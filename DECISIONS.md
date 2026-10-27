@@ -14,7 +14,7 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 
 ## D2. ReasonML semantics and ReScript syntax
 
-Decision: expression-oriented code, variants, exhaustive `switch`, Hindley-Milner inference, labeled arguments and the `->` pipe (sections 2 and 4).
+Decision: expression-oriented code, variants, exhaustive `switch`, Hindley-Milner inference and labeled arguments (sections 2 and 4). Currying, partial application and the pipe are left out (D12).
 
 - **Reason.** Immutable-by-default semantics fit reference counting (D1), because immutable values cannot form cycles.
 - **Reason.** ReScript syntax is close to TypeScript, so both people and models can read it from prior knowledge.
@@ -85,3 +85,14 @@ Decision: JSON diagnostics with exact fix edits, stable error codes, and a query
 
 - **Reason.** An agent calls commands and reads their output. Exact edits remove a step where the agent rewrites a fix in its own words and can get it wrong.
 - **Reason.** Explicit signatures (section 4), explicit imports (D3) and declared effects (D8) work together. An agent understands a function from its file and its imports alone.
+
+## D12. No currying, partial application, pipes or operator overloading
+
+Decision: a call passes every argument, there is no pipe operator, and operators are built in with one type family each (section 2).
+
+- **Reason.** Each call has one reading. With currying, `f(a)` might be a result or a function waiting for more arguments. A missing argument then shows up as a type error somewhere else.
+- **Reason.** Without currying, a function compiles to one C function with a fixed parameter list. No intermediate closures are allocated for partly applied calls.
+- **Reason.** Without pipes, every call is written as `f(x, y)`. Code has one call form to read, search and generate.
+- **Reason.** Without overloading, an operator's meaning follows from the operator alone. `+.` is always float addition, so the reader never needs the operand types first.
+- **Cost.** Data transformations read inside out or need named intermediate values. Fixing arguments needs an explicit lambda.
+- **Rejected: ReScript's `->` pipe.** It saves nesting, but adds a second way to write every call.

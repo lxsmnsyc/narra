@@ -34,14 +34,44 @@ The syntax follows ReScript, the current form of ReasonML syntax.
 - **Bindings.** `let x = expr;` binds a name. Bindings are immutable.
 - **Mutable locals.** `let mut x = expr;` declares a local that can be reassigned with `x = expr;`. A mutable local cannot be captured by a closure.
 - **Expressions.** `if`, `switch` and `{ ... }` blocks are expressions. A block's value is its last expression.
-- **Functions.** `(a, b) => expr`. Functions are values.
+- **Functions.** `(a, b) => expr`. Functions are values and can be stored, passed and returned.
 - **Labeled arguments.** `(~path, ~mode) => ...` declares them. Callers write `open(~path="a.txt", ~mode=Read)`. Labeled arguments can appear in any order.
-- **Pipe.** `x->f(y)` means `f(x, y)`. The left value becomes the first argument.
 - **Loops.** `for i in 0 to n - 1 { ... }`, `for item in list { ... }` and `while cond { ... }`. Loops have type `unit`.
 - **Comments.** `//` to the end of the line. `/* ... */` for blocks. `///` before a declaration is a doc comment.
 - **Formatting.** `lang fmt` defines the one valid layout. The compiler rejects nothing for layout, but CI is expected to run `lang fmt --check`.
 
-There are no macros, no operator overloading and no function overloading.
+There are no macros and no function overloading.
+
+### Calls
+
+- **A call passes every argument.** A function declared with two parameters is called with exactly two arguments. Passing fewer is a compile error.
+- **No currying.** `(a, b) => expr` is one function of two parameters, not a function that returns a function. The type `(int, int) => int` is different from `(int) => (int) => int`.
+- **No partial application.** To fix some arguments, write a lambda: `(x) => add(1, x)`.
+- **No pipe operator.** Write nested calls or name the intermediate values with `let`.
+
+```reason
+// Not valid: add(1), x->add(1), x |> add(1)
+let addOne = (x) => add(1, x);
+let words = String.split(text, ~on=" ");
+let counts = Array.map(words, String.length);
+```
+
+### Operators
+
+- **Operators are built in.** Programs cannot define new operators or give existing operators new meanings.
+- **Each operator works on one type family.**
+
+| Operators | Operand types |
+| --- | --- |
+| `+` `-` `*` `/` `%` | Integers. Both operands have the same integer type. |
+| `+%` `-%` `*%` | Integers, with wrapping on overflow. |
+| `+.` `-.` `*.` `/.` | Floats. Both operands have the same float type. |
+| `++` | `string` concatenation. |
+| `<` `<=` `>` `>=` | Integers, floats, `char` and `string`. Both operands have the same type. |
+| `==` `!=` | Any type without functions, compared structurally (section 4). |
+| `&&` `\|\|` `!` | `bool`. |
+
+- An integer operation whose operand types are still unknown after inference uses `int`.
 
 ## 3. Modules and imports
 
@@ -112,7 +142,7 @@ There is no null. A missing value is `None`.
 ### Numbers
 
 - Integer overflow panics in debug builds and wraps in release builds. The operators `+%`, `-%` and `*%` always wrap.
-- Float operators are separate: `+.`, `-.`, `*.`, `/.`.
+- Float operators are separate: `+.`, `-.`, `*.`, `/.` (section 2).
 - There are no implicit conversions. Use `I64.fromI32(x)`, `F64.fromInt(x)` and similar functions.
 
 ## 5. Errors
@@ -125,7 +155,7 @@ There is no null. A missing value is `None`.
 ```reason
 export let readConfig: (~path: string) => result(config, configError) uses io, alloc =
   (~path) => {
-    let text = try File.readText(~path)->Result.mapError(e => IoFailed(e));
+    let text = try Result.mapError(File.readText(~path), (e) => IoFailed(e));
     let config = try Config.parse(text);
     Ok(config)
   };
@@ -149,7 +179,7 @@ export let readConfig: (~path: string) => result(config, configError) uses io, a
 ```reason
 let mut xs = Array.make(0, ~len=1000);
 for i in 0 to 999 {
-  xs = xs->Array.set(i, i * i);  // count is 1, so the write is in place
+  xs = Array.set(xs, i, i * i);  // count is 1, so the write is in place
 };
 ```
 

@@ -4,11 +4,11 @@ This document defines the Lang language. Each section states the rules first, th
 
 File extension: `.lang`. Compiler command: `lang`.
 
-The previous draft used ReasonML syntax. It is kept at the git tag `reasonml-draft`.
+Earlier drafts are kept at git tags: `reasonml-draft` (ReasonML syntax) and `lua-draft` (Lua syntax).
 
 ## 1. Overview
 
-- Lang uses Lua syntax with static types. Metatables are removed.
+- Lang uses TypeScript-style syntax with Rust-style semantics: static types, enums with fields, pattern matching, and no `null`.
 - Lang compiles to native code, the same target as C, Rust and Go. The compiler emits C, and a C compiler builds the final binary.
 - Lang code is a set of modules. One file is one module. There are no globals.
 - Values are immutable. Safe code has no pointers or references, only values.
@@ -16,99 +16,120 @@ The previous draft used ReasonML syntax. It is kept at the git tag `reasonml-dra
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
-```lua
-const Float = import("std/float")
+```ts
+import * as Float from "std/float"
 
-export enum Shape
+export enum Shape {
   Circle(radius: f64)
   Rect(width: f64, height: f64)
-end
+}
 
-export function area(s: Shape): f64
-  match s
-    when Circle(r) then return Float.PI * r * r
-    when Rect(w, h) then return w * h
-  end
-end
+export function area(s: Shape): f64 {
+  return match (s) {
+    Circle(r) => Float.PI * r * r
+    Rect(w, h) => w * h
+  }
+}
 
-test "rect area" do
+test "rect area" {
   assert(area(Rect(2.0, 3.0)) == 6.0)
-end
+}
 ```
 
 ## 2. Syntax
 
-The syntax follows Lua 5.4. This section lists only the differences and additions.
+The syntax follows TypeScript where the meaning is the same. Where Lang means something different, it uses different syntax or reports a compile error. The table under "Differences from TypeScript" lists those cases.
+
+### Statements and layout
+
+- Blocks use `{ }`.
+- **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error.
+- `lang fmt` defines the one valid layout. CI is expected to run `lang fmt --check`.
+- Comments: `//` to the end of the line, `/* ... */` for blocks, `///` before a declaration for documentation.
 
 ### Bindings
 
 - `const x = expr` binds a name that cannot be reassigned.
 - `let x = expr` binds a name that can be reassigned with `x = expr`. A `let` binding cannot be captured by a closure.
-- `local` is not a keyword. Every binding is local to its block or module.
 - There are no globals. Assigning to an undeclared name is a compile error.
-- Multiple assignment is allowed: `const a, b = f()` when `f` returns two values.
+- There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
+- **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const [quotient, remainder] = Int.divmod(a, b)` for tuples.
 
 ### Functions
 
-- `function name(a: int, b: int): int ... end` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
-- Anonymous functions use the same form without a name: `function(x: int): int return x + 1 end`.
+- `function name(a: int, b: int): int { ... }` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
+- A function with no return type returns nothing.
+- **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
+- An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Array.map(prices, (p) => p * 2)`.
+- **Function types** are written like arrow functions: `(item: T) => U`.
+- **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
+- **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
+- **No currying and no partial application.** To fix some arguments, write an arrow function.
+- **No method calls.** `xs.push(v)` is not valid. Write `Array.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
+- **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.
 - **Recursion is declared.** A function that calls itself, directly or through other functions in the same module, is declared `recursive function`. A call that forms a cycle between functions that are not marked `recursive` is a compile error.
 - **Tail calls in recursive functions are loops.** In a `recursive function`, a tail-position call to itself compiles to a jump. The stack does not grow. Other recursive calls use the stack. Stack overflow aborts the program.
 
-```lua
-recursive function gcd(a: int, b: int): int
-  if b == 0 then return a end
-  return gcd(b, a % b)          -- tail call, compiled to a loop
-end
+```ts
+recursive function gcd(a: int, b: int): int {
+  if (b == 0) {
+    return a
+  }
+  return gcd(b, a % b)          // tail call, compiled to a loop
+}
 
-recursive function isEven(n: int): bool
-  if n == 0 then return true end
+recursive function isEven(n: int): bool {
+  if (n == 0) {
+    return true
+  }
   return isOdd(n - 1)
-end
+}
 
-recursive function isOdd(n: int): bool
-  if n == 0 then return false end
+recursive function isOdd(n: int): bool {
+  if (n == 0) {
+    return false
+  }
   return isEven(n - 1)
-end
+}
 ```
 
 - Recursion through function values, such as a function passed as an argument, is not checked.
-- **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
-- **Multiple return values** are allowed and typed: `function divmod(a: int, b: int): (int, int)`.
-- **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
-- **No currying and no partial application.** To fix some arguments, write an anonymous function.
-- **No method calls.** `obj:method(x)` is not valid. Write `Module.method(obj, x)`.
-- **No varargs.** `...` is not valid. Pass an array instead.
-- **No labeled arguments.** Pass a struct for functions with many options: `File.open(path, { mode = Read, create = true })`.
 
 ### Control flow
 
-- `if cond then ... elseif cond then ... else ... end`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
-- `while cond do ... end` and `repeat ... until cond`.
-- `for i = first, last do ... end` counts from `first` to `last` inclusive, as in Lua. `for i = first, last, step do` takes a step.
-- `for x in iter do ... end` loops over an iterator. `for i, x in Array.entries(xs) do` gives indexes from 0.
-- **An iterator is a `Generator<T>`** (section 8). `Array.values`, `Array.entries`, `Map.keys`, `Map.entries` and `Str.chars` return generators. A function returns its own iterator by returning a generator.
-- `for i, x in iter` works when the generator yields a `Tuple<A, B>`. The tuple is split into `i` and `x`.
-- `break` and `goto` work as in Lua. `continue` is added.
-- `match` is added (section 4).
+- `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
+- `while (cond) { ... }`.
+- `for (const item of iter) { ... }` loops over an iterator. `for (const [i, item] of Array.entries(items))` gives indexes from 0.
+- **An iterator is a `Generator<T>`** (section 8). `Array.values`, `Array.entries`, `Map.keys`, `Map.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **Counting loops use `Range`.** `Range.upTo(n)` counts from 0 to `n - 1`. `Range.between(start, end)` counts from `start` to `end - 1`. `Range.stepped(start, end, step)` takes a step.
+
+```ts
+for (const i of Range.upTo(Array.length(items))) {
+  print(items[i])
+}
+```
+
+- `break` and `continue` work as in TypeScript, including labels: `outer: for (...) { ... break outer }`.
+- There is no C-style `for (init; cond; step)`, no `do ... while`, no `switch` and no `goto`.
+- `match` replaces `switch` (section 4).
 
 ### Literals
 
-- **Strings** use double quotes only: `"text"`. Lua's long strings `[[ ... ]]` hold multi-line text.
-- **Characters** use single quotes: `'a'`, `'\n'`, `'\u{1F600}'`. A character literal has type `char`.
+- **Strings** use double quotes: `"text"`. They have no interpolation.
+- **Template strings** use backticks: `` `Hello ${name}` ``. Each `${...}` must hold an expression of type `string`. Template strings can span several lines.
+- **Characters** use single quotes: `'a'`, `'\n'`, `'\u{1F600}'`. A character literal has type `char`. `'abc'` is a compile error.
 - **Integers:** `42`, `0xFF`, `0o755`, `0b1010`. `_` can separate digits: `1_000_000`.
 - **Floats:** `3.14`, `1.0e-9`, `1_000.5`.
 - **A literal must fit its type.** `const x: u8 = 300` is a compile error.
 - `true` and `false` have type `bool`.
+- A number literal with no other type information is `int` when written without a decimal point, and `f64` when written with one.
+- **Arrays:** `[1, 2, 3]`. `[]` needs its type from context.
+- **Maps:** `Map { "a": 1, "b": 2 }`. A key that is not a literal is written `[key]: value`.
+- **Tuples:** `Tuple(1, "a")`, or `[1, "a"]` when the expected type is a tuple.
 
-### Comments and formatting
-
-- `--` comments to the end of the line. `--[[ ... ]]` comments a block. `---` before a declaration is a doc comment.
-- `lang fmt` defines the one valid layout. CI is expected to run `lang fmt --check`.
-
-There are no macros, no metatables, no operator overloading and no function overloading.
+There are no macros, no operator overloading and no function overloading.
 
 ### Operators
 
@@ -117,52 +138,70 @@ There are no macros, no metatables, no operator overloading and no function over
 
 | Operators | Operand types |
 | --- | --- |
-| `+` `-` `*` `%` | Any integer type or any float type |
-| `/` | Float types. Use `//` for integers |
-| `//` | Floor division for any integer or float type |
-| `^` | Float types |
+| `+` `-` `*` `/` `%` | Any integer type or any float type. `/` on integers truncates toward zero |
 | `+%` `-%` `*%` | Integer types, wrapping on overflow |
-| `&` `\|` `~` `<<` `>>` | Integer types. `~` is xor when binary and bitwise not when unary |
-| `..` | `string` |
+| `&` `\|` `^` `<<` `>>` | Integer types. `^` is xor |
+| `~` | Integer types, bitwise not |
 | `<` `<=` `>` `>=` | Numbers, `char` and `string` |
-| `==` `~=` | Any type without functions, compared structurally (section 4) |
-| `and` `or` `not` | `bool` |
-| `#` | Length of an array, map or string |
+| `==` `!=` | Types that implement `Equatable`, compared structurally (section 4) |
+| `&&` `\|\|` `!` | `bool` |
 
-- A number literal with no other type information is `int` when written without a decimal point, and `f64` when written with one.
+- There is no string concatenation operator. Use a template string or `Str.concat(a, b)`.
+- There is no length operator. Use `Array.length(items)`, `Str.length(s)` and `Map.size(m)`.
+- There is no power operator. Use `Float.pow(x, y)` or `Int.pow(x, y)`.
+- `Int.floorDiv(a, b)` rounds toward negative infinity.
+
+### Differences from TypeScript
+
+Code that is valid TypeScript but means something different in Lang is a compile error with a fix, never a silently different meaning.
+
+| TypeScript | Lang |
+| --- | --- |
+| `const` fixes the binding, but the object can still change | `const` values never change |
+| `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
+| `let` can be captured by closures | `let` cannot be captured |
+| `null`, `undefined` | Not present. Use `Option<T>` with `None` |
+| `number` | Not present. Use `int`, `i32`, `f64` and the other sized types |
+| `enum` holds named numbers or strings | `enum` holds variants with fields, checked by `match` |
+| `'text'` is a string | `'a'` is a `char`. Strings use `"text"` |
+| `for (const k in obj)` loops over keys | Not present. Use `for (const k of Map.keys(m))` |
+| `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
+| `xs.push(v)`, `s.length` | Not present. Use `Array.push(mutable xs, v)`, `Str.length(s)` |
+| `a + b` joins strings | Not present. Use a template string |
+| `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
+| `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
+| `async`, `await` | Not present. Use the `yield` effect (section 8) |
 
 ## 3. Modules and imports
 
 - **One file is one module.** Its path from the package root is its name: `src/app/text.lang` is `"app/text"`.
-- **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export enum`, `export struct`, `export type`, `export const`.
+- **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
-- **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Tuple`, the primitive types, `assert` and `panic`. Nothing else is in scope without an import.
+- **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Tuple`, `Range`, the primitive types, `print`, `assert` and `panic`. Nothing else is in scope without an import.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
-Import forms:
-
-```lua
-const Str = import("std/string")                  -- namespace import
-const { classify, Token } = import("app/text")    -- named imports
+```ts
+import * as Str from "std/string"            // namespace import
+import { classify, Token } from "app/text"   // named imports
 ```
 
-There is no re-export statement. To expose an imported name, import it with `import` and export a new declaration:
+There is no re-export statement. To expose an imported name, import it and export a new declaration:
 
-```lua
-const Text = import("app/text")
+```ts
+import * as Text from "app/text"
 
-export const classify = Text.classify   -- a function
-export type Token = Text.Token          -- a type, with its constructors
+export const classify = Text.classify        // a function
+export type Token = Text.Token               // a type, with its constructors
 ```
 
 Rules:
 
-- **`import` is a declaration, not a function call.** It must appear at the top level with a string literal path. It never runs code, and it never loads a module at runtime.
+- **Imports are static.** They appear at the top of the file with a string literal path. They never run code and never load a module at runtime. `import(...)` as an expression is a compile error.
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
-- **No re-export statement and no default exports.** An exported name is always declared in the exporting file with `export function`, `export const`, `export type`, `export struct` or `export enum`.
+- **No re-export statement and no default exports.** `export { x } from "m"`, `export *` and `export default` are compile errors. An exported name is always declared in the exporting file.
 - **`export type A = B`** declares an alias. When `B` is an enum, its constructors are usable through the alias.
 - **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
-- **No import side effects.** Top-level declarations must be functions, types, `const` constants or `lazy` values (section 10). There is no top-level `let`.
+- **No import side effects.** Top-level declarations must be functions, types, traits, `const` constants or `lazy` values (section 10). There is no top-level `let`.
 - **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
 - **`lang move old new`** moves a file and rewrites every import of it.
 
@@ -181,79 +220,75 @@ Rules:
 | `string` | Immutable UTF-8 text |
 | `bytes` | Immutable byte sequence |
 
-A function with no return type returns nothing.
-
 ### Composite types
 
 - **Structs.** Declared with `struct`. The full rules are in "Structs" below.
-
 - **Enums.** Declared with `enum`. Each constructor can carry fields.
 
-```lua
-export enum Token
+```ts
+export enum Token {
   Word(text: string)
   Number(value: int)
   Space
-end
+}
 ```
 
-- **Arrays.** `Array<T>` is a growable, contiguous array. `{1, 2, 3}` builds one when the expected type is an array. Indexes start at 0. `xs[i]` is bounds checked and panics when out of range. `#xs` is the length.
-- **Maps.** `Map<K, V>` is a hash map. `{ ["a"] = 1, ["b"] = 2 }` builds one when the expected type is a map. `m[k]` returns `Option<V>`.
+- **Arrays.** `Array<T>` is a growable, contiguous array. Indexes start at 0. `items[i]` is bounds checked and panics when out of range.
+- **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
 - **Float keys are not allowed.** `Map<f64, V>` and keys that contain floats are compile errors.
-- **Tuples.** `Tuple<int, string>` holds a fixed group of values, built with `Tuple(1, "a")`.
-- **Multiple return values.** `: (int, int)` in a return type means the function returns two values. They are not a tuple and cannot be stored as one value.
-- **Functions.** `function(int, string): bool`.
+- **Tuples.** `Tuple<int, string>` holds a fixed group of values. A function that returns several values returns a tuple or a struct.
+- **Functions.** `(a: int, b: string) => bool`.
 
 ### Structs
 
 A struct is a fixed set of named fields, stored inline like a C struct.
 
-```lua
-export struct ServerConfig
+```ts
+export struct ServerConfig {
   host: string
   port: int = 8080
-  tags: Array<string> = {}
-end
+  tags: Array<string> = []
+}
 
-struct Entry<K, V>
+struct Entry<K, V> {
   key: K
   value: V
-end
+}
 ```
 
 **Fields and defaults**
 
-- Each field has a name and a type.
+- Each field has a name and a type, one per line.
 - A field can have a default value after `=`. The default must be a compile-time constant (section 10).
 - A field without a default must be given every time the struct is built.
 
 **Building a struct**
 
-- `TypeName { field = value, ... }` builds a struct of that type. The fields can appear in any order.
-- When the expected type is already known, the type name can be left out: `{ field = value }`. The type comes from an annotation, a parameter or a return type.
+- `TypeName { field: value, ... }` builds a struct of that type. The fields can appear in any order.
+- When the expected type is already known, the type name can be left out: `{ field: value }`. The type comes from an annotation, a parameter or a return type.
 - Fields with defaults can be left out. All other fields must be given.
-- Every field is written as `name = value`, even when the value is a variable with the same name.
-- Type arguments of a generic struct are inferred from the fields: `Entry { key = "a", value = 1 }` is `Entry<string, int>`.
+- Every field is written as `name: value`, even when the value is a variable with the same name. `{ name }` is a compile error in a literal.
+- Type arguments of a generic struct are inferred from the fields: `Entry { key: "a", value: 1 }` is `Entry<string, int>`.
 
-```lua
-const config = ServerConfig { host = "localhost" }        -- port is 8080, tags is {}
-const loopback: ServerConfig = { host = "127.0.0.1", port = 3000 }
+```ts
+const config = ServerConfig { host: "localhost" }            // port is 8080, tags is []
+const loopback: ServerConfig = { host: "127.0.0.1", port: 3000 }
 
-function makeEntry(key: string, value: int): Entry<string, int>
-  return { key = key, value = value }                      -- type taken from the return type
-end
+function makeEntry(key: string, value: int): Entry<string, int> {
+  return { key: key, value: value }                          // type taken from the return type
+}
 ```
 
 **Reading and updating**
 
 - `s.field` reads a field.
-- `s with { field = value }` returns a copy with some fields changed. The original is unchanged.
+- `{ ...s, field: value }` returns a copy of `s` with some fields changed. The spread must come first, there is only one, and the result has the same type as `s`. The original is unchanged.
 - `s.field = value` changes a field in place. `s` must be a `let` variable, a `mutable` parameter, or a field of one.
 - To change a caller's struct inside a function, declare the parameter `mutable` (section 6).
 
-```lua
-const moved = config with { port = 9000 }
+```ts
+const moved = { ...config, port: 9000 }
 
 let current = config
 current.port = 9001
@@ -263,18 +298,18 @@ current.tags[0] = "primary"
 **Destructuring**
 
 - `const { field1, field2 } = s` binds each field to a variable with the same name.
-- `const { field = name } = s` binds the field to a different name.
+- `const { field: name } = s` binds the field to a different name.
 - Fields that are not listed are ignored.
-- The same pattern works in `match`. A literal after `=` tests the field's value instead of binding it.
+- The same patterns work in `match`. A literal after `:` tests the field's value instead of binding it.
 
-```lua
-const { host, port = serverPort } = config
+```ts
+const { host, port: serverPort } = config
 
-match point
-  when { x = 0.0, y = 0.0 } then print("origin")
-  when { x = 0.0, y } then print("on the y axis at " .. F64.toString(y))
-  when { x, y } then print(F64.toString(x) .. ", " .. F64.toString(y))
-end
+match (point) {
+  { x: 0.0, y: 0.0 } => print("origin")
+  { x: 0.0, y } => print(`on the y axis at ${F64.toString(y)}`)
+  { x, y } => print(`${F64.toString(x)}, ${F64.toString(y)}`)
+}
 ```
 
 **Storage**
@@ -290,37 +325,39 @@ end
 - `Box.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a `let` variable, in place when the count is 1.
 - Use a box for recursive structs and for large structs that are copied often.
 
-```lua
-struct ListNode
+```ts
+struct ListNode {
   value: int
   next: Option<Box<ListNode>> = None
-end
+}
 
-const list = ListNode { value = 1, next = Some(Box.new(ListNode { value = 2 })) }
+const list = ListNode { value: 1, next: Some(Box.new(ListNode { value: 2 })) }
 ```
 
 ### Opaque types
 
 `export opaque struct` exports a struct's name but not its fields.
 
-```lua
--- module "app/range"
-export opaque struct Range
+```ts
+// module "app/range"
+export opaque struct Range {
   start: int
   finish: int
-end
+}
 
-export function create(start: int, finish: int): Result<Range, string>
-  if start > finish then return Err("start is after finish") end
-  return Ok(Range { start = start, finish = finish })
-end
+export function create(start: int, finish: int): Result<Range, string> {
+  if (start > finish) {
+    return Err("start is after finish")
+  }
+  return Ok(Range { start: start, finish: finish })
+}
 
-export function length(r: Range): int
+export function length(r: Range): int {
   return r.finish - r.start
-end
+}
 ```
 
-- **Other modules** can store, pass, copy and compare a `Range` with `==`. They cannot build one with a literal, read or assign its fields, use `with`, or destructure it.
+- **Other modules** can store, pass, copy and compare a `Range` with `==`. They cannot build one with a literal, read or assign its fields, spread it, or destructure it.
 - **The declaring module** uses the struct like any other struct.
 - **Fields are all public or all private.** There is no per-field visibility.
 - Use an opaque struct when a type has a rule that every value must follow, such as `start <= finish`.
@@ -329,14 +366,14 @@ end
 
 `distinct type` declares a new type with the same representation as an existing one.
 
-```lua
+```ts
 export distinct type UserId = int
 export distinct type OrderId = int
 
 const user = UserId.from(42)
 const raw: int = UserId.toInt(user)
 
-loadUser(OrderId.from(7))     -- compile error: OrderId is not UserId
+loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 ```
 
 - **No implicit conversion.** A `UserId` is not an `int`, and an `OrderId` is not a `UserId`.
@@ -347,81 +384,91 @@ loadUser(OrderId.from(7))     -- compile error: OrderId is not UserId
 
 ### Optional values
 
-- `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `nil`.
-- `if x is Some(v) then` binds `v` inside the branch. After `if x is None then return ... end`, `x` is known to be `Some` for the rest of the block, and `x.value` reads the value.
+- `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `null` or `undefined`.
+- `if (x is Some(v)) { ... }` binds `v` inside the branch. After `if (x is None) { return ... }`, `x` is known to be `Some` for the rest of the block, and `x.value` reads the value.
 - `Option.withDefault(x, fallback)` returns `fallback` when `x` is `None`.
-- Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`.
+- Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`. There is no `T | null` or `T?`.
 
 ### Pattern matching
 
-`match` checks a value against patterns. It must cover every case, or have an `else` branch.
+`match` checks a value against patterns. It must cover every case, or end with a `_` arm.
 
-```lua
-match token
-  when Word(text) then print(text)
-  when Number(n) if n < 0 then print("negative")
-  when Number(n) then print(Int.toString(n))
-  when Space then print(" ")
-end
+```ts
+match (token) {
+  Word(text) => print(text)
+  Number(n) if (n < 0) => print("negative")
+  Number(n) => print(Int.toString(n))
+  Space => print(" ")
+}
+
+const label = match (status) {
+  Active => "active"
+  Suspended(reason) => `suspended: ${reason}`
+  _ => "other"
+}
 ```
 
-- Patterns can bind fields, test literals, and add an `if` guard.
-- `match` on an `Option<T>` uses `when Some(v) then` and `when None then`.
+- Each arm is `pattern => expression` or `pattern => { statements }`.
+- Patterns can bind fields, test literals, and add an `if (...)` guard.
+- **`match` as a value.** When every arm is a single expression, `match` produces a value.
+- `match` on an `Option<T>` uses `Some(v) =>` and `None =>`.
 
 ### Generics
 
-- Type parameters use angle brackets: `function first<T>(items: Array<T>): Option<T>` and `struct Entry<K, V> key: K value: V end`.
-- A type parameter can require traits: `<T: Ordered>`, or `<T: Show and Ordered>` for several (see "Traits" below).
+- Type parameters use angle brackets: `function first<T>(items: Array<T>): Option<T>` and `struct Entry<K, V> { ... }`.
+- A type parameter can require traits: `<T: Ordered>`, or `<T: Show & Ordered>` for several (see "Traits" below).
 - Arithmetic operators do not work on a type parameter. Pass a function or require a trait instead.
 - **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
-```lua
-export function contains<T: Equatable>(items: Array<T>, wanted: T): bool
-  for item in Array.values(items) do
-    if item == wanted then return true end
-  end
+```ts
+export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
+  for (const item of Array.values(items)) {
+    if (item == wanted) {
+      return true
+    }
+  }
   return false
-end
+}
 ```
 
 ### Traits
 
 A trait is a named set of functions that a type implements. A type's traits are all listed where the type is declared.
 
-```lua
-export trait Show
+```ts
+export trait Show {
   function show(value: Self): string
-end
+}
 
-export struct Money implements Show, Ordered
+export struct Money implements Show, Ordered {
   cents: int
-end
+}
 
-implement Show for Money
-  function show(value: Money): string
-    return Int.toString(value.cents // 100) .. "." .. Int.toString(value.cents % 100)
-  end
-end
+implement Show for Money {
+  function show(value: Money): string {
+    return `${Int.toString(value.cents / 100)}.${Int.toString(value.cents % 100)}`
+  }
+}
 
-implement Ordered for Money
-  function compare(a: Money, b: Money): Ordering
+implement Ordered for Money {
+  function compare(a: Money, b: Money): Ordering {
     return Int.compare(a.cents, b.cents)
-  end
-end
+  }
+}
 
 const label = Show.show(price)
 ```
 
 **Declaring and implementing**
 
-- `trait Name ... end` declares a trait. Its body lists function signatures. `Self` is the implementing type.
+- `trait Name { ... }` declares a trait. Its body lists function signatures. `Self` is the implementing type.
 - **A trait has functions only.** No fields, no default implementations, no associated types, and no traits that require other traits.
-- **Implementations live with the type.** A struct, enum or distinct type lists its traits with `implements`. Each listed trait needs an `implement Trait for Type ... end` block in the same module, or a `derives` entry.
+- **Implementations live with the type.** A struct, enum or distinct type lists its traits with `implements`. Each listed trait needs an `implement Trait for Type { ... }` block in the same module, or a `derives` entry.
 - **No implementations anywhere else.** A module cannot implement a trait for a type declared in another module. To add a trait to another module's type, wrap it in a `distinct type` or a struct.
-- `derives` asks the compiler to write the implementation: `struct User derives Show, Ordered, Shape`.
+- `derives` asks the compiler to write the implementation: `struct User derives Show, Ordered, Shape { ... }`.
 
 **Calling**
 
@@ -438,7 +485,7 @@ const label = Show.show(price)
 
 | Trait | Purpose | Implemented |
 | --- | --- | --- |
-| `Equatable` | `==` and `~=` | Automatically for types without functions |
+| `Equatable` | `==` and `!=` | Automatically for types without functions |
 | `Hashable` | `Hash.of`, map keys | Automatically for types without functions or floats |
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
@@ -456,7 +503,7 @@ const label = Show.show(price)
 ### Inference
 
 - Types of variables are inferred. `const n = 1` is `int`.
-- **Function parameters and return types are written for every function.** Anonymous functions passed as arguments are the exception. Their types come from the parameter they are passed to.
+- **Function parameters and return types are written for every named function.** Arrow functions passed as arguments are the exception. Their types come from the parameter they are passed to.
 - Other modules type-check against exported signatures only. They never read function bodies.
 
 ### Numbers
@@ -472,50 +519,50 @@ const label = Show.show(price)
 - **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
 - **Slices share memory.** `Str.slice` and `Array.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `Str.copy` or `Array.copy` to keep a small part of a large buffer without keeping the rest.
 - **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
-- `#s` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
+- `Str.length(s)` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
 
-```lua
-export struct Pair
+```ts
+export struct Pair {
   key: string
   value: string
-end
+}
 
-export function parsePair(line: string): Option<Pair>
+export function parsePair(line: string): Option<Pair> {
   const found = Str.indexOf(line, "=")
-  if found is None then
+  if (found is None) {
     return None
-  end
+  }
   const i = found.value
-  const key = Str.trim(Str.slice(line, 0, i))
-  const value = Str.trim(Str.sliceFrom(line, Str.nextChar(line, i)))
-  return Some({ key = key, value = value })
-end
+  return Some(Pair {
+    key: Str.trim(Str.slice(line, 0, i)),
+    value: Str.trim(Str.sliceFrom(line, Str.nextChar(line, i))),
+  })
+}
 ```
 
 ## 5. Errors
 
 - **Errors are return values.** A function that can fail returns `Result<T, E>`, with constructors `Ok(value)` and `Err(error)`.
-- **The caller checks the result.** There is no `try`, no `catch` and no operator that returns early. Every error path is a visible `if` or `match`.
-- **`is` tests a pattern and narrows the type.** After `if r is Err(e) then return ... end`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
+- **The caller checks the result.** There is no `try`, no `catch`, no `throw` and no operator that returns early. Every error path is a visible `if` or `match`.
+- **`is` tests a pattern and narrows the type.** After `if (r is Err(e)) { return ... }`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
-- There are no exceptions and no `pcall`.
 
-```lua
-export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc
+```ts
+export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc {
   const text = File.readText(path)
-  if text is Err(e) then
+  if (text is Err(e)) {
     return Err(IoFailed(e))
-  end
+  }
 
   const config = Config.parse(text.value)
-  if config is Err(e) then
+  if (config is Err(e)) {
     return Err(e)
-  end
+  }
 
   return Ok(config.value)
-end
+}
 ```
 
 ## 6. Memory model
@@ -532,30 +579,30 @@ end
 
 ### In-place updates
 
-- `xs[i] = v`, `m[k] = v`, `Array.push(mutable xs, v)` and `u.age = v` change a `let` variable. `u with { ... }` returns a changed copy.
+- `items[i] = v`, `m[k] = v`, `Array.push(mutable items, v)` and `u.age = v` change a `let` variable. `{ ...u, age: v }` returns a changed copy.
 - When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
 - Code that keeps one owner gets in-place mutation with no copies.
 
-```lua
-let xs: Array<int> = Array.filled(0, 1000)
-for i = 0, 999 do
-  xs[i] = i * i  -- the count is 1, so the write is in place
-end
+```ts
+let squares: Array<int> = Array.filled(0, 1000)
+for (const i of Range.upTo(1000)) {
+  squares[i] = i * i          // the count is 1, so the write is in place
+}
 ```
 
-- `xs[i] = v` and `u.age = v` require the target to be a `let` variable, a `mutable` parameter, or a field of one.
+- `items[i] = v` and `u.age = v` require the target to be a `let` variable, a `mutable` parameter, or a field of one.
 
 ### Mutable parameters
 
 A function changes a caller's variable only through a `mutable` parameter. The keyword appears in the declaration and again at the call.
 
-```lua
-function damage(mutable player: Player, amount: int)
+```ts
+function damage(mutable player: Player, amount: int) {
   player.hp = player.hp - amount
-end
+}
 
-let hero = Player { name = "Ana", hp = 100, position = Vec2 { x = 0.0, y = 0.0 } }
-damage(mutable hero, 10)      -- hero.hp is now 90
+let hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
+damage(mutable hero, 10)      // hero.hp is now 90
 ```
 
 - **The argument must be changeable.** It must be a `let` variable, a `mutable` parameter, or a field or element of one. A `const`, a literal or a function result is a compile error.
@@ -594,8 +641,8 @@ An effect marks something a function can do beyond computing a value. The set is
 
 Rules:
 
-- Exported functions declare their effects after the return type: `function f(s: string): int uses alloc`.
-- The compiler infers effects for private functions and anonymous functions.
+- Exported functions declare their effects after the return type: `function f(s: string): int uses alloc { ... }`.
+- The compiler infers effects for private functions and arrow functions.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
 - The entry function (section 15) has every effect except `yield`. `Async.run` provides a context where `yield` is allowed.
@@ -604,13 +651,13 @@ Rules:
 
 A function that calls a function it receives has that function's effects. An effect variable states this in a signature.
 
-```lua
-export function map<T, U, effect E>(items: Array<T>, f: function(T): U uses E): Array<U> uses alloc, E
+```ts
+export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): Array<U> uses alloc, E
 ```
 
 - Effect variables are declared in the type parameter list with the `effect` keyword, and appear only after `uses`.
 - **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type.
-- At each call, the variable takes the effects of the function passed in. `map(xs, Str.len)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
+- At each call, the variable takes the effects of the function passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
 
 ## 8. Coroutines and concurrency
 
@@ -626,23 +673,23 @@ A panic on any thread or task aborts the whole program.
 
 ### Coroutines
 
-Coroutines keep Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
+Coroutines follow Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
 
-```lua
-const Co = import("std/coroutine")
+```ts
+import * as Co from "std/coroutine"
 
-function counter(limit: int): Generator<int>
-  return Co.generator(function() uses yield
-    for i = 0, limit - 1 do
+function counter(limit: int): Generator<int> {
+  return Co.generator(() => {
+    for (const i of Range.upTo(limit)) {
       Co.yield(i)
-    end
-  end)
-end
+    }
+  })
+}
 
-let c = counter(3)
-for n in Co.values(mutable c) do
-  print(Int.toString(n))  -- 0, 1, 2
-end
+let numbers = counter(3)
+for (const n of Co.values(mutable numbers)) {
+  print(Int.toString(n))      // 0, 1, 2
+}
 ```
 
 - **`Coroutine<In, Out>`** takes `In` on each resume and produces `Out` on each yield.
@@ -659,14 +706,14 @@ end
 
 Threads run in a scope. Every thread started in a scope finishes before the scope returns.
 
-```lua
-const Thread = import("std/thread")
+```ts
+import * as Thread from "std/thread"
 
-const total = Thread.scope(function(scope: Scope): int uses alloc
-  const left = Thread.start(scope, function(): int return sum(firstHalf) end)
-  const right = Thread.start(scope, function(): int return sum(secondHalf) end)
+const total = Thread.scope((scope) => {
+  const left = Thread.start(scope, () => sum(firstHalf))
+  const right = Thread.start(scope, () => sum(secondHalf))
   return Thread.join(left) + Thread.join(right)
-end)
+})
 ```
 
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
@@ -677,22 +724,22 @@ end)
 
 ### Channels
 
-```lua
-const sender, receiver = Channel.create(16)      -- holds up to 16 values
+```ts
+const [sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
-Thread.start(scope, function() uses io
-  for i = 0, 99 do
-    Channel.send(sender, i)                       -- blocks while the channel is full
-  end
+Thread.start(scope, () => {
+  for (const i of Range.upTo(100)) {
+    Channel.send(sender, i)                            // blocks while the channel is full
+  }
   Channel.close(sender)
-end)
+})
 
-for value in Channel.values(receiver) do         -- ends when the channel is closed and empty
+for (const value of Channel.values(receiver)) {       // ends when the channel is closed and empty
   print(Int.toString(value))
-end
+}
 ```
 
-- **`Channel.create<T>(capacity)`** returns a `Sender<T>` and a `Receiver<T>`.
+- **`Channel.create<T>(capacity)`** returns a `Tuple<Sender<T>, Receiver<T>>`.
 - **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
 - Blocking calls have the `io` effect.
@@ -707,14 +754,14 @@ A few types have identity: copying one copies a handle to the same object. They 
 | `Shared<T>` | A value guarded by a lock |
 | `Atomic<T>` | An integer or `bool` with atomic operations |
 
-```lua
+```ts
 const hits = Shared.create(0)
 
-Shared.update(hits, function(mutable count: int)
+Shared.update(hits, (mutable count) => {
   count = count + 1
-end)
+})
 
-const now = Shared.read(hits, function(count: int): int return count end)
+const now = Shared.read(hits, (count) => count)
 ```
 
 - **The lock is held only during the callback.** `Shared.update` and `Shared.read` take the lock, run the callback and release it. There is no way to take the lock and forget to release it.
@@ -727,33 +774,39 @@ const now = Shared.read(hits, function(count: int): int return count end)
 
 An event loop runs many tasks on one thread. A task suspends at each I/O call that would block, and the loop resumes it when the I/O is ready.
 
-```lua
-const Async = import("std/async")
-const Net = import("std/async/net")
+```ts
+import * as Async from "std/async"
+import * as Net from "std/async/net"
 
-function handle(connection: Connection) uses io, yield, alloc
+function handle(connection: Connection) uses io, yield, alloc {
   let conn = connection
-  while true do
-    const data = Net.read(mutable conn, 4096)     -- suspends until data arrives
-    if data is Err(_) then return end
-    if #data.value == 0 then return end
+  while (true) {
+    const data = Net.read(mutable conn, 4096)         // suspends until data arrives
+    if (data is Err(_)) {
+      return
+    }
+    if (Bytes.length(data.value) == 0) {
+      return
+    }
     const written = Net.write(mutable conn, data.value)
-    if written is Err(_) then return end
-  end
-end
+    if (written is Err(_)) {
+      return
+    }
+  }
+}
 
-export function run(args: Array<string>): int    -- entry function set in lang.toml
-  Async.run(function(loop: Loop) uses io, yield, alloc
+export function run(args: Array<string>): int {        // entry function set in lang.toml
+  Async.run((loop) => {
     let listener = Net.listen("127.0.0.1", 8080)
-    while true do
+    while (true) {
       const accepted = Net.accept(mutable listener)
-      if accepted is Ok(conn) then
-        Async.spawn(loop, function() uses io, yield, alloc handle(conn) end)
-      end
-    end
-  end)
+      if (accepted is Ok(conn)) {
+        Async.spawn(loop, () => handle(conn))
+      }
+    }
+  })
   return 0
-end
+}
 ```
 
 - **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It removes the `yield` effect, so it can be called from the entry function or from a thread.
@@ -765,18 +818,18 @@ end
 
 ## 9. Unsafe code and C interop
 
-- **`unsafe do ... end`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
+- **`unsafe { ... }`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
 - **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
 
-```lua
+```ts
 @repr(u8)
-export enum Color
+export enum Color {
   Red = 1
   Green = 2
   Blue = 4
-end
+}
 ```
 
 - **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
@@ -802,6 +855,7 @@ end
 - **Coroutines** compile to a struct holding their live variables and a state number, plus a resume function with a `switch` on that number.
 - **`mutable` parameters** compile to C pointer parameters.
 - **Self-calls in tail position** inside a `recursive function` compile to loops (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
+- **Trait constraints** compile to a hidden parameter that points to the implementation table.
 - **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
 - **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
 
@@ -828,25 +882,25 @@ end
 
 Code that differs by platform branches on constants from `std/build`. The compiler keeps only the matching branch.
 
-```lua
-const Build = import("std/build")
+```ts
+import * as Build from "std/build"
 
-export function configDir(): string uses io
-  if Build.os == Os.Windows then
+export function configDir(): string uses io {
+  if (Build.os == Os.Windows) {
     return Env.get("APPDATA")
-  elseif Build.os == Os.MacOS then
-    return Env.home() .. "/Library/Application Support"
-  else
-    return Env.home() .. "/.config"
-  end
-end
+  } else if (Build.os == Os.MacOS) {
+    return `${Env.home()}/Library/Application Support`
+  } else {
+    return `${Env.home()}/.config`
+  }
+}
 ```
 
 - **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. An `if` that tests only these constants is resolved at compile time. The output contains no runtime check.
 - **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed.
 - **`@target(os = Os.Windows)`** on a declaration makes it exist only on that target. Calling it outside a branch that guarantees that target is a compile error.
 
-```lua
+```ts
 @target(os = Os.Windows)
 extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 ```
@@ -857,15 +911,16 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 
 ## 13. Tests and contracts
 
-- **`test "name" do ... end`** blocks sit next to the code. `lang test` runs them. They are removed from non-test builds.
-- **Contracts.** `requires` and `ensures` lines at the start of a function body are checked in debug builds and removed in release builds. `ensures` refers to the return value as `result`.
+- **`test "name" { ... }`** blocks sit next to the code. `lang test` runs them. They are removed from non-test builds.
+- **Contracts.** `requires` and `ensures` lines between a function's signature and its body are checked in debug builds and removed in release builds. `ensures` refers to the return value as `result`.
 
-```lua
+```ts
 export function sqrt(x: f64): f64
   requires x >= 0.0
   ensures result >= 0.0
+{
   return Float.sqrt(x)
-end
+}
 ```
 
 ## 14. Tooling for agents
@@ -889,6 +944,7 @@ end
 
 - Error codes are stable. `lang explain E0412` prints the rule and an example fix.
 - Fixes are exact edits that an agent can apply without rewriting them.
+- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic. Its fix rewrites the TypeScript form into the Lang form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Array.push(mutable xs, v)`.
 
 ### Queries
 
@@ -932,7 +988,6 @@ search = ["/opt/homebrew/lib"]
 - **Entry points are set in `lang.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect except `yield`.
 - **`[link]`** lists C libraries to link and directories to search.
-
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
 - **`lang.lock`** records the commit hash and content hash of every dependency. `lang build` fails when a fetched dependency does not match its hash.

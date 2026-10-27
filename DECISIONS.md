@@ -12,14 +12,13 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 - **Taken in part: mutable value semantics (Hylo).** Lang adds one optional parameter convention, `mutable` (D27). Parameters default to constant values, so most signatures carry no convention.
 - **Cost.** Reference count updates in hot code that shares data. A prototype must benchmark this early, on numeric and string-heavy code.
 
-## D2. Lua syntax with static types
+## D2. TypeScript-style syntax with Rust-style semantics
 
-Decision: Lua 5.4 syntax with type annotations, `enum`, `struct` and `match` added, and metatables removed (section 2). This replaces the ReasonML syntax of the first draft, kept at the git tag `reasonml-draft`.
+Decision: braces, `const` and `let`, arrow functions, `import`, template strings and type annotations follow TypeScript. Types and semantics follow Rust: enums with fields, `match`, `Option` and `Result`, no `null`, sized numbers (section 2). This replaces the ReasonML draft (tag `reasonml-draft`) and the Lua draft (tag `lua-draft`).
 
-- **Reason.** Lua has a small grammar that people and models already know.
-- **Reason.** Lua's module pattern already keeps imported names local to a file, which matches the module model (D3).
-- **Rejected: keeping metatables.** They allow operator overloading and dynamic field lookup, so the meaning of `a + b` or `t.x` would depend on runtime state.
-- **Prior art.** Teal compiles typed Lua to Lua. Luau adds gradual types and its own VM. Pallene compiles a typed Lua subset to C.
+- **Reason.** TypeScript syntax is the most widely read syntax among the target users and in model training data.
+- **Reason.** After the Lua draft dropped `nil`, metatables, 1-based indexes, globals and dynamic types, only Lua's keywords were left. Braces remove `then`, `do` and `end`.
+- **Rule.** Where Lang's meaning differs from TypeScript's, Lang uses different syntax or a compile error with a fix (D42). The same text never means two different things.
 
 ## D3. Explicit imports with package-rooted paths
 
@@ -37,7 +36,7 @@ Decision: the restrictions listed in section 3.
 - **No cycles.** Modules compile in dependency order and in parallel. No module ever sees a partly initialized dependency.
 - **No re-export statement.** Exporting is done only with an `export` declaration, so every exported name appears as a declaration in its file. Wildcard re-exports slow builds and hide where names come from, which is a known problem with barrel files in TypeScript. A named re-export form was also dropped, because `import` plus `export const` or `export type` already does the same job.
 - **No default exports.** A default export gets a different name in each importing file, so text search misses uses.
-- **No import side effects.** Initialization order can never matter, and startup runs no code before `main`.
+- **No import side effects.** Initialization order can never matter, and startup runs no code before the entry function.
 
 ## D5. Traits implemented only where the type is declared
 
@@ -80,7 +79,7 @@ Decision: functions that can fail return `Result<T, E>`. The caller checks it wi
 - **Reason.** One way to handle errors. A propagation operator would be a second, shorter way.
 - **Reason.** Uncatchable panics need no unwinding tables, which keeps binaries small and C output simple.
 - **Cost.** Each fallible call takes three or four lines when the error is passed up, as in Go.
-- **Rejected: exceptions and `pcall`.** The failure paths are invisible in signatures.
+- **Rejected: exceptions (`throw`, `try`, `catch`).** The failure paths are invisible in signatures.
 - **Rejected: Go-style `value, err` pairs.** Both values can be set or both empty at once. `Result` makes exactly one of them present.
 
 ## D10. C as the compile target
@@ -100,13 +99,15 @@ Decision: JSON diagnostics with exact fix edits, stable error codes, and a query
 
 ## D12. One call form and built-in operators
 
-Decision: a call passes every argument. There is no currying, partial application, pipe, method call syntax, varargs or labeled arguments. Operators are built in (section 2).
+Decision: a call passes every argument. There is no currying, partial application, pipe, method call, varargs, optional parameters or labeled arguments. Operators are built in, and there are no operators for joining strings, length or powers (section 2).
 
 - **Reason.** Each call has one reading and one form, `f(x, y)`. Code has one call form to read, search and generate.
 - **Reason.** A function compiles to one C function with a fixed parameter list. No closures are allocated for partly applied calls.
-- **Rejected: Lua's `obj:method()`.** It is a second way to pass the first argument, the same as a pipe.
-- **Rejected: varargs.** Their types and counts are checked only at runtime. An array argument has one type.
-- **Cost.** Data transformations read inside out or need named intermediate values. Fixing arguments needs an anonymous function.
+- **Rejected: method calls such as `xs.push(v)`.** They are a second way to pass the first argument. They also make the called function depend on the value's type.
+- **Rejected: varargs and optional parameters.** A struct with defaults covers optional settings with one rule.
+- **Rejected: `+` for strings.** An operator's meaning would depend on its operand types. Template strings join text instead.
+- **Rejected: `#` or `.length`.** Named functions such as `Array.length` say which type they work on.
+- **Cost.** Data transformations read inside out or need named intermediate values. Fixing arguments needs an arrow function.
 
 ## D13. Uniform form with a tag bit, and heap boxes for 64-bit values and structs in generic code
 
@@ -154,14 +155,14 @@ Decision: async tasks are coroutines run by an event loop from `std/async`. Susp
 
 ## D18. Indexes start at 0
 
-Decision: arrays and string positions start at 0, unlike Lua (sections 4 and 6).
+Decision: arrays and string positions start at 0 (sections 4 and 6).
 
 - **Reason.** C, the byte offsets of D15 and most other languages start at 0. Code that calls C or ports algorithms needs no index shifting.
-- **Cost.** Lua's numeric `for` is inclusive, so loops over an array write `for i = 0, #xs - 1 do`. `Array.entries` avoids the subtraction.
+- **Reason.** Counting loops use `Range.upTo(n)`, which stops before `n`, so loops over an array need no `- 1`.
 
 ## D19. Lua-style coroutines, compiled to state machines
 
-Decision: coroutines keep Lua's create, resume and yield model, typed as `Coroutine<In, Out>`. Functions that suspend have the `yield` effect. The compiler turns each coroutine into a state machine (section 8).
+Decision: coroutines follow Lua's create, resume and yield model, typed as `Coroutine<In, Out>`. Functions that suspend have the `yield` effect. The compiler turns each coroutine into a state machine (section 8).
 
 - **Reason.** No separate stack is allocated per coroutine, and no assembly or platform-specific context switching is needed in the runtime.
 - **Reason.** The `yield` effect tells the compiler exactly which functions need the state-machine form. Code that never yields compiles as plain C functions.
@@ -178,9 +179,9 @@ Decision: `struct` types are stored inline, like C structs. `Box<T>` puts a valu
 
 ## D21. No truthiness and no `nil`
 
-Decision: conditions must be `bool`. A missing value is `None` of type `Option<T>`, and there is no `nil` (section 4).
+Decision: conditions must be `bool`. A missing value is `None` of type `Option<T>`. There is no `nil`, `null` or `undefined` (section 4).
 
-- **Reason.** In Lua, `0` and `""` are true and only `nil` and `false` are false. A typed condition removes that source of bugs.
+- **Reason.** Lua and TypeScript treat values such as `0`, `""` or `nil` as true or false by their own rules. A typed condition removes that source of bugs.
 - **Reason.** A plain `T` always holds a value, so the compiler checks every place a missing value is possible.
 
 ## D22. Every function signature is written
@@ -189,43 +190,45 @@ Decision: function parameters and return types are always written. Local variabl
 
 - **Reason.** Each function can be type-checked from its signature without reading other bodies. This keeps checking fast and local.
 - **Reason.** A reader sees a function's contract without running inference in their head.
-- **Exception.** Anonymous functions passed as arguments take their types from the parameter they are passed to.
+- **Exception.** Arrow functions passed as arguments take their types from the parameter they are passed to.
 
 ## D23. Type syntax uses names, not symbols
 
-Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`, `Generator<T>`. There is no `T?`, `{T}` or `{K: V}` type syntax, and no `??` operator (section 4).
+Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`, `Generator<T>`. There is no `T?`, `T | null`, `{T}` or `{K: V}` type syntax, and no `??` operator (section 4).
 
 - **Reason.** A name says what the type is. A reader who has not seen the language before can read `Option<string>`, but not `string?` or `{string}`.
 - **Reason.** Names are easy to search for. Symbols such as `?` appear in many other places.
 - **Cost.** Signatures are longer.
 - **Rejected: Lua-style table types (`{T}`, `{K: V}`) from Teal.** One symbol form for two different types.
 
-## D24. `const` and `let` instead of `local`
+## D24. `const` and `let`
 
-Decision: `const` declares a binding that cannot be reassigned, and `let` declares one that can. `local` is not a keyword (section 2).
+Decision: `const` declares a binding that cannot be reassigned, and `let` declares one that can (section 2).
 
-- **Reason.** The keyword says whether the name can change. Lua's `local` says only where the name is visible, and every binding in Lang is local anyway, since there are no globals.
-- **Reason.** `const` and `let` mean the same in TypeScript, so people and models read them correctly.
+- **Reason.** The keyword says whether the name can change.
+- **Reason.** TypeScript uses the same words. Lang goes further, since a `const` value can never change, not only its binding. Section 2 lists this as a difference from TypeScript.
 - **Note.** A top-level `const` must be a compile-time constant. Inside a function, `const` accepts any expression (section 10).
-- **Rejected: `local` and `local mut`.** Two words for the common mutable case, and `mut` is not a Lua or TypeScript word.
+- **Rejected: Lua's `local` and `local mut`.** `local` says only where a name is visible, and every binding is local anyway.
 
-## D25. `import(...)` instead of Lua's `require(...)`
+## D25. TypeScript import syntax, with namespace and named imports only
 
-Decision: modules are imported with `const Name = import("path")` (section 3).
+Decision: `import * as Name from "path"` and `import { a, b } from "path"`. There are no default imports and no dynamic `import(...)` (section 3).
 
-- **Reason.** In Lua, `require` is a runtime function that loads and runs a module. In Lang, importing is a compile-time declaration that runs nothing. A different word avoids implying Lua's behavior.
-- **Reason.** `import` is the word TypeScript, Go, Python and Java use.
-- **Note.** `import(...)` looks like TypeScript's dynamic import, which is a runtime call. In Lang it is only valid as a top-level declaration with a string literal path.
+- **Reason.** These are TypeScript's own forms, so they read correctly with no new rules.
+- **Reason.** `import X from "m"` means a default import in TypeScript. Lang has no default exports, so that form is a compile error instead of a different meaning.
+- **Rejected: Lua's `require` and the earlier `const Name = import(...)`.** They look like runtime calls, but importing runs nothing.
 
-## D26. Struct literals, defaults and destructuring
+## D26. Struct literals, defaults, spread updates and destructuring
 
-Decision: structs support typed literals (`Point { ... }`), constant field defaults, destructuring in `const` and `match`, and `Box.new` with `.value` for boxes. Field shorthand in literals is not allowed (section 4).
+Decision: structs use typed literals (`Point { x: 1.0, y: 2.0 }`), constant field defaults, `{ ...s, field: value }` for updated copies, destructuring in `const` and `match`, and `Box.new` with `.value` for boxes. Field shorthand in literals is not allowed (section 4).
 
 - **Typed literals.** Without `Point { ... }`, every struct literal would need an annotation or a context that gives the type.
 - **Constant defaults.** Optional settings need no builder functions. Constant values keep building a struct free of hidden calls.
-- **Destructuring.** `const { x, y } = p` and `when { x = 0.0, y }` read several fields in one step, and match the named import form `const { a, b } = import(...)`.
-- **No literal shorthand.** `{ name = name }` is always written in full. `{ name }` in a literal would be a second way to write a field. In a pattern, `{ name }` is the only way to bind a field to its own name, so it stays.
+- **Spread updates.** `{ ...s, port: 9000 }` is the TypeScript form for an updated copy. Lang limits it to one spread, first, with the same struct type, so it cannot merge unrelated values.
+- **Destructuring.** `const { x, y } = p` and `{ x: 0.0, y } =>` read several fields in one step, using TypeScript's pattern syntax.
+- **No literal shorthand.** `{ name: name }` is always written in full. `{ name }` in a literal would be a second way to write a field. In a pattern, `{ name }` is the only way to bind a field to its own name, so it stays.
 - **Rejected: positional struct literals such as `Point(1.0, 2.0)`.** They depend on field order, and that form already means an enum constructor.
+- **Rejected: a `with` keyword.** It was a second form for what the spread already does in TypeScript.
 
 ## D27. `mutable` parameters, marked at the declaration and the call
 
@@ -258,15 +261,15 @@ Decision: `Sender<T>`, `Receiver<T>`, `Shared<T>` and `Atomic<T>` are the only s
 
 ## D30. Literals, equality constraints and floats
 
-Decision: strings use `"..."` and characters use `'...'`. Literals must fit their type. `Equatable` and `Hashable` are standard traits implemented automatically when possible. `==` on floats follows IEEE 754, and floats cannot be hashed (sections 2 and 4).
+Decision: strings use `"..."`, template strings use backticks, and characters use `'...'`. Literals must fit their type. `Equatable` and `Hashable` are standard traits implemented automatically when possible. `==` on floats follows IEEE 754, and floats cannot be hashed (sections 2 and 4).
 
-- **Reason.** Lua's two string quote styles were a second way to write strings, and `char` needed a literal form.
+- **Reason.** One quote style for plain strings, and `char` needed a literal form. `'abc'` is a compile error with a fix, because TypeScript reads it as a string.
 - **Reason.** Generic code that uses `==` or hashing must know its type argument supports them. The constraints `<T: Equatable>` and `<T: Hashable>` say this.
 - **Reason.** Float keys break maps when `NaN` is involved, because `NaN` is not equal to itself.
 
 ## D31. Iterators are generators
 
-Decision: `for x in iter` takes a `Generator<T>`. Collections return generators (section 2).
+Decision: `for (const x of iter)` takes a `Generator<T>`. Collections return generators (section 2).
 
 - **Reason.** No new protocol or trait is needed. Coroutines already define suspend and resume.
 
@@ -344,3 +347,33 @@ Decision: platform differences use `if` on compile-time constants from `std/buil
 - **Reason.** A reader or an agent sees every platform's behavior in one place.
 - **Rejected: per-platform file suffixes (Go).** Small differences need a whole separate file, and shared logic gets copied between files.
 - **Rejected: a preprocessor.** Code inside an inactive branch is never checked.
+
+## D42. TypeScript forms with a different meaning are errors with fixes
+
+Decision: code that is valid TypeScript but would mean something different in Lang is a compile error. The diagnostic includes an exact fix (sections 2 and 14).
+
+- **Reason.** People and models will write TypeScript habits. A compile error with a fix is cheap. A silently different meaning causes bugs.
+- **Examples.** `===` becomes `==`. `null` becomes `None`. `xs.push(v)` becomes `Array.push(mutable xs, v)`. `import X from` becomes `import * as X from`. `'abc'` becomes `"abc"`.
+
+## D43. No semicolons
+
+Decision: a line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues. A `;` is a compile error (section 2).
+
+- **Reason.** The rule depends only on the last token of the line, as in Go, so there is one reading.
+- **Reason.** The known problems with semicolons in TypeScript come from making them optional with guessing rules. Lang has no optional form.
+- **Rejected: required semicolons.** They add a token to every line without removing any ambiguity the line rule leaves.
+
+## D44. Tuples instead of multiple return values
+
+Decision: a function that returns several values returns a `Tuple` or a struct. The caller destructures with `const [a, b] = f()` (section 4).
+
+- **Reason.** Multiple return values and tuples were two concepts for the same job.
+- **Reason.** A tuple can be stored, passed and returned like any value. Multiple return values could not.
+
+## D45. Counting loops through `Range`
+
+Decision: there is no C-style `for (init; cond; step)` and no Lua numeric `for`. Counting uses `for (const i of Range.upTo(n))` (section 2).
+
+- **Reason.** One loop form, `for ... of`, covers arrays, maps, ranges and generators.
+- **Reason.** `Range.upTo(n)` stops before `n`, which fits 0-based indexes.
+- **Rejected: `++` and compound assignment.** They are a second way to write `x = x + 1`.

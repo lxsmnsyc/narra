@@ -1,6 +1,6 @@
 # Lang
 
-Lang is a draft design for a compiled language with Lua syntax and static types. It is memory safe without a garbage collector, and builds native binaries through C. "Lang" is a working name.
+Lang is a draft design for a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C. "Lang" is a working name.
 
 Status: specification draft. There is no compiler yet.
 
@@ -23,8 +23,9 @@ Status: specification draft. There is no compiler yet.
 - [Roc](https://www.roc-lang.org/) is the closest existing language: ML semantics, reference counting, native output.
 - [Koka](https://koka-lang.github.io/) for Perceus reference counting and effect inference.
 - [Lean 4](https://lean-lang.org/) for reference counting with in-place reuse, compiled to C.
-- [Lua](https://www.lua.org/) for syntax.
-- [Teal](https://github.com/teal-language/tl), [Luau](https://luau.org/) and [Pallene](https://github.com/pallene-lang/pallene) for typed Lua.
+- [TypeScript](https://www.typescriptlang.org/) for syntax.
+- [Rust](https://www.rust-lang.org/) for enums, pattern matching, `Option` and `Result`.
+- [Lua](https://www.lua.org/) for the coroutine model.
 - [Hylo](https://www.hylo-lang.org/) for mutable value semantics, the model behind `mutable` parameters.
 - [Vale](https://vale.dev/) for generational handles.
 - [Go](https://go.dev/) and [Zig](https://ziglang.org/) for build speed and C interop.

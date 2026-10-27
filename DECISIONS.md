@@ -1,0 +1,87 @@
+# Design decisions
+
+Each entry states the decision first, then the reason and the rejected alternatives. Section numbers refer to `SPEC.md`.
+
+## D1. Memory safety through reference counting, not a borrow checker or a garbage collector
+
+Decision: immutable values with compiler-inserted reference counting and in-place reuse (section 6).
+
+- **Reason.** Safe code has no references, so there is nothing to annotate and no borrow rules to learn. Frees are deterministic and there are no collector pauses.
+- **Rejected: borrow checker with lifetimes (Rust).** Safe and fast, but lifetime annotations and borrow errors are the main source of complexity in Rust.
+- **Rejected: tracing garbage collector (OCaml, Go).** Simple to use, but adds a runtime, pauses and memory overhead that do not fit a C-level target.
+- **Rejected: mutable value semantics with `inout` parameters (Hylo).** Safe without lifetimes, but adds parameter conventions to every signature. Reference counting with reuse gets the same in-place updates without them.
+- **Cost.** Reference count updates in hot code that shares data. Section 14 tracks the need for early benchmarks.
+
+## D2. ReasonML semantics and ReScript syntax
+
+Decision: expression-oriented code, variants, exhaustive `switch`, Hindley-Milner inference, labeled arguments and the `->` pipe (sections 2 and 4).
+
+- **Reason.** Immutable-by-default semantics fit reference counting (D1), because immutable values cannot form cycles.
+- **Reason.** ReScript syntax is close to TypeScript, so both people and models can read it from prior knowledge.
+
+## D3. Explicit imports with package-rooted paths
+
+Decision: one file is one module, names are private unless exported, and every external name comes from an import (section 3).
+
+- **Reason.** The import list gives the dependency graph without name resolution, which keeps build scheduling simple.
+- **Reason.** Every name in a file is either declared there or listed at the top. Reading the file or a text search finds where it comes from.
+- **Rejected: OCaml-style global module names.** Any file can reference any module by name without an import, so dependencies are implicit.
+- **Rejected: relative paths.** They break when a file moves. Package-rooted paths plus `lang move` avoid that.
+
+## D4. No import cycles, no `export *`, no default exports, no import side effects
+
+Decision: the restrictions listed in section 3.
+
+- **No cycles.** Modules compile in dependency order and in parallel. No module ever sees a partly initialized dependency.
+- **No `export *`.** Wildcard re-exports slow builds and hide where names come from. This is a known problem with barrel files in TypeScript.
+- **No default exports.** A default export gets a different name in each importing file, so text search misses uses.
+- **No import side effects.** Initialization order can never matter, and startup runs no code before `main`.
+
+## D5. No typeclasses or traits
+
+Decision: behavior is passed explicitly as functions or modules. Equality and hashing are derived structurally by the compiler (section 4).
+
+- **Reason.** Trait implementations are visible program-wide, which needs coherence and orphan rules and makes "which implementation runs here" hard to answer by reading code.
+- **Cost.** More explicit arguments, such as `Array.sortBy(xs, Int.compare)` instead of `xs.sort()`.
+
+## D6. No functors at first
+
+Decision: modules cannot be parameterized by other modules in this draft.
+
+- **Reason.** Functors are the most complex part of the OCaml module system. Generics plus explicit function arguments cover most uses.
+- **Revisit when.** Real code shows repeated patterns that generics cannot express.
+
+## D7. Polymorphic code compiled once, with opt-in specialization
+
+Decision: generic functions take boxed values and compile to one copy. `@specialize` requests per-type copies (section 10).
+
+- **Reason.** Per-type copies, as in C++ templates and Rust generics, are the main cause of large binaries and slow builds in those languages.
+- **Cost.** Boxing in generic code. `@specialize` exists for hot paths.
+
+## D8. A fixed set of effects in signatures
+
+Decision: `alloc`, `io` and `unsafe`, declared on exported functions and inferred elsewhere (section 7).
+
+- **Reason.** A reader, human or agent, sees what a function may do from its signature alone.
+- **Rejected: a general effect system (Koka).** User-defined effects and handlers add a large feature to learn. A fixed set covers the questions readers ask most.
+
+## D9. Results instead of exceptions, and panics that abort
+
+Decision: `result` plus `try` for recoverable errors. Panics cannot be caught (section 5).
+
+- **Reason.** Every way a function can fail is in its return type.
+- **Reason.** Uncatchable panics need no unwinding tables, which keeps binaries small and C output simple.
+
+## D10. C as the compile target
+
+Decision: emit one C file per module (section 10).
+
+- **Reason.** Every platform with a C compiler is a target from the start, and debug builds can use a fast C compiler.
+- **Revisit when.** C compile time dominates debug builds. A native debug backend, like Go's and Zig's, is the next step.
+
+## D11. Tooling made for agents
+
+Decision: JSON diagnostics with exact fix edits, stable error codes, and a query CLI (section 13).
+
+- **Reason.** An agent calls commands and reads their output. Exact edits remove a step where the agent rewrites a fix in its own words and can get it wrong.
+- **Reason.** Explicit signatures (section 4), explicit imports (D3) and declared effects (D8) work together. An agent understands a function from its file and its imports alone.

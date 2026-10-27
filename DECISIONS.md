@@ -17,13 +17,13 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 Decision: Lua 5.4 syntax with type annotations, `enum`, `struct` and `match` added, and metatables removed (section 2). This replaces the ReasonML syntax of the first draft, kept at the git tag `reasonml-draft`.
 
 - **Reason.** Lua has a small grammar that people and models already know.
-- **Reason.** Lua's `require` already keeps imported names local to a file, which matches the module model (D3).
+- **Reason.** Lua's module pattern already keeps imported names local to a file, which matches the module model (D3).
 - **Rejected: keeping metatables.** They allow operator overloading and dynamic field lookup, so the meaning of `a + b` or `t.x` would depend on runtime state.
 - **Prior art.** Teal compiles typed Lua to Lua. Luau adds gradual types and its own VM. Pallene compiles a typed Lua subset to C.
 
 ## D3. Explicit imports with package-rooted paths
 
-Decision: one file is one module, names are private unless exported, and every external name comes from a `require` declaration (section 3).
+Decision: one file is one module, names are private unless exported, and every external name comes from an `import` declaration (section 3).
 
 - **Reason.** The import list gives the dependency graph without name resolution, which keeps build scheduling simple.
 - **Reason.** Every name in a file is either declared there or listed at the top. Reading the file or a text search finds where it comes from.
@@ -35,7 +35,7 @@ Decision: one file is one module, names are private unless exported, and every e
 Decision: the restrictions listed in section 3.
 
 - **No cycles.** Modules compile in dependency order and in parallel. No module ever sees a partly initialized dependency.
-- **No re-export statement.** Exporting is done only with an `export` declaration, so every exported name appears as a declaration in its file. Wildcard re-exports slow builds and hide where names come from, which is a known problem with barrel files in TypeScript. A named re-export form was also dropped, because `require` plus `export const` or `export type` already does the same job.
+- **No re-export statement.** Exporting is done only with an `export` declaration, so every exported name appears as a declaration in its file. Wildcard re-exports slow builds and hide where names come from, which is a known problem with barrel files in TypeScript. A named re-export form was also dropped, because `import` plus `export const` or `export type` already does the same job.
 - **No default exports.** A default export gets a different name in each importing file, so text search misses uses.
 - **No import side effects.** Initialization order can never matter, and startup runs no code before `main`.
 
@@ -200,3 +200,11 @@ Decision: `const` declares a binding that cannot be reassigned, and `let` declar
 - **Reason.** `const` and `let` mean the same in TypeScript, so people and models read them correctly.
 - **Note.** A top-level `const` must be a compile-time constant. Inside a function, `const` accepts any expression (section 10).
 - **Rejected: `local` and `local mut`.** Two words for the common mutable case, and `mut` is not a Lua or TypeScript word.
+
+## D25. `import(...)` instead of Lua's `require(...)`
+
+Decision: modules are imported with `const Name = import("path")` (section 3).
+
+- **Reason.** In Lua, `require` is a runtime function that loads and runs a module. In Lang, importing is a compile-time declaration that runs nothing. A different word avoids implying Lua's behavior.
+- **Reason.** `import` is the word TypeScript, Go, Python and Java use.
+- **Note.** `import(...)` looks like TypeScript's dynamic import, which is a runtime call. In Lang it is only valid as a top-level declaration with a string literal path.

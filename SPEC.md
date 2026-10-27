@@ -16,7 +16,7 @@ The previous draft used ReasonML syntax. It is kept at the git tag `reasonml-dra
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
 ```lua
-const Float = require("std/float")
+const Float = import("std/float")
 
 export enum Shape
   Circle(radius: f64)
@@ -106,14 +106,14 @@ There are no macros, no metatables, no operator overloading and no function over
 Import forms:
 
 ```lua
-const Str = require("std/string")                  -- namespace import
-const { classify, Token } = require("app/text")    -- named imports
+const Str = import("std/string")                  -- namespace import
+const { classify, Token } = import("app/text")    -- named imports
 ```
 
-There is no re-export statement. To expose an imported name, import it and export a new declaration:
+There is no re-export statement. To expose an imported name, import it with `import` and export a new declaration:
 
 ```lua
-const Text = require("app/text")
+const Text = import("app/text")
 
 export const classify = Text.classify   -- a function
 export type Token = Text.Token          -- a type, with its constructors
@@ -121,7 +121,7 @@ export type Token = Text.Token          -- a type, with its constructors
 
 Rules:
 
-- **`require` is a declaration, not a function call.** It must appear at the top level with a string literal path. It never runs code.
+- **`import` is a declaration, not a function call.** It must appear at the top level with a string literal path. It never runs code, and it never loads a module at runtime.
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
 - **No re-export statement and no default exports.** An exported name is always declared in the exporting file with `export function`, `export const`, `export type`, `export struct` or `export enum`.
 - **`export type A = B`** declares an alias. When `B` is an enum, its constructors are usable through the alias.
@@ -346,7 +346,7 @@ export function map<T, U, effect E>(items: Array<T>, f: function(T): U uses E): 
 Coroutines keep Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
 
 ```lua
-const Co = require("std/coroutine")
+const Co = import("std/coroutine")
 
 function counter(limit: int): Generator<int>
   return Co.generator(function() uses yield
@@ -380,7 +380,7 @@ end
 
 ## 10. Top-level declarations
 
-- **`const`** at the top level declares a compile-time constant. Its value must be a literal, a constructor, a struct or array of constants, a named function, another constant, or a call to a function marked `@const`. Inside a function, `const` accepts any expression.
+- **`const`** at the top level declares a compile-time constant. Its value must be one of these: a literal, a constructor, a struct or array of constants, a named function, another constant, or a call to an `@const` function. Inside a function, `const` accepts any expression.
 - **`lazy`** defers a computation until first use: `const table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
 - Modules have no initialization code. Program startup runs nothing before `main`.
 
@@ -405,7 +405,7 @@ end
 
 ## 12. Build model
 
-- The compiler reads a module's `require` declarations before anything else and builds the module graph from them.
+- The compiler reads a module's `import` declarations before anything else and builds the module graph from them.
 - Each module produces an interface file (`.langi`) with its exported signatures. A module type-checks against its dependencies' interface files only.
 - When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.

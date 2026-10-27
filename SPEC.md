@@ -4,8 +4,6 @@ This document defines the Lang language. Each section states the rules first, th
 
 File extension: `.lang`. Compiler command: `lang`.
 
-Earlier drafts are kept at git tags: `reasonml-draft` (ReasonML syntax) and `lua-draft` (Lua syntax).
-
 ## 1. Overview
 
 - Lang uses TypeScript-style syntax with Rust-style semantics: static types, enums with fields, pattern matching, and no `null`.
@@ -673,7 +671,7 @@ A panic on any thread or task aborts the whole program.
 
 ### Coroutines
 
-Coroutines follow Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
+A coroutine is a function that can suspend itself and be resumed later. Coroutines are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
 
 ```ts
 import * as Co from "std/coroutine"

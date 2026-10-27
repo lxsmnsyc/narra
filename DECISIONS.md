@@ -8,16 +8,15 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 
 - **Reason.** Safe code has no references, so there is nothing to annotate and no borrow rules to learn. Frees are deterministic and there are no collector pauses.
 - **Rejected: borrow checker with lifetimes (Rust).** Safe and fast, but lifetime annotations and borrow errors are the main source of complexity in Rust.
-- **Rejected: tracing garbage collector (Lua, OCaml, Go).** Simple to use. But it adds a runtime, pauses and memory overhead that do not fit a native target.
+- **Rejected: tracing garbage collector (OCaml, Go).** Simple to use. But it adds a runtime, pauses and memory overhead that do not fit a native target.
 - **Taken in part: mutable value semantics (Hylo).** Lang adds one optional parameter convention, `mutable` (D27). Parameters default to constant values, so most signatures carry no convention.
 - **Cost.** Reference count updates in hot code that shares data. A prototype must benchmark this early, on numeric and string-heavy code.
 
 ## D2. TypeScript-style syntax with Rust-style semantics
 
-Decision: braces, `const` and `let`, arrow functions, `import`, template strings and type annotations follow TypeScript. Types and semantics follow Rust: enums with fields, `match`, `Option` and `Result`, no `null`, sized numbers (section 2). This replaces the ReasonML draft (tag `reasonml-draft`) and the Lua draft (tag `lua-draft`).
+Decision: braces, `const` and `let`, arrow functions, `import`, template strings and type annotations follow TypeScript. Types and semantics follow Rust: enums with fields, `match`, `Option` and `Result`, no `null`, sized numbers (section 2).
 
 - **Reason.** TypeScript syntax is the most widely read syntax among the target users and in model training data.
-- **Reason.** After the Lua draft dropped `nil`, metatables, 1-based indexes, globals and dynamic types, only Lua's keywords were left. Braces remove `then`, `do` and `end`.
 - **Rule.** Where Lang's meaning differs from TypeScript's, Lang uses different syntax or a compile error with a fix (D42). The same text never means two different things.
 
 ## D3. Explicit imports with package-rooted paths
@@ -26,7 +25,7 @@ Decision: one file is one module, names are private unless exported, and every e
 
 - **Reason.** The import list gives the dependency graph without name resolution, which keeps build scheduling simple.
 - **Reason.** Every name in a file is either declared there or listed at the top. Reading the file or a text search finds where it comes from.
-- **Rejected: Lua globals.** Any file can read or write any global, so dependencies are implicit and typos create new variables.
+- **Rejected: globals.** Any file can read or write any global, so dependencies are implicit and typos create new variables.
 - **Rejected: relative paths.** They break when a file moves. Package-rooted paths plus `lang move` avoid that.
 
 ## D4. No import cycles, no re-export statement, no default exports, no import side effects
@@ -40,7 +39,7 @@ Decision: the restrictions listed in section 3.
 
 ## D5. Traits implemented only where the type is declared
 
-Decision: traits exist, but a type's trait implementations must be in the module that declares the type and listed with `implements` on its declaration. Trait functions are called through the trait name, such as `Show.show(x)` (section 4). This replaces the first draft's "no traits" decision.
+Decision: traits exist, but a type's trait implementations must be in the module that declares the type and listed with `implements` on its declaration. Trait functions are called through the trait name, such as `Show.show(x)` (section 4).
 
 - **Reason.** Formatting, serialization, ordering and mixed-type collections all need a shared interface. Without traits, each needed its own workaround.
 - **Reason.** With implementations only next to the type, there is exactly one place to look and no coherence or orphan rules are needed.
@@ -52,7 +51,7 @@ Decision: traits exist, but a type's trait implementations must be in the module
 
 ## D6. No functors or module parameters at first
 
-Decision: modules cannot be parameterized by other modules in this draft.
+Decision: modules cannot be parameterized by other modules in the first version.
 
 - **Reason.** Parameterized modules are a large feature. Generics plus explicit function arguments cover most uses.
 - **Revisit when.** Real code shows repeated patterns that generics cannot express.
@@ -160,13 +159,13 @@ Decision: arrays and string positions start at 0 (sections 4 and 6).
 - **Reason.** C, the byte offsets of D15 and most other languages start at 0. Code that calls C or ports algorithms needs no index shifting.
 - **Reason.** Counting loops use `Range.upTo(n)`, which stops before `n`, so loops over an array need no `- 1`.
 
-## D19. Lua-style coroutines, compiled to state machines
+## D19. Coroutines compiled to state machines
 
-Decision: coroutines follow Lua's create, resume and yield model, typed as `Coroutine<In, Out>`. Functions that suspend have the `yield` effect. The compiler turns each coroutine into a state machine (section 8).
+Decision: coroutines are created, resumed and yielded explicitly, typed as `Coroutine<In, Out>`. Functions that suspend have the `yield` effect. The compiler turns each coroutine into a state machine (section 8).
 
 - **Reason.** No separate stack is allocated per coroutine, and no assembly or platform-specific context switching is needed in the runtime.
 - **Reason.** The `yield` effect tells the compiler exactly which functions need the state-machine form. Code that never yields compiles as plain C functions.
-- **Rejected: stackful coroutines (Lua's own runtime, Go).** They allow yielding from any call depth. But each coroutine needs its own stack, and switching stacks needs platform-specific code.
+- **Rejected: stackful coroutines (Go).** They allow yielding from any call depth. But each coroutine needs its own stack, and switching stacks needs platform-specific code.
 - **Cost.** A generic function called with a `yield` function gets a separate specialized copy.
 
 ## D20. Structs stored inline
@@ -177,11 +176,11 @@ Decision: `struct` types are stored inline, like C structs. `Box<T>` puts a valu
 - **Reason.** `@repr(C)` structs match C layouts directly for interop.
 - **Cost.** Copying a large struct copies all its fields. `Box<T>` exists for large or recursive data.
 
-## D21. No truthiness and no `nil`
+## D21. No truthiness and no `null`
 
-Decision: conditions must be `bool`. A missing value is `None` of type `Option<T>`. There is no `nil`, `null` or `undefined` (section 4).
+Decision: conditions must be `bool`. A missing value is `None` of type `Option<T>`. There is no `null` or `undefined` (section 4).
 
-- **Reason.** Lua and TypeScript treat values such as `0`, `""` or `nil` as true or false by their own rules. A typed condition removes that source of bugs.
+- **Reason.** TypeScript treats values such as `0`, `""` and `null` as false in conditions. A typed condition removes that source of bugs.
 - **Reason.** A plain `T` always holds a value, so the compiler checks every place a missing value is possible.
 
 ## D22. Every function signature is written
@@ -199,7 +198,6 @@ Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, 
 - **Reason.** A name says what the type is. A reader who has not seen the language before can read `Option<string>`, but not `string?` or `{string}`.
 - **Reason.** Names are easy to search for. Symbols such as `?` appear in many other places.
 - **Cost.** Signatures are longer.
-- **Rejected: Lua-style table types (`{T}`, `{K: V}`) from Teal.** One symbol form for two different types.
 
 ## D24. `const` and `let`
 
@@ -208,7 +206,6 @@ Decision: `const` declares a binding that cannot be reassigned, and `let` declar
 - **Reason.** The keyword says whether the name can change.
 - **Reason.** TypeScript uses the same words. Lang goes further, since a `const` value can never change, not only its binding. Section 2 lists this as a difference from TypeScript.
 - **Note.** A top-level `const` must be a compile-time constant. Inside a function, `const` accepts any expression (section 10).
-- **Rejected: Lua's `local` and `local mut`.** `local` says only where a name is visible, and every binding is local anyway.
 
 ## D25. TypeScript import syntax, with namespace and named imports only
 
@@ -216,7 +213,7 @@ Decision: `import * as Name from "path"` and `import { a, b } from "path"`. Ther
 
 - **Reason.** These are TypeScript's own forms, so they read correctly with no new rules.
 - **Reason.** `import X from "m"` means a default import in TypeScript. Lang has no default exports, so that form is a compile error instead of a different meaning.
-- **Rejected: Lua's `require` and the earlier `const Name = import(...)`.** They look like runtime calls, but importing runs nothing.
+- **Rejected: a call-style import such as `const Name = import(...)`.** It looks like a runtime call, but importing runs nothing.
 
 ## D26. Struct literals, defaults, spread updates and destructuring
 
@@ -228,7 +225,6 @@ Decision: structs use typed literals (`Point { x: 1.0, y: 2.0 }`), constant fiel
 - **Destructuring.** `const { x, y } = p` and `{ x: 0.0, y } =>` read several fields in one step, using TypeScript's pattern syntax.
 - **No literal shorthand.** `{ name: name }` is always written in full. `{ name }` in a literal would be a second way to write a field. In a pattern, `{ name }` is the only way to bind a field to its own name, so it stays.
 - **Rejected: positional struct literals such as `Point(1.0, 2.0)`.** They depend on field order, and that form already means an enum constructor.
-- **Rejected: a `with` keyword.** It was a second form for what the spread already does in TypeScript.
 
 ## D27. `mutable` parameters, marked at the declaration and the call
 
@@ -307,7 +303,7 @@ Decision: running out of memory, stack overflow and integer division by zero abo
 
 ## D37. Recursive functions are declared
 
-Decision: a function that calls itself, directly or through other functions in its module, is declared `recursive function`. In such a function, a self-call in tail position compiles to a loop (section 2). This follows ReasonML's `let rec`.
+Decision: a function that calls itself, directly or through other functions in its module, is declared `recursive function`. In such a function, a self-call in tail position compiles to a loop (section 2).
 
 - **Reason.** Recursion is visible in the declaration. A reader knows which functions can grow the stack.
 - **Reason.** Non-recursive functions have a fixed stack depth that the compiler can compute.
@@ -367,12 +363,13 @@ Decision: a line break ends a statement when the line could end there. A line th
 
 Decision: a function that returns several values returns a `Tuple` or a struct. The caller destructures with `const [a, b] = f()` (section 4).
 
-- **Reason.** Multiple return values and tuples were two concepts for the same job.
-- **Reason.** A tuple can be stored, passed and returned like any value. Multiple return values could not.
+- **Reason.** One concept covers both returning several values and grouping values.
+- **Reason.** A tuple can be stored, passed and returned like any value.
+- **Rejected: multiple return values (Go).** A second concept for the same job, and the values cannot be stored as one value.
 
 ## D45. Counting loops through `Range`
 
-Decision: there is no C-style `for (init; cond; step)` and no Lua numeric `for`. Counting uses `for (const i of Range.upTo(n))` (section 2).
+Decision: there is no C-style `for (init; cond; step)`. Counting uses `for (const i of Range.upTo(n))` (section 2).
 
 - **Reason.** One loop form, `for ... of`, covers arrays, maps, ranges and generators.
 - **Reason.** `Range.upTo(n)` stops before `n`, which fits 0-based indexes.

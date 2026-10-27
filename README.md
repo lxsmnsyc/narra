@@ -25,7 +25,6 @@ Status: specification draft. There is no compiler yet.
 - [Lean 4](https://lean-lang.org/) for reference counting with in-place reuse, compiled to C.
 - [TypeScript](https://www.typescriptlang.org/) for syntax.
 - [Rust](https://www.rust-lang.org/) for enums, pattern matching, `Option` and `Result`.
-- [Lua](https://www.lua.org/) for the coroutine model.
 - [Hylo](https://www.hylo-lang.org/) for mutable value semantics, the model behind `mutable` parameters.
 - [Vale](https://vale.dev/) for generational handles.
 - [Go](https://go.dev/) and [Zig](https://ziglang.org/) for build speed and C interop.

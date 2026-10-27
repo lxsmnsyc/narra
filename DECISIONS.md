@@ -17,7 +17,7 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 Decision: Lua 5.4 syntax with type annotations, `enum`, `struct` and `match` added, and metatables removed (section 2). This replaces the ReasonML syntax of the first draft, kept at the git tag `reasonml-draft`.
 
 - **Reason.** Lua has a small grammar that people and models already know.
-- **Reason.** `local` and `require` already keep names local to a file, which matches the module model (D3).
+- **Reason.** Lua's `require` already keeps imported names local to a file, which matches the module model (D3).
 - **Rejected: keeping metatables.** They allow operator overloading and dynamic field lookup, so the meaning of `a + b` or `t.x` would depend on runtime state.
 - **Prior art.** Teal compiles typed Lua to Lua. Luau adds gradual types and its own VM. Pallene compiles a typed Lua subset to C.
 
@@ -191,3 +191,12 @@ Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, 
 - **Reason.** Names are easy to search for. Symbols such as `?` appear in many other places.
 - **Cost.** Signatures are longer.
 - **Rejected: Lua-style table types (`{T}`, `{K: V}`) from Teal.** One symbol form for two different types.
+
+## D24. `const` and `let` instead of `local`
+
+Decision: `const` declares a binding that cannot be reassigned, and `let` declares one that can. `local` is not a keyword (section 2).
+
+- **Reason.** The keyword says whether the name can change. Lua's `local` says only where the name is visible, and every binding in Lang is local anyway, since there are no globals.
+- **Reason.** `const` and `let` mean the same in TypeScript, so people and models read them correctly.
+- **Note.** A top-level `const` must be a compile-time constant. Inside a function, `const` accepts any expression (section 10).
+- **Rejected: `local` and `local mut`.** Two words for the common mutable case, and `mut` is not a Lua or TypeScript word.

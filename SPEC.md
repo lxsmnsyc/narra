@@ -16,7 +16,7 @@ The previous draft used ReasonML syntax. It is kept at the git tag `reasonml-dra
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
 ```lua
-local Float = require("std/float")
+const Float = require("std/float")
 
 export enum Shape
   Circle(radius: f64)
@@ -41,14 +41,15 @@ The syntax follows Lua 5.4. This section lists only the differences and addition
 
 ### Bindings
 
-- `local x = expr` binds a name that cannot be reassigned.
-- `local mut x = expr` binds a name that can be reassigned with `x = expr`. A mutable local cannot be captured by a closure.
+- `const x = expr` binds a name that cannot be reassigned.
+- `let x = expr` binds a name that can be reassigned with `x = expr`. A `let` binding cannot be captured by a closure.
+- `local` is not a keyword. Every binding is local to its block or module.
 - There are no globals. Assigning to an undeclared name is a compile error.
-- Multiple assignment is allowed: `local a, b = f()` when `f` returns two values.
+- Multiple assignment is allowed: `const a, b = f()` when `f` returns two values.
 
 ### Functions
 
-- `function name(a: int, b: int): int ... end` declares a function. `local function` and `export function` set its visibility (section 3).
+- `function name(a: int, b: int): int ... end` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
 - Anonymous functions use the same form without a name: `function(x: int): int return x + 1 end`.
 - **Multiple return values** are allowed and typed: `function divmod(a: int, b: int): (int, int)`.
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
@@ -105,8 +106,8 @@ There are no macros, no metatables, no operator overloading and no function over
 Import forms:
 
 ```lua
-local Str = require("std/string")                  -- namespace import
-local { classify, Token } = require("app/text")    -- named imports
+const Str = require("std/string")                  -- namespace import
+const { classify, Token } = require("app/text")    -- named imports
 export { classify } from "app/text"                -- named re-export
 ```
 
@@ -115,7 +116,7 @@ Rules:
 - **`require` is a declaration, not a function call.** It must appear at the top level with a string literal path. It never runs code.
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
 - **No wildcard re-exports and no default exports.**
-- **No import side effects.** Top-level declarations must be functions, types, constants or `lazy` values (section 9).
+- **No import side effects.** Top-level declarations must be functions, types, `const` constants or `lazy` values (section 10). There is no top-level `let`.
 - **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
 - **`lang move old new`** moves a file and rewrites every import of it.
 
@@ -139,7 +140,7 @@ A function with no return type returns nothing.
 ### Composite types
 
 - **Structs.** Declared with `struct`. Built with a table constructor whose type is known from context. Updated with `with`, which returns a new struct.
-- **Structs are stored inline,** like C structs. A struct field, array element or local holds the struct's fields directly, with no heap allocation and no reference count of its own.
+- **Structs are stored inline,** like C structs. A struct field, array element or variable holds the struct's fields directly, with no heap allocation and no reference count of its own.
 - **A struct cannot contain itself.** Use an enum, an array or `Box<T>` for recursive data.
 
 ```lua
@@ -148,8 +149,8 @@ export struct User
   age: int
 end
 
-local u: User = { name = "Ana", age = 30 }
-local older = u with { age = 31 }
+const u: User = { name = "Ana", age = 30 }
+const older = u with { age = 31 }
 ```
 
 - **Enums.** Declared with `enum`. Each constructor can carry fields.
@@ -201,7 +202,7 @@ end
 
 ### Inference
 
-- Types of locals are inferred. `local n = 1` is `int`.
+- Types of variables are inferred. `const n = 1` is `int`.
 - **Function parameters and return types are written for every function.** Anonymous functions passed as arguments are the exception. Their types come from the parameter they are passed to.
 - Other modules type-check against exported signatures only. They never read function bodies.
 
@@ -226,13 +227,13 @@ export struct Pair
 end
 
 export function parsePair(line: string): Option<Pair>
-  local found = Str.indexOf(line, "=")
+  const found = Str.indexOf(line, "=")
   if found is None then
     return None
   end
-  local i = found.value
-  local key = Str.trim(Str.slice(line, 0, i))
-  local value = Str.trim(Str.sliceFrom(line, Str.nextChar(line, i)))
+  const i = found.value
+  const key = Str.trim(Str.slice(line, 0, i))
+  const value = Str.trim(Str.sliceFrom(line, Str.nextChar(line, i)))
   return Some({ key = key, value = value })
 end
 ```
@@ -242,18 +243,18 @@ end
 - **Errors are return values.** A function that can fail returns `Result<T, E>`, with constructors `Ok(value)` and `Err(error)`.
 - **The caller checks the result.** There is no `try`, no `catch` and no operator that returns early. Every error path is a visible `if` or `match`.
 - **`is` tests a pattern and narrows the type.** After `if r is Err(e) then return ... end`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
-- **Ignoring a `Result` is a compile error.** Discard one on purpose with `local _ = f()`.
+- **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
 - There are no exceptions and no `pcall`.
 
 ```lua
 export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc
-  local text = File.readText(path)
+  const text = File.readText(path)
   if text is Err(e) then
     return Err(IoFailed(e))
   end
 
-  local config = Config.parse(text.value)
+  const config = Config.parse(text.value)
   if config is Err(e) then
     return Err(e)
   end
@@ -280,18 +281,18 @@ end
 - Code that keeps one owner gets in-place mutation with no copies.
 
 ```lua
-local mut xs: Array<int> = Array.filled(0, 1000)
+let xs: Array<int> = Array.filled(0, 1000)
 for i = 0, 999 do
   xs[i] = i * i  -- the count is 1, so the write is in place
 end
 ```
 
-- `xs[i] = v` and `u.age = v` require the target to be a mutable local or a field of one.
+- `xs[i] = v` and `u.age = v` require the target to be a `let` variable or a field of one.
 
 ### Cycles
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
-- A mutable local cannot be captured or stored, so it cannot create a cycle.
+- A `let` variable cannot be captured or stored, so it cannot create a cycle.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Threads
@@ -336,9 +337,9 @@ export function map<T, U, effect E>(items: Array<T>, f: function(T): U uses E): 
 Coroutines keep Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
 
 ```lua
-local Co = require("std/coroutine")
+const Co = require("std/coroutine")
 
-local function counter(limit: int): Generator<int>
+function counter(limit: int): Generator<int>
   return Co.generator(function() uses yield
     for i = 0, limit - 1 do
       Co.yield(i)
@@ -346,7 +347,7 @@ local function counter(limit: int): Generator<int>
   end)
 end
 
-local c = counter(3)
+const c = counter(3)
 for n in Co.values(c) do
   print(Int.toString(n))  -- 0, 1, 2
 end
@@ -370,8 +371,8 @@ end
 
 ## 10. Top-level declarations
 
-- **`const`** declares a constant: literals, constructors, structs and arrays of constants, and calls to functions marked `@const`.
-- **`lazy`** defers a computation until first use: `local table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
+- **`const`** at the top level declares a compile-time constant. Its value must be a literal, a constructor, a struct or array of constants, or a call to a function marked `@const`. Inside a function, `const` accepts any expression.
+- **`lazy`** defers a computation until first use: `const table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
 - Modules have no initialization code. Program startup runs nothing before `main`.
 
 ## 11. Code generation
@@ -379,7 +380,7 @@ end
 - **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arena.
 - **Debug builds** use a fast C compiler such as TCC with checks on.
 - **Release builds** use Clang or GCC with `-O2`.
-- **Coroutines** compile to a struct holding their live locals and a state number, plus a resume function with a `switch` on that number.
+- **Coroutines** compile to a struct holding their live variables and a state number, plus a resume function with a `switch` on that number.
 - **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
 - **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
 
@@ -400,7 +401,7 @@ end
 - When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.
 - Builds are deterministic. The same inputs produce byte-identical C and binaries.
-- Compile-time evaluation is limited to `const` declarations and `@const` functions.
+- Compile-time evaluation is limited to top-level `const` declarations and `@const` functions.
 
 ## 13. Tests and contracts
 

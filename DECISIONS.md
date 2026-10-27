@@ -10,7 +10,7 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 - **Rejected: borrow checker with lifetimes (Rust).** Safe and fast, but lifetime annotations and borrow errors are the main source of complexity in Rust.
 - **Rejected: tracing garbage collector (OCaml, Go).** Simple to use, but adds a runtime, pauses and memory overhead that do not fit a C-level target.
 - **Rejected: mutable value semantics with `inout` parameters (Hylo).** Safe without lifetimes, but adds parameter conventions to every signature. Reference counting with reuse gets the same in-place updates without them.
-- **Cost.** Reference count updates in hot code that shares data. Section 14 tracks the need for early benchmarks.
+- **Cost.** Reference count updates in hot code that shares data. A prototype must benchmark this early, on numeric and string-heavy code.
 
 ## D2. ReasonML semantics and ReScript syntax
 
@@ -96,3 +96,44 @@ Decision: a call passes every argument, there is no pipe operator, and operators
 - **Reason.** Without overloading, an operator's meaning follows from the operator alone. `+.` is always float addition, so the reader never needs the operand types first.
 - **Cost.** Data transformations read inside out or need named intermediate values. Fixing arguments needs an explicit lambda.
 - **Rejected: ReScript's `->` pipe.** It saves nesting, but adds a second way to write every call.
+
+## D13. Uniform form with a tag bit, and heap boxes for 64-bit values in generic code
+
+Decision: generic code receives one machine word per value. Types of 32 bits or less are stored inline with a tag bit. 64-bit numbers are heap boxed (section 10).
+
+- **Reason.** `i64` stays a full 64-bit integer that matches C's `int64_t`.
+- **Reason.** Non-generic code never boxes. Boxing happens only where a 64-bit value enters generic code, and `@specialize` removes it in hot paths.
+- **Rejected: 63-bit `int` (OCaml).** Fast generic code, but `int` no longer matches a C type, which complicates C interop.
+- **Rejected: a type descriptor passed with every generic call.** No boxing. But every generic call takes an extra argument, and generic code must read sizes at runtime.
+
+## D14. Effect variables for higher-order functions
+
+Decision: signatures can write `'e` after `uses`, bound by a function parameter (section 7).
+
+- **Reason.** `map` with a pure function has only `alloc`, and `map` with an I/O function has `alloc, io`. A fixed effect list cannot state both.
+- **Reason.** Inference writes the variable for private code. Only exported higher-order functions show it.
+- **Rejected: higher-order functions accept only pure functions.** Too strict. Mapping over files to read them is common.
+
+## D15. Strings indexed by checked byte offsets
+
+Decision: string positions are `byteIndex` values, and slicing panics on a position inside a character (section 4).
+
+- **Reason.** Byte offsets make slicing take constant time. Positions returned by searches are always valid.
+- **Reason.** A distinct `byteIndex` type stops a character count from being used as a position.
+- **Rejected: character offsets.** `s[i]` would take time proportional to `i`, which hides slow loops.
+- **Rejected: iterators only.** Safe, but simple parsers need positions.
+
+## D16. Git dependencies with minimal version selection
+
+Decision: dependencies are git repositories pinned to tags, versions resolve with minimal version selection, and `lang.lock` stores hashes (section 14).
+
+- **Reason.** Resolution needs no solver and gives the same result on every machine.
+- **Reason.** No registry to run at the start.
+- **Revisit when.** The number of packages makes discovery or name squatting a problem.
+
+## D17. Async deferred
+
+Decision: the first version has threads and channels only (section 15).
+
+- **Reason.** async/await splits libraries into sync and async versions. Green threads need a scheduler, which goes against a small runtime.
+- **Direction.** An `async` effect fits the existing effect system and keeps one version of each library.

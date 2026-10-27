@@ -145,6 +145,28 @@ There is no null. A missing value is `None`.
 - Float operators are separate: `+.`, `-.`, `*.`, `/.` (section 2).
 - There are no implicit conversions. Use `I64.fromI32(x)`, `F64.fromInt(x)` and similar functions.
 
+### Strings
+
+- `string` holds valid UTF-8. Functions that build a string from bytes return `result`, and fail on invalid UTF-8.
+- **Positions are byte offsets of type `byteIndex`.** `byteIndex` is a distinct type, not `int`. A character count cannot be passed where a position is expected.
+- **Positions come from the string.** `String.indexOf`, `String.find` and iterators return `byteIndex` values. These always fall on a character boundary.
+- **Slicing checks boundaries.** `String.slice(s, ~from, ~to)` panics when either position is not on a character boundary or is out of range.
+- `String.length(s)` returns the byte length as `byteIndex`. `String.charCount(s)` counts characters and takes time proportional to the length.
+- `ByteIndex.toInt` and `ByteIndex.unsafeFromInt` convert to and from `int`. The second one is checked at the next slice.
+- Grapheme clusters, case mapping and normalization are in `std/unicode`.
+
+```reason
+let line = "key = value";
+switch (String.indexOf(line, "=")) {
+| Some(i) => {
+    let key = String.trim(String.slice(line, ~from=ByteIndex.zero, ~to=i));
+    let value = String.trim(String.sliceFrom(line, ByteIndex.next(line, i)));
+    Some((key, value))
+  }
+| None => None
+};
+```
+
 ## 5. Errors
 
 - **Recoverable errors use `result(t, e)`.**
@@ -213,6 +235,19 @@ Rules:
 - Panics are not an effect. Any function can panic.
 - `main` has every effect.
 
+### Effect variables
+
+A function that calls a function it receives has that function's effects. An effect variable states this in a signature.
+
+```reason
+export let map: (array('a), ('a) => 'b uses 'e) => array('b) uses alloc, 'e = ...;
+```
+
+- An effect variable is written like a type variable, but appears only after `uses`.
+- **It is bound by a parameter.** An effect variable in the result `uses` list must also appear in a parameter's function type.
+- At each call, the variable takes the effects of the function passed in. `map(xs, String.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
+- The compiler infers effect variables for private functions and lambdas. Only exported higher-order functions write them.
+
 ## 8. Unsafe code and C interop
 
 - **`unsafe { ... }`** blocks allow raw pointers (`ptr('a)`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
@@ -228,7 +263,17 @@ Rules:
 
 ## 10. Code generation
 
-- **Polymorphic functions are compiled once.** Values of a type parameter are passed in a uniform boxed form. A boxed scalar is stored inline when it fits in a pointer.
+- **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
+- **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
+
+| Type | Uniform form |
+| --- | --- |
+| Boxed values (records, variants with payloads, arrays, strings, closures) | Pointer, unchanged |
+| `i8` to `i32`, `u8` to `u32`, `bool`, `char`, `f32`, `unit`, constructors without payloads | Inline, shifted left one bit with the tag bit set |
+| `i64`, `u64`, `int`, `f64` | Copied into a heap box with a reference count |
+| `@unboxed` records | Copied into a heap box with a reference count |
+
+- **Boxing happens only at the boundary.** Non-generic code uses raw C types. The compiler converts a value to the uniform form when it passes the value into generic code, and converts it back when it receives one.
 - **`@specialize`** on a function asks the compiler to emit a separate copy for each concrete type it is called with. Use it in hot paths only.
 - **Output is C.** One `.c` file per module, plus a small runtime (allocator, reference counting, panic handler, arena).
 - **Debug builds** use a fast C compiler such as TCC with checks on.
@@ -293,10 +338,29 @@ All query commands accept `--json`.
 
 `lang check` on an unchanged package with one edited file returns in under 100 ms.
 
-## 14. Open questions
+## 14. Packages (sketch)
 
-- **Boxed scalars in generic code.** Inline boxing needs a tag bit, which conflicts with full 64-bit integers. One option is to heap-box `i64` and `u64` in generic code and keep smaller scalars inline.
-- **Effect polymorphism.** `Array.map` has the effects of the function it receives. The syntax for "the same effects as this argument" is not decided.
-- **String indexing.** Whether `string` exposes byte offsets, character offsets or only iterators.
-- **Async.** Not covered. Threads and channels are the only concurrency in this draft.
-- **Package manager and versioning.** Not covered.
+- **A package is a directory** with a `lang.toml` manifest and a `src/` directory.
+- **The package name is the import path prefix.** Package `json` exposes `src/parse.lang` as `"json/parse"`.
+- **Dependencies are git repositories** pinned to version tags. There is no central registry.
+
+```toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+json = { git = "https://github.com/example/lang-json", version = "1.2.0" }
+```
+
+- **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
+- **One version per package** in a build. A major version change is a new package name, such as `json2`.
+- **`lang.lock`** records the commit hash and content hash of every dependency. `lang build` fails when a fetched dependency does not match its hash.
+
+## 15. Deferred
+
+These are left out of the first version on purpose.
+
+- **Async.** Threads and channels are the only concurrency. When programs need many cheap tasks, an `async` effect (section 7) is the preferred direction, because it keeps one library for sync and async callers.
+- **Functors.** See `DECISIONS.md`, D6.
+- **A native debug backend.** See `DECISIONS.md`, D10.

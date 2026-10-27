@@ -371,11 +371,11 @@ end
 ### Generics
 
 - Type parameters use angle brackets: `function first<T>(items: Array<T>): Option<T>` and `struct Entry<K, V> key: K value: V end`.
-- There are no typeclasses or traits. Behavior is passed explicitly, as a function: `Array.sortBy(xs, Int.compare)`.
-- Arithmetic operators do not work on a type parameter. Pass a function instead.
-- **Structural equality.** `==` compares values structurally, and the compiler derives it for every type except functions. Using `==` on a type that contains a function is a compile error.
-- **Hashing.** `Hash.of(x)` follows the same rule, and also rejects types that contain floats.
-- **`Equatable` and `Hashable` constraints.** Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`. The compiler checks each type argument against the rules above. These two are the only constraints in the language, and users cannot define new ones.
+- A type parameter can require traits: `<T: Ordered>`, or `<T: Show and Ordered>` for several (see "Traits" below).
+- Arithmetic operators do not work on a type parameter. Pass a function or require a trait instead.
+- **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
+- **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
+- Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 ```lua
@@ -386,6 +386,72 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool
   return false
 end
 ```
+
+### Traits
+
+A trait is a named set of functions that a type implements. A type's traits are all listed where the type is declared.
+
+```lua
+export trait Show
+  function show(value: Self): string
+end
+
+export struct Money implements Show, Ordered
+  cents: int
+end
+
+implement Show for Money
+  function show(value: Money): string
+    return Int.toString(value.cents // 100) .. "." .. Int.toString(value.cents % 100)
+  end
+end
+
+implement Ordered for Money
+  function compare(a: Money, b: Money): Ordering
+    return Int.compare(a.cents, b.cents)
+  end
+end
+
+const label = Show.show(price)
+```
+
+**Declaring and implementing**
+
+- `trait Name ... end` declares a trait. Its body lists function signatures. `Self` is the implementing type.
+- **A trait has functions only.** No fields, no default implementations, no associated types, and no traits that require other traits.
+- **Implementations live with the type.** A struct, enum or distinct type lists its traits with `implements`. Each listed trait needs an `implement Trait for Type ... end` block in the same module, or a `derives` entry.
+- **No implementations anywhere else.** A module cannot implement a trait for a type declared in another module. To add a trait to another module's type, wrap it in a `distinct type` or a struct.
+- `derives` asks the compiler to write the implementation: `struct User derives Show, Ordered, Shape`.
+
+**Calling**
+
+- Trait functions are called through the trait name: `Show.show(price)`. There is no `price.show()` form.
+- In generic code, `<T: Show>` allows `Show.show(value)` for a `value: T`.
+
+**Trait values**
+
+- `Dynamic<Trait>` holds a value of any type that implements the trait. `Dynamic.of(value)` creates one when the expected type is known.
+- `Array<Dynamic<Drawable>>` holds values of different types. `Drawable.draw(item, mutable canvas)` calls the implementation of each item's own type.
+- A `Dynamic<Trait>` stores the value in a box, plus a pointer to the implementation.
+
+**Standard traits**
+
+| Trait | Purpose | Implemented |
+| --- | --- | --- |
+| `Equatable` | `==` and `~=` | Automatically for types without functions |
+| `Hashable` | `Hash.of`, map keys | Automatically for types without functions or floats |
+| `Ordered` | `compare`, sorting | By `derives` or `implement` |
+| `Show` | Text for logs, tests and errors | By `derives` or `implement` |
+| `Shape` | A description of fields and constructors, for serialization | By `derives` only |
+
+- A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
+- Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
+
+**Serialization with `Shape`**
+
+- `derives Shape` makes the compiler emit a constant description of the type: field names, field types, defaults and enum constructors.
+- Libraries such as `std/json` read the description: `Json.encode(user)` and `Json.decode(text, User)` work for any type that derives `Shape`.
+- An opaque struct can derive `Shape` only for use inside its own module.
 
 ### Inference
 
@@ -756,7 +822,38 @@ end
 - When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.
 - Builds are deterministic. The same inputs produce byte-identical C and binaries.
-- Compile-time evaluation is limited to top-level `const` declarations and `@const` functions.
+- Compile-time evaluation is limited to top-level `const` declarations, `@const` functions and build conditions.
+
+### Build conditions
+
+Code that differs by platform branches on constants from `std/build`. The compiler keeps only the matching branch.
+
+```lua
+const Build = import("std/build")
+
+export function configDir(): string uses io
+  if Build.os == Os.Windows then
+    return Env.get("APPDATA")
+  elseif Build.os == Os.MacOS then
+    return Env.home() .. "/Library/Application Support"
+  else
+    return Env.home() .. "/.config"
+  end
+end
+```
+
+- **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. An `if` that tests only these constants is resolved at compile time. The output contains no runtime check.
+- **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed.
+- **`@target(os = Os.Windows)`** on a declaration makes it exist only on that target. Calling it outside a branch that guarantees that target is a compile error.
+
+```lua
+@target(os = Os.Windows)
+extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
+```
+
+- A `@target` C function is linked only when building for its target.
+- `lang check --all-targets` type-checks the package for every supported target.
+- There are no per-platform file names and no preprocessor.
 
 ## 13. Tests and contracts
 

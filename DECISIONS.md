@@ -39,12 +39,17 @@ Decision: the restrictions listed in section 3.
 - **No default exports.** A default export gets a different name in each importing file, so text search misses uses.
 - **No import side effects.** Initialization order can never matter, and startup runs no code before `main`.
 
-## D5. No typeclasses or traits
+## D5. Traits implemented only where the type is declared
 
-Decision: behavior is passed explicitly as functions. Equality and hashing are derived structurally by the compiler (section 4).
+Decision: traits exist, but a type's trait implementations must be in the module that declares the type and listed with `implements` on its declaration. Trait functions are called through the trait name, such as `Show.show(x)` (section 4). This replaces the first draft's "no traits" decision.
 
-- **Reason.** Trait implementations are visible program-wide, which needs coherence and orphan rules and makes "which implementation runs here" hard to answer by reading code.
-- **Cost.** More explicit arguments, such as `Array.sortBy(xs, Int.compare)` instead of `xs.sort()`.
+- **Reason.** Formatting, serialization, ordering and mixed-type collections all need a shared interface. Without traits, each needed its own workaround.
+- **Reason.** With implementations only next to the type, there is exactly one place to look and no coherence or orphan rules are needed.
+- **Reason.** Calling through the trait name keeps one call form (D12) and makes every use searchable.
+- **Reason.** Constrained generic code receives the implementation table as a hidden argument, so generic functions are still compiled once (D7).
+- **Cost.** No retroactive implementations. Adding a trait to another module's type requires a wrapper type.
+- **Rejected: Rust-style traits with implementations anywhere.** They need global coherence rules, and finding the implementation that runs needs tooling.
+- **Rejected: no user traits, only compiler-derived abilities.** Simpler, but users could not define `Ordered`-like contracts of their own.
 
 ## D6. No functors or module parameters at first
 
@@ -253,10 +258,10 @@ Decision: `Sender<T>`, `Receiver<T>`, `Shared<T>` and `Atomic<T>` are the only s
 
 ## D30. Literals, equality constraints and floats
 
-Decision: strings use `"..."` and characters use `'...'`. Literals must fit their type. `Equatable` and `Hashable` are the only constraints. `==` on floats follows IEEE 754, and floats cannot be hashed (sections 2 and 4).
+Decision: strings use `"..."` and characters use `'...'`. Literals must fit their type. `Equatable` and `Hashable` are standard traits implemented automatically when possible. `==` on floats follows IEEE 754, and floats cannot be hashed (sections 2 and 4).
 
 - **Reason.** Lua's two string quote styles were a second way to write strings, and `char` needed a literal form.
-- **Reason.** Generic code that uses `==` or hashing must know its type argument supports them. Two built-in constraints say this without adding traits.
+- **Reason.** Generic code that uses `==` or hashing must know its type argument supports them. The constraints `<T: Equatable>` and `<T: Hashable>` say this.
 - **Reason.** Float keys break maps when `NaN` is involved, because `NaN` is not equal to itself.
 
 ## D31. Iterators are generators
@@ -329,3 +334,13 @@ Decision: `distinct type A = B` declares a new type with the representation of `
 - **Reason.** IDs, units and indexes with the same representation cannot be mixed up by accident.
 - **Reason.** No runtime cost, since the C type is the same.
 - **Reason.** With `opaque`, only the declaring module can create values, which is how `ByteIndex` is defined.
+
+## D41. Build conditions in code instead of per-platform files
+
+Decision: platform differences use `if` on compile-time constants from `std/build` and `@target` on declarations. Every branch is type-checked on every build (section 12).
+
+- **Reason.** Shared code is written once. Small platform differences stay inside one function.
+- **Reason.** Checking every branch on every build stops code for other platforms from breaking unnoticed, which is the main problem with C's `#if`.
+- **Reason.** A reader or an agent sees every platform's behavior in one place.
+- **Rejected: per-platform file suffixes (Go).** Small differences need a whole separate file, and shared logic gets copied between files.
+- **Rejected: a preprocessor.** Code inside an inactive branch is never checked.

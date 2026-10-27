@@ -68,33 +68,38 @@ The syntax follows TypeScript where the meaning is the same. Where Lang means so
 - **No currying and no partial application.** To fix some arguments, write an arrow function.
 - **No method calls.** `xs.push(v)` is not valid. Write `Array.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
 - **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.
-- **Recursion is declared.** A function that calls itself, directly or through other functions in the same module, is declared `recursive function`. A call that forms a cycle between functions that are not marked `recursive` is a compile error.
-- **Tail calls in recursive functions are loops.** In a `recursive function`, a tail-position call to itself compiles to a jump. The stack does not grow. Other recursive calls use the stack. Stack overflow aborts the program.
+- **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
+- **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `lang query recursion MODULE` lists them.
 
 ```ts
-recursive function gcd(a: int, b: int): int {
+function gcd(a: int, b: int): int {
   if (b == 0) {
     return a
   }
   return gcd(b, a % b)          // tail call, compiled to a loop
 }
-
-recursive function isEven(n: int): bool {
-  if (n == 0) {
-    return true
-  }
-  return isOdd(n - 1)
-}
-
-recursive function isOdd(n: int): bool {
-  if (n == 0) {
-    return false
-  }
-  return isEven(n - 1)
-}
 ```
 
-- Recursion through function values, such as a function passed as an argument, is not checked.
+### Closures
+
+- An arrow function that captures nothing compiles to a plain C function pointer.
+- An arrow function that captures values stores them in an environment. Captured heap values have their reference count incremented, and captured structs are copied.
+- Closures capture only constant values (`const` bindings and parameters), so an environment never changes after it is created.
+- **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
+- **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
+- **`escaping`** marks a function-type parameter that may be stored or outlive the call: `function onClick(escaping handler: () => void)`. An escaping closure's environment is allocated on the heap.
+- Struct fields and array elements of function type always hold escaping closures. `Thread.start`, `Async.spawn` and `Async.run` take escaping parameters.
+- **`@inline`** on a function copies its body into each caller. On a higher-order function such as `Array.map`, this also places the closure's body at the call, which removes the indirect call.
+
+```ts
+@inline
+export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): Array<U> uses alloc, E {
+  // f cannot escape, so the closure passed in needs no allocation
+}
+
+const scaled = Array.map(prices, (p) => p * rate)    // no closure allocation, no indirect call
+```
+
 
 ### Control flow
 
@@ -724,7 +729,7 @@ const total = Thread.scope((scope) => {
 ```
 
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
-- **`Thread.start(scope, f)`** runs `f` on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
+- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
 - **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
 - **Thread functions capture only constant values,** like every closure. They cannot be `async`.
 - **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
@@ -866,7 +871,8 @@ export enum Color {
 - **Release builds** use Clang or GCC with `-O2`.
 - **Generators and async functions** compile to a struct and a resume function. The struct holds their live variables and a state number. The resume function switches on that number.
 - **`mutable` parameters** compile to C pointer parameters.
-- **Self-calls in tail position** inside a `recursive function` compile to loops (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
+- **Self-calls in tail position** compile to loops in every function (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
+- **Closures.** A non-escaping closure's environment is a C struct on the caller's stack. An escaping closure's environment is a reference-counted heap object. `@inline` functions are emitted as `static inline` C functions, and their bodies are copied into callers.
 - **Trait constraints** compile to a hidden parameter that points to the implementation table.
 - **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
 - **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
@@ -967,6 +973,7 @@ export function sqrt(x: f64): f64
 | `lang query refs NAME` | Every use of an exported name |
 | `lang query callers FUNCTION` | Every function that calls it |
 | `lang query interface MODULE` | The module's exported signatures |
+| `lang query recursion MODULE` | The module's recursive functions |
 
 All query commands accept `--json`.
 

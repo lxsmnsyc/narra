@@ -303,14 +303,15 @@ Decision: running out of memory, stack overflow and integer division by zero abo
 
 - **Reason.** These failures cannot be handled where they happen in a useful way. Aborting matches panics (D9).
 
-## D37. Recursive functions are declared
+## D37. Recursion is found by the compiler, and self tail calls are loops
 
-Decision: a function that calls itself, directly or through other functions in its module, is declared `recursive function`. In such a function, a self-call in tail position compiles to a loop (section 2).
+Decision: there is no `recursive` keyword. The compiler finds recursion from each module's call graph. A self-call in tail position compiles to a loop in every function (section 2).
 
-- **Reason.** Recursion is visible in the declaration. A reader knows which functions can grow the stack.
-- **Reason.** Non-recursive functions have a fixed stack depth that the compiler can compute.
-- **Reason.** Tail-call loops are guaranteed where recursion is declared, without a separate attribute.
-- **Note.** Imports cannot form cycles (D4), so recursion across modules is only possible through function values, which are not checked.
+- **Reason.** The compiler already builds the call graph. Imports cannot form cycles (D4), so recursion never spans modules except through function values.
+- **Reason.** A keyword would repeat what the compiler knows. Accidental recursion is rare in Lang, since names are not shadowed and imported functions are called with a module prefix.
+- **Reason.** The tail-call guarantee covers every function, not only marked ones.
+- **Cost.** Recursion is not visible in a declaration. `lang query recursion MODULE` lists recursive functions.
+- **Rejected: a `recursive` keyword.** It made recursion visible, but added a keyword for information the compiler already has.
 - **Rejected: `@tailcall` attribute.** It marked only the optimization, not the recursion.
 
 ## D38. No shadowing, and unused names are errors
@@ -376,3 +377,13 @@ Decision: there is no C-style `for (init; cond; step)`. Counting uses `for (cons
 - **Reason.** One loop form, `for ... of`, covers arrays, maps, ranges and generators.
 - **Reason.** `Range.upTo(n)` stops before `n`, which fits 0-based indexes.
 - **Rejected: `++` and compound assignment.** They are a second way to write `x = x + 1`.
+
+## D46. Function parameters cannot escape by default
+
+Decision: a function-type parameter can only be called during the call. `escaping` allows it to be stored, returned, captured or sent to a thread. `@inline` copies a function's body into callers (section 2).
+
+- **Reason.** A non-escaping closure's environment lives on the caller's stack, so passing an arrow function to `Array.map` allocates nothing.
+- **Reason.** The cost of an escaping closure, one heap allocation, is visible in the signature.
+- **Reason.** `@inline` on small higher-order functions removes the indirect call, so `Array.map` with an arrow function compiles like a loop.
+- **Prior art.** Swift makes closure parameters non-escaping by default and requires `@escaping`.
+- **Rejected: escape analysis without a marker.** It would give the same speed. But a change inside one function could turn a free closure into an allocation for every caller, with no visible sign.

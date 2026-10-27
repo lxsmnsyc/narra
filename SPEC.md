@@ -4,100 +4,120 @@ This document defines the Lang language. Each section states the rules first, th
 
 File extension: `.lang`. Compiler command: `lang`.
 
+The previous draft used ReasonML syntax. It is kept at the git tag `reasonml-draft`.
+
 ## 1. Overview
 
-- Lang code is a set of modules. One file is one module.
-- Values are immutable by default. Safe code has no pointers or references, only values.
+- Lang uses Lua syntax with static types. Metatables are removed.
+- Lang compiles to native code, the same target as C, Rust and Go. The compiler emits C, and a C compiler builds the final binary.
+- Lang code is a set of modules. One file is one module. There are no globals.
+- Values are immutable. Safe code has no pointers or references, only values.
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
-- The compiler emits C. A C compiler builds the final binary.
 
-```reason
-import { type shape } from "app/geometry";
-import * as Float from "std/float";
+```lua
+local Float = require("std/float")
 
-export let area: (shape) => f64 = (s) =>
-  switch (s) {
-  | Circle(r) => Float.pi *. r *. r
-  | Rect({width, height}) => width *. height
-  };
+export enum Shape
+  Circle(radius: f64)
+  Rect(width: f64, height: f64)
+end
 
-test("rect area") {
-  assert(area(Rect({width: 2.0, height: 3.0})) == 6.0);
-};
+export function area(s: Shape): f64
+  match s
+    when Circle(r) then return Float.PI * r * r
+    when Rect(w, h) then return w * h
+  end
+end
+
+test "rect area" do
+  assert(area(Rect(2.0, 3.0)) == 6.0)
+end
 ```
 
 ## 2. Syntax
 
-The syntax follows ReScript, the current form of ReasonML syntax.
+The syntax follows Lua 5.4. This section lists only the differences and additions.
 
-- **Bindings.** `let x = expr;` binds a name. Bindings are immutable.
-- **Mutable locals.** `let mut x = expr;` declares a local that can be reassigned with `x = expr;`. A mutable local cannot be captured by a closure.
-- **Expressions.** `if`, `switch` and `{ ... }` blocks are expressions. A block's value is its last expression.
-- **Functions.** `(a, b) => expr`. Functions are values and can be stored, passed and returned.
-- **Labeled arguments.** `(~path, ~mode) => ...` declares them. Callers write `open(~path="a.txt", ~mode=Read)`. Labeled arguments can appear in any order.
-- **Loops.** `for i in 0 to n - 1 { ... }`, `for item in list { ... }` and `while cond { ... }`. Loops have type `unit`.
-- **Comments.** `//` to the end of the line. `/* ... */` for blocks. `///` before a declaration is a doc comment.
-- **Formatting.** `lang fmt` defines the one valid layout. The compiler rejects nothing for layout, but CI is expected to run `lang fmt --check`.
+### Bindings
 
-There are no macros and no function overloading.
+- `local x = expr` binds a name that cannot be reassigned.
+- `local mut x = expr` binds a name that can be reassigned with `x = expr`. A mutable local cannot be captured by a closure.
+- There are no globals. Assigning to an undeclared name is a compile error.
+- Multiple assignment is allowed: `local a, b = f()` when `f` returns two values.
 
-### Calls
+### Functions
 
-- **A call passes every argument.** A function declared with two parameters is called with exactly two arguments. Passing fewer is a compile error.
-- **No currying.** `(a, b) => expr` is one function of two parameters, not a function that returns a function. The type `(int, int) => int` is different from `(int) => (int) => int`.
-- **No partial application.** To fix some arguments, write a lambda: `(x) => add(1, x)`.
-- **No pipe operator.** Write nested calls or name the intermediate values with `let`.
+- `function name(a: int, b: int): int ... end` declares a function. `local function` and `export function` set its visibility (section 3).
+- Anonymous functions use the same form without a name: `function(x: int): int return x + 1 end`.
+- **Multiple return values** are allowed and typed: `function divmod(a: int, b: int): (int, int)`.
+- **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
+- **No currying and no partial application.** To fix some arguments, write an anonymous function.
+- **No method calls.** `obj:method(x)` is not valid. Write `Module.method(obj, x)`.
+- **No varargs.** `...` is not valid. Pass an array instead.
+- **No labeled arguments.** Pass a struct for functions with many options: `File.open(path, { mode = Read, create = true })`.
 
-```reason
-// Not valid: add(1), x->add(1), x |> add(1)
-let addOne = (x) => add(1, x);
-let words = String.split(text, ~on=" ");
-let counts = Array.map(words, String.length);
-```
+### Control flow
+
+- `if cond then ... elseif cond then ... else ... end`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
+- `while cond do ... end` and `repeat ... until cond`.
+- `for i = first, last do ... end` counts from `first` to `last` inclusive, as in Lua. `for i = first, last, step do` takes a step.
+- `for x in iter do ... end` loops over an iterator. `for i, x in Array.entries(xs) do` gives indexes from 0.
+- `break` and `goto` work as in Lua. `continue` is added.
+- `match` is added (section 4).
+
+### Comments and formatting
+
+- `--` comments to the end of the line. `--[[ ... ]]` comments a block. `---` before a declaration is a doc comment.
+- `lang fmt` defines the one valid layout. CI is expected to run `lang fmt --check`.
+
+There are no macros, no metatables, no operator overloading and no function overloading.
 
 ### Operators
 
-- **Operators are built in.** Programs cannot define new operators or give existing operators new meanings.
-- **Each operator works on one type family.**
+- **Operators are built in.** Programs cannot define operators or change their meaning.
+- **Both operands have the same type.** There are no implicit conversions, so `1 + 2.0` is a compile error.
 
 | Operators | Operand types |
 | --- | --- |
-| `+` `-` `*` `/` `%` | Integers. Both operands have the same integer type. |
-| `+%` `-%` `*%` | Integers, with wrapping on overflow. |
-| `+.` `-.` `*.` `/.` | Floats. Both operands have the same float type. |
-| `++` | `string` concatenation. |
-| `<` `<=` `>` `>=` | Integers, floats, `char` and `string`. Both operands have the same type. |
-| `==` `!=` | Any type without functions, compared structurally (section 4). |
-| `&&` `\|\|` `!` | `bool`. |
+| `+` `-` `*` `%` | Any integer type or any float type |
+| `/` | Float types. Use `//` for integers |
+| `//` | Floor division for any integer or float type |
+| `^` | Float types |
+| `+%` `-%` `*%` | Integer types, wrapping on overflow |
+| `&` `\|` `~` `<<` `>>` | Integer types. `~` is xor when binary and bitwise not when unary |
+| `..` | `string` |
+| `<` `<=` `>` `>=` | Numbers, `char` and `string` |
+| `==` `~=` | Any type without functions, compared structurally (section 4) |
+| `and` `or` `not` | `bool` |
+| `#` | Length of an array, map or string |
 
-- An integer operation whose operand types are still unknown after inference uses `int`.
+- A number literal with no other type information is `int` when written without a decimal point, and `f64` when written with one.
 
 ## 3. Modules and imports
 
 - **One file is one module.** Its path from the package root is its name: `src/app/text.lang` is `"app/text"`.
-- **Names are private by default.** `export` makes a top-level declaration visible to other modules.
+- **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export enum`, `export struct`, `export type`, `export const`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
-- **Prelude.** The prelude holds `option`, `result`, `Some`, `None`, `Ok`, `Error`, the primitive types, `assert` and `panic`. Nothing else is in scope without an import.
-- **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths such as `"../text"` are not allowed.
+- **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Tuple`, the primitive types, `assert` and `panic`. Nothing else is in scope without an import.
+- **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 Import forms:
 
-```reason
-import { classify, type token } from "app/text";   // named imports
-import * as Str from "std/string";                 // namespace import
-export { classify } from "app/text";               // named re-export
+```lua
+local Str = require("std/string")                  -- namespace import
+local { classify, Token } = require("app/text")    -- named imports
+export { classify } from "app/text"                -- named re-export
 ```
 
 Rules:
 
+- **`require` is a declaration, not a function call.** It must appear at the top level with a string literal path. It never runs code.
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
-- **No `export *`.** Re-exports name each item.
-- **No default exports.**
-- **No import side effects.** Importing a module never runs code. Top-level `let` values must be constant expressions or `lazy` values (see section 9).
-- **Constructors come with their type.** Importing `type token` makes its constructors usable in patterns. In a `switch`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is not in scope or is ambiguous.
-- **Nested modules.** `export module Utf8 = { ... }` declares a module inside a file. It follows the same `export` rules.
-- **`lang move`.** Moving a file with `lang move old new` rewrites every import of it.
+- **No wildcard re-exports and no default exports.**
+- **No import side effects.** Top-level declarations must be functions, types, constants or `lazy` values (section 9).
+- **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
+- **`lang move old new`** moves a file and rewrites every import of it.
 
 ## 4. Types
 
@@ -113,74 +133,133 @@ Rules:
 | `char` | A Unicode scalar value |
 | `string` | Immutable UTF-8 text |
 | `bytes` | Immutable byte sequence |
-| `unit` | The type with one value, `()` |
+
+A function with no return type returns nothing.
 
 ### Composite types
 
-- **Records.** `type user = {name: string, age: int};` Records are structural values. Update with `{...u, age: 31}`.
-- **Variants.** `type shape = Circle(f64) | Rect({width: f64, height: f64});`
-- **Tuples.** `(int, string)`.
-- **Arrays.** `array(t)` is a growable, contiguous sequence. Indexing is bounds checked.
-- **Functions.** `(int, ~label: string) => bool`.
-- **Option and result.** `option(t)` and `result(t, e)` are ordinary variants defined in the prelude.
+- **Structs.** Declared with `struct`. Built with a table constructor whose type is known from context. Updated with `with`, which returns a new struct.
+- **Structs are stored inline,** like C structs. A struct field, array element or local holds the struct's fields directly, with no heap allocation and no reference count of its own.
+- **A struct cannot contain itself.** Use an enum, an array or `Box<T>` for recursive data.
 
-There is no null. A missing value is `None`.
+```lua
+export struct User
+  name: string
+  age: int
+end
+
+local u: User = { name = "Ana", age = 30 }
+local older = u with { age = 31 }
+```
+
+- **Enums.** Declared with `enum`. Each constructor can carry fields.
+
+```lua
+export enum Token
+  Word(text: string)
+  Number(value: int)
+  Space
+end
+```
+
+- **Arrays.** `Array<T>` is a growable, contiguous array. `{1, 2, 3}` builds one when the expected type is an array. Indexes start at 0. `xs[i]` is bounds checked and panics when out of range. `#xs` is the length.
+- **Maps.** `Map<K, V>` is a hash map. `{ ["a"] = 1, ["b"] = 2 }` builds one when the expected type is a map. `m[k]` returns `Option<V>`.
+- **Tuples.** `Tuple<int, string>` holds a fixed group of values, built with `Tuple(1, "a")`.
+- **Multiple return values.** `: (int, int)` in a return type means the function returns two values. They are not a tuple and cannot be stored as one value.
+- **Functions.** `function(int, string): bool`.
+
+### Optional values
+
+- `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `nil`.
+- `if x is Some(v) then` binds `v` inside the branch. After `if x is None then return ... end`, `x` is known to be `Some` for the rest of the block, and `x.value` reads the value.
+- `Option.withDefault(x, fallback)` returns `fallback` when `x` is `None`.
+- Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`.
+
+### Pattern matching
+
+`match` checks a value against patterns. It must cover every case, or have an `else` branch.
+
+```lua
+match token
+  when Word(text) then print(text)
+  when Number(n) if n < 0 then print("negative")
+  when Number(n) then print(Int.toString(n))
+  when Space then print(" ")
+end
+```
+
+- Patterns can bind fields, test literals, and add an `if` guard.
+- `match` on an `Option<T>` uses `when Some(v) then` and `when None then`.
 
 ### Generics
 
-- Type parameters are written `array('a)` and `type tree('a) = Leaf | Node(tree('a), 'a, tree('a))`, as in ReasonML.
-- There are no typeclasses or traits. Behavior is passed explicitly, as a function or a module: `Array.sortBy(xs, Int.compare)`.
+- Type parameters use angle brackets: `function first<T>(items: Array<T>): Option<T>` and `struct Entry<K, V> key: K value: V end`.
+- There are no typeclasses or traits. Behavior is passed explicitly, as a function: `Array.sortBy(xs, Int.compare)`.
+- Arithmetic operators do not work on a type parameter. Pass a function instead.
 - **Structural equality.** `==` compares values structurally, and the compiler derives it for every type except functions. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` follows the same rule.
 
 ### Inference
 
-- Types are inferred inside a module with Hindley-Milner inference.
-- **Exported declarations must state their type**, including effects (section 7). Other modules type-check against these signatures only. They never read the body.
-- Local bindings and private functions need no annotations.
+- Types of locals are inferred. `local n = 1` is `int`.
+- **Function parameters and return types are written for every function.** Anonymous functions passed as arguments are the exception. Their types come from the parameter they are passed to.
+- Other modules type-check against exported signatures only. They never read function bodies.
 
 ### Numbers
 
-- Integer overflow panics in debug builds and wraps in release builds. The operators `+%`, `-%` and `*%` always wrap.
-- Float operators are separate: `+.`, `-.`, `*.`, `/.` (section 2).
-- There are no implicit conversions. Use `I64.fromI32(x)`, `F64.fromInt(x)` and similar functions.
+- Integer overflow panics in debug builds and wraps in release builds. `+%`, `-%` and `*%` always wrap.
+- Conversions are explicit: `I32.from(x)`, `F64.fromInt(x)`, `Int.truncate(f)`.
 
 ### Strings
 
-- `string` holds valid UTF-8. Functions that build a string from bytes return `result`, and fail on invalid UTF-8.
-- **Positions are byte offsets of type `byteIndex`.** `byteIndex` is a distinct type, not `int`. A character count cannot be passed where a position is expected.
-- **Positions come from the string.** `String.indexOf`, `String.find` and iterators return `byteIndex` values. These always fall on a character boundary.
-- **Slicing checks boundaries.** `String.slice(s, ~from, ~to)` panics when either position is not on a character boundary or is out of range.
-- `String.length(s)` returns the byte length as `byteIndex`. `String.charCount(s)` counts characters and takes time proportional to the length.
-- `ByteIndex.toInt` and `ByteIndex.unsafeFromInt` convert to and from `int`. The second one is checked at the next slice.
+- `string` holds valid UTF-8. Functions that build a string from bytes return `Result` and fail on invalid UTF-8.
+- **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is a distinct type, not `int`.
+- **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
+- **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
+- `#s` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
 
-```reason
-let line = "key = value";
-switch (String.indexOf(line, "=")) {
-| Some(i) => {
-    let key = String.trim(String.slice(line, ~from=ByteIndex.zero, ~to=i));
-    let value = String.trim(String.sliceFrom(line, ByteIndex.next(line, i)));
-    Some((key, value))
-  }
-| None => None
-};
+```lua
+export struct Pair
+  key: string
+  value: string
+end
+
+export function parsePair(line: string): Option<Pair>
+  local found = Str.indexOf(line, "=")
+  if found is None then
+    return None
+  end
+  local i = found.value
+  local key = Str.trim(Str.slice(line, 0, i))
+  local value = Str.trim(Str.sliceFrom(line, Str.nextChar(line, i)))
+  return Some({ key = key, value = value })
+end
 ```
 
 ## 5. Errors
 
-- **Recoverable errors use `result(t, e)`.**
-- **`try expr`** unwraps an `Ok` value or returns the `Error` from the enclosing function. The error types must be equal, or the function must convert them with `Result.mapError`.
+- **Errors are return values.** A function that can fail returns `Result<T, E>`, with constructors `Ok(value)` and `Err(error)`.
+- **The caller checks the result.** There is no `try`, no `catch` and no operator that returns early. Every error path is a visible `if` or `match`.
+- **`is` tests a pattern and narrows the type.** After `if r is Err(e) then return ... end`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
+- **Ignoring a `Result` is a compile error.** Discard one on purpose with `local _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
-- There are no exceptions.
+- There are no exceptions and no `pcall`.
 
-```reason
-export let readConfig: (~path: string) => result(config, configError) uses io, alloc =
-  (~path) => {
-    let text = try Result.mapError(File.readText(~path), (e) => IoFailed(e));
-    let config = try Config.parse(text);
-    Ok(config)
-  };
+```lua
+export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc
+  local text = File.readText(path)
+  if text is Err(e) then
+    return Err(IoFailed(e))
+  end
+
+  local config = Config.parse(text.value)
+  if config is Err(e) then
+    return Err(e)
+  end
+
+  return Ok(config.value)
+end
 ```
 
 ## 6. Memory model
@@ -188,34 +267,38 @@ export let readConfig: (~path: string) => result(config, configError) uses io, a
 ### Values and ownership
 
 - Every value has one or more owners: variables, fields, array slots, closure captures.
-- Boxed values (records, variants with payloads, arrays, strings, closures) live on the heap with a reference count. Scalars and small unboxed records live inline.
+- Boxed values (enums with fields, arrays, maps, strings, closures and `Box<T>`) live on the heap with a reference count. Numbers, `bool`, `char` and structs live inline.
+- A struct that holds boxed fields counts those fields, not itself. Copying the struct increments the count of each boxed field.
+- **`Box<T>`** puts a value on the heap with a reference count. Use it for recursive structs and for large structs that are passed around often.
 - The compiler inserts reference count increments and decrements. It removes the ones it can prove unnecessary, as in Koka's Perceus.
 - A value is freed when its count reaches zero. Freeing is deterministic, so file handles and sockets close at the point their last owner drops them.
 
 ### In-place updates
 
-- An update such as `{...u, age: 31}`, `Array.set(xs, i, v)` or `Array.push(xs, v)` returns a new value.
-- When the reference count of the input is 1, the compiler writes into the input instead of allocating. This is called reuse.
-- Code that keeps one owner gets in-place mutation without writing any mutation.
+- `xs[i] = v`, `m[k] = v`, `Array.push(xs, v)`, `u.age = v` and `u with { ... }` produce a new value and assign it.
+- When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
+- Code that keeps one owner gets in-place mutation with no copies.
 
-```reason
-let mut xs = Array.make(0, ~len=1000);
-for i in 0 to 999 {
-  xs = Array.set(xs, i, i * i);  // count is 1, so the write is in place
-};
+```lua
+local mut xs: Array<int> = Array.filled(0, 1000)
+for i = 0, 999 do
+  xs[i] = i * i  -- the count is 1, so the write is in place
+end
 ```
+
+- `xs[i] = v` and `u.age = v` require the target to be a mutable local or a field of one.
 
 ### Cycles
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
-- There are no mutable reference cells in safe code. A mutable local (`let mut`) cannot be captured or stored, so it cannot create a cycle.
-- **Graphs** use `Arena('a)` and `Handle('a)` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
+- A mutable local cannot be captured or stored, so it cannot create a cycle.
+- **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Threads
 
 - Values sent to another thread with `Thread.spawn` or `Channel.send` are marked shared. Shared values use atomic reference counts. Unshared values use plain counts.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
-- There is no shared mutable state in safe code. `std/sync` provides `Mutex('a)` and `Atomic('a)` for the cases that need it.
+- There is no shared mutable state in safe code. `std/sync` provides `Mutex<T>` and `Atomic<T>` for the cases that need it.
 
 ## 7. Effects
 
@@ -225,82 +308,114 @@ An effect marks something a function can do beyond computing a value. The set is
 | --- | --- |
 | `alloc` | May allocate heap memory |
 | `io` | May perform input or output, read the clock, or read the environment |
-| `unsafe` | Calls code that the compiler cannot check (section 8) |
+| `yield` | May suspend the current coroutine (section 8) |
+| `unsafe` | Calls code that the compiler cannot check (section 9) |
 
 Rules:
 
-- Exported functions declare their effects after the return type: `(string) => int uses alloc`.
-- The compiler infers effects for private functions and lambdas.
+- Exported functions declare their effects after the return type: `function f(s: string): int uses alloc`.
+- The compiler infers effects for private functions and anonymous functions.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
-- `main` has every effect.
+- `main` has every effect except `yield`.
 
 ### Effect variables
 
 A function that calls a function it receives has that function's effects. An effect variable states this in a signature.
 
-```reason
-export let map: (array('a), ('a) => 'b uses 'e) => array('b) uses alloc, 'e = ...;
+```lua
+export function map<T, U, effect E>(items: Array<T>, f: function(T): U uses E): Array<U> uses alloc, E
 ```
 
-- An effect variable is written like a type variable, but appears only after `uses`.
-- **It is bound by a parameter.** An effect variable in the result `uses` list must also appear in a parameter's function type.
-- At each call, the variable takes the effects of the function passed in. `map(xs, String.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
-- The compiler infers effect variables for private functions and lambdas. Only exported higher-order functions write them.
+- Effect variables are declared in the type parameter list with the `effect` keyword, and appear only after `uses`.
+- **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type.
+- At each call, the variable takes the effects of the function passed in. `map(xs, Str.len)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
 
-## 8. Unsafe code and C interop
+## 8. Coroutines
 
-- **`unsafe { ... }`** blocks allow raw pointers (`ptr('a)`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
-- **`external`** declares a C function: `external strlen: (ptr(u8)) => u64 uses unsafe = "strlen";`
-- **Layout attributes.** `@repr(C)` gives a record C struct layout. `@unboxed` stores a record inline instead of on the heap. `@unboxed` records cannot be recursive.
+Coroutines keep Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
+
+```lua
+local Co = require("std/coroutine")
+
+local function counter(limit: int): Generator<int>
+  return Co.generator(function() uses yield
+    for i = 0, limit - 1 do
+      Co.yield(i)
+    end
+  end)
+end
+
+local c = counter(3)
+for n in Co.values(c) do
+  print(Int.toString(n))  -- 0, 1, 2
+end
+```
+
+- **`Coroutine<In, Out>`** takes `In` on each resume and produces `Out` on each yield.
+- **`Generator<Out>`** is a coroutine that takes no input on resume. `Co.generator(f)` makes one.
+- **`Co.create(f)`** makes a coroutine from a function with the `yield` effect.
+- **`Co.resume(c, input)`** returns `Yielded(value)`, `Done` or `Panicked(message)`. A panic inside a coroutine still aborts the program in release builds. `Panicked` is only reported in test builds.
+- **`Co.yield(value)`** suspends the coroutine. It has the `yield` effect.
+- **`Co.values(g)`** iterates over a `Generator<Out>`.
+- **Yield crosses calls only through `yield` functions.** A function can call `Co.yield` only if it has the `yield` effect. Higher-order functions pass `yield` through effect variables like any other effect.
+- **Generic code that yields is specialized.** A generic function called with a `yield` function is compiled as a separate state-machine copy for that effect. Code that never yields pays nothing.
+
+## 9. Unsafe code and C interop
+
+- **`unsafe do ... end`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
+- **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
+- **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - `lang audit` lists every `unsafe` block and `@trusted` function in a package.
 
-## 9. Top-level values
+## 10. Top-level declarations
 
-- A top-level `let` must be a constant expression: literals, constructors, records and arrays of constants, and calls to functions marked `@const`.
-- `lazy expr` defers a computation until first use. The first `Lazy.force(x)` computes the value and later calls return it. Forcing is thread safe.
+- **`const`** declares a constant: literals, constructors, structs and arrays of constants, and calls to functions marked `@const`.
+- **`lazy`** defers a computation until first use: `local table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
 - Modules have no initialization code. Program startup runs nothing before `main`.
 
-## 10. Code generation
+## 11. Code generation
 
+- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arena.
+- **Debug builds** use a fast C compiler such as TCC with checks on.
+- **Release builds** use Clang or GCC with `-O2`.
+- **Coroutines** compile to a struct holding their live locals and a state number, plus a resume function with a `switch` on that number.
 - **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
 - **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
 
 | Type | Uniform form |
 | --- | --- |
-| Boxed values (records, variants with payloads, arrays, strings, closures) | Pointer, unchanged |
-| `i8` to `i32`, `u8` to `u32`, `bool`, `char`, `f32`, `unit`, constructors without payloads | Inline, shifted left one bit with the tag bit set |
+| Boxed values (enums with fields, arrays, maps, strings, closures, `Box<T>`) | Pointer, unchanged |
+| `i8` to `i32`, `u8` to `u32`, `bool`, `char`, `f32`, enum constructors without fields | Inline, shifted left one bit with the tag bit set |
 | `i64`, `u64`, `int`, `f64` | Copied into a heap box with a reference count |
-| `@unboxed` records | Copied into a heap box with a reference count |
+| Structs | Copied into a heap box with a reference count |
 
 - **Boxing happens only at the boundary.** Non-generic code uses raw C types. The compiler converts a value to the uniform form when it passes the value into generic code, and converts it back when it receives one.
 - **`@specialize`** on a function asks the compiler to emit a separate copy for each concrete type it is called with. Use it in hot paths only.
-- **Output is C.** One `.c` file per module, plus a small runtime (allocator, reference counting, panic handler, arena).
-- **Debug builds** use a fast C compiler such as TCC with checks on.
-- **Release builds** use Clang or GCC with `-O2`.
 
-## 11. Build model
+## 12. Build model
 
-- The compiler reads a module's imports before anything else and builds the module graph from them.
+- The compiler reads a module's `require` declarations before anything else and builds the module graph from them.
 - Each module produces an interface file (`.langi`) with its exported signatures. A module type-checks against its dependencies' interface files only.
 - When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.
 - Builds are deterministic. The same inputs produce byte-identical C and binaries.
-- Compile-time evaluation is limited to constant expressions and `@const` functions.
+- Compile-time evaluation is limited to `const` declarations and `@const` functions.
 
-## 12. Tests and contracts
+## 13. Tests and contracts
 
-- **`test("name") { ... }`** blocks sit next to the code. `lang test` runs them. They are removed from non-test builds.
-- **Contracts.** `requires` and `ensures` clauses on functions are checked in debug builds and removed in release builds.
+- **`test "name" do ... end`** blocks sit next to the code. `lang test` runs them. They are removed from non-test builds.
+- **Contracts.** `requires` and `ensures` lines at the start of a function body are checked in debug builds and removed in release builds. `ensures` refers to the return value as `result`.
 
-```reason
-export let sqrt: (f64) => f64 =
-  (x) => requires x >=. 0.0 ensures result >=. 0.0 {
-    Float.sqrt(x)
-  };
+```lua
+export function sqrt(x: f64): f64
+  requires x >= 0.0
+  ensures result >= 0.0
+  return Float.sqrt(x)
+end
 ```
 
-## 13. Tooling for agents
+## 14. Tooling for agents
 
 ### Diagnostics
 
@@ -314,7 +429,7 @@ export let sqrt: (f64) => f64 =
   "file": "src/app/config.lang",
   "range": {"start": [12, 4], "end": [12, 22]},
   "fixes": [
-    {"title": "Add `io` to the signature", "edits": [{"file": "src/app/config.lang", "range": {"start": [8, 52], "end": [8, 52]}, "text": ", io"}]}
+    {"title": "Add `io` to the signature", "edits": [{"file": "src/app/config.lang", "range": {"start": [8, 40], "end": [8, 40]}, "text": ", io"}]}
   ]
 }
 ```
@@ -338,7 +453,7 @@ All query commands accept `--json`.
 
 `lang check` on an unchanged package with one edited file returns in under 100 ms.
 
-## 14. Packages (sketch)
+## 15. Packages (sketch)
 
 - **A package is a directory** with a `lang.toml` manifest and a `src/` directory.
 - **The package name is the import path prefix.** Package `json` exposes `src/parse.lang` as `"json/parse"`.
@@ -357,10 +472,11 @@ json = { git = "https://github.com/example/lang-json", version = "1.2.0" }
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
 - **`lang.lock`** records the commit hash and content hash of every dependency. `lang build` fails when a fetched dependency does not match its hash.
 
-## 15. Deferred
+## 16. Deferred
 
 These are left out of the first version on purpose.
 
-- **Async.** Threads and channels are the only concurrency. When programs need many cheap tasks, an `async` effect (section 7) is the preferred direction, because it keeps one library for sync and async callers.
-- **Functors.** See `DECISIONS.md`, D6.
+- **Async I/O.** Coroutines (section 8) are the base for it. An event loop in `std/async` that resumes coroutines when I/O is ready is the planned direction.
+- **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.
+- **A bytecode VM.** Possible later for scripting and hot reload. The first target is native code only.

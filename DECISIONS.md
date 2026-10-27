@@ -30,12 +30,12 @@ Decision: one file is one module, names are private unless exported, and every e
 - **Rejected: Lua globals.** Any file can read or write any global, so dependencies are implicit and typos create new variables.
 - **Rejected: relative paths.** They break when a file moves. Package-rooted paths plus `lang move` avoid that.
 
-## D4. No import cycles, no wildcard re-exports, no default exports, no import side effects
+## D4. No import cycles, no re-export statement, no default exports, no import side effects
 
 Decision: the restrictions listed in section 3.
 
 - **No cycles.** Modules compile in dependency order and in parallel. No module ever sees a partly initialized dependency.
-- **No wildcard re-exports.** They slow builds and hide where names come from. This is a known problem with barrel files in TypeScript.
+- **No re-export statement.** Exporting is done only with an `export` declaration, so every exported name appears as a declaration in its file. Wildcard re-exports slow builds and hide where names come from, which is a known problem with barrel files in TypeScript. A named re-export form was also dropped, because `require` plus `export const` or `export type` already does the same job.
 - **No default exports.** A default export gets a different name in each importing file, so text search misses uses.
 - **No import side effects.** Initialization order can never matter, and startup runs no code before `main`.
 

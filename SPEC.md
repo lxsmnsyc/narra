@@ -108,14 +108,23 @@ Import forms:
 ```lua
 const Str = require("std/string")                  -- namespace import
 const { classify, Token } = require("app/text")    -- named imports
-export { classify } from "app/text"                -- named re-export
+```
+
+There is no re-export statement. To expose an imported name, import it and export a new declaration:
+
+```lua
+const Text = require("app/text")
+
+export const classify = Text.classify   -- a function
+export type Token = Text.Token          -- a type, with its constructors
 ```
 
 Rules:
 
 - **`require` is a declaration, not a function call.** It must appear at the top level with a string literal path. It never runs code.
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
-- **No wildcard re-exports and no default exports.**
+- **No re-export statement and no default exports.** An exported name is always declared in the exporting file with `export function`, `export const`, `export type`, `export struct` or `export enum`.
+- **`export type A = B`** declares an alias. When `B` is an enum, its constructors are usable through the alias.
 - **No import side effects.** Top-level declarations must be functions, types, `const` constants or `lazy` values (section 10). There is no top-level `let`.
 - **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
 - **`lang move old new`** moves a file and rewrites every import of it.
@@ -371,7 +380,7 @@ end
 
 ## 10. Top-level declarations
 
-- **`const`** at the top level declares a compile-time constant. Its value must be a literal, a constructor, a struct or array of constants, or a call to a function marked `@const`. Inside a function, `const` accepts any expression.
+- **`const`** at the top level declares a compile-time constant. Its value must be a literal, a constructor, a struct or array of constants, a named function, another constant, or a call to a function marked `@const`. Inside a function, `const` accepts any expression.
 - **`lazy`** defers a computation until first use: `const table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
 - Modules have no initialization code. Program startup runs nothing before `main`.
 

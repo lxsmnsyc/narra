@@ -208,3 +208,13 @@ Decision: modules are imported with `const Name = import("path")` (section 3).
 - **Reason.** In Lua, `require` is a runtime function that loads and runs a module. In Lang, importing is a compile-time declaration that runs nothing. A different word avoids implying Lua's behavior.
 - **Reason.** `import` is the word TypeScript, Go, Python and Java use.
 - **Note.** `import(...)` looks like TypeScript's dynamic import, which is a runtime call. In Lang it is only valid as a top-level declaration with a string literal path.
+
+## D26. Struct literals, defaults and destructuring
+
+Decision: structs support typed literals (`Point { ... }`), constant field defaults, destructuring in `const` and `match`, and `Box.new` with `.value` for boxes. Field shorthand in literals is not allowed (section 4).
+
+- **Typed literals.** Without `Point { ... }`, every struct literal would need an annotation or a context that gives the type.
+- **Constant defaults.** Optional settings need no builder functions. Constant values keep building a struct free of hidden calls.
+- **Destructuring.** `const { x, y } = p` and `when { x = 0.0, y }` read several fields in one step, and match the named import form `const { a, b } = import(...)`.
+- **No literal shorthand.** `{ name = name }` is always written in full. `{ name }` in a literal would be a second way to write a field. In a pattern, `{ name }` is the only way to bind a field to its own name, so it stays.
+- **Rejected: positional struct literals such as `Point(1.0, 2.0)`.** They depend on field order, and that form already means an enum constructor.

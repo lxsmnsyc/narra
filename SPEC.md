@@ -148,19 +148,7 @@ A function with no return type returns nothing.
 
 ### Composite types
 
-- **Structs.** Declared with `struct`. Built with a table constructor whose type is known from context. Updated with `with`, which returns a new struct.
-- **Structs are stored inline,** like C structs. A struct field, array element or variable holds the struct's fields directly, with no heap allocation and no reference count of its own.
-- **A struct cannot contain itself.** Use an enum, an array or `Box<T>` for recursive data.
-
-```lua
-export struct User
-  name: string
-  age: int
-end
-
-const u: User = { name = "Ana", age = 30 }
-const older = u with { age = 31 }
-```
+- **Structs.** Declared with `struct`. The full rules are in "Structs" below.
 
 - **Enums.** Declared with `enum`. Each constructor can carry fields.
 
@@ -177,6 +165,99 @@ end
 - **Tuples.** `Tuple<int, string>` holds a fixed group of values, built with `Tuple(1, "a")`.
 - **Multiple return values.** `: (int, int)` in a return type means the function returns two values. They are not a tuple and cannot be stored as one value.
 - **Functions.** `function(int, string): bool`.
+
+### Structs
+
+A struct is a fixed set of named fields, stored inline like a C struct.
+
+```lua
+export struct ServerConfig
+  host: string
+  port: int = 8080
+  tags: Array<string> = {}
+end
+
+struct Entry<K, V>
+  key: K
+  value: V
+end
+```
+
+**Fields and defaults**
+
+- Each field has a name and a type.
+- A field can have a default value after `=`. The default must be a compile-time constant (section 10).
+- A field without a default must be given every time the struct is built.
+
+**Building a struct**
+
+- `TypeName { field = value, ... }` builds a struct of that type. The fields can appear in any order.
+- When the expected type is already known, the type name can be left out: `{ field = value }`. The type comes from an annotation, a parameter or a return type.
+- Fields with defaults can be left out. All other fields must be given.
+- Every field is written as `name = value`, even when the value is a variable with the same name.
+- Type arguments of a generic struct are inferred from the fields: `Entry { key = "a", value = 1 }` is `Entry<string, int>`.
+
+```lua
+const config = ServerConfig { host = "localhost" }        -- port is 8080, tags is {}
+const loopback: ServerConfig = { host = "127.0.0.1", port = 3000 }
+
+function makeEntry(key: string, value: int): Entry<string, int>
+  return { key = key, value = value }                      -- type taken from the return type
+end
+```
+
+**Reading and updating**
+
+- `s.field` reads a field.
+- `s with { field = value }` returns a copy with some fields changed. The original is unchanged.
+- `s.field = value` changes a field in place. `s` must be a `let` variable or a field of one.
+
+```lua
+const moved = config with { port = 9000 }
+
+let current = config
+current.port = 9001
+current.tags[0] = "primary"
+```
+
+**Destructuring**
+
+- `const { field1, field2 } = s` binds each field to a variable with the same name.
+- `const { field = name } = s` binds the field to a different name.
+- Fields that are not listed are ignored.
+- The same pattern works in `match`. A literal after `=` tests the field's value instead of binding it.
+
+```lua
+const { host, port = serverPort } = config
+
+match point
+  when { x = 0.0, y = 0.0 } then print("origin")
+  when { x = 0.0, y } then print("on the y axis at " .. F64.toString(y))
+  when { x, y } then print(F64.toString(x) .. ", " .. F64.toString(y))
+end
+```
+
+**Storage**
+
+- A struct field, array element or variable holds the struct's fields directly. There is no heap allocation and no reference count for the struct itself.
+- Copying a struct copies its fields. Fields stored on the heap, such as strings and arrays, have their reference count incremented.
+- `==` compares structs field by field. It is a compile error when a field holds a function.
+- **A struct cannot contain itself.** Use an array, an enum or `Box<T>` for recursive data.
+
+**Boxes**
+
+- `Box<T>` holds one value on the heap with a reference count.
+- `Box.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a `let` variable, in place when the count is 1.
+- Use a box for recursive structs and for large structs that are copied often.
+
+```lua
+struct ListNode
+  value: int
+  next: Option<Box<ListNode>> = None
+end
+
+const list = ListNode { value = 1, next = Some(Box.new(ListNode { value = 2 })) }
+```
 
 ### Optional values
 

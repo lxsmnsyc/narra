@@ -380,7 +380,11 @@ end
 
 ## 10. Top-level declarations
 
-- **`const`** at the top level declares a compile-time constant. Its value must be one of these: a literal, a constructor, a struct or array of constants, a named function, another constant, or a call to an `@const` function. Inside a function, `const` accepts any expression.
+- **`const`** at the top level declares a compile-time constant. Inside a function, `const` accepts any expression. A top-level value must be one of these:
+  - a literal or a constructor
+  - a struct or array of constants
+  - a named function or another constant
+  - a call to an `@const` function
 - **`lazy`** defers a computation until first use: `const table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
 - Modules have no initialization code. Program startup runs nothing before `main`.
 

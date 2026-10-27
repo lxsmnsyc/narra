@@ -1,0 +1,84 @@
+---
+milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost]
+merge:
+  mode: maintainer
+branches:
+---
+
+# Bootstrap compiler to a self-hosted Lang
+
+## Outcome
+
+The Lang compiler is written in Lang and compiles itself. The Go bootstrap compiler `langc` first grows to cover the language features the compiler needs. The compiled compiler (stage 1) builds itself (stage 2), and stage 1 and stage 2 produce byte-identical C for the test programs. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Lang with Go and Rust. After self-hosting, the language gets its real name.
+
+## Acceptance
+
+- `cd compiler && go test ./...` passes, with every sample program clean under AddressSanitizer and the leak check.
+- The self-hosted compiler builds itself, and its output matches the Go compiler's output on every program in `compiler/testdata/`.
+- `bench/` reports Lang, Go and Rust times for the same programs.
+
+## Priorities
+
+- must: needed for the self-hosted compiler (milestones m3-core and m8-selfhost).
+- should: spec features that real programs need soon, and the measurement and tooling that make the language usable.
+- could: spec features with no current user.
+- later: parked.
+
+## Constraints
+
+- `SPEC.md` is the source of truth for language behavior. A node that must differ records the difference in `compiler/README.md` under "Differences from the spec".
+- Every new feature adds sample programs to `compiler/testdata/` (run under sanitizers and the leak check) and compile-error tests to `compiler/testdata/errors/`.
+- The generated C must stay valid C11 for clang and gcc.
+- Go standard library only in the bootstrap compiler. No third-party Go modules.
+
+## Non-goals
+
+- A package registry, an editor plugin, or a debugger.
+- Keeping the Go compiler after self-hosting beyond what bootstrapping needs.
+
+## Verification
+
+- Fast check (safe to run in parallel worktrees): `cd compiler && go vet ./... && go test ./...` (about 10 s, no shared resources)
+- Full check: the same, plus `bench/run.sh` once it exists (exclusive: benchmarks need a quiet machine).
+
+## Numbered resources
+
+- Diagnostic codes (`E0001` and up) are assigned by node `json-diagnostics`. Earlier nodes use the placeholder code `E0000`. Nodes after it reserve their codes with `reserves: [diag E0NNN]`.
+
+## Hot files
+
+`parser.go`, `ast.go`, `clone.go`, `check_expr.go` and `emit_expr.go` are edited by several nodes. split-compiler splits the checker and emitter by feature, but the parser stays one recursive-descent file and each feature adds a few `case` lines to the shared switches. Nodes in the same wave merge in the order `plan.py status` prints, and each later branch rebases before review. In wave 2, modules merges first, because it changes how every C name is generated.
+
+## Sources
+
+- `SPEC.md` and `DECISIONS.md` in the repo root.
+- `compiler/README.md`: what the bootstrap compiler supports and its gaps.
+
+## Coverage
+
+- closures with non-escaping parameters and `@inline` -> closures, inline
+- multiple modules and `lang.toml` -> modules
+- traits and constraints, struct and enum equality -> traits
+- nested patterns, spread updates, destructuring -> patterns
+- effects checking -> effects
+- generators -> generators; async -> async; threads, channels, shared state -> threads
+- unsafe, extern, C interop -> c-interop
+- opaque and distinct types -> opaque-distinct
+- regions -> regions; fixed arrays -> fixed-arrays; SIMD -> simd; build conditions -> build-conditions
+- JSON diagnostics -> json-diagnostics; query CLI -> query-cli; fmt -> fmt
+- Perceus reference count optimization -> perceus; layout tables -> layout-tables
+- benchmarks against Go and Rust -> bench-harness
+- self-hosting -> selfhost-spike, selfhost-front, selfhost-check, selfhost-emit, selfhost-bootstrap
+- renaming the language -> rename
+- not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
+
+## Open questions
+
+- Is the must line right: only what self-hosting needs, with concurrency, systems features and tooling after it? (all nodes)
+- Should the Go compiler be split by feature first (node split-compiler)? It changes the code layout. (split-compiler, and everything that edits the checker and emitter)
+
+## Gates
+
+- Contract freeze after split-compiler (the diagnostic and builtin registry contracts).
+- selfhost-spike: the user reviews the list of missing features before the port starts.
+- rename: the user chooses the name.

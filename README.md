@@ -2,7 +2,7 @@
 
 Lang is a draft design for a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C. "Lang" is a working name.
 
-Status: specification draft. There is no compiler yet.
+Status: specification draft. `compiler/` holds `langc`, a bootstrap compiler in Go for a subset of the language.
 
 ## Goals
 
@@ -17,6 +17,7 @@ Status: specification draft. There is no compiler yet.
 
 - `SPEC.md` is the language specification.
 - `DECISIONS.md` lists the design decisions, with the alternatives that were rejected and why.
+- `compiler/` holds the bootstrap compiler. Its README lists what it supports.
 
 ## Prior art
 

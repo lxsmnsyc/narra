@@ -1,0 +1,676 @@
+package langc
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+type Parser struct {
+	toks []Token
+	i    int
+}
+
+func Parse(src string) (*File, error) {
+	toks, err := Lex(src)
+	if err != nil {
+		return nil, err
+	}
+	p := &Parser{toks: toks}
+	return p.file()
+}
+
+type parseError struct{ msg string }
+
+func (p *Parser) fail(pos Pos, format string, args ...any) {
+	panic(parseError{fmt.Sprintf("%s: %s", pos, fmt.Sprintf(format, args...))})
+}
+
+func (p *Parser) tok() Token { return p.toks[p.i] }
+
+func (p *Parser) next() Token {
+	t := p.toks[p.i]
+	if p.i < len(p.toks)-1 {
+		p.i++
+	}
+	return t
+}
+
+func (p *Parser) is(text string) bool {
+	t := p.tok()
+	return (t.Kind == TokPunct || t.Kind == TokKeyword) && t.Text == text
+}
+
+func (p *Parser) accept(text string) bool {
+	if p.is(text) {
+		p.next()
+		return true
+	}
+	return false
+}
+
+func (p *Parser) expect(text string) Token {
+	if !p.is(text) {
+		p.fail(p.tok().Pos, "expected %q, found %s", text, describe(p.tok()))
+	}
+	return p.next()
+}
+
+func (p *Parser) ident() Token {
+	if p.tok().Kind != TokIdent {
+		p.fail(p.tok().Pos, "expected a name, found %s", describe(p.tok()))
+	}
+	return p.next()
+}
+
+func (p *Parser) skipNewlines() {
+	for p.tok().Kind == TokNewline {
+		p.next()
+	}
+}
+
+// endStatement accepts the end of a statement: a line break, or a closing
+// brace or end of file that follows on the same line.
+func (p *Parser) endStatement() {
+	switch {
+	case p.tok().Kind == TokNewline:
+		p.skipNewlines()
+	case p.is("}") || p.tok().Kind == TokEOF:
+	default:
+		p.fail(p.tok().Pos, "expected the end of the statement, found %s", describe(p.tok()))
+	}
+}
+
+func describe(t Token) string {
+	switch t.Kind {
+	case TokEOF:
+		return "end of file"
+	case TokNewline:
+		return "line break"
+	}
+	return strconv.Quote(t.Text)
+}
+
+func (p *Parser) file() (f *File, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			pe, ok := r.(parseError)
+			if !ok {
+				panic(r)
+			}
+			err = fmt.Errorf("%s", pe.msg)
+		}
+	}()
+	f = &File{}
+	p.skipNewlines()
+	for p.is("import") {
+		f.Imports = append(f.Imports, p.importDecl())
+		p.skipNewlines()
+	}
+	for p.tok().Kind != TokEOF {
+		f.Decls = append(f.Decls, p.decl())
+		p.skipNewlines()
+	}
+	return f, nil
+}
+
+func (p *Parser) importDecl() *ImportDecl {
+	pos := p.expect("import").Pos
+	d := &ImportDecl{Pos: pos}
+	if p.accept("*") {
+		p.expect("as")
+		d.Alias = p.ident().Text
+	} else if p.accept("{") {
+		p.skipNewlines()
+		for !p.is("}") {
+			d.Names = append(d.Names, p.ident().Text)
+			p.skipNewlines()
+			if !p.accept(",") {
+				break
+			}
+			p.skipNewlines()
+		}
+		p.skipNewlines()
+		p.expect("}")
+	} else {
+		p.fail(p.tok().Pos, "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports")
+	}
+	p.expect("from")
+	if p.tok().Kind != TokString {
+		p.fail(p.tok().Pos, "expected a module path string")
+	}
+	d.Path = p.next().Text
+	p.endStatement()
+	return d
+}
+
+func (p *Parser) decl() Decl {
+	exported := p.accept("export")
+	switch {
+	case p.is("function"):
+		return p.funcDecl(exported)
+	case p.is("struct"):
+		return p.structDecl(exported)
+	case p.is("enum"):
+		return p.enumDecl(exported)
+	case p.is("test"):
+		if exported {
+			p.fail(p.tok().Pos, "tests cannot be exported")
+		}
+		pos := p.next().Pos
+		if p.tok().Kind != TokString {
+			p.fail(p.tok().Pos, "expected the test name as a string")
+		}
+		name := p.next().Text
+		return &TestDecl{Pos: pos, Name: name, Body: p.block()}
+	}
+	p.fail(p.tok().Pos, "expected a declaration, found %s", describe(p.tok()))
+	return nil
+}
+
+func (p *Parser) typeExpr() *TypeExpr {
+	t := p.ident()
+	te := &TypeExpr{Pos: t.Pos, Name: t.Text}
+	if p.accept("<") {
+		for {
+			te.Args = append(te.Args, p.typeExpr())
+			if !p.accept(",") {
+				break
+			}
+		}
+		// In `Array<Array<int>>` the lexer reads `>>` as one token. Split it.
+		if p.is(">>") {
+			t := p.tok()
+			p.toks[p.i] = Token{Kind: TokPunct, Text: ">", Pos: Pos{t.Pos.Line, t.Pos.Col + 1}}
+			return te
+		}
+		p.expect(">")
+	}
+	return te
+}
+
+func (p *Parser) funcDecl(exported bool) *FuncDecl {
+	pos := p.expect("function").Pos
+	if p.is("*") {
+		p.fail(p.tok().Pos, "generators are not supported by this compiler yet")
+	}
+	fd := &FuncDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	p.expect("(")
+	for !p.is(")") {
+		param := &Param{Pos: p.tok().Pos}
+		param.Mutable = p.accept("mutable")
+		param.Name = p.ident().Text
+		p.expect(":")
+		param.Type = p.typeExpr()
+		fd.Params = append(fd.Params, param)
+		if !p.accept(",") {
+			break
+		}
+	}
+	p.expect(")")
+	if p.accept(":") {
+		fd.Result = p.typeExpr()
+	}
+	if p.accept("uses") {
+		for {
+			fd.Effects = append(fd.Effects, p.ident().Text)
+			if !p.accept(",") {
+				break
+			}
+		}
+	}
+	fd.Body = p.block()
+	return fd
+}
+
+func (p *Parser) fieldList() []*FieldDecl {
+	var fields []*FieldDecl
+	p.skipNewlines()
+	for !p.is("}") {
+		fdecl := &FieldDecl{Pos: p.tok().Pos, Name: p.ident().Text}
+		p.expect(":")
+		fdecl.Type = p.typeExpr()
+		if p.accept("=") {
+			fdecl.Default = p.expr()
+		}
+		fields = append(fields, fdecl)
+		p.accept(",")
+		p.skipNewlines()
+	}
+	return fields
+}
+
+func (p *Parser) structDecl(exported bool) *StructDecl {
+	pos := p.expect("struct").Pos
+	sd := &StructDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	p.expect("{")
+	sd.Fields = p.fieldList()
+	p.expect("}")
+	return sd
+}
+
+func (p *Parser) enumDecl(exported bool) *EnumDecl {
+	pos := p.expect("enum").Pos
+	ed := &EnumDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	p.expect("{")
+	p.skipNewlines()
+	for !p.is("}") {
+		v := &VariantDecl{Pos: p.tok().Pos, Name: p.ident().Text}
+		if p.accept("(") {
+			for !p.is(")") {
+				f := &FieldDecl{Pos: p.tok().Pos, Name: p.ident().Text}
+				p.expect(":")
+				f.Type = p.typeExpr()
+				v.Fields = append(v.Fields, f)
+				if !p.accept(",") {
+					break
+				}
+			}
+			p.expect(")")
+		}
+		ed.Variants = append(ed.Variants, v)
+		p.accept(",")
+		p.skipNewlines()
+	}
+	p.expect("}")
+	return ed
+}
+
+func (p *Parser) block() *Block {
+	b := &Block{Pos: p.expect("{").Pos}
+	p.skipNewlines()
+	for !p.is("}") {
+		if p.tok().Kind == TokEOF {
+			p.fail(p.tok().Pos, "unexpected end of file inside a block")
+		}
+		b.Stmts = append(b.Stmts, p.stmt())
+	}
+	p.expect("}")
+	return b
+}
+
+func (p *Parser) stmt() Stmt {
+	t := p.tok()
+	switch {
+	case p.is("const") || p.is("let"):
+		mutable := p.next().Text == "let"
+		s := &VarStmt{Pos: t.Pos, Mutable: mutable, Name: p.ident().Text}
+		if p.accept(":") {
+			s.Type = p.typeExpr()
+		}
+		p.expect("=")
+		s.Value = p.expr()
+		p.endStatement()
+		return s
+	case p.is("return"):
+		p.next()
+		s := &ReturnStmt{Pos: t.Pos}
+		if p.tok().Kind != TokNewline && !p.is("}") {
+			s.Value = p.expr()
+		}
+		p.endStatement()
+		return s
+	case p.is("if"):
+		return p.ifStmt()
+	case p.is("while"):
+		p.next()
+		p.expect("(")
+		cond := p.expr()
+		p.expect(")")
+		s := &WhileStmt{Pos: t.Pos, Cond: cond, Body: p.block()}
+		p.skipNewlines()
+		return s
+	case p.is("for"):
+		p.next()
+		p.expect("(")
+		if !p.accept("const") {
+			p.fail(p.tok().Pos, "write `for (const item of items)`")
+		}
+		name := p.ident().Text
+		if p.is("in") || (p.tok().Kind == TokIdent && p.tok().Text == "in") {
+			p.fail(p.tok().Pos, "use `of`; `for ... in` is not part of the language")
+		}
+		p.expect("of")
+		iter := p.expr()
+		p.expect(")")
+		s := &ForStmt{Pos: t.Pos, Name: name, Iter: iter, Body: p.block()}
+		p.skipNewlines()
+		return s
+	case p.is("break"):
+		p.next()
+		p.endStatement()
+		return &BreakStmt{Pos: t.Pos}
+	case p.is("continue"):
+		p.next()
+		p.endStatement()
+		return &ContinueStmt{Pos: t.Pos}
+	case p.is("{"):
+		p.fail(t.Pos, "a block must belong to a statement such as if or while")
+	}
+	e := p.expr()
+	if p.accept("=") {
+		v := p.expr()
+		p.endStatement()
+		return &AssignStmt{Pos: t.Pos, Target: e, Value: v}
+	}
+	if m, ok := e.(*MatchExpr); ok {
+		p.skipNewlines()
+		return &ExprStmt{Pos: t.Pos, Expr: m}
+	}
+	p.endStatement()
+	return &ExprStmt{Pos: t.Pos, Expr: e}
+}
+
+func (p *Parser) ifStmt() *IfStmt {
+	pos := p.expect("if").Pos
+	p.expect("(")
+	cond := p.expr()
+	p.expect(")")
+	s := &IfStmt{Pos: pos, Cond: cond, Then: p.block()}
+	save := p.i
+	p.skipNewlines()
+	if p.accept("else") {
+		if p.is("if") {
+			s.Else = p.ifStmt()
+			return s
+		}
+		s.Else = p.block()
+		p.skipNewlines()
+		return s
+	}
+	p.i = save
+	p.skipNewlines()
+	return s
+}
+
+// Operator precedence, lowest first.
+var binaryLevels = [][]string{
+	{"||"},
+	{"&&"},
+	{"==", "!="},
+	{"<", "<=", ">", ">="},
+	{"|"},
+	{"^"},
+	{"&"},
+	{"<<", ">>"},
+	{"+", "-", "+%", "-%"},
+	{"*", "/", "%", "*%"},
+}
+
+func (p *Parser) expr() Expr { return p.binary(0) }
+
+func (p *Parser) binary(level int) Expr {
+	if level == len(binaryLevels) {
+		return p.unary()
+	}
+	left := p.binary(level + 1)
+	for {
+		t := p.tok()
+		if t.Kind != TokPunct {
+			return left
+		}
+		matched := false
+		for _, op := range binaryLevels[level] {
+			if t.Text == op {
+				matched = true
+			}
+		}
+		if t.Text == "===" || t.Text == "!==" {
+			p.fail(t.Pos, "use `%s`; there is no strict equality operator", t.Text[:2])
+		}
+		if !matched {
+			return left
+		}
+		p.next()
+		if p.is("=") && p.tok().Pos.Col == t.Pos.Col+len(t.Text) {
+			p.fail(t.Pos, "compound assignment is not supported; write `x = x %s y`", t.Text)
+		}
+		right := p.binary(level + 1)
+		left = &BinaryExpr{exprBase: exprBase{P: t.Pos}, Op: t.Text, Left: left, Right: right}
+	}
+}
+
+func (p *Parser) unary() Expr {
+	t := p.tok()
+	if p.is("-") || p.is("!") || p.is("~") {
+		p.next()
+		return &UnaryExpr{exprBase: exprBase{P: t.Pos}, Op: t.Text, Operand: p.unary()}
+	}
+	return p.postfix(p.primary())
+}
+
+func (p *Parser) postfix(e Expr) Expr {
+	for {
+		t := p.tok()
+		switch {
+		case p.is("."):
+			p.next()
+			name := p.ident()
+			e = &FieldExpr{exprBase: exprBase{P: name.Pos}, Target: e, Name: name.Text}
+		case p.is("("):
+			p.next()
+			call := &CallExpr{exprBase: exprBase{P: t.Pos}, Callee: e}
+			for !p.is(")") {
+				arg := &Arg{Mutable: p.accept("mutable")}
+				arg.Value = p.expr()
+				call.Args = append(call.Args, arg)
+				if !p.accept(",") {
+					break
+				}
+			}
+			p.expect(")")
+			e = call
+		case p.is("["):
+			p.next()
+			idx := p.expr()
+			p.expect("]")
+			e = &IndexExpr{exprBase: exprBase{P: t.Pos}, Target: e, Index: idx}
+		case p.is("{"):
+			// `Name { field: value }` is a struct literal.
+			id, ok := e.(*Ident)
+			if !ok || !startsUpper(id.Name) {
+				return e
+			}
+			lit := p.structLit()
+			lit.TypeName = id.Name
+			lit.P = id.P
+			e = lit
+		default:
+			return e
+		}
+	}
+}
+
+func startsUpper(s string) bool { return s != "" && s[0] >= 'A' && s[0] <= 'Z' }
+
+func (p *Parser) structLit() *StructLit {
+	lit := &StructLit{exprBase: exprBase{P: p.expect("{").Pos}}
+	p.skipNewlines()
+	for !p.is("}") {
+		if p.is("...") {
+			p.fail(p.tok().Pos, "spread updates are not supported by this compiler yet")
+		}
+		name := p.ident()
+		if !p.is(":") {
+			p.fail(name.Pos, "write `%s: %s`; field shorthand is not allowed", name.Text, name.Text)
+		}
+		p.expect(":")
+		lit.Fields = append(lit.Fields, &FieldInit{Pos: name.Pos, Name: name.Text, Value: p.expr()})
+		p.skipNewlines()
+		if !p.accept(",") {
+			break
+		}
+		p.skipNewlines()
+	}
+	p.skipNewlines()
+	p.expect("}")
+	return lit
+}
+
+func (p *Parser) primary() Expr {
+	t := p.tok()
+	base := exprBase{P: t.Pos}
+	switch t.Kind {
+	case TokInt:
+		p.next()
+		return &IntLit{exprBase: base, Text: t.Text}
+	case TokFloat:
+		p.next()
+		return &FloatLit{exprBase: base, Text: t.Text}
+	case TokString:
+		p.next()
+		return &StringLit{exprBase: base, Value: t.Text}
+	case TokChar:
+		p.next()
+		return &CharLit{exprBase: base, Value: []rune(t.Text)[0]}
+	case TokTemplate:
+		p.next()
+		return p.template(t)
+	case TokIdent:
+		p.next()
+		if t.Text == "null" || t.Text == "undefined" {
+			p.fail(t.Pos, "there is no %s; use `None` with an `Option` type", t.Text)
+		}
+		return &Ident{exprBase: base, Name: t.Text}
+	case TokKeyword:
+		switch t.Text {
+		case "true", "false":
+			p.next()
+			return &BoolLit{exprBase: base, Value: t.Text == "true"}
+		case "match":
+			return p.matchExpr()
+		}
+	case TokPunct:
+		switch t.Text {
+		case "(":
+			p.next()
+			e := p.expr()
+			p.expect(")")
+			return e
+		case "[":
+			p.next()
+			lit := &ArrayLit{exprBase: base}
+			for !p.is("]") {
+				lit.Elems = append(lit.Elems, p.expr())
+				if !p.accept(",") {
+					break
+				}
+			}
+			p.expect("]")
+			return lit
+		case "{":
+			return p.structLit()
+		}
+	}
+	p.fail(t.Pos, "expected an expression, found %s", describe(t))
+	return nil
+}
+
+func (p *Parser) template(t Token) Expr {
+	lit := &TemplateLit{exprBase: exprBase{P: t.Pos}}
+	raw := t.Text
+	var text strings.Builder
+	flush := func() {
+		if text.Len() > 0 {
+			lit.Parts = append(lit.Parts, &StringLit{exprBase: exprBase{P: t.Pos}, Value: text.String()})
+			text.Reset()
+		}
+	}
+	for i := 0; i < len(raw); {
+		c := raw[i]
+		if c == '\\' && i+1 < len(raw) {
+			switch raw[i+1] {
+			case 'n':
+				text.WriteByte('\n')
+			case 't':
+				text.WriteByte('\t')
+			default:
+				text.WriteByte(raw[i+1])
+			}
+			i += 2
+			continue
+		}
+		if c == '$' && i+1 < len(raw) && raw[i+1] == '{' {
+			depth := 1
+			j := i + 2
+			for j < len(raw) && depth > 0 {
+				switch raw[j] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+				j++
+			}
+			if depth != 0 {
+				p.fail(t.Pos, "unterminated ${ in template string")
+			}
+			flush()
+			inner, err := Lex(raw[i+2 : j-1])
+			if err != nil {
+				p.fail(t.Pos, "in template string: %v", err)
+			}
+			sub := &Parser{toks: inner}
+			e := sub.expr()
+			lit.Parts = append(lit.Parts, e)
+			i = j
+			continue
+		}
+		text.WriteByte(c)
+		i++
+	}
+	flush()
+	return lit
+}
+
+func (p *Parser) matchExpr() Expr {
+	pos := p.expect("match").Pos
+	p.expect("(")
+	subject := p.expr()
+	p.expect(")")
+	p.expect("{")
+	m := &MatchExpr{exprBase: exprBase{P: pos}, Subject: subject}
+	p.skipNewlines()
+	for !p.is("}") {
+		arm := &MatchArm{Pos: p.tok().Pos, Pattern: p.pattern()}
+		if p.accept("if") {
+			p.expect("(")
+			arm.Guard = p.expr()
+			p.expect(")")
+		}
+		p.expect("=>")
+		if p.is("{") {
+			arm.Block = p.block()
+		} else {
+			arm.Body = p.expr()
+		}
+		m.Arms = append(m.Arms, arm)
+		p.accept(",")
+		p.skipNewlines()
+	}
+	p.expect("}")
+	return m
+}
+
+func (p *Parser) pattern() *Pattern {
+	t := p.ident()
+	pat := &Pattern{Pos: t.Pos}
+	if t.Text == "_" {
+		pat.Wildcard = true
+		return pat
+	}
+	pat.Name = t.Text
+	if p.accept(".") {
+		pat.Name = p.ident().Text // Shape.Circle: the enum is known from the subject
+	}
+	if p.accept("(") {
+		for !p.is(")") {
+			pat.Binds = append(pat.Binds, p.ident().Text)
+			if !p.accept(",") {
+				break
+			}
+		}
+		p.expect(")")
+	}
+	return pat
+}

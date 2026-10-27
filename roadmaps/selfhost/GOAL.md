@@ -72,10 +72,10 @@ The Lang compiler is written in Lang and compiles itself. The Go bootstrap compi
 - renaming the language -> rename
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 
-## Open questions
+## Decisions
 
-- Is the must line right: only what self-hosting needs, with concurrency, systems features and tooling after it? (all nodes)
-- Should the Go compiler be split by feature first (node split-compiler)? It changes the code layout. (split-compiler, and everything that edits the checker and emitter)
+- 2026-10-28: the user confirmed the plan. The must line covers only what self-hosting needs. split-compiler runs first. Every pull request waits for the user, and branches stay local because the repo has no remote.
+- Execution has not started. Wave 1 (split-compiler, bench-harness) starts when the user asks.
 
 ## Gates
 

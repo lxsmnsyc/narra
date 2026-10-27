@@ -38,6 +38,10 @@ go test ./...
 - Enums with fields, and `match` as a statement or a value, with guards and `_`.
 - `Array<T>`: literals, `Array.push`, `Array.length`, `Array.filled`, indexing and element assignment, with copy on write.
 - `mutable` parameters, with the exclusive access check.
+- Generic functions, structs and enums. Type arguments are inferred from arguments, the expected type and struct fields.
+- `Option<T>` and `Result<T, E>`, declared in a prelude written in Lang.
+- `is` patterns in conditions. `if (x is Some(v))` binds `v` in the branch. After `if (x is None) { return ... }`, `x.value` reads the value. Narrowing works on constants and parameters.
+- Calls whose `Result` is not checked are compile errors.
 - Template strings.
 - Integer overflow checks in debug builds, and division by zero and bounds checks in every build.
 - `test` blocks and `assert`.
@@ -46,7 +50,10 @@ go test ./...
 ## Not supported yet
 
 - Several modules, and `lang.toml`.
-- Generics, traits, `Option`, `Result` and `is`.
+- Traits and trait constraints such as `<T: Equatable>`.
+- Nested patterns such as `Some(Node(a, b))`, and struct patterns.
+- Explicit type arguments in calls, such as `f<int>(x)`.
+- Defaults for generic struct fields whose type uses a type parameter.
 - Closures and arrow functions.
 - Effects are parsed but not checked.
 - Struct spread updates, destructuring, `==` on structs and enums.
@@ -58,3 +65,5 @@ go test ./...
 - Enums are stored inline as tagged unions, so an enum cannot contain itself.
 - `Str.length` returns `int` instead of `ByteIndex`.
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.
+- Generic functions and types are compiled once per set of type arguments in every build. The spec's layout tables for debug builds are not implemented.
+- Generic function bodies are checked once with their type parameters left open, then again for each instance.

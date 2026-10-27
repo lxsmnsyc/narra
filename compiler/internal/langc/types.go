@@ -1,6 +1,9 @@
 package langc
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type Type interface {
 	String() string
@@ -47,10 +50,11 @@ type Field struct {
 type StructType struct {
 	Name   string
 	Fields []*Field
+	Args   []Type // type arguments of a generic instance
 }
 
-func (t *StructType) String() string { return t.Name }
-func (t *StructType) CName() string  { return "S_" + t.Name }
+func (t *StructType) String() string { return t.Name + typeArgsString(t.Args) }
+func (t *StructType) CName() string  { return "S_" + t.Name + typeArgsMangle(t.Args) }
 
 func (t *StructType) Field(name string) *Field {
 	for _, f := range t.Fields {
@@ -71,10 +75,63 @@ type Variant struct {
 type EnumType struct {
 	Name     string
 	Variants []*Variant
+	Args     []Type // type arguments of a generic instance
 }
 
-func (t *EnumType) String() string { return t.Name }
-func (t *EnumType) CName() string  { return "E_" + t.Name }
+func (t *EnumType) String() string { return t.Name + typeArgsString(t.Args) }
+func (t *EnumType) CName() string  { return "E_" + t.Name + typeArgsMangle(t.Args) }
+
+func typeArgsString(args []Type) string {
+	if len(args) == 0 {
+		return ""
+	}
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = a.String()
+	}
+	return "<" + strings.Join(parts, ", ") + ">"
+}
+
+func typeArgsMangle(args []Type) string {
+	var b strings.Builder
+	for _, a := range args {
+		b.WriteString("__")
+		b.WriteString(mangle(a))
+	}
+	return b.String()
+}
+
+// TypeParamType stands for a type parameter while a generic declaration is
+// checked on its own.
+type TypeParamType struct {
+	Name string
+	ID   int // distinguishes parameters with the same name in different declarations
+}
+
+func (t *TypeParamType) String() string { return t.Name }
+func (t *TypeParamType) CName() string  { return "void*" }
+
+func containsTypeParam(t Type) bool {
+	switch t := t.(type) {
+	case *TypeParamType:
+		return true
+	case *ArrayType:
+		return containsTypeParam(t.Elem)
+	case *StructType:
+		for _, a := range t.Args {
+			if containsTypeParam(a) {
+				return true
+			}
+		}
+	case *EnumType:
+		for _, a := range t.Args {
+			if containsTypeParam(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func (t *EnumType) Variant(name string) *Variant {
 	for _, v := range t.Variants {
@@ -121,9 +178,11 @@ func mangle(t Type) string {
 	case *PrimType:
 		return t.Name
 	case *StructType:
-		return "S_" + t.Name
+		return t.CName()
 	case *EnumType:
-		return "E_" + t.Name
+		return t.CName()
+	case *TypeParamType:
+		return fmt.Sprintf("P_%s_%d", t.Name, t.ID)
 	case *ArrayType:
 		return "A_" + mangle(t.Elem)
 	}

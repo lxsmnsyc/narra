@@ -189,12 +189,31 @@ func (p *Parser) typeExpr() *TypeExpr {
 	return te
 }
 
+func (p *Parser) typeParams() []string {
+	var names []string
+	if !p.accept("<") {
+		return nil
+	}
+	for !p.is(">") {
+		names = append(names, p.ident().Text)
+		if p.is(":") {
+			p.fail(p.tok().Pos, "trait constraints are not supported by this compiler yet")
+		}
+		if !p.accept(",") {
+			break
+		}
+	}
+	p.expect(">")
+	return names
+}
+
 func (p *Parser) funcDecl(exported bool) *FuncDecl {
 	pos := p.expect("function").Pos
 	if p.is("*") {
 		p.fail(p.tok().Pos, "generators are not supported by this compiler yet")
 	}
 	fd := &FuncDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	fd.TypeParams = p.typeParams()
 	p.expect("(")
 	for !p.is(")") {
 		param := &Param{Pos: p.tok().Pos}
@@ -243,6 +262,7 @@ func (p *Parser) fieldList() []*FieldDecl {
 func (p *Parser) structDecl(exported bool) *StructDecl {
 	pos := p.expect("struct").Pos
 	sd := &StructDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	sd.TypeParams = p.typeParams()
 	p.expect("{")
 	sd.Fields = p.fieldList()
 	p.expect("}")
@@ -252,6 +272,7 @@ func (p *Parser) structDecl(exported bool) *StructDecl {
 func (p *Parser) enumDecl(exported bool) *EnumDecl {
 	pos := p.expect("enum").Pos
 	ed := &EnumDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	ed.TypeParams = p.typeParams()
 	p.expect("{")
 	p.skipNewlines()
 	for !p.is("}") {
@@ -397,6 +418,9 @@ var binaryLevels = [][]string{
 	{"*", "/", "%", "*%"},
 }
 
+// `x is Pattern` binds tighter than == and looser than < and +.
+const isLevel = 2
+
 func (p *Parser) expr() Expr { return p.binary(0) }
 
 func (p *Parser) binary(level int) Expr {
@@ -406,6 +430,11 @@ func (p *Parser) binary(level int) Expr {
 	left := p.binary(level + 1)
 	for {
 		t := p.tok()
+		if level == isLevel && p.is("is") {
+			p.next()
+			left = &IsExpr{exprBase: exprBase{P: t.Pos}, Subject: left, Pattern: p.pattern()}
+			continue
+		}
 		if t.Kind != TokPunct {
 			return left
 		}
@@ -609,6 +638,10 @@ func (p *Parser) template(t Token) Expr {
 			inner, err := Lex(raw[i+2 : j-1])
 			if err != nil {
 				p.fail(t.Pos, "in template string: %v", err)
+			}
+			// Report errors inside ${...} at the template's position.
+			for k := range inner {
+				inner[k].Pos = t.Pos
 			}
 			sub := &Parser{toks: inner}
 			e := sub.expr()

@@ -16,10 +16,9 @@ const (
 
 // Builtin describes a standard function the compiler implements directly.
 type Builtin struct {
-	Name    string // C-facing name, such as "Int.toString"
-	Params  []Type // nil entries are checked by hand
-	Result  Type
-	Mutable []bool
+	Name   string // C-facing name, such as "Int.toString"
+	Params []Type
+	Result Type
 }
 
 var stdModules = map[string]map[string]*Builtin{
@@ -41,6 +40,19 @@ var stdModules = map[string]map[string]*Builtin{
 	},
 }
 
+// The prelude is written in Lang and checked with every program.
+const preludeSrc = `
+enum Option<T> {
+  Some(value: T)
+  None
+}
+
+enum Result<T, E> {
+  Ok(value: T)
+  Err(error: E)
+}
+`
+
 type Program struct {
 	File   *File
 	Types  []Type // structs and enums in dependency order, so C defines inner types first
@@ -52,31 +64,64 @@ type Program struct {
 
 type scope struct {
 	names  map[string]*Local
+	narrow map[*Local]*Variant
 	parent *scope
 }
 
+// genericType is a generic struct or enum declaration.
+type genericType struct {
+	name      string
+	params    []*TypeParamType
+	sdecl     *StructDecl
+	edecl     *EnumDecl
+	built     bool
+	fields    []*Field   // struct template, with type parameters
+	variants  []*Variant // enum template, with type parameters
+	instances map[string]Type
+}
+
+type pendingFunc struct {
+	fd  *FuncDecl
+	env map[string]Type
+}
+
 type Checker struct {
-	prog     *Program
-	types    map[string]Type
-	funcs    map[string]*FuncDecl
-	modules  map[string]string // alias -> path
-	imported map[string]*Builtin
-	errs     []string
-	scope    *scope
-	fn       *FuncDecl
-	loops    int
-	arrays   map[string]*ArrayType
-	localN   int
+	prog      *Program
+	types     map[string]Type // non-generic named types
+	generics  map[string]*genericType
+	funcs     map[string]*FuncDecl
+	funcTP    map[*FuncDecl][]*TypeParamType
+	funcInsts map[string]*FuncDecl
+	pending   []pendingFunc
+	env       map[string]Type // type parameter names in scope
+	modules   map[string]string
+	imported  map[string]*Builtin
+	errs      []string
+	scope     *scope
+	fn        *FuncDecl
+	loops     int
+	arrays    map[string]*ArrayType
+	instTypes []Type
+	localN    int
+	isBinds   bool // an `is` pattern may bind names here
 }
 
 func Check(f *File) (*Program, error) {
+	prelude, err := Parse(preludeSrc)
+	if err != nil {
+		return nil, fmt.Errorf("prelude: %v", err)
+	}
+	f.Decls = append(prelude.Decls, f.Decls...)
 	c := &Checker{
-		prog:     &Program{File: f},
-		types:    map[string]Type{"int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr},
-		funcs:    map[string]*FuncDecl{},
-		modules:  map[string]string{},
-		imported: map[string]*Builtin{},
-		arrays:   map[string]*ArrayType{},
+		prog:      &Program{File: f},
+		types:     map[string]Type{"int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr},
+		generics:  map[string]*genericType{},
+		funcs:     map[string]*FuncDecl{},
+		funcTP:    map[*FuncDecl][]*TypeParamType{},
+		funcInsts: map[string]*FuncDecl{},
+		modules:   map[string]string{},
+		imported:  map[string]*Builtin{},
+		arrays:    map[string]*ArrayType{},
 	}
 	c.run(f)
 	if len(c.errs) > 0 {
@@ -109,38 +154,48 @@ func (c *Checker) run(f *File) {
 		}
 	}
 	// Declare type names first, so declarations can refer to each other.
+	var concrete []Type
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *StructDecl:
+			if len(d.TypeParams) > 0 {
+				c.declareGeneric(d.Pos, &genericType{name: d.Name, params: makeParams(d.TypeParams), sdecl: d})
+				continue
+			}
 			d.T = &StructType{Name: d.Name}
 			c.declareType(d.Pos, d.Name, d.T)
+			concrete = append(concrete, d.T)
 		case *EnumDecl:
+			if len(d.TypeParams) > 0 {
+				c.declareGeneric(d.Pos, &genericType{name: d.Name, params: makeParams(d.TypeParams), edecl: d})
+				continue
+			}
 			d.T = &EnumType{Name: d.Name}
 			c.declareType(d.Pos, d.Name, d.T)
+			concrete = append(concrete, d.T)
 		}
 	}
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *StructDecl:
-			for _, fd := range d.Fields {
-				if d.T.Field(fd.Name) != nil {
-					c.errorf(fd.Pos, "field %q is declared twice", fd.Name)
-				}
-				d.T.Fields = append(d.T.Fields, &Field{Name: fd.Name, T: c.resolveType(fd.Type)})
+			if d.T != nil {
+				d.T.Fields = c.resolveFields(d.Fields)
 			}
 		case *EnumDecl:
-			for i, vd := range d.Variants {
-				v := &Variant{Name: vd.Name, Index: i, Enum: d.T}
-				for _, fd := range vd.Fields {
-					v.Fields = append(v.Fields, &Field{Name: fd.Name, T: c.resolveType(fd.Type)})
-				}
-				d.T.Variants = append(d.T.Variants, v)
+			if d.T != nil {
+				d.T.Variants = c.resolveVariants(d.Variants, d.T)
 			}
 		case *FuncDecl:
 			if _, dup := c.funcs[d.Name]; dup {
 				c.errorf(d.Pos, "function %q is declared twice", d.Name)
 			}
 			c.funcs[d.Name] = d
+			c.env = nil
+			if len(d.TypeParams) > 0 {
+				tps := makeParams(d.TypeParams)
+				c.funcTP[d] = tps
+				c.env = envOf(tps, nil)
+			}
 			for _, p := range d.Params {
 				p.T = c.resolveType(p.Type)
 			}
@@ -148,7 +203,10 @@ func (c *Checker) run(f *File) {
 			if d.Result != nil {
 				d.ResultT = c.resolveType(d.Result)
 			}
-			c.prog.Funcs = append(c.prog.Funcs, d)
+			c.env = nil
+			if len(d.TypeParams) == 0 {
+				c.prog.Funcs = append(c.prog.Funcs, d)
+			}
 			if d.Name == "run" && d.Exported {
 				c.prog.Entry = d
 			}
@@ -156,32 +214,37 @@ func (c *Checker) run(f *File) {
 			c.prog.Tests = append(c.prog.Tests, d)
 		}
 	}
+	for _, g := range c.generics {
+		c.buildGeneric(g)
+	}
 	// Defaults are checked after every field type is known.
 	for _, d := range f.Decls {
-		if sd, ok := d.(*StructDecl); ok {
-			for i, fd := range sd.Fields {
-				if fd.Default != nil {
-					c.scope = &scope{names: map[string]*Local{}}
-					t := c.expr(fd.Default, sd.T.Fields[i].T)
-					c.expectType(fd.Default.position(), sd.T.Fields[i].T, t)
-					if !isConstant(fd.Default) {
-						c.errorf(fd.Default.position(), "a field default must be a constant")
-					}
-					sd.T.Fields[i].Default = fd.Default
-				}
-			}
+		if sd, ok := d.(*StructDecl); ok && sd.T != nil {
+			c.checkDefaults(sd.T.Fields)
 		}
 	}
-	c.orderStructs(f)
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *FuncDecl:
-			c.funcBody(d)
+			if tps, ok := c.funcTP[d]; ok {
+				// Check the generic body once with the parameters left open,
+				// so errors point at the declaration.
+				c.funcBody(d, envOf(tps, nil))
+			} else {
+				c.funcBody(d, nil)
+			}
 		case *TestDecl:
 			c.fn = &FuncDecl{Name: "test", ResultT: TVoid}
+			c.env = nil
 			c.scope = &scope{names: map[string]*Local{}}
 			c.block(d.Body)
 		}
+	}
+	// Instances of generic functions are checked as they are discovered.
+	for len(c.pending) > 0 {
+		p := c.pending[0]
+		c.pending = c.pending[1:]
+		c.funcBody(p.fd, p.env)
 	}
 	if c.prog.Entry != nil {
 		e := c.prog.Entry
@@ -190,13 +253,257 @@ func (c *Checker) run(f *File) {
 			c.errorf(e.Pos, "the entry function must be `export function run(args: Array<string>): int`")
 		}
 	}
+	for _, t := range c.instTypes {
+		if !containsTypeParam(t) {
+			concrete = append(concrete, t)
+		}
+	}
+	c.orderTypes(concrete)
 	keys := make([]string, 0, len(c.arrays))
-	for k := range c.arrays {
-		keys = append(keys, k)
+	for k, a := range c.arrays {
+		if !containsTypeParam(a) {
+			keys = append(keys, k)
+		}
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
 		c.prog.Arrays = append(c.prog.Arrays, c.arrays[k])
+	}
+}
+
+var typeParamID int
+
+func makeParams(names []string) []*TypeParamType {
+	tps := make([]*TypeParamType, len(names))
+	for i, n := range names {
+		typeParamID++
+		tps[i] = &TypeParamType{Name: n, ID: typeParamID}
+	}
+	return tps
+}
+
+func envOf(tps []*TypeParamType, args []Type) map[string]Type {
+	env := map[string]Type{}
+	for i, tp := range tps {
+		if args != nil {
+			env[tp.Name] = args[i]
+		} else {
+			env[tp.Name] = tp
+		}
+	}
+	return env
+}
+
+func (c *Checker) declareType(pos Pos, name string, t Type) {
+	if _, dup := c.types[name]; dup {
+		c.errorf(pos, "type %q is declared twice", name)
+	}
+	if _, dup := c.generics[name]; dup {
+		c.errorf(pos, "type %q is declared twice", name)
+	}
+	c.types[name] = t
+}
+
+func (c *Checker) declareGeneric(pos Pos, g *genericType) {
+	if _, dup := c.types[g.name]; dup {
+		c.errorf(pos, "type %q is declared twice", g.name)
+	}
+	if _, dup := c.generics[g.name]; dup {
+		c.errorf(pos, "type %q is declared twice", g.name)
+	}
+	g.instances = map[string]Type{}
+	c.generics[g.name] = g
+}
+
+func (c *Checker) resolveFields(decls []*FieldDecl) []*Field {
+	var fields []*Field
+	seen := map[string]bool{}
+	for _, fd := range decls {
+		if seen[fd.Name] {
+			c.errorf(fd.Pos, "field %q is declared twice", fd.Name)
+		}
+		seen[fd.Name] = true
+		fields = append(fields, &Field{Name: fd.Name, T: c.resolveType(fd.Type), Default: fd.Default})
+	}
+	return fields
+}
+
+func (c *Checker) resolveVariants(decls []*VariantDecl, et *EnumType) []*Variant {
+	var vs []*Variant
+	for i, vd := range decls {
+		vs = append(vs, &Variant{Name: vd.Name, Index: i, Enum: et, Fields: c.resolveFields(vd.Fields)})
+	}
+	return vs
+}
+
+func (c *Checker) checkDefaults(fields []*Field) {
+	for _, f := range fields {
+		if f.Default == nil {
+			continue
+		}
+		c.scope = &scope{names: map[string]*Local{}}
+		t := c.expr(f.Default, f.T)
+		c.expectType(f.Default.position(), f.T, t)
+		if !isConstant(f.Default) {
+			c.errorf(f.Default.position(), "a field default must be a constant")
+		}
+	}
+}
+
+// buildGeneric resolves a generic declaration's fields with its type
+// parameters left open. Instances substitute into this template.
+func (c *Checker) buildGeneric(g *genericType) {
+	if g.built {
+		return
+	}
+	g.built = true
+	saved := c.env
+	c.env = envOf(g.params, nil)
+	if g.sdecl != nil {
+		g.fields = c.resolveFields(g.sdecl.Fields)
+		for i, f := range g.fields {
+			if f.Default != nil && containsTypeParam(f.T) {
+				c.errorf(g.sdecl.Fields[i].Pos, "a default for a field whose type uses a type parameter is not supported by this compiler yet")
+				f.Default = nil
+			}
+		}
+		c.checkDefaults(g.fields)
+	} else {
+		g.variants = c.resolveVariants(g.edecl.Variants, nil)
+	}
+	c.env = saved
+}
+
+func (c *Checker) instantiate(g *genericType, args []Type) Type {
+	c.buildGeneric(g)
+	key := typeArgsMangle(args)
+	if t, ok := g.instances[key]; ok {
+		return t
+	}
+	m := map[*TypeParamType]Type{}
+	for i, p := range g.params {
+		m[p] = args[i]
+	}
+	if g.sdecl != nil {
+		st := &StructType{Name: g.name, Args: args}
+		g.instances[key] = st
+		for _, f := range g.fields {
+			st.Fields = append(st.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m), Default: f.Default})
+		}
+		c.instTypes = append(c.instTypes, st)
+		return st
+	}
+	et := &EnumType{Name: g.name, Args: args}
+	g.instances[key] = et
+	for _, v := range g.variants {
+		nv := &Variant{Name: v.Name, Index: v.Index, Enum: et}
+		for _, f := range v.Fields {
+			nv.Fields = append(nv.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m)})
+		}
+		et.Variants = append(et.Variants, nv)
+	}
+	c.instTypes = append(c.instTypes, et)
+	return et
+}
+
+func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
+	switch t := t.(type) {
+	case *TypeParamType:
+		if r, ok := m[t]; ok {
+			return r
+		}
+		return t
+	case *ArrayType:
+		return c.arrayOf(c.substitute(t.Elem, m))
+	case *StructType:
+		if len(t.Args) == 0 {
+			return t
+		}
+		return c.instantiate(c.generics[t.Name], c.substituteAll(t.Args, m))
+	case *EnumType:
+		if len(t.Args) == 0 {
+			return t
+		}
+		return c.instantiate(c.generics[t.Name], c.substituteAll(t.Args, m))
+	}
+	return t
+}
+
+func (c *Checker) substituteAll(ts []Type, m map[*TypeParamType]Type) []Type {
+	out := make([]Type, len(ts))
+	for i, t := range ts {
+		out[i] = c.substitute(t, m)
+	}
+	return out
+}
+
+// unify matches a type that contains parameters against a concrete type and
+// records what each parameter must be.
+func unify(pat, act Type, m map[*TypeParamType]Type) {
+	if pat == nil || act == nil {
+		return
+	}
+	switch p := pat.(type) {
+	case *TypeParamType:
+		if _, known := m[p]; !known {
+			if _, isVoid := act.(*PrimType); !isVoid || act != TVoid {
+				m[p] = act
+			}
+		}
+	case *ArrayType:
+		if a, ok := act.(*ArrayType); ok {
+			unify(p.Elem, a.Elem, m)
+		}
+	case *StructType:
+		if a, ok := act.(*StructType); ok && a.Name == p.Name && len(a.Args) == len(p.Args) {
+			for i := range p.Args {
+				unify(p.Args[i], a.Args[i], m)
+			}
+		}
+	case *EnumType:
+		if a, ok := act.(*EnumType); ok && a.Name == p.Name && len(a.Args) == len(p.Args) {
+			for i := range p.Args {
+				unify(p.Args[i], a.Args[i], m)
+			}
+		}
+	}
+}
+
+// orderTypes sorts structs and enums so that each one is defined after the
+// types it holds inline, and rejects types that contain themselves.
+func (c *Checker) orderTypes(types []Type) {
+	state := map[Type]int{}
+	var visit func(t Type)
+	visit = func(t Type) {
+		switch t.(type) {
+		case *StructType, *EnumType:
+		default:
+			return
+		}
+		if state[t] == 2 {
+			return
+		}
+		if state[t] == 1 {
+			c.errorf(Pos{}, "type %s contains itself; use an array for recursive data", t)
+			return
+		}
+		state[t] = 1
+		var fields []*Field
+		if st, ok := t.(*StructType); ok {
+			fields = st.Fields
+		} else {
+			for _, v := range t.(*EnumType).Variants {
+				fields = append(fields, v.Fields...)
+			}
+		}
+		for _, f := range fields {
+			visit(f.T)
+		}
+		state[t] = 2
+		c.prog.Types = append(c.prog.Types, t)
+	}
+	for _, t := range types {
+		visit(t)
 	}
 }
 
@@ -213,61 +520,28 @@ func isConstant(e Expr) bool {
 			}
 		}
 		return true
+	case *Ident:
+		return e.Ctor != nil
+	case *CallExpr:
+		if e.Ctor == nil {
+			return false
+		}
+		for _, a := range e.Args {
+			if !isConstant(a.Value) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
-}
-
-func (c *Checker) declareType(pos Pos, name string, t Type) {
-	if _, dup := c.types[name]; dup {
-		c.errorf(pos, "type %q is declared twice", name)
-	}
-	c.types[name] = t
-}
-
-// orderStructs sorts structs and enums so that each one is defined after the
-// types it holds inline, and rejects types that contain themselves.
-func (c *Checker) orderStructs(f *File) {
-	state := map[Type]int{}
-	var visit func(t Type, pos Pos)
-	visit = func(t Type, pos Pos) {
-		switch t := t.(type) {
-		case *StructType, *EnumType:
-			if state[t] == 2 {
-				return
-			}
-			if state[t] == 1 {
-				c.errorf(pos, "type %s contains itself; use an array or Box for recursive data", t)
-				return
-			}
-			state[t] = 1
-			var fields []*Field
-			if st, ok := t.(*StructType); ok {
-				fields = st.Fields
-			} else {
-				for _, v := range t.(*EnumType).Variants {
-					fields = append(fields, v.Fields...)
-				}
-			}
-			for _, fl := range fields {
-				visit(fl.T, pos)
-			}
-			state[t] = 2
-			c.prog.Types = append(c.prog.Types, t)
-		}
-	}
-	for _, d := range f.Decls {
-		switch d := d.(type) {
-		case *StructDecl:
-			visit(d.T, d.Pos)
-		case *EnumDecl:
-			visit(d.T, d.Pos)
-		}
-	}
 }
 
 func (c *Checker) resolveType(te *TypeExpr) Type {
 	if te == nil {
 		return TVoid
+	}
+	if t, ok := c.env[te.Name]; ok && len(te.Args) == 0 {
+		return t
 	}
 	if te.Name == "Array" {
 		if len(te.Args) != 1 {
@@ -284,8 +558,19 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		c.errorf(te.Pos, "use `bool`")
 		return TBool
 	}
+	if g, ok := c.generics[te.Name]; ok {
+		if len(te.Args) != len(g.params) {
+			c.errorf(te.Pos, "%s takes %d type arguments", te.Name, len(g.params))
+			return TVoid
+		}
+		args := make([]Type, len(te.Args))
+		for i, a := range te.Args {
+			args[i] = c.resolveType(a)
+		}
+		return c.instantiate(g, args)
+	}
 	if len(te.Args) > 0 {
-		c.errorf(te.Pos, "generic type %s is not supported by this compiler yet", te.Name)
+		c.errorf(te.Pos, "type %s is not generic", te.Name)
 		return TVoid
 	}
 	t, ok := c.types[te.Name]
@@ -324,6 +609,22 @@ func (c *Checker) lookup(name string) *Local {
 	return nil
 }
 
+func (c *Checker) narrowed(l *Local) *Variant {
+	for s := c.scope; s != nil; s = s.parent {
+		if v, ok := s.narrow[l]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func (c *Checker) setNarrow(l *Local, v *Variant) {
+	if c.scope.narrow == nil {
+		c.scope.narrow = map[*Local]*Variant{}
+	}
+	c.scope.narrow[l] = v
+}
+
 func (c *Checker) declare(pos Pos, name string, t Type, mutable bool) *Local {
 	if name != "_" && c.lookup(name) != nil {
 		c.errorf(pos, "%q is already declared in this function; shadowing is not allowed", name)
@@ -337,8 +638,10 @@ func (c *Checker) declare(pos Pos, name string, t Type, mutable bool) *Local {
 func (c *Checker) push() { c.scope = &scope{names: map[string]*Local{}, parent: c.scope} }
 func (c *Checker) pop()  { c.scope = c.scope.parent }
 
-func (c *Checker) funcBody(fd *FuncDecl) {
+func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	c.fn = fd
+	c.env = env
+	c.loops = 0
 	c.scope = &scope{names: map[string]*Local{}}
 	for _, p := range fd.Params {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
@@ -347,6 +650,18 @@ func (c *Checker) funcBody(fd *FuncDecl) {
 		p.Local = l
 	}
 	c.block(fd.Body)
+	c.env = nil
+}
+
+// inGenericTemplate reports whether the current body is a generic function
+// checked with its type parameters left open. Such a body is never emitted.
+func (c *Checker) inGenericTemplate() bool {
+	for _, t := range c.env {
+		if _, ok := t.(*TypeParamType); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Checker) block(b *Block) {
@@ -355,6 +670,93 @@ func (c *Checker) block(b *Block) {
 		c.stmt(s)
 	}
 	c.pop()
+}
+
+// diverges reports whether a block always leaves by return, break, continue
+// or panic.
+func diverges(b *Block) bool {
+	if b == nil || len(b.Stmts) == 0 {
+		return false
+	}
+	switch s := b.Stmts[len(b.Stmts)-1].(type) {
+	case *ReturnStmt, *BreakStmt, *ContinueStmt:
+		return true
+	case *ExprStmt:
+		if call, ok := s.Expr.(*CallExpr); ok {
+			if id, ok := call.Callee.(*Ident); ok && id.Name == "panic" {
+				return true
+			}
+		}
+	case *IfStmt:
+		if s.Else == nil || !diverges(s.Then) {
+			return false
+		}
+		if eb, ok := s.Else.(*Block); ok {
+			return diverges(eb)
+		}
+		return diverges(&Block{Stmts: []Stmt{s.Else}})
+	case *Block:
+		return diverges(s)
+	}
+	return false
+}
+
+// otherVariant returns the variant an enum value must be when it is not v,
+// for enums with exactly two variants.
+func otherVariant(v *Variant) *Variant {
+	if v == nil || len(v.Enum.Variants) != 2 {
+		return nil
+	}
+	return v.Enum.Variants[1-v.Index]
+}
+
+func (c *Checker) narrowable(e Expr) *Local {
+	id, ok := e.(*Ident)
+	if !ok || id.Local == nil || id.Local.Mutable {
+		return nil
+	}
+	return id.Local
+}
+
+func (c *Checker) ifStmt(s *IfStmt) {
+	is, isPattern := s.Cond.(*IsExpr)
+	if isPattern {
+		c.isBinds = true
+	}
+	c.expectType(s.Cond.position(), TBool, c.expr(s.Cond, TBool))
+	c.isBinds = false
+	var subject *Local
+	var v *Variant
+	if isPattern && !is.Pattern.Wildcard {
+		subject = c.narrowable(is.Subject)
+		v = is.Pattern.Variant
+	}
+	c.push()
+	if isPattern {
+		for _, l := range is.Pattern.Locals {
+			if l != nil {
+				c.scope.names[l.Name] = l
+			}
+		}
+		if subject != nil && v != nil {
+			c.setNarrow(subject, v)
+		}
+	}
+	for _, st := range s.Then.Stmts {
+		c.stmt(st)
+	}
+	c.pop()
+	other := otherVariant(v)
+	if s.Else != nil {
+		c.push()
+		if subject != nil && other != nil {
+			c.setNarrow(subject, other)
+		}
+		c.stmt(s.Else)
+		c.pop()
+	} else if subject != nil && other != nil && diverges(s.Then) {
+		c.setNarrow(subject, other)
+	}
 }
 
 func (c *Checker) stmt(s Stmt) {
@@ -390,11 +792,12 @@ func (c *Checker) stmt(s Stmt) {
 			c.match(m, nil, false)
 			return
 		}
-		t := c.expr(s.Expr, nil)
-		if _, ok := s.Expr.(*CallExpr); !ok {
+		c.expr(s.Expr, nil)
+		if call, ok := s.Expr.(*CallExpr); !ok {
 			c.errorf(s.Pos, "this expression does nothing")
+		} else if isResult(call.Type()) {
+			c.errorf(s.Pos, "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`")
 		}
-		_ = t
 	case *ReturnStmt:
 		want := c.fn.ResultT
 		if s.Value == nil {
@@ -410,11 +813,7 @@ func (c *Checker) stmt(s Stmt) {
 		}
 		c.expectType(s.Value.position(), want, t)
 	case *IfStmt:
-		c.expectType(s.Cond.position(), TBool, c.expr(s.Cond, TBool))
-		c.block(s.Then)
-		if s.Else != nil {
-			c.stmt(s.Else)
-		}
+		c.ifStmt(s)
 	case *WhileStmt:
 		c.expectType(s.Cond.position(), TBool, c.expr(s.Cond, TBool))
 		c.loops++
@@ -430,7 +829,10 @@ func (c *Checker) stmt(s Stmt) {
 			elem = TInt
 		case isCall && call.Builtin == "Array.values":
 			s.Kind = forArray
-			elem = call.Args[0].Value.Type().(*ArrayType).Elem
+			elem = TVoid
+			if at, ok := call.Args[0].Value.Type().(*ArrayType); ok {
+				elem = at.Elem
+			}
 		default:
 			c.errorf(s.Iter.position(), "for ... of needs Range.upTo, Range.between or Array.values, found %s", t)
 			elem = TInt
@@ -441,21 +843,20 @@ func (c *Checker) stmt(s Stmt) {
 		c.block(s.Body)
 		c.loops--
 		c.pop()
-	case *BreakStmt, *ContinueStmt:
+	case *BreakStmt:
 		if c.loops == 0 {
-			c.errorf(stmtPos(s), "break and continue must be inside a loop")
+			c.errorf(s.Pos, "break must be inside a loop")
+		}
+	case *ContinueStmt:
+		if c.loops == 0 {
+			c.errorf(s.Pos, "continue must be inside a loop")
 		}
 	}
 }
 
-func stmtPos(s Stmt) Pos {
-	switch s := s.(type) {
-	case *BreakStmt:
-		return s.Pos
-	case *ContinueStmt:
-		return s.Pos
-	}
-	return Pos{}
+func isResult(t Type) bool {
+	et, ok := t.(*EnumType)
+	return ok && et.Name == "Result" && len(et.Args) == 2
 }
 
 // lvalueRoot returns the variable at the root of an assignable expression.
@@ -464,7 +865,7 @@ func (c *Checker) lvalueRoot(e Expr) *Local {
 	case *Ident:
 		return e.Local
 	case *FieldExpr:
-		if e.Builtin != "" || e.Ctor != nil {
+		if e.Builtin != "" || e.Ctor != nil || e.Narrow != nil {
 			return nil
 		}
 		return c.lvalueRoot(e.Target)
@@ -512,17 +913,13 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			l.Used = true
 			return l.T
 		}
-		if fd, ok := c.funcs[e.Name]; ok {
-			e.Func = fd
+		if _, ok := c.funcs[e.Name]; ok {
 			c.errorf(e.P, "functions as values are not supported by this compiler yet")
 			return TVoid
 		}
-		if v := c.findCtor(e.Name, want); v != nil {
-			if len(v.Fields) > 0 {
-				c.errorf(e.P, "%s takes %d fields", v.Name, len(v.Fields))
-			}
+		if t, v := c.ctor(e.P, "", e.Name, nil, want); t != nil {
 			e.Ctor = v
-			return v.Enum
+			return t
 		}
 		if _, ok := c.modules[e.Name]; ok {
 			c.errorf(e.P, "a module is not a value")
@@ -531,19 +928,10 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		c.errorf(e.P, "unknown name %q", e.Name)
 		return TVoid
 	case *FieldExpr:
-		if id, ok := e.Target.(*Ident); ok && c.lookup(id.Name) == nil {
-			if et, ok := c.types[id.Name].(*EnumType); ok {
-				v := et.Variant(e.Name)
-				if v == nil {
-					c.errorf(e.P, "enum %s has no constructor %q", et, e.Name)
-					return et
-				}
-				if len(v.Fields) > 0 {
-					c.errorf(e.P, "%s takes %d fields", v.Name, len(v.Fields))
-				}
-				e.Ctor = v
-				return et
-			}
+		if id, ok := e.Target.(*Ident); ok && c.lookup(id.Name) == nil && c.isEnumName(id.Name) {
+			t, v := c.ctor(e.P, id.Name, e.Name, nil, want)
+			e.Ctor = v
+			return t
 		}
 		t := c.expr(e.Target, nil)
 		switch tt := t.(type) {
@@ -554,6 +942,23 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 				return TVoid
 			}
 			return f.T
+		case *EnumType:
+			var v *Variant
+			if l := c.narrowable(e.Target); l != nil {
+				v = c.narrowed(l)
+			}
+			if v == nil {
+				c.errorf(e.P, "this %s may hold any of its variants; check it with `is` or `match` before reading %q", tt, e.Name)
+				return TVoid
+			}
+			for _, f := range v.Fields {
+				if f.Name == e.Name {
+					e.Narrow = v
+					return f.T
+				}
+			}
+			c.errorf(e.P, "%s has no field %q", v.Name, e.Name)
+			return TVoid
 		case *ArrayType, *PrimType:
 			if e.Name == "length" {
 				c.errorf(e.P, "there is no .length; use Array.length(x) or Str.length(x)")
@@ -588,6 +993,20 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		return t
 	case *BinaryExpr:
 		return c.binary(e)
+	case *IsExpr:
+		binds := c.isBinds
+		c.isBinds = false
+		t := c.expr(e.Subject, nil)
+		et, ok := t.(*EnumType)
+		if !ok {
+			c.errorf(e.P, "`is` needs an enum value, found %s", t)
+			return TBool
+		}
+		c.resolvePattern(e.Pattern, et)
+		if len(e.Pattern.Binds) > 0 && !binds {
+			c.errorf(e.P, "an `is` pattern can only bind names when it is the whole condition of an if")
+		}
+		return TBool
 	case *CallExpr:
 		return c.call(e, want)
 	case *StructLit:
@@ -616,24 +1035,167 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 	return TVoid
 }
 
-func (c *Checker) findCtor(name string, want Type) *Variant {
-	if et, ok := want.(*EnumType); ok {
+func (c *Checker) isEnumName(name string) bool {
+	if _, ok := c.types[name].(*EnumType); ok {
+		return true
+	}
+	g, ok := c.generics[name]
+	return ok && g.edecl != nil
+}
+
+// ctor resolves an enum constructor by name and checks its arguments.
+// enumName restricts the search to one enum when the call is qualified, as
+// in Shape.Circle. It returns nil when no enum has a constructor of that name.
+func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (Type, *Variant) {
+	// The expected type decides first, so `None` takes its type from context.
+	if et, ok := want.(*EnumType); ok && (enumName == "" || enumName == et.Name) {
 		if v := et.Variant(name); v != nil {
-			return v
+			c.ctorArgs(pos, v, args)
+			return et, v
 		}
 	}
-	var found *Variant
-	for _, t := range c.types {
-		if et, ok := t.(*EnumType); ok {
-			if v := et.Variant(name); v != nil {
-				if found != nil {
-					return found // ambiguous names resolve to the first; the type check reports mismatches
+	for tn, t := range c.types {
+		et, ok := t.(*EnumType)
+		if !ok || (enumName != "" && tn != enumName) {
+			continue
+		}
+		if v := et.Variant(name); v != nil {
+			c.ctorArgs(pos, v, args)
+			return et, v
+		}
+	}
+	names := make([]string, 0, len(c.generics))
+	for n := range c.generics {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, gn := range names {
+		g := c.generics[gn]
+		if g.edecl == nil || (enumName != "" && gn != enumName) {
+			continue
+		}
+		c.buildGeneric(g)
+		for _, tv := range g.variants {
+			if tv.Name != name {
+				continue
+			}
+			m := map[*TypeParamType]Type{}
+			if et, ok := want.(*EnumType); ok && et.Name == g.name {
+				for i, p := range g.params {
+					m[p] = et.Args[i]
 				}
-				found = v
+			}
+			if len(args) != len(tv.Fields) {
+				c.errorf(pos, "%s takes %d fields, found %d", name, len(tv.Fields), len(args))
+				for _, a := range args {
+					c.expr(a.Value, nil)
+				}
+				return TVoid, nil
+			}
+			for i, a := range args {
+				fw := c.substitute(tv.Fields[i].T, m)
+				if containsOpen(fw, g.params) {
+					fw = nil
+				}
+				at := c.expr(a.Value, fw)
+				unify(tv.Fields[i].T, at, m)
+			}
+			targs := make([]Type, len(g.params))
+			for i, p := range g.params {
+				t, ok := m[p]
+				if !ok {
+					c.errorf(pos, "cannot tell the type of %s here; add a type annotation", name)
+					return TVoid, nil
+				}
+				targs[i] = t
+			}
+			et := c.instantiate(g, targs).(*EnumType)
+			v := et.Variants[tv.Index]
+			for i, a := range args {
+				c.expectType(a.Value.position(), v.Fields[i].T, a.Value.Type())
+				if a.Mutable {
+					c.errorf(pos, "constructor fields are not mutable")
+				}
+			}
+			return et, v
+		}
+	}
+	if enumName != "" {
+		c.errorf(pos, "enum %s has no constructor %q", enumName, name)
+		return TVoid, nil
+	}
+	return nil, nil
+}
+
+// containsOpen reports whether t still mentions one of the given parameters.
+func containsOpen(t Type, params []*TypeParamType) bool {
+	switch t := t.(type) {
+	case *TypeParamType:
+		for _, p := range params {
+			if p == t {
+				return true
+			}
+		}
+	case *ArrayType:
+		return containsOpen(t.Elem, params)
+	case *StructType:
+		for _, a := range t.Args {
+			if containsOpen(a, params) {
+				return true
+			}
+		}
+	case *EnumType:
+		for _, a := range t.Args {
+			if containsOpen(a, params) {
+				return true
 			}
 		}
 	}
-	return found
+	return false
+}
+
+func (c *Checker) ctorArgs(pos Pos, v *Variant, args []*Arg) {
+	if len(args) != len(v.Fields) {
+		c.errorf(pos, "%s takes %d fields, found %d", v.Name, len(v.Fields), len(args))
+	}
+	for i, a := range args {
+		if a.Mutable {
+			c.errorf(pos, "constructor fields are not mutable")
+		}
+		if i < len(v.Fields) {
+			c.expectType(a.Value.position(), v.Fields[i].T, c.expr(a.Value, v.Fields[i].T))
+		} else {
+			c.expr(a.Value, nil)
+		}
+	}
+}
+
+func (c *Checker) resolvePattern(p *Pattern, et *EnumType) {
+	if p.Wildcard {
+		return
+	}
+	v := et.Variant(p.Name)
+	if v == nil {
+		c.errorf(p.Pos, "enum %s has no constructor %q", et, p.Name)
+		return
+	}
+	p.Variant = v
+	if len(p.Binds) != len(v.Fields) && len(p.Binds) != 0 {
+		c.errorf(p.Pos, "%s has %d fields, the pattern lists %d", v.Name, len(v.Fields), len(p.Binds))
+		return
+	}
+	p.Locals = nil
+	for i, b := range p.Binds {
+		if b == "_" {
+			p.Locals = append(p.Locals, nil)
+			continue
+		}
+		if c.lookup(b) != nil {
+			c.errorf(p.Pos, "%q is already declared in this function; shadowing is not allowed", b)
+		}
+		c.localN++
+		p.Locals = append(p.Locals, &Local{Name: b, T: v.Fields[i].T, Pos: p.Pos, CName: fmt.Sprintf("v_%s_%d", b, c.localN)})
+	}
 }
 
 func (c *Checker) binary(e *BinaryExpr) Type {
@@ -648,7 +1210,7 @@ func (c *Checker) binary(e *BinaryExpr) Type {
 		if !sameType(l, r) {
 			c.errorf(e.P, "cannot compare %s with %s", l, r)
 		} else if _, ok := l.(*PrimType); !ok {
-			c.errorf(e.P, "== on %s is not supported by this compiler yet", l)
+			c.errorf(e.P, "== on %s is not supported by this compiler yet; use `is` or `match` for enums", l)
 		}
 		return TBool
 	case "<", "<=", ">", ">=":
@@ -677,14 +1239,45 @@ func (c *Checker) binary(e *BinaryExpr) Type {
 
 func (c *Checker) structLit(e *StructLit, want Type) Type {
 	var st *StructType
-	if e.TypeName != "" {
+	switch {
+	case e.TypeName != "" && c.generics[e.TypeName] != nil && c.generics[e.TypeName].sdecl != nil:
+		g := c.generics[e.TypeName]
+		c.buildGeneric(g)
+		m := map[*TypeParamType]Type{}
+		if wt, ok := want.(*StructType); ok && wt.Name == g.name {
+			for i, p := range g.params {
+				m[p] = wt.Args[i]
+			}
+		}
+		for _, fi := range e.Fields {
+			for _, f := range g.fields {
+				if f.Name == fi.Name {
+					fw := c.substitute(f.T, m)
+					if containsOpen(fw, g.params) {
+						fw = nil
+					}
+					unify(f.T, c.expr(fi.Value, fw), m)
+				}
+			}
+		}
+		targs := make([]Type, len(g.params))
+		for i, p := range g.params {
+			t, ok := m[p]
+			if !ok {
+				c.errorf(e.P, "cannot tell type parameter %s of %s here; add a type annotation", p.Name, g.name)
+				return TVoid
+			}
+			targs[i] = t
+		}
+		st = c.instantiate(g, targs).(*StructType)
+	case e.TypeName != "":
 		t, ok := c.types[e.TypeName]
 		st, _ = t.(*StructType)
 		if !ok || st == nil {
 			c.errorf(e.P, "%q is not a struct", e.TypeName)
 			return TVoid
 		}
-	} else {
+	default:
 		st, _ = want.(*StructType)
 		if st == nil {
 			c.errorf(e.P, "the struct type is unknown here; write `TypeName { ... }`")
@@ -703,7 +1296,10 @@ func (c *Checker) structLit(e *StructLit, want Type) Type {
 			c.errorf(fi.Pos, "field %q is given twice", fi.Name)
 		}
 		seen[fi.Name] = true
-		c.expectType(fi.Value.position(), f.T, c.expr(fi.Value, f.T))
+		if fi.Value.Type() == nil {
+			c.expr(fi.Value, f.T)
+		}
+		c.expectType(fi.Value.position(), f.T, fi.Value.Type())
 	}
 	for _, f := range st.Fields {
 		if !seen[f.Name] && f.Default == nil {
@@ -730,25 +1326,14 @@ func (c *Checker) match(m *MatchExpr, want Type, isValue bool) Type {
 		if p.Wildcard {
 			hasWildcard = true
 		} else {
-			v := et.Variant(p.Name)
-			if v == nil {
-				c.errorf(p.Pos, "enum %s has no constructor %q", et, p.Name)
-			} else {
-				p.Variant = v
-				if len(p.Binds) != len(v.Fields) && !(len(p.Binds) == 0 && len(v.Fields) == 0) {
-					c.errorf(p.Pos, "%s has %d fields, the pattern lists %d", v.Name, len(v.Fields), len(p.Binds))
-				} else {
-					for i, b := range p.Binds {
-						if b == "_" {
-							p.Locals = append(p.Locals, nil)
-							continue
-						}
-						p.Locals = append(p.Locals, c.declare(p.Pos, b, v.Fields[i].T, false))
-					}
+			c.resolvePattern(p, et)
+			for _, l := range p.Locals {
+				if l != nil {
+					c.scope.names[l.Name] = l
 				}
-				if arm.Guard == nil {
-					covered[v] = true
-				}
+			}
+			if p.Variant != nil && arm.Guard == nil {
+				covered[p.Variant] = true
 			}
 		}
 		if arm.Guard != nil {
@@ -781,10 +1366,7 @@ func (c *Checker) match(m *MatchExpr, want Type, isValue bool) Type {
 			c.errorf(m.P, "match does not cover %s; add the cases or a `_` arm", strings.Join(missing, ", "))
 		}
 	}
-	if !isValue {
-		return TVoid
-	}
-	if result == nil {
+	if !isValue || result == nil {
 		return TVoid
 	}
 	return result
@@ -800,19 +1382,28 @@ var preludeFuncs = map[string]*Builtin{
 func (c *Checker) call(e *CallExpr, want Type) Type {
 	switch callee := e.Callee.(type) {
 	case *Ident:
-		if b, ok := preludeFuncs[callee.Name]; ok && c.lookup(callee.Name) == nil {
+		if c.lookup(callee.Name) != nil {
+			c.errorf(callee.P, "calling a function value is not supported by this compiler yet")
+			c.argsLoose(e)
+			return TVoid
+		}
+		if b, ok := preludeFuncs[callee.Name]; ok {
 			return c.builtinCall(e, b)
 		}
-		if b, ok := c.imported[callee.Name]; ok && c.lookup(callee.Name) == nil {
+		if b, ok := c.imported[callee.Name]; ok {
 			return c.builtinCall(e, b)
 		}
-		if fd, ok := c.funcs[callee.Name]; ok && c.lookup(callee.Name) == nil {
+		if fd, ok := c.funcs[callee.Name]; ok {
+			if _, generic := c.funcTP[fd]; generic {
+				return c.genericCall(e, fd, want)
+			}
 			e.Func = fd
-			c.args(e, fd.Params)
+			c.args(e, fd.Params, func(i int) Type { return fd.Params[i].T })
 			return fd.ResultT
 		}
-		if v := c.findCtor(callee.Name, want); v != nil && c.lookup(callee.Name) == nil {
-			return c.ctorCall(e, v)
+		if t, v := c.ctor(callee.P, "", callee.Name, e.Args, want); t != nil {
+			e.Ctor = v
+			return t
 		}
 		c.errorf(callee.P, "unknown function %q", callee.Name)
 		c.argsLoose(e)
@@ -831,14 +1422,10 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 			if id.Name == "Array" || id.Name == "Range" {
 				return c.preludeNamespaceCall(e, id.Name+"."+callee.Name, want)
 			}
-			if et, ok := c.types[id.Name].(*EnumType); ok {
-				v := et.Variant(callee.Name)
-				if v == nil {
-					c.errorf(callee.P, "enum %s has no constructor %q", et, callee.Name)
-					c.argsLoose(e)
-					return et
-				}
-				return c.ctorCall(e, v)
+			if c.isEnumName(id.Name) {
+				t, v := c.ctor(callee.P, id.Name, callee.Name, e.Args, want)
+				e.Ctor = v
+				return t
 			}
 			if _, ok := c.types[id.Name]; !ok && startsUpper(id.Name) {
 				c.errorf(id.P, "unknown module %q; import it first, for example `import * as %s from \"std/...\"`", id.Name, id.Name)
@@ -856,28 +1443,87 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 	return TVoid
 }
 
+func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
+	tps := c.funcTP[fd]
+	m := map[*TypeParamType]Type{}
+	if want != nil {
+		unify(fd.ResultT, want, m)
+	}
+	c.args(e, fd.Params, func(i int) Type {
+		pw := c.substitute(fd.Params[i].T, m)
+		if containsOpen(pw, tps) {
+			return nil
+		}
+		return pw
+	})
+	for i, a := range e.Args {
+		if i < len(fd.Params) {
+			unify(fd.Params[i].T, a.Value.Type(), m)
+		}
+	}
+	targs := make([]Type, len(tps))
+	for i, p := range tps {
+		t, ok := m[p]
+		if !ok {
+			c.errorf(e.P, "cannot tell type parameter %s of %s here; add a type annotation", p.Name, fd.Name)
+			return TVoid
+		}
+		targs[i] = t
+	}
+	for i, a := range e.Args {
+		if i < len(fd.Params) {
+			c.expectType(a.Value.position(), c.substitute(fd.Params[i].T, m), a.Value.Type())
+		}
+	}
+	result := c.substitute(fd.ResultT, m)
+	open := false
+	for _, t := range targs {
+		if containsTypeParam(t) {
+			open = true
+		}
+	}
+	if open {
+		// Inside a generic template the call stays generic; it is resolved
+		// again when the template is instantiated.
+		e.Func = fd
+		return result
+	}
+	e.Func = c.funcInstance(fd, tps, targs)
+	return result
+}
+
+func (c *Checker) funcInstance(fd *FuncDecl, tps []*TypeParamType, targs []Type) *FuncDecl {
+	key := fd.Name + typeArgsMangle(targs)
+	if inst, ok := c.funcInsts[key]; ok {
+		return inst
+	}
+	inst := cloneFunc(fd)
+	inst.Name = key
+	env := envOf(tps, targs)
+	saved := c.env
+	c.env = env
+	for _, p := range inst.Params {
+		p.T = c.resolveType(p.Type)
+	}
+	inst.ResultT = TVoid
+	if inst.Result != nil {
+		inst.ResultT = c.resolveType(inst.Result)
+	}
+	c.env = saved
+	c.funcInsts[key] = inst
+	if len(c.funcInsts) > 10000 {
+		c.errorf(fd.Pos, "too many instances of generic functions; %s may recurse with ever larger types", fd.Name)
+		return inst
+	}
+	c.prog.Funcs = append(c.prog.Funcs, inst)
+	c.pending = append(c.pending, pendingFunc{inst, env})
+	return inst
+}
+
 func (c *Checker) argsLoose(e *CallExpr) {
 	for _, a := range e.Args {
 		c.expr(a.Value, nil)
 	}
-}
-
-func (c *Checker) ctorCall(e *CallExpr, v *Variant) Type {
-	e.Ctor = v
-	if len(e.Args) != len(v.Fields) {
-		c.errorf(e.P, "%s takes %d fields, found %d", v.Name, len(v.Fields), len(e.Args))
-	}
-	for i, a := range e.Args {
-		if a.Mutable {
-			c.errorf(e.P, "constructor fields are not mutable")
-		}
-		if i < len(v.Fields) {
-			c.expectType(a.Value.position(), v.Fields[i].T, c.expr(a.Value, v.Fields[i].T))
-		} else {
-			c.expr(a.Value, nil)
-		}
-	}
-	return v.Enum
 }
 
 func (c *Checker) builtinCall(e *CallExpr, b *Builtin) Type {
@@ -979,7 +1625,9 @@ func (c *Checker) checkMutableArg(v Expr) {
 	}
 }
 
-func (c *Checker) args(e *CallExpr, params []*Param) {
+// args checks the arguments of a call. paramType gives the expected type of
+// each argument, or nil when it is not known yet.
+func (c *Checker) args(e *CallExpr, params []*Param, paramType func(int) Type) {
 	if len(e.Args) != len(params) {
 		c.errorf(e.P, "this call passes %d arguments, the function takes %d", len(e.Args), len(params))
 	}
@@ -990,7 +1638,11 @@ func (c *Checker) args(e *CallExpr, params []*Param) {
 			continue
 		}
 		p := params[i]
-		c.expectType(a.Value.position(), p.T, c.expr(a.Value, p.T))
+		want := paramType(i)
+		t := c.expr(a.Value, want)
+		if want != nil {
+			c.expectType(a.Value.position(), want, t)
+		}
 		switch {
 		case p.Mutable && !a.Mutable:
 			c.errorf(a.Value.position(), "parameter %q is mutable; write `mutable` before the argument", p.Name)
@@ -1045,6 +1697,8 @@ func usesLocal(e Expr, l *Local) bool {
 		case *BinaryExpr:
 			walk(e.Left)
 			walk(e.Right)
+		case *IsExpr:
+			walk(e.Subject)
 		case *CallExpr:
 			for _, a := range e.Args {
 				walk(a.Value)

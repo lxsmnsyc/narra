@@ -521,6 +521,10 @@ func (e *Emitter) stmt(s Stmt) {
 		}
 		e.frames = e.frames[:len(e.frames)-1]
 	case *IfStmt:
+		if is, ok := s.Cond.(*IsExpr); ok {
+			e.ifIs(s, is)
+			return
+		}
 		e.beginStmt()
 		cond, _ := e.expr(s.Cond)
 		c := e.temp(TBool, cond)
@@ -561,6 +565,61 @@ func (e *Emitter) stmt(s Stmt) {
 	case *ContinueStmt:
 		e.unwindLoop()
 		e.line("continue;")
+	}
+}
+
+// ifIs emits `if (x is Pattern) { ... }`. The subject is held for the whole
+// statement, because the pattern's names read from it.
+func (e *Emitter) ifIs(s *IfStmt, is *IsExpr) {
+	et := is.Subject.Type().(*EnumType)
+	e.line("{")
+	e.indent++
+	e.pushScope(false)
+	e.beginStmt()
+	code, owned := e.expr(is.Subject)
+	held := e.consume(code, owned, et)
+	subj := e.temp(et, held)
+	e.endStmt()
+	e.addLocal(&Local{Name: "subject", T: et, CName: subj})
+	cond := "true"
+	if !is.Pattern.Wildcard {
+		cond = fmt.Sprintf("%s.tag == %d", subj, is.Pattern.Variant.Index)
+	}
+	e.line("if (%s) {", cond)
+	e.indent++
+	e.pushScope(false)
+	e.bindPattern(is.Pattern, subj)
+	e.blockInScope(s.Then)
+	e.popScope()
+	e.indent--
+	if s.Else != nil {
+		e.line("} else {")
+		e.indent++
+		if b, ok := s.Else.(*Block); ok {
+			e.block(b, false)
+		} else {
+			e.stmt(s.Else)
+		}
+		e.indent--
+	}
+	e.line("}")
+	e.popScope()
+	e.indent--
+	e.line("}")
+}
+
+// bindPattern declares the names a pattern binds, reading from subj.
+func (e *Emitter) bindPattern(p *Pattern, subj string) {
+	for i, l := range p.Locals {
+		if l == nil {
+			continue
+		}
+		f := p.Variant.Fields[i]
+		e.line("%s %s = %s.u.%s.%s;", l.T.CName(), l.CName, subj, variantName(p.Variant), fieldName(f.Name))
+		if r := retain(l.T, l.CName); r != "" {
+			e.line("%s", r)
+		}
+		e.addLocal(l)
 	}
 }
 
@@ -706,6 +765,9 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 			return fmt.Sprintf("((%s){.tag = %d})", x.Ctor.Enum.CName(), x.Ctor.Index), false
 		}
 		target, _ := e.expr(x.Target)
+		if x.Narrow != nil {
+			return fmt.Sprintf("(%s).u.%s.%s", target, variantName(x.Narrow), fieldName(x.Name)), false
+		}
 		return fmt.Sprintf("(%s).%s", target, fieldName(x.Name)), false
 	case *IndexExpr:
 		at := x.Target.Type().(*ArrayType)
@@ -727,6 +789,12 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		}
 	case *BinaryExpr:
 		return e.binary(x), false
+	case *IsExpr:
+		code, _ := e.expr(x.Subject)
+		if x.Pattern.Wildcard {
+			return "true", false
+		}
+		return fmt.Sprintf("((%s).tag == %d)", code, x.Pattern.Variant.Index), false
 	case *CallExpr:
 		return e.call(x)
 	case *StructLit:
@@ -915,16 +983,8 @@ func (e *Emitter) matchArms(m *MatchExpr, body func(arm *MatchArm)) {
 		}
 		e.indent++
 		e.pushScope(false)
-		for i, l := range p.Locals {
-			if l == nil {
-				continue
-			}
-			f := p.Variant.Fields[i]
-			e.line("%s %s = %s.u.%s.%s;", l.T.CName(), l.CName, subj, variantName(p.Variant), fieldName(f.Name))
-			if r := retain(l.T, l.CName); r != "" {
-				e.line("%s", r)
-			}
-			e.addLocal(l)
+		if !p.Wildcard {
+			e.bindPattern(p, subj)
 		}
 		if arm.Guard != nil {
 			e.beginStmt()

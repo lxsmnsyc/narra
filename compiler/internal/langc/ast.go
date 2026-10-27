@@ -33,14 +33,15 @@ type Param struct {
 }
 
 type FuncDecl struct {
-	Pos      Pos
-	Name     string
-	Exported bool
-	Params   []*Param
-	Result   *TypeExpr
-	Effects  []string
-	Body     *Block
-	ResultT  Type
+	Pos        Pos
+	Name       string
+	TypeParams []string
+	Exported   bool
+	Params     []*Param
+	Result     *TypeExpr
+	Effects    []string
+	Body       *Block
+	ResultT    Type
 }
 
 type FieldDecl struct {
@@ -51,11 +52,12 @@ type FieldDecl struct {
 }
 
 type StructDecl struct {
-	Pos      Pos
-	Name     string
-	Exported bool
-	Fields   []*FieldDecl
-	T        *StructType
+	Pos        Pos
+	Name       string
+	TypeParams []string
+	Exported   bool
+	Fields     []*FieldDecl
+	T          *StructType
 }
 
 type VariantDecl struct {
@@ -65,11 +67,12 @@ type VariantDecl struct {
 }
 
 type EnumDecl struct {
-	Pos      Pos
-	Name     string
-	Exported bool
-	Variants []*VariantDecl
-	T        *EnumType
+	Pos        Pos
+	Name       string
+	TypeParams []string
+	Exported   bool
+	Variants   []*VariantDecl
+	T          *EnumType
 }
 
 type TestDecl struct {
@@ -213,6 +216,15 @@ type FieldExpr struct {
 	// Set by the checker when Target names a module or an enum:
 	Builtin string   // "Int.toString" and other standard functions
 	Ctor    *Variant // Shape.Circle
+	// Set when Target is an enum value narrowed to one variant by `is`.
+	Narrow *Variant
+}
+
+// IsExpr is `subject is Pattern`.
+type IsExpr struct {
+	exprBase
+	Subject Expr
+	Pattern *Pattern
 }
 
 type IndexExpr struct {

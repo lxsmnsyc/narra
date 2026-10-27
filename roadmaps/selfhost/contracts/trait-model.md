@@ -41,17 +41,17 @@ C names:
 
 | Type | eq | hash | cmp | show |
 | --- | --- | --- | --- | --- |
-| `int` | `lang_eq_int` | `lang_hash_int` | `lang_cmp_int` | `lstr_from_int` |
-| `f64` | `lang_eq_f64` | none | `lang_cmp_f64` | `lstr_from_f64` |
-| `bool`, `char` | `lang_eq_bool`, `lang_eq_char` | `lang_hash_bool`, `lang_hash_char` | `lang_cmp_bool`, `lang_cmp_char` | `lang_show_bool`, `lang_show_char` |
-| `string` | `lstr_eq` | `lstr_hash` | `lstr_cmp` | `lang_show_string` |
+| `int` | `narra_eq_int` | `narra_hash_int` | `narra_cmp_int` | `lstr_from_int` |
+| `f64` | `narra_eq_f64` | none | `narra_cmp_f64` | `lstr_from_f64` |
+| `bool`, `char` | `narra_eq_bool`, `narra_eq_char` | `narra_hash_bool`, `narra_hash_char` | `narra_cmp_bool`, `narra_cmp_char` | `narra_show_bool`, `narra_show_char` |
+| `string` | `lstr_eq` | `lstr_hash` | `lstr_cmp` | `narra_show_string` |
 | arrays, structs, enums, instances | `<mangle(t)>_eq` | `<mangle(t)>_hash` | `<mangle(t)>_cmp` | `<mangle(t)>_show` |
 
 `mangle` is the existing function in `types.go`, so `Pair<int, string>` gives `S_Pair__int__string_eq`.
 
 ## Stub
 
-maps can build before traits lands by calling the primitive names above for `int` and `string` keys. The `lang_eq_int`, `lang_hash_int` and `lstr_hash` helpers go in `runtime.h` with whichever node lands first.
+maps can build before traits lands by calling the primitive names above for `int` and `string` keys. The `narra_eq_int`, `narra_hash_int` and `lstr_hash` helpers go in `runtime.h` with whichever node lands first.
 
 ## Changes
 

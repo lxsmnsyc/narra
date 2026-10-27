@@ -29,7 +29,7 @@ depends_on:
 
 ## Goal
 
-Type checker in Lang, including generics, traits and patterns. Split before starting.
+Type checker in Narra, including generics, traits and patterns. Split before starting.
 
 ## Notes
 

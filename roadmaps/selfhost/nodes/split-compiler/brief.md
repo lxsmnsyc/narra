@@ -16,14 +16,14 @@ fulfilled_by:
 gate: true
 added:
 owns:
-  - compiler/internal/langc/check*.go
-  - compiler/internal/langc/emit*.go
-  - compiler/internal/langc/builtins.go
-  - compiler/internal/langc/std_int.go
-  - compiler/internal/langc/std_float.go
-  - compiler/internal/langc/std_string.go
-  - compiler/internal/langc/std_prelude.go
-  - compiler/internal/langc/diagnostic.go
+  - compiler/internal/narra/check*.go
+  - compiler/internal/narra/emit*.go
+  - compiler/internal/narra/builtins.go
+  - compiler/internal/narra/std_int.go
+  - compiler/internal/narra/std_float.go
+  - compiler/internal/narra/std_string.go
+  - compiler/internal/narra/std_prelude.go
+  - compiler/internal/narra/diagnostic.go
 shared: []
 reserves: []
 provides: [diagnostic, builtins]

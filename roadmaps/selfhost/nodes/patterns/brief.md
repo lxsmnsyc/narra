@@ -16,20 +16,20 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/check_match.go
-  - compiler/internal/langc/emit_match.go
+  - compiler/internal/narra/check_match.go
+  - compiler/internal/narra/emit_match.go
   - compiler/testdata/patterns*
 shared:
-  - compiler/internal/langc/ast.go
-  - compiler/internal/langc/parser.go
-  - compiler/internal/langc/clone.go
-  - compiler/internal/langc/check_stmt.go
-  - compiler/internal/langc/emit_stmt.go
-  - compiler/internal/langc/check_expr.go
-  - compiler/internal/langc/emit_expr.go
-  - compiler/internal/langc/types.go
-  - compiler/internal/langc/check_types.go
-  - compiler/internal/langc/emit_types.go
+  - compiler/internal/narra/ast.go
+  - compiler/internal/narra/parser.go
+  - compiler/internal/narra/clone.go
+  - compiler/internal/narra/check_stmt.go
+  - compiler/internal/narra/emit_stmt.go
+  - compiler/internal/narra/check_expr.go
+  - compiler/internal/narra/emit_expr.go
+  - compiler/internal/narra/types.go
+  - compiler/internal/narra/check_types.go
+  - compiler/internal/narra/emit_types.go
 reserves: []
 provides: []
 depends_on:

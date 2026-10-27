@@ -16,13 +16,13 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/std_string.go
-  - compiler/internal/langc/runtime_string.h
+  - compiler/internal/narra/std_string.go
+  - compiler/internal/narra/runtime_string.h
   - compiler/testdata/strings2*
 shared:
-  - compiler/internal/langc/runtime.h
-  - compiler/internal/langc/emit_types.go
-  - compiler/internal/langc/emit_call.go
+  - compiler/internal/narra/runtime.h
+  - compiler/internal/narra/emit_types.go
+  - compiler/internal/narra/emit_call.go
 reserves: []
 provides: []
 depends_on:

@@ -16,21 +16,21 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/check_closure.go
-  - compiler/internal/langc/emit_closure.go
+  - compiler/internal/narra/check_closure.go
+  - compiler/internal/narra/emit_closure.go
   - compiler/testdata/closures*
 shared:
-  - compiler/internal/langc/ast.go
-  - compiler/internal/langc/parser.go
-  - compiler/internal/langc/clone.go
-  - compiler/internal/langc/types.go
-  - compiler/internal/langc/check_expr.go
-  - compiler/internal/langc/check_call.go
-  - compiler/internal/langc/emit_expr.go
-  - compiler/internal/langc/emit_call.go
-  - compiler/internal/langc/check_types.go
-  - compiler/internal/langc/emit_types.go
-  - compiler/internal/langc/check_stmt.go
+  - compiler/internal/narra/ast.go
+  - compiler/internal/narra/parser.go
+  - compiler/internal/narra/clone.go
+  - compiler/internal/narra/types.go
+  - compiler/internal/narra/check_expr.go
+  - compiler/internal/narra/check_call.go
+  - compiler/internal/narra/emit_expr.go
+  - compiler/internal/narra/emit_call.go
+  - compiler/internal/narra/check_types.go
+  - compiler/internal/narra/emit_types.go
+  - compiler/internal/narra/check_stmt.go
 reserves: []
 provides: []
 depends_on:

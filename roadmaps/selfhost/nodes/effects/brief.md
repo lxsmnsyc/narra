@@ -16,16 +16,16 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/check_effects.go
+  - compiler/internal/narra/check_effects.go
   - compiler/testdata/effects*
 shared:
-  - compiler/internal/langc/check_call.go
-  - compiler/internal/langc/std_*.go
-  - compiler/internal/langc/ast.go
-  - compiler/internal/langc/parser.go
-  - compiler/internal/langc/clone.go
-  - compiler/internal/langc/types.go
-  - compiler/internal/langc/check_types.go
+  - compiler/internal/narra/check_call.go
+  - compiler/internal/narra/std_*.go
+  - compiler/internal/narra/ast.go
+  - compiler/internal/narra/parser.go
+  - compiler/internal/narra/clone.go
+  - compiler/internal/narra/types.go
+  - compiler/internal/narra/check_types.go
 reserves: []
 provides: []
 depends_on:

@@ -1,4 +1,4 @@
-// Runtime for programs compiled by langc. Included at the top of every
+// Runtime for programs compiled by narra. Included at the top of every
 // generated C file.
 #include <inttypes.h>
 #include <math.h>
@@ -9,38 +9,38 @@
 #include <string.h>
 #include <unistd.h>
 
-static void lang_panic(const char* where, const char* msg) {
+static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);
   fprintf(stderr, "panic at %s: %s\n", where, msg);
   exit(101);
 }
 
-// Live allocation count. With LANG_CHECK_LEAKS set, the program reports
+// Live allocation count. With NARRA_CHECK_LEAKS set, the program reports
 // allocations still live at exit, which shows reference counting bugs.
-static int64_t lang_live = 0;
+static int64_t narra_live = 0;
 
-static void lang_report_leaks(void) {
-  if (getenv("LANG_CHECK_LEAKS") && lang_live != 0) {
-    fprintf(stderr, "leak check: %" PRId64 " allocations still live\n", lang_live);
+static void narra_report_leaks(void) {
+  if (getenv("NARRA_CHECK_LEAKS") && narra_live != 0) {
+    fprintf(stderr, "leak check: %" PRId64 " allocations still live\n", narra_live);
     _exit(102);
   }
 }
 
-static void* lang_alloc(size_t n) {
+static void* narra_alloc(size_t n) {
   void* p = malloc(n ? n : 1);
-  if (!p) lang_panic("runtime", "out of memory");
-  lang_live++;
+  if (!p) narra_panic("runtime", "out of memory");
+  narra_live++;
   return p;
 }
 
-static void lang_free(void* p) {
-  lang_live--;
+static void narra_free(void* p) {
+  narra_live--;
   free(p);
 }
 
-static void* lang_realloc(void* p, size_t n) {
+static void* narra_realloc(void* p, size_t n) {
   void* q = realloc(p, n ? n : 1);
-  if (!q) lang_panic("runtime", "out of memory");
+  if (!q) narra_panic("runtime", "out of memory");
   return q;
 }
 
@@ -52,10 +52,10 @@ typedef struct lstr {
 } lstr;
 
 static lstr* lstr_new(int64_t len) {
-  lstr* s = lang_alloc(sizeof(lstr));
+  lstr* s = narra_alloc(sizeof(lstr));
   s->rc = 1;
   s->len = len;
-  s->data = lang_alloc((size_t)len + 1);
+  s->data = narra_alloc((size_t)len + 1);
   s->data[len] = 0;
   return s;
 }
@@ -66,8 +66,8 @@ static void lstr_retain(lstr* s) {
 
 static void lstr_release(lstr* s) {
   if (s->rc >= 0 && --s->rc == 0) {
-    lang_free(s->data);
-    lang_free(s);
+    narra_free(s->data);
+    narra_free(s);
   }
 }
 
@@ -86,7 +86,7 @@ static lstr* lstr_concat(lstr* a, lstr* b) {
 }
 
 static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
-  if (n < 0) lang_panic(where, "Str.repeat with a negative count");
+  if (n < 0) narra_panic(where, "Str.repeat with a negative count");
   lstr* s = lstr_new(a->len * n);
   for (int64_t i = 0; i < n; i++) memcpy(s->data + i * a->len, a->data, (size_t)a->len);
   return s;
@@ -142,95 +142,95 @@ static int lstr_cmp(lstr* a, lstr* b) {
   return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
 }
 
-static void lang_print(lstr* s) {
+static void narra_print(lstr* s) {
   fwrite(s->data, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
 }
 
-static void lang_assert(bool ok, const char* where) {
-  if (!ok) lang_panic(where, "assertion failed");
+static void narra_assert(bool ok, const char* where) {
+  if (!ok) narra_panic(where, "assertion failed");
 }
 
-static void lang_panic_str(lstr* msg, const char* where) {
-  lang_panic(where, msg->data);
+static void narra_panic_str(lstr* msg, const char* where) {
+  narra_panic(where, msg->data);
 }
 
 // Integer arithmetic. Overflow panics in debug builds and wraps in release
 // builds. Division by zero panics in every build.
-#ifdef LANG_RELEASE
-#define LANG_CHECKED 0
+#ifdef NARRA_RELEASE
+#define NARRA_CHECKED 0
 #else
-#define LANG_CHECKED 1
+#define NARRA_CHECKED 1
 #endif
 
-static int64_t lang_add(int64_t a, int64_t b, const char* where) {
+static int64_t narra_add(int64_t a, int64_t b, const char* where) {
   int64_t r;
-  if (__builtin_add_overflow(a, b, &r) && LANG_CHECKED) lang_panic(where, "integer overflow");
+  if (__builtin_add_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow");
   return r;
 }
 
-static int64_t lang_sub(int64_t a, int64_t b, const char* where) {
+static int64_t narra_sub(int64_t a, int64_t b, const char* where) {
   int64_t r;
-  if (__builtin_sub_overflow(a, b, &r) && LANG_CHECKED) lang_panic(where, "integer overflow");
+  if (__builtin_sub_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow");
   return r;
 }
 
-static int64_t lang_mul(int64_t a, int64_t b, const char* where) {
+static int64_t narra_mul(int64_t a, int64_t b, const char* where) {
   int64_t r;
-  if (__builtin_mul_overflow(a, b, &r) && LANG_CHECKED) lang_panic(where, "integer overflow");
+  if (__builtin_mul_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow");
   return r;
 }
 
-static int64_t lang_neg(int64_t a, const char* where) {
+static int64_t narra_neg(int64_t a, const char* where) {
   if (a == INT64_MIN) {
-    if (LANG_CHECKED) lang_panic(where, "integer overflow");
+    if (NARRA_CHECKED) narra_panic(where, "integer overflow");
     return a;
   }
   return -a;
 }
 
-static int64_t lang_div(int64_t a, int64_t b, const char* where) {
-  if (b == 0) lang_panic(where, "division by zero");
+static int64_t narra_div(int64_t a, int64_t b, const char* where) {
+  if (b == 0) narra_panic(where, "division by zero");
   if (a == INT64_MIN && b == -1) {
-    if (LANG_CHECKED) lang_panic(where, "integer overflow");
+    if (NARRA_CHECKED) narra_panic(where, "integer overflow");
     return a;
   }
   return a / b;
 }
 
-static int64_t lang_rem(int64_t a, int64_t b, const char* where) {
-  if (b == 0) lang_panic(where, "division by zero");
+static int64_t narra_rem(int64_t a, int64_t b, const char* where) {
+  if (b == 0) narra_panic(where, "division by zero");
   if (b == -1) return 0;
   return a % b;
 }
 
-static int64_t lang_wrap_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
-static int64_t lang_wrap_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
-static int64_t lang_wrap_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
+static int64_t narra_wrap_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
+static int64_t narra_wrap_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
+static int64_t narra_wrap_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
 
-static int64_t lang_shl(int64_t a, int64_t b, const char* where) {
-  if (b < 0 || b > 63) lang_panic(where, "shift count out of range");
+static int64_t narra_shl(int64_t a, int64_t b, const char* where) {
+  if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
   return (int64_t)((uint64_t)a << b);
 }
 
-static int64_t lang_shr(int64_t a, int64_t b, const char* where) {
-  if (b < 0 || b > 63) lang_panic(where, "shift count out of range");
+static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
+  if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
   return a >> b;
 }
 
-static int64_t lang_abs(int64_t a, const char* where) { return a < 0 ? lang_neg(a, where) : a; }
+static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_neg(a, where) : a; }
 
-static int64_t lang_truncate(double v, const char* where) {
+static int64_t narra_truncate(double v, const char* where) {
   if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) {
-    lang_panic(where, "Float.truncate: value out of range");
+    narra_panic(where, "Float.truncate: value out of range");
   }
   return (int64_t)v;
 }
 
-static void lang_bounds(int64_t i, int64_t len, const char* where) {
+static void narra_bounds(int64_t i, int64_t len, const char* where) {
   if (i < 0 || i >= len) {
     char msg[96];
     snprintf(msg, sizeof msg, "index %" PRId64 " out of range for length %" PRId64, i, len);
-    lang_panic(where, msg);
+    narra_panic(where, msg);
   }
 }

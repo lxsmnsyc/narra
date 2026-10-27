@@ -16,22 +16,22 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/check_traits.go
-  - compiler/internal/langc/emit_traits.go
+  - compiler/internal/narra/check_traits.go
+  - compiler/internal/narra/emit_traits.go
   - compiler/testdata/traits*
 shared:
-  - compiler/internal/langc/ast.go
-  - compiler/internal/langc/parser.go
-  - compiler/internal/langc/clone.go
-  - compiler/internal/langc/types.go
-  - compiler/internal/langc/check_types.go
-  - compiler/internal/langc/check_expr.go
-  - compiler/internal/langc/emit_expr.go
-  - compiler/internal/langc/emit_types.go
-  - compiler/internal/langc/check_call.go
-  - compiler/internal/langc/emit_call.go
-  - compiler/internal/langc/check.go
-  - compiler/internal/langc/emit.go
+  - compiler/internal/narra/ast.go
+  - compiler/internal/narra/parser.go
+  - compiler/internal/narra/clone.go
+  - compiler/internal/narra/types.go
+  - compiler/internal/narra/check_types.go
+  - compiler/internal/narra/check_expr.go
+  - compiler/internal/narra/emit_expr.go
+  - compiler/internal/narra/emit_types.go
+  - compiler/internal/narra/check_call.go
+  - compiler/internal/narra/emit_call.go
+  - compiler/internal/narra/check.go
+  - compiler/internal/narra/emit.go
 reserves: []
 provides: [trait-model]
 depends_on:

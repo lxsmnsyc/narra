@@ -1,14 +1,14 @@
-# Lang specification (draft)
+# Narra specification (draft)
 
-This document defines the Lang language. Each section states the rules first, then shows an example. `DECISIONS.md` explains why each rule was chosen over the alternatives.
+This document defines the Narra language. Each section states the rules first, then shows an example. `DECISIONS.md` explains why each rule was chosen over the alternatives.
 
-File extension: `.lang`. Compiler command: `lang`.
+File extension: `.nra`. Compiler command: `narra`.
 
 ## 1. Overview
 
-- Lang uses TypeScript-style syntax with Rust-style semantics: static types, enums with fields, pattern matching, and no `null`.
-- Lang compiles to native code, the same target as C, Rust and Go. The compiler emits C, and a C compiler builds the final binary.
-- Lang code is a set of modules. One file is one module. There are no globals.
+- Narra uses TypeScript-style syntax with Rust-style semantics: static types, enums with fields, pattern matching, and no `null`.
+- Narra compiles to native code, the same target as C, Rust and Go. The compiler emits C, and a C compiler builds the final binary.
+- Narra code is a set of modules. One file is one module. There are no globals.
 - Values are immutable. Safe code has no pointers or references, only values.
 - A function changes a caller's variable only through a `mutable` parameter, marked at the call: `damage(mutable hero, 10)`.
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
@@ -36,13 +36,13 @@ test "rect area" {
 
 ## 2. Syntax
 
-The syntax follows TypeScript where the meaning is the same. Where Lang means something different, it uses different syntax or reports a compile error. The table under "Differences from TypeScript" lists those cases.
+The syntax follows TypeScript where the meaning is the same. Where Narra means something different, it uses different syntax or reports a compile error. The table under "Differences from TypeScript" lists those cases.
 
 ### Statements and layout
 
 - Blocks use `{ }`.
 - **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error.
-- `lang fmt` defines the one valid layout. CI is expected to run `lang fmt --check`.
+- `narra fmt` defines the one valid layout. CI is expected to run `narra fmt --check`.
 - Comments: `//` to the end of the line, `/* ... */` for blocks, `///` before a declaration for documentation.
 
 ### Bindings
@@ -69,7 +69,7 @@ The syntax follows TypeScript where the meaning is the same. Where Lang means so
 - **No method calls.** `xs.push(v)` is not valid. Write `Array.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
 - **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.
 - **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
-- **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `lang query recursion MODULE` lists them.
+- **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narra query recursion MODULE` lists them.
 
 ```ts
 function gcd(a: int, b: int): int {
@@ -157,9 +157,9 @@ There are no macros, no operator overloading and no function overloading.
 
 ### Differences from TypeScript
 
-Code that is valid TypeScript but means something different in Lang is a compile error with a fix, never a silently different meaning.
+Code that is valid TypeScript but means something different in Narra is a compile error with a fix, never a silently different meaning.
 
-| TypeScript | Lang |
+| TypeScript | Narra |
 | --- | --- |
 | `const` fixes the binding, but the object can still change | `const` values never change |
 | `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
@@ -180,7 +180,7 @@ Code that is valid TypeScript but means something different in Lang is a compile
 
 ## 3. Modules and imports
 
-- **One file is one module.** Its path from the package root is its name: `src/app/text.lang` is `"app/text"`.
+- **One file is one module.** Its path from the package root is its name: `src/app/text.nra` is `"app/text"`.
 - **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
 - **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Tuple`, `Range`, the primitive types, `print`, `assert` and `panic`. Nothing else is in scope without an import.
@@ -209,7 +209,7 @@ Rules:
 - **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
 - **No import side effects.** Top-level declarations must be functions, types, traits, `const` constants or `lazy` values (section 10). There is no top-level `let`.
 - **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
-- **`lang move old new`** moves a file and rewrites every import of it.
+- **`narra move old new`** moves a file and rewrites every import of it.
 
 ## 4. Types
 
@@ -605,8 +605,8 @@ for (const i of Range.upTo(1000)) {
 
 When an update targets a value whose reference count is greater than 1, the value is copied first. The copy is correct, but it costs time proportional to the value's size, and the source does not show it. Three tools make these copies visible:
 
-- **`lang check --report-copies`** lists every update where the compiler cannot prove the count is 1.
-- **`LANG_TRACE_COPIES=1`** makes a program log every copy at runtime, with its source location and size.
+- **`narra check --report-copies`** lists every update where the compiler cannot prove the count is 1.
+- **`NARRA_TRACE_COPIES=1`** makes a program log every copy at runtime, with its source location and size.
 - **`@unique`** on a `let` declares that the variable is never shared. In debug builds, an update that would copy it panics. In release builds the check is removed.
 
 ```ts
@@ -704,7 +704,7 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
 
 ## 8. Generators and concurrency
 
-Lang has three tools. Each covers one type of concurrent work:
+Narra has three tools. Each covers one type of concurrent work:
 
 | Work | Tool |
 | --- | --- |
@@ -817,7 +817,7 @@ const now = Shared.read(hits, (count) => count)
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
-- **Deadlocks are possible** when callbacks nest locks in different orders. `lang audit` lists every nested `Shared.update`.
+- **Deadlocks are possible** when callbacks nest locks in different orders. `narra audit` lists every nested `Shared.update`.
 
 ### Async functions
 
@@ -844,7 +844,7 @@ async function handle(connection: Connection) uses io, alloc {
   }
 }
 
-export function run(args: Array<string>): int {        // entry function set in lang.toml
+export function run(args: Array<string>): int {        // entry function set in narra.toml
   Async.run(async (loop) => {
     let listener = Net.listen("127.0.0.1", 8080)
     while (true) {
@@ -888,8 +888,8 @@ export enum Color {
 
 - **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
 - **C strings.** `std/ffi` provides `CString`. `CString.from(s)` copies a string with a terminating zero byte, and `CString.toString(p)` copies back and returns `Result` on invalid UTF-8.
-- **Linking.** A `[link]` table in `lang.toml` lists C libraries and search paths (section 15).
-- `lang audit` lists every `unsafe` block and `@trusted` function in a package.
+- **Linking.** A `[link]` table in `narra.toml` lists C libraries and search paths (section 15).
+- `narra audit` lists every `unsafe` block and `@trusted` function in a package.
 
 ## 10. Top-level declarations
 
@@ -920,13 +920,13 @@ export enum Color {
   - Debug builds compile each generic function once, with layout tables, for fast builds.
   - Release builds compile a separate copy for each type a generic function is used with inside the same package.
   - Calls across packages use layout tables unless the function is marked `@specialize` or `@inline`.
-  - `generics = "compact"` in the `[build]` table of `lang.toml` uses layout tables everywhere, for smaller binaries.
+  - `generics = "compact"` in the `[build]` table of `narra.toml` uses layout tables everywhere, for smaller binaries.
 - **`@specialize`** on a function always emits a copy per concrete type, in every build.
 
 ## 12. Build model
 
 - The compiler reads a module's `import` declarations before anything else and builds the module graph from them.
-- Each module produces an interface file (`.langi`) with its exported signatures. A module type-checks against its dependencies' interface files only.
+- Each module produces an interface file (`.nrai`) with its exported signatures. A module type-checks against its dependencies' interface files only.
 - When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.
 - Builds are deterministic. The same inputs produce byte-identical C and binaries.
@@ -960,12 +960,12 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 ```
 
 - A `@target` C function is linked only when building for its target.
-- `lang check --all-targets` type-checks the package for every supported target.
+- `narra check --all-targets` type-checks the package for every supported target.
 - There are no per-platform file names and no preprocessor.
 
 ## 13. Tests and contracts
 
-- **`test "name" { ... }`** blocks sit next to the code. `lang test` runs them. They are removed from non-test builds.
+- **`test "name" { ... }`** blocks sit next to the code. `narra test` runs them. They are removed from non-test builds.
 - **Contracts.** `requires` and `ensures` lines between a function's signature and its body are checked in debug builds and removed in release builds. `ensures` refers to the return value as `result`.
 
 ```ts
@@ -981,46 +981,46 @@ export function sqrt(x: f64): f64
 
 ### Diagnostics
 
-`lang check --json` prints one JSON object per diagnostic:
+`narra check --json` prints one JSON object per diagnostic:
 
 ```json
 {
   "code": "E0412",
   "severity": "error",
   "message": "Function `load` uses `io` but its signature does not declare it",
-  "file": "src/app/config.lang",
+  "file": "src/app/config.nra",
   "range": {"start": [12, 4], "end": [12, 22]},
   "fixes": [
-    {"title": "Add `io` to the signature", "edits": [{"file": "src/app/config.lang", "range": {"start": [8, 40], "end": [8, 40]}, "text": ", io"}]}
+    {"title": "Add `io` to the signature", "edits": [{"file": "src/app/config.nra", "range": {"start": [8, 40], "end": [8, 40]}, "text": ", io"}]}
   ]
 }
 ```
 
-- Error codes are stable. `lang explain E0412` prints the rule and an example fix.
+- Error codes are stable. `narra explain E0412` prints the rule and an example fix.
 - Fixes are exact edits that an agent can apply without rewriting them.
-- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic. Its fix rewrites the TypeScript form into the Lang form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Array.push(mutable xs, v)`.
+- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic. Its fix rewrites the TypeScript form into the Narra form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Array.push(mutable xs, v)`.
 
 ### Queries
 
 | Command | Output |
 | --- | --- |
-| `lang query type-of FILE:LINE:COL` | The type and effects at a position |
-| `lang query def NAME` | Where a name is defined |
-| `lang query refs NAME` | Every use of an exported name |
-| `lang query callers FUNCTION` | Every function that calls it |
-| `lang query interface MODULE` | The module's exported signatures |
-| `lang query recursion MODULE` | The module's recursive functions |
+| `narra query type-of FILE:LINE:COL` | The type and effects at a position |
+| `narra query def NAME` | Where a name is defined |
+| `narra query refs NAME` | Every use of an exported name |
+| `narra query callers FUNCTION` | Every function that calls it |
+| `narra query interface MODULE` | The module's exported signatures |
+| `narra query recursion MODULE` | The module's recursive functions |
 
 All query commands accept `--json`.
 
 ### Speed target
 
-`lang check` on an unchanged package with one edited file returns in under 100 ms.
+`narra check` on an unchanged package with one edited file returns in under 100 ms.
 
 ## 15. Packages (sketch)
 
-- **A package is a directory** with a `lang.toml` manifest and a `src/` directory.
-- **The package name is the import path prefix.** Package `json` exposes `src/parse.lang` as `"json/parse"`.
+- **A package is a directory** with a `narra.toml` manifest and a `src/` directory.
+- **The package name is the import path prefix.** Package `json` exposes `src/parse.nra` as `"json/parse"`.
 - **Dependencies are git repositories** pinned to version tags. There is no central registry.
 
 ```toml
@@ -1029,7 +1029,7 @@ name = "app"
 version = "0.1.0"
 
 [dependencies]
-json = { git = "https://github.com/example/lang-json", version = "1.2.0" }
+json = { git = "https://github.com/example/narra-json", version = "1.2.0" }
 
 [[binary]]
 name = "app"
@@ -1043,12 +1043,12 @@ search = ["/opt/homebrew/lib"]
 generics = "compact"    # optional: layout tables everywhere, for smaller binaries
 ```
 
-- **Entry points are set in `lang.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
+- **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect, and it is not `async`.
 - **`[link]`** lists C libraries to link and directories to search.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
-- **`lang.lock`** records the commit hash and content hash of every dependency. `lang build` fails when a fetched dependency does not match its hash.
+- **`narra.lock`** records the commit hash and content hash of every dependency. `narra build` fails when a fetched dependency does not match its hash.
 
 ## 16. Deferred
 

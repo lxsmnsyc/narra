@@ -1,8 +1,10 @@
-# Lang
+# Narra
 
-Lang is a draft design for a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C. "Lang" is a working name.
+Narra is a draft design for a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C.
 
-Status: specification draft. `compiler/` holds `langc`, a bootstrap compiler in Go for a subset of the language.
+The name comes from the narra, the national tree of the Philippines, a hardwood known for lasting a long time.
+
+Status: specification draft. `compiler/` holds `narra`, a bootstrap compiler in Go for a subset of the language.
 
 ## Goals
 

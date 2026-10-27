@@ -29,7 +29,7 @@ depends_on:
 
 ## Goal
 
-`std/build` constants, compile-time `if`, `@target` declarations, and `langc check --all-targets`.
+`std/build` constants, compile-time `if`, `@target` declarations, and `narra check --all-targets`.
 
 ## Notes
 

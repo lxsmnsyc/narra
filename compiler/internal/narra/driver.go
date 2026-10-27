@@ -1,4 +1,4 @@
-package langc
+package narra
 
 import (
 	"fmt"
@@ -46,7 +46,7 @@ func Build(path, output string, opts BuildOptions) error {
 	if err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp("", "langc")
+	dir, err := os.MkdirTemp("", "narra")
 	if err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func Build(path, output string, opts BuildOptions) error {
 	args := append([]string{"-std=c11", "-w"}, opts.CFlags...)
 	args = append(args, "-o", output, cfile, "-lm")
 	if opts.Release {
-		args = append([]string{"-O2", "-DLANG_RELEASE"}, args...)
+		args = append([]string{"-O2", "-DNARRA_RELEASE"}, args...)
 	} else {
 		args = append([]string{"-O0", "-g"}, args...)
 	}

@@ -16,20 +16,20 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/std_map.go
-  - compiler/internal/langc/runtime_map.h
+  - compiler/internal/narra/std_map.go
+  - compiler/internal/narra/runtime_map.h
   - compiler/testdata/maps*
 shared:
-  - compiler/internal/langc/parser.go
-  - compiler/internal/langc/check_expr.go
-  - compiler/internal/langc/emit_expr.go
-  - compiler/internal/langc/emit_types.go
-  - compiler/internal/langc/types.go
-  - compiler/internal/langc/check_types.go
-  - compiler/internal/langc/check_stmt.go
-  - compiler/internal/langc/emit_stmt.go
-  - compiler/internal/langc/ast.go
-  - compiler/internal/langc/clone.go
+  - compiler/internal/narra/parser.go
+  - compiler/internal/narra/check_expr.go
+  - compiler/internal/narra/emit_expr.go
+  - compiler/internal/narra/emit_types.go
+  - compiler/internal/narra/types.go
+  - compiler/internal/narra/check_types.go
+  - compiler/internal/narra/check_stmt.go
+  - compiler/internal/narra/emit_stmt.go
+  - compiler/internal/narra/ast.go
+  - compiler/internal/narra/clone.go
 reserves: []
 provides: []
 depends_on:

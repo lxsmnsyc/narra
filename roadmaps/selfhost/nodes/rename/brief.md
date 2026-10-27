@@ -1,7 +1,7 @@
 ---
 id: rename
 title: Choose the language's name
-status: todo
+status: done
 priority: should
 type: chore
 outline: true
@@ -12,17 +12,15 @@ size: S
 spike: false
 verify:
 exclusive: []
-fulfilled_by:
+fulfilled_by: renamed to Narra on 2026-10-28, before self-hosting
 gate: true
 added:
 owns: []
 shared: []
 reserves: []
 provides: []
-depends_on:
-  - on: selfhost-bootstrap
-    kind: hard
-    why: the user wants to rename after self-hosting
+depends_on: []
+
 ---
 
 # Choose the language's name

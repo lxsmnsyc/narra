@@ -50,7 +50,7 @@ depends_on:
 
 ## Goal
 
-Port the lexer to Lang as a test, list the features still missing for the rest of the compiler, and estimate the port. The user reviews the list before the port starts.
+Port the lexer to Narra as a test, list the features still missing for the rest of the compiler, and estimate the port. The user reviews the list before the port starts.
 
 ## Notes
 

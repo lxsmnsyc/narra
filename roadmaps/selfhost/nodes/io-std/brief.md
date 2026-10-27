@@ -16,10 +16,10 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/std_fs.go
-  - compiler/internal/langc/std_process.go
-  - compiler/internal/langc/std_env.go
-  - compiler/internal/langc/runtime_io.h
+  - compiler/internal/narra/std_fs.go
+  - compiler/internal/narra/std_process.go
+  - compiler/internal/narra/std_env.go
+  - compiler/internal/narra/runtime_io.h
   - compiler/testdata/io*
 shared: []
 reserves: []

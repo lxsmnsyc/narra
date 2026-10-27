@@ -1,4 +1,4 @@
-// Command langc is the bootstrap compiler for Lang. It compiles one source
+// Command narra is the bootstrap compiler for Narra. It compiles one source
 // file to C and builds it with the system C compiler.
 package main
 
@@ -10,14 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"langc/internal/langc"
+	"narra/internal/narra"
 )
 
 const usage = `usage:
-  langc build [-release] [-o output] [-emit-c file.c] file.lang
-  langc run [-release] file.lang [args...]
-  langc test file.lang
-  langc emit file.lang      print the generated C`
+  narra build [-release] [-o output] [-emit-c file.c] file.nra
+  narra run [-release] file.nra [args...]
+  narra test file.nra
+  narra emit file.nra      print the generated C`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -41,15 +41,15 @@ func main() {
 		tmpDir := ""
 		if out == "" {
 			if cmd == "build" {
-				out = strings.TrimSuffix(filepath.Base(src), ".lang")
+				out = strings.TrimSuffix(filepath.Base(src), ".nra")
 			} else {
-				d, err := os.MkdirTemp("", "langc-run")
+				d, err := os.MkdirTemp("", "narra-run")
 				check(err)
 				tmpDir = d
 				out = filepath.Join(d, "program")
 			}
 		}
-		err := langc.Build(src, out, langc.BuildOptions{Release: *release, Tests: cmd == "test", KeepC: *emitC})
+		err := narra.Build(src, out, narra.BuildOptions{Release: *release, Tests: cmd == "test", KeepC: *emitC})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -72,7 +72,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		c, err := langc.CompileToC(rest[0], false)
+		c, err := narra.CompileToC(rest[0], false)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

@@ -1,4 +1,4 @@
-package langc
+package narra
 
 // Syntax tree. The checker fills in the Type fields of expressions and the
 // resolved declarations of names.

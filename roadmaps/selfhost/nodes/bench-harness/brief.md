@@ -27,7 +27,7 @@ depends_on: []
 
 ## Goal
 
-Build `bench/` with the same small programs written in Lang, Go and Rust, a script that builds and times them, and a recorded baseline. Later performance nodes report their before and after numbers with it.
+Build `bench/` with the same small programs written in Narra, Go and Rust, a script that builds and times them, and a recorded baseline. Later performance nodes report their before and after numbers with it.
 
 ## Context
 

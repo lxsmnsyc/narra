@@ -1,4 +1,4 @@
-package langc
+package narra
 
 import (
 	"fmt"
@@ -40,7 +40,7 @@ var stdModules = map[string]map[string]*Builtin{
 	},
 }
 
-// The prelude is written in Lang and checked with every program.
+// The prelude is written in Narra and checked with every program.
 const preludeSrc = `
 enum Option<T> {
   Some(value: T)

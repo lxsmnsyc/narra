@@ -1,4 +1,4 @@
-package langc
+package narra
 
 import (
 	_ "embed"
@@ -106,7 +106,7 @@ func Emit(prog *Program, file string, tests bool) string {
 		for i, t := range prog.Tests {
 			fmt.Fprintf(&b, "  test_%d();\n  printf(\"ok - %%s\\n\", %s);\n", i, cString(t.Name))
 		}
-		fmt.Fprintf(&b, "  printf(\"%d tests passed\\n\");\n  lang_report_leaks();\n  return 0;\n}\n", len(prog.Tests))
+		fmt.Fprintf(&b, "  printf(\"%d tests passed\\n\");\n  narra_report_leaks();\n  return 0;\n}\n", len(prog.Tests))
 	} else if prog.Entry != nil {
 		at := prog.Entry.Params[0].T.(*ArrayType)
 		n := arrName(at)
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
   int64_t code = f_run(args);
   %[1]s_release(args);
   fflush(stdout);
-  lang_report_leaks();
+  narra_report_leaks();
   return (int)code;
 }
 `, n)
@@ -245,17 +245,17 @@ func (e *Emitter) arrayFuncs(b *strings.Builder, a *ArrayType) {
 	ret := retain(a.Elem, "c->items[i]")
 	fmt.Fprintf(b, `
 static %[1]s* %[1]s_new(int64_t cap) {
-  %[1]s* a = lang_alloc(sizeof(%[1]s));
+  %[1]s* a = narra_alloc(sizeof(%[1]s));
   a->rc = 1; a->len = 0; a->cap = cap;
-  a->items = lang_alloc(sizeof(%[2]s) * (size_t)(cap > 0 ? cap : 1));
+  a->items = narra_alloc(sizeof(%[2]s) * (size_t)(cap > 0 ? cap : 1));
   return a;
 }
 static void %[1]s_retain(%[1]s* a) { a->rc++; }
 static void %[1]s_release(%[1]s* a) {
   if (--a->rc == 0) {
     for (int64_t i = 0; i < a->len; i++) { %[3]s }
-    lang_free(a->items);
-    lang_free(a);
+    narra_free(a->items);
+    narra_free(a);
   }
 }
 // Returns an array the caller owns alone, copying it when it is shared.
@@ -272,22 +272,22 @@ static void %[1]s_push(%[1]s** p, %[2]s v) {
   %[1]s* a = %[1]s_unique(*p);
   if (a->len == a->cap) {
     a->cap = a->cap ? a->cap * 2 : 4;
-    a->items = lang_realloc(a->items, sizeof(%[2]s) * (size_t)a->cap);
+    a->items = narra_realloc(a->items, sizeof(%[2]s) * (size_t)a->cap);
   }
   a->items[a->len++] = v;
   *p = a;
 }
 static %[2]s %[1]s_get(%[1]s* a, int64_t i, const char* where) {
-  lang_bounds(i, a->len, where);
+  narra_bounds(i, a->len, where);
   return a->items[i];
 }
 static %[2]s* %[1]s_at(%[1]s** p, int64_t i, const char* where) {
   *p = %[1]s_unique(*p);
-  lang_bounds(i, (*p)->len, where);
+  narra_bounds(i, (*p)->len, where);
   return &(*p)->items[i];
 }
 static %[1]s* %[1]s_filled(%[2]s v, int64_t n, const char* where) {
-  if (n < 0) lang_panic(where, "Array.filled with a negative count");
+  if (n < 0) narra_panic(where, "Array.filled with a negative count");
   %[1]s* a = %[1]s_new(n);
   for (int64_t i = 0; i < n; i++) { a->items[i] = v; %[5]s }
   a->len = n;
@@ -440,7 +440,7 @@ func (e *Emitter) function(fd *FuncDecl) {
 	e.blockInScope(fd.Body)
 	e.unwindAll()
 	if fd.ResultT != TVoid {
-		e.line("lang_panic(%s, \"function ended without returning a value\");", e.where(fd.Pos))
+		e.line("narra_panic(%s, \"function ended without returning a value\");", e.where(fd.Pos))
 		e.line("return (%s){0};", fd.ResultT.CName())
 	}
 	e.indent--
@@ -779,7 +779,7 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		switch x.Op {
 		case "-":
 			if x.Type() == TInt {
-				return e.temp(TInt, fmt.Sprintf("lang_neg(%s, %s)", v, e.where(x.P))), false
+				return e.temp(TInt, fmt.Sprintf("narra_neg(%s, %s)", v, e.where(x.P))), false
 			}
 			return "(-" + v + ")", false
 		case "!":
@@ -862,11 +862,11 @@ func (e *Emitter) binary(x *BinaryExpr) string {
 		}
 	}
 	if lt == TInt {
-		fns := map[string]string{"+": "lang_add", "-": "lang_sub", "*": "lang_mul", "/": "lang_div", "%": "lang_rem", "<<": "lang_shl", ">>": "lang_shr"}
+		fns := map[string]string{"+": "narra_add", "-": "narra_sub", "*": "narra_mul", "/": "narra_div", "%": "narra_rem", "<<": "narra_shl", ">>": "narra_shr"}
 		if f, ok := fns[x.Op]; ok {
 			return e.temp(TInt, fmt.Sprintf("%s(%s, %s, %s)", f, l, r, w))
 		}
-		wraps := map[string]string{"+%": "lang_wrap_add", "-%": "lang_wrap_sub", "*%": "lang_wrap_mul"}
+		wraps := map[string]string{"+%": "narra_wrap_add", "-%": "narra_wrap_sub", "*%": "narra_wrap_mul"}
 		if f, ok := wraps[x.Op]; ok {
 			return fmt.Sprintf("%s(%s, %s)", f, l, r)
 		}
@@ -923,15 +923,15 @@ func (e *Emitter) builtin(x *CallExpr, w string) (string, bool) {
 	}
 	switch x.Builtin {
 	case "print":
-		return fmt.Sprintf("lang_print(%s)", arg(0)), false
+		return fmt.Sprintf("narra_print(%s)", arg(0)), false
 	case "assert":
-		return fmt.Sprintf("lang_assert(%s, %s)", arg(0), w), false
+		return fmt.Sprintf("narra_assert(%s, %s)", arg(0), w), false
 	case "panic":
-		return fmt.Sprintf("lang_panic_str(%s, %s)", arg(0), w), false
+		return fmt.Sprintf("narra_panic_str(%s, %s)", arg(0), w), false
 	case "Int.toString":
 		return e.ownedTemp(TStr, fmt.Sprintf("lstr_from_int(%s)", arg(0))), true
 	case "Int.abs":
-		return e.temp(TInt, fmt.Sprintf("lang_abs(%s, %s)", arg(0), w)), false
+		return e.temp(TInt, fmt.Sprintf("narra_abs(%s, %s)", arg(0), w)), false
 	case "Float.toString":
 		return e.ownedTemp(TStr, fmt.Sprintf("lstr_from_f64(%s)", arg(0))), true
 	case "Float.sqrt":
@@ -939,7 +939,7 @@ func (e *Emitter) builtin(x *CallExpr, w string) (string, bool) {
 	case "Float.fromInt":
 		return fmt.Sprintf("((double)%s)", arg(0)), false
 	case "Float.truncate":
-		return e.temp(TInt, fmt.Sprintf("lang_truncate(%s, %s)", arg(0), w)), false
+		return e.temp(TInt, fmt.Sprintf("narra_truncate(%s, %s)", arg(0), w)), false
 	case "Str.length":
 		return fmt.Sprintf("(%s)->len", arg(0)), false
 	case "Str.concat":

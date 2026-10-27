@@ -1,23 +1,23 @@
-# langc
+# narra
 
-`langc` is the bootstrap compiler for Lang, written in Go. It compiles one `.lang` file to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Lang.
+`narra` is the bootstrap compiler for Narra, written in Go. It compiles one `.nra` file to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Narra.
 
 ## Usage
 
 ```sh
 cd compiler
-go build -o langc ./cmd/langc
+go build -o narra ./cmd/narra
 
-./langc run testdata/numbers.lang          # build and run
-./langc build -o app file.lang             # build a debug executable
-./langc build -release -o app file.lang    # optimized, integer overflow wraps
-./langc test testdata/tests.lang           # run `test` blocks
-./langc emit file.lang                     # print the generated C
+./narra run testdata/numbers.nra          # build and run
+./narra build -o app file.nra             # build a debug executable
+./narra build -release -o app file.nra    # optimized, integer overflow wraps
+./narra test testdata/tests.nra           # run `test` blocks
+./narra emit file.nra                     # print the generated C
 ```
 
-The program's entry function is `export function run(args: Array<string>): int`. `lang.toml` is not read yet.
+The program's entry function is `export function run(args: Array<string>): int`. `narra.toml` is not read yet.
 
-Set `LANG_CHECK_LEAKS=1` when running a program to report allocations that are still live at exit. The program exits with code 102 when any are found.
+Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are still live at exit. The program exits with code 102 when any are found.
 
 ## Tests
 
@@ -25,7 +25,7 @@ Set `LANG_CHECK_LEAKS=1` when running a program to report allocations that are s
 go test ./...
 ```
 
-- `testdata/*.lang` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.
+- `testdata/*.nra` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.
 - `testdata/panics/` must panic with a given message and exit code 101.
 - `testdata/errors/` must fail to compile. The first line, `// error: text`, gives text the error must contain.
 
@@ -39,7 +39,7 @@ go test ./...
 - `Array<T>`: literals, `Array.push`, `Array.length`, `Array.filled`, indexing and element assignment, with copy on write.
 - `mutable` parameters, with the exclusive access check.
 - Generic functions, structs and enums. Type arguments are inferred from arguments, the expected type and struct fields.
-- `Option<T>` and `Result<T, E>`, declared in a prelude written in Lang.
+- `Option<T>` and `Result<T, E>`, declared in a prelude written in Narra.
 - `is` patterns in conditions. `if (x is Some(v))` binds `v` in the branch. After `if (x is None) { return ... }`, `x.value` reads the value. Narrowing works on constants and parameters.
 - Calls whose `Result` is not checked are compile errors.
 - Template strings.
@@ -49,7 +49,7 @@ go test ./...
 
 ## Not supported yet
 
-- Several modules, and `lang.toml`.
+- Several modules, and `narra.toml`.
 - Traits and trait constraints such as `<T: Equatable>`.
 - Nested patterns such as `Some(Node(a, b))`, and struct patterns.
 - Explicit type arguments in calls, such as `f<int>(x)`.

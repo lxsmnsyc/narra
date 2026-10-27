@@ -29,7 +29,7 @@ depends_on:
 
 ## Goal
 
-C emitter and driver in Lang, producing the same C as the Go compiler.
+C emitter and driver in Narra, producing the same C as the Go compiler.
 
 ## Notes
 

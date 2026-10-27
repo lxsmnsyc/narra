@@ -29,7 +29,7 @@ depends_on:
 
 ## Goal
 
-Lexer, AST and parser in Lang, producing the same tree as the Go parser on every test program.
+Lexer, AST and parser in Narra, producing the same tree as the Go parser on every test program.
 
 ## Notes
 

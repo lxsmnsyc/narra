@@ -1,6 +1,6 @@
 ---
 id: query-cli
-title: langc query
+title: narra query
 status: todo
 priority: could
 type: feature
@@ -25,11 +25,11 @@ depends_on:
     via: module-graph
 ---
 
-# langc query
+# narra query
 
 ## Goal
 
-`langc query type-of|def|refs|callers|interface|recursion`, with `--json`.
+`narra query type-of|def|refs|callers|interface|recursion`, with `--json`.
 
 ## Notes
 

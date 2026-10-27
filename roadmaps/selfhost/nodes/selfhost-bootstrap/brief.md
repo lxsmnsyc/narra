@@ -22,7 +22,7 @@ provides: []
 depends_on:
   - on: selfhost-emit
     kind: hard
-    why: needs a complete compiler in Lang
+    why: needs a complete compiler in Narra
 ---
 
 # Bootstrap: the compiler compiles itself

@@ -29,7 +29,7 @@ depends_on:
 
 ## Goal
 
-`unsafe` blocks, `Ptr<T>`, `extern`, `@repr(C)`, `@repr(u8)` enums, `@export(C)`, `CString`, `[link]` in `lang.toml`, and `lang audit`.
+`unsafe` blocks, `Ptr<T>`, `extern`, `@repr(C)`, `@repr(u8)` enums, `@export(C)`, `CString`, `[link]` in `narra.toml`, and `narra audit`.
 
 ## Notes
 

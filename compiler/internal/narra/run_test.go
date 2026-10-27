@@ -1,4 +1,4 @@
-package langc
+package narra
 
 import (
 	"bytes"
@@ -30,7 +30,7 @@ func runProgram(t *testing.T, src string, opts BuildOptions) (string, string, in
 		t.Fatalf("build %s: %v", src, err)
 	}
 	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), "LANG_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0")
+	cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -44,16 +44,16 @@ func runProgram(t *testing.T, src string, opts BuildOptions) (string, string, in
 }
 
 func TestPrograms(t *testing.T) {
-	files, _ := filepath.Glob(filepath.Join(testdata, "*.lang"))
+	files, _ := filepath.Glob(filepath.Join(testdata, "*.nra"))
 	for _, src := range files {
-		want, err := os.ReadFile(strings.TrimSuffix(src, ".lang") + ".out")
+		want, err := os.ReadFile(strings.TrimSuffix(src, ".nra") + ".out")
 		if err != nil {
 			t.Fatalf("missing expected output for %s", src)
 		}
 		for _, m := range modes {
 			t.Run(filepath.Base(src)+"/"+m.name, func(t *testing.T) {
 				opts := m.opts
-				opts.Tests = filepath.Base(src) == "tests.lang"
+				opts.Tests = filepath.Base(src) == "tests.nra"
 				out, stderr, code := runProgram(t, src, opts)
 				if code != 0 {
 					t.Fatalf("exit code %d\nstderr:\n%s", code, stderr)
@@ -68,9 +68,9 @@ func TestPrograms(t *testing.T) {
 
 func TestPanics(t *testing.T) {
 	cases := map[string]string{
-		"bounds.lang":   "index 5 out of range for length 2",
-		"overflow.lang": "integer overflow",
-		"divzero.lang":  "division by zero",
+		"bounds.nra":   "index 5 out of range for length 2",
+		"overflow.nra": "integer overflow",
+		"divzero.nra":  "division by zero",
 	}
 	for file, msg := range cases {
 		t.Run(file, func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestPanics(t *testing.T) {
 }
 
 func TestCompileErrors(t *testing.T) {
-	files, _ := filepath.Glob(filepath.Join(testdata, "errors", "*.lang"))
+	files, _ := filepath.Glob(filepath.Join(testdata, "errors", "*.nra"))
 	for _, src := range files {
 		t.Run(filepath.Base(src), func(t *testing.T) {
 			text, _ := os.ReadFile(src)

@@ -5,17 +5,17 @@ merge:
 branches:
 ---
 
-# Bootstrap compiler to a self-hosted Lang
+# Bootstrap compiler to a self-hosted Narra
 
 ## Outcome
 
-The Lang compiler is written in Lang and compiles itself. The Go bootstrap compiler `langc` first grows to cover the language features the compiler needs. The compiled compiler (stage 1) builds itself (stage 2), and stage 1 and stage 2 produce byte-identical C for the test programs. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Lang with Go and Rust. After self-hosting, the language gets its real name.
+The Narra compiler is written in Narra and compiles itself. The Go bootstrap compiler `narra` first grows to cover the language features the compiler needs. The compiled compiler (stage 1) builds itself (stage 2), and stage 1 and stage 2 produce byte-identical C for the test programs. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Narra with Go and Rust. The language was named Narra on 2026-10-28, before self-hosting.
 
 ## Acceptance
 
 - `cd compiler && go test ./...` passes, with every sample program clean under AddressSanitizer and the leak check.
 - The self-hosted compiler builds itself, and its output matches the Go compiler's output on every program in `compiler/testdata/`.
-- `bench/` reports Lang, Go and Rust times for the same programs.
+- `bench/` reports Narra, Go and Rust times for the same programs.
 
 ## Priorities
 
@@ -57,7 +57,7 @@ The Lang compiler is written in Lang and compiles itself. The Go bootstrap compi
 ## Coverage
 
 - closures with non-escaping parameters and `@inline` -> closures, inline
-- multiple modules and `lang.toml` -> modules
+- multiple modules and `narra.toml` -> modules
 - traits and constraints, struct and enum equality -> traits
 - nested patterns, spread updates, destructuring -> patterns
 - effects checking -> effects
@@ -69,7 +69,7 @@ The Lang compiler is written in Lang and compiles itself. The Go bootstrap compi
 - Perceus reference count optimization -> perceus; layout tables -> layout-tables
 - benchmarks against Go and Rust -> bench-harness
 - self-hosting -> selfhost-spike, selfhost-front, selfhost-check, selfhost-emit, selfhost-bootstrap
-- renaming the language -> rename
+- renaming the language -> rename (done early: Narra)
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 
 ## Decisions
@@ -81,4 +81,3 @@ The Lang compiler is written in Lang and compiles itself. The Go bootstrap compi
 
 - Contract freeze after split-compiler (the diagnostic and builtin registry contracts).
 - selfhost-spike: the user reviews the list of missing features before the port starts.
-- rename: the user chooses the name.

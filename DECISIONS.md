@@ -9,7 +9,7 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 - **Reason.** Safe code has no references, so there is nothing to annotate and no borrow rules to learn. Frees are deterministic and there are no collector pauses.
 - **Rejected: borrow checker with lifetimes (Rust).** Safe and fast, but lifetime annotations and borrow errors are the main source of complexity in Rust.
 - **Rejected: tracing garbage collector (OCaml, Go).** Simple to use. But it adds a runtime, pauses and memory overhead that do not fit a native target.
-- **Taken in part: mutable value semantics (Hylo).** Lang adds one optional parameter convention, `mutable` (D27). Parameters default to constant values, so most signatures carry no convention.
+- **Taken in part: mutable value semantics (Hylo).** Narra adds one optional parameter convention, `mutable` (D27). Parameters default to constant values, so most signatures carry no convention.
 - **Cost.** Reference count updates in hot code that shares data. A prototype must benchmark this early, on numeric and string-heavy code.
 
 ## D2. TypeScript-style syntax with Rust-style semantics
@@ -17,7 +17,7 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 Decision: braces, `const` and `let`, arrow functions, `import`, template strings and type annotations follow TypeScript. Types and semantics follow Rust: enums with fields, `match`, `Option` and `Result`, no `null`, sized numbers (section 2).
 
 - **Reason.** TypeScript syntax is the most widely read syntax among the target users and in model training data.
-- **Rule.** Where Lang's meaning differs from TypeScript's, Lang uses different syntax or a compile error with a fix (D42). The same text never means two different things.
+- **Rule.** Where Narra's meaning differs from TypeScript's, Narra uses different syntax or a compile error with a fix (D42). The same text never means two different things.
 
 ## D3. Explicit imports with package-rooted paths
 
@@ -26,7 +26,7 @@ Decision: one file is one module, names are private unless exported, and every e
 - **Reason.** The import list gives the dependency graph without name resolution, which keeps build scheduling simple.
 - **Reason.** Every name in a file is either declared there or listed at the top. Reading the file or a text search finds where it comes from.
 - **Rejected: globals.** Any file can read or write any global, so dependencies are implicit and typos create new variables.
-- **Rejected: relative paths.** They break when a file moves. Package-rooted paths plus `lang move` avoid that.
+- **Rejected: relative paths.** They break when a file moves. Package-rooted paths plus `narra move` avoid that.
 
 ## D4. No import cycles, no re-export statement, no default exports, no import side effects
 
@@ -139,7 +139,7 @@ Decision: string positions are `ByteIndex` values starting at 0, and slicing pan
 
 ## D16. Git dependencies with minimal version selection
 
-Decision: dependencies are git repositories pinned to tags, versions resolve with minimal version selection, and `lang.lock` stores hashes (section 15).
+Decision: dependencies are git repositories pinned to tags, versions resolve with minimal version selection, and `narra.lock` stores hashes (section 15).
 
 - **Reason.** Resolution needs no solver and gives the same result on every machine.
 - **Reason.** No registry to run at the start.
@@ -209,7 +209,7 @@ Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, 
 Decision: `const` declares a binding that cannot be reassigned, and `let` declares one that can (section 2).
 
 - **Reason.** The keyword says whether the name can change.
-- **Reason.** TypeScript uses the same words. Lang goes further, since a `const` value can never change, not only its binding. Section 2 lists this as a difference from TypeScript.
+- **Reason.** TypeScript uses the same words. Narra goes further, since a `const` value can never change, not only its binding. Section 2 lists this as a difference from TypeScript.
 - **Note.** A top-level `const` must be a compile-time constant. Inside a function, `const` accepts any expression (section 10).
 
 ## D25. TypeScript import syntax, with namespace and named imports only
@@ -217,7 +217,7 @@ Decision: `const` declares a binding that cannot be reassigned, and `let` declar
 Decision: `import * as Name from "path"` and `import { a, b } from "path"`. There are no default imports and no dynamic `import(...)` (section 3).
 
 - **Reason.** These are TypeScript's own forms, so they read correctly with no new rules.
-- **Reason.** `import X from "m"` means a default import in TypeScript. Lang has no default exports, so that form is a compile error instead of a different meaning.
+- **Reason.** `import X from "m"` means a default import in TypeScript. Narra has no default exports, so that form is a compile error instead of a different meaning.
 - **Rejected: a call-style import such as `const Name = import(...)`.** It looks like a runtime call, but importing runs nothing.
 
 ## D26. Struct literals, defaults, spread updates and destructuring
@@ -226,7 +226,7 @@ Decision: structs use typed literals (`Point { x: 1.0, y: 2.0 }`), constant fiel
 
 - **Typed literals.** Without `Point { ... }`, every struct literal would need an annotation or a context that gives the type.
 - **Constant defaults.** Optional settings need no builder functions. Constant values keep building a struct free of hidden calls.
-- **Spread updates.** `{ ...s, port: 9000 }` is the TypeScript form for an updated copy. Lang limits it to one spread, first, with the same struct type, so it cannot merge unrelated values.
+- **Spread updates.** `{ ...s, port: 9000 }` is the TypeScript form for an updated copy. Narra limits it to one spread, first, with the same struct type, so it cannot merge unrelated values.
 - **Destructuring.** `const { x, y } = p` and `{ x: 0.0, y } =>` read several fields in one step, using TypeScript's pattern syntax.
 - **No literal shorthand.** `{ name: name }` is always written in full. `{ name }` in a literal would be a second way to write a field. In a pattern, `{ name }` is the only way to bind a field to its own name, so it stays.
 - **Rejected: positional struct literals such as `Point(1.0, 2.0)`.** They depend on field order, and that form already means an enum constructor.
@@ -258,7 +258,7 @@ Decision: `Sender<T>`, `Receiver<T>`, `Shared<T>` and `Atomic<T>` are the only s
 - **Reason.** A lock must be one object that every copy refers to. Plain values cannot express that, so these types are named and few, and easy to find with a search.
 - **Reason.** Callbacks release the lock when they return, so a lock cannot be left held.
 - **Reason.** Callbacks cannot be `async`, so a task cannot suspend while holding a lock.
-- **Cost.** Deadlocks are still possible with nested locks. `lang audit` lists nested `Shared.update` calls.
+- **Cost.** Deadlocks are still possible with nested locks. `narra audit` lists nested `Shared.update` calls.
 
 ## D30. Literals, equality constraints and floats
 
@@ -287,16 +287,16 @@ Decision: `Str.slice` and `Array.slice` return views into the original buffer. `
 - **Reason.** Parsers slice often, and a copy per slice is slow.
 - **Cost.** A small slice keeps a large buffer alive until the slice is dropped.
 
-## D34. Entry points set in `lang.toml`
+## D34. Entry points set in `narra.toml`
 
-Decision: each `[[binary]]` in `lang.toml` names an entry function as `"module.function"`. Its signature is `(args: Array<string>): int` (section 15).
+Decision: each `[[binary]]` in `narra.toml` names an entry function as `"module.function"`. Its signature is `(args: Array<string>): int` (section 15).
 
 - **Reason.** One package can build several binaries without a special `main` name or file.
 - **Reason.** A package with no `[[binary]]` is a library, which needs no extra marker.
 
 ## D35. C interop details
 
-Decision: `@repr(<integer type>)` enums with explicit values, `@export(C, "name")` for callbacks, `CString` in `std/ffi`, and a `[link]` table in `lang.toml` (sections 9 and 15).
+Decision: `@repr(<integer type>)` enums with explicit values, `@export(C, "name")` for callbacks, `CString` in `std/ffi`, and a `[link]` table in `narra.toml` (sections 9 and 15).
 
 - **Reason.** These cover calling C libraries that take flags, callbacks and strings, which most C libraries do.
 
@@ -311,9 +311,9 @@ Decision: running out of memory, stack overflow and integer division by zero abo
 Decision: there is no `recursive` keyword. The compiler finds recursion from each module's call graph. A self-call in tail position compiles to a loop in every function (section 2).
 
 - **Reason.** The compiler already builds the call graph. Imports cannot form cycles (D4), so recursion never spans modules except through function values.
-- **Reason.** A keyword would repeat what the compiler knows. Accidental recursion is rare in Lang, since names are not shadowed and imported functions are called with a module prefix.
+- **Reason.** A keyword would repeat what the compiler knows. Accidental recursion is rare in Narra, since names are not shadowed and imported functions are called with a module prefix.
 - **Reason.** The tail-call guarantee covers every function, not only marked ones.
-- **Cost.** Recursion is not visible in a declaration. `lang query recursion MODULE` lists recursive functions.
+- **Cost.** Recursion is not visible in a declaration. `narra query recursion MODULE` lists recursive functions.
 - **Rejected: a `recursive` keyword.** It made recursion visible, but added a keyword for information the compiler already has.
 - **Rejected: `@tailcall` attribute.** It marked only the optimization, not the recursion.
 
@@ -352,7 +352,7 @@ Decision: platform differences use `if` on compile-time constants from `std/buil
 
 ## D42. TypeScript forms with a different meaning are errors with fixes
 
-Decision: code that is valid TypeScript but would mean something different in Lang is a compile error. The diagnostic includes an exact fix (sections 2 and 14).
+Decision: code that is valid TypeScript but would mean something different in Narra is a compile error. The diagnostic includes an exact fix (sections 2 and 14).
 
 - **Reason.** People and models will write TypeScript habits. A compile error with a fix is cheap. A silently different meaning causes bugs.
 - **Examples.** `===` becomes `==`. `null` becomes `None`. `xs.push(v)` becomes `Array.push(mutable xs, v)`. `import X from` becomes `import * as X from`. `'abc'` becomes `"abc"`.
@@ -362,7 +362,7 @@ Decision: code that is valid TypeScript but would mean something different in La
 Decision: a line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues. A `;` is a compile error (section 2).
 
 - **Reason.** The rule depends only on the last token of the line, as in Go, so there is one reading.
-- **Reason.** The known problems with semicolons in TypeScript come from making them optional with guessing rules. Lang has no optional form.
+- **Reason.** The known problems with semicolons in TypeScript come from making them optional with guessing rules. Narra has no optional form.
 - **Rejected: required semicolons.** They add a token to every line without removing any ambiguity the line rule leaves.
 
 ## D44. Tuples instead of multiple return values
@@ -408,7 +408,7 @@ Decision: `Region.run(f)` allocates every heap value created during `f` from one
 
 ## D49. Copies on shared values are made visible
 
-Decision: `lang check --report-copies`, `LANG_TRACE_COPIES=1` and `@unique` let variables show where an update copies a shared value (section 6).
+Decision: `narra check --report-copies`, `NARRA_TRACE_COPIES=1` and `@unique` let variables show where an update copies a shared value (section 6).
 
 - **Reason.** Copy-on-update is correct but hidden. A copy of a large array in a hot loop is the main source of unexpected slowness in this memory model.
 - **Reason.** `@unique` turns the fast path into a checked promise in debug builds, at no cost in release builds.

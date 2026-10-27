@@ -16,13 +16,13 @@ fulfilled_by:
 gate: false
 added:
 owns:
-  - compiler/internal/langc/emit_box.go
+  - compiler/internal/narra/emit_box.go
   - compiler/testdata/recursive*
 shared:
-  - compiler/internal/langc/emit_types.go
-  - compiler/internal/langc/check_types.go
-  - compiler/internal/langc/emit_match.go
-  - compiler/internal/langc/runtime.h
+  - compiler/internal/narra/emit_types.go
+  - compiler/internal/narra/check_types.go
+  - compiler/internal/narra/emit_match.go
+  - compiler/internal/narra/runtime.h
 reserves: []
 provides: []
 depends_on:

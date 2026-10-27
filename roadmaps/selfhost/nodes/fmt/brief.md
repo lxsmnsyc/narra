@@ -1,6 +1,6 @@
 ---
 id: fmt
-title: langc fmt
+title: narra fmt
 status: todo
 priority: could
 type: feature
@@ -25,7 +25,7 @@ depends_on:
     why: needs the parser to keep comments, which touches files split-compiler settles
 ---
 
-# langc fmt
+# narra fmt
 
 ## Goal
 

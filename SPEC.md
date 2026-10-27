@@ -12,6 +12,7 @@ The previous draft used ReasonML syntax. It is kept at the git tag `reasonml-dra
 - Lang compiles to native code, the same target as C, Rust and Go. The compiler emits C, and a C compiler builds the final binary.
 - Lang code is a set of modules. One file is one module. There are no globals.
 - Values are immutable. Safe code has no pointers or references, only values.
+- A function changes a caller's variable only through a `mutable` parameter, marked at the call: `damage(mutable hero, 10)`.
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
@@ -51,6 +52,7 @@ The syntax follows Lua 5.4. This section lists only the differences and addition
 
 - `function name(a: int, b: int): int ... end` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
 - Anonymous functions use the same form without a name: `function(x: int): int return x + 1 end`.
+- **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
 - **Multiple return values** are allowed and typed: `function divmod(a: int, b: int): (int, int)`.
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
 - **No currying and no partial application.** To fix some arguments, write an anonymous function.
@@ -210,7 +212,8 @@ end
 
 - `s.field` reads a field.
 - `s with { field = value }` returns a copy with some fields changed. The original is unchanged.
-- `s.field = value` changes a field in place. `s` must be a `let` variable or a field of one.
+- `s.field = value` changes a field in place. `s` must be a `let` variable, a `mutable` parameter, or a field of one.
+- To change a caller's struct inside a function, declare the parameter `mutable` (section 6).
 
 ```lua
 const moved = config with { port = 9000 }
@@ -366,7 +369,7 @@ end
 
 ### In-place updates
 
-- `xs[i] = v`, `m[k] = v`, `Array.push(xs, v)`, `u.age = v` and `u with { ... }` produce a new value and assign it.
+- `xs[i] = v`, `m[k] = v`, `Array.push(mutable xs, v)` and `u.age = v` change a `let` variable. `u with { ... }` returns a changed copy.
 - When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
 - Code that keeps one owner gets in-place mutation with no copies.
 
@@ -377,12 +380,36 @@ for i = 0, 999 do
 end
 ```
 
-- `xs[i] = v` and `u.age = v` require the target to be a `let` variable or a field of one.
+- `xs[i] = v` and `u.age = v` require the target to be a `let` variable, a `mutable` parameter, or a field of one.
+
+### Mutable parameters
+
+A function changes a caller's variable only through a `mutable` parameter. The keyword appears in the declaration and again at the call.
+
+```lua
+function damage(mutable player: Player, amount: int)
+  player.hp = player.hp - amount
+end
+
+let hero = Player { name = "Ana", hp = 100, position = Vec2 { x = 0.0, y = 0.0 } }
+damage(mutable hero, 10)      -- hero.hp is now 90
+```
+
+- **The argument must be changeable.** It must be a `let` variable, a `mutable` parameter, or a field or element of one. A `const`, a literal or a function result is a compile error.
+- **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
+- **A `mutable` parameter cannot escape.** It cannot be stored, captured by a closure, or returned. Copying its value with `const copy = player` is allowed.
+- **No copies.** The compiler passes a pointer to the caller's variable. Changes are written in place, with no copy and no reference count change for the variable itself.
+- **Other parameters are values.** A parameter without `mutable` is a constant copy. To build new data instead of changing the caller's data, return a new value.
+
+| Goal | Form |
+| --- | --- |
+| Change the caller's data | `damage(mutable hero, 10)` |
+| Build new data | `const stronger = withBonus(hero, 5)` |
 
 ### Cycles
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
-- A `let` variable cannot be captured or stored, so it cannot create a cycle.
+- A `let` variable or `mutable` parameter cannot be captured or stored, so it cannot create a cycle.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Threads
@@ -438,7 +465,7 @@ function counter(limit: int): Generator<int>
 end
 
 const c = counter(3)
-for n in Co.values(c) do
+for n in Co.values(mutable c) do
   print(Int.toString(n))  -- 0, 1, 2
 end
 ```
@@ -446,9 +473,10 @@ end
 - **`Coroutine<In, Out>`** takes `In` on each resume and produces `Out` on each yield.
 - **`Generator<Out>`** is a coroutine that takes no input on resume. `Co.generator(f)` makes one.
 - **`Co.create(f)`** makes a coroutine from a function with the `yield` effect.
-- **`Co.resume(c, input)`** returns `Yielded(value)`, `Done` or `Panicked(message)`. A panic inside a coroutine still aborts the program in release builds. `Panicked` is only reported in test builds.
+- **`Co.resume(mutable c, input)`** runs the coroutine until its next yield, changing `c` in place. It returns `Yielded(value)`, `Done` or `Panicked(message)`. A panic inside a coroutine still aborts the program in release builds. `Panicked` is only reported in test builds.
 - **`Co.yield(value)`** suspends the coroutine. It has the `yield` effect.
-- **`Co.values(g)`** iterates over a `Generator<Out>`.
+- **`Co.values(mutable g)`** iterates over a `Generator<Out>`, advancing `g` in place.
+- **A coroutine is a value like any other.** Resuming one requires a `mutable` argument, so the change is visible at the call. Copying a coroutine with `const` and then resuming the copy leaves the original unchanged.
 - **Yield crosses calls only through `yield` functions.** A function can call `Co.yield` only if it has the `yield` effect. Higher-order functions pass `yield` through effect variables like any other effect.
 - **Generic code that yields is specialized.** A generic function called with a `yield` function is compiled as a separate state-machine copy for that effect. Code that never yields pays nothing.
 
@@ -475,6 +503,7 @@ end
 - **Debug builds** use a fast C compiler such as TCC with checks on.
 - **Release builds** use Clang or GCC with `-O2`.
 - **Coroutines** compile to a struct holding their live variables and a state number, plus a resume function with a `switch` on that number.
+- **`mutable` parameters** compile to C pointer parameters.
 - **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
 - **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
 

@@ -25,5 +25,6 @@ Status: specification draft. There is no compiler yet.
 - [Lean 4](https://lean-lang.org/) for reference counting with in-place reuse, compiled to C.
 - [Lua](https://www.lua.org/) for syntax.
 - [Teal](https://github.com/teal-language/tl), [Luau](https://luau.org/) and [Pallene](https://github.com/pallene-lang/pallene) for typed Lua.
+- [Hylo](https://www.hylo-lang.org/) for mutable value semantics, the model behind `mutable` parameters.
 - [Vale](https://vale.dev/) for generational handles.
 - [Go](https://go.dev/) and [Zig](https://ziglang.org/) for build speed and C interop.

@@ -9,7 +9,7 @@ Decision: immutable values with compiler-inserted reference counting and in-plac
 - **Reason.** Safe code has no references, so there is nothing to annotate and no borrow rules to learn. Frees are deterministic and there are no collector pauses.
 - **Rejected: borrow checker with lifetimes (Rust).** Safe and fast, but lifetime annotations and borrow errors are the main source of complexity in Rust.
 - **Rejected: tracing garbage collector (Lua, OCaml, Go).** Simple to use. But it adds a runtime, pauses and memory overhead that do not fit a native target.
-- **Rejected: mutable value semantics with `inout` parameters (Hylo).** Safe without lifetimes, but adds parameter conventions to every signature. Reference counting with reuse gets the same in-place updates without them.
+- **Taken in part: mutable value semantics (Hylo).** Lang adds one optional parameter convention, `mutable` (D27). Parameters default to constant values, so most signatures carry no convention.
 - **Cost.** Reference count updates in hot code that shares data. A prototype must benchmark this early, on numeric and string-heavy code.
 
 ## D2. Lua syntax with static types
@@ -218,3 +218,15 @@ Decision: structs support typed literals (`Point { ... }`), constant field defau
 - **Destructuring.** `const { x, y } = p` and `when { x = 0.0, y }` read several fields in one step, and match the named import form `const { a, b } = import(...)`.
 - **No literal shorthand.** `{ name = name }` is always written in full. `{ name }` in a literal would be a second way to write a field. In a pattern, `{ name }` is the only way to bind a field to its own name, so it stays.
 - **Rejected: positional struct literals such as `Point(1.0, 2.0)`.** They depend on field order, and that form already means an enum constructor.
+
+## D27. `mutable` parameters, marked at the declaration and the call
+
+Decision: a function changes a caller's variable only through a parameter declared `mutable`. The call writes `mutable` before the argument. Access is exclusive for the call, and the parameter cannot escape (section 6).
+
+- **Reason.** Every change to a caller's data is visible in the signature and at the call. A reader of either file knows the value changes.
+- **Reason.** In-place updates are part of the language, not an optimization. The compiler passes a pointer, with no copies.
+- **Reason.** Exclusive access and no escaping keep it memory safe with one local check per call. The reference ends when the call returns, so no lifetimes are needed.
+- **Reason.** It gives coroutines and collections one explicit form: `Co.resume(mutable c, x)` and `Array.push(mutable xs, v)`.
+- **Rejected: guaranteeing in-place updates for `x = f(x)`.** The fast path would depend on a pattern that is not visible. `y = f(x)` looks almost the same and copies.
+- **Rejected keywords.** `inout` describes the mechanism instead of the meaning. `mut` is an abbreviation. `ref` suggests references that could be stored.
+- **Cost.** Two ways to produce changed data: a `mutable` parameter or a returned value. The rule is `mutable` to change the caller's data, and a return value to build new data.

@@ -250,3 +250,66 @@ Decision: `Sender<T>`, `Receiver<T>`, `Shared<T>` and `Atomic<T>` are the only s
 - **Reason.** Callbacks release the lock when they return, so a lock cannot be left held.
 - **Reason.** Callbacks cannot have `yield`, so a task cannot suspend while holding a lock.
 - **Cost.** Deadlocks are still possible with nested locks. `lang audit` lists nested `Shared.update` calls.
+
+## D30. Literals, equality constraints and floats
+
+Decision: strings use `"..."` and characters use `'...'`. Literals must fit their type. `Equatable` and `Hashable` are the only constraints. `==` on floats follows IEEE 754, and floats cannot be hashed (sections 2 and 4).
+
+- **Reason.** Lua's two string quote styles were a second way to write strings, and `char` needed a literal form.
+- **Reason.** Generic code that uses `==` or hashing must know its type argument supports them. Two built-in constraints say this without adding traits.
+- **Reason.** Float keys break maps when `NaN` is involved, because `NaN` is not equal to itself.
+
+## D31. Iterators are generators
+
+Decision: `for x in iter` takes a `Generator<T>`. Collections return generators (section 2).
+
+- **Reason.** No new protocol or trait is needed. Coroutines already define suspend and resume.
+
+## D32. Maps keep insertion order
+
+Decision: map iteration follows insertion order (section 4).
+
+- **Reason.** Output, tests and builds are the same on every run.
+
+## D33. Slices share memory
+
+Decision: `Str.slice` and `Array.slice` return views into the original buffer. `copy` functions make a separate copy (section 4).
+
+- **Reason.** Parsers slice often, and a copy per slice is slow.
+- **Cost.** A small slice keeps a large buffer alive until the slice is dropped.
+
+## D34. Entry points set in `lang.toml`
+
+Decision: each `[[binary]]` in `lang.toml` names an entry function as `"module.function"`. Its signature is `(args: Array<string>): int` (section 15).
+
+- **Reason.** One package can build several binaries without a special `main` name or file.
+- **Reason.** A package with no `[[binary]]` is a library, which needs no extra marker.
+
+## D35. C interop details
+
+Decision: `@repr(<integer type>)` enums with explicit values, `@export(C, "name")` for callbacks, `CString` in `std/ffi`, and a `[link]` table in `lang.toml` (sections 9 and 15).
+
+- **Reason.** These cover calling C libraries that take flags, callbacks and strings, which most C libraries do.
+
+## D36. Runtime failures abort
+
+Decision: running out of memory, stack overflow and integer division by zero abort the program, in every build (sections 4, 6 and 11).
+
+- **Reason.** These failures cannot be handled where they happen in a useful way. Aborting matches panics (D9).
+
+## D37. Recursive functions are declared
+
+Decision: a function that calls itself, directly or through other functions in its module, is declared `recursive function`. In such a function, a self-call in tail position compiles to a loop (section 2). This follows ReasonML's `let rec`.
+
+- **Reason.** Recursion is visible in the declaration. A reader knows which functions can grow the stack.
+- **Reason.** Non-recursive functions have a fixed stack depth that the compiler can compute.
+- **Reason.** Tail-call loops are guaranteed where recursion is declared, without a separate attribute.
+- **Note.** Imports cannot form cycles (D4), so recursion across modules is only possible through function values, which are not checked.
+- **Rejected: `@tailcall` attribute.** It marked only the optimization, not the recursion.
+
+## D38. No shadowing, and unused names are errors
+
+Decision: a name cannot be declared again in the same function while an earlier binding is in scope. Unused locals, parameters, imports and private functions are compile errors unless they start with `_` (section 2).
+
+- **Reason.** Each name in a function means one thing, so a reader or an agent never has to work out which binding is meant.
+- **Reason.** Unused code is removed as soon as it appears instead of accumulating.

@@ -47,11 +47,34 @@ The syntax follows Lua 5.4. This section lists only the differences and addition
 - `local` is not a keyword. Every binding is local to its block or module.
 - There are no globals. Assigning to an undeclared name is a compile error.
 - Multiple assignment is allowed: `const a, b = f()` when `f` returns two values.
+- **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
+- **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
 
 ### Functions
 
 - `function name(a: int, b: int): int ... end` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
 - Anonymous functions use the same form without a name: `function(x: int): int return x + 1 end`.
+- **Recursion is declared.** A function that calls itself, directly or through other functions in the same module, is declared `recursive function`. A call that forms a cycle between functions that are not marked `recursive` is a compile error.
+- **Tail calls in recursive functions are loops.** In a `recursive function`, a tail-position call to itself compiles to a jump. The stack does not grow. Other recursive calls use the stack. Stack overflow aborts the program.
+
+```lua
+recursive function gcd(a: int, b: int): int
+  if b == 0 then return a end
+  return gcd(b, a % b)          -- tail call, compiled to a loop
+end
+
+recursive function isEven(n: int): bool
+  if n == 0 then return true end
+  return isOdd(n - 1)
+end
+
+recursive function isOdd(n: int): bool
+  if n == 0 then return false end
+  return isEven(n - 1)
+end
+```
+
+- Recursion through function values, such as a function passed as an argument, is not checked.
 - **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
 - **Multiple return values** are allowed and typed: `function divmod(a: int, b: int): (int, int)`.
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
@@ -66,8 +89,19 @@ The syntax follows Lua 5.4. This section lists only the differences and addition
 - `while cond do ... end` and `repeat ... until cond`.
 - `for i = first, last do ... end` counts from `first` to `last` inclusive, as in Lua. `for i = first, last, step do` takes a step.
 - `for x in iter do ... end` loops over an iterator. `for i, x in Array.entries(xs) do` gives indexes from 0.
+- **An iterator is a `Generator<T>`** (section 8). `Array.values`, `Array.entries`, `Map.keys`, `Map.entries` and `Str.chars` return generators. A function returns its own iterator by returning a generator.
+- `for i, x in iter` works when the generator yields a `Tuple<A, B>`. The tuple is split into `i` and `x`.
 - `break` and `goto` work as in Lua. `continue` is added.
 - `match` is added (section 4).
+
+### Literals
+
+- **Strings** use double quotes only: `"text"`. Lua's long strings `[[ ... ]]` hold multi-line text.
+- **Characters** use single quotes: `'a'`, `'\n'`, `'\u{1F600}'`. A character literal has type `char`.
+- **Integers:** `42`, `0xFF`, `0o755`, `0b1010`. `_` can separate digits: `1_000_000`.
+- **Floats:** `3.14`, `1.0e-9`, `1_000.5`.
+- **A literal must fit its type.** `const x: u8 = 300` is a compile error.
+- `true` and `false` have type `bool`.
 
 ### Comments and formatting
 
@@ -164,6 +198,8 @@ end
 
 - **Arrays.** `Array<T>` is a growable, contiguous array. `{1, 2, 3}` builds one when the expected type is an array. Indexes start at 0. `xs[i]` is bounds checked and panics when out of range. `#xs` is the length.
 - **Maps.** `Map<K, V>` is a hash map. `{ ["a"] = 1, ["b"] = 2 }` builds one when the expected type is a map. `m[k]` returns `Option<V>`.
+- **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
+- **Float keys are not allowed.** `Map<f64, V>` and keys that contain floats are compile errors.
 - **Tuples.** `Tuple<int, string>` holds a fixed group of values, built with `Tuple(1, "a")`.
 - **Multiple return values.** `: (int, int)` in a return type means the function returns two values. They are not a tuple and cannot be stored as one value.
 - **Functions.** `function(int, string): bool`.
@@ -291,7 +327,18 @@ end
 - There are no typeclasses or traits. Behavior is passed explicitly, as a function: `Array.sortBy(xs, Int.compare)`.
 - Arithmetic operators do not work on a type parameter. Pass a function instead.
 - **Structural equality.** `==` compares values structurally, and the compiler derives it for every type except functions. Using `==` on a type that contains a function is a compile error.
-- **Hashing.** `Hash.of(x)` follows the same rule.
+- **Hashing.** `Hash.of(x)` follows the same rule, and also rejects types that contain floats.
+- **`Equatable` and `Hashable` constraints.** Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`. The compiler checks each type argument against the rules above. These two are the only constraints in the language, and users cannot define new ones.
+- **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
+
+```lua
+export function contains<T: Equatable>(items: Array<T>, wanted: T): bool
+  for item in Array.values(items) do
+    if item == wanted then return true end
+  end
+  return false
+end
+```
 
 ### Inference
 
@@ -302,6 +349,7 @@ end
 ### Numbers
 
 - Integer overflow panics in debug builds and wraps in release builds. `+%`, `-%` and `*%` always wrap.
+- Integer division or remainder by zero panics in every build.
 - Conversions are explicit: `I32.from(x)`, `F64.fromInt(x)`, `Int.truncate(f)`.
 
 ### Strings
@@ -309,6 +357,7 @@ end
 - `string` holds valid UTF-8. Functions that build a string from bytes return `Result` and fail on invalid UTF-8.
 - **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is a distinct type, not `int`.
 - **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
+- **Slices share memory.** `Str.slice` and `Array.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `Str.copy` or `Array.copy` to keep a small part of a large buffer without keeping the rest.
 - **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
 - `#s` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
@@ -366,6 +415,7 @@ end
 - **`Box<T>`** puts a value on the heap with a reference count. Use it for recursive structs and for large structs that are passed around often.
 - The compiler inserts reference count increments and decrements. It removes the ones it can prove unnecessary, as in Koka's Perceus.
 - A value is freed when its count reaches zero. Freeing is deterministic, so file handles and sockets close at the point their last owner drops them.
+- **Running out of memory aborts the program,** the same as a panic.
 
 ### In-place updates
 
@@ -435,7 +485,7 @@ Rules:
 - The compiler infers effects for private functions and anonymous functions.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
-- `main` has every effect except `yield`. `Async.run` provides a context where `yield` is allowed.
+- The entry function (section 15) has every effect except `yield`. `Async.run` provides a context where `yield` is allowed.
 
 ### Effect variables
 
@@ -579,7 +629,7 @@ function handle(connection: Connection) uses io, yield, alloc
   end
 end
 
-function main()
+export function run(args: Array<string>): int    -- entry function set in lang.toml
   Async.run(function(loop: Loop) uses io, yield, alloc
     let listener = Net.listen("127.0.0.1", 8080)
     while true do
@@ -589,10 +639,11 @@ function main()
       end
     end
   end)
+  return 0
 end
 ```
 
-- **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It removes the `yield` effect, so it can be called from `main` or from a thread.
+- **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It removes the `yield` effect, so it can be called from the entry function or from a thread.
 - **`Async.spawn(loop, f)`** starts a task on that loop and returns a `Task<T>`. **`Async.await(t)`** suspends until the task finishes and returns its result. **`Async.all(tasks)`** waits for several.
 - **A `Loop` cannot escape,** with the same rules as a `Scope`.
 - **Suspending I/O lives in `std/async/*`.** `std/async/net`, `std/async/file` and `std/async/time` mirror the blocking modules with the same function names. Their functions have `uses io, yield`.
@@ -604,6 +655,20 @@ end
 - **`unsafe do ... end`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
 - **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
+- **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
+
+```lua
+@repr(u8)
+export enum Color
+  Red = 1
+  Green = 2
+  Blue = 4
+end
+```
+
+- **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
+- **C strings.** `std/ffi` provides `CString`. `CString.from(s)` copies a string with a terminating zero byte, and `CString.toString(p)` copies back and returns `Result` on invalid UTF-8.
+- **Linking.** A `[link]` table in `lang.toml` lists C libraries and search paths (section 15).
 - `lang audit` lists every `unsafe` block and `@trusted` function in a package.
 
 ## 10. Top-level declarations
@@ -614,7 +679,7 @@ end
   - a named function or another constant
   - a call to an `@const` function
 - **`lazy`** defers a computation until first use: `const table = lazy buildTable()`. The first `Lazy.force(table)` computes the value and later calls return it. Forcing is thread safe.
-- Modules have no initialization code. Program startup runs nothing before `main`.
+- Modules have no initialization code. Program startup runs nothing before the entry function.
 
 ## 11. Code generation
 
@@ -623,6 +688,7 @@ end
 - **Release builds** use Clang or GCC with `-O2`.
 - **Coroutines** compile to a struct holding their live variables and a state number, plus a resume function with a `switch` on that number.
 - **`mutable` parameters** compile to C pointer parameters.
+- **Self-calls in tail position** inside a `recursive function` compile to loops (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
 - **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
 - **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
 
@@ -709,7 +775,19 @@ version = "0.1.0"
 
 [dependencies]
 json = { git = "https://github.com/example/lang-json", version = "1.2.0" }
+
+[[binary]]
+name = "app"
+entry = "app/cli.run"
+
+[link]
+libraries = ["sqlite3"]
+search = ["/opt/homebrew/lib"]
 ```
+
+- **Entry points are set in `lang.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
+- **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect except `yield`.
+- **`[link]`** lists C libraries to link and directories to search.
 
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.

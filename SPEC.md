@@ -161,6 +161,7 @@ Rules:
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
 - **No re-export statement and no default exports.** An exported name is always declared in the exporting file with `export function`, `export const`, `export type`, `export struct` or `export enum`.
 - **`export type A = B`** declares an alias. When `B` is an enum, its constructors are usable through the alias.
+- **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
 - **No import side effects.** Top-level declarations must be functions, types, `const` constants or `lazy` values (section 10). There is no top-level `let`.
 - **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
 - **`lang move old new`** moves a file and rewrites every import of it.
@@ -298,6 +299,52 @@ end
 const list = ListNode { value = 1, next = Some(Box.new(ListNode { value = 2 })) }
 ```
 
+### Opaque types
+
+`export opaque struct` exports a struct's name but not its fields.
+
+```lua
+-- module "app/range"
+export opaque struct Range
+  start: int
+  finish: int
+end
+
+export function create(start: int, finish: int): Result<Range, string>
+  if start > finish then return Err("start is after finish") end
+  return Ok(Range { start = start, finish = finish })
+end
+
+export function length(r: Range): int
+  return r.finish - r.start
+end
+```
+
+- **Other modules** can store, pass, copy and compare a `Range` with `==`. They cannot build one with a literal, read or assign its fields, use `with`, or destructure it.
+- **The declaring module** uses the struct like any other struct.
+- **Fields are all public or all private.** There is no per-field visibility.
+- Use an opaque struct when a type has a rule that every value must follow, such as `start <= finish`.
+
+### Distinct types
+
+`distinct type` declares a new type with the same representation as an existing one.
+
+```lua
+export distinct type UserId = int
+export distinct type OrderId = int
+
+const user = UserId.from(42)
+const raw: int = UserId.toInt(user)
+
+loadUser(OrderId.from(7))     -- compile error: OrderId is not UserId
+```
+
+- **No implicit conversion.** A `UserId` is not an `int`, and an `OrderId` is not a `UserId`.
+- **`T.from` and `T.toInt`** are generated. For a distinct type over another type, the second function is named after it, such as `T.toString` for a distinct `string`.
+- **No operators carry over.** `user + 1` is a compile error. The declaring module defines any operations the type needs as functions.
+- **No runtime cost.** A distinct type compiles to the same C type as its base.
+- **`export opaque distinct type`** hides `from`, so only the declaring module can create values. Other modules can still call the unwrap function.
+
 ### Optional values
 
 - `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `nil`.
@@ -355,7 +402,7 @@ end
 ### Strings
 
 - `string` holds valid UTF-8. Functions that build a string from bytes return `Result` and fail on invalid UTF-8.
-- **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is a distinct type, not `int`.
+- **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is declared as `export opaque distinct type ByteIndex = u64`, so only `std/string` can create one.
 - **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
 - **Slices share memory.** `Str.slice` and `Array.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `Str.copy` or `Array.copy` to keep a small part of a large buffer without keeping the rest.
 - **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.

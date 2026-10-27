@@ -313,3 +313,19 @@ Decision: a name cannot be declared again in the same function while an earlier 
 
 - **Reason.** Each name in a function means one thing, so a reader or an agent never has to work out which binding is meant.
 - **Reason.** Unused code is removed as soon as it appears instead of accumulating.
+
+## D39. Opaque structs
+
+Decision: `export opaque struct` exports a struct type without its fields. Only the declaring module can build, read or change the fields (section 4).
+
+- **Reason.** A library can enforce rules on its values, such as `start <= finish`. Without it, any module could build an invalid value.
+- **Reason.** The standard library needs it for types such as `Handle<T>`.
+- **Rejected: per-field visibility.** It adds a keyword to every field, and a struct with some hidden fields still cannot be built from outside.
+
+## D40. Distinct types
+
+Decision: `distinct type A = B` declares a new type with the representation of `B`, converted only through generated `from` and `to` functions (section 4).
+
+- **Reason.** IDs, units and indexes with the same representation cannot be mixed up by accident.
+- **Reason.** No runtime cost, since the C type is the same.
+- **Reason.** With `opaque`, only the declaring module can create values, which is how `ByteIndex` is defined.

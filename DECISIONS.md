@@ -56,12 +56,14 @@ Decision: modules cannot be parameterized by other modules in the first version.
 - **Reason.** Parameterized modules are a large feature. Generics plus explicit function arguments cover most uses.
 - **Revisit when.** Real code shows repeated patterns that generics cannot express.
 
-## D7. Polymorphic code compiled once, with opt-in specialization
+## D7. Generic code with layout tables, specialized in release builds
 
-Decision: generic functions take values in a uniform form and compile to one copy. `@specialize` requests per-type copies (section 11).
+Decision: unspecialized generic code receives a layout table per type parameter. Debug builds compile each generic function once. Release builds specialize within a package. `@specialize`, `@inline` and `generics = "compact"` adjust this (section 11).
 
-- **Reason.** Per-type copies, as in C++ templates and Rust generics, are the main cause of large binaries and slow builds in those languages.
-- **Cost.** Boxing in generic code. `@specialize` exists for hot paths.
+- **Reason.** Debug builds stay fast to compile, since each generic function is compiled once.
+- **Reason.** Release builds get direct code for the generic calls inside a package, where most hot code is.
+- **Reason.** Calls across packages use layout tables by default. Binary size and build time do not grow with every use, as they do with C++ templates and Rust generics.
+- **Cost.** Unspecialized generic code copies values through table functions instead of direct moves.
 
 ## D8. A fixed set of effects in signatures
 
@@ -108,14 +110,15 @@ Decision: a call passes every argument. There is no currying, partial applicatio
 - **Rejected: `#` or `.length`.** Named functions such as `Array.length` say which type they work on.
 - **Cost.** Data transformations read inside out or need named intermediate values. Fixing arguments needs an arrow function.
 
-## D13. Uniform form with a tag bit, and heap boxes for 64-bit values and structs in generic code
+## D13. Layout tables instead of boxing in generic code
 
-Decision: generic code receives one machine word per value. Types of 32 bits or less are stored inline with a tag bit. 64-bit numbers and structs are heap boxed (section 11).
+Decision: generic code handles values of a type parameter through a table with size, alignment, copy, drop and move functions. Values are never boxed for generic code, and containers store raw values (section 11).
 
+- **Reason.** `Array<int>` holds raw integers in all code. A boxed design would allocate one heap object per element in generic containers.
 - **Reason.** `i64` stays a full 64-bit integer that matches C's `int64_t`.
-- **Reason.** Non-generic code never boxes. Boxing happens only where a value enters generic code, and `@specialize` removes it in hot paths.
-- **Rejected: 63-bit `int` (OCaml).** Fast generic code, but `int` no longer matches a C type, which complicates C interop.
-- **Rejected: a type descriptor passed with every generic call.** No boxing. But every generic call takes an extra argument, and generic code must read sizes at runtime.
+- **Prior art.** Swift's value witness tables work the same way.
+- **Rejected: a uniform one-word form with boxing for large values.** It made generic containers of numbers and structs allocate per element.
+- **Rejected: 63-bit `int` (OCaml).** Fast generic code, but `int` no longer matches a C type.
 
 ## D14. Effect variables for higher-order functions
 
@@ -387,3 +390,33 @@ Decision: a function-type parameter can only be called during the call. `escapin
 - **Reason.** `@inline` on small higher-order functions removes the indirect call, so `Array.map` with an arrow function compiles like a loop.
 - **Prior art.** Swift makes closure parameters non-escaping by default and requires `@escaping`.
 - **Rejected: escape analysis without a marker.** It would give the same speed. But a change inside one function could turn a free closure into an allocation for every caller, with no visible sign.
+
+## D47. Fixed-size arrays and vector types
+
+Decision: `FixedArray<T, N>` is stored inline, with `const N: int` generic parameters. `std/simd` provides vector types compiled to vector instructions (section 4).
+
+- **Reason.** Small arrays such as a 4x4 matrix or a 16-byte key need no heap allocation and can live inside structs.
+- **Reason.** Numeric code needs vector instructions without writing C.
+
+## D48. Regions for bulk allocation
+
+Decision: `Region.run(f)` allocates every heap value created during `f` from one block and frees the block when `f` returns. Values leave only by copying (section 6).
+
+- **Reason.** Work with a clear end, such as one request or one compile, frees thousands of values in one step. No reference counts are updated.
+- **Reason.** Copying on the way out keeps the rule that no value can point into freed memory.
+- **Cost.** The result is copied out. Large results should be kept small, such as a summary instead of the whole tree.
+
+## D49. Copies on shared values are made visible
+
+Decision: `lang check --report-copies`, `LANG_TRACE_COPIES=1` and `@unique` let variables show where an update copies a shared value (section 6).
+
+- **Reason.** Copy-on-update is correct but hidden. A copy of a large array in a hot loop is the main source of unexpected slowness in this memory model.
+- **Reason.** `@unique` turns the fast path into a checked promise in debug builds, at no cost in release builds.
+- **Rejected: making every copy explicit, as Rust's `.clone()`.** Every shared value would need copy calls, which goes against the value model.
+
+## D50. Constant parameters and reads go through pointers
+
+Decision: large constant parameters are passed by pointer, and reads of fields and elements go through pointers without copying (section 11).
+
+- **Reason.** Value semantics do not require physical copies. Parameters are constant and access is exclusive, so a pointer is indistinguishable from a copy.
+- **Reason.** It removes the cost of passing large structs and of reading from containers, with no syntax.

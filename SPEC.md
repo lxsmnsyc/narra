@@ -239,7 +239,9 @@ export enum Token {
 }
 ```
 
-- **Arrays.** `Array<T>` is a growable, contiguous array. Indexes start at 0. `items[i]` is bounds checked and panics when out of range.
+- **Arrays.** `Array<T>` is a growable, contiguous array on the heap. Elements are stored directly: an `Array<int>` holds raw 8-byte integers. Indexes start at 0. `items[i]` is bounds checked and panics when out of range.
+- **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
+- **Vector types.** `std/simd` provides fixed-width vectors such as `F32x4`, `F64x2` and `I32x8`. Their operators work lane by lane and compile to the target's vector instructions.
 - **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
 - **Float keys are not allowed.** `Map<f64, V>` and keys that contain floats are compile errors.
@@ -580,7 +582,8 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 - A struct that holds boxed fields counts those fields, not itself. Copying the struct increments the count of each boxed field.
 - **`Box<T>`** puts a value on the heap with a reference count. Use it for recursive structs and for large structs that are passed around often.
 - The compiler inserts reference count increments and decrements. It removes the ones it can prove unnecessary, as in Koka's Perceus.
-- A value is freed when its count reaches zero. Freeing is deterministic, so file handles and sockets close at the point their last owner drops them.
+- A value is freed when its count reaches zero. File handles, sockets and other resources close at the point their last owner drops them.
+- **Large frees can be spread out.** When a large structure is freed, the runtime may release its memory in small batches during later allocations. Resources still close immediately. Only the return of memory to the allocator is delayed.
 - **Running out of memory aborts the program,** the same as a panic.
 
 ### In-place updates
@@ -597,6 +600,40 @@ for (const i of Range.upTo(1000)) {
 ```
 
 - `items[i] = v` and `u.age = v` require the target to be a `let` variable, a `mutable` parameter, or a field of one.
+
+### Copies on shared values
+
+When an update targets a value whose reference count is greater than 1, the value is copied first. The copy is correct, but it costs time proportional to the value's size, and the source does not show it. Three tools make these copies visible:
+
+- **`lang check --report-copies`** lists every update where the compiler cannot prove the count is 1.
+- **`LANG_TRACE_COPIES=1`** makes a program log every copy at runtime, with its source location and size.
+- **`@unique`** on a `let` declares that the variable is never shared. In debug builds, an update that would copy it panics. In release builds the check is removed.
+
+```ts
+@unique let buffer: Array<u8> = Array.withCapacity(65536)
+Array.push(mutable buffer, 0)        // debug builds panic here if buffer is shared
+const view = buffer                  // shares buffer: the next update would panic in debug
+```
+
+### Regions
+
+A region allocates many values from one block and frees them all at once.
+
+```ts
+import * as Region from "std/region"
+
+const summary = Region.run((region) => {
+  const tree = Parser.parse(source)        // every allocation here comes from the region
+  return Summary.of(tree)                  // the result is copied out
+})
+// the region and everything in it has been freed
+```
+
+- **`Region.run(f)`** runs `f` with a region. Every heap allocation made while `f` runs comes from the region. Values in a region have no reference count updates.
+- **Values leave a region only by copying.** The result of `f` is copied to the normal heap. A value sent to a channel, stored in a `Shared`, or returned through the result is copied when it leaves.
+- **The region is freed when `f` returns,** in one step.
+- **A region cannot escape,** with the same rules as a `Scope`.
+- Regions suit work with a clear end, such as handling one request or compiling one file.
 
 ### Mutable parameters
 
@@ -866,7 +903,8 @@ export enum Color {
 
 ## 11. Code generation
 
-- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arena.
+- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arenas and regions.
+- **Vector types** from `std/simd` compile to C compiler vector extensions.
 - **Debug builds** use a fast C compiler such as TCC with checks on.
 - **Release builds** use Clang or GCC with `-O2`.
 - **Generators and async functions** compile to a struct and a resume function. The struct holds their live variables and a state number. The resume function switches on that number.
@@ -874,18 +912,16 @@ export enum Color {
 - **Self-calls in tail position** compile to loops in every function (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
 - **Closures.** A non-escaping closure's environment is a C struct on the caller's stack. An escaping closure's environment is a reference-counted heap object. `@inline` functions are emitted as `static inline` C functions, and their bodies are copied into callers.
 - **Trait constraints** compile to a hidden parameter that points to the implementation table.
-- **Polymorphic functions are compiled once.** A value of a type parameter is passed as one machine word in a uniform form.
-- **Uniform form.** The lowest bit tells generic code what the word holds. A clear bit means a heap pointer, which needs reference counting. A set bit means an inline value.
-
-| Type | Uniform form |
-| --- | --- |
-| Boxed values (enums with fields, arrays, maps, strings, closures, `Box<T>`) | Pointer, unchanged |
-| `i8` to `i32`, `u8` to `u32`, `bool`, `char`, `f32`, enum constructors without fields | Inline, shifted left one bit with the tag bit set |
-| `i64`, `u64`, `int`, `f64` | Copied into a heap box with a reference count |
-| Structs | Copied into a heap box with a reference count |
-
-- **Boxing happens only at the boundary.** Non-generic code uses raw C types. The compiler converts a value to the uniform form when it passes the value into generic code, and converts it back when it receives one.
-- **`@specialize`** on a function asks the compiler to emit a separate copy for each concrete type it is called with. Use it in hot paths only.
+- **Constant parameters pass by pointer.** A parameter larger than two machine words is passed as a pointer to the caller's value. Parameters are constant and access is exclusive (section 6), so this changes nothing a program can observe.
+- **Reads do not copy.** `items[i].field` and `s.inner.field` read through a pointer. The element is not copied and its reference count is not touched.
+- **Generic code uses layout tables.** A generic function that is not specialized receives one hidden table per type parameter. The table holds the type's size, its alignment, and functions to copy, drop and move a value. Values are stored and passed in their normal form, never boxed.
+- **Containers store raw values.** `Array<T>` stores elements directly, using the size from the layout table. `Array<int>` holds raw integers in both generic and specialized code.
+- **Specialization.**
+  - Debug builds compile each generic function once, with layout tables, for fast builds.
+  - Release builds compile a separate copy for each type a generic function is used with inside the same package.
+  - Calls across packages use layout tables unless the function is marked `@specialize` or `@inline`.
+  - `generics = "compact"` in the `[build]` table of `lang.toml` uses layout tables everywhere, for smaller binaries.
+- **`@specialize`** on a function always emits a copy per concrete type, in every build.
 
 ## 12. Build model
 
@@ -1002,6 +1038,9 @@ entry = "app/cli.run"
 [link]
 libraries = ["sqlite3"]
 search = ["/opt/homebrew/lib"]
+
+[build]
+generics = "compact"    # optional: layout tables everywhere, for smaller binaries
 ```
 
 - **Entry points are set in `lang.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.

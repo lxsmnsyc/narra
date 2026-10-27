@@ -74,7 +74,8 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 
 ## Decisions
 
-- 2026-10-28: the user confirmed the plan. The must line covers only what self-hosting needs. split-compiler runs first. Every pull request waits for the user, and branches stay local because the repo has no remote.
+- 2026-10-28: the user confirmed the plan. The must line covers only what self-hosting needs. split-compiler runs first. Every pull request waits for the user.
+- 2026-10-28: the repo was published at https://github.com/lxsmnsyc/narra (public). Node pull requests go there. The repo has no CI workflows yet; checks run locally.
 - Execution has not started. Wave 1 (split-compiler, bench-harness) starts when the user asks.
 
 ## Gates

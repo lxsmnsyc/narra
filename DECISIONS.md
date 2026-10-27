@@ -137,12 +137,15 @@ Decision: dependencies are git repositories pinned to tags, versions resolve wit
 - **Reason.** No registry to run at the start.
 - **Revisit when.** The number of packages makes discovery or name squatting a problem.
 
-## D17. Async I/O deferred
+## D17. Async I/O on coroutines with explicit event loops
 
-Decision: the first version has threads, channels and coroutines. An async I/O event loop is deferred (section 16).
+Decision: async tasks are coroutines run by an event loop from `std/async`. Suspending functions have the `yield` effect. A program starts a loop with `Async.run` and passes the `Loop` explicitly (section 8).
 
-- **Reason.** async/await splits libraries into sync and async versions. Green threads need a scheduler, which goes against a small runtime.
-- **Direction.** An event loop in `std/async` that resumes coroutines when I/O is ready. The `yield` effect already marks which functions can suspend.
+- **Reason.** Every point where a task can suspend is visible: the function has `yield` in its signature.
+- **Reason.** The runtime stays small. The event loop is library code, and there is no work-stealing scheduler.
+- **Cost.** Function coloring. A `yield` function can only be called from other `yield` functions, and suspending I/O has its own modules in `std/async/*`. Effect variables let generic code such as `map` work in both cases.
+- **Rejected: green threads with a runtime scheduler (Go).** No coloring. But the scheduler and growable stacks go against a small runtime and a C target.
+- **Rejected: `async` and `await` keywords.** The `yield` effect already marks suspending functions. Keywords would be a second marker for the same thing.
 
 ## D18. Indexes start at 0
 
@@ -230,3 +233,20 @@ Decision: a function changes a caller's variable only through a parameter declar
 - **Rejected: guaranteeing in-place updates for `x = f(x)`.** The fast path would depend on a pattern that is not visible. `y = f(x)` looks almost the same and copies.
 - **Rejected keywords.** `inout` describes the mechanism instead of the meaning. `mut` is an abbreviation. `ref` suggests references that could be stored.
 - **Cost.** Two ways to produce changed data: a `mutable` parameter or a returned value. The rule is `mutable` to change the caller's data, and a return value to build new data.
+
+## D28. Scoped threads
+
+Decision: threads start inside `Thread.scope`, which waits for all of them before it returns. A `Scope` cannot escape (section 8).
+
+- **Reason.** No thread outlives the scope that started it, so no thread is leaked and no result is forgotten.
+- **Reason.** Every value is immutable or copied, so any value can be passed to a thread. No `Send` or `Sync` traits are needed.
+- **Rejected: detached `Thread.spawn`.** It allows threads that run past the code that started them, with results nobody reads.
+
+## D29. A few identity types for shared state
+
+Decision: `Sender<T>`, `Receiver<T>`, `Shared<T>` and `Atomic<T>` are the only safe types with identity. `Shared<T>` is used through `Shared.update` and `Shared.read` callbacks (section 8).
+
+- **Reason.** A lock must be one object that every copy refers to. Plain values cannot express that, so these types are named and few, and easy to find with a search.
+- **Reason.** Callbacks release the lock when they return, so a lock cannot be left held.
+- **Reason.** Callbacks cannot have `yield`, so a task cannot suspend while holding a lock.
+- **Cost.** Deadlocks are still possible with nested locks. `lang audit` lists nested `Shared.update` calls.

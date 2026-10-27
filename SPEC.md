@@ -412,11 +412,11 @@ damage(mutable hero, 10)      -- hero.hp is now 90
 - A `let` variable or `mutable` parameter cannot be captured or stored, so it cannot create a cycle.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
-### Threads
+### Values across threads
 
-- Values sent to another thread with `Thread.spawn` or `Channel.send` are marked shared. Shared values use atomic reference counts. Unshared values use plain counts.
+- A value captured by a thread function or sent through a channel is marked shared. Shared values use atomic reference counts. Unshared values use plain counts.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
-- There is no shared mutable state in safe code. `std/sync` provides `Mutex<T>` and `Atomic<T>` for the cases that need it.
+- Every value can be sent to another thread. Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
 
 ## 7. Effects
 
@@ -426,7 +426,7 @@ An effect marks something a function can do beyond computing a value. The set is
 | --- | --- |
 | `alloc` | May allocate heap memory |
 | `io` | May perform input or output, read the clock, or read the environment |
-| `yield` | May suspend the current coroutine (section 8) |
+| `yield` | May suspend the current coroutine or async task (section 8) |
 | `unsafe` | Calls code that the compiler cannot check (section 9) |
 
 Rules:
@@ -435,7 +435,7 @@ Rules:
 - The compiler infers effects for private functions and anonymous functions.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
-- `main` has every effect except `yield`.
+- `main` has every effect except `yield`. `Async.run` provides a context where `yield` is allowed.
 
 ### Effect variables
 
@@ -449,7 +449,19 @@ export function map<T, U, effect E>(items: Array<T>, f: function(T): U uses E): 
 - **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type.
 - At each call, the variable takes the effects of the function passed in. `map(xs, Str.len)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
 
-## 8. Coroutines
+## 8. Coroutines and concurrency
+
+Lang has three tools. Each covers one type of concurrent work:
+
+| Work | Tool |
+| --- | --- |
+| Suspend and resume a computation on one thread | Coroutines |
+| Run computations in parallel on several cores | Scoped threads and channels |
+| Wait on many I/O operations at once | Async tasks on an event loop |
+
+A panic on any thread or task aborts the whole program.
+
+### Coroutines
 
 Coroutines keep Lua's model: create, resume and yield. They are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
 
@@ -464,7 +476,7 @@ function counter(limit: int): Generator<int>
   end)
 end
 
-const c = counter(3)
+let c = counter(3)
 for n in Co.values(mutable c) do
   print(Int.toString(n))  -- 0, 1, 2
 end
@@ -479,6 +491,113 @@ end
 - **A coroutine is a value like any other.** Resuming one requires a `mutable` argument, so the change is visible at the call. Copying a coroutine with `const` and then resuming the copy leaves the original unchanged.
 - **Yield crosses calls only through `yield` functions.** A function can call `Co.yield` only if it has the `yield` effect. Higher-order functions pass `yield` through effect variables like any other effect.
 - **Generic code that yields is specialized.** A generic function called with a `yield` function is compiled as a separate state-machine copy for that effect. Code that never yields pays nothing.
+
+### Threads
+
+Threads run in a scope. Every thread started in a scope finishes before the scope returns.
+
+```lua
+const Thread = import("std/thread")
+
+const total = Thread.scope(function(scope: Scope): int uses alloc
+  const left = Thread.start(scope, function(): int return sum(firstHalf) end)
+  const right = Thread.start(scope, function(): int return sum(secondHalf) end)
+  return Thread.join(left) + Thread.join(right)
+end)
+```
+
+- **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
+- **`Thread.start(scope, f)`** runs `f` on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
+- **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
+- **Thread functions capture only constant values,** like every closure. They cannot have the `yield` effect.
+- **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
+
+### Channels
+
+```lua
+const sender, receiver = Channel.create(16)      -- holds up to 16 values
+
+Thread.start(scope, function() uses io
+  for i = 0, 99 do
+    Channel.send(sender, i)                       -- blocks while the channel is full
+  end
+  Channel.close(sender)
+end)
+
+for value in Channel.values(receiver) do         -- ends when the channel is closed and empty
+  print(Int.toString(value))
+end
+```
+
+- **`Channel.create<T>(capacity)`** returns a `Sender<T>` and a `Receiver<T>`.
+- **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
+- **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
+- Blocking calls have the `io` effect.
+
+### Shared state
+
+A few types have identity: copying one copies a handle to the same object. They are the only way two threads can see the same changing data.
+
+| Type | Use |
+| --- | --- |
+| `Sender<T>`, `Receiver<T>` | Channel ends |
+| `Shared<T>` | A value guarded by a lock |
+| `Atomic<T>` | An integer or `bool` with atomic operations |
+
+```lua
+const hits = Shared.create(0)
+
+Shared.update(hits, function(mutable count: int)
+  count = count + 1
+end)
+
+const now = Shared.read(hits, function(count: int): int return count end)
+```
+
+- **The lock is held only during the callback.** `Shared.update` and `Shared.read` take the lock, run the callback and release it. There is no way to take the lock and forget to release it.
+- **The callback cannot have the `yield` effect,** so a task never suspends while holding a lock.
+- **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
+- `==` on an identity type compares identity, not contents.
+- **Deadlocks are possible** when callbacks nest locks in different orders. `lang audit` lists every nested `Shared.update`.
+
+### Async tasks
+
+An event loop runs many tasks on one thread. A task suspends at each I/O call that would block, and the loop resumes it when the I/O is ready.
+
+```lua
+const Async = import("std/async")
+const Net = import("std/async/net")
+
+function handle(connection: Connection) uses io, yield, alloc
+  let conn = connection
+  while true do
+    const data = Net.read(mutable conn, 4096)     -- suspends until data arrives
+    if data is Err(_) then return end
+    if #data.value == 0 then return end
+    const written = Net.write(mutable conn, data.value)
+    if written is Err(_) then return end
+  end
+end
+
+function main()
+  Async.run(function(loop: Loop) uses io, yield, alloc
+    let listener = Net.listen("127.0.0.1", 8080)
+    while true do
+      const accepted = Net.accept(mutable listener)
+      if accepted is Ok(conn) then
+        Async.spawn(loop, function() uses io, yield, alloc handle(conn) end)
+      end
+    end
+  end)
+end
+```
+
+- **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It removes the `yield` effect, so it can be called from `main` or from a thread.
+- **`Async.spawn(loop, f)`** starts a task on that loop and returns a `Task<T>`. **`Async.await(t)`** suspends until the task finishes and returns its result. **`Async.all(tasks)`** waits for several.
+- **A `Loop` cannot escape,** with the same rules as a `Scope`.
+- **Suspending I/O lives in `std/async/*`.** `std/async/net`, `std/async/file` and `std/async/time` mirror the blocking modules with the same function names. Their functions have `uses io, yield`.
+- **A task stays on the thread that runs its loop.** To use several cores, run one loop per thread inside `Thread.scope`. Pass work between the loops with channels.
+- `Async.sleep(milliseconds)` suspends the task for a time.
 
 ## 9. Unsafe code and C interop
 
@@ -600,7 +719,7 @@ json = { git = "https://github.com/example/lang-json", version = "1.2.0" }
 
 These are left out of the first version on purpose.
 
-- **Async I/O.** Coroutines (section 8) are the base for it. An event loop in `std/async` that resumes coroutines when I/O is ready is the planned direction.
+- **Task cancellation and timeouts.** A task runs until it returns. A cancellation design for async tasks and threads is not decided.
 - **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.
 - **A bytecode VM.** Possible later for scripting and hot reload. The first target is native code only.

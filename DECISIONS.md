@@ -65,7 +65,7 @@ Decision: generic functions take values in a uniform form and compile to one cop
 
 ## D8. A fixed set of effects in signatures
 
-Decision: `alloc`, `io`, `yield` and `unsafe`, declared on exported functions and inferred elsewhere (section 7).
+Decision: `alloc`, `io` and `unsafe`, declared on exported functions and inferred elsewhere (section 7). Suspension is marked by `async` and `function*` instead of an effect.
 
 - **Reason.** A reader, human or agent, sees what a function may do from its signature alone.
 - **Rejected: a general effect system (Koka).** User-defined effects and handlers add a large feature to learn. A fixed set covers the questions readers ask most.
@@ -142,15 +142,17 @@ Decision: dependencies are git repositories pinned to tags, versions resolve wit
 - **Reason.** No registry to run at the start.
 - **Revisit when.** The number of packages makes discovery or name squatting a problem.
 
-## D17. Async I/O on coroutines with explicit event loops
+## D17. `async` and `await` on an explicit event loop
 
-Decision: async tasks are coroutines run by an event loop from `std/async`. Suspending functions have the `yield` effect. A program starts a loop with `Async.run` and passes the `Loop` explicitly (section 8).
+Decision: async functions use TypeScript's `async function` and `await`. Every call to an async function needs `await`. Tasks run on an event loop from `std/async`, started with `Async.run` and `Async.spawn` (section 8).
 
-- **Reason.** Every point where a task can suspend is visible: the function has `yield` in its signature.
+- **Reason.** `await` marks every point where a task can suspend, at the call itself. A reader does not need to look up the called function.
+- **Reason.** A call without `await` is an error, so there are no forgotten background tasks. Concurrent work is started on purpose with `Async.spawn` or `Async.all`.
 - **Reason.** The runtime stays small. The event loop is library code, and there is no work-stealing scheduler.
-- **Cost.** Function coloring. A `yield` function can only be called from other `yield` functions, and suspending I/O has its own modules in `std/async/*`. Effect variables let generic code such as `map` work in both cases.
+- **Cost.** Function coloring. An async function can only be called from another async function or through the event loop. Higher-order functions such as `Array.map` do not take async callbacks, so `std/async` has its own versions.
+- **Rejected: a `yield` effect for suspension.** It showed suspension only in signatures, not at calls, and it did not match the TypeScript-style syntax.
 - **Rejected: green threads with a runtime scheduler (Go).** No coloring. But the scheduler and growable stacks go against a small runtime and a C target.
-- **Rejected: `async` and `await` keywords.** The `yield` effect already marks suspending functions. Keywords would be a second marker for the same thing.
+- **Rejected: TypeScript's eager start and `Promise`.** An unawaited call that runs in the background is a common source of lost errors.
 
 ## D18. Indexes start at 0
 
@@ -159,14 +161,14 @@ Decision: arrays and string positions start at 0 (sections 4 and 6).
 - **Reason.** C, the byte offsets of D15 and most other languages start at 0. Code that calls C or ports algorithms needs no index shifting.
 - **Reason.** Counting loops use `Range.upTo(n)`, which stops before `n`, so loops over an array need no `- 1`.
 
-## D19. Coroutines compiled to state machines
+## D19. Generators with `function*` and `yield`, compiled to state machines
 
-Decision: coroutines are created, resumed and yielded explicitly, typed as `Coroutine<In, Out>`. Functions that suspend have the `yield` effect. The compiler turns each coroutine into a state machine (section 8).
+Decision: generators use TypeScript's `function*`, `yield` and `yield*`. `yield` is valid only directly inside a generator body. The compiler turns each generator into a state machine (section 8).
 
-- **Reason.** No separate stack is allocated per coroutine, and no assembly or platform-specific context switching is needed in the runtime.
-- **Reason.** The `yield` effect tells the compiler exactly which functions need the state-machine form. Code that never yields compiles as plain C functions.
+- **Reason.** The syntax is familiar from TypeScript.
+- **Reason.** Because `yield` cannot cross a normal call, only generator bodies need the state-machine form. Every other function compiles as a plain C function, and generic code needs no special copies for generators.
+- **Reason.** No separate stack is allocated per generator, and no platform-specific context switching is needed in the runtime.
 - **Rejected: stackful coroutines (Go).** They allow yielding from any call depth. But each coroutine needs its own stack, and switching stacks needs platform-specific code.
-- **Cost.** A generic function called with a `yield` function gets a separate specialized copy.
 
 ## D20. Structs stored inline
 
@@ -233,7 +235,7 @@ Decision: a function changes a caller's variable only through a parameter declar
 - **Reason.** Every change to a caller's data is visible in the signature and at the call. A reader of either file knows the value changes.
 - **Reason.** In-place updates are part of the language, not an optimization. The compiler passes a pointer, with no copies.
 - **Reason.** Exclusive access and no escaping keep it memory safe with one local check per call. The reference ends when the call returns, so no lifetimes are needed.
-- **Reason.** It gives coroutines and collections one explicit form: `Co.resume(mutable c, x)` and `Array.push(mutable xs, v)`.
+- **Reason.** It gives generators and collections one explicit form: `Co.resume(mutable g, x)` and `Array.push(mutable xs, v)`.
 - **Rejected: guaranteeing in-place updates for `x = f(x)`.** The fast path would depend on a pattern that is not visible. `y = f(x)` looks almost the same and copies.
 - **Rejected keywords.** `inout` describes the mechanism instead of the meaning. `mut` is an abbreviation. `ref` suggests references that could be stored.
 - **Cost.** Two ways to produce changed data: a `mutable` parameter or a returned value. The rule is `mutable` to change the caller's data, and a return value to build new data.
@@ -252,7 +254,7 @@ Decision: `Sender<T>`, `Receiver<T>`, `Shared<T>` and `Atomic<T>` are the only s
 
 - **Reason.** A lock must be one object that every copy refers to. Plain values cannot express that, so these types are named and few, and easy to find with a search.
 - **Reason.** Callbacks release the lock when they return, so a lock cannot be left held.
-- **Reason.** Callbacks cannot have `yield`, so a task cannot suspend while holding a lock.
+- **Reason.** Callbacks cannot be `async`, so a task cannot suspend while holding a lock.
 - **Cost.** Deadlocks are still possible with nested locks. `lang audit` lists nested `Shared.update` calls.
 
 ## D30. Literals, equality constraints and floats
@@ -267,7 +269,7 @@ Decision: strings use `"..."`, template strings use backticks, and characters us
 
 Decision: `for (const x of iter)` takes a `Generator<T>`. Collections return generators (section 2).
 
-- **Reason.** No new protocol or trait is needed. Coroutines already define suspend and resume.
+- **Reason.** No new protocol or trait is needed. Generators already define suspend and resume.
 
 ## D32. Maps keep insertion order
 

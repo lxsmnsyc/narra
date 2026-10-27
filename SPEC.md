@@ -60,6 +60,7 @@ The syntax follows TypeScript where the meaning is the same. Where Lang means so
 - `function name(a: int, b: int): int { ... }` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
 - A function with no return type returns nothing.
 - **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
+- **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
 - An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Array.map(prices, (p) => p * 2)`.
 - **Function types** are written like arrow functions: `(item: T) => U`.
 - **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
@@ -100,7 +101,7 @@ recursive function isOdd(n: int): bool {
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
 - `for (const item of iter) { ... }` loops over an iterator. `for (const [i, item] of Array.entries(items))` gives indexes from 0.
-- **An iterator is a `Generator<T>`** (section 8). `Array.values`, `Array.entries`, `Map.keys`, `Map.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Array.values`, `Array.entries`, `Map.keys`, `Map.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
 - **Counting loops use `Range`.** `Range.upTo(n)` counts from 0 to `n - 1`. `Range.between(start, end)` counts from `start` to `end - 1`. `Range.stepped(start, end, step)` takes a step.
 
 ```ts
@@ -168,7 +169,9 @@ Code that is valid TypeScript but means something different in Lang is a compile
 | `a + b` joins strings | Not present. Use a template string |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
-| `async`, `await` | Not present. Use the `yield` effect (section 8) |
+| Calling an async function without `await` starts it in the background | A compile error. Use `await f()`, or start a task with `Async.spawn` (section 8) |
+| `Promise<T>` | Not present. `Async.spawn` returns a `Task<T>` |
+| `async function*` | Not present in the first version |
 
 ## 3. Modules and imports
 
@@ -634,7 +637,6 @@ An effect marks something a function can do beyond computing a value. The set is
 | --- | --- |
 | `alloc` | May allocate heap memory |
 | `io` | May perform input or output, read the clock, or read the environment |
-| `yield` | May suspend the current coroutine or async task (section 8) |
 | `unsafe` | Calls code that the compiler cannot check (section 9) |
 
 Rules:
@@ -643,7 +645,8 @@ Rules:
 - The compiler infers effects for private functions and arrow functions.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
-- The entry function (section 15) has every effect except `yield`. `Async.run` provides a context where `yield` is allowed.
+- The entry function (section 15) has every effect. It is not `async`. `Async.run` runs async code from it.
+- `async` and `function*` are not effects. They mark the type of function a declaration is (section 8).
 
 ### Effect variables
 
@@ -657,48 +660,54 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
 - **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type.
 - At each call, the variable takes the effects of the function passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
 
-## 8. Coroutines and concurrency
+## 8. Generators and concurrency
 
 Lang has three tools. Each covers one type of concurrent work:
 
 | Work | Tool |
 | --- | --- |
-| Suspend and resume a computation on one thread | Coroutines |
+| Produce values one at a time, on demand | Generators |
 | Run computations in parallel on several cores | Scoped threads and channels |
-| Wait on many I/O operations at once | Async tasks on an event loop |
+| Wait on many I/O operations at once | Async functions on an event loop |
 
 A panic on any thread or task aborts the whole program.
 
-### Coroutines
+### Generators
 
-A coroutine is a function that can suspend itself and be resumed later. Coroutines are typed, and the compiler turns each coroutine into a state machine, so no separate stack is allocated.
+A generator is a function that can suspend itself with `yield` and be resumed later. The syntax is TypeScript's. The compiler turns each generator into a state machine, so no separate stack is allocated.
 
 ```ts
-import * as Co from "std/coroutine"
-
-function counter(limit: int): Generator<int> {
-  return Co.generator(() => {
-    for (const i of Range.upTo(limit)) {
-      Co.yield(i)
-    }
-  })
+function* counter(limit: int): Generator<int> {
+  for (const i of Range.upTo(limit)) {
+    yield i
+  }
 }
 
-let numbers = counter(3)
-for (const n of Co.values(mutable numbers)) {
-  print(Int.toString(n))      // 0, 1, 2
+function* evens(limit: int): Generator<int> {
+  for (const n of counter(limit)) {
+    if (n % 2 == 0) {
+      yield n
+    }
+  }
+}
+
+function* both(): Generator<int> {
+  yield* counter(3)
+  yield* evens(10)
+}
+
+for (const n of both()) {
+  print(Int.toString(n))
 }
 ```
 
-- **`Coroutine<In, Out>`** takes `In` on each resume and produces `Out` on each yield.
-- **`Generator<Out>`** is a coroutine that takes no input on resume. `Co.generator(f)` makes one.
-- **`Co.create(f)`** makes a coroutine from a function with the `yield` effect.
-- **`Co.resume(mutable c, input)`** runs the coroutine until its next yield, changing `c` in place. It returns `Yielded(value)`, `Done` or `Panicked(message)`. A panic inside a coroutine still aborts the program in release builds. `Panicked` is only reported in test builds.
-- **`Co.yield(value)`** suspends the coroutine. It has the `yield` effect.
-- **`Co.values(mutable g)`** iterates over a `Generator<Out>`, advancing `g` in place.
-- **A coroutine is a value like any other.** Resuming one requires a `mutable` argument, so the change is visible at the call. Copying a coroutine with `const` and then resuming the copy leaves the original unchanged.
-- **Yield crosses calls only through `yield` functions.** A function can call `Co.yield` only if it has the `yield` effect. Higher-order functions pass `yield` through effect variables like any other effect.
-- **Generic code that yields is specialized.** A generic function called with a `yield` function is compiled as a separate state-machine copy for that effect. Code that never yields pays nothing.
+- **`function*`** declares a generator. Calling it returns a `Generator<Out>` without running any of its body.
+- **`yield value`** suspends the generator and produces `value`. It is valid only directly inside a `function*` body, not in a nested function.
+- **`yield* other`** produces every value of another generator in turn.
+- **`Coroutine<In, Out>`** is a generator that also receives a value on each resume. Inside it, `const input = yield output` gets that value.
+- **`Co.resume(mutable g, input)`** from `std/coroutine` runs a generator or coroutine to its next `yield`, changing `g` in place. It returns `Yielded(value)`, `Done` or `Panicked(message)`. `Panicked` is only reported in test builds. In other builds a panic aborts the program.
+- **A generator is a value like any other.** Resuming one by hand requires a `mutable` argument. `for ... of` iterates over its own copy.
+- **Only generator bodies become state machines.** A `yield` cannot cross a normal function call, so other functions compile as plain C functions.
 
 ### Threads
 
@@ -717,7 +726,7 @@ const total = Thread.scope((scope) => {
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
 - **`Thread.start(scope, f)`** runs `f` on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
 - **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
-- **Thread functions capture only constant values,** like every closure. They cannot have the `yield` effect.
+- **Thread functions capture only constant values,** like every closure. They cannot be `async`.
 - **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
 
 ### Channels
@@ -763,30 +772,30 @@ const now = Shared.read(hits, (count) => count)
 ```
 
 - **The lock is held only during the callback.** `Shared.update` and `Shared.read` take the lock, run the callback and release it. There is no way to take the lock and forget to release it.
-- **The callback cannot have the `yield` effect,** so a task never suspends while holding a lock.
+- **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
 - **Deadlocks are possible** when callbacks nest locks in different orders. `lang audit` lists every nested `Shared.update`.
 
-### Async tasks
+### Async functions
 
-An event loop runs many tasks on one thread. A task suspends at each I/O call that would block, and the loop resumes it when the I/O is ready.
+An event loop runs many tasks on one thread. A task suspends at each `await`, and the loop resumes it when the awaited I/O is ready. The syntax is TypeScript's.
 
 ```ts
 import * as Async from "std/async"
 import * as Net from "std/async/net"
 
-function handle(connection: Connection) uses io, yield, alloc {
+async function handle(connection: Connection) uses io, alloc {
   let conn = connection
   while (true) {
-    const data = Net.read(mutable conn, 4096)         // suspends until data arrives
+    const data = await Net.read(mutable conn, 4096)
     if (data is Err(_)) {
       return
     }
     if (Bytes.length(data.value) == 0) {
       return
     }
-    const written = Net.write(mutable conn, data.value)
+    const written = await Net.write(mutable conn, data.value)
     if (written is Err(_)) {
       return
     }
@@ -794,12 +803,12 @@ function handle(connection: Connection) uses io, yield, alloc {
 }
 
 export function run(args: Array<string>): int {        // entry function set in lang.toml
-  Async.run((loop) => {
+  Async.run(async (loop) => {
     let listener = Net.listen("127.0.0.1", 8080)
     while (true) {
-      const accepted = Net.accept(mutable listener)
+      const accepted = await Net.accept(mutable listener)
       if (accepted is Ok(conn)) {
-        Async.spawn(loop, () => handle(conn))
+        Async.spawn(loop, async () => await handle(conn))
       }
     }
   })
@@ -807,12 +816,17 @@ export function run(args: Array<string>): int {        // entry function set in 
 }
 ```
 
-- **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It removes the `yield` effect, so it can be called from the entry function or from a thread.
-- **`Async.spawn(loop, f)`** starts a task on that loop and returns a `Task<T>`. **`Async.await(t)`** suspends until the task finishes and returns its result. **`Async.all(tasks)`** waits for several.
+- **`async function`** declares a function that can suspend. Its body compiles to a state machine.
+- **`await` is required on every call to an async function.** A call without `await` is a compile error. Every point where a task can suspend is visible at the call.
+- **Async functions run only inside an event loop.** They are called with `await` from other async functions, or started with `Async.run` and `Async.spawn`.
+- **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It is a normal function, so it can be called from the entry function or from a thread.
+- **`Async.spawn(loop, f)`** starts a task on that loop and returns a `Task<T>`. **`await Async.join(t)`** waits for the task and returns its result.
+- **`await Async.all(functions)`** runs several async functions at the same time and returns their results in order.
+- **No async callbacks in normal higher-order functions.** `Array.map(items, async (x) => ...)` is a compile error. `std/async` provides `Async.map` and `Async.forEach` instead.
 - **A `Loop` cannot escape,** with the same rules as a `Scope`.
-- **Suspending I/O lives in `std/async/*`.** `std/async/net`, `std/async/file` and `std/async/time` mirror the blocking modules with the same function names. Their functions have `uses io, yield`.
+- **Suspending I/O lives in `std/async/*`.** `std/async/net`, `std/async/file` and `std/async/time` mirror the blocking modules with the same function names. Their functions are `async`.
 - **A task stays on the thread that runs its loop.** To use several cores, run one loop per thread inside `Thread.scope`. Pass work between the loops with channels.
-- `Async.sleep(milliseconds)` suspends the task for a time.
+- `await Async.sleep(milliseconds)` suspends the task for a time.
 
 ## 9. Unsafe code and C interop
 
@@ -850,7 +864,7 @@ export enum Color {
 - **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arena.
 - **Debug builds** use a fast C compiler such as TCC with checks on.
 - **Release builds** use Clang or GCC with `-O2`.
-- **Coroutines** compile to a struct holding their live variables and a state number, plus a resume function with a `switch` on that number.
+- **Generators and async functions** compile to a struct and a resume function. The struct holds their live variables and a state number. The resume function switches on that number.
 - **`mutable` parameters** compile to C pointer parameters.
 - **Self-calls in tail position** inside a `recursive function` compile to loops (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
 - **Trait constraints** compile to a hidden parameter that points to the implementation table.
@@ -984,7 +998,7 @@ search = ["/opt/homebrew/lib"]
 ```
 
 - **Entry points are set in `lang.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
-- **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect except `yield`.
+- **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect, and it is not `async`.
 - **`[link]`** lists C libraries to link and directories to search.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.

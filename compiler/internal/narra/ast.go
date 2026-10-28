@@ -4,6 +4,7 @@ package narra
 // resolved declarations of names.
 
 type File struct {
+	Path    string // source path relative to the package directory, for diagnostics
 	Imports []*ImportDecl
 	Decls   []Decl
 }
@@ -42,6 +43,7 @@ type FuncDecl struct {
 	Effects    []string
 	Body       *Block
 	ResultT    Type
+	Module     string // declaring module path, set by the checker
 }
 
 type FieldDecl struct {
@@ -76,9 +78,10 @@ type EnumDecl struct {
 }
 
 type TestDecl struct {
-	Pos  Pos
-	Name string
-	Body *Block
+	Pos    Pos
+	Name   string
+	Body   *Block
+	Module string // declaring module path, set by the checker
 }
 
 func (*FuncDecl) declNode()   {}

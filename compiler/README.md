@@ -1,6 +1,6 @@
 # narra
 
-`narra` is the bootstrap compiler for Narra, written in Go. It compiles one `.nra` file to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Narra.
+`narra` is the bootstrap compiler for Narra, written in Go. It compiles a `.nra` file or a package to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Narra.
 
 ## Usage
 
@@ -13,9 +13,24 @@ go build -o narra ./cmd/narra
 ./narra build -release -o app file.nra    # optimized, integer overflow wraps
 ./narra test testdata/tests.nra           # run `test` blocks
 ./narra emit file.nra                     # print the generated C
+./narra build testdata/packages/app       # build every [[binary]] of a package
+./narra run -bin app testdata/packages/app
 ```
 
-The program's entry function is `export function run(args: Array<string>): int`. `narra.toml` is not read yet.
+A single file's entry function is `export function run(args: Array<string>): int`.
+
+A package is a directory with `narra.toml` and `src/`. The file `src/text.nra` of package `app` is module `"app/text"`. `narra.toml` sets the package name and the binaries:
+
+```toml
+[package]
+name = "app"
+
+[[binary]]
+name = "app"
+entry = "cli.run"     # module inside the package, then the function; "app/cli.run" also works
+```
+
+`[link]` (`libraries`, `search`) is read but not used yet. Other tables, such as `[build]`, are skipped. `[dependencies]` is an error.
 
 Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are still live at exit. The program exits with code 102 when any are found.
 
@@ -28,10 +43,13 @@ go test ./...
 - `testdata/*.nra` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.
 - `testdata/panics/` must panic with a given message and exit code 101.
 - `testdata/errors/` must fail to compile. The first line, `// error: text`, gives text the error must contain.
+- `testdata/packages/*/` with a `run.out` build the package's binary, run it in both modes like `testdata/*.nra`, and run its tests.
+- `testdata/packages/errors/*/` must fail to compile. The first line of `narra.toml`, `# error: text`, gives the text.
 
 ## Supported
 
-- One source file per program, with `import * as X from` and `import { a } from` for `std/int`, `std/float` and `std/string`.
+- Packages with several modules and `narra.toml`, or one source file. `import * as X from` and `import { a } from` for `std/int`, `std/float`, `std/string` and the modules of the same package. `export` on functions, structs and enums; other names are private. Import cycles are errors that list the cycle.
+- Names from a namespace import: calls `X.f(...)` and types `X.T`. Named imports bring functions, and structs and enums with their constructors.
 - Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `break`, `continue`.
 - `int`, `f64`, `bool`, `char` and `string`.
 - Structs with constant field defaults, typed literals (`Point { x: 1 }`) and literals typed from context.
@@ -49,7 +67,8 @@ go test ./...
 
 ## Not supported yet
 
-- Several modules, and `narra.toml`.
+- Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
+- `export const`, `export type` aliases, and enum constructors through a namespace (`X.Token.Word`).
 - Traits and trait constraints such as `<T: Equatable>`.
 - Nested patterns such as `Some(Node(a, b))`, and struct patterns.
 - Explicit type arguments in calls, such as `f<int>(x)`.
@@ -67,3 +86,7 @@ go test ./...
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.
 - Generic functions and types are compiled once per set of type arguments in every build. The spec's layout tables for debug builds are not implemented.
 - Generic function bodies are checked once with their type parameters left open, then again for each instance.
+- One C file per program, not one per module. C names carry the module: `f_app_text__helper`, `S_app_text__Token`. A single file `hello.nra` is module `"hello"`.
+- Modules are checked against the declarations of the modules they import, in memory. There are no `.nrai` files.
+- Unused imports and private functions are not errors yet.
+- Every line of a compile error starts with its file, as in `src/text.nra:3:4: ...`.

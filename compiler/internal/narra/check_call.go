@@ -171,6 +171,9 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 	case *FieldExpr:
 		if id, ok := callee.Target.(*Ident); ok && c.lookup(id.Name) == nil {
 			if path, ok := c.modules[id.Name]; ok {
+				if s := c.mods[path]; s != nil && s.src != nil {
+					return c.moduleCall(e, s, callee, want)
+				}
 				b := stdModules[path].Funcs[callee.Name]
 				if b == nil {
 					c.errorf(callee.P, "module %q has no function %q", path, callee.Name)
@@ -260,12 +263,19 @@ func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 }
 
 func (c *Checker) funcInstance(fd *FuncDecl, tps []*TypeParamType, targs []Type) *FuncDecl {
-	key := fd.Name + typeArgsMangle(targs)
+	name := fd.Name + typeArgsMangle(targs)
+	key := fd.Module + "." + name
 	if inst, ok := c.funcInsts[key]; ok {
 		return inst
 	}
 	inst := cloneFunc(fd)
-	inst.Name = key
+	inst.Name = name
+	inst.Module = fd.Module
+	// Types in the signature are names in the declaring module.
+	mod := c.funcMod[fd]
+	c.funcMod[inst] = mod
+	savedMod := c.enter(mod)
+	defer c.enter(savedMod)
 	env := envOf(tps, targs)
 	saved := c.env
 	c.env = env
@@ -283,7 +293,7 @@ func (c *Checker) funcInstance(fd *FuncDecl, tps []*TypeParamType, targs []Type)
 		return inst
 	}
 	c.prog.Funcs = append(c.prog.Funcs, inst)
-	c.pending = append(c.pending, pendingFunc{inst, env})
+	c.pending = append(c.pending, pendingFunc{inst, env, mod})
 	return inst
 }
 

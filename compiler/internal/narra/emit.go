@@ -41,8 +41,8 @@ type Emitter struct {
 	fn       *FuncDecl
 }
 
-func Emit(prog *Program, file string, tests bool) string {
-	e := &Emitter{prog: prog, file: file}
+func Emit(prog *Program, entry *FuncDecl, tests bool) string {
+	e := &Emitter{prog: prog}
 	var b strings.Builder
 	b.WriteString(runtimeH)
 	for _, m := range prog.Modules {
@@ -92,6 +92,7 @@ func Emit(prog *Program, file string, tests bool) string {
 	}
 	for i, t := range prog.Tests {
 		e.fn = &FuncDecl{Name: "test", ResultT: TVoid}
+		e.file = prog.Files[t.Module]
 		e.line("static void test_%d(void) {", i)
 		e.indent++
 		e.funcScope(nil)
@@ -112,8 +113,8 @@ func Emit(prog *Program, file string, tests bool) string {
 			fmt.Fprintf(&b, "  test_%d();\n  printf(\"ok - %%s\\n\", %s);\n", i, cString(t.Name))
 		}
 		fmt.Fprintf(&b, "  printf(\"%d tests passed\\n\");\n  narra_report_leaks();\n  return 0;\n}\n", len(prog.Tests))
-	} else if prog.Entry != nil {
-		at := prog.Entry.Params[0].T.(*ArrayType)
+	} else if entry != nil {
+		at := entry.Params[0].T.(*ArrayType)
 		n := arrName(at)
 		fmt.Fprintf(&b, `
 int main(int argc, char** argv) {
@@ -121,13 +122,13 @@ int main(int argc, char** argv) {
   for (int i = 0; i < argc; i++) {
     args->items[args->len++] = lstr_from_cstr(argv[i]);
   }
-  int64_t code = f_run(args);
+  int64_t code = %[2]s(args);
   %[1]s_release(args);
   fflush(stdout);
   narra_report_leaks();
   return (int)code;
 }
-`, n)
+`, n, funcCName(entry))
 	}
 	return b.String()
 }
@@ -263,11 +264,12 @@ func (e *Emitter) signature(fd *FuncDecl) string {
 	if len(params) == 0 {
 		params = []string{"void"}
 	}
-	return fmt.Sprintf("static %s f_%s(%s)", fd.ResultT.CName(), fd.Name, strings.Join(params, ", "))
+	return fmt.Sprintf("static %s %s(%s)", fd.ResultT.CName(), funcCName(fd), strings.Join(params, ", "))
 }
 
 func (e *Emitter) function(fd *FuncDecl) {
 	e.fn = fd
+	e.file = e.prog.Files[fd.Module]
 	e.line("%s {", e.signature(fd))
 	e.indent++
 	e.funcScope(fd.Params)

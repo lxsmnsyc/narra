@@ -7,42 +7,53 @@ import (
 	"path/filepath"
 )
 
-// CompileToC parses, checks and emits C for one source file.
+// CompileToC parses, checks and emits C for a source file or a package
+// directory with one binary.
 func CompileToC(path string, tests bool) (string, error) {
-	src, err := os.ReadFile(path)
+	return CompileBinary(path, "", tests)
+}
+
+// CompileBinary emits C for the binary bin of the package at path. An empty
+// bin selects the only binary. In test mode the C runs every test block.
+func CompileBinary(path, bin string, tests bool) (string, error) {
+	pkg, err := Load(path)
+	if err != nil {
+		return "", FormatError(err)
+	}
+	prog, err := CheckPackage(pkg)
+	if err != nil {
+		return "", FormatError(err)
+	}
+	if tests {
+		return Emit(prog, nil, true), nil
+	}
+	b, err := pkg.binary(bin)
 	if err != nil {
 		return "", err
 	}
-	name := filepath.Base(path)
-	file, err := Parse(string(src))
-	if err != nil {
-		return "", prefix(name, err)
+	entry := prog.Entries[b.Name]
+	if entry == nil {
+		if pkg.single {
+			return "", fmt.Errorf("%s: no entry function; declare `export function run(args: Array<string>): int`", pkg.Modules[0].Files[0].Path)
+		}
+		mod, fn := pkg.entryModule(b.Entry)
+		return "", fmt.Errorf("narra.toml: binary %q: no entry function %q; declare `export function %s(args: Array<string>): int` in module %q", b.Name, b.Entry, fn, mod)
 	}
-	prog, err := Check(file)
-	if err != nil {
-		return "", prefix(name, err)
-	}
-	if !tests && prog.Entry == nil {
-		return "", fmt.Errorf("%s: no entry function; declare `export function run(args: Array<string>): int`", name)
-	}
-	return Emit(prog, name, tests), nil
-}
-
-func prefix(name string, err error) error {
-	return fmt.Errorf("%s:%s", name, err.Error())
+	return Emit(prog, entry, false), nil
 }
 
 type BuildOptions struct {
 	Release bool
 	Tests   bool
+	Binary  string // the binary to build from a package; empty for the only one
 	KeepC   string // when set, the generated C is also written here
 	CC      string
 	CFlags  []string
 }
 
-// Build compiles a source file to a native executable.
+// Build compiles a source file or a package binary to a native executable.
 func Build(path, output string, opts BuildOptions) error {
-	csrc, err := CompileToC(path, opts.Tests)
+	csrc, err := CompileBinary(path, opts.Binary, opts.Tests)
 	if err != nil {
 		return err
 	}

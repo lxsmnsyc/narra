@@ -198,12 +198,12 @@ Decision: function parameters and return types are always written. Local variabl
 
 ## D23. Type syntax uses names, not symbols
 
-Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`, `Generator<T>`. There is no `T?`, `T | null`, `{T}` or `{K: V}` type syntax, and no `??` operator (section 4).
+Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, V>`, `Result<T, E>`, `Generator<T>`. Tuples are the exception: their type is `#[A, B]`, like their literal (D53). There is no `T?`, `T | null`, `{T}` or `{K: V}` type syntax, and no `??` operator (section 4).
 
 - **Reason.** A name says what the type is. A reader who has not seen the language before can read `Option<string>`, but not `string?` or `{string}`.
 - **Reason.** Names are easy to search for. Symbols such as `?` appear in many other places.
 - **Cost.** Signatures are longer.
-- **`T[]` was considered and rejected (2026-10-28).** In a function type it is ambiguous, because `() => int[]` can mean either a function returning an array or an array of functions. It would also make `Array` the only collection with a symbol, unlike `FixedArray<T, N>` and `Map<K, V>`. TypeScript accepts `Array<T>` as well, so the named form costs TypeScript users nothing. `T[]` gets a diagnostic with a fix instead (section 2).
+- **`T[]` was considered and rejected (2026-10-28).** In a function type it is ambiguous, because `() => int[]` can mean either a function returning an array or an array of functions. It would also make `Array` the only collection type written with a symbol, unlike `FixedArray<T, N>` and `Map<K, V>`; tuples (D53) are not a collection. TypeScript accepts `Array<T>` as well, so the named form costs TypeScript users nothing. `T[]` gets a diagnostic with a fix instead (section 2).
 
 ## D24. `const` and `let`
 
@@ -368,7 +368,7 @@ Decision: a line break ends a statement when the line could end there. A line th
 
 ## D44. Tuples instead of multiple return values
 
-Decision: a function that returns several values returns a `Tuple` or a struct. The caller destructures with `const [a, b] = f()` (section 4).
+Decision: a function that returns several values returns a tuple or a struct. The caller destructures with `const #[a, b] = f()` (section 4).
 
 - **Reason.** One concept covers both returning several values and grouping values.
 - **Reason.** A tuple can be stored, passed and returned like any value.
@@ -437,3 +437,15 @@ Decision: only a parameter written with a function type, such as `f: (x: T) => U
 - **Reason.** A generic body may store or return a `T`. Whether the parameter escapes must not depend on the type argument, or the same body would be valid for some calls and not others.
 - **Cost.** A non-escaping parameter cannot be passed to a generic `T` parameter.
 
+## D53. Tuple literals and types use `#[...]`
+
+Decision: `#[1, "a"]` builds a tuple, `const #[a, b] = t` destructures one, and `#[0, name]` matches one in a pattern. The type is written the same way: `#[int, string]`, nested as in `Array<#[int, string]>`. A one-element `#[T]` is an error, as type and as literal. `[a, b]` is always an array (sections 2 and 4).
+
+- **Reason.** It is the syntax of the JavaScript Records & Tuples proposal, so it reads as a tuple to TypeScript users.
+- **Reason.** `#[` starts nothing else, so a tuple never depends on the expected type. It works in generic calls such as `swap(#[1, "a"])`, where no expected type exists.
+- **Reason.** Tuples are the one type written with a symbol rather than a name (D23). The type mirrors the literal and the pattern, so `#[int, string]`, `#[1, "a"]` and `#[n, s]` read as one form.
+- **Rejected: `Tuple<A, B>` as the type.** It would be the only type whose values are not written with its name, and it keeps `Tuple` out of user code as a name.
+- **Rejected: `(a, b)`.** The parser would need lookahead to tell it from the parameters of an arrow function.
+- **Rejected: `Tuple(a, b)`.** It is verbose, and it makes `Tuple` a reserved value name.
+- **Rejected: `[a, b]` with a tuple as the expected type.** The same text would build an array or a tuple depending on context.
+- **Note.** D44 now destructures with `const #[a, b] = f()`, and D23 lists tuples as its one exception. `Tuple` is not a prelude name.

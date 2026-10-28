@@ -52,10 +52,29 @@ type StructType struct {
 	Module string // declaring module path; "" for the prelude
 	Fields []*Field
 	Args   []Type // type arguments of a generic instance
+	Tuple  bool   // Tuple<A, B>: fields "0", "1", ... and Args are the element types
 }
 
-func (t *StructType) String() string { return t.Name + typeArgsString(t.Args) }
+func (t *StructType) String() string {
+	if t.Tuple {
+		s := typeArgsString(t.Args)
+		return "#[" + s[1:len(s)-1] + "]"
+	}
+	return t.Name + typeArgsString(t.Args)
+}
+
+// tupleCName names a tuple type. No module path maps to a segment starting
+// with "_", so S__Tuple cannot be a user struct's name. The element count
+// comes first, as F<n> does for function types, so nested tuples of
+// different shapes differ: #[#[int, int], int] is S__Tuple2__S__Tuple2__int__int__int.
+func tupleCName(elems []Type) string {
+	return fmt.Sprintf("S__Tuple%d%s", len(elems), typeArgsMangle(elems))
+}
+
 func (t *StructType) CName() string {
+	if t.Tuple {
+		return tupleCName(t.Args)
+	}
 	return "S_" + cModule(t.Module) + t.Name + typeArgsMangle(t.Args)
 }
 

@@ -54,6 +54,10 @@ go test ./...
 - `int`, `f64`, `bool`, `char` and `string`.
 - Structs with constant field defaults, typed literals (`Point { x: 1 }`) and literals typed from context.
 - Enums with fields, and `match` as a statement or a value, with guards and `_`.
+- Patterns in `match`, `is` and `const`: nested constructors (`Some(Node(a, 0))`), struct patterns (`{ x: 0.0, y }`), tuple patterns (`#[a, Some(b)]`), literals (`0`, `-1`, `1.5`, `"a"`, `'c'`, `true`), bindings and `_`. `match` works on any value and checks exhaustiveness through nested enums, bools, structs and tuples.
+- Destructuring: `const { host, port: serverPort } = config` and `const #[q, r] = divmod(a, b)`, nested too.
+- Spread updates: `{ ...s, field: v }` and `Point { ...s, x: 1.0 }`.
+- Tuples: the type `#[int, string]` (in every type position), the literal `#[a, b]`, and `const #[a, b] = t`. Tuples implement the standard traits when their elements do.
 - `Array<T>`: literals, `Array.push`, `Array.length`, `Array.filled`, indexing and element assignment, with copy on write.
 - `mutable` parameters, with the exclusive access check.
 - Generic functions, structs and enums. Type arguments are inferred from arguments, the expected type and struct fields.
@@ -74,12 +78,11 @@ go test ./...
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - `export const`, `export type` aliases, and enum constructors through a namespace (`X.Token.Word`).
 - `Dynamic<Trait>`, `derives Shape` and `Hash.of`.
-- Nested patterns such as `Some(Node(a, b))`, and struct patterns.
 - Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects are parsed but not checked.
-- Struct spread updates, destructuring.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
+- Destructuring in `for (const #[i, x] of ...)` loops, and reading a tuple element by index.
 - Generators, async functions, threads and channels.
 - Opaque and distinct types, `unsafe` and `extern`.
 
@@ -103,7 +106,11 @@ go test ./...
 - `trait`, `implement`, `implements` and `derives` are keywords, so they cannot be used as names. `Ordering` (with `Less`, `Equal`, `Greater`) and the traits `Equatable`, `Hashable`, `Ordered` and `Show` are prelude names, like `Option`, so a program cannot declare its own type or trait with those names.
 - Trait names and trait function names cannot start or end with `_` or contain `__`, because the C names of implementations use `__` between them.
 - `Hashable.hash(x)` returns `int`. `Hash.of` does not exist yet.
-- Derived `Show` writes `Point { x: 1, y: 2 }`, `Some(1)` and `[1, 2]`, and quotes strings and chars inside: `"text"`, `'c'`. `Show.show` on a string quotes it too.
 - A function type carries no `escaping` marker, so the parameters of a function value are escaping: an argument passed through a function value must be escaping, and a parameter of an arrow function that has a function type may be stored.
 - Only a parameter written with a function type can be non-escaping. A parameter whose type is a type parameter is escaping even when the type argument is a function type, so passing a non-escaping parameter to `id<T>(v: T)` is an error.
 - An arrow function with a block body and no result type infers it from its `return` statements (void when none returns a value).
+- Derived `Show` writes `Point { x: 1, y: 2 }`, `Some(1)` and `[1, 2]`, and quotes strings and chars inside: `"text"`, `'c'`. `Show.show` on a string quotes it too. A tuple shows as `#[1, "a"]`.
+- A name in a pattern is a constructor when the matched value is an enum with that variant. Otherwise it binds a new name, except that a name starting with an uppercase letter is an error. The spec does not say how a pattern tells the two apart.
+- `match` accepts any value, not only enums, and so does `is`. A match on `int` or `string` needs a `_` arm or a binding arm.
+- `let { a } = s` is allowed and declares `let` variables. The spec shows only `const` for struct destructuring.
+- A destructuring pattern must match every value (`const { x: 0 } = p` and `const Some(x) = o` are errors). A constructor works when its enum has one variant: `const Only(s) = u`.

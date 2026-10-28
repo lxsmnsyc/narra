@@ -28,7 +28,7 @@ func cloneStmt(s Stmt) Stmt {
 	case *Block:
 		return cloneBlock(s)
 	case *VarStmt:
-		return &VarStmt{Pos: s.Pos, Mutable: s.Mutable, Name: s.Name, Type: s.Type, Value: cloneExpr(s.Value)}
+		return &VarStmt{Pos: s.Pos, Mutable: s.Mutable, Name: s.Name, Pattern: clonePattern(s.Pattern), Type: s.Type, Value: cloneExpr(s.Value)}
 	case *AssignStmt:
 		return &AssignStmt{Pos: s.Pos, Target: cloneExpr(s.Target), Value: cloneExpr(s.Value)}
 	case *ExprStmt:
@@ -53,7 +53,17 @@ func clonePattern(p *Pattern) *Pattern {
 	if p == nil {
 		return nil
 	}
-	return &Pattern{Pos: p.Pos, Wildcard: p.Wildcard, Name: p.Name, Binds: p.Binds}
+	c := &Pattern{Pos: p.Pos, Kind: p.Kind, Name: p.Name, Enum: p.Enum, Lit: cloneExpr(p.Lit)}
+	if p.Args != nil {
+		c.Args = []*Pattern{}
+		for _, a := range p.Args {
+			c.Args = append(c.Args, clonePattern(a))
+		}
+	}
+	for _, f := range p.Fields {
+		c.Fields = append(c.Fields, &FieldPattern{Pos: f.Pos, Name: f.Name, Pattern: clonePattern(f.Pattern)})
+	}
+	return c
 }
 
 func cloneExpr(e Expr) Expr {
@@ -94,13 +104,13 @@ func cloneExpr(e Expr) Expr {
 	case *BinaryExpr:
 		return &BinaryExpr{exprBase: exprBase{P: e.P}, Op: e.Op, Left: cloneExpr(e.Left), Right: cloneExpr(e.Right)}
 	case *StructLit:
-		c := &StructLit{exprBase: exprBase{P: e.P}, TypeName: e.TypeName}
+		c := &StructLit{exprBase: exprBase{P: e.P}, TypeName: e.TypeName, Spread: cloneExpr(e.Spread)}
 		for _, f := range e.Fields {
 			c.Fields = append(c.Fields, &FieldInit{Pos: f.Pos, Name: f.Name, Value: cloneExpr(f.Value)})
 		}
 		return c
 	case *ArrayLit:
-		c := &ArrayLit{exprBase: exprBase{P: e.P}}
+		c := &ArrayLit{exprBase: exprBase{P: e.P}, IsTuple: e.IsTuple}
 		for _, el := range e.Elems {
 			c.Elems = append(c.Elems, cloneExpr(el))
 		}

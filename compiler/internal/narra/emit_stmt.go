@@ -13,6 +13,10 @@ func (e *Emitter) stmt(s Stmt) {
 		e.indent--
 		e.line("}")
 	case *VarStmt:
+		if s.Pattern != nil {
+			e.destructure(s)
+			return
+		}
 		e.beginStmt()
 		code, owned := e.expr(s.Value)
 		v := e.consume(code, owned, s.Local.T)

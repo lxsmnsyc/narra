@@ -126,24 +126,15 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 	case *BinaryExpr:
 		return c.binary(e)
 	case *IsExpr:
-		binds := c.isBinds
-		c.isBinds = false
-		t := c.expr(e.Subject, nil)
-		et, ok := t.(*EnumType)
-		if !ok {
-			c.errorf(e.P, "`is` needs an enum value, found %s", t)
-			return TBool
-		}
-		c.resolvePattern(e.Pattern, et)
-		if len(e.Pattern.Binds) > 0 && !binds {
-			c.errorf(e.P, "an `is` pattern can only bind names when it is the whole condition of an if")
-		}
-		return TBool
+		return c.isExpr(e)
 	case *CallExpr:
 		return c.call(e, want)
 	case *StructLit:
 		return c.structLit(e, want)
 	case *ArrayLit:
+		if e.IsTuple {
+			return c.tupleLit(e, want)
+		}
 		var elem Type
 		if at, ok := want.(*ArrayType); ok {
 			elem = at.Elem
@@ -209,6 +200,9 @@ func (c *Checker) binary(e *BinaryExpr) Type {
 }
 
 func (c *Checker) structLit(e *StructLit, want Type) Type {
+	if e.Spread != nil {
+		return c.spreadLit(e, want)
+	}
 	var st *StructType
 	switch {
 	case e.TypeName != "" && c.generics[e.TypeName] != nil && c.generics[e.TypeName].sdecl != nil:

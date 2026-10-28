@@ -109,7 +109,8 @@ type Checker struct {
 	arrays    map[string]*ArrayType
 	instTypes []Type
 	localN    int
-	isBinds   bool // an `is` pattern may bind names here
+	isBinds   bool                   // an `is` pattern may bind names here
+	tuples    map[string]*StructType // tuple types by element mangle (check_patterns.go)
 	// The name tables above (types, generics, funcs, modules, imported)
 	// belong to mod, the module being checked; enter swaps them (modules_check.go).
 	mod     *modScope

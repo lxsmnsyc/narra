@@ -157,6 +157,9 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		if len(t.Args) == 0 {
 			return t
 		}
+		if t.Tuple {
+			return c.tupleOf(c.substituteAll(t.Args, m))
+		}
 		return c.instantiate(c.genericOf(t.Module, t.Name), c.substituteAll(t.Args, m))
 	case *EnumType:
 		if len(t.Args) == 0 {
@@ -292,6 +295,9 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		}
 		return c.funcOf(params, c.funcResult(te.Result))
 	}
+	if te.Tuple {
+		return c.tupleType(te)
+	}
 	if t, ok := c.env[te.Name]; ok && len(te.Args) == 0 {
 		return t
 	}
@@ -323,6 +329,10 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 			args[i] = c.resolveType(a)
 		}
 		return c.instantiate(g, args)
+	}
+	if _, ok := c.types[te.Name]; !ok && te.Name == "Tuple" {
+		c.errorf(te.Pos, "there is no Tuple type; write a tuple type as #[A, B]")
+		return TVoid
 	}
 	if len(te.Args) > 0 {
 		c.errorf(te.Pos, "type %s is not generic", te.Name)

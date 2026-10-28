@@ -44,7 +44,7 @@ var keywords = map[string]bool{
 
 // Longest punctuation first, so "==" is matched before "=".
 var puncts = []string{
-	"===", "!==", "...", "=>", "==", "!=", "<=", ">=", "&&", "||", "+%", "-%", "*%", "<<", ">>",
+	"===", "!==", "...", "#[", "=>", "==", "!=", "<=", ">=", "&&", "||", "+%", "-%", "*%", "<<", ">>",
 	"+", "-", "*", "/", "%", "<", ">", "=", "!", "&", "|", "^", "~",
 	"(", ")", "{", "}", "[", "]", ",", ":", ".", ";",
 }
@@ -191,7 +191,7 @@ func (lx *Lexer) run() error {
 						return lx.errorf(pos, "semicolons are not used; end the statement with a line break")
 					}
 					switch p {
-					case "(", "[":
+					case "(", "[", "#[":
 						lx.depth++
 					case ")", "]":
 						if lx.depth > 0 {

@@ -499,12 +499,15 @@ func typeExprString(te *TypeExpr) string {
 	if te.Func {
 		return "a function type"
 	}
-	if len(te.Args) == 0 {
+	if len(te.Args) == 0 && !te.Tuple {
 		return te.Name
 	}
 	parts := make([]string, len(te.Args))
 	for i, a := range te.Args {
 		parts[i] = typeExprString(a)
+	}
+	if te.Tuple {
+		return "#[" + strings.Join(parts, ", ") + "]"
 	}
 	return te.Name + "<" + strings.Join(parts, ", ") + ">"
 }

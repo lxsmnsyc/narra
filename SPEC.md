@@ -53,7 +53,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
-- **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const [quotient, remainder] = Int.divmod(a, b)` for tuples.
+- **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
 
 ### Functions
 
@@ -105,7 +105,7 @@ const scaled = Array.map(prices, (p) => p * rate)    // no closure allocation, n
 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
-- `for (const item of iter) { ... }` loops over an iterator. `for (const [i, item] of Array.entries(items))` gives indexes from 0.
+- `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Array.entries(items))` gives indexes from 0.
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Array.values`, `Array.entries`, `Map.keys`, `Map.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
 - **Counting loops use `Range`.** `Range.upTo(n)` counts from 0 to `n - 1`. `Range.between(start, end)` counts from `start` to `end - 1`. `Range.stepped(start, end, step)` takes a step.
 
@@ -131,7 +131,7 @@ for (const i of Range.upTo(Array.length(items))) {
 - A number literal with no other type information is `int` when written without a decimal point, and `f64` when written with one.
 - **Arrays:** `[1, 2, 3]`. `[]` needs its type from context.
 - **Maps:** `Map { "a": 1, "b": 2 }`. A key that is not a literal is written `[key]: value`.
-- **Tuples:** `Tuple(1, "a")`, or `[1, "a"]` when the expected type is a tuple.
+- **Tuples:** `#[1, "a"]` builds a tuple of type `#[int, string]`. It always makes a tuple, needs no expected type and has at least two elements. `[1, 2]` is always an array.
 
 There are no macros, no operator overloading and no function overloading.
 
@@ -184,7 +184,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **One file is one module.** Its path from the package root is its name: `src/app/text.nra` is `"app/text"`.
 - **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
-- **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Tuple`, `Range`, the primitive types, `print`, `assert` and `panic`. Nothing else is in scope without an import.
+- **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, the primitive types, `print`, `assert` and `panic`. Nothing else is in scope without an import.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 ```ts
@@ -246,7 +246,7 @@ export enum Token {
 - **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
 - **Float keys are not allowed.** `Map<f64, V>` and keys that contain floats are compile errors.
-- **Tuples.** `Tuple<int, string>` holds a fixed group of values. A function that returns several values returns a tuple or a struct.
+- **Tuples.** `#[int, string]` is a tuple type. It holds a fixed group of at least two values. `#[1, "a"]` builds one, `const #[n, s] = t` (or `let`) destructures one, and `#[0, name]` matches one in a pattern. The type is written like the literal, in every type position: `Array<#[int, string]>`, `#[#[int, int], string]`. A function that returns several values returns a tuple or a struct.
 - **Functions.** `(a: int, b: string) => bool`.
 
 ### Structs
@@ -396,7 +396,7 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 - `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `null` or `undefined`.
 - `if (x is Some(v)) { ... }` binds `v` inside the branch. After `if (x is None) { return ... }`, `x` is known to be `Some` for the rest of the block, and `x.value` reads the value.
 - `Option.withDefault(x, fallback)` returns `fallback` when `x` is `None`.
-- Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Tuple<A, B>`, `Result<T, E>`. There is no `T | null` or `T?`.
+- Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Result<T, E>`. There is no `T | null` or `T?`. Tuples are the one exception: `#[A, B]` (see Tuples above).
 
 ### Pattern matching
 
@@ -775,7 +775,7 @@ const total = Thread.scope((scope) => {
 ### Channels
 
 ```ts
-const [sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
+const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
 Thread.start(scope, () => {
   for (const i of Range.upTo(100)) {
@@ -789,7 +789,7 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 }
 ```
 
-- **`Channel.create<T>(capacity)`** returns a `Tuple<Sender<T>, Receiver<T>>`.
+- **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`.
 - **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
 - Blocking calls have the `io` effect.

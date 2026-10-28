@@ -183,6 +183,18 @@ func (p *Parser) typeExpr() *TypeExpr {
 	if p.is("(") {
 		return p.funcTypeExpr()
 	}
+	if p.is("#[") {
+		// A tuple type, written like the literal: #[int, string].
+		te := &TypeExpr{Pos: p.next().Pos, Tuple: true}
+		for !p.is("]") {
+			te.Args = append(te.Args, p.typeExpr())
+			if !p.accept(",") {
+				break
+			}
+		}
+		p.expect("]")
+		return te
+	}
 	t := p.ident()
 	te := &TypeExpr{Pos: t.Pos, Name: t.Text}
 	if p.accept(".") { // a type from a namespace import, such as Text.Token
@@ -522,7 +534,14 @@ func (p *Parser) stmt() Stmt {
 	switch {
 	case p.is("const") || p.is("let"):
 		mutable := p.next().Text == "let"
-		s := &VarStmt{Pos: t.Pos, Mutable: mutable, Name: p.ident().Text}
+		s := &VarStmt{Pos: t.Pos, Mutable: mutable}
+		next := p.toks[p.i+1] // the token stream always ends with EOF
+		ctor := p.tok().Kind == TokIdent && next.Kind == TokPunct && (next.Text == "(" || next.Text == ".")
+		if p.is("{") || p.is("#[") || ctor {
+			s.Pattern = p.pattern()
+		} else {
+			s.Name = p.ident().Text
+		}
 		if p.accept(":") {
 			s.Type = p.typeExpr()
 		}
@@ -724,7 +743,17 @@ func (p *Parser) structLit() *StructLit {
 	p.skipNewlines()
 	for !p.is("}") {
 		if p.is("...") {
-			p.fail(p.tok().Pos, "spread updates are not supported by this compiler yet")
+			if lit.Spread != nil || len(lit.Fields) > 0 {
+				p.fail(p.tok().Pos, "a struct literal has at most one spread, and it comes first")
+			}
+			p.next()
+			lit.Spread = p.expr()
+			p.skipNewlines()
+			if !p.accept(",") {
+				break
+			}
+			p.skipNewlines()
+			continue
 		}
 		name := p.ident()
 		if !p.is(":") {
@@ -786,9 +815,9 @@ func (p *Parser) primary() Expr {
 			e := p.expr()
 			p.expect(")")
 			return e
-		case "[":
+		case "[", "#[":
 			p.next()
-			lit := &ArrayLit{exprBase: base}
+			lit := &ArrayLit{exprBase: base, IsTuple: t.Text == "#["}
 			for !p.is("]") {
 				lit.Elems = append(lit.Elems, p.expr())
 				if !p.accept(",") {
@@ -896,24 +925,82 @@ func (p *Parser) matchExpr() Expr {
 }
 
 func (p *Parser) pattern() *Pattern {
-	t := p.ident()
+	t := p.tok()
 	pat := &Pattern{Pos: t.Pos}
-	if t.Text == "_" {
-		pat.Wildcard = true
-		return pat
-	}
-	pat.Name = t.Text
-	if p.accept(".") {
-		pat.Name = p.ident().Text // Shape.Circle: the enum is known from the subject
-	}
-	if p.accept("(") {
-		for !p.is(")") {
-			pat.Binds = append(pat.Binds, p.ident().Text)
+	switch {
+	case p.is("{"):
+		p.next()
+		pat.Kind = PatStruct
+		p.skipNewlines()
+		for !p.is("}") {
+			name := p.ident()
+			fp := &FieldPattern{Pos: name.Pos, Name: name.Text}
+			if p.accept(":") {
+				fp.Pattern = p.pattern()
+			} else {
+				fp.Pattern = &Pattern{Pos: name.Pos, Kind: PatName, Name: name.Text}
+			}
+			pat.Fields = append(pat.Fields, fp)
+			p.skipNewlines()
 			if !p.accept(",") {
 				break
 			}
+			p.skipNewlines()
 		}
-		p.expect(")")
+		p.skipNewlines()
+		p.expect("}")
+		return pat
+	case p.is("#["):
+		p.next()
+		pat.Kind = PatTuple
+		pat.Args = p.patternList("]")
+		return pat
+	case p.is("-"):
+		p.next()
+		n := p.tok()
+		if n.Kind != TokInt && n.Kind != TokFloat {
+			p.fail(n.Pos, "expected a number after - in a pattern, found %s", describe(n))
+		}
+		pat.Kind = PatLit
+		pat.Lit = &UnaryExpr{exprBase: exprBase{P: t.Pos}, Op: "-", Operand: p.primary()}
+		return pat
+	case t.Kind == TokInt || t.Kind == TokFloat || t.Kind == TokString || t.Kind == TokChar || p.is("true") || p.is("false"):
+		pat.Kind = PatLit
+		pat.Lit = p.primary()
+		return pat
+	}
+	t = p.ident()
+	if t.Text == "_" {
+		pat.Kind = PatWildcard
+		return pat
+	}
+	pat.Kind = PatName
+	pat.Name = t.Text
+	if p.accept(".") {
+		pat.Kind = PatCtor
+		pat.Enum = t.Text
+		pat.Name = p.ident().Text
+	}
+	if p.accept("(") {
+		pat.Kind = PatCtor
+		pat.Args = p.patternList(")")
 	}
 	return pat
+}
+
+// patternList parses patterns up to close, which it consumes. The result is
+// never nil, so Name() keeps zero arguments apart from a bare Name.
+func (p *Parser) patternList(close string) []*Pattern {
+	list := []*Pattern{}
+	p.skipNewlines()
+	for !p.is(close) {
+		list = append(list, p.pattern())
+		p.skipNewlines()
+		if !p.accept(",") {
+			break
+		}
+		p.skipNewlines()
+	}
+	p.expect(close)
+	return list
 }

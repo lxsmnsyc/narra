@@ -26,6 +26,8 @@ type TypeExpr struct {
 	// types and Result the result type.
 	Func   bool
 	Result *TypeExpr
+	// A tuple type `#[A, B]` sets Tuple; Args are the element types.
+	Tuple bool
 }
 
 type Param struct {
@@ -131,6 +133,7 @@ type VarStmt struct {
 	Pos     Pos
 	Mutable bool // let
 	Name    string
+	Pattern *Pattern // const { a, b } = s and const #[a, b] = t; Name is empty
 	Type    *TypeExpr
 	Value   Expr
 	Local   *Local
@@ -308,21 +311,50 @@ type StructLit struct {
 	exprBase
 	TypeName string // empty when the type comes from context
 	Fields   []*FieldInit
+	Spread   Expr // { ...s, field: v }
 	Struct   *StructType
 }
 
 type ArrayLit struct {
 	exprBase
-	Elems []Expr
+	Elems   []Expr
+	IsTuple bool        // written #[a, b]
+	Tuple   *StructType // set by the checker when the literal builds a tuple
+}
+
+// PatternKind is the syntax of a pattern. The checker decides what a
+// PatName means: a constructor without fields when the value is an enum with
+// that variant, otherwise a binding.
+type PatternKind int
+
+const (
+	PatWildcard PatternKind = iota // _
+	PatName                        // name
+	PatCtor                        // Name(p, ...) or Enum.Name
+	PatStruct                      // { field, field: p }
+	PatTuple                       // #[p, q]
+	PatLit                         // 0, -1, 1.5, "a", 'c', true
+)
+
+type FieldPattern struct {
+	Pos     Pos
+	Name    string
+	Pattern *Pattern
 }
 
 type Pattern struct {
-	Pos      Pos
-	Wildcard bool
-	Name     string   // constructor name
-	Binds    []string // one per constructor field, "_" to skip
-	Variant  *Variant
-	Locals   []*Local
+	Pos    Pos
+	Kind   PatternKind
+	Name   string          // constructor name, or the bound name of a PatName
+	Enum   string          // the qualifier of Shape.Circle
+	Args   []*Pattern      // constructor fields or tuple elements; nil for a bare constructor
+	Fields []*FieldPattern // PatStruct
+	Lit    Expr            // PatLit
+	// Set by the checker:
+	T       Type
+	Variant *Variant // PatName or PatCtor naming a constructor
+	Local   *Local   // PatName that binds
+	Locals  []*Local // on the root pattern: every name it binds, in order
 }
 
 type MatchArm struct {

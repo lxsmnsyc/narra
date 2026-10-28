@@ -1,7 +1,7 @@
 ---
 id: hashed-cnames
 title: Hashed C names
-status: todo
+status: active
 priority: must
 type: refactor
 outline: false

@@ -1,7 +1,7 @@
 ---
 id: poly-recursion
 title: Reject polymorphic recursion in generic types
-status: todo
+status: active
 priority: must
 type: fix
 outline: false

@@ -200,27 +200,45 @@ static void lstr_append_owned(lstr** acc, lstr* piece) {
 
 static lstr* narra_show_bool(bool v) { return lstr_from_cstr(v ? "true" : "false"); }
 
-static lstr* narra_show_char(uint32_t c) {
-  lstr* s = lstr_from_cstr("'");
-  lstr_append_owned(&s, lstr_from_char(c));
-  lstr_append_c(&s, "'");
+// The escape for byte c inside quotes q, or 0 when c stands for itself.
+static char narra_escape(char c, char q) {
+  switch (c) {
+  case '\n': return 'n';
+  case '\t': return 't';
+  case '\r': return 'r';
+  case '\\': return '\\';
+  default: return c == q ? q : 0;
+  }
+}
+
+// Bytes in quotes q, with q, `\`, newline, tab and carriage return escaped.
+static lstr* narra_quote(const char* data, int64_t len, char q) {
+  int64_t n = 2;
+  for (int64_t i = 0; i < len; i++) n += narra_escape(data[i], q) ? 2 : 1;
+  lstr* s = lstr_new(n);
+  int64_t j = 0;
+  s->data[j++] = q;
+  for (int64_t i = 0; i < len; i++) {
+    char e = narra_escape(data[i], q);
+    if (e) {
+      s->data[j++] = '\\';
+      s->data[j++] = e;
+    } else {
+      s->data[j++] = data[i];
+    }
+  }
+  s->data[j++] = q;
   return s;
 }
 
-// A string in double quotes, with `"` and `\` escaped.
-static lstr* narra_show_string(lstr* v) {
-  int64_t n = 2;
-  for (int64_t i = 0; i < v->len; i++) n += (v->data[i] == '"' || v->data[i] == '\\') ? 2 : 1;
-  lstr* s = lstr_new(n);
-  int64_t j = 0;
-  s->data[j++] = '"';
-  for (int64_t i = 0; i < v->len; i++) {
-    if (v->data[i] == '"' || v->data[i] == '\\') s->data[j++] = '\\';
-    s->data[j++] = v->data[i];
-  }
-  s->data[j++] = '"';
+static lstr* narra_show_char(uint32_t c) {
+  lstr* u = lstr_from_char(c);
+  lstr* s = narra_quote(u->data, u->len, '\'');
+  lstr_release(u);
   return s;
 }
+
+static lstr* narra_show_string(lstr* v) { return narra_quote(v->data, v->len, '"'); }
 
 static void narra_print(lstr* s) {
   fwrite(s->data, 1, (size_t)s->len, stdout);

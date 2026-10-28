@@ -14,7 +14,11 @@
 
 Change the generated names in the table from `<mangle(t)>_eq`, `_hash`, `_cmp`, `_show` to `<mangle(t)>__eq`, `__hash`, `__cmp`, `__show`. Example: `Pair<int, string>` in module `app/a` gives `S_app_a__Pair__int__string__eq`. No output of `mangle` is `eq`, `hash`, `cmp` or `show`, and type names contain no `__`, so these never equal a type's or a generic instance's C name. Primitive names are unchanged. `E_Ordering__show` keeps no module prefix (prelude).
 
-Functions of `implement` blocks are `FuncDecl`s with `Module` set to the type's module and `Name` from `implFuncName`: `<Type>__0<cModule(trait module)><Trait>__<fn>`. Through `funcCName`, that gives `f_app_geo__Square__0app_shape__Area__area`, or `f_app_geo__Square__0Show__show` for a prelude trait. The `0` segment cannot start an identifier or a `mangle` output, so it never equals a generic instance name. Trait function names cannot contain `__`.
+Functions of `implement` blocks are `FuncDecl`s with `Module` set to the type's module and `Name` from `implFuncName`: `<Type>__0<cModule(trait module)><Trait>__<fn>`. Through `funcCName`, that gives `f_app_geo__Square__0app_shape__Area__area`, or `f_app_geo__Square__0Show__show` for a prelude trait. The `0` segment cannot start an identifier or a `mangle` output, so it never equals a generic instance name.
+
+Naming rule that keeps these names injective: trait names and trait function names must pass `cSafeSegment`, the module-graph v2 rule for path segments: no `__`, and no leading or trailing `_`. Type names already contain no `__`. The type name ends at the first `__0`, because the part after it always starts with `0`, never `_`. The remaining `__`-separated segments are then all non-empty and free of edge `_`, so the last one is the function, the one before it the trait, and any before that the trait's module. Without the rule, trait `T_` with function `f` and trait `T` with function `_f` both gave `X__0T___f` (review of PR #3). `testdata/errors/traits_name_underscore.nra` pins the error.
+
+`mangle` gains a case for `FuncType`: `F<n>` then the parameter types and the result, joined by `__` like type arguments. `(int) => int` is `F1__int__int`. This keeps `Box<(int) => int>` and `Box<(bool) => int>` apart.
 
 Modules: an `implement` block must be in the module that declares the type (SPEC section 4, D5). `export trait` exports a trait, and `import { Trait } from "..."` imports it. `Trait.Module` holds the declaring module ("" for the prelude).
 

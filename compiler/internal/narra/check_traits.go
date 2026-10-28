@@ -179,9 +179,15 @@ func (c *Checker) declareTraits(f *File) {
 				c.errorf(d.Pos, "%q is declared twice", d.Name)
 				continue
 			}
+			// Implementation C names join the trait and function names with
+			// "__" (implFuncName), so neither may start or end with "_" or
+			// contain "__", as for module path segments.
+			if !cSafeSegment(d.Name) {
+				c.errorf(d.Pos, "trait name %q cannot start or end with \"_\" or contain \"__\"; C names use them as separators", d.Name)
+			}
 			for _, fd := range d.Funcs {
-				if strings.Contains(fd.Name, "__") {
-					c.errorf(fd.Pos, "name %q cannot contain \"__\"; C names use it between the module and the name", fd.Name)
+				if !cSafeSegment(fd.Name) {
+					c.errorf(fd.Pos, "trait function name %q cannot start or end with \"_\" or contain \"__\"; C names use them as separators", fd.Name)
 				}
 			}
 			typeParamID++
@@ -250,8 +256,14 @@ func (c *Checker) traitNamed(te *TypeExpr) *Trait {
 // funcBounds resolves the constraints of a generic function's type parameters.
 func (c *Checker) funcBounds(fd *FuncDecl, tps []*TypeParamType) {
 	for i, bs := range fd.Bounds {
+		seen := map[*Trait]bool{}
 		for _, te := range bs {
 			if tr := c.traitNamed(te); tr != nil {
+				if seen[tr] {
+					c.errorf(te.Pos, "%s is listed twice in the constraint of %s", tr.Name, fd.TypeParams[i])
+					continue
+				}
+				seen[tr] = true
 				c.traits.bounds[tps[i]] = append(c.traits.bounds[tps[i]], tr)
 			}
 		}

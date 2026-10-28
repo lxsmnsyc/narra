@@ -148,6 +148,11 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		return t
 	case *ArrayType:
 		return c.arrayOf(c.substitute(t.Elem, m))
+	case *FuncType:
+		if !containsTypeParam(t) {
+			return t
+		}
+		return &FuncType{Params: c.substituteAll(t.Params, m), Result: c.substitute(t.Result, m)}
 	case *StructType:
 		if len(t.Args) == 0 {
 			return t
@@ -186,6 +191,13 @@ func unify(pat, act Type, m map[*TypeParamType]Type) {
 	case *ArrayType:
 		if a, ok := act.(*ArrayType); ok {
 			unify(p.Elem, a.Elem, m)
+		}
+	case *FuncType:
+		if a, ok := act.(*FuncType); ok && len(a.Params) == len(p.Params) {
+			for i := range p.Params {
+				unify(p.Params[i], a.Params[i], m)
+			}
+			unify(p.Result, a.Result, m)
 		}
 	case *StructType:
 		if a, ok := act.(*StructType); ok && a.Name == p.Name && a.Module == p.Module && len(a.Args) == len(p.Args) {

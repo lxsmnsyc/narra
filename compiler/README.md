@@ -78,7 +78,7 @@ go test ./...
 - Closures and arrow functions.
 - Effects are parsed but not checked.
 - Struct spread updates, destructuring.
-- Function values. Function types such as `(x: int) => int` parse, but no value of one can be made yet.
+- Function values. Function types such as `(x: int) => int` parse and compare by their parameters and result, but no value of one can be made yet.
 - Generators, async functions, threads and channels.
 - Opaque and distinct types, `unsafe` and `extern`.
 
@@ -99,5 +99,7 @@ go test ./...
 - An `implement` block must be in the module that declares the type. The prelude (`Option`, `Result`, `Ordering`) and primitive and array types belong to no user module, so they cannot get `implement` blocks.
 - Traits are imported by name (`import { Area } from "app/shapes"`). `Alias.Trait.f(x)` and `<T: Alias.Trait>` are not supported.
 - A bare constructor name resolves from the expected type first. Otherwise the enums visible in the module are searched in three ranks: those the module declares, then those it imports by name, then the prelude. The first rank with a match wins, so a user `Less` is not `Ordering.Less`. Two enums of the same rank sharing the name are an ambiguity error; write `Enum.Name`.
+- `trait`, `implement`, `implements` and `derives` are keywords, so they cannot be used as names. `Ordering` (with `Less`, `Equal`, `Greater`) and the traits `Equatable`, `Hashable`, `Ordered` and `Show` are prelude names, like `Option`, so a program cannot declare its own type or trait with those names.
+- Trait names and trait function names cannot start or end with `_` or contain `__`, because the C names of implementations use `__` between them.
 - `Hashable.hash(x)` returns `int`. `Hash.of` does not exist yet.
 - Derived `Show` writes `Point { x: 1, y: 2 }`, `Some(1)` and `[1, 2]`, and quotes strings and chars inside: `"text"`, `'c'`. `Show.show` on a string quotes it too.

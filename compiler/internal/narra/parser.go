@@ -157,6 +157,13 @@ func (p *Parser) decl() Decl {
 		return p.structDecl(exported)
 	case p.is("enum"):
 		return p.enumDecl(exported)
+	case p.is("trait"):
+		return p.traitDecl(exported)
+	case p.is("implement"):
+		if exported {
+			p.fail(p.tok().Pos, "implement blocks cannot be exported; export the trait and the type")
+		}
+		return p.implDecl()
 	case p.is("test"):
 		if exported {
 			p.fail(p.tok().Pos, "tests cannot be exported")
@@ -173,6 +180,9 @@ func (p *Parser) decl() Decl {
 }
 
 func (p *Parser) typeExpr() *TypeExpr {
+	if p.is("(") {
+		return p.funcTypeExpr()
+	}
 	t := p.ident()
 	te := &TypeExpr{Pos: t.Pos, Name: t.Text}
 	if p.accept(".") { // a type from a namespace import, such as Text.Token
@@ -196,31 +206,62 @@ func (p *Parser) typeExpr() *TypeExpr {
 	return te
 }
 
-func (p *Parser) typeParams() []string {
+// typeParams parses `<A, B: Show & Ordered>` and returns the names and the
+// trait constraints of each.
+func (p *Parser) typeParams() ([]string, [][]*TypeExpr) {
 	var names []string
+	var bounds [][]*TypeExpr
 	if !p.accept("<") {
-		return nil
+		return nil, nil
 	}
 	for !p.is(">") {
 		names = append(names, p.ident().Text)
-		if p.is(":") {
-			p.fail(p.tok().Pos, "trait constraints are not supported by this compiler yet")
+		var bs []*TypeExpr
+		if p.accept(":") {
+			for {
+				t := p.ident()
+				bs = append(bs, &TypeExpr{Pos: t.Pos, Name: t.Text})
+				if !p.accept("&") {
+					break
+				}
+			}
 		}
+		bounds = append(bounds, bs)
 		if !p.accept(",") {
 			break
 		}
 	}
 	p.expect(">")
+	return names, bounds
+}
+
+// typeParamsNoBounds parses type parameters of a struct or enum, which cannot
+// have constraints in this compiler.
+func (p *Parser) typeParamsNoBounds() []string {
+	pos := p.tok().Pos
+	names, bounds := p.typeParams()
+	for _, bs := range bounds {
+		if len(bs) > 0 {
+			p.fail(pos, "trait constraints on struct and enum type parameters are not supported by this compiler yet")
+		}
+	}
 	return names
 }
 
 func (p *Parser) funcDecl(exported bool) *FuncDecl {
+	fd := p.funcHeader(exported)
+	fd.Body = p.block()
+	return fd
+}
+
+// funcHeader parses a function declaration up to its body.
+func (p *Parser) funcHeader(exported bool) *FuncDecl {
 	pos := p.expect("function").Pos
 	if p.is("*") {
 		p.fail(p.tok().Pos, "generators are not supported by this compiler yet")
 	}
 	fd := &FuncDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
-	fd.TypeParams = p.typeParams()
+	fd.TypeParams, fd.Bounds = p.typeParams()
 	p.expect("(")
 	for !p.is(")") {
 		param := &Param{Pos: p.tok().Pos}
@@ -245,7 +286,6 @@ func (p *Parser) funcDecl(exported bool) *FuncDecl {
 			}
 		}
 	}
-	fd.Body = p.block()
 	return fd
 }
 
@@ -269,7 +309,8 @@ func (p *Parser) fieldList() []*FieldDecl {
 func (p *Parser) structDecl(exported bool) *StructDecl {
 	pos := p.expect("struct").Pos
 	sd := &StructDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
-	sd.TypeParams = p.typeParams()
+	sd.TypeParams = p.typeParamsNoBounds()
+	sd.Implements, sd.Derives = p.traitLists()
 	p.expect("{")
 	sd.Fields = p.fieldList()
 	p.expect("}")
@@ -279,7 +320,8 @@ func (p *Parser) structDecl(exported bool) *StructDecl {
 func (p *Parser) enumDecl(exported bool) *EnumDecl {
 	pos := p.expect("enum").Pos
 	ed := &EnumDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
-	ed.TypeParams = p.typeParams()
+	ed.TypeParams = p.typeParamsNoBounds()
+	ed.Implements, ed.Derives = p.traitLists()
 	p.expect("{")
 	p.skipNewlines()
 	for !p.is("}") {
@@ -302,6 +344,93 @@ func (p *Parser) enumDecl(exported bool) *EnumDecl {
 	}
 	p.expect("}")
 	return ed
+}
+
+// traitLists parses `implements A, B` and `derives C, D` after a type name.
+func (p *Parser) traitLists() (impls, derives []*TypeExpr) {
+	names := func() []*TypeExpr {
+		var out []*TypeExpr
+		for {
+			t := p.ident()
+			out = append(out, &TypeExpr{Pos: t.Pos, Name: t.Text})
+			if !p.accept(",") {
+				return out
+			}
+		}
+	}
+	if p.accept("implements") {
+		impls = names()
+	}
+	if p.accept("derives") {
+		derives = names()
+	}
+	return impls, derives
+}
+
+func (p *Parser) traitDecl(exported bool) *TraitDecl {
+	pos := p.expect("trait").Pos
+	td := &TraitDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	if p.is("<") {
+		p.fail(p.tok().Pos, "a trait has no type parameters; use Self for the implementing type")
+	}
+	p.expect("{")
+	p.skipNewlines()
+	for !p.is("}") {
+		if !p.is("function") {
+			p.fail(p.tok().Pos, "a trait has functions only, found %s", describe(p.tok()))
+		}
+		fd := p.funcHeader(false)
+		if p.is("{") {
+			p.fail(p.tok().Pos, "trait functions have no default implementation; remove the body")
+		}
+		td.Funcs = append(td.Funcs, fd)
+		p.endStatement()
+	}
+	p.expect("}")
+	return td
+}
+
+func (p *Parser) implDecl() *ImplDecl {
+	pos := p.expect("implement").Pos
+	d := &ImplDecl{Pos: pos}
+	t := p.ident()
+	d.Trait = &TypeExpr{Pos: t.Pos, Name: t.Text}
+	p.expect("for")
+	d.Type = p.typeExpr()
+	p.expect("{")
+	p.skipNewlines()
+	for !p.is("}") {
+		if p.is("export") {
+			p.fail(p.tok().Pos, "functions in an implement block cannot be exported")
+		}
+		if !p.is("function") {
+			p.fail(p.tok().Pos, "an implement block has functions only, found %s", describe(p.tok()))
+		}
+		d.Funcs = append(d.Funcs, p.funcDecl(false))
+		p.skipNewlines()
+	}
+	p.expect("}")
+	return d
+}
+
+// funcTypeExpr parses a function type such as `(item: T) => U`. Parameter
+// names are optional and ignored.
+func (p *Parser) funcTypeExpr() *TypeExpr {
+	te := &TypeExpr{Pos: p.expect("(").Pos, Func: true}
+	for !p.is(")") {
+		if p.tok().Kind == TokIdent && p.i+1 < len(p.toks) && p.toks[p.i+1].Kind == TokPunct && p.toks[p.i+1].Text == ":" {
+			p.next()
+			p.next()
+		}
+		te.Args = append(te.Args, p.typeExpr())
+		if !p.accept(",") {
+			break
+		}
+	}
+	p.expect(")")
+	p.expect("=>")
+	te.Result = p.typeExpr()
+	return te
 }
 
 func (p *Parser) block() *Block {

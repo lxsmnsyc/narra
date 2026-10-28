@@ -22,6 +22,8 @@ func (e *Emitter) call(x *CallExpr) (string, bool) {
 		}
 		init += "})"
 		return e.ownedTemp(v.Enum, init), true
+	case x.Trait != nil:
+		return e.traitCall(x)
 	case x.Builtin != "":
 		return e.builtin(x, w)
 	case x.Func != nil:

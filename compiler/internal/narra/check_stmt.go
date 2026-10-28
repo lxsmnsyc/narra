@@ -130,12 +130,14 @@ func (c *Checker) stmt(s Stmt) {
 		if s.Type != nil {
 			want = c.resolveType(s.Type)
 		}
+		nerrs := len(c.errs)
 		t := c.expr(s.Value, want)
 		if want != nil {
 			c.expectType(s.Value.position(), want, t)
 			t = want
 		}
-		if t == TVoid {
+		// A value whose check already failed is void; do not report it twice.
+		if t == TVoid && len(c.errs) == nerrs {
 			c.errorf(s.Pos, "this expression has no value")
 		}
 		s.Local = c.declare(s.Pos, s.Name, t, s.Mutable)

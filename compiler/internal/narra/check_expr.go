@@ -175,8 +175,8 @@ func (c *Checker) binary(e *BinaryExpr) Type {
 	case "==", "!=":
 		if !sameType(l, r) {
 			c.errorf(e.P, "cannot compare %s with %s", l, r)
-		} else if _, ok := l.(*PrimType); !ok {
-			c.errorf(e.P, "== on %s is not supported by this compiler yet; use `is` or `match` for enums", l)
+		} else {
+			c.checkEquatable(e.P, l)
 		}
 		return TBool
 	case "<", "<=", ">", ">=":

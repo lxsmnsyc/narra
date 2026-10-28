@@ -119,6 +119,13 @@ func containsTypeParam(t Type) bool {
 	switch t := t.(type) {
 	case *TypeParamType:
 		return true
+	case *FuncType:
+		for _, p := range t.Params {
+			if containsTypeParam(p) {
+				return true
+			}
+		}
+		return containsTypeParam(t.Result)
 	case *ArrayType:
 		return containsTypeParam(t.Elem)
 	case *StructType:
@@ -189,6 +196,16 @@ func mangle(t Type) string {
 		return fmt.Sprintf("P_%s_%d", t.Name, t.ID)
 	case *ArrayType:
 		return "A_" + mangle(t.Elem)
+	case *FuncType:
+		// F<n> then the n parameter types and the result, as type arguments
+		// are joined: (int, bool) => int gives F2__int__bool__int.
+		var b strings.Builder
+		fmt.Fprintf(&b, "F%d", len(t.Params))
+		for _, p := range t.Params {
+			b.WriteString("__" + mangle(p))
+		}
+		b.WriteString("__" + mangle(t.Result))
+		return b.String()
 	}
 	return "x"
 }
@@ -201,6 +218,16 @@ func sameType(a, b Type) bool {
 	bb, ok2 := b.(*ArrayType)
 	if ok1 && ok2 {
 		return sameType(aa.Elem, bb.Elem)
+	}
+	fa, ok1 := a.(*FuncType)
+	fb, ok2 := b.(*FuncType)
+	if ok1 && ok2 && len(fa.Params) == len(fb.Params) && sameType(fa.Result, fb.Result) {
+		for i := range fa.Params {
+			if !sameType(fa.Params[i], fb.Params[i]) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

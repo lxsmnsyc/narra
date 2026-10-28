@@ -39,6 +39,7 @@ type Emitter struct {
 	scopes   []*scopeFrame
 	loopTemp []int // frame depth when each enclosing loop started
 	fn       *FuncDecl
+	traits   *traitEmit // trait functions used so far
 }
 
 func Emit(prog *Program, entry *FuncDecl, tests bool) string {
@@ -105,6 +106,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	}
 	b.WriteString("\n// String literals\n")
 	b.WriteString(e.lits.String())
+	e.traitFuncs(&b)
 	b.WriteString("\n")
 	b.WriteString(bodies.String())
 	if tests {

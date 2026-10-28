@@ -142,6 +142,104 @@ static int lstr_cmp(lstr* a, lstr* b) {
   return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
 }
 
+// Standard trait functions for primitive types (trait-model contract).
+static bool narra_eq_int(int64_t a, int64_t b) { return a == b; }
+static bool narra_eq_f64(double a, double b) { return a == b; }
+static bool narra_eq_bool(bool a, bool b) { return a == b; }
+static bool narra_eq_char(uint32_t a, uint32_t b) { return a == b; }
+
+static uint64_t narra_hash_mix(uint64_t h, uint64_t x) {
+  h ^= x;
+  h *= UINT64_C(1099511628211);
+  return h ^ (h >> 29);
+}
+
+static uint64_t narra_hash_int(int64_t v) {
+  uint64_t x = (uint64_t)v + UINT64_C(0x9E3779B97F4A7C15);
+  x = (x ^ (x >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
+  x = (x ^ (x >> 27)) * UINT64_C(0x94D049BB133111EB);
+  return x ^ (x >> 31);
+}
+static uint64_t narra_hash_bool(bool v) { return narra_hash_int(v ? 1 : 0); }
+static uint64_t narra_hash_char(uint32_t v) { return narra_hash_int((int64_t)v); }
+
+static uint64_t lstr_hash(lstr* s) {
+  uint64_t h = UINT64_C(14695981039346656037);
+  for (int64_t i = 0; i < s->len; i++) {
+    h ^= (unsigned char)s->data[i];
+    h *= UINT64_C(1099511628211);
+  }
+  return h;
+}
+
+static int narra_cmp_int(int64_t a, int64_t b) { return (a > b) - (a < b); }
+static int narra_cmp_f64(double a, double b) { return (a > b) - (a < b); }
+static int narra_cmp_bool(bool a, bool b) { return (a > b) - (a < b); }
+static int narra_cmp_char(uint32_t a, uint32_t b) { return (a > b) - (a < b); }
+
+// Ordering's tag for a comparison result: Less = 0, Equal = 1, Greater = 2.
+static int32_t narra_ordering(int c) { return c < 0 ? 0 : (c > 0 ? 2 : 1); }
+
+// Appends c to *acc, replacing *acc with the result.
+static void lstr_append_c(lstr** acc, const char* c) {
+  int64_t n = (int64_t)strlen(c);
+  lstr* s = lstr_new((*acc)->len + n);
+  memcpy(s->data, (*acc)->data, (size_t)(*acc)->len);
+  memcpy(s->data + (*acc)->len, c, (size_t)n);
+  lstr_release(*acc);
+  *acc = s;
+}
+
+// Appends piece to *acc and releases piece.
+static void lstr_append_owned(lstr** acc, lstr* piece) {
+  lstr* s = lstr_concat(*acc, piece);
+  lstr_release(*acc);
+  lstr_release(piece);
+  *acc = s;
+}
+
+static lstr* narra_show_bool(bool v) { return lstr_from_cstr(v ? "true" : "false"); }
+
+// The escape for byte c inside quotes q, or 0 when c stands for itself.
+static char narra_escape(char c, char q) {
+  switch (c) {
+  case '\n': return 'n';
+  case '\t': return 't';
+  case '\r': return 'r';
+  case '\\': return '\\';
+  default: return c == q ? q : 0;
+  }
+}
+
+// Bytes in quotes q, with q, `\`, newline, tab and carriage return escaped.
+static lstr* narra_quote(const char* data, int64_t len, char q) {
+  int64_t n = 2;
+  for (int64_t i = 0; i < len; i++) n += narra_escape(data[i], q) ? 2 : 1;
+  lstr* s = lstr_new(n);
+  int64_t j = 0;
+  s->data[j++] = q;
+  for (int64_t i = 0; i < len; i++) {
+    char e = narra_escape(data[i], q);
+    if (e) {
+      s->data[j++] = '\\';
+      s->data[j++] = e;
+    } else {
+      s->data[j++] = data[i];
+    }
+  }
+  s->data[j++] = q;
+  return s;
+}
+
+static lstr* narra_show_char(uint32_t c) {
+  lstr* u = lstr_from_char(c);
+  lstr* s = narra_quote(u->data, u->len, '\'');
+  lstr_release(u);
+  return s;
+}
+
+static lstr* narra_show_string(lstr* v) { return narra_quote(v->data, v->len, '"'); }
+
 static void narra_print(lstr* s) {
   fwrite(s->data, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);

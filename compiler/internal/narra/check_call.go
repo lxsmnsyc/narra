@@ -2,6 +2,7 @@ package narra
 
 import (
 	"sort"
+	"strings"
 )
 
 func (c *Checker) isEnumName(name string) bool {
@@ -23,26 +24,21 @@ func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (
 			return et, v
 		}
 	}
-	for tn, t := range c.types {
-		et, ok := t.(*EnumType)
-		if !ok || (enumName != "" && tn != enumName) {
-			continue
+	owners := c.ctorOwners(enumName, name)
+	if len(owners) > 1 {
+		c.errorf(pos, "constructor %s is ambiguous: %s all have it; write %s.%s", name, strings.Join(owners, ", "), owners[0], name)
+		for _, a := range args {
+			c.expr(a.Value, nil)
 		}
-		if v := et.Variant(name); v != nil {
+		return TVoid, nil
+	}
+	for _, gn := range owners {
+		if et, ok := c.types[gn].(*EnumType); ok {
+			v := et.Variant(name)
 			c.ctorArgs(pos, v, args)
 			return et, v
 		}
-	}
-	names := make([]string, 0, len(c.generics))
-	for n := range c.generics {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, gn := range names {
 		g := c.generics[gn]
-		if g.edecl == nil || (enumName != "" && gn != enumName) {
-			continue
-		}
 		c.buildGeneric(g)
 		for _, tv := range g.variants {
 			if tv.Name != name {
@@ -96,6 +92,93 @@ func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (
 	return nil, nil
 }
 
+// ctorOwners lists the enums, by the name the current module uses for them,
+// that have a constructor with this name. enumName, when set, restricts the
+// search to one enum. Enums are ranked: those the module declares, then
+// those it imports by name, then the prelude. Only the first rank with a
+// match is returned, so a user `Less` hides `Ordering.Less`. Within a rank
+// the order is fixed (declaration order, import order, then by name), so the
+// result never depends on map order. More than one result is ambiguous.
+func (c *Checker) ctorOwners(enumName, name string) []string {
+	var ranks [3][]string
+	for _, n := range c.visibleEnums(enumName) {
+		module, has := "", false
+		if et, ok := c.types[n].(*EnumType); ok {
+			module, has = et.Module, et.Variant(name) != nil
+		} else if g := c.generics[n]; g != nil && g.edecl != nil {
+			c.buildGeneric(g)
+			module = g.mod.path
+			for _, v := range g.variants {
+				if v.Name == name {
+					has = true
+				}
+			}
+		}
+		if !has {
+			continue
+		}
+		switch module {
+		case c.mod.path:
+			ranks[0] = append(ranks[0], n)
+		case "":
+			ranks[2] = append(ranks[2], n)
+		default:
+			ranks[1] = append(ranks[1], n)
+		}
+	}
+	for _, r := range ranks {
+		if len(r) > 0 {
+			return r
+		}
+	}
+	return nil
+}
+
+// visibleEnums lists the names of the enums visible in the current module
+// without duplicates: its declarations in order, its imports in order, then
+// the rest (the prelude) sorted by name.
+func (c *Checker) visibleEnums(only string) []string {
+	if only != "" {
+		return []string{only}
+	}
+	var names []string
+	seen := map[string]bool{}
+	add := func(n string) {
+		if !seen[n] && c.isEnumName(n) {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	if c.mod.src != nil {
+		for _, f := range c.mod.src.Files {
+			for _, d := range f.Decls {
+				if ed, ok := d.(*EnumDecl); ok {
+					add(ed.Name)
+				}
+			}
+		}
+		for _, f := range c.mod.src.Files {
+			for _, imp := range f.Imports {
+				for _, n := range imp.Names {
+					add(n)
+				}
+			}
+		}
+	}
+	var rest []string
+	for n := range c.types {
+		rest = append(rest, n)
+	}
+	for n := range c.generics {
+		rest = append(rest, n)
+	}
+	sort.Strings(rest)
+	for _, n := range rest {
+		add(n)
+	}
+	return names
+}
+
 // containsOpen reports whether t still mentions one of the given parameters.
 func containsOpen(t Type, params []*TypeParamType) bool {
 	switch t := t.(type) {
@@ -107,6 +190,13 @@ func containsOpen(t Type, params []*TypeParamType) bool {
 		}
 	case *ArrayType:
 		return containsOpen(t.Elem, params)
+	case *FuncType:
+		for _, p := range t.Params {
+			if containsOpen(p, params) {
+				return true
+			}
+		}
+		return containsOpen(t.Result, params)
 	case *StructType:
 		for _, a := range t.Args {
 			if containsOpen(a, params) {
@@ -170,6 +260,9 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 		return TVoid
 	case *FieldExpr:
 		if id, ok := callee.Target.(*Ident); ok && c.lookup(id.Name) == nil {
+			if tr := c.lookupTrait(id.Name); tr != nil {
+				return c.traitCall(e, tr, callee.Name, want)
+			}
 			if path, ok := c.modules[id.Name]; ok {
 				if s := c.mods[path]; s != nil && s.src != nil {
 					return c.moduleCall(e, s, callee, want)
@@ -240,6 +333,7 @@ func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 		}
 		targs[i] = t
 	}
+	c.checkBounds(e.P, fd, tps, targs)
 	for i, a := range e.Args {
 		if i < len(fd.Params) {
 			c.expectType(a.Value.position(), c.substitute(fd.Params[i].T, m), a.Value.Type())

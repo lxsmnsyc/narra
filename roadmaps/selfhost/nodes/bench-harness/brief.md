@@ -1,7 +1,7 @@
 ---
 id: bench-harness
 title: Benchmark harness against Go and Rust
-status: todo
+status: active
 priority: should
 type: feature
 outline: false

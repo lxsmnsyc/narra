@@ -1,7 +1,7 @@
 ---
 id: split-compiler
 title: Split the checker and emitter by feature
-status: todo
+status: active
 priority: must
 type: refactor
 outline: false

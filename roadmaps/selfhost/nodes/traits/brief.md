@@ -1,7 +1,7 @@
 ---
 id: traits
 title: Traits, constraints and equality
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

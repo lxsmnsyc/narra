@@ -1,7 +1,10 @@
 ---
 milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost]
 merge:
-  mode: maintainer
+  mode: auto
+  method: squash
+  max_size: M
+  exclude: [release, hotfix, contract, gate]
 branches:
 ---
 
@@ -76,7 +79,8 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 
 - 2026-10-28: the user confirmed the plan. The must line covers only what self-hosting needs. split-compiler runs first. Every pull request waits for the user.
 - 2026-10-28: the repo was published at https://github.com/lxsmnsyc/narra (public). Node pull requests go there. The repo has no CI workflows yet; checks run locally.
-- Execution has not started. Wave 1 (split-compiler, bench-harness) starts when the user asks.
+- 2026-10-28: wave 1 (split-compiler, bench-harness) started.
+- 2026-10-28: the user switched merging to auto. The orchestrator merges a pull request without the user when `plan.py can-merge` allows it: clean fresh-context review, local checks pass on the rebased branch, size M or smaller. Gated nodes, contract-freezing nodes, releases and hotfixes still go to the user. This replaces "every pull request waits for the user" from the first decision.
 
 ## Gates
 

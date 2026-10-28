@@ -44,9 +44,9 @@ depends_on:
 
 C names for user declarations and composite types become short, stable and unique by construction. This replaces the current string mangling, which joins module paths, names and type arguments with `__`.
 
-- **Declarations:** `<kind>_<module hash>_<name>`. The module hash is FNV-1a 32 bit (`hash/fnv`), as 8 lowercase hex digits, over the module path relative to the package. It is computed once per module. Example: `app/text.show` becomes `f_3fa9c1e7_show`.
+- **Declarations:** `<kind>_<module hash>_<name>`. The module hash is xxHash32 with seed 0, as 8 lowercase hex digits, over the module path relative to the package. It is computed once per module. Example: `app/text.show` becomes `f_3fa9c1e7_show`.
 - **Composite types** (generic instances, tuples, function types, arrays, options and other prelude instances) are interned. Each distinct type is named once. A bigger type refers to its parts by their names, never by their expansion: `#[int, #[int, int]]` is `#[int, T1]` where `T1` names `#[int, int]`.
-- The ID of an interned type is `<kind>_<readable head>_<hash>`. The hash is FNV-1a 32 over the folded form: the head, the arity, and the C names of the arguments in order. Examples: `S_Tuple2_4e1a90c3`, or `S_3fa9c1e7_Box_<hash>` for a generic instance of `Box`.
+- The ID of an interned type is `<kind>_<readable head>_<hash>`. The hash is xxHash32 over the folded form: the head, the arity, and the C names of the arguments in order. Examples: `S_Tuple2_4e1a90c3`, or `S_3fa9c1e7_Box_<hash>` for a generic instance of `Box`.
 - The generated C carries a comment table that maps each interned name to its Narra type, for example `/* S_Tuple2_b71f0d28 = #[int, #[int, int]] */`, so backtraces and ASan reports can be read.
 
 ## Context
@@ -54,7 +54,7 @@ C names for user declarations and composite types become short, stable and uniqu
 The user chose this on 2026-10-28. String mangling caused three collision bugs: `__` inside names, modules named after prelude types, and tuple arity. Each was patched with a new naming rule. Interning plus a folded hash makes names unique without such rules, keeps identifiers short however deep the nesting, and keeps them stable.
 
 - **Why a hash and not sequential IDs (`T1`, `T2`):** sequential IDs depend on the order types are first seen, so a small edit renumbers the whole file and future per-module builds could not share names. A folded hash gives the same type the same name in every build, on every machine, and at both stages of self-hosting.
-- **Why FNV-1a 32 and not xxHash32:** both were benchmarked. The hash inputs here are a few short tokens, so speed does not matter. FNV-1a is in the Go standard library and takes a few lines to port to Narra. `hash/maphash` is ruled out because its seed is random per process.
+- **Why xxHash32:** the user chose it on 2026-10-28. On this machine it ran 1.7 times faster than FNV-1a at 24 bytes and 2.7 times faster at 48 bytes, and its output is better mixed. The Go standard library has no xxHash, so write it by hand (about 50 lines), because the bootstrap compiler may not use third-party modules. The self-hosted compiler ports it using 32-bit rotates and wrapping multiplication (`*%`). `hash/maphash` is ruled out because its seed is random per process.
 - **No absolute paths** may enter any hash input.
 - **Nominal types are never folded into what they wrap.** `opaque` and `distinct` types (node opaque-distinct) keep their own identity, so `distinct UserId = int` must get a different name from `int`. Only true aliases, if the language ever adds them, would be expanded first.
 - **Prelude and runtime names** (`lstr_*`, `narra_*`, `E_Ordering`, and others) may stay as they are if no hashed name can equal them. Every hashed name has a hash segment, and prelude names have none.
@@ -76,6 +76,7 @@ M: one naming module, plus the mechanical replacement of the existing name build
 
 ## Notes for the worker
 
-- Keep the helper small and self-contained, so that the self-hosted compiler can port it line for line. The FNV-1a constants are offset basis `2166136261` and prime `16777619`.
+- Keep the helper small and self-contained, so that the self-hosted compiler can port it line for line.
+- Implement xxHash32 from the reference specification. Test it against the reference values for seed 0, including `""` -> `02cc5d05` and `"abc"` -> `32d153ff`, and against inputs of 15, 16 and 17 bytes to cover the 16-byte stripe boundary. Read input as little-endian 32-bit words, whatever the host.
 - Intern types by their folded form, so lookup and naming use one key.
 - Emit the comment table in a fixed order, sorted by name, so the C stays deterministic.

@@ -22,6 +22,10 @@ type TypeExpr struct {
 	Pos  Pos
 	Name string
 	Args []*TypeExpr
+	// A function type `(a: A, b: B) => R` sets Func; Args are the parameter
+	// types and Result the result type.
+	Func   bool
+	Result *TypeExpr
 }
 
 type Param struct {
@@ -37,6 +41,7 @@ type FuncDecl struct {
 	Pos        Pos
 	Name       string
 	TypeParams []string
+	Bounds     [][]*TypeExpr // trait constraints, one list per type parameter
 	Exported   bool
 	Params     []*Param
 	Result     *TypeExpr
@@ -58,6 +63,8 @@ type StructDecl struct {
 	Name       string
 	TypeParams []string
 	Exported   bool
+	Implements []*TypeExpr
+	Derives    []*TypeExpr
 	Fields     []*FieldDecl
 	T          *StructType
 }
@@ -73,6 +80,8 @@ type EnumDecl struct {
 	Name       string
 	TypeParams []string
 	Exported   bool
+	Implements []*TypeExpr
+	Derives    []*TypeExpr
 	Variants   []*VariantDecl
 	T          *EnumType
 }
@@ -84,10 +93,29 @@ type TestDecl struct {
 	Module string // declaring module path, set by the checker
 }
 
+// TraitDecl is `trait Name { function f(a: Self): R ... }`. Funcs have no body.
+type TraitDecl struct {
+	Pos      Pos
+	Name     string
+	Exported bool
+	Funcs    []*FuncDecl
+	T        *Trait
+}
+
+// ImplDecl is `implement Trait for Type { ... }`.
+type ImplDecl struct {
+	Pos   Pos
+	Trait *TypeExpr
+	Type  *TypeExpr
+	Funcs []*FuncDecl
+}
+
 func (*FuncDecl) declNode()   {}
 func (*StructDecl) declNode() {}
 func (*EnumDecl) declNode()   {}
 func (*TestDecl) declNode()   {}
+func (*TraitDecl) declNode()  {}
+func (*ImplDecl) declNode()   {}
 
 type Stmt interface{ stmtNode() }
 
@@ -248,6 +276,7 @@ type CallExpr struct {
 	Builtin string // set for standard functions
 	Func    *FuncDecl
 	Ctor    *Variant
+	Trait   *TraitCall // set for a trait function the compiler implements
 }
 
 type UnaryExpr struct {

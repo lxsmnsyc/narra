@@ -66,6 +66,7 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		mods:      map[string]*modScope{},
 		funcMod:   map[*FuncDecl]*modScope{},
 		pkg:       pkg,
+		traits:    newTraitState(),
 	}
 	c.enter(c.newScope("", "prelude", nil))
 	concrete := c.declareModule(prelude)
@@ -140,6 +141,8 @@ func (c *Checker) importPackageModule(imp *ImportDecl) bool {
 				c.errorf(imp.Pos, "function %q is declared twice", n)
 			}
 			c.funcs[n] = d
+		case *TraitDecl:
+			c.importTrait(imp.Pos, n, d)
 		case *StructDecl, *EnumDecl:
 			if g := s.generics[n]; g != nil && s.types[n] == nil {
 				if c.types[n] != nil || c.generics[n] != nil {

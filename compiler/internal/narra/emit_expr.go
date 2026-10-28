@@ -197,6 +197,9 @@ func (e *Emitter) binary(x *BinaryExpr) string {
 			return fmt.Sprintf("(lstr_cmp(%s, %s) %s 0)", l, r, x.Op)
 		}
 	}
+	if _, prim := lt.(*PrimType); !prim && (x.Op == "==" || x.Op == "!=") {
+		return e.eqCode(x.Op, lt, l, r)
+	}
 	if lt == TInt {
 		fns := map[string]string{"+": "narra_add", "-": "narra_sub", "*": "narra_mul", "/": "narra_div", "%": "narra_rem", "<<": "narra_shl", ">>": "narra_shr"}
 		if f, ok := fns[x.Op]; ok {

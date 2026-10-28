@@ -273,6 +273,13 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 	if te == nil {
 		return TVoid
 	}
+	if te.Func {
+		ft := &FuncType{Result: c.resolveType(te.Result)}
+		for _, a := range te.Args {
+			ft.Params = append(ft.Params, c.resolveType(a))
+		}
+		return ft
+	}
 	if t, ok := c.env[te.Name]; ok && len(te.Args) == 0 {
 		return t
 	}

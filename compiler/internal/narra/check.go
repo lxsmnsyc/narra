@@ -14,12 +14,34 @@ type forKind int
 
 // The prelude is written in Narra and checked once per program, as module "".
 const preludeSrc = `
-enum Option<T> {
+trait Equatable {
+  function equals(a: Self, b: Self): bool
+}
+
+trait Hashable {
+  function hash(value: Self): int
+}
+
+trait Ordered {
+  function compare(a: Self, b: Self): Ordering
+}
+
+trait Show {
+  function show(value: Self): string
+}
+
+enum Ordering derives Show, Ordered {
+  Less
+  Equal
+  Greater
+}
+
+enum Option<T> derives Show, Ordered {
   Some(value: T)
   None
 }
 
-enum Result<T, E> {
+enum Result<T, E> derives Show, Ordered {
   Ok(value: T)
   Err(error: E)
 }
@@ -38,6 +60,8 @@ type Program struct {
 	// Modules are the imported standard library modules, once each, in import order.
 	// The emitter writes their Runtime C.
 	Modules []*Module
+	// Impls are the functions of `implement` blocks, by type and "Trait.function".
+	Impls map[Type]map[string]*FuncDecl
 }
 
 type scope struct {
@@ -90,6 +114,7 @@ type Checker struct {
 	mods    map[string]*modScope // by module path; "" is the prelude
 	funcMod map[*FuncDecl]*modScope
 	pkg     *Package
+	traits  *traitState
 }
 
 // Check checks one parsed file as the only module of package "main".
@@ -170,6 +195,7 @@ func (c *Checker) declareModule(f *File) []Type {
 			concrete = append(concrete, d.T)
 		}
 	}
+	c.declareTraits(f)
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *StructDecl:
@@ -191,6 +217,7 @@ func (c *Checker) declareModule(f *File) []Type {
 			if len(d.TypeParams) > 0 {
 				tps := makeParams(d.TypeParams)
 				c.funcTP[d] = tps
+				c.funcBounds(d, tps)
 				c.env = envOf(tps, nil)
 			}
 			for _, p := range d.Params {
@@ -212,6 +239,7 @@ func (c *Checker) declareModule(f *File) []Type {
 	for _, g := range own {
 		c.buildGeneric(g)
 	}
+	c.resolveTraits(f)
 	// Defaults are checked after every field type is known.
 	for _, d := range f.Decls {
 		if sd, ok := d.(*StructDecl); ok && sd.T != nil {
@@ -233,6 +261,8 @@ func (c *Checker) checkBodies(f *File) {
 			} else {
 				c.funcBody(d, nil)
 			}
+		case *ImplDecl:
+			c.implBodies(d)
 		case *TestDecl:
 			c.fn = &FuncDecl{Name: "test", ResultT: TVoid}
 			c.env = nil

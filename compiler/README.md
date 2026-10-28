@@ -64,18 +64,21 @@ go test ./...
 - Integer overflow checks in debug builds, and division by zero and bounds checks in every build.
 - `test` blocks and `assert`.
 - Reference counting for strings, arrays, and structs and enums that hold them.
+- Traits: `trait`, `implements`, `implement Trait for Type`, `derives`, constraints such as `<T: Show & Ordered>`, and calls through the trait name such as `Show.show(x)`.
+- The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
 
 ## Not supported yet
 
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - `export const`, `export type` aliases, and enum constructors through a namespace (`X.Token.Word`).
-- Traits and trait constraints such as `<T: Equatable>`.
+- `Dynamic<Trait>`, `derives Shape` and `Hash.of`.
 - Nested patterns such as `Some(Node(a, b))`, and struct patterns.
 - Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Closures and arrow functions.
 - Effects are parsed but not checked.
-- Struct spread updates, destructuring, `==` on structs and enums.
+- Struct spread updates, destructuring.
+- Function values. Function types such as `(x: int) => int` parse, but no value of one can be made yet.
 - Generators, async functions, threads and channels.
 - Opaque and distinct types, `unsafe` and `extern`.
 
@@ -90,3 +93,11 @@ go test ./...
 - Modules are checked against the declarations of the modules they import, in memory. There are no `.nrai` files.
 - Unused imports and private functions are not errors yet.
 - Every line of a compile error starts with its file, as in `src/text.nra:3:4: ...`.
+- Trait constraints do not compile to a hidden table parameter. Generic functions are compiled once per set of type arguments, so every trait call is a direct call.
+- Constraints are allowed on the type parameters of functions only, not of structs and enums.
+- `implement` blocks work for non-generic structs and enums only. A generic type gets traits through `derives`, and an instance implements a derived trait when its contents do.
+- An `implement` block must be in the module that declares the type. The prelude (`Option`, `Result`, `Ordering`) and primitive and array types belong to no user module, so they cannot get `implement` blocks.
+- Traits are imported by name (`import { Area } from "app/shapes"`). `Alias.Trait.f(x)` and `<T: Alias.Trait>` are not supported.
+- A bare constructor name resolves from the expected type first. Otherwise the enums visible in the module are searched in three ranks: those the module declares, then those it imports by name, then the prelude. The first rank with a match wins, so a user `Less` is not `Ordering.Less`. Two enums of the same rank sharing the name are an ambiguity error; write `Enum.Name`.
+- `Hashable.hash(x)` returns `int`. `Hash.of` does not exist yet.
+- Derived `Show` writes `Point { x: 1, y: 2 }`, `Some(1)` and `[1, 2]`, and quotes strings and chars inside: `"text"`, `'c'`. `Show.show` on a string quotes it too.

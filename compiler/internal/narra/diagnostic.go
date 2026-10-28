@@ -28,11 +28,8 @@ type Edit struct {
 	Text       string
 }
 
-// Error prints `line:col: message`, or just the message when the position is unknown.
+// Error prints `line:col: message`. An unknown position prints as 0:0, as before.
 func (d Diagnostic) Error() string {
-	if d.Pos == (Pos{}) {
-		return d.Message
-	}
 	return fmt.Sprintf("%s: %s", d.Pos, d.Message)
 }
 

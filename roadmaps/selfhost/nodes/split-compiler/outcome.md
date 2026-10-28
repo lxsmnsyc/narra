@@ -32,12 +32,13 @@ Per-module runtime C: `Module.Runtime` is written by `Emit` after `runtime.h` fo
 
 Diagnostic (contract `diagnostic` v1, `diagnostic.go`): `Diagnostic`, `Fix`, `Edit`, `Diagnostics` (an `error` that prints one diagnostic per line), `(*Checker).report`. `errorf` builds `Diagnostic{Code: "E0000", ...}` and calls `report`. `Parse` wraps lexer and parser errors in one `Diagnostic` through `syntaxDiagnostic`. `Check` returns `Diagnostics`, so callers can type-assert to get structure.
 
-Contracts: `builtins` and `diagnostic` are ready to be marked `status: frozen` (v1, no change requests).
+Contracts: builtins v1 frozen, diagnostic v1 frozen (no change requests).
 
 ## Deviations
 
 - `parser.go` (not owned) changed in `Parse` only, 8 lines, to wrap errors in a `Diagnostic`. Text is unchanged.
-- The "unknown module" hint is now built from the registry and lists modules sorted: `std/float, std/int and std/string` instead of `std/int, std/float and std/string`. No test covers it.
+- `Diagnostic.Error` always prints the position, so errors without one still print `0:0:` as on main. `compiler/testdata/errors/contains_itself.nra` and `unknown_module.nra` pin the two messages.
+- `registerModule` defaults `Builtin.Name` to `<module path>.<key>` when empty.
 - `Diagnostic.File` is not filled: `driver.go` (not owned) still prefixes the file name with `prefix`. `json-diagnostics` should fill it there.
 
 ## Stubs left

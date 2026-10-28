@@ -2,7 +2,6 @@ package narra
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -42,7 +41,10 @@ var (
 func registerModule(m *Module) {
 	stdModules[m.Path] = m
 	registeredModules = append(registeredModules, m.Path)
-	for _, b := range m.Funcs {
+	for n, b := range m.Funcs {
+		if b.Name == "" {
+			b.Name = m.Path + "." + n
+		}
 		registerByName(b)
 	}
 }
@@ -77,8 +79,21 @@ func registerByName(b *Builtin) {
 
 // moduleList names the registered modules for error messages.
 func moduleList() string {
-	paths := append([]string(nil), registeredModules...)
-	sort.Strings(paths)
+	var paths []string
+	seen := map[string]bool{}
+	// Go runs the init functions by file name, so list the first modules in
+	// the order the hint always had; later modules follow in registration order.
+	for _, p := range []string{"std/int", "std/float", "std/string"} {
+		if stdModules[p] != nil {
+			paths = append(paths, p)
+			seen[p] = true
+		}
+	}
+	for _, p := range registeredModules {
+		if !seen[p] {
+			paths = append(paths, p)
+		}
+	}
 	if len(paths) < 2 {
 		return strings.Join(paths, "")
 	}

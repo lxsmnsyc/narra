@@ -2,7 +2,7 @@ package narra
 
 import "strconv"
 
-// destructure checks `const { a, b: c } = s` and `const [a, b] = t`.
+// destructure checks `const { a, b: c } = s` and `const #[a, b] = t`.
 func (c *Checker) destructure(s *VarStmt) {
 	var want Type
 	if s.Type != nil {
@@ -77,10 +77,10 @@ func (c *Checker) spreadLit(e *StructLit, want Type) Type {
 	return st
 }
 
-// tupleType resolves Tuple<A, B, ...>.
+// tupleType resolves #[A, B, ...].
 func (c *Checker) tupleType(te *TypeExpr) Type {
 	if len(te.Args) < 2 {
-		c.errorf(te.Pos, "Tuple takes at least two type arguments")
+		c.errorf(te.Pos, "a tuple type needs at least two element types, found %d", len(te.Args))
 		return TVoid
 	}
 	elems := make([]Type, len(te.Args))
@@ -122,19 +122,19 @@ func (c *Checker) tupleOf(elems []Type) *StructType {
 	return t
 }
 
-// tupleLit checks `[a, b]` with a tuple as the expected type, and Tuple(a, b).
+// tupleLit checks `#[a, b]`. An expected tuple type of the same length
+// guides the elements; otherwise each element's type is inferred.
 func (c *Checker) tupleLit(e *ArrayLit, want Type) Type {
+	if len(e.Elems) < 2 {
+		c.errorf(e.P, "a tuple needs at least two elements, found %d", len(e.Elems))
+		for _, el := range e.Elems {
+			c.expr(el, nil)
+		}
+		return TVoid
+	}
 	wt, _ := want.(*StructType)
 	if wt != nil && (!wt.Tuple || len(wt.Fields) != len(e.Elems)) {
 		wt = nil
-	}
-	if wt == nil && !e.TupleCall {
-		c.errorf(e.P, "expected %s, found a literal with %d elements", want, len(e.Elems))
-		return TVoid
-	}
-	if len(e.Elems) < 2 {
-		c.errorf(e.P, "a tuple needs at least two elements")
-		return TVoid
 	}
 	elems := make([]Type, len(e.Elems))
 	for i, el := range e.Elems {
@@ -150,9 +150,4 @@ func (c *Checker) tupleLit(e *ArrayLit, want Type) Type {
 	}
 	e.Tuple = c.tupleOf(elems)
 	return e.Tuple
-}
-
-func isTupleType(t Type) bool {
-	st, ok := t.(*StructType)
-	return ok && st.Tuple
 }

@@ -274,15 +274,15 @@ func (e *Emitter) showDef(b *strings.Builder, t Type) {
 		app("  ", "]")
 	case *StructType:
 		if t.Tuple {
-			// Tuple(1, "a"), as the literal is written.
-			b.WriteString("  lstr* s = lstr_from_cstr(\"Tuple(\");\n")
+			// #[1, "a"], as the literal is written.
+			b.WriteString("  lstr* s = lstr_from_cstr(\"#[\");\n")
 			for i, f := range t.Fields {
 				if i > 0 {
 					app("  ", ", ")
 				}
 				fmt.Fprintf(b, "  lstr_append_owned(&s, %s(v.%s));\n", e.useShow(f.T), fieldName(f.Name))
 			}
-			app("  ", ")")
+			app("  ", "]")
 			break
 		}
 		if len(t.Fields) == 0 {

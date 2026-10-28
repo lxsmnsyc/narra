@@ -183,6 +183,18 @@ func (p *Parser) typeExpr() *TypeExpr {
 	if p.is("(") {
 		return p.funcTypeExpr()
 	}
+	if p.is("#[") {
+		// A tuple type, written like the literal: #[int, string].
+		te := &TypeExpr{Pos: p.next().Pos, Tuple: true}
+		for !p.is("]") {
+			te.Args = append(te.Args, p.typeExpr())
+			if !p.accept(",") {
+				break
+			}
+		}
+		p.expect("]")
+		return te
+	}
 	t := p.ident()
 	te := &TypeExpr{Pos: t.Pos, Name: t.Text}
 	if p.accept(".") { // a type from a namespace import, such as Text.Token
@@ -523,7 +535,9 @@ func (p *Parser) stmt() Stmt {
 	case p.is("const") || p.is("let"):
 		mutable := p.next().Text == "let"
 		s := &VarStmt{Pos: t.Pos, Mutable: mutable}
-		if p.is("{") || p.is("[") {
+		next := p.toks[p.i+1] // the token stream always ends with EOF
+		ctor := p.tok().Kind == TokIdent && next.Kind == TokPunct && (next.Text == "(" || next.Text == ".")
+		if p.is("{") || p.is("#[") || ctor {
 			s.Pattern = p.pattern()
 		} else {
 			s.Name = p.ident().Text
@@ -782,9 +796,6 @@ func (p *Parser) primary() Expr {
 		if t.Text == "null" || t.Text == "undefined" {
 			p.fail(t.Pos, "there is no %s; use `None` with an `Option` type", t.Text)
 		}
-		if t.Text == "Tuple" && p.is("(") {
-			return p.tupleCall(base)
-		}
 		return &Ident{exprBase: base, Name: t.Text}
 	case TokKeyword:
 		switch t.Text {
@@ -804,9 +815,9 @@ func (p *Parser) primary() Expr {
 			e := p.expr()
 			p.expect(")")
 			return e
-		case "[":
+		case "[", "#[":
 			p.next()
-			lit := &ArrayLit{exprBase: base}
+			lit := &ArrayLit{exprBase: base, IsTuple: t.Text == "#["}
 			for !p.is("]") {
 				lit.Elems = append(lit.Elems, p.expr())
 				if !p.accept(",") {
@@ -913,19 +924,6 @@ func (p *Parser) matchExpr() Expr {
 	return m
 }
 
-func (p *Parser) tupleCall(base exprBase) Expr {
-	p.expect("(")
-	lit := &ArrayLit{exprBase: base, TupleCall: true}
-	for !p.is(")") {
-		lit.Elems = append(lit.Elems, p.expr())
-		if !p.accept(",") {
-			break
-		}
-	}
-	p.expect(")")
-	return lit
-}
-
 func (p *Parser) pattern() *Pattern {
 	t := p.tok()
 	pat := &Pattern{Pos: t.Pos}
@@ -952,7 +950,7 @@ func (p *Parser) pattern() *Pattern {
 		p.skipNewlines()
 		p.expect("}")
 		return pat
-	case p.is("["):
+	case p.is("#["):
 		p.next()
 		pat.Kind = PatTuple
 		pat.Args = p.patternList("]")

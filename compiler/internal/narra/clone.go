@@ -110,7 +110,7 @@ func cloneExpr(e Expr) Expr {
 		}
 		return c
 	case *ArrayLit:
-		c := &ArrayLit{exprBase: exprBase{P: e.P}, TupleCall: e.TupleCall}
+		c := &ArrayLit{exprBase: exprBase{P: e.P}, IsTuple: e.IsTuple}
 		for _, el := range e.Elems {
 			c.Elems = append(c.Elems, cloneExpr(el))
 		}

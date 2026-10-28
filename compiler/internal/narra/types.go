@@ -55,8 +55,19 @@ type StructType struct {
 	Tuple  bool   // Tuple<A, B>: fields "0", "1", ... and Args are the element types
 }
 
-func (t *StructType) String() string { return t.Name + typeArgsString(t.Args) }
+func (t *StructType) String() string {
+	if t.Tuple {
+		s := typeArgsString(t.Args)
+		return "#[" + s[1:len(s)-1] + "]"
+	}
+	return t.Name + typeArgsString(t.Args)
+}
 func (t *StructType) CName() string {
+	if t.Tuple {
+		// No module path maps to a segment starting with "_", so S__Tuple
+		// cannot be a user struct's name.
+		return "S__Tuple" + typeArgsMangle(t.Args)
+	}
 	return "S_" + cModule(t.Module) + t.Name + typeArgsMangle(t.Args)
 }
 

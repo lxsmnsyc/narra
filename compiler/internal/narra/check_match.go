@@ -46,15 +46,18 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 		et, ok := t.(*EnumType)
 		if !ok {
 			c.errorf(p.Pos, "constructor pattern %s needs an enum value, found %s", p.Name, t)
+			c.bindRest(p, root, seen)
 			return
 		}
 		if p.Enum != "" && !c.namesEnum(p.Enum, et) {
 			c.errorf(p.Pos, "%s.%s does not match a value of type %s", p.Enum, p.Name, et)
+			c.bindRest(p, root, seen)
 			return
 		}
 		v := et.Variant(p.Name)
 		if v == nil {
 			c.errorf(p.Pos, "enum %s has no constructor %q", et, p.Name)
+			c.bindRest(p, root, seen)
 			return
 		}
 		p.Variant = v
@@ -63,6 +66,7 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 		}
 		if len(p.Args) != len(v.Fields) {
 			c.errorf(p.Pos, "%s has %d fields, the pattern lists %d", v.Name, len(v.Fields), len(p.Args))
+			c.bindRest(p, root, seen)
 			return
 		}
 		for i, a := range p.Args {
@@ -72,6 +76,7 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 		st, ok := t.(*StructType)
 		if !ok || st.Tuple {
 			c.errorf(p.Pos, "a struct pattern needs a struct value, found %s", t)
+			c.bindRest(p, root, seen)
 			return
 		}
 		given := map[string]bool{}
@@ -79,10 +84,12 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 			f := st.Field(fp.Name)
 			if f == nil {
 				c.errorf(fp.Pos, "struct %s has no field %q", st, fp.Name)
+				c.bindRest(fp.Pattern, root, seen)
 				continue
 			}
 			if given[fp.Name] {
 				c.errorf(fp.Pos, "field %q is listed twice", fp.Name)
+				c.bindRest(fp.Pattern, root, seen)
 				continue
 			}
 			given[fp.Name] = true
@@ -92,10 +99,12 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 		st, ok := t.(*StructType)
 		if !ok || !st.Tuple {
 			c.errorf(p.Pos, "a tuple pattern needs a tuple value, found %s", t)
+			c.bindRest(p, root, seen)
 			return
 		}
 		if len(p.Args) != len(st.Fields) {
 			c.errorf(p.Pos, "%s has %d elements, the pattern lists %d", st, len(st.Fields), len(p.Args))
+			c.bindRest(p, root, seen)
 			return
 		}
 		for i, a := range p.Args {
@@ -108,6 +117,23 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 			return
 		}
 		c.expectType(p.Pos, t, c.expr(p.Lit, t))
+	}
+}
+
+// bindRest binds the names inside a pattern that failed to check, with type
+// void, so their uses do not also report "unknown name".
+func (c *Checker) bindRest(p *Pattern, root *Pattern, seen map[string]bool) {
+	if p.Kind == PatName && p.Variant == nil && p.Local == nil && !startsUpper(p.Name) && !seen[p.Name] {
+		seen[p.Name] = true
+		c.localN++
+		p.Local = &Local{Name: p.Name, T: TVoid, Pos: p.Pos, CName: fmt.Sprintf("v_%s_%d", p.Name, c.localN)}
+		root.Locals = append(root.Locals, p.Local)
+	}
+	for _, a := range p.Args {
+		c.bindRest(a, root, seen)
+	}
+	for _, f := range p.Fields {
+		c.bindRest(f.Pattern, root, seen)
 	}
 }
 
@@ -163,10 +189,19 @@ func (c *Checker) match(m *MatchExpr, want Type, isValue bool) Type {
 		return TVoid
 	}
 	var rows [][]*Pattern
+	patternErr := false
 	result := want
 	for _, arm := range m.Arms {
 		c.push()
+		nerrs := len(c.errs)
 		c.resolvePattern(arm.Pattern, st)
+		if len(c.errs) > nerrs {
+			// Checking the guard and body would only report errors that
+			// follow from this one.
+			patternErr = true
+			c.pop()
+			continue
+		}
 		for _, l := range arm.Pattern.Locals {
 			c.scope.names[l.Name] = l
 		}
@@ -193,7 +228,10 @@ func (c *Checker) match(m *MatchExpr, want Type, isValue bool) Type {
 		c.pop()
 	}
 	limit := 10
-	missing := c.missingCases(rows, []Type{st}, &limit)
+	var missing [][]string
+	if !patternErr {
+		missing = c.missingCases(rows, []Type{st}, &limit)
+	}
 	if len(missing) > 0 {
 		var names []string
 		other := false
@@ -388,17 +426,17 @@ func ctorText(t Type, k int, args []string) string {
 	}
 	switch t := t.(type) {
 	case *EnumType:
-		name := t.Variants[k].Name
-		if allWild {
-			return name
+		v := t.Variants[k]
+		if len(v.Fields) == 0 {
+			return v.Name
 		}
-		return name + "(" + strings.Join(args, ", ") + ")"
+		return v.Name + "(" + strings.Join(args, ", ") + ")"
 	case *StructType:
 		if allWild {
 			return "_"
 		}
 		if t.Tuple {
-			return "[" + strings.Join(args, ", ") + "]"
+			return "#[" + strings.Join(args, ", ") + "]"
 		}
 		var parts []string
 		for i, a := range args {

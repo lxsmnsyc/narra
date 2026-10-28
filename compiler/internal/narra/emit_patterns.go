@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// destructure emits `const { a, b: c } = s` and `const [a, b] = t`. The
+// destructure emits `const { a, b: c } = s` and `const #[a, b] = t`. The
 // value is held in a temporary for the statement; each bound name retains
 // its part, and an owned value is released at the end of the statement.
 func (e *Emitter) destructure(s *VarStmt) {
@@ -41,7 +41,7 @@ func (e *Emitter) spreadLit(x *StructLit) (string, bool) {
 	return e.ownedTemp(st, fmt.Sprintf("((%s){%s})", st.CName(), strings.Join(parts, ", "))), true
 }
 
-// tupleLit emits `[a, b]` or `Tuple(a, b)` building a tuple.
+// tupleLit emits `#[a, b]`.
 func (e *Emitter) tupleLit(x *ArrayLit) (string, bool) {
 	st := x.Tuple
 	var parts []string

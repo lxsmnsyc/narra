@@ -8,3 +8,5 @@
 - Tuple show needed a case in emit_traits.go (outside the brief): `Tuple(1, "a")`.
 - Else-branch narrowing after `is` with a refutable nested pattern was wrong; fixed in check_stmt.go with argsIrrefutable.
 - Samples, package test and 8 error tests pass; full fast check passes.
+- Review round 1 (user decisions): tuples use `#[...]` for literals, destructuring, patterns and types. `Tuple(...)` and the expected-type `[a, b]` path are gone; `Tuple` is a plain name. Show prints `#[1, "a"]`. SPEC.md and DECISIONS.md (D23, D44, new D53; D51 and D52 are taken by closures) updated.
+- Review fixes: tuple C name is `S__Tuple__...` (a module named "Tuple" collided; `testdata/Tuple.nra`). Witnesses print `Name(_)` for variants with fields. `const Only(s) = u` parses. Failed patterns bind their names as void, and the match skips the arm body and the exhaustiveness check, so one error does not cascade.

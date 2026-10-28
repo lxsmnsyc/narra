@@ -132,7 +132,7 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 	case *StructLit:
 		return c.structLit(e, want)
 	case *ArrayLit:
-		if e.TupleCall || isTupleType(want) {
+		if e.IsTuple {
 			return c.tupleLit(e, want)
 		}
 		var elem Type

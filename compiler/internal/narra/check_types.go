@@ -295,6 +295,9 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		}
 		return c.funcOf(params, c.funcResult(te.Result))
 	}
+	if te.Tuple {
+		return c.tupleType(te)
+	}
 	if t, ok := c.env[te.Name]; ok && len(te.Args) == 0 {
 		return t
 	}
@@ -309,8 +312,6 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		return c.arrayOf(c.resolveType(te.Args[0]))
 	}
 	switch te.Name {
-	case "Tuple":
-		return c.tupleType(te)
 	case "number":
 		c.errorf(te.Pos, "there is no `number`; use `int` or `f64`")
 		return TInt
@@ -328,6 +329,10 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 			args[i] = c.resolveType(a)
 		}
 		return c.instantiate(g, args)
+	}
+	if _, ok := c.types[te.Name]; !ok && te.Name == "Tuple" {
+		c.errorf(te.Pos, "there is no Tuple type; write a tuple type as #[A, B]")
+		return TVoid
 	}
 	if len(te.Args) > 0 {
 		c.errorf(te.Pos, "type %s is not generic", te.Name)

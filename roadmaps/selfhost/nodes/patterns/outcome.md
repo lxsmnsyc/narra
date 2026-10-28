@@ -28,15 +28,15 @@ type Pattern struct {
 ```
 
 - The old `Wildcard` and `Binds` fields are gone. `Some(v)` is now a `PatCtor` whose `Args` hold one `PatName`.
-- `VarStmt.Pattern` is set for `const { a, b: c } = s` and `const [a, b] = t`; `Name` is then empty.
+- `VarStmt.Pattern` is set for `const { a, b: c } = s` and `const #[a, b] = t` (also with `let`); `Name` is then empty.
 - `StructLit.Spread` holds `s` of `{ ...s, f: v }`. The parser allows one spread, first.
-- `ArrayLit.TupleCall` marks `Tuple(a, b)`; `ArrayLit.Tuple` is set by the checker when the literal builds a tuple (also `[a, b]` with a tuple expected).
-- `StructType.Tuple`: `Tuple<A, B>` is a prelude `StructType{Name: "Tuple", Module: "", Args: elems, Fields: "0", "1", ...}`, interned by `c.tupleOf(elems)` (`check_patterns.go`, map `Checker.tuples`). C name `S_Tuple__int__string`, fields `f_0`, `f_1`. The struct paths (layout, `orderTypes`, retain and release, eq, hash, cmp) handle it unchanged. `substitute` has a tuple case. `tupleOf` registers trait facts for `typeKey{"", "Tuple"}`: derives `Ordered` and `Show`, automatic `Equatable` and `Hashable`.
+- The lexer has a `#[` token. `ArrayLit.IsTuple` marks `#[a, b]`; `ArrayLit.Tuple` is set by the checker. A tuple literal needs no expected type; an expected tuple of the same length guides its elements. `[a, b]` is always an array. `TypeExpr.Tuple` marks the type `#[A, B]`, whose `Args` are the element types.
+- `StructType.Tuple`: `#[A, B]` is a `StructType{Name: "Tuple", Module: "", Tuple: true, Args: elems, Fields: "0", "1", ...}` that no source name refers to, interned by `c.tupleOf(elems)` (`check_patterns.go`, map `Checker.tuples`). C name `S__Tuple__int__string` (no module path maps to a segment starting with `_`, so this cannot equal a user struct; `testdata/Tuple.nra` would collide with `S_Tuple__...`), fields `f_0`, `f_1`. `String()` prints `#[int, string]`. The struct paths (layout, `orderTypes`, retain and release, eq, hash, cmp) handle it unchanged. `substitute` has a tuple case. `tupleOf` registers trait facts for `typeKey{"", "Tuple"}`: derives `Ordered` and `Show`, automatic `Equatable` and `Hashable`.
 
 Checker (`check_match.go`, `check_patterns.go`):
 - `c.resolvePattern(p, t)` checks a pattern against a type and fills `T`, `Variant`, `Local`, and `Locals` on the root. A `PatName` is a constructor when `t` is an enum with that variant; otherwise it binds, and an uppercase name is an error. Constructors in patterns resolve through the subject's type, never through the constructor ranks, so a user `Less` cannot capture `Ordering.Less` and `Message.Text` works on an imported enum (`namesEnum`).
-- `c.match` accepts any subject type. Exhaustiveness uses the usefulness algorithm (`missingCases`), with witnesses: enums, bool, structs and tuples have finite constructors; other types need a wildcard or binding. Arms with guards do not count. Messages: `match does not cover Some(Circle(_, false)), Some(Square); add the cases or a `_` arm`, or `match does not cover every int value; add a `_` arm`.
-- `irrefutable(p)` and `argsIrrefutable(p)`. Destructuring needs an irrefutable pattern. `if (x is Some(1)) ... else` no longer narrows x to `None` in the else branch; it does only when the constructor's arguments are irrefutable (`check_stmt.go`).
+- `c.match` accepts any subject type. Exhaustiveness uses the usefulness algorithm (`missingCases`), with witnesses: enums, bool, structs and tuples have finite constructors; other types need a wildcard or binding. Arms with guards do not count. Messages: `match does not cover Some(Circle(_, false)), Some(Square(_)); add the cases or a `_` arm`, or `match does not cover every int value; add a `_` arm`. A variant with fields prints as `Name(_)` even when every field is a wildcard. After a pattern error the arm's guard and body are not checked and the exhaustiveness check is skipped; names inside a failed pattern are bound with type void (`bindRest`), so no `unknown name` follows.
+- `irrefutable(p)` and `argsIrrefutable(p)`. Destructuring needs an irrefutable pattern; `const Only(s) = u` parses (a name followed by `(` or `.` after `const`/`let`) and works when the enum has one variant. `if (x is Some(1)) ... else` no longer narrows x to `None` in the else branch; it does only when the constructor's arguments are irrefutable (`check_stmt.go`).
 - `c.isExpr`, `c.destructure`, `c.spreadLit`, `c.tupleType`, `c.tupleLit`.
 
 Emitter (`emit_match.go`, `emit_patterns.go`):
@@ -53,13 +53,14 @@ How reference counts flow:
 - Spread: given fields are consumed (owned), untouched fields are copied from the source and retained, so the new struct owns all its fields. An owned source is released at the end of the statement.
 - Tuple literals consume each element, like struct literals.
 
-Tests: samples `compiler/testdata/patterns_nested.nra`, `patterns_structs.nra`, `patterns_tuples.nra`, `patterns_generic.nra` (with `.out`). Package `compiler/testdata/packages/patterns` (matches on `pp/model`'s enum, destructures and spreads its struct, takes a tuple from it, matches `Ordering` while an imported enum has `Less`). Error tests `compiler/testdata/errors/patterns_*.nra`: shorthand, spread type, spread order, nested exhaustiveness, int exhaustiveness, refutable destructuring, name bound twice, tuple arity.
+Tests: samples `compiler/testdata/patterns_nested.nra`, `patterns_structs.nra`, `patterns_tuples.nra`, `patterns_generic.nra`, and `Tuple.nra` (module "Tuple" using tuples, the C name collision case), all with `.out`. `patterns_tuples.nra` passes `#[..]` straight to generic functions and declares its own `struct Tuple`. Package `compiler/testdata/packages/patterns` (matches on `pp/model`'s enum, destructures and spreads its struct, takes a tuple from it, matches `Ordering` while an imported enum has `Less`). Error tests `compiler/testdata/errors/patterns_*.nra`: shorthand, spread type, spread order, nested exhaustiveness, int exhaustiveness, refutable destructuring (struct and constructor), name bound twice, tuple arity, one-element tuple literal (`#[x]`), one-element tuple type (`#[int]`), `Tuple<int, int>`, array literal where a tuple is expected.
 
 ## Deviations
 
-- Outside the brief's paths: `check.go` (one field, `Checker.tuples`) and `emit_traits.go` (tuple case in `showDef`, writes `Tuple(1, "a")`). New files `check_patterns.go` and `emit_patterns.go` instead of growing the shared files, as the orchestrator asked. `compiler/README.md` updated.
-- Language choices recorded in `compiler/README.md` "Differences from the spec": the constructor-or-binding rule for names, `Tuple(...)` parsed as syntax, `match` and `is` on any value, `let` destructuring, destructuring needs irrefutable patterns.
-- `IsExpr` emission now uses a subject temporary, so the C for existing `is` expressions changed; program behavior is the same.
+- Outside the brief's paths: `check.go` (one field, `Checker.tuples`) and `emit_traits.go` (tuple case in `showDef`, writes `#[1, "a"]`). New files `check_patterns.go` and `emit_patterns.go` instead of growing the shared files, as the orchestrator asked. `compiler/README.md` updated.
+- Language choices recorded in `compiler/README.md` "Differences from the spec": the constructor-or-binding rule for names, `match` and `is` on any value, `let` destructuring of structs, destructuring needs irrefutable patterns.
+- Tuple syntax `#[...]` for literals, patterns and types (user decisions during review). `SPEC.md` edited in section 2 (destructuring line, `for (const #[i, item] of ...)`, the Tuples literal line), section 3 (prelude list no longer has `Tuple`), section 4 (Tuples under Composite types, the "type syntax uses names" line) and section 8 (`const #[sender, receiver] = Channel.create`, its `#[Sender<T>, Receiver<T>]` result). `DECISIONS.md`: D23 notes tuples as the exception, D44 example now `const #[a, b] = f()`, and new decision D53 "Tuple literals and types use `#[...]`" (D51 and D52 belong to the closures PR). `lexer.go` gained the `#[` token and `check_traits.go` `typeExprString` prints tuple types (both outside the brief's paths).
+- The C for `match` and `is` changed shape: the `match` subject and the `is` subject are held in a temporary, and each arm computes its condition into a `bool` before testing it. Program behavior is the same.
 
 ## Stubs left
 
@@ -69,8 +70,8 @@ Tests: samples `compiler/testdata/patterns_nested.nra`, `patterns_structs.nra`, 
 
 ## Gotchas
 
-- `Tuple` is a parser keyword-like name only when followed by `(`; as a type it resolves in `resolveType` before user types.
-- `[a, b]` with no expected type is still an array. Generic parameters get no expected type (`genericCall` passes nil for open types), so pass `Tuple(a, b)` there.
+- `Tuple` is a plain name again: a program can declare `struct Tuple`. `Tuple<A, B>` without such a declaration gives "there is no Tuple type; write a tuple type as #[A, B]".
+- `#[` counts as an opening bracket in the lexer, so line breaks inside a tuple literal do not end the statement. Tuple patterns are written `#[p, q]`; `[` starts no pattern.
 - Match arms are no longer a single `if (!done && tag)`: each arm opens two C blocks. Closures that capture pattern locals see ordinary `Local`s with `CName` `v_<name>_<n>`.
 - `Pattern.Locals` is only set on the root pattern. Nested `Local`s are on `Pattern.Local`.
 

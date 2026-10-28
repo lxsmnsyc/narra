@@ -26,6 +26,8 @@ type TypeExpr struct {
 	// types and Result the result type.
 	Func   bool
 	Result *TypeExpr
+	// A tuple type `#[A, B]` sets Tuple; Args are the element types.
+	Tuple bool
 }
 
 type Param struct {
@@ -131,7 +133,7 @@ type VarStmt struct {
 	Pos     Pos
 	Mutable bool // let
 	Name    string
-	Pattern *Pattern // const { a, b } = s and const [a, b] = t; Name is empty
+	Pattern *Pattern // const { a, b } = s and const #[a, b] = t; Name is empty
 	Type    *TypeExpr
 	Value   Expr
 	Local   *Local
@@ -315,9 +317,9 @@ type StructLit struct {
 
 type ArrayLit struct {
 	exprBase
-	Elems     []Expr
-	TupleCall bool        // written Tuple(a, b)
-	Tuple     *StructType // set by the checker when the literal builds a tuple
+	Elems   []Expr
+	IsTuple bool        // written #[a, b]
+	Tuple   *StructType // set by the checker when the literal builds a tuple
 }
 
 // PatternKind is the syntax of a pattern. The checker decides what a
@@ -330,7 +332,7 @@ const (
 	PatName                        // name
 	PatCtor                        // Name(p, ...) or Enum.Name
 	PatStruct                      // { field, field: p }
-	PatTuple                       // [p, q]
+	PatTuple                       // #[p, q]
 	PatLit                         // 0, -1, 1.5, "a", 'c', true
 )
 

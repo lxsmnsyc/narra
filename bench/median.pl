@@ -10,7 +10,9 @@ my @times;
 my $out = "";
 for (1 .. $runs) {
     my $start = time();
-    $out = `$exe`;
+    open(my $fh, "-|", $exe) or die "cannot run $exe: $!";
+    $out = do { local $/; <$fh> } // "";
+    close($fh);
     my $status = $?;
     push @times, time() - $start;
     if ($status != 0) {

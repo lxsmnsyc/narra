@@ -42,6 +42,7 @@ fi
 
 printf '%-12s %10s %10s %10s   %s\n' program narra go rust check
 failed=0
+skipped=0
 
 for p in "${programs[@]}"; do
   dir="$here/$p"
@@ -83,9 +84,15 @@ for p in "${programs[@]}"; do
     [ -z "$o" ] && continue
     if [ -z "$ref" ]; then ref="$o"; elif [ "$o" != "$ref" ]; then check=MISMATCH; failed=1; fi
   done
+  # A row where no language ran checked nothing.
+  if [ -z "$ref" ] && [ "$check" = ok ]; then check=skipped; skipped=1; fi
   printf '%-12s %10s %10s %10s   %s\n' "$p" "${cols[0]}" "${cols[1]}" "${cols[2]}" "$check ($ref)"
 done
 
 echo
 echo "median of $runs runs, seconds, wall clock. '-' means the language was skipped."
+if [ "$skipped" = 1 ]; then
+  echo "error: no language ran for at least one program" >&2
+  failed=1
+fi
 exit "$failed"

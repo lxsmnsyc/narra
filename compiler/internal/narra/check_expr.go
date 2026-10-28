@@ -210,7 +210,7 @@ func (c *Checker) structLit(e *StructLit, want Type) Type {
 		g := c.generics[e.TypeName]
 		c.buildGeneric(g)
 		m := map[*TypeParamType]Type{}
-		if wt, ok := want.(*StructType); ok && wt.Name == g.name {
+		if wt, ok := want.(*StructType); ok && wt.Name == g.name && wt.Module == g.mod.path {
 			for i, p := range g.params {
 				m[p] = wt.Args[i]
 			}

@@ -49,12 +49,15 @@ type Field struct {
 
 type StructType struct {
 	Name   string
+	Module string // declaring module path; "" for the prelude
 	Fields []*Field
 	Args   []Type // type arguments of a generic instance
 }
 
 func (t *StructType) String() string { return t.Name + typeArgsString(t.Args) }
-func (t *StructType) CName() string  { return "S_" + t.Name + typeArgsMangle(t.Args) }
+func (t *StructType) CName() string {
+	return "S_" + cModule(t.Module) + t.Name + typeArgsMangle(t.Args)
+}
 
 func (t *StructType) Field(name string) *Field {
 	for _, f := range t.Fields {
@@ -74,12 +77,13 @@ type Variant struct {
 
 type EnumType struct {
 	Name     string
+	Module   string // declaring module path; "" for the prelude
 	Variants []*Variant
 	Args     []Type // type arguments of a generic instance
 }
 
 func (t *EnumType) String() string { return t.Name + typeArgsString(t.Args) }
-func (t *EnumType) CName() string  { return "E_" + t.Name + typeArgsMangle(t.Args) }
+func (t *EnumType) CName() string  { return "E_" + cModule(t.Module) + t.Name + typeArgsMangle(t.Args) }
 
 func typeArgsString(args []Type) string {
 	if len(args) == 0 {

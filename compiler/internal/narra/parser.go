@@ -175,6 +175,9 @@ func (p *Parser) decl() Decl {
 func (p *Parser) typeExpr() *TypeExpr {
 	t := p.ident()
 	te := &TypeExpr{Pos: t.Pos, Name: t.Text}
+	if p.accept(".") { // a type from a namespace import, such as Text.Token
+		te.Name += "." + p.ident().Text
+	}
 	if p.accept("<") {
 		for {
 			te.Args = append(te.Args, p.typeExpr())

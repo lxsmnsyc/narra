@@ -12,7 +12,7 @@ const (
 
 type forKind int
 
-// The prelude is written in Narra and checked with every program.
+// The prelude is written in Narra and checked once per program, as module "".
 const preludeSrc = `
 enum Option<T> {
   Some(value: T)
@@ -26,12 +26,15 @@ enum Result<T, E> {
 `
 
 type Program struct {
-	File   *File
 	Types  []Type // structs and enums in dependency order, so C defines inner types first
 	Funcs  []*FuncDecl
 	Tests  []*TestDecl
 	Arrays []*ArrayType
-	Entry  *FuncDecl
+	// Entries maps a binary name to its entry function. A binary whose entry
+	// function does not exist has no key.
+	Entries map[string]*FuncDecl
+	// Files maps a module path to its file, for panic messages.
+	Files map[string]string
 	// Modules are the imported standard library modules, once each, in import order.
 	// The emitter writes their Runtime C.
 	Modules []*Module
@@ -53,11 +56,13 @@ type genericType struct {
 	fields    []*Field   // struct template, with type parameters
 	variants  []*Variant // enum template, with type parameters
 	instances map[string]Type
+	mod       *modScope // the declaring module
 }
 
 type pendingFunc struct {
 	fd  *FuncDecl
 	env map[string]Type
+	mod *modScope
 }
 
 type Checker struct {
@@ -79,34 +84,27 @@ type Checker struct {
 	instTypes []Type
 	localN    int
 	isBinds   bool // an `is` pattern may bind names here
+	// The name tables above (types, generics, funcs, modules, imported)
+	// belong to mod, the module being checked; enter swaps them (modules_check.go).
+	mod     *modScope
+	mods    map[string]*modScope // by module path; "" is the prelude
+	funcMod map[*FuncDecl]*modScope
+	pkg     *Package
 }
 
+// Check checks one parsed file as the only module of package "main".
 func Check(f *File) (*Program, error) {
-	prelude, err := Parse(preludeSrc)
-	if err != nil {
-		return nil, fmt.Errorf("prelude: %v", err)
-	}
-	f.Decls = append(prelude.Decls, f.Decls...)
-	c := &Checker{
-		prog:      &Program{File: f},
-		types:     map[string]Type{"int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr},
-		generics:  map[string]*genericType{},
-		funcs:     map[string]*FuncDecl{},
-		funcTP:    map[*FuncDecl][]*TypeParamType{},
-		funcInsts: map[string]*FuncDecl{},
-		modules:   map[string]string{},
-		imported:  map[string]*Builtin{},
-		arrays:    map[string]*ArrayType{},
-	}
-	c.run(f)
-	if len(c.errs) > 0 {
-		return nil, Diagnostics(c.errs)
-	}
-	return c.prog, nil
+	pkg := &Package{Name: "main", Binaries: []Binary{{Name: "main", Entry: "main.run"}}}
+	pkg.Modules = []*SourceModule{newSourceModule("main", f)}
+	return CheckPackage(pkg)
 }
 
 func (c *Checker) errorf(pos Pos, format string, args ...any) {
-	c.report(Diagnostic{Code: "E0000", Pos: pos, Message: fmt.Sprintf(format, args...)})
+	file := ""
+	if c.mod != nil {
+		file = c.mod.file
+	}
+	c.report(Diagnostic{Code: "E0000", Pos: pos, File: file, Message: fmt.Sprintf(format, args...)})
 }
 
 // useModule records an imported standard library module.
@@ -119,8 +117,14 @@ func (c *Checker) useModule(m *Module) {
 	c.prog.Modules = append(c.prog.Modules, m)
 }
 
-func (c *Checker) run(f *File) {
+// declareModule runs the declaration passes of the current module: imports,
+// type names, fields, function signatures and generic templates. It returns
+// the module's non-generic types.
+func (c *Checker) declareModule(f *File) []Type {
 	for _, imp := range f.Imports {
+		if c.importPackageModule(imp) {
+			continue
+		}
 		mod, ok := stdModules[imp.Path]
 		if !ok {
 			c.errorf(imp.Pos, "unknown module %q (this compiler supports %s)", imp.Path, moduleList())
@@ -141,22 +145,27 @@ func (c *Checker) run(f *File) {
 	}
 	// Declare type names first, so declarations can refer to each other.
 	var concrete []Type
+	var own []*genericType
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *StructDecl:
 			if len(d.TypeParams) > 0 {
-				c.declareGeneric(d.Pos, &genericType{name: d.Name, params: makeParams(d.TypeParams), sdecl: d})
+				g := &genericType{name: d.Name, params: makeParams(d.TypeParams), sdecl: d, mod: c.mod}
+				c.declareGeneric(d.Pos, g)
+				own = append(own, g)
 				continue
 			}
-			d.T = &StructType{Name: d.Name}
+			d.T = &StructType{Name: d.Name, Module: c.mod.path}
 			c.declareType(d.Pos, d.Name, d.T)
 			concrete = append(concrete, d.T)
 		case *EnumDecl:
 			if len(d.TypeParams) > 0 {
-				c.declareGeneric(d.Pos, &genericType{name: d.Name, params: makeParams(d.TypeParams), edecl: d})
+				g := &genericType{name: d.Name, params: makeParams(d.TypeParams), edecl: d, mod: c.mod}
+				c.declareGeneric(d.Pos, g)
+				own = append(own, g)
 				continue
 			}
-			d.T = &EnumType{Name: d.Name}
+			d.T = &EnumType{Name: d.Name, Module: c.mod.path}
 			c.declareType(d.Pos, d.Name, d.T)
 			concrete = append(concrete, d.T)
 		}
@@ -176,6 +185,8 @@ func (c *Checker) run(f *File) {
 				c.errorf(d.Pos, "function %q is declared twice", d.Name)
 			}
 			c.funcs[d.Name] = d
+			d.Module = c.mod.path
+			c.funcMod[d] = c.mod
 			c.env = nil
 			if len(d.TypeParams) > 0 {
 				tps := makeParams(d.TypeParams)
@@ -193,14 +204,12 @@ func (c *Checker) run(f *File) {
 			if len(d.TypeParams) == 0 {
 				c.prog.Funcs = append(c.prog.Funcs, d)
 			}
-			if d.Name == "run" && d.Exported {
-				c.prog.Entry = d
-			}
 		case *TestDecl:
+			d.Module = c.mod.path
 			c.prog.Tests = append(c.prog.Tests, d)
 		}
 	}
-	for _, g := range c.generics {
+	for _, g := range own {
 		c.buildGeneric(g)
 	}
 	// Defaults are checked after every field type is known.
@@ -209,6 +218,11 @@ func (c *Checker) run(f *File) {
 			c.checkDefaults(sd.T.Fields)
 		}
 	}
+	return concrete
+}
+
+// checkBodies checks the function and test bodies of the current module.
+func (c *Checker) checkBodies(f *File) {
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *FuncDecl:
@@ -226,19 +240,22 @@ func (c *Checker) run(f *File) {
 			c.block(d.Body)
 		}
 	}
-	// Instances of generic functions are checked as they are discovered.
+}
+
+// checkPending checks instances of generic functions as they are
+// discovered, each in the module that declares the generic function.
+func (c *Checker) checkPending() {
 	for len(c.pending) > 0 {
 		p := c.pending[0]
 		c.pending = c.pending[1:]
+		saved := c.enter(p.mod)
 		c.funcBody(p.fd, p.env)
+		c.enter(saved)
 	}
-	if c.prog.Entry != nil {
-		e := c.prog.Entry
-		ok := len(e.Params) == 1 && sameType(e.Params[0].T, &ArrayType{Elem: TStr}) && !e.Params[0].Mutable && e.ResultT == TInt
-		if !ok {
-			c.errorf(e.Pos, "the entry function must be `export function run(args: Array<string>): int`")
-		}
-	}
+}
+
+// finish orders the program's types and arrays for the emitter.
+func (c *Checker) finish(concrete []Type) {
 	for _, t := range c.instTypes {
 		if !containsTypeParam(t) {
 			concrete = append(concrete, t)

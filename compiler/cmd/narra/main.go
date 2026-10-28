@@ -1,5 +1,5 @@
-// Command narra is the bootstrap compiler for Narra. It compiles one source
-// file to C and builds it with the system C compiler.
+// Command narra is the bootstrap compiler for Narra. It compiles a source
+// file or a package directory to C and builds it with the system C compiler.
 package main
 
 import (
@@ -14,10 +14,14 @@ import (
 )
 
 const usage = `usage:
-  narra build [-release] [-o output] [-emit-c file.c] file.nra
-  narra run [-release] file.nra [args...]
-  narra test file.nra
-  narra emit file.nra      print the generated C`
+  narra build [-release] [-bin name] [-o output] [-emit-c file.c] file.nra|dir
+  narra run [-release] [-bin name] file.nra|dir [args...]
+  narra test file.nra|dir
+  narra emit [-bin name] file.nra|dir      print the generated C
+
+A dir is a package: a directory with narra.toml and src/. Without -bin,
+build makes every [[binary]] of the package; run and emit need the package
+to have one binary.`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -31,31 +35,30 @@ func main() {
 		release := fs.Bool("release", false, "optimize and wrap integer overflow")
 		output := fs.String("o", "", "output executable")
 		emitC := fs.String("emit-c", "", "also write the generated C to this file")
+		bin := fs.String("bin", "", "the package binary to build or run")
 		fs.Parse(rest)
 		if fs.NArg() < 1 {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		src := fs.Arg(0)
+		opts := narra.BuildOptions{Release: *release, Tests: cmd == "test", KeepC: *emitC, Binary: *bin}
+		if cmd == "build" {
+			build(src, *output, opts)
+			return
+		}
 		out := *output
 		tmpDir := ""
 		if out == "" {
-			if cmd == "build" {
-				out = strings.TrimSuffix(filepath.Base(src), ".nra")
-			} else {
-				d, err := os.MkdirTemp("", "narra-run")
-				check(err)
-				tmpDir = d
-				out = filepath.Join(d, "program")
-			}
+			d, err := os.MkdirTemp("", "narra-run")
+			check(err)
+			tmpDir = d
+			out = filepath.Join(d, "program")
 		}
-		err := narra.Build(src, out, narra.BuildOptions{Release: *release, Tests: cmd == "test", KeepC: *emitC})
+		err := narra.Build(src, out, opts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
-		}
-		if cmd == "build" {
-			return
 		}
 		run := exec.Command(out, fs.Args()[1:]...)
 		run.Stdin, run.Stdout, run.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -68,11 +71,14 @@ func main() {
 		}
 		check(err)
 	case "emit":
-		if len(rest) != 1 {
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		bin := fs.String("bin", "", "the package binary to emit")
+		fs.Parse(rest)
+		if fs.NArg() != 1 {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		c, err := narra.CompileToC(rest[0], false)
+		c, err := narra.CompileBinary(fs.Arg(0), *bin, false)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -81,6 +87,45 @@ func main() {
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
+	}
+}
+
+// build makes one executable for a file, or one per selected binary for a
+// package. Executables are named after the file or the binary.
+func build(src, output string, opts narra.BuildOptions) {
+	pkg, err := narra.Load(src)
+	check(narra.FormatError(err))
+	var names []string
+	if opts.Binary != "" {
+		names = []string{opts.Binary}
+	} else {
+		for _, b := range pkg.Binaries {
+			names = append(names, b.Name)
+		}
+	}
+	info, err := os.Stat(src)
+	check(err)
+	if !info.IsDir() {
+		out := output
+		if out == "" {
+			out = strings.TrimSuffix(filepath.Base(src), ".nra")
+		}
+		check(narra.Build(src, out, opts))
+		return
+	}
+	if len(names) == 0 {
+		check(fmt.Errorf("narra.toml: package %s has no [[binary]]; it is a library", pkg.Name))
+	}
+	if output != "" && len(names) > 1 {
+		check(fmt.Errorf("-o needs one binary; the package has %s, choose one with -bin", strings.Join(names, ", ")))
+	}
+	for _, name := range names {
+		out := output
+		if out == "" {
+			out = name
+		}
+		opts.Binary = name
+		check(narra.Build(src, out, opts))
 	}
 }
 

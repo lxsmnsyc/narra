@@ -1,5 +1,7 @@
 package narra
 
+import "strings"
+
 var typeParamID int
 
 func makeParams(names []string) []*TypeParamType {
@@ -86,6 +88,8 @@ func (c *Checker) buildGeneric(g *genericType) {
 		return
 	}
 	g.built = true
+	savedMod := c.enter(g.mod)
+	defer c.enter(savedMod)
 	saved := c.env
 	c.env = envOf(g.params, nil)
 	if g.sdecl != nil {
@@ -114,7 +118,7 @@ func (c *Checker) instantiate(g *genericType, args []Type) Type {
 		m[p] = args[i]
 	}
 	if g.sdecl != nil {
-		st := &StructType{Name: g.name, Args: args}
+		st := &StructType{Name: g.name, Module: g.mod.path, Args: args}
 		g.instances[key] = st
 		for _, f := range g.fields {
 			st.Fields = append(st.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m), Default: f.Default})
@@ -122,7 +126,7 @@ func (c *Checker) instantiate(g *genericType, args []Type) Type {
 		c.instTypes = append(c.instTypes, st)
 		return st
 	}
-	et := &EnumType{Name: g.name, Args: args}
+	et := &EnumType{Name: g.name, Module: g.mod.path, Args: args}
 	g.instances[key] = et
 	for _, v := range g.variants {
 		nv := &Variant{Name: v.Name, Index: v.Index, Enum: et}
@@ -148,12 +152,12 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		if len(t.Args) == 0 {
 			return t
 		}
-		return c.instantiate(c.generics[t.Name], c.substituteAll(t.Args, m))
+		return c.instantiate(c.genericOf(t.Module, t.Name), c.substituteAll(t.Args, m))
 	case *EnumType:
 		if len(t.Args) == 0 {
 			return t
 		}
-		return c.instantiate(c.generics[t.Name], c.substituteAll(t.Args, m))
+		return c.instantiate(c.genericOf(t.Module, t.Name), c.substituteAll(t.Args, m))
 	}
 	return t
 }
@@ -184,13 +188,13 @@ func unify(pat, act Type, m map[*TypeParamType]Type) {
 			unify(p.Elem, a.Elem, m)
 		}
 	case *StructType:
-		if a, ok := act.(*StructType); ok && a.Name == p.Name && len(a.Args) == len(p.Args) {
+		if a, ok := act.(*StructType); ok && a.Name == p.Name && a.Module == p.Module && len(a.Args) == len(p.Args) {
 			for i := range p.Args {
 				unify(p.Args[i], a.Args[i], m)
 			}
 		}
 	case *EnumType:
-		if a, ok := act.(*EnumType); ok && a.Name == p.Name && len(a.Args) == len(p.Args) {
+		if a, ok := act.(*EnumType); ok && a.Name == p.Name && a.Module == p.Module && len(a.Args) == len(p.Args) {
 			for i := range p.Args {
 				unify(p.Args[i], a.Args[i], m)
 			}
@@ -213,7 +217,7 @@ func (c *Checker) orderTypes(types []Type) {
 			return
 		}
 		if state[t] == 1 {
-			c.errorf(Pos{}, "type %s contains itself; use an array for recursive data", t)
+			c.typeErrorf(t, "type %s contains itself; use an array for recursive data", t)
 			return
 		}
 		state[t] = 1
@@ -272,6 +276,9 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 	if t, ok := c.env[te.Name]; ok && len(te.Args) == 0 {
 		return t
 	}
+	if strings.Contains(te.Name, ".") {
+		return c.qualifiedType(te)
+	}
 	if te.Name == "Array" {
 		if len(te.Args) != 1 {
 			c.errorf(te.Pos, "Array takes one type argument")
@@ -325,6 +332,6 @@ func (c *Checker) expectType(pos Pos, want, got Type) {
 		return
 	}
 	if !sameType(want, got) {
-		c.errorf(pos, "expected %s, found %s", want, got)
+		c.errorf(pos, "expected %s, found %s", typeName(want, got), typeName(got, want))
 	}
 }

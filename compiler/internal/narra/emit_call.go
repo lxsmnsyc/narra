@@ -34,7 +34,7 @@ func (e *Emitter) call(x *CallExpr) (string, bool) {
 			code, _ := e.expr(a.Value)
 			args = append(args, code)
 		}
-		callCode := fmt.Sprintf("f_%s(%s)", x.Func.Name, strings.Join(args, ", "))
+		callCode := fmt.Sprintf("%s(%s)", funcCName(x.Func), strings.Join(args, ", "))
 		if x.Func.ResultT == TVoid {
 			return callCode, false
 		}

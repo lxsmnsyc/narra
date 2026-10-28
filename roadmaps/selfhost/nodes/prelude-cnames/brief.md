@@ -1,7 +1,7 @@
 ---
 id: prelude-cnames
 title: Keep prelude C names apart from module names
-status: todo
+status: dropped
 priority: must
 type: fix
 outline: false
@@ -52,3 +52,7 @@ S: one check in the loader.
 ## Notes for the worker
 
 - Record the rule in a change request against module-graph (v3), since it narrows valid module names.
+
+## Dropped
+
+2026-10-28: replaced by node `hashed-cnames`. Hashed C names cannot collide with prelude names, so no module name needs to be rejected.

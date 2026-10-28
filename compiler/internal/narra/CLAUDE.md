@@ -12,3 +12,5 @@
 - Cross-module tests go in `compiler/testdata/packages/<name>/` (with `run.out`) or `compiler/testdata/packages/errors/<name>/` (first line of `narra.toml` is `# error: <text>`).
 - Emit calls to the standard trait functions through `e.useEq`, `e.useHash`, `e.useCmp` and `e.useShow`, not `eqFunc(t)` or a hand-built `<type>__eq`. The definition is only emitted when requested.
 - Trait names and trait function names follow the same segment rule as module paths: no `__`, no leading or trailing `_`.
+- Create function types only through `c.funcOf`. The emitter writes C structs only for function types it has listed.
+- New per-function emitter state must be saved and restored in `closureFunc`, because closures are emitted in the middle of another body.

@@ -1,7 +1,7 @@
 ---
 id: closures
 title: Arrow functions and function values
-status: active
+status: done
 priority: must
 type: feature
 outline: false
@@ -65,3 +65,5 @@ L: touches parser, checker and emitter, and escape checking is new.
 ## Notes for the worker
 
 - `@inline` is a separate node (inline). Effect checking of function types is node effects.
+
+Pull request: #5 (merged 2026-10-28 by the user).

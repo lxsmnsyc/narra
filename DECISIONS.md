@@ -203,7 +203,7 @@ Decision: types are written as named generics: `Option<T>`, `Array<T>`, `Map<K, 
 - **Reason.** A name says what the type is. A reader who has not seen the language before can read `Option<string>`, but not `string?` or `{string}`.
 - **Reason.** Names are easy to search for. Symbols such as `?` appear in many other places.
 - **Cost.** Signatures are longer.
-- **`T[]` was considered and rejected (2026-10-28).** In a function type it is ambiguous, because `() => int[]` can mean either a function returning an array or an array of functions. It would also make `Array` the only collection with a symbol, unlike `FixedArray<T, N>` and `Map<K, V>`. TypeScript accepts `Array<T>` as well, so the named form costs TypeScript users nothing. `T[]` gets a diagnostic with a fix instead (section 2).
+- **`T[]` was considered and rejected (2026-10-28).** In a function type it is ambiguous, because `() => int[]` can mean either a function returning an array or an array of functions. It would also make `Array` the only collection type written with a symbol, unlike `FixedArray<T, N>` and `Map<K, V>`; tuples (D53) are not a collection. TypeScript accepts `Array<T>` as well, so the named form costs TypeScript users nothing. `T[]` gets a diagnostic with a fix instead (section 2).
 
 ## D24. `const` and `let`
 

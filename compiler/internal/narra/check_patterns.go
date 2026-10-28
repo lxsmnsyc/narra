@@ -94,7 +94,7 @@ func (c *Checker) tupleType(te *TypeExpr) Type {
 // prelude struct named Tuple whose fields are "0", "1", ..., so the struct
 // code paths (layout, reference counts, traits) handle it.
 func (c *Checker) tupleOf(elems []Type) *StructType {
-	key := typeArgsMangle(elems)
+	key := tupleCName(elems) // the C name, so the key keeps the arity of nested tuples
 	if c.tuples == nil {
 		c.tuples = map[string]*StructType{}
 	}

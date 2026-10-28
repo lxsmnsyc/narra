@@ -10,3 +10,5 @@
 - Samples, package test and 8 error tests pass; full fast check passes.
 - Review round 1 (user decisions): tuples use `#[...]` for literals, destructuring, patterns and types. `Tuple(...)` and the expected-type `[a, b]` path are gone; `Tuple` is a plain name. Show prints `#[1, "a"]`. SPEC.md and DECISIONS.md (D23, D44, new D53; D51 and D52 are taken by closures) updated.
 - Review fixes: tuple C name is `S__Tuple__...` (a module named "Tuple" collided; `testdata/Tuple.nra`). Witnesses print `Name(_)` for variants with fields. `const Only(s) = u` parses. Failed patterns bind their names as void, and the match skips the arm body and the exhaustiveness check, so one error does not cascade.
+- Rebased onto closures (9f0fa89). Conflicts only in README and DECISIONS (kept D51, D52, then D53). Go files merged cleanly.
+- Re-review blocker: nested tuples of different arity shared a type and C name. Name and intern key are now `S__Tuple<n>__...` (`tupleCName`). Samples `patterns_tuple_shapes` and `patterns_closures` (closures inside tuples, structs and enums), error test for `==` on a tuple holding a function. D23 bullet reworded.

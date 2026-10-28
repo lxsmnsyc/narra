@@ -1,7 +1,7 @@
 ---
 id: modules
 title: Multiple modules and narra.toml
-status: active
+status: done
 priority: must
 type: feature
 outline: false
@@ -65,3 +65,5 @@ L: size medium, new to this repo (module resolution and a TOML subset), and it c
 ## Notes for the worker
 
 - Keep type checking per module against exported signatures only, as the spec says. Interface files (`.nrai`) and incremental builds are not part of this node.
+
+Pull request: #4 (merged 2026-10-28 by the user).

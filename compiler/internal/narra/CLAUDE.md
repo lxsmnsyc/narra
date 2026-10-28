@@ -6,3 +6,7 @@
 - Every `Builtin.Name` must be unique. Registration panics on a duplicate.
 - Registration runs in `init()`, and Go runs `init` in file name order. Do not depend on the order between modules.
 - A refactor must keep the generated C and the error text byte-identical. Compare the output for every file in `compiler/testdata/` before and after.
+- Build C names only through `CName()` and `funcCName`, never from `Name`. Names carry the module.
+- Compare struct and enum types by module and name, never by name alone.
+- Before resolving another module's types or checking its bodies, `enter` that module's scope, as `funcInstance` and `buildGeneric` do.
+- Cross-module tests go in `compiler/testdata/packages/<name>/` (with `run.out`) or `compiler/testdata/packages/errors/<name>/` (first line of `narra.toml` is `# error: <text>`).

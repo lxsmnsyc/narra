@@ -1,7 +1,7 @@
 # Change request: module-graph v1 to v1 (draft fix before freeze)
 
 - From node: modules
-- Status: open
+- Status: accepted
 
 ## Problem
 
@@ -33,3 +33,4 @@ Implemented as proposed in `compiler/internal/narra/modules.go` and `modules_che
 
 ## Decision
 
+Accepted 2026-10-28 with PR #4. The contract is now v2, frozen.

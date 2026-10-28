@@ -47,7 +47,7 @@ depends_on:
 
 ## Goal
 
-Assign stable codes to every diagnostic, add exact fixes for the TypeScript habits in `SPEC.md` section 2 (`===`, `null`, `xs.push`, `import X from`, `;`, `+` on strings), and add `narra check --json` and `narra explain <code>`.
+Assign stable codes to every diagnostic, add exact fixes for the TypeScript habits in `SPEC.md` section 2 (`===`, `null`, `T[]`, `xs.push`, `import X from`, `;`, `+` on strings), and add `narra check --json` and `narra explain <code>`.
 
 ## Context
 

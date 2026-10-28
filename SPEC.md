@@ -165,6 +165,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
 | `let` can be captured by closures | `let` cannot be captured |
 | `null`, `undefined` | Not present. Use `Option<T>` with `None` |
+| `T[]` is an array type | Not present. Write `Array<T>` (D23) |
 | `number` | Not present. Use `int`, `i32`, `f64` and the other sized types |
 | `enum` holds named numbers or strings | `enum` holds variants with fields, checked by `match` |
 | `'text'` is a string | `'a'` is a `char`. Strings use `"text"` |

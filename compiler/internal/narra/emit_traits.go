@@ -273,6 +273,18 @@ func (e *Emitter) showDef(b *strings.Builder, t Type) {
 		fmt.Fprintf(b, "    lstr_append_owned(&s, %s(v->items[i]));\n  }\n", e.useShow(t.Elem))
 		app("  ", "]")
 	case *StructType:
+		if t.Tuple {
+			// Tuple(1, "a"), as the literal is written.
+			b.WriteString("  lstr* s = lstr_from_cstr(\"Tuple(\");\n")
+			for i, f := range t.Fields {
+				if i > 0 {
+					app("  ", ", ")
+				}
+				fmt.Fprintf(b, "  lstr_append_owned(&s, %s(v.%s));\n", e.useShow(f.T), fieldName(f.Name))
+			}
+			app("  ", ")")
+			break
+		}
 		if len(t.Fields) == 0 {
 			fmt.Fprintf(b, "  lstr* s = lstr_from_cstr(%s);\n", cString(t.Name+" {}"))
 			break

@@ -90,7 +90,7 @@ func (c *Checker) ifStmt(s *IfStmt) {
 	c.isBinds = false
 	var subject *Local
 	var v *Variant
-	if isPattern && !is.Pattern.Wildcard {
+	if isPattern && is.Pattern.Variant != nil {
 		subject = c.narrowable(is.Subject)
 		v = is.Pattern.Variant
 	}
@@ -110,6 +110,9 @@ func (c *Checker) ifStmt(s *IfStmt) {
 	}
 	c.pop()
 	other := otherVariant(v)
+	if isPattern && !argsIrrefutable(is.Pattern) {
+		other = nil // `x is Some(1)` failing does not make x None
+	}
 	if s.Else != nil {
 		c.push()
 		if subject != nil && other != nil {
@@ -127,6 +130,10 @@ func (c *Checker) stmt(s Stmt) {
 	case *Block:
 		c.block(s)
 	case *VarStmt:
+		if s.Pattern != nil {
+			c.destructure(s)
+			return
+		}
 		var want Type
 		if s.Type != nil {
 			want = c.resolveType(s.Type)

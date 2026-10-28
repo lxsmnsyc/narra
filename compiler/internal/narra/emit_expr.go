@@ -132,14 +132,13 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 	case *BinaryExpr:
 		return e.binary(x), false
 	case *IsExpr:
-		code, _ := e.expr(x.Subject)
-		if x.Pattern.Wildcard {
-			return "true", false
-		}
-		return fmt.Sprintf("((%s).tag == %d)", code, x.Pattern.Variant.Index), false
+		return e.isCond(x), false
 	case *CallExpr:
 		return e.call(x)
 	case *StructLit:
+		if x.Spread != nil {
+			return e.spreadLit(x)
+		}
 		var parts []string
 		given := map[string]bool{}
 		for _, fi := range x.Fields {
@@ -157,6 +156,9 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		}
 		return e.ownedTemp(x.Struct, fmt.Sprintf("((%s){%s})", x.Struct.CName(), strings.Join(parts, ", "))), true
 	case *ArrayLit:
+		if x.Tuple != nil {
+			return e.tupleLit(x)
+		}
 		at := x.Type().(*ArrayType)
 		arr := e.ownedTemp(at, fmt.Sprintf("%s_new(%d)", arrName(at), len(x.Elems)))
 		for _, el := range x.Elems {

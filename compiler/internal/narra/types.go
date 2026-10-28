@@ -52,6 +52,7 @@ type StructType struct {
 	Module string // declaring module path; "" for the prelude
 	Fields []*Field
 	Args   []Type // type arguments of a generic instance
+	Tuple  bool   // Tuple<A, B>: fields "0", "1", ... and Args are the element types
 }
 
 func (t *StructType) String() string { return t.Name + typeArgsString(t.Args) }

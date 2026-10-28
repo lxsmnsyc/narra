@@ -157,6 +157,9 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		if len(t.Args) == 0 {
 			return t
 		}
+		if t.Tuple {
+			return c.tupleOf(c.substituteAll(t.Args, m))
+		}
 		return c.instantiate(c.genericOf(t.Module, t.Name), c.substituteAll(t.Args, m))
 	case *EnumType:
 		if len(t.Args) == 0 {
@@ -306,6 +309,8 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		return c.arrayOf(c.resolveType(te.Args[0]))
 	}
 	switch te.Name {
+	case "Tuple":
+		return c.tupleType(te)
 	case "number":
 		c.errorf(te.Pos, "there is no `number`; use `int` or `f64`")
 		return TInt

@@ -39,7 +39,8 @@ type Emitter struct {
 	scopes   []*scopeFrame
 	loopTemp []int // frame depth when each enclosing loop started
 	fn       *FuncDecl
-	traits   *traitEmit // trait functions used so far
+	traits   *traitEmit   // trait functions used so far
+	closures *closureEmit // emit_closure.go
 }
 
 func Emit(prog *Program, entry *FuncDecl, tests bool) string {
@@ -59,6 +60,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	for _, t := range prog.Types {
 		fmt.Fprintf(&b, "typedef struct %s %s;\n", t.CName(), t.CName())
 	}
+	e.funcTypeDefs(&b)
 	for _, t := range prog.Types {
 		e.typeDef(&b, t)
 	}
@@ -92,7 +94,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 		e.out.Reset()
 	}
 	for i, t := range prog.Tests {
-		e.fn = &FuncDecl{Name: "test", ResultT: TVoid}
+		e.fn = &FuncDecl{Name: "test", ResultT: TVoid, Module: t.Module}
 		e.file = prog.Files[t.Module]
 		e.line("static void test_%d(void) {", i)
 		e.indent++
@@ -107,6 +109,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	b.WriteString("\n// String literals\n")
 	b.WriteString(e.lits.String())
 	e.traitFuncs(&b)
+	e.closureFuncs(&b)
 	b.WriteString("\n")
 	b.WriteString(bodies.String())
 	if tests {

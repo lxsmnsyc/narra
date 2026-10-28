@@ -266,6 +266,7 @@ func (p *Parser) funcHeader(exported bool) *FuncDecl {
 	for !p.is(")") {
 		param := &Param{Pos: p.tok().Pos}
 		param.Mutable = p.accept("mutable")
+		param.Escaping = !param.Mutable && p.acceptEscaping()
 		param.Name = p.ident().Text
 		p.expect(":")
 		param.Type = p.typeExpr()
@@ -431,6 +432,76 @@ func (p *Parser) funcTypeExpr() *TypeExpr {
 	p.expect("=>")
 	te.Result = p.typeExpr()
 	return te
+}
+
+// acceptEscaping accepts the `escaping` marker before a parameter name.
+// It is not a keyword, so a parameter can still be named escaping.
+func (p *Parser) acceptEscaping() bool {
+	t := p.tok()
+	if t.Kind == TokIdent && t.Text == "escaping" && p.i+1 < len(p.toks) && p.toks[p.i+1].Kind == TokIdent {
+		p.next()
+		return true
+	}
+	return false
+}
+
+// arrowAhead reports whether the `(` at the current token starts an arrow
+// function: its matching `)` is followed by `=>` or by `:` and a result type.
+func (p *Parser) arrowAhead() bool {
+	depth := 0
+	for j := p.i; j < len(p.toks); j++ {
+		t := p.toks[j]
+		if t.Kind == TokEOF {
+			return false
+		}
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(":
+			depth++
+		case ")":
+			depth--
+			if depth == 0 {
+				if j+1 >= len(p.toks) || p.toks[j+1].Kind != TokPunct {
+					return false
+				}
+				next := p.toks[j+1].Text
+				return next == "=>" || next == ":"
+			}
+		}
+	}
+	return false
+}
+
+// arrow parses `(a: A, b) : R => body`, where the body is an expression or
+// a block. Parameter and result types may be left out.
+func (p *Parser) arrow() Expr {
+	a := &ArrowExpr{exprBase: exprBase{P: p.expect("(").Pos}}
+	for !p.is(")") {
+		if p.is("mutable") {
+			p.fail(p.tok().Pos, "arrow function parameters cannot be mutable")
+		}
+		param := &Param{Pos: p.tok().Pos, Name: p.ident().Text}
+		if p.accept(":") {
+			param.Type = p.typeExpr()
+		}
+		a.Params = append(a.Params, param)
+		if !p.accept(",") {
+			break
+		}
+	}
+	p.expect(")")
+	if p.accept(":") {
+		a.Result = p.typeExpr()
+	}
+	p.expect("=>")
+	if p.is("{") {
+		a.Block = p.block()
+	} else {
+		a.Body = p.expr()
+	}
+	return a
 }
 
 func (p *Parser) block() *Block {
@@ -708,6 +779,9 @@ func (p *Parser) primary() Expr {
 	case TokPunct:
 		switch t.Text {
 		case "(":
+			if p.arrowAhead() {
+				return p.arrow()
+			}
 			p.next()
 			e := p.expr()
 			p.expect(")")

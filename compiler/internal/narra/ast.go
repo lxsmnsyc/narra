@@ -35,6 +35,9 @@ type Param struct {
 	Type    *TypeExpr
 	T       Type
 	Local   *Local
+	// Escaping marks a function-type parameter that may be stored,
+	// returned or captured (`escaping f: () => void`).
+	Escaping bool
 }
 
 type FuncDecl struct {
@@ -249,6 +252,7 @@ type FieldExpr struct {
 	Ctor    *Variant // Shape.Circle
 	// Set when Target is an enum value narrowed to one variant by `is`.
 	Narrow *Variant
+	Func   *FuncDecl // Alias.f used as a function value
 }
 
 // IsExpr is `subject is Pattern`.
@@ -277,6 +281,9 @@ type CallExpr struct {
 	Func    *FuncDecl
 	Ctor    *Variant
 	Trait   *TraitCall // set for a trait function the compiler implements
+	// FuncValue is set when the callee is a function value, such as a
+	// parameter, a local or a struct field of function type.
+	FuncValue *FuncType
 }
 
 type UnaryExpr struct {
@@ -331,4 +338,15 @@ type MatchExpr struct {
 	Subject Expr
 	Arms    []*MatchArm
 	IsValue bool
+}
+
+// ArrowExpr is an arrow function, `(x: int): int => x + 1` or
+// `(x) => { ... }`. See check_closure.go and emit_closure.go.
+type ArrowExpr struct {
+	exprBase
+	Params  []*Param  // Type is nil when it comes from the expected type
+	Result  *TypeExpr // nil when not written
+	Body    Expr      // expression body, or nil
+	Block   *Block    // block body, or nil
+	Closure *Closure  // filled by the checker
 }

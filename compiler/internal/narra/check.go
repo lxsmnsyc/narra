@@ -62,6 +62,8 @@ type Program struct {
 	Modules []*Module
 	// Impls are the functions of `implement` blocks, by type and "Trait.function".
 	Impls map[Type]map[string]*FuncDecl
+	// FuncTypes are the function types the program uses, for C typedefs.
+	FuncTypes []*FuncType
 }
 
 type scope struct {
@@ -115,6 +117,7 @@ type Checker struct {
 	funcMod map[*FuncDecl]*modScope
 	pkg     *Package
 	traits  *traitState
+	closure *closureState // check_closure.go
 }
 
 // Check checks one parsed file as the only module of package "main".
@@ -302,6 +305,7 @@ func (c *Checker) finish(concrete []Type) {
 	for _, k := range keys {
 		c.prog.Arrays = append(c.prog.Arrays, c.arrays[k])
 	}
+	c.finishFuncTypes()
 }
 
 func (c *Checker) lookup(name string) *Local {

@@ -182,7 +182,10 @@ func (t *FuncType) String() string {
 	}
 	return "(" + strings.Join(parts, ", ") + ") => " + t.Result.String()
 }
-func (t *FuncType) CName() string { return "void*" }
+
+// CName is the struct that holds a function value: a C function pointer
+// and its environment (emit_closure.go).
+func (t *FuncType) CName() string { return mangle(t) }
 
 func mangle(t Type) string {
 	switch t := t.(type) {
@@ -239,7 +242,7 @@ func needsRC(t Type) bool {
 	switch t := t.(type) {
 	case *PrimType:
 		return t == TStr
-	case *ArrayType:
+	case *ArrayType, *FuncType:
 		return true
 	case *StructType:
 		for _, f := range t.Fields {
@@ -269,4 +272,7 @@ type Local struct {
 	CName   string
 	Used    bool
 	Pos     Pos
+	// NoEscape marks a function-type parameter without `escaping`: it can
+	// only be called or passed to another non-escaping parameter.
+	NoEscape bool
 }

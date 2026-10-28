@@ -40,11 +40,11 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		if l := c.lookup(e.Name); l != nil {
 			e.Local = l
 			l.Used = true
+			c.useLocal(e, l)
 			return l.T
 		}
-		if _, ok := c.funcs[e.Name]; ok {
-			c.errorf(e.P, "functions as values are not supported by this compiler yet")
-			return TVoid
+		if fd, ok := c.funcs[e.Name]; ok {
+			return c.funcValue(e.P, fd, want, &e.Func)
 		}
 		if t, v := c.ctor(e.P, "", e.Name, nil, want); t != nil {
 			e.Ctor = v
@@ -57,6 +57,9 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		c.errorf(e.P, "unknown name %q", e.Name)
 		return TVoid
 	case *FieldExpr:
+		if t := c.moduleFuncValue(e, want); t != nil {
+			return t
+		}
 		if id, ok := e.Target.(*Ident); ok && c.lookup(id.Name) == nil && c.isEnumName(id.Name) {
 			t, v := c.ctor(e.P, id.Name, e.Name, nil, want)
 			e.Ctor = v
@@ -159,6 +162,8 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		return c.arrayOf(elem)
 	case *MatchExpr:
 		return c.match(e, want, true)
+	case *ArrowExpr:
+		return c.arrow(e, want)
 	}
 	c.errorf(e.position(), "unsupported expression")
 	return TVoid

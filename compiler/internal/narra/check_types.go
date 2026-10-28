@@ -152,7 +152,7 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		if !containsTypeParam(t) {
 			return t
 		}
-		return &FuncType{Params: c.substituteAll(t.Params, m), Result: c.substitute(t.Result, m)}
+		return c.funcOf(c.substituteAll(t.Params, m), c.substitute(t.Result, m))
 	case *StructType:
 		if len(t.Args) == 0 {
 			return t
@@ -286,11 +286,11 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		return TVoid
 	}
 	if te.Func {
-		ft := &FuncType{Result: c.resolveType(te.Result)}
+		var params []Type
 		for _, a := range te.Args {
-			ft.Params = append(ft.Params, c.resolveType(a))
+			params = append(params, c.resolveType(a))
 		}
-		return ft
+		return c.funcOf(params, c.funcResult(te.Result))
 	}
 	if t, ok := c.env[te.Name]; ok && len(te.Args) == 0 {
 		return t

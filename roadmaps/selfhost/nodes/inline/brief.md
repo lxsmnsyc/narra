@@ -34,3 +34,4 @@ depends_on:
 ## Notes
 
 Outline. Break into full briefs when `plan.py refine` lists it.
+- From closures: a non-escaping closure gets a stack environment, which is a block-local C variable. Inlining or any tail-call rewrite must not move a pointer to it out of its block.

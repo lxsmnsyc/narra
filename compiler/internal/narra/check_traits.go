@@ -469,7 +469,7 @@ func (c *Checker) sameSignature(fd *FuncDecl, tf *TraitFunc, self map[*TypeParam
 		return false
 	}
 	for i, p := range fd.Params {
-		if p.Mutable != want.Params[i].Mutable || !sameType(p.T, c.substitute(want.Params[i].T, self)) {
+		if p.Mutable != want.Params[i].Mutable || p.Escaping != want.Params[i].Escaping || !sameType(p.T, c.substitute(want.Params[i].T, self)) {
 			return false
 		}
 	}
@@ -482,6 +482,9 @@ func (c *Checker) signatureText(tf *TraitFunc, self map[*TypeParamType]Type) str
 		m := ""
 		if p.Mutable {
 			m = "mutable "
+		}
+		if p.Escaping {
+			m = "escaping "
 		}
 		parts = append(parts, fmt.Sprintf("%s%s: %s", m, p.Name, c.substitute(p.T, self)))
 	}

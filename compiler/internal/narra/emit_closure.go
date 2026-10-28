@@ -211,8 +211,12 @@ func (e *Emitter) closureFunc(name, envT string, clo *Closure) {
 // valueCall emits a call through a function value.
 func (e *Emitter) valueCall(x *CallExpr) (string, bool) {
 	ft := x.FuncValue
-	code, _ := e.expr(x.Callee)
-	f := e.temp(ft, code)
+	// The call owns a reference to the callee until the statement ends, so
+	// an argument that reassigns the variable holding it cannot free the
+	// environment before the call. Stack and NULL environments ignore it.
+	code, owned := e.expr(x.Callee)
+	f := e.consume(code, owned, ft)
+	e.frames[len(e.frames)-1] = append(e.frames[len(e.frames)-1], tempVar{f, ft})
 	args := []string{f + ".env"}
 	for _, a := range x.Args {
 		c, _ := e.expr(a.Value)

@@ -9,3 +9,7 @@
 - `traits_functypes.nra` stored and returned non-escaping parameters; marked them `escaping` and made the program call them.
 - C names: `k<funcCName(owner)>__<n>` (function), `K...` (environment), `D...` (drop), `w<funcCName>` (thunk). Test blocks name closures after `f_<module>__test`; `test` is a keyword, so no user function has that name.
 - All samples pass under ASan, UBSan and the leak check on the first run.
+- Review fixes, rebased on abe7383:
+  - (1) `sameSignature` ignored `escaping`, so an implementation could store a parameter the trait declares non-escaping (ASan stack-use-after-return). It must match now. Added `closures_trait_escaping` (error) and `closures_traits.nra` (matching `escaping`).
+  - (2) `valueCall` copied the callee before the arguments ran, so `f(swap(mutable f))` freed the environment early. The checker now rejects this (`checkCalleeExclusive`), and the emitter holds a reference to the callee for the statement. With the checker rule disabled, both repros run clean under ASan with no leak.
+  - (3) Added D51 and D52 to `DECISIONS.md`. (4) Added a tail-call gotcha to the outcome.

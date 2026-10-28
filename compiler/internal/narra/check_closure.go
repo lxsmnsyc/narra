@@ -288,7 +288,75 @@ func (c *Checker) valueCallOf(e *CallExpr, ft *FuncType) Type {
 		}
 		c.expectType(a.Value.position(), want, c.expr(a.Value, want))
 	}
+	c.checkCalleeExclusive(e)
 	return ft.Result
+}
+
+// checkCalleeExclusive rejects a call through a value whose arguments pass,
+// at any depth, a variable as mutable that the callee expression reads, as
+// in `f(swap(mutable f))`. The call could otherwise change or free the
+// function value it is calling (SPEC section 6, exclusive access).
+func (c *Checker) checkCalleeExclusive(e *CallExpr) {
+	for _, a := range e.Args {
+		for _, root := range c.mutableRoots(a.Value) {
+			if usesLocal(e.Callee, root) {
+				c.errorf(a.Value.position(), "%q is passed as mutable inside this call, so it cannot also hold the function being called", root.Name)
+			}
+		}
+	}
+}
+
+// mutableRoots lists the variables passed as mutable arguments by the calls
+// inside x, outside arrow functions.
+func (c *Checker) mutableRoots(x Expr) []*Local {
+	var out []*Local
+	var walk func(x Expr)
+	walk = func(x Expr) {
+		switch x := x.(type) {
+		case *CallExpr:
+			walk(x.Callee)
+			for _, a := range x.Args {
+				if a.Mutable {
+					if root := c.lvalueRoot(a.Value); root != nil {
+						out = append(out, root)
+					}
+				}
+				walk(a.Value)
+			}
+		case *FieldExpr:
+			walk(x.Target)
+		case *IndexExpr:
+			walk(x.Target)
+			walk(x.Index)
+		case *UnaryExpr:
+			walk(x.Operand)
+		case *BinaryExpr:
+			walk(x.Left)
+			walk(x.Right)
+		case *IsExpr:
+			walk(x.Subject)
+		case *TemplateLit:
+			for _, p := range x.Parts {
+				walk(p)
+			}
+		case *StructLit:
+			for _, f := range x.Fields {
+				walk(f.Value)
+			}
+		case *ArrayLit:
+			for _, el := range x.Elems {
+				walk(el)
+			}
+		case *MatchExpr:
+			walk(x.Subject)
+			for _, arm := range x.Arms {
+				walk(arm.Guard)
+				walk(arm.Body)
+			}
+		}
+	}
+	walk(x)
+	return out
 }
 
 // hintArrow gives an arrow function argument of a generic call the parts

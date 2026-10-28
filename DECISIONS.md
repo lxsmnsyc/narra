@@ -421,3 +421,19 @@ Decision: large constant parameters are passed by pointer, and reads of fields a
 
 - **Reason.** Value semantics do not require physical copies. Parameters are constant and access is exclusive, so a pointer is indistinguishable from a copy.
 - **Reason.** It removes the cost of passing large structs and of reading from containers, with no syntax.
+
+## D51. Parameters reached through a function value are escaping
+
+Decision: a function type has no `escaping` marker, so the parameters of a function value are treated as escaping. An argument passed through a function value must be an escaping value, and a function-type parameter of an arrow function may be stored. This makes D46 stricter.
+
+- **Reason.** The caller of a function value cannot see which function it calls, so it cannot know whether that function keeps an argument. Treating every such parameter as escaping keeps a stack environment from outliving its call.
+- **Cost.** A non-escaping parameter cannot be passed through a function value, and an arrow function passed that way gets a heap environment.
+- **Rejected: `escaping` inside function types.** It would add a marker to every function type that takes a function, for a rare case.
+
+## D52. A parameter whose type is a type parameter is escaping
+
+Decision: only a parameter written with a function type, such as `f: (x: T) => U`, can be non-escaping. A parameter written as a type parameter, such as `v: T` in `id<T>(v: T): T`, is escaping, even when `T` is a function type at a call. This makes D46 stricter.
+
+- **Reason.** A generic body may store or return a `T`. Whether the parameter escapes must not depend on the type argument, or the same body would be valid for some calls and not others.
+- **Cost.** A non-escaping parameter cannot be passed to a generic `T` parameter.
+

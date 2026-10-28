@@ -47,6 +47,8 @@ See `SPEC.md` section 4 and decisions D39 and D40. Opacity only matters across m
 
 - Source: `SPEC.md`, `DECISIONS.md`, `compiler/README.md`
 
+- From patterns: reject struct patterns, destructuring and spread of another module's opaque struct, in `resolvePat` (PatStruct) and `spreadLit`.
+
 ## Acceptance
 
 - [ ] A sample package uses an opaque struct from another module through its functions.

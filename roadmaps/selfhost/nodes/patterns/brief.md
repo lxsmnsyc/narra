@@ -1,7 +1,7 @@
 ---
 id: patterns
 title: Nested patterns, destructuring, spread and tuples
-status: active
+status: done
 priority: must
 type: feature
 outline: false
@@ -59,3 +59,5 @@ See `SPEC.md` section 4: Structs (Destructuring, Reading and updating), Pattern 
 ## Sizing
 
 L: several related syntax forms across parser, checker and emitter.
+
+Pull request: #6 (merged 2026-10-28).

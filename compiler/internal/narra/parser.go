@@ -14,10 +14,14 @@ type Parser struct {
 func Parse(src string) (*File, error) {
 	toks, err := Lex(src)
 	if err != nil {
-		return nil, err
+		return nil, syntaxDiagnostic(err)
 	}
 	p := &Parser{toks: toks}
-	return p.file()
+	f, err := p.file()
+	if err != nil {
+		return nil, syntaxDiagnostic(err)
+	}
+	return f, nil
 }
 
 type parseError struct{ msg string }

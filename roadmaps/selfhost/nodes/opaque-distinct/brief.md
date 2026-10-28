@@ -49,6 +49,8 @@ See `SPEC.md` section 4 and decisions D39 and D40. Opacity only matters across m
 
 - From patterns: reject struct patterns, destructuring and spread of another module's opaque struct, in `resolvePat` (PatStruct) and `spreadLit`.
 
+- From hashed-cnames: name opaque and distinct types through the `cnames.go` helper as their own nominal types. Never fold them into the type they wrap, so `distinct UserId = int` gets its own C name.
+
 ## Acceptance
 
 - [ ] A sample package uses an opaque struct from another module through its functions.

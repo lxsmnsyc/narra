@@ -1,7 +1,7 @@
 ---
 id: closures
 title: Arrow functions and function values
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

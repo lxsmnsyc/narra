@@ -64,6 +64,8 @@ go test ./...
 - Integer overflow checks in debug builds, and division by zero and bounds checks in every build.
 - `test` blocks and `assert`.
 - Reference counting for strings, arrays, and structs and enums that hold them.
+- Arrow functions `(x: int): int => x + 1` and `(x) => { ... }`, function types `(x: int) => int`, named functions as values (`apply(double, 1)`, `Alias.f`), calls through function values (`f(x)`, `make()(x)`, `button.onClick(x)`), and captures of constants. Parameter types of an arrow function come from the expected type, also through a generic call such as `map(items, (x) => x * 2)`.
+- `escaping` function parameters. A non-escaping closure keeps its environment on the caller's stack; an escaping one has a reference-counted heap environment.
 - Traits: `trait`, `implements`, `implement Trait for Type`, `derives`, constraints such as `<T: Show & Ordered>`, and calls through the trait name such as `Show.show(x)`.
 - The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
 
@@ -75,10 +77,9 @@ go test ./...
 - Nested patterns such as `Some(Node(a, b))`, and struct patterns.
 - Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
-- Closures and arrow functions.
 - Effects are parsed but not checked.
 - Struct spread updates, destructuring.
-- Function values. Function types such as `(x: int) => int` parse and compare by their parameters and result, but no value of one can be made yet.
+- `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Generators, async functions, threads and channels.
 - Opaque and distinct types, `unsafe` and `extern`.
 
@@ -103,3 +104,6 @@ go test ./...
 - Trait names and trait function names cannot start or end with `_` or contain `__`, because the C names of implementations use `__` between them.
 - `Hashable.hash(x)` returns `int`. `Hash.of` does not exist yet.
 - Derived `Show` writes `Point { x: 1, y: 2 }`, `Some(1)` and `[1, 2]`, and quotes strings and chars inside: `"text"`, `'c'`. `Show.show` on a string quotes it too.
+- A function type carries no `escaping` marker, so the parameters of a function value are escaping: an argument passed through a function value must be escaping, and a parameter of an arrow function that has a function type may be stored.
+- Only a parameter written with a function type can be non-escaping. A parameter whose type is a type parameter is escaping even when the type argument is a function type, so passing a non-escaping parameter to `id<T>(v: T)` is an error.
+- An arrow function with a block body and no result type infers it from its `return` statements (void when none returns a value).

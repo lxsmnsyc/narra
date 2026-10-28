@@ -233,9 +233,7 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 	switch callee := e.Callee.(type) {
 	case *Ident:
 		if c.lookup(callee.Name) != nil {
-			c.errorf(callee.P, "calling a function value is not supported by this compiler yet")
-			c.argsLoose(e)
-			return TVoid
+			return c.valueCall(e)
 		}
 		if b, ok := preludeFuncs[callee.Name]; ok {
 			return c.builtinCall(e, b, want)
@@ -297,13 +295,14 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 			}
 		}
 		t := c.expr(callee.Target, nil)
+		if ft := fieldFunc(callee, t); ft != nil {
+			return c.valueCallOf(e, ft)
+		}
 		c.errorf(callee.P, "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)", callee.Name, t)
 		c.argsLoose(e)
 		return TVoid
 	}
-	c.errorf(e.P, "this expression cannot be called")
-	c.argsLoose(e)
-	return TVoid
+	return c.valueCall(e)
 }
 
 func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
@@ -315,6 +314,7 @@ func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 	c.args(e, fd.Params, func(i int) Type {
 		pw := c.substitute(fd.Params[i].T, m)
 		if containsOpen(pw, tps) {
+			c.hintArrow(e, i, fd, tps, m)
 			return nil
 		}
 		return pw
@@ -452,6 +452,7 @@ func (c *Checker) args(e *CallExpr, params []*Param, paramType func(int) Type) {
 		}
 		p := params[i]
 		want := paramType(i)
+		c.funcArg(p, a.Value)
 		t := c.expr(a.Value, want)
 		if want != nil {
 			c.expectType(a.Value.position(), want, t)

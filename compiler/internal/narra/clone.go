@@ -6,7 +6,7 @@ package narra
 func cloneFunc(fd *FuncDecl) *FuncDecl {
 	c := &FuncDecl{Pos: fd.Pos, Name: fd.Name, Exported: fd.Exported, Result: fd.Result, Effects: fd.Effects}
 	for _, p := range fd.Params {
-		c.Params = append(c.Params, &Param{Pos: p.Pos, Name: p.Name, Mutable: p.Mutable, Type: p.Type})
+		c.Params = append(c.Params, &Param{Pos: p.Pos, Name: p.Name, Mutable: p.Mutable, Escaping: p.Escaping, Type: p.Type})
 	}
 	c.Body = cloneBlock(fd.Body)
 	return c
@@ -113,6 +113,8 @@ func cloneExpr(e Expr) Expr {
 		return c
 	case *IsExpr:
 		return &IsExpr{exprBase: exprBase{P: e.P}, Subject: cloneExpr(e.Subject), Pattern: clonePattern(e.Pattern)}
+	case *ArrowExpr:
+		return cloneArrow(e)
 	}
 	panic("clone: unknown expression")
 }

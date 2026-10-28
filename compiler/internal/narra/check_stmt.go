@@ -9,6 +9,7 @@ func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
 		l.Param = true
 		l.ByRef = p.Mutable
+		c.funcParam(p, l)
 		p.Local = l
 	}
 	c.block(fd.Body)

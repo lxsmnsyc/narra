@@ -96,7 +96,13 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		if x.Ctor != nil {
 			return fmt.Sprintf("((%s){.tag = %d})", x.Ctor.Enum.CName(), x.Ctor.Index), false
 		}
+		if x.Func != nil {
+			return e.funcValueCode(x.Func, x.Type().(*FuncType))
+		}
 	case *FieldExpr:
+		if x.Func != nil {
+			return e.funcValueCode(x.Func, x.Type().(*FuncType))
+		}
 		if x.Ctor != nil {
 			return fmt.Sprintf("((%s){.tag = %d})", x.Ctor.Enum.CName(), x.Ctor.Index), false
 		}
@@ -161,6 +167,8 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		return arr, true
 	case *MatchExpr:
 		return e.matchValue(x)
+	case *ArrowExpr:
+		return e.arrow(x)
 	}
 	panic(fmt.Sprintf("emit: unsupported expression %T", x))
 }

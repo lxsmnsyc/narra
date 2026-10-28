@@ -70,7 +70,10 @@ func parseManifest(text string) (*Package, error) {
 		switch table + "." + key {
 		case "package.name":
 			if !isStr || !validPackageName(str) {
-				return nil, fail(lineNo, "package name must be a string of letters, digits and `_`, starting with a letter")
+				return nil, fail(lineNo, "package name must be a string of letters, digits and `_`, starting with a letter, not ending with `_` and without `__`")
+			}
+			if str == "std" {
+				return nil, fail(lineNo, "package name \"std\" is reserved for the standard library")
 			}
 			pkg.Name = str
 		case "[[binary]].name", "[[binary]].entry":
@@ -97,16 +100,21 @@ func parseManifest(text string) (*Package, error) {
 	if pkg.Name == "" {
 		return nil, fail(0, "[package] needs a name")
 	}
+	seen := map[string]bool{}
 	for _, b := range pkg.Binaries {
 		if b.Name == "" || b.Entry == "" {
 			return nil, fail(0, "each [[binary]] needs a name and an entry such as \"cli.run\"")
 		}
+		if seen[b.Name] {
+			return nil, fail(0, "two [[binary]] entries are named %q", b.Name)
+		}
+		seen[b.Name] = true
 	}
 	return pkg, nil
 }
 
 func validPackageName(s string) bool {
-	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') {
+	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') || !cSafeSegment(s) {
 		return false
 	}
 	for _, ch := range s {

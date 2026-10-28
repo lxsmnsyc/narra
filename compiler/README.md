@@ -86,7 +86,7 @@ go test ./...
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.
 - Generic functions and types are compiled once per set of type arguments in every build. The spec's layout tables for debug builds are not implemented.
 - Generic function bodies are checked once with their type parameters left open, then again for each instance.
-- One C file per program, not one per module. C names carry the module: `f_app_text__helper`, `S_app_text__Token`. A single file `hello.nra` is module `"hello"`.
+- One C file per program, not one per module. C names carry the module: `f_app_text__helper`, `S_app_text__Token`. A single file `hello.nra` is module `"hello"`. Top-level names cannot contain `__`, and module file and directory names and package names cannot contain `__` or start or end with `_`, so C names stay unique. A package cannot be named `std`.
 - Modules are checked against the declarations of the modules they import, in memory. There are no `.nrai` files.
 - Unused imports and private functions are not errors yet.
 - Every line of a compile error starts with its file, as in `src/text.nra:3:4: ...`.

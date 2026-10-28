@@ -111,6 +111,9 @@ func loadFile(path string) (*Package, error) {
 		return nil, withFile(err, base)
 	}
 	f.Path = base
+	if errs := checkDeclNames(f); len(errs) > 0 {
+		return nil, errs
+	}
 	return &Package{
 		Name:     stem,
 		Dir:      filepath.Dir(path),
@@ -168,6 +171,12 @@ func LoadPackage(dir string) (*Package, error) {
 		}
 		f.Path = display
 		m := newSourceModule(pkg.Name+"/"+rel, f)
+		for _, seg := range strings.Split(rel, "/") {
+			if !cSafeSegment(strings.TrimSuffix(cModule(seg), "__")) {
+				errs = append(errs, Diagnostic{Code: "E0000", File: display, Message: fmt.Sprintf("module path segment %q cannot contain \"__\" or start or end with \"_\"; C names use \"__\" between the module and the name", seg)})
+			}
+		}
+		errs = append(errs, checkDeclNames(f)...)
 		if other, dup := cnames[cModule(m.Path)]; dup {
 			errs = append(errs, Diagnostic{Code: "E0000", File: display, Message: fmt.Sprintf("modules %q and %q have the same C name; rename one file", other, m.Path)})
 		}
@@ -285,6 +294,26 @@ func cModule(path string) string {
 		}
 	}
 	return string(b) + "__"
+}
+
+// cSafeSegment reports whether a part of a module path keeps C names
+// injective: it has no "__" and does not start or end with "_". With that
+// rule and no "__" in declaration names, the first "__" in a C name after
+// the kind prefix always separates the module from the name.
+func cSafeSegment(s string) bool {
+	return s != "" && !strings.Contains(s, "__") && !strings.HasPrefix(s, "_") && !strings.HasSuffix(s, "_")
+}
+
+// checkDeclNames rejects top-level names that contain "__", which C names
+// use between the module and the name and before type arguments.
+func checkDeclNames(f *File) Diagnostics {
+	var errs Diagnostics
+	for _, d := range f.Decls {
+		if n := declName(d); strings.Contains(n, "__") {
+			errs = append(errs, Diagnostic{Code: "E0000", Pos: declPos(d), File: f.Path, Message: fmt.Sprintf("name %q cannot contain \"__\"; C names use it between the module and the name", n)})
+		}
+	}
+	return errs
 }
 
 // funcCName is the C name of a function.

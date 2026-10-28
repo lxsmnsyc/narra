@@ -217,7 +217,7 @@ func (c *Checker) orderTypes(types []Type) {
 			return
 		}
 		if state[t] == 1 {
-			c.errorf(Pos{}, "type %s contains itself; use an array for recursive data", t)
+			c.typeErrorf(t, "type %s contains itself; use an array for recursive data", t)
 			return
 		}
 		state[t] = 1
@@ -332,6 +332,6 @@ func (c *Checker) expectType(pos Pos, want, got Type) {
 		return
 	}
 	if !sameType(want, got) {
-		c.errorf(pos, "expected %s, found %s", want, got)
+		c.errorf(pos, "expected %s, found %s", typeName(want, got), typeName(got, want))
 	}
 }

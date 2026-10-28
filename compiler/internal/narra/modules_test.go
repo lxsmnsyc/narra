@@ -105,7 +105,10 @@ search = [
 		"[package]\nname = \"a-b\"\n":           "package name must be",
 		"[package]\nname = \"a\"\n[[binary]]\n": "needs a name and an entry",
 		"[dependencies]\n":                      "not supported",
-		"[package]\nname = \"a\n":               "unterminated string",
+		"[package]\nname = \"std\"\n":           "reserved for the standard library",
+		"[package]\nname = \"a__b\"\n":          "without `__`",
+		"[package]\nname = \"a\"\n[[binary]]\nname = \"x\"\nentry = \"m.run\"\n[[binary]]\nname = \"x\"\nentry = \"n.run\"\n": "two [[binary]] entries are named \"x\"",
+		"[package]\nname = \"a\n": "unterminated string",
 	} {
 		_, err := parseManifest(src)
 		if err == nil || !strings.Contains(err.Error(), msg) {

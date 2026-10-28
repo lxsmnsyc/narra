@@ -17,7 +17,7 @@ func (c *Checker) isEnumName(name string) bool {
 // in Shape.Circle. It returns nil when no enum has a constructor of that name.
 func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (Type, *Variant) {
 	// The expected type decides first, so `None` takes its type from context.
-	if et, ok := want.(*EnumType); ok && (enumName == "" || enumName == et.Name) {
+	if et, ok := want.(*EnumType); ok && (enumName == "" || c.namesEnum(enumName, et)) {
 		if v := et.Variant(name); v != nil {
 			c.ctorArgs(pos, v, args)
 			return et, v
@@ -49,7 +49,7 @@ func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (
 				continue
 			}
 			m := map[*TypeParamType]Type{}
-			if et, ok := want.(*EnumType); ok && et.Name == g.name {
+			if et, ok := want.(*EnumType); ok && et.Name == g.name && et.Module == g.mod.path {
 				for i, p := range g.params {
 					m[p] = et.Args[i]
 				}

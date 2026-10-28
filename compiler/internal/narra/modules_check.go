@@ -224,3 +224,77 @@ func (c *Checker) genericOf(module, name string) *genericType {
 	}
 	return nil
 }
+
+// namesEnum reports whether name, as written in the current module, refers
+// to the enum et. Two modules may declare enums with the same name.
+func (c *Checker) namesEnum(name string, et *EnumType) bool {
+	if t, ok := c.types[name]; ok {
+		return t == et
+	}
+	if g := c.generics[name]; g != nil {
+		return g.name == et.Name && g.mod.path == et.Module
+	}
+	return false
+}
+
+// typeName prints t for a message that also prints other. When both print
+// the same, the module is added, as in "p/b.Kind".
+func typeName(t, other Type) string {
+	s := t.String()
+	if s != other.String() {
+		return s
+	}
+	switch t := t.(type) {
+	case *StructType:
+		if t.Module != "" {
+			return t.Module + "." + s
+		}
+	case *EnumType:
+		if t.Module != "" {
+			return t.Module + "." + s
+		}
+	}
+	return s
+}
+
+// typeErrorf reports an error at the declaration of a struct or enum, in
+// the file of the module that declares it.
+func (c *Checker) typeErrorf(t Type, format string, args ...any) {
+	module, name := "", ""
+	switch t := t.(type) {
+	case *StructType:
+		module, name = t.Module, t.Name
+	case *EnumType:
+		module, name = t.Module, t.Name
+	}
+	s := c.mods[module]
+	if s == nil {
+		c.errorf(Pos{}, format, args...)
+		return
+	}
+	pos := Pos{}
+	if s.src != nil {
+		for _, f := range s.src.Files {
+			for _, d := range f.Decls {
+				if _, isFunc := d.(*FuncDecl); !isFunc && declName(d) == name {
+					pos = declPos(d)
+				}
+			}
+		}
+	}
+	saved := c.enter(s)
+	c.errorf(pos, format, args...)
+	c.enter(saved)
+}
+
+func declPos(d Decl) Pos {
+	switch d := d.(type) {
+	case *FuncDecl:
+		return d.Pos
+	case *StructDecl:
+		return d.Pos
+	case *EnumDecl:
+		return d.Pos
+	}
+	return Pos{}
+}

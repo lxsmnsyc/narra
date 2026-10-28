@@ -1,7 +1,7 @@
 ---
 id: bench-harness
 title: Benchmark harness against Go and Rust
-status: active
+status: done
 priority: should
 type: feature
 outline: false
@@ -49,3 +49,5 @@ M: new directory, no compiler changes, but three languages and a script.
 
 - Skip Rust or Go programs cleanly when the toolchain is missing, and say so in the output.
 - Benchmarks need a quiet machine; do not run them in parallel with other work.
+
+Pull request: #1 (merged 2026-10-28, auto-merge).

@@ -1,7 +1,7 @@
 ---
 id: traits
 title: Traits, constraints and equality
-status: active
+status: done
 priority: must
 type: feature
 outline: false
@@ -65,3 +65,5 @@ L: new to this repo, several syntax forms, and a contract other nodes use.
 ## Notes for the worker
 
 - `Dynamic<Trait>` and `derives Shape` are not part of this node.
+
+Pull request: #3 (merged 2026-10-28 by the user).

@@ -55,6 +55,8 @@ Keys need `Hashable` and `Equatable` from `contracts/trait-model.md`. Until trai
 
 - From split-compiler: put new runtime C in the module's `Module.Runtime` (in its `std_*.go` file), not in `runtime.h`. The emitter writes it once per imported module.
 
+- From traits: a type with a user `implement Equatable` but no `implement Hashable` keeps the field-based hash, so equal keys can hash differently. Require both for map keys, or reject such keys. Use `e.useEq` and `e.useHash` in the emitter.
+
 ## Acceptance
 
 - [ ] Sample program counts words with a `Map<string, int>` and prints them in insertion order.

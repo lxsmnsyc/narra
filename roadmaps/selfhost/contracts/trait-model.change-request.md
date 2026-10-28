@@ -1,7 +1,7 @@
 # Change request: trait-model v1 to v2
 
 - From node: traits
-- Status: open
+- Status: accepted
 
 ## Problem
 
@@ -57,3 +57,4 @@ Implemented as proposed in `check_traits.go` and `emit_traits.go`, rebased on mo
 
 ## Decision
 
+Accepted 2026-10-28 with PR #3. The contract is now v2, frozen.

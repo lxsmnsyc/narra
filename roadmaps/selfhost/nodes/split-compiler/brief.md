@@ -1,7 +1,7 @@
 ---
 id: split-compiler
 title: Split the checker and emitter by feature
-status: active
+status: done
 priority: must
 type: refactor
 outline: false
@@ -64,3 +64,5 @@ M: many files, but the change moves code without changing behavior, and the test
 ## Notes for the worker
 
 - Do not rename functions or change logic in the same pull request. Reviewers should be able to check that code only moved.
+
+Pull request: #2 (merged 2026-10-28 by the user).

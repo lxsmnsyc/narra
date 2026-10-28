@@ -43,6 +43,8 @@ See `SPEC.md` section 4, "Strings", and decisions D15 and D33. Slices share memo
 
 - Source: `SPEC.md`, `DECISIONS.md`, `compiler/README.md`
 
+- From split-compiler: put new runtime C in the module's `Module.Runtime` (in its `std_*.go` file), not in `runtime.h`. The emitter writes it once per imported module.
+
 ## Acceptance
 
 - [ ] A sample program tokenizes a short source string into words and numbers using these functions.

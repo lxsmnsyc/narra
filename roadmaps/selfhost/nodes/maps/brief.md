@@ -53,6 +53,8 @@ Keys need `Hashable` and `Equatable` from `contracts/trait-model.md`. Until trai
 
 - Source: `SPEC.md`, `DECISIONS.md`, `compiler/README.md`
 
+- From split-compiler: put new runtime C in the module's `Module.Runtime` (in its `std_*.go` file), not in `runtime.h`. The emitter writes it once per imported module.
+
 ## Acceptance
 
 - [ ] Sample program counts words with a `Map<string, int>` and prints them in insertion order.

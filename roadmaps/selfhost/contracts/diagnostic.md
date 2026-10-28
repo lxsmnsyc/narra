@@ -1,7 +1,7 @@
 ---
 name: diagnostic
 version: 1
-status: draft
+status: frozen
 defined_by: split-compiler
 ---
 

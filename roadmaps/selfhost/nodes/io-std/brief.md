@@ -42,6 +42,8 @@ The self-hosted compiler must read source files, write C and run the C compiler.
 
 - Source: `SPEC.md`, `DECISIONS.md`, `compiler/README.md`
 
+- From split-compiler: put new runtime C in the module's `Module.Runtime` (in its `std_*.go` file), not in `runtime.h`. The emitter writes it once per imported module.
+
 ## Acceptance
 
 - [ ] A sample program writes a file, reads it back, and runs `echo` through `std/process`.

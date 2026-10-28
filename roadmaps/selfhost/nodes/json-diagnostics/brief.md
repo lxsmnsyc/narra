@@ -22,6 +22,7 @@ shared:
   - compiler/cmd/narra/main.go
   - compiler/internal/narra/check*.go
   - compiler/internal/narra/parser.go
+  - compiler/internal/narra/driver.go
 reserves: []
 provides: []
 depends_on:
@@ -53,6 +54,8 @@ Assign stable codes to every diagnostic, add exact fixes for the TypeScript habi
 See `SPEC.md` section 14 and decision D42. The JSON shape is in section 14.
 
 - Source: `SPEC.md`, `DECISIONS.md`, `compiler/README.md`
+
+- From split-compiler: `Diagnostic.File` is still empty. `driver.go` prefixes the file name as text. Fill `File` there and stop adding the prefix by hand.
 
 ## Acceptance
 

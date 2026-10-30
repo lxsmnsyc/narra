@@ -131,6 +131,8 @@ func containsTypeParam(t Type) bool {
 		return containsTypeParam(t.Elem)
 	case *BoxType:
 		return containsTypeParam(t.Elem)
+	case *MapType:
+		return containsTypeParam(t.Key) || containsTypeParam(t.Val)
 	case *StructType:
 		for _, a := range t.Args {
 			if containsTypeParam(a) {
@@ -176,6 +178,12 @@ func isBoxedEnum(t *EnumType) bool {
 	return false
 }
 
+// MapType is Map<K, V>: a hash map that keeps insertion order (std_map.go).
+type MapType struct{ Key, Val Type }
+
+func (t *MapType) String() string { return "Map<" + t.Key.String() + ", " + t.Val.String() + ">" }
+func (t *MapType) CName() string  { return mapCName(t) + "*" }
+
 func (t *ArrayType) String() string { return "Array<" + t.Elem.String() + ">" }
 func (t *ArrayType) CName() string  { return arrayCName(t) + "*" }
 
@@ -217,6 +225,11 @@ func sameType(a, b Type) bool {
 	if ok1 && ok2 {
 		return sameType(aa.Elem, bb.Elem)
 	}
+	ma, ok1 := a.(*MapType)
+	mb, ok2 := b.(*MapType)
+	if ok1 && ok2 {
+		return sameType(ma.Key, mb.Key) && sameType(ma.Val, mb.Val)
+	}
 	fa, ok1 := a.(*FuncType)
 	fb, ok2 := b.(*FuncType)
 	if ok1 && ok2 && len(fa.Params) == len(fb.Params) && sameType(fa.Result, fb.Result) {
@@ -237,7 +250,7 @@ func needsRC(t Type) bool {
 	switch t := t.(type) {
 	case *PrimType:
 		return t == TStr || t == TStringBuilder
-	case *ArrayType, *FuncType, *BoxType:
+	case *ArrayType, *FuncType, *BoxType, *MapType:
 		return true
 	case *StructType:
 		for _, f := range t.Fields {

@@ -269,6 +269,14 @@ type IndexExpr struct {
 	exprBase
 	Target Expr
 	Index  Expr
+	MapSet bool // the target of `m[k] = v`, which has type V instead of Option<V>
+}
+
+// MapLit is `Map { "a": 1, [key]: 2 }`.
+type MapLit struct {
+	exprBase
+	Keys []Expr
+	Vals []Expr
 }
 
 type Arg struct {

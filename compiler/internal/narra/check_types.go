@@ -123,6 +123,8 @@ func (c *Checker) templateEdges(t Type, out []genericEdge) []genericEdge {
 		return c.templateEdges(t.Elem, out)
 	case *BoxType:
 		return c.templateEdges(t.Elem, out)
+	case *MapType:
+		return c.templateEdges(t.Val, c.templateEdges(t.Key, out))
 	case *FuncType:
 		for _, p := range t.Params {
 			out = c.templateEdges(p, out)
@@ -271,6 +273,8 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		return c.arrayOf(c.substitute(t.Elem, m))
 	case *BoxType:
 		return c.boxOf(c.substitute(t.Elem, m))
+	case *MapType:
+		return c.mapOf(c.substitute(t.Key, m), c.substitute(t.Val, m))
 	case *FuncType:
 		if !containsTypeParam(t) {
 			return t
@@ -321,6 +325,11 @@ func unify(pat, act Type, m map[*TypeParamType]Type) {
 	case *BoxType:
 		if a, ok := act.(*BoxType); ok {
 			unify(p.Elem, a.Elem, m)
+		}
+	case *MapType:
+		if a, ok := act.(*MapType); ok {
+			unify(p.Key, a.Key, m)
+			unify(p.Val, a.Val, m)
 		}
 	case *FuncType:
 		if a, ok := act.(*FuncType); ok && len(a.Params) == len(p.Params) {
@@ -449,6 +458,15 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 			return TVoid
 		}
 		return c.boxOf(c.resolveType(te.Args[0]))
+	}
+	if te.Name == "Map" && !c.userMap() {
+		if len(te.Args) != 2 {
+			c.errorf(te.Pos, "Map takes two type arguments")
+			return TVoid
+		}
+		k, v := c.resolveType(te.Args[0]), c.resolveType(te.Args[1])
+		c.checkMapKey(te.Pos, k)
+		return c.mapOf(k, v)
 	}
 	if te.Name == "Array" {
 		if len(te.Args) != 1 {

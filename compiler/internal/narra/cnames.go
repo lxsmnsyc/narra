@@ -145,6 +145,8 @@ func typeID(t Type) string {
 		return arrayCName(t)
 	case *BoxType:
 		return boxCName(t)
+	case *MapType:
+		return mapCName(t)
 	case *FuncType:
 		return funcTypeCName(t)
 	}
@@ -187,6 +189,12 @@ func arrayCName(t *ArrayType) string {
 // boxCName is the struct of a Box<T>, without the pointer star.
 func boxCName(t *BoxType) string {
 	return internedName("B", "Box", []string{typeID(t.Elem)})
+}
+
+// mapCName is the struct of a Map<K, V>, without the pointer star. Its kind
+// letter M is its own, so no declaration name can equal it.
+func mapCName(t *MapType) string {
+	return internedName("M", "Map", []string{typeID(t.Key), typeID(t.Val)})
 }
 
 // payloadCName is the heap struct that holds the fields of a boxed enum's
@@ -257,6 +265,9 @@ func writeCNameTable(b *strings.Builder, prog *Program) {
 	}
 	for _, bt := range prog.Boxes {
 		names[boxCName(bt)] = bt
+	}
+	for _, mt := range prog.Maps {
+		names[mapCName(mt)] = mt
 	}
 	for _, ft := range prog.FuncTypes {
 		names[ft.CName()] = ft

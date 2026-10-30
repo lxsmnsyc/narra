@@ -97,7 +97,7 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 				return TVoid
 			}
 			return tt.Elem
-		case *ArrayType, *PrimType:
+		case *ArrayType, *PrimType, *MapType:
 			if e.Name == "length" {
 				c.errorf(e.P, "there is no .length; use Array.length(x) or Str.length(x)")
 			} else {
@@ -109,6 +109,9 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		return TVoid
 	case *IndexExpr:
 		t := c.expr(e.Target, nil)
+		if mt, ok := t.(*MapType); ok {
+			return c.mapIndex(e, mt)
+		}
 		c.expectType(e.Index.position(), TInt, c.expr(e.Index, TInt))
 		at, ok := t.(*ArrayType)
 		if !ok {
@@ -157,6 +160,8 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			return TVoid
 		}
 		return c.arrayOf(elem)
+	case *MapLit:
+		return c.mapLit(e, want)
 	case *MatchExpr:
 		return c.match(e, want, true)
 	case *ArrowExpr:

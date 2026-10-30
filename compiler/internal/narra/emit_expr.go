@@ -115,6 +115,9 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		}
 		return fmt.Sprintf("(%s).%s", target, fieldName(x.Name)), false
 	case *IndexExpr:
+		if _, ok := x.Target.Type().(*MapType); ok {
+			return e.mapGet(x)
+		}
 		at := x.Target.Type().(*ArrayType)
 		target, _ := e.expr(x.Target)
 		idx, _ := e.expr(x.Index)
@@ -170,6 +173,8 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 			e.line("%s->items[%s->len++] = %s;", arr, arr, v)
 		}
 		return arr, true
+	case *MapLit:
+		return e.mapLitCode(x)
 	case *MatchExpr:
 		return e.matchValue(x)
 	case *ArrowExpr:

@@ -45,6 +45,8 @@ func retain(t Type, v string) string {
 		return fmt.Sprintf("%s_retain(%s);", arrName(t), v)
 	case *BoxType:
 		return fmt.Sprintf("%s_retain(%s);", boxName(t), v)
+	case *MapType:
+		return fmt.Sprintf("%s_retain(%s);", mapName(t), v)
 	case *FuncType:
 		return fmt.Sprintf("narra_env_retain((%s).env);", v)
 	case *StructType, *EnumType:
@@ -68,6 +70,8 @@ func release(t Type, v string) string {
 		return fmt.Sprintf("%s_release(%s);", arrName(t), v)
 	case *BoxType:
 		return fmt.Sprintf("%s_release(%s);", boxName(t), v)
+	case *MapType:
+		return fmt.Sprintf("%s_release(%s);", mapName(t), v)
 	case *FuncType:
 		return fmt.Sprintf("narra_env_release((%s).env);", v)
 	case *StructType, *EnumType:

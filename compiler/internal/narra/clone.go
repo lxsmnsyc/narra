@@ -115,6 +115,13 @@ func cloneExpr(e Expr) Expr {
 			c.Elems = append(c.Elems, cloneExpr(el))
 		}
 		return c
+	case *MapLit:
+		c := &MapLit{exprBase: exprBase{P: e.P}}
+		for i := range e.Keys {
+			c.Keys = append(c.Keys, cloneExpr(e.Keys[i]))
+			c.Vals = append(c.Vals, cloneExpr(e.Vals[i]))
+		}
+		return c
 	case *MatchExpr:
 		c := &MatchExpr{exprBase: exprBase{P: e.P}, Subject: cloneExpr(e.Subject)}
 		for _, a := range e.Arms {

@@ -726,6 +726,10 @@ func (p *Parser) postfix(e Expr) Expr {
 			if !ok || !startsUpper(id.Name) {
 				return e
 			}
+			if id.Name == "Map" {
+				e = p.mapLit(id.P)
+				continue
+			}
 			lit := p.structLit()
 			lit.TypeName = id.Name
 			lit.P = id.P
@@ -737,6 +741,47 @@ func (p *Parser) postfix(e Expr) Expr {
 }
 
 func startsUpper(s string) bool { return s != "" && s[0] >= 'A' && s[0] <= 'Z' }
+
+// mapLit parses `Map { "a": 1, [key]: 2 }`. A key that is not a literal is
+// written in brackets.
+func (p *Parser) mapLit(pos Pos) *MapLit {
+	lit := &MapLit{exprBase: exprBase{P: pos}}
+	p.expect("{")
+	p.skipNewlines()
+	for !p.is("}") {
+		var key Expr
+		if p.accept("[") {
+			key = p.expr()
+			p.expect("]")
+		} else {
+			key = p.expr()
+			if !isLiteralKey(key) {
+				p.fail(key.position(), "a map key that is not a literal is written [key]: value")
+			}
+		}
+		p.expect(":")
+		lit.Keys = append(lit.Keys, key)
+		lit.Vals = append(lit.Vals, p.expr())
+		p.skipNewlines()
+		if !p.accept(",") {
+			break
+		}
+		p.skipNewlines()
+	}
+	p.skipNewlines()
+	p.expect("}")
+	return lit
+}
+
+func isLiteralKey(e Expr) bool {
+	switch e := e.(type) {
+	case *IntLit, *FloatLit, *StringLit, *CharLit, *BoolLit:
+		return true
+	case *UnaryExpr:
+		return e.Op == "-" && isLiteralKey(e.Operand)
+	}
+	return false
+}
 
 func (p *Parser) structLit() *StructLit {
 	lit := &StructLit{exprBase: exprBase{P: p.expect("{").Pos}}

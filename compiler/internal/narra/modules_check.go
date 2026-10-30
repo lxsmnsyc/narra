@@ -64,6 +64,7 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		funcInsts: map[string]*FuncDecl{},
 		arrays:    map[string]*ArrayType{},
 		boxes:     map[string]*BoxType{},
+		maps:      map[string]*MapType{},
 		mods:      map[string]*modScope{},
 		funcMod:   map[*FuncDecl]*modScope{},
 		pkg:       pkg,
@@ -86,6 +87,7 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		}
 	}
 	c.checkPending()
+	c.flushMapKeys()
 	for _, b := range pkg.Binaries {
 		if fd := c.entryFunc(b); fd != nil {
 			saved := c.enter(c.funcMod[fd])

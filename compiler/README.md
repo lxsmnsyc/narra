@@ -115,3 +115,4 @@ go test ./...
 - `match` accepts any value, not only enums, and so does `is`. A match on `int` or `string` needs a `_` arm or a binding arm.
 - `let { a } = s` is allowed and declares `let` variables. The spec shows only `const` for struct destructuring.
 - A destructuring pattern must match every value (`const { x: 0 } = p` and `const Some(x) = o` are errors). A constructor works when its enum has one variant: `const Only(s) = u`.
+- `Map.keys(m)` and `Map.entries(m)` are arrays (of keys, or of `#[key, value]` tuples) outside a loop, not generators. `for ... of` over them reads the map directly and sees the entries as they were when the loop started. `Map.remove(mutable m, key)` returns `bool`. A `Map` has no `Equatable`, `Hashable` or `Show` yet, so it cannot be compared, used as a key or put in a `derives` struct. A key type must implement `Equatable` and `Hashable` together or neither, and the check looks at the key type and the fields inside it.

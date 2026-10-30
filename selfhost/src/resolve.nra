@@ -4,8 +4,8 @@
 // (userMap). Go interns arrays, boxes, maps and function types in tables
 // for the emitter; here they are plain values and the emitter collects them.
 //
-// Extension points (comments marked HOOK): selfhost-check-imports
-// replaces qualifiedType with the lookup through module scopes.
+// qualifiedType resolves `Alias.Name` through the module scopes
+// (selfhost-check-imports, scopes.nra).
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { TypeExpr, FieldDecl, VariantDecl, Pos } from "narrac/ast"
@@ -13,6 +13,7 @@ import { quoteGo } from "narrac/parser"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
 import { Checker, checkMapKey, errorf, enter, lookupType, lookupGeneric, containsTypeParam } from "narrac/check"
 import { envOf, checkPolyRecursion } from "narrac/generics"
+import { sourceScope, exported } from "narrac/scopes"
 import * as Array from "std/array"
 import * as Range from "std/range"
 
@@ -117,14 +118,61 @@ export function resolveType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   return TVoid
 }
 
-// qualifiedType resolves `Alias.Name`. This node has no module scopes, so
-// every alias is unknown here, as in Go for an alias that is not a package
-// module. HOOK selfhost-check-imports: look the alias up in the module
-// scopes and resolve the exported type.
+// qualifiedType resolves `Alias.Name`, where Alias is a namespace import of
+// a package module and Name a type it exports (Go's qualifiedType).
 function qualifiedType(mutable c: Checker, te: TypeExpr): Type uses alloc {
-  const parts = Str.split(te.name, ".")
-  const alias = parts[0]
-  errorf(mutable c, te.pos, `unknown module ${quoteGo(alias)} in type ${te.name}; import it with \`import * as ${alias} from "..."\``)
+  const alias = Str.split(te.name, ".")[0]
+  const name = Str.sliceFrom(te.name, Str.length(alias) + 1)
+  let s = -1
+  if (c.scopes[c.cur].modules[alias] is Some(path)) {
+    s = sourceScope(c, path)
+  }
+  if (s < 0) {
+    errorf(mutable c, te.pos, `unknown module ${quoteGo(alias)} in type ${te.name}; import it with \`import * as ${alias} from "..."\``)
+    return TVoid
+  }
+  const d = exported(mutable c, te.pos, s, name)
+  if (d is None) {
+    return TVoid
+  }
+  let isType = false
+  match (d) {
+    Some(decl) => {
+      isType = match (decl) {
+        Struct(_) => true
+        Enum(_) => true
+        Distinct(_) => true
+        _ => false
+      }
+    }
+    None => {}
+  }
+  if (!isType) {
+    errorf(mutable c, te.pos, `${te.name} is not a type`)
+    return TVoid
+  }
+  const nargs = Array.length(te.args)
+  if (c.scopes[s].generics[name] is Some(g)) {
+    if (c.scopes[s].types[name] is None) {
+      const want = Array.length(c.generics[g].params)
+      if (nargs != want) {
+        errorf(mutable c, te.pos, `${te.name} takes ${Int.toString(want)} type arguments`)
+        return TVoid
+      }
+      let args: Array<Type> = []
+      for (const a of Array.values(te.args)) {
+        Array.push(mutable args, resolveType(mutable c, a))
+      }
+      return instantiate(mutable c, g, args)
+    }
+  }
+  if (nargs > 0) {
+    errorf(mutable c, te.pos, `type ${te.name} is not generic`)
+    return TVoid
+  }
+  if (c.scopes[s].types[name] is Some(t)) {
+    return t
+  }
   return TVoid
 }
 

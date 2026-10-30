@@ -1,0 +1,196 @@
+// The builtin registry: the signature data of the standard library, ported
+// from compiler/internal/narra/builtins.go (Builtin, Module, the registries,
+// registerModule, registerByName, moduleList). The table itself is in
+// stdlib.nra. Check and Emit closures are not ported: a builtin names the
+// Go Check function it needs in `check`, and the body checker dispatches on
+// that name (selfhost-check-bodies); the emitter brings its own code
+// (selfhost-emit).
+//
+// Types are kept as their text (`Array<string>`, `Result<int, string>`),
+// because Option, Result and tuple types are instances that only a checker
+// can make. stdType in scopes.nra resolves the text.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Array from "std/array"
+import * as Map from "std/map"
+import * as Range from "std/range"
+
+// One std function. check is "" for a builtin with a fixed signature in
+// params and result; "fixed" for one whose Go Check is an inline closure
+// that calls checkFixed with params and result; otherwise the name of the
+// Go Check function (checkArrayPush), and params and result are empty.
+export struct StdFunc {
+  name: string // Builtin.Name: "Str.slice", unique
+  module: string // "std/string", or "" for print, assert and panic
+  key: string // the name an import uses: "slice" (Go's Module.Funcs key)
+  params: Array<string> = [] // type text
+  mutables: Array<bool> = [] // Builtin.Mutable; empty means none are mutable
+  result: string = "" // type text; "" when the check computes it
+  effects: Array<string> = [] // "alloc", "io"
+  callbacks: Array<int> = [] // arguments that are function values the builtin calls
+  check: string = ""
+}
+
+// A std module: its functions by export name (StdFunc indexes).
+export struct StdModule {
+  path: string
+  funcs: Map<string, int>
+}
+
+export struct Registry {
+  funcs: Array<StdFunc>
+  prelude: Map<string, int> // print, assert, panic: the only global functions
+  modules: Map<string, StdModule>
+  order: Array<string> // module paths in registration order
+  byName: Map<string, int> // every builtin by StdFunc.name
+}
+
+export function newRegistry(): Registry uses alloc {
+  return Registry { funcs: [], prelude: Map {}, modules: Map {}, order: [], byName: Map {} }
+}
+
+// register adds f. A duplicate name is a bug in the table, as in Go.
+export function register(mutable r: Registry, f: StdFunc) uses alloc {
+  if (r.byName[f.name] is Some(_)) {
+    panic(`duplicate builtin ${f.name}`)
+  }
+  const k = Array.length(r.funcs)
+  r.byName[f.name] = k
+  Array.push(mutable r.funcs, f)
+  if (f.module == "") {
+    r.prelude[f.key] = k
+    return
+  }
+  if (r.modules[f.module] is Some(m)) {
+    let funcs = m.funcs
+    funcs[f.key] = k
+    r.modules[f.module] = StdModule { path: f.module, funcs: funcs }
+    return
+  }
+  let funcs: Map<string, int> = Map {}
+  funcs[f.key] = k
+  r.modules[f.module] = StdModule { path: f.module, funcs: funcs }
+  Array.push(mutable r.order, f.module)
+}
+
+// moduleOrder lists the module paths as Go's moduleList names them: std/int,
+// std/float and std/string first, then the rest in registration order.
+export function moduleOrder(r: Registry): Array<string> uses alloc {
+  let paths: Array<string> = []
+  const first = ["std/int", "std/float", "std/string"]
+  for (const p of Array.values(first)) {
+    if (r.modules[p] is Some(_)) {
+      Array.push(mutable paths, p)
+    }
+  }
+  for (const p of Array.values(r.order)) {
+    if (p != "std/int" && p != "std/float" && p != "std/string") {
+      Array.push(mutable paths, p)
+    }
+  }
+  return paths
+}
+
+// moduleList names the registered modules for error messages:
+// "std/int, std/float and std/test".
+export function moduleList(r: Registry): string uses alloc {
+  const paths = moduleOrder(r)
+  const n = Array.length(paths)
+  if (n < 2) {
+    return Str.join(paths, "")
+  }
+  let head: Array<string> = []
+  for (const k of Array.values(paths)) {
+    if (Array.length(head) < n - 1) {
+      Array.push(mutable head, k)
+    }
+  }
+  return `${Str.join(head, ", ")} and ${paths[n - 1]}`
+}
+
+// dump prints the registry in the `builtin` format of decldump.go: the
+// prelude functions, then each module in moduleOrder, functions by export
+// name. A "fixed" builtin also prints its signature as `fixed param` and
+// `fixed result` lines, which Go cannot print (TestSelfhostBuiltins checks
+// them by compiling a call and removes them before comparing).
+export function dump(r: Registry): string uses alloc {
+  let sb = Str.builder()
+  dumpModule(mutable sb, r, "", r.prelude)
+  for (const p of Array.values(moduleOrder(r))) {
+    if (r.modules[p] is Some(m)) {
+      dumpModule(mutable sb, r, p, m.funcs)
+    }
+  }
+  return Str.build(sb)
+}
+
+function dumpModule(mutable sb: StringBuilder, r: Registry, path: string, funcs: Map<string, int>) uses alloc {
+  let names: Array<string> = []
+  for (const n of Map.keys(funcs)) {
+    Array.push(mutable names, n)
+  }
+  sortStrings(mutable names)
+  for (const n of Array.values(names)) {
+    if (funcs[n] is Some(k)) {
+      dumpFunc(mutable sb, r.funcs[k])
+    }
+  }
+}
+
+function dumpFunc(mutable sb: StringBuilder, f: StdFunc) uses alloc {
+  Str.append(mutable sb, `builtin module="${f.module}" export=${f.key} ${f.name}\n`)
+  const fixed = f.check == "fixed"
+  let prefix = "  "
+  if (fixed) {
+    prefix = "  fixed "
+  }
+  for (const k of Range.between(0, Array.length(f.params))) {
+    let flag = ""
+    if (k < Array.length(f.mutables) && f.mutables[k]) {
+      flag = "mutable "
+    }
+    Str.append(mutable sb, `${prefix}param ${flag}${f.params[k]}\n`)
+  }
+  if (Array.length(f.params) == 0 && !fixed && Array.length(f.mutables) > 0) {
+    let flags: Array<string> = []
+    for (const m of Array.values(f.mutables)) {
+      if (m) {
+        Array.push(mutable flags, "true")
+      } else {
+        Array.push(mutable flags, "false")
+      }
+    }
+    Str.append(mutable sb, `  mutable ${Str.join(flags, ",")}\n`)
+  }
+  if (f.result != "") {
+    Str.append(mutable sb, `${prefix}result ${f.result}\n`)
+  }
+  if (Array.length(f.effects) > 0) {
+    Str.append(mutable sb, `  effects ${Str.join(f.effects, ",")}\n`)
+  }
+  if (Array.length(f.callbacks) > 0) {
+    let idx: Array<string> = []
+    for (const c of Array.values(f.callbacks)) {
+      Array.push(mutable idx, Int.toString(c))
+    }
+    Str.append(mutable sb, `  callbacks ${Str.join(idx, ",")}\n`)
+  }
+  if (f.check != "") {
+    Str.append(mutable sb, `  check ${f.check}\n`)
+  }
+}
+
+// sortStrings sorts in byte order (insertion sort; a module has few
+// functions).
+function sortStrings(mutable items: Array<string>) {
+  const n = Array.length(items)
+  for (const i of Range.between(1, n)) {
+    const v = items[i]
+    let j = i
+    while (j > 0 && items[j - 1] > v) {
+      items[j] = items[j - 1]
+      j = j - 1
+    }
+    items[j] = v
+  }
+}

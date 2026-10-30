@@ -76,10 +76,10 @@ func TestDeclDumpSkipsBodies(t *testing.T) {
 		t.Fatalf("body errors must not be reported:\n%s", got)
 	}
 	for _, want := range []string{
-		"type struct module=\"body\" P\n  field x int\n",
-		"func module=\"body\" f\n  param p P\n  result int\n",
+		"type struct module=\"body\" body.P\n  field x int\n",
+		"func module=\"body\" f\n  param p body.P\n  result int\n",
 		"const module=\"body\" N ?\n",
-		"order module=\"body\" P\n",
+		"order module=\"body\" body.P\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dump lacks %q:\n%s", want, got)

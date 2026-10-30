@@ -1,0 +1,188 @@
+// The standard library's signature data: one StdFunc per Go builtin, in the
+// order of `narra`'s builtin dump (BuiltinDump in decldump.go: the prelude,
+// then the modules in moduleList order, functions by export name). The
+// table is hand-written; TestSelfhostBuiltins fails when it differs from
+// the Go registry, so a std function added only in Go fails until it is
+// added here too.
+import { StdFunc, Registry, newRegistry, register } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Checker, typeString } from "narrac/check"
+import { instantiate, tupleOf } from "narrac/resolve"
+import * as Str from "std/string"
+import * as Array from "std/array"
+import * as Range from "std/range"
+
+const STD_FUNCS: Array<StdFunc> = [
+  StdFunc { name: "assert", module: "", key: "assert", params: ["bool"], result: "void" },
+  StdFunc { name: "panic", module: "", key: "panic", params: ["string"], result: "void" },
+  StdFunc { name: "print", module: "", key: "print", params: ["string"], result: "void", effects: ["io"] },
+  StdFunc { name: "Int.abs", module: "std/int", key: "abs", params: ["int"], result: "int" },
+  StdFunc { name: "Int.parse", module: "std/int", key: "parse", params: ["string", "int"], result: "Result<int, string>", effects: ["alloc"], check: "fixed" },
+  StdFunc { name: "Int.toHex", module: "std/int", key: "toHex", params: ["int"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Int.toString", module: "std/int", key: "toString", params: ["int"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Float.fromInt", module: "std/float", key: "fromInt", params: ["int"], result: "f64" },
+  StdFunc { name: "Float.sqrt", module: "std/float", key: "sqrt", params: ["f64"], result: "f64" },
+  StdFunc { name: "Float.toString", module: "std/float", key: "toString", params: ["f64"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Float.truncate", module: "std/float", key: "truncate", params: ["f64"], result: "int" },
+  StdFunc { name: "Str.append", module: "std/string", key: "append", params: ["StringBuilder", "string"], mutables: [true, false], result: "void", effects: ["alloc"] },
+  StdFunc { name: "Str.appendChar", module: "std/string", key: "appendChar", params: ["StringBuilder", "char"], mutables: [true, false], result: "void", effects: ["alloc"] },
+  StdFunc { name: "Str.build", module: "std/string", key: "build", params: ["StringBuilder"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.builder", module: "std/string", key: "builder", result: "StringBuilder", effects: ["alloc"] },
+  StdFunc { name: "Str.byteAt", module: "std/string", key: "byteAt", params: ["string", "int"], result: "int" },
+  StdFunc { name: "Str.charAt", module: "std/string", key: "charAt", params: ["string", "int"], result: "char" },
+  StdFunc { name: "Str.charCount", module: "std/string", key: "charCount", params: ["string"], result: "int" },
+  StdFunc { name: "Str.chars", module: "std/string", key: "chars", params: ["string"], result: "Array<char>", effects: ["alloc"], check: "fixed" },
+  StdFunc { name: "Str.concat", module: "std/string", key: "concat", params: ["string", "string"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.contains", module: "std/string", key: "contains", params: ["string", "string"], result: "bool" },
+  StdFunc { name: "Str.endsWith", module: "std/string", key: "endsWith", params: ["string", "string"], result: "bool" },
+  StdFunc { name: "Str.fromChar", module: "std/string", key: "fromChar", params: ["char"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.indexOf", module: "std/string", key: "indexOf", params: ["string", "string"], result: "Option<int>", effects: ["alloc"], check: "fixed" },
+  StdFunc { name: "Str.join", module: "std/string", key: "join", params: ["Array<string>", "string"], result: "string", effects: ["alloc"], check: "fixed" },
+  StdFunc { name: "Str.length", module: "std/string", key: "length", params: ["string"], result: "int" },
+  StdFunc { name: "Str.nextChar", module: "std/string", key: "nextChar", params: ["string", "int"], result: "int" },
+  StdFunc { name: "Str.repeat", module: "std/string", key: "repeat", params: ["string", "int"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.replace", module: "std/string", key: "replace", params: ["string", "string", "string"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.slice", module: "std/string", key: "slice", params: ["string", "int", "int"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.sliceFrom", module: "std/string", key: "sliceFrom", params: ["string", "int"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Str.split", module: "std/string", key: "split", params: ["string", "string"], result: "Array<string>", effects: ["alloc"], check: "fixed" },
+  StdFunc { name: "Str.startsWith", module: "std/string", key: "startsWith", params: ["string", "string"], result: "bool" },
+  StdFunc { name: "Str.trim", module: "std/string", key: "trim", params: ["string"], result: "string", effects: ["alloc"] },
+  StdFunc { name: "Array.filled", module: "std/array", key: "filled", effects: ["alloc"], check: "checkArrayFilled" },
+  StdFunc { name: "Array.length", module: "std/array", key: "length", check: "checkArrayLength" },
+  StdFunc { name: "Array.push", module: "std/array", key: "push", mutables: [true, false], effects: ["alloc"], check: "checkArrayPush" },
+  StdFunc { name: "Array.values", module: "std/array", key: "values", check: "checkArrayLength" },
+  StdFunc { name: "Box.new", module: "std/box", key: "new", effects: ["alloc"], check: "checkBoxNew" },
+  StdFunc { name: "Char.code", module: "std/char", key: "code", params: ["char"], result: "int" },
+  StdFunc { name: "Char.fromCode", module: "std/char", key: "fromCode", params: ["int"], result: "Option<char>", check: "fixed" },
+  StdFunc { name: "Env.args", module: "std/env", key: "args", result: "Array<string>", effects: ["io", "alloc"], check: "fixed" },
+  StdFunc { name: "Env.get", module: "std/env", key: "get", params: ["string"], result: "Option<string>", effects: ["io", "alloc"], check: "fixed" },
+  StdFunc { name: "Fs.exists", module: "std/fs", key: "exists", params: ["string"], result: "bool", effects: ["io"] },
+  StdFunc { name: "Fs.listDir", module: "std/fs", key: "listDir", params: ["string"], result: "Result<Array<string>, string>", effects: ["io", "alloc"], check: "fixed" },
+  StdFunc { name: "Fs.readText", module: "std/fs", key: "readText", params: ["string"], result: "Result<string, string>", effects: ["io", "alloc"], check: "fixed" },
+  StdFunc { name: "Fs.writeText", module: "std/fs", key: "writeText", params: ["string", "string"], result: "Result<int, string>", effects: ["io"], check: "fixed" },
+  StdFunc { name: "Map.entries", module: "std/map", key: "entries", effects: ["alloc"], check: "checkMapIter" },
+  StdFunc { name: "Map.keys", module: "std/map", key: "keys", effects: ["alloc"], check: "checkMapIter" },
+  StdFunc { name: "Map.remove", module: "std/map", key: "remove", mutables: [true, false], effects: ["alloc"], check: "checkMapRemove" },
+  StdFunc { name: "Map.size", module: "std/map", key: "size", check: "checkMapSize" },
+  StdFunc { name: "Option.andThen", module: "std/option", key: "andThen", callbacks: [1], check: "checkOptionAndThen" },
+  StdFunc { name: "Option.isNone", module: "std/option", key: "isNone", check: "checkOptionIs" },
+  StdFunc { name: "Option.isSome", module: "std/option", key: "isSome", check: "checkOptionIs" },
+  StdFunc { name: "Option.map", module: "std/option", key: "map", effects: ["alloc"], callbacks: [1], check: "checkOptionMap" },
+  StdFunc { name: "Option.okOr", module: "std/option", key: "okOr", effects: ["alloc"], check: "checkOptionOkOr" },
+  StdFunc { name: "Option.orElse", module: "std/option", key: "orElse", callbacks: [1], check: "checkOptionOrElse" },
+  StdFunc { name: "Option.withDefault", module: "std/option", key: "withDefault", check: "checkOptionWithDefault" },
+  StdFunc { name: "Process.run", module: "std/process", key: "run", params: ["string", "Array<string>"], result: "Result<#[int, string, string], string>", effects: ["io", "alloc"], check: "fixed" },
+  StdFunc { name: "Range.between", module: "std/range", key: "between", check: "checkRangeBetween" },
+  StdFunc { name: "Range.upTo", module: "std/range", key: "upTo", check: "checkRangeUpTo" },
+  StdFunc { name: "Result.andThen", module: "std/result", key: "andThen", effects: ["alloc"], callbacks: [1], check: "checkResultAndThen" },
+  StdFunc { name: "Result.err", module: "std/result", key: "err", effects: ["alloc"], check: "checkResultToOption" },
+  StdFunc { name: "Result.map", module: "std/result", key: "map", effects: ["alloc"], callbacks: [1], check: "checkResultMap" },
+  StdFunc { name: "Result.mapErr", module: "std/result", key: "mapErr", effects: ["alloc"], callbacks: [1], check: "checkResultMap" },
+  StdFunc { name: "Result.ok", module: "std/result", key: "ok", effects: ["alloc"], check: "checkResultToOption" },
+  StdFunc { name: "Result.withDefault", module: "std/result", key: "withDefault", check: "checkResultWithDefault" },
+  StdFunc { name: "Test.eq", module: "std/test", key: "eq", effects: ["alloc"], check: "checkTestCompare" },
+  StdFunc { name: "Test.golden", module: "std/test", key: "golden", effects: ["io"], check: "checkTestGolden" },
+  StdFunc { name: "Test.ne", module: "std/test", key: "ne", effects: ["alloc"], check: "checkTestCompare" },
+  StdFunc { name: "Test.panics", module: "std/test", key: "panics", effects: ["io"], check: "checkTestPanics" },
+  StdFunc { name: "Test.panicsWith", module: "std/test", key: "panicsWith", effects: ["io"], check: "checkTestPanics" },
+]
+
+// stdRegistry builds the registry from the table. Registration order gives
+// the module order of Go's moduleList.
+export function stdRegistry(): Registry uses alloc {
+  let r = newRegistry()
+  for (const f of Array.values(STD_FUNCS)) {
+    register(mutable r, f)
+  }
+  return r
+}
+
+// stdType resolves the type text of a registry entry (`Option<int>`,
+// `Result<#[int, string, string], string>`). Option and Result are the
+// prelude's generics, so an instance is made on first use, as Go's
+// preludeEnum does when a builtin's Check runs. The body checker calls it
+// at the call site, never during the declaration passes.
+export function stdType(mutable c: Checker, text: string): Type uses alloc {
+  const n = Str.length(text)
+  if (Str.startsWith(text, "#[")) {
+    let elems: Array<Type> = []
+    for (const part of Array.values(splitTop(Str.slice(text, 2, n - 1)))) {
+      Array.push(mutable elems, stdType(mutable c, part))
+    }
+    return tupleOf(mutable c, elems)
+  }
+  const open = Str.indexOf(text, "<")
+  if (open is Some(i)) {
+    const head = Str.slice(text, 0, i)
+    let args: Array<Type> = []
+    for (const part of Array.values(splitTop(Str.slice(text, i + 1, n - 1)))) {
+      Array.push(mutable args, stdType(mutable c, part))
+    }
+    if (head == "Array") {
+      return TArray(args[0])
+    }
+    if (head == "Box") {
+      return TBox(args[0])
+    }
+    if (head == "Map") {
+      return TMap(args[0], args[1])
+    }
+    if (c.scopes[0].generics[head] is Some(g)) {
+      return instantiate(mutable c, g, args)
+    }
+    panic(`stdType: unknown generic ${head}`)
+  }
+  const prims = ["int", "f64", "bool", "char", "string", "void", "StringBuilder"]
+  const types = [TInt, TF64, TBool, TChar, TStr, TVoid, TStringBuilder]
+  for (const k of Range.between(0, Array.length(prims))) {
+    if (prims[k] == text) {
+      return types[k]
+    }
+  }
+  panic(`stdType: unknown type ${text}`)
+  return TVoid
+}
+
+// splitTop splits type arguments at the commas outside < > and [ ].
+function splitTop(text: string): Array<string> uses alloc {
+  let parts: Array<string> = []
+  let depth = 0
+  let start = 0
+  const n = Str.length(text)
+  for (const k of Range.between(0, n)) {
+    const b = Str.byteAt(text, k)
+    if (b == 60 || b == 91) {
+      depth = depth + 1
+    } else if (b == 62 || b == 93) {
+      depth = depth - 1
+    } else if (b == 44 && depth == 0) {
+      Array.push(mutable parts, Str.trim(Str.slice(text, start, k)))
+      start = k + 1
+    }
+  }
+  Array.push(mutable parts, Str.trim(Str.sliceFrom(text, start)))
+  return parts
+}
+
+// typeProblems resolves every type text of the registry with stdType and
+// returns a line for each one that does not print back as written. c must
+// have declared the prelude. `narrac builtins` prints the lines, so a typo
+// in the table fails TestSelfhostBuiltins.
+export function typeProblems(mutable c: Checker): Array<string> uses alloc {
+  let out: Array<string> = []
+  const funcs = c.registry.funcs
+  for (const f of Array.values(funcs)) {
+    let texts = f.params
+    if (f.result != "") {
+      Array.push(mutable texts, f.result)
+    }
+    for (const text of Array.values(texts)) {
+      const t = stdType(mutable c, text)
+      const back = typeString(c, t)
+      if (back != text) {
+        Array.push(mutable out, `stdType ${f.name}: ${text} prints as ${back}`)
+      }
+    }
+  }
+  return out
+}

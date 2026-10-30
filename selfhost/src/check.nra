@@ -13,23 +13,37 @@
 // the checker have none, but every write checks the range anyway.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Pos, FuncDecl, ConstDecl, Decl, File } from "narrac/ast"
+import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl } from "narrac/ast"
 import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, TraitInfo, TypeTraits, ImplInfo, ImplRef, MapKeyCheck, typeKey, isBoxedEnum } from "narrac/types"
+import { Registry, newRegistry } from "narrac/builtins"
 import * as Array from "std/array"
 import * as Map from "std/map"
 
-// The names one module sees (Go's modScope): its own declarations and the
-// prelude's types and generics. selfhost-check-imports adds the imported
-// names, aliases and the std registry entries.
+// The names one module sees (Go's modScope): its own declarations, the
+// names it imports and the prelude's types and generics. An imported name
+// maps to the same table index as in the module that declares it, so
+// types, functions, constants and traits compare by index across modules.
 export struct ModScope {
   path: string // "" for the prelude
   file: string // for diagnostics: "prelude", "src/text.nra", "hello.nra"
+  isSource: bool // a module of the package (Go's src != nil); false for the prelude
+  imports: Array<ImportDecl> // the module's imports, in source order
   decls: Array<Decl> // the module's declarations, for typeErrorf
+  exports: Map<string, int> // exported name -> index in decls (Go's SourceModule.Exports; the last one wins)
   types: Map<string, Type> // non-generic named types, with the primitives
   generics: Map<string, int> // Checker.generics
-  funcs: Map<string, int> // Checker.funcs
-  consts: Map<string, int> // Checker.consts
+  funcs: Map<string, int> // Checker.funcs, own and imported
+  consts: Map<string, int> // Checker.consts, own and imported
   traits: Map<string, int> // Checker.traits: the module's own traits and its imports'
+  modules: Map<string, string> // namespace alias -> module path, package or std
+  imported: Map<string, int> // std function imported by name -> Registry.funcs index
+}
+
+// The entry function of one binary: a Checker.funcs index, or -1 when the
+// entry names no exported function of the package.
+export struct EntryInfo {
+  binary: string
+  func: int
 }
 
 // A top-level function. typeParams is empty for a non-generic function.
@@ -105,6 +119,16 @@ export struct Checker {
   // Structs and enums in C definition order, set by finish (Go's
   // Program.Types).
   order: Array<Type>
+  // The std registry (stdlib.nra), the scope index of each module path,
+  // the package (for unknown-module errors), the std modules the program
+  // uses in first-import order (Go's Program.Modules) and the entry
+  // function of each binary.
+  registry: Registry
+  scopeIndex: Map<string, int>
+  pkgName: string
+  single: bool
+  used: Array<string>
+  entries: Array<EntryInfo>
 }
 
 // newChecker makes an empty checker whose side tables hold ids [0, ids).
@@ -115,6 +139,7 @@ export function newChecker(ids: int): Checker uses alloc {
     paramTypes: Array.filled(TVoid, ids), localN: 0,
     traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, impls: [], implFuncs: Map {}, mapKeys: [],
     errs: [], errKeys: Map {}, order: [],
+    registry: newRegistry(), scopeIndex: Map {}, pkgName: "", single: false, used: [], entries: [],
   }
 }
 
@@ -148,7 +173,7 @@ export function errorText(errs: Array<CheckError>): string uses alloc {
 
 // newScope adds the scope of a module and returns its index. Every module
 // sees the primitive names and the prelude's types and generics.
-export function newScope(mutable c: Checker, path: string, file: string, decls: Array<Decl>) : int uses alloc {
+export function newScope(mutable c: Checker, path: string, file: string, isSource: bool, imports: Array<ImportDecl>, decls: Array<Decl>) : int uses alloc {
   let types: Map<string, Type> = Map { "int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr }
   let generics: Map<string, int> = Map {}
   if (Array.length(c.scopes) > 0) {
@@ -161,8 +186,11 @@ export function newScope(mutable c: Checker, path: string, file: string, decls: 
       generics[n] = g
     }
   }
-  Array.push(mutable c.scopes, ModScope { path: path, file: file, decls: decls, types: types, generics: generics, funcs: Map {}, consts: Map {}, traits: Map {} })
-  return Array.length(c.scopes) - 1
+  const scope = ModScope { path: path, file: file, isSource: isSource, imports: imports, decls: decls, exports: Map {}, types: types, generics: generics, funcs: Map {}, consts: Map {}, traits: Map {}, modules: Map {}, imported: Map {} }
+  Array.push(mutable c.scopes, scope)
+  const s = Array.length(c.scopes) - 1
+  c.scopeIndex[path] = s
+  return s
 }
 
 // enter makes scope s current and returns the previous one.

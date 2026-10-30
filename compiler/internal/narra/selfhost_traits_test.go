@@ -69,22 +69,10 @@ func unportedTraitError(dump string) string {
 	return ""
 }
 
-// traitSkip says why an input is not compared, or "". Packages whose modules
-// import each other need module scopes (selfhost-check-imports), including
-// importTrait.
+// traitSkip says why an input is not compared, or "".
 func traitSkip(path, goDump string, goOK bool) string {
-	pkg, err := Load(path)
-	if err != nil {
+	if _, err := Load(path); err != nil {
 		return "does not load"
-	}
-	for _, m := range pkg.Modules {
-		for _, f := range m.Files {
-			for _, imp := range f.Imports {
-				if strings.HasPrefix(imp.Path, pkg.Name+"/") {
-					return "imports a module of its package (selfhost-check-imports)"
-				}
-			}
-		}
 	}
 	if !goOK {
 		if line := unportedTraitError(goDump); line != "" {

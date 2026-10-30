@@ -3,12 +3,13 @@
 // (declareType, declareGeneric), check_opaque.go (declareDistinct,
 // resolveDistinct) and check_const.go (declareConsts).
 //
-// This node checks the modules of a package one by one, each with its own
-// declarations and the prelude. Extension points are comments marked HOOK:
-// selfhost-check-traits added trait declarations, bounds and implementations (traits.nra);
-// selfhost-check-imports adds package and std imports, imported names and
-// the imported-constant check; selfhost-check-bodies adds default values,
-// bodies and pending generic function instances.
+// Each module of a package is declared in load order with its own
+// declarations, its imports (scopes.nra) and the prelude. Extension points
+// are comments marked HOOK: selfhost-check-traits added trait declarations,
+// bounds and implementations (traits.nra); selfhost-check-imports added
+// package and std imports, imported names, the imported-constant check and
+// the entry functions (scopes.nra); selfhost-check-bodies adds default
+// values, bodies and pending generic function instances.
 //
 // Node ids: the package's files use ids [0, Package.nextId). The prelude is
 // parsed after them, from Package.nextId, so its ids (trait parameters)
@@ -19,6 +20,8 @@ import { parse, quoteGo } from "narrac/parser"
 import { Package, SourceModule } from "narrac/modules"
 import { Type, StructInfo, EnumInfo, DistinctInfo, GenericInfo } from "narrac/types"
 import { Checker, FuncInfo, ConstInfo, CheckError, newChecker, newScope, enter, errorf, errorIn, setParamType, lookupType, lookupGeneric, lookupTrait, finish } from "narrac/check"
+import { stdRegistry } from "narrac/stdlib"
+import { exportsOf, checkTypeName, declareType, importModules, typeNamed, checkImportedConsts, checkEntries } from "narrac/scopes"
 import { makeParams, envOf } from "narrac/generics"
 import { declareTraits, resolveTraits, funcBounds, flushMapKeys } from "narrac/traits"
 import { resolveType, resolveOpt, resolveFields, resolveVariants, buildGeneric } from "narrac/resolve"
@@ -71,7 +74,10 @@ export function newPackageChecker(pkg: Package): Checker uses alloc {
     return c
   }
   let c = newChecker(parsed.value.nextId)
-  const s = newScope(mutable c, "", "prelude", parsed.value.file.decls)
+  c.registry = stdRegistry()
+  c.pkgName = pkg.name
+  c.single = pkg.single
+  const s = newScope(mutable c, "", "prelude", false, [], parsed.value.file.decls)
   enter(mutable c, s)
   declareModule(mutable c, parsed.value.file)
   return c
@@ -80,7 +86,8 @@ export function newPackageChecker(pkg: Package): Checker uses alloc {
 // declareSourceModule makes m the current module, in a new scope, and runs
 // its declaration passes. The full checker checks m's bodies right after.
 export function declareSourceModule(mutable c: Checker, m: SourceModule) uses alloc {
-  const s = newScope(mutable c, m.path, m.file, m.ast.decls)
+  const s = newScope(mutable c, m.path, m.file, true, m.ast.imports, m.ast.decls)
+  c.scopes[s].exports = exportsOf(m.ast.decls)
   enter(mutable c, s)
   declareModule(mutable c, m.ast)
 }
@@ -89,15 +96,7 @@ export function declareSourceModule(mutable c: Checker, m: SourceModule) uses al
 // type names, fields, function signatures, constants and generic templates.
 // Its non-generic structs and enums are appended to Checker.concrete.
 export function declareModule(mutable c: Checker, f: File) uses alloc {
-  for (const imp of Array.values(f.imports)) {
-    // HOOK selfhost-check-imports: package modules, unknown modules, named
-    // imports, aliases and the std registry.
-    if (imp.path == "std/string") {
-      // The type is visible only where its runtime C is emitted.
-      const s = c.cur
-      c.scopes[s].types["StringBuilder"] = TStringBuilder
-    }
-  }
+  importModules(mutable c, f)
   // Declare type names first, so declarations can refer to each other.
   // made holds the type created for each declaration, by position.
   let made: Array<Type> = []
@@ -181,21 +180,6 @@ function declPos(c: Checker, pos: Pos): Pos {
   return pos
 }
 
-function declareType(mutable c: Checker, pos: Pos, name: string, t: Type) uses alloc {
-  checkTypeName(mutable c, pos, name)
-  const s = c.cur
-  c.scopes[s].types[name] = t
-}
-
-function checkTypeName(mutable c: Checker, pos: Pos, name: string) uses alloc {
-  if (lookupType(c, name) is Some(_)) {
-    errorf(mutable c, pos, `type ${quoteGo(name)} is declared twice`)
-  }
-  if (lookupGeneric(c, name) is Some(_)) {
-    errorf(mutable c, pos, `type ${quoteGo(name)} is declared twice`)
-  }
-}
-
 // declareGeneric adds a generic struct or enum template and returns its index.
 function declareGeneric(mutable c: Checker, pos: Pos, name: string, typeParams: Array<string>, isStruct: bool, opaque: bool, fields: Array<FieldDecl>, variants: Array<VariantDecl>): int uses alloc {
   const params = makeParams(mutable c, typeParams)
@@ -253,14 +237,13 @@ function declareFunc(mutable c: Checker, fd: FuncDecl) uses alloc {
 // declareConsts registers the constants of f in the current module. A
 // constant may not share a name with a function, a type or another constant.
 function declareConsts(mutable c: Checker, f: File) uses alloc {
-  // HOOK selfhost-check-imports: an imported constant clashing with a type.
+  checkImportedConsts(mutable c, f)
   const s = c.cur
   for (const d of Array.values(f.decls)) {
     if (d is Const(cd)) {
       const dupFunc = c.scopes[s].funcs[cd.name] is Some(_)
       const dup = c.scopes[s].consts[cd.name] is Some(_)
-      const typeNamed = lookupType(c, cd.name) is Some(_) || lookupGeneric(c, cd.name) is Some(_) || lookupTrait(c, cd.name) >= 0
-      if (dup || dupFunc || typeNamed) {
+      if (dup || dupFunc || typeNamed(c, cd.name)) {
         errorf(mutable c, cd.pos, `constant ${quoteGo(cd.name)} is declared twice`)
         continue
       }
@@ -296,8 +279,9 @@ export function declareConstTypes(mutable c: Checker) uses alloc {
 }
 
 // declarePackage runs the declaration passes on every module of pkg in load
-// order, resolves the constant types and orders the types (finish), as
-// DeclDump does. Bodies are not checked.
+// order, resolves the constant types, checks the Map keys and the entry
+// functions and orders the types (finish), as DeclDump does. Bodies are not
+// checked.
 export function declarePackage(pkg: Package): Checker uses alloc {
   let c = newPackageChecker(pkg)
   if (Array.length(c.errs) > 0 && Array.length(c.scopes) == 0) {
@@ -308,6 +292,7 @@ export function declarePackage(pkg: Package): Checker uses alloc {
   }
   declareConstTypes(mutable c)
   flushMapKeys(mutable c)
+  checkEntries(mutable c, pkg)
   const concrete = c.concrete
   finish(mutable c, concrete)
   return c

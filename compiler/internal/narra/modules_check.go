@@ -56,34 +56,12 @@ func (c *Checker) newScope(path, file string, src *SourceModule) *modScope {
 // module sees only its own declarations, its imports and the prelude, and
 // uses the signatures of the modules it imports.
 func CheckPackage(pkg *Package) (*Program, error) {
-	prelude, err := Parse(preludeSrc)
+	c, concrete, err := newPackageChecker(pkg)
 	if err != nil {
-		return nil, fmt.Errorf("prelude: %v", err)
+		return nil, err
 	}
-	c := &Checker{
-		prog:      &Program{Entries: map[string]*FuncDecl{}, Files: map[string]string{}},
-		funcTP:    map[*FuncDecl][]*TypeParamType{},
-		funcInsts: map[string]*FuncDecl{},
-		arrays:    map[string]*ArrayType{},
-		boxes:     map[string]*BoxType{},
-		maps:      map[string]*MapType{},
-		mods:      map[string]*modScope{},
-		funcMod:   map[*FuncDecl]*modScope{},
-		pkg:       pkg,
-		traits:    newTraitState(),
-	}
-	c.enter(c.newScope("", "prelude", nil))
-	concrete := c.declareModule(prelude)
 	for _, m := range pkg.Modules {
-		file := ""
-		if len(m.Files) > 0 {
-			file = m.Files[0].Path
-		}
-		c.enter(c.newScope(m.Path, file, m))
-		c.prog.Files[m.Path] = file
-		for _, f := range m.Files {
-			concrete = append(concrete, c.declareModule(f)...)
-		}
+		concrete = append(concrete, c.declareSourceModule(m)...)
 		for _, f := range m.Files {
 			c.checkBodies(f)
 		}
@@ -106,6 +84,48 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		return nil, Diagnostics(c.errs)
 	}
 	return c.prog, nil
+}
+
+// newPackageChecker makes the checker for pkg and runs the declaration
+// passes of the prelude. It returns the prelude's non-generic types.
+func newPackageChecker(pkg *Package) (*Checker, []Type, error) {
+	prelude, err := Parse(preludeSrc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prelude: %v", err)
+	}
+	c := &Checker{
+		prog:      &Program{Entries: map[string]*FuncDecl{}, Files: map[string]string{}},
+		funcTP:    map[*FuncDecl][]*TypeParamType{},
+		funcInsts: map[string]*FuncDecl{},
+		arrays:    map[string]*ArrayType{},
+		boxes:     map[string]*BoxType{},
+		maps:      map[string]*MapType{},
+		mods:      map[string]*modScope{},
+		funcMod:   map[*FuncDecl]*modScope{},
+		pkg:       pkg,
+		traits:    newTraitState(),
+	}
+	c.enter(c.newScope("", "prelude", nil))
+	c.prelude = prelude
+	concrete := c.declareModule(prelude)
+	return c, concrete, nil
+}
+
+// declareSourceModule makes m the current module, in a new scope, and runs
+// the declaration passes of its files. It returns the module's non-generic
+// types. CheckPackage checks m's bodies right after; DeclDump does not.
+func (c *Checker) declareSourceModule(m *SourceModule) []Type {
+	file := ""
+	if len(m.Files) > 0 {
+		file = m.Files[0].Path
+	}
+	c.enter(c.newScope(m.Path, file, m))
+	c.prog.Files[m.Path] = file
+	var concrete []Type
+	for _, f := range m.Files {
+		concrete = append(concrete, c.declareModule(f)...)
+	}
+	return concrete
 }
 
 // entryFunc finds the exported function a binary names, or nil.

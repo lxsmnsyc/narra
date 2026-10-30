@@ -1,0 +1,224 @@
+// Generic templates, ported from check_types.go: type parameters (makeParams,
+// envOf), unification and the polymorphic-recursion check. Instantiation and
+// substitution resolve field types, so they are in resolve.nra with
+// resolveType (resolveType -> instantiate -> buildGeneric -> resolveFields
+// -> resolveType is one cycle, and modules cannot import in a cycle).
+//
+// Go keys parameters by pointer (map[*TypeParamType]Type). Here every
+// parameter is an index into Checker.params, and a substitution is a
+// Map<int, Type> from that index.
+import { Pos } from "narrac/ast"
+import { Type, ParamInfo, GenericInfo, Field } from "narrac/types"
+import { Checker, errorf, containsTypeParam, typeString } from "narrac/check"
+
+// makeParams makes fresh type parameters for one declaration.
+export function makeParams(mutable c: Checker, names: Array<string>): Array<int> uses alloc {
+  let out: Array<int> = []
+  for (const n of Array.values(names)) {
+    Array.push(mutable out, Array.length(c.params))
+    Array.push(mutable c.params, ParamInfo { name: n })
+  }
+  return out
+}
+
+// envOf maps each parameter's name to the parameter itself, so a template is
+// resolved with its parameters left open.
+export function envOf(c: Checker, params: Array<int>): Map<string, Type> uses alloc {
+  let env: Map<string, Type> = Map {}
+  for (const p of Array.values(params)) {
+    env[c.params[p].name] = TParam(p)
+  }
+  return env
+}
+
+// envWith maps each parameter's name to a type argument (Go's envOf with
+// args), for checking an instance of a generic function.
+export function envWith(c: Checker, params: Array<int>, args: Array<Type>): Map<string, Type> uses alloc {
+  let env: Map<string, Type> = Map {}
+  for (const k of Range.between(0, Array.length(params))) {
+    env[c.params[params[k]].name] = args[k]
+  }
+  return env
+}
+
+// unify matches a type that holds parameters against a concrete type and
+// records what each parameter must be. A parameter keeps its first match,
+// and void never matches.
+export function unify(c: Checker, pat: Type, act: Type, mutable m: Map<int, Type>) uses alloc {
+  match (pat) {
+    TParam(p) => {
+      if (m[p] is None && act != TVoid) {
+        m[p] = act
+      }
+    }
+    TArray(pe) => {
+      if (act is TArray(ae)) {
+        unify(c, pe, ae, mutable m)
+      }
+    }
+    TBox(pe) => {
+      if (act is TBox(ae)) {
+        unify(c, pe, ae, mutable m)
+      }
+    }
+    TMap(pk, pv) => {
+      if (act is TMap(ak, av)) {
+        unify(c, pk, ak, mutable m)
+        unify(c, pv, av, mutable m)
+      }
+    }
+    TFunc(pps, pr) => {
+      if (act is TFunc(aps, ar)) {
+        if (Array.length(aps) == Array.length(pps)) {
+          unifyAll(c, pps, aps, mutable m)
+          unify(c, pr, ar, mutable m)
+        }
+      }
+    }
+    TStruct(pi) => {
+      if (act is TStruct(ai)) {
+        const p = c.structs[pi]
+        const a = c.structs[ai]
+        if (a.name == p.name && a.module == p.module && Array.length(a.args) == Array.length(p.args)) {
+          unifyAll(c, p.args, a.args, mutable m)
+        }
+      }
+    }
+    TEnum(pi) => {
+      if (act is TEnum(ai)) {
+        const p = c.enums[pi]
+        const a = c.enums[ai]
+        if (a.name == p.name && a.module == p.module && Array.length(a.args) == Array.length(p.args)) {
+          unifyAll(c, p.args, a.args, mutable m)
+        }
+      }
+    }
+    _ => {}
+  }
+}
+
+function unifyAll(c: Checker, pats: Array<Type>, acts: Array<Type>, mutable m: Map<int, Type>) uses alloc {
+  for (const k of Range.between(0, Array.length(pats))) {
+    unify(c, pats[k], acts[k], mutable m)
+  }
+}
+
+// A reference from one generic template to a generic type (or to itself),
+// with the instance it names. grow: some argument holds a type parameter
+// without being one.
+struct GenericEdge {
+  to: int // Checker.generics
+  t: Type
+  grow: bool
+}
+
+// templateEdges lists the generic types t refers to, at any depth.
+function templateEdges(c: Checker, t: Type, mutable out: Array<GenericEdge>) uses alloc {
+  match (t) {
+    TArray(e) => templateEdges(c, e, mutable out)
+    TBox(e) => templateEdges(c, e, mutable out)
+    TMap(k, v) => {
+      templateEdges(c, k, mutable out)
+      templateEdges(c, v, mutable out)
+    }
+    TFunc(ps, r) => {
+      for (const p of Array.values(ps)) {
+        templateEdges(c, p, mutable out)
+      }
+      templateEdges(c, r, mutable out)
+    }
+    TStruct(i) => {
+      const s = c.structs[i]
+      if (Array.length(s.args) > 0) {
+        if (!s.tuple) {
+          Array.push(mutable out, GenericEdge { to: s.generic, t: t, grow: growsArgs(c, s.args) })
+        }
+        for (const a of Array.values(s.args)) {
+          templateEdges(c, a, mutable out)
+        }
+      }
+    }
+    TEnum(i) => {
+      const e = c.enums[i]
+      if (Array.length(e.args) > 0) {
+        Array.push(mutable out, GenericEdge { to: e.generic, t: t, grow: growsArgs(c, e.args) })
+        for (const a of Array.values(e.args)) {
+          templateEdges(c, a, mutable out)
+        }
+      }
+    }
+    _ => {}
+  }
+}
+
+function growsArgs(c: Checker, args: Array<Type>): bool {
+  for (const a of Array.values(args)) {
+    if (!(a is TParam(_)) && containsTypeParam(c, a)) {
+      return true
+    }
+  }
+  return false
+}
+
+function genericEdges(c: Checker, g: int): Array<GenericEdge> uses alloc {
+  let out: Array<GenericEdge> = []
+  const info = c.generics[g]
+  for (const f of Array.values(info.fields)) {
+    templateEdges(c, f.t, mutable out)
+  }
+  for (const v of Array.values(info.variants)) {
+    for (const f of Array.values(v.fields)) {
+      templateEdges(c, f.t, mutable out)
+    }
+  }
+  return out
+}
+
+// checkPolyRecursion rejects a generic type that reaches itself, directly or
+// through other generic types, with arguments that strictly hold its
+// parameters, such as struct G<T> { next: Array<G<Array<T>>> }: every
+// instance would need a larger one. Reaching itself with the same arguments
+// (List<T> holding Array<List<T>>) is fine. On failure the template's fields
+// are dropped, so no instance can grow forever.
+export function checkPolyRecursion(mutable c: Checker, g: int) uses alloc {
+  let seen: Map<string, bool> = Map {}
+  const found = walkEdges(c, g, g, false, None, mutable seen)
+  if (found is None) {
+    return
+  }
+  const info = c.generics[g]
+  const culprit = typeString(c, found.value)
+  errorf(mutable c, info.pos, `generic type ${info.name} contains ${culprit}, so each instance needs a larger one without end; every instance needs its own C type, so polymorphic recursion is not supported (use the same type arguments, or an enum or Box)`)
+  c.generics[g].fields = []
+  for (const k of Range.between(0, Array.length(info.variants))) {
+    c.generics[g].variants[k].fields = []
+  }
+}
+
+// walkEdges searches from h for a path back to g that grew. It returns the
+// first grown instance on that path.
+function walkEdges(c: Checker, g: int, h: int, grew: bool, via: Option<Type>, mutable seen: Map<string, bool>): Option<Type> uses alloc {
+  for (const e of Array.values(genericEdges(c, h))) {
+    if (e.to < 0) {
+      continue
+    }
+    const ng = grew || e.grow
+    let v = via
+    if (e.grow && via is None) {
+      v = Some(e.t)
+    }
+    if (e.to == g && ng) {
+      return v
+    }
+    const key = `${Show.show(e.to)}|${Show.show(ng)}`
+    if (seen[key] is Some(_)) {
+      continue
+    }
+    seen[key] = true
+    const r = walkEdges(c, g, e.to, ng, v, mutable seen)
+    if (r is Some(_)) {
+      return r
+    }
+  }
+  return None
+}

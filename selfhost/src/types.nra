@@ -1,0 +1,159 @@
+// The type model of the checker, ported from compiler/internal/narra/types.go
+// and the declaration half of check_opaque.go (D63).
+//
+// Go compares types by pointer. Here a `Type` is a value: primitives are
+// variants, and a struct, enum, distinct type or type parameter is an index
+// into a declaration table of the checker (`Checker.structs`, `enums`,
+// `distincts`, `params` in check.nra). Every generic instance and tuple type
+// gets its own table entry, found again through `Checker.instances`, so two
+// types are the same exactly when they are `==`. Composite types (`TArray`,
+// `TBox`, `TMap`, `TFunc`) hold their child types and compare structurally,
+// as Go's sameType does. Printing a type needs the tables: `typeString` in
+// check.nra. The C names (`CName`) are not ported here; they belong to
+// selfhost-emit.
+import * as Int from "std/int"
+import { Expr, Pos, FieldDecl, VariantDecl } from "narrac/ast"
+
+export enum Type derives Equatable {
+  TInt
+  TF64
+  TBool
+  TChar
+  TStr
+  TVoid
+  // std/string's builder, visible only in modules that import std/string.
+  TStringBuilder
+  TStruct(index: int) // Checker.structs
+  TEnum(index: int) // Checker.enums
+  TDistinct(index: int) // Checker.distincts
+  TParam(index: int) // Checker.params: a type parameter of one declaration
+  TArray(elem: Type)
+  TBox(elem: Type)
+  TMap(key: Type, val: Type)
+  TFunc(params: Array<Type>, result: Type)
+  // The subject of a for loop over a range (body checker only).
+  TRange
+  // A namespace import such as `Int` used as a value (body checker only).
+  TModule(path: string)
+}
+
+// A struct field or variant field. `pos` is the field's declaration, or the
+// zero position for tuple fields.
+export struct Field {
+  name: string
+  t: Type
+  default: Option<Expr>
+  pos: Pos
+}
+
+export struct Variant {
+  name: string
+  index: int
+  fields: Array<Field>
+}
+
+// A struct: a declared one, a generic instance (args set, generic >= 0), or a
+// tuple (tuple set, name "Tuple", module "", args the element types, fields
+// "0", "1", ...). scope is the index of the declaring module's ModScope and
+// pos the declaration (the zero position in the prelude), for typeErrorf.
+export struct StructInfo {
+  name: string
+  module: string
+  scope: int
+  pos: Pos
+  opaque: bool
+  tuple: bool
+  args: Array<Type>
+  generic: int // Checker.generics, or -1
+  fields: Array<Field>
+}
+
+export struct EnumInfo {
+  name: string
+  module: string
+  scope: int
+  pos: Pos
+  args: Array<Type>
+  generic: int
+  variants: Array<Variant>
+}
+
+// `distinct type Name = Base`. base is None until resolveDistinct runs, which
+// is how a definition in terms of itself is found.
+export struct DistinctInfo {
+  name: string
+  module: string
+  opaque: bool
+  base: Option<Type>
+}
+
+// A type parameter. Each declaration gets fresh ones (makeParams), so two
+// parameters named T of different declarations differ.
+export struct ParamInfo {
+  name: string
+}
+
+// A generic struct or enum declaration (Go's genericType). fields and
+// variants are the template with the parameters left open; they are empty
+// until buildGeneric runs, and emptied again when checkPolyRecursion fails.
+export struct GenericInfo {
+  name: string
+  module: string
+  scope: int
+  pos: Pos
+  params: Array<int> // Checker.params
+  isStruct: bool
+  opaque: bool
+  fieldDecls: Array<FieldDecl>
+  variantDecls: Array<VariantDecl>
+  built: bool
+  fields: Array<Field>
+  variants: Array<Variant>
+}
+
+// typeKey is a text that identifies a type, for the instance cache and other
+// maps keyed by type. Go keys by C name (typeID); this key has no hash and
+// is unique because struct, enum, distinct and parameter types are indexes.
+export function typeKey(t: Type): string uses alloc {
+  return match (t) {
+    TInt => "int"
+    TF64 => "f64"
+    TBool => "bool"
+    TChar => "char"
+    TStr => "string"
+    TVoid => "void"
+    TStringBuilder => "StringBuilder"
+    TStruct(i) => `S${Int.toString(i)}`
+    TEnum(i) => `E${Int.toString(i)}`
+    TDistinct(i) => `D${Int.toString(i)}`
+    TParam(i) => `P${Int.toString(i)}`
+    TArray(e) => `A(${typeKey(e)})`
+    TBox(e) => `B(${typeKey(e)})`
+    TMap(k, v) => `M(${typeKey(k)},${typeKey(v)})`
+    TFunc(ps, r) => `F(${typeKeys(ps)};${typeKey(r)})`
+    TRange => "Range"
+    TModule(p) => `module ${p}`
+  }
+}
+
+export function typeKeys(ts: Array<Type>): string uses alloc {
+  let out = ""
+  for (const k of Range.between(0, Array.length(ts))) {
+    if (k > 0) {
+      out = `${out},`
+    }
+    out = `${out}${typeKey(ts[k])}`
+  }
+  return out
+}
+
+// isBoxedEnum reports whether an enum keeps its variant fields on the heap.
+// An enum with no fields stays an inline tag.
+export function isBoxedEnum(e: EnumInfo): bool {
+  for (const v of Array.values(e.variants)) {
+    if (Array.length(v.fields) > 0) {
+      return true
+    }
+  }
+  return false
+}

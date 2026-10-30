@@ -1,0 +1,337 @@
+// Type resolution, ported from check_types.go (resolveType, resolveFields,
+// resolveVariants, buildGeneric, instantiate, substitute), check_patterns.go
+// (tupleType, tupleOf), check_closure.go (funcResult) and std_map.go
+// (userMap). Go interns arrays, boxes, maps and function types in tables
+// for the emitter; here they are plain values and the emitter collects them.
+//
+// Extension points (comments marked HOOK): selfhost-check-traits queues Map
+// key checks (checkMapKey) and records tuple trait facts; selfhost-check-imports
+// replaces qualifiedType with the lookup through module scopes.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { TypeExpr, FieldDecl, VariantDecl, Pos } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
+import { Checker, errorf, enter, lookupType, lookupGeneric, containsTypeParam } from "narrac/check"
+import { envOf, checkPolyRecursion } from "narrac/generics"
+
+// resolveOpt resolves an optional type; a missing one is void.
+export function resolveOpt(mutable c: Checker, te: Option<TypeExpr>): Type uses alloc {
+  if (te is Some(t)) {
+    return resolveType(mutable c, t)
+  }
+  return TVoid
+}
+
+// funcResult resolves the result of a function type, where `void` means the
+// function returns nothing.
+export function funcResult(mutable c: Checker, te: Option<Box<TypeExpr>>): Type uses alloc {
+  if (te is Some(b)) {
+    const t = b.value
+    if (t.name == "void" && Array.length(t.args) == 0 && !t.isFunc) {
+      return TVoid
+    }
+    return resolveType(mutable c, t)
+  }
+  return TVoid
+}
+
+export function resolveType(mutable c: Checker, te: TypeExpr): Type uses alloc {
+  if (te.isFunc) {
+    let params: Array<Type> = []
+    for (const a of Array.values(te.args)) {
+      Array.push(mutable params, resolveType(mutable c, a))
+    }
+    return TFunc(params, funcResult(mutable c, te.result))
+  }
+  if (te.isTuple) {
+    return tupleType(mutable c, te)
+  }
+  const nargs = Array.length(te.args)
+  if (c.env[te.name] is Some(t)) {
+    if (nargs == 0) {
+      return t
+    }
+  }
+  if (Str.contains(te.name, ".")) {
+    return qualifiedType(mutable c, te)
+  }
+  if (te.name == "Box" && !userType(c, "Box")) {
+    if (nargs != 1) {
+      errorf(mutable c, te.pos, "Box takes one type argument")
+      return TVoid
+    }
+    return TBox(resolveType(mutable c, te.args[0]))
+  }
+  if (te.name == "Map" && !userType(c, "Map")) {
+    if (nargs != 2) {
+      errorf(mutable c, te.pos, "Map takes two type arguments")
+      return TVoid
+    }
+    const k = resolveType(mutable c, te.args[0])
+    const v = resolveType(mutable c, te.args[1])
+    // HOOK selfhost-check-traits: checkMapKey(te.pos, k), queued.
+    return TMap(k, v)
+  }
+  if (te.name == "Array") {
+    if (nargs != 1) {
+      errorf(mutable c, te.pos, "Array takes one type argument")
+      return TVoid
+    }
+    return TArray(resolveType(mutable c, te.args[0]))
+  }
+  if (te.name == "number") {
+    errorf(mutable c, te.pos, "there is no `number`; use `int` or `f64`")
+    return TInt
+  }
+  if (te.name == "boolean") {
+    errorf(mutable c, te.pos, "use `bool`")
+    return TBool
+  }
+  if (lookupGeneric(c, te.name) is Some(g)) {
+    const want = Array.length(c.generics[g].params)
+    if (nargs != want) {
+      errorf(mutable c, te.pos, `${te.name} takes ${Int.toString(want)} type arguments`)
+      return TVoid
+    }
+    let args: Array<Type> = []
+    for (const a of Array.values(te.args)) {
+      Array.push(mutable args, resolveType(mutable c, a))
+    }
+    return instantiate(mutable c, g, args)
+  }
+  const named = lookupType(c, te.name)
+  if (named is None && te.name == "Tuple") {
+    errorf(mutable c, te.pos, "there is no Tuple type; write a tuple type as #[A, B]")
+    return TVoid
+  }
+  if (nargs > 0) {
+    errorf(mutable c, te.pos, `type ${te.name} is not generic`)
+    return TVoid
+  }
+  if (named is Some(t)) {
+    return t
+  }
+  errorf(mutable c, te.pos, `unknown type ${quoteGo(te.name)}`)
+  return TVoid
+}
+
+// qualifiedType resolves `Alias.Name`. This node has no module scopes, so
+// every alias is unknown here, as in Go for an alias that is not a package
+// module. HOOK selfhost-check-imports: look the alias up in the module
+// scopes and resolve the exported type.
+function qualifiedType(mutable c: Checker, te: TypeExpr): Type uses alloc {
+  const parts = Str.split(te.name, ".")
+  const alias = parts[0]
+  errorf(mutable c, te.pos, `unknown module ${quoteGo(alias)} in type ${te.name}; import it with \`import * as ${alias} from "..."\``)
+  return TVoid
+}
+
+// userType reports whether the module declares its own type with this name
+// (Box or Map), which hides the builtin.
+function userType(c: Checker, name: string): bool {
+  return lookupGeneric(c, name) is Some(_) || lookupType(c, name) is Some(_)
+}
+
+// tupleType resolves #[A, B, ...].
+function tupleType(mutable c: Checker, te: TypeExpr): Type uses alloc {
+  const n = Array.length(te.args)
+  if (n < 2) {
+    errorf(mutable c, te.pos, `a tuple type needs at least two element types, found ${Int.toString(n)}`)
+    return TVoid
+  }
+  let elems: Array<Type> = []
+  for (const a of Array.values(te.args)) {
+    Array.push(mutable elems, resolveType(mutable c, a))
+  }
+  return tupleOf(mutable c, elems)
+}
+
+// tupleOf returns the one tuple type with these element types: a prelude
+// struct named Tuple whose fields are "0", "1", ...
+export function tupleOf(mutable c: Checker, elems: Array<Type>): Type uses alloc {
+  const key = `T|${typeKeys(elems)}`
+  if (c.instances[key] is Some(t)) {
+    return t
+  }
+  let fields: Array<Field> = []
+  for (const k of Range.between(0, Array.length(elems))) {
+    Array.push(mutable fields, Field { name: Int.toString(k), t: elems[k], default: None, pos: zeroPos() })
+  }
+  const t = TStruct(Array.length(c.structs))
+  Array.push(mutable c.structs, StructInfo { name: "Tuple", module: "", scope: 0, pos: zeroPos(), opaque: false, tuple: true, args: elems, generic: -1, fields: fields })
+  c.instances[key] = t
+  Array.push(mutable c.instTypes, t)
+  // HOOK selfhost-check-traits: tuples derive Show and Ordered (typeTraits).
+  return t
+}
+
+function zeroPos(): Pos {
+  return Pos { line: 0, col: 0 }
+}
+
+export function resolveFields(mutable c: Checker, decls: Array<FieldDecl>): Array<Field> uses alloc {
+  let fields: Array<Field> = []
+  let seen: Map<string, bool> = Map {}
+  for (const fd of Array.values(decls)) {
+    if (seen[fd.name] is Some(_)) {
+      errorf(mutable c, fd.pos, `field ${quoteGo(fd.name)} is declared twice`)
+    }
+    seen[fd.name] = true
+    const t = resolveType(mutable c, fd.type)
+    Array.push(mutable fields, Field { name: fd.name, t: t, default: fd.default, pos: fd.pos })
+  }
+  return fields
+}
+
+export function resolveVariants(mutable c: Checker, decls: Array<VariantDecl>): Array<Variant> uses alloc {
+  let vs: Array<Variant> = []
+  for (const k of Range.between(0, Array.length(decls))) {
+    const fields = resolveFields(mutable c, decls[k].fields)
+    Array.push(mutable vs, Variant { name: decls[k].name, index: k, fields: fields })
+  }
+  return vs
+}
+
+// buildGeneric resolves a generic declaration's fields with its parameters
+// left open, in the declaring module. Instances substitute into this
+// template. It runs once; an instance made while the template is being
+// built (a self-reference) gets no fields, as in Go.
+export function buildGeneric(mutable c: Checker, g: int) uses alloc {
+  if (c.generics[g].built) {
+    return
+  }
+  c.generics[g].built = true
+  const info = c.generics[g]
+  const savedMod = enter(mutable c, info.scope)
+  const savedEnv = c.env
+  c.env = envOf(c, info.params)
+  if (info.isStruct) {
+    let fields = resolveFields(mutable c, info.fieldDecls)
+    for (const k of Range.between(0, Array.length(fields))) {
+      if (fields[k].default is Some(_) && containsTypeParam(c, fields[k].t)) {
+        errorf(mutable c, info.fieldDecls[k].pos, "a default for a field whose type uses a type parameter is not supported by this compiler yet")
+        fields[k].default = None
+      }
+    }
+    // HOOK selfhost-check-bodies: checkDefaults(fields).
+    c.generics[g].fields = fields
+  } else {
+    const variants = resolveVariants(mutable c, info.variantDecls)
+    c.generics[g].variants = variants
+  }
+  c.env = savedEnv
+  checkPolyRecursion(mutable c, g)
+  enter(mutable c, savedMod)
+}
+
+// instantiate returns the instance of generic g for args, creating it on
+// first use. The instance is cached before its fields are substituted, so a
+// template that holds itself (List<T> in Array<List<T>>) finds it; it joins
+// instTypes after its fields, as in Go.
+export function instantiate(mutable c: Checker, g: int, args: Array<Type>): Type uses alloc {
+  buildGeneric(mutable c, g)
+  const key = `${Int.toString(g)}|${typeKeys(args)}`
+  if (c.instances[key] is Some(t)) {
+    return t
+  }
+  const info = c.generics[g]
+  let m: Map<int, Type> = Map {}
+  for (const k of Range.between(0, Array.length(info.params))) {
+    m[info.params[k]] = args[k]
+  }
+  let pos = info.pos
+  if (info.module == "") {
+    pos = zeroPos()
+  }
+  if (info.isStruct) {
+    const idx = Array.length(c.structs)
+    const t = TStruct(idx)
+    Array.push(mutable c.structs, StructInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, opaque: info.opaque, tuple: false, args: args, generic: g, fields: [] })
+    c.instances[key] = t
+    let fields: Array<Field> = []
+    for (const f of Array.values(info.fields)) {
+      const ft = substitute(mutable c, f.t, m)
+      Array.push(mutable fields, Field { name: f.name, t: ft, default: f.default, pos: f.pos })
+    }
+    c.structs[idx].fields = fields
+    Array.push(mutable c.instTypes, t)
+    return t
+  }
+  const idx = Array.length(c.enums)
+  const t = TEnum(idx)
+  Array.push(mutable c.enums, EnumInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, args: args, generic: g, variants: [] })
+  c.instances[key] = t
+  let variants: Array<Variant> = []
+  for (const v of Array.values(info.variants)) {
+    let fields: Array<Field> = []
+    for (const f of Array.values(v.fields)) {
+      const ft = substitute(mutable c, f.t, m)
+      Array.push(mutable fields, Field { name: f.name, t: ft, default: None, pos: f.pos })
+    }
+    Array.push(mutable variants, Variant { name: v.name, index: v.index, fields: fields })
+  }
+  c.enums[idx].variants = variants
+  Array.push(mutable c.instTypes, t)
+  return t
+}
+
+// substitute replaces the parameters in t by their types in m, creating the
+// instances it names.
+export function substitute(mutable c: Checker, t: Type, m: Map<int, Type>): Type uses alloc {
+  match (t) {
+    TParam(p) => {
+      if (m[p] is Some(r)) {
+        return r
+      }
+      return t
+    }
+    TArray(e) => {
+      return TArray(substitute(mutable c, e, m))
+    }
+    TBox(e) => {
+      return TBox(substitute(mutable c, e, m))
+    }
+    TMap(k, v) => {
+      const nk = substitute(mutable c, k, m)
+      return TMap(nk, substitute(mutable c, v, m))
+    }
+    TFunc(ps, r) => {
+      if (!containsTypeParam(c, t)) {
+        return t
+      }
+      const nps = substituteAll(mutable c, ps, m)
+      return TFunc(nps, substitute(mutable c, r, m))
+    }
+    TStruct(i) => {
+      const s = c.structs[i]
+      if (Array.length(s.args) == 0) {
+        return t
+      }
+      const args = substituteAll(mutable c, s.args, m)
+      if (s.tuple) {
+        return tupleOf(mutable c, args)
+      }
+      return instantiate(mutable c, s.generic, args)
+    }
+    TEnum(i) => {
+      const e = c.enums[i]
+      if (Array.length(e.args) == 0) {
+        return t
+      }
+      const args = substituteAll(mutable c, e.args, m)
+      return instantiate(mutable c, e.generic, args)
+    }
+    _ => {
+      return t
+    }
+  }
+}
+
+export function substituteAll(mutable c: Checker, ts: Array<Type>, m: Map<int, Type>): Array<Type> uses alloc {
+  let out: Array<Type> = []
+  for (const t of Array.values(ts)) {
+    Array.push(mutable out, substitute(mutable c, t, m))
+  }
+  return out
+}

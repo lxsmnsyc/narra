@@ -36,3 +36,4 @@
 - Name resolution is local, then constant, then function, and a constant may not share a name with a function or a type.
 - `clone.go` must copy every field of an AST node, including positions such as `StringLit.End`. Fixes and diagnostics in generic instances read them.
 - Never name a compiler source file `*_test.go`: Go builds it only under `go test`, so its code is missing from the `narra` binary. `std/test` lives in `std_testing.go`.
+- A new std function or module needs a matching line in `selfhost/src/stdlib.nra`, in Go's registration order. `TestSelfhostBuiltins` fails until the Narra table matches the Go registry.

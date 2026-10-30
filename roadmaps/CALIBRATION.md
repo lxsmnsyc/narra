@@ -35,3 +35,4 @@ Notes:
 | selfhost | literal-type-args | M | M | 2 | 311k tokens. Gate. One token-scan lookahead rule shared by both parsers. Review found an error cascade (void after E0237); reviewer showed no valid program changes meaning. |
 | selfhost | selfhost-check-traits | M | M+ | 2 | 340k tokens. About 1050 Narra lines against 850 estimated. Review found a quadratic impl lookup in the dump (4.6 s to 0.85 s at 2000 types). Merged automatically. |
 | selfhost | std-option-result | M | M | 2 | 375k tokens. Gate. Capturing arrows passed to helpers use a stack environment: 0 heap allocations per call besides the result payload. Review found Err(...) callbacks needing annotations; fixed by taking the result type from the call's expected type. |
+| selfhost | selfhost-check-imports | L | M+ | 1 | 369k tokens. About 930 Narra lines against 1000 estimated. Clean review; whole selfhost/ package now compared. Reviewer found a quadratic cost per module on main (inbox). |

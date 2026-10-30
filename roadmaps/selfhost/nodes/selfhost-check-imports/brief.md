@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-imports
 title: Self-hosted checker: module scopes and builtin registry
-status: active
+status: done
+spent: 369000
 priority: must
 type: feature
 outline: false
@@ -66,11 +67,11 @@ Port the cross-module half of the declaration checker to Narra: a scope per modu
 
 ## Acceptance
 
-- [ ] `TestDeclDump` goldens cover the new line kinds, and `TestSelfhostImports` passes: `narrac decls` equals `narra decls` on every input above (all line kinds, or all but the trait kinds when traits has not merged).
-- [ ] `TestSelfhostDecls` still passes.
-- [ ] A new std function added only in Go fails a test until the Narra registry matches (generated file or a registry-equality check).
-- [ ] The outcome describes the scope layout, the registry shape and how bodies dispatch generic builtins.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `TestDeclDump` goldens cover the new line kinds, and `TestSelfhostImports` passes: `narrac decls` equals `narra decls` on every input above (all line kinds, or all but the trait kinds when traits has not merged).
+- [x] `TestSelfhostDecls` still passes.
+- [x] A new std function added only in Go fails a test until the Narra registry matches (generated file or a registry-equality check).
+- [x] The outcome describes the scope layout, the registry shape and how bodies dispatch generic builtins.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

@@ -482,3 +482,56 @@ Decision: `std/fs`, `std/process` and `std/env` return `Result<T, string>` or `O
 
 - **Reason.** The language has no exceptions, so failure is a value the caller must check.
 - **Cost.** `writeText` carries a number nobody needs, until a unit type exists.
+
+## D58. Effects: exported functions declare, private ones are inferred
+
+Decision: an exported function's body effects must be inside its declared `uses`, and callers trust the declared set. Private functions and arrow functions are inferred by a fixed point over all bodies, so recursion works. The entry function has every effect. `alloc` comes from array literals, template strings with parts, string `+` and enum constructors with fields, besides builtins that declare it. An effect variable (`<effect E>`) takes the effects of the arguments passed to the parameters whose function type names it.
+
+- **Reason.** Signatures are the module boundary, so they must state effects. Inside a module, writing `uses` on every helper is noise.
+- **Reason.** Making private higher-order functions strict rejected valid code (found in review of #14).
+- **Cost.** Function types carry no effects in the type checker yet. Calls through struct fields, call results and arrays of functions count as pure.
+
+## D59. Diagnostic codes come from the message format
+
+Decision: each code names one message format in `diagnostic_codes.go`, and `codeFor` finds the code from the format string at the call site. Codes are grouped in ranges of 100 by area. A test fails when a format has no code. Codes are never renumbered or reused.
+
+- **Reason.** The alternative, a code argument at about 230 error sites, would touch every hot file.
+- **Cost.** Two sites with the same format share a code, and a non-literal format gets `E0000`.
+- **Note.** Diagnostics have a position, not an extent; JSON `range.end` equals `range.start`. Fix edits have real ranges.
+
+## D60. String positions are `int` byte offsets, and slices copy
+
+Decision: `Str.slice`, `charAt`, `nextChar` and `indexOf` use `int` byte offsets, and panic on a position inside a character. A slice is a copy of the bytes. `StringBuilder` is counted and copied on write when shared. Both differ from the spec and are listed in `compiler/README.md`.
+
+- **Reason.** A view needs a parent pointer in `lstr`, which touches `runtime.h` and every release path. `ByteIndex` as a distinct type can come later, now that distinct types exist.
+- **Cost.** Slicing allocates.
+
+## D61. Top-level constants: scalars inline, others built on first use
+
+Decision: a scalar or fieldless-constructor constant is emitted at each use. Any other constant gets storage, a ready flag and a getter that builds it on first use and returns it borrowed; `narra_consts_release` frees it before the leak report. No code runs at startup. A constant may not call a function.
+
+- **Reason.** SPEC section 10 asks for no initialization code. Static C data for structs, arrays and maps would need a constant evaluator and a static layout for counted values.
+- **Cost.** The first-use build is not thread safe; threads must revisit it. Errors such as `1 / 0` panic at first use, not at compile time.
+
+## D62. Distinct types convert by name
+
+Decision: `distinct type A = B` makes a new type with `B`'s C type. `A.from(b)` wraps and an unwrap named after the base (`A.toInt`, `A.toString`) unwraps; both compile to the value itself. `==`, `!=` and map keys work when the base supports them. Arithmetic and mixing with the base are type errors. An `opaque` distinct type can only be wrapped in its own module.
+
+- **Reason.** Naming the unwrap after the base reads like the existing `Int.toString` style and needs no generic `unwrap`.
+- **Cost.** No `implements` or `derives` on distinct types yet, and no generic distinct types.
+
+## D63. The self-hosted compiler uses integer node ids and is ported soon
+
+Decision: the self-hosted parser gives every expression, pattern and local an integer id, and the checker keeps its results in side tables indexed by id. Types are a recursive `enum Type`; structs and enums are an index into a declaration table. The port starts now: features of milestones m4-m7, except opaque-distinct, wait until after self-hosting.
+
+- **Reason.** The Go checker writes into AST nodes and compares pointers. Narra has value semantics and immutable shared enum payloads, so a line-by-line port is impossible there. Ids work today with no new library.
+- **Reason.** Each feature built in Go first must also be ported, so building them later costs less.
+- **Rejected: `std/arena` first.** Same design with checked handles, but one more M node before the port.
+- **Cost.** About 10-15% more code in check and emit, and every pass threads a context struct.
+
+## D64. Maps keep insertion order
+
+Decision: `Map<K, V>` iterates in insertion order. Removal leaves a dead entry; inserting the key again moves it to the end. A key type with a hand-written `implement Equatable` must also implement `Hashable`, and the reverse. Float keys, functions and maps are not keys. `m[k]` is `Option<V>`.
+
+- **Reason.** Deterministic order keeps the compiler's output stable without sorting.
+- **Cost.** Maps do not implement the standard traits yet, so a map cannot be compared or used as a key.

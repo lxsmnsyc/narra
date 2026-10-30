@@ -23,3 +23,15 @@
 - Check a generic type for a growing self-reference at declaration time (`checkPolyRecursion`). Instantiation loops forever otherwise. `List<T>` holding `Array<List<T>>` is allowed.
 - A std builtin that returns `Result` fills out-parameters in its runtime C and builds the value with `ioResult`/`ioEither` (`std_fs.go`). Runtime C cannot name per-program types, since `Module.Runtime` is emitted before them.
 - Error tests that list std modules (`unknown_module.nra`) match a prefix only. The list grows with every std node.
+- Every error format needs a code in `diagnosticCodes` (`diagnostic_codes.go`), because the code is looked up from the format string. Pass the format as a string literal at the call site, or it gets `E0000`. `TestEveryFormatHasCode` fails on a missing entry.
+- To add a code: take the next free number in the range for the area (the table comments list the ranges), append `{"E0NNN", "<exact format>"}`, and add a `testdata/errors/` test. Never renumber or reuse a code. Rewording a format means rewording its table entry too, keeping the code.
+- A TypeScript-habit error should carry an exact fix (`c.errorfFix`, `p.failFix`) and a `testdata/diagnostics/` case whose first line is `// code: E0NNN`. The test applies the fix and the file must compile.
+- Register a std type name (such as `StringBuilder`) only in modules that import the std module whose `Module.Runtime` defines it. Otherwise the C names a type whose runtime is not emitted.
+- Set `Builtin.Effects` on every std builtin. The effect pass reads it, and a missing entry makes the builtin pure.
+- A builtin with a `Mutable` parameter: check the argument expression before `checkMutableArg`, or the root local is unresolved.
+- Emit a statement call that returns a value through `e.temp`. `ExprStmt` prints only void calls, so the call is dropped otherwise.
+- Map key checks are queued (`checkMapKey`) and run after all modules are checked (`flushMapKeys`), so trait facts of later types are known. Check key types in signatures too, not only in bodies.
+- Before a `switch t.(type)` over base kinds, call `underlying(t)` or add a `*DistinctType` case. A distinct type shares its base's C type but has its own `typeID`.
+- Read a top-level constant only through `e.constRef`. Non-scalar constants are built on first use by a getter that returns a borrowed value, and freed in `narra_consts_release`.
+- Name resolution is local, then constant, then function, and a constant may not share a name with a function or a type.
+- `clone.go` must copy every field of an AST node, including positions such as `StringLit.End`. Fixes and diagnostics in generic instances read them.

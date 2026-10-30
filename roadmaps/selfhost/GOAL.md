@@ -71,7 +71,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - JSON diagnostics -> json-diagnostics; query CLI -> query-cli; fmt -> fmt
 - Perceus reference count optimization -> perceus; layout tables -> layout-tables
 - benchmarks against Go and Rust -> bench-harness
-- self-hosting -> selfhost-spike, selfhost-front, selfhost-check, selfhost-emit, selfhost-bootstrap
+- self-hosting -> selfhost-spike, selfhost-ast, selfhost-front, selfhost-modules, selfhost-check-decls, selfhost-check-bodies, selfhost-emit, selfhost-bootstrap
 - renaming the language -> rename (done early: Narra)
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 

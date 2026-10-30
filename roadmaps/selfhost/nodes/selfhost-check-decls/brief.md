@@ -23,6 +23,9 @@ depends_on:
   - on: selfhost-front
     kind: hard
     why: checks the AST the front end produces
+  - on: selfhost-modules
+    kind: hard
+    why: checks a whole package in module order
 ---
 
 # Self-hosted checker: declarations
@@ -35,4 +38,5 @@ Port the declaration half of the checker to Narra: types, declarations, modules,
 
 - Split from selfhost-check (XL) on 2026-10-30, as the selfhost-spike outcome proposed.
 - Design (user decision 2026-10-30): the parser gives every expression, pattern and local an integer id; the checker keeps its results in side tables (`Array<Type>` by id, `Map<int, ...>`). Types are a recursive `enum Type`; structs and enums are referred to by an index into a declaration table. See the selfhost-spike outcome, gap 3.
+- 2026-10-30: selfhost-front was split into selfhost-ast, selfhost-front (parser) and selfhost-modules. Refine this brief after selfhost-front's outcome fixes the node id scheme.
 - Outline. Break into a full brief when `plan.py refine` lists it.

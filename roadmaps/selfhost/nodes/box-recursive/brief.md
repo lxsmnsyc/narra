@@ -1,7 +1,8 @@
 ---
 id: box-recursive
 title: Box and recursive enums
-status: active
+status: done
+spent: 242309
 priority: must
 type: feature
 outline: false
@@ -51,9 +52,9 @@ Today enums are inline tagged unions, so `enum Expr { Add(left: Expr, right: Exp
 
 ## Acceptance
 
-- [ ] A sample program builds and evaluates a recursive expression tree and a linked list made with `Box`.
-- [ ] Leak check is clean after dropping a deep tree.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] A sample program builds and evaluates a recursive expression tree and a linked list made with `Box`.
+- [x] Leak check is clean after dropping a deep tree.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

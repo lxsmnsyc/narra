@@ -1,7 +1,8 @@
 ---
 id: io-std
 title: Files, processes and environment
-status: active
+status: done
+spent: 167565
 priority: must
 type: feature
 outline: false
@@ -46,9 +47,9 @@ The self-hosted compiler must read source files, write C and run the C compiler.
 
 ## Acceptance
 
-- [ ] A sample program writes a file, reads it back, and runs `echo` through `std/process`.
-- [ ] Errors come back as `Err` values, never panics.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] A sample program writes a file, reads it back, and runs `echo` through `std/process`.
+- [x] Errors come back as `Err` values, never panics.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

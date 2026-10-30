@@ -64,6 +64,7 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		funcInsts: map[string]*FuncDecl{},
 		arrays:    map[string]*ArrayType{},
 		boxes:     map[string]*BoxType{},
+		maps:      map[string]*MapType{},
 		mods:      map[string]*modScope{},
 		funcMod:   map[*FuncDecl]*modScope{},
 		pkg:       pkg,

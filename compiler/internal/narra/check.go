@@ -8,6 +8,8 @@ import (
 const (
 	forRange forKind = iota
 	forArray
+	forMapKeys
+	forMapEntries
 )
 
 type forKind int
@@ -53,6 +55,7 @@ type Program struct {
 	Tests  []*TestDecl
 	Arrays []*ArrayType
 	Boxes  []*BoxType
+	Maps   []*MapType
 	// Entries maps a binary name to its entry function. A binary whose entry
 	// function does not exist has no key.
 	Entries map[string]*FuncDecl
@@ -109,6 +112,8 @@ type Checker struct {
 	loops     int
 	arrays    map[string]*ArrayType
 	boxes     map[string]*BoxType
+	maps      map[string]*MapType
+	assigning Expr // the target of the assignment being checked (check_map.go)
 	instTypes []Type
 	localN    int
 	isBinds   bool                   // an `is` pattern may bind names here
@@ -321,6 +326,16 @@ func (c *Checker) finish(concrete []Type) {
 	sort.Strings(bkeys)
 	for _, k := range bkeys {
 		c.prog.Boxes = append(c.prog.Boxes, c.boxes[k])
+	}
+	var mkeys []string
+	for k, m := range c.maps {
+		if !containsTypeParam(m) {
+			mkeys = append(mkeys, k)
+		}
+	}
+	sort.Strings(mkeys)
+	for _, k := range mkeys {
+		c.prog.Maps = append(c.prog.Maps, c.maps[k])
 	}
 	c.finishFuncTypes()
 }

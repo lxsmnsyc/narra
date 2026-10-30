@@ -25,6 +25,11 @@ func (e *Emitter) stmt(s Stmt) {
 		e.addLocal(s.Local)
 	case *AssignStmt:
 		e.beginStmt()
+		if ix, ok := s.Target.(*IndexExpr); ok && ix.MapSet {
+			e.mapSet(ix, s.Value)
+			e.endStmt()
+			return
+		}
 		code, owned := e.expr(s.Value)
 		v := e.consume(code, owned, s.Value.Type())
 		loc := e.lvaluePtr(s.Target)
@@ -132,6 +137,10 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		e.loopTemp = e.loopTemp[:len(e.loopTemp)-1]
 		e.indent--
 		e.line("}")
+	case forMapKeys:
+		e.mapFor(s, call, false)
+	case forMapEntries:
+		e.mapFor(s, call, true)
 	case forArray:
 		at := call.Args[0].Value.Type().(*ArrayType)
 		code, owned := e.expr(call.Args[0].Value)

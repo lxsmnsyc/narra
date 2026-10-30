@@ -192,6 +192,8 @@ func containsOpen(t Type, params []*TypeParamType) bool {
 		return containsOpen(t.Elem, params)
 	case *BoxType:
 		return containsOpen(t.Elem, params)
+	case *MapType:
+		return containsOpen(t.Key, params) || containsOpen(t.Val, params)
 	case *FuncType:
 		for _, p := range t.Params {
 			if containsOpen(p, params) {
@@ -276,7 +278,7 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				return c.builtinCall(e, b, want)
 			}
 			// A type the program declares named Box hides the builtin Box.
-			if namespaces[id.Name] && !(id.Name == "Box" && c.userBox()) {
+			if namespaces[id.Name] && !(id.Name == "Box" && c.userBox()) && !(id.Name == "Map" && c.userMap()) {
 				name := id.Name + "." + callee.Name
 				b := namespaceFuncs[name]
 				if b == nil {
@@ -533,6 +535,11 @@ func usesLocal(e Expr, l *Local) bool {
 		case *ArrayLit:
 			for _, el := range e.Elems {
 				walk(el)
+			}
+		case *MapLit:
+			for i := range e.Keys {
+				walk(e.Keys[i])
+				walk(e.Vals[i])
 			}
 		case *MatchExpr:
 			walk(e.Subject)

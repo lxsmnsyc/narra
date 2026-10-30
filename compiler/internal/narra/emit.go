@@ -58,6 +58,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	for _, a := range prog.Arrays {
 		fmt.Fprintf(&b, "typedef struct %s %s;\n", arrName(a), arrName(a))
 	}
+	e.mapTypedefs(&b)
 	for _, t := range prog.Types {
 		fmt.Fprintf(&b, "typedef struct %s %s;\n", t.CName(), t.CName())
 	}
@@ -69,9 +70,11 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	for _, a := range prog.Arrays {
 		fmt.Fprintf(&b, "struct %s { int64_t rc; int64_t len; int64_t cap; %s* items; };\n", arrName(a), a.Elem.CName())
 	}
+	e.mapStructs(&b)
 	e.heapDefs(&b)
 	b.WriteString("\n// Reference counting\n")
 	e.boxProtos(&b)
+	e.mapProtos(&b)
 	for _, t := range prog.Types {
 		if needsRC(t) {
 			fmt.Fprintf(&b, "static void %s(%s v);\nstatic void %s(%s v);\n", opFuncName("retain", t), t.CName(), opFuncName("release", t), t.CName())
@@ -89,6 +92,12 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	}
 	for _, bt := range prog.Boxes {
 		e.boxFuncs(&b, bt)
+	}
+	// The map functions call the key's eq and hash, so they are written
+	// after the trait functions.
+	var mapb strings.Builder
+	for _, m := range prog.Maps {
+		e.mapFuncs(&mapb, m)
 	}
 	b.WriteString("\n// Functions\n")
 	for _, fd := range prog.Funcs {
@@ -116,6 +125,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	b.WriteString("\n// String literals\n")
 	b.WriteString(e.lits.String())
 	e.traitFuncs(&b)
+	b.WriteString(mapb.String())
 	e.closureFuncs(&b)
 	b.WriteString("\n")
 	b.WriteString(bodies.String())

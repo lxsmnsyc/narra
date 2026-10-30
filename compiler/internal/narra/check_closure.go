@@ -347,6 +347,11 @@ func (c *Checker) mutableRoots(x Expr) []*Local {
 			for _, el := range x.Elems {
 				walk(el)
 			}
+		case *MapLit:
+			for i := range x.Keys {
+				walk(x.Keys[i])
+				walk(x.Vals[i])
+			}
 		case *MatchExpr:
 			walk(x.Subject)
 			for _, arm := range x.Arms {

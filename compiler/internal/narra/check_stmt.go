@@ -150,7 +150,9 @@ func (c *Checker) stmt(s Stmt) {
 		}
 		s.Local = c.declare(s.Pos, s.Name, t, s.Mutable)
 	case *AssignStmt:
+		c.assigning = s.Target
 		t := c.expr(s.Target, nil)
+		c.assigning = nil
 		root := c.lvalueRoot(s.Target)
 		if root == nil {
 			c.errorf(s.Pos, "only variables, fields and array elements can be assigned")
@@ -205,8 +207,17 @@ func (c *Checker) stmt(s Stmt) {
 			if at, ok := call.Args[0].Value.Type().(*ArrayType); ok {
 				elem = at.Elem
 			}
+		case isCall && (call.Builtin == "Map.keys" || call.Builtin == "Map.entries"):
+			s.Kind = forMapKeys
+			if call.Builtin == "Map.entries" {
+				s.Kind = forMapEntries
+			}
+			elem = TVoid
+			if at, ok := t.(*ArrayType); ok {
+				elem = at.Elem
+			}
 		default:
-			c.errorf(s.Iter.position(), "for ... of needs Range.upTo, Range.between or Array.values, found %s", t)
+			c.errorf(s.Iter.position(), "for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found %s", t)
 			elem = TInt
 		}
 		c.push()

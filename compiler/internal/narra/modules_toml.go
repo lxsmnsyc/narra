@@ -15,7 +15,7 @@ func parseManifest(text string) (*Package, error) {
 	table := ""
 	lines := strings.Split(text, "\n")
 	fail := func(line int, format string, args ...any) error {
-		return Diagnostic{Code: "E0000", File: "narra.toml", Pos: Pos{Line: line, Col: 1}, Message: fmt.Sprintf(format, args...)}
+		return Diagnostic{Code: codeFor(format), File: "narra.toml", Pos: Pos{Line: line, Col: 1}, Message: fmt.Sprintf(format, args...)}
 	}
 	for i := 0; i < len(lines); i++ {
 		lineNo := i + 1

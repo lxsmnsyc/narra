@@ -17,6 +17,8 @@ const usage = `usage:
   narra build [-release] [-bin name] [-o output] [-emit-c file.c] file.nra|dir
   narra run [-release] [-bin name] file.nra|dir [args...]
   narra test file.nra|dir
+  narra check [--json] file.nra|dir        report errors; --json prints one object per line
+  narra explain E0000                      explain a diagnostic code
   narra emit [-bin name] file.nra|dir      print the generated C
 
 A dir is a package: a directory with narra.toml and src/. Without -bin,
@@ -84,6 +86,10 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Print(c)
+	case "check":
+		os.Exit(narra.CheckCommand(rest))
+	case "explain":
+		os.Exit(narra.ExplainCommand(rest))
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

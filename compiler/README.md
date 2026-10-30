@@ -13,6 +13,8 @@ go build -o narra ./cmd/narra
 ./narra build -release -o app file.nra    # optimized, integer overflow wraps
 ./narra test testdata/tests.nra           # run `test` blocks
 ./narra emit file.nra                     # print the generated C
+./narra check [--json] file.nra          # report errors; --json prints one object per line
+./narra explain E0003                    # explain a diagnostic code
 ./narra build testdata/packages/app       # build every [[binary]] of a package
 ./narra run -bin app testdata/packages/app
 ```
@@ -91,6 +93,7 @@ go test ./...
 
 ## Differences from the spec
 
+- `narra check --json` ranges are positions only: `range.end` equals `range.start` for a diagnostic (fix edits have real ranges), and `file` is the base name for a single file.
 - Enums are stored inline as tagged unions, so an enum cannot contain itself.
 - `Str.length` returns `int` instead of `ByteIndex`, and so do all string positions (`Str.indexOf`, `Str.slice`, `Str.nextChar` and the rest). Slices are copies, not views of the original buffer.
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.

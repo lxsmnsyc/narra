@@ -76,7 +76,7 @@ func cloneExpr(e Expr) Expr {
 	case *FloatLit:
 		return &FloatLit{exprBase: exprBase{P: e.P}, Text: e.Text}
 	case *StringLit:
-		return &StringLit{exprBase: exprBase{P: e.P}, Value: e.Value}
+		return &StringLit{exprBase: exprBase{P: e.P}, Value: e.Value, End: e.End}
 	case *CharLit:
 		return &CharLit{exprBase: exprBase{P: e.P}, Value: e.Value}
 	case *BoolLit:

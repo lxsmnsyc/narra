@@ -47,12 +47,35 @@ func (ds Diagnostics) Error() string {
 
 // report records a diagnostic. Checking continues, so one run can report several.
 func (c *Checker) report(d Diagnostic) {
+	// A generic function is checked once per instance and repeats its errors.
+	for _, old := range c.errs {
+		if old.Code == d.Code && old.File == d.File && old.Pos == d.Pos && old.Message == d.Message {
+			return
+		}
+	}
+	// Drop a fix with a range that ends before it starts.
+	var fixes []Fix
+	for _, f := range d.Fixes {
+		ok := true
+		for _, e := range f.Edits {
+			if e.End.Line < e.Start.Line || (e.End.Line == e.Start.Line && e.End.Col < e.Start.Col) {
+				ok = false
+			}
+		}
+		if ok {
+			fixes = append(fixes, f)
+		}
+	}
+	d.Fixes = fixes
 	c.errs = append(c.errs, d)
 }
 
 // syntaxDiagnostic wraps an error from the lexer or the parser, which stop at
 // the first error and format it as `line:col: message`.
 func syntaxDiagnostic(err error) Diagnostic {
+	if d, ok := err.(Diagnostic); ok {
+		return d
+	}
 	text := err.Error()
 	d := Diagnostic{Code: "E0000", Message: text}
 	parts := strings.SplitN(text, ": ", 2)

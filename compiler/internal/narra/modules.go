@@ -175,7 +175,7 @@ func LoadPackage(dir string) (*Package, error) {
 		f.Path = display
 		m := newSourceModule(pkg.Name+"/"+rel, f)
 		if other, dup := cnames[moduleHash(m.Path)]; dup {
-			errs = append(errs, Diagnostic{Code: "E0000", File: display, Message: fmt.Sprintf("modules %q and %q have the same C name hash; rename one file", other, m.Path)})
+			errs = append(errs, Diagnostic{Code: codeFor("modules %q and %q have the same C name hash; rename one file"), File: display, Message: fmt.Sprintf("modules %q and %q have the same C name hash; rename one file", other, m.Path)})
 		}
 		cnames[moduleHash(m.Path)] = m.Path
 		byPath[m.Path] = m
@@ -220,7 +220,7 @@ func orderModules(mods []*SourceModule, byPath map[string]*SourceModule) ([]*Sou
 						}
 					}
 					cycle := append(append([]string{}, stack[start:]...), dep.Path)
-					errs = append(errs, Diagnostic{Code: "E0000", Pos: imp.Pos, File: f.Path, Message: "import cycle: " + strings.Join(cycle, " -> ")})
+					errs = append(errs, Diagnostic{Code: codeFor("import cycle: %s"), Pos: imp.Pos, File: f.Path, Message: "import cycle: " + strings.Join(cycle, " -> ")})
 				case 0:
 					visit(dep)
 				}

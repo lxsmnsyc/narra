@@ -1119,7 +1119,10 @@ func (p *Parser) patternList(close string) []*Pattern {
 // by `name:`, `mutable name` or `escaping name`, the next parameter of a
 // function. It ends a `uses` list written inside a parameter list.
 func (p *Parser) paramAfterComma() bool {
-	if p.i+2 >= len(p.toks) || p.toks[p.i+1].Kind != TokIdent {
+	if p.i+2 >= len(p.toks) {
+		return false
+	}
+	if k := p.toks[p.i+1]; k.Kind != TokIdent && !(k.Kind == TokKeyword && k.Text == "mutable") {
 		return false
 	}
 	n := p.toks[p.i+2]

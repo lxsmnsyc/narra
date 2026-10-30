@@ -23,6 +23,13 @@ shared:
   - compiler/internal/narra/runtime.h
   - compiler/internal/narra/emit_types.go
   - compiler/internal/narra/emit_call.go
+  - compiler/README.md
+  - compiler/internal/narra/check.go
+  - compiler/internal/narra/check_call.go
+  - compiler/internal/narra/check_traits.go
+  - compiler/internal/narra/std_string_test.go
+  - compiler/internal/narra/types.go
+  - compiler/testdata/**/strings2*
 reserves: []
 provides: []
 depends_on:

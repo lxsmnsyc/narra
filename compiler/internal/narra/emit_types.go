@@ -38,6 +38,9 @@ func retain(t Type, v string) string {
 		if t == TStr {
 			return fmt.Sprintf("lstr_retain(%s);", v)
 		}
+		if t == TStringBuilder {
+			return fmt.Sprintf("narra_sb_retain(%s);", v)
+		}
 	case *ArrayType:
 		return fmt.Sprintf("%s_retain(%s);", arrName(t), v)
 	case *BoxType:
@@ -57,6 +60,9 @@ func release(t Type, v string) string {
 	case *PrimType:
 		if t == TStr {
 			return fmt.Sprintf("lstr_release(%s);", v)
+		}
+		if t == TStringBuilder {
+			return fmt.Sprintf("narra_sb_release(%s);", v)
 		}
 	case *ArrayType:
 		return fmt.Sprintf("%s_release(%s);", arrName(t), v)

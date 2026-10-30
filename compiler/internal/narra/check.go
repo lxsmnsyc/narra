@@ -162,6 +162,10 @@ func (c *Checker) declareModule(f *File) []Type {
 			continue
 		}
 		c.useModule(mod)
+		if imp.Path == "std/string" {
+			// The type is visible only where its runtime C is emitted.
+			c.types["StringBuilder"] = TStringBuilder
+		}
 		if imp.Alias != "" {
 			c.modules[imp.Alias] = imp.Path
 		}

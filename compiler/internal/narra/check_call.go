@@ -411,6 +411,12 @@ func (c *Checker) builtinCall(e *CallExpr, b *Builtin, want Type) Type {
 	var mutables []int
 	for i, a := range e.Args {
 		mutable := i < len(b.Mutable) && b.Mutable[i]
+		var want Type
+		if i < len(b.Params) {
+			want = b.Params[i]
+		}
+		// Check the argument first: checkMutableArg reads the resolved local.
+		got := c.expr(a.Value, want)
 		switch {
 		case mutable && !a.Mutable:
 			c.errorf(e.P, "%s changes its argument; write `mutable` before it", b.Name)
@@ -420,11 +426,7 @@ func (c *Checker) builtinCall(e *CallExpr, b *Builtin, want Type) Type {
 			c.checkMutableArg(a.Value)
 			mutables = append(mutables, i)
 		}
-		var want Type
-		if i < len(b.Params) {
-			want = b.Params[i]
-		}
-		c.expectType(a.Value.position(), want, c.expr(a.Value, want))
+		c.expectType(a.Value.position(), want, got)
 	}
 	c.checkExclusive(e, mutables)
 	return b.Result

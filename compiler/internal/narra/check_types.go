@@ -88,6 +88,7 @@ func (c *Checker) buildGeneric(g *genericType) {
 		return
 	}
 	g.built = true
+	g.building = true
 	savedMod := c.enter(g.mod)
 	defer c.enter(savedMod)
 	saved := c.env
@@ -106,6 +107,14 @@ func (c *Checker) buildGeneric(g *genericType) {
 	}
 	c.env = saved
 	c.checkPolyRecursion(g)
+	// Instances made while the fields were being resolved (a field naming
+	// M<int> inside M<T>) are empty until now.
+	g.building = false
+	pending := g.pending
+	g.pending = nil
+	for _, t := range pending {
+		c.fillInstance(g, t)
+	}
 }
 
 // genericEdge is a reference from one generic declaration's template to
@@ -236,30 +245,46 @@ func (c *Checker) instantiate(g *genericType, args []Type) Type {
 	if t, ok := g.instances[key]; ok {
 		return t
 	}
-	m := map[*TypeParamType]Type{}
-	for i, p := range g.params {
-		m[p] = args[i]
-	}
+	var t Type
 	if g.sdecl != nil {
-		st := &StructType{Name: g.name, Module: g.mod.path, Args: args, Opaque: g.sdecl.Opaque}
-		g.instances[key] = st
+		t = &StructType{Name: g.name, Module: g.mod.path, Args: args, Opaque: g.sdecl.Opaque}
+	} else {
+		t = &EnumType{Name: g.name, Module: g.mod.path, Args: args}
+	}
+	g.instances[key] = t
+	if g.building {
+		g.pending = append(g.pending, t)
+		return t
+	}
+	c.fillInstance(g, t)
+	return t
+}
+
+// fillInstance copies the template's fields into instance t, substituting
+// its type arguments, and adds t to instTypes.
+func (c *Checker) fillInstance(g *genericType, t Type) {
+	m := map[*TypeParamType]Type{}
+	if st, ok := t.(*StructType); ok {
+		for i, p := range g.params {
+			m[p] = st.Args[i]
+		}
 		for _, f := range g.fields {
 			st.Fields = append(st.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m), Default: f.Default})
 		}
-		c.instTypes = append(c.instTypes, st)
-		return st
-	}
-	et := &EnumType{Name: g.name, Module: g.mod.path, Args: args}
-	g.instances[key] = et
-	for _, v := range g.variants {
-		nv := &Variant{Name: v.Name, Index: v.Index, Enum: et}
-		for _, f := range v.Fields {
-			nv.Fields = append(nv.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m)})
+	} else {
+		et := t.(*EnumType)
+		for i, p := range g.params {
+			m[p] = et.Args[i]
 		}
-		et.Variants = append(et.Variants, nv)
+		for _, v := range g.variants {
+			nv := &Variant{Name: v.Name, Index: v.Index, Enum: et}
+			for _, f := range v.Fields {
+				nv.Fields = append(nv.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m)})
+			}
+			et.Variants = append(et.Variants, nv)
+		}
 	}
-	c.instTypes = append(c.instTypes, et)
-	return et
+	c.instTypes = append(c.instTypes, t)
 }
 
 func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {

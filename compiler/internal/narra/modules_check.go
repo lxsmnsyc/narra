@@ -87,6 +87,7 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		}
 	}
 	c.checkPending()
+	c.flushMapKeys()
 	for _, b := range pkg.Binaries {
 		if fd := c.entryFunc(b); fd != nil {
 			saved := c.enter(c.funcMod[fd])

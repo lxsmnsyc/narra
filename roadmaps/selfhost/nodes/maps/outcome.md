@@ -11,7 +11,7 @@ All in `compiler/internal/narra/` unless noted.
 - `m[k]` is `Option<V>`; `m[k] = v` stores (`IndexExpr.MapSet`, set through `Checker.assigning`). `for (const k of Map.keys(m))` and `Map.entries(m)` iterate directly (`forMapKeys`, `forMapEntries`); the loop holds a reference, so writes to the variable in the body copy and the loop sees the old entries. Outside a loop `Map.keys`/`Map.entries` return `Array<K>` / `Array<#[K, V]>`.
 - Key check: float keys, functions, maps, and a key type with a user `implement Equatable` but no `implement Hashable` (or the reverse) are compile errors.
 - Map C functions are written after the trait functions (they call the key's eq and hash), in `Emit` (`emit.go`).
-- Tests: `testdata/maps.nra` (+ `.out`: word count in insertion order, literals, copy on write, remove and re-insert order, struct keys with enum values, 1000-entry growth and compaction, write inside a loop, array values), `testdata/errors/maps_float_key.nra`, `maps_float_literal.nra`, `maps_partial_traits.nra`.
+- Tests: `testdata/maps.nra` (+ `.out`: word count in insertion order, literals, copy on write, remove and re-insert order, struct keys with enum values, 1000-entry growth and compaction, write inside a loop, array values), `testdata/errors/maps_float_key.nra`, `maps_float_literal.nra`, `maps_partial_traits.nra`, `maps_partial_traits_signature.nra`.
 
 ## Deviations
 
@@ -27,7 +27,7 @@ All in `compiler/internal/narra/` unless noted.
 
 ## Gotchas
 
-- The key check runs when the type is resolved, and a struct's trait info may not exist yet while declarations are still being resolved. The check looks at the key's field types and at `info.impls` only when the info is present, so a key struct declared later in the file can skip the Equatable/Hashable pairing check.
+- Key checks are queued (`checkMapKey`) and run once after all modules are declared and checked (`flushMapKeys`), so trait facts of later-declared types are known. Their errors come after the other checker errors.
 - Map functions are emitted after `traitFuncs` and before the function bodies, so any new emitter code that needs a map function prototype must use `mapProtos`.
 - A statement call like `Map.remove(...)` returns `bool`; the emitter emits it through `e.temp` so the call runs even when the result is dropped (`ExprStmt` only prints void calls).
 - `maps` and `Map.keys` snapshots: a `for` over `Map.keys(m)` holds a reference to the map, so each write to `m` inside the loop copies the whole map once (then `m` is unique again).

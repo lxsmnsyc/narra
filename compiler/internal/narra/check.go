@@ -113,6 +113,7 @@ type Checker struct {
 	arrays    map[string]*ArrayType
 	boxes     map[string]*BoxType
 	maps      map[string]*MapType
+	mapKeys   []mapKeyCheck
 	assigning Expr // the target of the assignment being checked (check_map.go)
 	instTypes []Type
 	localN    int

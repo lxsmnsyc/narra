@@ -115,9 +115,28 @@ func (c *Checker) checkMapKey(pos Pos, key Type) {
 	if containsTypeParam(key) {
 		return
 	}
-	if p := c.mapKeyProblem(key, map[Type]bool{}); p != "" {
-		c.errorf(pos, "%s cannot be a map key: %s", key, p)
+	// Trait facts of types declared later are not known yet, so the check
+	// runs once every module is declared (flushMapKeys).
+	file := ""
+	if c.mod != nil {
+		file = c.mod.file
 	}
+	c.mapKeys = append(c.mapKeys, mapKeyCheck{pos, key, file})
+}
+
+type mapKeyCheck struct {
+	pos  Pos
+	key  Type
+	file string
+}
+
+func (c *Checker) flushMapKeys() {
+	for _, k := range c.mapKeys {
+		if p := c.mapKeyProblem(k.key, map[Type]bool{}); p != "" {
+			c.report(Diagnostic{Code: "E0000", Pos: k.pos, File: k.file, Message: fmt.Sprintf("%s cannot be a map key: %s", k.key, p)})
+		}
+	}
+	c.mapKeys = nil
 }
 
 // mapIndex checks m[k]: Option<V>, or V when it is the target of an assignment.

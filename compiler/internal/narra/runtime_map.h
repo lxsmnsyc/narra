@@ -109,9 +109,9 @@ static void @M@_set(@M@** p, @K@ k, @V@ v) {
 }
 // Removes k and reports whether it was there. Borrows k.
 static bool @M@_remove(@M@** p, @K@ k) {
-  if (@M@_lookup(*p, k) < 0) return false;
+  int64_t e = @M@_lookup(*p, k);
+  if (e < 0) return false;
   @M@* m = @M@_unique(*p); *p = m;
-  int64_t e = @M@_lookup(m, k);
   @REL_KEY_E@
   @REL_VAL_E@
   m->alive[e] = 0;

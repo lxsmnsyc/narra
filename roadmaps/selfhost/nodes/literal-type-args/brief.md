@@ -16,6 +16,7 @@ fulfilled_by:
 gate: true
 added: 2026-10-30
 owns:
+  - compiler/internal/narra/literal_type_args_test.go
   - compiler/testdata/literal_type_args*.nra
   - compiler/testdata/literal_type_args*.out
   - compiler/testdata/errors/literal_type_args_*.nra

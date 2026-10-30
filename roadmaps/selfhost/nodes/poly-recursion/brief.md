@@ -1,7 +1,8 @@
 ---
 id: poly-recursion
 title: Reject polymorphic recursion in generic types
-status: active
+status: done
+spent: 83430
 priority: must
 type: fix
 outline: false
@@ -41,10 +42,10 @@ Found by the review of PR #3. It hangs on main before traits, and `derives Show`
 
 ## Acceptance
 
-- [ ] `compiler/testdata/errors/poly_recursion.nra` with the type above gives a clear error at the type's declaration, and the test finishes in under a second.
-- [ ] The same with `derives Show` on the type.
-- [ ] Existing recursive generic programs still compile.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `compiler/testdata/errors/poly_recursion.nra` with the type above gives a clear error at the type's declaration, and the test finishes in under a second.
+- [x] The same with `derives Show` on the type.
+- [x] Existing recursive generic programs still compile.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

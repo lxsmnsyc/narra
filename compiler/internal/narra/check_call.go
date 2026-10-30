@@ -277,16 +277,13 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				}
 				return c.builtinCall(e, b, want)
 			}
-			// A type the program declares named Box hides the builtin Box.
-			if namespaces[id.Name] && !(id.Name == "Box" && c.userBox()) && !(id.Name == "Map" && c.userMap()) {
-				name := id.Name + "." + callee.Name
-				b := namespaceFuncs[name]
-				if b == nil {
-					c.errorf(e.P, "unknown function %s", name)
-					c.argsLoose(e)
-					return TVoid
-				}
-				return c.builtinCall(e, b, want)
+			// Array, Box, Map and Range are prelude types; their functions
+			// need the import. A type the program declares named Box or Map
+			// hides the builtin.
+			if path, ok := namespaceModules[id.Name]; ok && !(id.Name == "Box" && c.userBox()) && !(id.Name == "Map" && c.userMap()) {
+				c.errorfFix(id.P, c.importFix(id.Name, path), "%s.%s needs an import; add `import * as %s from %q`", id.Name, callee.Name, id.Name, path)
+				c.argsLoose(e)
+				return TVoid
 			}
 			if d := c.distinctOf(callee.Target); d != nil {
 				return c.distinctCall(e, d, callee)
@@ -306,7 +303,11 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 		if ft := fieldFunc(callee, t); ft != nil {
 			return c.valueCallOf(e, ft)
 		}
-		c.errorfFix(callee.P, pushFix(e, callee, t), "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)", callee.Name, t)
+		fixes := pushFix(e, callee, t)
+		if _, imported := c.modules["Array"]; len(fixes) > 0 && !imported {
+			fixes[0].Edits = append(fixes[0].Edits, c.importFix("Array", "std/array")[0].Edits...)
+		}
+		c.errorfFix(callee.P, fixes, "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)", callee.Name, t)
 		c.argsLoose(e)
 		return TVoid
 	}

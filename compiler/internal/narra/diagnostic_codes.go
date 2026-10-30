@@ -247,6 +247,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0905", "Array.push changes the array; write Array.push(mutable items, value)"},
 	{"E0906", "Array.push needs an array, found %s"},
 	{"E0907", "%s can only be called inside a `test` block"},
+	{"E0908", "%s.%s needs an import; add `import * as %s from %q`"},
 }
 
 var codeByFormat = func() map[string]string {

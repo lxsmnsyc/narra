@@ -30,9 +30,8 @@ type Module struct {
 
 var (
 	stdModules        = map[string]*Module{}
-	preludeFuncs      = map[string]*Builtin{} // print, assert, panic
-	namespaceFuncs    = map[string]*Builtin{} // "Array.push", "Range.upTo"
-	namespaces        = map[string]bool{}     // "Array", "Range"
+	preludeFuncs      = map[string]*Builtin{} // print, assert, panic: the only global functions
+	namespaceModules  = map[string]string{}   // "Array" -> "std/array": type names whose functions live in a module
 	builtinsByName    = map[string]*Builtin{} // every builtin by Builtin.Name
 	registeredModules []string
 )
@@ -58,16 +57,15 @@ func registerPrelude(name string, b *Builtin) {
 	registerByName(b)
 }
 
-// registerNamespace adds functions called as ns.name, such as Array.push.
-func registerNamespace(ns string, funcs map[string]*Builtin) {
-	namespaces[ns] = true
+// registerNamespaceModule registers a std module whose functions are called
+// as ns.name, such as Array.push from "std/array". The functions need the
+// import; ns is also the name of a type or constructor in the prelude.
+func registerNamespaceModule(ns, path string, funcs map[string]*Builtin) {
 	for n, b := range funcs {
-		if b.Name == "" {
-			b.Name = ns + "." + n
-		}
-		namespaceFuncs[ns+"."+n] = b
-		registerByName(b)
+		b.Name = ns + "." + n
 	}
+	namespaceModules[ns] = path
+	registerModule(&Module{Path: path, Funcs: funcs})
 }
 
 func registerByName(b *Builtin) {

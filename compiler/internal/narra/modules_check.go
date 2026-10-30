@@ -17,6 +17,7 @@ type modScope struct {
 	modules  map[string]string // namespace import alias -> module path
 	imported map[string]*Builtin
 	consts   map[string]*ConstDecl // own and imported top-level constants
+	importAt Pos                   // where an added import line goes: the first import, or the top of the file
 }
 
 // enter makes s the current module and returns the previous one.

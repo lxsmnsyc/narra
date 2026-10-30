@@ -49,7 +49,7 @@ func init() {
 		},
 		"values": {Check: checkArrayLength},
 		"push": {
-			Check: checkArrayPush, Mutable: []bool{true, false},
+			Check: checkArrayPush, Mutable: []bool{true, false}, Effects: []string{"alloc"},
 			Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
 				at := x.Args[0].Value.Type().(*ArrayType)
 				code, owned := e.expr(x.Args[1].Value)

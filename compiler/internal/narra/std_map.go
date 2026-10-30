@@ -33,7 +33,7 @@ func init() {
 			},
 		},
 		"remove": {
-			Check: checkMapRemove, Mutable: []bool{true, false},
+			Check: checkMapRemove, Mutable: []bool{true, false}, Effects: []string{"alloc"},
 			Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
 				mt := x.Args[0].Value.Type().(*MapType)
 				k := e.argCode(x, 1)

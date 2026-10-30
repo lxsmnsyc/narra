@@ -97,6 +97,9 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		}
 	}
 	c.finish(concrete)
+	if len(c.errs) == 0 {
+		c.checkEffects()
+	}
 	if len(c.errs) > 0 {
 		return nil, Diagnostics(c.errs)
 	}

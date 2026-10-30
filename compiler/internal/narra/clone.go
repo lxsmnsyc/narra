@@ -4,7 +4,7 @@ package narra
 // fills in are left empty, so each generic instance is checked from scratch.
 
 func cloneFunc(fd *FuncDecl) *FuncDecl {
-	c := &FuncDecl{Pos: fd.Pos, Name: fd.Name, Exported: fd.Exported, Result: fd.Result, Effects: fd.Effects}
+	c := &FuncDecl{Pos: fd.Pos, Name: fd.Name, Exported: fd.Exported, Result: fd.Result, Effects: fd.Effects, EffectParams: fd.EffectParams, Origin: fd}
 	for _, p := range fd.Params {
 		c.Params = append(c.Params, &Param{Pos: p.Pos, Name: p.Name, Mutable: p.Mutable, Escaping: p.Escaping, Type: p.Type})
 	}

@@ -221,12 +221,28 @@ func (p *Parser) typeExpr() *TypeExpr {
 // typeParams parses `<A, B: Show & Ordered>` and returns the names and the
 // trait constraints of each.
 func (p *Parser) typeParams() ([]string, [][]*TypeExpr) {
+	names, bounds, _ := p.typeParamsEffects()
+	return names, bounds
+}
+
+// typeParamsEffects also reads effect variables, `<T, effect E>`. They are
+// returned apart from the type parameters (check_effects.go).
+func (p *Parser) typeParamsEffects() ([]string, [][]*TypeExpr, []string) {
 	var names []string
 	var bounds [][]*TypeExpr
+	var effects []string
 	if !p.accept("<") {
-		return nil, nil
+		return nil, nil, nil
 	}
 	for !p.is(">") {
+		if t := p.tok(); t.Kind == TokIdent && t.Text == "effect" && p.i+1 < len(p.toks) && p.toks[p.i+1].Kind == TokIdent {
+			p.next()
+			effects = append(effects, p.ident().Text)
+			if !p.accept(",") {
+				break
+			}
+			continue
+		}
 		names = append(names, p.ident().Text)
 		var bs []*TypeExpr
 		if p.accept(":") {
@@ -244,7 +260,7 @@ func (p *Parser) typeParams() ([]string, [][]*TypeExpr) {
 		}
 	}
 	p.expect(">")
-	return names, bounds
+	return names, bounds, effects
 }
 
 // typeParamsNoBounds parses type parameters of a struct or enum, which cannot
@@ -273,7 +289,7 @@ func (p *Parser) funcHeader(exported bool) *FuncDecl {
 		p.fail(p.tok().Pos, "generators are not supported by this compiler yet")
 	}
 	fd := &FuncDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
-	fd.TypeParams, fd.Bounds = p.typeParams()
+	fd.TypeParams, fd.Bounds, fd.EffectParams = p.typeParamsEffects()
 	p.expect("(")
 	for !p.is(")") {
 		param := &Param{Pos: p.tok().Pos}
@@ -291,14 +307,7 @@ func (p *Parser) funcHeader(exported bool) *FuncDecl {
 	if p.accept(":") {
 		fd.Result = p.typeExpr()
 	}
-	if p.accept("uses") {
-		for {
-			fd.Effects = append(fd.Effects, p.ident().Text)
-			if !p.accept(",") {
-				break
-			}
-		}
-	}
+	fd.Effects = p.usesList()
 	return fd
 }
 
@@ -443,7 +452,25 @@ func (p *Parser) funcTypeExpr() *TypeExpr {
 	p.expect(")")
 	p.expect("=>")
 	te.Result = p.typeExpr()
+	te.Uses = p.usesList()
 	return te
+}
+
+// usesList reads an optional `uses a, b` list of effect names.
+func (p *Parser) usesList() []string {
+	var names []string
+	if p.accept("uses") {
+		for {
+			names = append(names, p.ident().Text)
+			if p.is(",") && p.paramAfterComma() {
+				break
+			}
+			if !p.accept(",") {
+				break
+			}
+		}
+	}
+	return names
 }
 
 // acceptEscaping accepts the `escaping` marker before a parameter name.
@@ -1048,4 +1075,15 @@ func (p *Parser) patternList(close string) []*Pattern {
 	}
 	p.expect(close)
 	return list
+}
+
+// paramAfterComma reports whether the `,` at the current token is followed
+// by `name:`, `mutable name` or `escaping name`, the next parameter of a
+// function. It ends a `uses` list written inside a parameter list.
+func (p *Parser) paramAfterComma() bool {
+	if p.i+2 >= len(p.toks) || p.toks[p.i+1].Kind != TokIdent {
+		return false
+	}
+	n := p.toks[p.i+2]
+	return n.Kind == TokIdent || (n.Kind == TokPunct && n.Text == ":")
 }

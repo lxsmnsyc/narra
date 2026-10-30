@@ -49,7 +49,7 @@ go test ./...
 ## Supported
 
 - Packages with several modules and `narra.toml`, or one source file. `import * as X from` and `import { a } from` for `std/int`, `std/float`, `std/string` and the modules of the same package. `export` on functions, structs and enums; other names are private. Import cycles are errors that list the cycle.
-- `std/fs` (`readText`, `writeText`, `exists`, `listDir`), `std/process` (`run`) and `std/env` (`get`, `args`). Fallible functions return `Result<T, string>`; the string is `<subject>: <reason>`. `writeText` returns the byte count, `listDir` the sorted names (Err for the whole listing if any entry name is not valid UTF-8), `Process.run(command, args)` returns `#[exit code, stdout, stderr]` (stdin closed; killed by signal gives 128 + signal), `Env.get` returns `Option<string>`, and `Env.args()` equals the entry function's `args`. Effects are declared but not checked yet.
+- `std/fs` (`readText`, `writeText`, `exists`, `listDir`), `std/process` (`run`) and `std/env` (`get`, `args`). Fallible functions return `Result<T, string>`; the string is `<subject>: <reason>`. `writeText` returns the byte count, `listDir` the sorted names (Err for the whole listing if any entry name is not valid UTF-8), `Process.run(command, args)` returns `#[exit code, stdout, stderr]` (stdin closed; killed by signal gives 128 + signal), `Env.get` returns `Option<string>`, and `Env.args()` equals the entry function's `args`.
 - `std/string` also has `slice`, `sliceFrom`, `byteAt`, `charAt`, `nextChar`, `charCount`, `indexOf` (returns `Option<int>`), `startsWith`, `trim` (ASCII whitespace), `split` (panics on an empty separator), `chars` (`Array<char>`) and a `StringBuilder` (`Str.builder()`, `Str.append(mutable sb, s)`, `Str.appendChar(mutable sb, c)`, `Str.build(sb)`). Slicing, `charAt` and `nextChar` panic on a position out of range or inside a character.
 - Names from a namespace import: calls `X.f(...)` and types `X.T`. Named imports bring functions, and structs and enums with their constructors.
 - Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `break`, `continue`.
@@ -74,6 +74,7 @@ go test ./...
 - `escaping` function parameters. A non-escaping closure keeps its environment on the caller's stack; an escaping one has a reference-counted heap environment.
 - Traits: `trait`, `implements`, `implement Trait for Type`, `derives`, constraints such as `<T: Show & Ordered>`, and calls through the trait name such as `Show.show(x)`.
 - The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
+- Effects (`check_effects.go`): exported functions must declare `uses alloc, io, unsafe` for everything they do; private functions and arrows are inferred; `<effect E>` and `uses E` on function types work. On an exported function a function-type parameter without `uses` accepts only pure arguments; on a private function it acts as an implicit effect variable. `alloc` also comes from array literals, template strings, string `+` and constructors with fields.
 
 ## Not supported yet
 
@@ -82,7 +83,7 @@ go test ./...
 - `Dynamic<Trait>`, `derives Shape` and `Hash.of`.
 - Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
-- Effects are parsed but not checked.
+- Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Destructuring in `for (const #[i, x] of ...)` loops, and reading a tuple element by index.
 - Generators, async functions, threads and channels.

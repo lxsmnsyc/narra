@@ -45,8 +45,9 @@ test "a" {
 		{"timeout", `test "a" {
   Test.panics(() => { while (true) {} })
 }`, "panic at prog.nra:4:14: expected a panic, but the function ran past the 1 s timeout"},
-		// The inner and outer timeouts race: either the outer call fails on
-		// its timeout, or it passes and the last call fails. Neither hangs.
+		// The nested closure and the closure around it have the same limit and
+		// race: either the outer call fails on its timeout, or it passes and the
+		// last call fails. Neither hangs, and the message is the same.
 		{"nested_timeout", `function spin() {
   while (true) {}
 }
@@ -56,8 +57,9 @@ test "a" {
   Test.panics(() => spin())
 }`, "ran past the 1 s timeout"},
 	}
-	// A short timeout for the cases whose closure never returns.
-	t.Setenv("NARRA_TEST_TIMEOUT", "1")
+	// A short limit for the cases whose closure never returns. The test has 2
+	// seconds, so a Test.panics closure gets 1 and its own message comes first.
+	t.Setenv("NARRA_TEST_TIMEOUT", "2")
 	for _, tc := range cases {
 		for _, m := range modes {
 			t.Run(tc.name+"/"+m.name, func(t *testing.T) {
@@ -68,12 +70,18 @@ test "a" {
 				}
 				opts := m.opts
 				opts.Tests = true
-				out, stderr, code := runProgram(t, src, opts)
-				if code != 101 || !strings.Contains(stderr, tc.want) {
-					t.Fatalf("want exit 101 and %q, got exit %d\nstdout:\n%s\nstderr:\n%s", tc.want, code, out, stderr)
+				// The runner prints "FAIL - a: <message> (<position>)" and goes on.
+				want := tc.want
+				if rest, ok := strings.CutPrefix(want, "panic at "); ok {
+					pos, msg, _ := strings.Cut(rest, ": ")
+					want = "FAIL - a: " + msg + " (" + pos + ")"
 				}
-				if strings.Contains(out, "next test") || strings.Contains(out, "tests passed") {
-					t.Fatalf("the run went on after the failure:\n%s", out)
+				out, stderr, code := runProgram(t, src, opts)
+				if code != 1 || !strings.Contains(out, want) {
+					t.Fatalf("want exit 1 and %q, got exit %d\nstdout:\n%s\nstderr:\n%s", want, code, out, stderr)
+				}
+				if !strings.Contains(out, "next test") || !strings.Contains(out, "1 passed, 1 failed") {
+					t.Fatalf("the run did not go on after the failure:\n%s", out)
 				}
 			})
 		}

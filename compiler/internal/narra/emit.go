@@ -137,11 +137,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	b.WriteString("\n")
 	b.WriteString(bodies.String())
 	if tests {
-		b.WriteString("\nint main(void) {\n")
-		for i, t := range prog.Tests {
-			fmt.Fprintf(&b, "  test_%d();\n  printf(\"ok - %%s\\n\", %s);\n", i, cString(t.Name))
-		}
-		fmt.Fprintf(&b, "  printf(\"%d tests passed\\n\");\n  narra_consts_release();\n  narra_report_leaks();\n  return 0;\n}\n", len(prog.Tests))
+		emitTestMain(&b, prog)
 	} else if entry != nil {
 		at := entry.Params[0].T.(*ArrayType)
 		n := arrName(at)

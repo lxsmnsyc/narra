@@ -16,7 +16,7 @@ import (
 const usage = `usage:
   narra build [-release] [-bin name] [-o output] [-emit-c file.c] file.nra|dir
   narra run [-release] [-bin name] file.nra|dir [args...]
-  narra test file.nra|dir
+  narra test [-filter text] [-time] file.nra|dir
   narra check [--json] file.nra|dir        report errors; --json prints one object per line
   narra explain E0000                      explain a diagnostic code
   narra emit [-bin name] file.nra|dir      print the generated C
@@ -38,12 +38,21 @@ func main() {
 		output := fs.String("o", "", "output executable")
 		emitC := fs.String("emit-c", "", "also write the generated C to this file")
 		bin := fs.String("bin", "", "the package binary to build or run")
+		filter := fs.String("filter", "", "test only: run the tests whose name contains this text")
+		timing := fs.Bool("time", false, "test only: print the time of each test")
 		fs.Parse(rest)
 		if fs.NArg() < 1 {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		src := fs.Arg(0)
+		progArgs := fs.Args()[1:]
+		if cmd == "test" {
+			progArgs = append(narra.TestArgs(*filter, *timing, src), progArgs...)
+		} else if *filter != "" || *timing {
+			fmt.Fprintln(os.Stderr, "-filter and -time are for `narra test`")
+			os.Exit(2)
+		}
 		opts := narra.BuildOptions{Release: *release, Tests: cmd == "test", KeepC: *emitC, Binary: *bin}
 		if cmd == "build" {
 			build(src, *output, opts)
@@ -62,7 +71,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		run := exec.Command(out, fs.Args()[1:]...)
+		run := exec.Command(out, progArgs...)
 		run.Stdin, run.Stdout, run.Stderr = os.Stdin, os.Stdout, os.Stderr
 		err = run.Run()
 		if tmpDir != "" {

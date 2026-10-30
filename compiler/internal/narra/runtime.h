@@ -12,10 +12,17 @@
 // Test builds only (std/test): in a child process that runs a Test.panics
 // closure, a panic writes its message to this pipe and exits 101 at once.
 static int narra_panic_fd = -1;
+// Set by the test runner's child: the pipe then gets "<where>\n<message>".
+static int narra_panic_pos = 0;
+// Where Test.golden reads and writes files; narra test sets it with --golden-dir.
+static const char* narra_golden_dir = "testdata";
 
 static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);
   if (narra_panic_fd >= 0) {
+    if (narra_panic_pos) {
+      if (write(narra_panic_fd, where, strlen(where)) < 0 || write(narra_panic_fd, "\n", 1) < 0) _exit(101);
+    }
     size_t n = strlen(msg);
     while (n > 0) {
       ssize_t w = write(narra_panic_fd, msg, n);

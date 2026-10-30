@@ -275,7 +275,8 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				}
 				return c.builtinCall(e, b, want)
 			}
-			if namespaces[id.Name] {
+			// A type the program declares named Box hides the builtin Box.
+			if namespaces[id.Name] && !(id.Name == "Box" && c.userBox()) {
 				name := id.Name + "." + callee.Name
 				b := namespaceFuncs[name]
 				if b == nil {

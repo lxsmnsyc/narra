@@ -38,6 +38,37 @@ static void narra_free(void* p) {
   free(p);
 }
 
+// Dropping a heap value queues the values it holds instead of recursing, so
+// a long list or a deep tree is freed with a worklist, not the C stack.
+typedef struct narra_pending { void* p; void (*drop)(void*); } narra_pending;
+static _Thread_local narra_pending* narra_pend = NULL;
+static _Thread_local size_t narra_pend_n = 0, narra_pend_cap = 0;
+static _Thread_local bool narra_draining = false;
+
+static void narra_drop(void* p, void (*drop)(void*)) {
+  if (narra_draining) {
+    if (narra_pend_n == narra_pend_cap) {
+      narra_pend_cap = narra_pend_cap ? narra_pend_cap * 2 : 64;
+      narra_pend = realloc(narra_pend, narra_pend_cap * sizeof(narra_pending));
+      if (!narra_pend) narra_panic("runtime", "out of memory");
+    }
+    narra_pend[narra_pend_n].p = p;
+    narra_pend[narra_pend_n].drop = drop;
+    narra_pend_n++;
+    return;
+  }
+  narra_draining = true;
+  drop(p);
+  while (narra_pend_n > 0) {
+    narra_pending d = narra_pend[--narra_pend_n];
+    d.drop(d.p);
+  }
+  narra_draining = false;
+  free(narra_pend);
+  narra_pend = NULL;
+  narra_pend_cap = 0;
+}
+
 static void* narra_realloc(void* p, size_t n) {
   void* q = realloc(p, n ? n : 1);
   if (!q) narra_panic("runtime", "out of memory");

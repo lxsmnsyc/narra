@@ -76,6 +76,24 @@ func (e *Emitter) rcFuncs(b *strings.Builder, t Type) {
 	if !needsRC(t) {
 		return
 	}
+	if et, ok := t.(*EnumType); ok {
+		// The drop function runs when the count reaches zero. Releasing a
+		// child there queues it (narra_drop) instead of recursing, so the
+		// depth of a structure does not use the C stack.
+		fmt.Fprintf(b, "static void %s(void* p) {\n  %s* q = p;\n  switch (q->tag) {\n", opFuncName("drop", t), payloadCName(et))
+		for _, v := range et.Variants {
+			var stmts []string
+			for _, f := range v.Fields {
+				if s := release(f.T, "q->"+variantName(v)+"."+fieldName(f.Name)); s != "" {
+					stmts = append(stmts, s)
+				}
+			}
+			if len(stmts) > 0 {
+				fmt.Fprintf(b, "  case %d: %s break;\n", v.Index, strings.Join(stmts, " "))
+			}
+		}
+		b.WriteString("  default: break;\n  }\n  narra_free(q);\n}\n")
+	}
 	for _, op := range []string{"retain", "release"} {
 		fmt.Fprintf(b, "static void %s(%s v) {\n", opFuncName(op, t), t.CName())
 		gen := retain
@@ -94,19 +112,7 @@ func (e *Emitter) rcFuncs(b *strings.Builder, t Type) {
 				b.WriteString("  if (v.u) v.u->rc++;\n")
 				break
 			}
-			b.WriteString("  if (!v.u || --v.u->rc > 0) return;\n  switch (v.tag) {\n")
-			for _, v := range t.Variants {
-				var stmts []string
-				for _, f := range v.Fields {
-					if s := gen(f.T, "v.u->"+variantName(v)+"."+fieldName(f.Name)); s != "" {
-						stmts = append(stmts, s)
-					}
-				}
-				if len(stmts) > 0 {
-					fmt.Fprintf(b, "  case %d: %s break;\n", v.Index, strings.Join(stmts, " "))
-				}
-			}
-			b.WriteString("  default: break;\n  }\n  narra_free(v.u);\n")
+			fmt.Fprintf(b, "  if (v.u && --v.u->rc == 0) narra_drop(v.u, %s);\n", opFuncName("drop", t))
 		}
 		b.WriteString("}\n")
 	}

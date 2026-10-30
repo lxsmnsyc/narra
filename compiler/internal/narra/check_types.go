@@ -443,7 +443,7 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 	if strings.Contains(te.Name, ".") {
 		return c.qualifiedType(te)
 	}
-	if te.Name == "Box" && c.generics["Box"] == nil && c.types["Box"] == nil {
+	if te.Name == "Box" && !c.userBox() {
 		if len(te.Args) != 1 {
 			c.errorf(te.Pos, "Box takes one type argument")
 			return TVoid
@@ -501,6 +501,10 @@ func (c *Checker) arrayOf(elem Type) *ArrayType {
 	c.arrays[key] = a
 	return a
 }
+
+// userBox reports whether the module declares its own type named Box, which
+// then hides the builtin Box<T> and Box.new.
+func (c *Checker) userBox() bool { return c.generics["Box"] != nil || c.types["Box"] != nil }
 
 func (c *Checker) boxOf(elem Type) *BoxType {
 	key := typeID(elem)

@@ -37,7 +37,7 @@ func (e *Emitter) heapDefs(b *strings.Builder) {
 		if !ok || !isBoxedEnum(et) {
 			continue
 		}
-		fmt.Fprintf(b, "struct %s { int64_t rc; union {", payloadCName(et))
+		fmt.Fprintf(b, "struct %s { int64_t rc; int32_t tag; union {", payloadCName(et))
 		for _, v := range et.Variants {
 			if len(v.Fields) == 0 {
 				continue
@@ -71,11 +71,13 @@ static %[1]s* %[1]s_new(%[2]s v) {
   return a;
 }
 static void %[1]s_retain(%[1]s* a) { a->rc++; }
+static void %[1]s_drop(void* p) {
+  %[1]s* a = p;
+  %[3]s
+  narra_free(a);
+}
 static void %[1]s_release(%[1]s* a) {
-  if (--a->rc == 0) {
-    %[3]s
-    narra_free(a);
-  }
+  if (--a->rc == 0) narra_drop(a, %[1]s_drop);
 }
 `, n, bt.Elem.CName(), release(bt.Elem, "a->f_value"))
 }
@@ -90,7 +92,7 @@ func (e *Emitter) enumAlloc(v *Variant, fields []string) string {
 	e.tempN++
 	p := fmt.Sprintf("q%d", e.tempN)
 	e.line("%s* %s = narra_alloc(sizeof(%s));", payloadCName(et), p, payloadCName(et))
-	e.line("%s->rc = 1;", p)
+	e.line("%s->rc = 1; %s->tag = %d;", p, p, v.Index)
 	for i, f := range v.Fields {
 		e.line("%s->%s.%s = %s;", p, variantName(v), fieldName(f.Name), fields[i])
 	}

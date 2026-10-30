@@ -2,7 +2,7 @@
 id: selfhost-spike
 title: Self-hosting gap check
 status: done
-spent: 449494
+spent: 399494
 priority: must
 type: feature
 outline: false

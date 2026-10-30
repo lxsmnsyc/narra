@@ -50,6 +50,7 @@ Parameter types of trait and impl functions are in `paramTypes` by `Param.id`. R
 - `c.impls` for the bodies of impl functions (Go's `implBodies`): check each `ImplInfo.funcs[k].decl` with env `Self` = `ImplInfo.t`. Only blocks that passed their checks are in `c.impls`.
 - `checkBounds` at generic call sites, `checkEquatable` for `==` and `!=`, `checkMapKey` for Map types and literals in bodies. `flushMapKeys` already runs in `declarePackage`; the full checker calls it after all bodies, as Go does.
 - Bodies of generic functions: `c.bounds[param]` gives the constraint of a type parameter.
+- `holds=` lines exist only for the types of the `order` lines (concrete structs and enums, and instances without type parameters). Bodies must call `typeImplements` on any type, instances included, and never read the dump for it.
 
 ### What selfhost-check-imports does
 
@@ -65,7 +66,7 @@ Goldens: all `testdata/declsdump/*.dump` gained the prelude trait lines. New cas
 
 ### Harness
 
-`TestSelfhostTraits` (selfhost_traits_test.go) compares the whole `narrac decls` output with `narra decls` (stdout, or stderr and exit 1 for errors) on every input of `declInputs`. It accepts the declaration error formats plus the trait formats (`portedTraitErrors`). 188 inputs compared, 61 skipped. `TestSelfhostDecls` is unchanged and still passes (bound and trait lines are not in its `declKinds`; the `param` and `result` lines of trait functions are).
+`TestSelfhostTraits` (selfhost_traits_test.go) compares the whole `narrac decls` output with `narra decls` (stdout, or stderr and exit 1 for errors) on every input of `declInputs`. It accepts the declaration error formats plus the trait formats (`portedTraitErrors`). 188 inputs compared, 61 skipped. `dump` is linear in the number of `implement` blocks and sorts the instance blocks with a merge sort (N=4000 blocks: 3.2 s before, 0.9 s after; Go 0.07 s). `TestSelfhostDecls` is unchanged and still passes (bound and trait lines are not in its `declKinds`; the `param` and `result` lines of trait functions are).
 
 ### Also done
 
@@ -74,7 +75,7 @@ Goldens: all `testdata/declsdump/*.dump` gained the prelude trait lines. New cas
 ## Deviations
 
 - Files edited outside the owned paths and the brief's `shared` list: `selfhost/src/resolve.nra` (one call `checkMapKey(mutable c, te.pos, k)` in the Map case, the import, two comments). The decls outcome named this hook; the file is not in the shared list.
-- `selfhost_decls_test.go` is unchanged; the trait error formats are in the new harness only.
+- `selfhost_test.go` is not edited by this branch (it changed on main through literal-type-args). `selfhost_decls_test.go` is unchanged; the trait error formats are in the new harness only.
 - `declare.nra`: `setParamType` moved to check.nra (import cycle: traits.nra needs it, declare.nra imports traits.nra).
 - `check_traits.go` and `std_map.go` are not edited. Go-side change: `decldump.go` only. `narra emit` and `narra check` do not call it, so their output is unchanged (git diff shows no other Go file touched).
 - Tuples: Go records the `Tuple` trait facts in `tupleOf`; here `typeTraitsOf` makes them on first use. Same answers, so `resolve.nra` needs no hook.

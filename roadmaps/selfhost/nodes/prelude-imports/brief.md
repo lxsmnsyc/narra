@@ -33,6 +33,7 @@ shared:
   - compiler/internal/narra/decldump.go
   - compiler/internal/narra/ast.go
   - compiler/internal/narra/parser.go
+  - compiler/internal/narra/check_expr.go
   - compiler/testdata/**
   - selfhost/src/**
   - bench/**

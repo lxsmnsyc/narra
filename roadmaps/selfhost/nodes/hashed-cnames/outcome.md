@@ -22,7 +22,7 @@ All C naming is in `compiler/internal/narra/cnames.go`. `mangle`, `typeArgsMangl
 
 - Removed four error tests that checked the dropped rules: `testdata/errors/traits_func_underscore.nra`, `traits_name_underscore.nra`, `testdata/packages/errors/dunder_name`, `dunder_module` (outside owned paths, required by the brief). Removed the `a__b` case in `modules_test.go`.
 - Edited outside owned paths: `compiler/README.md` (naming text), `compiler/internal/narra/CLAUDE.md` (naming rules), `modules_toml.go` (package name rule), `testdata/Tuple.nra` (comment), `check_traits.go`, `check_types.go`, `check_call.go`, `check_closure.go`, `check_patterns.go`, `emit*.go`, `types.go`, `modules.go` (shared).
-- Generated C "unchanged apart from names": checked by output and exit code of every sample under debug and release (all pass). No normalized textual diff of C was run.
+- Generated C "unchanged apart from names": the reviewer emitted all 31 samples with main and the branch. 25 differ only in names; 4 (`closures.nra`, `closures_nested.nra`, `patterns_tuples.nra`, `traits_functypes.nra`) also differ in definition order (hash names sort differently, deterministic); `cnames_modules` is new; nothing else changed.
 
 ## Stubs left
 

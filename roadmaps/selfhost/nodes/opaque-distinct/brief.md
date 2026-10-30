@@ -1,7 +1,8 @@
 ---
 id: opaque-distinct
 title: Opaque structs and distinct types
-status: active
+status: done
+spent: 340264
 priority: should
 type: feature
 outline: false
@@ -69,10 +70,12 @@ See `SPEC.md` section 4 and decisions D39 and D40. Opacity only matters across m
 
 ## Acceptance
 
-- [ ] A sample package uses an opaque struct from another module through its functions.
-- [ ] Error tests: building, reading or spreading an opaque struct from another module; mixing two distinct types.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] A sample package uses an opaque struct from another module through its functions.
+- [x] Error tests: building, reading or spreading an opaque struct from another module; mixing two distinct types.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: checker rules, little emitter work.
+
+PR: [#18](https://github.com/lxsmnsyc/narra/pull/18)

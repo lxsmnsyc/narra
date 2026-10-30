@@ -77,7 +77,8 @@ func (c *Checker) checkEffects() {
 	if len(c.errs) > 0 {
 		return
 	}
-	// Grow the sets until nothing changes. Sets only grow, so this ends.
+	// Grow the sets until nothing changes. Sets only grow, so an unchanged
+	// size means an unchanged set, and the loop ends.
 	for pass := 0; pass < 100; pass++ {
 		s.changed = false
 		s.walkAll(false)
@@ -443,11 +444,23 @@ func (w *effectWalker) userCall(e *CallExpr) {
 			}
 		}
 	}
+	// A private function is inferred, so a function-type parameter without
+	// `uses` acts as an implicit effect variable: the call has the effects
+	// of the argument.
+	if !g.Exported {
+		for i, p := range g.Params {
+			if i < len(e.Args) && p.Type != nil && p.Type.Func && len(p.Type.Uses) == 0 {
+				for m, cause := range s.valueEffects(e.Args[i].Value) {
+					w.add(m, e.P, cause.via)
+				}
+			}
+		}
+	}
 	if !s.report {
 		return
 	}
-	// A parameter whose function type has no variable accepts only the
-	// effects it lists.
+	// An exported function's parameter whose function type has no variable
+	// accepts only the effects it lists.
 	for i, p := range g.Params {
 		if i >= len(e.Args) || p.Type == nil || !p.Type.Func {
 			continue
@@ -456,7 +469,7 @@ func (w *effectWalker) userCall(e *CallExpr) {
 		for _, n := range p.Type.Uses {
 			hasVar = hasVar || vars[n]
 		}
-		if hasVar {
+		if hasVar || (!g.Exported && len(p.Type.Uses) == 0) {
 			continue
 		}
 		var extra []string

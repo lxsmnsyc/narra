@@ -1,7 +1,7 @@
 ---
 id: selfhost-check-imports
 title: Self-hosted checker: module scopes and builtin registry
-status: todo
+status: active
 priority: must
 type: feature
 outline: false
@@ -81,3 +81,5 @@ L: about 1,000 Narra lines, plus a registry that reads nine std files' signature
 - Edit the Go checker only to expose what the dump needs or to fix a bug the comparison finds; record it in the outcome.
 - From the selfhost-check-decls review (#26): `decldump.go` prints field, parameter and result types without their module, so two modules that both declare `Token` dump alike (`testdata/declsdump/two_modules.dump`). Print `module.Name` for types from a non-prelude module, in Go and Narra, before comparing cross-module packages.
 - Register `std/test` (from std-test, #24) in the Narra registry, and the namespaces prelude-imports moves to `std/array`, `std/map`, `std/range`, `std/box`.
+- From the selfhost-check-traits review (#32): `dumpImpl` in `declsdump.nra` returns silently on a position mismatch and drops every later impl block. It cannot happen while the dump runs only without errors, but make it fail loudly when you extend impls across modules.
+- If std-option-result (#31) has merged, register `std/option` (7 functions) and `std/result` (6 functions) in the Narra registry too.

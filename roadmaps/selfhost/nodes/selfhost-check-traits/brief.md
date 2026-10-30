@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-traits
 title: Self-hosted checker: traits and implementations
-status: active
+status: done
+spent: 340000
 priority: must
 type: feature
 outline: false
@@ -59,10 +60,10 @@ Port the trait half of the declaration checker to Narra: trait declarations and 
 
 ## Acceptance
 
-- [ ] `TestDeclDump` goldens cover the new line kinds, and `TestSelfhostTraits` passes: `narrac decls` equals `narra decls` on the trait lines and errors for every input above, skips named in the outcome.
-- [ ] `TestSelfhostDecls` still passes with the extra `bound` data on `func` lines.
-- [ ] The outcome lists the `Trait`/`Impl` table layout and the functions selfhost-check-bodies calls.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `TestDeclDump` goldens cover the new line kinds, and `TestSelfhostTraits` passes: `narrac decls` equals `narra decls` on the trait lines and errors for every input above, skips named in the outcome.
+- [x] `TestSelfhostDecls` still passes with the extra `bound` data on `func` lines.
+- [x] The outcome lists the `Trait`/`Impl` table layout and the functions selfhost-check-bodies calls.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

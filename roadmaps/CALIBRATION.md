@@ -33,3 +33,4 @@ Notes:
 | selfhost | test-runner | M | M+ | 3 | 510k tokens over three fix rounds. Reviews found a hang with no per-test timeout, a zero-match filter passing, an absolute golden path baked into the C, untested leak detection, and an unreachable inner timeout. |
 | selfhost | prelude-imports | M | M | 3 | 561k tokens. Gate. Scripted migration of 59 files (90 import lines). Reviews found a rebase conflict on decision numbers, a missing E0908 for functions used as values, and a false E0908 when the alias was imported. |
 | selfhost | literal-type-args | M | M | 2 | 311k tokens. Gate. One token-scan lookahead rule shared by both parsers. Review found an error cascade (void after E0237); reviewer showed no valid program changes meaning. |
+| selfhost | selfhost-check-traits | M | M+ | 2 | 340k tokens. About 1050 Narra lines against 850 estimated. Review found a quadratic impl lookup in the dump (4.6 s to 0.85 s at 2000 types). Merged automatically. |

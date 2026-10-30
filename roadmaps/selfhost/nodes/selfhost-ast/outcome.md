@@ -35,6 +35,9 @@ file
 
 - Narra AST differences from Go (also in the header of `ast.nra`): ids on expressions, patterns, `Param`, `VarStmt`, `ForStmt`; field names avoid keywords (`exported`, `isMutable`, `effects`, `impls`, `derived`, `orElse`, `traitType`); `PatCtor.bare` replaces nil `Args`; `CharLit.value` is a one-char string; checker-only fields are not mirrored; `IfStmt.orElse` is `Option<Stmt>` (BlockStmt or IfStmt). Every Go AST type has a Narra type.
 - Positions the parser must reproduce: a declaration's pos is its keyword (`const`, `function`), not `export`; a call's pos is the `(`; a field-expr's pos is the member name; binary pos is the operator; index pos is the `[`; a struct literal with a type name uses the name's pos; template parts all take the template's pos (inner tokens are re-posed) and its string pieces carry the template's `end`; `x is P` has the pos of `is`; a shorthand pattern field `{ a }` makes a `pat-name` at the field's pos.
+- Columns count characters (runes), not bytes. The same rules are in the "Positions" paragraph of the `astdump.go` doc comment, which is authoritative.
+- `bare` relies on the Go parser keeping a nil `Args` (`Circle`) apart from an empty one (`Circle()`).
+- `TestASTDumpDocKinds` fails when a node kind in the doc comment's table is missing from `astKinds`. The `exprs` golden now covers `\\`, `\u{1}`, `\"`, non-ASCII and escaped chars.
 - `Name()` and `Name` differ by `bare`. A lone `Empty` is a `pat-name`; the checker decides later.
 - Go parser quirk: `uses E, mutable x: T` inside a parameter list fails to parse (`paramAfterComma` ignores `mutable`). The samples avoid it.
 - `bool` prints `value=true|false`; `string` has `end=<line>:<col>`; `char` prints the character escaped like text.

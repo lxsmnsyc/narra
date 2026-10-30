@@ -108,6 +108,24 @@ import (
 //	pat-tuple L:C                direct: the element patterns
 //	pat-lit L:C                  direct: the literal expression
 //
+// Positions
+//
+//	Lines and columns start at 1. Columns count characters (runes), not
+//	bytes. Positions are those the Go parser records, which are not always
+//	the first token of the node:
+//	  - a declaration's pos is its keyword (`const`, `function`), not `export`
+//	  - a call's pos is its `(`; an index's pos is its `[`
+//	  - a field-expr's pos is the member name
+//	  - a binary's pos is the operator; an `is` expression's pos is `is`
+//	  - a struct literal with a type name has the name's pos
+//	  - every part of a template (string pieces and the expressions inside
+//	    `${...}`) takes the template's pos, and its string pieces carry the
+//	    template's `end`
+//	  - a shorthand pattern field `{ a }` makes a pat-name at the field's pos
+//	`pat-ctor` prints `bare` when the Go parser left Args nil (`Circle`) and
+//	not when it set an empty list (`Circle()`). That distinction relies on
+//	the parser keeping nil and empty apart.
+//
 // Order in the file is source order. Nothing in the dump depends on map
 // iteration order.
 //

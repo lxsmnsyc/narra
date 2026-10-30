@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -84,5 +85,43 @@ func TestASTDump(t *testing.T) {
 		if !seen[k] {
 			t.Errorf("no golden contains a %q node", k)
 		}
+	}
+}
+
+// TestASTDumpDocKinds checks that every node kind in the format table of
+// astdump.go's doc comment is in astKinds, so the list cannot drift.
+func TestASTDumpDocKinds(t *testing.T) {
+	src, err := os.ReadFile("astdump.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	start := strings.Index(text, "// Nodes (")
+	end := strings.Index(text, "// Positions")
+	if start < 0 || end < start {
+		t.Fatal("node table not found in astdump.go")
+	}
+	known := map[string]bool{}
+	for _, k := range astKinds {
+		known[k] = true
+	}
+	first := regexp.MustCompile(`^//\t([a-z][a-z-]*)( |$)`)
+	more := regexp.MustCompile(`, ([a-z][a-z-]*) L:C`)
+	count := 0
+	for _, line := range strings.Split(text[start:end], "\n") {
+		if m := first.FindStringSubmatch(line); m != nil {
+			count++
+			if !known[m[1]] {
+				t.Errorf("doc comment kind %q is missing from astKinds", m[1])
+			}
+		}
+		for _, m := range more.FindAllStringSubmatch(line, -1) {
+			if !known[m[1]] {
+				t.Errorf("doc comment kind %q is missing from astKinds", m[1])
+			}
+		}
+	}
+	if count < 40 {
+		t.Errorf("parsed only %d kinds from the doc comment", count)
 	}
 }

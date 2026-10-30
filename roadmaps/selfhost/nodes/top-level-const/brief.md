@@ -29,6 +29,14 @@ shared:
   - compiler/internal/narra/modules_check.go
   - compiler/internal/narra/emit.go
   - compiler/README.md
+  - compiler/internal/narra/check_call.go
+  - compiler/internal/narra/check_expr.go
+  - compiler/internal/narra/check_stmt.go
+  - compiler/internal/narra/cnames.go
+  - compiler/internal/narra/diagnostic_codes.go
+  - compiler/internal/narra/emit_expr.go
+  - compiler/internal/narra/modules.go
+  - compiler/testdata/packages/const/**
 reserves: []
 provides: []
 depends_on:

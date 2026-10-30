@@ -1,7 +1,7 @@
 ---
 id: json-diagnostics
 title: Diagnostic codes, fixes and JSON output
-status: todo
+status: active
 priority: should
 type: feature
 outline: false

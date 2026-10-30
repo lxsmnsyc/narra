@@ -1,7 +1,8 @@
 ---
 id: effects
 title: Effect checking
-status: active
+status: done
+spent: 490332
 priority: should
 type: feature
 outline: false
@@ -54,10 +55,12 @@ See `SPEC.md` section 7 and decisions D8 and D14. Builtins declare their effects
 
 ## Acceptance
 
-- [ ] Error test: calling an `io` function from a function that does not declare `io`.
-- [ ] A generic `map` with an effect variable accepts both pure and `io` callbacks.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] Error test: calling an `io` function from a function that does not declare `io`.
+- [x] A generic `map` with an effect variable accepts both pure and `io` callbacks.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: one analysis pass over checked code.
+
+PR: [#14](https://github.com/lxsmnsyc/narra/pull/14)

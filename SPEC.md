@@ -189,7 +189,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Array.push(mutable xs, v)` needs `import * as Array from "std/array"`. The alias may equal the type name: `Array<int>` is the type and `Array.push` is the module. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one, unless the program also writes `import * as Box from "std/box"` (or `std/map`): then `Box.new` is the module function.
-- **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/process`, `std/range`, `std/string` and `std/test`.
+- **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/option`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 ```ts
@@ -401,7 +401,9 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 - `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `null` or `undefined`.
 - `if (x is Some(v)) { ... }` binds `v` inside the branch. After `if (x is None) { return ... }`, `x` is known to be `Some` for the rest of the block, and `x.value` reads the value.
-- `Option.withDefault(x, fallback)` returns `fallback` when `x` is `None`.
+- **`std/option` helpers.** `import * as Option from "std/option"` adds `Option.map(x, f)`, `Option.andThen(x, f)` (`f` returns an `Option`), `Option.withDefault(x, fallback)`, `Option.orElse(x, f)` (`f` takes no argument and returns an `Option`), `Option.isSome(x)`, `Option.isNone(x)` and `Option.okOr(x, error)` (a `Result`). `withDefault` returns `fallback` when `x` is `None`. There is no `unwrap` or `expect`: read the value after an `is` test, or give a fallback.
+- **Callbacks.** The function arguments of these helpers are non-escaping and take an effect variable, like `Array.map` in the effects section: a call uses the effects of its callback, so an `io` callback needs `uses io` on the caller. A capturing arrow function passed to a helper is allocated on the stack.
+- **Helpers never return early.** They are expressions. The main style for a path that stops stays `is` and `match`.
 - Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Result<T, E>`. There is no `T | null` or `T?`. Tuples are the one exception: `#[A, B]` (see Tuples above).
 
 ### Pattern matching
@@ -561,6 +563,7 @@ export function parsePair(line: string): Option<Pair> {
 - **Errors are return values.** A function that can fail returns `Result<T, E>`, with constructors `Ok(value)` and `Err(error)`.
 - **The caller checks the result.** There is no `try`, no `catch`, no `throw` and no operator that returns early. Every error path is a visible `if` or `match`.
 - **`is` tests a pattern and narrows the type.** After `if (r is Err(e)) { return ... }`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
+- **`std/result` helpers.** `import * as Result from "std/result"` adds `Result.map(r, f)`, `Result.mapErr(r, f)`, `Result.andThen(r, f)` (`f` returns a `Result` with the same error type), `Result.withDefault(r, fallback)`, and `Result.ok(r)` and `Result.err(r)`, which return the `Ok` or `Err` value as an `Option`. They work on a value you already hold. They never return from the caller, so they do not replace the visible `if` or `match` on the error path; they transform a result or give it a fallback.
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
 

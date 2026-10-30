@@ -22,7 +22,13 @@ provides: []
 depends_on:
   - on: selfhost-check-decls
     kind: hard
-    why: bodies are checked against the declaration tables
+    why: bodies are checked against the type model and declaration tables
+  - on: selfhost-check-traits
+    kind: hard
+    why: calls on trait functions and bounds use the trait tables
+  - on: selfhost-check-imports
+    kind: hard
+    why: names resolve through module scopes, and builtin calls use the registry
 ---
 
 # Self-hosted checker: bodies

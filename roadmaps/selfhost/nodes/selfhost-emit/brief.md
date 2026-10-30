@@ -33,4 +33,6 @@ C emitter and driver in Narra, producing the same C as the Go compiler.
 
 ## Notes
 
+- 2026-10-30: port the xxHash32 check that two modules' relative paths do not hash alike (`module-graph` contract); selfhost-modules deferred it here.
+
 Outline. Break into full briefs when `plan.py refine` lists it.

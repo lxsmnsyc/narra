@@ -1,0 +1,92 @@
+import * as Fs from "std/fs"
+import * as Process from "std/process"
+import * as Env from "std/env"
+import * as Int from "std/int"
+
+function tempDir(): string {
+  const t = Env.get("TMPDIR")
+  if (t is Some(dir)) {
+    return dir
+  }
+  return "/tmp"
+}
+
+export function run(args: Array<string>): int {
+  const base = tempDir()
+  const dir = `${base}/narra_io_files_test`
+  const file = `${dir}/hello.txt`
+
+  // Files: write, read back, list.
+  const made = Process.run("mkdir", ["-p", dir])
+  if (made is Err(e)) {
+    print(`mkdir failed: ${e}`)
+    return 1
+  }
+  const wrote = Fs.writeText(file, "héllo\nworld\n")
+  if (wrote is Ok(n)) {
+    print(`wrote ${Int.toString(n)} bytes`)
+  }
+  const read = Fs.readText(file)
+  if (read is Ok(text)) {
+    print(`read: ${text}`)
+  }
+  const second = Fs.writeText(`${dir}/b.txt`, "")
+  if (second is Err(e)) {
+    print(e)
+  }
+  const names = Fs.listDir(dir)
+  if (names is Ok(items)) {
+    for (const name of Array.values(items)) {
+      print(`entry ${name}`)
+    }
+  }
+  if (Fs.exists(file)) {
+    print("exists: true")
+  }
+
+  // Errors come back as values.
+  const missing = Fs.readText(`${dir}/missing.txt`)
+  if (missing is Err(_)) {
+    print("missing file: Err")
+  }
+  const nowhere = Fs.writeText(`${dir}/no/such/dir/x.txt`, "x")
+  if (nowhere is Err(_)) {
+    print("bad write: Err")
+  }
+  const nodir = Fs.listDir(`${dir}/missing`)
+  if (nodir is Err(_)) {
+    print("bad listDir: Err")
+  }
+  if (!Fs.exists(`${dir}/missing.txt`)) {
+    print("exists is false for a missing file")
+  }
+
+  // Processes: output, exit code, stderr, and a command that does not exist.
+  const echo = Process.run("echo", ["hello", "from", "echo"])
+  if (echo is Ok(r)) {
+    const #[code, out, _] = r
+    print(`echo exit ${Int.toString(code)}: ${out}`)
+  }
+  const failing = Process.run("sh", ["-c", "echo oops >&2; exit 3"])
+  if (failing is Ok(r)) {
+    const #[code, _, stderr] = r
+    print(`sh exit ${Int.toString(code)} stderr ${stderr}`)
+  }
+  const none = Process.run("narra-no-such-command", [])
+  if (none is Err(_)) {
+    print("missing command: Err")
+  }
+
+  // Environment.
+  const unset = Env.get("NARRA_SURELY_NOT_SET")
+  if (unset is None) {
+    print("unset variable: None")
+  }
+  print(`args: ${Int.toString(Array.length(Env.args()))} == ${Int.toString(Array.length(args))}`)
+
+  const cleaned = Process.run("rm", ["-r", dir])
+  if (cleaned is Err(e)) {
+    print(e)
+  }
+  return 0
+}

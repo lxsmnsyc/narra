@@ -190,6 +190,8 @@ func containsOpen(t Type, params []*TypeParamType) bool {
 		}
 	case *ArrayType:
 		return containsOpen(t.Elem, params)
+	case *BoxType:
+		return containsOpen(t.Elem, params)
 	case *FuncType:
 		for _, p := range t.Params {
 			if containsOpen(p, params) {
@@ -273,7 +275,8 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				}
 				return c.builtinCall(e, b, want)
 			}
-			if namespaces[id.Name] {
+			// A type the program declares named Box hides the builtin Box.
+			if namespaces[id.Name] && !(id.Name == "Box" && c.userBox()) {
 				name := id.Name + "." + callee.Name
 				b := namespaceFuncs[name]
 				if b == nil {

@@ -121,6 +121,8 @@ func (c *Checker) templateEdges(t Type, out []genericEdge) []genericEdge {
 	switch t := t.(type) {
 	case *ArrayType:
 		return c.templateEdges(t.Elem, out)
+	case *BoxType:
+		return c.templateEdges(t.Elem, out)
 	case *FuncType:
 		for _, p := range t.Params {
 			out = c.templateEdges(p, out)
@@ -267,6 +269,8 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		return t
 	case *ArrayType:
 		return c.arrayOf(c.substitute(t.Elem, m))
+	case *BoxType:
+		return c.boxOf(c.substitute(t.Elem, m))
 	case *FuncType:
 		if !containsTypeParam(t) {
 			return t
@@ -314,6 +318,10 @@ func unify(pat, act Type, m map[*TypeParamType]Type) {
 		if a, ok := act.(*ArrayType); ok {
 			unify(p.Elem, a.Elem, m)
 		}
+	case *BoxType:
+		if a, ok := act.(*BoxType); ok {
+			unify(p.Elem, a.Elem, m)
+		}
 	case *FuncType:
 		if a, ok := act.(*FuncType); ok && len(a.Params) == len(p.Params) {
 			for i := range p.Params {
@@ -351,7 +359,19 @@ func (c *Checker) orderTypes(types []Type) {
 			return
 		}
 		if state[t] == 1 {
-			c.typeErrorf(t, "type %s contains itself; use an array for recursive data", t)
+			c.typeErrorf(t, "type %s contains itself; put the recursive field in an enum, Box or array", t)
+			return
+		}
+		if et, ok := t.(*EnumType); ok && isBoxedEnum(et) {
+			// The value is a tag and a pointer, so the enum is complete
+			// before its fields are; this is what lets an enum hold itself.
+			state[t] = 2
+			c.prog.Types = append(c.prog.Types, t)
+			for _, v := range et.Variants {
+				for _, f := range v.Fields {
+					visit(f.T)
+				}
+			}
 			return
 		}
 		state[t] = 1
@@ -423,6 +443,13 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 	if strings.Contains(te.Name, ".") {
 		return c.qualifiedType(te)
 	}
+	if te.Name == "Box" && !c.userBox() {
+		if len(te.Args) != 1 {
+			c.errorf(te.Pos, "Box takes one type argument")
+			return TVoid
+		}
+		return c.boxOf(c.resolveType(te.Args[0]))
+	}
 	if te.Name == "Array" {
 		if len(te.Args) != 1 {
 			c.errorf(te.Pos, "Array takes one type argument")
@@ -473,6 +500,20 @@ func (c *Checker) arrayOf(elem Type) *ArrayType {
 	a := &ArrayType{Elem: elem}
 	c.arrays[key] = a
 	return a
+}
+
+// userBox reports whether the module declares its own type named Box, which
+// then hides the builtin Box<T> and Box.new.
+func (c *Checker) userBox() bool { return c.generics["Box"] != nil || c.types["Box"] != nil }
+
+func (c *Checker) boxOf(elem Type) *BoxType {
+	key := typeID(elem)
+	if b, ok := c.boxes[key]; ok {
+		return b
+	}
+	b := &BoxType{Elem: elem}
+	c.boxes[key] = b
+	return b
 }
 
 func (c *Checker) expectType(pos Pos, want, got Type) {

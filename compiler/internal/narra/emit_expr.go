@@ -108,7 +108,10 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		}
 		target, _ := e.expr(x.Target)
 		if x.Narrow != nil {
-			return fmt.Sprintf("(%s).u.%s.%s", target, variantName(x.Narrow), fieldName(x.Name)), false
+			return fmt.Sprintf("(%s).u->%s.%s", target, variantName(x.Narrow), fieldName(x.Name)), false
+		}
+		if _, ok := x.Target.Type().(*BoxType); ok {
+			return fmt.Sprintf("(%s)->%s", target, fieldName(x.Name)), false
 		}
 		return fmt.Sprintf("(%s).%s", target, fieldName(x.Name)), false
 	case *IndexExpr:

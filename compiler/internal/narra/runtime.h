@@ -9,8 +9,22 @@
 #include <string.h>
 #include <unistd.h>
 
+// Test builds only (std/test): in a child process that runs a Test.panics
+// closure, a panic writes its message to this pipe and exits 101 at once.
+static int narra_panic_fd = -1;
+
 static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);
+  if (narra_panic_fd >= 0) {
+    size_t n = strlen(msg);
+    while (n > 0) {
+      ssize_t w = write(narra_panic_fd, msg, n);
+      if (w <= 0) break;
+      msg += w;
+      n -= (size_t)w;
+    }
+    _exit(101);
+  }
   fprintf(stderr, "panic at %s: %s\n", where, msg);
   exit(101);
 }

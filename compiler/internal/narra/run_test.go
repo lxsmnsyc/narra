@@ -53,7 +53,9 @@ func TestPrograms(t *testing.T) {
 		for _, m := range modes {
 			t.Run(filepath.Base(src)+"/"+m.name, func(t *testing.T) {
 				opts := m.opts
-				opts.Tests = filepath.Base(src) == "tests.nra"
+				// tests.nra and std_test*.nra run their test blocks.
+				base := filepath.Base(src)
+				opts.Tests = base == "tests.nra" || strings.HasPrefix(base, "std_test")
 				out, stderr, code := runProgram(t, src, opts)
 				if code != 0 {
 					t.Fatalf("exit code %d\nstderr:\n%s", code, stderr)

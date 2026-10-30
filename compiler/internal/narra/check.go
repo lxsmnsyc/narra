@@ -129,6 +129,7 @@ type Checker struct {
 	pkg     *Package
 	traits  *traitState
 	closure *closureState // check_closure.go
+	inTest  bool          // checking a test block, arrow functions inside it included (std_testing.go)
 }
 
 // Check checks one parsed file as the only module of package "main".
@@ -292,7 +293,9 @@ func (c *Checker) checkBodies(f *File) {
 			c.fn = &FuncDecl{Name: "test", ResultT: TVoid}
 			c.env = nil
 			c.scope = &scope{names: map[string]*Local{}}
+			c.inTest = true
 			c.block(d.Body)
+			c.inTest = false
 		}
 	}
 }

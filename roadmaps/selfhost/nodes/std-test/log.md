@@ -1,0 +1,10 @@
+# Log: std-test
+
+- 2026-10-30: started on main 45ee125. Nothing of the node existed (no `std/test` module, no `Test.*`).
+- The module cannot live in `std_test.go`: Go treats any `*_test.go` file as a test file, so the `init` registration would exist only under `go test`. Module is in `std_testing.go`; `std_test.go` (owned) holds the Go tests. Recorded as a deviation.
+- "Importable only in test builds": the checker does not know whether the build is a test build, and a file with tests and a `run` entry must still build as a program. Rule taken: every `std/test` call must be inside a `test` block (arrow functions inside it included), checked through a `Checker.inTest` flag set around test bodies in `check.go`. The import is allowed anywhere. New code E0907 (std library range, next free).
+- Panic capture: tried fork first. Runtime hook `narra_panic_fd` in `runtime.h`: when set, `narra_panic` writes the message to the fd and `_exit(101)`. `runtime_test.h` (Module.Runtime of std/test): `narra_test_fork` (flushes stdio, pipe, fork, child sets the fd), `narra_test_returned` (`_exit(0)`), `narra_test_expect` (read pipe to EOF, waitpid, check status 101 and message substring).
+- Measured: `testdata/std_test.nra` (11 forks, one nested in a child) and 3 forking failure cases in `std_test.go`, all clean under `-fsanitize=address,undefined` with `NARRA_CHECK_LEAKS=1` and in release, on macOS clang. The child's heap is a copy, so its allocations never touch the parent's `narra_live`; `_exit` skips the child's leak report. setjmp not tried.
+- Dead end: a multi-line block arrow inside call parentheses does not parse (newlines are not statement ends inside parens). Sample uses a helper function instead. Not this node's issue.
+- Positions: `where` for a builtin call is the call's `(` position (existing convention, `CallExpr.P`), so `Test.eq(` at column 3 reports column 10. Kept for consistency with other runtime panics.
+- Doubt: a child that crashes (signal, sanitizer report, exit 102) fails the test with "expected a panic, but the function exited with code N / was killed by signal N", rather than counting as a panic. Seems right.

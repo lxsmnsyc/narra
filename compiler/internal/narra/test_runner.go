@@ -178,7 +178,7 @@ static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
       printf("FAIL - %s: timed out after %u s%s\n", c->name, limit, tbuf);
       failed++;
     } else if (WIFSIGNALED(status)) {
-      printf("FAIL - %s: killed by signal %d%s\n", c->name, WTERMSIG(status), tbuf);
+      printf("FAIL - %s: killed by signal %d (%s)%s\n", c->name, WTERMSIG(status), strsignal(WTERMSIG(status)), tbuf);
       failed++;
     } else {
       printf("FAIL - %s: exited with code %d%s\n", c->name, WEXITSTATUS(status), tbuf);

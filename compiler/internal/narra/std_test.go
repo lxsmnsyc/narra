@@ -45,8 +45,9 @@ test "a" {
 		{"timeout", `test "a" {
   Test.panics(() => { while (true) {} })
 }`, "panic at prog.nra:4:14: expected a panic, but the function ran past the 1 s timeout"},
-		// The inner and outer timeouts race: either the outer call fails on
-		// its timeout, or it passes and the last call fails. Neither hangs.
+		// The nested closure and the closure around it have the same limit and
+		// race: either the outer call fails on its timeout, or it passes and the
+		// last call fails. Neither hangs, and the message is the same.
 		{"nested_timeout", `function spin() {
   while (true) {}
 }
@@ -56,8 +57,9 @@ test "a" {
   Test.panics(() => spin())
 }`, "ran past the 1 s timeout"},
 	}
-	// A short timeout for the cases whose closure never returns.
-	t.Setenv("NARRA_TEST_TIMEOUT", "1")
+	// A short limit for the cases whose closure never returns. The test has 2
+	// seconds, so a Test.panics closure gets 1 and its own message comes first.
+	t.Setenv("NARRA_TEST_TIMEOUT", "2")
 	for _, tc := range cases {
 		for _, m := range modes {
 			t.Run(tc.name+"/"+m.name, func(t *testing.T) {
@@ -75,11 +77,6 @@ test "a" {
 					want = "FAIL - a: " + msg + " (" + pos + ")"
 				}
 				out, stderr, code := runProgram(t, src, opts)
-				// The test's own limit (NARRA_TEST_TIMEOUT) and the limit of the
-				// Test.panics child are the same, so they race: either message is a pass.
-				if strings.HasSuffix(tc.name, "timeout") && strings.Contains(out, "FAIL - a: timed out after 1 s") {
-					want = "FAIL - a: timed out after 1 s"
-				}
 				if code != 1 || !strings.Contains(out, want) {
 					t.Fatalf("want exit 1 and %q, got exit %d\nstdout:\n%s\nstderr:\n%s", want, code, out, stderr)
 				}

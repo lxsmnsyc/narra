@@ -24,13 +24,23 @@ typedef struct narra_test_proc {
 } narra_test_proc;
 
 static unsigned narra_test_timeout(void) {
+  unsigned limit = 10;
   const char* s = getenv("NARRA_TEST_TIMEOUT");
   if (s && *s) {
     char* end;
     long v = strtol(s, &end, 10);
-    if (*end == 0 && v > 0 && v < 100000) return (unsigned)v;
+    if (*end == 0 && v > 0 && v < 100000) limit = (unsigned)v;
   }
-  return 10;
+  // Inside a test that has a time limit (an alarm is pending), the closure
+  // gets what is left minus one second, at least one, so its own timeout
+  // message comes before the test's.
+  unsigned left = alarm(0);
+  if (left) {
+    alarm(left);
+    unsigned budget = left > 2 ? left - 1 : 1;
+    if (budget < limit) limit = budget;
+  }
+  return limit;
 }
 
 // narra_test_fork returns true in the child, which must call the closure

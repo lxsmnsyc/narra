@@ -127,6 +127,7 @@ func ApplyFix(src string, f Fix) string {
 
 // Explain returns the text of `narra explain code`.
 func Explain(code string) (string, error) {
+	code = strings.ToUpper(code)
 	var format string
 	for _, d := range diagnosticCodes {
 		if d.Code == code {

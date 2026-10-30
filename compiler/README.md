@@ -93,6 +93,7 @@ go test ./...
 
 ## Differences from the spec
 
+- `narra check --json` ranges are positions only: `range.end` equals `range.start` for a diagnostic (fix edits have real ranges), and `file` is the base name for a single file.
 - Enums are stored inline as tagged unions, so an enum cannot contain itself.
 - `Str.length` returns `int` instead of `ByteIndex`, and so do all string positions (`Str.indexOf`, `Str.slice`, `Str.nextChar` and the rest). Slices are copies, not views of the original buffer.
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.

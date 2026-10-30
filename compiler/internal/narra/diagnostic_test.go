@@ -38,6 +38,8 @@ func TestEveryFormatHasCode(t *testing.T) {
 			idx := 1
 			switch fn {
 			case "errorf", "fail", "typeErrorf":
+			case "codeFor":
+				idx = 0
 			case "failFix", "errorfFix":
 				idx = 2
 			default:
@@ -133,7 +135,25 @@ func TestHabitFixes(t *testing.T) {
 	}
 }
 
+// A generic function is checked once per instance; its error is reported once.
+func TestGenericErrorOnce(t *testing.T) {
+	ds, err := CheckDiagnostics(filepath.Join(testdata, "diagnostics", "ts_generic_concat.nra"))
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("want one diagnostic, got %v, %v", ds, err)
+	}
+	for _, f := range ds[0].Fixes {
+		for _, e := range f.Edits {
+			if e.End.Line < e.Start.Line || (e.End.Line == e.Start.Line && e.End.Col < e.Start.Col) {
+				t.Fatalf("invalid range in %s", ds[0].JSON())
+			}
+		}
+	}
+}
+
 func TestExplain(t *testing.T) {
+	if _, err := Explain("e0003"); err != nil {
+		t.Fatal(err)
+	}
 	text, err := Explain("E0003")
 	if err != nil || !strings.Contains(text, "semicolons") {
 		t.Fatalf("explain E0003: %q, %v", text, err)

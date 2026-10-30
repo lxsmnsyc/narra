@@ -60,7 +60,7 @@ The numbers inside a range follow the order of the error sites at the time of as
 
 ## Stubs left
 
-- No fix for `'abc'` strings (D42 example). The `T[]` fix covers a simple name or generic type only; `Array<int>[]` is not handled.
+- No fix for `'abc'` strings (D42 example). The `T[]` fix covers `int[]`, `Array<int>[]` and similar.
 - Only `E0003`, `E0014`, `E0020`, `E0033`, `E0038`, `E0216`, `E0309` have long `explain` texts. The rest print their message format.
 - The lexer and parser still stop at the first error.
 

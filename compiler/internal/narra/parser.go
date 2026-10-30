@@ -932,7 +932,7 @@ func (p *Parser) template(t Token) Expr {
 	var text strings.Builder
 	flush := func() {
 		if text.Len() > 0 {
-			lit.Parts = append(lit.Parts, &StringLit{exprBase: exprBase{P: t.Pos}, Value: text.String()})
+			lit.Parts = append(lit.Parts, &StringLit{exprBase: exprBase{P: t.Pos}, Value: text.String(), End: t.End})
 			text.Reset()
 		}
 	}

@@ -64,7 +64,7 @@ Accepted 2026-10-28 with PR #3. The contract is now v2, frozen.
 # Change request: trait-model v2 to v3
 
 - From node: hashed-cnames
-- Status: open
+- Status: accepted
 
 ## Problem
 
@@ -87,3 +87,4 @@ Implemented in `compiler/internal/narra/cnames.go` (`implName`, `opFuncName`).
 
 ## Decision
 
+Accepted 2026-10-30 with PR #8. The contract is now v3, frozen.

@@ -40,7 +40,7 @@ Accepted 2026-10-28 with PR #4. The contract is now v2, frozen.
 # Change request: module-graph v2 to v3
 
 - From node: hashed-cnames
-- Status: open
+- Status: accepted
 
 ## Problem
 
@@ -68,3 +68,4 @@ None needed; the node implements this in `compiler/internal/narra/cnames.go`.
 
 ## Decision
 
+Accepted 2026-10-30 with PR #8. The contract is now v3, frozen.

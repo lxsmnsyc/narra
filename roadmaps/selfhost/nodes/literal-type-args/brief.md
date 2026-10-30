@@ -32,6 +32,8 @@ shared:
   - selfhost/src/parser.nra
   - selfhost/src/ast.nra
   - selfhost/src/astdump.nra
+  - selfhost/src/idcheck.nra
+  - compiler/internal/narra/selfhost_test.go
   - compiler/README.md
   - SPEC.md
   - DECISIONS.md

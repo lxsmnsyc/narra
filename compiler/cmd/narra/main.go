@@ -103,6 +103,19 @@ func main() {
 		if !ok {
 			os.Exit(1)
 		}
+	case "parse":
+		// Hidden: print the syntax tree of a file, for the self-hosted parser test.
+		if len(rest) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: narra parse file.nra")
+			os.Exit(2)
+		}
+		src, err := os.ReadFile(rest[0])
+		check(err)
+		dump, ok := narra.ASTDump(string(src))
+		fmt.Print(dump)
+		if !ok {
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

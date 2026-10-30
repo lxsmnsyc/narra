@@ -465,7 +465,7 @@ func (p *Parser) traitDecl(exported bool) *TraitDecl {
 			p.fail(p.tok().Pos, "trait functions have no default implementation; remove the body")
 		}
 		td.Funcs = append(td.Funcs, fd)
-		p.endStatement()
+		p.endTypeDecl()
 	}
 	p.expect("}")
 	return td

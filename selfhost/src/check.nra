@@ -14,7 +14,7 @@
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, FuncDecl, ConstDecl, Decl, File } from "narrac/ast"
-import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, typeKey, isBoxedEnum } from "narrac/types"
+import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, TraitInfo, TypeTraits, ImplInfo, ImplRef, MapKeyCheck, typeKey, isBoxedEnum } from "narrac/types"
 import * as Array from "std/array"
 import * as Map from "std/map"
 
@@ -29,6 +29,7 @@ export struct ModScope {
   generics: Map<string, int> // Checker.generics
   funcs: Map<string, int> // Checker.funcs
   consts: Map<string, int> // Checker.consts
+  traits: Map<string, int> // Checker.traits: the module's own traits and its imports'
 }
 
 // A top-level function. typeParams is empty for a non-generic function.
@@ -85,7 +86,22 @@ export struct Checker {
   paramTypes: Array<Type> // the type of each Param, TVoid until set
   // Locals declared so far, for unique local names (body checker).
   localN: int
+  // Traits (traits.nra). traits holds every declared trait; a module's
+  // ModScope.traits maps names to indexes. typeTraits has one entry per
+  // struct and enum declaration (and the prelude's), found by
+  // "<module>|<name>" in typeTraitIndex. bounds maps a type parameter to the
+  // traits in its constraint. impls are the checked implement blocks, and
+  // implFuncs maps "<typeKey>|Trait.function" to the implementing function.
+  traits: Array<TraitInfo>
+  typeTraits: Array<TypeTraits>
+  typeTraitIndex: Map<string, int>
+  bounds: Map<int, Array<int>>
+  busy: Map<string, bool>
+  impls: Array<ImplInfo>
+  implFuncs: Map<string, ImplRef>
+  mapKeys: Array<MapKeyCheck>
   errs: Array<CheckError>
+  errKeys: Map<string, bool> // file, line, column and message of each error in errs
   // Structs and enums in C definition order, set by finish (Go's
   // Program.Types).
   order: Array<Type>
@@ -96,7 +112,9 @@ export function newChecker(ids: int): Checker uses alloc {
   return Checker {
     structs: [], enums: [], distincts: [], params: [], generics: [], funcs: [], consts: [],
     instances: Map {}, instTypes: [], concrete: [], scopes: [], cur: 0, env: Map {},
-    paramTypes: Array.filled(TVoid, ids), localN: 0, errs: [], order: [],
+    paramTypes: Array.filled(TVoid, ids), localN: 0,
+    traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, impls: [], implFuncs: Map {}, mapKeys: [],
+    errs: [], errKeys: Map {}, order: [],
   }
 }
 
@@ -111,11 +129,11 @@ export function errorf(mutable c: Checker, pos: Pos, message: string) uses alloc
 }
 
 export function errorIn(mutable c: Checker, file: string, pos: Pos, message: string) uses alloc {
-  for (const e of Array.values(c.errs)) {
-    if (e.file == file && e.pos.line == pos.line && e.pos.col == pos.col && e.message == message) {
-      return
-    }
+  const key = `${file}|${Int.toString(pos.line)}|${Int.toString(pos.col)}|${message}`
+  if (c.errKeys[key] is Some(_)) {
+    return
   }
+  c.errKeys[key] = true
   Array.push(mutable c.errs, CheckError { file: file, pos: pos, message: message })
 }
 
@@ -143,7 +161,7 @@ export function newScope(mutable c: Checker, path: string, file: string, decls: 
       generics[n] = g
     }
   }
-  Array.push(mutable c.scopes, ModScope { path: path, file: file, decls: decls, types: types, generics: generics, funcs: Map {}, consts: Map {} })
+  Array.push(mutable c.scopes, ModScope { path: path, file: file, decls: decls, types: types, generics: generics, funcs: Map {}, consts: Map {}, traits: Map {} })
   return Array.length(c.scopes) - 1
 }
 
@@ -161,6 +179,53 @@ export function lookupType(c: Checker, name: string): Option<Type> {
 
 export function lookupGeneric(c: Checker, name: string): Option<int> {
   return c.scopes[c.cur].generics[name]
+}
+
+// setParamType records the type of a parameter in the side table. Ids
+// outside the table are ignored.
+export function setParamType(mutable c: Checker, id: int, t: Type) {
+  if (id >= 0 && id < Array.length(c.paramTypes)) {
+    c.paramTypes[id] = t
+  }
+}
+
+// lookupTrait finds a trait by the name the current module uses for it: its
+// own and imported traits, then the prelude's. It returns the Checker.traits
+// index, or -1.
+export function lookupTrait(c: Checker, name: string): int {
+  if (c.scopes[c.cur].traits[name] is Some(i)) {
+    return i
+  }
+  if (c.scopes[0].traits[name] is Some(j)) {
+    return j
+  }
+  return -1
+}
+
+// stdTrait finds Equatable, Hashable, Ordered or Show, or returns -1.
+export function stdTrait(c: Checker, name: string): int {
+  if (c.scopes[0].traits[name] is Some(i)) {
+    if (c.traits[i].std) {
+      return i
+    }
+  }
+  return -1
+}
+
+// checkMapKey queues the check of a Map key type. Keys that still hold type
+// parameters are checked when the generic is used. The check runs once every
+// module is declared (flushMapKeys in traits.nra), when the trait facts of
+// later types are known.
+export function checkMapKey(mutable c: Checker, pos: Pos, key: Type) uses alloc {
+  if (containsTypeParam(c, key)) {
+    return
+  }
+  let file = ""
+  if (Array.length(c.scopes) > 0) {
+    file = c.scopes[c.cur].file
+  }
+  const item = MapKeyCheck { pos: pos, key: key, file: file }
+  Array.push(mutable c.mapKeys, item)
 }
 
 // typeString prints a type as Go's Type.String does: structs and enums by

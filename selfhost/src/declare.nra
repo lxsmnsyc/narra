@@ -5,7 +5,7 @@
 //
 // This node checks the modules of a package one by one, each with its own
 // declarations and the prelude. Extension points are comments marked HOOK:
-// selfhost-check-traits adds trait declarations, bounds and implementations;
+// selfhost-check-traits added trait declarations, bounds and implementations (traits.nra);
 // selfhost-check-imports adds package and std imports, imported names and
 // the imported-constant check; selfhost-check-bodies adds default values,
 // bodies and pending generic function instances.
@@ -18,8 +18,9 @@ import { Pos, File, Decl, FuncDecl, ConstDecl, DistinctDecl, FieldDecl, VariantD
 import { parse, quoteGo } from "narrac/parser"
 import { Package, SourceModule } from "narrac/modules"
 import { Type, StructInfo, EnumInfo, DistinctInfo, GenericInfo } from "narrac/types"
-import { Checker, FuncInfo, ConstInfo, CheckError, newChecker, newScope, enter, errorf, errorIn, lookupType, lookupGeneric, finish } from "narrac/check"
+import { Checker, FuncInfo, ConstInfo, CheckError, newChecker, newScope, enter, errorf, errorIn, setParamType, lookupType, lookupGeneric, lookupTrait, finish } from "narrac/check"
 import { makeParams, envOf } from "narrac/generics"
+import { declareTraits, resolveTraits, funcBounds, flushMapKeys } from "narrac/traits"
 import { resolveType, resolveOpt, resolveFields, resolveVariants, buildGeneric } from "narrac/resolve"
 import * as Array from "std/array"
 import * as Range from "std/range"
@@ -136,7 +137,7 @@ export function declareModule(mutable c: Checker, f: File) uses alloc {
     }
     Array.push(mutable made, t)
   }
-  // HOOK selfhost-check-traits: declareTraits(f).
+  declareTraits(mutable c, f)
   for (const k of Range.between(0, Array.length(f.decls))) {
     const t = made[k]
     match (f.decls[k]) {
@@ -162,7 +163,7 @@ export function declareModule(mutable c: Checker, f: File) uses alloc {
   for (const g of Array.values(own)) {
     buildGeneric(mutable c, g)
   }
-  // HOOK selfhost-check-traits: resolveTraits(f).
+  resolveTraits(mutable c, f)
   // HOOK selfhost-check-bodies: checkDefaults on the fields of every
   // non-generic struct, after every field type is known.
 }
@@ -234,7 +235,7 @@ function declareFunc(mutable c: Checker, fd: FuncDecl) uses alloc {
   let tps: Array<int> = []
   if (Array.length(fd.typeParams) > 0) {
     tps = makeParams(mutable c, fd.typeParams)
-    // HOOK selfhost-check-traits: funcBounds(fd, tps).
+    funcBounds(mutable c, fd, tps)
     c.env = envOf(c, tps)
   }
   for (const p of Array.values(fd.params)) {
@@ -249,12 +250,6 @@ function declareFunc(mutable c: Checker, fd: FuncDecl) uses alloc {
   c.scopes[s].funcs[fd.name] = idx
 }
 
-export function setParamType(mutable c: Checker, id: int, t: Type) {
-  if (id >= 0 && id < Array.length(c.paramTypes)) {
-    c.paramTypes[id] = t
-  }
-}
-
 // declareConsts registers the constants of f in the current module. A
 // constant may not share a name with a function, a type or another constant.
 function declareConsts(mutable c: Checker, f: File) uses alloc {
@@ -264,8 +259,7 @@ function declareConsts(mutable c: Checker, f: File) uses alloc {
     if (d is Const(cd)) {
       const dupFunc = c.scopes[s].funcs[cd.name] is Some(_)
       const dup = c.scopes[s].consts[cd.name] is Some(_)
-      // HOOK selfhost-check-traits: a trait name counts as a type name.
-      const typeNamed = lookupType(c, cd.name) is Some(_) || lookupGeneric(c, cd.name) is Some(_)
+      const typeNamed = lookupType(c, cd.name) is Some(_) || lookupGeneric(c, cd.name) is Some(_) || lookupTrait(c, cd.name) >= 0
       if (dup || dupFunc || typeNamed) {
         errorf(mutable c, cd.pos, `constant ${quoteGo(cd.name)} is declared twice`)
         continue
@@ -313,6 +307,7 @@ export function declarePackage(pkg: Package): Checker uses alloc {
     declareSourceModule(mutable c, m)
   }
   declareConstTypes(mutable c)
+  flushMapKeys(mutable c)
   const concrete = c.concrete
   finish(mutable c, concrete)
   return c

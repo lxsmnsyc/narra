@@ -39,8 +39,19 @@ import (
 //	    func module="<m>" [typeParams=<T>,<U>] <name>
 //	      param <name> [mutable] <type>
 //	      result <type>
+//	      bound <T> <Trait>
 //	    const module="<m>" <name> <type>|?
 //	    order module="<m>" <type>
+//	    trait module="<m>" [std] <name>
+//	      function <name>
+//	        param <name> [mutable] [escaping] <type>
+//	        result <type>
+//	    impl module="<m>" listed <Trait> <name>
+//	    impl module="<m>" derived <Trait> <name>
+//	    impl module="<m>" block <Trait> <name>
+//	      function <name>
+//	        param ... and result ... (as for a trait)
+//	    impl module="<m>" holds=<true|false> <Trait> <type>
 //
 // Rules
 //
@@ -48,8 +59,21 @@ import (
 //     package modules in load order. Inside a module, struct, enum,
 //     distinct, generic, func and const lines follow the declarations in
 //     source order. A non-generic struct or enum is a `type` line; a generic
-//     one is a `generic` line. Traits, implementations and tests print
-//     nothing here.
+//     one is a `generic` line. Tests print nothing here.
+//   - A `bound` line sits under the `func` of a generic function, one per
+//     constraint, in the order they are written: the type parameter, then
+//     the trait name.
+//   - A `trait` line sits where the trait is declared. Its `function`
+//     lines show the signature with Self printed as "Self". `std` marks the
+//     prelude's Equatable, Hashable, Ordered and Show.
+//   - Right after a struct or enum (its `type` or `generic` block) come one
+//     `impl ... listed` line per trait of its `implements` list and one
+//     `impl ... derived` line per trait of its `derives` list, as written.
+//     An `implement` block prints `impl ... block` where it is declared,
+//     with the functions it defines (the names written in the source).
+//   - After the `order` lines come the `holds` lines: for each type of the
+//     order, in that order, one line for each of Equatable, Hashable,
+//     Ordered and Show with the answer of implements(type, trait).
 //   - `default` marks a field that has a default value. `opaque` marks an
 //     opaque struct or distinct type (and the instances of an opaque generic
 //     struct).
@@ -74,8 +98,9 @@ import (
 //	Each line kind belongs to one roadmap node; a later node appends its own
 //	kinds and documents them here. selfhost-check-decls: type, field,
 //	variant, base, generic, func, param, result, const, order, error.
-//	selfhost-check-traits adds trait, impl and bound; selfhost-check-imports
-//	adds module, import and builtin.
+//	selfhost-check-traits: trait, impl, bound, and function (the signature
+//	line inside trait and impl). selfhost-check-imports adds module, import
+//	and builtin.
 
 // DeclDump loads the package at path, runs the declaration passes and returns
 // the dump described above.
@@ -102,6 +127,7 @@ func DeclDump(path string) (dump string, ok bool) {
 			}
 		}
 	}
+	c.flushMapKeys()
 	c.finish(concrete)
 	if len(c.errs) > 0 {
 		return errorLines(Diagnostics(c.errs)), false
@@ -127,6 +153,9 @@ func DeclDump(path string) (dump string, ok bool) {
 	}
 	for _, t := range c.prog.Types {
 		b.WriteString("order module=" + quoteDump(typeModule(t)) + " " + t.String() + "\n")
+	}
+	for _, t := range c.prog.Types {
+		c.dumpHolds(&b, t)
 	}
 	return b.String(), true
 }
@@ -168,6 +197,7 @@ func (c *Checker) dumpModule(b *strings.Builder, s *modScope, f *File, constType
 			} else {
 				dumpType(b, s.types[name])
 			}
+			c.dumpListed(b, mod, s.path, name)
 		case *DistinctDecl:
 			dumpType(b, d.T)
 		case *FuncDecl:
@@ -184,6 +214,15 @@ func (c *Checker) dumpModule(b *strings.Builder, s *modScope, f *File, constType
 				b.WriteString(p.T.String() + "\n")
 			}
 			b.WriteString("  result " + d.ResultT.String() + "\n")
+			for i, tp := range c.funcTP[d] {
+				for _, tr := range c.traits.bounds[tp] {
+					b.WriteString("  bound " + d.TypeParams[i] + " " + tr.Name + "\n")
+				}
+			}
+		case *TraitDecl:
+			dumpTrait(b, mod, d.T)
+		case *ImplDecl:
+			c.dumpImpl(b, mod, d)
 		case *ConstDecl:
 			t := "?"
 			if ct, ok := constTypes[d]; ok {
@@ -248,4 +287,71 @@ func opaqueFlag(on bool) string {
 		return "opaque "
 	}
 	return ""
+}
+
+// dumpListed prints the `implements` and `derives` lists of a struct or enum.
+func (c *Checker) dumpListed(b *strings.Builder, mod, path, name string) {
+	info := c.traits.types[typeKey{path, name}]
+	if info == nil {
+		return
+	}
+	for _, te := range info.implExprs {
+		b.WriteString("impl" + mod + "listed " + te.Name + " " + name + "\n")
+	}
+	for _, te := range info.derivExprs {
+		b.WriteString("impl" + mod + "derived " + te.Name + " " + name + "\n")
+	}
+}
+
+func dumpTrait(b *strings.Builder, mod string, tr *Trait) {
+	std := ""
+	if tr.Std {
+		std = "std "
+	}
+	b.WriteString("trait" + mod + std + tr.Name + "\n")
+	for _, tf := range tr.Funcs {
+		dumpSignature(b, tf.Name, tf.Decl)
+	}
+}
+
+// dumpImpl prints an `implement` block. The block's functions were renamed
+// (implName), so their source names come from the implementation table.
+func (c *Checker) dumpImpl(b *strings.Builder, mod string, d *ImplDecl) {
+	t := c.traits.implType[d]
+	b.WriteString("impl" + mod + "block " + d.Trait.Name + " " + declaredName(t) + "\n")
+	for _, fd := range d.Funcs {
+		name := fd.Name
+		for key, f := range c.traits.implFuncs[t] {
+			if f == fd {
+				name = key[strings.Index(key, ".")+1:]
+			}
+		}
+		dumpSignature(b, name, fd)
+	}
+}
+
+func dumpSignature(b *strings.Builder, name string, fd *FuncDecl) {
+	b.WriteString("  function " + name + "\n")
+	for _, p := range fd.Params {
+		b.WriteString("    param " + p.Name + " ")
+		if p.Mutable {
+			b.WriteString("mutable ")
+		}
+		if p.Escaping {
+			b.WriteString("escaping ")
+		}
+		b.WriteString(p.T.String() + "\n")
+	}
+	b.WriteString("    result " + fd.ResultT.String() + "\n")
+}
+
+// dumpHolds prints implements(t, trait) for the four standard traits.
+func (c *Checker) dumpHolds(b *strings.Builder, t Type) {
+	for _, n := range []string{"Equatable", "Hashable", "Ordered", "Show"} {
+		holds := "false"
+		if c.implements(t, c.stdTrait(n)) {
+			holds = "true"
+		}
+		b.WriteString("impl module=" + quoteDump(typeModule(t)) + " holds=" + holds + " " + n + " " + t.String() + "\n")
+	}
 }

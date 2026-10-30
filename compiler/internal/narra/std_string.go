@@ -45,6 +45,22 @@ func init() {
 			"charCount":  strFn("Str.charCount", []Type{TStr}, TInt, nil, "narra_str_char_count", false, false),
 			"trim":       strFn("Str.trim", []Type{TStr}, TStr, []string{"alloc"}, "narra_str_trim", false, true),
 			"startsWith": strFn("Str.startsWith", []Type{TStr, TStr}, TBool, nil, "narra_str_starts_with", false, false),
+			"endsWith":   strFn("Str.endsWith", []Type{TStr, TStr}, TBool, nil, "narra_str_ends_with", false, false),
+			"contains":   strFn("Str.contains", []Type{TStr, TStr}, TBool, nil, "narra_str_contains", false, false),
+			// replace(s, from, to): every match of from, left to right and
+			// non-overlapping. An empty from returns s unchanged.
+			"replace": strFn("Str.replace", []Type{TStr, TStr, TStr}, TStr, []string{"alloc"}, "narra_str_replace", false, true),
+			// join(parts, sep): the parts with sep between them.
+			"join": {
+				Name: "Str.join", Effects: []string{"alloc"},
+				Check: func(c *Checker, x *CallExpr, want Type) Type {
+					return checkFixed(c, x, []Type{c.arrayOf(TStr), TStr}, TStr)
+				},
+				Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
+					a := e.argCode(x, 0)
+					return e.ownedTemp(TStr, fmt.Sprintf("narra_str_join(%s->items, %s->len, %s)", a, a, e.argCode(x, 1))), true
+				},
+			},
 			// indexOf(s, needle): the first position of needle, or None.
 			"indexOf": {
 				Name: "Str.indexOf", Effects: []string{"alloc"},

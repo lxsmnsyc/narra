@@ -145,22 +145,30 @@ static lstr* lstr_from_f64(double v) {
 
 static lstr* lstr_from_char(uint32_t c) {
   char buf[5] = {0};
+  int64_t n;
   if (c < 0x80) {
     buf[0] = (char)c;
+    n = 1;
   } else if (c < 0x800) {
     buf[0] = (char)(0xC0 | (c >> 6));
     buf[1] = (char)(0x80 | (c & 0x3F));
+    n = 2;
   } else if (c < 0x10000) {
     buf[0] = (char)(0xE0 | (c >> 12));
     buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
     buf[2] = (char)(0x80 | (c & 0x3F));
+    n = 3;
   } else {
     buf[0] = (char)(0xF0 | (c >> 18));
     buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
     buf[2] = (char)(0x80 | ((c >> 6) & 0x3F));
     buf[3] = (char)(0x80 | (c & 0x3F));
+    n = 4;
   }
-  return lstr_from_cstr(buf);
+  // Use the encoded length: a NUL character has no strlen.
+  lstr* r = lstr_new(n);
+  memcpy(r->data, buf, (size_t)n);
+  return r;
 }
 
 static bool lstr_eq(lstr* a, lstr* b) {

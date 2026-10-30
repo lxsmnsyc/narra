@@ -357,7 +357,7 @@ func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 }
 
 func (c *Checker) funcInstance(fd *FuncDecl, tps []*TypeParamType, targs []Type) *FuncDecl {
-	name := fd.Name + typeArgsMangle(targs)
+	name := instanceName(fd.Module, fd.Name, targs)
 	key := fd.Module + "." + name
 	if inst, ok := c.funcInsts[key]; ok {
 		return inst

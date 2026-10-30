@@ -58,7 +58,7 @@ func closureOf(a *ArrowExpr) *Closure {
 // function types can be listed for the emitter.
 func (c *Checker) funcOf(params []Type, result Type) *FuncType {
 	ft := &FuncType{Params: params, Result: result}
-	key := mangle(ft)
+	key := typeID(ft)
 	if have, ok := c.cl().funcTypes[key]; ok {
 		return have
 	}

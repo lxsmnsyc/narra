@@ -17,10 +17,7 @@ import (
 // calls the user's `implement` function when there is one.
 
 // traitFuncName is where every C name of a generated trait function is made.
-// The "__" keeps it apart from the C name of a type such as `Point_eq`:
-// no output of mangle is "eq", "hash", "cmp" or "show", and type names
-// contain no "__".
-func traitFuncName(t Type, op string) string { return mangle(t) + "__" + op }
+func traitFuncName(t Type, op string) string { return opFuncName(op, t) }
 
 func primTraitFunc(t *PrimType, op string) string {
 	if t == TStr {

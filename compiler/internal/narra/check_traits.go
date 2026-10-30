@@ -98,22 +98,6 @@ func newTraitState() *traitState {
 	}
 }
 
-// implFuncName is the FuncDecl.Name of a function in an `implement` block.
-// The function's Module is the type's module, so funcCName gives
-// f_<module>__<Type>__0<trait module>__<Trait>__<fn>, or
-// f_<module>__<Type>__0<Trait>__<fn> for a prelude trait. Every C name for
-// user trait code is made here.
-//
-// The segment after the type starts with "0". No identifier and no output
-// of mangle starts with a digit, so these names never equal a generic
-// instance name (f_<module>__<name>__<mangle>...). Type, trait and function
-// names contain no "__" and module paths map without "__", so the segment
-// count tells a prelude trait (two segments after "0") from a module trait
-// (three).
-func implFuncName(tr *Trait, fn string, t Type) string {
-	return declaredName(t) + "__0" + cModule(tr.Module) + tr.Name + "__" + fn
-}
-
 // ownsType reports whether the current module may write `implement` blocks
 // for the type: only the module that declares it (SPEC section 4, D5).
 func (c *Checker) ownsType(info *typeTraits) bool { return info.module == c.mod.path }
@@ -178,17 +162,6 @@ func (c *Checker) declareTraits(f *File) {
 			if c.lookupTrait(d.Name) != nil || isType || isGeneric {
 				c.errorf(d.Pos, "%q is declared twice", d.Name)
 				continue
-			}
-			// Implementation C names join the trait and function names with
-			// "__" (implFuncName), so neither may start or end with "_" or
-			// contain "__", as for module path segments.
-			if !cSafeSegment(d.Name) {
-				c.errorf(d.Pos, "trait name %q cannot start or end with \"_\" or contain \"__\"; C names use them as separators", d.Name)
-			}
-			for _, fd := range d.Funcs {
-				if !cSafeSegment(fd.Name) {
-					c.errorf(fd.Pos, "trait function name %q cannot start or end with \"_\" or contain \"__\"; C names use them as separators", fd.Name)
-				}
 			}
 			typeParamID++
 			tr := &Trait{Name: d.Name, Decl: d, Module: mod, Self: &SelfType{Name: "Self", ID: typeParamID}}
@@ -449,7 +422,7 @@ func (c *Checker) resolveImpl(d *ImplDecl) {
 			c.errorf(fd.Pos, "%s.%s for %s must be `%s`", tr.Name, fd.Name, info.name, c.signatureText(tf, selfMap))
 		}
 		key := tr.Name + "." + tf.Name
-		fd.Name = implFuncName(tr, tf.Name, t)
+		fd.Name = implName(tr, tf.Name, t)
 		fd.Module = c.mod.path
 		c.funcMod[fd] = c.mod
 		ts.implFuncs[t][key] = fd

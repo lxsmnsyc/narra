@@ -93,7 +93,7 @@ go test ./...
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.
 - Generic functions and types are compiled once per set of type arguments in every build. The spec's layout tables for debug builds are not implemented.
 - Generic function bodies are checked once with their type parameters left open, then again for each instance.
-- One C file per program, not one per module. C names carry the module: `f_app_text__helper`, `S_app_text__Token`. A single file `hello.nra` is module `"hello"`. Top-level names cannot contain `__`, and module file and directory names and package names cannot contain `__` or start or end with `_`, so C names stay unique. A package cannot be named `std`.
+- One C file per program, not one per module. Declaration C names are `<kind>_<module hash>_<name>`, such as `f_3fa9c1e7_show`: the hash is xxHash32 (seed 0) of the module path relative to the package. Composite types (generic instances, tuples, function types, arrays) are interned as `<kind>_<head>_<hash>`, and a comment table in the C maps each to its Narra type. A single file `hello.nra` is module `"hello"`. A package cannot be named `std`.
 - Modules are checked against the declarations of the modules they import, in memory. There are no `.nrai` files.
 - Unused imports and private functions are not errors yet.
 - Every line of a compile error starts with its file, as in `src/text.nra:3:4: ...`.
@@ -104,7 +104,6 @@ go test ./...
 - Traits are imported by name (`import { Area } from "app/shapes"`). `Alias.Trait.f(x)` and `<T: Alias.Trait>` are not supported.
 - A bare constructor name resolves from the expected type first. Otherwise the enums visible in the module are searched in three ranks: those the module declares, then those it imports by name, then the prelude. The first rank with a match wins, so a user `Less` is not `Ordering.Less`. Two enums of the same rank sharing the name are an ambiguity error; write `Enum.Name`.
 - `trait`, `implement`, `implements` and `derives` are keywords, so they cannot be used as names. `Ordering` (with `Less`, `Equal`, `Greater`) and the traits `Equatable`, `Hashable`, `Ordered` and `Show` are prelude names, like `Option`, so a program cannot declare its own type or trait with those names.
-- Trait names and trait function names cannot start or end with `_` or contain `__`, because the C names of implementations use `__` between them.
 - `Hashable.hash(x)` returns `int`. `Hash.of` does not exist yet.
 - A function type carries no `escaping` marker, so the parameters of a function value are escaping: an argument passed through a function value must be escaping, and a parameter of an arrow function that has a function type may be stored.
 - Only a parameter written with a function type can be non-escaping. A parameter whose type is a type parameter is escaping even when the type argument is a function type, so passing a non-escaping parameter to `id<T>(v: T)` is an error.

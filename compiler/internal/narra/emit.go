@@ -54,6 +54,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 		}
 	}
 	b.WriteString("\n// Types\n")
+	writeCNameTable(&b, prog)
 	for _, a := range prog.Arrays {
 		fmt.Fprintf(&b, "typedef struct %s %s;\n", arrName(a), arrName(a))
 	}
@@ -70,7 +71,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	b.WriteString("\n// Reference counting\n")
 	for _, t := range prog.Types {
 		if needsRC(t) {
-			fmt.Fprintf(&b, "static void %s_retain(%s v);\nstatic void %s_release(%s v);\n", t.CName(), t.CName(), t.CName(), t.CName())
+			fmt.Fprintf(&b, "static void %s(%s v);\nstatic void %s(%s v);\n", opFuncName("retain", t), t.CName(), opFuncName("release", t), t.CName())
 		}
 	}
 	for _, a := range prog.Arrays {

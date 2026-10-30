@@ -106,7 +106,6 @@ search = [
 		"[package]\nname = \"a\"\n[[binary]]\n": "needs a name and an entry",
 		"[dependencies]\n":                      "not supported",
 		"[package]\nname = \"std\"\n":           "reserved for the standard library",
-		"[package]\nname = \"a__b\"\n":          "without `__`",
 		"[package]\nname = \"a\"\n[[binary]]\nname = \"x\"\nentry = \"m.run\"\n[[binary]]\nname = \"x\"\nentry = \"n.run\"\n": "two [[binary]] entries are named \"x\"",
 		"[package]\nname = \"a\n": "unterminated string",
 	} {

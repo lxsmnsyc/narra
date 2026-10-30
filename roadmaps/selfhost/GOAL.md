@@ -70,6 +70,8 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - regions -> regions; fixed arrays -> fixed-arrays; SIMD -> simd; build conditions -> build-conditions
 - JSON diagnostics -> json-diagnostics; query CLI -> query-cli; fmt -> fmt
 - no global functions except print, assert, panic (user decision 2026-10-30) -> prelude-imports
+- literal type arguments, `Map<K, V> {}` (user decision 2026-10-30) -> literal-type-args
+- `std/option` and `std/result` helpers (user decision 2026-10-30) -> std-option-result
 - testing library `std/test` (added 2026-10-30, not in SPEC.md) -> std-test, test-runner
 - Perceus reference count optimization -> perceus; layout tables -> layout-tables
 - benchmarks against Go and Rust -> bench-harness

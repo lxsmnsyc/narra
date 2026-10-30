@@ -28,6 +28,7 @@ shared:
   - compiler/internal/narra/builtins.go
   - compiler/internal/narra/check_call.go
   - compiler/internal/narra/emit_call.go
+  - compiler/internal/narra/check_effects.go
   - compiler/internal/narra/diagnostic_codes.go
   - compiler/README.md
   - SPEC.md

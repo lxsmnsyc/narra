@@ -1,7 +1,8 @@
 ---
 id: json-diagnostics
 title: Diagnostic codes, fixes and JSON output
-status: active
+status: done
+spent: 385200
 priority: should
 type: feature
 outline: false
@@ -68,9 +69,11 @@ See `SPEC.md` section 14 and decision D42. The JSON shape is in section 14.
 
 ## Acceptance
 
-- [ ] `narra check --json` on each `testdata/errors/` file prints a diagnostic with a code, and the TypeScript habit cases include a fix that, when applied, makes the file compile.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `narra check --json` on each `testdata/errors/` file prints a diagnostic with a code, and the TypeScript habit cases include a fix that, when applied, makes the file compile.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: touches many error sites, but each change is small.
+
+PR: [#15](https://github.com/lxsmnsyc/narra/pull/15)

@@ -2,7 +2,7 @@
 id: test-runner
 title: Golden files and narra test runner features
 status: done
-spent: 600000
+spent: 510000
 priority: should
 type: feature
 outline: false

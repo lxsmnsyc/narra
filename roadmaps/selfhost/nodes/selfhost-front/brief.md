@@ -1,7 +1,8 @@
 ---
 id: selfhost-front
 title: Self-hosted parser
-status: active
+status: done
+spent: 292000
 priority: must
 type: feature
 outline: false
@@ -60,10 +61,10 @@ Port `compiler/internal/narra/parser.go` (about 1130 lines) to `selfhost/src/par
 
 ## Acceptance
 
-- [ ] `TestSelfhostParser` passes: `narrac parse` output and exit code equal `narra parse` on every `.nra` under `compiler/testdata/` and `selfhost/src/`.
-- [ ] `TestSelfhostLexer` still passes, with the stubs above replaced and a non-ASCII `\u{}` edge case.
-- [ ] The outcome describes the node id scheme and the error flow.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `TestSelfhostParser` passes: `narrac parse` output and exit code equal `narra parse` on every `.nra` under `compiler/testdata/` and `selfhost/src/`.
+- [x] `TestSelfhostLexer` still passes, with the stubs above replaced and a non-ASCII `\u{}` edge case.
+- [x] The outcome describes the node id scheme and the error flow.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

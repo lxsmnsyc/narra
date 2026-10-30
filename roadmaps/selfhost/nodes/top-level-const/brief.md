@@ -1,7 +1,7 @@
 ---
 id: top-level-const
 title: Top-level constants
-status: active
+status: done
 priority: should
 type: feature
 outline: false
@@ -15,7 +15,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-10-30
-spent:
+spent: 607467
 owns:
   - compiler/internal/narra/check_const.go
   - compiler/internal/narra/emit_const.go
@@ -62,10 +62,12 @@ Implement top-level `const` from `SPEC.md` section 10: a module-level constant w
 
 ## Acceptance
 
-- [ ] `testdata/const.nra` uses int, string, struct, array and enum constants, including one imported from another module of a package, and runs clean under the sanitizers and the leak check.
-- [ ] Error tests: a constant that calls a function, a cycle, assignment to a constant.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `testdata/const.nra` uses int, string, struct, array and enum constants, including one imported from another module of a package, and runs clean under the sanitizers and the leak check.
+- [x] Error tests: a constant that calls a function, a cycle, assignment to a constant.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: one new declaration kind through parser, checker and emitter; static C data for the common types.
+
+PR: [#19](https://github.com/lxsmnsyc/narra/pull/19)

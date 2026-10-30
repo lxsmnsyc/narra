@@ -23,6 +23,13 @@ shared:
   - compiler/internal/narra/check*.go
   - compiler/internal/narra/parser.go
   - compiler/internal/narra/driver.go
+  - compiler/README.md
+  - compiler/internal/narra/ast.go
+  - compiler/internal/narra/clone.go
+  - compiler/internal/narra/lexer.go
+  - compiler/internal/narra/modules.go
+  - compiler/internal/narra/modules_toml.go
+  - compiler/internal/narra/std_map.go
 reserves: []
 provides: []
 depends_on:

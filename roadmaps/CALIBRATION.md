@@ -28,3 +28,4 @@ Notes:
 | selfhost | selfhost-ast | M | M | 2 | 446k tokens. Round 1 asked for escape goldens and position rules in the format comment. Found a Go parser bug (`mutable` after `uses` in parameters), split into fix PR #21. |
 | selfhost | selfhost-front | L | L | 1 | 292k tokens. 1501 Narra lines for about 1180 Go (1.27x), under the spike's 1800 because constants and std-convert removed workarounds. Review had nits only. |
 | selfhost | selfhost-modules | M | M | 2 | 512k tokens. 745 Narra lines for 569 Go (1.3x). Round 1: no test of the id chain across files; added `narrac pkg --ids`. Reviewer ran about 60 handwritten packages against both loaders. |
+| selfhost | std-test | L | L | 2 | 385k tokens. Gate (spec text). Fork-based panic capture clean under ASan and leaks. Review found a hang on a closure that never returns; fixed with alarm. Brief named the module file `std_test.go`, which Go builds only under go test. |

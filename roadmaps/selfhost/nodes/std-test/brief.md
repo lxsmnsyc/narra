@@ -1,7 +1,8 @@
 ---
 id: std-test
 title: std/test assertions and panic expectations
-status: active
+status: done
+spent: 385000
 priority: should
 type: feature
 outline: false
@@ -65,11 +66,11 @@ A `std/test` module for `test` blocks: `Test.eq(a, b)` and `Test.ne(a, b)` that 
 
 ## Acceptance
 
-- [ ] `testdata/std_test.nra` (run with `narra test` by the harness, or a package under `testdata/packages/std_test/` if single files cannot run tests) covers passing `eq`, `ne`, `panics` and `panicsWith`, and its `.out` matches in debug (ASan, UBSan, leak check) and release builds.
-- [ ] Failing cases are checked: a failing `Test.eq` prints both values and the position and the test run exits non-zero; a `Test.panics` whose closure returns fails.
-- [ ] `testdata/errors/` cases: `std/test` imported outside tests; `Test.eq` on a type without `Show` or `Equatable`.
-- [ ] `SPEC.md` section 13 describes `std/test`; D65 is in `DECISIONS.md`; `compiler/README.md` lists the gaps.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `testdata/std_test.nra` (run with `narra test` by the harness, or a package under `testdata/packages/std_test/` if single files cannot run tests) covers passing `eq`, `ne`, `panics` and `panicsWith`, and its `.out` matches in debug (ASan, UBSan, leak check) and release builds.
+- [x] Failing cases are checked: a failing `Test.eq` prints both values and the position and the test run exits non-zero; a `Test.panics` whose closure returns fails.
+- [x] `testdata/errors/` cases: `std/test` imported outside tests; `Test.eq` on a type without `Show` or `Equatable`.
+- [x] `SPEC.md` section 13 describes `std/test`; D65 is in `DECISIONS.md`; `compiler/README.md` lists the gaps.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

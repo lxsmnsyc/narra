@@ -35,3 +35,4 @@
 - Read a top-level constant only through `e.constRef`. Non-scalar constants are built on first use by a getter that returns a borrowed value, and freed in `narra_consts_release`.
 - Name resolution is local, then constant, then function, and a constant may not share a name with a function or a type.
 - `clone.go` must copy every field of an AST node, including positions such as `StringLit.End`. Fixes and diagnostics in generic instances read them.
+- Never name a compiler source file `*_test.go`: Go builds it only under `go test`, so its code is missing from the `narra` binary. `std/test` lives in `std_testing.go`.

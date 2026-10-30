@@ -26,6 +26,8 @@ type TypeExpr struct {
 	// types and Result the result type.
 	Func   bool
 	Result *TypeExpr
+	// Uses lists the effects of a function type, `() => void uses io, E`.
+	Uses []string
 	// A tuple type `#[A, B]` sets Tuple; Args are the element types.
 	Tuple bool
 }
@@ -51,9 +53,13 @@ type FuncDecl struct {
 	Params     []*Param
 	Result     *TypeExpr
 	Effects    []string
-	Body       *Block
-	ResultT    Type
-	Module     string // declaring module path, set by the checker
+	// EffectParams are the effect variables of `<T, effect E>`.
+	EffectParams []string
+	// Origin is the generic function an instance was made from.
+	Origin  *FuncDecl
+	Body    *Block
+	ResultT Type
+	Module  string // declaring module path, set by the checker
 }
 
 type FieldDecl struct {

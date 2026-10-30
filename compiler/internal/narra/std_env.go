@@ -18,9 +18,7 @@ func init() {
 					some, none := variantOf(ot, "Some"), variantOf(ot, "None")
 					name := e.argCode(x, 0)
 					v := e.temp(TStr, fmt.Sprintf("narra_env_get(%s)", name))
-					code := fmt.Sprintf("(%[1]s ? ((%[2]s){.tag = %[3]d, .u.%[4]s.%[5]s = %[1]s}) : ((%[2]s){.tag = %[6]d}))",
-						v, ot.CName(), some.Index, variantName(some), fieldName("value"), none.Index)
-					return e.ownedTemp(ot, code), true
+					return ioEither(e, ot, v, some, []string{v}, none, nil), true
 				},
 			},
 			// args(): the program's arguments, as the entry function's

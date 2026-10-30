@@ -68,11 +68,24 @@ func variantOf(et *EnumType, name string) *Variant {
 // result is an owned temporary that releases whichever one it holds.
 func ioResult(e *Emitter, rt *EnumType, success, okVal, errVal string) string {
 	ok, bad := variantOf(rt, "Ok"), variantOf(rt, "Err")
-	code := fmt.Sprintf("(%[1]s ? ((%[2]s){.tag = %[3]d, .u.%[4]s.%[5]s = %[6]s}) : ((%[2]s){.tag = %[7]d, .u.%[8]s.%[9]s = %[10]s}))",
-		success, rt.CName(),
-		ok.Index, variantName(ok), fieldName("value"), okVal,
-		bad.Index, variantName(bad), fieldName("error"), errVal)
-	return e.ownedTemp(rt, code)
+	return ioEither(e, rt, success, ok, []string{okVal}, bad, []string{errVal})
+}
+
+// ioEither sets an owned temporary of enum type rt to variant a (holding
+// aVal) when cond is true, and to variant b (holding bVal) otherwise. The
+// payload is allocated only in the branch taken, through enumAlloc.
+func ioEither(e *Emitter, rt *EnumType, cond string, a *Variant, aVal []string, b *Variant, bVal []string) string {
+	r := e.ownedTemp(rt, fmt.Sprintf("((%s){0})", rt.CName()))
+	e.line("if (%s) {", cond)
+	e.indent++
+	e.line("%s = %s;", r, e.enumAlloc(a, aVal))
+	e.indent--
+	e.line("} else {")
+	e.indent++
+	e.line("%s = %s;", r, e.enumAlloc(b, bVal))
+	e.indent--
+	e.line("}")
+	return r
 }
 
 // stringOut declares a string out-parameter for a runtime call.

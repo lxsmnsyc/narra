@@ -535,3 +535,13 @@ Decision: `Map<K, V>` iterates in insertion order. Removal leaves a dead entry; 
 
 - **Reason.** Deterministic order keeps the compiler's output stable without sorting.
 - **Cost.** Maps do not implement the standard traits yet, so a map cannot be compared or used as a key.
+
+## D65. `std/test` catches panics in a child process
+
+Decision: `Test.panics(f)` and `Test.panicsWith(f, message)` run `f` in a child process made with `fork`. The child sets a pipe as the panic hook (`narra_panic_fd` in `runtime.h`), so a panic writes its message there and calls `_exit(101)`; a closure that returns calls `_exit(0)`. The parent reads the pipe until it closes, then waits for the child and checks the exit status. The child has a timeout (`alarm`, 10 seconds or `NARRA_TEST_TIMEOUT`); a closure that runs past it fails the test. Only `narra test` builds contain the std/test runtime and the test blocks. The functions of `std/test` can be called only inside `test` blocks (error E0907); the import itself is allowed anywhere, since test blocks are not part of a non-test build.
+
+- **Reason.** Measured on macOS (clang, `-fsanitize=address,undefined`, `NARRA_CHECK_LEAKS=1`): `testdata/std_test.nra` forks 11 times (once inside a child) and the failure cases in `std_test.go` fork 3 times, all clean in debug and release builds. The child's heap is a copy, so its allocations never reach the parent's leak count, and the child skips the leak report through `_exit`. No change to how values are freed was needed.
+- **Rejected: `setjmp`/`longjmp`.** It would skip every release between the panic and the jump, so the leak check fails after each caught panic unless panics unwind, and a panic can leave a value half built. Not tried, because fork passed.
+- **Rejected: an import error in non-test builds.** A file with tests and a `run` entry must still build as a program.
+- **Leaks on failure.** A failed assertion frees what it built except the final message, which `narra_panic` prints; the process then exits 101 and the leak report, which runs only at the normal end of `main`, does not run.
+- **Cost.** POSIX only (`fork`, `alarm`); Windows needs another design (a re-run of the test binary per closure). Each call costs one fork. Changes `f` makes to mutable state are lost, which is also what makes the capture safe. A crash in the child (signal, sanitizer report) fails the test instead of counting as a panic. When a nested `Test.panics` runs past the timeout, the inner and the outer timeouts race. An empty `message` matches any panic, and the match stops at a NUL byte.

@@ -280,8 +280,7 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 			// Array, Box, Map and Range are prelude types; their functions
 			// need the import. A type the program declares named Box or Map
 			// hides the builtin.
-			if path, ok := namespaceModules[id.Name]; ok && !(id.Name == "Box" && c.userBox()) && !(id.Name == "Map" && c.userMap()) {
-				c.errorfFix(id.P, c.importFix(id.Name, path), "%s.%s needs an import; add `import * as %s from %q`", id.Name, callee.Name, id.Name, path)
+			if c.missingImport(id, callee.Name) {
 				c.argsLoose(e)
 				return TVoid
 			}
@@ -554,4 +553,15 @@ func usesLocal(e Expr, l *Local) bool {
 	}
 	walk(e)
 	return found
+}
+
+// missingImport reports Array.f, Box.f, Map.f or Range.f used without the
+// import of the module that holds f, and returns true when it did.
+func (c *Checker) missingImport(id *Ident, name string) bool {
+	path, ok := namespaceModules[id.Name]
+	if !ok || (id.Name == "Box" && c.userBox()) || (id.Name == "Map" && c.userMap()) {
+		return false
+	}
+	c.errorfFix(id.P, c.importFix(id.Name, path), "%s.%s needs an import; add `import * as %s from %q`", id.Name, name, id.Name, path)
+	return true
 }

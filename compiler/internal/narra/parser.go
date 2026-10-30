@@ -21,6 +21,13 @@ func Parse(src string) (*File, error) {
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
 	}
+	f.Header = 1
+	for _, line := range strings.Split(src, "\n") {
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		f.Header++
+	}
 	return f, nil
 }
 

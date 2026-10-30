@@ -5,6 +5,7 @@ package narra
 
 type File struct {
 	Path    string // source path relative to the package directory, for diagnostics
+	Header  int    // line after the leading comment lines; where a fix adds the first import
 	Imports []*ImportDecl
 	Decls   []Decl
 }

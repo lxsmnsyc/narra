@@ -19,7 +19,7 @@ func (c *Checker) errorfFix(pos Pos, fixes []Fix, format string, args ...any) {
 }
 
 // importFix adds `import * as ns from "path"` before the module's first import,
-// or at the top of the file when it has none.
+// or after the leading comment lines when it has none.
 func (c *Checker) importFix(ns, path string) []Fix {
 	at := Pos{1, 1}
 	if c.mod != nil && c.mod.importAt.Line > 0 {

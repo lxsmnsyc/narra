@@ -12,7 +12,7 @@
 - `Str.charCount`, `Str.startsWith`, `Str.trim` (ASCII whitespace).
 - `Str.split(s, sep)`: `Array<string>`; panics on an empty `sep`.
 - `Str.chars(s)`: `Array<char>`.
-- `StringBuilder`: `Str.builder()`, `Str.append(mutable sb, s)`, `Str.appendChar(mutable sb, c)`, `Str.build(sb)`. The type name `StringBuilder` resolves in any module. It is a new prim type `TStringBuilder` (C type `narra_sb*`, reference counted, copy on write when shared), so `const copy = sb` then appending to `sb` leaves `copy` unchanged.
+- `StringBuilder`: `Str.builder()`, `Str.append(mutable sb, s)`, `Str.appendChar(mutable sb, c)`, `Str.build(sb)`. The type name `StringBuilder` resolves only in modules that import `std/string` (registered in `declareModule` in `check.go`), so its runtime C is always present; `errors/strings2_builder_no_import.nra` pins the error. It is a new prim type `TStringBuilder` (C type `narra_sb*`, reference counted, copy on write when shared), so `const copy = sb` then appending to `sb` leaves `copy` unchanged.
 
 Runtime C: `compiler/internal/narra/runtime_string.h`, embedded and set as `Module.Runtime` of `std/string` (so every program importing `std/string` now carries it).
 
@@ -22,7 +22,7 @@ Tests: `compiler/testdata/strings2.nra` (+ `.out`) tokenizes a string into words
 
 - `ByteIndex` is `int`, not a distinct type (the brief allows this until `opaque-distinct`). Recorded in `compiler/README.md` under "Differences from the spec".
 - Slices are copies, not views of the original buffer (spec says views). Same README entry. A view needs a parent pointer in `lstr`, which touches `runtime.h` and every release path.
-- Files outside owned paths: `compiler/README.md` (docs), `types.go` (`TStringBuilder`, `needsRC`), `emit_types.go` (retain/release), `check_traits.go` (builder implements no standard trait), `modules_check.go` (type name map), `check_call.go` (see Gotchas). Each is a few lines.
+- Files outside owned paths: `compiler/README.md` (docs), `types.go` (`TStringBuilder`, `needsRC`), `emit_types.go` (retain/release), `check_traits.go` (builder implements no standard trait), `check.go` (StringBuilder type name on import), `check_call.go` (see Gotchas). Each is a few lines.
 - Panic programs live in `testdata/panics/` and run from a new `std_string_test.go`, so `run_test.go` is untouched.
 
 ## Stubs left

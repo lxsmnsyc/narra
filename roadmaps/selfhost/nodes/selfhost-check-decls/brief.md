@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-decls
 title: Self-hosted checker: type model and declarations
-status: active
+status: done
+spent: 401000
 priority: must
 type: feature
 outline: false
@@ -73,12 +74,12 @@ Port the core of the declaration half of the checker to Narra: the `Type` model,
 
 ## Acceptance
 
-- [ ] `narra decls <path>` prints the dump, its format is defined in the doc comment of `decldump.go`, and `TestDeclDump` compares goldens in `compiler/testdata/declsdump/`. The `CheckPackage` split changes no output.
-- [ ] `TestSelfhostDecls`: `narrac decls` equals `narra decls` on this node's line kinds for every input listed above, with the skipped inputs named in the outcome.
-- [ ] `TestSelfhostNodeIds` passes and fails if two nodes get the same id (shown by a unit check that corrupts an id on purpose).
-- [ ] `TestSelfhostLexer`, `TestSelfhostParser`, `TestSelfhostModules` still pass.
-- [ ] The outcome describes the `Type` enum, the declaration tables, the checker context and which fields later nodes extend, and the side tables with their sizes.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `narra decls <path>` prints the dump, its format is defined in the doc comment of `decldump.go`, and `TestDeclDump` compares goldens in `compiler/testdata/declsdump/`. The `CheckPackage` split changes no output.
+- [x] `TestSelfhostDecls`: `narrac decls` equals `narra decls` on this node's line kinds for every input listed above, with the skipped inputs named in the outcome.
+- [x] `TestSelfhostNodeIds` passes and fails if two nodes get the same id (shown by a unit check that corrupts an id on purpose).
+- [x] `TestSelfhostLexer`, `TestSelfhostParser`, `TestSelfhostModules` still pass.
+- [x] The outcome describes the `Type` enum, the declaration tables, the checker context and which fields later nodes extend, and the side tables with their sizes.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

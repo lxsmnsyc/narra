@@ -72,3 +72,4 @@ M: about 850 Narra lines, one Go dump extension, one harness. Coupling medium: i
 - Compare struct and enum types by module and name through the table index, never by name alone.
 - Output order must match Go: `Map` iteration is insertion order in Narra but Go map order is random, so find where Go sorts and sort the same way; where Go relies on declaration order, use it.
 - Edit `check_traits.go` only to expose what the dump needs or to fix a bug the comparison finds; record it in the outcome.
+- From the selfhost-check-decls review (#26): `errorIn` in `selfhost/src/check.nra` rescans every earlier error on each report (quadratic with many errors); Go uses a map. Switch to a `Map<string, bool>` keyed by file, line, column and message.

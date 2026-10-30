@@ -1,7 +1,8 @@
 ---
 id: std-option-result
 title: std/option and std/result helpers
-status: active
+status: done
+spent: 375000
 priority: should
 type: feature
 outline: false
@@ -60,10 +61,10 @@ Two std modules with combinators for the prelude types:
 
 ## Acceptance
 
-- [ ] Every function works on `Some`/`None` and `Ok`/`Err`, with capturing and non-capturing callbacks and with an `io` callback; samples with `.out` pass in debug (ASan, UBSan, leak check) and release.
-- [ ] Error tests: a callback of the wrong type, a missing import, `Option.andThen` with a callback that does not return an `Option`.
-- [ ] `SPEC.md` (the Optional values section and section 5), D69 and `compiler/README.md` describe the modules.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] Every function works on `Some`/`None` and `Ok`/`Err`, with capturing and non-capturing callbacks and with an `io` callback; samples with `.out` pass in debug (ASan, UBSan, leak check) and release.
+- [x] Error tests: a callback of the wrong type, a missing import, `Option.andThen` with a callback that does not return an `Option`.
+- [x] `SPEC.md` (the Optional values section and section 5), D69 and `compiler/README.md` describe the modules.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

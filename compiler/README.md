@@ -60,6 +60,7 @@ go test ./...
 - Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `break`, `continue`.
 - `int`, `f64`, `bool`, `char` and `string`.
 - Structs with constant field defaults, typed literals (`Point { x: 1 }`) and literals typed from context.
+- Type arguments on map and generic struct literals: `Map<string, int> {}`, `Pair<int, string> { a: 1, b: "x" }` (D68). The checker resolves them like an annotation and reports E0237 when they differ from the expected type. Function types are not accepted inside them.
 - Enums with fields, and `match` as a statement or a value, with guards and `_`.
 - Patterns in `match`, `is` and `const`: nested constructors (`Some(Node(a, 0))`), struct patterns (`{ x: 0.0, y }`), tuple patterns (`#[a, Some(b)]`), literals (`0`, `-1`, `1.5`, `"a"`, `'c'`, `true`), bindings and `_`. `match` works on any value and checks exhaustiveness through nested enums, bools, structs and tuples.
 - Destructuring: `const { host, port: serverPort } = config` and `const #[q, r] = divmod(a, b)`, nested too.

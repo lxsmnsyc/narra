@@ -128,6 +128,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0234", "continue must be inside a loop"},
 	{"E0235", "cannot read field %q of %s: it is an opaque struct of module %q"},
 	{"E0236", "cannot spread %s: it is an opaque struct of module %q"},
+	{"E0237", "the type arguments make %s, but the expected type is %s"},
 	{"E0290", "constant %q cannot be changed; copy it into a `let` variable first"},
 	{"E0300", "constructor %s is ambiguous: %s all have it; write %s.%s"},
 	{"E0301", "%s takes %d fields, found %d"},

@@ -307,11 +307,12 @@ type IndexExpr struct {
 	MapSet bool // the target of `m[k] = v`, which has type V instead of Option<V>
 }
 
-// MapLit is `Map { "a": 1, [key]: 2 }`.
+// MapLit is `Map { "a": 1, [key]: 2 }` or `Map<K, V> { ... }`.
 type MapLit struct {
 	exprBase
-	Keys []Expr
-	Vals []Expr
+	TypeArgs []*TypeExpr // K and V when written
+	Keys     []Expr
+	Vals     []Expr
 }
 
 type Arg struct {
@@ -354,7 +355,8 @@ type FieldInit struct {
 
 type StructLit struct {
 	exprBase
-	TypeName string // empty when the type comes from context
+	TypeName string      // empty when the type comes from context
+	TypeArgs []*TypeExpr // `Pair<int, string> { ... }`
 	Fields   []*FieldInit
 	Spread   Expr // { ...s, field: v }
 	Struct   *StructType

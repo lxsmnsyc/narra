@@ -807,24 +807,84 @@ func (p *Parser) postfix(e Expr) Expr {
 			idx := p.expr()
 			p.expect("]")
 			e = &IndexExpr{exprBase: exprBase{P: t.Pos}, Target: e, Index: idx}
-		case p.is("{"):
-			// `Name { field: value }` is a struct literal.
+		case p.is("<") || p.is("{"):
+			// `Name { field: value }` is a struct literal, and
+			// `Name<A, B> { ... }` is one with type arguments.
 			id, ok := e.(*Ident)
 			if !ok || !startsUpper(id.Name) {
 				return e
 			}
+			var targs []*TypeExpr
+			if p.is("<") {
+				if !p.typeArgsLitAhead() {
+					return e
+				}
+				targs = p.litTypeArgs()
+			}
 			if id.Name == "Map" {
-				e = p.mapLit(id.P)
+				m := p.mapLit(id.P)
+				m.TypeArgs = targs
+				e = m
 				continue
 			}
 			lit := p.structLit()
 			lit.TypeName = id.Name
+			lit.TypeArgs = targs
 			lit.P = id.P
 			e = lit
 		default:
 			return e
 		}
 	}
+}
+
+// typeArgsLitAhead reports whether the `<` at the current token starts the
+// type arguments of a literal: a balanced `<` ... `>` holding only names,
+// `.`, `,`, `#[`, `]` and nested `<>`, followed by `{`. Anything else is a
+// comparison, so `a < B` never changes meaning. `>>` closes two levels.
+func (p *Parser) typeArgsLitAhead() bool {
+	depth := 0
+	for i := p.i; i < len(p.toks); i++ {
+		t := p.toks[i]
+		switch {
+		case t.Kind == TokIdent:
+			if depth == 0 {
+				return false
+			}
+		case t.Kind != TokPunct:
+			return false
+		case t.Text == "<":
+			depth++
+		case t.Text == ">" || t.Text == ">>":
+			depth -= len(t.Text)
+			if depth < 0 {
+				return false
+			}
+			if depth == 0 {
+				n := p.toks[min(i+1, len(p.toks)-1)]
+				return n.Kind == TokPunct && n.Text == "{"
+			}
+		case t.Text == "," || t.Text == "." || t.Text == "#[" || t.Text == "]":
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// litTypeArgs parses the `<A, B>` before a literal's `{`. A trailing `>>`
+// is split by typeExpr, as in a type.
+func (p *Parser) litTypeArgs() []*TypeExpr {
+	p.expect("<")
+	var args []*TypeExpr
+	for {
+		args = append(args, p.typeExpr())
+		if !p.accept(",") {
+			break
+		}
+	}
+	p.expect(">")
+	return args
 }
 
 func startsUpper(s string) bool { return s != "" && s[0] >= 'A' && s[0] <= 'Z' }

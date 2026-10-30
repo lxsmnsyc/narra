@@ -82,14 +82,16 @@ import (
 //	field-expr L:C               name=""   direct: the target
 //	is L:C                       .subject  .pattern
 //	index L:C                    .target  .index
-//	map L:C                      .key and .val, alternating, one pair per
+//	map L:C                      .typeargs (type nodes, only when written)
+//	                             .key and .val, alternating, one pair per
 //	                             entry
 //	call L:C                     .callee  .args (each `arg [mutable]`, no
 //	                             position, with the argument expression
 //	                             directly under it)
 //	unary L:C                    op=""     direct: the operand
 //	binary L:C                   op=""     .left  .right
-//	structlit L:C                type="" (only when set)  .spread  .fields
+//	structlit L:C                type="" (only when set)  .typeargs (type
+//	                             nodes, only when written)  .spread  .fields
 //	                             (each `init L:C name=""` with the value
 //	                             directly under it)
 //	array L:C                    tuple       direct: the elements
@@ -472,6 +474,7 @@ func (d *astDumper) expr(e Expr) {
 		})
 	case *MapLit:
 		d.node("map", pos, nil, func() {
+			d.typeExprSlot("typeargs", nil, n.TypeArgs)
 			for i := range n.Keys {
 				d.exprSlot("key", n.Keys[i])
 				d.exprSlot("val", n.Vals[i])
@@ -505,6 +508,7 @@ func (d *astDumper) expr(e Expr) {
 			tn = strAttr("type", n.TypeName)
 		}
 		d.node("structlit", pos, tn, func() {
+			d.typeExprSlot("typeargs", nil, n.TypeArgs)
 			d.exprSlot("spread", n.Spread)
 			if len(n.Fields) > 0 {
 				d.slot("fields", nil, func() {

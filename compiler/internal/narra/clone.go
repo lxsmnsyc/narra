@@ -104,7 +104,8 @@ func cloneExpr(e Expr) Expr {
 	case *BinaryExpr:
 		return &BinaryExpr{exprBase: exprBase{P: e.P}, Op: e.Op, Left: cloneExpr(e.Left), Right: cloneExpr(e.Right)}
 	case *StructLit:
-		c := &StructLit{exprBase: exprBase{P: e.P}, TypeName: e.TypeName, Spread: cloneExpr(e.Spread)}
+		// TypeArgs is shared with the original: the checker never changes a TypeExpr.
+		c := &StructLit{exprBase: exprBase{P: e.P}, TypeName: e.TypeName, TypeArgs: e.TypeArgs, Spread: cloneExpr(e.Spread)}
 		for _, f := range e.Fields {
 			c.Fields = append(c.Fields, &FieldInit{Pos: f.Pos, Name: f.Name, Value: cloneExpr(f.Value)})
 		}
@@ -116,7 +117,7 @@ func cloneExpr(e Expr) Expr {
 		}
 		return c
 	case *MapLit:
-		c := &MapLit{exprBase: exprBase{P: e.P}}
+		c := &MapLit{exprBase: exprBase{P: e.P}, TypeArgs: e.TypeArgs}
 		for i := range e.Keys {
 			c.Keys = append(c.Keys, cloneExpr(e.Keys[i]))
 			c.Vals = append(c.Vals, cloneExpr(e.Vals[i]))

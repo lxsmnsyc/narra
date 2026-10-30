@@ -224,6 +224,33 @@ func (c *Checker) binary(e *BinaryExpr) Type {
 }
 
 func (c *Checker) structLit(e *StructLit, want Type) Type {
+	// `Pair<int, string> { ... }`: the written types give the literal's
+	// type. They must agree with the expected one, and then stand in for it.
+	if len(e.TypeArgs) > 0 {
+		lt, ok := c.resolveType(&TypeExpr{Pos: e.P, Name: e.TypeName, Args: e.TypeArgs}).(*StructType)
+		if !ok {
+			for _, fi := range e.Fields {
+				c.expr(fi.Value, nil)
+			}
+			if want != nil {
+				return want
+			}
+			return TVoid
+		}
+		if wt, ok := want.(*StructType); ok && !sameType(wt, lt) {
+			c.errorf(e.P, "the type arguments make %s, but the expected type is %s", lt, wt)
+			return wt // one error per mistake: the caller sees no second mismatch
+		}
+		want = lt
+		if e.Spread != nil {
+			t := c.spreadLit(e, want)
+			if st, ok := t.(*StructType); ok && !sameType(st, lt) {
+				c.errorf(e.Spread.position(), "the type arguments make %s, but the expected type is %s", lt, st)
+				return lt
+			}
+			return t
+		}
+	}
 	if e.Spread != nil {
 		return c.spreadLit(e, want)
 	}

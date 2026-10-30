@@ -156,6 +156,24 @@ func (c *Checker) mapLit(e *MapLit, want Type) Type {
 	if mt, ok := want.(*MapType); ok {
 		key, val = mt.Key, mt.Val
 	}
+	if len(e.TypeArgs) > 0 {
+		// `Map<K, V> { ... }`: the written types decide the type of the
+		// literal, and resolveType checks arity and the key.
+		lt, ok := c.resolveType(&TypeExpr{Pos: e.P, Name: "Map", Args: e.TypeArgs}).(*MapType)
+		if !ok {
+			// resolveType reported it; give the expected type back so the
+			// caller does not add "found void".
+			if want != nil {
+				return want
+			}
+			return TVoid
+		}
+		if wt, ok := want.(*MapType); ok && !sameType(wt, lt) {
+			c.errorf(e.P, "the type arguments make %s, but the expected type is %s", lt, wt)
+			return wt // one error per mistake: the caller sees no second mismatch
+		}
+		key, val = lt.Key, lt.Val
+	}
 	for i := range e.Keys {
 		kt := c.expr(e.Keys[i], key)
 		if key == nil {
@@ -172,7 +190,9 @@ func (c *Checker) mapLit(e *MapLit, want Type) Type {
 		c.errorf(e.P, "the type of Map {} is unknown; add a type annotation")
 		return TVoid
 	}
-	c.checkMapKey(e.P, key)
+	if len(e.TypeArgs) == 0 {
+		c.checkMapKey(e.P, key)
+	}
 	return c.mapOf(key, val)
 }
 

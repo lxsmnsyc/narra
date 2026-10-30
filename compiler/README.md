@@ -78,6 +78,7 @@ go test ./...
 - Traits: `trait`, `implements`, `implement Trait for Type`, `derives`, constraints such as `<T: Show & Ordered>`, and calls through the trait name such as `Show.show(x)`.
 - The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
 - Effects (`check_effects.go`): exported functions must declare `uses alloc, io, unsafe` for everything they do; private functions and arrows are inferred; `<effect E>` and `uses E` on function types work. On an exported function a function-type parameter without `uses` accepts only pure arguments; on a private function it acts as an implicit effect variable. `alloc` also comes from array literals, template strings, string `+` and constructors with fields.
+- Opaque structs and distinct types (`check_opaque.go`): `export opaque struct`, `distinct type A = B`, `export opaque distinct type`. Another module cannot build, read, assign, spread or match the fields of an opaque struct. `A.from(x)` and `A.toInt(x)` (`toString` for a string base, named after the base type) are generated and emit no code. `==`/`!=` work on a distinct type when its base supports them; no other operator does. Distinct types have no `implements`/`derives` and no `Show`/`Ordered`. `opaque`, `distinct` and `type` are contextual words, not keywords.
 
 ## Not supported yet
 
@@ -90,7 +91,7 @@ go test ./...
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Destructuring in `for (const #[i, x] of ...)` loops, and reading a tuple element by index.
 - Generators, async functions, threads and channels.
-- Opaque and distinct types, `unsafe` and `extern`.
+- `unsafe` and `extern`.
 
 ## Differences from the spec
 

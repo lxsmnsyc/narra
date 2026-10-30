@@ -557,6 +557,8 @@ func (c *Checker) implements(t Type, tr *Trait) bool {
 		return tr.Std && c.implements(t.Elem, tr)
 	case *BoxType:
 		return tr.Std && c.implements(t.Elem, tr)
+	case *DistinctType:
+		return tr.Std && (tr.Name == "Equatable" || tr.Name == "Hashable") && c.implements(t.Base, tr)
 	case *StructType, *EnumType:
 		info := c.traits.types[typeKeyOf(t)]
 		if info == nil {
@@ -687,6 +689,8 @@ func containsFunc(t Type, seen map[Type]bool) bool {
 		return containsFunc(t.Elem, seen)
 	case *BoxType:
 		return containsFunc(t.Elem, seen)
+	case *DistinctType:
+		return containsFunc(t.Base, seen)
 	case *StructType, *EnumType:
 		for _, f := range fieldsOf(t) {
 			if containsFunc(f.T, seen) {

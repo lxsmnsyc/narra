@@ -73,6 +73,9 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 				c.errorf(e.P, "struct %s has no field %q", tt, e.Name)
 				return TVoid
 			}
+			if c.hiddenStruct(tt) {
+				c.errorf(e.P, "cannot read field %q of %s: it is an opaque struct of module %q", e.Name, tt, tt.Module)
+			}
 			return f.T
 		case *EnumType:
 			var v *Variant
@@ -259,6 +262,9 @@ func (c *Checker) structLit(e *StructLit, want Type) Type {
 			c.errorf(e.P, "the struct type is unknown here; write `TypeName { ... }`")
 			return TVoid
 		}
+	}
+	if c.hiddenStruct(st) {
+		c.errorf(e.P, "cannot build %s with a literal: it is an opaque struct of module %q; use that module's functions", st, st.Module)
 	}
 	e.Struct = st
 	seen := map[string]bool{}

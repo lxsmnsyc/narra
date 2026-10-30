@@ -8,6 +8,9 @@ import (
 func (e *Emitter) call(x *CallExpr) (string, bool) {
 	w := e.where(x.P)
 	switch {
+	case x.Distinct != nil:
+		// from and to keep the representation: the argument is the result.
+		return e.expr(x.Args[0].Value)
 	case x.Ctor != nil:
 		v := x.Ctor
 		var parts []string

@@ -160,6 +160,9 @@ func (p *Parser) importDecl() *ImportDecl {
 
 func (p *Parser) decl() Decl {
 	exported := p.accept("export")
+	if d := p.opaqueOrDistinct(exported); d != nil {
+		return d
+	}
 	switch {
 	case p.is("function"):
 		return p.funcDecl(exported)
@@ -746,7 +749,7 @@ func (p *Parser) postfix(e Expr) Expr {
 		switch {
 		case p.is("."):
 			p.next()
-			name := p.ident()
+			name := p.memberName()
 			e = &FieldExpr{exprBase: exprBase{P: name.Pos}, Target: e, Name: name.Text}
 		case p.is("("):
 			p.next()

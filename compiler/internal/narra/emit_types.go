@@ -33,6 +33,7 @@ func variantName(v *Variant) string { return "v_" + v.Name }
 
 // retain and release return C statements for one value of type t.
 func retain(t Type, v string) string {
+	t = underlying(t)
 	switch t := t.(type) {
 	case *PrimType:
 		if t == TStr {
@@ -58,6 +59,7 @@ func retain(t Type, v string) string {
 }
 
 func release(t Type, v string) string {
+	t = underlying(t)
 	switch t := t.(type) {
 	case *PrimType:
 		if t == TStr {

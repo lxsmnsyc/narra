@@ -288,6 +288,9 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				}
 				return c.builtinCall(e, b, want)
 			}
+			if d := c.distinctOf(callee.Target); d != nil {
+				return c.distinctCall(e, d, callee)
+			}
 			if c.isEnumName(id.Name) {
 				t, v := c.ctor(callee.P, id.Name, callee.Name, e.Args, want)
 				e.Ctor = v

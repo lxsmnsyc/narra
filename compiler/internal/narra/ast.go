@@ -78,6 +78,17 @@ type StructDecl struct {
 	Derives    []*TypeExpr
 	Fields     []*FieldDecl
 	T          *StructType
+	Opaque     bool // `export opaque struct`: other modules cannot see the fields
+}
+
+// DistinctDecl is `distinct type A = B` (check_opaque.go).
+type DistinctDecl struct {
+	Pos      Pos
+	Name     string
+	Exported bool
+	Opaque   bool // `export opaque distinct type`: only the declaring module can call from
+	Base     *TypeExpr
+	T        *DistinctType
 }
 
 type VariantDecl struct {
@@ -121,12 +132,13 @@ type ImplDecl struct {
 	Funcs []*FuncDecl
 }
 
-func (*FuncDecl) declNode()   {}
-func (*StructDecl) declNode() {}
-func (*EnumDecl) declNode()   {}
-func (*TestDecl) declNode()   {}
-func (*TraitDecl) declNode()  {}
-func (*ImplDecl) declNode()   {}
+func (*FuncDecl) declNode()     {}
+func (*StructDecl) declNode()   {}
+func (*EnumDecl) declNode()     {}
+func (*DistinctDecl) declNode() {}
+func (*TestDecl) declNode()     {}
+func (*TraitDecl) declNode()    {}
+func (*ImplDecl) declNode()     {}
 
 type Stmt interface{ stmtNode() }
 
@@ -302,6 +314,8 @@ type CallExpr struct {
 	// FuncValue is set when the callee is a function value, such as a
 	// parameter, a local or a struct field of function type.
 	FuncValue *FuncType
+	// Distinct is set for `T.from(x)` and `T.toInt(x)` on a distinct type.
+	Distinct *DistinctType
 }
 
 type UnaryExpr struct {

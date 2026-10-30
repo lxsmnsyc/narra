@@ -149,6 +149,8 @@ func (c *Checker) importPackageModule(imp *ImportDecl) bool {
 			c.funcs[n] = d
 		case *TraitDecl:
 			c.importTrait(imp.Pos, n, d)
+		case *DistinctDecl:
+			c.declareType(imp.Pos, n, s.types[n])
 		case *StructDecl, *EnumDecl:
 			if g := s.generics[n]; g != nil && s.types[n] == nil {
 				if c.types[n] != nil || c.generics[n] != nil {
@@ -201,7 +203,7 @@ func (c *Checker) qualifiedType(te *TypeExpr) Type {
 		return TVoid
 	}
 	switch c.exported(te.Pos, s, name).(type) {
-	case *StructDecl, *EnumDecl:
+	case *StructDecl, *EnumDecl, *DistinctDecl:
 	case nil:
 		return TVoid
 	default:

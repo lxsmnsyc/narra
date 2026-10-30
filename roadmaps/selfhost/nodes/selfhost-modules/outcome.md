@@ -16,6 +16,7 @@
   struct SourceModule { path: string, file: string, ast: File, exports: Array<string> }
   ```
   `path` is `"<package>/<rel>"`, `file` is `src/<rel>.nra` (the base name for a single file), `ast` is the parsed `narrac/ast.File`, `exports` are the exported function, const, struct, enum, trait and distinct names, sorted by bytes, without duplicates. There is one file per module (no `Files` array). `Package.dir` is the given path (the parent directory for a file).
+- Id check: `SourceModule` also has `firstId` and `endId` (the file's range `[firstId, endId)`). `narrac pkg --ids <path>` checks that the ranges are disjoint, cover `[0, nextId)` without a gap, and prints `ids ok <nextId>`; `TestSelfhostModuleIds` runs it on every loadable input. It checks the chaining, not that each node id lies in its file's range (the parser owns that).
 - Id sequence: files are parsed in sorted path order of `src/` and each `Parsed.nextId` becomes the next file's `firstId`, starting at 0. `Package.nextId` is the final value. Ids follow the sorted order, not the load order. A single file starts at 0.
 - Load order: depth-first over the modules in sorted order; a module is appended after the modules it imports (imports outside the package are skipped, as in Go). A cycle is reported at the import that closes it: `import cycle: a -> b -> a`, in the importing file at the import position.
 - `narrac pkg <path>` in `main.nra`. Go side: `compiler/internal/narra/pkgdump.go` (`PkgDump`) and hidden `narra pkg <path>`. The dump format is defined in the doc comment at the top of `pkgdump.go`. Goldens: `compiler/testdata/pkgdump/<case>.dump` for the 28 cases in `compiler/testdata/pkgdump/<case>/`; `TestPkgDump` compares them (`NARRA_UPDATE=1` rewrites).
@@ -28,10 +29,13 @@
 - `selfhost_test.go`: `compareSelfhost` now uses `buildSelfhost` and `runNarrac`; behavior is the same.
 - `Result<Package, Array<LoadError>>` instead of `Result<Package, Diag>`, see above.
 - No change requests. No Go loader change.
+- A symlinked directory in `src/` behaves differently: Go's WalkDir does not follow it, Narra's `listDir` does, so `src/loop -> .` fails in Narra.
+- Invalid UTF-8 in `narra.toml` gives a different error text than in Go.
+- `popLast` copies the stack on each visit and `sortStrings` is an insertion sort. Both are fine for tens of files and quadratic for hundreds.
 
 ## Stubs left
 
-- The check for two modules with the same C name hash (`LoadPackage`) is not ported; it needs xxHash32. selfhost-emit needs xxh32 for names and can add the check.
+- The check for two modules with the same C name hash (`LoadPackage`) is not ported; it needs xxHash32. The check is deferred to selfhost-emit, which needs xxh32 for C names anyway.
 - `Str.trim` is ASCII only; Go's `TrimSpace` also trims Unicode spaces. Only an exotic narra.toml differs.
 - OS error texts (missing `narra.toml`, unreadable file, missing `src/`) differ from Go's. The comparison avoids those inputs.
 

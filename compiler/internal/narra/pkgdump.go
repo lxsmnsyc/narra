@@ -54,6 +54,17 @@ import (
 //	reproduce; the comparison tests avoid those inputs. The dump of a failed
 //	load is only the error lines, and the command exits 1.
 
+// Not covered
+//
+//	The dump compares what the loader decides: names, files, order, binaries,
+//	link settings, exports, imports and errors. It does not cover:
+//	  - the syntax tree of each file, which `narra parse` and
+//	    TestSelfhostParser cover;
+//	  - Package.Dir and the single-file flag, and which kind of declaration
+//	    an export is (only the names print);
+//	  - node ids, which the Go parser does not number. The Narra side checks
+//	    its id sequence with `narrac pkg --ids <path>` (TestSelfhostModuleIds).
+
 // PkgDump loads the package at path and returns the dump described above.
 func PkgDump(path string) (dump string, ok bool) {
 	pkg, err := Load(path)

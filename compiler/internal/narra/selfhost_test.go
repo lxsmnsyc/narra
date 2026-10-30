@@ -258,6 +258,44 @@ func TestSelfhostParser(t *testing.T) {
 // selfhost/src.
 func TestSelfhostModules(t *testing.T) {
 	exe := buildSelfhost(t)
+	inputs := pkgInputs(t)
+	for _, path := range inputs {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			want, ok := PkgDump(path)
+			wantOut, wantErr, wantCode := want, "", 0
+			if !ok {
+				wantOut, wantErr, wantCode = "", want, 1
+			}
+			runNarrac(t, exe, []string{"pkg", path}, wantOut, wantErr, wantCode)
+		})
+	}
+}
+
+// TestSelfhostModuleIds runs `narrac pkg --ids` on every package that loads:
+// the id ranges of the files must be disjoint, contiguous from 0, and end at
+// Package.nextId.
+func TestSelfhostModuleIds(t *testing.T) {
+	exe := buildSelfhost(t)
+	for _, path := range pkgInputs(t) {
+		if _, ok := PkgDump(path); !ok {
+			continue
+		}
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.Command(exe, "pkg", "--ids", path)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.HasPrefix(string(out), "ids ok ") {
+				t.Fatalf("%v\n%s", err, out)
+			}
+		})
+	}
+}
+
+// pkgInputs lists the package directories and single files that the package
+// tests run on.
+func pkgInputs(t *testing.T) []string {
+	t.Helper()
 	var inputs []string
 	for _, pattern := range []string{
 		filepath.Join(testdata, "packages", "*"),
@@ -274,17 +312,7 @@ func TestSelfhostModules(t *testing.T) {
 	inputs = append(inputs, "../../../selfhost")
 	files, _ := selfhostInputs(t, nil)
 	inputs = append(inputs, files...)
-	for _, path := range inputs {
-		t.Run(path, func(t *testing.T) {
-			t.Parallel()
-			want, ok := PkgDump(path)
-			wantOut, wantErr, wantCode := want, "", 0
-			if !ok {
-				wantOut, wantErr, wantCode = "", want, 1
-			}
-			runNarrac(t, exe, []string{"pkg", path}, wantOut, wantErr, wantCode)
-		})
-	}
+	return inputs
 }
 
 // firstDiff describes the first line where want and got differ.

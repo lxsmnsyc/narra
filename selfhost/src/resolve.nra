@@ -196,12 +196,13 @@ export function resolveVariants(mutable c: Checker, decls: Array<VariantDecl>): 
 // buildGeneric resolves a generic declaration's fields with its parameters
 // left open, in the declaring module. Instances substitute into this
 // template. It runs once; an instance made while the template is being
-// built (a self-reference) gets no fields, as in Go.
+// built (a self-reference) is filled when the build ends, as in Go.
 export function buildGeneric(mutable c: Checker, g: int) uses alloc {
   if (c.generics[g].built) {
     return
   }
   c.generics[g].built = true
+  c.generics[g].building = true
   const info = c.generics[g]
   const savedMod = enter(mutable c, info.scope)
   const savedEnv = c.env
@@ -222,6 +223,12 @@ export function buildGeneric(mutable c: Checker, g: int) uses alloc {
   }
   c.env = savedEnv
   checkPolyRecursion(mutable c, g)
+  c.generics[g].building = false
+  const pending = c.generics[g].pending
+  c.generics[g].pending = []
+  for (const t of Array.values(pending)) {
+    fillInstance(mutable c, g, t)
+  }
   enter(mutable c, savedMod)
 }
 
@@ -236,44 +243,59 @@ export function instantiate(mutable c: Checker, g: int, args: Array<Type>): Type
     return t
   }
   const info = c.generics[g]
-  let m: Map<int, Type> = Map {}
-  for (const k of Range.between(0, Array.length(info.params))) {
-    m[info.params[k]] = args[k]
-  }
   let pos = info.pos
   if (info.module == "") {
     pos = zeroPos()
   }
+  let t = TEnum(Array.length(c.enums))
   if (info.isStruct) {
-    const idx = Array.length(c.structs)
-    const t = TStruct(idx)
+    t = TStruct(Array.length(c.structs))
     Array.push(mutable c.structs, StructInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, opaque: info.opaque, tuple: false, args: args, generic: g, fields: [] })
-    c.instances[key] = t
+  } else {
+    Array.push(mutable c.enums, EnumInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, args: args, generic: g, variants: [] })
+  }
+  c.instances[key] = t
+  if (info.building) {
+    Array.push(mutable c.generics[g].pending, t)
+    return t
+  }
+  fillInstance(mutable c, g, t)
+  return t
+}
+
+// fillInstance copies the template's fields into instance t, substituting
+// its type arguments, and adds t to instTypes.
+function fillInstance(mutable c: Checker, g: int, t: Type) uses alloc {
+  const info = c.generics[g]
+  let m: Map<int, Type> = Map {}
+  if (t is TStruct(idx)) {
+    const args = c.structs[idx].args
+    for (const k of Range.between(0, Array.length(info.params))) {
+      m[info.params[k]] = args[k]
+    }
     let fields: Array<Field> = []
     for (const f of Array.values(info.fields)) {
       const ft = substitute(mutable c, f.t, m)
       Array.push(mutable fields, Field { name: f.name, t: ft, default: f.default, pos: f.pos })
     }
     c.structs[idx].fields = fields
-    Array.push(mutable c.instTypes, t)
-    return t
-  }
-  const idx = Array.length(c.enums)
-  const t = TEnum(idx)
-  Array.push(mutable c.enums, EnumInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, args: args, generic: g, variants: [] })
-  c.instances[key] = t
-  let variants: Array<Variant> = []
-  for (const v of Array.values(info.variants)) {
-    let fields: Array<Field> = []
-    for (const f of Array.values(v.fields)) {
-      const ft = substitute(mutable c, f.t, m)
-      Array.push(mutable fields, Field { name: f.name, t: ft, default: None, pos: f.pos })
+  } else if (t is TEnum(idx)) {
+    const args = c.enums[idx].args
+    for (const k of Range.between(0, Array.length(info.params))) {
+      m[info.params[k]] = args[k]
     }
-    Array.push(mutable variants, Variant { name: v.name, index: v.index, fields: fields })
+    let variants: Array<Variant> = []
+    for (const v of Array.values(info.variants)) {
+      let fields: Array<Field> = []
+      for (const f of Array.values(v.fields)) {
+        const ft = substitute(mutable c, f.t, m)
+        Array.push(mutable fields, Field { name: f.name, t: ft, default: None, pos: f.pos })
+      }
+      Array.push(mutable variants, Variant { name: v.name, index: v.index, fields: fields })
+    }
+    c.enums[idx].variants = variants
   }
-  c.enums[idx].variants = variants
   Array.push(mutable c.instTypes, t)
-  return t
 }
 
 // substitute replaces the parameters in t by their types in m, creating the

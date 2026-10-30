@@ -85,6 +85,8 @@ type genericType struct {
 	sdecl     *StructDecl
 	edecl     *EnumDecl
 	built     bool
+	building  bool       // fields are being resolved; see buildGeneric
+	pending   []Type     // instances made while building, filled when it ends
 	fields    []*Field   // struct template, with type parameters
 	variants  []*Variant // enum template, with type parameters
 	instances map[string]Type

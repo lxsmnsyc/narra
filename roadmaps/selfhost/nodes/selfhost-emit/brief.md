@@ -22,7 +22,22 @@ provides: []
 depends_on:
   - on: selfhost-check-bodies
     kind: hard
-    why: emits from the checked tree
+    why: emits from the checked tree; per-body type tables and the dump format
+  - on: selfhost-check-calls
+    kind: hard
+    why: emits from the checked tree; call resolution and generic instances
+  - on: selfhost-check-patterns
+    kind: hard
+    why: emits from the checked tree; patterns and narrowing
+  - on: selfhost-check-closures
+    kind: hard
+    why: emits from the checked tree; closure captures and stack environments
+  - on: selfhost-check-builtins
+    kind: hard
+    why: emits from the checked tree; builtin calls
+  - on: selfhost-check-effects
+    kind: hard
+    why: emits from the checked tree; the complete checker
 ---
 
 # Self-hosted C emitter

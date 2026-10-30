@@ -13,6 +13,10 @@ type Builtin struct {
 	Mutable []bool // per parameter; nil means none are mutable
 	Result  Type
 	Effects []string // "alloc", "io", "unsafe"; set by every node that adds a builtin
+	// Callbacks lists the arguments that are function values the builtin
+	// calls. The call has their effects, like an effect variable bound to
+	// the argument (Option.map(x, f) uses what f uses).
+	Callbacks []int
 	// Check is optional. Generic builtins such as Array.push and Array.filled
 	// check their own arguments and return the result type.
 	Check func(c *Checker, call *CallExpr, want Type) Type

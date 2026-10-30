@@ -413,6 +413,13 @@ func (w *effectWalker) call(e *CallExpr) {
 			for _, n := range b.Effects {
 				w.add(n, e.P, b.Name)
 			}
+			for _, i := range b.Callbacks {
+				if i < len(e.Args) {
+					for m, cause := range s.valueEffects(e.Args[i].Value) {
+						w.add(m, e.P, cause.via)
+					}
+				}
+			}
 		}
 	case e.Func != nil:
 		w.userCall(e)

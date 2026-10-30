@@ -575,3 +575,12 @@ The parser decides by lookahead. After a capitalized name, a `<` starts type arg
 - **Rejected: a bare `Map {}` with inference from later uses.** The checker checks one expression at a time and has no place to hold an unresolved type.
 - **Rejected: `Map::<K, V> {}` or `Map.of<K, V>()`.** The first adds a token the language does not have. The second is a function call, and the literal form already exists.
 - **Cost.** Two parsers carry the lookahead. A comparison such as `A < B > { ... }` between capitalized names is read as a literal, which no valid program writes.
+
+## D69. `std/option` and `std/result` helpers
+
+Decision: two std modules, `std/option` (`map`, `andThen`, `withDefault`, `orElse`, `isSome`, `isNone`, `okOr`) and `std/result` (`map`, `mapErr`, `andThen`, `withDefault`, `ok`, `err`), registered like `std/array` (D67): the alias equals the type name and the call needs the import. Callbacks are non-escaping function parameters whose effects flow to the call, like `Array.map` with `<effect E>`. A capturing arrow function passed directly gets a stack environment, so a call allocates only the new `Some`, `Ok` or `Err` payload and nothing for the closure. There is no `unwrap` or `expect`.
+
+- **Reason.** User decision 2026-10-30. `SPEC.md` already documented `Option.withDefault`. The helpers never return early from the caller, so section 5 stays true: an error path that stops is an `is` or `match`.
+- **Implementation.** Builtins with a new field `Builtin.Callbacks` (argument indexes); the effect pass adds the effects of those arguments to the call. Five new diagnostics, E0909 to E0913.
+- **Rejected: `unwrap` and `expect`.** They hide a panic where the spec wants a visible branch.
+- **Cost.** `Option.map` and the other helpers that build a value allocate its payload (`alloc` effect). A callback passed as a stored local (`const f = ...`) is a heap closure, created once, not per call.

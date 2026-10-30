@@ -249,6 +249,11 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0906", "Array.push needs an array, found %s"},
 	{"E0907", "%s can only be called inside a `test` block"},
 	{"E0908", "%s.%s needs an import; add `import * as %s from %q`"},
+	{"E0909", "%s needs an Option<T>, found %s"},
+	{"E0910", "%s needs a Result<T, E>, found %s"},
+	{"E0911", "%s needs a function as argument %d, found %s"},
+	{"E0912", "%s needs a function that returns %s, found one that returns %s"},
+	{"E0913", "%s needs a function that returns a value"},
 }
 
 var codeByFormat = func() map[string]string {

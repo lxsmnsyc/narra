@@ -56,6 +56,8 @@ type Program struct {
 	Arrays []*ArrayType
 	Boxes  []*BoxType
 	Maps   []*MapType
+	// Consts are the top-level constants, each after the constants it uses.
+	Consts []*ConstDecl
 	// Entries maps a binary name to its entry function. A binary whose entry
 	// function does not exist has no key.
 	Entries map[string]*FuncDecl
@@ -256,6 +258,7 @@ func (c *Checker) declareModule(f *File) []Type {
 			c.prog.Tests = append(c.prog.Tests, d)
 		}
 	}
+	c.declareConsts(f)
 	for _, g := range own {
 		c.buildGeneric(g)
 	}
@@ -281,6 +284,8 @@ func (c *Checker) checkBodies(f *File) {
 			} else {
 				c.funcBody(d, nil)
 			}
+		case *ConstDecl:
+			c.constType(d, d.Pos)
 		case *ImplDecl:
 			c.implBodies(d)
 		case *TestDecl:

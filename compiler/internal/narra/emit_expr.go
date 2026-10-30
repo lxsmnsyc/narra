@@ -93,6 +93,9 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		if x.Local != nil {
 			return e.localRef(x.Local), false
 		}
+		if x.Const != nil {
+			return e.constRef(x.Const)
+		}
 		if x.Ctor != nil {
 			return fmt.Sprintf("((%s){.tag = %d})", x.Ctor.Enum.CName(), x.Ctor.Index), false
 		}
@@ -100,6 +103,9 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 			return e.funcValueCode(x.Func, x.Type().(*FuncType))
 		}
 	case *FieldExpr:
+		if x.Const != nil {
+			return e.constRef(x.Const)
+		}
 		if x.Func != nil {
 			return e.funcValueCode(x.Func, x.Type().(*FuncType))
 		}

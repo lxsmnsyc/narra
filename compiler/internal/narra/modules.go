@@ -48,6 +48,10 @@ func newSourceModule(path string, f *File) *SourceModule {
 			if d.Exported {
 				m.Exports[d.Name] = d
 			}
+		case *ConstDecl:
+			if d.Exported {
+				m.Exports[d.Name] = d
+			}
 		case *StructDecl:
 			if d.Exported {
 				m.Exports[d.Name] = d
@@ -81,6 +85,8 @@ func declName(d Decl) string {
 	case *TraitDecl:
 		return d.Name
 	case *DistinctDecl:
+		return d.Name
+	case *ConstDecl:
 		return d.Name
 	}
 	return ""

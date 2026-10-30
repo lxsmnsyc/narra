@@ -155,7 +155,9 @@ func (c *Checker) stmt(s Stmt) {
 		c.assigning = nil
 		root := c.lvalueRoot(s.Target)
 		if root == nil {
-			c.errorf(s.Pos, "only variables, fields and array elements can be assigned")
+			if !c.constWrite(s.Pos, s.Target) {
+				c.errorf(s.Pos, "only variables, fields and array elements can be assigned")
+			}
 		} else if !root.Mutable {
 			c.errorf(s.Pos, "%q is constant; declare it with `let` to change it", root.Name)
 		}

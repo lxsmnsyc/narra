@@ -236,7 +236,7 @@ func (c *Checker) ctorArgs(pos Pos, v *Variant, args []*Arg) {
 func (c *Checker) call(e *CallExpr, want Type) Type {
 	switch callee := e.Callee.(type) {
 	case *Ident:
-		if c.lookup(callee.Name) != nil {
+		if c.lookup(callee.Name) != nil || c.mod.consts[callee.Name] != nil {
 			return c.valueCall(e)
 		}
 		if b, ok := preludeFuncs[callee.Name]; ok {
@@ -440,7 +440,9 @@ func (c *Checker) builtinCall(e *CallExpr, b *Builtin, want Type) Type {
 func (c *Checker) checkMutableArg(v Expr) {
 	root := c.lvalueRoot(v)
 	if root == nil {
-		c.errorf(v.position(), "a mutable argument must be a variable, a field or an element")
+		if !c.constWrite(v.position(), v) {
+			c.errorf(v.position(), "a mutable argument must be a variable, a field or an element")
+		}
 		return
 	}
 	if !root.Mutable {

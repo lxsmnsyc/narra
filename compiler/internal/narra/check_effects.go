@@ -355,6 +355,15 @@ func (w *effectWalker) expr(x Expr) {
 	case *IndexExpr:
 		w.expr(x.Target)
 		w.expr(x.Index)
+		if x.MapSet {
+			w.add("alloc", x.P, "map update")
+		}
+	case *MapLit:
+		for i := range x.Keys {
+			w.expr(x.Keys[i])
+			w.expr(x.Vals[i])
+		}
+		w.add("alloc", x.P, "map literal")
 	case *UnaryExpr:
 		w.expr(x.Operand)
 	case *BinaryExpr:

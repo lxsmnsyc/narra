@@ -34,6 +34,9 @@ depends_on:
   - on: selfhost-check-decls
     kind: hard
     why: extends its Type model, checker context and declaration passes; no frozen interface exists yet
+  - on: prelude-imports
+    kind: hard
+    why: the user moved prelude function namespaces behind std imports on 2026-10-30; port the checker against the new prelude
 ---
 
 # Self-hosted checker: traits and implementations

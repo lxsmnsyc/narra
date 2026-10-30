@@ -449,3 +449,36 @@ Decision: `#[1, "a"]` builds a tuple, `const #[a, b] = t` destructures one, and 
 - **Rejected: `Tuple(a, b)`.** It is verbose, and it makes `Tuple` a reserved value name.
 - **Rejected: `[a, b]` with a tuple as the expected type.** The same text would build an array or a tuple depending on context.
 - **Note.** D44 now destructures with `const #[a, b] = f()`, and D23 lists tuples as its one exception. `Tuple` is not a prelude name.
+
+## D54. C names are hashed, built in one file
+
+Decision: every C name comes from `compiler/internal/narra/cnames.go`. A declaration is `<kind>_<module hash>_<name>`. An interned type (generic instance, tuple, array, function type, box, enum payload) is `<kind>_<head>_<hash>`, with the hash over `head|arity|arg ids`. The hash is xxHash32, seed 0, written by hand. A process-wide table panics with an internal error if two different things get one name. `Emit` writes a comment table that maps each hashed name to its type. `__` and leading or trailing `_` are allowed in user names.
+
+- **Reason.** Hand-built names caused three collision bugs in wave 2 (`__` in names, prelude names, tuple arity). One builder and a checked table remove the class.
+- **Reason.** xxHash32 was 1.7 to 2.7 times faster than FNV-1a on short names, and mixes better. The self-hosted compiler ports it with `*%` and rotates.
+- **Rejected: FNV-1a.** In the Go standard library, but slower and weaker.
+- **Rejected: `hash/maphash`.** The seed is random per process, so names would change between runs.
+- **Cost.** Generated C reads less well. The comment table and the readable head in each name make up for it.
+
+## D55. Fielded enum variants live on the heap, and `Box<T>` exists
+
+Decision: an enum with at least one fielded variant is `{ tag, payload pointer }`. The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
+
+- **Reason.** SPEC section 6 asks for this, and recursive enums (an AST) need it.
+- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates. The `interp` benchmark is about 2x slower until node `perceus` removes retains on borrowed values. The user accepted this.
+- **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths.
+- **Limit.** User functions still recurse on the C stack; about 20000 deep overflows under ASan. Not solved here.
+
+## D56. Polymorphic recursion is an error
+
+Decision: a generic type whose declaration reaches itself with a larger argument (`G<Array<T>>` inside `G<T>`) is a compile error at the declaration. Recursion with the same arguments is allowed.
+
+- **Reason.** Each instance would need a larger one without end, so monomorphization never stops.
+- **Rejected: an instantiation depth limit.** The error would point at a use, not the cause.
+
+## D57. Fallible I/O returns `Result<T, string>`
+
+Decision: `std/fs`, `std/process` and `std/env` return `Result<T, string>` or `Option<string>`. The language has no unit value, so `writeText` returns `Result<int, string>` with the byte count.
+
+- **Reason.** The language has no exceptions, so failure is a value the caller must check.
+- **Cost.** `writeText` carries a number nobody needs, until a unit type exists.

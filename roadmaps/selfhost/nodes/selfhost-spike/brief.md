@@ -54,4 +54,4 @@ Port the lexer to Narra as a test, list the features still missing for the rest 
 
 ## Notes
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+Facts from wave 3: C names are hashed (xxHash32 needs `*%` and rotates), fielded enums are heap payloads, `Box<T>` and std/fs, std/process, std/env exist. User-code recursion is limited to about 20000 frames; check that the lexer and parser port do not recurse per character or per token. Outline. Break into full briefs when `plan.py refine` lists it.

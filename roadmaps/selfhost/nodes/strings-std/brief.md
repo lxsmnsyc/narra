@@ -45,6 +45,10 @@ See `SPEC.md` section 4, "Strings", and decisions D15 and D33. Slices share memo
 
 - From split-compiler: put new runtime C in the module's `Module.Runtime` (in its `std_*.go` file), not in `runtime.h`. The emitter writes it once per imported module.
 
+- From io-std: `Str.split` and similar functions that return `Array<string>` must call `c.arrayOf(...)` in `Check` so the array type is emitted. A `Result`-returning function builds it with `ioResult` from `std_fs.go`. `testdata/errors/unknown_module.nra` matches a prefix, so adding modules needs no edit there.
+
+- From hashed-cnames: C names for any new type (a `StringBuilder`) go through `cnames.go` with their own kind letter.
+
 ## Acceptance
 
 - [ ] A sample program tokenizes a short source string into words and numbers using these functions.

@@ -57,6 +57,8 @@ See `SPEC.md` section 14 and decision D42. The JSON shape is in section 14.
 
 - From split-compiler: `Diagnostic.File` is still empty. `driver.go` prefixes the file name as text. Fill `File` there and stop adding the prefix by hand.
 
+- From hashed-cnames and poly-recursion: the loader errors for `__` and edge `_` in names are gone; do not assign codes to them. New errors to code: the `checkPolyRecursion` error and the recursive struct error ("put the recursive field in an enum, Box or array"). Internal errors from the C name table ("C name X is used for both") are compiler bugs, not diagnostics.
+
 ## Acceptance
 
 - [ ] `narra check --json` on each `testdata/errors/` file prints a diagnostic with a code, and the TypeScript habit cases include a fix that, when applied, makes the file compile.

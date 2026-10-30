@@ -57,6 +57,10 @@ Keys need `Hashable` and `Equatable` from `contracts/trait-model.md`. Until trai
 
 - From traits: a type with a user `implement Equatable` but no `implement Hashable` keeps the field-based hash, so equal keys can hash differently. Require both for map keys, or reject such keys. Use `e.useEq` and `e.useHash` in the emitter.
 
+- From hashed-cnames and box-recursive: make the Map's C names in `cnames.go` with their own kind letter, register them, and add them to the C name comment table. A map holding a boxed enum value must retain and release it; drop through the `narra_drop` worklist.
+
+- From io-std: `unknown_module.nra` matches a prefix, so adding `std/map` needs no edit there.
+
 ## Acceptance
 
 - [ ] Sample program counts words with a `Map<string, int>` and prints them in insertion order.

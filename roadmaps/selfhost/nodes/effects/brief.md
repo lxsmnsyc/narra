@@ -46,6 +46,8 @@ See `SPEC.md` section 7 and decisions D8 and D14. Builtins declare their effects
 
 - Source: `SPEC.md`, `DECISIONS.md`, `compiler/README.md`
 
+- From io-std: `std/fs`, `std/process` and `std/env` declare `io` and `alloc` on their builtins in `std_fs.go`, `std_process.go` and `std_env.go`. Sample programs that call them (`testdata/io_files.nra`) will need `uses io` when this lands.
+
 ## Acceptance
 
 - [ ] Error test: calling an `io` function from a function that does not declare `io`.

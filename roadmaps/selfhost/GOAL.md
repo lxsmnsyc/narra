@@ -81,6 +81,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-10-28: the repo was published at https://github.com/lxsmnsyc/narra (public). Node pull requests go there. The repo has no CI workflows yet; checks run locally.
 - 2026-10-28: wave 1 (split-compiler, bench-harness) started.
 - 2026-10-28: the user switched merging to auto. The orchestrator merges a pull request without the user when `plan.py can-merge` allows it: clean fresh-context review, local checks pass on the rebased branch, size M or smaller. Gated nodes, contract-freezing nodes, releases and hotfixes still go to the user. This replaces "every pull request waits for the user" from the first decision.
+- 2026-10-30: wave 3 showed that two reviewed pull requests can break main together (io-std built enum values the old way after box-recursive merged). Rule: before merging a second pull request of the same wave, rebase it on main and rerun the fast check. `can-merge` answers hold only for the base they were run on.
 
 ## Gates
 

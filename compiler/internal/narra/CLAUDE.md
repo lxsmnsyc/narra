@@ -16,3 +16,10 @@
 - New per-function emitter state must be saved and restored in `closureFunc`, because closures are emitted in the middle of another body.
 - Emit pattern tests as `&&` chains, with each tag test before any read of its union member.
 - Names bound by a pattern retain when bound and release when the scope pops. Never borrow from the match subject.
+- Give each heap or interned kind its own kind letter in `cnames.go` (`B` box, `Q` enum payload), and register it. A shared letter can clash with declaration names.
+- Put the operation before the type in generated helper names (`retain_S_...`). A suffix such as `<type>_retain` can equal a user type name.
+- An enum with a fielded variant holds `{ tag; Q* u }`. Build such a value only with `e.enumAlloc`, and read fields as `v.u->variant.field`. Never write `.u.` or a `{.tag=..., .u...}` literal by hand, because the payload is a shared heap pointer that is never mutated.
+- Free heap values through the `narra_drop` worklist (`runtime.h`), never by recursive release. A 1,000,000-long list must drop without growing the C stack.
+- Check a generic type for a growing self-reference at declaration time (`checkPolyRecursion`). Instantiation loops forever otherwise. `List<T>` holding `Array<List<T>>` is allowed.
+- A std builtin that returns `Result` fills out-parameters in its runtime C and builds the value with `ioResult`/`ioEither` (`std_fs.go`). Runtime C cannot name per-program types, since `Module.Runtime` is emitted before them.
+- Error tests that list std modules (`unknown_module.nra`) match a prefix only. The list grows with every std node.

@@ -51,6 +51,8 @@ See `SPEC.md` section 4 and decisions D39 and D40. Opacity only matters across m
 
 - From hashed-cnames: name opaque and distinct types through the `cnames.go` helper as their own nominal types. Never fold them into the type they wrap, so `distinct UserId = int` gets its own C name.
 
+- From box-recursive: an opaque struct that holds a boxed enum or a `Box` field is still reached through `.u->`; do not read fields by hand in generated accessors. Allocate enum values with `e.enumAlloc`.
+
 ## Acceptance
 
 - [ ] A sample package uses an opaque struct from another module through its functions.

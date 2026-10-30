@@ -203,7 +203,7 @@ func (e *Emitter) binary(x *BinaryExpr) string {
 	}
 	l, _ := e.expr(x.Left)
 	r, _ := e.expr(x.Right)
-	lt := x.Left.Type()
+	lt := underlying(x.Left.Type())
 	w := e.where(x.P)
 	if lt == TStr {
 		switch x.Op {

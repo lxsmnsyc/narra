@@ -241,7 +241,7 @@ func (c *Checker) instantiate(g *genericType, args []Type) Type {
 		m[p] = args[i]
 	}
 	if g.sdecl != nil {
-		st := &StructType{Name: g.name, Module: g.mod.path, Args: args}
+		st := &StructType{Name: g.name, Module: g.mod.path, Args: args, Opaque: g.sdecl.Opaque}
 		g.instances[key] = st
 		for _, f := range g.fields {
 			st.Fields = append(st.Fields, &Field{Name: f.Name, T: c.substitute(f.T, m), Default: f.Default})

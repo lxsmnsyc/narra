@@ -139,6 +139,8 @@ func typeID(t Type) string {
 		return structCName(t)
 	case *EnumType:
 		return enumCName(t)
+	case *DistinctType:
+		return declCName("D", t.Module, t.Name)
 	case *TypeParamType:
 		return fmt.Sprintf("P_%s_%d", t.Name, t.ID)
 	case *ArrayType:

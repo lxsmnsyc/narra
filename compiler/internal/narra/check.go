@@ -196,9 +196,11 @@ func (c *Checker) declareModule(f *File) []Type {
 				own = append(own, g)
 				continue
 			}
-			d.T = &StructType{Name: d.Name, Module: c.mod.path}
+			d.T = &StructType{Name: d.Name, Module: c.mod.path, Opaque: d.Opaque}
 			c.declareType(d.Pos, d.Name, d.T)
 			concrete = append(concrete, d.T)
+		case *DistinctDecl:
+			c.declareDistinct(d)
 		case *EnumDecl:
 			if len(d.TypeParams) > 0 {
 				g := &genericType{name: d.Name, params: makeParams(d.TypeParams), edecl: d, mod: c.mod}
@@ -222,6 +224,8 @@ func (c *Checker) declareModule(f *File) []Type {
 			if d.T != nil {
 				d.T.Variants = c.resolveVariants(d.Variants, d.T)
 			}
+		case *DistinctDecl:
+			c.resolveDistinct(d)
 		case *FuncDecl:
 			if _, dup := c.funcs[d.Name]; dup {
 				c.errorf(d.Pos, "function %q is declared twice", d.Name)

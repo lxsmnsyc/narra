@@ -60,6 +60,7 @@ func (e *Emitter) useCmp(t Type) string  { return e.useTraitFunc("cmp", t) }
 func (e *Emitter) useShow(t Type) string { return e.useTraitFunc("show", t) }
 
 func (e *Emitter) useTraitFunc(op string, t Type) string {
+	t = underlying(t)
 	name := stdFuncName(op, t)
 	if _, prim := t.(*PrimType); prim {
 		return name

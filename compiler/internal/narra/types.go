@@ -57,6 +57,7 @@ type StructType struct {
 	Fields []*Field
 	Args   []Type // type arguments of a generic instance
 	Tuple  bool   // Tuple<A, B>: fields "0", "1", ... and Args are the element types
+	Opaque bool   // declared `opaque`: only the declaring module sees the fields
 }
 
 func (t *StructType) String() string {
@@ -260,6 +261,8 @@ func needsRC(t Type) bool {
 		}
 	case *EnumType:
 		return isBoxedEnum(t)
+	case *DistinctType:
+		return needsRC(t.Base)
 	}
 	return false
 }

@@ -89,6 +89,8 @@ func (c *Checker) mapKeyProblem(t Type, seen map[Type]bool) string {
 		return c.mapKeyProblem(t.Elem, seen)
 	case *BoxType:
 		return c.mapKeyProblem(t.Elem, seen)
+	case *DistinctType:
+		return c.mapKeyProblem(t.Base, seen)
 	case *FuncType:
 		return "a function is not hashable"
 	case *MapType:

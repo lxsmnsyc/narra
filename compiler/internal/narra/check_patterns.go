@@ -46,6 +46,9 @@ func (c *Checker) spreadLit(e *StructLit, want Type) Type {
 		c.errorf(e.Spread.position(), "a spread needs a struct value, found %s", t)
 		return TVoid
 	}
+	if c.hiddenStruct(st) {
+		c.errorf(e.Spread.position(), "cannot spread %s: it is an opaque struct of module %q", st, st.Module)
+	}
 	target := hint
 	if e.TypeName != "" && named == nil {
 		g := c.generics[e.TypeName]

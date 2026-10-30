@@ -79,6 +79,9 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 			c.bindRest(p, root, seen)
 			return
 		}
+		if c.hiddenStruct(st) {
+			c.errorf(p.Pos, "cannot match the fields of %s: it is an opaque struct of module %q", st, st.Module)
+		}
 		given := map[string]bool{}
 		for _, fp := range p.Fields {
 			f := st.Field(fp.Name)

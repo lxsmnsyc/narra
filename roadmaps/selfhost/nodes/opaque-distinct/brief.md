@@ -1,7 +1,7 @@
 ---
 id: opaque-distinct
 title: Opaque structs and distinct types
-status: todo
+status: active
 priority: should
 type: feature
 outline: false

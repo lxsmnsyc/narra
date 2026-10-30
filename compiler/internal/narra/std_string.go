@@ -45,8 +45,8 @@ func init() {
 			"charCount":  strFn("Str.charCount", []Type{TStr}, TInt, nil, "narra_str_char_count", false, false),
 			"trim":       strFn("Str.trim", []Type{TStr}, TStr, []string{"alloc"}, "narra_str_trim", false, true),
 			"startsWith": strFn("Str.startsWith", []Type{TStr, TStr}, TBool, nil, "narra_str_starts_with", false, false),
-			"endsWith": strFn("Str.endsWith", []Type{TStr, TStr}, TBool, nil, "narra_str_ends_with", false, false),
-			"contains": strFn("Str.contains", []Type{TStr, TStr}, TBool, nil, "narra_str_contains", false, false),
+			"endsWith":   strFn("Str.endsWith", []Type{TStr, TStr}, TBool, nil, "narra_str_ends_with", false, false),
+			"contains":   strFn("Str.contains", []Type{TStr, TStr}, TBool, nil, "narra_str_contains", false, false),
 			// replace(s, from, to): every match of from, left to right and
 			// non-overlapping. An empty from returns s unchanged.
 			"replace": strFn("Str.replace", []Type{TStr, TStr, TStr}, TStr, []string{"alloc"}, "narra_str_replace", false, true),

@@ -105,6 +105,125 @@ func (c *Checker) buildGeneric(g *genericType) {
 		g.variants = c.resolveVariants(g.edecl.Variants, nil)
 	}
 	c.env = saved
+	c.checkPolyRecursion(g)
+}
+
+// genericEdge is a reference from one generic declaration's template to
+// another generic type (or to itself), with the arguments it gives.
+type genericEdge struct {
+	to   *genericType
+	t    Type // the referenced instance, for the message
+	grow bool // some argument contains a type parameter without being one
+}
+
+// templateEdges lists the generic types that t refers to, at any depth.
+func (c *Checker) templateEdges(t Type, out []genericEdge) []genericEdge {
+	switch t := t.(type) {
+	case *ArrayType:
+		return c.templateEdges(t.Elem, out)
+	case *FuncType:
+		for _, p := range t.Params {
+			out = c.templateEdges(p, out)
+		}
+		return c.templateEdges(t.Result, out)
+	case *StructType:
+		if len(t.Args) == 0 {
+			return out
+		}
+		if !t.Tuple {
+			out = append(out, genericEdge{c.genericOf(t.Module, t.Name), t, growsArgs(t.Args)})
+		}
+		for _, a := range t.Args {
+			out = c.templateEdges(a, out)
+		}
+	case *EnumType:
+		if len(t.Args) == 0 {
+			return out
+		}
+		out = append(out, genericEdge{c.genericOf(t.Module, t.Name), t, growsArgs(t.Args)})
+		for _, a := range t.Args {
+			out = c.templateEdges(a, out)
+		}
+	}
+	return out
+}
+
+func growsArgs(args []Type) bool {
+	for _, a := range args {
+		if _, bare := a.(*TypeParamType); !bare && containsTypeParam(a) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Checker) genericEdges(g *genericType) []genericEdge {
+	var out []genericEdge
+	for _, f := range g.fields {
+		out = c.templateEdges(f.T, out)
+	}
+	for _, v := range g.variants {
+		for _, f := range v.Fields {
+			out = c.templateEdges(f.T, out)
+		}
+	}
+	return out
+}
+
+// checkPolyRecursion rejects a generic type that reaches itself, directly or
+// through other generic types, with arguments that strictly contain its
+// parameters, such as struct G<T> { next: Array<G<Array<T>>> }. G<int> would
+// need G<Array<int>>, then G<Array<Array<int>>>, without end, and every
+// instance needs its own C type. Reaching itself with the same arguments
+// (List<T> holding Array<List<T>>) is fine.
+func (c *Checker) checkPolyRecursion(g *genericType) {
+	type node struct {
+		g    *genericType
+		grew bool
+	}
+	seen := map[node]bool{}
+	var culprit Type
+	var walk func(h *genericType, grew bool, via Type) bool
+	walk = func(h *genericType, grew bool, via Type) bool {
+		for _, e := range c.genericEdges(h) {
+			if e.to == nil {
+				continue
+			}
+			ng := grew || e.grow
+			v := via
+			if e.grow && via == nil {
+				v = e.t
+			}
+			if e.to == g && ng {
+				culprit = v
+				return true
+			}
+			n := node{e.to, ng}
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			if walk(e.to, ng, v) {
+				return true
+			}
+		}
+		return false
+	}
+	if !walk(g, false, nil) {
+		return
+	}
+	var pos Pos
+	if g.sdecl != nil {
+		pos = g.sdecl.Pos
+	} else {
+		pos = g.edecl.Pos
+	}
+	c.errorf(pos, "generic type %s contains %s, so each instance needs a larger one without end; every instance needs its own C type, so polymorphic recursion is not supported (use the same type arguments, or an enum or Box)", g.name, culprit)
+	// Drop the fields so a later instance cannot grow forever.
+	g.fields = nil
+	for _, v := range g.variants {
+		v.Fields = nil
+	}
 }
 
 func (c *Checker) instantiate(g *genericType, args []Type) Type {

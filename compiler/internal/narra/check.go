@@ -63,6 +63,8 @@ type Program struct {
 	Entries map[string]*FuncDecl
 	// Files maps a module path to its file, for panic messages.
 	Files map[string]string
+	// GoldenDir is the directory of Test.golden files (test_runner.go).
+	GoldenDir string
 	// Modules are the imported standard library modules, once each, in import order.
 	// The emitter writes their Runtime C.
 	Modules []*Module

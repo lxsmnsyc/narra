@@ -970,7 +970,12 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 - **`std/test`** has assertions for test blocks. Its functions can be called only inside a `test` block, arrow functions inside it included; a call anywhere else is a compile error. The import itself may stay in a file that is also built as a program, because test blocks are not part of that build.
   - `Test.eq<T: Equatable & Show>(actual: T, expected: T)` panics with `expected <expected>, got <actual>` when the values differ. `Test.ne(actual, other)` panics with `expected a value other than <other>` when they are equal. Both values are written with `Show`, and the panic names the call's `file:line:col`.
   - `Test.panics(f: () => void)` calls `f` and panics unless `f` panics. `Test.panicsWith(f, message: string)` also needs the panic message to contain `message`.
-  - A failed assertion is a panic: the test run stops and exits with code 101.
+  - `Test.golden(name: string, actual: string)` compares `actual` with the file `<name>.golden` in the package's `testdata/` directory (for a single file, in the file's own directory). It fails with `golden <name> differs at line N: expected "<line>", got "<line>"`, or when the file is missing. With the environment variable `NARRA_UPDATE_GOLDEN=1` it writes the file instead and passes. `name` may contain `/` but not `..`. It declares `io`; test blocks may use any effect without declaring it.
+  - A failed assertion is a panic that fails its test only.
+- **`narra test`** runs each test in its own process, in source order, and goes on after a failure. It prints one line per test to standard output: `ok - <name>`, or `FAIL - <name>: <message> (<file>:<line>:<col>)`. Output a test prints appears before its line. The last line is `N passed, M failed`. The exit code is 1 when a test failed, otherwise 0. A test that crashes or leaks memory in a debug build fails with the signal or exit code.
+  - `narra test -filter <text> file` runs only the tests whose name contains `<text>`.
+  - `narra test -time file` appends ` (N ms)` to each test line. Without it no timing is printed.
+  - The test binary reads `--filter <text>` and `--time` from its own arguments, so it can be run directly.
   - `f` runs in a child process, so nothing it changes or allocates reaches the test. Output it prints appears in order. `Test.panics` and `Test.panicsWith` therefore need a POSIX system (`fork`). A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails.
 
 ```ts

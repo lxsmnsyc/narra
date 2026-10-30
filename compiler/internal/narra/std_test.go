@@ -68,12 +68,18 @@ test "a" {
 				}
 				opts := m.opts
 				opts.Tests = true
-				out, stderr, code := runProgram(t, src, opts)
-				if code != 101 || !strings.Contains(stderr, tc.want) {
-					t.Fatalf("want exit 101 and %q, got exit %d\nstdout:\n%s\nstderr:\n%s", tc.want, code, out, stderr)
+				// The runner prints "FAIL - a: <message> (<position>)" and goes on.
+				want := tc.want
+				if rest, ok := strings.CutPrefix(want, "panic at "); ok {
+					pos, msg, _ := strings.Cut(rest, ": ")
+					want = "FAIL - a: " + msg + " (" + pos + ")"
 				}
-				if strings.Contains(out, "next test") || strings.Contains(out, "tests passed") {
-					t.Fatalf("the run went on after the failure:\n%s", out)
+				out, stderr, code := runProgram(t, src, opts)
+				if code != 1 || !strings.Contains(out, want) {
+					t.Fatalf("want exit 1 and %q, got exit %d\nstdout:\n%s\nstderr:\n%s", want, code, out, stderr)
+				}
+				if !strings.Contains(out, "next test") || !strings.Contains(out, "1 passed, 1 failed") {
+					t.Fatalf("the run did not go on after the failure:\n%s", out)
 				}
 			})
 		}

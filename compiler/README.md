@@ -72,7 +72,7 @@ go test ./...
 - Calls whose `Result` is not checked are compile errors.
 - Template strings.
 - Integer overflow checks in debug builds, and division by zero and bounds checks in every build.
-- `test` blocks and `assert`. `std/test` (inside test blocks only): `Test.eq`, `Test.ne`, `Test.panics(f)` and `Test.panicsWith(f, message)`. A failed assertion panics with the call's position and both values written with `Show`.
+- `test` blocks and `assert`. `std/test` (inside test blocks only): `Test.eq`, `Test.ne`, `Test.panics(f)` and `Test.panicsWith(f, message)` and `Test.golden(name, actual)`. A failed assertion panics with the call's position and both values written with `Show`. `narra test` runs each test in its own process, prints `ok - name` or `FAIL - name: message (file:line:col)`, then `N passed, M failed`, and exits 1 on a failure. `-filter text` runs the tests whose name contains the text and `-time` adds the milliseconds of each test (D66).
 - Reference counting for strings, arrays, and structs and enums that hold them.
 - Arrow functions `(x: int): int => x + 1` and `(x) => { ... }`, function types `(x: int) => int`, named functions as values (`apply(double, 1)`, `Alias.f`), calls through function values (`f(x)`, `make()(x)`, `button.onClick(x)`), and captures of constants. Parameter types of an arrow function come from the expected type, also through a generic call such as `map(items, (x) => x * 2)`.
 - `escaping` function parameters. A non-escaping closure keeps its environment on the caller's stack; an escaping one has a reference-counted heap environment.
@@ -96,7 +96,7 @@ go test ./...
 - Destructuring in `for (const #[i, x] of ...)` loops, and reading a tuple element by index.
 - Generators, async functions, threads and channels.
 - `unsafe` and `extern`.
-- `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. Golden files and runner options (filters, reports) are not there yet, and a failed assertion stops the whole test run.
+- `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.
 
 ## Differences from the spec
 

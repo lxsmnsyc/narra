@@ -46,6 +46,7 @@ static bool narra_test_fork(narra_test_proc* t, const char* where) {
   if (pid == 0) {
     close(fds[0]);
     narra_panic_fd = fds[1];
+    narra_panic_pos = 0;
     alarm(t->timeout);
     return true;
   }
@@ -136,5 +137,95 @@ static void narra_test_fail_ne(lstr* value, const char* where) {
   if (!out) narra_panic("runtime", "out of memory");
   snprintf(out, n, "expected a value other than %s", value->data);
   lstr_release(value);
+  narra_panic(where, out);
+}
+
+// Test.golden: compare actual with <dir>/<name>.golden. With
+// NARRA_UPDATE_GOLDEN=1 the file is written instead.
+#include <sys/stat.h>
+
+static void narra_test_golden(lstr* name, lstr* actual, const char* dir, const char* where) {
+  const char* up = getenv("NARRA_UPDATE_GOLDEN");
+  int update = up && strcmp(up, "1") == 0;
+  size_t cap = strlen(dir) + (size_t)name->len + 160;
+  char* path = malloc(cap);
+  if (!path) narra_panic("runtime", "out of memory");
+  if (name->len == 0 || memchr(name->data, 0, (size_t)name->len) || name->data[0] == '/' || strstr(name->data, "..")) {
+    free(path);
+    narra_panic(where, "Test.golden: the name must be a relative path without `..`");
+  }
+  snprintf(path, cap, "%s/%s.golden", dir, name->data);
+  if (update) {
+    // Create the directories on the way.
+    mkdir(dir, 0777);
+    for (char* p = path + strlen(dir) + 1; *p; p++) {
+      if (*p == '/') {
+        *p = 0;
+        mkdir(path, 0777);
+        *p = '/';
+      }
+    }
+    FILE* f = fopen(path, "wb");
+    if (!f || fwrite(actual->data, 1, (size_t)actual->len, f) != (size_t)actual->len) {
+      char* out = malloc(cap + 48);
+      if (!out) narra_panic("runtime", "out of memory");
+      snprintf(out, cap + 48, "Test.golden: cannot write %s", path);
+      if (f) fclose(f);
+      free(path);
+      narra_panic(where, out);
+    }
+    fclose(f);
+    free(path);
+    return;
+  }
+  FILE* f = fopen(path, "rb");
+  if (!f) {
+    char* out = malloc(cap + 96);
+    if (!out) narra_panic("runtime", "out of memory");
+    snprintf(out, cap + 96, "golden file %s does not exist; run with NARRA_UPDATE_GOLDEN=1 to create it", path);
+    free(path);
+    narra_panic(where, out);
+  }
+  size_t wcap = 4096, wlen = 0;
+  char* want = malloc(wcap);
+  if (!want) narra_panic("runtime", "out of memory");
+  for (;;) {
+    if (wlen == wcap) {
+      wcap *= 2;
+      want = realloc(want, wcap);
+      if (!want) narra_panic("runtime", "out of memory");
+    }
+    size_t n = fread(want + wlen, 1, wcap - wlen, f);
+    if (n == 0) break;
+    wlen += n;
+  }
+  fclose(f);
+  const char* got = actual->data;
+  size_t glen = (size_t)actual->len;
+  size_t i = 0;
+  while (i < wlen && i < glen && want[i] == got[i]) i++;
+  if (i == wlen && i == glen) {
+    free(want);
+    free(path);
+    return;
+  }
+  // The first differing line: both lines start after the last newline before i.
+  size_t start = i;
+  int64_t line = 1;
+  for (size_t k = 0; k < i; k++) if (want[k] == '\n') line++;
+  while (start > 0 && want[start - 1] != '\n') start--;
+  size_t we = start, ge = start;
+  while (we < wlen && want[we] != '\n') we++;
+  while (ge < glen && got[ge] != '\n') ge++;
+  lstr* w = narra_quote(want + start, (int64_t)(we - start), '"');
+  lstr* g = narra_quote(got + start, (int64_t)(ge - start), '"');
+  size_t n = (size_t)w->len + (size_t)g->len + (size_t)name->len + 96;
+  char* out = malloc(n);
+  if (!out) narra_panic("runtime", "out of memory");
+  snprintf(out, n, "golden %s differs at line %lld: expected %s, got %s", name->data, (long long)line, w->data, g->data);
+  lstr_release(w);
+  lstr_release(g);
+  free(want);
+  free(path);
   narra_panic(where, out);
 }

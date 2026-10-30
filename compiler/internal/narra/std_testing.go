@@ -29,8 +29,22 @@ func init() {
 			// panicsWith(f, message): panics unless calling f panics with a
 			// message that contains message.
 			"panicsWith": {Name: "Test.panicsWith", Effects: []string{"io"}, Check: checkTestPanics, Emit: emitTestPanics},
+			// golden(name, actual): compares actual with <testdata>/<name>.golden;
+			// NARRA_UPDATE_GOLDEN=1 writes the file instead (D66).
+			"golden": {Name: "Test.golden", Effects: []string{"io"}, Check: checkTestGolden, Emit: emitTestGolden},
 		},
 	})
+}
+
+func checkTestGolden(c *Checker, e *CallExpr, want Type) Type {
+	testOnly(c, e)
+	return checkFixed(c, e, []Type{TStr, TStr}, TVoid)
+}
+
+func emitTestGolden(e *Emitter, x *CallExpr, w string) (string, bool) {
+	name := e.temp(TStr, e.argCode(x, 0))
+	actual := e.temp(TStr, e.argCode(x, 1))
+	return fmt.Sprintf("narra_test_golden(%s, %s, %s, %s)", name, actual, cString(e.prog.GoldenDir), w), false
 }
 
 // testOnly reports a std/test call outside a test block.

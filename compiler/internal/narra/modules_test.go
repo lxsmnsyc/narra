@@ -33,7 +33,7 @@ func TestPackages(t *testing.T) {
 			opts := modes[0].opts
 			opts.Tests = true
 			got, stderr, code := runProgram(t, dir, opts)
-			if code != 0 || !strings.Contains(got, "tests passed") {
+			if code != 0 || !strings.Contains(got, " passed, 0 failed") {
 				t.Fatalf("exit code %d\nstdout:\n%s\nstderr:\n%s", code, got, stderr)
 			}
 		})

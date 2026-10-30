@@ -545,3 +545,14 @@ Decision: `Test.panics(f)` and `Test.panicsWith(f, message)` run `f` in a child 
 - **Rejected: an import error in non-test builds.** A file with tests and a `run` entry must still build as a program.
 - **Leaks on failure.** A failed assertion frees what it built except the final message, which `narra_panic` prints; the process then exits 101 and the leak report, which runs only at the normal end of `main`, does not run.
 - **Cost.** POSIX only (`fork`, `alarm`); Windows needs another design (a re-run of the test binary per closure). Each call costs one fork. Changes `f` makes to mutable state are lost, which is also what makes the capture safe. A crash in the child (signal, sanitizer report) fails the test instead of counting as a panic. When a nested `Test.panics` runs past the timeout, the inner and the outer timeouts race. An empty `message` matches any panic, and the match stops at a NUL byte.
+
+## D66. The test runner forks per test and golden files live in `testdata/`
+
+Decision: the main of a test build runs each `test` block in a child process (`fork`). The child sets `narra_panic_fd` and `narra_panic_pos`, so a panic writes `<position>\n<message>` to a pipe and exits 101; the parent prints `ok - <name>` or `FAIL - <name>: <message> (<position>)`, goes on, and ends with `N passed, M failed` and exit code 1 when a test failed. The child frees its constants and runs the leak check after its test, so a leak fails that test alone. `--filter <text>` and `--time` are arguments of the test binary; `narra test -filter -time` passes them on. `Test.golden(name, actual)` compares with `<dir>/<name>.golden` (package `testdata/`, or the file's directory for a single file; the compiler bakes in the absolute path) and rewrites the file when `NARRA_UPDATE_GOLDEN=1`.
+
+- **Reason.** D65 already showed fork works under the sanitizers and the leak check. Per-test processes give isolation and let the run continue, with no change to how panics unwind.
+- **Filter by argv.** An environment variable would leak into the nested processes of the tests and is invisible in a command line; argv also lets the binary run alone.
+- **Timing is opt-in.** The output is compared in tests, and times vary.
+- **`io` in test blocks.** The effect pass already ignores the effects of a `test` body (`Test.panics` declares `io` and is called freely), so `Test.golden` declares `io` and needs no `uses`. Helper functions called from a test still declare their own effects.
+- **Golden location.** `testdata/` keeps the files out of `src/`. A single file has no package, so the golden file sits next to it.
+- **Cost.** POSIX only. No per-test timeout (a hanging test hangs the run; `Test.panics` keeps its own). The failed-assertion message is no longer on stderr as `panic at ...`; it is on standard output in the `FAIL` line. The exit code of a failed run changed from 101 to 1. Generated C of every test build changed.

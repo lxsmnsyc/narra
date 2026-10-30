@@ -72,6 +72,9 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			e.Ctor = v
 			return t
 		}
+		if id, ok := e.Target.(*Ident); ok && c.lookup(id.Name) == nil && c.mod.consts[id.Name] == nil && c.missingImport(id, e.Name) {
+			return TVoid
+		}
 		t := c.expr(e.Target, nil)
 		switch tt := t.(type) {
 		case *StructType:

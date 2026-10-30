@@ -21,6 +21,15 @@ func Parse(src string) (*File, error) {
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
 	}
+	// The header ends at the last leading comment line that a blank line
+	// follows; a comment right above a declaration is its doc comment.
+	f.Header = 1
+	lines := strings.Split(src, "\n")
+	for i := 0; i < len(lines) && strings.HasPrefix(lines[i], "//"); i++ {
+		if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
+			f.Header = i + 2
+		}
+	}
 	return f, nil
 }
 

@@ -164,6 +164,12 @@ func (c *Checker) useModule(m *Module) {
 // type names, fields, function signatures and generic templates. It returns
 // the module's non-generic types.
 func (c *Checker) declareModule(f *File) []Type {
+	if c.mod != nil && c.mod.importAt.Line == 0 {
+		c.mod.importAt = Pos{f.Header, 1}
+		if len(f.Imports) > 0 {
+			c.mod.importAt = Pos{f.Imports[0].Pos.Line, 1}
+		}
+	}
 	for _, imp := range f.Imports {
 		if c.importPackageModule(imp) {
 			continue

@@ -25,7 +25,7 @@ import (
 var runtimeMapH string
 
 func init() {
-	registerNamespace("Map", map[string]*Builtin{
+	registerNamespaceModule("Map", "std/map", map[string]*Builtin{
 		"size": {
 			Check: checkMapSize,
 			Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {

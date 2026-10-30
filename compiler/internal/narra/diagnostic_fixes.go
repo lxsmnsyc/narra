@@ -18,6 +18,16 @@ func (c *Checker) errorfFix(pos Pos, fixes []Fix, format string, args ...any) {
 	}
 }
 
+// importFix adds `import * as ns from "path"` before the module's first import,
+// or after the leading comment lines when it has none.
+func (c *Checker) importFix(ns, path string) []Fix {
+	at := Pos{1, 1}
+	if c.mod != nil && c.mod.importAt.Line > 0 {
+		at = c.mod.importAt
+	}
+	return []Fix{{Title: "import " + path, Edits: []Edit{{Start: at, End: at, Text: "import * as " + ns + " from \"" + path + "\"\n"}}}}
+}
+
 // concatFix rewrites `a + "x" + b` as the template string `${a}x${b}`. It
 // offers the fix only when every operand is a string name or string literal,
 // because only then are the start and the end of the text known exactly.

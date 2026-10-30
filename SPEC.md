@@ -4,6 +4,8 @@ This document defines the Narra language. Each section states the rules first, t
 
 File extension: `.nra`. Compiler command: `narra`.
 
+Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` functions (section 3): a sample that calls `Array.push` assumes `import * as Array from "std/array"`.
+
 ## 1. Overview
 
 - Narra uses TypeScript-style syntax with Rust-style semantics: static types, enums with fields, pattern matching, and no `null`.
@@ -184,11 +186,14 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **One file is one module.** Its path from the package root is its name: `src/app/text.nra` is `"app/text"`.
 - **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
-- **Prelude.** The prelude holds `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, the primitive types, `print`, `assert` and `panic`. Nothing else is in scope without an import.
+- **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
+- **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Array.push(mutable xs, v)` needs `import * as Array from "std/array"`. The alias may equal the type name: `Array<int>` is the type and `Array.push` is the module. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one, unless the program also writes `import * as Box from "std/box"` (or `std/map`): then `Box.new` is the module function.
+- **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/process`, `std/range`, `std/string` and `std/test`.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 ```ts
 import * as Str from "std/string"            // namespace import
+import * as Array from "std/array"           // the alias can be a prelude type name
 import { classify, Token } from "app/text"   // named imports
 ```
 

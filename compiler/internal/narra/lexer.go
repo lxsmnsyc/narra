@@ -31,6 +31,7 @@ type Token struct {
 	Kind TokenKind
 	Text string
 	Pos  Pos
+	End  Pos // the position after the token's last character
 }
 
 var keywords = map[string]bool{
@@ -68,7 +69,7 @@ func Lex(src string) ([]Token, error) {
 }
 
 func (lx *Lexer) errorf(pos Pos, format string, args ...any) error {
-	return fmt.Errorf("%s: %s", pos, fmt.Sprintf(format, args...))
+	return Diagnostic{Code: codeFor(format), Pos: pos, Message: fmt.Sprintf(format, args...)}
 }
 
 func (lx *Lexer) peek(off int) rune {
@@ -91,7 +92,7 @@ func (lx *Lexer) advance() rune {
 }
 
 func (lx *Lexer) emit(kind TokenKind, text string, pos Pos) {
-	lx.tokens = append(lx.tokens, Token{Kind: kind, Text: text, Pos: pos})
+	lx.tokens = append(lx.tokens, Token{Kind: kind, Text: text, Pos: pos, End: Pos{lx.line, lx.col}})
 	lx.last = &lx.tokens[len(lx.tokens)-1]
 }
 
@@ -188,7 +189,9 @@ func (lx *Lexer) run() error {
 						lx.advance()
 					}
 					if p == ";" {
-						return lx.errorf(pos, "semicolons are not used; end the statement with a line break")
+						d := lx.errorf(pos, "semicolons are not used; end the statement with a line break").(Diagnostic)
+						d.Fixes = []Fix{{Title: "remove the semicolon", Edits: []Edit{{Start: pos, End: Pos{pos.Line, pos.Col + 1}}}}}
+						return d
 					}
 					switch p {
 					case "(", "[", "#[":

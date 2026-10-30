@@ -13,6 +13,8 @@ go build -o narra ./cmd/narra
 ./narra build -release -o app file.nra    # optimized, integer overflow wraps
 ./narra test testdata/tests.nra           # run `test` blocks
 ./narra emit file.nra                     # print the generated C
+./narra check [--json] file.nra          # report errors; --json prints one object per line
+./narra explain E0003                    # explain a diagnostic code
 ./narra build testdata/packages/app       # build every [[binary]] of a package
 ./narra run -bin app testdata/packages/app
 ```

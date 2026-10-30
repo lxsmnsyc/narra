@@ -53,6 +53,9 @@ func (c *Checker) report(d Diagnostic) {
 // syntaxDiagnostic wraps an error from the lexer or the parser, which stop at
 // the first error and format it as `line:col: message`.
 func syntaxDiagnostic(err error) Diagnostic {
+	if d, ok := err.(Diagnostic); ok {
+		return d
+	}
 	text := err.Error()
 	d := Diagnostic{Code: "E0000", Message: text}
 	parts := strings.SplitN(text, ": ", 2)

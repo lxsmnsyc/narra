@@ -133,7 +133,7 @@ type mapKeyCheck struct {
 func (c *Checker) flushMapKeys() {
 	for _, k := range c.mapKeys {
 		if p := c.mapKeyProblem(k.key, map[Type]bool{}); p != "" {
-			c.report(Diagnostic{Code: "E0000", Pos: k.pos, File: k.file, Message: fmt.Sprintf("%s cannot be a map key: %s", k.key, p)})
+			c.report(Diagnostic{Code: codeFor("%s cannot be a map key: %s"), Pos: k.pos, File: k.file, Message: fmt.Sprintf("%s cannot be a map key: %s", k.key, p)})
 		}
 	}
 	c.mapKeys = nil

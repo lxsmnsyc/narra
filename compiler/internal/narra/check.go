@@ -141,7 +141,7 @@ func (c *Checker) errorf(pos Pos, format string, args ...any) {
 	if c.mod != nil {
 		file = c.mod.file
 	}
-	c.report(Diagnostic{Code: "E0000", Pos: pos, File: file, Message: fmt.Sprintf(format, args...)})
+	c.report(Diagnostic{Code: codeFor(format), Pos: pos, File: file, Message: fmt.Sprintf(format, args...)})
 }
 
 // useModule records an imported standard library module.

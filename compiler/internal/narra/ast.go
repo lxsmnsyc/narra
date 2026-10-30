@@ -227,6 +227,7 @@ type FloatLit struct {
 type StringLit struct {
 	exprBase
 	Value string
+	End   Pos // after the closing quote
 }
 
 type CharLit struct {

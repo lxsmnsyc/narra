@@ -194,7 +194,7 @@ func (c *Checker) binary(e *BinaryExpr) Type {
 	case "+", "-", "*", "/", "%":
 		if !sameType(l, r) || !isNumeric(l) {
 			if l == TStr || r == TStr {
-				c.errorf(e.P, "strings are joined with a template string, not +")
+				c.errorfFix(e.P, concatFix(e), "strings are joined with a template string, not +")
 			} else {
 				c.errorf(e.P, "%s needs two numbers of the same type, found %s and %s", e.Op, l, r)
 			}

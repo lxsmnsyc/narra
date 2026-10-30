@@ -24,10 +24,15 @@ func Parse(src string) (*File, error) {
 	return f, nil
 }
 
-type parseError struct{ msg string }
+type parseError struct{ d Diagnostic }
 
 func (p *Parser) fail(pos Pos, format string, args ...any) {
-	panic(parseError{fmt.Sprintf("%s: %s", pos, fmt.Sprintf(format, args...))})
+	p.failFix(pos, nil, format, args...)
+}
+
+// failFix stops parsing with an error that carries exact fixes.
+func (p *Parser) failFix(pos Pos, fixes []Fix, format string, args ...any) {
+	panic(parseError{Diagnostic{Code: codeFor(format), Pos: pos, Message: fmt.Sprintf(format, args...), Fixes: fixes}})
 }
 
 func (p *Parser) tok() Token { return p.toks[p.i] }
@@ -102,7 +107,7 @@ func (p *Parser) file() (f *File, err error) {
 			if !ok {
 				panic(r)
 			}
-			err = fmt.Errorf("%s", pe.msg)
+			err = pe.d
 		}
 	}()
 	f = &File{}
@@ -137,7 +142,12 @@ func (p *Parser) importDecl() *ImportDecl {
 		p.skipNewlines()
 		p.expect("}")
 	} else {
-		p.fail(p.tok().Pos, "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports")
+		at := p.tok().Pos
+		var fixes []Fix
+		if p.tok().Kind == TokIdent {
+			fixes = []Fix{{Title: "import the module as a namespace", Edits: []Edit{{Start: at, End: at, Text: "* as "}}}}
+		}
+		p.failFix(at, fixes, "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports")
 	}
 	p.expect("from")
 	if p.tok().Kind != TokString {
@@ -214,6 +224,14 @@ func (p *Parser) typeExpr() *TypeExpr {
 			return te
 		}
 		p.expect(">")
+	}
+	if p.is("[") && p.toks[p.i+1].Kind == TokPunct && p.toks[p.i+1].Text == "]" {
+		open, shut := p.tok().Pos, p.toks[p.i+1].Pos
+		fix := Fix{Title: "write Array<...>", Edits: []Edit{
+			{Start: te.Pos, End: te.Pos, Text: "Array<"},
+			{Start: open, End: Pos{shut.Line, shut.Col + 1}, Text: ">"},
+		}}
+		p.failFix(open, []Fix{fix}, "there is no `T[]` array type; write `Array<T>`")
 	}
 	return te
 }
@@ -698,7 +716,8 @@ func (p *Parser) binary(level int) Expr {
 			}
 		}
 		if t.Text == "===" || t.Text == "!==" {
-			p.fail(t.Pos, "use `%s`; there is no strict equality operator", t.Text[:2])
+			fix := Fix{Title: "use " + t.Text[:2], Edits: []Edit{{Start: t.Pos, End: Pos{t.Pos.Line, t.Pos.Col + 3}, Text: t.Text[:2]}}}
+			p.failFix(t.Pos, []Fix{fix}, "use `%s`; there is no strict equality operator", t.Text[:2])
 		}
 		if !matched {
 			return left
@@ -856,7 +875,7 @@ func (p *Parser) primary() Expr {
 		return &FloatLit{exprBase: base, Text: t.Text}
 	case TokString:
 		p.next()
-		return &StringLit{exprBase: base, Value: t.Text}
+		return &StringLit{exprBase: base, Value: t.Text, End: t.End}
 	case TokChar:
 		p.next()
 		return &CharLit{exprBase: base, Value: []rune(t.Text)[0]}
@@ -866,7 +885,8 @@ func (p *Parser) primary() Expr {
 	case TokIdent:
 		p.next()
 		if t.Text == "null" || t.Text == "undefined" {
-			p.fail(t.Pos, "there is no %s; use `None` with an `Option` type", t.Text)
+			fix := Fix{Title: "use None", Edits: []Edit{{Start: t.Pos, End: Pos{t.Pos.Line, t.Pos.Col + len(t.Text)}, Text: "None"}}}
+			p.failFix(t.Pos, []Fix{fix}, "there is no %s; use `None` with an `Option` type", t.Text)
 		}
 		return &Ident{exprBase: base, Name: t.Text}
 	case TokKeyword:

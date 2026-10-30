@@ -303,7 +303,7 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 		if ft := fieldFunc(callee, t); ft != nil {
 			return c.valueCallOf(e, ft)
 		}
-		c.errorf(callee.P, "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)", callee.Name, t)
+		c.errorfFix(callee.P, pushFix(e, callee, t), "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)", callee.Name, t)
 		c.argsLoose(e)
 		return TVoid
 	}

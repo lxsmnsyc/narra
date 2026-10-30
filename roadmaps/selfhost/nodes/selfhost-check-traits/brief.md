@@ -1,7 +1,7 @@
 ---
 id: selfhost-check-traits
 title: Self-hosted checker: traits and implementations
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

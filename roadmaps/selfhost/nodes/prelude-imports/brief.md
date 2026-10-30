@@ -1,7 +1,8 @@
 ---
 id: prelude-imports
 title: Move prelude function namespaces behind std imports
-status: active
+status: done
+spent: 561000
 priority: must
 type: feature
 outline: false
@@ -66,10 +67,10 @@ No global functions except `print`, `assert` and `panic`. The function namespace
 
 ## Acceptance
 
-- [ ] `Array.*`, `Map.*`, `Range.*` and `Box.*` resolve only through their `std/*` import; without it, a compile error with an add-import fix (`testdata/errors/prelude_*.nra`). Types and constructors remain global; `print`, `assert`, `panic` remain global.
-- [ ] Every sample, package, bench program and `selfhost/src` file is migrated; all run tests pass in debug (ASan, UBSan, leak check) and release; selfhost dump tests pass.
-- [ ] `SPEC.md`, D67 and `compiler/README.md` describe the new prelude.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `Array.*`, `Map.*`, `Range.*` and `Box.*` resolve only through their `std/*` import; without it, a compile error with an add-import fix (`testdata/errors/prelude_*.nra`). Types and constructors remain global; `print`, `assert`, `panic` remain global.
+- [x] Every sample, package, bench program and `selfhost/src` file is migrated; all run tests pass in debug (ASan, UBSan, leak check) and release; selfhost dump tests pass.
+- [x] `SPEC.md`, D67 and `compiler/README.md` describe the new prelude.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

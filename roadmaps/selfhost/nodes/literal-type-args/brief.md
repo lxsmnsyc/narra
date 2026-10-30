@@ -1,7 +1,7 @@
 ---
 id: literal-type-args
 title: Type arguments on map and generic struct literals
-status: todo
+status: active
 priority: should
 type: feature
 outline: false

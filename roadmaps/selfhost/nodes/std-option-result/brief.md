@@ -1,7 +1,7 @@
 ---
 id: std-option-result
 title: std/option and std/result helpers
-status: todo
+status: active
 priority: should
 type: feature
 outline: false

@@ -22,6 +22,11 @@ owns:
   - compiler/internal/narra/selfhost_imports_test.go
   - compiler/testdata/declsdump/imports/**
 shared:
+  - compiler/internal/narra/decldump_test.go
+  - compiler/internal/narra/selfhost_decls_test.go
+  - compiler/internal/narra/selfhost_traits_test.go
+  - selfhost/src/resolve.nra
+  - compiler/testdata/declsdump/**
   - compiler/internal/narra/decldump.go
   - compiler/internal/narra/selfhost_test.go
   - compiler/internal/narra/check.go

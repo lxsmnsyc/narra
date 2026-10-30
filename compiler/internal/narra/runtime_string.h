@@ -202,3 +202,44 @@ static void narra_sb_append_char(narra_sb** p, uint32_t c) {
 }
 
 static lstr* narra_sb_build(narra_sb* b) { return narra_str_copy(b->data, b->len); }
+
+static bool narra_str_ends_with(lstr* s, lstr* suffix) {
+  return suffix->len <= s->len && memcmp(s->data + s->len - suffix->len, suffix->data, (size_t)suffix->len) == 0;
+}
+
+static bool narra_str_contains(lstr* s, lstr* part) { return narra_str_index_of(s, part) >= 0; }
+
+// Replaces every non-overlapping match of from, left to right. An empty from
+// returns a copy of s.
+static lstr* narra_str_replace(lstr* s, lstr* from, lstr* to) {
+  if (from->len == 0) return narra_str_copy(s->data, s->len);
+  int64_t count = 0;
+  for (int64_t i = 0; i + from->len <= s->len;) {
+    if (memcmp(s->data + i, from->data, (size_t)from->len) == 0) { count++; i += from->len; } else i++;
+  }
+  lstr* r = lstr_new(s->len + count * (to->len - from->len));
+  int64_t o = 0;
+  for (int64_t i = 0; i < s->len;) {
+    if (i + from->len <= s->len && memcmp(s->data + i, from->data, (size_t)from->len) == 0) {
+      memcpy(r->data + o, to->data, (size_t)to->len);
+      o += to->len;
+      i += from->len;
+    } else {
+      r->data[o++] = s->data[i++];
+    }
+  }
+  return r;
+}
+
+static lstr* narra_str_join(lstr** parts, int64_t n, lstr* sep) {
+  int64_t total = 0;
+  for (int64_t i = 0; i < n; i++) total += parts[i]->len + (i > 0 ? sep->len : 0);
+  lstr* r = lstr_new(total);
+  int64_t o = 0;
+  for (int64_t i = 0; i < n; i++) {
+    if (i > 0) { memcpy(r->data + o, sep->data, (size_t)sep->len); o += sep->len; }
+    memcpy(r->data + o, parts[i]->data, (size_t)parts[i]->len);
+    o += parts[i]->len;
+  }
+  return r;
+}

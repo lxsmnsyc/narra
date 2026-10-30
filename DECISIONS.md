@@ -564,3 +564,14 @@ Decision: the only global functions are `print`, `assert` and `panic`. The funct
 - **Reason.** User decision 2026-10-30: do not expose global functions. One rule for every function: it comes from a module.
 - **Rejected: a prelude that re-exports the functions as globals.** It keeps the old behavior for no gain.
 - **Cost.** Every program that uses these functions gains one to four import lines. Positions in goldens shift.
+
+## D68. Type arguments on map and generic struct literals
+
+Decision: a map literal or a generic struct literal may carry type arguments after the name: `Map<string, int> {}`, `Map<string, int> { "a": 1 }`, `Pair<int, string> { a: 1, b: "x" }`. The type arguments fix the type of the literal, so it no longer depends on the expected type. When both exist they must be the same type (E0237). Arity, the map key rules and each key, value and field are checked against the written types with the same code that checks a type annotation. `Map<K, V> { ...spread }` does not exist, and `Pair<A, B> { ...s, a: 1 }` requires `s` to have the written type. Arrays get no form: `let xs: Array<int> = []` stays.
+
+The parser decides by lookahead. After a capitalized name, a `<` starts type arguments only when the tokens up to the matching `>` are names, `.`, `,`, `#[`, `]` and nested `<...>` (`>>` closes two levels) and the next token is `{`. Otherwise `<` is the less-than operator. Function types are not allowed inside literal type arguments, because `(` is not in the set; they can still be passed through an annotation.
+
+- **Reason.** User decision 2026-10-30: an empty map needs no variable annotation and can be passed straight to a generic function. D23 keeps names over symbols, so there is no `{K: V}` type and no `#{...}` literal.
+- **Rejected: a bare `Map {}` with inference from later uses.** The checker checks one expression at a time and has no place to hold an unresolved type.
+- **Rejected: `Map::<K, V> {}` or `Map.of<K, V>()`.** The first adds a token the language does not have. The second is a function call, and the literal form already exists.
+- **Cost.** Two parsers carry the lookahead. A comparison such as `A < B > { ... }` between capitalized names is read as a literal, which no valid program writes.

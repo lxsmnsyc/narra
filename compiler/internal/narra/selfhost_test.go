@@ -70,6 +70,12 @@ var parseEdgeCases = map[string]string{
 	"compound.nra":          "function f() { x += 1 }\n",
 	"compound_spaced.nra":   "function f() { x + = 1 }\n",
 	"map_key.nra":           "function f() { Map { a: 1 } }\n",
+	"lit_targs_map.nra":     "function f() { Map<string, Array<int>> { \"a\": [1] }\n Map<int, A.B> {}\n Map<#[int, bool], int> {} }\n",
+	"lit_targs_struct.nra":  "function f() { Pair<int, string> { a: 1 }\n Pair<A<B>, C> { ...p } }\n",
+	"lit_targs_cmp.nra":     "function f() { a < B\n A < B > c\n A < B, C > { }\n A < B >> { } }\n",
+	"lit_targs_eof.nra":     "function f() { Map<string, int",
+	"lit_targs_err.nra":     "function f() { Pair<int, > { a: 1 } }\n",
+	"lit_targs_spread.nra":  "function f() { Pair<int, int> { 1: 2, ...p } }\n",
 	"map_ok.nra":            "function f() { Map { -1: 2, [k]: 3, \"s\": 4,\n'c': 5, true: 6, 1.5: 7 } }\n",
 	"two_spreads.nra":       "function f() { S { ...a, ...b } }\n",
 	"shorthand.nra":         "function f() { S { a } }\n",
@@ -116,7 +122,6 @@ var parseEdgeCases = map[string]string{
 	"eof_in_tuple_type.nra": "function f(x: #[int, ",
 	"eof_in_func_type.nra":  "function f(x: (a: int, ",
 }
-
 
 // selfhostInputs lists every .nra file under testdata/ and selfhost/src,
 // plus the edge cases written to a temporary directory. It maps each path to

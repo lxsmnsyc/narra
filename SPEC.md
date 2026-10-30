@@ -131,8 +131,9 @@ for (const i of Range.upTo(Array.length(items))) {
 - **A literal must fit its type.** `const x: u8 = 300` is a compile error.
 - `true` and `false` have type `bool`.
 - A number literal with no other type information is `int` when written without a decimal point, and `f64` when written with one.
-- **Arrays:** `[1, 2, 3]`. `[]` needs its type from context.
-- **Maps:** `Map { "a": 1, "b": 2 }`. A key that is not a literal is written `[key]: value`.
+- **Arrays:** `[1, 2, 3]`. `[]` needs its type from context, as in `let xs: Array<int> = []`. Arrays have no literal form with a type argument.
+- **Maps:** `Map { "a": 1, "b": 2 }`. A key that is not a literal is written `[key]: value`. The key and value types come from the entries or from context. An empty `Map {}` needs its type from context.
+- **Type arguments on a literal.** `Map<string, int> {}`, `Map<string, int> { "a": 1 }` and `Pair<int, string> { a: 1, b: "x" }` write the type arguments after the name. The literal then has that type without help from context, so `count(Map<string, int> {})` needs no annotation. The compiler checks the arity, that each argument is a type, the map key rules (no float keys, `Equatable` and `Hashable` together) and every key, value and field against the written types. If an expected type also exists, the two must be the same type. A `<` after a capitalized name starts type arguments only when it is followed by a balanced `<...>` of type names and then `{`; in every other case it is the less-than operator, so `a < b` is unchanged. There is no `{K: V}` type and no `#{...}` literal.
 - **Tuples:** `#[1, "a"]` builds a tuple of type `#[int, string]`. It always makes a tuple, needs no expected type and has at least two elements. `[1, 2]` is always an array.
 
 There are no macros, no operator overloading and no function overloading.

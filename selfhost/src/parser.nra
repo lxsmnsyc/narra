@@ -1095,16 +1095,24 @@ function postfix(mutable p: Parser, first: Expr): Expr {
       const idx = parseExpr(mutable p)
       expect(mutable p, "]")
       e = IndexExpr(newId(mutable p), posOf(t), e, idx)
-    } else if (at(p, "{")) {
-      // `Name { field: value }` is a struct literal.
+    } else if (at(p, "<") || at(p, "{")) {
+      // `Name { field: value }` is a struct literal, and
+      // `Name<A, B> { ... }` is one with type arguments.
       if (e is Ident(_, ipos, iname)) {
         if (!startsUpper(iname)) {
           return e
         }
+        let targs: Array<TypeExpr> = []
+        if (at(p, "<")) {
+          if (!typeArgsLitAhead(p)) {
+            return e
+          }
+          targs = litTypeArgs(mutable p)
+        }
         if (iname == "Map") {
-          e = mapLit(mutable p, ipos)
+          e = mapLit(mutable p, ipos, targs)
         } else {
-          e = structLit(mutable p, iname, ipos)
+          e = structLit(mutable p, iname, targs, ipos)
         }
       } else {
         return e
@@ -1125,6 +1133,60 @@ function memberName(mutable p: Parser): Token {
   return ident(mutable p)
 }
 
+// typeArgsLitAhead reports whether the `<` at the current token starts the
+// type arguments of a literal: a balanced `<` ... `>` holding only names,
+// `.`, `,`, `#[`, `]` and nested `<>`, followed by `{`. Anything else is a
+// comparison, so `a < B` never changes meaning. `>>` closes two levels.
+function typeArgsLitAhead(p: Parser): bool {
+  let depth = 0
+  let k = 0
+  const n = Array.length(p.toks)
+  while (p.i + k < n) {
+    const t = tokAt(p, k)
+    if (t.kind == TokIdent) {
+      if (depth == 0) {
+        return false
+      }
+    } else if (t.kind != TokPunct) {
+      return false
+    } else if (t.text == "<") {
+      depth = depth + 1
+    } else if (t.text == ">" || t.text == ">>") {
+      if (t.text == ">") {
+        depth = depth - 1
+      } else {
+        depth = depth - 2
+      }
+      if (depth < 0) {
+        return false
+      }
+      if (depth == 0) {
+        const after = tokAt(p, k + 1)
+        return after.kind == TokPunct && after.text == "{"
+      }
+    } else if (t.text != "," && t.text != "." && t.text != "#[" && t.text != "]") {
+      return false
+    }
+    k = k + 1
+  }
+  return false
+}
+
+// litTypeArgs parses the `<A, B>` before a literal's `{`. A trailing `>>`
+// is split by parseType, as in a type.
+function litTypeArgs(mutable p: Parser): Array<TypeExpr> {
+  expect(mutable p, "<")
+  let args: Array<TypeExpr> = []
+  while (ok(p)) {
+    Array.push(mutable args, parseType(mutable p))
+    if (!accept(mutable p, ",")) {
+      break
+    }
+  }
+  expect(mutable p, ">")
+  return args
+}
+
 function startsUpper(s: string): bool {
   if (s == "") {
     return false
@@ -1135,7 +1197,7 @@ function startsUpper(s: string): bool {
 
 // mapLit parses `Map { "a": 1, [key]: 2 }`. A key that is not a literal is
 // written in brackets.
-function mapLit(mutable p: Parser, pos: Pos): Expr {
+function mapLit(mutable p: Parser, pos: Pos, typeArgs: Array<TypeExpr>): Expr {
   expect(mutable p, "{")
   skipNewlines(mutable p)
   let keys: Array<Expr> = []
@@ -1163,7 +1225,7 @@ function mapLit(mutable p: Parser, pos: Pos): Expr {
   }
   skipNewlines(mutable p)
   expect(mutable p, "}")
-  return MapLit(newId(mutable p), pos, keys, vals)
+  return MapLit(newId(mutable p), pos, typeArgs, keys, vals)
 }
 
 function isLiteralKey(e: Expr): bool {
@@ -1191,11 +1253,11 @@ function exprPos(e: Expr): Pos {
     FieldExpr(_, pos, _, _) => pos
     IsExpr(_, pos, _, _) => pos
     IndexExpr(_, pos, _, _) => pos
-    MapLit(_, pos, _, _) => pos
+    MapLit(_, pos, _, _, _) => pos
     CallExpr(_, pos, _, _) => pos
     UnaryExpr(_, pos, _, _) => pos
     BinaryExpr(_, pos, _, _, _) => pos
-    StructLit(_, pos, _, _, _) => pos
+    StructLit(_, pos, _, _, _, _) => pos
     ArrayLit(_, pos, _, _) => pos
     MatchExpr(_, pos, _, _) => pos
     ArrowExpr(_, pos, _, _, _, _) => pos
@@ -1204,7 +1266,7 @@ function exprPos(e: Expr): Pos {
 
 // structLit parses `{ ...spread, field: value }`. typeName is empty and pos
 // is the `{` without a type name; with one, pos is the name's.
-function structLit(mutable p: Parser, typeName: string, pos: Pos): Expr {
+function structLit(mutable p: Parser, typeName: string, typeArgs: Array<TypeExpr>, pos: Pos): Expr {
   expect(mutable p, "{")
   skipNewlines(mutable p)
   let fields: Array<FieldInit> = []
@@ -1240,7 +1302,7 @@ function structLit(mutable p: Parser, typeName: string, pos: Pos): Expr {
   }
   skipNewlines(mutable p)
   expect(mutable p, "}")
-  return StructLit(newId(mutable p), pos, typeName, fields, spread)
+  return StructLit(newId(mutable p), pos, typeName, typeArgs, fields, spread)
 }
 
 function primary(mutable p: Parser): Expr {
@@ -1306,7 +1368,7 @@ function primary(mutable p: Parser): Expr {
       return ArrayLit(newId(mutable p), pos, elems, t.text == "#[")
     }
     if (t.text == "{") {
-      return structLit(mutable p, "", pos)
+      return structLit(mutable p, "", [], pos)
     }
   }
   failAt(mutable p, pos, `expected an expression, found ${describe(t)}`)

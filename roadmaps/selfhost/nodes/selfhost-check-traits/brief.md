@@ -20,6 +20,7 @@ owns:
   - compiler/internal/narra/selfhost_traits_test.go
   - compiler/testdata/declsdump/traits/**
 shared:
+  - compiler/testdata/declsdump/**
   - compiler/internal/narra/decldump.go
   - compiler/internal/narra/selfhost_test.go
   - selfhost/src/declare.nra

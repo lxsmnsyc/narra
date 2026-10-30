@@ -127,6 +127,17 @@ func main() {
 		if !ok {
 			os.Exit(1)
 		}
+	case "decls":
+		// Hidden: print the checked declarations, for the self-hosted checker test.
+		if len(rest) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: narra decls path")
+			os.Exit(2)
+		}
+		dump, ok := narra.DeclDump(rest[0])
+		fmt.Print(dump)
+		if !ok {
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

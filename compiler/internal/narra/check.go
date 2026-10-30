@@ -127,6 +127,7 @@ type Checker struct {
 	mods    map[string]*modScope // by module path; "" is the prelude
 	funcMod map[*FuncDecl]*modScope
 	pkg     *Package
+	prelude *File // the parsed prelude, for DeclDump
 	traits  *traitState
 	closure *closureState // check_closure.go
 	inTest  bool          // checking a test block, arrow functions inside it included (std_testing.go)

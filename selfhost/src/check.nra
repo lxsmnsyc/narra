@@ -1,0 +1,330 @@
+// The checker context, ported from the Checker struct and helpers of
+// compiler/internal/narra/check.go, diagnostic.go (report) and the
+// orderTypes half of check_types.go.
+//
+// One `Checker` value is threaded through every pass as `mutable c`. Every
+// array and map in it has one owner, so pushes and writes happen in place.
+// Declaration tables are written through `c.structs[i].fields = ...`.
+//
+// Side tables are indexed by node id (D63). They are sized by the id count
+// given to newChecker (the package's `nextId` plus the prelude's ids, see
+// declare.nra), never by the number of nodes, because ids have gaps. A
+// dummy node built after a parse error has id -1; parsed files that reach
+// the checker have none, but every write checks the range anyway.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Pos, FuncDecl, ConstDecl, Decl, File } from "narrac/ast"
+import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, typeKey, isBoxedEnum } from "narrac/types"
+
+// The names one module sees (Go's modScope): its own declarations and the
+// prelude's types and generics. selfhost-check-imports adds the imported
+// names, aliases and the std registry entries.
+export struct ModScope {
+  path: string // "" for the prelude
+  file: string // for diagnostics: "prelude", "src/text.nra", "hello.nra"
+  decls: Array<Decl> // the module's declarations, for typeErrorf
+  types: Map<string, Type> // non-generic named types, with the primitives
+  generics: Map<string, int> // Checker.generics
+  funcs: Map<string, int> // Checker.funcs
+  consts: Map<string, int> // Checker.consts
+}
+
+// A top-level function. typeParams is empty for a non-generic function.
+// Parameter types are in the side table Checker.paramTypes by Param.id.
+export struct FuncInfo {
+  name: string
+  module: string
+  scope: int
+  decl: FuncDecl
+  typeParams: Array<int> // Checker.params
+  result: Type
+}
+
+// A top-level constant. t is the declared type, set by declareConstTypes;
+// None without an annotation until the body checker infers it.
+export struct ConstInfo {
+  name: string
+  module: string
+  scope: int
+  decl: ConstDecl
+  t: Option<Type>
+}
+
+// A compile error. There are no codes or fixes yet: they go with the driver
+// in selfhost-bootstrap.
+export struct CheckError {
+  file: string
+  pos: Pos
+  message: string
+}
+
+export struct Checker {
+  // Declaration tables. A Type indexes into the first four.
+  structs: Array<StructInfo>
+  enums: Array<EnumInfo>
+  distincts: Array<DistinctInfo>
+  params: Array<ParamInfo>
+  generics: Array<GenericInfo>
+  funcs: Array<FuncInfo>
+  consts: Array<ConstInfo>
+  // Generic instances and tuple types by "<generic>|<typeKeys>" or
+  // "T|<typeKeys>", and the instances in creation order (Go's instTypes).
+  instances: Map<string, Type>
+  instTypes: Array<Type>
+  // Non-generic structs and enums in declaration order, prelude first
+  // (the concrete list Go passes to finish).
+  concrete: Array<Type>
+  // Module scopes; cur is the module being checked (Go's c.mod).
+  scopes: Array<ModScope>
+  cur: int
+  // The type parameters in scope by name (Go's c.env).
+  env: Map<string, Type>
+  // Side tables by node id.
+  paramTypes: Array<Type> // the type of each Param, TVoid until set
+  // Locals declared so far, for unique local names (body checker).
+  localN: int
+  errs: Array<CheckError>
+  // Structs and enums in C definition order, set by finish (Go's
+  // Program.Types).
+  order: Array<Type>
+}
+
+// newChecker makes an empty checker whose side tables hold ids [0, ids).
+export function newChecker(ids: int): Checker uses alloc {
+  return Checker {
+    structs: [], enums: [], distincts: [], params: [], generics: [], funcs: [], consts: [],
+    instances: Map {}, instTypes: [], concrete: [], scopes: [], cur: 0, env: Map {},
+    paramTypes: Array.filled(TVoid, ids), localN: 0, errs: [], order: [],
+  }
+}
+
+// errorf records an error in the current module's file. An error equal to
+// one already recorded is dropped, as Go's report does.
+export function errorf(mutable c: Checker, pos: Pos, message: string) uses alloc {
+  let file = ""
+  if (Array.length(c.scopes) > 0) {
+    file = c.scopes[c.cur].file
+  }
+  errorIn(mutable c, file, pos, message)
+}
+
+export function errorIn(mutable c: Checker, file: string, pos: Pos, message: string) uses alloc {
+  for (const e of Array.values(c.errs)) {
+    if (e.file == file && e.pos.line == pos.line && e.pos.col == pos.col && e.message == message) {
+      return
+    }
+  }
+  Array.push(mutable c.errs, CheckError { file: file, pos: pos, message: message })
+}
+
+// errorText prints the errors as the Go dumps do, one line each.
+export function errorText(errs: Array<CheckError>): string uses alloc {
+  let sb = Str.builder()
+  for (const e of Array.values(errs)) {
+    Str.append(mutable sb, `error ${e.file}:${Int.toString(e.pos.line)}:${Int.toString(e.pos.col)}: ${e.message}\n`)
+  }
+  return Str.build(sb)
+}
+
+// newScope adds the scope of a module and returns its index. Every module
+// sees the primitive names and the prelude's types and generics.
+export function newScope(mutable c: Checker, path: string, file: string, decls: Array<Decl>) : int uses alloc {
+  let types: Map<string, Type> = Map { "int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr }
+  let generics: Map<string, int> = Map {}
+  if (Array.length(c.scopes) > 0) {
+    for (const e of Map.entries(c.scopes[0].types)) {
+      const #[n, t] = e
+      types[n] = t
+    }
+    for (const e of Map.entries(c.scopes[0].generics)) {
+      const #[n, g] = e
+      generics[n] = g
+    }
+  }
+  Array.push(mutable c.scopes, ModScope { path: path, file: file, decls: decls, types: types, generics: generics, funcs: Map {}, consts: Map {} })
+  return Array.length(c.scopes) - 1
+}
+
+// enter makes scope s current and returns the previous one.
+export function enter(mutable c: Checker, s: int): int {
+  const prev = c.cur
+  c.cur = s
+  return prev
+}
+
+// lookupType finds a non-generic named type in the current scope.
+export function lookupType(c: Checker, name: string): Option<Type> {
+  return c.scopes[c.cur].types[name]
+}
+
+export function lookupGeneric(c: Checker, name: string): Option<int> {
+  return c.scopes[c.cur].generics[name]
+}
+
+// typeString prints a type as Go's Type.String does: structs and enums by
+// name with their type arguments, tuples as #[A, B].
+export function typeString(c: Checker, t: Type): string uses alloc {
+  return match (t) {
+    TInt => "int"
+    TF64 => "f64"
+    TBool => "bool"
+    TChar => "char"
+    TStr => "string"
+    TVoid => "void"
+    TStringBuilder => "StringBuilder"
+    TStruct(i) => structString(c, i)
+    TEnum(i) => `${c.enums[i].name}${typeArgs(c, c.enums[i].args)}`
+    TDistinct(i) => c.distincts[i].name
+    TParam(i) => c.params[i].name
+    TArray(e) => `Array<${typeString(c, e)}>`
+    TBox(e) => `Box<${typeString(c, e)}>`
+    TMap(k, v) => `Map<${typeString(c, k)}, ${typeString(c, v)}>`
+    TFunc(ps, r) => `(${typeList(c, ps)}) => ${typeString(c, r)}`
+    TRange => "Range"
+    TModule(p) => `module ${p}`
+  }
+}
+
+function structString(c: Checker, i: int): string uses alloc {
+  const s = c.structs[i]
+  if (s.tuple) {
+    return `#[${typeList(c, s.args)}]`
+  }
+  return `${s.name}${typeArgs(c, s.args)}`
+}
+
+function typeArgs(c: Checker, args: Array<Type>): string uses alloc {
+  if (Array.length(args) == 0) {
+    return ""
+  }
+  return `<${typeList(c, args)}>`
+}
+
+export function typeList(c: Checker, ts: Array<Type>): string uses alloc {
+  let parts: Array<string> = []
+  for (const t of Array.values(ts)) {
+    Array.push(mutable parts, typeString(c, t))
+  }
+  return Str.join(parts, ", ")
+}
+
+// typeModule is the declaring module of a struct, enum or distinct type, or
+// "" for any other type.
+export function typeModule(c: Checker, t: Type): string {
+  return match (t) {
+    TStruct(i) => c.structs[i].module
+    TEnum(i) => c.enums[i].module
+    TDistinct(i) => c.distincts[i].module
+    _ => ""
+  }
+}
+
+export function containsTypeParam(c: Checker, t: Type): bool {
+  return match (t) {
+    TParam(_) => true
+    TFunc(ps, r) => anyTypeParam(c, ps) || containsTypeParam(c, r)
+    TArray(e) => containsTypeParam(c, e)
+    TBox(e) => containsTypeParam(c, e)
+    TMap(k, v) => containsTypeParam(c, k) || containsTypeParam(c, v)
+    TStruct(i) => anyTypeParam(c, c.structs[i].args)
+    TEnum(i) => anyTypeParam(c, c.enums[i].args)
+    _ => false
+  }
+}
+
+export function anyTypeParam(c: Checker, ts: Array<Type>): bool {
+  for (const t of Array.values(ts)) {
+    if (containsTypeParam(c, t)) {
+      return true
+    }
+  }
+  return false
+}
+
+// typeErrorf reports an error at the declaration of a struct or enum, in the
+// file of the module that declares it.
+export function typeErrorf(mutable c: Checker, t: Type, message: string) uses alloc {
+  let scope = 0
+  let pos = Pos { line: 0, col: 0 }
+  match (t) {
+    TStruct(i) => {
+      scope = c.structs[i].scope
+      pos = c.structs[i].pos
+    }
+    TEnum(i) => {
+      scope = c.enums[i].scope
+      pos = c.enums[i].pos
+    }
+    _ => {}
+  }
+  const saved = enter(mutable c, scope)
+  errorf(mutable c, pos, message)
+  enter(mutable c, saved)
+}
+
+// finish orders the program's structs and enums for the emitter: concrete
+// are the non-generic ones in declaration order, then come the instances
+// without type parameters. Go's finish also lists arrays, boxes, maps and
+// function types; the emitter collects those itself (selfhost-emit).
+export function finish(mutable c: Checker, concrete: Array<Type>) uses alloc {
+  let all = concrete
+  for (const t of Array.values(c.instTypes)) {
+    if (!containsTypeParam(c, t)) {
+      Array.push(mutable all, t)
+    }
+  }
+  let state: Map<string, int> = Map {}
+  for (const t of Array.values(all)) {
+    visitOrder(mutable c, mutable state, t)
+  }
+}
+
+// visitOrder places t after the types it holds inline (Go's orderTypes). A
+// boxed enum is complete before its fields, which lets an enum hold itself.
+function visitOrder(mutable c: Checker, mutable state: Map<string, int>, t: Type) uses alloc {
+  let fields: Array<Field> = []
+  let boxed = false
+  match (t) {
+    TStruct(i) => {
+      fields = c.structs[i].fields
+    }
+    TEnum(i) => {
+      boxed = isBoxedEnum(c.enums[i])
+      for (const v of Array.values(c.enums[i].variants)) {
+        for (const f of Array.values(v.fields)) {
+          Array.push(mutable fields, f)
+        }
+      }
+    }
+    _ => {
+      return
+    }
+  }
+  const key = typeKey(t)
+  let st = 0
+  if (state[key] is Some(s)) {
+    st = s
+  }
+  if (st == 2) {
+    return
+  }
+  if (st == 1) {
+    const text = typeString(c, t)
+    typeErrorf(mutable c, t, `type ${text} contains itself; put the recursive field in an enum, Box or array`)
+    return
+  }
+  if (boxed) {
+    state[key] = 2
+    Array.push(mutable c.order, t)
+    for (const f of Array.values(fields)) {
+      visitOrder(mutable c, mutable state, f.t)
+    }
+    return
+  }
+  state[key] = 1
+  for (const f of Array.values(fields)) {
+    visitOrder(mutable c, mutable state, f.t)
+  }
+  state[key] = 2
+  Array.push(mutable c.order, t)
+}

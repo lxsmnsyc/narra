@@ -1,9 +1,14 @@
 // narrac <file>: prints the tokens of a file, one per line, in the format of
 // `narra lex`.
 // narrac parse <file>: prints the syntax tree in the format of `narra parse`.
-// narrac pkg --ids <path>: checks the node id ranges of the files and prints
-// `ids ok <nextId>`.
+// narrac pkg --ids <path>: checks the node id ranges of the files and the ids
+// of every node (idcheck.nra), and prints `ids ok <nextId>`.
+// narrac pkg --ids-dup <path>: the same, after copying the first node id of
+// the first module over the second, so the walker must fail (a test of the
+// check itself).
 // narrac pkg <path>: prints the loaded package in the format of `narra pkg`.
+// narrac decls <path>: runs the declaration passes of the checker and prints
+// the format of `narra decls`.
 // An error prints `error <line>:<col>: <message>` to stderr and exits 1.
 import * as Fs from "std/fs"
 import * as Int from "std/int"
@@ -11,6 +16,10 @@ import * as Lexer from "narrac/lexer"
 import * as Parser from "narrac/parser"
 import * as AstDump from "narrac/astdump"
 import * as Modules from "narrac/modules"
+import * as Check from "narrac/check"
+import * as Declare from "narrac/declare"
+import * as DeclsDump from "narrac/declsdump"
+import * as IdCheck from "narrac/idcheck"
 
 export function run(args: Array<string>): int uses io, alloc {
   if (Array.length(args) == 3 && args[1] == "parse") {
@@ -19,11 +28,17 @@ export function run(args: Array<string>): int uses io, alloc {
   if (Array.length(args) == 3 && args[1] == "pkg") {
     return pkgDump(args[2])
   }
+  if (Array.length(args) == 3 && args[1] == "decls") {
+    return declsDump(args[2])
+  }
   if (Array.length(args) == 4 && args[1] == "pkg" && args[2] == "--ids") {
-    return pkgIds(args[3])
+    return pkgIds(args[3], false)
+  }
+  if (Array.length(args) == 4 && args[1] == "pkg" && args[2] == "--ids-dup") {
+    return pkgIds(args[3], true)
   }
   if (Array.length(args) != 2) {
-    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path")
+    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path | narrac decls path")
     return 2
   }
   return lexFile(args[1])
@@ -87,8 +102,10 @@ function pkgDump(path: string): int uses io, alloc {
   return writeStdout(Modules.dump(loaded.value))
 }
 
-// pkgIds loads a package and checks its node id sequence (modules.checkIds).
-function pkgIds(path: string): int uses io, alloc {
+// pkgIds loads a package and checks its node id sequence (modules.checkIds)
+// and the ids of every node of every module (idcheck.nra). With corrupt, the
+// first module's second id is replaced by its first before the check.
+function pkgIds(path: string, corrupt: bool): int uses io, alloc {
   const loaded = Modules.load(path)
   if (loaded is Err(errs)) {
     const _ = Fs.writeText("/dev/stderr", Modules.errorText(errs))
@@ -99,5 +116,34 @@ function pkgIds(path: string): int uses io, alloc {
     printError(e)
     return 1
   }
+  let first = corrupt
+  for (const m of Array.values(loaded.value.modules)) {
+    let ids = IdCheck.collectIds(m.ast)
+    if (first && Array.length(ids) >= 2) {
+      ids[1] = ids[0]
+      first = false
+    }
+    const nodes = IdCheck.checkIdList(ids, m.firstId, m.endId)
+    if (nodes is Err(e)) {
+      printError(`${m.path}: ${e}`)
+      return 1
+    }
+  }
   return writeStdout(`${checked.value}\n`)
+}
+
+// declsDump loads a package, runs the declaration passes and prints the
+// dump. Load and check errors go to stderr, one `error ...` line each.
+function declsDump(path: string): int uses io, alloc {
+  const loaded = Modules.load(path)
+  if (loaded is Err(errs)) {
+    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errs))
+    return 1
+  }
+  const c = Declare.declarePackage(loaded.value)
+  if (Array.length(c.errs) > 0) {
+    const _ = Fs.writeText("/dev/stderr", Check.errorText(c.errs))
+    return 1
+  }
+  return writeStdout(DeclsDump.dump(c))
 }

@@ -1,0 +1,253 @@
+// The node id walker: it visits every node that carries an id (every Expr,
+// Pattern and Param, every VarStmt and ForStmt) of a parsed file and checks
+// that the ids are unique and lie in the file's range [firstId, endId).
+// `narrac pkg --ids <path>` runs it on every module after modules.checkIds.
+//
+// When the AST gains a node type or a child slot, add it to this walker
+// too, or its ids go unchecked.
+import * as Int from "std/int"
+import { File, Decl, FuncDecl, FieldDecl, Block, Stmt, Expr, Pattern, Param, MatchArm } from "narrac/ast"
+
+// collectIds returns the ids of a file's nodes in visiting order.
+export function collectIds(f: File): Array<int> uses alloc {
+  let ids: Array<int> = []
+  for (const d of Array.values(f.decls)) {
+    match (d) {
+      Func(fd) => funcIds(mutable ids, fd)
+      Const(cd) => exprIds(mutable ids, cd.value)
+      Struct(sd) => fieldIds(mutable ids, sd.fields)
+      Enum(ed) => {
+        for (const v of Array.values(ed.variants)) {
+          fieldIds(mutable ids, v.fields)
+        }
+      }
+      Test(td) => blockIds(mutable ids, td.body)
+      Trait(td) => {
+        for (const fd of Array.values(td.funcs)) {
+          funcIds(mutable ids, fd)
+        }
+      }
+      Impl(id) => {
+        for (const fd of Array.values(id.funcs)) {
+          funcIds(mutable ids, fd)
+        }
+      }
+      Distinct(_) => {}
+    }
+  }
+  return ids
+}
+
+// checkIdList checks that ids are unique and in [first, end).
+export function checkIdList(ids: Array<int>, first: int, end: int): Result<int, string> uses alloc {
+  if (end < first) {
+    return Err(`ids bad: range ${Int.toString(first)}..${Int.toString(end)}`)
+  }
+  let seen = Array.filled(false, end - first)
+  for (const id of Array.values(ids)) {
+    if (id < first || id >= end) {
+      return Err(`ids bad: id ${Int.toString(id)} is outside ${Int.toString(first)}..${Int.toString(end)}`)
+    }
+    if (seen[id - first]) {
+      return Err(`ids bad: id ${Int.toString(id)} is used twice`)
+    }
+    seen[id - first] = true
+  }
+  return Ok(Array.length(ids))
+}
+
+function funcIds(mutable ids: Array<int>, fd: FuncDecl) uses alloc {
+  paramIds(mutable ids, fd.params)
+  if (fd.body is Some(b)) {
+    blockIds(mutable ids, b)
+  }
+}
+
+function paramIds(mutable ids: Array<int>, ps: Array<Param>) uses alloc {
+  for (const p of Array.values(ps)) {
+    Array.push(mutable ids, p.id)
+  }
+}
+
+function fieldIds(mutable ids: Array<int>, fields: Array<FieldDecl>) uses alloc {
+  for (const f of Array.values(fields)) {
+    if (f.default is Some(e)) {
+      exprIds(mutable ids, e)
+    }
+  }
+}
+
+function blockIds(mutable ids: Array<int>, b: Block) uses alloc {
+  for (const s of Array.values(b.stmts)) {
+    stmtIds(mutable ids, s)
+  }
+}
+
+function stmtIds(mutable ids: Array<int>, s: Stmt) uses alloc {
+  match (s) {
+    BlockStmt(b) => blockIds(mutable ids, b)
+    VarStmt(id, _, _, _, pattern, _, value) => {
+      Array.push(mutable ids, id)
+      if (pattern is Some(p)) {
+        patternIds(mutable ids, p)
+      }
+      exprIds(mutable ids, value)
+    }
+    AssignStmt(_, target, value) => {
+      exprIds(mutable ids, target)
+      exprIds(mutable ids, value)
+    }
+    ExprStmt(_, e) => exprIds(mutable ids, e)
+    ReturnStmt(_, value) => {
+      if (value is Some(e)) {
+        exprIds(mutable ids, e)
+      }
+    }
+    IfStmt(_, cond, then, orElse) => {
+      exprIds(mutable ids, cond)
+      blockIds(mutable ids, then)
+      if (orElse is Some(e)) {
+        stmtIds(mutable ids, e)
+      }
+    }
+    WhileStmt(_, cond, body) => {
+      exprIds(mutable ids, cond)
+      blockIds(mutable ids, body)
+    }
+    ForStmt(id, _, _, iter, body) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, iter)
+      blockIds(mutable ids, body)
+    }
+    BreakStmt(_) => {}
+    ContinueStmt(_) => {}
+  }
+}
+
+function exprIds(mutable ids: Array<int>, e: Expr) uses alloc {
+  match (e) {
+    IntLit(id, _, _) => Array.push(mutable ids, id)
+    FloatLit(id, _, _) => Array.push(mutable ids, id)
+    StringLit(id, _, _, _) => Array.push(mutable ids, id)
+    CharLit(id, _, _) => Array.push(mutable ids, id)
+    BoolLit(id, _, _) => Array.push(mutable ids, id)
+    TemplateLit(id, _, parts) => {
+      Array.push(mutable ids, id)
+      exprsIds(mutable ids, parts)
+    }
+    Ident(id, _, _) => Array.push(mutable ids, id)
+    FieldExpr(id, _, target, _) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, target)
+    }
+    IsExpr(id, _, subject, pattern) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, subject)
+      patternIds(mutable ids, pattern)
+    }
+    IndexExpr(id, _, target, index) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, target)
+      exprIds(mutable ids, index)
+    }
+    MapLit(id, _, keys, vals) => {
+      Array.push(mutable ids, id)
+      exprsIds(mutable ids, keys)
+      exprsIds(mutable ids, vals)
+    }
+    CallExpr(id, _, callee, args) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, callee)
+      for (const a of Array.values(args)) {
+        exprIds(mutable ids, a.value)
+      }
+    }
+    UnaryExpr(id, _, _, operand) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, operand)
+    }
+    BinaryExpr(id, _, _, left, right) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, left)
+      exprIds(mutable ids, right)
+    }
+    StructLit(id, _, _, fields, spread) => {
+      Array.push(mutable ids, id)
+      for (const f of Array.values(fields)) {
+        exprIds(mutable ids, f.value)
+      }
+      if (spread is Some(s)) {
+        exprIds(mutable ids, s)
+      }
+    }
+    ArrayLit(id, _, elems, _) => {
+      Array.push(mutable ids, id)
+      exprsIds(mutable ids, elems)
+    }
+    MatchExpr(id, _, subject, arms) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, subject)
+      for (const arm of Array.values(arms)) {
+        armIds(mutable ids, arm)
+      }
+    }
+    ArrowExpr(id, _, params, _, body, block) => {
+      Array.push(mutable ids, id)
+      paramIds(mutable ids, params)
+      if (body is Some(b)) {
+        exprIds(mutable ids, b)
+      }
+      if (block is Some(b)) {
+        blockIds(mutable ids, b)
+      }
+    }
+  }
+}
+
+function exprsIds(mutable ids: Array<int>, es: Array<Expr>) uses alloc {
+  for (const e of Array.values(es)) {
+    exprIds(mutable ids, e)
+  }
+}
+
+function armIds(mutable ids: Array<int>, arm: MatchArm) uses alloc {
+  patternIds(mutable ids, arm.pattern)
+  if (arm.guard is Some(g)) {
+    exprIds(mutable ids, g)
+  }
+  if (arm.body is Some(b)) {
+    exprIds(mutable ids, b)
+  }
+  if (arm.block is Some(b)) {
+    blockIds(mutable ids, b)
+  }
+}
+
+function patternIds(mutable ids: Array<int>, p: Pattern) uses alloc {
+  match (p) {
+    PatWildcard(id, _) => Array.push(mutable ids, id)
+    PatName(id, _, _) => Array.push(mutable ids, id)
+    PatCtor(id, _, _, _, args, _) => {
+      Array.push(mutable ids, id)
+      for (const a of Array.values(args)) {
+        patternIds(mutable ids, a)
+      }
+    }
+    PatStruct(id, _, fields) => {
+      Array.push(mutable ids, id)
+      for (const f of Array.values(fields)) {
+        patternIds(mutable ids, f.pattern)
+      }
+    }
+    PatTuple(id, _, args) => {
+      Array.push(mutable ids, id)
+      for (const a of Array.values(args)) {
+        patternIds(mutable ids, a)
+      }
+    }
+    PatLit(id, _, lit) => {
+      Array.push(mutable ids, id)
+      exprIds(mutable ids, lit)
+    }
+  }
+}

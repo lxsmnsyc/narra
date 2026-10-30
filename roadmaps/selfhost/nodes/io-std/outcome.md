@@ -2,7 +2,7 @@
 
 ## Built
 
-- `std/fs`: `readText(path): Result<string, string>` (Err on I/O failure or invalid UTF-8), `writeText(path, text): Result<int, string>` (Ok = bytes written), `exists(path): bool`, `listDir(path): Result<Array<string>, string>` (sorted by bytes, no `.` or `..`). In `compiler/internal/narra/std_fs.go`.
+- `std/fs`: `readText(path): Result<string, string>` (Err on I/O failure or invalid UTF-8), `writeText(path, text): Result<int, string>` (Ok = bytes written), `exists(path): bool`, `listDir(path): Result<Array<string>, string>` (sorted by bytes, no `.` or `..`; Err for the whole listing if any entry name is not valid UTF-8). In `compiler/internal/narra/std_fs.go`.
 - `std/process`: `run(command: string, args: Array<string>): Result<#[int, string, string], string>`. Ok holds `#[exit code, stdout, stderr]`. The command is found through PATH, stdin is /dev/null, a signal death gives 128 + signal, and Err means it could not start (exec failure is reported through a close-on-exec pipe). Output is made valid UTF-8 with U+FFFD. In `std_process.go`.
 - `std/env`: `get(name): Option<string>`, `args(): Array<string>` (same as the entry function's `args`, program name first; macOS `_NSGetArgv`, elsewhere `/proc/self/cmdline`, so no change to `emit.go`). In `std_env.go`.
 - Runtime C in `compiler/internal/narra/runtime_io.h`, embedded by `std_fs.go` and split at `// @section` lines. Each module's `Module.Runtime` is the guarded `common` section plus its own, so importing several modules emits the common helpers once.

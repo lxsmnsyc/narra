@@ -271,12 +271,17 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
     return false;
   }
   if (pid == 0) {
+    int e;
     int in = open("/dev/null", O_RDONLY);
-    if (in >= 0) dup2(in, 0);
-    dup2(po[1], 1);
-    dup2(pe[1], 2);
+    if (in < 0) goto child_fail;
+    if (in != 0) {
+      if (dup2(in, 0) < 0) goto child_fail;
+      close(in);
+    }
+    if (dup2(po[1], 1) < 0 || dup2(pe[1], 2) < 0) goto child_fail;
     execvp(vec[0], vec);
-    int e = errno;
+  child_fail:
+    e = errno;
     ssize_t w = write(px[1], &e, sizeof e);
     (void)w;
     _exit(127);

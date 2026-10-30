@@ -15,6 +15,8 @@
 - `compiler/testdata/errors/unknown_module.nra`: the expected text listed exactly three modules and broke when modules were added. It now expects the prefix `unknown module "std/nope" (this compiler supports std/int, std/float, std/string`. Other std nodes will hit the same line; this prefix needs no further edit.
 - `compiler/README.md` got one added line (not in owned paths). The new error tests are under `compiler/testdata/errors/`, outside the `compiler/testdata/io*` glob.
 
+- Forward fix after box-recursive (#10) merged: enum payloads are heap pointers, so `ioResult` (and `Env.get`) now build values through `ioEither` in `std_fs.go`, which declares an owned temporary and calls `e.enumAlloc` inside an if/else, so only the variant taken allocates.
+
 ## Stubs left
 
 - None. Effects (`io`, `alloc`) are declared on the builtins; checking is node effects.

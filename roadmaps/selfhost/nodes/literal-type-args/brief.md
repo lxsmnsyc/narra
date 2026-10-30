@@ -1,7 +1,8 @@
 ---
 id: literal-type-args
 title: Type arguments on map and generic struct literals
-status: active
+status: done
+spent: 311000
 priority: should
 type: feature
 outline: false
@@ -63,11 +64,11 @@ Allow type arguments on a literal: `Map<string, int> {}`, `Map<string, int> { "a
 
 ## Acceptance
 
-- [ ] `Map<K, V> {}`, `Map<K, V> { ... }` and `Pair<A, B> { ... }` parse, check and run (sample with `.out`, debug and release); passing `Map<string, int> {}` to a generic function works without annotation.
-- [ ] Error tests: wrong arity, float key type, a value that does not match, type arguments that disagree with the expected type.
-- [ ] `a < b`, `f<int>(x)` and existing samples still parse; `TestASTDump` goldens updated; `TestSelfhostParser` passes with the Narra parser change.
-- [ ] `SPEC.md`, D68 and `compiler/README.md` describe it.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `Map<K, V> {}`, `Map<K, V> { ... }` and `Pair<A, B> { ... }` parse, check and run (sample with `.out`, debug and release); passing `Map<string, int> {}` to a generic function works without annotation.
+- [x] Error tests: wrong arity, float key type, a value that does not match, type arguments that disagree with the expected type.
+- [x] `a < b`, `f<int>(x)` and existing samples still parse; `TestASTDump` goldens updated; `TestSelfhostParser` passes with the Narra parser change.
+- [x] `SPEC.md`, D68 and `compiler/README.md` describe it.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

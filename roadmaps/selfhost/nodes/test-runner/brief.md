@@ -1,7 +1,8 @@
 ---
 id: test-runner
 title: Golden files and narra test runner features
-status: active
+status: done
+spent: 600000
 priority: should
 type: feature
 outline: false
@@ -63,11 +64,11 @@ depends_on:
 
 ## Acceptance
 
-- [ ] A sample with passing and failing tests runs every test, prints `ok`/`FAIL` lines and the summary, exits 1, in debug (ASan, UBSan, leak check) and release builds; an all-passing run exits 0. Existing `tests.nra` and `std_test*.nra` outputs are updated to the new summary format.
-- [ ] `--filter` and `--time` work and have tests; timing never appears in compared output.
-- [ ] `Test.golden` passes on a match, fails with the first differing line on a mismatch, and rewrites the file under `NARRA_UPDATE_GOLDEN=1` (test in a temp dir).
-- [ ] `SPEC.md` section 13, D66 and `compiler/README.md` describe it.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] A sample with passing and failing tests runs every test, prints `ok`/`FAIL` lines and the summary, exits 1, in debug (ASan, UBSan, leak check) and release builds; an all-passing run exits 0. Existing `tests.nra` and `std_test*.nra` outputs are updated to the new summary format.
+- [x] `--filter` and `--time` work and have tests; timing never appears in compared output.
+- [x] `Test.golden` passes on a match, fails with the first differing line on a mismatch, and rewrites the file under `NARRA_UPDATE_GOLDEN=1` (test in a temp dir).
+- [x] `SPEC.md` section 13, D66 and `compiler/README.md` describe it.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

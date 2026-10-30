@@ -169,11 +169,13 @@ func (e *Emitter) traitDef(b *strings.Builder, n traitNeed) string {
 }
 
 func variantField(v *Variant, f *Field) string {
-	return "u." + variantName(v) + "." + fieldName(f.Name)
+	return "u->" + variantName(v) + "." + fieldName(f.Name)
 }
 
 func (e *Emitter) eqDef(b *strings.Builder, t Type) {
 	switch t := t.(type) {
+	case *BoxType:
+		fmt.Fprintf(b, "  return a == b || %s(a->f_value, b->f_value);\n", e.useEq(t.Elem))
 	case *ArrayType:
 		fmt.Fprintf(b, "  if (a->len != b->len) return false;\n")
 		fmt.Fprintf(b, "  for (int64_t i = 0; i < a->len; i++) {\n    if (!%s(a->items[i], b->items[i])) return false;\n  }\n", e.useEq(t.Elem))
@@ -205,6 +207,8 @@ func (e *Emitter) eqDef(b *strings.Builder, t Type) {
 func (e *Emitter) hashDef(b *strings.Builder, t Type) {
 	b.WriteString("  uint64_t h = UINT64_C(14695981039346656037);\n")
 	switch t := t.(type) {
+	case *BoxType:
+		fmt.Fprintf(b, "  h = narra_hash_mix(h, %s(v->f_value));\n", e.useHash(t.Elem))
 	case *ArrayType:
 		fmt.Fprintf(b, "  for (int64_t i = 0; i < v->len; i++) h = narra_hash_mix(h, %s(v->items[i]));\n", e.useHash(t.Elem))
 	case *StructType:
@@ -231,6 +235,9 @@ func (e *Emitter) hashDef(b *strings.Builder, t Type) {
 func (e *Emitter) cmpDef(b *strings.Builder, t Type) {
 	b.WriteString("  int c = 0;\n")
 	switch t := t.(type) {
+	case *BoxType:
+		fmt.Fprintf(b, "  return %s(a->f_value, b->f_value);\n", e.useCmp(t.Elem))
+		return
 	case *ArrayType:
 		fmt.Fprintf(b, "  for (int64_t i = 0; i < a->len && i < b->len; i++) {\n    if ((c = %s(a->items[i], b->items[i])) != 0) return c;\n  }\n", e.useCmp(t.Elem))
 		b.WriteString("  return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);\n")
@@ -263,6 +270,9 @@ func (e *Emitter) cmpDef(b *strings.Builder, t Type) {
 func (e *Emitter) showDef(b *strings.Builder, t Type) {
 	app := func(indent, c string) { fmt.Fprintf(b, "%slstr_append_c(&s, %s);\n", indent, cString(c)) }
 	switch t := t.(type) {
+	case *BoxType:
+		fmt.Fprintf(b, "  lstr* s = lstr_from_cstr(\"Box(\");\n  lstr_append_owned(&s, %s(v->f_value));\n", e.useShow(t.Elem))
+		app("  ", ")")
 	case *ArrayType:
 		b.WriteString("  lstr* s = lstr_from_cstr(\"[\");\n")
 		b.WriteString("  for (int64_t i = 0; i < v->len; i++) {\n")

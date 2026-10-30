@@ -91,6 +91,12 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			}
 			c.errorf(e.P, "%s has no field %q", v.Name, e.Name)
 			return TVoid
+		case *BoxType:
+			if e.Name != "value" {
+				c.errorf(e.P, "%s has one field, value", tt)
+				return TVoid
+			}
+			return tt.Elem
 		case *ArrayType, *PrimType:
 			if e.Name == "length" {
 				c.errorf(e.P, "there is no .length; use Array.length(x) or Str.length(x)")

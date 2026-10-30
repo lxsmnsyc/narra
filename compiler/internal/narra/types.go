@@ -124,6 +124,8 @@ func containsTypeParam(t Type) bool {
 		return containsTypeParam(t.Result)
 	case *ArrayType:
 		return containsTypeParam(t.Elem)
+	case *BoxType:
+		return containsTypeParam(t.Elem)
 	case *StructType:
 		for _, a := range t.Args {
 			if containsTypeParam(a) {
@@ -150,6 +152,24 @@ func (t *EnumType) Variant(name string) *Variant {
 }
 
 type ArrayType struct{ Elem Type }
+
+// BoxType is Box<T>: one value on the heap with a reference count
+// (emit_box.go). Box.new makes one and .value reads it.
+type BoxType struct{ Elem Type }
+
+func (t *BoxType) String() string { return "Box<" + t.Elem.String() + ">" }
+func (t *BoxType) CName() string  { return boxCName(t) + "*" }
+
+// isBoxedEnum reports whether the enum keeps its variant fields on the heap.
+// An enum with no fields stays an inline tag.
+func isBoxedEnum(t *EnumType) bool {
+	for _, v := range t.Variants {
+		if len(v.Fields) > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func (t *ArrayType) String() string { return "Array<" + t.Elem.String() + ">" }
 func (t *ArrayType) CName() string  { return arrayCName(t) + "*" }
@@ -212,7 +232,7 @@ func needsRC(t Type) bool {
 	switch t := t.(type) {
 	case *PrimType:
 		return t == TStr
-	case *ArrayType, *FuncType:
+	case *ArrayType, *FuncType, *BoxType:
 		return true
 	case *StructType:
 		for _, f := range t.Fields {
@@ -221,13 +241,7 @@ func needsRC(t Type) bool {
 			}
 		}
 	case *EnumType:
-		for _, v := range t.Variants {
-			for _, f := range v.Fields {
-				if needsRC(f.T) {
-					return true
-				}
-			}
-		}
+		return isBoxedEnum(t)
 	}
 	return false
 }

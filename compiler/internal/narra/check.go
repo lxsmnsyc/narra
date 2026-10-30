@@ -52,6 +52,7 @@ type Program struct {
 	Funcs  []*FuncDecl
 	Tests  []*TestDecl
 	Arrays []*ArrayType
+	Boxes  []*BoxType
 	// Entries maps a binary name to its entry function. A binary whose entry
 	// function does not exist has no key.
 	Entries map[string]*FuncDecl
@@ -107,6 +108,7 @@ type Checker struct {
 	fn        *FuncDecl
 	loops     int
 	arrays    map[string]*ArrayType
+	boxes     map[string]*BoxType
 	instTypes []Type
 	localN    int
 	isBinds   bool                   // an `is` pattern may bind names here
@@ -305,6 +307,16 @@ func (c *Checker) finish(concrete []Type) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		c.prog.Arrays = append(c.prog.Arrays, c.arrays[k])
+	}
+	var bkeys []string
+	for k, b := range c.boxes {
+		if !containsTypeParam(b) {
+			bkeys = append(bkeys, k)
+		}
+	}
+	sort.Strings(bkeys)
+	for _, k := range bkeys {
+		c.prog.Boxes = append(c.prog.Boxes, c.boxes[k])
 	}
 	c.finishFuncTypes()
 }

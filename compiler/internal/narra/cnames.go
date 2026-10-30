@@ -143,6 +143,8 @@ func typeID(t Type) string {
 		return fmt.Sprintf("P_%s_%d", t.Name, t.ID)
 	case *ArrayType:
 		return arrayCName(t)
+	case *BoxType:
+		return boxCName(t)
 	case *FuncType:
 		return funcTypeCName(t)
 	}
@@ -180,6 +182,18 @@ func enumCName(t *EnumType) string {
 // arrayCName is the struct of an array, without the pointer star.
 func arrayCName(t *ArrayType) string {
 	return internedName("A", "Array", []string{typeID(t.Elem)})
+}
+
+// boxCName is the struct of a Box<T>, without the pointer star.
+func boxCName(t *BoxType) string {
+	return internedName("B", "Box", []string{typeID(t.Elem)})
+}
+
+// payloadCName is the heap struct that holds the fields of a boxed enum's
+// variants. Its kind letter is its own, so no declaration name can equal it.
+func payloadCName(t *EnumType) string {
+	en := enumCName(t)
+	return registerCName("Q"+en[1:], "Q|"+en)
 }
 
 // funcTypeCName is the struct of a function value: the parameters, then
@@ -240,6 +254,9 @@ func writeCNameTable(b *strings.Builder, prog *Program) {
 	}
 	for _, a := range prog.Arrays {
 		names[arrayCName(a)] = a
+	}
+	for _, bt := range prog.Boxes {
+		names[boxCName(bt)] = bt
 	}
 	for _, ft := range prog.FuncTypes {
 		names[ft.CName()] = ft

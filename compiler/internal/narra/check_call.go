@@ -190,6 +190,8 @@ func containsOpen(t Type, params []*TypeParamType) bool {
 		}
 	case *ArrayType:
 		return containsOpen(t.Elem, params)
+	case *BoxType:
+		return containsOpen(t.Elem, params)
 	case *FuncType:
 		for _, p := range t.Params {
 			if containsOpen(p, params) {

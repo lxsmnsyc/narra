@@ -19,28 +19,11 @@ func (e *Emitter) typeDef(b *strings.Builder, t Type) {
 		}
 		b.WriteString(" };\n")
 	case *EnumType:
-		fmt.Fprintf(b, "struct %s { int32_t tag;", t.CName())
-		hasFields := false
-		for _, v := range t.Variants {
-			if len(v.Fields) > 0 {
-				hasFields = true
-			}
+		if isBoxedEnum(t) {
+			fmt.Fprintf(b, "struct %s { int32_t tag; %s* u; };\n", t.CName(), payloadCName(t))
+		} else {
+			fmt.Fprintf(b, "struct %s { int32_t tag; };\n", t.CName())
 		}
-		if hasFields {
-			b.WriteString(" union {")
-			for _, v := range t.Variants {
-				if len(v.Fields) == 0 {
-					continue
-				}
-				b.WriteString(" struct {")
-				for _, f := range v.Fields {
-					fmt.Fprintf(b, " %s %s;", f.T.CName(), fieldName(f.Name))
-				}
-				fmt.Fprintf(b, " } %s;", variantName(v))
-			}
-			b.WriteString(" } u;")
-		}
-		b.WriteString(" };\n")
 	}
 }
 
@@ -57,6 +40,8 @@ func retain(t Type, v string) string {
 		}
 	case *ArrayType:
 		return fmt.Sprintf("%s_retain(%s);", arrName(t), v)
+	case *BoxType:
+		return fmt.Sprintf("%s_retain(%s);", boxName(t), v)
 	case *FuncType:
 		return fmt.Sprintf("narra_env_retain((%s).env);", v)
 	case *StructType, *EnumType:
@@ -75,6 +60,8 @@ func release(t Type, v string) string {
 		}
 	case *ArrayType:
 		return fmt.Sprintf("%s_release(%s);", arrName(t), v)
+	case *BoxType:
+		return fmt.Sprintf("%s_release(%s);", boxName(t), v)
 	case *FuncType:
 		return fmt.Sprintf("narra_env_release((%s).env);", v)
 	case *StructType, *EnumType:
@@ -103,11 +90,15 @@ func (e *Emitter) rcFuncs(b *strings.Builder, t Type) {
 				}
 			}
 		case *EnumType:
-			b.WriteString("  switch (v.tag) {\n")
+			if op == "retain" {
+				b.WriteString("  if (v.u) v.u->rc++;\n")
+				break
+			}
+			b.WriteString("  if (!v.u || --v.u->rc > 0) return;\n  switch (v.tag) {\n")
 			for _, v := range t.Variants {
 				var stmts []string
 				for _, f := range v.Fields {
-					if s := gen(f.T, "v.u."+variantName(v)+"."+fieldName(f.Name)); s != "" {
+					if s := gen(f.T, "v.u->"+variantName(v)+"."+fieldName(f.Name)); s != "" {
 						stmts = append(stmts, s)
 					}
 				}
@@ -115,7 +106,7 @@ func (e *Emitter) rcFuncs(b *strings.Builder, t Type) {
 					fmt.Fprintf(b, "  case %d: %s break;\n", v.Index, strings.Join(stmts, " "))
 				}
 			}
-			b.WriteString("  default: break;\n  }\n")
+			b.WriteString("  default: break;\n  }\n  narra_free(v.u);\n")
 		}
 		b.WriteString("}\n")
 	}

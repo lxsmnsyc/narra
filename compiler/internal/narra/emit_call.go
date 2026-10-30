@@ -13,15 +13,9 @@ func (e *Emitter) call(x *CallExpr) (string, bool) {
 		var parts []string
 		for i, a := range x.Args {
 			code, owned := e.expr(a.Value)
-			c := e.consume(code, owned, v.Fields[i].T)
-			parts = append(parts, fmt.Sprintf(".%s = %s", fieldName(v.Fields[i].Name), c))
+			parts = append(parts, e.consume(code, owned, v.Fields[i].T))
 		}
-		init := fmt.Sprintf("((%s){.tag = %d", v.Enum.CName(), v.Index)
-		if len(parts) > 0 {
-			init += fmt.Sprintf(", .u.%s = {%s}", variantName(v), strings.Join(parts, ", "))
-		}
-		init += "})"
-		return e.ownedTemp(v.Enum, init), true
+		return e.ownedTemp(v.Enum, e.enumAlloc(v, parts)), true
 	case x.Trait != nil:
 		return e.traitCall(x)
 	case x.FuncValue != nil:

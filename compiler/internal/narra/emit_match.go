@@ -53,7 +53,7 @@ func (e *Emitter) patternConds(p *Pattern, path string, conds *[]string) {
 }
 
 func variantPath(path string, v *Variant, i int) string {
-	return fmt.Sprintf("%s.u.%s.%s", path, variantName(v), fieldName(v.Fields[i].Name))
+	return fmt.Sprintf("%s.u->%s.%s", path, variantName(v), fieldName(v.Fields[i].Name))
 }
 
 // bindPattern declares the names a pattern binds, reading from path. Each

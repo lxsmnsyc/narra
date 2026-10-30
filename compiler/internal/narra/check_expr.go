@@ -232,17 +232,21 @@ func (c *Checker) structLit(e *StructLit, want Type) Type {
 			for _, fi := range e.Fields {
 				c.expr(fi.Value, nil)
 			}
+			if want != nil {
+				return want
+			}
 			return TVoid
 		}
 		if wt, ok := want.(*StructType); ok && !sameType(wt, lt) {
 			c.errorf(e.P, "the type arguments make %s, but the expected type is %s", lt, wt)
-			return TVoid
+			return wt // one error per mistake: the caller sees no second mismatch
 		}
 		want = lt
 		if e.Spread != nil {
 			t := c.spreadLit(e, want)
 			if st, ok := t.(*StructType); ok && !sameType(st, lt) {
 				c.errorf(e.Spread.position(), "the type arguments make %s, but the expected type is %s", lt, st)
+				return lt
 			}
 			return t
 		}

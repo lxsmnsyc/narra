@@ -161,11 +161,16 @@ func (c *Checker) mapLit(e *MapLit, want Type) Type {
 		// literal, and resolveType checks arity and the key.
 		lt, ok := c.resolveType(&TypeExpr{Pos: e.P, Name: "Map", Args: e.TypeArgs}).(*MapType)
 		if !ok {
+			// resolveType reported it; give the expected type back so the
+			// caller does not add "found void".
+			if want != nil {
+				return want
+			}
 			return TVoid
 		}
 		if wt, ok := want.(*MapType); ok && !sameType(wt, lt) {
 			c.errorf(e.P, "the type arguments make %s, but the expected type is %s", lt, wt)
-			return TVoid
+			return wt // one error per mistake: the caller sees no second mismatch
 		}
 		key, val = lt.Key, lt.Val
 	}

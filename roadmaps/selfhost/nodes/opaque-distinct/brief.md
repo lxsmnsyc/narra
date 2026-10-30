@@ -27,6 +27,20 @@ shared:
   - compiler/internal/narra/check_call.go
   - compiler/internal/narra/emit_call.go
   - compiler/internal/narra/emit_types.go
+  - compiler/README.md
+  - compiler/internal/narra/check.go
+  - compiler/internal/narra/check_expr.go
+  - compiler/internal/narra/check_match.go
+  - compiler/internal/narra/check_patterns.go
+  - compiler/internal/narra/check_traits.go
+  - compiler/internal/narra/cnames.go
+  - compiler/internal/narra/diagnostic_codes.go
+  - compiler/internal/narra/emit_expr.go
+  - compiler/internal/narra/emit_traits.go
+  - compiler/internal/narra/modules.go
+  - compiler/internal/narra/modules_check.go
+  - compiler/internal/narra/std_map.go
+  - compiler/testdata/packages/errors/**
 reserves: []
 provides: []
 depends_on:

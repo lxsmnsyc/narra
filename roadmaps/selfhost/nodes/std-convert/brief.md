@@ -1,7 +1,7 @@
 ---
 id: std-convert
 title: Char, integer and string helpers
-status: active
+status: done
 priority: must
 type: feature
 outline: false
@@ -15,7 +15,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-10-30
-spent:
+spent: 178351
 owns:
   - compiler/internal/narra/std_char.go
   - compiler/testdata/convert*
@@ -64,10 +64,12 @@ Bug fix: `lstr_from_char` in `runtime.h` ends with `lstr_from_cstr(buf)`, which 
 
 ## Acceptance
 
-- [ ] `testdata/convert.nra` covers every new builtin, including `Char.fromCode` on a surrogate and above 0x10FFFF, `Int.parse` overflow and bad digits in bases 2, 10, 16 and 36, `Int.toHex` on 0, negative and the largest int, `Str.replace` with overlapping candidates, and `Str.join` on an empty array. Clean under the sanitizers and the leak check.
-- [ ] `Str.fromChar('\0')` has length 1, and a StringBuilder with an appended NUL keeps it (test in `testdata/convert.nra` or `std_string_test.go`).
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `testdata/convert.nra` covers every new builtin, including `Char.fromCode` on a surrogate and above 0x10FFFF, `Int.parse` overflow and bad digits in bases 2, 10, 16 and 36, `Int.toHex` on 0, negative and the largest int, `Str.replace` with overlapping candidates, and `Str.join` on an empty array. Clean under the sanitizers and the leak check.
+- [x] `Str.fromChar('\0')` has length 1, and a StringBuilder with an appended NUL keeps it (test in `testdata/convert.nra` or `std_string_test.go`).
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: eight small builtins with runtime C, one runtime bug fix, many edge cases to test.
+
+PR: [#17](https://github.com/lxsmnsyc/narra/pull/17)

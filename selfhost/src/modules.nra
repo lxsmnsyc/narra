@@ -1,0 +1,458 @@
+// Package loading, ported from compiler/internal/narra/modules.go: read
+// narra.toml, walk src/, parse each module, order modules by imports and
+// resolve binaries. dump prints the format defined at the top of
+// compiler/internal/narra/pkgdump.go.
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Lexer from "narrac/lexer"
+import { Pos, File, Decl } from "narrac/ast"
+import { parse } from "narrac/parser"
+import { Binary, LoadError, parseManifest } from "narrac/manifest"
+
+// One module of a package: one file under src/.
+export struct SourceModule {
+  path: string // "app/text"
+  file: string // the path shown in diagnostics: "src/text.nra"
+  ast: File
+  exports: Array<string> // exported names, sorted, without duplicates
+  firstId: int // the node ids of this file are in [firstId, endId)
+  endId: int
+}
+
+export struct Package {
+  name: string
+  dir: string
+  modules: Array<SourceModule> // dependency order, imports first
+  binaries: Array<Binary>
+  libraries: Array<string>
+  search: Array<string>
+  nextId: int // the next free node id after all files (one sequence)
+  single: bool // loaded from one .nra file, without narra.toml
+}
+
+// A load error that is not a diagnostic (an unreadable file).
+function plain(message: string): Array<LoadError> {
+  return [LoadError { file: "", line: 0, col: 0, message: message }]
+}
+
+// load reads a package directory, or a single .nra file as a package with
+// one module and one binary whose entry is `run`. Errors are the diagnostics
+// of the load, in report order.
+export function load(path: string): Result<Package, Array<LoadError>> uses io, alloc {
+  if (Fs.listDir(path) is Ok(_)) {
+    return loadPackage(path)
+  }
+  if (!Fs.exists(path)) {
+    return Err(plain(`stat ${path}: no such file or directory`))
+  }
+  return loadFile(path)
+}
+
+function baseName(path: string): string uses alloc {
+  const parts = Str.split(path, "/")
+  return parts[Array.length(parts) - 1]
+}
+
+function dirName(path: string): string uses alloc {
+  const parts = Str.split(path, "/")
+  if (Array.length(parts) == 1) {
+    return "."
+  }
+  let keep: Array<string> = []
+  for (const k of Range.between(0, Array.length(parts) - 1)) {
+    Array.push(mutable keep, parts[k])
+  }
+  return Str.join(keep, "/")
+}
+
+function loadFile(path: string): Result<Package, Array<LoadError>> uses io, alloc {
+  const read = Fs.readText(path)
+  if (read is Err(e)) {
+    return Err(plain(e))
+  }
+  const base = baseName(path)
+  let stem = base
+  if (Str.endsWith(base, ".nra")) {
+    stem = Str.slice(base, 0, Str.length(base) - 4)
+  }
+  const parsed = parse(read.value, 0)
+  if (parsed is Err(d)) {
+    return Err([LoadError { file: base, line: d.pos.line, col: d.pos.col, message: d.message }])
+  }
+  const m = newModule(stem, base, parsed.value.file, 0, parsed.value.nextId)
+  return Ok(Package {
+    name: stem,
+    dir: dirName(path),
+    modules: [m],
+    binaries: [Binary { name: stem, entry: `${stem}.run` }],
+    libraries: [],
+    search: [],
+    nextId: parsed.value.nextId,
+    single: true,
+  })
+}
+
+// loadPackage reads narra.toml and every file under src/, and orders the
+// modules so that each comes after the modules it imports. The files are
+// numbered in one id sequence, in sorted path order (not load order).
+function loadPackage(dir: string): Result<Package, Array<LoadError>> uses io, alloc {
+  const text = Fs.readText(`${dir}/narra.toml`)
+  if (text is Err(e)) {
+    return Err(plain(e))
+  }
+  const manifest = parseManifest(text.value)
+  if (manifest is Err(e)) {
+    return Err([e])
+  }
+  const m = manifest.value
+  let paths: Array<string> = []
+  const listed = Fs.listDir(`${dir}/src`)
+  if (listed is Err(e)) {
+    return Err(plain(e))
+  }
+  collect(`${dir}/src`, "", mutable paths)
+  if (Array.length(paths) == 0) {
+    return Err(plain(`narra.toml: package ${m.name} has no .nra files in src/`))
+  }
+  sortStrings(mutable paths)
+  let mods: Array<SourceModule> = []
+  let errs: Array<LoadError> = []
+  let nextId = 0
+  for (const p of Array.values(paths)) {
+    const rel = Str.slice(p, 0, Str.length(p) - 4)
+    const display = `src/${p}`
+    const read = Fs.readText(`${dir}/src/${p}`)
+    if (read is Err(e)) {
+      return Err(plain(e))
+    }
+    const parsed = parse(read.value, nextId)
+    if (parsed is Err(d)) {
+      Array.push(mutable errs, LoadError { file: display, line: d.pos.line, col: d.pos.col, message: d.message })
+      continue
+    }
+    Array.push(mutable mods, newModule(`${m.name}/${rel}`, display, parsed.value.file, nextId, parsed.value.nextId))
+    nextId = parsed.value.nextId
+  }
+  if (Array.length(errs) > 0) {
+    return Err(errs)
+  }
+  const ordered = orderModules(mods)
+  if (Array.length(ordered.errs) > 0) {
+    return Err(ordered.errs)
+  }
+  return Ok(Package {
+    name: m.name,
+    dir: dir,
+    modules: ordered.mods,
+    binaries: m.binaries,
+    libraries: m.libraries,
+    search: m.search,
+    nextId: nextId,
+    single: false,
+  })
+}
+
+// collect adds the paths of the .nra files under root/rel, relative to root.
+// A name that cannot be listed is a file.
+function collect(root: string, rel: string, mutable out: Array<string>) uses io, alloc {
+  let here = root
+  if (rel != "") {
+    here = `${root}/${rel}`
+  }
+  const names = Fs.listDir(here)
+  if (names is Ok(list)) {
+    for (const n of Array.values(list)) {
+      let child = n
+      if (rel != "") {
+        child = `${rel}/${n}`
+      }
+      collectEntry(root, child, mutable out)
+    }
+  }
+}
+
+function collectEntry(root: string, rel: string, mutable out: Array<string>) uses io, alloc {
+  if (Fs.listDir(`${root}/${rel}`) is Ok(_)) {
+    collect(root, rel, mutable out)
+  } else if (Str.endsWith(rel, ".nra")) {
+    Array.push(mutable out, rel)
+  }
+}
+
+// sortStrings sorts by bytes (insertion sort; the lists are short).
+function sortStrings(mutable items: Array<string>) uses alloc {
+  let sorted: Array<string> = []
+  for (const s of Array.values(items)) {
+    Array.push(mutable sorted, s)
+    let k = Array.length(sorted) - 1
+    while (k > 0 && sorted[k] < sorted[k - 1]) {
+      const tmp = sorted[k]
+      sorted[k] = sorted[k - 1]
+      sorted[k - 1] = tmp
+      k = k - 1
+    }
+  }
+  items = sorted
+}
+
+function newModule(path: string, file: string, ast: File, firstId: int, endId: int): SourceModule uses alloc {
+  let names: Array<string> = []
+  for (const d of Array.values(ast.decls)) {
+    const name = exportedName(d)
+    if (name != "") {
+      Array.push(mutable names, name)
+    }
+  }
+  sortStrings(mutable names)
+  let unique: Array<string> = []
+  for (const n of Array.values(names)) {
+    if (Array.length(unique) == 0 || unique[Array.length(unique) - 1] != n) {
+      Array.push(mutable unique, n)
+    }
+  }
+  return SourceModule { path: path, file: file, ast: ast, exports: unique, firstId: firstId, endId: endId }
+}
+
+// exportedName gives the name of an exported function, const, struct, enum,
+// trait or distinct type, and "" for anything else.
+function exportedName(d: Decl): string {
+  match (d) {
+    Func(f) => {
+      if (f.exported) {
+        return f.name
+      }
+    }
+    Const(c) => {
+      if (c.exported) {
+        return c.name
+      }
+    }
+    Struct(s) => {
+      if (s.exported) {
+        return s.name
+      }
+    }
+    Enum(e) => {
+      if (e.exported) {
+        return e.name
+      }
+    }
+    Trait(t) => {
+      if (t.exported) {
+        return t.name
+      }
+    }
+    Distinct(x) => {
+      if (x.exported) {
+        return x.name
+      }
+    }
+    _ => {}
+  }
+  return ""
+}
+
+struct Ordered {
+  mods: Array<SourceModule>
+  errs: Array<LoadError>
+}
+
+struct Walk {
+  mods: Array<SourceModule>
+  index: Map<string, int> // module path -> position in mods
+  state: Array<int> // 0 new, 1 visiting, 2 done
+  order: Array<SourceModule>
+  stack: Array<string>
+  errs: Array<LoadError>
+}
+
+// orderModules sorts modules so imports come first, and reports import
+// cycles. Imports of modules outside the package are skipped; the checker
+// reports unknown modules.
+function orderModules(mods: Array<SourceModule>): Ordered uses alloc {
+  let index: Map<string, int> = Map {}
+  let state: Array<int> = []
+  for (const k of Range.between(0, Array.length(mods))) {
+    index[mods[k].path] = k
+    Array.push(mutable state, 0)
+  }
+  let w = Walk { mods: mods, index: index, state: state, order: [], stack: [], errs: [] }
+  for (const k of Range.between(0, Array.length(mods))) {
+    if (w.state[k] == 0) {
+      visit(mutable w, k)
+    }
+  }
+  return Ordered { mods: w.order, errs: w.errs }
+}
+
+function visit(mutable w: Walk, k: int) uses alloc {
+  const m = w.mods[k]
+  w.state[k] = 1
+  Array.push(mutable w.stack, m.path)
+  for (const imp of Array.values(m.ast.imports)) {
+    const found = w.index[imp.path]
+    if (found is None) {
+      continue
+    }
+    const dep = found.value
+    const st = w.state[dep]
+    if (st == 1) {
+      let start = 0
+      for (const i of Range.between(0, Array.length(w.stack))) {
+        if (w.stack[i] == imp.path) {
+          start = i
+        }
+      }
+      let cycle: Array<string> = []
+      for (const i of Range.between(start, Array.length(w.stack))) {
+        Array.push(mutable cycle, w.stack[i])
+      }
+      Array.push(mutable cycle, imp.path)
+      Array.push(mutable w.errs, LoadError {
+        file: m.file,
+        line: imp.pos.line,
+        col: imp.pos.col,
+        message: `import cycle: ${Str.join(cycle, " -> ")}`,
+      })
+    } else if (st == 0) {
+      visit(mutable w, dep)
+    }
+  }
+  w.stack = popLast(w.stack)
+  w.state[k] = 2
+  Array.push(mutable w.order, m)
+}
+
+function popLast(items: Array<string>): Array<string> uses alloc {
+  let out: Array<string> = []
+  for (const k of Range.between(0, Array.length(items) - 1)) {
+    Array.push(mutable out, items[k])
+  }
+  return out
+}
+
+// binary finds a binary by name. An empty name selects the only binary.
+export function binary(p: Package, name: string): Result<Binary, string> uses alloc {
+  if (name != "") {
+    for (const b of Array.values(p.binaries)) {
+      if (b.name == name) {
+        return Ok(b)
+      }
+    }
+    return Err(`narra.toml: package ${p.name} has no binary ${quoteDump(name)}`)
+  }
+  const n = Array.length(p.binaries)
+  if (n == 0) {
+    return Err(`narra.toml: package ${p.name} has no [[binary]]; it is a library`)
+  }
+  if (n == 1) {
+    return Ok(p.binaries[0])
+  }
+  let names: Array<string> = []
+  for (const b of Array.values(p.binaries)) {
+    Array.push(mutable names, b.name)
+  }
+  return Err(`narra.toml: package ${p.name} has several binaries (${Str.join(names, ", ")}); choose one with -bin`)
+}
+
+// entryModule resolves the module part of a binary's entry. It accepts the
+// contract form "cli.run" and the spec form "app/cli.run". The module is
+// returned as written when no module of the package matches.
+export function entryModule(p: Package, entry: string): #[string, string] uses alloc {
+  let last = -1
+  for (const k of Range.between(0, Str.length(entry))) {
+    if (Str.byteAt(entry, k) == 46) {
+      last = k
+    }
+  }
+  if (last < 0) {
+    return #["", entry]
+  }
+  const mod = Str.slice(entry, 0, last)
+  const fn = Str.sliceFrom(entry, last + 1)
+  for (const m of Array.values(p.modules)) {
+    if (m.path == `${p.name}/${mod}`) {
+      return #[m.path, fn]
+    }
+  }
+  return #[mod, fn]
+}
+
+// quoteDump quotes like the AST dump: escapes as in the lex dump, plus `"`.
+function quoteDump(s: string): string uses alloc {
+  const parts = Str.split(Lexer.escapeText(s), "\"")
+  return `"${Str.join(parts, "\\\"")}"`
+}
+
+// errorText prints load errors as the Go dump does, one `error ...` line per
+// diagnostic, each ending with a newline.
+export function errorText(errs: Array<LoadError>): string uses alloc {
+  let sb = Str.builder()
+  for (const e of Array.values(errs)) {
+    if (e.file == "" && e.line == 0) {
+      Str.append(mutable sb, `error ${e.message}\n`)
+    } else {
+      Str.append(mutable sb, `error ${e.file}:${Int.toString(e.line)}:${Int.toString(e.col)}: ${e.message}\n`)
+    }
+  }
+  return Str.build(sb)
+}
+
+function listLine(mutable sb: StringBuilder, name: string, items: Array<string>) uses alloc {
+  if (Array.length(items) == 0) {
+    return
+  }
+  Str.append(mutable sb, name)
+  for (const s of Array.values(items)) {
+    Str.append(mutable sb, ` ${quoteDump(s)}`)
+  }
+  Str.append(mutable sb, "\n")
+}
+
+// dump returns the package dump of pkgdump.go, ending with a newline.
+export function dump(p: Package): string uses alloc {
+  let sb = Str.builder()
+  Str.append(mutable sb, `package ${quoteDump(p.name)}\n`)
+  for (const b of Array.values(p.binaries)) {
+    const #[mod, fn] = entryModule(p, b.entry)
+    Str.append(mutable sb, `binary ${quoteDump(b.name)} entry=${quoteDump(b.entry)} module=${quoteDump(mod)} fn=${quoteDump(fn)}\n`)
+  }
+  listLine(mutable sb, "libraries", p.libraries)
+  listLine(mutable sb, "search", p.search)
+  for (const m of Array.values(p.modules)) {
+    Str.append(mutable sb, `module ${quoteDump(m.path)} file=${quoteDump(m.file)}\n`)
+    if (Array.length(m.exports) > 0) {
+      Str.append(mutable sb, `  exports ${Str.join(m.exports, ",")}\n`)
+    }
+    for (const imp of Array.values(m.ast.imports)) {
+      Str.append(mutable sb, `  import ${Int.toString(imp.pos.line)}:${Int.toString(imp.pos.col)} ${quoteDump(imp.path)}\n`)
+    }
+  }
+  return Str.build(sb)
+}
+
+// checkIds verifies the id sequence of a package: the id ranges of the files
+// are disjoint, together they cover [0, nextId) with no gap, and none passes
+// nextId. It returns "ids ok <nextId>" or a description of the problem.
+export function checkIds(p: Package): Result<string, string> uses alloc {
+  let total = 0
+  const n = Array.length(p.modules)
+  for (const a of Range.between(0, n)) {
+    const m = p.modules[a]
+    if (m.firstId < 0 || m.endId < m.firstId || m.endId > p.nextId) {
+      return Err(`ids bad: ${m.path} has ${Int.toString(m.firstId)}..${Int.toString(m.endId)} with nextId ${Int.toString(p.nextId)}`)
+    }
+    total = total + m.endId - m.firstId
+    for (const b of Range.between(a + 1, n)) {
+      const o = p.modules[b]
+      if (m.firstId < o.endId && o.firstId < m.endId) {
+        return Err(`ids bad: ${m.path} and ${o.path} overlap`)
+      }
+    }
+  }
+  if (total != p.nextId) {
+    return Err(`ids bad: the files use ${Int.toString(total)} ids but nextId is ${Int.toString(p.nextId)}`)
+  }
+  return Ok(`ids ok ${Int.toString(p.nextId)}`)
+}

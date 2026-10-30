@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -153,15 +154,70 @@ func selfhostInputs(t *testing.T, edges map[string]string) ([]string, map[string
 	return files, names
 }
 
+// buildSelfhost builds selfhost/ in debug mode (AddressSanitizer, UBSan and
+// the leak check) and returns the executable. The build is shared by the
+// tests of one run.
+var selfhostBuild struct {
+	once sync.Once
+	dir  string
+	exe  string
+	err  error
+}
+
+func buildSelfhost(t *testing.T) string {
+	t.Helper()
+	selfhostBuild.once.Do(func() {
+		selfhostBuild.dir, selfhostBuild.err = os.MkdirTemp("", "narrac")
+		if selfhostBuild.err != nil {
+			return
+		}
+		selfhostBuild.exe = filepath.Join(selfhostBuild.dir, "narrac")
+		selfhostBuild.err = Build("../../../selfhost", selfhostBuild.exe, modes[0].opts)
+	})
+	if selfhostBuild.err != nil {
+		t.Fatalf("build selfhost: %v", selfhostBuild.err)
+	}
+	return selfhostBuild.exe
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if selfhostBuild.dir != "" {
+		os.RemoveAll(selfhostBuild.dir)
+	}
+	os.Exit(code)
+}
+
+// runNarrac runs narrac and checks stdout, stderr and the exit code.
+func runNarrac(t *testing.T, exe string, args []string, wantOut, wantErr string, wantCode int) {
+	t.Helper()
+	cmd := exec.Command(exe, args...)
+	cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	code := 0
+	if exit, ok := err.(*exec.ExitError); ok {
+		code = exit.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if code != wantCode {
+		t.Fatalf("exit code %d, want %d\nstderr:\n%s", code, wantCode, stderr.String())
+	}
+	if got := stdout.String(); got != wantOut {
+		t.Fatalf("stdout differs: %s", firstDiff(wantOut, got))
+	}
+	if got := stderr.String(); got != wantErr {
+		t.Fatalf("stderr differs: %s", firstDiff(wantErr, got))
+	}
+}
+
 // compareSelfhost runs narrac with args on every input and compares it with
 // the Go dump: on success the dump is stdout, and on failure the error line
 // is stderr (the Go commands print it to stdout) with exit code 1.
 func compareSelfhost(t *testing.T, args []string, edges map[string]string, dump func(string) (string, bool)) {
-	// Debug build: AddressSanitizer, UBSan and the leak check.
-	exe := filepath.Join(t.TempDir(), "narrac")
-	if err := Build("../../../selfhost", exe, modes[0].opts); err != nil {
-		t.Fatalf("build selfhost: %v", err)
-	}
+	exe := buildSelfhost(t)
 	files, names := selfhostInputs(t, edges)
 	for _, path := range files {
 		t.Run(names[path], func(t *testing.T) {
@@ -175,26 +231,7 @@ func compareSelfhost(t *testing.T, args []string, edges map[string]string, dump 
 			if !ok {
 				wantOut, wantErr, wantCode = "", want, 1
 			}
-			cmd := exec.Command(exe, append(append([]string{}, args...), path)...)
-			cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0")
-			var stdout, stderr bytes.Buffer
-			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			err = cmd.Run()
-			code := 0
-			if exit, ok := err.(*exec.ExitError); ok {
-				code = exit.ExitCode()
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			if code != wantCode {
-				t.Fatalf("exit code %d, want %d\nstderr:\n%s", code, wantCode, stderr.String())
-			}
-			if got := stdout.String(); got != wantOut {
-				t.Fatalf("stdout differs: %s", firstDiff(wantOut, got))
-			}
-			if got := stderr.String(); got != wantErr {
-				t.Fatalf("stderr differs: %s", firstDiff(wantErr, got))
-			}
+			runNarrac(t, exe, append(append([]string{}, args...), path), wantOut, wantErr, wantCode)
 		})
 	}
 }
@@ -212,6 +249,70 @@ func TestSelfhostLexer(t *testing.T) {
 // files and on parseEdgeCases.
 func TestSelfhostParser(t *testing.T) {
 	compareSelfhost(t, []string{"parse"}, parseEdgeCases, ASTDump)
+}
+
+// TestSelfhostModules checks that `narrac pkg <path>` prints the same package
+// dump as `narra pkg` (PkgDump), including errors, on every package under
+// testdata/packages (and its errors/), the manifest cases in testdata/pkgdump,
+// selfhost/ itself, and every single .nra file under testdata/ and
+// selfhost/src.
+func TestSelfhostModules(t *testing.T) {
+	exe := buildSelfhost(t)
+	inputs := pkgInputs(t)
+	for _, path := range inputs {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			want, ok := PkgDump(path)
+			wantOut, wantErr, wantCode := want, "", 0
+			if !ok {
+				wantOut, wantErr, wantCode = "", want, 1
+			}
+			runNarrac(t, exe, []string{"pkg", path}, wantOut, wantErr, wantCode)
+		})
+	}
+}
+
+// TestSelfhostModuleIds runs `narrac pkg --ids` on every package that loads:
+// the id ranges of the files must be disjoint, contiguous from 0, and end at
+// Package.nextId.
+func TestSelfhostModuleIds(t *testing.T) {
+	exe := buildSelfhost(t)
+	for _, path := range pkgInputs(t) {
+		if _, ok := PkgDump(path); !ok {
+			continue
+		}
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.Command(exe, "pkg", "--ids", path)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.HasPrefix(string(out), "ids ok ") {
+				t.Fatalf("%v\n%s", err, out)
+			}
+		})
+	}
+}
+
+// pkgInputs lists the package directories and single files that the package
+// tests run on.
+func pkgInputs(t *testing.T) []string {
+	t.Helper()
+	var inputs []string
+	for _, pattern := range []string{
+		filepath.Join(testdata, "packages", "*"),
+		filepath.Join(testdata, "packages", "errors", "*"),
+		filepath.Join(testdata, "pkgdump", "*"),
+	} {
+		dirs, _ := filepath.Glob(pattern)
+		for _, d := range dirs {
+			if info, err := os.Stat(filepath.Join(d, "narra.toml")); err == nil && !info.IsDir() {
+				inputs = append(inputs, d)
+			}
+		}
+	}
+	inputs = append(inputs, "../../../selfhost")
+	files, _ := selfhostInputs(t, nil)
+	inputs = append(inputs, files...)
+	return inputs
 }
 
 // firstDiff describes the first line where want and got differ.

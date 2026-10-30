@@ -1,7 +1,7 @@
 ---
 id: selfhost-ast
 title: AST dump and Narra AST types
-status: todo
+status: active
 priority: must
 type: feature
 outline: false
@@ -23,6 +23,7 @@ owns:
   - selfhost/src/astdump.nra
 shared:
   - compiler/cmd/narra/main.go
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:

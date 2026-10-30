@@ -6,14 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 )
 
 // lexEdgeCases are inputs the testdata files do not cover: escapes, control
-// characters and every lexer error. Non-ASCII \u{...} escapes are left out;
-// the self-hosted lexer cannot build those characters yet (no Char.fromCode).
+// characters and every lexer error.
 var lexEdgeCases = map[string]string{
 	"escapes.nra":        "const a = \"x\\u{41}\\t\\0\\$\\\\\"\nconst b = '\\''\n",
 	"unexpected.nra":     "x @ y\n",
@@ -30,23 +30,105 @@ var lexEdgeCases = map[string]string{
 	"bad_u.nra":          "\"\\u{zz}\"",
 	"eof_escape.nra":     "\"\\",
 	"nul_char.nra":       "'\\0' '\x00'",
+	// Non-ASCII escapes; a surrogate, a value above 0x10FFFF and a value
+	// that does not fit 32 bits become U+FFFD, as Go's string(rune(v)) does.
+	"unicode_escapes.nra": "\"\\u{e9}\\u{3bb}\\u{1F600}\\u{80}\" '\\u{10FFFF}' \"\\u{D800}\\u{110000}\\u{100000041}\\u{FFFFFFFF}\"",
 }
 
-// TestSelfhostLexer builds the self-hosted compiler in selfhost/ (debug,
-// with AddressSanitizer and the leak check) and checks that its token dump
-// equals `narra lex` (LexDump) on every .nra file under testdata/, on the
-// selfhost sources, and on lexEdgeCases. Like TestPrograms, it needs a C
-// compiler (`cc`, or $CC) that supports -fsanitize=address,undefined.
-func TestSelfhostLexer(t *testing.T) {
-	exe := filepath.Join(t.TempDir(), "narrac")
-	if err := Build("../../../selfhost", exe, modes[0].opts); err != nil {
-		t.Fatalf("build selfhost: %v", err)
-	}
+// parseEdgeCases are inputs for the parser that the testdata files do not
+// cover: one per parser error, and syntax the samples do not use.
+var parseEdgeCases = map[string]string{
+	"empty.nra":             "",
+	"default_import.nra":    "import x from \"a\"\n",
+	"import_path.nra":       "import * as A from b\n",
+	"import_names.nra":      "import {\n  a,\n  b,\n} from \"m\"\nimport { } from \"n\"\n",
+	"import_unclosed.nra":   "import { a, b\n",
+	"export_impl.nra":       "export implement T for X {}\n",
+	"export_test.nra":       "export test \"a\" {}\n",
+	"test_name.nra":         "test x {}\n",
+	"no_decl.nra":           "42\n",
+	"opaque_private.nra":    "opaque struct A {}\n",
+	"opaque_enum.nra":       "export opaque enum A {}\n",
+	"distinct_type.nra":     "distinct A = int\n",
+	"distinct_ok.nra":       "export opaque distinct type A = Array<int>\ndistinct type B = A.C\n",
+	"array_suffix.nra":      "function f(): int[] {}\n",
+	"struct_bound.nra":      "struct S<T: Show> {}\n",
+	"generator.nra":         "function* g() {}\n",
+	"trait_params.nra":      "trait T<A> {}\n",
+	"trait_field.nra":       "trait T { x }\n",
+	"trait_body.nra":        "trait T { function f() {} }\n",
+	"impl_export.nra":       "implement T for X { export function f() {} }\n",
+	"impl_field.nra":        "implement T for X { x }\n",
+	"arrow_mutable.nra":     "function f() { const g = (mutable x) => x }\n",
+	"block_eof.nra":         "function f() {\n",
+	"for_const.nra":         "function f() { for (x of y) {} }\n",
+	"for_in.nra":            "function f() { for (const x in y) {} }\n",
+	"bare_block.nra":        "function f() { { } }\n",
+	"strict_eq.nra":         "function f() { a === b }\n",
+	"strict_ne.nra":         "function f() { a !== b }\n",
+	"compound.nra":          "function f() { x += 1 }\n",
+	"compound_spaced.nra":   "function f() { x + = 1 }\n",
+	"map_key.nra":           "function f() { Map { a: 1 } }\n",
+	"map_ok.nra":            "function f() { Map { -1: 2, [k]: 3, \"s\": 4,\n'c': 5, true: 6, 1.5: 7 } }\n",
+	"two_spreads.nra":       "function f() { S { ...a, ...b } }\n",
+	"shorthand.nra":         "function f() { S { a } }\n",
+	"null.nra":              "function f() { return null }\n",
+	"undefined.nra":         "function f() { g(undefined) }\n",
+	"template_open.nra":     "function f() { `a ${x` }\n",
+	"template_lex.nra":      "function f() { `${\"a}` }\n",
+	"template_parse.nra":    "function f() {\n  `x ${)}`\n}\n",
+	"template_nested.nra":   "function f() { `a\\n\\t\\${b} ${g(`${h(\"s\")}`)} c` }\n",
+	"pattern_minus.nra":     "function f() { match (x) { -a => 1 } }\n",
+	"statement_end.nra":     "function f() { a b }\n",
+	"statement_end2.nra":    "function f() { const x = 1 const y = 2 }\n",
+	"describe.nra":          "function f() { a \"é\\u{80}\\u{a0}\\t\\u{1}\\\"\\\\\" }\n",
+	"describe_eol.nra":      "function f() { a = }\n",
+	"type_bad.nra":          "function f(x: 1) {}\n",
+	"var_patterns.nra":      "function f() {\n  const Some(x) = y\n  let #[a, b]: #[int, int] = t\n  const { p, q: Some(_) } = s\n  const Shape.Circle = c\n}\n",
+	"patterns.nra":          "function f() {\n  match (x) {\n    -1 => 0\n    -2.5 => 0\n    'c' => 0\n    \"s\" => 0\n    true => 0\n    Shape.Circle => 0\n    Circle() => 0\n    Circle => 0\n    _ if (g) => {\n      return 1\n    }\n  }\n}\n",
+	"func_types.nra":        "function f<T: A & B, effect E>(g: (x: int, y) => T uses E, mutable out: Array<Array<int>>, escaping h: () => #[int, string] uses io, alloc): Map<string, Array<int>> uses E {}\n",
+	"escaping_name.nra":     "function f(escaping: int) {}\n",
+	"if_else.nra":           "function f() {\n  if (a) {\n  }\n  else if (b) {\n  } else {\n  }\n  if (c) {\n  }\n\n  x = 1\n}\n",
+	"while_return.nra":      "function f() {\n  while (a is Some(x) && b) {\n    return\n  }\n  return }\n",
+	"unary.nra":             "function f() { x = -~!a.b(mutable c)[0] }\n",
+	"arrow_forms.nra":       "function f() {\n  const g = (a: int, b): int => {\n    return a\n  }\n  const h = () => 1\n  const k = (x)\n}\n",
+	"struct_ctx.nra":        "function f() { g({ a: 1, ...b }) }\n",
+	"member_from.nra":       "function f() { UserId.from(1) }\n",
+	"enum_fields.nra":       "export enum E<T> implements A, B derives C {\n  X(a: int, b: T),\n  Y\n}\nstruct S implements A {\n  a: int = 1,\n  b: Option<int>\n}\n",
+	"export_const.nra":      "export const A: int = 1 << 2 >> 1 | 3 ^ 4 & 5 +% 6 -% 7 *% 8 % 9\n",
+	"decl_eof.nra":          "export\n",
+	"match_value.nra":       "function f() {\n  const x = match (y) {\n    A => 1,\n    B => 2,\n  }\n  match (y) {\n    _ => g()\n  } h()\n}\n",
+	"eof_in_call.nra":       "function f() { g(",
+	"eof_in_type.nra":       "function f(x: Array<",
+	"eof_in_params.nra":     "function f(a: int",
+	"eof_in_struct.nra":     "struct S { a: int",
+	"eof_in_enum.nra":       "enum E { A(x: int",
+	"eof_in_match.nra":      "function f() { match (x) { A => ",
+	"eof_in_pattern.nra":    "function f() { match (x) { A(b, ",
+	"eof_in_array.nra":      "function f() { [1, 2",
+	"eof_in_struct_lit.nra": "function f() { S { a: 1",
+	"eof_in_map.nra":        "function f() { Map { 1: 2",
+	"eof_in_uses.nra":       "function f() uses a,",
+	"eof_in_tparams.nra":    "function f<A: B &",
+	"eof_in_trait.nra":      "trait T { function f()\n",
+	"eof_in_impl.nra":       "implement T for X { function f() {}\n",
+	"eof_in_tuple_type.nra": "function f(x: #[int, ",
+	"eof_in_func_type.nra":  "function f(x: (a: int, ",
+}
+
+
+// selfhostInputs lists every .nra file under testdata/ and selfhost/src,
+// plus the edge cases written to a temporary directory. It maps each path to
+// the subtest name.
+func selfhostInputs(t *testing.T, edges map[string]string) ([]string, map[string]string) {
+	t.Helper()
 	var files []string
+	names := map[string]string{}
 	for _, root := range []string{testdata, "../../../selfhost/src"} {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err == nil && !d.IsDir() && strings.HasSuffix(path, ".nra") {
 				files = append(files, path)
+				names[path] = path
 			}
 			return err
 		})
@@ -55,30 +137,45 @@ func TestSelfhostLexer(t *testing.T) {
 		}
 	}
 	edgeDir := t.TempDir()
-	for name, src := range lexEdgeCases {
+	var edgeNames []string
+	for name := range edges {
+		edgeNames = append(edgeNames, name)
+	}
+	sort.Strings(edgeNames)
+	for _, name := range edgeNames {
 		path := filepath.Join(edgeDir, name)
-		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(edges[name]), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		files = append(files, path)
+		names[path] = "edge/" + name
 	}
+	return files, names
+}
+
+// compareSelfhost runs narrac with args on every input and compares it with
+// the Go dump: on success the dump is stdout, and on failure the error line
+// is stderr (the Go commands print it to stdout) with exit code 1.
+func compareSelfhost(t *testing.T, args []string, edges map[string]string, dump func(string) (string, bool)) {
+	// Debug build: AddressSanitizer, UBSan and the leak check.
+	exe := filepath.Join(t.TempDir(), "narrac")
+	if err := Build("../../../selfhost", exe, modes[0].opts); err != nil {
+		t.Fatalf("build selfhost: %v", err)
+	}
+	files, names := selfhostInputs(t, edges)
 	for _, path := range files {
-		name := path
-		if strings.HasPrefix(path, edgeDir) {
-			name = "edge/" + filepath.Base(path)
-		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(names[path], func(t *testing.T) {
 			t.Parallel()
 			src, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, ok := LexDump(string(src))
-			wantCode := 0
+			want, ok := dump(string(src))
+			wantOut, wantErr, wantCode := want, "", 0
 			if !ok {
-				wantCode = 1
+				wantOut, wantErr, wantCode = "", want, 1
 			}
-			cmd := exec.Command(exe, path)
+			cmd := exec.Command(exe, append(append([]string{}, args...), path)...)
 			cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0")
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -92,11 +189,29 @@ func TestSelfhostLexer(t *testing.T) {
 			if code != wantCode {
 				t.Fatalf("exit code %d, want %d\nstderr:\n%s", code, wantCode, stderr.String())
 			}
-			if got := stdout.String(); got != want {
-				t.Fatalf("token dump differs: %s", firstDiff(want, got))
+			if got := stdout.String(); got != wantOut {
+				t.Fatalf("stdout differs: %s", firstDiff(wantOut, got))
+			}
+			if got := stderr.String(); got != wantErr {
+				t.Fatalf("stderr differs: %s", firstDiff(wantErr, got))
 			}
 		})
 	}
+}
+
+// TestSelfhostLexer checks that `narrac <file>` prints the same token dump
+// as `narra lex` (LexDump) on every .nra file under testdata/, on the
+// selfhost sources, and on lexEdgeCases. Like TestPrograms, it needs a C
+// compiler (`cc`, or $CC) that supports -fsanitize=address,undefined.
+func TestSelfhostLexer(t *testing.T) {
+	compareSelfhost(t, nil, lexEdgeCases, LexDump)
+}
+
+// TestSelfhostParser checks that `narrac parse <file>` prints the same AST
+// dump as `narra parse` (ASTDump), including the first error, on the same
+// files and on parseEdgeCases.
+func TestSelfhostParser(t *testing.T) {
+	compareSelfhost(t, []string{"parse"}, parseEdgeCases, ASTDump)
 }
 
 // firstDiff describes the first line where want and got differ.

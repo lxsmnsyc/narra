@@ -1,26 +1,57 @@
 // narrac <file>: prints the tokens of a file, one per line, in the format of
-// `narra lex`. A lex error prints `error <line>:<col>: <message>` and exits 1.
+// `narra lex`.
+// narrac parse <file>: prints the syntax tree in the format of `narra parse`.
+// An error prints `error <line>:<col>: <message>` to stderr and exits 1.
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Lexer from "narrac/lexer"
+import * as Parser from "narrac/parser"
+import * as AstDump from "narrac/astdump"
 
 export function run(args: Array<string>): int uses io, alloc {
+  if (Array.length(args) == 3 && args[1] == "parse") {
+    return parseFile(args[2])
+  }
   if (Array.length(args) != 2) {
-    print("usage: narrac file.nra")
+    printError("usage: narrac file.nra | narrac parse file.nra")
     return 2
   }
-  const read = Fs.readText(args[1])
+  return lexFile(args[1])
+}
+
+// printError writes a line to stderr. There is no eprint yet.
+function printError(text: string) {
+  const _ = Fs.writeText("/dev/stderr", `${text}\n`)
+}
+
+function lexFile(path: string): int {
+  const read = Fs.readText(path)
   if (read is Err(e)) {
-    print(e)
+    printError(e)
     return 1
   }
   const tokens = Lexer.lex(read.value)
   if (tokens is Err(e)) {
-    print(`error ${e}`)
+    printError(`error ${e}`)
     return 1
   }
   for (const t of Array.values(tokens.value)) {
     print(`${Int.toString(t.line)}:${Int.toString(t.col)} ${Lexer.kindName(t.kind)} ${Lexer.escapeText(t.text)}`)
   }
+  return 0
+}
+
+function parseFile(path: string): int {
+  const read = Fs.readText(path)
+  if (read is Err(e)) {
+    printError(e)
+    return 1
+  }
+  const parsed = Parser.parse(read.value, 0)
+  if (parsed is Err(d)) {
+    printError(`error ${Parser.diagText(d)}`)
+    return 1
+  }
+  const _ = Fs.writeText("/dev/stdout", AstDump.dump(parsed.value.file))
   return 0
 }

@@ -1,0 +1,545 @@
+// The lexer, ported line by line from compiler/internal/narra/lexer.go.
+// It works on an array of characters, like the Go lexer works on []rune, so
+// columns count characters, not bytes.
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export enum TokenKind {
+  Eof
+  Newline
+  Ident
+  IntLit
+  FloatLit
+  StringLit
+  CharLit
+  Template
+  Keyword
+  Punct
+}
+
+export struct Token {
+  kind: TokenKind
+  text: string
+  line: int
+  col: int
+}
+
+struct Lexer {
+  src: Array<char>
+  i: int
+  line: int
+  col: int
+  depth: int // nesting of ( and [, where line breaks never end a statement
+  tokens: Array<Token>
+  keywords: Map<string, bool>
+  puncts: Array<string>
+  punctChars: Array<Array<char>>
+}
+
+function keywordTable(): Map<string, bool> {
+  let m: Map<string, bool> = Map {}
+  const words = [
+    "function", "export", "import", "from", "as",
+    "const", "let", "if", "else", "while",
+    "for", "of", "return", "break", "continue",
+    "struct", "enum", "match", "true", "false",
+    "mutable", "uses", "test", "is",
+    "trait", "implement", "implements", "derives",
+  ]
+  for (const w of Array.values(words)) {
+    m[w] = true
+  }
+  return m
+}
+
+// Longest punctuation first, so "==" is matched before "=".
+function punctTable(): Array<string> {
+  return [
+    "===", "!==", "...", "#[", "=>", "==", "!=", "<=", ">=", "&&", "||", "+%", "-%", "*%", "<<", ">>",
+    "+", "-", "*", "/", "%", "<", ">", "=", "!", "&", "|", "^", "~",
+    "(", ")", "{", "}", "[", "]", ",", ":", ".", ";",
+  ]
+}
+
+function newLexer(src: string): Lexer {
+  const puncts = punctTable()
+  let punctChars: Array<Array<char>> = []
+  for (const p of Array.values(puncts)) {
+    Array.push(mutable punctChars, Str.chars(p))
+  }
+  return Lexer {
+    src: Str.chars(src),
+    i: 0,
+    line: 1,
+    col: 1,
+    depth: 0,
+    tokens: [],
+    keywords: keywordTable(),
+    puncts: puncts,
+    punctChars: punctChars,
+  }
+}
+
+// lex returns the tokens of src, or the first error as "line:col: message".
+export function lex(src: string): Result<Array<Token>, string> uses alloc {
+  let lx = newLexer(src)
+  const failed = runLexer(mutable lx)
+  if (failed is Some(msg)) {
+    return Err(msg)
+  }
+  return Ok(lx.tokens)
+}
+
+function errorAt(line: int, col: int, msg: string): Option<string> {
+  return Some(`${Int.toString(line)}:${Int.toString(col)}: ${msg}`)
+}
+
+function size(lx: Lexer): int {
+  return Array.length(lx.src)
+}
+
+function peek(lx: Lexer, off: int): char {
+  if (lx.i + off < Array.length(lx.src)) {
+    return lx.src[lx.i + off]
+  }
+  return '\0'
+}
+
+function advance(mutable lx: Lexer): char {
+  const r = lx.src[lx.i]
+  lx.i = lx.i + 1
+  if (r == '\n') {
+    lx.line = lx.line + 1
+    lx.col = 1
+  } else {
+    lx.col = lx.col + 1
+  }
+  return r
+}
+
+function emit(mutable lx: Lexer, kind: TokenKind, text: string, line: int, col: int) {
+  Array.push(mutable lx.tokens, Token { kind: kind, text: text, line: line, col: col })
+}
+
+// A line break ends a statement only after a token that can end one.
+function lastEndsStatement(lx: Lexer): bool {
+  const n = Array.length(lx.tokens)
+  if (n == 0) {
+    return false
+  }
+  const last = lx.tokens[n - 1]
+  return match (last.kind) {
+    Ident => true
+    IntLit => true
+    FloatLit => true
+    StringLit => true
+    CharLit => true
+    Template => true
+    Keyword => last.text == "return" || last.text == "break" || last.text == "continue" || last.text == "true" || last.text == "false"
+    Punct => last.text == ")" || last.text == "]" || last.text == "}"
+    _ => false
+  }
+}
+
+// text returns the characters first..end of the source as a string.
+// (`from` is a keyword, so it cannot name a parameter.)
+function text(lx: Lexer, first: int, end: int): string {
+  let sb = Str.builder()
+  let k = first
+  while (k < end) {
+    pushChar(mutable sb, lx.src[k])
+    k = k + 1
+  }
+  return Str.build(sb)
+}
+
+function runLexer(mutable lx: Lexer): Option<string> {
+  while (lx.i < size(lx)) {
+    const r = peek(lx, 0)
+    const line = lx.line
+    const col = lx.col
+    if (r == '\n') {
+      advance(mutable lx)
+      if (lx.depth == 0 && lastEndsStatement(lx)) {
+        emit(mutable lx, Newline, "\n", line, col)
+      }
+    } else if (r == ' ' || r == '\t' || r == '\r') {
+      advance(mutable lx)
+    } else if (r == '/' && peek(lx, 1) == '/') {
+      while (lx.i < size(lx) && peek(lx, 0) != '\n') {
+        advance(mutable lx)
+      }
+    } else if (r == '/' && peek(lx, 1) == '*') {
+      advance(mutable lx)
+      advance(mutable lx)
+      while (lx.i < size(lx) && !(peek(lx, 0) == '*' && peek(lx, 1) == '/')) {
+        advance(mutable lx)
+      }
+      if (lx.i >= size(lx)) {
+        return errorAt(line, col, "unterminated block comment")
+      }
+      advance(mutable lx)
+      advance(mutable lx)
+    } else if (isLetter(r)) {
+      const start = lx.i
+      while (lx.i < size(lx) && (isLetter(peek(lx, 0)) || isDigit(peek(lx, 0)))) {
+        advance(mutable lx)
+      }
+      const word = text(lx, start, lx.i)
+      if (lx.keywords[word] is Some(_)) {
+        emit(mutable lx, Keyword, word, line, col)
+      } else {
+        emit(mutable lx, Ident, word, line, col)
+      }
+    } else if (isDigit(r)) {
+      number(mutable lx, line, col)
+    } else if (r == '"') {
+      const s = quoted(mutable lx, '"', line, col)
+      if (s is Err(e)) {
+        return Some(e)
+      }
+      emit(mutable lx, StringLit, s.value, line, col)
+    } else if (r == '\'') {
+      const s = quoted(mutable lx, '\'', line, col)
+      if (s is Err(e)) {
+        return Some(e)
+      }
+      if (Str.charCount(s.value) != 1) {
+        return errorAt(line, col, "a character literal holds exactly one character; use double quotes for strings")
+      }
+      emit(mutable lx, CharLit, s.value, line, col)
+    } else if (r == '`') {
+      const s = template(mutable lx, line, col)
+      if (s is Err(e)) {
+        return Some(e)
+      }
+      emit(mutable lx, Template, s.value, line, col)
+    } else {
+      const failed = punct(mutable lx, r, line, col)
+      if (failed is Some(_)) {
+        return failed
+      }
+    }
+  }
+  const line = lx.line
+  const col = lx.col
+  if (lastEndsStatement(lx)) {
+    emit(mutable lx, Newline, "\n", line, col)
+  }
+  emit(mutable lx, Eof, "", line, col)
+  return None
+}
+
+function punct(mutable lx: Lexer, r: char, line: int, col: int): Option<string> {
+  for (const k of Range.upTo(Array.length(lx.puncts))) {
+    if (hasPrefix(lx, lx.punctChars[k])) {
+      const p = lx.puncts[k]
+      for (const _c of Array.values(lx.punctChars[k])) {
+        advance(mutable lx)
+      }
+      if (p == ";") {
+        return errorAt(line, col, "semicolons are not used; end the statement with a line break")
+      }
+      if (p == "(" || p == "[" || p == "#[") {
+        lx.depth = lx.depth + 1
+      } else if (p == ")" || p == "]") {
+        if (lx.depth > 0) {
+          lx.depth = lx.depth - 1
+        }
+      }
+      emit(mutable lx, Punct, p, line, col)
+      return None
+    }
+  }
+  return errorAt(line, col, `unexpected character ${quoteChar(r)}`)
+}
+
+function hasPrefix(lx: Lexer, p: Array<char>): bool {
+  for (const k of Range.upTo(Array.length(p))) {
+    if (peek(lx, k) != p[k]) {
+      return false
+    }
+  }
+  return true
+}
+
+function number(mutable lx: Lexer, line: int, col: int) {
+  const start = lx.i
+  let isFloat = false
+  if (peek(lx, 0) == '0' && (peek(lx, 1) == 'x' || peek(lx, 1) == 'b' || peek(lx, 1) == 'o')) {
+    advance(mutable lx)
+    advance(mutable lx)
+    while (isHexDigit(peek(lx, 0)) || peek(lx, 0) == '_') {
+      advance(mutable lx)
+    }
+  } else {
+    while (isDigit(peek(lx, 0)) || peek(lx, 0) == '_') {
+      advance(mutable lx)
+    }
+    if (peek(lx, 0) == '.' && isDigit(peek(lx, 1))) {
+      isFloat = true
+      advance(mutable lx)
+      while (isDigit(peek(lx, 0)) || peek(lx, 0) == '_') {
+        advance(mutable lx)
+      }
+    }
+    if (peek(lx, 0) == 'e' || peek(lx, 0) == 'E') {
+      isFloat = true
+      advance(mutable lx)
+      if (peek(lx, 0) == '+' || peek(lx, 0) == '-') {
+        advance(mutable lx)
+      }
+      while (isDigit(peek(lx, 0))) {
+        advance(mutable lx)
+      }
+    }
+  }
+  // The text without the `_` separators.
+  let sb = Str.builder()
+  let k = start
+  while (k < lx.i) {
+    if (lx.src[k] != '_') {
+      Str.appendChar(mutable sb, lx.src[k])
+    }
+    k = k + 1
+  }
+  if (isFloat) {
+    emit(mutable lx, FloatLit, Str.build(sb), line, col)
+  } else {
+    emit(mutable lx, IntLit, Str.build(sb), line, col)
+  }
+}
+
+function fail(line: int, col: int, msg: string): Result<string, string> {
+  return Err(`${Int.toString(line)}:${Int.toString(col)}: ${msg}`)
+}
+
+function escape(mutable lx: Lexer, line: int, col: int): Result<string, string> {
+  advance(mutable lx) // the backslash
+  if (lx.i >= size(lx)) {
+    return fail(line, col, "unterminated escape")
+  }
+  const c = advance(mutable lx)
+  return match (c) {
+    'n' => Ok("\n")
+    't' => Ok("\t")
+    'r' => Ok("\r")
+    '0' => Ok("\0")
+    '\\' => Ok("\\")
+    '"' => Ok("\"")
+    '\'' => Ok("'")
+    '`' => Ok("`")
+    '$' => Ok("$")
+    'u' => unicodeEscape(mutable lx, line, col)
+    _ => fail(line, col, `unknown escape \\${charString(c)}`)
+  }
+}
+
+function unicodeEscape(mutable lx: Lexer, line: int, col: int): Result<string, string> {
+  if (peek(lx, 0) != '{') {
+    return fail(line, col, "expected { after \\u")
+  }
+  advance(mutable lx)
+  let v = 0
+  while (peek(lx, 0) != '}') {
+    if (lx.i >= size(lx) || !isHexDigit(peek(lx, 0))) {
+      return fail(line, col, "invalid \\u escape")
+    }
+    v = (v *% 16) +% hexValue(advance(mutable lx))
+  }
+  advance(mutable lx)
+  // Gap: there is no Char.fromCode, so only ASCII code points can be made,
+  // by indexing a string that holds all of them.
+  if (v >= 0 && v < 128) {
+    return Ok(Str.slice(asciiTable(), v, v + 1))
+  }
+  return fail(line, col, "\\u escapes above 7f are not supported by the self-hosted lexer yet (no Char.fromCode)")
+}
+
+function asciiTable(): string {
+  return "\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}\u{6}\u{7}\u{8}\t\n\u{b}\u{c}\r\u{e}\u{f}\u{10}\u{11}\u{12}\u{13}\u{14}\u{15}\u{16}\u{17}\u{18}\u{19}\u{1a}\u{1b}\u{1c}\u{1d}\u{1e}\u{1f} !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u{7f}"
+}
+
+function quoted(mutable lx: Lexer, q: char, line: int, col: int): Result<string, string> {
+  advance(mutable lx)
+  let sb = Str.builder()
+  while (true) {
+    if (lx.i >= size(lx) || peek(lx, 0) == '\n') {
+      return fail(line, col, "unterminated literal")
+    }
+    const c = peek(lx, 0)
+    if (c == q) {
+      advance(mutable lx)
+      return Ok(Str.build(sb))
+    }
+    if (c == '\\') {
+      const s = escape(mutable lx, line, col)
+      if (s is Err(e)) {
+        return Err(e)
+      }
+      Str.append(mutable sb, s.value)
+    } else {
+      pushChar(mutable sb, advance(mutable lx))
+    }
+  }
+  return fail(line, col, "unreachable")
+}
+
+// Templates keep their raw source. The parser splits out each ${...} part
+// and parses it on its own.
+function template(mutable lx: Lexer, line: int, col: int): Result<string, string> {
+  advance(mutable lx)
+  const start = lx.i
+  while (true) {
+    if (lx.i >= size(lx)) {
+      return fail(line, col, "unterminated template string")
+    }
+    const c = peek(lx, 0)
+    if (c == '\\') {
+      advance(mutable lx)
+      if (lx.i < size(lx)) {
+        advance(mutable lx)
+      }
+    } else if (c == '`') {
+      const raw = text(lx, start, lx.i)
+      advance(mutable lx)
+      return Ok(raw)
+    } else {
+      advance(mutable lx)
+    }
+  }
+  return fail(line, col, "unreachable")
+}
+
+// charCode returns the code of an ASCII character. Gap: no Char.code; this
+// reads the first UTF-8 byte, which is the code only below 128.
+function charCode(c: char): int {
+  if (c == '\0') {
+    return 0
+  }
+  return Str.byteAt(Str.fromChar(c), 0)
+}
+
+// Gap: Str.fromChar('\0') and Str.appendChar(sb, '\0') give an empty
+// string (the runtime's lstr_from_char uses strlen). These two helpers go
+// through the literal "\0", which keeps its byte.
+function charString(c: char): string {
+  if (c == '\0') {
+    return "\0"
+  }
+  return Str.fromChar(c)
+}
+
+function pushChar(mutable sb: StringBuilder, c: char) {
+  if (c == '\0') {
+    Str.append(mutable sb, "\0")
+  } else {
+    Str.appendChar(mutable sb, c)
+  }
+}
+
+function hexDigit(n: int): string {
+  return Str.slice("0123456789abcdef", n, n + 1)
+}
+
+// hex writes n in lowercase hexadecimal with at least `width` digits.
+export function hex(n: int, width: int): string uses alloc {
+  let digits: Array<string> = []
+  let v = n
+  while (v > 0 || Array.length(digits) < width) {
+    Array.push(mutable digits, hexDigit(v % 16))
+    v = v / 16
+  }
+  let sb = Str.builder()
+  let k = Array.length(digits) - 1
+  while (k >= 0) {
+    Str.append(mutable sb, digits[k])
+    k = k - 1
+  }
+  return Str.build(sb)
+}
+
+// quoteChar copies Go's %q for a rune, for the "unexpected character" error.
+// Non-ASCII characters are written as they are (Go escapes the ones that
+// are not printable; this needs Unicode tables).
+function quoteChar(c: char): string {
+  return match (c) {
+    '\'' => "'\\''"
+    '\\' => "'\\\\'"
+    '\u{7}' => "'\\a'"
+    '\u{8}' => "'\\b'"
+    '\u{c}' => "'\\f'"
+    '\n' => "'\\n'"
+    '\r' => "'\\r'"
+    '\t' => "'\\t'"
+    '\u{b}' => "'\\v'"
+    _ => quoteOther(c)
+  }
+}
+
+function quoteOther(c: char): string {
+  if (c < ' ' || c == '\u{7f}') {
+    return `'\\x${hex(charCode(c), 2)}'`
+  }
+  return `'${charString(c)}'`
+}
+
+function isLetter(r: char): bool {
+  return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+function isDigit(r: char): bool {
+  return r >= '0' && r <= '9'
+}
+
+function isHexDigit(r: char): bool {
+  return isDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+function hexValue(r: char): int {
+  if (isDigit(r)) {
+    return charCode(r) - charCode('0')
+  }
+  if (r >= 'a' && r <= 'f') {
+    return charCode(r) - charCode('a') + 10
+  }
+  return charCode(r) - charCode('A') + 10
+}
+
+export function kindName(k: TokenKind): string {
+  return match (k) {
+    Eof => "eof"
+    Newline => "newline"
+    Ident => "ident"
+    IntLit => "int"
+    FloatLit => "float"
+    StringLit => "string"
+    CharLit => "char"
+    Template => "template"
+    Keyword => "keyword"
+    Punct => "punct"
+  }
+}
+
+// escapeText writes `\` as `\\`, newline, tab and carriage return as `\n`,
+// `\t` and `\r`, and other control characters as `\u{<hex>}`, the same as
+// escapeTokenText in compiler/internal/narra/lexdump.go.
+export function escapeText(s: string): string uses alloc {
+  let sb = Str.builder()
+  for (const c of Array.values(Str.chars(s))) {
+    if (c == '\\') {
+      Str.append(mutable sb, "\\\\")
+    } else if (c == '\n') {
+      Str.append(mutable sb, "\\n")
+    } else if (c == '\t') {
+      Str.append(mutable sb, "\\t")
+    } else if (c == '\r') {
+      Str.append(mutable sb, "\\r")
+    } else if (c < ' ' || c == '\u{7f}') {
+      Str.append(mutable sb, `\\u{${hex(charCode(c), 1)}}`)
+    } else {
+      pushChar(mutable sb, c)
+    }
+  }
+  return Str.build(sb)
+}

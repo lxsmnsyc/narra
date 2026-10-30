@@ -30,6 +30,8 @@ shared:
   - compiler/internal/narra/std_test.go
   - compiler/internal/narra/run_test.go
   - compiler/internal/narra/modules_test.go
+  - compiler/testdata/tests.out
+  - compiler/testdata/std_test.out
   - compiler/internal/narra/check.go
   - compiler/internal/narra/check_effects.go
   - compiler/internal/narra/diagnostic_codes.go

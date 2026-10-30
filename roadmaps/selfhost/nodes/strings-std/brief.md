@@ -1,7 +1,8 @@
 ---
 id: strings-std
 title: String positions, slicing and characters
-status: active
+status: done
+spent: 330547
 priority: must
 type: feature
 outline: false
@@ -58,10 +59,12 @@ See `SPEC.md` section 4, "Strings", and decisions D15 and D33. Slices share memo
 
 ## Acceptance
 
-- [ ] A sample program tokenizes a short source string into words and numbers using these functions.
-- [ ] Panic tests: slicing inside a character, out-of-range slice.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] A sample program tokenizes a short source string into words and numbers using these functions.
+- [x] Panic tests: slicing inside a character, out-of-range slice.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: one module, mostly runtime C and registry entries.
+
+PR: [#12](https://github.com/lxsmnsyc/narra/pull/12)

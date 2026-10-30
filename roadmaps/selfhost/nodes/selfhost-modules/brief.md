@@ -28,6 +28,7 @@ shared:
   - compiler/internal/narra/modules_toml.go
   - selfhost/src/main.nra
   - selfhost/narra.toml
+  - selfhost/src/parser.nra
 reserves: []
 provides: []
 depends_on:

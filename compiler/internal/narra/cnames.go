@@ -283,3 +283,8 @@ func writeCNameTable(b *strings.Builder, prog *Program) {
 		fmt.Fprintf(b, "/* %s = %s */\n", k, names[k].String())
 	}
 }
+
+// constCName and constGetCName name the storage and the getter of a
+// top-level constant that is built on first use (emit_const.go).
+func constCName(d *ConstDecl) string    { return declCName("G", d.Module, d.Name) }
+func constGetCName(d *ConstDecl) string { return declCName("g", d.Module, d.Name) }

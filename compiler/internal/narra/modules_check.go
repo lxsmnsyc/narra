@@ -16,6 +16,7 @@ type modScope struct {
 	funcs    map[string]*FuncDecl
 	modules  map[string]string // namespace import alias -> module path
 	imported map[string]*Builtin
+	consts   map[string]*ConstDecl // own and imported top-level constants
 }
 
 // enter makes s the current module and returns the previous one.
@@ -36,6 +37,7 @@ func (c *Checker) newScope(path, file string, src *SourceModule) *modScope {
 		funcs:    map[string]*FuncDecl{},
 		modules:  map[string]string{},
 		imported: map[string]*Builtin{},
+		consts:   map[string]*ConstDecl{},
 	}
 	// Every module sees the prelude.
 	if p := c.mods[""]; p != nil {
@@ -147,6 +149,8 @@ func (c *Checker) importPackageModule(imp *ImportDecl) bool {
 				c.errorf(imp.Pos, "function %q is declared twice", n)
 			}
 			c.funcs[n] = d
+		case *ConstDecl:
+			c.importConst(imp.Pos, d)
 		case *TraitDecl:
 			c.importTrait(imp.Pos, n, d)
 		case *DistinctDecl:
@@ -181,7 +185,11 @@ func (c *Checker) exported(pos Pos, s *modScope, n string) Decl {
 
 // moduleCall checks `Alias.name(args)` where Alias names a package module.
 func (c *Checker) moduleCall(e *CallExpr, s *modScope, callee *FieldExpr, want Type) Type {
-	fd, ok := c.exported(callee.P, s, callee.Name).(*FuncDecl)
+	d := c.exported(callee.P, s, callee.Name)
+	if _, isConst := d.(*ConstDecl); isConst {
+		return c.valueCall(e) // a constant holding a function
+	}
+	fd, ok := d.(*FuncDecl)
 	if !ok {
 		c.argsLoose(e)
 		return TVoid

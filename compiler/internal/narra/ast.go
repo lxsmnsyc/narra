@@ -62,6 +62,18 @@ type FuncDecl struct {
 	Module  string // declaring module path, set by the checker
 }
 
+// ConstDecl is a top-level `const NAME: T = value` (check_const.go).
+type ConstDecl struct {
+	Pos      Pos
+	Name     string
+	Exported bool
+	Type     *TypeExpr // optional annotation
+	Value    Expr
+	T        Type   // set by the checker
+	Module   string // declaring module path, set by the checker
+	state    int    // check_const.go: not started, busy, done
+}
+
 type FieldDecl struct {
 	Pos     Pos
 	Name    string
@@ -133,6 +145,7 @@ type ImplDecl struct {
 }
 
 func (*FuncDecl) declNode()     {}
+func (*ConstDecl) declNode()    {}
 func (*StructDecl) declNode()   {}
 func (*EnumDecl) declNode()     {}
 func (*DistinctDecl) declNode() {}
@@ -260,9 +273,10 @@ type TemplateLit struct {
 type Ident struct {
 	exprBase
 	Name  string
-	Local *Local    // set when the name is a local or parameter
-	Func  *FuncDecl // set when the name is a function
-	Ctor  *Variant  // set when the name is an enum constructor without fields
+	Local *Local     // set when the name is a local or parameter
+	Func  *FuncDecl  // set when the name is a function
+	Ctor  *Variant   // set when the name is an enum constructor without fields
+	Const *ConstDecl // set when the name is a top-level constant
 }
 
 type FieldExpr struct {
@@ -274,7 +288,8 @@ type FieldExpr struct {
 	Ctor    *Variant // Shape.Circle
 	// Set when Target is an enum value narrowed to one variant by `is`.
 	Narrow *Variant
-	Func   *FuncDecl // Alias.f used as a function value
+	Func   *FuncDecl  // Alias.f used as a function value
+	Const  *ConstDecl // Alias.NAME, a constant of another module
 }
 
 // IsExpr is `subject is Pattern`.

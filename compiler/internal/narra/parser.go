@@ -166,6 +166,8 @@ func (p *Parser) decl() Decl {
 	switch {
 	case p.is("function"):
 		return p.funcDecl(exported)
+	case p.is("const"):
+		return p.constDecl(exported)
 	case p.is("struct"):
 		return p.structDecl(exported)
 	case p.is("enum"):
@@ -295,6 +297,19 @@ func (p *Parser) typeParamsNoBounds() []string {
 		}
 	}
 	return names
+}
+
+// constDecl parses a top-level `const NAME: T = value`.
+func (p *Parser) constDecl(exported bool) *ConstDecl {
+	d := &ConstDecl{Pos: p.expect("const").Pos, Exported: exported}
+	d.Name = p.ident().Text
+	if p.accept(":") {
+		d.Type = p.typeExpr()
+	}
+	p.expect("=")
+	d.Value = p.expr()
+	p.endStatement()
+	return d
 }
 
 func (p *Parser) funcDecl(exported bool) *FuncDecl {

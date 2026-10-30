@@ -99,11 +99,14 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	for _, m := range prog.Maps {
 		e.mapFuncs(&mapb, m)
 	}
+	b.WriteString("\n// Constants\n")
+	e.constProtos(&b)
 	b.WriteString("\n// Functions\n")
 	for _, fd := range prog.Funcs {
 		b.WriteString(e.signature(fd) + ";\n")
 	}
 	var bodies strings.Builder
+	e.constBodies(&bodies)
 	for _, fd := range prog.Funcs {
 		e.function(fd)
 		bodies.WriteString(e.out.String())
@@ -134,7 +137,7 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 		for i, t := range prog.Tests {
 			fmt.Fprintf(&b, "  test_%d();\n  printf(\"ok - %%s\\n\", %s);\n", i, cString(t.Name))
 		}
-		fmt.Fprintf(&b, "  printf(\"%d tests passed\\n\");\n  narra_report_leaks();\n  return 0;\n}\n", len(prog.Tests))
+		fmt.Fprintf(&b, "  printf(\"%d tests passed\\n\");\n  narra_consts_release();\n  narra_report_leaks();\n  return 0;\n}\n", len(prog.Tests))
 	} else if entry != nil {
 		at := entry.Params[0].T.(*ArrayType)
 		n := arrName(at)
@@ -147,6 +150,7 @@ int main(int argc, char** argv) {
   int64_t code = %[2]s(args);
   %[1]s_release(args);
   fflush(stdout);
+  narra_consts_release();
   narra_report_leaks();
   return (int)code;
 }

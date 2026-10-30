@@ -43,6 +43,10 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			c.useLocal(e, l)
 			return l.T
 		}
+		if d := c.mod.consts[e.Name]; d != nil {
+			e.Const = d
+			return c.constType(d, e.P)
+		}
 		if fd, ok := c.funcs[e.Name]; ok {
 			return c.funcValue(e.P, fd, want, &e.Func)
 		}
@@ -58,6 +62,9 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		return TVoid
 	case *FieldExpr:
 		if t := c.moduleFuncValue(e, want); t != nil {
+			return t
+		}
+		if t := c.moduleConstValue(e); t != nil {
 			return t
 		}
 		if id, ok := e.Target.(*Ident); ok && c.lookup(id.Name) == nil && c.isEnumName(id.Name) {

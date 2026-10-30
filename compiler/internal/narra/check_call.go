@@ -559,7 +559,7 @@ func usesLocal(e Expr, l *Local) bool {
 // import of the module that holds f, and returns true when it did.
 func (c *Checker) missingImport(id *Ident, name string) bool {
 	path, ok := namespaceModules[id.Name]
-	if !ok || (id.Name == "Box" && c.userBox()) || (id.Name == "Map" && c.userMap()) {
+	if _, imported := c.modules[id.Name]; imported || !ok || (id.Name == "Box" && c.userBox()) || (id.Name == "Map" && c.userMap()) {
 		return false
 	}
 	c.errorfFix(id.P, c.importFix(id.Name, path), "%s.%s needs an import; add `import * as %s from %q`", id.Name, name, id.Name, path)

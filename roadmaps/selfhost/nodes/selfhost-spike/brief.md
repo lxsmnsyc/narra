@@ -1,7 +1,7 @@
 ---
 id: selfhost-spike
 title: Self-hosting gap check
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

@@ -24,13 +24,13 @@ All in `compiler/internal/narra/` unless noted.
 ## Stubs left
 
 - Windows: fork, so unsupported (README gap kept).
-- No per-test timeout (only `Test.panics` has one). No JSON or other report formats.
+- No JSON or other report formats.
 
 ## Gotchas
 
-- The leak check now runs per test child; a leak fails that test with `exited with code 102` and `leak check: N allocations still live` on stderr.
+- The leak check now runs per test child; a leak fails that test with `leaked N allocations.
 - A test using `Test.golden` in update mode passes and rewrites files; run it only on purpose.
-- Golden paths are absolute and compiled in, so a test binary moved to another machine reads the original path.
+- `narra test` passes `--golden-dir`; a test binary run alone reads `testdata/` relative to its working directory. No path is in the generated C.
 - The ordering `FAIL` line vs. test output: output printed by the test comes first, as lines before the FAIL line.
 - Generated C of every test build changed.
 

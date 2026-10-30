@@ -48,7 +48,7 @@ func main() {
 		src := fs.Arg(0)
 		progArgs := fs.Args()[1:]
 		if cmd == "test" {
-			progArgs = append(narra.TestArgs(*filter, *timing), progArgs...)
+			progArgs = append(narra.TestArgs(*filter, *timing, src), progArgs...)
 		} else if *filter != "" || *timing {
 			fmt.Fprintln(os.Stderr, "-filter and -time are for `narra test`")
 			os.Exit(2)

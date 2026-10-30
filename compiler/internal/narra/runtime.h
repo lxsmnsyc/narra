@@ -14,6 +14,8 @@
 static int narra_panic_fd = -1;
 // Set by the test runner's child: the pipe then gets "<where>\n<message>".
 static int narra_panic_pos = 0;
+// Where Test.golden reads and writes files; narra test sets it with --golden-dir.
+static const char* narra_golden_dir = "testdata";
 
 static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);

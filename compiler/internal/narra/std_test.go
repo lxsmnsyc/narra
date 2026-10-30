@@ -75,6 +75,11 @@ test "a" {
 					want = "FAIL - a: " + msg + " (" + pos + ")"
 				}
 				out, stderr, code := runProgram(t, src, opts)
+				// The test's own limit (NARRA_TEST_TIMEOUT) and the limit of the
+				// Test.panics child are the same, so they race: either message is a pass.
+				if strings.HasSuffix(tc.name, "timeout") && strings.Contains(out, "FAIL - a: timed out after 1 s") {
+					want = "FAIL - a: timed out after 1 s"
+				}
 				if code != 1 || !strings.Contains(out, want) {
 					t.Fatalf("want exit 1 and %q, got exit %d\nstdout:\n%s\nstderr:\n%s", want, code, out, stderr)
 				}

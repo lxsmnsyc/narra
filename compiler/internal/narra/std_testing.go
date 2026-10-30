@@ -44,7 +44,7 @@ func checkTestGolden(c *Checker, e *CallExpr, want Type) Type {
 func emitTestGolden(e *Emitter, x *CallExpr, w string) (string, bool) {
 	name := e.temp(TStr, e.argCode(x, 0))
 	actual := e.temp(TStr, e.argCode(x, 1))
-	return fmt.Sprintf("narra_test_golden(%s, %s, %s, %s)", name, actual, cString(e.prog.GoldenDir), w), false
+	return fmt.Sprintf("narra_test_golden(%s, %s, %s)", name, actual, w), false
 }
 
 // testOnly reports a std/test call outside a test block.

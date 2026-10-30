@@ -25,7 +25,6 @@ func CompileBinary(path, bin string, tests bool) (string, error) {
 		return "", FormatError(err)
 	}
 	if tests {
-		prog.GoldenDir = goldenDir(pkg)
 		return Emit(prog, nil, true), nil
 	}
 	b, err := pkg.binary(bin)

@@ -144,16 +144,24 @@ static void narra_test_fail_ne(lstr* value, const char* where) {
 // NARRA_UPDATE_GOLDEN=1 the file is written instead.
 #include <sys/stat.h>
 
-static void narra_test_golden(lstr* name, lstr* actual, const char* dir, const char* where) {
+static void narra_test_golden(lstr* name, lstr* actual, const char* where) {
+  const char* dir = narra_golden_dir;
   const char* up = getenv("NARRA_UPDATE_GOLDEN");
   int update = up && strcmp(up, "1") == 0;
+  if (name->len == 0) narra_panic(where, "Test.golden: the name is empty");
+  int bad = memchr(name->data, 0, (size_t)name->len) != NULL || name->data[0] == '/';
+  // No path segment may be "..".
+  for (const char* s = name->data; !bad && *s;) {
+    const char* e = strchr(s, '/');
+    size_t k = e ? (size_t)(e - s) : strlen(s);
+    if (k == 2 && s[0] == '.' && s[1] == '.') bad = 1;
+    s += k + (e ? 1 : 0);
+    if (!e) break;
+  }
+  if (bad) narra_panic(where, "Test.golden: the name must be a relative path without a `..` segment");
   size_t cap = strlen(dir) + (size_t)name->len + 160;
   char* path = malloc(cap);
   if (!path) narra_panic("runtime", "out of memory");
-  if (name->len == 0 || memchr(name->data, 0, (size_t)name->len) || name->data[0] == '/' || strstr(name->data, "..")) {
-    free(path);
-    narra_panic(where, "Test.golden: the name must be a relative path without `..`");
-  }
   snprintf(path, cap, "%s/%s.golden", dir, name->data);
   if (update) {
     // Create the directories on the way.
@@ -169,7 +177,7 @@ static void narra_test_golden(lstr* name, lstr* actual, const char* dir, const c
     if (!f || fwrite(actual->data, 1, (size_t)actual->len, f) != (size_t)actual->len) {
       char* out = malloc(cap + 48);
       if (!out) narra_panic("runtime", "out of memory");
-      snprintf(out, cap + 48, "Test.golden: cannot write %s", path);
+      snprintf(out, cap + 48, "Test.golden: cannot write %s.golden", name->data);
       if (f) fclose(f);
       free(path);
       narra_panic(where, out);
@@ -180,9 +188,11 @@ static void narra_test_golden(lstr* name, lstr* actual, const char* dir, const c
   }
   FILE* f = fopen(path, "rb");
   if (!f) {
+    // The message names the golden file, not the directory, so test output
+    // does not depend on where the package is.
     char* out = malloc(cap + 96);
     if (!out) narra_panic("runtime", "out of memory");
-    snprintf(out, cap + 96, "golden file %s does not exist; run with NARRA_UPDATE_GOLDEN=1 to create it", path);
+    snprintf(out, cap + 96, "golden file %s.golden does not exist; run with NARRA_UPDATE_GOLDEN=1 to create it", name->data);
     free(path);
     narra_panic(where, out);
   }

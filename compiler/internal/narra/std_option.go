@@ -76,6 +76,7 @@ func checkCallback(c *Checker, e *CallExpr, i int, params []Type, result Type) T
 	if result != nil {
 		want = &FuncType{Params: params, Result: result}
 	}
+	before := len(c.errs)
 	t := c.expr(arg, want)
 	ft, ok := t.(*FuncType)
 	if !ok {
@@ -85,7 +86,11 @@ func checkCallback(c *Checker, e *CallExpr, i int, params []Type, result Type) T
 		return nil
 	}
 	if ft.Result == TVoid {
-		c.errorf(arg.position(), "%s needs a function that returns a value", e.Builtin)
+		// An arrow whose body failed to check also ends up void; its error is
+		// already reported.
+		if len(c.errs) == before {
+			c.errorf(arg.position(), "%s needs a function that returns a value", e.Builtin)
+		}
 		return nil
 	}
 	if result != nil {
@@ -134,7 +139,13 @@ func checkOptionAndThen(c *Checker, e *CallExpr, want Type) Type {
 		c.expr(e.Args[1].Value, nil)
 		return TVoid
 	}
-	if r := callbackReturns(c, e, checkCallback(c, e, 1, []Type{o.Args[0]}, nil), "Option"); r != nil {
+	// The expected Option type of the call gives the callback its result, so
+	// `None` needs no annotation there.
+	var wantRes Type
+	if w := c.preludeEnumArg(want, "Option"); w != nil {
+		wantRes = w
+	}
+	if r := callbackReturns(c, e, checkCallback(c, e, 1, []Type{o.Args[0]}, wantRes), "Option"); r != nil {
 		return r
 	}
 	return TVoid

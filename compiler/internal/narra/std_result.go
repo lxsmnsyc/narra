@@ -48,7 +48,13 @@ func checkResultAndThen(c *Checker, e *CallExpr, want Type) Type {
 		c.expr(e.Args[1].Value, nil)
 		return TVoid
 	}
-	res := callbackReturns(c, e, checkCallback(c, e, 1, []Type{r.Args[0]}, nil), "Result")
+	// The expected type of the call, when its error type is r's, gives the
+	// callback its result, so `Err("e")` needs no annotation there.
+	var wantRes Type
+	if w := c.preludeEnumArg(want, "Result"); w != nil && sameType(w.Args[1], r.Args[1]) {
+		wantRes = w
+	}
+	res := callbackReturns(c, e, checkCallback(c, e, 1, []Type{r.Args[0]}, wantRes), "Result")
 	if res == nil {
 		return TVoid
 	}

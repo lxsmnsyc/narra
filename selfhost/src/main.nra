@@ -1,19 +1,24 @@
 // narrac <file>: prints the tokens of a file, one per line, in the format of
 // `narra lex`.
 // narrac parse <file>: prints the syntax tree in the format of `narra parse`.
+// narrac pkg <path>: prints the loaded package in the format of `narra pkg`.
 // An error prints `error <line>:<col>: <message>` to stderr and exits 1.
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Lexer from "narrac/lexer"
 import * as Parser from "narrac/parser"
 import * as AstDump from "narrac/astdump"
+import * as Modules from "narrac/modules"
 
 export function run(args: Array<string>): int uses io, alloc {
   if (Array.length(args) == 3 && args[1] == "parse") {
     return parseFile(args[2])
   }
+  if (Array.length(args) == 3 && args[1] == "pkg") {
+    return pkgDump(args[2])
+  }
   if (Array.length(args) != 2) {
-    printError("usage: narrac file.nra | narrac parse file.nra")
+    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path")
     return 2
   }
   return lexFile(args[1])
@@ -52,6 +57,27 @@ function parseFile(path: string): int {
     printError(`error ${Parser.diagText(d)}`)
     return 1
   }
-  const _ = Fs.writeText("/dev/stdout", AstDump.dump(parsed.value.file))
+  return writeStdout(AstDump.dump(parsed.value.file))
+}
+
+// writeStdout writes text as is (print would add a newline). A failed write
+// is exit code 1.
+function writeStdout(text: string): int uses io {
+  const written = Fs.writeText("/dev/stdout", text)
+  if (written is Err(e)) {
+    printError(e)
+    return 1
+  }
   return 0
+}
+
+// pkgDump loads a package directory or a single file and prints the dump. The
+// errors go to stderr, one `error ...` line per diagnostic.
+function pkgDump(path: string): int uses io, alloc {
+  const loaded = Modules.load(path)
+  if (loaded is Err(errs)) {
+    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errs))
+    return 1
+  }
+  return writeStdout(Modules.dump(loaded.value))
 }

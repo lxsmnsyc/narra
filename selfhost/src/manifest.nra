@@ -1,0 +1,314 @@
+// The narra.toml reader, ported from compiler/internal/narra/modules_toml.go.
+// It reads the same subset of TOML: tables, arrays of tables, `key = value`
+// with basic or literal strings and arrays of strings, and comments. Bytes
+// are compared as in Go; whitespace is ASCII only (Str.trim).
+import * as Str from "std/string"
+import { quoteGo } from "narrac/parser"
+
+export struct Binary {
+  name: string
+  entry: string // "cli.run": module path inside the package, then the function
+}
+
+export struct Manifest {
+  name: string
+  binaries: Array<Binary>
+  libraries: Array<string>
+  search: Array<string>
+}
+
+// An error of the loader. An empty file and line 0 print as a bare message
+// (the Go error was not a diagnostic).
+export struct LoadError {
+  file: string
+  line: int
+  col: int
+  message: string
+}
+
+enum Value {
+  VStr(text: string)
+  VList(items: Array<string>)
+}
+
+const QUOTE = 34
+const APOSTROPHE = 39
+const BACKSLASH = 92
+const HASH = 35
+const OPEN = 91
+const CLOSE = 93
+const COMMA = 44
+
+function fail(line: int, message: string): LoadError {
+  return LoadError { file: "narra.toml", line: line, col: 1, message: message }
+}
+
+// parseManifest reads the narra.toml keys the compiler uses: [package] name,
+// [[binary]] name and entry, and [link] libraries and search.
+export function parseManifest(text: string): Result<Manifest, LoadError> uses alloc {
+  let name = ""
+  let binaries: Array<Binary> = []
+  let libraries: Array<string> = []
+  let search: Array<string> = []
+  let table = ""
+  let inBinary = false
+  let binName = ""
+  let binEntry = ""
+  const lines = Str.split(text, "\n")
+  let i = 0
+  while (i < Array.length(lines)) {
+    const lineNo = i + 1
+    const line = Str.trim(stripComment(lines[i]))
+    i = i + 1
+    if (line == "") {
+      continue
+    }
+    if (Str.startsWith(line, "[[")) {
+      if (!Str.endsWith(line, "]]")) {
+        return Err(fail(lineNo, "expected `]]`"))
+      }
+      if (inBinary) {
+        Array.push(mutable binaries, Binary { name: binName, entry: binEntry })
+      }
+      table = `[[${Str.trim(Str.slice(line, 2, Str.length(line) - 2))}]]`
+      inBinary = table == "[[binary]]"
+      binName = ""
+      binEntry = ""
+      continue
+    }
+    if (Str.startsWith(line, "[")) {
+      if (!Str.endsWith(line, "]")) {
+        return Err(fail(lineNo, "expected `]`"))
+      }
+      if (inBinary) {
+        Array.push(mutable binaries, Binary { name: binName, entry: binEntry })
+        inBinary = false
+      }
+      table = Str.trim(Str.slice(line, 1, Str.length(line) - 1))
+      if (table == "dependencies") {
+        return Err(fail(lineNo, "[dependencies] is not supported by this compiler yet"))
+      }
+      continue
+    }
+    const known = table == "package" || table == "link" || table == "[[binary]]"
+    const eq = Str.indexOf(line, "=")
+    if (eq is None) {
+      if (!known) {
+        continue
+      }
+      return Err(fail(lineNo, "expected `key = value`"))
+    }
+    const at = eq.value
+    const key = Str.trim(Str.slice(line, 0, at))
+    let raw = Str.trim(Str.sliceFrom(line, at + 1))
+    // An array may continue over several lines.
+    while (Str.startsWith(raw, "[") && !closedArray(raw) && i < Array.length(lines)) {
+      raw = `${raw} ${Str.trim(stripComment(lines[i]))}`
+      i = i + 1
+    }
+    if (!known) {
+      continue
+    }
+    const parsed = parseValue(raw)
+    if (parsed is Err(e)) {
+      return Err(fail(lineNo, `${key}: ${e}`))
+    }
+    const val = parsed.value
+    const which = `${table}.${key}`
+    if (which == "package.name") {
+      if (val is VStr(s)) {
+        if (validPackageName(s)) {
+          if (s == "std") {
+            return Err(fail(lineNo, "package name \"std\" is reserved for the standard library"))
+          }
+          name = s
+          continue
+        }
+      }
+      return Err(fail(lineNo, "package name must be a string of letters, digits and `_`, starting with a letter"))
+    }
+    if (which == "[[binary]].name" || which == "[[binary]].entry") {
+      if (val is VStr(s)) {
+        if (key == "name") {
+          binName = s
+        } else {
+          binEntry = s
+        }
+        continue
+      }
+      return Err(fail(lineNo, `${key} must be a string`))
+    }
+    if (which == "link.libraries" || which == "link.search") {
+      if (val is VList(items)) {
+        if (key == "libraries") {
+          libraries = items
+        } else {
+          search = items
+        }
+        continue
+      }
+      return Err(fail(lineNo, `${key} must be an array of strings`))
+    }
+  }
+  if (inBinary) {
+    Array.push(mutable binaries, Binary { name: binName, entry: binEntry })
+  }
+  if (name == "") {
+    return Err(fail(0, "[package] needs a name"))
+  }
+  let seen: Map<string, bool> = Map {}
+  for (const b of Array.values(binaries)) {
+    if (b.name == "" || b.entry == "") {
+      return Err(fail(0, "each [[binary]] needs a name and an entry such as \"cli.run\""))
+    }
+    if (seen[b.name] is Some(_)) {
+      return Err(fail(0, `two [[binary]] entries are named ${quoteGo(b.name)}`))
+    }
+    seen[b.name] = true
+  }
+  return Ok(Manifest { name: name, binaries: binaries, libraries: libraries, search: search })
+}
+
+function validPackageName(s: string): bool {
+  const n = Str.length(s)
+  if (n == 0 || !isLetter(Str.byteAt(s, 0))) {
+    return false
+  }
+  for (const k of Range.between(0, n)) {
+    const c = Str.byteAt(s, k)
+    if (!(c == 95 || isLetter(c) || (c >= 48 && c <= 57))) {
+      return false
+    }
+  }
+  return true
+}
+
+function isLetter(c: int): bool {
+  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+}
+
+// stripComment removes a `#` comment that is not inside a string.
+function stripComment(line: string): string uses alloc {
+  let quote = 0
+  let i = 0
+  const n = Str.length(line)
+  while (i < n) {
+    const c = Str.byteAt(line, i)
+    if (quote != 0) {
+      if (c == BACKSLASH && quote == QUOTE) {
+        i = i + 1
+      } else if (c == quote) {
+        quote = 0
+      }
+    } else if (c == QUOTE || c == APOSTROPHE) {
+      quote = c
+    } else if (c == HASH) {
+      return Str.slice(line, 0, i)
+    }
+    i = i + 1
+  }
+  return line
+}
+
+// closedArray reports whether the brackets of an array value are balanced.
+function closedArray(s: string): bool {
+  let depth = 0
+  let quote = 0
+  let i = 0
+  const n = Str.length(s)
+  while (i < n) {
+    const c = Str.byteAt(s, i)
+    if (quote != 0) {
+      if (c == BACKSLASH && quote == QUOTE) {
+        i = i + 1
+      } else if (c == quote) {
+        quote = 0
+      }
+    } else if (c == QUOTE || c == APOSTROPHE) {
+      quote = c
+    } else if (c == OPEN) {
+      depth = depth + 1
+    } else if (c == CLOSE) {
+      depth = depth - 1
+    }
+    i = i + 1
+  }
+  return depth == 0
+}
+
+// parseValue reads a string or an array of strings.
+function parseValue(s: string): Result<Value, string> uses alloc {
+  if (Str.startsWith(s, "[")) {
+    let out: Array<string> = []
+    let rest = Str.trim(Str.sliceFrom(s, 1))
+    while (true) {
+      if (Str.startsWith(rest, "]")) {
+        if (Str.trim(Str.sliceFrom(rest, 1)) != "") {
+          return Err("unexpected text after the array")
+        }
+        return Ok(VList(out))
+      }
+      const r = parseString(rest)
+      if (r is Err(e)) {
+        return Err(e)
+      }
+      const #[str, n] = r.value
+      Array.push(mutable out, str)
+      rest = Str.trim(Str.sliceFrom(rest, n))
+      if (Str.startsWith(rest, ",")) {
+        rest = Str.trim(Str.sliceFrom(rest, 1))
+      } else if (!Str.startsWith(rest, "]")) {
+        return Err("expected `,` or `]` in the array")
+      }
+    }
+  }
+  const r = parseString(s)
+  if (r is Err(e)) {
+    return Err(e)
+  }
+  const #[str, n] = r.value
+  if (Str.trim(Str.sliceFrom(s, n)) != "") {
+    return Err("unexpected text after the string")
+  }
+  return Ok(VStr(str))
+}
+
+// parseString reads a basic ("...") or literal ('...') string at the start
+// of s and returns its value and length in bytes.
+function parseString(s: string): Result<#[string, int], string> uses alloc {
+  const n = Str.length(s)
+  if (n == 0 || (Str.byteAt(s, 0) != QUOTE && Str.byteAt(s, 0) != APOSTROPHE)) {
+    return Err("expected a string")
+  }
+  const quote = Str.byteAt(s, 0)
+  let sb = Str.builder()
+  let i = 1
+  while (i < n) {
+    const c = Str.byteAt(s, i)
+    if (c == quote) {
+      return Ok(#[Str.build(sb), i + 1])
+    }
+    if (c == BACKSLASH && quote == QUOTE && i + 1 < n) {
+      i = i + 1
+      const e = Str.byteAt(s, i)
+      if (e == 110) {
+        Str.append(mutable sb, "\n")
+      } else if (e == 116) {
+        Str.append(mutable sb, "\t")
+      } else if (e == QUOTE || e == BACKSLASH) {
+        Str.append(mutable sb, Str.slice(s, i, i + 1))
+      } else {
+        // Go prints %c of the byte; for a non-ASCII lead byte this is its
+        // Latin-1 character, which the dump tests do not exercise.
+        return Err(`unsupported escape \\${Str.slice(s, i, i + 1)}`)
+      }
+      i = i + 1
+      continue
+    }
+    // Copy a whole character so multi-byte text stays valid.
+    const next = Str.nextChar(s, i)
+    Str.append(mutable sb, Str.slice(s, i, next))
+    i = next
+  }
+  return Err("unterminated string")
+}

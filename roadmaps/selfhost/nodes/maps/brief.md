@@ -30,6 +30,14 @@ shared:
   - compiler/internal/narra/emit_stmt.go
   - compiler/internal/narra/ast.go
   - compiler/internal/narra/clone.go
+  - compiler/internal/narra/check.go
+  - compiler/internal/narra/check_call.go
+  - compiler/internal/narra/check_closure.go
+  - compiler/internal/narra/cnames.go
+  - compiler/internal/narra/emit.go
+  - compiler/internal/narra/modules_check.go
+  - compiler/testdata/errors/maps*
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:

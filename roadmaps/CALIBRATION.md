@@ -25,3 +25,4 @@ Notes:
 | selfhost | std-convert | M | M | - | 178k tokens. Spike guessed S; nine small functions and a runtime fix. |
 | selfhost | opaque-distinct | M | M | - | 340k tokens. Edited 13 files outside its owned paths, a few lines each. |
 | selfhost | top-level-const | M | M | 2 | 607k tokens, the most of the wave. Review found a constant/type name clash undetected. Lazy getters replaced static data. |
+| selfhost | selfhost-ast | M | M | 2 | 446k tokens. Round 1 asked for escape goldens and position rules in the format comment. Found a Go parser bug (`mutable` after `uses` in parameters), split into fix PR #21. |

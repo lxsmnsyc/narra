@@ -1,7 +1,8 @@
 ---
 id: selfhost-ast
 title: AST dump and Narra AST types
-status: active
+status: done
+spent: 446000
 priority: must
 type: feature
 outline: false
@@ -49,10 +50,10 @@ Define a fixed text dump of the parsed AST, print it from the Go parser as a hid
 
 ## Acceptance
 
-- [ ] `narra parse <file>` prints the dump; `TestASTDump` runs it on every `.nra` under `compiler/testdata/` (no panic, same output twice) and compares a few files with goldens in `compiler/testdata/astdump/` that together cover every AST node type.
-- [ ] `selfhost/src/ast.nra` has a type for every node in `ast.go`, and `selfhost/` still builds (`TestSelfhostLexer` passes).
-- [ ] A doc comment at the top of `astdump.go` defines the format, so selfhost-front can match it.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `narra parse <file>` prints the dump; `TestASTDump` runs it on every `.nra` under `compiler/testdata/` (no panic, same output twice) and compares a few files with goldens in `compiler/testdata/astdump/` that together cover every AST node type.
+- [x] `selfhost/src/ast.nra` has a type for every node in `ast.go`, and `selfhost/` still builds (`TestSelfhostLexer` passes).
+- [x] A doc comment at the top of `astdump.go` defines the format, so selfhost-front can match it.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

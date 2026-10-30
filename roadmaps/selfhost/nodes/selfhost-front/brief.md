@@ -14,7 +14,7 @@ verify: cd compiler && go test ./internal/narra -run 'TestSelfhostLexer|TestSelf
 exclusive: []
 fulfilled_by:
 gate: false
-added:
+added: 2026-10-30
 owns:
   - selfhost/src/parser.nra
   - selfhost/src/lexer.nra
@@ -54,6 +54,8 @@ Port `compiler/internal/narra/parser.go` (about 1130 lines) to `selfhost/src/par
   - `keywordTable` and `punctTable` become top-level constants.
   - `main.nra` prints errors to stdout; write them to `/dev/stderr` with `Fs.writeText` and keep the exit codes. Update the harness if it compares stderr.
 - Add an edge case with a non-ASCII `\u{...}` escape to the lexer harness once `unicodeEscape` is fixed.
+- selfhost-ast (#20) is merged: `ASTDump` and `narra parse` in Go, `selfhost/src/ast.nra` (module `narrac/ast`) and `selfhost/src/astdump.nra` (`dump(f: File): string uses alloc`, not yet diffed against Go). Reproduce the position rules in the "Positions" paragraph of the `astdump.go` doc comment exactly: columns count runes, a call's pos is `(`, a field-expr's pos is the member name, template parts take the template's pos.
+- Go parser fix in PR #21 (open on 2026-10-30): `paramAfterComma` also accepts `mutable` after the comma, so `g: () => U uses E, mutable out: T` parses. Port the fixed version. If #21 merges while you work, rebase onto main; if it is still open when you finish, say so in the outcome.
 - Read `selfhost/CLAUDE.md`, the selfhost-spike outcome (gap list, gotchas) and the selfhost-ast outcome.
 
 ## Acceptance

@@ -3,6 +3,8 @@
 The Narra compiler written in Narra. Each part is checked against the Go compiler through a text dump.
 
 - Compare each ported part with the Go side through a dump with a fixed text format (`narra lex` and `LexDump` for tokens). A byte diff points at the first wrong token or node.
+- Print optional and repeated children under named slot lines (`.result`, `.body`) so an absent child and an empty list differ in the dump. The `astdump.go` doc comment is the authority on the AST dump format, including positions.
+- `narra build selfhost` type-checks every module, even ones nobody imports, so a broken module fails `TestSelfhostLexer`.
 - Keep the Go lexer's quirks (`0b102` is one int, `3.x` is `3` `.` `x`, `7e` is a float) unless both sides change together. The dump tests compare them.
 - Thread compiler state through one `mutable` context struct, and keep every array in it unique. A second owner makes each push copy the whole array.
 - Give every expression, pattern and local an integer id, and keep checker results in side tables indexed by id (`Array<T>`, `Map<int, T>`). Enum payloads are immutable and shared, so nothing can be written back into the AST.

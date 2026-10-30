@@ -70,7 +70,7 @@ func parseManifest(text string) (*Package, error) {
 		switch table + "." + key {
 		case "package.name":
 			if !isStr || !validPackageName(str) {
-				return nil, fail(lineNo, "package name must be a string of letters, digits and `_`, starting with a letter, not ending with `_` and without `__`")
+				return nil, fail(lineNo, "package name must be a string of letters, digits and `_`, starting with a letter")
 			}
 			if str == "std" {
 				return nil, fail(lineNo, "package name \"std\" is reserved for the standard library")
@@ -114,7 +114,7 @@ func parseManifest(text string) (*Package, error) {
 }
 
 func validPackageName(s string) bool {
-	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') || !cSafeSegment(s) {
+	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') {
 		return false
 	}
 	for _, ch := range s {

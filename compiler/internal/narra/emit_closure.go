@@ -7,17 +7,17 @@ import (
 
 // Function values in C (see check_closure.go for the rules).
 //
-// A function type such as (int) => int is a struct named by mangle,
-// `F1__int__int { int64_t (*fn)(narra_env*, int64_t); narra_env* env; }`.
+// A function type such as (int) => int is an interned struct (cnames.go),
+// `F_Fn1_<hash> { int64_t (*fn)(narra_env*, int64_t); narra_env* env; }`.
 // A call passes the environment first: `f.fn(f.env, x)`.
 //
-// - A named function used as a value is a thunk `w<funcCName>` with a NULL
-//   environment.
-// - An arrow function is a C function `k<funcCName(owner)>__<n>`, where the
+// - A named function used as a value is a thunk `w_<hash>_<name>` (thunkCName)
+//   with a NULL environment.
+// - An arrow function is a C function `k_<hash>_<name>_<n>` (closureCName), where the
 //   owner is the declared function (or test) it appears in and n counts
 //   from 1 in that owner. Its environment struct is `K...` and the function
-//   that releases its captures is `D...`. funcCName is injective and no
-//   funcCName ends in `__<digits>`, so these names are too.
+//   that releases its captures is `D...`. The last segment is the count, so
+//   the names are injective because funcCName is.
 // - Without captures the environment is NULL. A closure passed straight to
 //   a non-escaping parameter has its environment on the caller's stack with
 //   a count of -1, which retain and release ignore; its captures are
@@ -90,7 +90,7 @@ func (e *Emitter) closureFuncs(b *strings.Builder) {
 
 // funcValueCode returns a named function as a value.
 func (e *Emitter) funcValueCode(fd *FuncDecl, ft *FuncType) (string, bool) {
-	name := "w" + funcCName(fd)
+	name := thunkCName(funcCName(fd))
 	st := e.cl()
 	if !st.thunks[name] {
 		st.thunks[name] = true
@@ -118,8 +118,8 @@ func (e *Emitter) arrow(x *ArrowExpr) (string, bool) {
 	st := e.cl()
 	owner := funcCName(e.fn)
 	st.counts[owner]++
-	suffix := fmt.Sprintf("%s__%d", owner, st.counts[owner])
-	name, envT, drop := "k"+suffix, "K"+suffix, "D"+suffix
+	n := st.counts[owner]
+	name, envT, drop := closureCName("k", owner, n), closureCName("K", owner, n), closureCName("D", owner, n)
 	if len(clo.Captures) > 0 {
 		e.envStruct(envT, drop, clo)
 	}

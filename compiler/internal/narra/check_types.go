@@ -109,7 +109,7 @@ func (c *Checker) buildGeneric(g *genericType) {
 
 func (c *Checker) instantiate(g *genericType, args []Type) Type {
 	c.buildGeneric(g)
-	key := typeArgsMangle(args)
+	key := typeArgsKey(args)
 	if t, ok := g.instances[key]; ok {
 		return t
 	}
@@ -347,7 +347,7 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 }
 
 func (c *Checker) arrayOf(elem Type) *ArrayType {
-	key := mangle(elem)
+	key := typeID(elem)
 	if a, ok := c.arrays[key]; ok {
 		return a
 	}

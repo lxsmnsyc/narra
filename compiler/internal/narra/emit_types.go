@@ -61,7 +61,7 @@ func retain(t Type, v string) string {
 		return fmt.Sprintf("narra_env_retain((%s).env);", v)
 	case *StructType, *EnumType:
 		if needsRC(t) {
-			return fmt.Sprintf("%s_retain(%s);", t.CName(), v)
+			return fmt.Sprintf("%s(%s);", opFuncName("retain", t), v)
 		}
 	}
 	return ""
@@ -79,7 +79,7 @@ func release(t Type, v string) string {
 		return fmt.Sprintf("narra_env_release((%s).env);", v)
 	case *StructType, *EnumType:
 		if needsRC(t) {
-			return fmt.Sprintf("%s_release(%s);", t.CName(), v)
+			return fmt.Sprintf("%s(%s);", opFuncName("release", t), v)
 		}
 	}
 	return ""
@@ -90,7 +90,7 @@ func (e *Emitter) rcFuncs(b *strings.Builder, t Type) {
 		return
 	}
 	for _, op := range []string{"retain", "release"} {
-		fmt.Fprintf(b, "static void %s_%s(%s v) {\n", t.CName(), op, t.CName())
+		fmt.Fprintf(b, "static void %s(%s v) {\n", opFuncName(op, t), t.CName())
 		gen := retain
 		if op == "release" {
 			gen = release

@@ -1,7 +1,6 @@
 package narra
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -63,20 +62,7 @@ func (t *StructType) String() string {
 	return t.Name + typeArgsString(t.Args)
 }
 
-// tupleCName names a tuple type. No module path maps to a segment starting
-// with "_", so S__Tuple cannot be a user struct's name. The element count
-// comes first, as F<n> does for function types, so nested tuples of
-// different shapes differ: #[#[int, int], int] is S__Tuple2__S__Tuple2__int__int__int.
-func tupleCName(elems []Type) string {
-	return fmt.Sprintf("S__Tuple%d%s", len(elems), typeArgsMangle(elems))
-}
-
-func (t *StructType) CName() string {
-	if t.Tuple {
-		return tupleCName(t.Args)
-	}
-	return "S_" + cModule(t.Module) + t.Name + typeArgsMangle(t.Args)
-}
+func (t *StructType) CName() string { return structCName(t) }
 
 func (t *StructType) Field(name string) *Field {
 	for _, f := range t.Fields {
@@ -102,7 +88,7 @@ type EnumType struct {
 }
 
 func (t *EnumType) String() string { return t.Name + typeArgsString(t.Args) }
-func (t *EnumType) CName() string  { return "E_" + cModule(t.Module) + t.Name + typeArgsMangle(t.Args) }
+func (t *EnumType) CName() string  { return enumCName(t) }
 
 func typeArgsString(args []Type) string {
 	if len(args) == 0 {
@@ -113,15 +99,6 @@ func typeArgsString(args []Type) string {
 		parts[i] = a.String()
 	}
 	return "<" + strings.Join(parts, ", ") + ">"
-}
-
-func typeArgsMangle(args []Type) string {
-	var b strings.Builder
-	for _, a := range args {
-		b.WriteString("__")
-		b.WriteString(mangle(a))
-	}
-	return b.String()
 }
 
 // TypeParamType stands for a type parameter while a generic declaration is
@@ -175,7 +152,7 @@ func (t *EnumType) Variant(name string) *Variant {
 type ArrayType struct{ Elem Type }
 
 func (t *ArrayType) String() string { return "Array<" + t.Elem.String() + ">" }
-func (t *ArrayType) CName() string  { return "A_" + mangle(t.Elem) + "*" }
+func (t *ArrayType) CName() string  { return arrayCName(t) + "*" }
 
 // Range values exist only as the subject of a for loop.
 type RangeType struct{}
@@ -204,33 +181,7 @@ func (t *FuncType) String() string {
 
 // CName is the struct that holds a function value: a C function pointer
 // and its environment (emit_closure.go).
-func (t *FuncType) CName() string { return mangle(t) }
-
-func mangle(t Type) string {
-	switch t := t.(type) {
-	case *PrimType:
-		return t.Name
-	case *StructType:
-		return t.CName()
-	case *EnumType:
-		return t.CName()
-	case *TypeParamType:
-		return fmt.Sprintf("P_%s_%d", t.Name, t.ID)
-	case *ArrayType:
-		return "A_" + mangle(t.Elem)
-	case *FuncType:
-		// F<n> then the n parameter types and the result, as type arguments
-		// are joined: (int, bool) => int gives F2__int__bool__int.
-		var b strings.Builder
-		fmt.Fprintf(&b, "F%d", len(t.Params))
-		for _, p := range t.Params {
-			b.WriteString("__" + mangle(p))
-		}
-		b.WriteString("__" + mangle(t.Result))
-		return b.String()
-	}
-	return "x"
-}
+func (t *FuncType) CName() string { return funcTypeCName(t) }
 
 func sameType(a, b Type) bool {
 	if a == b {

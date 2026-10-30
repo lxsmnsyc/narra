@@ -2,7 +2,7 @@
 id: perceus
 title: Remove unneeded reference count updates
 status: todo
-priority: should
+priority: later
 type: feature
 outline: true
 milestone: m6-performance

@@ -2,7 +2,7 @@
 id: threads
 title: Scoped threads, channels and shared state
 status: todo
-priority: could
+priority: later
 type: feature
 outline: true
 milestone: m5-concurrency

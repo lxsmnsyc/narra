@@ -2,7 +2,7 @@
 id: fixed-arrays
 title: Fixed-size arrays and const generics
 status: todo
-priority: could
+priority: later
 type: feature
 outline: true
 milestone: m4-systems

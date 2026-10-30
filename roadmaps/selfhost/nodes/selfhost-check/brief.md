@@ -1,7 +1,7 @@
 ---
 id: selfhost-check
 title: Self-hosted checker
-status: todo
+status: dropped
 priority: must
 type: feature
 outline: true
@@ -34,3 +34,7 @@ Type checker in Narra, including generics, traits and patterns. Split before sta
 ## Notes
 
 Outline. Break into full briefs when `plan.py refine` lists it.
+
+## Dropped
+
+2026-10-30: split into selfhost-check-decls and selfhost-check-bodies.

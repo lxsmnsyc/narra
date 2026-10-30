@@ -2,7 +2,7 @@
 id: inline
 title: @inline for higher-order functions
 status: todo
-priority: could
+priority: later
 type: feature
 outline: true
 milestone: m6-performance

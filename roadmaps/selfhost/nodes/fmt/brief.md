@@ -2,7 +2,7 @@
 id: fmt
 title: narra fmt
 status: todo
-priority: could
+priority: later
 type: feature
 outline: true
 milestone: m7-tooling

@@ -2,7 +2,7 @@
 id: generators
 title: Generators with function* and yield
 status: todo
-priority: should
+priority: later
 type: feature
 outline: true
 milestone: m5-concurrency

@@ -2,7 +2,7 @@
 id: build-conditions
 title: Build conditions and @target
 status: todo
-priority: could
+priority: later
 type: feature
 outline: true
 milestone: m4-systems

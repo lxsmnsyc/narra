@@ -20,7 +20,7 @@ shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: selfhost-check
+  - on: selfhost-check-bodies
     kind: hard
     why: emits from the checked tree
 ---

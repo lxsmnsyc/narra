@@ -82,6 +82,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-10-28: wave 1 (split-compiler, bench-harness) started.
 - 2026-10-28: the user switched merging to auto. The orchestrator merges a pull request without the user when `plan.py can-merge` allows it: clean fresh-context review, local checks pass on the rebased branch, size M or smaller. Gated nodes, contract-freezing nodes, releases and hotfixes still go to the user. This replaces "every pull request waits for the user" from the first decision.
 - 2026-10-30: wave 3 showed that two reviewed pull requests can break main together (io-std built enum values the old way after box-recursive merged). Rule: before merging a second pull request of the same wave, rebase it on main and rerun the fast check. `can-merge` answers hold only for the base they were run on.
+- 2026-10-30: selfhost-spike gate, user decisions. Add `top-level-const` (should). The self-hosted compiler uses integer node ids and side tables, not an arena library. selfhost-check is split into selfhost-check-decls and selfhost-check-bodies. Port soon: every m4-m7 node except opaque-distinct is parked (`later`) until after self-hosting, because each feature built in Go first must also be ported. std-convert (char and number conversions) is pending a naming check.
 
 ## Gates
 

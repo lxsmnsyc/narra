@@ -2,7 +2,7 @@
 id: c-interop
 title: Unsafe code and C interop
 status: todo
-priority: should
+priority: later
 type: feature
 outline: true
 milestone: m4-systems

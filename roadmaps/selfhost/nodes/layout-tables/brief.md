@@ -2,7 +2,7 @@
 id: layout-tables
 title: Layout tables for debug builds
 status: todo
-priority: could
+priority: later
 type: feature
 outline: true
 milestone: m6-performance

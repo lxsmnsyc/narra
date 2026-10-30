@@ -1,7 +1,7 @@
 ---
 id: box-recursive
 title: Box and recursive enums
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

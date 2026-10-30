@@ -26,6 +26,10 @@ shared:
   - compiler/internal/narra/clone.go
   - compiler/internal/narra/types.go
   - compiler/internal/narra/check_types.go
+  - compiler/README.md
+  - compiler/internal/narra/modules_check.go
+  - compiler/testdata/errors/effects*
+  - compiler/testdata/packages/**
 reserves: []
 provides: []
 depends_on:

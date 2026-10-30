@@ -14,6 +14,8 @@ API (`import * as Test from "std/test"`, or named imports `import { eq } from "s
 | `Test.panicsWith(f: () => void, message: string)` | same, plus a string | as above, or `expected a panic containing "<message>", got "<actual message>"` |
 
 - A failure is an ordinary panic: stderr gets `panic at <file>:<line>:<col>: <message>`, exit code 101, and the run stops (no later tests, no `N tests passed`). `<line>:<col>` is the call's `(` (the existing `CallExpr.P` convention).
+- Timeout: the child calls `alarm(N)` before `f`, N = 10 seconds or the env var `NARRA_TEST_TIMEOUT` (positive integer). Past it, the call fails with `expected a panic, but the function ran past the N s timeout`. This also bounds a nested child that keeps the pipe open. When a nested `Test.panics` times out, the inner and outer timeouts race.
+- An empty `message` matches any panic, and the match stops at a NUL byte (`strstr`).
 - A crash of the child (signal, sanitizer report, any exit code other than 0 or 101) fails with `expected a panic, but the function was killed by signal N` or `... exited with code N`.
 - Effects: `eq`/`ne` declare `alloc`, `panics`/`panicsWith` declare `io`.
 - Files: `std_testing.go` (module registration, Check and Emit), `runtime_test.h` (embedded as `Module.Runtime`), `std_test.go` (Go tests of failing assertions and of a normal build of a file that uses std/test).
@@ -33,12 +35,12 @@ Panic capture design (D65): fork.
 Test-only rule:
 
 - Every call of a `std/test` function must be inside a `test` block, arrow functions inside it included. Otherwise: E0907 `%s can only be called inside a \`test\` block` (format in `diagnostic_codes.go`). Tracked by `Checker.inTest` (`check.go`), set only while `checkBodies` checks a `TestDecl` body. Helper functions declared at top level cannot call `Test.*`, even when only tests call them.
-- The import itself is allowed in any module, so a file with tests and a `run` entry still builds as a program (`TestRunStdTestBuilds`). The std/test runtime C is emitted in that build too (test bodies are still emitted as unused static functions by `emit.go`), but nothing calls it.
+- The import itself is allowed in any module, so a file with tests and a `run` entry still builds as a program (`TestRunStdTestBuilds`). `emit.go` now leaves out the test bodies and the std/test runtime C in a non-test build, so such a build has no fork code.
 
 Tests:
 
 - `testdata/std_test.nra` / `.out`: passing `eq` (int, string, char, bool, f64, struct, enum, array, Option), `ne`, `panics` (division, `panic`, bounds), `panicsWith` (message substring, failing `Test.eq`/`Test.ne`/`Test.panics` inside a closure), print in a child. `run_test.go` now runs `tests.nra` and every `std_test*.nra` in test mode.
-- `std_test.go`: `TestRunStdTestFailures` (failing eq on int, struct, array; failing ne; panics whose closure returns; panicsWith with another message; debug and release, exit 101, message and position, later tests not run) and `TestRunStdTestBuilds`.
+- `std_test.go`: `TestRunStdTestFailures` (failing eq on int, struct, array; failing ne; panics whose closure returns; panicsWith with another message; an endless loop and a nested endless loop with `NARRA_TEST_TIMEOUT=1`; debug and release, exit 101, message and position, later tests not run) and `TestRunStdTestBuilds`.
 - `testdata/errors/`: `std_test_outside.nra` (E0907), `std_test_no_show.nra` (`Point does not implement Show`, E0524), `std_test_no_equatable.nra` (`Map<string, int> does not implement Equatable`), `std_test_panics_type.nra` (argument count).
 - Docs: SPEC.md section 13 (`std/test` bullet and example), DECISIONS.md D65, `compiler/README.md` (Supported, Tests, Not supported yet).
 
@@ -46,11 +48,12 @@ Tests:
 
 - The module is in `std_testing.go`, not the owned `std_test.go`: Go compiles a `*_test.go` file only under `go test`, so the registration would be missing from the `narra` binary. `std_test.go` holds the Go tests instead. `std_testing.go` is a new file outside the owned paths.
 - The brief says importing `std/test` outside a test block or in a non-test build is an error. The checker does not know the build mode, and a file with tests must still build as a program, so the rule is on calls instead: every `Test.*` call must be inside a `test` block. Proposed in the SPEC text for the user's approval.
+- `emit.go` (shared) no longer emits test bodies in a non-test build, and emits the std/test runtime only in test builds. This makes "removed from non-test builds" (SPEC section 13) true in the C. Generated C of non-test builds of files with tests changes.
 - `runtime.h` gets the hook (as the brief says), although the folder rule says module C goes in `Module.Runtime`; the hook must sit inside `narra_panic`.
 
 ## Stubs left
 
-- No Windows support for `Test.panics` (fork). Listed in `compiler/README.md` under Not supported yet.
+- No Windows support for `Test.panics` (fork, alarm). Listed in `compiler/README.md` under Not supported yet.
 - A failed assertion stops the whole run. Continuing after a failure, filters, reports and golden files are for test-runner.
 
 ## Gotchas
@@ -59,6 +62,7 @@ Tests:
 - A multi-line block arrow inside call parentheses does not parse (newlines inside parentheses are not statement ends). Use a one-line block or a helper function.
 - Panic positions point at the call's `(`, not at `Test`.
 - `Test.eq` takes its type from the first argument; the second is checked against it. `Test.eq(None, Some(1))` fails to infer; write the typed value first.
+- Failure paths free what they built except the final message passed to `narra_panic`; the leak report runs only at the normal end of `main`, so a panicking run is not leak-checked.
 - Generated C for every program changed (the hook is in `runtime.h`), so C-output comparisons must regenerate.
 
 ## Proposed learnings

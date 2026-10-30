@@ -96,7 +96,7 @@ go test ./...
 - Destructuring in `for (const #[i, x] of ...)` loops, and reading a tuple element by index.
 - Generators, async functions, threads and channels.
 - `unsafe` and `extern`.
-- `std/test` on Windows: `Test.panics` uses `fork` (D65), so it is POSIX only. Golden files and runner options (filters, reports) are not there yet; a failed assertion stops the whole test run.
+- `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. Golden files and runner options (filters, reports) are not there yet, and a failed assertion stops the whole test run.
 
 ## Differences from the spec
 

@@ -42,7 +42,22 @@ test "a" {
   const xs = [1]
   Test.panics(() => { const y = xs[0] })
 }`, "expected a panic, but the function returned"},
+		{"timeout", `test "a" {
+  Test.panics(() => { while (true) {} })
+}`, "panic at prog.nra:4:14: expected a panic, but the function ran past the 1 s timeout"},
+		// The inner and outer timeouts race: either the outer call fails on
+		// its timeout, or it passes and the last call fails. Neither hangs.
+		{"nested_timeout", `function spin() {
+  while (true) {}
+}
+
+test "a" {
+  Test.panics(() => Test.panics(() => spin()))
+  Test.panics(() => spin())
+}`, "ran past the 1 s timeout"},
 	}
+	// A short timeout for the cases whose closure never returns.
+	t.Setenv("NARRA_TEST_TIMEOUT", "1")
 	for _, tc := range cases {
 		for _, m := range modes {
 			t.Run(tc.name+"/"+m.name, func(t *testing.T) {

@@ -971,7 +971,7 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
   - `Test.eq<T: Equatable & Show>(actual: T, expected: T)` panics with `expected <expected>, got <actual>` when the values differ. `Test.ne(actual, other)` panics with `expected a value other than <other>` when they are equal. Both values are written with `Show`, and the panic names the call's `file:line:col`.
   - `Test.panics(f: () => void)` calls `f` and panics unless `f` panics. `Test.panicsWith(f, message: string)` also needs the panic message to contain `message`.
   - A failed assertion is a panic: the test run stops and exits with code 101.
-  - `f` runs in a child process, so nothing it changes or allocates reaches the test. Output it prints appears in order.
+  - `f` runs in a child process, so nothing it changes or allocates reaches the test. Output it prints appears in order. `Test.panics` and `Test.panicsWith` therefore need a POSIX system (`fork`). A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails.
 
 ```ts
 import * as Test from "std/test"

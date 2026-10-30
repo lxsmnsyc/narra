@@ -5,14 +5,33 @@
 // 101. The parent reads the pipe until it closes, waits for the child and
 // checks how it ended. The child's heap is a copy, so nothing it allocates
 // counts in the parent's leak check.
+//
+// The child gets a timeout (alarm), 10 seconds or NARRA_TEST_TIMEOUT, so a
+// closure that never returns fails instead of hanging the run. This also
+// bounds a nested child that would keep the pipe open.
+//
+// The failure paths free what they built, except the final message, which
+// narra_panic prints before the process ends.
 #include <errno.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
 typedef struct narra_test_proc {
   pid_t pid;
   int fd;
+  unsigned timeout;
 } narra_test_proc;
+
+static unsigned narra_test_timeout(void) {
+  const char* s = getenv("NARRA_TEST_TIMEOUT");
+  if (s && *s) {
+    char* end;
+    long v = strtol(s, &end, 10);
+    if (*end == 0 && v > 0 && v < 100000) return (unsigned)v;
+  }
+  return 10;
+}
 
 // narra_test_fork returns true in the child, which must call the closure
 // and then narra_test_returned. It returns false in the parent.
@@ -20,12 +39,14 @@ static bool narra_test_fork(narra_test_proc* t, const char* where) {
   int fds[2];
   fflush(stdout);
   fflush(stderr);
+  t->timeout = narra_test_timeout();
   if (pipe(fds) != 0) narra_panic(where, "Test.panics: cannot create a pipe");
   pid_t pid = fork();
   if (pid < 0) narra_panic(where, "Test.panics: cannot fork");
   if (pid == 0) {
     close(fds[0]);
     narra_panic_fd = fds[1];
+    alarm(t->timeout);
     return true;
   }
   close(fds[1]);
@@ -41,7 +62,8 @@ static void narra_test_returned(void) {
 }
 
 // narra_test_expect waits for the child and panics unless it panicked with
-// a message that contains want (any message when want is NULL).
+// a message that contains want (any message when want is NULL). An empty
+// want matches any message, and the match stops at a NUL byte in either.
 static void narra_test_expect(narra_test_proc* t, lstr* want, const char* where) {
   size_t cap = 256, len = 0;
   char* msg = malloc(cap);
@@ -69,7 +91,9 @@ static void narra_test_expect(narra_test_proc* t, lstr* want, const char* where)
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
     fail = "expected a panic, but the function returned";
   } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 101) {
-    if (WIFSIGNALED(status)) {
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM) {
+      snprintf(buf, sizeof buf, "expected a panic, but the function ran past the %u s timeout", t->timeout);
+    } else if (WIFSIGNALED(status)) {
       snprintf(buf, sizeof buf, "expected a panic, but the function was killed by signal %d", WTERMSIG(status));
     } else {
       snprintf(buf, sizeof buf, "expected a panic, but the function exited with code %d", WEXITSTATUS(status));
@@ -87,17 +111,22 @@ static void narra_test_expect(narra_test_proc* t, lstr* want, const char* where)
     char* out = malloc(n);
     if (!out) narra_panic("runtime", "out of memory");
     snprintf(out, n, "expected a panic containing %s, got %s", w->data, g->data);
+    lstr_release(w);
+    lstr_release(g);
+    free(msg);
     narra_panic(where, out);
   }
   free(msg);
 }
 
-// The failure of Test.eq: shown values are owned and the program ends.
+// The failure of Test.eq. The shown values are owned and released here.
 static void narra_test_fail_eq(lstr* expected, lstr* actual, const char* where) {
   size_t n = (size_t)expected->len + (size_t)actual->len + 32;
   char* out = malloc(n);
   if (!out) narra_panic("runtime", "out of memory");
   snprintf(out, n, "expected %s, got %s", expected->data, actual->data);
+  lstr_release(expected);
+  lstr_release(actual);
   narra_panic(where, out);
 }
 
@@ -106,5 +135,6 @@ static void narra_test_fail_ne(lstr* value, const char* where) {
   char* out = malloc(n);
   if (!out) narra_panic("runtime", "out of memory");
   snprintf(out, n, "expected a value other than %s", value->data);
+  lstr_release(value);
   narra_panic(where, out);
 }

@@ -48,7 +48,8 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 	var b strings.Builder
 	b.WriteString(runtimeH)
 	for _, m := range prog.Modules {
-		if m.Runtime != "" {
+		// std/test is called only from test blocks, which a non-test build drops.
+		if m.Runtime != "" && (tests || m.Path != "std/test") {
 			b.WriteString("\n")
 			b.WriteString(m.Runtime)
 		}
@@ -113,6 +114,9 @@ func Emit(prog *Program, entry *FuncDecl, tests bool) string {
 		e.out.Reset()
 	}
 	for i, t := range prog.Tests {
+		if !tests {
+			break // test blocks are not part of a non-test build
+		}
 		e.fn = &FuncDecl{Name: "test", ResultT: TVoid, Module: t.Module}
 		e.file = prog.Files[t.Module]
 		e.line("static void test_%d(void) {", i)

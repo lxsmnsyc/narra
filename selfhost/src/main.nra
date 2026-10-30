@@ -9,17 +9,24 @@
 // narrac pkg <path>: prints the loaded package in the format of `narra pkg`.
 // narrac decls <path>: runs the declaration passes of the checker and prints
 // the format of `narra decls`.
+// narrac builtins: prints the std registry in the `builtin` format of
+// decldump.go (BuiltinDump), after a line per registry type text that does
+// not resolve back to itself.
 // An error prints `error <line>:<col>: <message>` to stderr and exits 1.
 import * as Fs from "std/fs"
 import * as Int from "std/int"
+import * as Str from "std/string"
 import * as Lexer from "narrac/lexer"
 import * as Parser from "narrac/parser"
 import * as AstDump from "narrac/astdump"
 import * as Modules from "narrac/modules"
+import { Package } from "narrac/modules"
 import * as Check from "narrac/check"
 import * as Declare from "narrac/declare"
 import * as DeclsDump from "narrac/declsdump"
 import * as IdCheck from "narrac/idcheck"
+import * as Builtins from "narrac/builtins"
+import * as Stdlib from "narrac/stdlib"
 import * as Array from "std/array"
 
 export function run(args: Array<string>): int uses io, alloc {
@@ -32,6 +39,9 @@ export function run(args: Array<string>): int uses io, alloc {
   if (Array.length(args) == 3 && args[1] == "decls") {
     return declsDump(args[2])
   }
+  if (Array.length(args) == 2 && args[1] == "builtins") {
+    return builtinsDump()
+  }
   if (Array.length(args) == 4 && args[1] == "pkg" && args[2] == "--ids") {
     return pkgIds(args[3], false)
   }
@@ -39,7 +49,7 @@ export function run(args: Array<string>): int uses io, alloc {
     return pkgIds(args[3], true)
   }
   if (Array.length(args) != 2) {
-    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path | narrac decls path")
+    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path | narrac decls path | narrac builtins")
     return 2
   }
   return lexFile(args[1])
@@ -147,4 +157,17 @@ function declsDump(path: string): int uses io, alloc {
     return 1
   }
   return writeStdout(DeclsDump.dump(mutable c))
+}
+
+// builtinsDump prints the std registry. The type texts are resolved in a
+// checker that has declared only the prelude.
+function builtinsDump(): int uses io, alloc {
+  const empty = Package { name: "builtins", dir: "", modules: [], binaries: [], libraries: [], search: [], nextId: 0, single: true }
+  let c = Declare.newPackageChecker(empty)
+  let sb = Str.builder()
+  for (const line of Array.values(Stdlib.typeProblems(mutable c))) {
+    Str.append(mutable sb, `${line}\n`)
+  }
+  Str.append(mutable sb, Builtins.dump(c.registry))
+  return writeStdout(Str.build(sb))
 }

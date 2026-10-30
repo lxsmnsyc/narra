@@ -1,0 +1,16 @@
+# Log: selfhost-check-imports
+
+- 2026-10-30: started on d474399; #31 (std-option-result) and #33 (parser fix) merged meanwhile, so the branch was reset to 9a4b2b6 before any commit. std/option and std/result are registered.
+- Registry choice: hand-written `stdlib.nra` (81 table lines, a top-level `const` array of `StdFunc` structs with field defaults), not a generator. Under the 300-line threshold. The equality test is `TestSelfhostBuiltins`: `narrac builtins` must equal Go's `BuiltinDump()`.
+- Dead end: Go cannot print the signature of the 12 builtins whose Check is an inline closure (`checkFixed(c, x, []Type{...}, preludeEnum(...))`): the types live inside the closure. Options weighed: add a data field to `Builtin` (builtins.go and std_*.go are outside this node and #31 was editing them), or call Check on a synthetic call (hacky). Chosen: the Narra table holds the signature; the Go dump prints `check fixed`; the test compiles a probe `function probe(a0: P0, ...): R { return M.f(a0, ...) }` with the Go checker for each one. `TestSelfhostBuiltinsProbeFails` shows a wrong signature fails.
+- Check names come from `runtime.FuncForPC` on `Builtin.Check` (`checkArrayPush`); an inline closure's name contains a dot and prints as `fixed`.
+- `builtin` lines are not in the `narra decls` dump. They would be the same ~350 lines in every golden and every new std function would change all goldens. They are a separate dump (`BuiltinDump`, `narrac builtins`) in the same style.
+- Types in the decls dump now carry their module (`q/lib.Token`) everywhere, also in single-file dumps (`hello.P`). One rule, no context needed for instance blocks. All goldens regenerated.
+- `export` is a keyword in Narra: the registry field is `key`.
+- Module order: `stdModuleOrder()` in decldump.go copies moduleList's order (builtins.go was in #31's file list). `TestStdModuleOrder` keeps them in step.
+- Entry: `DeclDump` now runs `entryFunc`/`checkEntry` after `flushMapKeys` (CheckPackage's order relative to finish), and prints `entry` lines. Narra: `checkEntries` in scopes.nra.
+- Cycle: `qualifiedType` -> `instantiate` must stay in resolve.nra (resolve <-> instantiate cycle), so resolve.nra imports scopes.nra for `exported`/`sourceScope`. `stdType` needs `instantiate`, so it lives in stdlib.nra and check.nra imports only builtins.nra (the registry is filled by newPackageChecker in declare.nra).
+- Coordinator item (impl method results and function-type results missing from the Narra dump): already fixed by #33 (parser). `testdata/trait_method_generic_return.nra` and the new `declsdump/imports/impl_results.nra` (Option<Array<int>>, `(int) => Option<int>`, Option<Self>, #[Self, int], `(int) => #[int, bool]`) match.
+- Results: TestSelfhostImports 271 compared, 30 skipped, all "does not load". selfhost/ itself matches (3382 lines).
+- Timing (`decls selfhost/`): narrac debug 0.75 s wall (0.32 s user), release 0.47 s (0.15 s user), Go 0.04 s. Load alone is 0.09 s. Scaling check on a generated package: 20 modules x 100 names 0.06 s, 40 x 100 0.14 s, 40 x 200 0.29 s (linear); Go 0.10 s on the last.
+- emit/check byte-identical: 280 inputs x (emit, check, check --json), main build (9a4b2b6) vs branch: 0 differences.

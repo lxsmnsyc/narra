@@ -1,8 +1,9 @@
 // The declaration dump (`narrac decls <path>`). The format is defined in the
 // doc comment at the top of compiler/internal/narra/decldump.go; this file
 // prints the same text from the Narra checker's tables. selfhost-check-traits
-// added trait, impl and bound; selfhost-check-imports adds module, import and
-// builtin, in dumpModule's switch or after it.
+// added trait, impl and bound; selfhost-check-imports added module, import,
+// scope and entry, and writes types with their module (dumpTypeString). The
+// builtin lines are printed by builtins.nra (`narrac builtins`).
 import * as Str from "std/string"
 import { Decl, File, FuncDecl, Param, ImplDecl } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
@@ -10,6 +11,7 @@ import { Type, Field, Variant } from "narrac/types"
 import { Checker, typeString, typeModule, containsTypeParam, stdTrait } from "narrac/check"
 import { typeImplements } from "narrac/traits"
 import * as Array from "std/array"
+import * as Map from "std/map"
 import * as Range from "std/range"
 
 // dump returns the dump of a checker that ran declarePackage without errors.
@@ -19,6 +21,19 @@ export function dump(mutable c: Checker): string uses alloc {
   let nextImpl = 0
   for (const s of Range.between(0, Array.length(c.scopes))) {
     dumpModule(mutable sb, c, s, mutable nextImpl)
+    if (c.scopes[s].isSource) {
+      dumpScope(mutable sb, c, s)
+    }
+  }
+  if (nextImpl != Array.length(c.impls)) {
+    panic("declsdump: an implement block was not printed")
+  }
+  for (const e of Array.values(c.entries)) {
+    let target = "none"
+    if (e.func >= 0) {
+      target = `${c.funcs[e.func].module}.${c.funcs[e.func].name}`
+    }
+    Str.append(mutable sb, `entry ${quoteDump(e.binary)} ${target}\n`)
   }
   let blocks: Array<string> = []
   let heads: Array<string> = []
@@ -37,7 +52,7 @@ export function dump(mutable c: Checker): string uses alloc {
     Str.append(mutable sb, blocks[k])
   }
   for (const t of Array.values(c.order)) {
-    Str.append(mutable sb, `order module=${quoteDump(typeModule(c, t))} ${typeString(c, t)}\n`)
+    Str.append(mutable sb, `order module=${quoteDump(typeModule(c, t))} ${dumpTypeString(c, t)}\n`)
   }
   for (const t of Array.values(c.order)) {
     dumpHolds(mutable sb, mutable c, t)
@@ -110,7 +125,7 @@ function dumpModule(mutable sb: StringBuilder, c: Checker, s: int, mutable nextI
         let t = "?"
         if (scope.consts[cd.name] is Some(k)) {
           if (c.consts[k].t is Some(ct)) {
-            t = typeString(c, ct)
+            t = dumpTypeString(c, ct)
           }
         }
         Str.append(mutable sb, `const${mod}${cd.name} ${t}\n`)
@@ -141,11 +156,11 @@ function dumpFunc(mutable sb: StringBuilder, c: Checker, s: int, mod: string, fd
     if (p.isMutable) {
       flag = "mutable "
     }
-    Str.append(mutable sb, `  param ${p.name} ${flag}${typeString(c, c.paramTypes[p.id])}\n`)
+    Str.append(mutable sb, `  param ${p.name} ${flag}${dumpTypeString(c, c.paramTypes[p.id])}\n`)
   }
   let result = "void"
   if (c.scopes[s].funcs[fd.name] is Some(k)) {
-    result = typeString(c, c.funcs[k].result)
+    result = dumpTypeString(c, c.funcs[k].result)
   }
   Str.append(mutable sb, `  result ${result}\n`)
   if (c.scopes[s].funcs[fd.name] is Some(k)) {
@@ -184,15 +199,16 @@ function dumpTrait(mutable sb: StringBuilder, c: Checker, mod: string, ti: int) 
 }
 
 // dumpImpl prints an `implement` block. Checker.impls holds the checked
-// blocks in declaration order, so the next one is this block; the position
-// check guards a block that was not recorded.
+// blocks in declaration order, so the next one is this block. The dump runs
+// only without errors, when every block was recorded; a mismatch is a bug
+// and stops the dump.
 function dumpImpl(mutable sb: StringBuilder, c: Checker, mod: string, s: int, d: ImplDecl, mutable nextImpl: int) uses alloc {
   if (nextImpl >= Array.length(c.impls)) {
-    return
+    panic("declsdump: an implement block is missing from Checker.impls")
   }
   const b = c.impls[nextImpl]
   if (b.scope != s || b.decl.pos != d.pos) {
-    return
+    panic("declsdump: Checker.impls is out of declaration order")
   }
   nextImpl = nextImpl + 1
   Str.append(mutable sb, `impl${mod}block ${c.traits[b.traitIdx].name} ${implTypeName(c, b.t)}\n`)
@@ -219,9 +235,9 @@ function dumpSignature(mutable sb: StringBuilder, c: Checker, name: string, fd: 
     if (p.escaping) {
       flags = `${flags}escaping `
     }
-    Str.append(mutable sb, `    param ${p.name} ${flags}${typeString(c, c.paramTypes[p.id])}\n`)
+    Str.append(mutable sb, `    param ${p.name} ${flags}${dumpTypeString(c, c.paramTypes[p.id])}\n`)
   }
-  Str.append(mutable sb, `    result ${typeString(c, result)}\n`)
+  Str.append(mutable sb, `    result ${dumpTypeString(c, result)}\n`)
 }
 
 // dumpHolds prints typeImplements(t, trait) for the four standard traits.
@@ -233,7 +249,7 @@ function dumpHolds(mutable sb: StringBuilder, mutable c: Checker, t: Type) uses 
     if (typeImplements(mutable c, t, tr)) {
       holds = "true"
     }
-    Str.append(mutable sb, `impl module=${quoteDump(typeModule(c, t))} holds=${holds} ${n} ${typeString(c, t)}\n`)
+    Str.append(mutable sb, `impl module=${quoteDump(typeModule(c, t))} holds=${holds} ${n} ${dumpTypeString(c, t)}\n`)
   }
 }
 
@@ -242,14 +258,14 @@ function dumpType(mutable sb: StringBuilder, c: Checker, t: Type) uses alloc {
     TStruct(i) => {
       const s = c.structs[i]
       if (s.tuple) {
-        Str.append(mutable sb, `type tuple module="" ${typeString(c, t)}\n`)
+        Str.append(mutable sb, `type tuple module="" ${dumpTypeString(c, t)}\n`)
       } else {
-        Str.append(mutable sb, `type struct module=${quoteDump(s.module)} ${opaqueFlag(s.opaque)}${typeString(c, t)}\n`)
+        Str.append(mutable sb, `type struct module=${quoteDump(s.module)} ${opaqueFlag(s.opaque)}${dumpTypeString(c, t)}\n`)
       }
       dumpFields(mutable sb, c, "  ", s.fields)
     }
     TEnum(i) => {
-      Str.append(mutable sb, `type enum module=${quoteDump(c.enums[i].module)} ${typeString(c, t)}\n`)
+      Str.append(mutable sb, `type enum module=${quoteDump(c.enums[i].module)} ${dumpTypeString(c, t)}\n`)
       dumpVariants(mutable sb, c, c.enums[i].variants)
     }
     TDistinct(i) => {
@@ -257,7 +273,7 @@ function dumpType(mutable sb: StringBuilder, c: Checker, t: Type) uses alloc {
       Str.append(mutable sb, `type distinct module=${quoteDump(d.module)} ${opaqueFlag(d.opaque)}${d.name}\n`)
       let base = "void"
       if (d.base is Some(b)) {
-        base = typeString(c, b)
+        base = dumpTypeString(c, b)
       }
       Str.append(mutable sb, `  base ${base}\n`)
     }
@@ -293,7 +309,7 @@ function dumpFields(mutable sb: StringBuilder, c: Checker, indent: string, field
     if (f.default is Some(_)) {
       flag = "default "
     }
-    Str.append(mutable sb, `${indent}field ${f.name} ${flag}${typeString(c, f.t)}\n`)
+    Str.append(mutable sb, `${indent}field ${f.name} ${flag}${dumpTypeString(c, f.t)}\n`)
   }
 }
 
@@ -302,4 +318,134 @@ function opaqueFlag(on: bool): string {
     return "opaque "
   }
   return ""
+}
+
+// dumpTypeString prints a type as typeString does, except that a struct,
+// enum or distinct type declared in a package module is written
+// <module>.<Name> (decldump.go's dumpTypeString).
+function dumpTypeString(c: Checker, t: Type): string uses alloc {
+  return match (t) {
+    TStruct(i) => structText(c, i)
+    TEnum(i) => `${qualified(c.enums[i].module, c.enums[i].name)}${argsText(c, c.enums[i].args)}`
+    TDistinct(i) => qualified(c.distincts[i].module, c.distincts[i].name)
+    TArray(e) => `Array<${dumpTypeString(c, e)}>`
+    TBox(e) => `Box<${dumpTypeString(c, e)}>`
+    TMap(k, v) => `Map<${dumpTypeString(c, k)}, ${dumpTypeString(c, v)}>`
+    TFunc(ps, r) => `(${listText(c, ps)}) => ${dumpTypeString(c, r)}`
+    _ => typeString(c, t)
+  }
+}
+
+function structText(c: Checker, i: int): string uses alloc {
+  const s = c.structs[i]
+  if (s.tuple) {
+    return `#[${listText(c, s.args)}]`
+  }
+  return `${qualified(s.module, s.name)}${argsText(c, s.args)}`
+}
+
+function qualified(module: string, name: string): string uses alloc {
+  if (module == "") {
+    return name
+  }
+  return `${module}.${name}`
+}
+
+function argsText(c: Checker, args: Array<Type>): string uses alloc {
+  if (Array.length(args) == 0) {
+    return ""
+  }
+  return `<${listText(c, args)}>`
+}
+
+function listText(c: Checker, ts: Array<Type>): string uses alloc {
+  let parts: Array<string> = []
+  for (const t of Array.values(ts)) {
+    Array.push(mutable parts, dumpTypeString(c, t))
+  }
+  return Str.join(parts, ", ")
+}
+
+// dumpScope prints the `module` block of package module s: its imports in
+// source order, then the names of its scope that the prelude does not give
+// every module, by kind and then by name (byte order).
+function dumpScope(mutable sb: StringBuilder, c: Checker, s: int) uses alloc {
+  const scope = c.scopes[s]
+  Str.append(mutable sb, `module ${quoteDump(scope.path)}\n`)
+  for (const imp of Array.values(scope.imports)) {
+    let kind = "std"
+    if (c.scopeIndex[imp.path] is Some(k)) {
+      if (c.scopes[k].isSource) {
+        kind = "package"
+      }
+    }
+    Str.append(mutable sb, `  import ${quoteDump(imp.path)} ${kind}`)
+    if (imp.alias != "") {
+      Str.append(mutable sb, ` alias=${imp.alias}`)
+    }
+    if (Array.length(imp.names) > 0) {
+      Str.append(mutable sb, ` names=${Str.join(imp.names, ",")}`)
+    }
+    Str.append(mutable sb, "\n")
+  }
+  let lines: Array<string> = []
+  for (const e of Map.entries(scope.types)) {
+    const #[n, t] = e
+    let inherited = false
+    if (c.scopes[0].types[n] is Some(pt)) {
+      inherited = pt == t
+    }
+    if (!inherited) {
+      Array.push(mutable lines, `type ${n} ${dumpTypeString(c, t)}`)
+    }
+  }
+  writeScopeLines(mutable sb, lines)
+  lines = []
+  for (const e of Map.entries(scope.generics)) {
+    const #[n, g] = e
+    let inherited = false
+    if (c.scopes[0].generics[n] is Some(pg)) {
+      inherited = pg == g
+    }
+    if (!inherited) {
+      Array.push(mutable lines, `generic ${n} ${qualified(c.generics[g].module, c.generics[g].name)}`)
+    }
+  }
+  writeScopeLines(mutable sb, lines)
+  lines = []
+  for (const e of Map.entries(scope.funcs)) {
+    const #[n, k] = e
+    Array.push(mutable lines, `func ${n} ${qualified(c.funcs[k].module, c.funcs[k].name)}`)
+  }
+  writeScopeLines(mutable sb, lines)
+  lines = []
+  for (const e of Map.entries(scope.consts)) {
+    const #[n, k] = e
+    Array.push(mutable lines, `const ${n} ${qualified(c.consts[k].module, c.consts[k].name)}`)
+  }
+  writeScopeLines(mutable sb, lines)
+  lines = []
+  for (const e of Map.entries(scope.traits)) {
+    const #[n, k] = e
+    Array.push(mutable lines, `trait ${n} ${qualified(c.traits[k].module, c.traits[k].name)}`)
+  }
+  writeScopeLines(mutable sb, lines)
+  lines = []
+  for (const e of Map.entries(scope.imported)) {
+    const #[n, k] = e
+    Array.push(mutable lines, `builtin ${n} ${c.registry.funcs[k].name}`)
+  }
+  writeScopeLines(mutable sb, lines)
+  lines = []
+  for (const e of Map.entries(scope.modules)) {
+    const #[a, p] = e
+    Array.push(mutable lines, `alias ${a} ${quoteDump(p)}`)
+  }
+  writeScopeLines(mutable sb, lines)
+}
+
+function writeScopeLines(mutable sb: StringBuilder, lines: Array<string>) uses alloc {
+  for (const k of Array.values(sortedByHead(lines))) {
+    Str.append(mutable sb, `  scope ${lines[k]}\n`)
+  }
 }

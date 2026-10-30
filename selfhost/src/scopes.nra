@@ -1,0 +1,316 @@
+// Module scopes across modules, ported from compiler/internal/narra:
+// the import loop of declareModule and useModule (check.go),
+// importPackageModule, exported, entryFunc and checkEntry
+// (modules_check.go), importTrait (check_traits.go), importConst and the
+// imported-constant check of declareConsts (check_const.go), declareType
+// (check_types.go).
+//
+// Package modules are declared in load order, imports first, so every
+// module an import names already has its scope and its table entries. An
+// imported name points at the declaring module's entry: a type is the same
+// Type value, a function, constant, generic or trait the same table index.
+import { Pos, Decl, File, ImportDecl } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Package, entryModule } from "narrac/modules"
+import { Type } from "narrac/types"
+import { moduleList } from "narrac/builtins"
+import { Checker, EntryInfo, errorf, enter, lookupType, lookupGeneric, lookupTrait } from "narrac/check"
+import * as Str from "std/string"
+import * as Array from "std/array"
+import * as Range from "std/range"
+
+// declName is the name a top-level declaration declares, or "" (tests and
+// implement blocks).
+export function declName(d: Decl): string {
+  return match (d) {
+    Func(f) => f.name
+    Const(x) => x.name
+    Struct(x) => x.name
+    Enum(x) => x.name
+    Distinct(x) => x.name
+    Trait(x) => x.name
+    _ => ""
+  }
+}
+
+function isExported(d: Decl): bool {
+  return match (d) {
+    Func(f) => f.exported
+    Const(x) => x.exported
+    Struct(x) => x.exported
+    Enum(x) => x.exported
+    Distinct(x) => x.exported
+    Trait(x) => x.exported
+    _ => false
+  }
+}
+
+// exportsOf maps each exported name to its declaration's index. A later
+// declaration of the same name wins, as in Go's Exports map.
+export function exportsOf(decls: Array<Decl>): Map<string, int> uses alloc {
+  let out: Map<string, int> = Map {}
+  for (const k of Range.between(0, Array.length(decls))) {
+    if (isExported(decls[k])) {
+      out[declName(decls[k])] = k
+    }
+  }
+  return out
+}
+
+// checkTypeName reports a type name already taken in the current scope.
+export function checkTypeName(mutable c: Checker, pos: Pos, name: string) uses alloc {
+  if (lookupType(c, name) is Some(_)) {
+    errorf(mutable c, pos, `type ${quoteGo(name)} is declared twice`)
+  }
+  if (lookupGeneric(c, name) is Some(_)) {
+    errorf(mutable c, pos, `type ${quoteGo(name)} is declared twice`)
+  }
+}
+
+export function declareType(mutable c: Checker, pos: Pos, name: string, t: Type) uses alloc {
+  checkTypeName(mutable c, pos, name)
+  const s = c.cur
+  c.scopes[s].types[name] = t
+}
+
+// importModules runs the imports of f in the current module: a package
+// module, or else a std module of the registry.
+export function importModules(mutable c: Checker, f: File) uses alloc {
+  for (const imp of Array.values(f.imports)) {
+    if (importPackageModule(mutable c, imp)) {
+      continue
+    }
+    if (c.registry.modules[imp.path] is Some(mod)) {
+      useModule(mutable c, imp.path)
+      const s = c.cur
+      if (imp.path == "std/string") {
+        // The type is visible only where its runtime C is emitted.
+        c.scopes[s].types["StringBuilder"] = TStringBuilder
+      }
+      if (imp.alias != "") {
+        c.scopes[s].modules[imp.alias] = imp.path
+      }
+      for (const n of Array.values(imp.names)) {
+        if (mod.funcs[n] is Some(k)) {
+          c.scopes[s].imported[n] = k
+        } else {
+          errorf(mutable c, imp.pos, `module ${quoteGo(imp.path)} has no export ${quoteGo(n)}`)
+        }
+      }
+    } else {
+      const list = moduleList(c.registry)
+      errorf(mutable c, imp.pos, `unknown module ${quoteGo(imp.path)} (this compiler supports ${list})`)
+    }
+  }
+}
+
+// useModule records a std module the program uses, once, in first-import
+// order (Go's Program.Modules; the emitter writes their runtime C).
+function useModule(mutable c: Checker, path: string) uses alloc {
+  for (const p of Array.values(c.used)) {
+    if (p == path) {
+      return
+    }
+  }
+  Array.push(mutable c.used, path)
+}
+
+// sourceScope finds the scope of a package module by path, or -1.
+export function sourceScope(c: Checker, path: string): int {
+  if (c.scopeIndex[path] is Some(s)) {
+    if (c.scopes[s].isSource) {
+      return s
+    }
+  }
+  return -1
+}
+
+// importPackageModule handles an import of a module of this package. It
+// returns false when the path is not one, so the caller tries std modules.
+function importPackageModule(mutable c: Checker, imp: ImportDecl): bool uses alloc {
+  const s = sourceScope(c, imp.path)
+  if (s < 0) {
+    const prefix = `${c.pkgName}/`
+    if (!c.single && Str.startsWith(imp.path, prefix)) {
+      const rest = Str.sliceFrom(imp.path, Str.length(prefix))
+      const msg = `unknown module ${quoteGo(imp.path)}; package ${c.pkgName} has no file src/${rest}.nra`
+      errorf(mutable c, imp.pos, msg)
+      return true
+    }
+    return false
+  }
+  const cur = c.cur
+  if (imp.alias != "") {
+    c.scopes[cur].modules[imp.alias] = imp.path
+  }
+  for (const n of Array.values(imp.names)) {
+    const d = exported(mutable c, imp.pos, s, n)
+    match (d) {
+      Some(decl) => importDecl(mutable c, imp.pos, s, n, decl)
+      None => {}
+    }
+  }
+  return true
+}
+
+// importDecl makes the exported declaration n of scope s visible in the
+// current module.
+function importDecl(mutable c: Checker, pos: Pos, s: int, n: string, d: Decl) uses alloc {
+  const cur = c.cur
+  match (d) {
+    Func(_) => {
+      if (c.scopes[cur].funcs[n] is Some(_)) {
+        errorf(mutable c, pos, `function ${quoteGo(n)} is declared twice`)
+      }
+      if (c.scopes[s].funcs[n] is Some(k)) {
+        c.scopes[cur].funcs[n] = k
+      }
+    }
+    Const(_) => {
+      if (c.scopes[s].consts[n] is Some(k)) {
+        importConst(mutable c, pos, n, k)
+      }
+    }
+    Trait(_) => {
+      if (c.scopes[s].traits[n] is Some(ti)) {
+        if (c.traits[ti].module == c.scopes[s].path) {
+          importTrait(mutable c, pos, n, ti)
+        }
+      }
+    }
+    Distinct(_) => importType(mutable c, pos, s, n)
+    Struct(_) => importNamedType(mutable c, pos, s, n)
+    Enum(_) => importNamedType(mutable c, pos, s, n)
+    _ => {}
+  }
+}
+
+function importType(mutable c: Checker, pos: Pos, s: int, n: string) uses alloc {
+  if (c.scopes[s].types[n] is Some(t)) {
+    declareType(mutable c, pos, n, t)
+  } else {
+    checkTypeName(mutable c, pos, n)
+  }
+}
+
+// importNamedType imports a struct or enum: a generic template by its
+// Checker.generics index, or a type.
+function importNamedType(mutable c: Checker, pos: Pos, s: int, n: string) uses alloc {
+  if (c.scopes[s].generics[n] is Some(g)) {
+    if (c.scopes[s].types[n] is None) {
+      if (lookupType(c, n) is Some(_) || lookupGeneric(c, n) is Some(_)) {
+        errorf(mutable c, pos, `type ${quoteGo(n)} is declared twice`)
+      }
+      const cur = c.cur
+      c.scopes[cur].generics[n] = g
+      return
+    }
+  }
+  importType(mutable c, pos, s, n)
+}
+
+// exported returns the exported declaration n of scope s, or reports why it
+// cannot be used and returns None.
+export function exported(mutable c: Checker, pos: Pos, s: int, n: string): Option<Decl> uses alloc {
+  if (c.scopes[s].exports[n] is Some(k)) {
+    return Some(c.scopes[s].decls[k])
+  }
+  const path = c.scopes[s].path
+  for (const d of Array.values(c.scopes[s].decls)) {
+    if (declName(d) == n) {
+      errorf(mutable c, pos, `${quoteGo(n)} is not exported by module ${quoteGo(path)}; add \`export\` to its declaration`)
+      return None
+    }
+  }
+  errorf(mutable c, pos, `module ${quoteGo(path)} has no export ${quoteGo(n)}`)
+  return None
+}
+
+// importTrait makes the exported trait ti visible by name.
+function importTrait(mutable c: Checker, pos: Pos, n: string, ti: int) uses alloc {
+  if (lookupTrait(c, n) >= 0 || lookupType(c, n) is Some(_) || lookupGeneric(c, n) is Some(_)) {
+    errorf(mutable c, pos, `${quoteGo(n)} is declared twice`)
+    return
+  }
+  const cur = c.cur
+  c.scopes[cur].traits[n] = ti
+}
+
+// importConst makes the exported constant k visible by name.
+function importConst(mutable c: Checker, pos: Pos, n: string, k: int) uses alloc {
+  const cur = c.cur
+  if (c.scopes[cur].consts[n] is Some(_) || typeNamed(c, n)) {
+    errorf(mutable c, pos, `constant ${quoteGo(n)} is declared twice`)
+    return
+  }
+  c.scopes[cur].consts[n] = k
+}
+
+// typeNamed reports whether name is a type or trait of the current module.
+export function typeNamed(c: Checker, name: string): bool {
+  return lookupType(c, name) is Some(_) || lookupGeneric(c, name) is Some(_) || lookupTrait(c, name) >= 0
+}
+
+// checkImportedConsts reports an imported constant whose name the module
+// later gave to a type: the import ran before the module's types existed.
+export function checkImportedConsts(mutable c: Checker, f: File) uses alloc {
+  const cur = c.cur
+  const path = c.scopes[cur].path
+  for (const imp of Array.values(f.imports)) {
+    for (const n of Array.values(imp.names)) {
+      if (c.scopes[cur].consts[n] is Some(k)) {
+        if (c.consts[k].module != path && typeNamed(c, n)) {
+          errorf(mutable c, imp.pos, `constant ${quoteGo(n)} is declared twice`)
+        }
+      }
+    }
+  }
+}
+
+// checkEntries finds the entry function of each binary and reports one
+// with the wrong signature (Go's entryFunc and checkEntry in CheckPackage).
+export function checkEntries(mutable c: Checker, pkg: Package) uses alloc {
+  for (const b of Array.values(pkg.binaries)) {
+    const k = entryFunc(c, pkg, b.entry)
+    if (k >= 0) {
+      const fs = c.funcs[k].scope
+      const saved = enter(mutable c, fs)
+      checkEntry(mutable c, k)
+      enter(mutable c, saved)
+    }
+    const info = EntryInfo { binary: b.name, func: k }
+    Array.push(mutable c.entries, info)
+  }
+}
+
+// entryFunc finds the exported function an entry names, or -1.
+function entryFunc(c: Checker, pkg: Package, entry: string): int uses alloc {
+  const target = entryModule(pkg, entry)
+  const #[mod, fn] = target
+  const s = sourceScope(c, mod)
+  if (s < 0) {
+    return -1
+  }
+  if (c.scopes[s].exports[fn] is Some(d)) {
+    if (c.scopes[s].decls[d] is Func(fd)) {
+      if (c.scopes[s].funcs[fn] is Some(k)) {
+        if (c.funcs[k].decl.pos == fd.pos && c.funcs[k].scope == s) {
+          return k
+        }
+      }
+    }
+  }
+  return -1
+}
+
+function checkEntry(mutable c: Checker, k: int) uses alloc {
+  const fd = c.funcs[k].decl
+  let ok = Array.length(fd.params) == 1 && c.funcs[k].result == TInt
+  if (ok) {
+    const p = fd.params[0]
+    ok = c.paramTypes[p.id] == TArray(TStr) && !p.isMutable
+  }
+  if (!ok) {
+    errorf(mutable c, fd.pos, `the entry function must be \`export function ${fd.name}(args: Array<string>): int\``)
+  }
+}

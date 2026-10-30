@@ -127,21 +127,10 @@ func pkgInputsDirs(t *testing.T) []string {
 }
 
 // declSkip says why an input is not compared, or "". Inputs that fail to
-// load are TestSelfhostModules' business. A package whose modules import
-// each other needs module scopes (selfhost-check-imports).
+// load are TestSelfhostModules' business.
 func declSkip(path, goDump string, goOK bool) string {
-	pkg, err := Load(path)
-	if err != nil {
+	if _, err := Load(path); err != nil {
 		return "does not load"
-	}
-	for _, m := range pkg.Modules {
-		for _, f := range m.Files {
-			for _, imp := range f.Imports {
-				if strings.HasPrefix(imp.Path, pkg.Name+"/") {
-					return "imports a module of its package (selfhost-check-imports)"
-				}
-			}
-		}
 	}
 	if !goOK {
 		if line := unportedDeclError(goDump); line != "" {

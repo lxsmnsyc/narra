@@ -1,18 +1,19 @@
 // The declaration dump (`narrac decls <path>`). The format is defined in the
 // doc comment at the top of compiler/internal/narra/decldump.go; this file
 // prints the same text from the Narra checker's tables. selfhost-check-traits
-// and selfhost-check-imports add their line kinds here (trait, impl, bound;
-// module, import, builtin), in dumpModule's switch or after it.
+// added trait, impl and bound; selfhost-check-imports adds module, import and
+// builtin, in dumpModule's switch or after it.
 import * as Str from "std/string"
-import { Decl, File, FuncDecl, Param } from "narrac/ast"
+import { Decl, File, FuncDecl, Param, ImplDecl } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Type, Field, Variant } from "narrac/types"
-import { Checker, typeString, typeModule, containsTypeParam } from "narrac/check"
+import { Checker, typeString, typeModule, containsTypeParam, stdTrait } from "narrac/check"
+import { typeImplements } from "narrac/traits"
 import * as Array from "std/array"
 import * as Range from "std/range"
 
 // dump returns the dump of a checker that ran declarePackage without errors.
-export function dump(c: Checker): string uses alloc {
+export function dump(mutable c: Checker): string uses alloc {
   let sb = Str.builder()
   for (const s of Range.between(0, Array.length(c.scopes))) {
     dumpModule(mutable sb, c, s)
@@ -46,6 +47,9 @@ export function dump(c: Checker): string uses alloc {
   for (const t of Array.values(c.order)) {
     Str.append(mutable sb, `order module=${quoteDump(typeModule(c, t))} ${typeString(c, t)}\n`)
   }
+  for (const t of Array.values(c.order)) {
+    dumpHolds(mutable sb, mutable c, t)
+  }
   return Str.build(sb)
 }
 
@@ -54,8 +58,20 @@ function dumpModule(mutable sb: StringBuilder, c: Checker, s: int) uses alloc {
   const mod = ` module=${quoteDump(scope.path)} `
   for (const d of Array.values(scope.decls)) {
     match (d) {
-      Struct(sd) => dumpNamed(mutable sb, c, s, sd.name)
-      Enum(ed) => dumpNamed(mutable sb, c, s, ed.name)
+      Struct(sd) => {
+        dumpNamed(mutable sb, c, s, sd.name)
+        dumpListed(mutable sb, c, mod, scope.path, sd.name)
+      }
+      Enum(ed) => {
+        dumpNamed(mutable sb, c, s, ed.name)
+        dumpListed(mutable sb, c, mod, scope.path, ed.name)
+      }
+      Trait(td) => {
+        if (scope.traits[td.name] is Some(ti)) {
+          dumpTrait(mutable sb, c, mod, ti)
+        }
+      }
+      Impl(id) => dumpImpl(mutable sb, c, mod, s, id)
       Distinct(dd) => dumpNamed(mutable sb, c, s, dd.name)
       Func(fd) => dumpFunc(mutable sb, c, s, mod, fd)
       Const(cd) => {
@@ -100,6 +116,88 @@ function dumpFunc(mutable sb: StringBuilder, c: Checker, s: int, mod: string, fd
     result = typeString(c, c.funcs[k].result)
   }
   Str.append(mutable sb, `  result ${result}\n`)
+  if (c.scopes[s].funcs[fd.name] is Some(k)) {
+    for (const i of Range.between(0, Array.length(c.funcs[k].typeParams))) {
+      if (c.bounds[c.funcs[k].typeParams[i]] is Some(bs)) {
+        for (const tr of Array.values(bs)) {
+          Str.append(mutable sb, `  bound ${fd.typeParams[i]} ${c.traits[tr].name}\n`)
+        }
+      }
+    }
+  }
+}
+
+// dumpListed prints the `implements` and `derives` lists of a struct or enum.
+function dumpListed(mutable sb: StringBuilder, c: Checker, mod: string, path: string, name: string) uses alloc {
+  if (c.typeTraitIndex[`${path}|${name}`] is Some(ix)) {
+    for (const te of Array.values(c.typeTraits[ix].implExprs)) {
+      Str.append(mutable sb, `impl${mod}listed ${te.name} ${name}\n`)
+    }
+    for (const te of Array.values(c.typeTraits[ix].derivExprs)) {
+      Str.append(mutable sb, `impl${mod}derived ${te.name} ${name}\n`)
+    }
+  }
+}
+
+function dumpTrait(mutable sb: StringBuilder, c: Checker, mod: string, ti: int) uses alloc {
+  const tr = c.traits[ti]
+  let std = ""
+  if (tr.std) {
+    std = "std "
+  }
+  Str.append(mutable sb, `trait${mod}${std}${tr.name}\n`)
+  for (const tf of Array.values(tr.funcs)) {
+    dumpSignature(mutable sb, c, tf.name, tf.decl, tf.result)
+  }
+}
+
+// dumpImpl prints an `implement` block, found in Checker.impls by scope and
+// position.
+function dumpImpl(mutable sb: StringBuilder, c: Checker, mod: string, s: int, d: ImplDecl) uses alloc {
+  for (const b of Array.values(c.impls)) {
+    if (b.scope == s && b.decl.pos == d.pos) {
+      Str.append(mutable sb, `impl${mod}block ${c.traits[b.traitIdx].name} ${implTypeName(c, b.t)}\n`)
+      for (const f of Array.values(b.funcs)) {
+        dumpSignature(mutable sb, c, f.name, f.decl, f.result)
+      }
+    }
+  }
+}
+
+function implTypeName(c: Checker, t: Type): string {
+  return match (t) {
+    TStruct(i) => c.structs[i].name
+    TEnum(i) => c.enums[i].name
+    _ => ""
+  }
+}
+
+function dumpSignature(mutable sb: StringBuilder, c: Checker, name: string, fd: FuncDecl, result: Type) uses alloc {
+  Str.append(mutable sb, `  function ${name}\n`)
+  for (const p of Array.values(fd.params)) {
+    let flags = ""
+    if (p.isMutable) {
+      flags = "mutable "
+    }
+    if (p.escaping) {
+      flags = `${flags}escaping `
+    }
+    Str.append(mutable sb, `    param ${p.name} ${flags}${typeString(c, c.paramTypes[p.id])}\n`)
+  }
+  Str.append(mutable sb, `    result ${typeString(c, result)}\n`)
+}
+
+// dumpHolds prints typeImplements(t, trait) for the four standard traits.
+function dumpHolds(mutable sb: StringBuilder, mutable c: Checker, t: Type) uses alloc {
+  const names = ["Equatable", "Hashable", "Ordered", "Show"]
+  for (const n of Array.values(names)) {
+    const tr = stdTrait(c, n)
+    let holds = "false"
+    if (typeImplements(mutable c, t, tr)) {
+      holds = "true"
+    }
+    Str.append(mutable sb, `impl module=${quoteDump(typeModule(c, t))} holds=${holds} ${n} ${typeString(c, t)}\n`)
+  }
 }
 
 function dumpType(mutable sb: StringBuilder, c: Checker, t: Type) uses alloc {

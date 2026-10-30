@@ -17,6 +17,7 @@ gate: true
 added: 2026-10-30
 owns:
   - compiler/internal/narra/std_test.go
+  - compiler/internal/narra/std_testing.go
   - compiler/internal/narra/runtime_test.h
   - compiler/testdata/std_test*.nra
   - compiler/testdata/std_test*.out

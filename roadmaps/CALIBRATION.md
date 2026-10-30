@@ -27,3 +27,4 @@ Notes:
 | selfhost | top-level-const | M | M | 2 | 607k tokens, the most of the wave. Review found a constant/type name clash undetected. Lazy getters replaced static data. |
 | selfhost | selfhost-ast | M | M | 2 | 446k tokens. Round 1 asked for escape goldens and position rules in the format comment. Found a Go parser bug (`mutable` after `uses` in parameters), split into fix PR #21. |
 | selfhost | selfhost-front | L | L | 1 | 292k tokens. 1501 Narra lines for about 1180 Go (1.27x), under the spike's 1800 because constants and std-convert removed workarounds. Review had nits only. |
+| selfhost | selfhost-modules | M | M | 2 | 512k tokens. 745 Narra lines for 569 Go (1.3x). Round 1: no test of the id chain across files; added `narrac pkg --ids`. Reviewer ran about 60 handwritten packages against both loaders. |

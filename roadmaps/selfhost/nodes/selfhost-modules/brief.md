@@ -1,7 +1,8 @@
 ---
 id: selfhost-modules
 title: Self-hosted package loading
-status: active
+status: done
+spent: 512000
 priority: must
 type: feature
 outline: false
@@ -57,11 +58,11 @@ Port `compiler/internal/narra/modules.go` and `modules_toml.go` (569 Go lines) t
 
 ## Acceptance
 
-- [ ] `narra pkg <path>` prints the dump, its format is defined in the doc comment of `pkgdump.go`, and `TestPkgDump` compares goldens in `compiler/testdata/pkgdump/`.
-- [ ] `TestSelfhostModules` passes: `narrac pkg` equals `narra pkg` on every input listed above.
-- [ ] `TestSelfhostLexer` and `TestSelfhostParser` still pass.
-- [ ] The outcome describes the Narra `Package` and `SourceModule` types, the id sequence across files, and the load order.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `narra pkg <path>` prints the dump, its format is defined in the doc comment of `pkgdump.go`, and `TestPkgDump` compares goldens in `compiler/testdata/pkgdump/`.
+- [x] `TestSelfhostModules` passes: `narrac pkg` equals `narra pkg` on every input listed above.
+- [x] `TestSelfhostLexer` and `TestSelfhostParser` still pass.
+- [x] The outcome describes the Narra `Package` and `SourceModule` types, the id sequence across files, and the load order.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 

@@ -1,7 +1,8 @@
 ---
 id: maps
 title: Map with insertion order
-status: active
+status: done
+spent: 468022
 priority: must
 type: feature
 outline: false
@@ -71,10 +72,12 @@ Keys need `Hashable` and `Equatable` from `contracts/trait-model.md`. Until trai
 
 ## Acceptance
 
-- [ ] Sample program counts words with a `Map<string, int>` and prints them in insertion order.
-- [ ] Error test: a map with a float key.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] Sample program counts words with a `Map<string, int>` and prints them in insertion order.
+- [x] Error test: a map with a float key.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: one new container following the array's pattern.
+
+PR: [#13](https://github.com/lxsmnsyc/narra/pull/13)

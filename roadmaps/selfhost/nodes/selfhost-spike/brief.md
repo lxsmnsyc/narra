@@ -1,7 +1,8 @@
 ---
 id: selfhost-spike
 title: Self-hosting gap check
-status: active
+status: done
+spent: 449494
 priority: must
 type: feature
 outline: false
@@ -67,11 +68,13 @@ Port the bootstrap lexer (`compiler/internal/narra/lexer.go`, about 370 lines) t
 
 ## Acceptance
 
-- [ ] `selfhost/` builds with `narra build`, and its lexer output matches `narra lex` on every `.nra` file under `compiler/testdata/` (`TestSelfhostLexer`).
-- [ ] `outcome.md` holds the gap list: each missing feature with the compiler part that needs it, a workaround if one exists, and a size guess. Group by blocker (port cannot proceed), annoyance (workaround costs code or speed) and nice-to-have.
-- [ ] `outcome.md` holds a port estimate per remaining node (selfhost-front, selfhost-check, selfhost-emit, selfhost-bootstrap) in source lines and size, and proposes new nodes for the blockers.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `selfhost/` builds with `narra build`, and its lexer output matches `narra lex` on every `.nra` file under `compiler/testdata/` (`TestSelfhostLexer`).
+- [x] `outcome.md` holds the gap list: each missing feature with the compiler part that needs it, a workaround if one exists, and a size guess. Group by blocker (port cannot proceed), annoyance (workaround costs code or speed) and nice-to-have.
+- [x] `outcome.md` holds a port estimate per remaining node (selfhost-front, selfhost-check, selfhost-emit, selfhost-bootstrap) in source lines and size, and proposes new nodes for the blockers.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
 M: one small module ported line by line, a test harness and a written report. The gap list is the deliverable that matters.
+
+PR: [#16](https://github.com/lxsmnsyc/narra/pull/16). Gate passed 2026-10-30; user decisions are in GOAL.md.

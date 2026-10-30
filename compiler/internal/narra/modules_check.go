@@ -31,7 +31,7 @@ func (c *Checker) newScope(path, file string, src *SourceModule) *modScope {
 		path:     path,
 		file:     file,
 		src:      src,
-		types:    map[string]Type{"int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr},
+		types:    map[string]Type{"int": TInt, "i64": TInt, "f64": TF64, "bool": TBool, "char": TChar, "string": TStr, "StringBuilder": TStringBuilder},
 		generics: map[string]*genericType{},
 		funcs:    map[string]*FuncDecl{},
 		modules:  map[string]string{},

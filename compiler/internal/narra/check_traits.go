@@ -549,7 +549,7 @@ func (c *Checker) implements(t Type, tr *Trait) bool {
 		}
 		return false
 	case *PrimType:
-		if !tr.Std || t == TVoid {
+		if !tr.Std || t == TVoid || t == TStringBuilder {
 			return false
 		}
 		return tr.Name != "Hashable" || t != TF64

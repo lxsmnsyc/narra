@@ -50,6 +50,7 @@ go test ./...
 
 - Packages with several modules and `narra.toml`, or one source file. `import * as X from` and `import { a } from` for `std/int`, `std/float`, `std/string` and the modules of the same package. `export` on functions, structs and enums; other names are private. Import cycles are errors that list the cycle.
 - `std/fs` (`readText`, `writeText`, `exists`, `listDir`), `std/process` (`run`) and `std/env` (`get`, `args`). Fallible functions return `Result<T, string>`; the string is `<subject>: <reason>`. `writeText` returns the byte count, `listDir` the sorted names (Err for the whole listing if any entry name is not valid UTF-8), `Process.run(command, args)` returns `#[exit code, stdout, stderr]` (stdin closed; killed by signal gives 128 + signal), `Env.get` returns `Option<string>`, and `Env.args()` equals the entry function's `args`. Effects are declared but not checked yet.
+- `std/string` also has `slice`, `sliceFrom`, `byteAt`, `charAt`, `nextChar`, `charCount`, `indexOf` (returns `Option<int>`), `startsWith`, `trim` (ASCII whitespace), `split` (panics on an empty separator), `chars` (`Array<char>`) and a `StringBuilder` (`Str.builder()`, `Str.append(mutable sb, s)`, `Str.appendChar(mutable sb, c)`, `Str.build(sb)`). Slicing, `charAt` and `nextChar` panic on a position out of range or inside a character.
 - Names from a namespace import: calls `X.f(...)` and types `X.T`. Named imports bring functions, and structs and enums with their constructors.
 - Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `break`, `continue`.
 - `int`, `f64`, `bool`, `char` and `string`.
@@ -90,7 +91,7 @@ go test ./...
 ## Differences from the spec
 
 - Enums are stored inline as tagged unions, so an enum cannot contain itself.
-- `Str.length` returns `int` instead of `ByteIndex`.
+- `Str.length` returns `int` instead of `ByteIndex`, and so do all string positions (`Str.indexOf`, `Str.slice`, `Str.nextChar` and the rest). Slices are copies, not views of the original buffer.
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.
 - Generic functions and types are compiled once per set of type arguments in every build. The spec's layout tables for debug builds are not implemented.
 - Generic function bodies are checked once with their type parameters left open, then again for each instance.

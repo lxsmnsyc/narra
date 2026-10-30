@@ -25,6 +25,8 @@ func (t *PrimType) CName() string {
 		return "uint32_t"
 	case "string":
 		return "lstr*"
+	case "StringBuilder":
+		return "narra_sb*"
 	case "void":
 		return "void"
 	}
@@ -38,6 +40,9 @@ var (
 	TChar = &PrimType{"char"}
 	TStr  = &PrimType{"string"}
 	TVoid = &PrimType{"void"}
+	// TStringBuilder is the type of std/string's builder: a reference
+	// counted buffer. It implements no standard trait.
+	TStringBuilder = &PrimType{"StringBuilder"}
 )
 
 type Field struct {
@@ -231,7 +236,7 @@ func isNumeric(t Type) bool { return t == TInt || t == TF64 }
 func needsRC(t Type) bool {
 	switch t := t.(type) {
 	case *PrimType:
-		return t == TStr
+		return t == TStr || t == TStringBuilder
 	case *ArrayType, *FuncType, *BoxType:
 		return true
 	case *StructType:

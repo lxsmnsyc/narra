@@ -15,6 +15,14 @@ const (
 
 // declareConsts registers the constants of f in the current module.
 func (c *Checker) declareConsts(f *File) {
+	// An imported constant was added before this module's types existed.
+	for _, imp := range f.Imports {
+		for _, n := range imp.Names {
+			if d := c.mod.consts[n]; d != nil && d.Module != c.mod.path && c.typeNamed(n) {
+				c.errorf(imp.Pos, "constant %q is declared twice", n)
+			}
+		}
+	}
 	for _, d := range f.Decls {
 		cd, ok := d.(*ConstDecl)
 		if !ok {
@@ -22,7 +30,7 @@ func (c *Checker) declareConsts(f *File) {
 		}
 		cd.Module = c.mod.path
 		_, dupFunc := c.funcs[cd.Name]
-		if _, dup := c.mod.consts[cd.Name]; dup || dupFunc {
+		if _, dup := c.mod.consts[cd.Name]; dup || dupFunc || c.typeNamed(cd.Name) {
 			c.errorf(cd.Pos, "constant %q is declared twice", cd.Name)
 			continue
 		}
@@ -32,7 +40,7 @@ func (c *Checker) declareConsts(f *File) {
 
 // importConst makes an exported constant of another module visible.
 func (c *Checker) importConst(pos Pos, d *ConstDecl) {
-	if _, dup := c.mod.consts[d.Name]; dup {
+	if _, dup := c.mod.consts[d.Name]; dup || c.typeNamed(d.Name) {
 		c.errorf(pos, "constant %q is declared twice", d.Name)
 		return
 	}
@@ -115,23 +123,21 @@ func (c *Checker) moduleConstValue(e *FieldExpr) Type {
 }
 
 // constWrite reports a write through a constant and returns true, or
-// returns false when the root of e is not a constant.
+// returns false when the root of e is not a constant. It reads the syntax
+// only, so it can run before e is checked.
 func (c *Checker) constWrite(pos Pos, e Expr) bool {
 	for {
 		switch x := e.(type) {
 		case *Ident:
-			if x.Const == nil {
+			if c.lookup(x.Name) != nil || c.mod.consts[x.Name] == nil {
 				return false
 			}
 			c.errorf(pos, "constant %q cannot be changed; copy it into a `let` variable first", x.Name)
 			return true
 		case *FieldExpr:
-			if x.Const != nil {
+			if id, ok := x.Target.(*Ident); ok && c.lookup(id.Name) == nil && c.moduleHasConst(id.Name, x.Name) {
 				c.errorf(pos, "constant %q cannot be changed; copy it into a `let` variable first", x.Name)
 				return true
-			}
-			if x.Builtin != "" || x.Ctor != nil || x.Narrow != nil {
-				return false
 			}
 			e = x.Target
 		case *IndexExpr:
@@ -140,6 +146,29 @@ func (c *Checker) constWrite(pos Pos, e Expr) bool {
 			return false
 		}
 	}
+}
+
+// moduleHasConst reports whether alias names a package module that declares
+// the constant name.
+func (c *Checker) moduleHasConst(alias, name string) bool {
+	s := c.mods[c.modules[alias]]
+	if s == nil || s.src == nil {
+		return false
+	}
+	for _, f := range s.src.Files {
+		for _, d := range f.Decls {
+			if cd, ok := d.(*ConstDecl); ok && cd.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// typeNamed reports whether name is a type or trait of the current module.
+func (c *Checker) typeNamed(name string) bool {
+	_, isType := c.types[name]
+	return isType || c.generics[name] != nil || c.lookupTrait(name) != nil
 }
 
 // checkConstValue reports the first part of x that is not allowed in the

@@ -438,11 +438,12 @@ func (c *Checker) builtinCall(e *CallExpr, b *Builtin, want Type) Type {
 }
 
 func (c *Checker) checkMutableArg(v Expr) {
+	if c.constWrite(v.position(), v) {
+		return
+	}
 	root := c.lvalueRoot(v)
 	if root == nil {
-		if !c.constWrite(v.position(), v) {
-			c.errorf(v.position(), "a mutable argument must be a variable, a field or an element")
-		}
+		c.errorf(v.position(), "a mutable argument must be a variable, a field or an element")
 		return
 	}
 	if !root.Mutable {

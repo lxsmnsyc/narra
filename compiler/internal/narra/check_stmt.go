@@ -150,14 +150,16 @@ func (c *Checker) stmt(s Stmt) {
 		}
 		s.Local = c.declare(s.Pos, s.Name, t, s.Mutable)
 	case *AssignStmt:
+		if c.constWrite(s.Pos, s.Target) {
+			c.expr(s.Value, nil)
+			return
+		}
 		c.assigning = s.Target
 		t := c.expr(s.Target, nil)
 		c.assigning = nil
 		root := c.lvalueRoot(s.Target)
 		if root == nil {
-			if !c.constWrite(s.Pos, s.Target) {
-				c.errorf(s.Pos, "only variables, fields and array elements can be assigned")
-			}
+			c.errorf(s.Pos, "only variables, fields and array elements can be assigned")
 		} else if !root.Mutable {
 			c.errorf(s.Pos, "%q is constant; declare it with `let` to change it", root.Name)
 		}

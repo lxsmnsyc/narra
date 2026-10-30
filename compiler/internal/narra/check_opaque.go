@@ -66,7 +66,7 @@ func (p *Parser) opaqueOrDistinct(exported bool) Decl {
 		d := &DistinctDecl{Pos: pos, Exported: exported, Opaque: opaque, Name: p.ident().Text}
 		p.expect("=")
 		d.Base = p.typeExpr()
-		p.endStatement()
+		p.endTypeDecl()
 		return d
 	case opaque:
 		p.fail(p.tok().Pos, "expected `struct` or `distinct type` after `opaque`, found %s", describe(p.tok()))

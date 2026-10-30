@@ -90,6 +90,20 @@ func (p *Parser) endStatement() {
 	}
 }
 
+// endTypeDecl ends a declaration whose last token is a type. The lexer emits
+// no line break after a `>`, since `>` also continues an expression, so a
+// declaration ending in a generic type is ended by the next token on a later
+// line.
+func (p *Parser) endTypeDecl() {
+	if p.i > 0 {
+		prev, cur := p.toks[p.i-1], p.tok()
+		if prev.Kind == TokPunct && prev.Text == ">" && cur.Pos.Line > prev.Pos.Line {
+			return
+		}
+	}
+	p.endStatement()
+}
+
 func describe(t Token) string {
 	switch t.Kind {
 	case TokEOF:

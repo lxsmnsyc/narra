@@ -7,3 +7,4 @@
 - Narra rejects shadowing in pattern bindings (`block is Some(block)`); fixed in idcheck.
 - Literal check: all string/char/template text identical to main.
 - Fast check passed (internal/narra 201 s).
+- Review round 1: renamed the remaining abbreviated locals and parameters (params, decls, stmts, vals, args, impls, funcs, col, attrs, decl, func). Struct literal keys keep the AST field names. Literal check and parity counts unchanged.

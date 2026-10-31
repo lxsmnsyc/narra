@@ -51,7 +51,7 @@ struct TypeParams {
 }
 
 struct TraitLists {
-  impls: Array<TypeExpr>
+  implementations: Array<TypeExpr>
   derived: Array<TypeExpr>
 }
 
@@ -96,17 +96,17 @@ export function diagText(diagnostic: Diag): string uses alloc {
 function splitLexError(text: string): Diag {
   const parts = Str.split(text, ": ")
   if (Arrays.length(parts) >= 2) {
-    const lineAndCol = Str.split(parts[0], ":")
-    if (Arrays.length(lineAndCol) == 2) {
-      const line = Int.parse(lineAndCol[0], 10)
-      const col = Int.parse(lineAndCol[1], 10)
+    const lineAndColumn = Str.split(parts[0], ":")
+    if (Arrays.length(lineAndColumn) == 2) {
+      const line = Int.parse(lineAndColumn[0], 10)
+      const column = Int.parse(lineAndColumn[1], 10)
       if (line is Ok(lineNumber)) {
-        if (col is Ok(colNumber)) {
+        if (column is Ok(columnNumber)) {
           let rest: Array<string> = []
           for (const index of Ranges.between(1, Arrays.length(parts))) {
             Arrays.push(mutable rest, parts[index])
           }
-          return Diag { pos: Pos { line: lineNumber, col: colNumber }, message: Str.join(rest, ": ") }
+          return Diag { pos: Pos { line: lineNumber, col: columnNumber }, message: Str.join(rest, ": ") }
         }
       }
     }
@@ -319,17 +319,17 @@ function createDummyPattern(): Pattern {
 
 function parseFile(mutable parser: Parser): File {
   let imports: Array<ImportDecl> = []
-  let decls: Array<Decl> = []
+  let declarations: Array<Decl> = []
   skipNewlines(mutable parser)
   while (isOk(parser) && isAt(parser, "import")) {
     Arrays.push(mutable imports, parseImport(mutable parser))
     skipNewlines(mutable parser)
   }
   while (isOk(parser) && currentToken(parser).kind != TokenKind.TokEof) {
-    Arrays.push(mutable decls, parseDecl(mutable parser))
+    Arrays.push(mutable declarations, parseDecl(mutable parser))
     skipNewlines(mutable parser)
   }
-  return File { imports: imports, decls: decls }
+  return File { imports: imports, decls: declarations }
 }
 
 function parseImport(mutable parser: Parser): ImportDecl {
@@ -456,15 +456,15 @@ function parseType(mutable parser: Parser): TypeExpr {
   if (isAt(parser, "#[")) {
     // A tuple type, written like the literal: #[int, string].
     const pos = getPos(advance(mutable parser))
-    let args: Array<TypeExpr> = []
+    let arguments: Array<TypeExpr> = []
     while (isOk(parser) && !isAt(parser, "]")) {
-      Arrays.push(mutable args, parseType(mutable parser))
+      Arrays.push(mutable arguments, parseType(mutable parser))
       if (!accept(mutable parser, ",")) {
         break
       }
     }
     expect(mutable parser, "]")
-    return TypeExpr { pos: pos, name: "", args: args, isFunc: false, result: None, effects: [], isTuple: true }
+    return TypeExpr { pos: pos, name: "", args: arguments, isFunc: false, result: None, effects: [], isTuple: true }
   }
   const token = expectIdent(mutable parser)
   if (!isOk(parser)) {
@@ -474,11 +474,11 @@ function parseType(mutable parser: Parser): TypeExpr {
   if (accept(mutable parser, ".")) { // a type from a namespace import, such as Text.Token
     name = `${name}.${expectIdent(mutable parser).text}`
   }
-  let args: Array<TypeExpr> = []
+  let arguments: Array<TypeExpr> = []
   const named = TypeExpr { pos: getPos(token), name: name, args: [], isFunc: false, result: None, effects: [], isTuple: false }
   if (accept(mutable parser, "<")) {
     while (isOk(parser)) {
-      Arrays.push(mutable args, parseType(mutable parser))
+      Arrays.push(mutable arguments, parseType(mutable parser))
       if (!accept(mutable parser, ",")) {
         break
       }
@@ -487,7 +487,7 @@ function parseType(mutable parser: Parser): TypeExpr {
     if (isAt(parser, ">>")) {
       const shift = currentToken(parser)
       parser.tokens[parser.index] = Token { ...shift, text: ">", col: shift.col + 1 }
-      return TypeExpr { ...named, args: args }
+      return TypeExpr { ...named, args: arguments }
     }
     expect(mutable parser, ">")
   }
@@ -495,7 +495,7 @@ function parseType(mutable parser: Parser): TypeExpr {
   if (isAt(parser, "[") && after.kind == TokenKind.TokPunct && after.text == "]") {
     failHere(mutable parser, "there is no `T[]` array type; write `Array<T>`")
   }
-  return TypeExpr { ...named, args: args }
+  return TypeExpr { ...named, args: arguments }
 }
 
 // parseTypeParams parses `<A, B: Show & Ordered, effect E>`. Effect
@@ -583,7 +583,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   const name = expectIdent(mutable parser).text
   const typeParameters = parseTypeParams(mutable parser)
   expect(mutable parser, "(")
-  let params: Array<Param> = []
+  let parameters: Array<Param> = []
   while (isOk(parser) && !isAt(parser, ")")) {
     const paramPos = getPos(currentToken(parser))
     const isMutable = accept(mutable parser, "mutable")
@@ -594,7 +594,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     const paramName = expectIdent(mutable parser).text
     expect(mutable parser, ":")
     const paramType = parseType(mutable parser)
-    Arrays.push(mutable params, Param { id: newId(mutable parser), pos: paramPos, name: paramName, isMutable: isMutable, type: Some(paramType), escaping: escaping })
+    Arrays.push(mutable parameters, Param { id: newId(mutable parser), pos: paramPos, name: paramName, isMutable: isMutable, type: Some(paramType), escaping: escaping })
     if (!accept(mutable parser, ",")) {
       break
     }
@@ -611,7 +611,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     typeParams: typeParameters.names,
     bounds: typeParameters.bounds,
     exported: exported,
-    params: params,
+    params: parameters,
     result: result,
     effects: effects,
     effectParams: typeParameters.effects,
@@ -641,18 +641,18 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
 function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   const pos = getPos(expect(mutable parser, "struct"))
   const name = expectIdent(mutable parser).text
-  const typeParams = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser)
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, "{")
   const fields = parseFieldList(mutable parser)
   expect(mutable parser, "}")
-  return StructDecl { pos: pos, name: name, typeParams: typeParams, exported: exported, impls: traitLists.impls, derived: traitLists.derived, fields: fields, opaque: false }
+  return StructDecl { pos: pos, name: name, typeParams: typeParameters, exported: exported, impls: traitLists.implementations, derived: traitLists.derived, fields: fields, opaque: false }
 }
 
 function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   const pos = getPos(expect(mutable parser, "enum"))
   const name = expectIdent(mutable parser).text
-  const typeParams = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser)
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
@@ -679,20 +679,20 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
     skipNewlines(mutable parser)
   }
   expect(mutable parser, "}")
-  return EnumDecl { pos: pos, name: name, typeParams: typeParams, exported: exported, impls: traitLists.impls, derived: traitLists.derived, variants: variants }
+  return EnumDecl { pos: pos, name: name, typeParams: typeParameters, exported: exported, impls: traitLists.implementations, derived: traitLists.derived, variants: variants }
 }
 
 // parseTraitLists parses `implements A, B` and `derives C, D` after a type name.
 function parseTraitLists(mutable parser: Parser): TraitLists {
-  let impls: Array<TypeExpr> = []
+  let implementations: Array<TypeExpr> = []
   let derived: Array<TypeExpr> = []
   if (accept(mutable parser, "implements")) {
-    impls = parseTraitNames(mutable parser)
+    implementations = parseTraitNames(mutable parser)
   }
   if (accept(mutable parser, "derives")) {
     derived = parseTraitNames(mutable parser)
   }
-  return TraitLists { impls: impls, derived: derived }
+  return TraitLists { implementations: implementations, derived: derived }
 }
 
 function parseTraitNames(mutable parser: Parser): Array<TypeExpr> {
@@ -715,7 +715,7 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
   }
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
-  let funcs: Array<FuncDecl> = []
+  let functions: Array<FuncDecl> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     if (!isAt(parser, "function")) {
       failFound(mutable parser, `a trait has functions only`)
@@ -725,11 +725,11 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
     if (isAt(parser, "{")) {
       failHere(mutable parser, "trait functions have no default implementation; remove the body")
     }
-    Arrays.push(mutable funcs, header)
+    Arrays.push(mutable functions, header)
     endTypeDecl(mutable parser)
   }
   expect(mutable parser, "}")
-  return TraitDecl { pos: pos, name: name, exported: exported, funcs: funcs }
+  return TraitDecl { pos: pos, name: name, exported: exported, funcs: functions }
 }
 
 function parseImplDecl(mutable parser: Parser): ImplDecl {
@@ -740,7 +740,7 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
   const declaredType = parseType(mutable parser)
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
-  let funcs: Array<FuncDecl> = []
+  let functions: Array<FuncDecl> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     if (isAt(parser, "export")) {
       failHere(mutable parser, "functions in an implement block cannot be exported")
@@ -750,25 +750,25 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
       failFound(mutable parser, `an implement block has functions only`)
       break
     }
-    Arrays.push(mutable funcs, parseFuncDecl(mutable parser, false))
+    Arrays.push(mutable functions, parseFuncDecl(mutable parser, false))
     skipNewlines(mutable parser)
   }
   expect(mutable parser, "}")
-  return ImplDecl { pos: pos, traitType: traitType, type: declaredType, funcs: funcs }
+  return ImplDecl { pos: pos, traitType: traitType, type: declaredType, funcs: functions }
 }
 
 // parseFuncType parses a function type such as `(item: T) => U`. Parameter
 // names are optional and ignored.
 function parseFuncType(mutable parser: Parser): TypeExpr {
   const pos = getPos(expect(mutable parser, "("))
-  let args: Array<TypeExpr> = []
+  let arguments: Array<TypeExpr> = []
   while (isOk(parser) && !isAt(parser, ")")) {
     const colon = peekToken(parser, 1)
     if (currentToken(parser).kind == TokenKind.TokIdent && colon.kind == TokenKind.TokPunct && colon.text == ":") {
       advance(mutable parser)
       advance(mutable parser)
     }
-    Arrays.push(mutable args, parseType(mutable parser))
+    Arrays.push(mutable arguments, parseType(mutable parser))
     if (!accept(mutable parser, ",")) {
       break
     }
@@ -777,7 +777,7 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   expect(mutable parser, "=>")
   const result = parseType(mutable parser)
   const effects = parseUsesList(mutable parser)
-  return TypeExpr { pos: pos, name: "", args: args, isFunc: true, result: Some(Boxes.new(result)), effects: effects, isTuple: false }
+  return TypeExpr { pos: pos, name: "", args: arguments, isFunc: true, result: Some(Boxes.new(result)), effects: effects, isTuple: false }
 }
 
 // parseUsesList reads an optional `uses a, b` list of effect names.
@@ -860,7 +860,7 @@ function isArrowAhead(parser: Parser): bool {
 // expression or a block. Parameter and result types may be left out.
 function parseArrow(mutable parser: Parser): Expr {
   const pos = getPos(expect(mutable parser, "("))
-  let params: Array<Param> = []
+  let parameters: Array<Param> = []
   while (isOk(parser) && !isAt(parser, ")")) {
     if (isAt(parser, "mutable")) {
       failHere(mutable parser, "arrow function parameters cannot be mutable")
@@ -872,7 +872,7 @@ function parseArrow(mutable parser: Parser): Expr {
     if (accept(mutable parser, ":")) {
       paramType = Some(parseType(mutable parser))
     }
-    Arrays.push(mutable params, Param { id: newId(mutable parser), pos: paramPos, name: paramName, isMutable: false, type: paramType, escaping: false })
+    Arrays.push(mutable parameters, Param { id: newId(mutable parser), pos: paramPos, name: paramName, isMutable: false, type: paramType, escaping: false })
     if (!accept(mutable parser, ",")) {
       break
     }
@@ -885,25 +885,25 @@ function parseArrow(mutable parser: Parser): Expr {
   expect(mutable parser, "=>")
   if (isAt(parser, "{")) {
     const block = parseBlock(mutable parser)
-    return Expr.ArrowExpr(newId(mutable parser), pos, params, result, None, Some(block))
+    return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, None, Some(block))
   }
   const body = parseExpr(mutable parser)
-  return Expr.ArrowExpr(newId(mutable parser), pos, params, result, Some(body), None)
+  return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, Some(body), None)
 }
 
 function parseBlock(mutable parser: Parser): Block {
   const pos = getPos(expect(mutable parser, "{"))
   skipNewlines(mutable parser)
-  let stmts: Array<Stmt> = []
+  let statements: Array<Stmt> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     if (currentToken(parser).kind == TokenKind.TokEof) {
       failHere(mutable parser, "unexpected end of file inside a block")
       break
     }
-    Arrays.push(mutable stmts, parseStmt(mutable parser))
+    Arrays.push(mutable statements, parseStmt(mutable parser))
   }
   expect(mutable parser, "}")
-  return Block { pos: pos, stmts: stmts }
+  return Block { pos: pos, stmts: statements }
 }
 
 function parseStmt(mutable parser: Parser): Stmt {
@@ -1086,17 +1086,17 @@ function parsePostfix(mutable parser: Parser, first: Expr): Expr {
       expression = Expr.FieldExpr(newId(mutable parser), getPos(name), expression, name.text)
     } else if (isAt(parser, "(")) {
       advance(mutable parser)
-      let args: Array<Arg> = []
+      let arguments: Array<Arg> = []
       while (isOk(parser) && !isAt(parser, ")")) {
         const isMutable = accept(mutable parser, "mutable")
         const value = parseExpr(mutable parser)
-        Arrays.push(mutable args, Arg { isMutable: isMutable, value: value })
+        Arrays.push(mutable arguments, Arg { isMutable: isMutable, value: value })
         if (!accept(mutable parser, ",")) {
           break
         }
       }
       expect(mutable parser, ")")
-      expression = Expr.CallExpr(newId(mutable parser), getPos(token), expression, args)
+      expression = Expr.CallExpr(newId(mutable parser), getPos(token), expression, arguments)
     } else if (isAt(parser, "[")) {
       advance(mutable parser)
       const index = parseExpr(mutable parser)
@@ -1183,15 +1183,15 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
 // is split by parseType, as in a type.
 function parseLiteralTypeArgs(mutable parser: Parser): Array<TypeExpr> {
   expect(mutable parser, "<")
-  let args: Array<TypeExpr> = []
+  let arguments: Array<TypeExpr> = []
   while (isOk(parser)) {
-    Arrays.push(mutable args, parseType(mutable parser))
+    Arrays.push(mutable arguments, parseType(mutable parser))
     if (!accept(mutable parser, ",")) {
       break
     }
   }
   expect(mutable parser, ">")
-  return args
+  return arguments
 }
 
 function startsUpper(text: string): bool {
@@ -1208,7 +1208,7 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArgs: Array<TypeExpr>
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
   let keys: Array<Expr> = []
-  let vals: Array<Expr> = []
+  let values: Array<Expr> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     let key = createDummyExpr()
     if (accept(mutable parser, "[")) {
@@ -1223,7 +1223,7 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArgs: Array<TypeExpr>
     }
     expect(mutable parser, ":")
     Arrays.push(mutable keys, key)
-    Arrays.push(mutable vals, parseExpr(mutable parser))
+    Arrays.push(mutable values, parseExpr(mutable parser))
     skipNewlines(mutable parser)
     if (!accept(mutable parser, ",")) {
       break
@@ -1232,7 +1232,7 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArgs: Array<TypeExpr>
   }
   skipNewlines(mutable parser)
   expect(mutable parser, "}")
-  return Expr.MapLit(newId(mutable parser), pos, typeArgs, keys, vals)
+  return Expr.MapLit(newId(mutable parser), pos, typeArgs, keys, values)
 }
 
 function isLiteralKey(expression: Expr): bool {
@@ -1526,8 +1526,8 @@ function parsePattern(mutable parser: Parser): Pattern {
   }
   if (isAt(parser, "#[")) {
     advance(mutable parser)
-    const args = parsePatternList(mutable parser, "]")
-    return Pattern.PatTuple(newId(mutable parser), pos, args)
+    const arguments = parsePatternList(mutable parser, "]")
+    return Pattern.PatTuple(newId(mutable parser), pos, arguments)
   }
   if (isAt(parser, "-")) {
     advance(mutable parser)
@@ -1564,8 +1564,8 @@ function parsePattern(mutable parser: Parser): Pattern {
     name = expectIdent(mutable parser).text
   }
   if (accept(mutable parser, "(")) {
-    const args = parsePatternList(mutable parser, ")")
-    return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, args, false)
+    const arguments = parsePatternList(mutable parser, ")")
+    return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, arguments, false)
   }
   if (isConstructor) {
     return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, [], true)

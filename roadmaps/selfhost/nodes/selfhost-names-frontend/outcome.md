@@ -10,6 +10,7 @@ A rename pass over the selfhost front end. Behaviour, dump formats and error mes
 - `idcheck.nra`: id bindings are `nodeId`, the rest are full names. Private walkers: `paramIds`, `fieldIds`, `stmtIds`, `exprsIds`, `armIds`, `patternIds` → `collectParamIds`, `collectFieldIds`, `collectStatementIds`, `collectExpressionListIds`, `collectArmIds`, `collectPatternIds`.
 - `manifest.nra`: full names (`lineNumber`, `binaryName`, `qualifiedKey`, `index`, `code`, `builder`). Private: `fail` → `createError`, `closedArray` → `isClosedArray`, `validPackageName` → `isValidPackageName`.
 - `ast.nra`: unchanged. See Gotchas.
+- Review round 1: the remaining abbreviated locals and parameters are full words. parser: `params` → `parameters`, `decls` → `declarations`, `stmts` → `statements`, `vals` → `values`, `args` → `arguments`, `impls` → `implementations` (also the private `TraitLists.impls` field), `funcs` → `functions`, `col` → `column`, `lineAndCol` → `lineAndColumn`, and `typeParams` → `typeParameters` in the struct and enum parsers. idcheck: `decl` → `declaration`, `params` / `param` → `parameters` / `parameter`, `args` / `arg` → `arguments` / `argument`, `collectParamIds` → `collectParameterIds`. astdump: `attrs` → `attributes`, `decl` → `declaration`, `params` / `param` → `parameters` / `parameter`, `func` → `funcDecl` (`function` is a keyword), `funcs` → `functions`, `args` / `arg` → `arguments` / `argument`, `dumpParams` → `dumpParameters`.
 - `roadmaps/selfhost/CLAUDE.md`: one rule paragraph on readable names.
 
 ### Renamed exported names
@@ -27,7 +28,7 @@ Only parameter names of exported functions changed, and they are not part of the
 
 Names a later rename can change, with the files that would change with them:
 - `funcIds`, `blockIds`, `exprIds` → `collectFuncIds`, `collectBlockIds`, `collectExpressionIds` (check.nra).
-- AST fields `id` and `op` (two letters), and short AST fields such as `pos`, `cond`, `iter`, `vals`, `elems`, `stmts`, `decls`, `funcs`, `params`, `args`, `targs`. Every checker module reads them.
+- AST struct and variant fields `id` and `op` (two letters), and the abbreviated ones: `File.decls`, `Block.stmts`, `FuncDecl.params` / `typeParams`, `StructDecl.typeParams` / `impls`, `EnumDecl.typeParams` / `impls`, `TraitDecl.funcs`, `ImplDecl.funcs`, `TypeExpr.args`, `CallExpr.args`, `MapLit.vals`, `ArrayLit.elems`, `IfStmt.cond`, `WhileStmt.cond`, `ForStmt.iter`, `PatCtor.args`, `PatTuple.args`, `PatLit.lit`. Every checker module reads them, so the parser's struct literal keys keep these names.
 - `Pos.col` and `Token.col` / `endCol`, `LoadError.col` (main, modules, every checker module).
 - `Diag` → `Diagnostic`, `diagText` → `formatDiagnostic`, `kindName` → `getKindName`.
 

@@ -2,6 +2,7 @@ package narra
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -10,6 +11,10 @@ type Parser struct {
 	toks []Token
 	i    int
 }
+
+// templateDot finds `Name.` inside a template string. The parser does not keep
+// positions inside ${...}, so a fix cannot rename a name used there.
+var templateDot = regexp.MustCompile(`([A-Za-z_][A-Za-z_0-9]*)\.`)
 
 func Parse(src string) (*File, error) {
 	toks, err := Lex(src)
@@ -20,6 +25,19 @@ func Parse(src string) (*File, error) {
 	f, err := p.file()
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
+	}
+	f.dotUses = map[string][]Pos{}
+	f.inTemplate = map[string]bool{}
+	for i := 0; i < len(toks); i++ {
+		if toks[i].Kind == TokTemplate {
+			for _, m := range templateDot.FindAllStringSubmatch(toks[i].Text, -1) {
+				f.inTemplate[m[1]] = true
+			}
+		}
+		if i+1 < len(toks) && toks[i].Kind == TokIdent && toks[i+1].Kind == TokPunct && toks[i+1].Text == "." &&
+			(i == 0 || toks[i-1].Kind != TokPunct || toks[i-1].Text != ".") {
+			f.dotUses[toks[i].Text] = append(f.dotUses[toks[i].Text], toks[i].Pos)
+		}
 	}
 	// The header ends at the last leading comment line that a blank line
 	// follows; a comment right above a declaration is its doc comment.
@@ -151,11 +169,17 @@ func (p *Parser) importDecl() *ImportDecl {
 	d := &ImportDecl{Pos: pos}
 	if p.accept("*") {
 		p.expect("as")
+		d.AliasPos = p.tok().Pos
 		d.Alias = p.ident().Text
 	} else if p.accept("{") {
 		p.skipNewlines()
 		for !p.is("}") {
-			d.Names = append(d.Names, p.ident().Text)
+			n := p.ident().Text
+			local := n
+			if p.accept("as") {
+				local = p.ident().Text
+			}
+			d.Names = append(d.Names, ImportName{Name: n, Local: local})
 			p.skipNewlines()
 			if !p.accept(",") {
 				break

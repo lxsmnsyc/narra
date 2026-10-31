@@ -16,8 +16,8 @@ import { Type } from "narrac/types"
 import { moduleList } from "narrac/builtins"
 import { Checker, EntryInfo, errorf, enter, lookupType, lookupGeneric, lookupTrait } from "narrac/check"
 import * as Str from "std/string"
-import * as Array from "std/array"
-import * as Range from "std/range"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 
 // declName is the name a top-level declaration declares, or "" (tests and
 // implement blocks).
@@ -49,7 +49,7 @@ function isExported(d: Decl): bool {
 // declaration of the same name wins, as in Go's Exports map.
 export function exportsOf(decls: Array<Decl>): Map<string, int> uses alloc {
   let out: Map<string, int> = Map {}
-  for (const k of Range.between(0, Array.length(decls))) {
+  for (const k of Ranges.between(0, Arrays.length(decls))) {
     if (isExported(decls[k])) {
       out[declName(decls[k])] = k
     }
@@ -76,8 +76,9 @@ export function declareType(mutable c: Checker, pos: Pos, name: string, t: Type)
 // importModules runs the imports of f in the current module: a package
 // module, or else a std module of the registry.
 export function importModules(mutable c: Checker, f: File) uses alloc {
-  for (const imp of Array.values(f.imports)) {
-    if (importPackageModule(mutable c, imp)) {
+  let aliases: Map<string, bool> = Map {}
+  for (const imp of Arrays.values(f.imports)) {
+    if (importPackageModule(mutable c, imp, mutable aliases)) {
       continue
     }
     if (c.registry.modules[imp.path] is Some(mod)) {
@@ -87,14 +88,12 @@ export function importModules(mutable c: Checker, f: File) uses alloc {
         // The type is visible only where its runtime C is emitted.
         c.scopes[s].types["StringBuilder"] = TStringBuilder
       }
-      if (imp.alias != "") {
-        c.scopes[s].modules[imp.alias] = imp.path
-      }
-      for (const n of Array.values(imp.names)) {
-        if (mod.funcs[n] is Some(k)) {
-          c.scopes[s].imported[n] = k
+      bindAlias(mutable c, imp, mutable aliases)
+      for (const n of Arrays.values(imp.names)) {
+        if (mod.funcs[n.name] is Some(k)) {
+          c.scopes[s].imported[n.local] = k
         } else {
-          errorf(mutable c, imp.pos, `module ${quoteGo(imp.path)} has no export ${quoteGo(n)}`)
+          errorf(mutable c, imp.pos, `module ${quoteGo(imp.path)} has no export ${quoteGo(n.name)}`)
         }
       }
     } else {
@@ -107,12 +106,12 @@ export function importModules(mutable c: Checker, f: File) uses alloc {
 // useModule records a std module the program uses, once, in first-import
 // order (Go's Program.Modules; the emitter writes their runtime C).
 function useModule(mutable c: Checker, path: string) uses alloc {
-  for (const p of Array.values(c.used)) {
+  for (const p of Arrays.values(c.used)) {
     if (p == path) {
       return
     }
   }
-  Array.push(mutable c.used, path)
+  Arrays.push(mutable c.used, path)
 }
 
 // sourceScope finds the scope of a package module by path, or -1.
@@ -125,9 +124,26 @@ export function sourceScope(c: Checker, path: string): int {
   return -1
 }
 
+// bindAlias makes the alias of a namespace import visible. aliases holds the
+// aliases the current file has bound. Another file of the module may bind an
+// alias again for the same path, never for another one.
+function bindAlias(mutable c: Checker, imp: ImportDecl, mutable aliases: Map<string, bool>) uses alloc {
+  if (imp.alias == "") {
+    return
+  }
+  const cur = c.cur
+  if (c.scopes[cur].modules[imp.alias] is Some(prev)) {
+    if (prev != imp.path || aliases[imp.alias] is Some(_)) {
+      errorf(mutable c, imp.pos, `two imports use the alias ${imp.alias}; give one of them another alias`)
+    }
+  }
+  aliases[imp.alias] = true
+  c.scopes[cur].modules[imp.alias] = imp.path
+}
+
 // importPackageModule handles an import of a module of this package. It
 // returns false when the path is not one, so the caller tries std modules.
-function importPackageModule(mutable c: Checker, imp: ImportDecl): bool uses alloc {
+function importPackageModule(mutable c: Checker, imp: ImportDecl, mutable aliases: Map<string, bool>): bool uses alloc {
   const s = sourceScope(c, imp.path)
   if (s < 0) {
     const prefix = `${c.pkgName}/`
@@ -140,13 +156,11 @@ function importPackageModule(mutable c: Checker, imp: ImportDecl): bool uses all
     return false
   }
   const cur = c.cur
-  if (imp.alias != "") {
-    c.scopes[cur].modules[imp.alias] = imp.path
-  }
-  for (const n of Array.values(imp.names)) {
-    const d = exported(mutable c, imp.pos, s, n)
+  bindAlias(mutable c, imp, mutable aliases)
+  for (const n of Arrays.values(imp.names)) {
+    const d = exported(mutable c, imp.pos, s, n.name)
     match (d) {
-      Some(decl) => importDecl(mutable c, imp.pos, s, n, decl)
+      Some(decl) => importDecl(mutable c, imp.pos, s, n.name, n.local, decl)
       None => {}
     }
   }
@@ -155,58 +169,58 @@ function importPackageModule(mutable c: Checker, imp: ImportDecl): bool uses all
 
 // importDecl makes the exported declaration n of scope s visible in the
 // current module.
-function importDecl(mutable c: Checker, pos: Pos, s: int, n: string, d: Decl) uses alloc {
+function importDecl(mutable c: Checker, pos: Pos, s: int, n: string, local: string, d: Decl) uses alloc {
   const cur = c.cur
   match (d) {
     Func(_) => {
-      if (c.scopes[cur].funcs[n] is Some(_)) {
-        errorf(mutable c, pos, `function ${quoteGo(n)} is declared twice`)
+      if (c.scopes[cur].funcs[local] is Some(_)) {
+        errorf(mutable c, pos, `function ${quoteGo(local)} is declared twice`)
       }
       if (c.scopes[s].funcs[n] is Some(k)) {
-        c.scopes[cur].funcs[n] = k
+        c.scopes[cur].funcs[local] = k
       }
     }
     Const(_) => {
       if (c.scopes[s].consts[n] is Some(k)) {
-        importConst(mutable c, pos, n, k)
+        importConst(mutable c, pos, local, k)
       }
     }
     Trait(_) => {
       if (c.scopes[s].traits[n] is Some(ti)) {
         if (c.traits[ti].module == c.scopes[s].path) {
-          importTrait(mutable c, pos, n, ti)
+          importTrait(mutable c, pos, local, ti)
         }
       }
     }
-    Distinct(_) => importType(mutable c, pos, s, n)
-    Struct(_) => importNamedType(mutable c, pos, s, n)
-    Enum(_) => importNamedType(mutable c, pos, s, n)
+    Distinct(_) => importType(mutable c, pos, s, n, local)
+    Struct(_) => importNamedType(mutable c, pos, s, n, local)
+    Enum(_) => importNamedType(mutable c, pos, s, n, local)
     _ => {}
   }
 }
 
-function importType(mutable c: Checker, pos: Pos, s: int, n: string) uses alloc {
+function importType(mutable c: Checker, pos: Pos, s: int, n: string, local: string) uses alloc {
   if (c.scopes[s].types[n] is Some(t)) {
-    declareType(mutable c, pos, n, t)
+    declareType(mutable c, pos, local, t)
   } else {
-    checkTypeName(mutable c, pos, n)
+    checkTypeName(mutable c, pos, local)
   }
 }
 
 // importNamedType imports a struct or enum: a generic template by its
 // Checker.generics index, or a type.
-function importNamedType(mutable c: Checker, pos: Pos, s: int, n: string) uses alloc {
+function importNamedType(mutable c: Checker, pos: Pos, s: int, n: string, local: string) uses alloc {
   if (c.scopes[s].generics[n] is Some(g)) {
     if (c.scopes[s].types[n] is None) {
-      if (lookupType(c, n) is Some(_) || lookupGeneric(c, n) is Some(_)) {
-        errorf(mutable c, pos, `type ${quoteGo(n)} is declared twice`)
+      if (lookupType(c, local) is Some(_) || lookupGeneric(c, local) is Some(_)) {
+        errorf(mutable c, pos, `type ${quoteGo(local)} is declared twice`)
       }
       const cur = c.cur
-      c.scopes[cur].generics[n] = g
+      c.scopes[cur].generics[local] = g
       return
     }
   }
-  importType(mutable c, pos, s, n)
+  importType(mutable c, pos, s, n, local)
 }
 
 // exported returns the exported declaration n of scope s, or reports why it
@@ -216,7 +230,7 @@ export function exported(mutable c: Checker, pos: Pos, s: int, n: string): Optio
     return Some(c.scopes[s].decls[k])
   }
   const path = c.scopes[s].path
-  for (const d of Array.values(c.scopes[s].decls)) {
+  for (const d of Arrays.values(c.scopes[s].decls)) {
     if (declName(d) == n) {
       errorf(mutable c, pos, `${quoteGo(n)} is not exported by module ${quoteGo(path)}; add \`export\` to its declaration`)
       return None
@@ -256,11 +270,11 @@ export function typeNamed(c: Checker, name: string): bool {
 export function checkImportedConsts(mutable c: Checker, f: File) uses alloc {
   const cur = c.cur
   const path = c.scopes[cur].path
-  for (const imp of Array.values(f.imports)) {
-    for (const n of Array.values(imp.names)) {
-      if (c.scopes[cur].consts[n] is Some(k)) {
-        if (c.consts[k].module != path && typeNamed(c, n)) {
-          errorf(mutable c, imp.pos, `constant ${quoteGo(n)} is declared twice`)
+  for (const imp of Arrays.values(f.imports)) {
+    for (const n of Arrays.values(imp.names)) {
+      if (c.scopes[cur].consts[n.local] is Some(k)) {
+        if (c.consts[k].module != path && typeNamed(c, n.local)) {
+          errorf(mutable c, imp.pos, `constant ${quoteGo(n.local)} is declared twice`)
         }
       }
     }
@@ -270,7 +284,7 @@ export function checkImportedConsts(mutable c: Checker, f: File) uses alloc {
 // checkEntries finds the entry function of each binary and reports one
 // with the wrong signature (Go's entryFunc and checkEntry in CheckPackage).
 export function checkEntries(mutable c: Checker, pkg: Package) uses alloc {
-  for (const b of Array.values(pkg.binaries)) {
+  for (const b of Arrays.values(pkg.binaries)) {
     const k = entryFunc(c, pkg, b.entry)
     if (k >= 0) {
       const fs = c.funcs[k].scope
@@ -279,7 +293,7 @@ export function checkEntries(mutable c: Checker, pkg: Package) uses alloc {
       enter(mutable c, saved)
     }
     const info = EntryInfo { binary: b.name, func: k }
-    Array.push(mutable c.entries, info)
+    Arrays.push(mutable c.entries, info)
   }
 }
 
@@ -305,7 +319,7 @@ function entryFunc(c: Checker, pkg: Package, entry: string): int uses alloc {
 
 function checkEntry(mutable c: Checker, k: int) uses alloc {
   const fd = c.funcs[k].decl
-  let ok = Array.length(fd.params) == 1 && c.funcs[k].result == TInt
+  let ok = Arrays.length(fd.params) == 1 && c.funcs[k].result == TInt
   if (ok) {
     const p = fd.params[0]
     ok = c.paramTypes[p.id] == TArray(TStr) && !p.isMutable

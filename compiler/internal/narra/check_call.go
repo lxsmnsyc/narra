@@ -160,7 +160,7 @@ func (c *Checker) visibleEnums(only string) []string {
 		for _, f := range c.mod.src.Files {
 			for _, imp := range f.Imports {
 				for _, n := range imp.Names {
-					add(n)
+					add(n.Local)
 				}
 			}
 		}
@@ -302,9 +302,10 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 		if ft := fieldFunc(callee, t); ft != nil {
 			return c.valueCallOf(e, ft)
 		}
-		fixes := pushFix(e, callee, t)
-		if _, imported := c.modules["Array"]; len(fixes) > 0 && !imported {
-			fixes[0].Edits = append(fixes[0].Edits, c.importFix("Array", "std/array")[0].Edits...)
+		alias := c.aliasFor("std/array")
+		fixes := pushFix(e, callee, t, alias)
+		if alias == "" && len(fixes) > 0 {
+			fixes[0].Edits = append(fixes[0].Edits, c.importFix("Arrays", "std/array")[0].Edits...)
 		}
 		c.errorfFix(callee.P, fixes, "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)", callee.Name, t)
 		c.argsLoose(e)
@@ -562,6 +563,14 @@ func (c *Checker) missingImport(id *Ident, name string) bool {
 	if _, imported := c.modules[id.Name]; imported || !ok || (id.Name == "Box" && c.userBox()) || (id.Name == "Map" && c.userMap()) {
 		return false
 	}
-	c.errorfFix(id.P, c.importFix(id.Name, path), "%s.%s needs an import; add `import * as %s from %q`", id.Name, name, id.Name, path)
+	rename := Edit{Start: id.P, End: Pos{id.P.Line, id.P.Col + len(id.Name)}, Text: pluralAlias[id.Name]}
+	if have := c.aliasFor(path); have != "" {
+		rename.Text = have
+		c.errorfFix(id.P, []Fix{{Title: "call " + have + "." + name, Edits: []Edit{rename}}}, "%s.%s names a type; this module imports %q as %s", id.Name, name, path, have)
+		return true
+	}
+	fix := c.importFix(pluralAlias[id.Name], path)
+	fix[0].Edits = append(fix[0].Edits, rename)
+	c.errorfFix(id.P, fix, "%s.%s needs an import; add `import * as %s from %q`", id.Name, name, pluralAlias[id.Name], path)
 	return true
 }

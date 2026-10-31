@@ -174,6 +174,10 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0418", "import cycle: %s"},
 	{"E0419", "no entry function; declare `export function run(args: Array<string>): int`"},
 	{"E0420", "binary %q: no entry function %q; declare `export function %s(args: Array<string>): int` in module %q"},
+	{"E0421", "the import alias %s is also a type name; rename it, for example `import * as %s from %q`"},
+	{"E0422", "two imports use the alias %s; give one of them another alias"},
+	{"E0423", "imported name %q is already declared in this module; rename the import with `as`"},
+	{"E0424", "imported name %q is already imported from another module; rename one with `as`"},
 	{"E0500", "%q is declared twice"},
 	{"E0501", "%s is listed twice in `implements`"},
 	{"E0502", "derives Shape is not supported by this compiler yet"},
@@ -254,6 +258,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0911", "%s needs a function as argument %d, found %s"},
 	{"E0912", "%s needs a function that returns %s, found one that returns %s"},
 	{"E0913", "%s needs a function that returns a value"},
+	{"E0914", "%s.%s names a type; this module imports %q as %s"},
 }
 
 var codeByFormat = func() map[string]string {
@@ -284,5 +289,5 @@ var explanations = map[string]string{
 	"E0033": "There is no strict equality. `==` already compares without conversions.\nFix: `===` becomes `==`, and `!==` becomes `!=`.",
 	"E0038": "There is no `null` or `undefined`. A value that may be missing has type `Option<T>`.\nFix: `null` becomes `None`.",
 	"E0216": "Strings are joined with a template string.\nFix: `a + \"x\" + b` becomes `` `${a}x${b}` ``. The fix is offered when every operand is a string name or literal.",
-	"E0309": "Narra has no method calls. Functions belong to modules.\nFix: `xs.push(v)` becomes `Array.push(mutable xs, v)`.",
+	"E0309": "Narra has no method calls. Functions belong to modules.\nFix: `xs.push(v)` becomes `Arrays.push(mutable xs, v)`.",
 }

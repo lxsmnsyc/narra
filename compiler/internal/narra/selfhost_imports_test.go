@@ -19,6 +19,7 @@ var portedImportErrors = []string{
 	"module %q has no export %q",
 	"%q is not exported by module %q; add `export` to its declaration",
 	"%s is not a type",
+	"two imports use the alias %s; give one of them another alias",
 	"the entry function must be `export function %s(args: Array<string>): int`",
 }
 

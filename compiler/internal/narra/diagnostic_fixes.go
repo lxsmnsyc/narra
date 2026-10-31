@@ -97,9 +97,12 @@ func templateEscape(s string) (string, bool) {
 	return b.String(), true
 }
 
-// pushFix rewrites `xs.push(v)` as `Array.push(mutable xs, v)`. It checks that
+// pushFix rewrites `xs.push(v)` as `Arrays.push(mutable xs, v)`, with the alias the module uses. It checks that
 // the text between the parts has no spaces, since the AST keeps no spacing.
-func pushFix(call *CallExpr, callee *FieldExpr, t Type) []Fix {
+func pushFix(call *CallExpr, callee *FieldExpr, t Type, alias string) []Fix {
+	if alias == "" {
+		alias = "Arrays"
+	}
 	if _, ok := t.(*ArrayType); !ok || callee.Name != "push" || len(call.Args) == 0 {
 		return nil
 	}
@@ -111,8 +114,8 @@ func pushFix(call *CallExpr, callee *FieldExpr, t Type) []Fix {
 	if id.P.Line != dot.Line || id.P.Col+len(id.Name) != dot.Col || call.P.Line != dot.Line || call.P.Col != callee.P.Col+len(callee.Name) {
 		return nil
 	}
-	return []Fix{{Title: "call Array.push", Edits: []Edit{
-		{Start: id.P, End: id.P, Text: "Array.push(mutable "},
+	return []Fix{{Title: "call " + alias + ".push", Edits: []Edit{
+		{Start: id.P, End: id.P, Text: alias + ".push(mutable "},
 		{Start: dot, End: Pos{call.P.Line, call.P.Col + 1}, Text: ", "},
 	}}}
 }

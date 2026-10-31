@@ -222,7 +222,7 @@ func (d *astDumper) file(f *File) {
 					if i.Alias != "" {
 						alias = strAttr("alias", i.Alias)
 					}
-					d.node("import", i.Pos, join(alias, listAttr("names", i.Names), strAttr("path", i.Path)), nil)
+					d.node("import", i.Pos, join(alias, listAttr("names", importNameStrings(i.Names)), strAttr("path", i.Path)), nil)
 				}
 			})
 		}

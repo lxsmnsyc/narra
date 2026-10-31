@@ -150,7 +150,7 @@ func (c *Checker) checkEntry(e *FuncDecl) {
 
 // importPackageModule handles an import of a module of this package. It
 // returns false when the path is not one, so the caller tries std modules.
-func (c *Checker) importPackageModule(imp *ImportDecl) bool {
+func (c *Checker) importPackageModule(imp *ImportDecl, aliases map[string]bool) bool {
 	s := c.mods[imp.Path]
 	if s == nil || s.src == nil {
 		if !c.pkg.single && strings.HasPrefix(imp.Path, c.pkg.Name+"/") {
@@ -159,31 +159,30 @@ func (c *Checker) importPackageModule(imp *ImportDecl) bool {
 		}
 		return false
 	}
-	if imp.Alias != "" {
-		c.modules[imp.Alias] = imp.Path
-	}
-	for _, n := range imp.Names {
+	c.bindAlias(imp, aliases)
+	for _, in := range imp.Names {
+		n, local := in.Name, in.Local
 		d := c.exported(imp.Pos, s, n)
 		switch d := d.(type) {
 		case *FuncDecl:
-			if _, dup := c.funcs[n]; dup {
-				c.errorf(imp.Pos, "function %q is declared twice", n)
+			if _, dup := c.funcs[local]; dup {
+				c.errorf(imp.Pos, "function %q is declared twice", local)
 			}
-			c.funcs[n] = d
+			c.funcs[local] = d
 		case *ConstDecl:
-			c.importConst(imp.Pos, d)
+			c.importConst(imp.Pos, local, d)
 		case *TraitDecl:
-			c.importTrait(imp.Pos, n, d)
+			c.importTrait(imp.Pos, local, d)
 		case *DistinctDecl:
-			c.declareType(imp.Pos, n, s.types[n])
+			c.declareType(imp.Pos, local, s.types[n])
 		case *StructDecl, *EnumDecl:
 			if g := s.generics[n]; g != nil && s.types[n] == nil {
-				if c.types[n] != nil || c.generics[n] != nil {
-					c.errorf(imp.Pos, "type %q is declared twice", n)
+				if c.types[local] != nil || c.generics[local] != nil {
+					c.errorf(imp.Pos, "type %q is declared twice", local)
 				}
-				c.generics[n] = g
+				c.generics[local] = g
 			} else {
-				c.declareType(imp.Pos, n, s.types[n])
+				c.declareType(imp.Pos, local, s.types[n])
 			}
 		}
 	}

@@ -18,10 +18,10 @@ import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Token, TokenKind, lex, hex } from "narrac/lexer"
-import { Pos, File, ImportDecl, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Arg, FieldInit, FieldPattern, MatchArm, Stmt, Expr, Pattern } from "narrac/ast"
-import * as Array from "std/array"
-import * as Box from "std/box"
-import * as Range from "std/range"
+import { Pos, File, ImportDecl, ImportName, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Arg, FieldInit, FieldPattern, MatchArm, Stmt, Expr, Pattern } from "narrac/ast"
+import * as Arrays from "std/array"
+import * as Boxes from "std/box"
+import * as Ranges from "std/range"
 
 // A syntax error: `error <line>:<col>: <message>` in the dump.
 export struct Diag {
@@ -93,16 +93,16 @@ export function diagText(d: Diag): string uses alloc {
 // lexDiag splits a lex error "line:col: message" (Go: syntaxDiagnostic).
 function lexDiag(text: string): Diag {
   const parts = Str.split(text, ": ")
-  if (Array.length(parts) >= 2) {
+  if (Arrays.length(parts) >= 2) {
     const lc = Str.split(parts[0], ":")
-    if (Array.length(lc) == 2) {
+    if (Arrays.length(lc) == 2) {
       const line = Int.parse(lc[0], 10)
       const col = Int.parse(lc[1], 10)
       if (line is Ok(l)) {
         if (col is Ok(c)) {
           let rest: Array<string> = []
-          for (const k of Range.between(1, Array.length(parts))) {
-            Array.push(mutable rest, parts[k])
+          for (const k of Ranges.between(1, Arrays.length(parts))) {
+            Arrays.push(mutable rest, parts[k])
           }
           return Diag { pos: Pos { line: l, col: c }, message: Str.join(rest, ": ") }
         }
@@ -154,7 +154,7 @@ function tok(p: Parser): Token {
 
 // tokAt reads the token k places ahead, or the last token (EOF) past the end.
 function tokAt(p: Parser, k: int): Token {
-  const n = Array.length(p.toks)
+  const n = Arrays.length(p.toks)
   if (p.i + k < n) {
     return p.toks[p.i + k]
   }
@@ -164,7 +164,7 @@ function tokAt(p: Parser, k: int): Token {
 // advance is Go's next: it returns the token and moves on, but never past EOF.
 function advance(mutable p: Parser): Token {
   const t = p.toks[p.i]
-  if (p.i < Array.length(p.toks) - 1) {
+  if (p.i < Arrays.length(p.toks) - 1) {
     p.i = p.i + 1
   }
   return t
@@ -255,7 +255,7 @@ function describe(t: Token): string {
 export function quoteGo(s: string): string uses alloc {
   let sb = Str.builder()
   Str.append(mutable sb, "\"")
-  for (const c of Array.values(Str.chars(s))) {
+  for (const c of Arrays.values(Str.chars(s))) {
     const code = Char.code(c)
     if (c == '"') {
       Str.append(mutable sb, "\\\"")
@@ -320,11 +320,11 @@ function parseFile(mutable p: Parser): File {
   let decls: Array<Decl> = []
   skipNewlines(mutable p)
   while (ok(p) && at(p, "import")) {
-    Array.push(mutable imports, importDecl(mutable p))
+    Arrays.push(mutable imports, importDecl(mutable p))
     skipNewlines(mutable p)
   }
   while (ok(p) && tok(p).kind != TokEof) {
-    Array.push(mutable decls, parseDecl(mutable p))
+    Arrays.push(mutable decls, parseDecl(mutable p))
     skipNewlines(mutable p)
   }
   return File { imports: imports, decls: decls }
@@ -333,14 +333,19 @@ function parseFile(mutable p: Parser): File {
 function importDecl(mutable p: Parser): ImportDecl {
   const pos = posOf(expect(mutable p, "import"))
   let alias = ""
-  let names: Array<string> = []
+  let names: Array<ImportName> = []
   if (accept(mutable p, "*")) {
     expect(mutable p, "as")
     alias = ident(mutable p).text
   } else if (accept(mutable p, "{")) {
     skipNewlines(mutable p)
     while (ok(p) && !at(p, "}")) {
-      Array.push(mutable names, ident(mutable p).text)
+      const name = ident(mutable p).text
+      let local = name
+      if (accept(mutable p, "as")) {
+        local = ident(mutable p).text
+      }
+      Arrays.push(mutable names, ImportName { name: name, local: local })
       skipNewlines(mutable p)
       if (!accept(mutable p, ",")) {
         break
@@ -451,7 +456,7 @@ function parseType(mutable p: Parser): TypeExpr {
     const pos = posOf(advance(mutable p))
     let args: Array<TypeExpr> = []
     while (ok(p) && !at(p, "]")) {
-      Array.push(mutable args, parseType(mutable p))
+      Arrays.push(mutable args, parseType(mutable p))
       if (!accept(mutable p, ",")) {
         break
       }
@@ -471,7 +476,7 @@ function parseType(mutable p: Parser): TypeExpr {
   const te = TypeExpr { pos: posOf(t), name: name, args: [], isFunc: false, result: None, effects: [], isTuple: false }
   if (accept(mutable p, "<")) {
     while (ok(p)) {
-      Array.push(mutable args, parseType(mutable p))
+      Arrays.push(mutable args, parseType(mutable p))
       if (!accept(mutable p, ",")) {
         break
       }
@@ -504,24 +509,24 @@ function typeParamsEffects(mutable p: Parser): TypeParams {
     const t = tok(p)
     if (t.kind == TokIdent && t.text == "effect" && tokAt(p, 1).kind == TokIdent) {
       advance(mutable p)
-      Array.push(mutable effects, ident(mutable p).text)
+      Arrays.push(mutable effects, ident(mutable p).text)
       if (!accept(mutable p, ",")) {
         break
       }
       continue
     }
-    Array.push(mutable names, ident(mutable p).text)
+    Arrays.push(mutable names, ident(mutable p).text)
     let bs: Array<TypeExpr> = []
     if (accept(mutable p, ":")) {
       while (ok(p)) {
         const b = ident(mutable p)
-        Array.push(mutable bs, namedType(b))
+        Arrays.push(mutable bs, namedType(b))
         if (!accept(mutable p, "&")) {
           break
         }
       }
     }
-    Array.push(mutable bounds, bs)
+    Arrays.push(mutable bounds, bs)
     if (!accept(mutable p, ",")) {
       break
     }
@@ -540,8 +545,8 @@ function namedType(t: Token): TypeExpr {
 function typeParamsNoBounds(mutable p: Parser): Array<string> {
   const pos = posOf(tok(p))
   const tp = typeParamsEffects(mutable p)
-  for (const bs of Array.values(tp.bounds)) {
-    if (Array.length(bs) > 0) {
+  for (const bs of Arrays.values(tp.bounds)) {
+    if (Arrays.length(bs) > 0) {
       failAt(mutable p, pos, "trait constraints on struct and enum type parameters are not supported by this compiler yet")
     }
   }
@@ -587,7 +592,7 @@ function funcHeader(mutable p: Parser, exported: bool): FuncDecl {
     const pname = ident(mutable p).text
     expect(mutable p, ":")
     const ptype = parseType(mutable p)
-    Array.push(mutable params, Param { id: newId(mutable p), pos: ppos, name: pname, isMutable: isMutable, type: Some(ptype), escaping: escaping })
+    Arrays.push(mutable params, Param { id: newId(mutable p), pos: ppos, name: pname, isMutable: isMutable, type: Some(ptype), escaping: escaping })
     if (!accept(mutable p, ",")) {
       break
     }
@@ -624,7 +629,7 @@ function fieldList(mutable p: Parser): Array<FieldDecl> {
     if (accept(mutable p, "=")) {
       dflt = Some(parseExpr(mutable p))
     }
-    Array.push(mutable fields, FieldDecl { pos: pos, name: name, type: ftype, default: dflt })
+    Arrays.push(mutable fields, FieldDecl { pos: pos, name: name, type: ftype, default: dflt })
     accept(mutable p, ",")
     skipNewlines(mutable p)
   }
@@ -660,14 +665,14 @@ function enumDecl(mutable p: Parser, exported: bool): EnumDecl {
         const fname = ident(mutable p).text
         expect(mutable p, ":")
         const ftype = parseType(mutable p)
-        Array.push(mutable fields, FieldDecl { pos: fpos, name: fname, type: ftype, default: None })
+        Arrays.push(mutable fields, FieldDecl { pos: fpos, name: fname, type: ftype, default: None })
         if (!accept(mutable p, ",")) {
           break
         }
       }
       expect(mutable p, ")")
     }
-    Array.push(mutable variants, VariantDecl { pos: vpos, name: vname, fields: fields })
+    Arrays.push(mutable variants, VariantDecl { pos: vpos, name: vname, fields: fields })
     accept(mutable p, ",")
     skipNewlines(mutable p)
   }
@@ -692,7 +697,7 @@ function traitNames(mutable p: Parser): Array<TypeExpr> {
   let out: Array<TypeExpr> = []
   while (ok(p)) {
     const t = ident(mutable p)
-    Array.push(mutable out, namedType(t))
+    Arrays.push(mutable out, namedType(t))
     if (!accept(mutable p, ",")) {
       break
     }
@@ -718,7 +723,7 @@ function traitDecl(mutable p: Parser, exported: bool): TraitDecl {
     if (at(p, "{")) {
       failHere(mutable p, "trait functions have no default implementation; remove the body")
     }
-    Array.push(mutable funcs, fd)
+    Arrays.push(mutable funcs, fd)
     endTypeDecl(mutable p)
   }
   expect(mutable p, "}")
@@ -743,7 +748,7 @@ function implDecl(mutable p: Parser): ImplDecl {
       failFound(mutable p, `an implement block has functions only`)
       break
     }
-    Array.push(mutable funcs, funcDecl(mutable p, false))
+    Arrays.push(mutable funcs, funcDecl(mutable p, false))
     skipNewlines(mutable p)
   }
   expect(mutable p, "}")
@@ -761,7 +766,7 @@ function funcTypeExpr(mutable p: Parser): TypeExpr {
       advance(mutable p)
       advance(mutable p)
     }
-    Array.push(mutable args, parseType(mutable p))
+    Arrays.push(mutable args, parseType(mutable p))
     if (!accept(mutable p, ",")) {
       break
     }
@@ -770,7 +775,7 @@ function funcTypeExpr(mutable p: Parser): TypeExpr {
   expect(mutable p, "=>")
   const result = parseType(mutable p)
   const effects = usesList(mutable p)
-  return TypeExpr { pos: pos, name: "", args: args, isFunc: true, result: Some(Box.new(result)), effects: effects, isTuple: false }
+  return TypeExpr { pos: pos, name: "", args: args, isFunc: true, result: Some(Boxes.new(result)), effects: effects, isTuple: false }
 }
 
 // usesList reads an optional `uses a, b` list of effect names.
@@ -778,7 +783,7 @@ function usesList(mutable p: Parser): Array<string> {
   let names: Array<string> = []
   if (accept(mutable p, "uses")) {
     while (ok(p)) {
-      Array.push(mutable names, ident(mutable p).text)
+      Arrays.push(mutable names, ident(mutable p).text)
       if (at(p, ",") && paramAfterComma(p)) {
         break
       }
@@ -806,7 +811,7 @@ function acceptEscaping(mutable p: Parser): bool {
 // function. It ends a `uses` list written inside a parameter list. (This is
 // the version of PR #21, which also accepts `mutable`.)
 function paramAfterComma(p: Parser): bool {
-  if (p.i + 2 >= Array.length(p.toks)) {
+  if (p.i + 2 >= Arrays.length(p.toks)) {
     return false
   }
   const k = p.toks[p.i + 1]
@@ -824,7 +829,7 @@ function paramAfterComma(p: Parser): bool {
 function arrowAhead(p: Parser): bool {
   let depth = 0
   let j = p.i
-  const n = Array.length(p.toks)
+  const n = Arrays.length(p.toks)
   while (j < n) {
     const t = p.toks[j]
     if (t.kind == TokEof) {
@@ -865,7 +870,7 @@ function parseArrow(mutable p: Parser): Expr {
     if (accept(mutable p, ":")) {
       ptype = Some(parseType(mutable p))
     }
-    Array.push(mutable params, Param { id: newId(mutable p), pos: ppos, name: pname, isMutable: false, type: ptype, escaping: false })
+    Arrays.push(mutable params, Param { id: newId(mutable p), pos: ppos, name: pname, isMutable: false, type: ptype, escaping: false })
     if (!accept(mutable p, ",")) {
       break
     }
@@ -893,7 +898,7 @@ function parseBlock(mutable p: Parser): Block {
       failHere(mutable p, "unexpected end of file inside a block")
       break
     }
-    Array.push(mutable stmts, parseStmt(mutable p))
+    Arrays.push(mutable stmts, parseStmt(mutable p))
   }
   expect(mutable p, "}")
   return Block { pos: pos, stmts: stmts }
@@ -1019,7 +1024,7 @@ function parseExpr(mutable p: Parser): Expr {
 }
 
 function binary(mutable p: Parser, level: int): Expr {
-  if (level == Array.length(BINARY_LEVELS)) {
+  if (level == Arrays.length(BINARY_LEVELS)) {
     return unary(mutable p)
   }
   let left = binary(mutable p, level + 1)
@@ -1035,7 +1040,7 @@ function binary(mutable p: Parser, level: int): Expr {
       return left
     }
     let matched = false
-    for (const op of Array.values(BINARY_LEVELS[level])) {
+    for (const op of Arrays.values(BINARY_LEVELS[level])) {
       if (t.text == op) {
         matched = true
       }
@@ -1083,7 +1088,7 @@ function postfix(mutable p: Parser, first: Expr): Expr {
       while (ok(p) && !at(p, ")")) {
         const isMutable = accept(mutable p, "mutable")
         const value = parseExpr(mutable p)
-        Array.push(mutable args, Arg { isMutable: isMutable, value: value })
+        Arrays.push(mutable args, Arg { isMutable: isMutable, value: value })
         if (!accept(mutable p, ",")) {
           break
         }
@@ -1140,7 +1145,7 @@ function memberName(mutable p: Parser): Token {
 function typeArgsLitAhead(p: Parser): bool {
   let depth = 0
   let k = 0
-  const n = Array.length(p.toks)
+  const n = Arrays.length(p.toks)
   while (p.i + k < n) {
     const t = tokAt(p, k)
     if (t.kind == TokIdent) {
@@ -1178,7 +1183,7 @@ function litTypeArgs(mutable p: Parser): Array<TypeExpr> {
   expect(mutable p, "<")
   let args: Array<TypeExpr> = []
   while (ok(p)) {
-    Array.push(mutable args, parseType(mutable p))
+    Arrays.push(mutable args, parseType(mutable p))
     if (!accept(mutable p, ",")) {
       break
     }
@@ -1215,8 +1220,8 @@ function mapLit(mutable p: Parser, pos: Pos, typeArgs: Array<TypeExpr>): Expr {
       }
     }
     expect(mutable p, ":")
-    Array.push(mutable keys, key)
-    Array.push(mutable vals, parseExpr(mutable p))
+    Arrays.push(mutable keys, key)
+    Arrays.push(mutable vals, parseExpr(mutable p))
     skipNewlines(mutable p)
     if (!accept(mutable p, ",")) {
       break
@@ -1273,7 +1278,7 @@ function structLit(mutable p: Parser, typeName: string, typeArgs: Array<TypeExpr
   let spread: Option<Expr> = None
   while (ok(p) && !at(p, "}")) {
     if (at(p, "...")) {
-      if (spread is Some(_) || Array.length(fields) > 0) {
+      if (spread is Some(_) || Arrays.length(fields) > 0) {
         failHere(mutable p, "a struct literal has at most one spread, and it comes first")
         break
       }
@@ -1293,7 +1298,7 @@ function structLit(mutable p: Parser, typeName: string, typeArgs: Array<TypeExpr
     }
     expect(mutable p, ":")
     const value = parseExpr(mutable p)
-    Array.push(mutable fields, FieldInit { pos: posOf(name), name: name.text, value: value })
+    Arrays.push(mutable fields, FieldInit { pos: posOf(name), name: name.text, value: value })
     skipNewlines(mutable p)
     if (!accept(mutable p, ",")) {
       break
@@ -1359,7 +1364,7 @@ function primary(mutable p: Parser): Expr {
       advance(mutable p)
       let elems: Array<Expr> = []
       while (ok(p) && !at(p, "]")) {
-        Array.push(mutable elems, parseExpr(mutable p))
+        Arrays.push(mutable elems, parseExpr(mutable p))
         if (!accept(mutable p, ",")) {
           break
         }
@@ -1382,7 +1387,7 @@ function template(mutable p: Parser, t: Token): Expr {
   const pos = posOf(t)
   const end = Pos { line: t.endLine, col: t.endCol }
   const raw = Str.chars(t.text)
-  const n = Array.length(raw)
+  const n = Arrays.length(raw)
   let parts: Array<Expr> = []
   let text = Str.builder()
   let pending = 0 // characters in text
@@ -1418,12 +1423,12 @@ function template(mutable p: Parser, t: Token): Expr {
         return dummyExpr()
       }
       if (pending > 0) {
-        Array.push(mutable parts, StringLit(newId(mutable p), pos, Str.build(text), end))
+        Arrays.push(mutable parts, StringLit(newId(mutable p), pos, Str.build(text), end))
         text = Str.builder()
         pending = 0
       }
       let src = Str.builder()
-      for (const k of Range.between(i + 2, j - 1)) {
+      for (const k of Ranges.between(i + 2, j - 1)) {
         Str.appendChar(mutable src, raw[k])
       }
       const lexed = lex(Str.build(src))
@@ -1433,8 +1438,8 @@ function template(mutable p: Parser, t: Token): Expr {
       }
       // Report errors inside ${...} at the template's position.
       let inner: Array<Token> = []
-      for (const it of Array.values(lexed.value)) {
-        Array.push(mutable inner, Token { ...it, line: t.line, col: t.col })
+      for (const it of Arrays.values(lexed.value)) {
+        Arrays.push(mutable inner, Token { ...it, line: t.line, col: t.col })
       }
       let sub = Parser { toks: inner, i: 0, nextId: p.nextId, failed: None }
       const e = parseExpr(mutable sub)
@@ -1443,7 +1448,7 @@ function template(mutable p: Parser, t: Token): Expr {
         failAt(mutable p, d.pos, d.message)
         return dummyExpr()
       }
-      Array.push(mutable parts, e)
+      Arrays.push(mutable parts, e)
       i = j
       continue
     }
@@ -1452,7 +1457,7 @@ function template(mutable p: Parser, t: Token): Expr {
     i = i + 1
   }
   if (pending > 0) {
-    Array.push(mutable parts, StringLit(newId(mutable p), pos, Str.build(text), end))
+    Arrays.push(mutable parts, StringLit(newId(mutable p), pos, Str.build(text), end))
   }
   return TemplateLit(newId(mutable p), pos, parts)
 }
@@ -1477,10 +1482,10 @@ function matchExpr(mutable p: Parser): Expr {
     expect(mutable p, "=>")
     if (at(p, "{")) {
       const b = parseBlock(mutable p)
-      Array.push(mutable arms, MatchArm { pos: apos, pattern: pat, guard: guard, body: None, block: Some(b) })
+      Arrays.push(mutable arms, MatchArm { pos: apos, pattern: pat, guard: guard, body: None, block: Some(b) })
     } else {
       const body = parseExpr(mutable p)
-      Array.push(mutable arms, MatchArm { pos: apos, pattern: pat, guard: guard, body: Some(body), block: None })
+      Arrays.push(mutable arms, MatchArm { pos: apos, pattern: pat, guard: guard, body: Some(body), block: None })
     }
     accept(mutable p, ",")
     skipNewlines(mutable p)
@@ -1502,10 +1507,10 @@ function parsePattern(mutable p: Parser): Pattern {
       const name = ident(mutable p)
       if (accept(mutable p, ":")) {
         const sub = parsePattern(mutable p)
-        Array.push(mutable fields, FieldPattern { pos: posOf(name), name: name.text, pattern: sub })
+        Arrays.push(mutable fields, FieldPattern { pos: posOf(name), name: name.text, pattern: sub })
       } else {
         const short = PatName(newId(mutable p), posOf(name), name.text)
-        Array.push(mutable fields, FieldPattern { pos: posOf(name), name: name.text, pattern: short })
+        Arrays.push(mutable fields, FieldPattern { pos: posOf(name), name: name.text, pattern: short })
       }
       skipNewlines(mutable p)
       if (!accept(mutable p, ",")) {
@@ -1567,7 +1572,7 @@ function patternList(mutable p: Parser, close: string): Array<Pattern> {
   let list: Array<Pattern> = []
   skipNewlines(mutable p)
   while (ok(p) && !at(p, close)) {
-    Array.push(mutable list, parsePattern(mutable p))
+    Arrays.push(mutable list, parsePattern(mutable p))
     skipNewlines(mutable p)
     if (!accept(mutable p, ",")) {
       break

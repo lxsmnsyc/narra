@@ -84,9 +84,20 @@ func TestTypesDumpInstanceOrder(t *testing.T) {
 }
 
 // callsInputs are the inputs of TestSelfhostBodies plus the cases of
-// testdata/typesdump/calls.
+// testdata/typesdump/calls, once each. The bodies inputs already hold the
+// single-file cases and the files of the package cases.
 func callsInputs(t *testing.T) []string {
-	return append(bodiesInputs(t), declDumpCases(t, typesDumpCallsDir)...)
+	inputs := bodiesInputs(t)
+	seen := map[string]bool{}
+	for _, p := range inputs {
+		seen[p] = true
+	}
+	for _, p := range declDumpCases(t, typesDumpCallsDir) {
+		if !seen[p] {
+			inputs = append(inputs, p)
+		}
+	}
+	return inputs
 }
 
 // TestSelfhostCalls checks that `narrac types <path>` prints the same dump

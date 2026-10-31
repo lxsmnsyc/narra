@@ -51,7 +51,7 @@ The `CallExpr` arm of `checkExpressionKind` is now `Walker.checkCall(...)`. `che
 
 ### Compared and skipped (TestSelfhostBodies)
 
-Compared 184, skipped 161 (main: 143 and 202). No compared input differs. TestSelfhostCalls: compared 210, skipped 161.
+Compared 198, skipped 161 (main: 143 and 202). Of the inputs main had, 184 are compared now; the other 14 are the new call files under testdata/typesdump/calls, which the bodies inputs pick up too. No compared input differs. TestSelfhostCalls: compared 200 (the same plus the two package cases), skipped 161.
 
 | count | reason | node |
 | --- | --- | --- |

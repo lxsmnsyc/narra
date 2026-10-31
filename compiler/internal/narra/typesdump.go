@@ -57,7 +57,7 @@ import (
 //	    local=<name>              a name that resolves to a local
 //	    const=<module>.<name>     a top-level constant
 //	    func=<module>.<name>      a function (an instance names its generic function)
-//	    ctor=<Enum>.<Variant>     an enum constructor
+//	    ctor=<Enum>.<Variant>     an enum constructor, or the variant a pattern names
 //	    builtin=<Builtin.Name>    a std function (Array.push, print)
 //	    narrow=<Variant>          a field read through a narrowed enum value
 //	    trait=<Trait>.<function>  a trait function the compiler implements
@@ -79,7 +79,8 @@ import (
 //	literals and plain calls, and the attributes local, const, func (plain
 //	functions) and builtin. selfhost-check-calls: ctor, trait, distinct, func
 //	on instances and impl blocks. selfhost-check-patterns: pattern lines,
-//	narrow, and pattern-binding locals. selfhost-check-closures: value, func
+//	narrow, and pattern-binding locals (a `local` line right after the
+//	binding's pat-name line). selfhost-check-closures: value, func
 //	on function values, arrow parameters.
 
 // checkedBody is one body the checker checked, logged when it starts.
@@ -396,7 +397,8 @@ func (d *typesDumper) pattern(p *Pattern) {
 	if !ok {
 		panic(fmt.Sprintf("typesdump: unknown pattern kind %d", p.Kind))
 	}
-	d.line(p.Pos, kind, nil, p.T)
+	d.line(p.Pos, kind, refAttrs(nil, nil, nil, p.Variant, ""), p.T)
+	d.local(p.Local)
 	for _, a := range p.Args {
 		d.pattern(a)
 	}

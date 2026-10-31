@@ -1,0 +1,422 @@
+// What the pattern checks share, ported from compiler/internal/narra:
+// check_match.go (irrefutable, argsIrrefutable, isWild, ctorCount,
+// ctorArgTypes, specialize, missingCases, ctorText) and the narrowing
+// helpers of check.go and check_stmt.go (narrowed, setNarrow, narrowable,
+// otherVariant).
+//
+// This module sits below narrac/exprs, which reads the narrowing when it
+// checks a field, so it imports narrac/check only. Resolving a pattern
+// needs expectType from exprs and lives in narrac/match.
+//
+// A resolved pattern keeps no field of its own (D63). The variant a
+// PatName or PatCtor names is the Ref.Variant of its node id in the current
+// body, and the locals it binds are the locals that its PatName nodes
+// declare (collectPatternLocals).
+//
+// Narrowing is not a field of the local. It is a key in the block scope
+// stack of the body, `narrow|<local index>`, whose value is the variant
+// index: it is saved and restored with pushScope and popScope like a name.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Pos, Expr, Pattern, FieldPattern } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, Ref, getRef, getLocal, findBodySlot } from "narrac/check"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function getPatternId(pattern: Pattern): int {
+  return match (pattern) {
+    Pattern.PatWildcard(nodeId, _) => nodeId
+    Pattern.PatName(nodeId, _, _) => nodeId
+    Pattern.PatCtor(nodeId, _, _, _, _, _) => nodeId
+    Pattern.PatStruct(nodeId, _, _) => nodeId
+    Pattern.PatTuple(nodeId, _, _) => nodeId
+    Pattern.PatLit(nodeId, _, _) => nodeId
+  }
+}
+
+export function getPatternPos(pattern: Pattern): Pos {
+  return match (pattern) {
+    Pattern.PatWildcard(_, pos) => pos
+    Pattern.PatName(_, pos, _) => pos
+    Pattern.PatCtor(_, pos, _, _, _, _) => pos
+    Pattern.PatStruct(_, pos, _) => pos
+    Pattern.PatTuple(_, pos, _) => pos
+    Pattern.PatLit(_, pos, _) => pos
+  }
+}
+
+// collectPatternLocals lists the locals that the PatName nodes of a pattern
+// declared in the current body (Go's Pattern.Locals).
+export function collectPatternLocals(checker: Checker, pattern: Pattern, mutable locals: Array<int>) uses alloc {
+  match (pattern) {
+    Pattern.PatName(nodeId, _, _) => {
+      const body = checker.bodies[checker.body]
+      const slot = findBodySlot(body, nodeId)
+      if (slot >= 0 && body.declared[slot] >= 0) {
+        Arrays.push(mutable locals, body.declared[slot])
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, args, _) => {
+      for (const argument of Arrays.values(args)) {
+        collectPatternLocals(checker, argument, mutable locals)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        collectPatternLocals(checker, field.pattern, mutable locals)
+      }
+    }
+    Pattern.PatTuple(_, _, args) => {
+      for (const argument of Arrays.values(args)) {
+        collectPatternLocals(checker, argument, mutable locals)
+      }
+    }
+    _ => {}
+  }
+}
+
+// bindPatternLocals puts the names of locals into the innermost scope.
+export function bindPatternLocals(mutable checker: Checker, locals: Array<int>) uses alloc {
+  const depth = checker.scopeDepth - 1
+  for (const index of Arrays.values(locals)) {
+    const name = getLocal(checker, index).name
+    checker.localScopes[depth][name] = index
+  }
+}
+
+// ---- narrowing ----
+
+function narrowKey(local: int): string uses alloc {
+  return `narrow|${Int.toString(local)}`
+}
+
+// findNarrowed is the variant index a local is narrowed to, or -1 (Go's
+// narrowed).
+export function findNarrowed(checker: Checker, local: int): int uses alloc {
+  const key = narrowKey(local)
+  let depth = checker.scopeDepth - 1
+  while (depth >= 0) {
+    if (checker.localScopes[depth][key] is Some(variantIndex)) {
+      return variantIndex
+    }
+    depth = depth - 1
+  }
+  return -1
+}
+
+// setNarrowed narrows a local in the innermost scope (Go's setNarrow).
+export function setNarrowed(mutable checker: Checker, local: int, variantIndex: int) uses alloc {
+  const depth = checker.scopeDepth - 1
+  checker.localScopes[depth][narrowKey(local)] = variantIndex
+}
+
+// findNarrowable is the local an expression names when it can be narrowed:
+// a name of a `const` local. It returns -1 for anything else.
+export function findNarrowable(checker: Checker, expression: Expr): int {
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Local(index)) {
+      if (!getLocal(checker, index).isMutable) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+// findOtherVariant is the variant an enum value must be when it is not
+// variantIndex, for enums with exactly two variants, or -1.
+export function findOtherVariant(checker: Checker, enumIndex: int, variantIndex: int): int {
+  if (variantIndex < 0 || Arrays.length(checker.enums[enumIndex].variants) != 2) {
+    return -1
+  }
+  return 1 - variantIndex
+}
+
+// ---- irrefutable patterns ----
+
+// irrefutable reports whether a pattern matches every value of its type.
+export function irrefutable(checker: Checker, pattern: Pattern): bool {
+  return match (pattern) {
+    Pattern.PatWildcard(_, _) => true
+    Pattern.PatName(nodeId, _, _) => isSingleVariantOrBinding(checker, nodeId)
+    Pattern.PatCtor(nodeId, _, _, _, args, _) => isSingleVariant(checker, nodeId) && allIrrefutable(checker, args)
+    Pattern.PatStruct(_, _, fields) => structFieldsIrrefutable(checker, fields)
+    Pattern.PatTuple(_, _, args) => allIrrefutable(checker, args)
+    Pattern.PatLit(_, _, _) => false
+  }
+}
+
+function isSingleVariantOrBinding(checker: Checker, nodeId: int): bool {
+  if (getRef(checker, nodeId) is Ref.Variant(enumIndex, _)) {
+    return Arrays.length(checker.enums[enumIndex].variants) == 1
+  }
+  return true
+}
+
+function isSingleVariant(checker: Checker, nodeId: int): bool {
+  if (getRef(checker, nodeId) is Ref.Variant(enumIndex, _)) {
+    return Arrays.length(checker.enums[enumIndex].variants) == 1
+  }
+  return false
+}
+
+function allIrrefutable(checker: Checker, patterns: Array<Pattern>): bool {
+  for (const pattern of Arrays.values(patterns)) {
+    if (!irrefutable(checker, pattern)) {
+      return false
+    }
+  }
+  return true
+}
+
+function structFieldsIrrefutable(checker: Checker, fields: Array<FieldPattern>): bool {
+  for (const field of Arrays.values(fields)) {
+    if (!irrefutable(checker, field.pattern)) {
+      return false
+    }
+  }
+  return true
+}
+
+// areArgsIrrefutable reports whether a constructor or tuple pattern matches
+// every value of its variant, so `x is Some(_)` failing means x is None.
+export function areArgsIrrefutable(checker: Checker, pattern: Pattern): bool {
+  return match (pattern) {
+    Pattern.PatCtor(_, _, _, _, args, _) => allIrrefutable(checker, args)
+    Pattern.PatTuple(_, _, args) => allIrrefutable(checker, args)
+    _ => true
+  }
+}
+
+// ---- exhaustiveness ----
+//
+// The usefulness algorithm: a match is exhaustive when no value vector
+// escapes the rows. findMissingCases returns example values that no row
+// matches, one string per column, at most `limit` of them (the order and
+// the limit are Go's, since the message prints them).
+//
+// Enums, bools, structs and tuples have a finite set of constructors. Other
+// types (int, string, arrays, type parameters) have infinitely many values,
+// so only wildcards and bindings cover them.
+
+function createWildcard(): Pattern {
+  return Pattern.PatWildcard(-1, Pos { line: 0, col: 0 })
+}
+
+function createWildcards(count: int): Array<Pattern> uses alloc {
+  let wildcards: Array<Pattern> = []
+  for (const position of Ranges.between(0, count)) {
+    Arrays.push(mutable wildcards, createWildcard())
+  }
+  return wildcards
+}
+
+export function isWild(checker: Checker, pattern: Pattern): bool {
+  if (pattern is Pattern.PatWildcard(_, _)) {
+    return true
+  }
+  if (pattern is Pattern.PatName(nodeId, _, _)) {
+    return getRef(checker, nodeId) is Ref.Unresolved
+  }
+  return false
+}
+
+// countConstructors is the number of constructors of a type, or -1 when it
+// has infinitely many values.
+function countConstructors(checker: Checker, type: Type): int {
+  return match (type) {
+    Type.TEnum(index) => Arrays.length(checker.enums[index].variants)
+    Type.TStruct(_) => 1
+    Type.TBool => 2
+    _ => -1
+  }
+}
+
+function listConstructorTypes(checker: Checker, type: Type, constructorIndex: int): Array<Type> uses alloc {
+  let types: Array<Type> = []
+  if (type is Type.TEnum(index)) {
+    for (const field of Arrays.values(checker.enums[index].variants[constructorIndex].fields)) {
+      Arrays.push(mutable types, field.fieldType)
+    }
+  } else if (type is Type.TStruct(index)) {
+    for (const field of Arrays.values(checker.structs[index].fields)) {
+      Arrays.push(mutable types, field.fieldType)
+    }
+  }
+  return types
+}
+
+// specialize returns the argument patterns of a pattern when it matches
+// constructor constructorIndex of type, which has count arguments, and None
+// when it matches another constructor.
+function specialize(checker: Checker, pattern: Pattern, type: Type, constructorIndex: int, count: int): Option<Array<Pattern>> uses alloc {
+  if (isWild(checker, pattern)) {
+    return Some(createWildcards(count))
+  }
+  if (pattern is Pattern.PatName(nodeId, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Variant(_, variantIndex)) {
+      if (variantIndex != constructorIndex) {
+        return None
+      }
+    }
+    return Some(createWildcards(count))
+  }
+  if (pattern is Pattern.PatCtor(nodeId, _, _, _, args, bare)) {
+    if (getRef(checker, nodeId) is Ref.Variant(_, variantIndex)) {
+      if (variantIndex != constructorIndex) {
+        return None
+      }
+      if (bare || Arrays.length(args) != count) {
+        return Some(createWildcards(count))
+      }
+      return Some(args)
+    }
+    return Some(createWildcards(count))
+  }
+  if (pattern is Pattern.PatTuple(_, _, args)) {
+    if (Arrays.length(args) != count) {
+      return Some(createWildcards(count))
+    }
+    return Some(args)
+  }
+  if (pattern is Pattern.PatStruct(_, _, fields)) {
+    let out = createWildcards(count)
+    if (type is Type.TStruct(structIndex)) {
+      const structFields = checker.structs[structIndex].fields
+      for (const fieldPattern of Arrays.values(fields)) {
+        for (const index of Ranges.between(0, Arrays.length(structFields))) {
+          if (structFields[index].name == fieldPattern.name) {
+            out[index] = fieldPattern.pattern
+          }
+        }
+      }
+    }
+    return Some(out)
+  }
+  if (pattern is Pattern.PatLit(_, _, literal)) {
+    if (literal is Expr.BoolLit(_, _, value)) {
+      if ((constructorIndex == 1) != value) {
+        return None
+      }
+      return Some([])
+    }
+  }
+  return Some(createWildcards(count))
+}
+
+function sliceItems<T>(items: Array<T>, start: int, end: int): Array<T> uses alloc {
+  let out: Array<T> = []
+  for (const index of Ranges.between(start, end)) {
+    Arrays.push(mutable out, items[index])
+  }
+  return out
+}
+
+function joinItems<T>(first: Array<T>, second: Array<T>): Array<T> uses alloc {
+  let out: Array<T> = []
+  for (const item of Arrays.values(first)) {
+    Arrays.push(mutable out, item)
+  }
+  for (const item of Arrays.values(second)) {
+    Arrays.push(mutable out, item)
+  }
+  return out
+}
+
+export function findMissingCases(checker: Checker, rows: Array<Array<Pattern>>, types: Array<Type>, mutable limit: int): Array<Array<string>> uses alloc {
+  if (limit <= 0) {
+    return []
+  }
+  if (Arrays.length(rows) == 0) {
+    limit = limit - 1
+    return [Arrays.filled("_", Arrays.length(types))]
+  }
+  if (Arrays.length(types) == 0) {
+    return []
+  }
+  const type = types[0]
+  const count = countConstructors(checker, type)
+  const restTypes = sliceItems(types, 1, Arrays.length(types))
+  let allWild = true
+  for (const row of Arrays.values(rows)) {
+    if (!isWild(checker, row[0])) {
+      allWild = false
+    }
+  }
+
+  // Only wildcards cover an infinite type, and a column of wildcards covers
+  // any constructor: look at the other columns.
+  if (count < 0 || allWild) {
+    let defaults: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(rows)) {
+      if (isWild(checker, row[0])) {
+        Arrays.push(mutable defaults, sliceItems(row, 1, Arrays.length(row)))
+      }
+    }
+    let out: Array<Array<string>> = []
+    for (const example of Arrays.values(findMissingCases(checker, defaults, restTypes, mutable limit))) {
+      Arrays.push(mutable out, joinItems(["_"], example))
+    }
+    return out
+  }
+
+  // Otherwise try each constructor with the rows that can match it.
+  let out: Array<Array<string>> = []
+  for (const constructorIndex of Ranges.between(0, count)) {
+    const argumentTypes = listConstructorTypes(checker, type, constructorIndex)
+    const argumentCount = Arrays.length(argumentTypes)
+    let specialized: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(rows)) {
+      if (specialize(checker, row[0], type, constructorIndex, argumentCount) is Some(patterns)) {
+        Arrays.push(mutable specialized, joinItems(patterns, sliceItems(row, 1, Arrays.length(row))))
+      }
+    }
+    const subTypes = joinItems(argumentTypes, restTypes)
+    for (const example of Arrays.values(findMissingCases(checker, specialized, subTypes, mutable limit))) {
+      const head = describeConstructor(checker, type, constructorIndex, sliceItems(example, 0, argumentCount))
+      Arrays.push(mutable out, joinItems([head], sliceItems(example, argumentCount, Arrays.length(example))))
+    }
+  }
+  return out
+}
+
+// describeConstructor prints constructor constructorIndex of type applied
+// to the example arguments (Go's ctorText).
+function describeConstructor(checker: Checker, type: Type, constructorIndex: int, args: Array<string>): string uses alloc {
+  let allWild = true
+  for (const argument of Arrays.values(args)) {
+    if (argument != "_") {
+      allWild = false
+    }
+  }
+  if (type is Type.TEnum(index)) {
+    const variant = checker.enums[index].variants[constructorIndex]
+    if (Arrays.length(variant.fields) == 0) {
+      return variant.name
+    }
+    return `${variant.name}(${Str.join(args, ", ")})`
+  }
+  if (type is Type.TStruct(index)) {
+    if (allWild) {
+      return "_"
+    }
+    if (checker.structs[index].tuple) {
+      return `#[${Str.join(args, ", ")}]`
+    }
+    let parts: Array<string> = []
+    for (const position of Ranges.between(0, Arrays.length(args))) {
+      if (args[position] != "_") {
+        Arrays.push(mutable parts, `${checker.structs[index].fields[position].name}: ${args[position]}`)
+      }
+    }
+    return `{ ${Str.join(parts, ", ")} }`
+  }
+  if (type == Type.TBool) {
+    if (constructorIndex == 1) {
+      return "true"
+    }
+    return "false"
+  }
+  return "_"
+}

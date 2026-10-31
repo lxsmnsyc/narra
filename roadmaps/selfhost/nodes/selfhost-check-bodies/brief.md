@@ -46,6 +46,9 @@ depends_on:
   - on: selfhost-check-imports
     kind: hard
     why: names resolve through module scopes, and std calls use the registry
+  - on: qualified-constructors
+    kind: hard
+    why: the migration to qualified constructors and plural aliases (D71, D72) rewrites selfhost/src; the body checker ports the new constructor lookup instead of the old one
 ---
 
 # Self-hosted checker: body core and the types dump

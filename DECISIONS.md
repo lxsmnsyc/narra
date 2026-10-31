@@ -220,6 +220,7 @@ Decision: `import * as Name from "path"` and `import { a, b } from "path"`. Ther
 - **Reason.** These are TypeScript's own forms, so they read correctly with no new rules.
 - **Reason.** `import X from "m"` means a default import in TypeScript. Narra has no default exports, so that form is a compile error instead of a different meaning.
 - **Rejected: a call-style import such as `const Name = import(...)`.** It looks like a runtime call, but importing runs nothing.
+- **Note.** D72 adds renaming to named imports: `import { map as mapArray } from "std/array"`.
 
 ## D26. Struct literals, defaults, spread updates and destructuring
 
@@ -564,6 +565,7 @@ Decision: the only global functions are `print`, `assert` and `panic`. The funct
 - **Reason.** User decision 2026-10-30: do not expose global functions. One rule for every function: it comes from a module.
 - **Rejected: a prelude that re-exports the functions as globals.** It keeps the old behavior for no gain.
 - **Cost.** Every program that uses these functions gains one to four import lines. Positions in goldens shift.
+- **Note.** D72 replaces the alias rule: an import alias may no longer equal a type name, and the std modules take plural aliases (`import * as Arrays from "std/array"`). The case where `import * as Box` wins over a user type `Box` is gone.
 
 ## D68. Type arguments on map and generic struct literals
 
@@ -584,3 +586,37 @@ Decision: two std modules, `std/option` (`map`, `andThen`, `withDefault`, `orEls
 - **Implementation.** Builtins with a new field `Builtin.Callbacks` (argument indexes); the effect pass adds the effects of those arguments to the call. Five new diagnostics, E0909 to E0913.
 - **Rejected: `unwrap` and `expect`.** They hide a panic where the spec wants a visible branch.
 - **Cost.** `Option.map` and the other helpers that build a value allocate its payload (`alloc` effect). A callback passed as a stored local (`const f = ...`) is a heap closure, created once, not per call.
+- **Note.** Under D72 the alias is plural: `import * as Options from "std/option"`, `import * as Results from "std/result"`.
+
+## D71. Enum constructors are always qualified
+
+Decision: a user enum's constructors are written with the enum's name, in expressions and in patterns: `SchoolPerson.Teacher`, `SchoolPerson.Student("x")`, `SchoolPerson.Teacher =>`. Importing the enum is enough. A bare constructor is a compile error with a fix that qualifies it. `Some`, `None`, `Ok` and `Err` stay bare as prelude names. Constructors of different enums never clash, and two constructors with the same name in one enum are an error (section 3). Debate: `roadmaps/debates/qualified-enum-constructors/debate.md`.
+
+- **Reason.** A bare constructor can be hidden by a local with the same name, which then compiles with a different meaning when the types match. D2 forbids that.
+- **Reason.** TypeScript writes enum members as `Color.Red`, and Rust writes `Enum::Variant`. Both readers expect the qualified form.
+- **Reason.** It removes the ambiguity rule the spec never finished. Two enums may share a constructor name, and a struct `Circle` can sit next to `Shape.Circle(c: Circle)`.
+- **Rejected: bare names in patterns, resolved from the matched type.** User decision 2026-10-31: one rule for every position is worth the longer match arms.
+- **Rejected: a Swift-style `.Teacher` shorthand where the type is known.** It has no TypeScript precedent. User decision 2026-10-31: never.
+- **Rejected: keeping bare constructors with a written ambiguity rule.** It keeps the shadowing hazard.
+- **Cost.** About 1,100 sites in `selfhost/` and `compiler/testdata/` change, through the compiler's own fix. Names that were prefixed to avoid clashes (`Type.TStruct`, `Token.TokIdent`) stutter until they are renamed.
+
+## D72. Import aliases do not equal type names, and named imports can rename
+
+Decision: an import alias may not equal a type name visible in the module (prelude, declared or imported), and two imports may not share an alias. The std modules of the capitalized prelude types take plural aliases by convention: `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options`, `Results`; their paths do not change. Named imports accept `{ a as b }`. Importing a constructor by name is an error whose fix imports its enum (section 3). Debate: `roadmaps/debates/qualified-enum-constructors/debate.md`.
+
+- **Reason.** Under D71, `Shape.Circle` is a constructor. An alias `Shape` would give the same text a second meaning. TypeScript also rejects an import that conflicts with a local declaration.
+- **Reason.** Plural is one rule the fix can suggest for every module, as in Java's `Arrays` and Guava's `Maps`. It is only a convention: any alias that follows the rules works.
+- **Reason.** `map` exists in `std/array`, `std/option` and `std/result`, so named imports need renaming to be usable. `as` means the same thing as in TypeScript.
+- **Rejected: lowercase aliases (`array.push`).** They break the capitalized style of `Str` and `Int` and clash with locals named `array` or `map`.
+- **Rejected: renaming the module paths to `std/arrays` and the rest.** The alias is enough.
+- **Cost.** 107 imports and about 700 calls in `selfhost/` and `compiler/testdata/` change, through the compiler's own fix. Amends D25 and D67.
+
+## D73. Sum types keep the `enum` keyword
+
+Decision: sum types are declared with `enum`, not with ML-style `type T = | A | B(x: int)`. Structs keep `struct`, not `type T = { ... }`. `Red = 1` in an enum without `@repr` gets an error whose fix adds `@repr(i32)` (section 9). Debate: `roadmaps/debates/sum-type-syntax/debate.md`.
+
+- **Reason.** In TypeScript, `type Shape = Circle | Square` is a union of existing types. The ML form would make the same text declare new constructors, which D2 forbids.
+- **Reason.** Every TypeScript enum that Narra accepts keeps its meaning: fieldless members, read as `Color.Red` under D71. Payloads are new syntax with no TypeScript meaning. Rust and Swift use `enum` the same way.
+- **Reason.** `type` already declares aliases. Making it declare a nominal type depending on the first token after `=` gives it two meanings.
+- **Rejected: `type Point = { x: f64 }` for structs.** In TypeScript that is a structural alias, while Narra structs are nominal. No case in the checker or emitter would go away.
+- **Cost.** None beyond the `Red = 1` diagnostic.

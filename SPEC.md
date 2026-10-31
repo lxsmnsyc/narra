@@ -4,7 +4,7 @@ This document defines the Narra language. Each section states the rules first, t
 
 File extension: `.nra`. Compiler command: `narra`.
 
-Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` functions (section 3): a sample that calls `Array.push` assumes `import * as Array from "std/array"`.
+Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` functions (section 3): a sample that calls `Arrays.push` assumes `import * as Arrays from "std/array"`.
 
 ## 1. Overview
 
@@ -26,13 +26,13 @@ export enum Shape {
 
 export function area(s: Shape): f64 {
   return match (s) {
-    Circle(r) => Float.PI * r * r
-    Rect(w, h) => w * h
+    Shape.Circle(r) => Float.PI * r * r
+    Shape.Rect(w, h) => w * h
   }
 }
 
 test "rect area" {
-  assert(area(Rect(2.0, 3.0)) == 6.0)
+  assert(area(Shape.Rect(2.0, 3.0)) == 6.0)
 }
 ```
 
@@ -63,12 +63,12 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - A function with no return type returns nothing.
 - **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
 - **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
-- An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Array.map(prices, (p) => p * 2)`.
+- An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Arrays.map(prices, (p) => p * 2)`.
 - **Function types** are written like arrow functions: `(item: T) => U`.
 - **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
 - **No currying and no partial application.** To fix some arguments, write an arrow function.
-- **No method calls.** `xs.push(v)` is not valid. Write `Array.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
+- **No method calls.** `xs.push(v)` is not valid. Write `Arrays.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
 - **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.
 - **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
 - **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narra query recursion MODULE` lists them.
@@ -91,7 +91,7 @@ function gcd(a: int, b: int): int {
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
 - **`escaping`** marks a function-type parameter that may be stored or outlive the call: `function onClick(escaping handler: () => void)`. An escaping closure's environment is allocated on the heap.
 - Struct fields and array elements of function type always hold escaping closures. `Thread.start`, `Async.spawn` and `Async.run` take escaping parameters.
-- **`@inline`** on a function copies its body into each caller. On a higher-order function such as `Array.map`, this also places the closure's body at the call, which removes the indirect call.
+- **`@inline`** on a function copies its body into each caller. On a higher-order function such as `Arrays.map`, this also places the closure's body at the call, which removes the indirect call.
 
 ```ts
 @inline
@@ -99,7 +99,7 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
   // f cannot escape, so the closure passed in needs no allocation
 }
 
-const scaled = Array.map(prices, (p) => p * rate)    // no closure allocation, no indirect call
+const scaled = Arrays.map(prices, (p) => p * rate)    // no closure allocation, no indirect call
 ```
 
 
@@ -107,12 +107,12 @@ const scaled = Array.map(prices, (p) => p * rate)    // no closure allocation, n
 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
-- `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Array.entries(items))` gives indexes from 0.
-- **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Array.values`, `Array.entries`, `Map.keys`, `Map.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
-- **Counting loops use `Range`.** `Range.upTo(n)` counts from 0 to `n - 1`. `Range.between(start, end)` counts from `start` to `end - 1`. `Range.stepped(start, end, step)` takes a step.
+- `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
+- **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step.
 
 ```ts
-for (const i of Range.upTo(Array.length(items))) {
+for (const i of Ranges.upTo(Arrays.length(items))) {
   print(items[i])
 }
 ```
@@ -154,7 +154,7 @@ There are no macros, no operator overloading and no function overloading.
 | `&&` `\|\|` `!` | `bool` |
 
 - There is no string concatenation operator. Use a template string or `Str.concat(a, b)`.
-- There is no length operator. Use `Array.length(items)`, `Str.length(s)` and `Map.size(m)`.
+- There is no length operator. Use `Arrays.length(items)`, `Str.length(s)` and `Maps.size(m)`.
 - There is no power operator. Use `Float.pow(x, y)` or `Int.pow(x, y)`.
 - `Int.floorDiv(a, b)` rounds toward negative infinity.
 
@@ -172,9 +172,9 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `number` | Not present. Use `int`, `i32`, `f64` and the other sized types |
 | `enum` holds named numbers or strings | `enum` holds variants with fields, checked by `match` |
 | `'text'` is a string | `'a'` is a `char`. Strings use `"text"` |
-| `for (const k in obj)` loops over keys | Not present. Use `for (const k of Map.keys(m))` |
+| `for (const k in obj)` loops over keys | Not present. Use `for (const k of Maps.keys(m))` |
 | `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
-| `xs.push(v)`, `s.length` | Not present. Use `Array.push(mutable xs, v)`, `Str.length(s)` |
+| `xs.push(v)`, `s.length` | Not present. Use `Arrays.push(mutable xs, v)`, `Str.length(s)` |
 | `a + b` joins strings | Not present. Use a template string |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
@@ -188,14 +188,16 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
-- **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Array.push(mutable xs, v)` needs `import * as Array from "std/array"`. The alias may equal the type name: `Array<int>` is the type and `Array.push` is the module. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one, unless the program also writes `import * as Box from "std/box"` (or `std/map`): then `Box.new` is the module function.
+- **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
+- **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
 - **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/option`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 ```ts
 import * as Str from "std/string"            // namespace import
-import * as Array from "std/array"           // the alias can be a prelude type name
+import * as Arrays from "std/array"          // plural alias for a prelude type's module
 import { classify, Token } from "app/text"   // named imports
+import { map as mapArray } from "std/array"  // a named import with a new name
 ```
 
 There is no re-export statement. To expose an imported name, import it and export a new declaration:
@@ -210,12 +212,14 @@ export type Token = Text.Token               // a type, with its constructors
 Rules:
 
 - **Imports are static.** They appear at the top of the file with a string literal path. They never run code and never load a module at runtime. `import(...)` as an expression is a compile error.
+- **An import alias may not equal a type name.** `import * as Shape` in a module that declares or imports a type `Shape`, or `import * as Array` (a prelude type), is a compile error, as in TypeScript. `Shape.Circle` then always names a constructor of `Shape`. The fix suggests the plural (`Arrays`). Two imports with the same alias are an error too.
+- **Named imports can take a new name.** `import { map as mapArray } from "std/array"` makes the function `mapArray` in this module. The new name follows the rules of every other name in the module: it may not clash with a declaration, another import or a type name. `import { Teacher }` of an enum constructor is a compile error whose fix imports the enum instead.
 - **No cycles.** The import graph must be acyclic. The compiler reports the cycle as a list of modules.
 - **No re-export statement and no default exports.** `export { x } from "m"`, `export *` and `export default` are compile errors. An exported name is always declared in the exporting file.
 - **`export type A = B`** declares an alias. When `B` is an enum, its constructors are usable through the alias.
 - **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
 - **No import side effects.** Top-level declarations must be functions, types, traits, `const` constants or `lazy` values (section 10). There is no top-level `let`.
-- **Constructors come with their enum.** Importing `Token` makes its constructors usable. In a `match`, constructors are resolved from the type being matched. Elsewhere, write `Token.Word(x)` when the bare name is ambiguous.
+- **Constructors come with their enum and are always qualified.** Importing `Token` makes `Token.Word(x)` usable, in expressions and in patterns (D71). A bare `Word(x)` is a compile error whose fix writes `Token.Word(x)`. `Some`, `None`, `Ok` and `Err` are the exception: they are prelude names and stay bare. Constructors of different enums never clash, whatever their fields, and a user enum may have a constructor named `None` (`Maybe.None`); a bare `None` is always the prelude one. Two constructors with the same name in one enum are an error.
 - **`narra move old new`** moves a file and rewrites every import of it.
 
 ## 4. Types
@@ -236,7 +240,7 @@ Rules:
 ### Composite types
 
 - **Structs.** Declared with `struct`. The full rules are in "Structs" below.
-- **Enums.** Declared with `enum`. Each constructor can carry fields.
+- **Enums.** Declared with `enum`. Each constructor can carry named fields, and is written with its enum's name: `Token.Word("hi")`, `Token.Space` (section 3).
 
 ```ts
 export enum Token {
@@ -337,7 +341,7 @@ match (point) {
 **Boxes**
 
 - `Box<T>` holds one value on the heap with a reference count.
-- `Box.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a `let` variable, in place when the count is 1.
+- `Boxes.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a `let` variable, in place when the count is 1.
 - Use a box for recursive structs and for large structs that are copied often.
 
 ```ts
@@ -346,7 +350,7 @@ struct ListNode {
   next: Option<Box<ListNode>> = None
 }
 
-const list = ListNode { value: 1, next: Some(Box.new(ListNode { value: 2 })) }
+const list = ListNode { value: 1, next: Some(Boxes.new(ListNode { value: 2 })) }
 ```
 
 ### Opaque types
@@ -401,8 +405,8 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 - `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `null` or `undefined`.
 - `if (x is Some(v)) { ... }` binds `v` inside the branch. After `if (x is None) { return ... }`, `x` is known to be `Some` for the rest of the block, and `x.value` reads the value.
-- **`std/option` helpers.** `import * as Option from "std/option"` adds `Option.map(x, f)`, `Option.andThen(x, f)` (`f` returns an `Option`), `Option.withDefault(x, fallback)`, `Option.orElse(x, f)` (`f` takes no argument and returns an `Option`), `Option.isSome(x)`, `Option.isNone(x)` and `Option.okOr(x, error)` (a `Result`). `withDefault` returns `fallback` when `x` is `None`. The fallback is always evaluated; use `orElse` for a lazy one. When a callback returns `None` or `Err(...)` and the type of the call is not known from context, annotate the result (`const y: Option<int> = Option.andThen(x, (v) => None)`). There is no `unwrap` or `expect`: read the value after an `is` test, or give a fallback.
-- **Callbacks.** The function arguments of these helpers are non-escaping and take an effect variable, like `Array.map` in the effects section: a call uses the effects of its callback, so an `io` callback needs `uses io` on the caller. A capturing arrow function passed to a helper is allocated on the stack.
+- **`std/option` helpers.** `import * as Options from "std/option"` adds `Options.map(x, f)`, `Options.andThen(x, f)` (`f` returns an `Option`), `Options.withDefault(x, fallback)`, `Options.orElse(x, f)` (`f` takes no argument and returns an `Option`), `Options.isSome(x)`, `Options.isNone(x)` and `Options.okOr(x, error)` (a `Result`). `withDefault` returns `fallback` when `x` is `None`. The fallback is always evaluated; use `orElse` for a lazy one. When a callback returns `None` or `Err(...)` and the type of the call is not known from context, annotate the result (`const y: Option<int> = Options.andThen(x, (v) => None)`). There is no `unwrap` or `expect`: read the value after an `is` test, or give a fallback.
+- **Callbacks.** The function arguments of these helpers are non-escaping and take an effect variable, like `Arrays.map` in the effects section: a call uses the effects of its callback, so an `io` callback needs `uses io` on the caller. A capturing arrow function passed to a helper is allocated on the stack.
 - **Helpers never return early.** They are expressions. The main style for a path that stops stays `is` and `match`.
 - Type syntax uses names, not symbols: `Option<T>`, `Array<T>`, `Map<K, V>`, `Result<T, E>`. There is no `T | null` or `T?`. Tuples are the one exception: `#[A, B]` (see Tuples above).
 
@@ -412,15 +416,15 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 ```ts
 match (token) {
-  Word(text) => print(text)
-  Number(n) if (n < 0) => print("negative")
-  Number(n) => print(Int.toString(n))
-  Space => print(" ")
+  Token.Word(text) => print(text)
+  Token.Number(n) if (n < 0) => print("negative")
+  Token.Number(n) => print(Int.toString(n))
+  Token.Space => print(" ")
 }
 
 const label = match (status) {
-  Active => "active"
-  Suspended(reason) => `suspended: ${reason}`
+  Status.Active => "active"
+  Status.Suspended(reason) => `suspended: ${reason}`
   _ => "other"
 }
 ```
@@ -442,7 +446,7 @@ const label = match (status) {
 
 ```ts
 export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
-  for (const item of Array.values(items)) {
+  for (const item of Arrays.values(items)) {
     if (item == wanted) {
       return true
     }
@@ -534,7 +538,7 @@ const label = Show.show(price)
 - `string` holds valid UTF-8. Functions that build a string from bytes return `Result` and fail on invalid UTF-8.
 - **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is declared as `export opaque distinct type ByteIndex = u64`, so only `std/string` can create one.
 - **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
-- **Slices share memory.** `Str.slice` and `Array.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `Str.copy` or `Array.copy` to keep a small part of a large buffer without keeping the rest.
+- **Slices share memory.** `Str.slice` and `Arrays.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `Str.copy` or `Arrays.copy` to keep a small part of a large buffer without keeping the rest.
 - **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
 - `Str.length(s)` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
@@ -563,7 +567,7 @@ export function parsePair(line: string): Option<Pair> {
 - **Errors are return values.** A function that can fail returns `Result<T, E>`, with constructors `Ok(value)` and `Err(error)`.
 - **The caller checks the result.** There is no `try`, no `catch`, no `throw` and no operator that returns early. Every error path is a visible `if` or `match`.
 - **`is` tests a pattern and narrows the type.** After `if (r is Err(e)) { return ... }`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
-- **`std/result` helpers.** `import * as Result from "std/result"` adds `Result.map(r, f)`, `Result.mapErr(r, f)`, `Result.andThen(r, f)` (`f` returns a `Result` with the same error type), `Result.withDefault(r, fallback)`, and `Result.ok(r)` and `Result.err(r)`, which return the `Ok` or `Err` value as an `Option`. They work on a value you already hold. They never return from the caller, so they do not replace the visible `if` or `match` on the error path; they transform a result or give it a fallback.
+- **`std/result` helpers.** `import * as Results from "std/result"` adds `Results.map(r, f)`, `Results.mapErr(r, f)`, `Results.andThen(r, f)` (`f` returns a `Result` with the same error type), `Results.withDefault(r, fallback)`, and `Results.ok(r)` and `Results.err(r)`, which return the `Ok` or `Err` value as an `Option`. They work on a value you already hold. They never return from the caller, so they do not replace the visible `if` or `match` on the error path; they transform a result or give it a fallback.
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
 
@@ -598,13 +602,13 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 
 ### In-place updates
 
-- `items[i] = v`, `m[k] = v`, `Array.push(mutable items, v)` and `u.age = v` change a `let` variable. `{ ...u, age: v }` returns a changed copy.
+- `items[i] = v`, `m[k] = v`, `Arrays.push(mutable items, v)` and `u.age = v` change a `let` variable. `{ ...u, age: v }` returns a changed copy.
 - When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
 - Code that keeps one owner gets in-place mutation with no copies.
 
 ```ts
-let squares: Array<int> = Array.filled(0, 1000)
-for (const i of Range.upTo(1000)) {
+let squares: Array<int> = Arrays.filled(0, 1000)
+for (const i of Ranges.upTo(1000)) {
   squares[i] = i * i          // the count is 1, so the write is in place
 }
 ```
@@ -620,8 +624,8 @@ When an update targets a value whose reference count is greater than 1, the valu
 - **`@unique`** on a `let` declares that the variable is never shared. In debug builds, an update that would copy it panics. In release builds the check is removed.
 
 ```ts
-@unique let buffer: Array<u8> = Array.withCapacity(65536)
-Array.push(mutable buffer, 0)        // debug builds panic here if buffer is shared
+@unique let buffer: Array<u8> = Arrays.withCapacity(65536)
+Arrays.push(mutable buffer, 0)        // debug builds panic here if buffer is shared
 const view = buffer                  // shares buffer: the next update would panic in debug
 ```
 
@@ -730,7 +734,7 @@ A generator is a function that can suspend itself with `yield` and be resumed la
 
 ```ts
 function* counter(limit: int): Generator<int> {
-  for (const i of Range.upTo(limit)) {
+  for (const i of Ranges.upTo(limit)) {
     yield i
   }
 }
@@ -787,7 +791,7 @@ const total = Thread.scope((scope) => {
 const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
 Thread.start(scope, () => {
-  for (const i of Range.upTo(100)) {
+  for (const i of Ranges.upTo(100)) {
     Channel.send(sender, i)                            // blocks while the channel is full
   }
   Channel.close(sender)
@@ -874,7 +878,7 @@ export function run(args: Array<string>): int {        // entry function set in 
 - **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It is a normal function, so it can be called from the entry function or from a thread.
 - **`Async.spawn(loop, f)`** starts a task on that loop and returns a `Task<T>`. **`await Async.join(t)`** waits for the task and returns its result.
 - **`await Async.all(functions)`** runs several async functions at the same time and returns their results in order.
-- **No async callbacks in normal higher-order functions.** `Array.map(items, async (x) => ...)` is a compile error. `std/async` provides `Async.map` and `Async.forEach` instead.
+- **No async callbacks in normal higher-order functions.** `Arrays.map(items, async (x) => ...)` is a compile error. `std/async` provides `Async.map` and `Async.forEach` instead.
 - **A `Loop` cannot escape,** with the same rules as a `Scope`.
 - **Suspending I/O lives in `std/async/*`.** `std/async/net`, `std/async/file` and `std/async/time` mirror the blocking modules with the same function names. Their functions are `async`.
 - **A task stays on the thread that runs its loop.** To use several cores, run one loop per thread inside `Thread.scope`. Pass work between the loops with channels.
@@ -885,7 +889,7 @@ export function run(args: Array<string>): int {        // entry function set in 
 - **`unsafe { ... }`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
 - **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
-- **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
+- **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Red = 1` in an enum without `@repr` is a compile error whose fix adds `@repr(i32)` (D73). `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
 
 ```ts
 @repr(u8)
@@ -1032,7 +1036,7 @@ export function sqrt(x: f64): f64
 
 - Error codes are stable. `narra explain E0412` prints the rule and an example fix.
 - Fixes are exact edits that an agent can apply without rewriting them.
-- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic. Its fix rewrites the TypeScript form into the Narra form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Array.push(mutable xs, v)`.
+- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic. Its fix rewrites the TypeScript form into the Narra form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Arrays.push(mutable xs, v)`.
 
 ### Queries
 

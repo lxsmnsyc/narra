@@ -29,6 +29,7 @@ import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resol
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdlib"
+import { findNarrowable, findNarrowed } from "narrac/patterns"
 import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -54,15 +55,15 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
     Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name, want)
     Expr.FieldExpr(nodeId, pos, target, name) => checkField(mutable checker, walker, nodeId, pos, target, name, want)
-    Expr.IsExpr(_, pos, _, _) => unsupported(mutable checker, pos, "`is` (selfhost-check-patterns)")
-    Expr.IndexExpr(_, pos, target, index) => checkIndex(mutable checker, walker, pos, target, index)
-    Expr.MapLit(_, pos, _, _, _) => unsupported(mutable checker, pos, "a Map literal (selfhost-check-patterns)")
+    Expr.IsExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
+    Expr.IndexExpr(nodeId, pos, target, index) => checkIndex(mutable checker, walker, nodeId, pos, target, index)
+    Expr.MapLit(_, _, _, _, _) => Walker.checkMapLiteral(walker, mutable checker, expression, want)
     Expr.CallExpr(nodeId, pos, callee, args) => Walker.checkCall(walker, mutable checker, nodeId, pos, callee, args, want)
     Expr.UnaryExpr(_, pos, operator, operand) => checkUnary(mutable checker, walker, pos, operator, operand, want)
     Expr.BinaryExpr(_, pos, operator, left, right) => checkBinary(mutable checker, walker, pos, operator, left, right)
     Expr.StructLit(_, pos, typeName, typeArgs, fields, spread) => checkStructLiteral(mutable checker, walker, pos, typeName, typeArgs, fields, spread, want)
     Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(mutable checker, walker, pos, elements, isTuple, want)
-    Expr.MatchExpr(_, pos, _, _) => unsupported(mutable checker, pos, "a match expression (selfhost-check-patterns)")
+    Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
     Expr.ArrowExpr(_, pos, _, _, _, _) => unsupported(mutable checker, pos, "an arrow function (selfhost-check-closures)")
   }
 }
@@ -414,12 +415,26 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int,
       }
       return checker.structs[index].fields[fieldIndex].fieldType
     }
-    Type.TEnum(_) => {
-      // Reading a variant field needs a value narrowed by `is` or match,
-      // which selfhost-check-patterns ports; without them none is narrowed.
-      const text = typeString(checker, targetType)
-      errorf(mutable checker, pos, `this ${text} may hold any of its variants; check it with \`is\` or \`match\` before reading ${quoteGo(name)}`)
-      return Type.TVoid
+    Type.TEnum(enumIndex) => {
+      // Reading a variant field needs a value narrowed by `is`.
+      let variantIndex = -1
+      const local = findNarrowable(checker, target)
+      if (local >= 0) {
+        variantIndex = findNarrowed(checker, local)
+      }
+      if (variantIndex < 0) {
+        const text = typeString(checker, targetType)
+        errorf(mutable checker, pos, `this ${text} may hold any of its variants; check it with \`is\` or \`match\` before reading ${quoteGo(name)}`)
+        return Type.TVoid
+      }
+      const variant = checker.enums[enumIndex].variants[variantIndex]
+      const fieldIndex = findField(variant.fields, name)
+      if (fieldIndex < 0) {
+        errorf(mutable checker, pos, `${variant.name} has no field ${quoteGo(name)}`)
+        return Type.TVoid
+      }
+      setRef(mutable checker, nodeId, Ref.Narrow(enumIndex, variantIndex))
+      return variant.fields[fieldIndex].fieldType
     }
     Type.TBox(element) => {
       if (name != "value") {
@@ -480,10 +495,10 @@ export function isHiddenStruct(checker: Checker, index: int): bool {
   return checker.structs[index].opaque && checker.structs[index].module != checker.scopes[checker.cur].path
 }
 
-function checkIndex<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, target: Expr, index: Expr): Type uses alloc {
+function checkIndex<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, target: Expr, index: Expr): Type uses alloc {
   const targetType = checkExpression(mutable checker, walker, target, None)
-  if (targetType is Type.TMap(_, _)) {
-    return unsupported(mutable checker, pos, "a Map index (selfhost-check-patterns)")
+  if (targetType is Type.TMap(mapKey, mapValue)) {
+    return Walker.checkMapIndex(walker, mutable checker, nodeId, index, mapKey, mapValue)
   }
   const indexType = checkExpression(mutable checker, walker, index, Some(Type.TInt))
   expectType(mutable checker, getExpressionPos(index), Some(Type.TInt), indexType)
@@ -618,7 +633,18 @@ function checkStructLiteral<W: Walker>(mutable checker: Checker, walker: W, pos:
     }
   }
   if (spread is Some(spreadExpression)) {
-    return unsupported(mutable checker, getExpressionPos(spreadExpression), "a spread in a struct literal (selfhost-check-patterns)")
+    const spreadType = Walker.checkSpread(walker, mutable checker, pos, typeName, fields, spreadExpression, expected)
+    // With written type arguments the spread must have that type.
+    if (Arrays.length(typeArgs) > 0) {
+      if (expected is Some(literalType)) {
+        if (spreadType is Type.TStruct(_) && spreadType != literalType) {
+          const message = `the type arguments make ${typeString(checker, literalType)}, but the expected type is ${typeString(checker, spreadType)}`
+          errorf(mutable checker, getExpressionPos(spreadExpression), message)
+          return literalType
+        }
+      }
+    }
+    return spreadType
   }
 
   // Find the struct: a generic one built from the field values, a named
@@ -745,7 +771,7 @@ function inferGenericStruct<W: Walker>(mutable checker: Checker, walker: W, pos:
 
 function checkArrayLiteral<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, elements: Array<Expr>, isTuple: bool, want: Option<Type>): Type uses alloc {
   if (isTuple) {
-    return unsupported(mutable checker, pos, "a tuple literal (selfhost-check-patterns)")
+    return Walker.checkTuple(walker, mutable checker, pos, elements, want)
   }
   // The expected type gives the element type, or else the first element.
   let elementType: Option<Type> = None

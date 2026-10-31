@@ -13,7 +13,7 @@
 // the checker have none, but every write checks the range anyway.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl, Expr, Block, Arg } from "narrac/ast"
+import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl, Expr, Block, Arg, FieldInit } from "narrac/ast"
 import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, TraitInfo, TypeTraits, ImplInfo, ImplRef, MapKeyCheck, typeKey, isBoxedEnum } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
 import { funcIds, blockIds, exprIds } from "narrac/idcheck"
@@ -83,6 +83,10 @@ export enum Ref {
   Const(index: int) // Checker.consts
   Function(index: int) // Checker.funcs
   Builtin(index: int) // Registry.funcs
+  // A field read through an enum value narrowed to one variant
+  // (selfhost-check-patterns). A pattern that names a variant records
+  // Constructor.
+  Narrow(enumIndex: int, variantIndex: int)
   // Added by selfhost-check-calls (calls.nra, ctors.nra):
   Constructor(enumIndex: int, variant: int) // Checker.enums, EnumInfo.variants
   Implementation(block: int, index: int) // Checker.impls[block].funcs[index]
@@ -138,6 +142,14 @@ export struct BodyInfo {
 export trait Walker {
   function checkExpression(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
   function checkBlock(walker: Self, mutable checker: Checker, block: Block) uses alloc
+  // `is` and `match` expressions (narrac/match).
+  function checkPatterns(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
+  // Map literals, tuple literals, spread struct literals and Map indexes
+  // (narrac/literals).
+  function checkMapLiteral(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
+  function checkTuple(walker: Self, mutable checker: Checker, pos: Pos, elements: Array<Expr>, want: Option<Type>): Type uses alloc
+  function checkSpread(walker: Self, mutable checker: Checker, pos: Pos, typeName: string, fields: Array<FieldInit>, spread: Expr, want: Option<Type>): Type uses alloc
+  function checkMapIndex(walker: Self, mutable checker: Checker, nodeId: int, index: Expr, mapKey: Type, mapValue: Type): Type uses alloc
   // Calls and constructors (calls.nra, ctors.nra) sit above narrac/exprs,
   // which reaches them through these two. checkConstructorName checks a
   // constructor used as a value (`None`, `Shape.Empty`); enumName is "" for
@@ -240,6 +252,9 @@ export struct Checker {
   resultType: Type
   loops: int = 0
   inTest: bool = false
+  // The id of the target of the assignment being checked, or -1 (Go's
+  // c.assigning): a Map index there is a write.
+  assigningId: int = -1
   // Generic function instances (instances.nra) in discovery order, found by
   // "<func>|<typeKeys>" in funcInstances. pending is the queue of instances
   // to check (instanceList indexes); checkPending (body.nra) works through

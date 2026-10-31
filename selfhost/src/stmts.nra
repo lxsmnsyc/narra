@@ -3,12 +3,14 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables (D70) through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
-import { Pos, Expr, Stmt, Block, TypeExpr } from "narrac/ast"
+import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Ref, Walker, errorf, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, Ref, Walker, errorf, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
 import { resolveType } from "narrac/resolve"
 import { checkExpression, expectType, checkConstWrite, findAssignedLocal } from "narrac/exprs"
+import { checkIs, checkMatch, checkDestructure } from "narrac/match"
+import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgsIrrefutable } from "narrac/patterns"
 import * as Arrays from "std/array"
 
 // checkBlock checks the statements of a block in a scope of their own.
@@ -23,7 +25,7 @@ export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block
 export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, statement: Stmt) uses alloc {
   match (statement) {
     Stmt.BlockStmt(block) => checkBlock(mutable checker, walker, block)
-    Stmt.VarStmt(nodeId, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, nodeId, pos, isMutable, name, pattern is Some(_), type, value)
+    Stmt.VarStmt(nodeId, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, nodeId, pos, isMutable, name, pattern, type, value)
     Stmt.AssignStmt(pos, target, value) => checkAssignment(mutable checker, walker, pos, target, value)
     Stmt.ExprStmt(pos, expression) => checkExpressionStatement(mutable checker, walker, pos, expression)
     Stmt.ReturnStmt(pos, value) => checkReturn(mutable checker, walker, pos, value)
@@ -46,9 +48,9 @@ function checkCondition<W: Walker>(mutable checker: Checker, walker: W, conditio
   expectType(mutable checker, getExpressionPos(condition), Some(Type.TBool), found)
 }
 
-function checkVariable<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, isMutable: bool, name: string, hasPattern: bool, type: Option<TypeExpr>, value: Expr) uses alloc {
-  if (hasPattern) {
-    unsupported(mutable checker, pos, "a destructuring declaration (selfhost-check-patterns)")
+function checkVariable<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, isMutable: bool, name: string, pattern: Option<Pattern>, type: Option<TypeExpr>, value: Expr) uses alloc {
+  if (pattern is Some(declaredPattern)) {
+    checkDestructure(mutable checker, walker, isMutable, declaredPattern, type, value)
     return
   }
 
@@ -77,7 +79,9 @@ function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Po
     checkExpression(mutable checker, walker, value, None)
     return
   }
+  checker.assigningId = getExpressionId(target)
   const targetType = checkExpression(mutable checker, walker, target, None)
+  checker.assigningId = -1
 
   // The root of the target must be a `let` variable.
   const root = findAssignedLocal(checker, target)
@@ -92,8 +96,8 @@ function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Po
 }
 
 function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, expression: Expr) uses alloc {
-  if (expression is Expr.MatchExpr(_, matchPos, _, _)) {
-    unsupported(mutable checker, matchPos, "a match statement (selfhost-check-patterns)")
+  if (expression is Expr.MatchExpr(_, matchPos, subject, arms)) {
+    checkMatch(mutable checker, walker, matchPos, subject, arms, None, false)
     return
   }
   checkExpression(mutable checker, walker, expression, None)
@@ -125,19 +129,68 @@ function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, v
   }
 }
 
-// checkIf checks a plain if statement. A condition with `is`, which
-// narrows the subject in the branches, is selfhost-check-patterns'.
+// checkIf checks an if statement. A condition that is an `is` test may bind
+// names for the then branch and narrows the subject, when it is a `const`
+// local, in the branches (Go's ifStmt).
 function checkIf<W: Walker>(mutable checker: Checker, walker: W, condition: Expr, then: Block, orElse: Option<Stmt>) uses alloc {
-  checkCondition(mutable checker, walker, condition)
+  // The whole condition may be an `is` test, the only place that binds.
+  let testPattern: Option<Pattern> = None
+  let subject = -1
+  if (condition is Expr.IsExpr(testId, testPos, testSubject, pattern)) {
+    const found = checkIs(mutable checker, walker, testPos, testSubject, pattern, true)
+    setNodeType(mutable checker, testId, found)
+    expectType(mutable checker, testPos, Some(Type.TBool), found)
+    testPattern = Some(pattern)
+    subject = findNarrowable(checker, testSubject)
+  } else {
+    checkCondition(mutable checker, walker, condition)
+  }
+
+  // The variant the test names, when its pattern is a constructor or name.
+  let enumIndex = -1
+  let variantIndex = -1
+  if (testPattern is Some(testedPattern)) {
+    if (getRef(checker, getPatternId(testedPattern)) is Ref.Constructor(testEnum, testVariant)) {
+      enumIndex = testEnum
+      variantIndex = testVariant
+    }
+  }
+  if (subject < 0) {
+    variantIndex = -1
+  }
+
+  // The then branch sees the bindings and the narrowed subject.
   pushScope(mutable checker)
+  if (testPattern is Some(boundPattern)) {
+    let locals: Array<int> = []
+    collectPatternLocals(checker, boundPattern, mutable locals)
+    bindPatternLocals(mutable checker, locals)
+  }
+  if (variantIndex >= 0) {
+    setNarrowed(mutable checker, subject, variantIndex)
+  }
   for (const statement of Arrays.values(then.stmts)) {
     checkStatement(mutable checker, walker, statement)
   }
   popScope(mutable checker)
+
+  // Where the test failed, a two-variant enum holds the other variant,
+  // unless the pattern also tested the fields (`x is Some(1)`).
+  let otherVariant = findOtherVariant(checker, enumIndex, variantIndex)
+  if (testPattern is Some(fieldPattern)) {
+    if (!areArgsIrrefutable(checker, fieldPattern)) {
+      otherVariant = -1
+    }
+  }
   if (orElse is Some(other)) {
     pushScope(mutable checker)
+    if (otherVariant >= 0) {
+      setNarrowed(mutable checker, subject, otherVariant)
+    }
     checkStatement(mutable checker, walker, other)
     popScope(mutable checker)
+  } else if (otherVariant >= 0 && diverges(then)) {
+    setNarrowed(mutable checker, subject, otherVariant)
   }
 }
 

@@ -489,7 +489,7 @@ func (c *Checker) dumpScope(b *strings.Builder, s *modScope) {
 				b.WriteString(" alias=" + imp.Alias)
 			}
 			if len(imp.Names) > 0 {
-				b.WriteString(" names=" + strings.Join(imp.Names, ","))
+				b.WriteString(" names=" + importNames(imp.Names))
 			}
 			b.WriteString("\n")
 		}

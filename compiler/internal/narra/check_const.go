@@ -18,8 +18,8 @@ func (c *Checker) declareConsts(f *File) {
 	// An imported constant was added before this module's types existed.
 	for _, imp := range f.Imports {
 		for _, n := range imp.Names {
-			if d := c.mod.consts[n]; d != nil && d.Module != c.mod.path && c.typeNamed(n) {
-				c.errorf(imp.Pos, "constant %q is declared twice", n)
+			if d := c.mod.consts[n.Local]; d != nil && d.Module != c.mod.path && c.typeNamed(n.Local) {
+				c.errorf(imp.Pos, "constant %q is declared twice", n.Local)
 			}
 		}
 	}
@@ -39,12 +39,12 @@ func (c *Checker) declareConsts(f *File) {
 }
 
 // importConst makes an exported constant of another module visible.
-func (c *Checker) importConst(pos Pos, d *ConstDecl) {
-	if _, dup := c.mod.consts[d.Name]; dup || c.typeNamed(d.Name) {
-		c.errorf(pos, "constant %q is declared twice", d.Name)
+func (c *Checker) importConst(pos Pos, local string, d *ConstDecl) {
+	if _, dup := c.mod.consts[local]; dup || c.typeNamed(local) {
+		c.errorf(pos, "constant %q is declared twice", local)
 		return
 	}
-	c.mod.consts[d.Name] = d
+	c.mod.consts[local] = d
 }
 
 // constType returns the type of d, checking its value first when needed.

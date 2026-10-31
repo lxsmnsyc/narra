@@ -170,8 +170,9 @@ func (c *Checker) declareModule(f *File) []Type {
 			c.mod.importAt = Pos{f.Imports[0].Pos.Line, 1}
 		}
 	}
+	aliases := map[string]bool{}
 	for _, imp := range f.Imports {
-		if c.importPackageModule(imp) {
+		if c.importPackageModule(imp, aliases) {
 			continue
 		}
 		mod, ok := stdModules[imp.Path]
@@ -184,16 +185,18 @@ func (c *Checker) declareModule(f *File) []Type {
 			// The type is visible only where its runtime C is emitted.
 			c.types["StringBuilder"] = TStringBuilder
 		}
-		if imp.Alias != "" {
-			c.modules[imp.Alias] = imp.Path
-		}
+		c.bindAlias(imp, aliases)
 		for _, n := range imp.Names {
-			b, ok := mod.Funcs[n]
+			b, ok := mod.Funcs[n.Name]
 			if !ok {
-				c.errorf(imp.Pos, "module %q has no export %q", imp.Path, n)
+				c.errorf(imp.Pos, "module %q has no export %q", imp.Path, n.Name)
 				continue
 			}
-			c.imported[n] = b
+			if prev, dup := c.imported[n.Local]; dup && prev != b {
+				c.errorf(imp.Pos, "imported name %q is already imported from another module; rename one with `as`", n.Local)
+				continue
+			}
+			c.imported[n.Local] = b
 		}
 	}
 	// Declare type names first, so declarations can refer to each other.
@@ -226,6 +229,7 @@ func (c *Checker) declareModule(f *File) []Type {
 		}
 	}
 	c.declareTraits(f)
+	c.checkImportNames(f)
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *StructDecl:

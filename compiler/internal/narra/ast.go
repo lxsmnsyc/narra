@@ -8,13 +8,32 @@ type File struct {
 	Header  int    // line after the leading comment lines; where a fix adds the first import
 	Imports []*ImportDecl
 	Decls   []Decl
+	// dotUses lists, by name, the identifiers written right before a `.` and
+	// not after one, such as `Arrays` in `Arrays.push(...)`. A fix that
+	// renames an import alias edits them.
+	inTemplate map[string]bool // names written before a `.` inside a template string
+	dotUses map[string][]dotUse
+}
+
+// dotUse is an identifier written before a `.`, with the name after the dot.
+type dotUse struct {
+	Pos    Pos
+	Member string
 }
 
 type ImportDecl struct {
-	Pos   Pos
-	Alias string // import * as Alias from "path"
-	Names []string
-	Path  string
+	Pos      Pos
+	Alias    string // import * as Alias from "path"
+	AliasPos Pos    // where Alias is written, for fixes
+	Names    []ImportName
+	Path     string
+}
+
+// ImportName is one name of `import { Name as Local } from "path"`. Local is
+// Name when the import does not rename it.
+type ImportName struct {
+	Name  string
+	Local string
 }
 
 type Decl interface{ declNode() }

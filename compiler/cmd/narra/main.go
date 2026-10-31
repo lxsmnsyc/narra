@@ -147,6 +147,19 @@ func main() {
 		if !ok {
 			os.Exit(1)
 		}
+	case "types":
+		// Hidden: print the type of every checked expression, for the
+		// self-hosted checker test. Errors go to stderr.
+		if len(rest) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: narra types path")
+			os.Exit(2)
+		}
+		dump, ok := narra.TypesDump(rest[0])
+		if !ok {
+			fmt.Fprint(os.Stderr, dump)
+			os.Exit(1)
+		}
+		fmt.Print(dump)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

@@ -58,10 +58,29 @@ func (c *Checker) newScope(path, file string, src *SourceModule) *modScope {
 // module sees only its own declarations, its imports and the prelude, and
 // uses the signatures of the modules it imports.
 func CheckPackage(pkg *Package) (*Program, error) {
+	c, err := checkPackageBodies(pkg, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(c.errs) == 0 {
+		c.checkEffects()
+	}
+	if len(c.errs) > 0 {
+		return nil, Diagnostics(c.errs)
+	}
+	return c.prog, nil
+}
+
+// checkPackageBodies runs every pass of CheckPackage except the effect pass:
+// the declarations and bodies of each module, the pending generic instances,
+// the Map keys, the entry functions and finish. With logBodies the checker
+// lists the checked bodies for TypesDump.
+func checkPackageBodies(pkg *Package, logBodies bool) (*Checker, error) {
 	c, concrete, err := newPackageChecker(pkg)
 	if err != nil {
 		return nil, err
 	}
+	c.logBodies = logBodies
 	for _, m := range pkg.Modules {
 		concrete = append(concrete, c.declareSourceModule(m)...)
 		for _, f := range m.Files {
@@ -79,13 +98,7 @@ func CheckPackage(pkg *Package) (*Program, error) {
 		}
 	}
 	c.finish(concrete)
-	if len(c.errs) == 0 {
-		c.checkEffects()
-	}
-	if len(c.errs) > 0 {
-		return nil, Diagnostics(c.errs)
-	}
-	return c.prog, nil
+	return c, nil
 }
 
 // newPackageChecker makes the checker for pkg and runs the declaration

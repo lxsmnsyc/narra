@@ -1,7 +1,7 @@
 ---
 id: typesdump-targs-spacing
 title: Keep the spaces inside type arguments in the types dump header
-status: todo
+status: active
 priority: must
 type: fix
 outline: false

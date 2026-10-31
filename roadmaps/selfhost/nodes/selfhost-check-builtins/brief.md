@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-builtins
 title: Self-hosted checker: generic builtin check kinds
-status: active
+status: done
+spent: 274000
 priority: must
 type: feature
 outline: false

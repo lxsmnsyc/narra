@@ -34,13 +34,13 @@ export struct Token {
 }
 
 struct Lexer {
-  src: Array<char>
-  i: int
+  source: Array<char>
+  index: int
   line: int
   col: int
   depth: int // nesting of ( and [, where line breaks never end a statement
   tokens: Array<Token>
-  punctChars: Array<Array<char>>
+  punctuationChars: Array<Array<char>>
 }
 
 const KEYWORDS = Map {
@@ -59,73 +59,73 @@ const PUNCTS = [
   "(", ")", "{", "}", "[", "]", ",", ":", ".", ";",
 ]
 
-function newLexer(src: string): Lexer {
-  let punctChars: Array<Array<char>> = []
-  for (const p of Arrays.values(PUNCTS)) {
-    Arrays.push(mutable punctChars, Str.chars(p))
+function createLexer(source: string): Lexer {
+  let punctuationChars: Array<Array<char>> = []
+  for (const punctuation of Arrays.values(PUNCTS)) {
+    Arrays.push(mutable punctuationChars, Str.chars(punctuation))
   }
   return Lexer {
-    src: Str.chars(src),
-    i: 0,
+    source: Str.chars(source),
+    index: 0,
     line: 1,
     col: 1,
     depth: 0,
     tokens: [],
-    punctChars: punctChars,
+    punctuationChars: punctuationChars,
   }
 }
 
-// lex returns the tokens of src, or the first error as "line:col: message".
-export function lex(src: string): Result<Array<Token>, string> uses alloc {
-  let lx = newLexer(src)
-  const failed = runLexer(mutable lx)
-  if (failed is Some(msg)) {
-    return Err(msg)
+// lex returns the tokens of source, or the first error as "line:col: message".
+export function lex(source: string): Result<Array<Token>, string> uses alloc {
+  let lexer = createLexer(source)
+  const failed = runLexer(mutable lexer)
+  if (failed is Some(message)) {
+    return Err(message)
   }
-  return Ok(lx.tokens)
+  return Ok(lexer.tokens)
 }
 
-function errorAt(line: int, col: int, msg: string): Option<string> {
-  return Some(`${Int.toString(line)}:${Int.toString(col)}: ${msg}`)
+function errorAt(line: int, col: int, message: string): Option<string> {
+  return Some(`${Int.toString(line)}:${Int.toString(col)}: ${message}`)
 }
 
-function size(lx: Lexer): int {
-  return Arrays.length(lx.src)
+function getSize(lexer: Lexer): int {
+  return Arrays.length(lexer.source)
 }
 
-function peek(lx: Lexer, off: int): char {
-  if (lx.i + off < Arrays.length(lx.src)) {
-    return lx.src[lx.i + off]
+function peek(lexer: Lexer, offset: int): char {
+  if (lexer.index + offset < Arrays.length(lexer.source)) {
+    return lexer.source[lexer.index + offset]
   }
   return '\0'
 }
 
-function advance(mutable lx: Lexer): char {
-  const r = lx.src[lx.i]
-  lx.i = lx.i + 1
-  if (r == '\n') {
-    lx.line = lx.line + 1
-    lx.col = 1
+function advance(mutable lexer: Lexer): char {
+  const character = lexer.source[lexer.index]
+  lexer.index = lexer.index + 1
+  if (character == '\n') {
+    lexer.line = lexer.line + 1
+    lexer.col = 1
   } else {
-    lx.col = lx.col + 1
+    lexer.col = lexer.col + 1
   }
-  return r
+  return character
 }
 
 // emit runs after the token's characters are consumed, so the current
 // position is the token's end.
-function emit(mutable lx: Lexer, kind: TokenKind, text: string, line: int, col: int) {
-  const t = Token { kind: kind, text: text, line: line, col: col, endLine: lx.line, endCol: lx.col }
-  Arrays.push(mutable lx.tokens, t)
+function emit(mutable lexer: Lexer, kind: TokenKind, text: string, line: int, col: int) {
+  const token = Token { kind: kind, text: text, line: line, col: col, endLine: lexer.line, endCol: lexer.col }
+  Arrays.push(mutable lexer.tokens, token)
 }
 
 // A line break ends a statement only after a token that can end one.
-function lastEndsStatement(lx: Lexer): bool {
-  const n = Arrays.length(lx.tokens)
-  if (n == 0) {
+function lastEndsStatement(lexer: Lexer): bool {
+  const count = Arrays.length(lexer.tokens)
+  if (count == 0) {
     return false
   }
-  const last = lx.tokens[n - 1]
+  const last = lexer.tokens[count - 1]
   return match (last.kind) {
     TokenKind.TokIdent => true
     TokenKind.TokInt => true
@@ -139,186 +139,185 @@ function lastEndsStatement(lx: Lexer): bool {
   }
 }
 
-// text returns the characters first..end of the source as a string.
+// readText returns the characters first..end of the source as a string.
 // (`from` is a keyword, so it cannot name a parameter.)
-function text(lx: Lexer, first: int, end: int): string {
-  let sb = Str.builder()
-  let k = first
-  while (k < end) {
-    Str.appendChar(mutable sb, lx.src[k])
-    k = k + 1
+function readText(lexer: Lexer, first: int, end: int): string {
+  let builder = Str.builder()
+  for (const index of Ranges.between(first, end)) {
+    Str.appendChar(mutable builder, lexer.source[index])
   }
-  return Str.build(sb)
+  return Str.build(builder)
 }
 
-function runLexer(mutable lx: Lexer): Option<string> {
-  while (lx.i < size(lx)) {
-    const r = peek(lx, 0)
-    const line = lx.line
-    const col = lx.col
-    if (r == '\n') {
-      advance(mutable lx)
-      if (lx.depth == 0 && lastEndsStatement(lx)) {
-        emit(mutable lx, TokenKind.TokNewline, "\n", line, col)
+function runLexer(mutable lexer: Lexer): Option<string> {
+  while (lexer.index < getSize(lexer)) {
+    const character = peek(lexer, 0)
+    const line = lexer.line
+    const col = lexer.col
+    if (character == '\n') {
+      advance(mutable lexer)
+      if (lexer.depth == 0 && lastEndsStatement(lexer)) {
+        emit(mutable lexer, TokenKind.TokNewline, "\n", line, col)
       }
-    } else if (r == ' ' || r == '\t' || r == '\r') {
-      advance(mutable lx)
-    } else if (r == '/' && peek(lx, 1) == '/') {
-      while (lx.i < size(lx) && peek(lx, 0) != '\n') {
-        advance(mutable lx)
+    } else if (character == ' ' || character == '\t' || character == '\r') {
+      advance(mutable lexer)
+    } else if (character == '/' && peek(lexer, 1) == '/') {
+      while (lexer.index < getSize(lexer) && peek(lexer, 0) != '\n') {
+        advance(mutable lexer)
       }
-    } else if (r == '/' && peek(lx, 1) == '*') {
-      advance(mutable lx)
-      advance(mutable lx)
-      while (lx.i < size(lx) && !(peek(lx, 0) == '*' && peek(lx, 1) == '/')) {
-        advance(mutable lx)
+    } else if (character == '/' && peek(lexer, 1) == '*') {
+      advance(mutable lexer)
+      advance(mutable lexer)
+      while (lexer.index < getSize(lexer) && !(peek(lexer, 0) == '*' && peek(lexer, 1) == '/')) {
+        advance(mutable lexer)
       }
-      if (lx.i >= size(lx)) {
+      if (lexer.index >= getSize(lexer)) {
         return errorAt(line, col, "unterminated block comment")
       }
-      advance(mutable lx)
-      advance(mutable lx)
-    } else if (isLetter(r)) {
-      const start = lx.i
-      while (lx.i < size(lx) && (isLetter(peek(lx, 0)) || isDigit(peek(lx, 0)))) {
-        advance(mutable lx)
+      advance(mutable lexer)
+      advance(mutable lexer)
+    } else if (isLetter(character)) {
+      const start = lexer.index
+      while (lexer.index < getSize(lexer) && (isLetter(peek(lexer, 0)) || isDigit(peek(lexer, 0)))) {
+        advance(mutable lexer)
       }
-      const word = text(lx, start, lx.i)
+      const word = readText(lexer, start, lexer.index)
       if (KEYWORDS[word] is Some(_)) {
-        emit(mutable lx, TokenKind.TokKeyword, word, line, col)
+        emit(mutable lexer, TokenKind.TokKeyword, word, line, col)
       } else {
-        emit(mutable lx, TokenKind.TokIdent, word, line, col)
+        emit(mutable lexer, TokenKind.TokIdent, word, line, col)
       }
-    } else if (isDigit(r)) {
-      number(mutable lx, line, col)
-    } else if (r == '"') {
-      const s = quoted(mutable lx, '"', line, col)
-      if (s is Err(e)) {
-        return Some(e)
+    } else if (isDigit(character)) {
+      lexNumber(mutable lexer, line, col)
+    } else if (character == '"') {
+      const literal = lexQuoted(mutable lexer, '"', line, col)
+      if (literal is Err(error)) {
+        return Some(error)
       }
-      emit(mutable lx, TokenKind.TokString, s.value, line, col)
-    } else if (r == '\'') {
-      const s = quoted(mutable lx, '\'', line, col)
-      if (s is Err(e)) {
-        return Some(e)
+      emit(mutable lexer, TokenKind.TokString, literal.value, line, col)
+    } else if (character == '\'') {
+      const literal = lexQuoted(mutable lexer, '\'', line, col)
+      if (literal is Err(error)) {
+        return Some(error)
       }
-      if (Str.charCount(s.value) != 1) {
+      if (Str.charCount(literal.value) != 1) {
         return errorAt(line, col, "a character literal holds exactly one character; use double quotes for strings")
       }
-      emit(mutable lx, TokenKind.TokChar, s.value, line, col)
-    } else if (r == '`') {
-      const s = template(mutable lx, line, col)
-      if (s is Err(e)) {
-        return Some(e)
+      emit(mutable lexer, TokenKind.TokChar, literal.value, line, col)
+    } else if (character == '`') {
+      const literal = lexTemplate(mutable lexer, line, col)
+      if (literal is Err(error)) {
+        return Some(error)
       }
-      emit(mutable lx, TokenKind.TokTemplate, s.value, line, col)
+      emit(mutable lexer, TokenKind.TokTemplate, literal.value, line, col)
     } else {
-      const failed = punct(mutable lx, r, line, col)
+      const failed = lexPunctuation(mutable lexer, character, line, col)
       if (failed is Some(_)) {
         return failed
       }
     }
   }
-  const line = lx.line
-  const col = lx.col
-  if (lastEndsStatement(lx)) {
-    emit(mutable lx, TokenKind.TokNewline, "\n", line, col)
+  const line = lexer.line
+  const col = lexer.col
+  if (lastEndsStatement(lexer)) {
+    emit(mutable lexer, TokenKind.TokNewline, "\n", line, col)
   }
-  emit(mutable lx, TokenKind.TokEof, "", line, col)
+  emit(mutable lexer, TokenKind.TokEof, "", line, col)
   return None
 }
 
-function punct(mutable lx: Lexer, r: char, line: int, col: int): Option<string> {
-  for (const k of Ranges.upTo(Arrays.length(PUNCTS))) {
-    if (hasPrefix(lx, lx.punctChars[k])) {
-      const p = PUNCTS[k]
-      for (const _c of Arrays.values(lx.punctChars[k])) {
-        advance(mutable lx)
+function lexPunctuation(mutable lexer: Lexer, character: char, line: int, col: int): Option<string> {
+  for (const index of Ranges.upTo(Arrays.length(PUNCTS))) {
+    if (hasPrefix(lexer, lexer.punctuationChars[index])) {
+      const punctuation = PUNCTS[index]
+      for (const _character of Arrays.values(lexer.punctuationChars[index])) {
+        advance(mutable lexer)
       }
-      if (p == ";") {
+      if (punctuation == ";") {
         return errorAt(line, col, "semicolons are not used; end the statement with a line break")
       }
-      if (p == "(" || p == "[" || p == "#[") {
-        lx.depth = lx.depth + 1
-      } else if (p == ")" || p == "]") {
-        if (lx.depth > 0) {
-          lx.depth = lx.depth - 1
+      if (punctuation == "(" || punctuation == "[" || punctuation == "#[") {
+        lexer.depth = lexer.depth + 1
+      } else if (punctuation == ")" || punctuation == "]") {
+        if (lexer.depth > 0) {
+          lexer.depth = lexer.depth - 1
         }
       }
-      emit(mutable lx, TokenKind.TokPunct, p, line, col)
+      emit(mutable lexer, TokenKind.TokPunct, punctuation, line, col)
       return None
     }
   }
-  return errorAt(line, col, `unexpected character ${quoteChar(r)}`)
+  return errorAt(line, col, `unexpected character ${quoteChar(character)}`)
 }
 
-function hasPrefix(lx: Lexer, p: Array<char>): bool {
-  for (const k of Ranges.upTo(Arrays.length(p))) {
-    if (peek(lx, k) != p[k]) {
+function hasPrefix(lexer: Lexer, prefix: Array<char>): bool {
+  for (const index of Ranges.upTo(Arrays.length(prefix))) {
+    if (peek(lexer, index) != prefix[index]) {
       return false
     }
   }
   return true
 }
 
-function number(mutable lx: Lexer, line: int, col: int) {
-  const start = lx.i
+function lexNumber(mutable lexer: Lexer, line: int, col: int) {
+  // A 0x, 0b or 0o prefix takes hex digits; otherwise read a decimal with an
+  // optional fraction and exponent.
+  const start = lexer.index
   let isFloat = false
-  if (peek(lx, 0) == '0' && (peek(lx, 1) == 'x' || peek(lx, 1) == 'b' || peek(lx, 1) == 'o')) {
-    advance(mutable lx)
-    advance(mutable lx)
-    while (isHexDigit(peek(lx, 0)) || peek(lx, 0) == '_') {
-      advance(mutable lx)
+  if (peek(lexer, 0) == '0' && (peek(lexer, 1) == 'x' || peek(lexer, 1) == 'b' || peek(lexer, 1) == 'o')) {
+    advance(mutable lexer)
+    advance(mutable lexer)
+    while (isHexDigit(peek(lexer, 0)) || peek(lexer, 0) == '_') {
+      advance(mutable lexer)
     }
   } else {
-    while (isDigit(peek(lx, 0)) || peek(lx, 0) == '_') {
-      advance(mutable lx)
+    while (isDigit(peek(lexer, 0)) || peek(lexer, 0) == '_') {
+      advance(mutable lexer)
     }
-    if (peek(lx, 0) == '.' && isDigit(peek(lx, 1))) {
+    if (peek(lexer, 0) == '.' && isDigit(peek(lexer, 1))) {
       isFloat = true
-      advance(mutable lx)
-      while (isDigit(peek(lx, 0)) || peek(lx, 0) == '_') {
-        advance(mutable lx)
+      advance(mutable lexer)
+      while (isDigit(peek(lexer, 0)) || peek(lexer, 0) == '_') {
+        advance(mutable lexer)
       }
     }
-    if (peek(lx, 0) == 'e' || peek(lx, 0) == 'E') {
+    if (peek(lexer, 0) == 'e' || peek(lexer, 0) == 'E') {
       isFloat = true
-      advance(mutable lx)
-      if (peek(lx, 0) == '+' || peek(lx, 0) == '-') {
-        advance(mutable lx)
+      advance(mutable lexer)
+      if (peek(lexer, 0) == '+' || peek(lexer, 0) == '-') {
+        advance(mutable lexer)
       }
-      while (isDigit(peek(lx, 0))) {
-        advance(mutable lx)
+      while (isDigit(peek(lexer, 0))) {
+        advance(mutable lexer)
       }
     }
   }
+
   // The text without the `_` separators.
-  let sb = Str.builder()
-  let k = start
-  while (k < lx.i) {
-    if (lx.src[k] != '_') {
-      Str.appendChar(mutable sb, lx.src[k])
+  let builder = Str.builder()
+  for (const index of Ranges.between(start, lexer.index)) {
+    if (lexer.source[index] != '_') {
+      Str.appendChar(mutable builder, lexer.source[index])
     }
-    k = k + 1
   }
   if (isFloat) {
-    emit(mutable lx, TokenKind.TokFloat, Str.build(sb), line, col)
+    emit(mutable lexer, TokenKind.TokFloat, Str.build(builder), line, col)
   } else {
-    emit(mutable lx, TokenKind.TokInt, Str.build(sb), line, col)
+    emit(mutable lexer, TokenKind.TokInt, Str.build(builder), line, col)
   }
 }
 
-function fail(line: int, col: int, msg: string): Result<string, string> {
-  return Err(`${Int.toString(line)}:${Int.toString(col)}: ${msg}`)
+function fail(line: int, col: int, message: string): Result<string, string> {
+  return Err(`${Int.toString(line)}:${Int.toString(col)}: ${message}`)
 }
 
-function escape(mutable lx: Lexer, line: int, col: int): Result<string, string> {
-  advance(mutable lx) // the backslash
-  if (lx.i >= size(lx)) {
+function lexEscape(mutable lexer: Lexer, line: int, col: int): Result<string, string> {
+  advance(mutable lexer) // the backslash
+  if (lexer.index >= getSize(lexer)) {
     return fail(line, col, "unterminated escape")
   }
-  const c = advance(mutable lx)
-  return match (c) {
+  const character = advance(mutable lexer)
+  return match (character) {
     'n' => Ok("\n")
     't' => Ok("\t")
     'r' => Ok("\r")
@@ -328,59 +327,59 @@ function escape(mutable lx: Lexer, line: int, col: int): Result<string, string> 
     '\'' => Ok("'")
     '`' => Ok("`")
     '$' => Ok("$")
-    'u' => unicodeEscape(mutable lx, line, col)
-    _ => fail(line, col, `unknown escape \\${Str.fromChar(c)}`)
+    'u' => lexUnicodeEscape(mutable lexer, line, col)
+    _ => fail(line, col, `unknown escape \\${Str.fromChar(character)}`)
   }
 }
 
-function unicodeEscape(mutable lx: Lexer, line: int, col: int): Result<string, string> {
-  if (peek(lx, 0) != '{') {
+function lexUnicodeEscape(mutable lexer: Lexer, line: int, col: int): Result<string, string> {
+  if (peek(lexer, 0) != '{') {
     return fail(line, col, "expected { after \\u")
   }
-  advance(mutable lx)
-  let v = 0
-  while (peek(lx, 0) != '}') {
-    if (lx.i >= size(lx) || !isHexDigit(peek(lx, 0))) {
+  advance(mutable lexer)
+  let value = 0
+  while (peek(lexer, 0) != '}') {
+    if (lexer.index >= getSize(lexer) || !isHexDigit(peek(lexer, 0))) {
       return fail(line, col, "invalid \\u escape")
     }
-    v = (v *% 16) +% hexValue(advance(mutable lx))
+    value = (value *% 16) +% hexValue(advance(mutable lexer))
   }
-  advance(mutable lx)
-  return Ok(Str.fromChar(runeOf(v)))
+  advance(mutable lexer)
+  return Ok(Str.fromChar(convertRune(value)))
 }
 
-// runeOf copies Go's string(rune(v)): v is cut to 32 bits, and a negative
-// value, a surrogate or a value above 0x10FFFF becomes U+FFFD.
-function runeOf(v: int): char {
-  const r = v & 0xFFFFFFFF
-  if (r < 0x80000000) {
-    if (Char.fromCode(r) is Some(c)) {
-      return c
+// convertRune copies Go's string(rune(value)): value is cut to 32 bits, and a
+// negative value, a surrogate or a value above 0x10FFFF becomes U+FFFD.
+function convertRune(value: int): char {
+  const code = value & 0xFFFFFFFF
+  if (code < 0x80000000) {
+    if (Char.fromCode(code) is Some(character)) {
+      return character
     }
   }
   return '\u{FFFD}'
 }
 
-function quoted(mutable lx: Lexer, q: char, line: int, col: int): Result<string, string> {
-  advance(mutable lx)
-  let sb = Str.builder()
+function lexQuoted(mutable lexer: Lexer, quote: char, line: int, col: int): Result<string, string> {
+  advance(mutable lexer)
+  let builder = Str.builder()
   while (true) {
-    if (lx.i >= size(lx) || peek(lx, 0) == '\n') {
+    if (lexer.index >= getSize(lexer) || peek(lexer, 0) == '\n') {
       return fail(line, col, "unterminated literal")
     }
-    const c = peek(lx, 0)
-    if (c == q) {
-      advance(mutable lx)
-      return Ok(Str.build(sb))
+    const character = peek(lexer, 0)
+    if (character == quote) {
+      advance(mutable lexer)
+      return Ok(Str.build(builder))
     }
-    if (c == '\\') {
-      const s = escape(mutable lx, line, col)
-      if (s is Err(e)) {
-        return Err(e)
+    if (character == '\\') {
+      const escaped = lexEscape(mutable lexer, line, col)
+      if (escaped is Err(error)) {
+        return Err(error)
       }
-      Str.append(mutable sb, s.value)
+      Str.append(mutable builder, escaped.value)
     } else {
-      Str.appendChar(mutable sb, advance(mutable lx))
+      Str.appendChar(mutable builder, advance(mutable lexer))
     }
   }
   return fail(line, col, "unreachable")
@@ -388,37 +387,37 @@ function quoted(mutable lx: Lexer, q: char, line: int, col: int): Result<string,
 
 // Templates keep their raw source. The parser splits out each ${...} part
 // and parses it on its own.
-function template(mutable lx: Lexer, line: int, col: int): Result<string, string> {
-  advance(mutable lx)
-  const start = lx.i
+function lexTemplate(mutable lexer: Lexer, line: int, col: int): Result<string, string> {
+  advance(mutable lexer)
+  const start = lexer.index
   while (true) {
-    if (lx.i >= size(lx)) {
+    if (lexer.index >= getSize(lexer)) {
       return fail(line, col, "unterminated template string")
     }
-    const c = peek(lx, 0)
-    if (c == '\\') {
-      advance(mutable lx)
-      if (lx.i < size(lx)) {
-        advance(mutable lx)
+    const character = peek(lexer, 0)
+    if (character == '\\') {
+      advance(mutable lexer)
+      if (lexer.index < getSize(lexer)) {
+        advance(mutable lexer)
       }
-    } else if (c == '`') {
-      const raw = text(lx, start, lx.i)
-      advance(mutable lx)
+    } else if (character == '`') {
+      const raw = readText(lexer, start, lexer.index)
+      advance(mutable lexer)
       return Ok(raw)
     } else {
-      advance(mutable lx)
+      advance(mutable lexer)
     }
   }
   return fail(line, col, "unreachable")
 }
 
-// hex writes n (not negative) in lowercase hexadecimal with at least
+// hex writes value (not negative) in lowercase hexadecimal with at least
 // `width` digits.
-export function hex(n: int, width: int): string uses alloc {
-  const digits = Int.toHex(n)
-  const pad = width - Str.length(digits)
-  if (pad > 0) {
-    return `${Str.repeat("0", pad)}${digits}`
+export function hex(value: int, width: int): string uses alloc {
+  const digits = Int.toHex(value)
+  const padding = width - Str.length(digits)
+  if (padding > 0) {
+    return `${Str.repeat("0", padding)}${digits}`
   }
   return digits
 }
@@ -426,8 +425,8 @@ export function hex(n: int, width: int): string uses alloc {
 // quoteChar copies Go's %q for a rune, for the "unexpected character" error.
 // Non-ASCII characters are written as they are (Go escapes the ones that
 // are not printable; this needs Unicode tables).
-function quoteChar(c: char): string {
-  return match (c) {
+function quoteChar(character: char): string {
+  return match (character) {
     '\'' => "'\\''"
     '\\' => "'\\\\'"
     '\u{7}' => "'\\a'"
@@ -437,41 +436,41 @@ function quoteChar(c: char): string {
     '\r' => "'\\r'"
     '\t' => "'\\t'"
     '\u{b}' => "'\\v'"
-    _ => quoteOther(c)
+    _ => quoteOther(character)
   }
 }
 
-function quoteOther(c: char): string {
-  if (c < ' ' || c == '\u{7f}') {
-    return `'\\x${hex(Char.code(c), 2)}'`
+function quoteOther(character: char): string {
+  if (character < ' ' || character == '\u{7f}') {
+    return `'\\x${hex(Char.code(character), 2)}'`
   }
-  return `'${Str.fromChar(c)}'`
+  return `'${Str.fromChar(character)}'`
 }
 
-function isLetter(r: char): bool {
-  return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+function isLetter(character: char): bool {
+  return character == '_' || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
 }
 
-function isDigit(r: char): bool {
-  return r >= '0' && r <= '9'
+function isDigit(character: char): bool {
+  return character >= '0' && character <= '9'
 }
 
-function isHexDigit(r: char): bool {
-  return isDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+function isHexDigit(character: char): bool {
+  return isDigit(character) || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')
 }
 
-function hexValue(r: char): int {
-  if (isDigit(r)) {
-    return Char.code(r) - Char.code('0')
+function hexValue(character: char): int {
+  if (isDigit(character)) {
+    return Char.code(character) - Char.code('0')
   }
-  if (r >= 'a' && r <= 'f') {
-    return Char.code(r) - Char.code('a') + 10
+  if (character >= 'a' && character <= 'f') {
+    return Char.code(character) - Char.code('a') + 10
   }
-  return Char.code(r) - Char.code('A') + 10
+  return Char.code(character) - Char.code('A') + 10
 }
 
-export function kindName(k: TokenKind): string {
-  return match (k) {
+export function kindName(kind: TokenKind): string {
+  return match (kind) {
     TokenKind.TokEof => "eof"
     TokenKind.TokNewline => "newline"
     TokenKind.TokIdent => "ident"
@@ -488,22 +487,22 @@ export function kindName(k: TokenKind): string {
 // escapeText writes `\` as `\\`, newline, tab and carriage return as `\n`,
 // `\t` and `\r`, and other control characters as `\u{<hex>}`, the same as
 // escapeTokenText in compiler/internal/narra/lexdump.go.
-export function escapeText(s: string): string uses alloc {
-  let sb = Str.builder()
-  for (const c of Arrays.values(Str.chars(s))) {
-    if (c == '\\') {
-      Str.append(mutable sb, "\\\\")
-    } else if (c == '\n') {
-      Str.append(mutable sb, "\\n")
-    } else if (c == '\t') {
-      Str.append(mutable sb, "\\t")
-    } else if (c == '\r') {
-      Str.append(mutable sb, "\\r")
-    } else if (c < ' ' || c == '\u{7f}') {
-      Str.append(mutable sb, `\\u{${Int.toHex(Char.code(c))}}`)
+export function escapeText(text: string): string uses alloc {
+  let builder = Str.builder()
+  for (const character of Arrays.values(Str.chars(text))) {
+    if (character == '\\') {
+      Str.append(mutable builder, "\\\\")
+    } else if (character == '\n') {
+      Str.append(mutable builder, "\\n")
+    } else if (character == '\t') {
+      Str.append(mutable builder, "\\t")
+    } else if (character == '\r') {
+      Str.append(mutable builder, "\\r")
+    } else if (character < ' ' || character == '\u{7f}') {
+      Str.append(mutable builder, `\\u{${Int.toHex(Char.code(character))}}`)
     } else {
-      Str.appendChar(mutable sb, c)
+      Str.appendChar(mutable builder, character)
     }
   }
-  return Str.build(sb)
+  return Str.build(builder)
 }

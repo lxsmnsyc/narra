@@ -102,6 +102,18 @@ func (c *Checker) logBody(b checkedBody) {
 	c.bodies = append(c.bodies, b)
 }
 
+// implSourceName is the name an implement block's function has in the
+// source; resolveImpl renames the function to its C name.
+func (c *Checker) implSourceName(t Type, fd *FuncDecl) string {
+	for key, f := range c.traits.implFuncs[t] {
+		if f == fd {
+			_, name, _ := strings.Cut(key, ".")
+			return name
+		}
+	}
+	return fd.Name
+}
+
 // instanceArgs lists the type arguments of an instance in the order of the
 // generic function's type parameters.
 func instanceArgs(tps []*TypeParamType, env map[string]Type) []Type {

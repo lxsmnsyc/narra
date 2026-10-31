@@ -14,7 +14,7 @@
 import { Pos, File, Decl, FuncDecl, ConstDecl, TestDecl, Expr, Block, Param } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
-import { Type } from "narrac/types"
+import { Type, Field } from "narrac/types"
 import { Checker, BodyRoot, Walker, errorf, enter, startBody, finishBody, declareLocal, unsupported, getExpressionPos, finish } from "narrac/check"
 import { newPackageChecker, declareSourceModule } from "narrac/declare"
 import { checkEntries } from "narrac/scopes"
@@ -63,36 +63,45 @@ export function checkPackage(pkg: Package): Checker uses alloc {
   return checker
 }
 
-// checkDefaults checks the default value of every field of the module's
-// non-generic structs, after every field type is known. A default of a
-// generic struct is checked by Go's buildGeneric; it is unsupported here
-// until a later node moves that check.
+// checkDefaults checks the field defaults of the structs the module's
+// declaration made known: first those of the generic structs built
+// meanwhile, in build order (Go checks them inside buildGeneric, a little
+// earlier), then those of the module's non-generic structs, after every
+// field type is known.
 function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
+  const generics = checker.pendingDefaults
+  checker.pendingDefaults = []
+  for (const generic of Arrays.values(generics)) {
+    checkGenericDefaults(mutable checker, walker, generic)
+  }
   const scope = checker.cur
   for (const decl of Arrays.values(file.decls)) {
     if (decl is Decl.Struct(structDecl)) {
       if (Arrays.length(structDecl.typeParams) > 0) {
-        checkGenericDefaults(mutable checker, structDecl.pos, structDecl.name)
         continue
       }
       const structIndex = findStruct(checker, scope, structDecl.pos)
       if (structIndex >= 0) {
-        checkStructDefaults(mutable checker, walker, structIndex)
+        const owner = dumpTypeString(checker, Type.TStruct(structIndex))
+        const fields = checker.structs[structIndex].fields
+        checkFieldDefaults(mutable checker, walker, owner, fields, Map {})
       }
     }
   }
 }
 
-function checkGenericDefaults(mutable checker: Checker, pos: Pos, name: string) uses alloc {
-  const scope = checker.cur
-  if (checker.scopes[scope].generics[name] is Some(generic)) {
-    for (const field of Arrays.values(checker.generics[generic].fields)) {
-      if (field.default is Some(_)) {
-        unsupported(mutable checker, pos, "a default of a generic struct field")
-        return
-      }
-    }
+// checkGenericDefaults checks the defaults of a generic struct's template
+// in its own module, with the type parameters open.
+function checkGenericDefaults(mutable checker: Checker, walker: BodyWalker, generic: int) uses alloc {
+  const info = checker.generics[generic]
+  const saved = enter(mutable checker, info.scope)
+  let owner = info.name
+  if (info.module != "") {
+    owner = `${info.module}.${info.name}`
   }
+  const env = envOf(checker, info.params)
+  checkFieldDefaults(mutable checker, walker, owner, info.fields, env)
+  enter(mutable checker, saved)
 }
 
 // findStruct finds the struct declared at pos in scope, or -1.
@@ -107,12 +116,11 @@ function findStruct(checker: Checker, scope: int, pos: Pos): int {
   return -1
 }
 
-function checkStructDefaults(mutable checker: Checker, walker: BodyWalker, structIndex: int) uses alloc {
-  const owner = dumpTypeString(checker, Type.TStruct(structIndex))
-  for (const field of Arrays.values(checker.structs[structIndex].fields)) {
+function checkFieldDefaults(mutable checker: Checker, walker: BodyWalker, owner: string, fields: Array<Field>, env: Map<string, Type>) uses alloc {
+  for (const field of Arrays.values(fields)) {
     if (field.default is Some(value)) {
       // Each default is a body of its own, outside any function.
-      const saved = startBody(mutable checker, "default", `${owner}.${field.name}`, [], BodyRoot.RootExpr(value), Type.TVoid, Map {})
+      const saved = startBody(mutable checker, "default", `${owner}.${field.name}`, [], BodyRoot.RootExpr(value), Type.TVoid, env)
       const found = Exprs.checkExpression(mutable checker, walker, value, Some(field.t))
       Exprs.expectType(mutable checker, getExpressionPos(value), Some(field.t), found)
       if (!Exprs.isConstantValue(value)) {

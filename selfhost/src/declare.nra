@@ -21,7 +21,7 @@ import { Package, SourceModule } from "narrac/modules"
 import { Type, StructInfo, EnumInfo, DistinctInfo, GenericInfo } from "narrac/types"
 import { Checker, FuncInfo, ConstInfo, CheckError, newChecker, newScope, enter, errorf, errorIn, setParamType, lookupType, lookupGeneric, lookupTrait, finish } from "narrac/check"
 import { stdRegistry } from "narrac/stdlib"
-import { exportsOf, checkTypeName, declareType, importModules, typeNamed, checkImportedConsts, checkEntries } from "narrac/scopes"
+import { exportsOf, checkTypeName, declareType, importModules, typeNamed, checkImportedConsts, checkEntries, checkImportNames } from "narrac/scopes"
 import { makeParams, envOf } from "narrac/generics"
 import { declareTraits, resolveTraits, funcBounds, flushMapKeys } from "narrac/traits"
 import { resolveType, resolveOpt, resolveFields, resolveVariants, buildGeneric } from "narrac/resolve"
@@ -122,6 +122,7 @@ export function declareModule(mutable c: Checker, f: File) uses alloc {
         declareType(mutable c, dd.pos, dd.name, t)
       }
       Decl.Enum(ed) => {
+        checkConstructorNames(mutable c, ed.name, ed.variants)
         if (Arrays.length(ed.typeParams) > 0) {
           Arrays.push(mutable own, declareGeneric(mutable c, ed.pos, ed.name, ed.typeParams, false, false, [], ed.variants))
         } else {
@@ -137,6 +138,7 @@ export function declareModule(mutable c: Checker, f: File) uses alloc {
     Arrays.push(mutable made, t)
   }
   declareTraits(mutable c, f)
+  checkImportNames(mutable c, f)
   for (const k of Ranges.between(0, Arrays.length(f.decls))) {
     const t = made[k]
     match (f.decls[k]) {
@@ -154,7 +156,6 @@ export function declareModule(mutable c: Checker, f: File) uses alloc {
       }
       Decl.Distinct(dd) => resolveDistinct(mutable c, dd, t)
       Decl.Func(fd) => declareFunc(mutable c, fd)
-      // HOOK selfhost-check-bodies: tests (Go's Program.Tests).
       _ => {}
     }
   }
@@ -163,8 +164,18 @@ export function declareModule(mutable c: Checker, f: File) uses alloc {
     buildGeneric(mutable c, g)
   }
   resolveTraits(mutable c, f)
-  // HOOK selfhost-check-bodies: checkDefaults on the fields of every
-  // non-generic struct, after every field type is known.
+  // Field defaults are checked after this, by checkDefaults in body.nra.
+}
+
+// checkConstructorNames reports a constructor declared twice in one enum.
+function checkConstructorNames(mutable checker: Checker, enumName: string, variants: Array<VariantDecl>) uses alloc {
+  let seen: Map<string, bool> = Map {}
+  for (const variant of Arrays.values(variants)) {
+    if (seen[variant.name] is Some(_)) {
+      errorf(mutable checker, variant.pos, `enum ${enumName} declares the constructor ${quoteGo(variant.name)} twice`)
+    }
+    seen[variant.name] = true
+  }
 }
 
 function modPath(c: Checker): string {

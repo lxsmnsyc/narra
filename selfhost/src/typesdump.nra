@@ -77,6 +77,7 @@ function describeRef(checker: Checker, bodyInfo: BodyInfo, nodeId: int): string 
     Ref.Implementation(block, index) => ` func=${describeImplementation(checker, block, index)}`
     Ref.TraitFunction(traitIndex, name) => ` trait=${checker.traits[traitIndex].name}.${name}`
     Ref.Distinct(index) => ` distinct=${qualifiedName(checker.distincts[index].module, checker.distincts[index].name)}`
+    Ref.Value => " value"
     Ref.Narrow(enumIndex, variantIndex) => ` narrow=${checker.enums[enumIndex].variants[variantIndex].name}`
   }
 }
@@ -86,6 +87,27 @@ function describeRef(checker: Checker, bodyInfo: BodyInfo, nodeId: int): string 
 function describeImplementation(checker: Checker, block: int, index: int): string uses alloc {
   const impl = checker.impls[block]
   return `${dumpTypeString(checker, impl.forType)}.${checker.traits[impl.traitIdx].name}.${impl.funcs[index].name}`
+}
+
+// describeClosure prints the stack and captures attributes of an arrow
+// function, each with its leading space.
+function describeClosure(bodyInfo: BodyInfo, nodeId: int): string uses alloc {
+  if (bodyInfo.closureIndex[nodeId] is Some(index)) {
+    const closure = bodyInfo.closures[index]
+    let text = ""
+    if (closure.stack) {
+      text = " stack"
+    }
+    if (Arrays.length(closure.captures) > 0) {
+      let names: Array<string> = []
+      for (const captured of Arrays.values(closure.captures)) {
+        Arrays.push(mutable names, bodyInfo.locals[captured].name)
+      }
+      text = `${text} captures=${Str.join(names, ",")}`
+    }
+    return text
+  }
+  return ""
 }
 
 function writeNode(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyInfo, nodeId: int, pos: Pos, kind: string) uses alloc {
@@ -236,7 +258,7 @@ function writeExpression(mutable out: StringBuilder, checker: Checker, bodyInfo:
       }
     }
     Expr.ArrowExpr(nodeId, pos, params, _, body, block) => {
-      writeNode(mutable out, checker, bodyInfo, nodeId, pos, "arrow")
+      writeNode(mutable out, checker, bodyInfo, nodeId, pos, `arrow${describeClosure(bodyInfo, nodeId)}`)
       writeParams(mutable out, checker, bodyInfo, params)
       if (body is Some(expressionBody)) {
         writeExpression(mutable out, checker, bodyInfo, expressionBody)

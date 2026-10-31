@@ -30,6 +30,7 @@ import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdlib"
 import { findNarrowable, findNarrowed } from "narrac/patterns"
+import { useLocal, markArgument, isNonEscaping, checkFunctionValue, findModuleFunction } from "narrac/funcvalues"
 import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -64,7 +65,7 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.StructLit(_, pos, typeName, typeArgs, fields, spread) => checkStructLiteral(mutable checker, walker, pos, typeName, typeArgs, fields, spread, want)
     Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(mutable checker, walker, pos, elements, isTuple, want)
     Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
-    Expr.ArrowExpr(_, pos, _, _, _, _) => unsupported(mutable checker, pos, "an arrow function (selfhost-check-closures)")
+    Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(walker, mutable checker, expression, want)
   }
 }
 
@@ -201,12 +202,10 @@ function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, 
   // A local of the current body.
   const local = findLocal(checker, name)
   if (local >= 0) {
-    if (getLocal(checker, local).noEscape) {
-      return unsupported(mutable checker, pos, "a non-escaping function parameter (selfhost-check-closures)")
-    }
     const body = checker.body
     checker.bodies[body].locals[local].used = true
     setRef(mutable checker, nodeId, Ref.Local(local))
+    useLocal(mutable checker, nodeId, pos, local)
     return getLocal(checker, local).localType
   }
 
@@ -216,8 +215,8 @@ function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, 
     setRef(mutable checker, nodeId, Ref.Const(index))
     return checkConstType(mutable checker, walker, index, pos)
   }
-  if (checker.scopes[scope].funcs[name] is Some(_)) {
-    return unsupported(mutable checker, pos, "a function used as a value (selfhost-check-closures)")
+  if (checker.scopes[scope].funcs[name] is Some(funcIndex)) {
+    return checkFunctionValue(mutable checker, nodeId, pos, funcIndex, want)
   }
   if (Walker.checkConstructorName(walker, mutable checker, nodeId, pos, "", name, want) is Some(constructorType)) {
     return constructorType
@@ -366,8 +365,12 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int,
         const moduleScope = sourceScope(checker, path)
         if (moduleScope >= 0) {
           if (checker.scopes[moduleScope].exports[name] is Some(exportIndex)) {
-            if (checker.scopes[moduleScope].decls[exportIndex] is Decl.Func(_)) {
-              return unsupported(mutable checker, pos, "a module function used as a value (selfhost-check-closures)")
+            if (checker.scopes[moduleScope].decls[exportIndex] is Decl.Func(funcDecl)) {
+              const funcIndex = findModuleFunction(checker, moduleScope, funcDecl)
+              if (funcIndex >= 0) {
+                setNodeType(mutable checker, targetId, Type.TModule(path))
+                return checkFunctionValue(mutable checker, nodeId, pos, funcIndex, want)
+              }
             }
           }
           const index = findModuleConst(checker, moduleScope, name)
@@ -806,15 +809,6 @@ export function checkArgumentsLoosely<W: Walker>(mutable checker: Checker, walke
   }
 }
 
-// nonEscapingParam reports a parameter written with a function type and
-// without `escaping` (check_closure.go).
-export function nonEscapingParam(param: Param): bool {
-  if (param.type is Some(typeExpression)) {
-    return typeExpression.isFunc && !param.escaping && !param.isMutable
-  }
-  return false
-}
-
 // checkArguments checks the arguments of a call of a function (Go's args).
 // wants gives the expected type of each parameter's argument, or None while
 // it is not known (an open type parameter).
@@ -826,39 +820,41 @@ export function checkArguments<W: Walker>(mutable checker: Checker, walker: W, p
   }
   let mutables: Array<int> = []
   for (const index of Ranges.between(0, argCount)) {
-    const arg = args[index]
     if (index >= paramCount) {
-      checkExpression(mutable checker, walker, arg.value, None)
+      checkExpression(mutable checker, walker, args[index].value, None)
       continue
     }
-
-    // A non-escaping function parameter lets its argument through (closures).
-    const param = params[index]
-    if (nonEscapingParam(param)) {
-      unsupported(mutable checker, getExpressionPos(arg.value), "an argument for a non-escaping function parameter (selfhost-check-closures)")
-    }
-    const want = wants[index]
-    const argType = checkExpression(mutable checker, walker, arg.value, want)
-    expectType(mutable checker, getExpressionPos(arg.value), want, argType)
-
-    // The argument is mutable exactly when the parameter is.
-    const argPos = getExpressionPos(arg.value)
-    if (param.isMutable && !arg.isMutable) {
-      errorf(mutable checker, argPos, `parameter ${quoteGo(param.name)} is mutable; write \`mutable\` before the argument`)
-    } else if (!param.isMutable && arg.isMutable) {
-      errorf(mutable checker, argPos, `parameter ${quoteGo(param.name)} is not mutable; remove \`mutable\``)
-    } else if (param.isMutable) {
-      checkMutableArgument(mutable checker, arg.value)
-      Arrays.push(mutable mutables, index)
-    }
+    checkArgument(mutable checker, walker, args, params, index, wants[index], mutable mutables)
   }
   checkExclusive(mutable checker, args, mutables)
+}
+
+// checkArgument checks argument index of a call against its parameter: the
+// non-escaping rule, the expected type and the mutable marking. The index
+// of a mutable argument is added to mutables (Go's args loop body).
+export function checkArgument<W: Walker>(mutable checker: Checker, walker: W, args: Array<Arg>, params: Array<Param>, index: int, want: Option<Type>, mutable mutables: Array<int>) uses alloc {
+  const arg = args[index]
+  const param = params[index]
+  markArgument(mutable checker, param, arg.value)
+  const argType = checkExpression(mutable checker, walker, arg.value, want)
+  expectType(mutable checker, getExpressionPos(arg.value), want, argType)
+
+  // The argument is mutable exactly when the parameter is.
+  const argPos = getExpressionPos(arg.value)
+  if (param.isMutable && !arg.isMutable) {
+    errorf(mutable checker, argPos, `parameter ${quoteGo(param.name)} is mutable; write \`mutable\` before the argument`)
+  } else if (!param.isMutable && arg.isMutable) {
+    errorf(mutable checker, argPos, `parameter ${quoteGo(param.name)} is not mutable; remove \`mutable\``)
+  } else if (param.isMutable) {
+    checkMutableArgument(mutable checker, arg.value)
+    Arrays.push(mutable mutables, index)
+  }
 }
 
 // checkExclusive rejects a call that passes a variable as mutable and also
 // passes it, or reads it, in another argument. It runs after the arguments
 // are checked, so their names are resolved.
-function checkExclusive(mutable checker: Checker, args: Array<Arg>, mutables: Array<int>) uses alloc {
+export function checkExclusive(mutable checker: Checker, args: Array<Arg>, mutables: Array<int>) uses alloc {
   for (const mutableIndex of Arrays.values(mutables)) {
     const root = findAssignedLocal(checker, args[mutableIndex].value)
     if (root < 0) {
@@ -875,7 +871,7 @@ function checkExclusive(mutable checker: Checker, args: Array<Arg>, mutables: Ar
 
 // usesLocal reports whether an expression reads a local (a BodyInfo.locals
 // index). It does not look into closures or match arms.
-function usesLocal(checker: Checker, expression: Expr, local: int): bool {
+export function usesLocal(checker: Checker, expression: Expr, local: int): bool uses alloc {
   return match (expression) {
     Expr.Ident(nodeId, _, _) => getRef(checker, nodeId) == Ref.Local(local)
     Expr.FieldExpr(_, _, target, _) => usesLocal(checker, target, local)

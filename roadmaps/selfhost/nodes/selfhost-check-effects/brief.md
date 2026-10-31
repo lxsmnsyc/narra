@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-effects
 title: Self-hosted checker: effect pass
-status: active
+status: done
+spent: 291000
 priority: must
 type: feature
 outline: false

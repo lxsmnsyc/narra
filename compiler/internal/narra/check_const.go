@@ -62,6 +62,7 @@ func (c *Checker) constType(d *ConstDecl, pos Pos) Type {
 	saved := c.enter(c.mods[d.Module])
 	fn, sc, env, loops := c.fn, c.scope, c.env, c.loops
 	c.fn = &FuncDecl{Name: "const " + d.Name, ResultT: TVoid, Module: d.Module}
+	c.logBody(checkedBody{kind: "const", name: d.Name, expr: d.Value})
 	c.scope = &scope{names: map[string]*Local{}}
 	c.env, c.loops = nil, 0
 

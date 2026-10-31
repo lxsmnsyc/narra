@@ -1,0 +1,240 @@
+// The body driver of the checker, ported from compiler/internal/narra:
+// checkBodies and funcBody (check.go, check_stmt.go), checkDefaults
+// (check_types.go), funcParam (check_closure.go) and the module loop of
+// checkPackageBodies (modules_check.go).
+//
+// checkPackage interleaves as Go does: each module is declared, then its
+// field defaults (the last step of Go's declareModule), then its bodies.
+// After all modules come the pending generic instances (none yet:
+// selfhost-check-calls queues them), the Map keys, the entry functions and
+// finish. Every checked body gets its own side tables (BodyInfo, D70).
+//
+// BodyWalker is the Walker (check.nra) that the modules below narrac/exprs
+// use to reach the expression and block checkers.
+import { Pos, File, Decl, FuncDecl, ConstDecl, TestDecl, Expr, Block, Param } from "narrac/ast"
+import { quoteDump } from "narrac/modules"
+import { Package } from "narrac/modules"
+import { Type, Field } from "narrac/types"
+import { Checker, BodyRoot, Walker, errorf, enter, startBody, finishBody, declareLocal, unsupported, getExpressionPos, finish } from "narrac/check"
+import { newPackageChecker, declareSourceModule } from "narrac/declare"
+import { checkEntries } from "narrac/scopes"
+import { flushMapKeys } from "narrac/traits"
+import { envOf } from "narrac/generics"
+import { dumpTypeString } from "narrac/declsdump"
+import * as Exprs from "narrac/exprs"
+import * as Stmts from "narrac/stmts"
+import * as Arrays from "std/array"
+
+struct BodyWalker implements Walker {}
+
+implement Walker for BodyWalker {
+  function checkExpression(walker: BodyWalker, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc {
+    return Exprs.checkExpression(mutable checker, walker, expression, want)
+  }
+
+  function checkBlock(walker: BodyWalker, mutable checker: Checker, block: Block) uses alloc {
+    Stmts.checkBlock(mutable checker, walker, block)
+  }
+}
+
+// checkPackage runs every pass of `narra check` except the effect pass, as
+// Go's checkPackageBodies does, and lists the checked bodies in
+// Checker.bodies.
+export function checkPackage(pkg: Package): Checker uses alloc {
+  let checker = newPackageChecker(pkg)
+  if (Arrays.length(checker.errs) > 0 && Arrays.length(checker.scopes) == 0) {
+    return checker
+  }
+  checker.checkingBodies = true
+  const walker = BodyWalker {}
+
+  // Each module: declarations, field defaults, bodies.
+  for (const module of Arrays.values(pkg.modules)) {
+    declareSourceModule(mutable checker, module)
+    checkDefaults(mutable checker, walker, module.ast)
+    checkModuleBodies(mutable checker, walker, module.ast)
+  }
+
+  // Then the checks that need every module.
+  flushMapKeys(mutable checker)
+  checkEntries(mutable checker, pkg)
+  const concrete = checker.concrete
+  finish(mutable checker, concrete)
+  return checker
+}
+
+// checkDefaults checks the field defaults of the structs the module's
+// declaration made known: first those of the generic structs built
+// meanwhile, in build order (Go checks them inside buildGeneric, a little
+// earlier), then those of the module's non-generic structs, after every
+// field type is known.
+function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
+  const generics = checker.pendingDefaults
+  checker.pendingDefaults = []
+  for (const generic of Arrays.values(generics)) {
+    checkGenericDefaults(mutable checker, walker, generic)
+  }
+  const scope = checker.cur
+  for (const decl of Arrays.values(file.decls)) {
+    if (decl is Decl.Struct(structDecl)) {
+      if (Arrays.length(structDecl.typeParams) > 0) {
+        continue
+      }
+      const structIndex = findStruct(checker, scope, structDecl.name, structDecl.pos)
+      if (structIndex >= 0) {
+        const owner = dumpTypeString(checker, Type.TStruct(structIndex))
+        const fields = checker.structs[structIndex].fields
+        checkFieldDefaults(mutable checker, walker, owner, fields, Map {})
+      }
+    }
+  }
+}
+
+// checkGenericDefaults checks the defaults of a generic struct's template
+// in its own module, with the type parameters open.
+function checkGenericDefaults(mutable checker: Checker, walker: BodyWalker, generic: int) uses alloc {
+  const info = checker.generics[generic]
+  const saved = enter(mutable checker, info.scope)
+  let owner = info.name
+  if (info.module != "") {
+    owner = `${info.module}.${info.name}`
+  }
+  const env = envOf(checker, info.params)
+  checkFieldDefaults(mutable checker, walker, owner, info.fields, env)
+  enter(mutable checker, saved)
+}
+
+// findStruct finds the struct declared as name at pos in scope, or -1.
+function findStruct(checker: Checker, scope: int, name: string, pos: Pos): int {
+  // The scope's type table has it, unless the name is declared twice.
+  if (checker.scopes[scope].types[name] is Some(Type.TStruct(found))) {
+    if (checker.structs[found].scope == scope && checker.structs[found].pos == pos) {
+      return found
+    }
+  }
+  let index = 0
+  for (const info of Arrays.values(checker.structs)) {
+    if (info.scope == scope && info.pos == pos && info.generic < 0 && !info.tuple) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+function checkFieldDefaults(mutable checker: Checker, walker: BodyWalker, owner: string, fields: Array<Field>, env: Map<string, Type>) uses alloc {
+  for (const field of Arrays.values(fields)) {
+    if (field.default is Some(value)) {
+      // Each default is a body of its own, outside any function.
+      const saved = startBody(mutable checker, "default", `${owner}.${field.name}`, [], BodyRoot.RootExpr(value), Type.TVoid, env)
+      const found = Exprs.checkExpression(mutable checker, walker, value, Some(field.t))
+      Exprs.expectType(mutable checker, getExpressionPos(value), Some(field.t), found)
+      if (!Exprs.isConstantValue(value)) {
+        errorf(mutable checker, getExpressionPos(value), "a field default must be a constant")
+      }
+      finishBody(mutable checker, saved)
+    }
+  }
+}
+
+// checkModuleBodies checks the function, constant, implement and test
+// bodies of the current module in declaration order.
+function checkModuleBodies(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
+  for (const decl of Arrays.values(file.decls)) {
+    match (decl) {
+      Decl.Func(funcDecl) => checkFunction(mutable checker, walker, funcDecl)
+      Decl.Const(constDecl) => checkConstDecl(mutable checker, walker, constDecl)
+      Decl.Impl(implDecl) => checkImplBodies(mutable checker, implDecl.pos)
+      Decl.Test(testDecl) => checkTest(mutable checker, walker, testDecl)
+      _ => {}
+    }
+  }
+}
+
+// findFunction finds the Checker.funcs entry of a declaration in the
+// current scope, or -1.
+function findFunction(checker: Checker, funcDecl: FuncDecl): int {
+  const scope = checker.cur
+  if (checker.scopes[scope].funcs[funcDecl.name] is Some(index)) {
+    if (checker.funcs[index].decl.pos == funcDecl.pos && checker.funcs[index].scope == scope) {
+      return index
+    }
+  }
+  // A function declared twice is no longer in the scope's map.
+  let index = 0
+  for (const info of Arrays.values(checker.funcs)) {
+    if (info.scope == scope && info.decl.pos == funcDecl.pos) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+// checkFunction checks a function body. A generic one is checked once with
+// its type parameters left open, so errors point at the declaration.
+function checkFunction(mutable checker: Checker, walker: BodyWalker, funcDecl: FuncDecl) uses alloc {
+  const funcIndex = findFunction(checker, funcDecl)
+  if (funcIndex < 0) {
+    return
+  }
+  const typeParams = checker.funcs[funcIndex].typeParams
+  const env = envOf(checker, typeParams)
+  const result = checker.funcs[funcIndex].result
+  const saved = startBody(mutable checker, "func", funcDecl.name, [], BodyRoot.RootFunc(funcDecl), result, env)
+  declareParams(mutable checker, funcDecl.params)
+  if (funcDecl.body is Some(block)) {
+    Stmts.checkBlock(mutable checker, walker, block)
+  }
+  finishBody(mutable checker, saved)
+}
+
+// declareParams makes each parameter a local of the body (Go's funcBody
+// and funcParam).
+function declareParams(mutable checker: Checker, params: Array<Param>) uses alloc {
+  for (const param of Arrays.values(params)) {
+    const paramType = checker.paramTypes[param.id]
+    const local = declareLocal(mutable checker, param.id, param.pos, param.name, paramType, param.isMutable, true)
+    let isFuncType = false
+    if (param.type is Some(typeExpression)) {
+      isFuncType = typeExpression.isFunc
+    }
+    if (param.escaping && !isFuncType) {
+      errorf(mutable checker, param.pos, "only a parameter with a function type can be escaping")
+    }
+    const body = checker.body
+    checker.bodies[body].locals[local].noEscape = Exprs.nonEscapingParam(param)
+  }
+}
+
+// checkConstDecl checks a constant's value, unless a use already did.
+function checkConstDecl(mutable checker: Checker, walker: BodyWalker, constDecl: ConstDecl) uses alloc {
+  const scope = checker.cur
+  if (checker.scopes[scope].consts[constDecl.name] is Some(index)) {
+    if (checker.consts[index].decl.pos == constDecl.pos) {
+      Exprs.checkConstType(mutable checker, walker, index, constDecl.pos)
+      return
+    }
+  }
+  unsupported(mutable checker, constDecl.pos, "a constant declared twice")
+}
+
+// checkImplBodies stands for Go's implBodies, which selfhost-check-calls
+// ports: a checked implement block with functions is unsupported.
+function checkImplBodies(mutable checker: Checker, pos: Pos) uses alloc {
+  const scope = checker.cur
+  for (const impl of Arrays.values(checker.impls)) {
+    if (impl.scope == scope && impl.decl.pos == pos && Arrays.length(impl.decl.funcs) > 0) {
+      unsupported(mutable checker, pos, "implement block bodies (selfhost-check-calls)")
+      return
+    }
+  }
+}
+
+function checkTest(mutable checker: Checker, walker: BodyWalker, testDecl: TestDecl) uses alloc {
+  const saved = startBody(mutable checker, "test", quoteDump(testDecl.name), [], BodyRoot.RootBlock(testDecl.body), Type.TVoid, Map {})
+  checker.inTest = true
+  Stmts.checkBlock(mutable checker, walker, testDecl.body)
+  checker.inTest = false
+  finishBody(mutable checker, saved)
+}

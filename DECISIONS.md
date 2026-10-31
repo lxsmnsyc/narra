@@ -588,6 +588,15 @@ Decision: two std modules, `std/option` (`map`, `andThen`, `withDefault`, `orEls
 - **Cost.** `Option.map` and the other helpers that build a value allocate its payload (`alloc` effect). A callback passed as a stored local (`const f = ...`) is a heap closure, created once, not per call.
 - **Note.** Under D72 the alias is plural: `import * as Options from "std/option"`, `import * as Results from "std/result"`.
 
+## D70. The self-hosted checker keeps body results per checked body
+
+Decision: the self-hosted body checker keeps the type of each expression, what each name or call resolves to, and the locals in tables of one checked body (`BodyInfo` in `selfhost/src/check.nra`), indexed by `id - first`, where the body's node ids lie in `[first, first + length)`. A function, test, constant value, field default and each instance of a generic function is one body. Tables that do not depend on the instance, such as `paramTypes`, stay package-wide and are indexed by id.
+
+- **Reason.** Go checks a generic function once per instance on a cloned AST, so the same node gets a different type in each instance. Narra does not clone: an instance reuses the same syntax and ids, so the results must be keyed by body as well as by id.
+- **Reason.** A table sized by the package's id count for every body would make checking quadratic in the number of bodies. The id range of one body is about its own size.
+- **Rejected: one package-wide table with a `Map<int, Type>` per instance.** It needs the same body key, and every lookup hashes.
+- **Cost.** Each body walks its nodes once to find its id range, and the passes after the checker (the emitter) must look up the body of the code they emit.
+
 ## D71. Enum constructors are always qualified
 
 Decision: a user enum's constructors are written with the enum's name, in expressions and in patterns: `SchoolPerson.Teacher`, `SchoolPerson.Student("x")`, `SchoolPerson.Teacher =>`. Importing the enum is enough. A bare constructor is a compile error with a fix that qualifies it. `Some`, `None`, `Ok` and `Err` stay bare as prelude names. Constructors of different enums never clash, and two constructors with the same name in one enum are an error (section 3). Debate: `roadmaps/debates/qualified-enum-constructors/debate.md`.

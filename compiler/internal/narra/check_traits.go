@@ -492,6 +492,7 @@ func (c *Checker) implBodies(d *ImplDecl) {
 		return
 	}
 	for _, fd := range d.Funcs {
+		c.logBody(checkedBody{kind: "impl", name: d.Trait.Name + " " + dumpTypeString(t) + "." + c.implSourceName(t, fd), fd: fd})
 		c.funcBody(fd, map[string]Type{"Self": t})
 	}
 }

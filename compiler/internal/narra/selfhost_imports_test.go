@@ -21,6 +21,11 @@ var portedImportErrors = []string{
 	"%s is not a type",
 	"two imports use the alias %s; give one of them another alias",
 	"the entry function must be `export function %s(args: Array<string>): int`",
+	"the import alias %s is also a type name; rename it, for example `import * as %s from %q`",
+	"imported name %q is already declared in this module; rename the import with `as`",
+	"imported name %q is already imported from another module; rename one with `as`",
+	// A declaration error that selfhost-check-bodies ported with them.
+	"enum %s declares the constructor %q twice",
 }
 
 var portedImportRes = func() []*regexp.Regexp {

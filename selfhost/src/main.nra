@@ -9,6 +9,8 @@
 // narrac pkg <path>: prints the loaded package in the format of `narra pkg`.
 // narrac decls <path>: runs the declaration passes of the checker and prints
 // the format of `narra decls`.
+// narrac types <path>: checks the package (every pass of `narra check` but
+// the effect pass) and prints the format of `narra types` (typesdump.go).
 // narrac builtins: prints the std registry in the `builtin` format of
 // decldump.go (BuiltinDump), after a line per registry type text that does
 // not resolve back to itself.
@@ -24,6 +26,8 @@ import { Package } from "narrac/modules"
 import * as Check from "narrac/check"
 import * as Declare from "narrac/declare"
 import * as DeclsDump from "narrac/declsdump"
+import * as Body from "narrac/body"
+import * as TypesDump from "narrac/typesdump"
 import * as IdCheck from "narrac/idcheck"
 import * as Builtins from "narrac/builtins"
 import * as Stdlib from "narrac/stdlib"
@@ -39,6 +43,9 @@ export function run(args: Array<string>): int uses io, alloc {
   if (Arrays.length(args) == 3 && args[1] == "decls") {
     return declsDump(args[2])
   }
+  if (Arrays.length(args) == 3 && args[1] == "types") {
+    return typesDump(args[2])
+  }
   if (Arrays.length(args) == 2 && args[1] == "builtins") {
     return builtinsDump()
   }
@@ -49,7 +56,7 @@ export function run(args: Array<string>): int uses io, alloc {
     return pkgIds(args[3], true)
   }
   if (Arrays.length(args) != 2) {
-    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path | narrac decls path | narrac builtins")
+    printError("usage: narrac file.nra | narrac parse file.nra | narrac pkg path | narrac decls path | narrac types path | narrac builtins")
     return 2
   }
   return lexFile(args[1])
@@ -157,6 +164,22 @@ function declsDump(path: string): int uses io, alloc {
     return 1
   }
   return writeStdout(DeclsDump.dump(mutable c))
+}
+
+// typesDump loads a package, checks it and prints the types dump. Load and
+// check errors go to stderr, one `error ...` line each.
+function typesDump(path: string): int uses io, alloc {
+  const loaded = Modules.load(path)
+  if (loaded is Err(errors)) {
+    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errors))
+    return 1
+  }
+  const checker = Body.checkPackage(loaded.value)
+  if (Arrays.length(checker.errs) > 0) {
+    const _ = Fs.writeText("/dev/stderr", Check.errorText(checker.errs))
+    return 1
+  }
+  return writeStdout(TypesDump.dump(checker))
 }
 
 // builtinsDump prints the std registry. The type texts are resolved in a

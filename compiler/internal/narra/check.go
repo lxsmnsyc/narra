@@ -133,6 +133,10 @@ type Checker struct {
 	traits  *traitState
 	closure *closureState // check_closure.go
 	inTest  bool          // checking a test block, arrow functions inside it included (std_testing.go)
+	// bodies lists the checked bodies in checking order when logBodies is
+	// set, for TypesDump (typesdump.go).
+	logBodies bool
+	bodies    []checkedBody
 }
 
 // Check checks one parsed file as the only module of package "main".
@@ -287,7 +291,11 @@ func (c *Checker) declareModule(f *File) []Type {
 	// Defaults are checked after every field type is known.
 	for _, d := range f.Decls {
 		if sd, ok := d.(*StructDecl); ok && sd.T != nil {
-			c.checkDefaults(sd.T.Fields)
+			owner := ""
+			if c.logBodies {
+				owner = dumpTypeString(sd.T)
+			}
+			c.checkDefaults(owner, sd.T.Fields)
 		}
 	}
 	return concrete
@@ -298,6 +306,7 @@ func (c *Checker) checkBodies(f *File) {
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *FuncDecl:
+			c.logBody(checkedBody{kind: "func", name: d.Name, fd: d})
 			if tps, ok := c.funcTP[d]; ok {
 				// Check the generic body once with the parameters left open,
 				// so errors point at the declaration.
@@ -310,6 +319,7 @@ func (c *Checker) checkBodies(f *File) {
 		case *ImplDecl:
 			c.implBodies(d)
 		case *TestDecl:
+			c.logBody(checkedBody{kind: "test", name: quoteDump(d.Name), block: d.Body})
 			c.fn = &FuncDecl{Name: "test", ResultT: TVoid}
 			c.env = nil
 			c.scope = &scope{names: map[string]*Local{}}
@@ -327,6 +337,7 @@ func (c *Checker) checkPending() {
 		p := c.pending[0]
 		c.pending = c.pending[1:]
 		saved := c.enter(p.mod)
+		c.logBody(checkedBody{kind: "func", name: p.fd.Origin.Name, fd: p.fd, targs: instanceArgs(c.funcTP[p.fd.Origin], p.env)})
 		c.funcBody(p.fd, p.env)
 		c.enter(saved)
 	}

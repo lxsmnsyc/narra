@@ -3,7 +3,7 @@
 // importPackageModule, exported, entryFunc and checkEntry
 // (modules_check.go), importTrait (check_traits.go), importConst and the
 // imported-constant check of declareConsts (check_const.go), declareType
-// (check_types.go).
+// (check_types.go), and checkImportNames and aliasTaken (import_names.go).
 //
 // Package modules are declared in load order, imports first, so every
 // module an import names already has its scope and its table entries. An
@@ -14,7 +14,7 @@ import { quoteGo } from "narrac/parser"
 import { Package, entryModule } from "narrac/modules"
 import { Type } from "narrac/types"
 import { moduleList } from "narrac/builtins"
-import { Checker, EntryInfo, errorf, enter, lookupType, lookupGeneric, lookupTrait } from "narrac/check"
+import { Checker, EntryInfo, errorf, enter, lookupType, lookupGeneric, lookupTrait, unsupported } from "narrac/check"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -91,6 +91,12 @@ export function importModules(mutable c: Checker, f: File) uses alloc {
       bindAlias(mutable c, imp, mutable aliases)
       for (const n of Arrays.values(imp.names)) {
         if (mod.funcs[n.name] is Some(k)) {
+          if (c.scopes[s].imported[n.local] is Some(previous)) {
+            if (previous != k) {
+              errorf(mutable c, imp.pos, `imported name ${quoteGo(n.local)} is already imported from another module; rename one with \`as\``)
+              continue
+            }
+          }
           c.scopes[s].imported[n.local] = k
         } else {
           errorf(mutable c, imp.pos, `module ${quoteGo(imp.path)} has no export ${quoteGo(n.name)}`)
@@ -158,6 +164,11 @@ function importPackageModule(mutable c: Checker, imp: ImportDecl, mutable aliase
   const cur = c.cur
   bindAlias(mutable c, imp, mutable aliases)
   for (const n of Arrays.values(imp.names)) {
+    if (c.checkingBodies && isConstructorImport(c, s, n.name)) {
+      // Go reports E0425 at the name, whose position the Narra AST lacks.
+      unsupported(mutable c, imp.pos, "an import of a constructor (selfhost-check-calls)")
+      continue
+    }
     const d = exported(mutable c, imp.pos, s, n.name)
     match (d) {
       Some(decl) => importDecl(mutable c, imp.pos, s, n.name, n.local, decl)
@@ -327,4 +338,136 @@ function checkEntry(mutable c: Checker, k: int) uses alloc {
   if (!ok) {
     errorf(mutable c, fd.pos, `the entry function must be \`export function ${fd.name}(args: Array<string>): int\``)
   }
+}
+
+// isConstructorImport reports `import { Teacher }` where Teacher is not an
+// export of the module but a constructor of an exported enum (Go's
+// ctorImport).
+function isConstructorImport(checker: Checker, moduleScope: int, name: string): bool {
+  if (checker.scopes[moduleScope].exports[name] is Some(_)) {
+    return false
+  }
+  for (const decl of Arrays.values(checker.scopes[moduleScope].decls)) {
+    if (decl is Decl.Enum(enumDecl)) {
+      if (enumDecl.exported) {
+        for (const variant of Arrays.values(enumDecl.variants)) {
+          if (variant.name == name) {
+            return true
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+// The std modules whose functions are called as Name.f, by the prelude
+// type name, with the plural alias the convention gives them (Go's
+// namespaceModules and pluralAlias).
+struct Namespace {
+  name: string
+  path: string
+  plural: string
+}
+
+const NAMESPACES = [
+  Namespace { name: "Array", path: "std/array", plural: "Arrays" },
+  Namespace { name: "Box", path: "std/box", plural: "Boxes" },
+  Namespace { name: "Map", path: "std/map", plural: "Maps" },
+  Namespace { name: "Option", path: "std/option", plural: "Options" },
+  Namespace { name: "Range", path: "std/range", plural: "Ranges" },
+  Namespace { name: "Result", path: "std/result", plural: "Results" },
+]
+
+// isNamespaceName reports a prelude type whose functions live in a std
+// module (Array, Box, Map, Option, Range, Result).
+export function isNamespaceName(name: string): bool {
+  for (const namespace of Arrays.values(NAMESPACES)) {
+    if (namespace.name == name) {
+      return true
+    }
+  }
+  return false
+}
+
+// aliasTaken reports whether name is a type, a trait or a prelude
+// namespace type visible in the module.
+function aliasTaken(checker: Checker, name: string): bool {
+  return typeNamed(checker, name) || isNamespaceName(name)
+}
+
+// suggestAlias is the alias the alias-equals-type error suggests: the
+// plural of a namespace type, or of the std module the import names, or the
+// alias with an s.
+function suggestAlias(alias: string, path: string): string uses alloc {
+  let suggestion = ""
+  for (const namespace of Arrays.values(NAMESPACES)) {
+    if (namespace.name == alias) {
+      suggestion = namespace.plural
+    }
+  }
+  for (const namespace of Arrays.values(NAMESPACES)) {
+    if (namespace.path == path) {
+      suggestion = namespace.plural
+    }
+  }
+  if (suggestion == "") {
+    return `${alias}s`
+  }
+  return suggestion
+}
+
+// checkImportNames runs after the module's type names are declared. It
+// reports an alias that equals a type name (E0421) and an imported name
+// that clashes with a declaration, an alias or a type (E0423). Go's fixes
+// are not ported.
+export function checkImportNames(mutable checker: Checker, file: File) uses alloc {
+  // An alias may not be a type name.
+  for (const importDecl of Arrays.values(file.imports)) {
+    if (importDecl.alias == "" || !aliasTaken(checker, importDecl.alias)) {
+      continue
+    }
+    const suggestion = suggestAlias(importDecl.alias, importDecl.path)
+    errorf(mutable checker, importDecl.pos, `the import alias ${importDecl.alias} is also a type name; rename it, for example \`import * as ${suggestion} from ${quoteGo(importDecl.path)}\``)
+  }
+
+  // An imported name may not clash with the module's functions, constants,
+  // aliases or types.
+  let declared: Map<string, bool> = Map {}
+  for (const decl of Arrays.values(file.decls)) {
+    if (decl is Decl.Func(funcDecl)) {
+      declared[funcDecl.name] = true
+    }
+  }
+  const scope = checker.cur
+  for (const importDecl of Arrays.values(file.imports)) {
+    const moduleScope = sourceScope(checker, importDecl.path)
+    for (const name of Arrays.values(importDecl.names)) {
+      const isAlias = checker.scopes[scope].modules[name.local] is Some(_)
+      if (moduleScope >= 0) {
+        // A type or trait import is itself in the type table, and the
+        // import reports a function or constant that clashes with a
+        // declaration. A function can still clash with a type declared
+        // later or with an alias.
+        if (!isExportedFunc(checker, moduleScope, name.name)) {
+          continue
+        }
+        if (isAlias || aliasTaken(checker, name.local)) {
+          errorf(mutable checker, importDecl.pos, `imported name ${quoteGo(name.local)} is already declared in this module; rename the import with \`as\``)
+        }
+        continue
+      }
+      const isConst = checker.scopes[scope].consts[name.local] is Some(_)
+      if (declared[name.local] is Some(_) || isConst || isAlias || aliasTaken(checker, name.local)) {
+        errorf(mutable checker, importDecl.pos, `imported name ${quoteGo(name.local)} is already declared in this module; rename the import with \`as\``)
+      }
+    }
+  }
+}
+
+function isExportedFunc(checker: Checker, moduleScope: int, name: string): bool {
+  if (checker.scopes[moduleScope].exports[name] is Some(index)) {
+    return checker.scopes[moduleScope].decls[index] is Decl.Func(_)
+  }
+  return false
 }

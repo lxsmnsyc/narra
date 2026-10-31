@@ -67,11 +67,13 @@ func (c *Checker) resolveVariants(decls []*VariantDecl, et *EnumType) []*Variant
 	return vs
 }
 
-func (c *Checker) checkDefaults(fields []*Field) {
+// owner names the struct for TypesDump; it is empty unless c.logBodies.
+func (c *Checker) checkDefaults(owner string, fields []*Field) {
 	for _, f := range fields {
 		if f.Default == nil {
 			continue
 		}
+		c.logBody(checkedBody{kind: "default", name: owner + "." + f.Name, expr: f.Default})
 		c.scope = &scope{names: map[string]*Local{}}
 		t := c.expr(f.Default, f.T)
 		c.expectType(f.Default.position(), f.T, t)
@@ -101,7 +103,7 @@ func (c *Checker) buildGeneric(g *genericType) {
 				f.Default = nil
 			}
 		}
-		c.checkDefaults(g.fields)
+		c.checkDefaults(qualifiedName(g.mod.path, g.name), g.fields)
 	} else {
 		g.variants = c.resolveVariants(g.edecl.Variants, nil)
 	}

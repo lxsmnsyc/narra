@@ -14,7 +14,7 @@ import { quoteGo } from "narrac/parser"
 import { Package, entryModule } from "narrac/modules"
 import { Type } from "narrac/types"
 import { moduleList } from "narrac/builtins"
-import { Checker, EntryInfo, errorf, enter, lookupType, lookupGeneric, lookupTrait, unsupported } from "narrac/check"
+import { Checker, EntryInfo, errorf, enter, lookupType, lookupGeneric, lookupTrait } from "narrac/check"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -164,10 +164,12 @@ function importPackageModule(mutable checker: Checker, importDecl: ImportDecl, m
   const current = checker.cur
   bindAlias(mutable checker, importDecl, mutable aliases)
   for (const name of Arrays.values(importDecl.names)) {
-    if (checker.checkingBodies && isConstructorImport(checker, scope, name.name)) {
-      // Go reports E0425 at the name, whose position the Narra AST lacks.
-      unsupported(mutable checker, importDecl.pos, "an import of a constructor (selfhost-check-calls)")
-      continue
+    if (checker.checkingBodies) {
+      const owner = findConstructorOwner(checker, scope, name.name)
+      if (owner != "") {
+        errorf(mutable checker, name.pos, `${quoteGo(name.name)} is a constructor of ${owner}; import the enum and write ${owner}.${name.name}`)
+        continue
+      }
     }
     const found = exported(mutable checker, importDecl.pos, scope, name.name)
     match (found) {
@@ -340,25 +342,26 @@ function checkEntry(mutable checker: Checker, index: int) uses alloc {
   }
 }
 
-// isConstructorImport reports `import { Teacher }` where Teacher is not an
-// export of the module but a constructor of an exported enum (Go's
-// ctorImport).
-function isConstructorImport(checker: Checker, moduleScope: int, name: string): bool {
+// findConstructorOwner finds the enum for `import { Teacher }` where Teacher
+// is not an export of the module but a constructor of an exported enum (Go's
+// ctorImport): the first such enum by name. It returns "" for anything else.
+function findConstructorOwner(checker: Checker, moduleScope: int, name: string): string {
   if (checker.scopes[moduleScope].exports[name] is Some(_)) {
-    return false
+    return ""
   }
+  let owner = ""
   for (const decl of Arrays.values(checker.scopes[moduleScope].decls)) {
     if (decl is Decl.Enum(enumDecl)) {
-      if (enumDecl.exported) {
+      if (enumDecl.exported && (owner == "" || enumDecl.name < owner)) {
         for (const variant of Arrays.values(enumDecl.variants)) {
           if (variant.name == name) {
-            return true
+            owner = enumDecl.name
           }
         }
       }
     }
   }
-  return false
+  return owner
 }
 
 // The std modules whose functions are called as Name.f, by the prelude

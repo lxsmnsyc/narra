@@ -21,10 +21,10 @@
 // Results go into the side tables of the current body (D70): the type of
 // every checked expression (setNodeType) and what a name or call resolves to
 // (setRef).
-import { Pos, Expr, Arg, FieldInit, TypeExpr, Decl, Param } from "narrac/ast"
+import { Pos, Expr, Arg, FieldInit, TypeExpr, Decl, Param, ConstDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field } from "narrac/types"
-import { Checker, Ref, BodyRoot, Walker, CONST_NEW, CONST_BUSY, CONST_DONE, errorf, enter, typeString, startBody, finishBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, unsupported, getExpressionId, getExpressionPos, isNumeric } from "narrac/check"
+import { Checker, Ref, BodyRoot, Walker, ConstInfo, CONST_NEW, CONST_BUSY, CONST_DONE, errorf, enter, typeString, startBody, finishBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, getExpressionId, getExpressionPos, isNumeric } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
@@ -333,26 +333,37 @@ function exportsEnum(checker: Checker, scope: int, name: string): bool {
 
 // findModuleConst finds the constant name declared in the package module
 // of scope moduleScope: the last declaration of that name, as Go's
-// moduleConstValue does. It returns its Checker.consts index, -2 when the
-// module declares it twice (only the first is registered), or -1.
-function findModuleConst(checker: Checker, moduleScope: int, name: string): int {
-  let found: Option<Pos> = None
+// moduleConstValue does. It returns its Checker.consts index, or -1. A
+// declaration that declare.nra rejected as a duplicate has no scope entry;
+// findConstInfo gives it an index of its own.
+function findModuleConst(mutable checker: Checker, moduleScope: int, name: string): int uses alloc {
+  let found: Option<ConstDecl> = None
   for (const decl of Arrays.values(checker.scopes[moduleScope].decls)) {
     if (decl is Decl.Const(constDecl)) {
       if (constDecl.name == name) {
-        found = Some(constDecl.pos)
+        found = Some(constDecl)
       }
     }
   }
-  if (found is Some(pos)) {
-    if (checker.scopes[moduleScope].consts[name] is Some(index)) {
-      if (checker.consts[index].decl.pos == pos) {
-        return index
-      }
-    }
-    return -2
+  if (found is Some(constDecl)) {
+    return findConstInfo(mutable checker, moduleScope, constDecl)
   }
   return -1
+}
+
+// findConstInfo finds the Checker.consts entry of a constant declaration.
+// A duplicate declaration is not in the scope's table; Go checks it like any
+// other constant, so it gets an entry here, once.
+export function findConstInfo(mutable checker: Checker, scope: int, constDecl: ConstDecl): int uses alloc {
+  for (const index of Ranges.between(0, Arrays.length(checker.consts))) {
+    if (checker.consts[index].scope == scope && checker.consts[index].decl.pos == constDecl.pos) {
+      return index
+    }
+  }
+  const index = Arrays.length(checker.consts)
+  const info = ConstInfo { name: constDecl.name, module: checker.scopes[scope].path, scope: scope, decl: constDecl, declaredType: None }
+  Arrays.push(mutable checker.consts, info)
+  return index
 }
 
 function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, target: Expr, name: string, want: Option<Type>): Type uses alloc {
@@ -373,10 +384,7 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int,
               }
             }
           }
-          const index = findModuleConst(checker, moduleScope, name)
-          if (index == -2) {
-            return unsupported(mutable checker, pos, "a module constant declared twice")
-          }
+          const index = findModuleConst(mutable checker, moduleScope, name)
           if (index >= 0) {
             if (exported(mutable checker, pos, moduleScope, name) is None) {
               return Type.TVoid

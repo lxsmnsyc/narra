@@ -26,7 +26,7 @@ import * as Boxes from "std/box"
 import * as Ranges from "std/range"
 
 // A syntax error: `error <line>:<col>: <message>` in the dump.
-export struct Diag {
+export struct Diagnostic {
   pos: Pos
   message: string
 }
@@ -40,7 +40,7 @@ struct Parser {
   tokens: Array<Token>
   index: int
   nextId: int
-  failed: Option<Diag>
+  failed: Option<Diagnostic>
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -74,7 +74,7 @@ const IS_LEVEL = 2
 
 // parse lexes and parses src. Ids start at firstId. A lex or parse error
 // gives the first error, as Go's Parse does.
-export function parse(source: string, firstId: int): Result<Parsed, Diag> uses alloc {
+export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> uses alloc {
   const lexed = lex(source)
   if (lexed is Err(error)) {
     return Err(splitLexError(error))
@@ -87,13 +87,13 @@ export function parse(source: string, firstId: int): Result<Parsed, Diag> uses a
   return Ok(Parsed { file: file, nextId: parser.nextId })
 }
 
-// diagText formats an error as Go's Diagnostic.Error does.
-export function diagText(diagnostic: Diag): string uses alloc {
-  return `${Int.toString(diagnostic.pos.line)}:${Int.toString(diagnostic.pos.col)}: ${diagnostic.message}`
+// formatDiagnostic formats an error as Go's Diagnostic.Error does.
+export function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
+  return `${Int.toString(diagnostic.pos.line)}:${Int.toString(diagnostic.pos.column)}: ${diagnostic.message}`
 }
 
 // splitLexError splits a lex error "line:col: message" (Go: syntaxDiagnostic).
-function splitLexError(text: string): Diag {
+function splitLexError(text: string): Diagnostic {
   const parts = Str.split(text, ": ")
   if (Arrays.length(parts) >= 2) {
     const lineAndColumn = Str.split(parts[0], ":")
@@ -106,12 +106,12 @@ function splitLexError(text: string): Diag {
           for (const index of Ranges.between(1, Arrays.length(parts))) {
             Arrays.push(mutable rest, parts[index])
           }
-          return Diag { pos: Pos { line: lineNumber, col: columnNumber }, message: Str.join(rest, ": ") }
+          return Diagnostic { pos: Pos { line: lineNumber, column: columnNumber }, message: Str.join(rest, ": ") }
         }
       }
     }
   }
-  return Diag { pos: Pos { line: 0, col: 0 }, message: text }
+  return Diagnostic { pos: Pos { line: 0, column: 0 }, message: text }
 }
 
 // ---- Tokens and errors
@@ -124,7 +124,7 @@ function isOk(parser: Parser): bool {
 // after a Go panic that never runs.
 function failAt(mutable parser: Parser, pos: Pos, message: string) {
   if (parser.failed is None) {
-    parser.failed = Some(Diag { pos: pos, message: message })
+    parser.failed = Some(Diagnostic { pos: pos, message: message })
   }
 }
 
@@ -147,7 +147,7 @@ function newId(mutable parser: Parser): int {
 }
 
 function getPos(token: Token): Pos {
-  return Pos { line: token.line, col: token.col }
+  return Pos { line: token.line, column: token.column }
 }
 
 function currentToken(parser: Parser): Token {
@@ -296,7 +296,7 @@ function notPrintable(code: int): bool {
 // ---- Dummy nodes, returned once parsing has failed
 
 function createEmptyPos(): Pos {
-  return Pos { line: 0, col: 0 }
+  return Pos { line: 0, column: 0 }
 }
 
 function createDummyExpr(): Expr {
@@ -304,11 +304,11 @@ function createDummyExpr(): Expr {
 }
 
 function createDummyType(): TypeExpr {
-  return TypeExpr { pos: createEmptyPos(), name: "", args: [], isFunc: false, result: None, effects: [], isTuple: false }
+  return TypeExpr { pos: createEmptyPos(), name: "", arguments: [], isFunc: false, result: None, effects: [], isTuple: false }
 }
 
 function createDummyBlock(): Block {
-  return Block { pos: createEmptyPos(), stmts: [] }
+  return Block { pos: createEmptyPos(), statements: [] }
 }
 
 function createDummyPattern(): Pattern {
@@ -329,7 +329,7 @@ function parseFile(mutable parser: Parser): File {
     Arrays.push(mutable declarations, parseDecl(mutable parser))
     skipNewlines(mutable parser)
   }
-  return File { imports: imports, decls: declarations }
+  return File { imports: imports, declarations: declarations }
 }
 
 function parseImport(mutable parser: Parser): ImportDecl {
@@ -465,7 +465,7 @@ function parseType(mutable parser: Parser): TypeExpr {
       }
     }
     expect(mutable parser, "]")
-    return TypeExpr { pos: pos, name: "", args: arguments, isFunc: false, result: None, effects: [], isTuple: true }
+    return TypeExpr { pos: pos, name: "", arguments: arguments, isFunc: false, result: None, effects: [], isTuple: true }
   }
   const token = expectIdent(mutable parser)
   if (!isOk(parser)) {
@@ -476,7 +476,7 @@ function parseType(mutable parser: Parser): TypeExpr {
     name = `${name}.${expectIdent(mutable parser).text}`
   }
   let arguments: Array<TypeExpr> = []
-  const named = TypeExpr { pos: getPos(token), name: name, args: [], isFunc: false, result: None, effects: [], isTuple: false }
+  const named = TypeExpr { pos: getPos(token), name: name, arguments: [], isFunc: false, result: None, effects: [], isTuple: false }
   if (accept(mutable parser, "<")) {
     while (isOk(parser)) {
       Arrays.push(mutable arguments, parseType(mutable parser))
@@ -487,8 +487,8 @@ function parseType(mutable parser: Parser): TypeExpr {
     // In `Array<Array<int>>` the lexer reads `>>` as one token. Split it.
     if (isAt(parser, ">>")) {
       const shift = currentToken(parser)
-      parser.tokens[parser.index] = Token { ...shift, text: ">", col: shift.col + 1 }
-      return TypeExpr { ...named, args: arguments }
+      parser.tokens[parser.index] = Token { ...shift, text: ">", column: shift.column + 1 }
+      return TypeExpr { ...named, arguments: arguments }
     }
     expect(mutable parser, ">")
   }
@@ -496,7 +496,7 @@ function parseType(mutable parser: Parser): TypeExpr {
   if (isAt(parser, "[") && after.kind == TokenKind.TokPunct && after.text == "]") {
     failHere(mutable parser, "there is no `T[]` array type; write `Array<T>`")
   }
-  return TypeExpr { ...named, args: arguments }
+  return TypeExpr { ...named, arguments: arguments }
 }
 
 // parseTypeParams parses `<A, B: Show & Ordered, effect E>`. Effect
@@ -540,7 +540,7 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
 
 // createNamedType is a TypeExpr with only a name, for trait names.
 function createNamedType(token: Token): TypeExpr {
-  return TypeExpr { pos: getPos(token), name: token.text, args: [], isFunc: false, result: None, effects: [], isTuple: false }
+  return TypeExpr { pos: getPos(token), name: token.text, arguments: [], isFunc: false, result: None, effects: [], isTuple: false }
 }
 
 // parseTypeParamsNoBounds parses type parameters of a struct or enum, which cannot
@@ -609,13 +609,13 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   return FuncDecl {
     pos: pos,
     name: name,
-    typeParams: typeParameters.names,
+    typeParameters: typeParameters.names,
     bounds: typeParameters.bounds,
     exported: exported,
-    params: parameters,
+    parameters: parameters,
     result: result,
     effects: effects,
-    effectParams: typeParameters.effects,
+    effectParameters: typeParameters.effects,
     body: None,
   }
 }
@@ -647,7 +647,7 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   expect(mutable parser, "{")
   const fields = parseFieldList(mutable parser)
   expect(mutable parser, "}")
-  return StructDecl { pos: pos, name: name, typeParams: typeParameters, exported: exported, impls: traitLists.implementations, derived: traitLists.derived, fields: fields, opaque: false }
+  return StructDecl { pos: pos, name: name, typeParameters: typeParameters, exported: exported, implementations: traitLists.implementations, derived: traitLists.derived, fields: fields, opaque: false }
 }
 
 function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
@@ -680,7 +680,7 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
     skipNewlines(mutable parser)
   }
   expect(mutable parser, "}")
-  return EnumDecl { pos: pos, name: name, typeParams: typeParameters, exported: exported, impls: traitLists.implementations, derived: traitLists.derived, variants: variants }
+  return EnumDecl { pos: pos, name: name, typeParameters: typeParameters, exported: exported, implementations: traitLists.implementations, derived: traitLists.derived, variants: variants }
 }
 
 // parseTraitLists parses `implements A, B` and `derives C, D` after a type name.
@@ -730,7 +730,7 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
     endTypeDecl(mutable parser)
   }
   expect(mutable parser, "}")
-  return TraitDecl { pos: pos, name: name, exported: exported, funcs: functions }
+  return TraitDecl { pos: pos, name: name, exported: exported, functions: functions }
 }
 
 function parseImplDecl(mutable parser: Parser): ImplDecl {
@@ -755,7 +755,7 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
     skipNewlines(mutable parser)
   }
   expect(mutable parser, "}")
-  return ImplDecl { pos: pos, traitType: traitType, type: declaredType, funcs: functions }
+  return ImplDecl { pos: pos, traitType: traitType, type: declaredType, functions: functions }
 }
 
 // parseFuncType parses a function type such as `(item: T) => U`. Parameter
@@ -778,7 +778,7 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   expect(mutable parser, "=>")
   const result = parseType(mutable parser)
   const effects = parseUsesList(mutable parser)
-  return TypeExpr { pos: pos, name: "", args: arguments, isFunc: true, result: Some(Boxes.new(result)), effects: effects, isTuple: false }
+  return TypeExpr { pos: pos, name: "", arguments: arguments, isFunc: true, result: Some(Boxes.new(result)), effects: effects, isTuple: false }
 }
 
 // parseUsesList reads an optional `uses a, b` list of effect names.
@@ -904,7 +904,7 @@ function parseBlock(mutable parser: Parser): Block {
     Arrays.push(mutable statements, parseStmt(mutable parser))
   }
   expect(mutable parser, "}")
-  return Block { pos: pos, stmts: statements }
+  return Block { pos: pos, statements: statements }
 }
 
 function parseStmt(mutable parser: Parser): Stmt {
@@ -1056,7 +1056,7 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       return left
     }
     advance(mutable parser)
-    if (isAt(parser, "=") && currentToken(parser).col == token.col + Str.length(token.text)) {
+    if (isAt(parser, "=") && currentToken(parser).column == token.column + Str.length(token.text)) {
       failAt(mutable parser, getPos(token), `compound assignment is not supported; write \`x = x ${token.text} y\``)
       return left
     }
@@ -1110,17 +1110,17 @@ function parsePostfix(mutable parser: Parser, first: Expr): Expr {
         if (!startsUpper(identName)) {
           return expression
         }
-        let typeArgs: Array<TypeExpr> = []
+        let typeArguments: Array<TypeExpr> = []
         if (isAt(parser, "<")) {
           if (!isLiteralTypeArgsAhead(parser)) {
             return expression
           }
-          typeArgs = parseLiteralTypeArgs(mutable parser)
+          typeArguments = parseLiteralTypeArgs(mutable parser)
         }
         if (identName == "Map") {
-          expression = parseMapLit(mutable parser, identPos, typeArgs)
+          expression = parseMapLit(mutable parser, identPos, typeArguments)
         } else {
-          expression = parseStructLit(mutable parser, identName, typeArgs, identPos)
+          expression = parseStructLit(mutable parser, identName, typeArguments, identPos)
         }
       } else {
         return expression
@@ -1205,7 +1205,7 @@ function startsUpper(text: string): bool {
 
 // parseMapLit parses `Map { "a": 1, [key]: 2 }`. A key that is not a literal is
 // written in brackets.
-function parseMapLit(mutable parser: Parser, pos: Pos, typeArgs: Array<TypeExpr>): Expr {
+function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<TypeExpr>): Expr {
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
   let keys: Array<Expr> = []
@@ -1233,7 +1233,7 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArgs: Array<TypeExpr>
   }
   skipNewlines(mutable parser)
   expect(mutable parser, "}")
-  return Expr.MapLit(newId(mutable parser), pos, typeArgs, keys, values)
+  return Expr.MapLit(newId(mutable parser), pos, typeArguments, keys, values)
 }
 
 function isLiteralKey(expression: Expr): bool {
@@ -1274,7 +1274,7 @@ function getExpressionPos(expression: Expr): Pos {
 
 // parseStructLit parses `{ ...spread, field: value }`. typeName is empty and pos
 // is the `{` without a type name; with one, pos is the name's.
-function parseStructLit(mutable parser: Parser, typeName: string, typeArgs: Array<TypeExpr>, pos: Pos): Expr {
+function parseStructLit(mutable parser: Parser, typeName: string, typeArguments: Array<TypeExpr>, pos: Pos): Expr {
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
   let fields: Array<FieldInit> = []
@@ -1310,7 +1310,7 @@ function parseStructLit(mutable parser: Parser, typeName: string, typeArgs: Arra
   }
   skipNewlines(mutable parser)
   expect(mutable parser, "}")
-  return Expr.StructLit(newId(mutable parser), pos, typeName, typeArgs, fields, spread)
+  return Expr.StructLit(newId(mutable parser), pos, typeName, typeArguments, fields, spread)
 }
 
 function parsePrimary(mutable parser: Parser): Expr {
@@ -1326,7 +1326,7 @@ function parsePrimary(mutable parser: Parser): Expr {
   }
   if (token.kind == TokenKind.TokString) {
     advance(mutable parser)
-    return Expr.StringLit(newId(mutable parser), pos, token.text, Pos { line: token.endLine, col: token.endCol })
+    return Expr.StringLit(newId(mutable parser), pos, token.text, Pos { line: token.endLine, column: token.endColumn })
   }
   if (token.kind == TokenKind.TokChar) {
     advance(mutable parser)
@@ -1388,7 +1388,7 @@ function parsePrimary(mutable parser: Parser): Expr {
 // tokens take the template's position (their ends are kept, as in Go).
 function parseTemplate(mutable parser: Parser, token: Token): Expr {
   const pos = getPos(token)
-  const end = Pos { line: token.endLine, col: token.endCol }
+  const end = Pos { line: token.endLine, column: token.endColumn }
   const raw = Str.chars(token.text)
   const count = Arrays.length(raw)
   let parts: Array<Expr> = []
@@ -1442,7 +1442,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       // Report errors inside ${...} at the template's position.
       let inner: Array<Token> = []
       for (const innerToken of Arrays.values(lexed.value)) {
-        Arrays.push(mutable inner, Token { ...innerToken, line: token.line, col: token.col })
+        Arrays.push(mutable inner, Token { ...innerToken, line: token.line, column: token.column })
       }
       let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None }
       const expression = parseExpr(mutable innerParser)

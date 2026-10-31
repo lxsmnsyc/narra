@@ -6,17 +6,17 @@
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Ref, Walker, errorf, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, Ref, Walker, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
 import { resolveType } from "narrac/resolve"
 import { checkExpression, expectType, checkConstWrite, findAssignedLocal } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
-import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgsIrrefutable } from "narrac/patterns"
+import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgumentsIrrefutable } from "narrac/patterns"
 import * as Arrays from "std/array"
 
 // checkBlock checks the statements of a block in a scope of their own.
 export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block: Block) uses alloc {
   pushScope(mutable checker)
-  for (const statement of Arrays.values(block.stmts)) {
+  for (const statement of Arrays.values(block.statements)) {
     checkStatement(mutable checker, walker, statement)
   }
   popScope(mutable checker)
@@ -39,7 +39,7 @@ export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, s
 
 function checkLoopExit(mutable checker: Checker, pos: Pos, message: string) uses alloc {
   if (checker.loops == 0) {
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
   }
 }
 
@@ -59,7 +59,7 @@ function checkVariable<W: Walker>(mutable checker: Checker, walker: W, nodeId: i
   if (type is Some(typeExpression)) {
     want = Some(resolveType(mutable checker, typeExpression))
   }
-  const errorCount = Arrays.length(checker.errs)
+  const errorCount = Arrays.length(checker.errors)
   let found = checkExpression(mutable checker, walker, value, want)
   if (want is Some(declared)) {
     expectType(mutable checker, getExpressionPos(value), want, found)
@@ -67,8 +67,8 @@ function checkVariable<W: Walker>(mutable checker: Checker, walker: W, nodeId: i
   }
 
   // A value whose check already failed is void; do not report it twice.
-  if (found == Type.TVoid && Arrays.length(checker.errs) == errorCount) {
-    errorf(mutable checker, pos, "this expression has no value")
+  if (found == Type.TVoid && Arrays.length(checker.errors) == errorCount) {
+    reportError(mutable checker, pos, "this expression has no value")
   }
   declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
 }
@@ -86,10 +86,10 @@ function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Po
   // The root of the target must be a `let` variable.
   const root = findAssignedLocal(checker, target)
   if (root < 0) {
-    errorf(mutable checker, pos, "only variables, fields and array elements can be assigned")
+    reportError(mutable checker, pos, "only variables, fields and array elements can be assigned")
   } else if (!getLocal(checker, root).isMutable) {
     const name = getLocal(checker, root).name
-    errorf(mutable checker, pos, `${quoteGo(name)} is constant; declare it with \`let\` to change it`)
+    reportError(mutable checker, pos, `${quoteGo(name)} is constant; declare it with \`let\` to change it`)
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
   expectType(mutable checker, getExpressionPos(value), Some(targetType), valueType)
@@ -106,11 +106,11 @@ function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W
   if (expression is Expr.CallExpr(nodeId, _, _, _)) {
     if (getNodeType(checker, nodeId) is Some(found)) {
       if (isResult(checker, found)) {
-        errorf(mutable checker, pos, "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`")
+        reportError(mutable checker, pos, "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`")
       }
     }
   } else {
-    errorf(mutable checker, pos, "this expression does nothing")
+    reportError(mutable checker, pos, "this expression does nothing")
   }
 }
 
@@ -127,13 +127,13 @@ function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, v
   if (value is Some(expression)) {
     const found = checkExpression(mutable checker, walker, expression, Some(want))
     if (want == Type.TVoid) {
-      errorf(mutable checker, pos, "this function returns nothing")
+      reportError(mutable checker, pos, "this function returns nothing")
       return
     }
     expectType(mutable checker, getExpressionPos(expression), Some(want), found)
   } else if (want != Type.TVoid) {
     const text = typeString(checker, want)
-    errorf(mutable checker, pos, `this function must return a ${text}`)
+    reportError(mutable checker, pos, `this function must return a ${text}`)
   }
 }
 
@@ -177,7 +177,7 @@ function checkIf<W: Walker>(mutable checker: Checker, walker: W, condition: Expr
   if (variantIndex >= 0) {
     setNarrowed(mutable checker, subject, variantIndex)
   }
-  for (const statement of Arrays.values(then.stmts)) {
+  for (const statement of Arrays.values(then.statements)) {
     checkStatement(mutable checker, walker, statement)
   }
   popScope(mutable checker)
@@ -186,7 +186,7 @@ function checkIf<W: Walker>(mutable checker: Checker, walker: W, condition: Expr
   // unless the pattern also tested the fields (`x is Some(1)`).
   let otherVariant = findOtherVariant(checker, enumIndex, variantIndex)
   if (testPattern is Some(fieldPattern)) {
-    if (!areArgsIrrefutable(checker, fieldPattern)) {
+    if (!areArgumentsIrrefutable(checker, fieldPattern)) {
       otherVariant = -1
     }
   }
@@ -214,12 +214,12 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
   const iterableType = checkExpression(mutable checker, walker, iterable, None)
   let builtin = ""
   let firstArgument = Type.TVoid
-  if (iterable is Expr.CallExpr(callId, _, _, args)) {
+  if (iterable is Expr.CallExpr(callId, _, _, arguments)) {
     if (getRef(checker, callId) is Ref.Builtin(index)) {
-      builtin = checker.registry.funcs[index].name
+      builtin = checker.registry.functions[index].name
     }
-    if (Arrays.length(args) > 0) {
-      if (getNodeType(checker, getExpressionId(args[0].value)) is Some(argumentType)) {
+    if (Arrays.length(arguments) > 0) {
+      if (getNodeType(checker, getExpressionId(arguments[0].value)) is Some(argumentType)) {
         firstArgument = argumentType
       }
     }
@@ -239,7 +239,7 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
     }
   } else {
     const text = typeString(checker, iterableType)
-    errorf(mutable checker, getExpressionPos(iterable), `for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found ${text}`)
+    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found ${text}`)
   }
 
   // The loop variable lives in a scope around the body.
@@ -254,7 +254,7 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
 // isResult reports a Result value, which a statement may not drop.
 export function isResult(checker: Checker, valueType: Type): bool {
   if (valueType is Type.TEnum(index)) {
-    return checker.enums[index].name == "Result" && Arrays.length(checker.enums[index].args) == 2
+    return checker.enums[index].name == "Result" && Arrays.length(checker.enums[index].arguments) == 2
   }
   return false
 }
@@ -262,11 +262,11 @@ export function isResult(checker: Checker, valueType: Type): bool {
 // diverges reports whether a block always leaves by return, break,
 // continue or panic.
 export function diverges(block: Block): bool {
-  const count = Arrays.length(block.stmts)
+  const count = Arrays.length(block.statements)
   if (count == 0) {
     return false
   }
-  return statementDiverges(block.stmts[count - 1])
+  return statementDiverges(block.statements[count - 1])
 }
 
 function statementDiverges(statement: Stmt): bool {

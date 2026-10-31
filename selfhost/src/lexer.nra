@@ -22,22 +22,22 @@ export enum TokenKind {
   TokPunct
 }
 
-// A token. endLine:endCol is the position after its last character (Go:
+// A token. endLine:endColumn is the position after its last character (Go:
 // Token.End); the parser reads it for StringLit.end.
 export struct Token {
   kind: TokenKind
   text: string
   line: int
-  col: int
+  column: int
   endLine: int
-  endCol: int
+  endColumn: int
 }
 
 struct Lexer {
   source: Array<char>
   index: int
   line: int
-  col: int
+  column: int
   depth: int // nesting of ( and [, where line breaks never end a statement
   tokens: Array<Token>
   punctuationChars: Array<Array<char>>
@@ -68,7 +68,7 @@ function createLexer(source: string): Lexer {
     source: Str.chars(source),
     index: 0,
     line: 1,
-    col: 1,
+    column: 1,
     depth: 0,
     tokens: [],
     punctuationChars: punctuationChars,
@@ -85,8 +85,8 @@ export function lex(source: string): Result<Array<Token>, string> uses alloc {
   return Ok(lexer.tokens)
 }
 
-function errorAt(line: int, col: int, message: string): Option<string> {
-  return Some(`${Int.toString(line)}:${Int.toString(col)}: ${message}`)
+function errorAt(line: int, column: int, message: string): Option<string> {
+  return Some(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
 }
 
 function getSize(lexer: Lexer): int {
@@ -105,17 +105,17 @@ function advance(mutable lexer: Lexer): char {
   lexer.index = lexer.index + 1
   if (character == '\n') {
     lexer.line = lexer.line + 1
-    lexer.col = 1
+    lexer.column = 1
   } else {
-    lexer.col = lexer.col + 1
+    lexer.column = lexer.column + 1
   }
   return character
 }
 
 // emit runs after the token's characters are consumed, so the current
 // position is the token's end.
-function emit(mutable lexer: Lexer, kind: TokenKind, text: string, line: int, col: int) {
-  const token = Token { kind: kind, text: text, line: line, col: col, endLine: lexer.line, endCol: lexer.col }
+function emit(mutable lexer: Lexer, kind: TokenKind, text: string, line: int, column: int) {
+  const token = Token { kind: kind, text: text, line: line, column: column, endLine: lexer.line, endColumn: lexer.column }
   Arrays.push(mutable lexer.tokens, token)
 }
 
@@ -153,11 +153,11 @@ function runLexer(mutable lexer: Lexer): Option<string> {
   while (lexer.index < getSize(lexer)) {
     const character = peek(lexer, 0)
     const line = lexer.line
-    const col = lexer.col
+    const column = lexer.column
     if (character == '\n') {
       advance(mutable lexer)
       if (lexer.depth == 0 && lastEndsStatement(lexer)) {
-        emit(mutable lexer, TokenKind.TokNewline, "\n", line, col)
+        emit(mutable lexer, TokenKind.TokNewline, "\n", line, column)
       }
     } else if (character == ' ' || character == '\t' || character == '\r') {
       advance(mutable lexer)
@@ -172,7 +172,7 @@ function runLexer(mutable lexer: Lexer): Option<string> {
         advance(mutable lexer)
       }
       if (lexer.index >= getSize(lexer)) {
-        return errorAt(line, col, "unterminated block comment")
+        return errorAt(line, column, "unterminated block comment")
       }
       advance(mutable lexer)
       advance(mutable lexer)
@@ -183,50 +183,50 @@ function runLexer(mutable lexer: Lexer): Option<string> {
       }
       const word = readText(lexer, start, lexer.index)
       if (KEYWORDS[word] is Some(_)) {
-        emit(mutable lexer, TokenKind.TokKeyword, word, line, col)
+        emit(mutable lexer, TokenKind.TokKeyword, word, line, column)
       } else {
-        emit(mutable lexer, TokenKind.TokIdent, word, line, col)
+        emit(mutable lexer, TokenKind.TokIdent, word, line, column)
       }
     } else if (isDigit(character)) {
-      lexNumber(mutable lexer, line, col)
+      lexNumber(mutable lexer, line, column)
     } else if (character == '"') {
-      const literal = lexQuoted(mutable lexer, '"', line, col)
+      const literal = lexQuoted(mutable lexer, '"', line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
-      emit(mutable lexer, TokenKind.TokString, literal.value, line, col)
+      emit(mutable lexer, TokenKind.TokString, literal.value, line, column)
     } else if (character == '\'') {
-      const literal = lexQuoted(mutable lexer, '\'', line, col)
+      const literal = lexQuoted(mutable lexer, '\'', line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
       if (Str.charCount(literal.value) != 1) {
-        return errorAt(line, col, "a character literal holds exactly one character; use double quotes for strings")
+        return errorAt(line, column, "a character literal holds exactly one character; use double quotes for strings")
       }
-      emit(mutable lexer, TokenKind.TokChar, literal.value, line, col)
+      emit(mutable lexer, TokenKind.TokChar, literal.value, line, column)
     } else if (character == '`') {
-      const literal = lexTemplate(mutable lexer, line, col)
+      const literal = lexTemplate(mutable lexer, line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
-      emit(mutable lexer, TokenKind.TokTemplate, literal.value, line, col)
+      emit(mutable lexer, TokenKind.TokTemplate, literal.value, line, column)
     } else {
-      const failed = lexPunctuation(mutable lexer, character, line, col)
+      const failed = lexPunctuation(mutable lexer, character, line, column)
       if (failed is Some(_)) {
         return failed
       }
     }
   }
   const line = lexer.line
-  const col = lexer.col
+  const column = lexer.column
   if (lastEndsStatement(lexer)) {
-    emit(mutable lexer, TokenKind.TokNewline, "\n", line, col)
+    emit(mutable lexer, TokenKind.TokNewline, "\n", line, column)
   }
-  emit(mutable lexer, TokenKind.TokEof, "", line, col)
+  emit(mutable lexer, TokenKind.TokEof, "", line, column)
   return None
 }
 
-function lexPunctuation(mutable lexer: Lexer, character: char, line: int, col: int): Option<string> {
+function lexPunctuation(mutable lexer: Lexer, character: char, line: int, column: int): Option<string> {
   for (const index of Ranges.upTo(Arrays.length(PUNCTS))) {
     if (hasPrefix(lexer, lexer.punctuationChars[index])) {
       const punctuation = PUNCTS[index]
@@ -234,7 +234,7 @@ function lexPunctuation(mutable lexer: Lexer, character: char, line: int, col: i
         advance(mutable lexer)
       }
       if (punctuation == ";") {
-        return errorAt(line, col, "semicolons are not used; end the statement with a line break")
+        return errorAt(line, column, "semicolons are not used; end the statement with a line break")
       }
       if (punctuation == "(" || punctuation == "[" || punctuation == "#[") {
         lexer.depth = lexer.depth + 1
@@ -243,11 +243,11 @@ function lexPunctuation(mutable lexer: Lexer, character: char, line: int, col: i
           lexer.depth = lexer.depth - 1
         }
       }
-      emit(mutable lexer, TokenKind.TokPunct, punctuation, line, col)
+      emit(mutable lexer, TokenKind.TokPunct, punctuation, line, column)
       return None
     }
   }
-  return errorAt(line, col, `unexpected character ${quoteChar(character)}`)
+  return errorAt(line, column, `unexpected character ${quoteChar(character)}`)
 }
 
 function hasPrefix(lexer: Lexer, prefix: Array<char>): bool {
@@ -259,7 +259,7 @@ function hasPrefix(lexer: Lexer, prefix: Array<char>): bool {
   return true
 }
 
-function lexNumber(mutable lexer: Lexer, line: int, col: int) {
+function lexNumber(mutable lexer: Lexer, line: int, column: int) {
   // A 0x, 0b or 0o prefix takes hex digits; otherwise read a decimal with an
   // optional fraction and exponent.
   const start = lexer.index
@@ -301,20 +301,20 @@ function lexNumber(mutable lexer: Lexer, line: int, col: int) {
     }
   }
   if (isFloat) {
-    emit(mutable lexer, TokenKind.TokFloat, Str.build(builder), line, col)
+    emit(mutable lexer, TokenKind.TokFloat, Str.build(builder), line, column)
   } else {
-    emit(mutable lexer, TokenKind.TokInt, Str.build(builder), line, col)
+    emit(mutable lexer, TokenKind.TokInt, Str.build(builder), line, column)
   }
 }
 
-function fail(line: int, col: int, message: string): Result<string, string> {
-  return Err(`${Int.toString(line)}:${Int.toString(col)}: ${message}`)
+function fail(line: int, column: int, message: string): Result<string, string> {
+  return Err(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
 }
 
-function lexEscape(mutable lexer: Lexer, line: int, col: int): Result<string, string> {
+function lexEscape(mutable lexer: Lexer, line: int, column: int): Result<string, string> {
   advance(mutable lexer) // the backslash
   if (lexer.index >= getSize(lexer)) {
-    return fail(line, col, "unterminated escape")
+    return fail(line, column, "unterminated escape")
   }
   const character = advance(mutable lexer)
   return match (character) {
@@ -327,20 +327,20 @@ function lexEscape(mutable lexer: Lexer, line: int, col: int): Result<string, st
     '\'' => Ok("'")
     '`' => Ok("`")
     '$' => Ok("$")
-    'u' => lexUnicodeEscape(mutable lexer, line, col)
-    _ => fail(line, col, `unknown escape \\${Str.fromChar(character)}`)
+    'u' => lexUnicodeEscape(mutable lexer, line, column)
+    _ => fail(line, column, `unknown escape \\${Str.fromChar(character)}`)
   }
 }
 
-function lexUnicodeEscape(mutable lexer: Lexer, line: int, col: int): Result<string, string> {
+function lexUnicodeEscape(mutable lexer: Lexer, line: int, column: int): Result<string, string> {
   if (peek(lexer, 0) != '{') {
-    return fail(line, col, "expected { after \\u")
+    return fail(line, column, "expected { after \\u")
   }
   advance(mutable lexer)
   let value = 0
   while (peek(lexer, 0) != '}') {
     if (lexer.index >= getSize(lexer) || !isHexDigit(peek(lexer, 0))) {
-      return fail(line, col, "invalid \\u escape")
+      return fail(line, column, "invalid \\u escape")
     }
     value = (value *% 16) +% hexValue(advance(mutable lexer))
   }
@@ -360,12 +360,12 @@ function convertRune(value: int): char {
   return '\u{FFFD}'
 }
 
-function lexQuoted(mutable lexer: Lexer, quote: char, line: int, col: int): Result<string, string> {
+function lexQuoted(mutable lexer: Lexer, quote: char, line: int, column: int): Result<string, string> {
   advance(mutable lexer)
   let builder = Str.builder()
   while (true) {
     if (lexer.index >= getSize(lexer) || peek(lexer, 0) == '\n') {
-      return fail(line, col, "unterminated literal")
+      return fail(line, column, "unterminated literal")
     }
     const character = peek(lexer, 0)
     if (character == quote) {
@@ -373,7 +373,7 @@ function lexQuoted(mutable lexer: Lexer, quote: char, line: int, col: int): Resu
       return Ok(Str.build(builder))
     }
     if (character == '\\') {
-      const escaped = lexEscape(mutable lexer, line, col)
+      const escaped = lexEscape(mutable lexer, line, column)
       if (escaped is Err(error)) {
         return Err(error)
       }
@@ -382,17 +382,17 @@ function lexQuoted(mutable lexer: Lexer, quote: char, line: int, col: int): Resu
       Str.appendChar(mutable builder, advance(mutable lexer))
     }
   }
-  return fail(line, col, "unreachable")
+  return fail(line, column, "unreachable")
 }
 
 // Templates keep their raw source. The parser splits out each ${...} part
 // and parses it on its own.
-function lexTemplate(mutable lexer: Lexer, line: int, col: int): Result<string, string> {
+function lexTemplate(mutable lexer: Lexer, line: int, column: int): Result<string, string> {
   advance(mutable lexer)
   const start = lexer.index
   while (true) {
     if (lexer.index >= getSize(lexer)) {
-      return fail(line, col, "unterminated template string")
+      return fail(line, column, "unterminated template string")
     }
     const character = peek(lexer, 0)
     if (character == '\\') {
@@ -408,7 +408,7 @@ function lexTemplate(mutable lexer: Lexer, line: int, col: int): Result<string, 
       advance(mutable lexer)
     }
   }
-  return fail(line, col, "unreachable")
+  return fail(line, column, "unreachable")
 }
 
 // hex writes value (not negative) in lowercase hexadecimal with at least
@@ -469,7 +469,7 @@ function hexValue(character: char): int {
   return Char.code(character) - Char.code('A') + 10
 }
 
-export function kindName(kind: TokenKind): string {
+export function getKindName(kind: TokenKind): string {
   return match (kind) {
     TokenKind.TokEof => "eof"
     TokenKind.TokNewline => "newline"

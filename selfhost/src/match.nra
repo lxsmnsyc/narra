@@ -3,8 +3,8 @@
 // bindRest, isExpr, match, requireQualified, enumNameFor) and
 // check_patterns.go (destructure).
 //
-// This module sits above narrac/exprs and below narrac/stmts. exprs reaches
-// it through the Walker trait (checkPatterns), stmts calls it directly. The
+// This module sits above narrac/exprs and below narrac/statements. exprs reaches
+// it through the Walker trait (checkPatterns), statements calls it directly. The
 // exhaustiveness check and the narrowing helpers are in narrac/patterns.
 //
 // A pattern's results go into the side tables of the current body (D70):
@@ -15,13 +15,13 @@
 import { Pos, Expr, Decl, Pattern, FieldPattern, MatchArm, Block, TypeExpr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Ref, Walker, errorf, typeString, setNodeType, setRef, getRef, findLocal, pushScope, popScope, findBodySlot, getExpressionPos } from "narrac/check"
+import { Checker, Ref, Walker, reportError, typeString, setNodeType, setRef, getRef, findLocal, pushScope, popScope, findBodySlot, getExpressionPos } from "narrac/check"
 import { LocalInfo } from "narrac/check"
 import { resolveType } from "narrac/resolve"
 import { sourceScope } from "narrac/scopes"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
 import { namesEnum, findEnumName } from "narrac/ctors"
-import { getPatternId, getPatternPos, collectPatternLocals, bindPatternLocals, irrefutable, findMissingCases } from "narrac/patterns"
+import { getPatternId, getPatternPos, collectPatternLocals, bindPatternLocals, isIrrefutable, findMissingCases } from "narrac/patterns"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -50,7 +50,7 @@ function findVariant(checker: Checker, enumIndex: int, name: string): int {
 // createPatternLocal declares the local a PatName binds, without putting it
 // into scope.
 function createPatternLocal(mutable checker: Checker, nodeId: int, pos: Pos, name: string, localType: Type) uses alloc {
-  checker.localN = checker.localN + 1
+  checker.localCount = checker.localCount + 1
   const body = checker.body
   const local = LocalInfo { name: name, localType: localType, isMutable: false, param: false, pos: pos, noEscape: false, used: false }
   Arrays.push(mutable checker.bodies[body].locals, local)
@@ -74,9 +74,9 @@ function resolveNode<W: Walker>(mutable checker: Checker, walker: W, pattern: Pa
   match (pattern) {
     Pattern.PatWildcard(_, _) => {}
     Pattern.PatName(nodeId, pos, name) => resolveName(mutable checker, nodeId, pos, name, valueType, mutable seen)
-    Pattern.PatCtor(nodeId, pos, enumName, name, args, bare) => resolveConstructor(mutable checker, walker, pattern, nodeId, pos, enumName, name, args, bare, valueType, mutable seen)
+    Pattern.PatCtor(nodeId, pos, enumName, name, arguments, bare) => resolveConstructor(mutable checker, walker, pattern, nodeId, pos, enumName, name, arguments, bare, valueType, mutable seen)
     Pattern.PatStruct(_, pos, fields) => resolveStruct(mutable checker, walker, pattern, pos, fields, valueType, mutable seen)
-    Pattern.PatTuple(_, pos, args) => resolveTuple(mutable checker, walker, pattern, pos, args, valueType, mutable seen)
+    Pattern.PatTuple(_, pos, arguments) => resolveTuple(mutable checker, walker, pattern, pos, arguments, valueType, mutable seen)
     Pattern.PatLit(_, pos, literal) => resolveLiteral(mutable checker, walker, pos, literal, valueType)
   }
 }
@@ -93,43 +93,43 @@ function resolveName(mutable checker: Checker, nodeId: int, pos: Pos, name: stri
     }
     if (startsUpper(name)) {
       const message = `enum ${typeString(checker, valueType)} has no constructor ${quoteGo(name)}`
-      errorf(mutable checker, pos, message)
+      reportError(mutable checker, pos, message)
       return
     }
   } else if (startsUpper(name)) {
     const message = `${name} is not a constructor of ${typeString(checker, valueType)}; a name that binds starts with a lowercase letter`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     return
   }
   if (seen[name] is Some(_)) {
-    errorf(mutable checker, pos, `${quoteGo(name)} is bound twice in this pattern`)
+    reportError(mutable checker, pos, `${quoteGo(name)} is bound twice in this pattern`)
     return
   }
   seen[name] = true
   if (findLocal(checker, name) >= 0) {
-    errorf(mutable checker, pos, `${quoteGo(name)} is already declared in this function; shadowing is not allowed`)
+    reportError(mutable checker, pos, `${quoteGo(name)} is already declared in this function; shadowing is not allowed`)
   }
   createPatternLocal(mutable checker, nodeId, pos, name, valueType)
 }
 
-function resolveConstructor<W: Walker>(mutable checker: Checker, walker: W, pattern: Pattern, nodeId: int, pos: Pos, enumName: string, name: string, args: Array<Pattern>, bare: bool, valueType: Type, mutable seen: Map<string, bool>) uses alloc {
+function resolveConstructor<W: Walker>(mutable checker: Checker, walker: W, pattern: Pattern, nodeId: int, pos: Pos, enumName: string, name: string, arguments: Array<Pattern>, bare: bool, valueType: Type, mutable seen: Map<string, bool>) uses alloc {
   if (enumOf(valueType) < 0) {
     const message = `constructor pattern ${name} needs an enum value, found ${typeString(checker, valueType)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
   const enumIndex = enumOf(valueType)
   if (enumName != "" && !namesEnum(checker, enumName, enumIndex)) {
     const message = `${enumName}.${name} does not match a value of type ${typeString(checker, valueType)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
   const variantIndex = findVariant(checker, enumIndex, name)
   if (variantIndex < 0) {
     const message = `enum ${typeString(checker, valueType)} has no constructor ${quoteGo(name)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
@@ -141,13 +141,13 @@ function resolveConstructor<W: Walker>(mutable checker: Checker, walker: W, patt
     return
   }
   const variant = checker.enums[enumIndex].variants[variantIndex]
-  if (Arrays.length(args) != Arrays.length(variant.fields)) {
-    errorf(mutable checker, pos, `${variant.name} has ${Int.toString(Arrays.length(variant.fields))} fields, the pattern lists ${Int.toString(Arrays.length(args))}`)
+  if (Arrays.length(arguments) != Arrays.length(variant.fields)) {
+    reportError(mutable checker, pos, `${variant.name} has ${Int.toString(Arrays.length(variant.fields))} fields, the pattern lists ${Int.toString(Arrays.length(arguments))}`)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
-  for (const index of Ranges.between(0, Arrays.length(args))) {
-    resolveNode(mutable checker, walker, args[index], variant.fields[index].fieldType, mutable seen)
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    resolveNode(mutable checker, walker, arguments[index], variant.fields[index].fieldType, mutable seen)
   }
 }
 
@@ -168,26 +168,26 @@ function resolveStruct<W: Walker>(mutable checker: Checker, walker: W, pattern: 
   }
   if (structIndex < 0) {
     const message = `a struct pattern needs a struct value, found ${typeString(checker, valueType)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
   const text = typeString(checker, valueType)
   if (isHiddenStruct(checker, structIndex)) {
     const message = `cannot match the fields of ${text}: it is an opaque struct of module ${quoteGo(checker.structs[structIndex].module)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
   }
   let given: Map<string, bool> = Map {}
   const structFields = checker.structs[structIndex].fields
   for (const fieldPattern of Arrays.values(fields)) {
     const fieldIndex = findField(structFields, fieldPattern.name)
     if (fieldIndex < 0) {
-      errorf(mutable checker, fieldPattern.pos, `struct ${text} has no field ${quoteGo(fieldPattern.name)}`)
+      reportError(mutable checker, fieldPattern.pos, `struct ${text} has no field ${quoteGo(fieldPattern.name)}`)
       bindRest(mutable checker, fieldPattern.pattern, mutable seen)
       continue
     }
     if (given[fieldPattern.name] is Some(_)) {
-      errorf(mutable checker, fieldPattern.pos, `field ${quoteGo(fieldPattern.name)} is listed twice`)
+      reportError(mutable checker, fieldPattern.pos, `field ${quoteGo(fieldPattern.name)} is listed twice`)
       bindRest(mutable checker, fieldPattern.pattern, mutable seen)
       continue
     }
@@ -196,7 +196,7 @@ function resolveStruct<W: Walker>(mutable checker: Checker, walker: W, pattern: 
   }
 }
 
-function resolveTuple<W: Walker>(mutable checker: Checker, walker: W, pattern: Pattern, pos: Pos, args: Array<Pattern>, valueType: Type, mutable seen: Map<string, bool>) uses alloc {
+function resolveTuple<W: Walker>(mutable checker: Checker, walker: W, pattern: Pattern, pos: Pos, arguments: Array<Pattern>, valueType: Type, mutable seen: Map<string, bool>) uses alloc {
   let structIndex = -1
   if (valueType is Type.TStruct(index)) {
     if (checker.structs[index].tuple) {
@@ -205,19 +205,19 @@ function resolveTuple<W: Walker>(mutable checker: Checker, walker: W, pattern: P
   }
   if (structIndex < 0) {
     const message = `a tuple pattern needs a tuple value, found ${typeString(checker, valueType)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
   const structFields = checker.structs[structIndex].fields
-  if (Arrays.length(args) != Arrays.length(structFields)) {
-    const message = `${typeString(checker, valueType)} has ${Int.toString(Arrays.length(structFields))} elements, the pattern lists ${Int.toString(Arrays.length(args))}`
-    errorf(mutable checker, pos, message)
+  if (Arrays.length(arguments) != Arrays.length(structFields)) {
+    const message = `${typeString(checker, valueType)} has ${Int.toString(Arrays.length(structFields))} elements, the pattern lists ${Int.toString(Arrays.length(arguments))}`
+    reportError(mutable checker, pos, message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
-  for (const index of Ranges.between(0, Arrays.length(args))) {
-    resolveNode(mutable checker, walker, args[index], structFields[index].fieldType, mutable seen)
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    resolveNode(mutable checker, walker, arguments[index], structFields[index].fieldType, mutable seen)
   }
 }
 
@@ -225,7 +225,7 @@ function resolveLiteral<W: Walker>(mutable checker: Checker, walker: W, pos: Pos
   const isPrimitive = valueType == Type.TInt || valueType == Type.TF64 || valueType == Type.TBool || valueType == Type.TChar || valueType == Type.TStr || valueType == Type.TStringBuilder
   if (!isPrimitive) {
     const message = `a literal pattern needs an int, f64, bool, char or string value, found ${typeString(checker, valueType)}`
-    errorf(mutable checker, pos, message)
+    reportError(mutable checker, pos, message)
     return
   }
   const found = checkExpression(mutable checker, walker, literal, Some(valueType))
@@ -245,8 +245,8 @@ function bindRest(mutable checker: Checker, pattern: Pattern, mutable seen: Map<
         createPatternLocal(mutable checker, nodeId, pos, name, Type.TVoid)
       }
     }
-    Pattern.PatCtor(_, _, _, _, args, _) => {
-      for (const argument of Arrays.values(args)) {
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
         bindRest(mutable checker, argument, mutable seen)
       }
     }
@@ -255,8 +255,8 @@ function bindRest(mutable checker: Checker, pattern: Pattern, mutable seen: Map<
         bindRest(mutable checker, field.pattern, mutable seen)
       }
     }
-    Pattern.PatTuple(_, _, args) => {
-      for (const argument of Arrays.values(args)) {
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
         bindRest(mutable checker, argument, mutable seen)
       }
     }
@@ -277,7 +277,7 @@ function requireQualified(mutable checker: Checker, pos: Pos, name: string, enum
     }
   }
   const enumName = findEnumName(mutable checker, enumIndex)
-  errorf(mutable checker, pos, `constructor ${name} needs its enum; write ${enumName}.${name}`)
+  reportError(mutable checker, pos, `constructor ${name} needs its enum; write ${enumName}.${name}`)
 }
 
 // ---- is, match, destructuring ----
@@ -299,7 +299,7 @@ export function checkIs<W: Walker>(mutable checker: Checker, walker: W, pos: Pos
   let locals: Array<int> = []
   collectPatternLocals(checker, pattern, mutable locals)
   if (Arrays.length(locals) > 0 && !binds) {
-    errorf(mutable checker, pos, "an `is` pattern can only bind names when it is the whole condition of an if")
+    reportError(mutable checker, pos, "an `is` pattern can only bind names when it is the whole condition of an if")
   }
   return Type.TBool
 }
@@ -308,7 +308,7 @@ export function checkIs<W: Walker>(mutable checker: Checker, walker: W, pos: Pos
 export function checkMatch<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, subject: Expr, arms: Array<MatchArm>, want: Option<Type>, isValue: bool): Type uses alloc {
   const subjectType = checkExpression(mutable checker, walker, subject, None)
   if (subjectType == Type.TVoid) {
-    errorf(mutable checker, pos, "match needs a value, found void")
+    reportError(mutable checker, pos, "match needs a value, found void")
     return Type.TVoid
   }
   let rows: Array<Array<Pattern>> = []
@@ -316,9 +316,9 @@ export function checkMatch<W: Walker>(mutable checker: Checker, walker: W, pos: 
   let result = want
   for (const arm of Arrays.values(arms)) {
     pushScope(mutable checker)
-    const errorCount = Arrays.length(checker.errs)
+    const errorCount = Arrays.length(checker.errors)
     resolvePattern(mutable checker, walker, arm.pattern, subjectType)
-    if (Arrays.length(checker.errs) > errorCount) {
+    if (Arrays.length(checker.errors) > errorCount) {
       // Checking the guard and body would only report errors that follow
       // from this one.
       patternFailed = true
@@ -338,7 +338,7 @@ export function checkMatch<W: Walker>(mutable checker: Checker, walker: W, pos: 
     }
     if (arm.block is Some(block)) {
       if (isValue) {
-        errorf(mutable checker, arm.pos, "a match used as a value needs a single expression in each arm")
+        reportError(mutable checker, arm.pos, "a match used as a value needs a single expression in each arm")
       }
       Walker.checkBlock(walker, mutable checker, block)
     } else if (arm.body is Some(body)) {
@@ -368,9 +368,9 @@ export function checkMatch<W: Walker>(mutable checker: Checker, walker: W, pos: 
       }
       if (other) {
         const message = `match does not cover every ${typeString(checker, subjectType)} value; add a \`_\` arm`
-        errorf(mutable checker, pos, message)
+        reportError(mutable checker, pos, message)
       } else {
-        errorf(mutable checker, pos, `match does not cover ${Str.join(names, ", ")}; add the cases or a \`_\` arm`)
+        reportError(mutable checker, pos, `match does not cover ${Str.join(names, ", ")}; add the cases or a \`_\` arm`)
       }
     }
   }
@@ -394,9 +394,9 @@ export function checkDestructure<W: Walker>(mutable checker: Checker, walker: W,
     found = declared
   }
   resolvePattern(mutable checker, walker, pattern, found)
-  if (!irrefutable(checker, pattern)) {
+  if (!isIrrefutable(checker, pattern)) {
     const message = `this pattern does not match every ${typeString(checker, found)}; use match or \`is\` to test a value`
-    errorf(mutable checker, getPatternPos(pattern), message)
+    reportError(mutable checker, getPatternPos(pattern), message)
   }
 
   // The names go into scope, as variables when the declaration is `let`.

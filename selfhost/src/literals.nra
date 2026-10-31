@@ -8,7 +8,7 @@
 import { Pos, Expr, TypeExpr, FieldInit } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Walker, errorf, typeString, checkMapKey, lookupGeneric, getExpressionPos } from "narrac/check"
+import { Checker, Walker, reportError, typeString, checkMapKey, lookupGeneric, getExpressionPos } from "narrac/check"
 import { resolveType, instantiate, findTupleType } from "narrac/resolve"
 import { checkExpression, expectType, describeType, findField, isHiddenStruct } from "narrac/exprs"
 import * as Int from "std/int"
@@ -17,29 +17,29 @@ import * as Ranges from "std/range"
 
 // checkMapLiteral checks `Map { k: v }` and `Map<K, V> { k: v }`.
 export function checkMapLiteral<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
-  if (expression is Expr.MapLit(_, pos, typeArgs, keys, values)) {
-    return checkMapEntries(mutable checker, walker, pos, typeArgs, keys, values, want)
+  if (expression is Expr.MapLit(_, pos, typeArguments, keys, values)) {
+    return checkMapEntries(mutable checker, walker, pos, typeArguments, keys, values, want)
   }
   return Type.TVoid
 }
 
-function checkMapEntries<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, typeArgs: Array<TypeExpr>, keys: Array<Expr>, values: Array<Expr>, want: Option<Type>): Type uses alloc {
+function checkMapEntries<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, typeArguments: Array<TypeExpr>, keys: Array<Expr>, values: Array<Expr>, want: Option<Type>): Type uses alloc {
   let keyType: Option<Type> = None
   let valueType: Option<Type> = None
   if (want is Some(Type.TMap(wantedKey, wantedValue))) {
     keyType = Some(wantedKey)
     valueType = Some(wantedValue)
   }
-  if (Arrays.length(typeArgs) > 0) {
+  if (Arrays.length(typeArguments) > 0) {
     // The written types decide the type of the literal, and resolveType
     // checks arity and the key.
-    const written = TypeExpr { pos: pos, name: "Map", args: typeArgs, isFunc: false, result: None, effects: [], isTuple: false }
+    const written = TypeExpr { pos: pos, name: "Map", arguments: typeArguments, isFunc: false, result: None, effects: [], isTuple: false }
     const literalType = resolveType(mutable checker, written)
     if (literalType is Type.TMap(literalKey, literalValue)) {
       if (want is Some(Type.TMap(wantedKey, wantedValue))) {
         if (Type.TMap(wantedKey, wantedValue) != literalType) {
           const message = `the type arguments make ${typeString(checker, literalType)}, but the expected type is ${typeString(checker, Type.TMap(wantedKey, wantedValue))}`
-          errorf(mutable checker, pos, message)
+          reportError(mutable checker, pos, message)
           return Type.TMap(wantedKey, wantedValue)
         }
       }
@@ -70,13 +70,13 @@ function checkMapEntries<W: Walker>(mutable checker: Checker, walker: W, pos: Po
   }
   if (keyType is Some(finalKey)) {
     if (valueType is Some(finalValue)) {
-      if (Arrays.length(typeArgs) == 0) {
+      if (Arrays.length(typeArguments) == 0) {
         checkMapKey(mutable checker, pos, finalKey)
       }
       return Type.TMap(finalKey, finalValue)
     }
   }
-  errorf(mutable checker, pos, "the type of Map {} is unknown; add a type annotation")
+  reportError(mutable checker, pos, "the type of Map {} is unknown; add a type annotation")
   return Type.TVoid
 }
 
@@ -98,7 +98,7 @@ export function checkMapIndex<W: Walker>(mutable checker: Checker, walker: W, no
 // guides the elements; otherwise each element's type is inferred.
 export function checkTuple<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, elements: Array<Expr>, want: Option<Type>): Type uses alloc {
   if (Arrays.length(elements) < 2) {
-    errorf(mutable checker, pos, `a tuple needs at least two elements, found ${Int.toString(Arrays.length(elements))}`)
+    reportError(mutable checker, pos, `a tuple needs at least two elements, found ${Int.toString(Arrays.length(elements))}`)
     for (const element of Arrays.values(elements)) {
       checkExpression(mutable checker, walker, element, None)
     }
@@ -135,7 +135,7 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
   let named: Option<Type> = None
   let genericIndex = -1
   if (typeName != "") {
-    const scope = checker.scopes[checker.cur]
+    const scope = checker.scopes[checker.current]
     if (scope.generics[typeName] is Some(generic)) {
       if (checker.generics[generic].isStruct) {
         genericIndex = generic
@@ -145,7 +145,7 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
       if (scope.types[typeName] is Some(Type.TStruct(structIndex))) {
         named = Some(Type.TStruct(structIndex))
       } else {
-        errorf(mutable checker, pos, `${quoteGo(typeName)} is not a struct`)
+        reportError(mutable checker, pos, `${quoteGo(typeName)} is not a struct`)
         return Type.TVoid
       }
     }
@@ -164,12 +164,12 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
   }
   if (spreadIndex < 0) {
     const message = `a spread needs a struct value, found ${typeString(checker, spreadType)}`
-    errorf(mutable checker, spreadPos, message)
+    reportError(mutable checker, spreadPos, message)
     return Type.TVoid
   }
   if (isHiddenStruct(checker, spreadIndex)) {
     const message = `cannot spread ${typeString(checker, spreadType)}: it is an opaque struct of module ${quoteGo(checker.structs[spreadIndex].module)}`
-    errorf(mutable checker, spreadPos, message)
+    reportError(mutable checker, spreadPos, message)
   }
 
   // The spread must have the type of the literal.
@@ -177,7 +177,7 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
   if (genericIndex >= 0) {
     if (checker.structs[spreadIndex].name != checker.generics[genericIndex].name || checker.structs[spreadIndex].module != checker.generics[genericIndex].module) {
       const message = `cannot spread ${typeString(checker, spreadType)} into a ${typeName} literal; the spread must have the literal's type`
-      errorf(mutable checker, spreadPos, message)
+      reportError(mutable checker, spreadPos, message)
       return Type.TVoid
     }
     target = None
@@ -186,7 +186,7 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
     const targetType = Type.TStruct(targetIndex)
     if (targetType != spreadType) {
       const message = `cannot spread ${describeType(checker, spreadType, targetType)} into a ${describeType(checker, targetType, spreadType)} literal; the spread must have the literal's type`
-      errorf(mutable checker, spreadPos, message)
+      reportError(mutable checker, spreadPos, message)
       return targetType
     }
   }
@@ -198,12 +198,12 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
   for (const field of Arrays.values(fields)) {
     const fieldIndex = findField(structFields, field.name)
     if (fieldIndex < 0) {
-      errorf(mutable checker, field.pos, `struct ${structText} has no field ${quoteGo(field.name)}`)
+      reportError(mutable checker, field.pos, `struct ${structText} has no field ${quoteGo(field.name)}`)
       checkExpression(mutable checker, walker, field.value, None)
       continue
     }
     if (seen[field.name] is Some(_)) {
-      errorf(mutable checker, field.pos, `field ${quoteGo(field.name)} is given twice`)
+      reportError(mutable checker, field.pos, `field ${quoteGo(field.name)} is given twice`)
     }
     seen[field.name] = true
     const fieldType = structFields[fieldIndex].fieldType

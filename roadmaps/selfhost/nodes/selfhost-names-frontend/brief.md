@@ -1,7 +1,7 @@
 ---
 id: selfhost-names-frontend
 title: Readable names in the selfhost front end
-status: todo
+status: active
 priority: must
 type: refactor
 outline: false

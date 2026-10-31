@@ -1,7 +1,7 @@
 ---
 id: selfhost-names-checker
 title: Readable names in the selfhost checker
-status: todo
+status: active
 priority: must
 type: refactor
 outline: false

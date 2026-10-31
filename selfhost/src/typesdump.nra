@@ -10,7 +10,7 @@ import * as Str from "std/string"
 import { Pos, Expr, Stmt, Block, Param, Pattern, MatchArm } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Type } from "narrac/types"
-import { Checker, BodyInfo, BodyRoot, Ref } from "narrac/check"
+import { Checker, BodyInfo, BodyRoot, Ref, findBodySlot } from "narrac/check"
 import { dumpTypeString } from "narrac/declsdump"
 import * as Arrays from "std/array"
 
@@ -21,8 +21,8 @@ export function dump(checker: Checker): string uses alloc {
     Str.append(mutable out, `body module=${quoteDump(body.module)} ${body.kind} ${body.name}`)
     if (Arrays.length(body.targs) > 0) {
       let parts: Array<string> = []
-      for (const t of Arrays.values(body.targs)) {
-        Arrays.push(mutable parts, dumpTypeString(checker, t))
+      for (const typeArgument of Arrays.values(body.targs)) {
+        Arrays.push(mutable parts, dumpTypeString(checker, typeArgument))
       }
       Str.append(mutable out, ` targs=${Str.join(parts, ",")}`)
     }
@@ -43,19 +43,11 @@ export function dump(checker: Checker): string uses alloc {
   return Str.build(out)
 }
 
-function findSlot(body: BodyInfo, id: int): int {
-  const slot = id - body.first
-  if (slot < 0 || slot >= Arrays.length(body.types)) {
-    return -1
-  }
-  return slot
-}
-
 function describeNodeType(checker: Checker, bodyInfo: BodyInfo, id: int): string uses alloc {
-  const slot = findSlot(bodyInfo, id)
+  const slot = findBodySlot(bodyInfo, id)
   if (slot >= 0) {
-    if (bodyInfo.types[slot] is Some(t)) {
-      return dumpTypeString(checker, t)
+    if (bodyInfo.types[slot] is Some(nodeType)) {
+      return dumpTypeString(checker, nodeType)
     }
   }
   return "-"
@@ -71,7 +63,7 @@ function qualifiedName(module: string, name: string): string uses alloc {
 // describeRef prints the resolution attribute of a node, with its leading
 // space, or "".
 function describeRef(checker: Checker, bodyInfo: BodyInfo, id: int): string uses alloc {
-  const slot = findSlot(bodyInfo, id)
+  const slot = findBodySlot(bodyInfo, id)
   if (slot < 0) {
     return ""
   }
@@ -92,7 +84,7 @@ function writeNode(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyI
 
 // writeLocal prints the local a node declares, if any.
 function writeLocal(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyInfo, id: int) uses alloc {
-  const slot = findSlot(bodyInfo, id)
+  const slot = findBodySlot(bodyInfo, id)
   if (slot < 0 || bodyInfo.declared[slot] < 0) {
     return
   }
@@ -101,7 +93,7 @@ function writeLocal(mutable out: StringBuilder, checker: Checker, bodyInfo: Body
   if (local.isMutable) {
     flag = " mutable"
   }
-  const text = dumpTypeString(checker, local.t)
+  const text = dumpTypeString(checker, local.localType)
   Str.append(mutable out, `  ${Int.toString(local.pos.line)}:${Int.toString(local.pos.col)} local ${local.name}${flag} ${text}\n`)
 }
 
@@ -122,8 +114,8 @@ function writeStatement(mutable out: StringBuilder, checker: Checker, bodyInfo: 
     Stmt.BlockStmt(block) => writeBlock(mutable out, checker, bodyInfo, block)
     Stmt.VarStmt(id, _, _, _, pattern, _, value) => {
       writeLocal(mutable out, checker, bodyInfo, id)
-      if (pattern is Some(p)) {
-        writePattern(mutable out, checker, bodyInfo, p)
+      if (pattern is Some(declaredPattern)) {
+        writePattern(mutable out, checker, bodyInfo, declaredPattern)
       }
       writeExpression(mutable out, checker, bodyInfo, value)
     }

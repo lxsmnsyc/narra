@@ -379,18 +379,21 @@ const NAMESPACES = [
   Namespace { name: "Result", path: "std/result", plural: "Results" },
 ]
 
-// aliasTaken reports whether name is a type, a trait or a prelude
-// namespace type visible in the module.
-function aliasTaken(checker: Checker, name: string): bool {
-  if (typeNamed(checker, name)) {
-    return true
-  }
+// isNamespaceName reports a prelude type whose functions live in a std
+// module (Array, Box, Map, Option, Range, Result).
+export function isNamespaceName(name: string): bool {
   for (const namespace of Arrays.values(NAMESPACES)) {
     if (namespace.name == name) {
       return true
     }
   }
   return false
+}
+
+// aliasTaken reports whether name is a type, a trait or a prelude
+// namespace type visible in the module.
+function aliasTaken(checker: Checker, name: string): bool {
+  return typeNamed(checker, name) || isNamespaceName(name)
 }
 
 // suggestAlias is the alias the alias-equals-type error suggests: the
@@ -420,12 +423,12 @@ function suggestAlias(alias: string, path: string): string uses alloc {
 // are not ported.
 export function checkImportNames(mutable checker: Checker, file: File) uses alloc {
   // An alias may not be a type name.
-  for (const imp of Arrays.values(file.imports)) {
-    if (imp.alias == "" || !aliasTaken(checker, imp.alias)) {
+  for (const importDecl of Arrays.values(file.imports)) {
+    if (importDecl.alias == "" || !aliasTaken(checker, importDecl.alias)) {
       continue
     }
-    const suggestion = suggestAlias(imp.alias, imp.path)
-    errorf(mutable checker, imp.pos, `the import alias ${imp.alias} is also a type name; rename it, for example \`import * as ${suggestion} from ${quoteGo(imp.path)}\``)
+    const suggestion = suggestAlias(importDecl.alias, importDecl.path)
+    errorf(mutable checker, importDecl.pos, `the import alias ${importDecl.alias} is also a type name; rename it, for example \`import * as ${suggestion} from ${quoteGo(importDecl.path)}\``)
   }
 
   // An imported name may not clash with the module's functions, constants,
@@ -437,9 +440,9 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
     }
   }
   const scope = checker.cur
-  for (const imp of Arrays.values(file.imports)) {
-    const moduleScope = sourceScope(checker, imp.path)
-    for (const name of Arrays.values(imp.names)) {
+  for (const importDecl of Arrays.values(file.imports)) {
+    const moduleScope = sourceScope(checker, importDecl.path)
+    for (const name of Arrays.values(importDecl.names)) {
       const isAlias = checker.scopes[scope].modules[name.local] is Some(_)
       if (moduleScope >= 0) {
         // A type or trait import is itself in the type table, and the
@@ -450,13 +453,13 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
           continue
         }
         if (isAlias || aliasTaken(checker, name.local)) {
-          errorf(mutable checker, imp.pos, `imported name ${quoteGo(name.local)} is already declared in this module; rename the import with \`as\``)
+          errorf(mutable checker, importDecl.pos, `imported name ${quoteGo(name.local)} is already declared in this module; rename the import with \`as\``)
         }
         continue
       }
       const isConst = checker.scopes[scope].consts[name.local] is Some(_)
       if (declared[name.local] is Some(_) || isConst || isAlias || aliasTaken(checker, name.local)) {
-        errorf(mutable checker, imp.pos, `imported name ${quoteGo(name.local)} is already declared in this module; rename the import with \`as\``)
+        errorf(mutable checker, importDecl.pos, `imported name ${quoteGo(name.local)} is already declared in this module; rename the import with \`as\``)
       }
     }
   }

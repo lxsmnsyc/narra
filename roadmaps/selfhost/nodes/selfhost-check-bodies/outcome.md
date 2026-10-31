@@ -35,7 +35,7 @@ In check.nra:
 ```
 enum Ref { Unresolved, Local(index) /* BodyInfo.locals */, Const(index) /* Checker.consts */,
            Function(index) /* Checker.funcs */, Builtin(index) /* Registry.funcs */ }
-struct LocalInfo { name, t: Type, isMutable, param, pos, noEscape, used }   // narrowing goes beside it
+struct LocalInfo { name, localType: Type, isMutable, param, pos, noEscape, used }   // narrowing goes beside it
 enum BodyRoot { RootFunc(decl: FuncDecl), RootBlock(block: Block), RootExpr(expr: Expr) }
 struct BodyInfo {
   module, kind ("func" | "test" | "impl" | "const" | "default"), name (header text), targs: Array<Type>,
@@ -50,7 +50,7 @@ struct BodyInfo {
 
 New `Checker` fields: `checkingBodies` (set by `narrac types`; `narrac decls` keeps skipping defaults), `pendingDefaults` (generic structs built since the last default check), `bodies`, `body` (current, -1), `localScopes` + `scopeDepth` (the block scope stack; std/array has no pop, so slots are reused), `resultType`, `loops`, `inTest`. `ConstInfo` gained `state` (`CONST_NEW`, `CONST_BUSY`, `CONST_DONE`) and `valueType`.
 
-Helpers in check.nra: `startBody(checker, kind, name, targs, root, resultType, env): BodyState` (walks the root with idcheck's exported `funcIds`, `blockIds` and `exprIds` to find the id range, saves the outer body's state, opens one scope), `finishBody(checker, saved)`, `setNodeType`, `getNodeType`, `setRef`, `getRef`, `findLocal` (Go's `lookup`), `getLocal`, `declareLocal` (Go's `declare`, with the shadowing error), `pushScope`, `popScope`, `unsupported`, `getExpressionId`, `getExpressionPos`, `isNumeric`. A constant checked at its first use opens its own body in the middle of another one; `BodyState` restores the outer one. `env` is saved too.
+Helpers in check.nra: `startBody(checker, kind, name, targs, root, resultType, env): BodyState` (walks the root with idcheck's exported `funcIds`, `blockIds` and `exprIds` to find the id range, saves the outer body's state, opens one scope), `finishBody(checker, saved)`, `findBodySlot(body, id)`, `setNodeType`, `getNodeType`, `setRef`, `getRef`, `findLocal` (Go's `lookup`), `getLocal`, `declareLocal` (Go's `declare`, with the shadowing error), `pushScope`, `popScope`, `unsupported`, `getExpressionId`, `getExpressionPos`, `isNumeric`. A constant checked at its first use opens its own body in the middle of another one; `BodyState` restores the outer one. `env` is saved too.
 
 Where things are recorded: the type of every checked expression is set in `checkExpression`. Refs go on the Ident (local, const), on the FieldExpr (`Alias.CONST`: const) and on the CallExpr (function, builtin). The Ident of `Alias` in `Alias.CONST` gets type `TModule(path)`. A callee Ident gets no type, as in Go.
 

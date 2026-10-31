@@ -24,7 +24,7 @@ import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resol
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdlib"
-import { sourceScope, exported } from "narrac/scopes"
+import { sourceScope, exported, isNamespaceName } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -74,13 +74,13 @@ export function expectType(mutable checker: Checker, pos: Pos, want: Option<Type
 
 // describeType prints t for a message about t and other. When both print
 // the same, a struct or enum gets its module (Go's typeName).
-export function describeType(checker: Checker, t: Type, other: Type): string uses alloc {
-  const text = typeString(checker, t)
+export function describeType(checker: Checker, described: Type, other: Type): string uses alloc {
+  const text = typeString(checker, described)
   if (text != typeString(checker, other)) {
     return text
   }
   let module = ""
-  match (t) {
+  match (described) {
     Type.TStruct(index) => {
       module = checker.structs[index].module
     }
@@ -154,15 +154,15 @@ function underscoresFit(text: string): bool {
     }
   }
   while (index < length) {
-    const ch = Str.charAt(text, index)
+    const character = Str.charAt(text, index)
     index = index + 1
-    const isDigit = ch >= '0' && ch <= '9'
-    const isHex = hex && ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))
+    const isDigit = character >= '0' && character <= '9'
+    const isHex = hex && ((character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F'))
     if (isDigit || isHex) {
       saw = '0'
       continue
     }
-    if (ch == '_') {
+    if (character == '_') {
       if (saw != '0') {
         return false
       }
@@ -200,7 +200,7 @@ function checkName<W: Walker>(mutable checker: Checker, walker: W, id: int, pos:
     const body = checker.body
     checker.bodies[body].locals[local].used = true
     setRef(mutable checker, id, Ref.Local(local))
-    return getLocal(checker, local).t
+    return getLocal(checker, local).localType
   }
 
   // A top-level constant, own or imported.
@@ -272,7 +272,7 @@ function isMissingImport(checker: Checker, name: string): bool {
       return false
     }
   }
-  return name == "Array" || name == "Box" || name == "Map" || name == "Option" || name == "Range" || name == "Result"
+  return isNamespaceName(name)
 }
 
 // isModuleEnum reports `Alias.Enum` where Alias names a package module that
@@ -334,8 +334,8 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, id: int, pos
       if (checker.scopes[scope].modules[alias] is Some(path)) {
         const moduleScope = sourceScope(checker, path)
         if (moduleScope >= 0) {
-          if (checker.scopes[moduleScope].exports[name] is Some(k)) {
-            if (checker.scopes[moduleScope].decls[k] is Decl.Func(_)) {
+          if (checker.scopes[moduleScope].exports[name] is Some(exportIndex)) {
+            if (checker.scopes[moduleScope].decls[exportIndex] is Decl.Func(_)) {
               return unsupported(mutable checker, pos, "a module function used as a value (selfhost-check-closures)")
             }
           }
@@ -411,8 +411,8 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, id: int, pos
 
 // hasNoFields is true for the types Go names in its `.length` hint:
 // arrays, maps and the primitive types.
-function hasNoFields(t: Type): bool {
-  return match (t) {
+function hasNoFields(fieldsType: Type): bool {
+  return match (fieldsType) {
     Type.TArray(_) => true
     Type.TMap(_, _) => true
     Type.TInt => true
@@ -519,8 +519,8 @@ function checkBinary<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, o
 }
 
 // containsOpen reports whether t holds one of the type parameters params.
-function containsOpen(checker: Checker, t: Type, params: Array<int>): bool {
-  return match (t) {
+function containsOpen(checker: Checker, searched: Type, params: Array<int>): bool {
+  return match (searched) {
     Type.TParam(index) => isParamIn(index, params)
     Type.TArray(element) => containsOpen(checker, element, params)
     Type.TBox(element) => containsOpen(checker, element, params)
@@ -542,8 +542,8 @@ function isParamIn(index: int, params: Array<int>): bool {
 }
 
 function anyOpen(checker: Checker, types: Array<Type>, params: Array<int>): bool {
-  for (const t of Arrays.values(types)) {
-    if (containsOpen(checker, t, params)) {
+  for (const memberType of Arrays.values(types)) {
+    if (containsOpen(checker, memberType, params)) {
       return true
     }
   }
@@ -571,8 +571,8 @@ function checkStructLiteral<W: Walker>(mutable checker: Checker, walker: W, pos:
       for (const field of Arrays.values(fields)) {
         checkExpression(mutable checker, walker, field.value, None)
       }
-      if (want is Some(t)) {
-        return t
+      if (want is Some(wantedType)) {
+        return wantedType
       }
       return Type.TVoid
     }
@@ -636,8 +636,8 @@ function checkStructLiteral<W: Walker>(mutable checker: Checker, walker: W, pos:
     const fieldType = structFields[fieldIndex].t
     const valueId = getExpressionId(field.value)
     let valueType = Type.TVoid
-    if (getNodeType(checker, valueId) is Some(t)) {
-      valueType = t
+    if (getNodeType(checker, valueId) is Some(checkedType)) {
+      valueType = checkedType
     } else {
       valueType = checkExpression(mutable checker, walker, field.value, Some(fieldType))
     }
@@ -688,8 +688,8 @@ function inferGenericStruct<W: Walker>(mutable checker: Checker, walker: W, pos:
   // Every type parameter must be known.
   let typeArgs: Array<Type> = []
   for (const param of Arrays.values(params)) {
-    if (bindings[param] is Some(t)) {
-      Arrays.push(mutable typeArgs, t)
+    if (bindings[param] is Some(boundType)) {
+      Arrays.push(mutable typeArgs, boundType)
     } else {
       const message = `cannot tell type parameter ${checker.params[param].name} of ${checker.generics[generic].name} here; add a type annotation`
       errorf(mutable checker, pos, message)
@@ -719,8 +719,8 @@ function checkArrayLiteral<W: Walker>(mutable checker: Checker, walker: W, pos: 
     }
     expectType(mutable checker, getExpressionPos(element), elementType, found)
   }
-  if (elementType is Some(t)) {
-    return Type.TArray(t)
+  if (elementType is Some(knownElement)) {
+    return Type.TArray(knownElement)
   }
   errorf(mutable checker, pos, "the type of [] is unknown; add a type annotation")
   return Type.TVoid
@@ -845,8 +845,8 @@ function checkArgumentsLoosely<W: Walker>(mutable checker: Checker, walker: W, a
 // nonEscapingParam reports a parameter written with a function type and
 // without `escaping` (check_closure.go).
 export function nonEscapingParam(param: Param): bool {
-  if (param.type is Some(te)) {
-    return te.isFunc && !param.escaping && !param.isMutable
+  if (param.type is Some(typeExpression)) {
+    return typeExpression.isFunc && !param.escaping && !param.isMutable
   }
   return false
 }
@@ -1079,8 +1079,8 @@ function moduleHasConst(checker: Checker, alias: string, name: string): bool {
 export function checkConstType<W: Walker>(mutable checker: Checker, walker: W, index: int, pos: Pos): Type uses alloc {
   const info = checker.consts[index]
   if (info.state == CONST_DONE) {
-    if (info.valueType is Some(t)) {
-      return t
+    if (info.valueType is Some(valueType)) {
+      return valueType
     }
     return Type.TVoid
   }
@@ -1094,8 +1094,8 @@ export function checkConstType<W: Walker>(mutable checker: Checker, walker: W, i
   const savedScope = enter(mutable checker, info.scope)
   const savedBody = startBody(mutable checker, "const", info.name, [], BodyRoot.RootExpr(info.decl.value), Type.TVoid, Map {})
   let want: Option<Type> = None
-  if (info.decl.type is Some(te)) {
-    want = Some(resolveType(mutable checker, te))
+  if (info.decl.type is Some(typeExpression)) {
+    want = Some(resolveType(mutable checker, typeExpression))
   }
   const errorCount = Arrays.length(checker.errs)
   let found = checkExpression(mutable checker, walker, info.decl.value, want)

@@ -291,7 +291,11 @@ func (c *Checker) declareModule(f *File) []Type {
 	// Defaults are checked after every field type is known.
 	for _, d := range f.Decls {
 		if sd, ok := d.(*StructDecl); ok && sd.T != nil {
-			c.checkDefaults(dumpTypeString(sd.T), sd.T.Fields)
+			owner := ""
+			if c.logBodies {
+				owner = dumpTypeString(sd.T)
+			}
+			c.checkDefaults(owner, sd.T.Fields)
 		}
 	}
 	return concrete

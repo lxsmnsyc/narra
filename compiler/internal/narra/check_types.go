@@ -67,7 +67,7 @@ func (c *Checker) resolveVariants(decls []*VariantDecl, et *EnumType) []*Variant
 	return vs
 }
 
-// owner names the struct for TypesDump.
+// owner names the struct for TypesDump; it is empty unless c.logBodies.
 func (c *Checker) checkDefaults(owner string, fields []*Field) {
 	for _, f := range fields {
 		if f.Default == nil {

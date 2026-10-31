@@ -10,3 +10,4 @@
 - Ported E0421/E0423/E0424 (scopes.nra checkImportNames, importModules) and E0194 (declare.nra). E0425 (constructor import) needs ImportName positions; in types mode it is `unsupported`.
 - Maintainer rule (2026-10-31, from the coordinator): new Narra code uses full descriptive names (`checker`, `expression`, `leftType`), action-named function declarations, for-of loops, step comments inside functions. Applied to all new code; existing code untouched except where edited.
 - Sweep: 345 inputs, 143 compared, 202 skipped (30 do not load, the rest unsupported). No mismatch.
+- Review fixes: short names renamed in new code (`LocalInfo.localType`, `typeExpression`, `exportIndex`, `character`), `findBodySlot` shared by check.nra and typesdump.nra, `isNamespaceName` in scopes.nra is the one namespace list, `findStruct` looks up the scope type table first, Go computes the default owner name only when logging.

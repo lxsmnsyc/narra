@@ -90,7 +90,7 @@ export enum Ref {
 // selfhost-check-patterns adds narrowing beside it.
 export struct LocalInfo {
   name: string
-  t: Type
+  localType: Type
   isMutable: bool
   param: bool
   pos: Pos
@@ -573,23 +573,28 @@ export function finishBody(mutable checker: Checker, saved: BodyState) {
   checker.env = saved.env
 }
 
-// findSlot is the table index of a node id in the current body, or -1.
-function findSlot(checker: Checker, id: int): int {
-  if (checker.body < 0) {
-    return -1
-  }
-  const slot = id - checker.bodies[checker.body].first
-  if (slot < 0 || slot >= Arrays.length(checker.bodies[checker.body].types)) {
+// findBodySlot is the table index of a node id in a body, or -1.
+export function findBodySlot(body: BodyInfo, id: int): int {
+  const slot = id - body.first
+  if (slot < 0 || slot >= Arrays.length(body.types)) {
     return -1
   }
   return slot
 }
 
-export function setNodeType(mutable checker: Checker, id: int, t: Type) uses alloc {
+// findSlot is the table index of a node id in the current body, or -1.
+function findSlot(checker: Checker, id: int): int {
+  if (checker.body < 0) {
+    return -1
+  }
+  return findBodySlot(checker.bodies[checker.body], id)
+}
+
+export function setNodeType(mutable checker: Checker, id: int, nodeType: Type) uses alloc {
   const slot = findSlot(checker, id)
   if (slot >= 0) {
     const body = checker.body
-    checker.bodies[body].types[slot] = Some(t)
+    checker.bodies[body].types[slot] = Some(nodeType)
   }
 }
 
@@ -637,7 +642,7 @@ export function getLocal(checker: Checker, index: int): LocalInfo {
 
 // declareLocal adds a local to the innermost scope (Go's declare); id is
 // the declaring node. Shadowing is an error, except for `_`.
-export function declareLocal(mutable checker: Checker, id: int, pos: Pos, name: string, t: Type, isMutable: bool, param: bool): int uses alloc {
+export function declareLocal(mutable checker: Checker, id: int, pos: Pos, name: string, localType: Type, isMutable: bool, param: bool): int uses alloc {
   if (name != "_" && findLocal(checker, name) >= 0) {
     errorf(mutable checker, pos, `"${name}" is already declared in this function; shadowing is not allowed`)
   }
@@ -645,7 +650,7 @@ export function declareLocal(mutable checker: Checker, id: int, pos: Pos, name: 
 
   // Record the local and the node that declares it.
   const body = checker.body
-  const local = LocalInfo { name: name, t: t, isMutable: isMutable, param: param, pos: pos, noEscape: false, used: false }
+  const local = LocalInfo { name: name, localType: localType, isMutable: isMutable, param: param, pos: pos, noEscape: false, used: false }
   Arrays.push(mutable checker.bodies[body].locals, local)
   const index = Arrays.length(checker.bodies[body].locals) - 1
   const slot = findSlot(checker, id)
@@ -728,6 +733,6 @@ export function getExpressionPos(expression: Expr): Pos {
   }
 }
 
-export function isNumeric(t: Type): bool {
-  return t == Type.TInt || t == Type.TF64
+export function isNumeric(valueType: Type): bool {
+  return valueType == Type.TInt || valueType == Type.TF64
 }

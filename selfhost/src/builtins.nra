@@ -49,43 +49,43 @@ export function newRegistry(): Registry uses alloc {
   return Registry { funcs: [], prelude: Map {}, modules: Map {}, order: [], byName: Map {} }
 }
 
-// register adds f. A duplicate name is a bug in the table, as in Go.
-export function register(mutable r: Registry, f: StdFunc) uses alloc {
-  if (r.byName[f.name] is Some(_)) {
-    panic(`duplicate builtin ${f.name}`)
+// register adds a builtin. A duplicate name is a bug in the table, as in Go.
+export function register(mutable registry: Registry, builtin: StdFunc) uses alloc {
+  if (registry.byName[builtin.name] is Some(_)) {
+    panic(`duplicate builtin ${builtin.name}`)
   }
-  const k = Arrays.length(r.funcs)
-  r.byName[f.name] = k
-  Arrays.push(mutable r.funcs, f)
-  if (f.module == "") {
-    r.prelude[f.key] = k
+  const index = Arrays.length(registry.funcs)
+  registry.byName[builtin.name] = index
+  Arrays.push(mutable registry.funcs, builtin)
+  if (builtin.module == "") {
+    registry.prelude[builtin.key] = index
     return
   }
-  if (r.modules[f.module] is Some(m)) {
-    let funcs = m.funcs
-    funcs[f.key] = k
-    r.modules[f.module] = StdModule { path: f.module, funcs: funcs }
+  if (registry.modules[builtin.module] is Some(module)) {
+    let funcs = module.funcs
+    funcs[builtin.key] = index
+    registry.modules[builtin.module] = StdModule { path: builtin.module, funcs: funcs }
     return
   }
   let funcs: Map<string, int> = Map {}
-  funcs[f.key] = k
-  r.modules[f.module] = StdModule { path: f.module, funcs: funcs }
-  Arrays.push(mutable r.order, f.module)
+  funcs[builtin.key] = index
+  registry.modules[builtin.module] = StdModule { path: builtin.module, funcs: funcs }
+  Arrays.push(mutable registry.order, builtin.module)
 }
 
 // moduleOrder lists the module paths as Go's moduleList names them: std/int,
 // std/float and std/string first, then the rest in registration order.
-export function moduleOrder(r: Registry): Array<string> uses alloc {
+export function moduleOrder(registry: Registry): Array<string> uses alloc {
   let paths: Array<string> = []
   const first = ["std/int", "std/float", "std/string"]
-  for (const p of Arrays.values(first)) {
-    if (r.modules[p] is Some(_)) {
-      Arrays.push(mutable paths, p)
+  for (const path of Arrays.values(first)) {
+    if (registry.modules[path] is Some(_)) {
+      Arrays.push(mutable paths, path)
     }
   }
-  for (const p of Arrays.values(r.order)) {
-    if (p != "std/int" && p != "std/float" && p != "std/string") {
-      Arrays.push(mutable paths, p)
+  for (const path of Arrays.values(registry.order)) {
+    if (path != "std/int" && path != "std/float" && path != "std/string") {
+      Arrays.push(mutable paths, path)
     }
   }
   return paths
@@ -93,19 +93,19 @@ export function moduleOrder(r: Registry): Array<string> uses alloc {
 
 // moduleList names the registered modules for error messages:
 // "std/int, std/float and std/test".
-export function moduleList(r: Registry): string uses alloc {
-  const paths = moduleOrder(r)
-  const n = Arrays.length(paths)
-  if (n < 2) {
+export function moduleList(registry: Registry): string uses alloc {
+  const paths = moduleOrder(registry)
+  const count = Arrays.length(paths)
+  if (count < 2) {
     return Str.join(paths, "")
   }
   let head: Array<string> = []
-  for (const k of Arrays.values(paths)) {
-    if (Arrays.length(head) < n - 1) {
-      Arrays.push(mutable head, k)
+  for (const path of Arrays.values(paths)) {
+    if (Arrays.length(head) < count - 1) {
+      Arrays.push(mutable head, path)
     }
   }
-  return `${Str.join(head, ", ")} and ${paths[n - 1]}`
+  return `${Str.join(head, ", ")} and ${paths[count - 1]}`
 }
 
 // dump prints the registry in the `builtin` format of decldump.go: the
@@ -113,84 +113,84 @@ export function moduleList(r: Registry): string uses alloc {
 // name. A "fixed" builtin also prints its signature as `fixed param` and
 // `fixed result` lines, which Go cannot print (TestSelfhostBuiltins checks
 // them by compiling a call and removes them before comparing).
-export function dump(r: Registry): string uses alloc {
-  let sb = Str.builder()
-  dumpModule(mutable sb, r, "", r.prelude)
-  for (const p of Arrays.values(moduleOrder(r))) {
-    if (r.modules[p] is Some(m)) {
-      dumpModule(mutable sb, r, p, m.funcs)
+export function dump(registry: Registry): string uses alloc {
+  let builder = Str.builder()
+  dumpModule(mutable builder, registry, "", registry.prelude)
+  for (const path of Arrays.values(moduleOrder(registry))) {
+    if (registry.modules[path] is Some(module)) {
+      dumpModule(mutable builder, registry, path, module.funcs)
     }
   }
-  return Str.build(sb)
+  return Str.build(builder)
 }
 
-function dumpModule(mutable sb: StringBuilder, r: Registry, path: string, funcs: Map<string, int>) uses alloc {
+function dumpModule(mutable builder: StringBuilder, registry: Registry, path: string, funcs: Map<string, int>) uses alloc {
   let names: Array<string> = []
-  for (const n of Maps.keys(funcs)) {
-    Arrays.push(mutable names, n)
+  for (const name of Maps.keys(funcs)) {
+    Arrays.push(mutable names, name)
   }
   sortStrings(mutable names)
-  for (const n of Arrays.values(names)) {
-    if (funcs[n] is Some(k)) {
-      dumpFunc(mutable sb, r.funcs[k])
+  for (const name of Arrays.values(names)) {
+    if (funcs[name] is Some(index)) {
+      dumpFunc(mutable builder, registry.funcs[index])
     }
   }
 }
 
-function dumpFunc(mutable sb: StringBuilder, f: StdFunc) uses alloc {
-  Str.append(mutable sb, `builtin module="${f.module}" export=${f.key} ${f.name}\n`)
-  const fixed = f.check == "fixed"
+function dumpFunc(mutable builder: StringBuilder, builtin: StdFunc) uses alloc {
+  Str.append(mutable builder, `builtin module="${builtin.module}" export=${builtin.key} ${builtin.name}\n`)
+  const fixed = builtin.check == "fixed"
   let prefix = "  "
   if (fixed) {
     prefix = "  fixed "
   }
-  for (const k of Ranges.between(0, Arrays.length(f.params))) {
+  for (const index of Ranges.between(0, Arrays.length(builtin.params))) {
     let flag = ""
-    if (k < Arrays.length(f.mutables) && f.mutables[k]) {
+    if (index < Arrays.length(builtin.mutables) && builtin.mutables[index]) {
       flag = "mutable "
     }
-    Str.append(mutable sb, `${prefix}param ${flag}${f.params[k]}\n`)
+    Str.append(mutable builder, `${prefix}param ${flag}${builtin.params[index]}\n`)
   }
-  if (Arrays.length(f.params) == 0 && !fixed && Arrays.length(f.mutables) > 0) {
+  if (Arrays.length(builtin.params) == 0 && !fixed && Arrays.length(builtin.mutables) > 0) {
     let flags: Array<string> = []
-    for (const m of Arrays.values(f.mutables)) {
-      if (m) {
+    for (const isMutable of Arrays.values(builtin.mutables)) {
+      if (isMutable) {
         Arrays.push(mutable flags, "true")
       } else {
         Arrays.push(mutable flags, "false")
       }
     }
-    Str.append(mutable sb, `  mutable ${Str.join(flags, ",")}\n`)
+    Str.append(mutable builder, `  mutable ${Str.join(flags, ",")}\n`)
   }
-  if (f.result != "") {
-    Str.append(mutable sb, `${prefix}result ${f.result}\n`)
+  if (builtin.result != "") {
+    Str.append(mutable builder, `${prefix}result ${builtin.result}\n`)
   }
-  if (Arrays.length(f.effects) > 0) {
-    Str.append(mutable sb, `  effects ${Str.join(f.effects, ",")}\n`)
+  if (Arrays.length(builtin.effects) > 0) {
+    Str.append(mutable builder, `  effects ${Str.join(builtin.effects, ",")}\n`)
   }
-  if (Arrays.length(f.callbacks) > 0) {
-    let idx: Array<string> = []
-    for (const c of Arrays.values(f.callbacks)) {
-      Arrays.push(mutable idx, Int.toString(c))
+  if (Arrays.length(builtin.callbacks) > 0) {
+    let indexes: Array<string> = []
+    for (const callback of Arrays.values(builtin.callbacks)) {
+      Arrays.push(mutable indexes, Int.toString(callback))
     }
-    Str.append(mutable sb, `  callbacks ${Str.join(idx, ",")}\n`)
+    Str.append(mutable builder, `  callbacks ${Str.join(indexes, ",")}\n`)
   }
-  if (f.check != "") {
-    Str.append(mutable sb, `  check ${f.check}\n`)
+  if (builtin.check != "") {
+    Str.append(mutable builder, `  check ${builtin.check}\n`)
   }
 }
 
 // sortStrings sorts in byte order (insertion sort; a module has few
 // functions).
 function sortStrings(mutable items: Array<string>) {
-  const n = Arrays.length(items)
-  for (const i of Ranges.between(1, n)) {
-    const v = items[i]
+  const count = Arrays.length(items)
+  for (const i of Ranges.between(1, count)) {
+    const item = items[i]
     let j = i
-    while (j > 0 && items[j - 1] > v) {
+    while (j > 0 && items[j - 1] > item) {
       items[j] = items[j - 1]
       j = j - 1
     }
-    items[j] = v
+    items[j] = item
   }
 }

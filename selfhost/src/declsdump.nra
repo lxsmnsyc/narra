@@ -15,159 +15,159 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 
 // dump returns the dump of a checker that ran declarePackage without errors.
-export function dump(mutable c: Checker): string uses alloc {
-  let sb = Str.builder()
-  // The implement blocks are in c.impls in the order dumpModule meets them.
+export function dump(mutable checker: Checker): string uses alloc {
+  let builder = Str.builder()
+  // The implement blocks are in checker.impls in the order dumpModule meets them.
   let nextImpl = 0
-  for (const s of Ranges.between(0, Arrays.length(c.scopes))) {
-    dumpModule(mutable sb, c, s, mutable nextImpl)
-    if (c.scopes[s].isSource) {
-      dumpScope(mutable sb, c, s)
+  for (const scope of Ranges.between(0, Arrays.length(checker.scopes))) {
+    dumpModule(mutable builder, checker, scope, mutable nextImpl)
+    if (checker.scopes[scope].isSource) {
+      dumpScope(mutable builder, checker, scope)
     }
   }
-  if (nextImpl != Arrays.length(c.impls)) {
+  if (nextImpl != Arrays.length(checker.impls)) {
     panic("declsdump: an implement block was not printed")
   }
-  for (const e of Arrays.values(c.entries)) {
+  for (const entry of Arrays.values(checker.entries)) {
     let target = "none"
-    if (e.func >= 0) {
-      target = `${c.funcs[e.func].module}.${c.funcs[e.func].name}`
+    if (entry.func >= 0) {
+      target = `${checker.funcs[entry.func].module}.${checker.funcs[entry.func].name}`
     }
-    Str.append(mutable sb, `entry ${quoteDump(e.binary)} ${target}\n`)
+    Str.append(mutable builder, `entry ${quoteDump(entry.binary)} ${target}\n`)
   }
   let blocks: Array<string> = []
   let heads: Array<string> = []
-  for (const t of Arrays.values(c.instTypes)) {
-    if (!containsTypeParam(c, t)) {
-      let ib = Str.builder()
-      dumpType(mutable ib, c, t)
-      const text = Str.build(ib)
+  for (const type of Arrays.values(checker.instTypes)) {
+    if (!containsTypeParam(checker, type)) {
+      let instanceBuilder = Str.builder()
+      dumpType(mutable instanceBuilder, checker, type)
+      const text = Str.build(instanceBuilder)
       const head = Str.split(text, "\n")[0]
       Arrays.push(mutable blocks, text)
       Arrays.push(mutable heads, head)
     }
   }
   // Stable order by the first line, as Go's sort.SliceStable.
-  for (const k of Arrays.values(sortedByHead(heads))) {
-    Str.append(mutable sb, blocks[k])
+  for (const index of Arrays.values(sortedByHead(heads))) {
+    Str.append(mutable builder, blocks[index])
   }
-  for (const t of Arrays.values(c.order)) {
-    Str.append(mutable sb, `order module=${quoteDump(typeModule(c, t))} ${dumpTypeString(c, t)}\n`)
+  for (const type of Arrays.values(checker.order)) {
+    Str.append(mutable builder, `order module=${quoteDump(typeModule(checker, type))} ${dumpTypeString(checker, type)}\n`)
   }
-  for (const t of Arrays.values(c.order)) {
-    dumpHolds(mutable sb, mutable c, t)
+  for (const type of Arrays.values(checker.order)) {
+    dumpHolds(mutable builder, mutable checker, type)
   }
-  return Str.build(sb)
+  return Str.build(builder)
 }
 
 // sortedByHead returns the indexes of heads in byte order, equal heads in
 // their original order (a bottom-up merge sort).
 function sortedByHead(heads: Array<string>): Array<int> uses alloc {
-  const n = Arrays.length(heads)
-  let src: Array<int> = []
-  for (const k of Ranges.between(0, n)) {
-    Arrays.push(mutable src, k)
+  const count = Arrays.length(heads)
+  let order: Array<int> = []
+  for (const index of Ranges.between(0, count)) {
+    Arrays.push(mutable order, index)
   }
   let width = 1
-  while (width < n) {
-    let dst: Array<int> = []
-    let lo = 0
-    while (lo < n) {
-      let mid = lo + width
-      if (mid > n) {
-        mid = n
+  while (width < count) {
+    let merged: Array<int> = []
+    let low = 0
+    while (low < count) {
+      let middle = low + width
+      if (middle > count) {
+        middle = count
       }
-      let hi = lo + 2 * width
-      if (hi > n) {
-        hi = n
+      let high = low + 2 * width
+      if (high > count) {
+        high = count
       }
-      let i = lo
-      let j = mid
-      while (i < mid || j < hi) {
-        if (j >= hi || (i < mid && heads[src[i]] <= heads[src[j]])) {
-          Arrays.push(mutable dst, src[i])
-          i = i + 1
+      let left = low
+      let right = middle
+      while (left < middle || right < high) {
+        if (right >= high || (left < middle && heads[order[left]] <= heads[order[right]])) {
+          Arrays.push(mutable merged, order[left])
+          left = left + 1
         } else {
-          Arrays.push(mutable dst, src[j])
-          j = j + 1
+          Arrays.push(mutable merged, order[right])
+          right = right + 1
         }
       }
-      lo = lo + 2 * width
+      low = low + 2 * width
     }
-    src = dst
+    order = merged
     width = width * 2
   }
-  return src
+  return order
 }
 
-function dumpModule(mutable sb: StringBuilder, c: Checker, s: int, mutable nextImpl: int) uses alloc {
-  const scope = c.scopes[s]
-  const mod = ` module=${quoteDump(scope.path)} `
-  for (const d of Arrays.values(scope.decls)) {
-    match (d) {
-      Decl.Struct(sd) => {
-        dumpNamed(mutable sb, c, s, sd.name)
-        dumpListed(mutable sb, c, mod, scope.path, sd.name)
+function dumpModule(mutable builder: StringBuilder, checker: Checker, scopeIndex: int, mutable nextImpl: int) uses alloc {
+  const scope = checker.scopes[scopeIndex]
+  const moduleAttr = ` module=${quoteDump(scope.path)} `
+  for (const decl of Arrays.values(scope.decls)) {
+    match (decl) {
+      Decl.Struct(structDecl) => {
+        dumpNamed(mutable builder, checker, scopeIndex, structDecl.name)
+        dumpListed(mutable builder, checker, moduleAttr, scope.path, structDecl.name)
       }
-      Decl.Enum(ed) => {
-        dumpNamed(mutable sb, c, s, ed.name)
-        dumpListed(mutable sb, c, mod, scope.path, ed.name)
+      Decl.Enum(enumDecl) => {
+        dumpNamed(mutable builder, checker, scopeIndex, enumDecl.name)
+        dumpListed(mutable builder, checker, moduleAttr, scope.path, enumDecl.name)
       }
-      Decl.Trait(td) => {
-        if (scope.traits[td.name] is Some(ti)) {
-          dumpTrait(mutable sb, c, mod, ti)
+      Decl.Trait(traitDecl) => {
+        if (scope.traits[traitDecl.name] is Some(traitIndex)) {
+          dumpTrait(mutable builder, checker, moduleAttr, traitIndex)
         }
       }
-      Decl.Impl(id) => dumpImpl(mutable sb, c, mod, s, id, mutable nextImpl)
-      Decl.Distinct(dd) => dumpNamed(mutable sb, c, s, dd.name)
-      Decl.Func(fd) => dumpFunc(mutable sb, c, s, mod, fd)
-      Decl.Const(cd) => {
-        let t = "?"
-        if (scope.consts[cd.name] is Some(k)) {
-          if (c.consts[k].t is Some(ct)) {
-            t = dumpTypeString(c, ct)
+      Decl.Impl(implDecl) => dumpImpl(mutable builder, checker, moduleAttr, scopeIndex, implDecl, mutable nextImpl)
+      Decl.Distinct(distinctDecl) => dumpNamed(mutable builder, checker, scopeIndex, distinctDecl.name)
+      Decl.Func(funcDecl) => dumpFunc(mutable builder, checker, scopeIndex, moduleAttr, funcDecl)
+      Decl.Const(constDecl) => {
+        let typeText = "?"
+        if (scope.consts[constDecl.name] is Some(constIndex)) {
+          if (checker.consts[constIndex].declaredType is Some(constType)) {
+            typeText = dumpTypeString(checker, constType)
           }
         }
-        Str.append(mutable sb, `const${mod}${cd.name} ${t}\n`)
+        Str.append(mutable builder, `const${moduleAttr}${constDecl.name} ${typeText}\n`)
       }
       _ => {}
     }
   }
 }
 
-// dumpNamed prints a struct, enum or distinct declaration of scope s: its
+// dumpNamed prints a struct, enum or distinct declaration of a scope: its
 // generic template, or its type.
-function dumpNamed(mutable sb: StringBuilder, c: Checker, s: int, name: string) uses alloc {
-  if (c.scopes[s].generics[name] is Some(g)) {
-    dumpGeneric(mutable sb, c, g)
-  } else if (c.scopes[s].types[name] is Some(t)) {
-    dumpType(mutable sb, c, t)
+function dumpNamed(mutable builder: StringBuilder, checker: Checker, scope: int, name: string) uses alloc {
+  if (checker.scopes[scope].generics[name] is Some(generic)) {
+    dumpGeneric(mutable builder, checker, generic)
+  } else if (checker.scopes[scope].types[name] is Some(type)) {
+    dumpType(mutable builder, checker, type)
   }
 }
 
-function dumpFunc(mutable sb: StringBuilder, c: Checker, s: int, mod: string, fd: FuncDecl) uses alloc {
-  Str.append(mutable sb, `func${mod}`)
-  if (Arrays.length(fd.typeParams) > 0) {
-    Str.append(mutable sb, `typeParams=${Str.join(fd.typeParams, ",")} `)
+function dumpFunc(mutable builder: StringBuilder, checker: Checker, scope: int, moduleAttr: string, funcDecl: FuncDecl) uses alloc {
+  Str.append(mutable builder, `func${moduleAttr}`)
+  if (Arrays.length(funcDecl.typeParams) > 0) {
+    Str.append(mutable builder, `typeParams=${Str.join(funcDecl.typeParams, ",")} `)
   }
-  Str.append(mutable sb, `${fd.name}\n`)
-  for (const p of Arrays.values(fd.params)) {
+  Str.append(mutable builder, `${funcDecl.name}\n`)
+  for (const param of Arrays.values(funcDecl.params)) {
     let flag = ""
-    if (p.isMutable) {
+    if (param.isMutable) {
       flag = "mutable "
     }
-    Str.append(mutable sb, `  param ${p.name} ${flag}${dumpTypeString(c, c.paramTypes[p.id])}\n`)
+    Str.append(mutable builder, `  param ${param.name} ${flag}${dumpTypeString(checker, checker.paramTypes[param.id])}\n`)
   }
   let result = "void"
-  if (c.scopes[s].funcs[fd.name] is Some(k)) {
-    result = dumpTypeString(c, c.funcs[k].result)
+  if (checker.scopes[scope].funcs[funcDecl.name] is Some(funcIndex)) {
+    result = dumpTypeString(checker, checker.funcs[funcIndex].result)
   }
-  Str.append(mutable sb, `  result ${result}\n`)
-  if (c.scopes[s].funcs[fd.name] is Some(k)) {
-    for (const i of Ranges.between(0, Arrays.length(c.funcs[k].typeParams))) {
-      if (c.bounds[c.funcs[k].typeParams[i]] is Some(bs)) {
-        for (const tr of Arrays.values(bs)) {
-          Str.append(mutable sb, `  bound ${fd.typeParams[i]} ${c.traits[tr].name}\n`)
+  Str.append(mutable builder, `  result ${result}\n`)
+  if (checker.scopes[scope].funcs[funcDecl.name] is Some(funcIndex)) {
+    for (const i of Ranges.between(0, Arrays.length(checker.funcs[funcIndex].typeParams))) {
+      if (checker.bounds[checker.funcs[funcIndex].typeParams[i]] is Some(bounds)) {
+        for (const traitIndex of Arrays.values(bounds)) {
+          Str.append(mutable builder, `  bound ${funcDecl.typeParams[i]} ${checker.traits[traitIndex].name}\n`)
         }
       }
     }
@@ -175,26 +175,26 @@ function dumpFunc(mutable sb: StringBuilder, c: Checker, s: int, mod: string, fd
 }
 
 // dumpListed prints the `implements` and `derives` lists of a struct or enum.
-function dumpListed(mutable sb: StringBuilder, c: Checker, mod: string, path: string, name: string) uses alloc {
-  if (c.typeTraitIndex[`${path}|${name}`] is Some(ix)) {
-    for (const te of Arrays.values(c.typeTraits[ix].implExprs)) {
-      Str.append(mutable sb, `impl${mod}listed ${te.name} ${name}\n`)
+function dumpListed(mutable builder: StringBuilder, checker: Checker, moduleAttr: string, path: string, name: string) uses alloc {
+  if (checker.typeTraitIndex[`${path}|${name}`] is Some(index)) {
+    for (const typeExpr of Arrays.values(checker.typeTraits[index].implExprs)) {
+      Str.append(mutable builder, `impl${moduleAttr}listed ${typeExpr.name} ${name}\n`)
     }
-    for (const te of Arrays.values(c.typeTraits[ix].derivExprs)) {
-      Str.append(mutable sb, `impl${mod}derived ${te.name} ${name}\n`)
+    for (const typeExpr of Arrays.values(checker.typeTraits[index].derivExprs)) {
+      Str.append(mutable builder, `impl${moduleAttr}derived ${typeExpr.name} ${name}\n`)
     }
   }
 }
 
-function dumpTrait(mutable sb: StringBuilder, c: Checker, mod: string, ti: int) uses alloc {
-  const tr = c.traits[ti]
+function dumpTrait(mutable builder: StringBuilder, checker: Checker, moduleAttr: string, traitIndex: int) uses alloc {
+  const info = checker.traits[traitIndex]
   let std = ""
-  if (tr.std) {
+  if (info.std) {
     std = "std "
   }
-  Str.append(mutable sb, `trait${mod}${std}${tr.name}\n`)
-  for (const tf of Arrays.values(tr.funcs)) {
-    dumpSignature(mutable sb, c, tf.name, tf.decl, tf.result)
+  Str.append(mutable builder, `trait${moduleAttr}${std}${info.name}\n`)
+  for (const traitFunc of Arrays.values(info.funcs)) {
+    dumpSignature(mutable builder, checker, traitFunc.name, traitFunc.decl, traitFunc.result)
   }
 }
 
@@ -202,119 +202,119 @@ function dumpTrait(mutable sb: StringBuilder, c: Checker, mod: string, ti: int) 
 // blocks in declaration order, so the next one is this block. The dump runs
 // only without errors, when every block was recorded; a mismatch is a bug
 // and stops the dump.
-function dumpImpl(mutable sb: StringBuilder, c: Checker, mod: string, s: int, d: ImplDecl, mutable nextImpl: int) uses alloc {
-  if (nextImpl >= Arrays.length(c.impls)) {
+function dumpImpl(mutable builder: StringBuilder, checker: Checker, moduleAttr: string, scope: int, implDecl: ImplDecl, mutable nextImpl: int) uses alloc {
+  if (nextImpl >= Arrays.length(checker.impls)) {
     panic("declsdump: an implement block is missing from Checker.impls")
   }
-  const b = c.impls[nextImpl]
-  if (b.scope != s || b.decl.pos != d.pos) {
+  const block = checker.impls[nextImpl]
+  if (block.scope != scope || block.decl.pos != implDecl.pos) {
     panic("declsdump: Checker.impls is out of declaration order")
   }
   nextImpl = nextImpl + 1
-  Str.append(mutable sb, `impl${mod}block ${c.traits[b.traitIdx].name} ${implTypeName(c, b.t)}\n`)
-  for (const f of Arrays.values(b.funcs)) {
-    dumpSignature(mutable sb, c, f.name, f.decl, f.result)
+  Str.append(mutable builder, `impl${moduleAttr}block ${checker.traits[block.traitIdx].name} ${implTypeName(checker, block.forType)}\n`)
+  for (const implFunc of Arrays.values(block.funcs)) {
+    dumpSignature(mutable builder, checker, implFunc.name, implFunc.decl, implFunc.result)
   }
 }
 
-function implTypeName(c: Checker, t: Type): string {
-  return match (t) {
-    Type.TStruct(i) => c.structs[i].name
-    Type.TEnum(i) => c.enums[i].name
+function implTypeName(checker: Checker, type: Type): string {
+  return match (type) {
+    Type.TStruct(index) => checker.structs[index].name
+    Type.TEnum(index) => checker.enums[index].name
     _ => ""
   }
 }
 
-function dumpSignature(mutable sb: StringBuilder, c: Checker, name: string, fd: FuncDecl, result: Type) uses alloc {
-  Str.append(mutable sb, `  function ${name}\n`)
-  for (const p of Arrays.values(fd.params)) {
+function dumpSignature(mutable builder: StringBuilder, checker: Checker, name: string, funcDecl: FuncDecl, result: Type) uses alloc {
+  Str.append(mutable builder, `  function ${name}\n`)
+  for (const param of Arrays.values(funcDecl.params)) {
     let flags = ""
-    if (p.isMutable) {
+    if (param.isMutable) {
       flags = "mutable "
     }
-    if (p.escaping) {
+    if (param.escaping) {
       flags = `${flags}escaping `
     }
-    Str.append(mutable sb, `    param ${p.name} ${flags}${dumpTypeString(c, c.paramTypes[p.id])}\n`)
+    Str.append(mutable builder, `    param ${param.name} ${flags}${dumpTypeString(checker, checker.paramTypes[param.id])}\n`)
   }
-  Str.append(mutable sb, `    result ${dumpTypeString(c, result)}\n`)
+  Str.append(mutable builder, `    result ${dumpTypeString(checker, result)}\n`)
 }
 
-// dumpHolds prints typeImplements(t, trait) for the four standard traits.
-function dumpHolds(mutable sb: StringBuilder, mutable c: Checker, t: Type) uses alloc {
+// dumpHolds prints typeImplements(type, trait) for the four standard traits.
+function dumpHolds(mutable builder: StringBuilder, mutable checker: Checker, type: Type) uses alloc {
   const names = ["Equatable", "Hashable", "Ordered", "Show"]
-  for (const n of Arrays.values(names)) {
-    const tr = stdTrait(c, n)
+  for (const name of Arrays.values(names)) {
+    const traitIndex = stdTrait(checker, name)
     let holds = "false"
-    if (typeImplements(mutable c, t, tr)) {
+    if (typeImplements(mutable checker, type, traitIndex)) {
       holds = "true"
     }
-    Str.append(mutable sb, `impl module=${quoteDump(typeModule(c, t))} holds=${holds} ${n} ${dumpTypeString(c, t)}\n`)
+    Str.append(mutable builder, `impl module=${quoteDump(typeModule(checker, type))} holds=${holds} ${name} ${dumpTypeString(checker, type)}\n`)
   }
 }
 
-function dumpType(mutable sb: StringBuilder, c: Checker, t: Type) uses alloc {
-  match (t) {
-    Type.TStruct(i) => {
-      const s = c.structs[i]
-      if (s.tuple) {
-        Str.append(mutable sb, `type tuple module="" ${dumpTypeString(c, t)}\n`)
+function dumpType(mutable builder: StringBuilder, checker: Checker, type: Type) uses alloc {
+  match (type) {
+    Type.TStruct(index) => {
+      const info = checker.structs[index]
+      if (info.tuple) {
+        Str.append(mutable builder, `type tuple module="" ${dumpTypeString(checker, type)}\n`)
       } else {
-        Str.append(mutable sb, `type struct module=${quoteDump(s.module)} ${opaqueFlag(s.opaque)}${dumpTypeString(c, t)}\n`)
+        Str.append(mutable builder, `type struct module=${quoteDump(info.module)} ${opaqueFlag(info.opaque)}${dumpTypeString(checker, type)}\n`)
       }
-      dumpFields(mutable sb, c, "  ", s.fields)
+      dumpFields(mutable builder, checker, "  ", info.fields)
     }
-    Type.TEnum(i) => {
-      Str.append(mutable sb, `type enum module=${quoteDump(c.enums[i].module)} ${dumpTypeString(c, t)}\n`)
-      dumpVariants(mutable sb, c, c.enums[i].variants)
+    Type.TEnum(index) => {
+      Str.append(mutable builder, `type enum module=${quoteDump(checker.enums[index].module)} ${dumpTypeString(checker, type)}\n`)
+      dumpVariants(mutable builder, checker, checker.enums[index].variants)
     }
-    Type.TDistinct(i) => {
-      const d = c.distincts[i]
-      Str.append(mutable sb, `type distinct module=${quoteDump(d.module)} ${opaqueFlag(d.opaque)}${d.name}\n`)
+    Type.TDistinct(index) => {
+      const info = checker.distincts[index]
+      Str.append(mutable builder, `type distinct module=${quoteDump(info.module)} ${opaqueFlag(info.opaque)}${info.name}\n`)
       let base = "void"
-      if (d.base is Some(b)) {
-        base = dumpTypeString(c, b)
+      if (info.base is Some(baseType)) {
+        base = dumpTypeString(checker, baseType)
       }
-      Str.append(mutable sb, `  base ${base}\n`)
+      Str.append(mutable builder, `  base ${base}\n`)
     }
     _ => {}
   }
 }
 
-function dumpGeneric(mutable sb: StringBuilder, c: Checker, g: int) uses alloc {
-  const info = c.generics[g]
+function dumpGeneric(mutable builder: StringBuilder, checker: Checker, generic: int) uses alloc {
+  const info = checker.generics[generic]
   let names: Array<string> = []
-  for (const p of Arrays.values(info.params)) {
-    Arrays.push(mutable names, c.params[p].name)
+  for (const param of Arrays.values(info.params)) {
+    Arrays.push(mutable names, checker.params[param].name)
   }
   let kind = "enum"
   if (info.isStruct) {
     kind = "struct"
   }
-  Str.append(mutable sb, `generic ${kind} module=${quoteDump(info.module)} params=${Str.join(names, ",")} ${opaqueFlag(info.opaque)}${info.name}\n`)
-  dumpFields(mutable sb, c, "  ", info.fields)
-  dumpVariants(mutable sb, c, info.variants)
+  Str.append(mutable builder, `generic ${kind} module=${quoteDump(info.module)} params=${Str.join(names, ",")} ${opaqueFlag(info.opaque)}${info.name}\n`)
+  dumpFields(mutable builder, checker, "  ", info.fields)
+  dumpVariants(mutable builder, checker, info.variants)
 }
 
-function dumpVariants(mutable sb: StringBuilder, c: Checker, vs: Array<Variant>) uses alloc {
-  for (const v of Arrays.values(vs)) {
-    Str.append(mutable sb, `  variant ${v.name}\n`)
-    dumpFields(mutable sb, c, "    ", v.fields)
+function dumpVariants(mutable builder: StringBuilder, checker: Checker, variants: Array<Variant>) uses alloc {
+  for (const variant of Arrays.values(variants)) {
+    Str.append(mutable builder, `  variant ${variant.name}\n`)
+    dumpFields(mutable builder, checker, "    ", variant.fields)
   }
 }
 
-function dumpFields(mutable sb: StringBuilder, c: Checker, indent: string, fields: Array<Field>) uses alloc {
-  for (const f of Arrays.values(fields)) {
+function dumpFields(mutable builder: StringBuilder, checker: Checker, indent: string, fields: Array<Field>) uses alloc {
+  for (const field of Arrays.values(fields)) {
     let flag = ""
-    if (f.default is Some(_)) {
+    if (field.default is Some(_)) {
       flag = "default "
     }
-    Str.append(mutable sb, `${indent}field ${f.name} ${flag}${dumpTypeString(c, f.t)}\n`)
+    Str.append(mutable builder, `${indent}field ${field.name} ${flag}${dumpTypeString(checker, field.fieldType)}\n`)
   }
 }
 
-function opaqueFlag(on: bool): string {
-  if (on) {
+function opaqueFlag(opaque: bool): string {
+  if (opaque) {
     return "opaque "
   }
   return ""
@@ -323,25 +323,25 @@ function opaqueFlag(on: bool): string {
 // dumpTypeString prints a type as typeString does, except that a struct,
 // enum or distinct type declared in a package module is written
 // <module>.<Name> (decldump.go's dumpTypeString).
-export function dumpTypeString(c: Checker, t: Type): string uses alloc {
-  return match (t) {
-    Type.TStruct(i) => structText(c, i)
-    Type.TEnum(i) => `${qualified(c.enums[i].module, c.enums[i].name)}${argsText(c, c.enums[i].args)}`
-    Type.TDistinct(i) => qualified(c.distincts[i].module, c.distincts[i].name)
-    Type.TArray(e) => `Array<${dumpTypeString(c, e)}>`
-    Type.TBox(e) => `Box<${dumpTypeString(c, e)}>`
-    Type.TMap(k, v) => `Map<${dumpTypeString(c, k)}, ${dumpTypeString(c, v)}>`
-    Type.TFunc(ps, r) => `(${listText(c, ps)}) => ${dumpTypeString(c, r)}`
-    _ => typeString(c, t)
+export function dumpTypeString(checker: Checker, type: Type): string uses alloc {
+  return match (type) {
+    Type.TStruct(index) => structText(checker, index)
+    Type.TEnum(index) => `${qualified(checker.enums[index].module, checker.enums[index].name)}${argsText(checker, checker.enums[index].args)}`
+    Type.TDistinct(index) => qualified(checker.distincts[index].module, checker.distincts[index].name)
+    Type.TArray(element) => `Array<${dumpTypeString(checker, element)}>`
+    Type.TBox(element) => `Box<${dumpTypeString(checker, element)}>`
+    Type.TMap(key, value) => `Map<${dumpTypeString(checker, key)}, ${dumpTypeString(checker, value)}>`
+    Type.TFunc(parameters, result) => `(${listText(checker, parameters)}) => ${dumpTypeString(checker, result)}`
+    _ => typeString(checker, type)
   }
 }
 
-function structText(c: Checker, i: int): string uses alloc {
-  const s = c.structs[i]
-  if (s.tuple) {
-    return `#[${listText(c, s.args)}]`
+function structText(checker: Checker, index: int): string uses alloc {
+  const info = checker.structs[index]
+  if (info.tuple) {
+    return `#[${listText(checker, info.args)}]`
   }
-  return `${qualified(s.module, s.name)}${argsText(c, s.args)}`
+  return `${qualified(info.module, info.name)}${argsText(checker, info.args)}`
 }
 
 function qualified(module: string, name: string): string uses alloc {
@@ -351,109 +351,109 @@ function qualified(module: string, name: string): string uses alloc {
   return `${module}.${name}`
 }
 
-function argsText(c: Checker, args: Array<Type>): string uses alloc {
+function argsText(checker: Checker, args: Array<Type>): string uses alloc {
   if (Arrays.length(args) == 0) {
     return ""
   }
-  return `<${listText(c, args)}>`
+  return `<${listText(checker, args)}>`
 }
 
-function listText(c: Checker, ts: Array<Type>): string uses alloc {
+function listText(checker: Checker, types: Array<Type>): string uses alloc {
   let parts: Array<string> = []
-  for (const t of Arrays.values(ts)) {
-    Arrays.push(mutable parts, dumpTypeString(c, t))
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable parts, dumpTypeString(checker, type))
   }
   return Str.join(parts, ", ")
 }
 
-// dumpScope prints the `module` block of package module s: its imports in
+// dumpScope prints the `module` block of a package module: its imports in
 // source order, then the names of its scope that the prelude does not give
 // every module, by kind and then by name (byte order).
-function dumpScope(mutable sb: StringBuilder, c: Checker, s: int) uses alloc {
-  const scope = c.scopes[s]
-  Str.append(mutable sb, `module ${quoteDump(scope.path)}\n`)
-  for (const imp of Arrays.values(scope.imports)) {
+function dumpScope(mutable builder: StringBuilder, checker: Checker, scopeIndex: int) uses alloc {
+  const scope = checker.scopes[scopeIndex]
+  Str.append(mutable builder, `module ${quoteDump(scope.path)}\n`)
+  for (const importDecl of Arrays.values(scope.imports)) {
     let kind = "std"
-    if (c.scopeIndex[imp.path] is Some(k)) {
-      if (c.scopes[k].isSource) {
+    if (checker.scopeIndex[importDecl.path] is Some(index)) {
+      if (checker.scopes[index].isSource) {
         kind = "package"
       }
     }
-    Str.append(mutable sb, `  import ${quoteDump(imp.path)} ${kind}`)
-    if (imp.alias != "") {
-      Str.append(mutable sb, ` alias=${imp.alias}`)
+    Str.append(mutable builder, `  import ${quoteDump(importDecl.path)} ${kind}`)
+    if (importDecl.alias != "") {
+      Str.append(mutable builder, ` alias=${importDecl.alias}`)
     }
-    if (Arrays.length(imp.names) > 0) {
+    if (Arrays.length(importDecl.names) > 0) {
       let parts: Array<string> = []
-      for (const n of Arrays.values(imp.names)) {
-        if (n.local == n.name) {
-          Arrays.push(mutable parts, n.name)
+      for (const name of Arrays.values(importDecl.names)) {
+        if (name.local == name.name) {
+          Arrays.push(mutable parts, name.name)
         } else {
-          Arrays.push(mutable parts, `${n.name} as ${n.local}`)
+          Arrays.push(mutable parts, `${name.name} as ${name.local}`)
         }
       }
-      Str.append(mutable sb, ` names=${Str.join(parts, ",")}`)
+      Str.append(mutable builder, ` names=${Str.join(parts, ",")}`)
     }
-    Str.append(mutable sb, "\n")
+    Str.append(mutable builder, "\n")
   }
   let lines: Array<string> = []
-  for (const e of Maps.entries(scope.types)) {
-    const #[n, t] = e
+  for (const entry of Maps.entries(scope.types)) {
+    const #[name, type] = entry
     let inherited = false
-    if (c.scopes[0].types[n] is Some(pt)) {
-      inherited = pt == t
+    if (checker.scopes[0].types[name] is Some(preludeType)) {
+      inherited = preludeType == type
     }
     if (!inherited) {
-      Arrays.push(mutable lines, `type ${n} ${dumpTypeString(c, t)}`)
+      Arrays.push(mutable lines, `type ${name} ${dumpTypeString(checker, type)}`)
     }
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
   lines = []
-  for (const e of Maps.entries(scope.generics)) {
-    const #[n, g] = e
+  for (const entry of Maps.entries(scope.generics)) {
+    const #[name, generic] = entry
     let inherited = false
-    if (c.scopes[0].generics[n] is Some(pg)) {
-      inherited = pg == g
+    if (checker.scopes[0].generics[name] is Some(preludeGeneric)) {
+      inherited = preludeGeneric == generic
     }
     if (!inherited) {
-      Arrays.push(mutable lines, `generic ${n} ${qualified(c.generics[g].module, c.generics[g].name)}`)
+      Arrays.push(mutable lines, `generic ${name} ${qualified(checker.generics[generic].module, checker.generics[generic].name)}`)
     }
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
   lines = []
-  for (const e of Maps.entries(scope.funcs)) {
-    const #[n, k] = e
-    Arrays.push(mutable lines, `func ${n} ${qualified(c.funcs[k].module, c.funcs[k].name)}`)
+  for (const entry of Maps.entries(scope.funcs)) {
+    const #[name, index] = entry
+    Arrays.push(mutable lines, `func ${name} ${qualified(checker.funcs[index].module, checker.funcs[index].name)}`)
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
   lines = []
-  for (const e of Maps.entries(scope.consts)) {
-    const #[n, k] = e
-    Arrays.push(mutable lines, `const ${n} ${qualified(c.consts[k].module, c.consts[k].name)}`)
+  for (const entry of Maps.entries(scope.consts)) {
+    const #[name, index] = entry
+    Arrays.push(mutable lines, `const ${name} ${qualified(checker.consts[index].module, checker.consts[index].name)}`)
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
   lines = []
-  for (const e of Maps.entries(scope.traits)) {
-    const #[n, k] = e
-    Arrays.push(mutable lines, `trait ${n} ${qualified(c.traits[k].module, c.traits[k].name)}`)
+  for (const entry of Maps.entries(scope.traits)) {
+    const #[name, index] = entry
+    Arrays.push(mutable lines, `trait ${name} ${qualified(checker.traits[index].module, checker.traits[index].name)}`)
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
   lines = []
-  for (const e of Maps.entries(scope.imported)) {
-    const #[n, k] = e
-    Arrays.push(mutable lines, `builtin ${n} ${c.registry.funcs[k].name}`)
+  for (const entry of Maps.entries(scope.imported)) {
+    const #[name, index] = entry
+    Arrays.push(mutable lines, `builtin ${name} ${checker.registry.funcs[index].name}`)
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
   lines = []
-  for (const e of Maps.entries(scope.modules)) {
-    const #[a, p] = e
-    Arrays.push(mutable lines, `alias ${a} ${quoteDump(p)}`)
+  for (const entry of Maps.entries(scope.modules)) {
+    const #[alias, path] = entry
+    Arrays.push(mutable lines, `alias ${alias} ${quoteDump(path)}`)
   }
-  writeScopeLines(mutable sb, lines)
+  writeScopeLines(mutable builder, lines)
 }
 
-function writeScopeLines(mutable sb: StringBuilder, lines: Array<string>) uses alloc {
-  for (const k of Arrays.values(sortedByHead(lines))) {
-    Str.append(mutable sb, `  scope ${lines[k]}\n`)
+function writeScopeLines(mutable builder: StringBuilder, lines: Array<string>) uses alloc {
+  for (const index of Arrays.values(sortedByHead(lines))) {
+    Str.append(mutable builder, `  scope ${lines[index]}\n`)
   }
 }

@@ -14,31 +14,31 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
 // makeParams makes fresh type parameters for one declaration.
-export function makeParams(mutable c: Checker, names: Array<string>): Array<int> uses alloc {
+export function makeParams(mutable checker: Checker, names: Array<string>): Array<int> uses alloc {
   let out: Array<int> = []
-  for (const n of Arrays.values(names)) {
-    Arrays.push(mutable out, Arrays.length(c.params))
-    Arrays.push(mutable c.params, ParamInfo { name: n })
+  for (const name of Arrays.values(names)) {
+    Arrays.push(mutable out, Arrays.length(checker.params))
+    Arrays.push(mutable checker.params, ParamInfo { name: name })
   }
   return out
 }
 
-// envOf maps each parameter's name to the parameter itself, so a template is
+// makeEnv maps each parameter's name to the parameter itself, so a template is
 // resolved with its parameters left open.
-export function envOf(c: Checker, params: Array<int>): Map<string, Type> uses alloc {
+export function makeEnv(checker: Checker, params: Array<int>): Map<string, Type> uses alloc {
   let env: Map<string, Type> = Map {}
-  for (const p of Arrays.values(params)) {
-    env[c.params[p].name] = Type.TParam(p)
+  for (const param of Arrays.values(params)) {
+    env[checker.params[param].name] = Type.TParam(param)
   }
   return env
 }
 
 // envWith maps each parameter's name to a type argument (Go's envOf with
 // args), for checking an instance of a generic function.
-export function envWith(c: Checker, params: Array<int>, args: Array<Type>): Map<string, Type> uses alloc {
+export function envWith(checker: Checker, params: Array<int>, args: Array<Type>): Map<string, Type> uses alloc {
   let env: Map<string, Type> = Map {}
-  for (const k of Ranges.between(0, Arrays.length(params))) {
-    env[c.params[params[k]].name] = args[k]
+  for (const index of Ranges.between(0, Arrays.length(params))) {
+    env[checker.params[params[index]].name] = args[index]
   }
   return env
 }
@@ -46,52 +46,52 @@ export function envWith(c: Checker, params: Array<int>, args: Array<Type>): Map<
 // unify matches a type that holds parameters against a concrete type and
 // records what each parameter must be. A parameter keeps its first match,
 // and void never matches.
-export function unify(c: Checker, pat: Type, act: Type, mutable m: Map<int, Type>) uses alloc {
-  match (pat) {
-    Type.TParam(p) => {
-      if (m[p] is None && act != Type.TVoid) {
-        m[p] = act
+export function unify(checker: Checker, pattern: Type, actual: Type, mutable bindings: Map<int, Type>) uses alloc {
+  match (pattern) {
+    Type.TParam(param) => {
+      if (bindings[param] is None && actual != Type.TVoid) {
+        bindings[param] = actual
       }
     }
-    Type.TArray(pe) => {
-      if (act is Type.TArray(ae)) {
-        unify(c, pe, ae, mutable m)
+    Type.TArray(patternElement) => {
+      if (actual is Type.TArray(actualElement)) {
+        unify(checker, patternElement, actualElement, mutable bindings)
       }
     }
-    Type.TBox(pe) => {
-      if (act is Type.TBox(ae)) {
-        unify(c, pe, ae, mutable m)
+    Type.TBox(patternElement) => {
+      if (actual is Type.TBox(actualElement)) {
+        unify(checker, patternElement, actualElement, mutable bindings)
       }
     }
-    Type.TMap(pk, pv) => {
-      if (act is Type.TMap(ak, av)) {
-        unify(c, pk, ak, mutable m)
-        unify(c, pv, av, mutable m)
+    Type.TMap(patternKey, patternValue) => {
+      if (actual is Type.TMap(actualKey, actualValue)) {
+        unify(checker, patternKey, actualKey, mutable bindings)
+        unify(checker, patternValue, actualValue, mutable bindings)
       }
     }
-    Type.TFunc(pps, pr) => {
-      if (act is Type.TFunc(aps, ar)) {
-        if (Arrays.length(aps) == Arrays.length(pps)) {
-          unifyAll(c, pps, aps, mutable m)
-          unify(c, pr, ar, mutable m)
+    Type.TFunc(patternParams, patternResult) => {
+      if (actual is Type.TFunc(actualParams, actualResult)) {
+        if (Arrays.length(actualParams) == Arrays.length(patternParams)) {
+          unifyAll(checker, patternParams, actualParams, mutable bindings)
+          unify(checker, patternResult, actualResult, mutable bindings)
         }
       }
     }
-    Type.TStruct(pi) => {
-      if (act is Type.TStruct(ai)) {
-        const p = c.structs[pi]
-        const a = c.structs[ai]
-        if (a.name == p.name && a.module == p.module && Arrays.length(a.args) == Arrays.length(p.args)) {
-          unifyAll(c, p.args, a.args, mutable m)
+    Type.TStruct(patternIndex) => {
+      if (actual is Type.TStruct(actualIndex)) {
+        const patternInfo = checker.structs[patternIndex]
+        const actualInfo = checker.structs[actualIndex]
+        if (actualInfo.name == patternInfo.name && actualInfo.module == patternInfo.module && Arrays.length(actualInfo.args) == Arrays.length(patternInfo.args)) {
+          unifyAll(checker, patternInfo.args, actualInfo.args, mutable bindings)
         }
       }
     }
-    Type.TEnum(pi) => {
-      if (act is Type.TEnum(ai)) {
-        const p = c.enums[pi]
-        const a = c.enums[ai]
-        if (a.name == p.name && a.module == p.module && Arrays.length(a.args) == Arrays.length(p.args)) {
-          unifyAll(c, p.args, a.args, mutable m)
+    Type.TEnum(patternIndex) => {
+      if (actual is Type.TEnum(actualIndex)) {
+        const patternInfo = checker.enums[patternIndex]
+        const actualInfo = checker.enums[actualIndex]
+        if (actualInfo.name == patternInfo.name && actualInfo.module == patternInfo.module && Arrays.length(actualInfo.args) == Arrays.length(patternInfo.args)) {
+          unifyAll(checker, patternInfo.args, actualInfo.args, mutable bindings)
         }
       }
     }
@@ -99,9 +99,9 @@ export function unify(c: Checker, pat: Type, act: Type, mutable m: Map<int, Type
   }
 }
 
-function unifyAll(c: Checker, pats: Array<Type>, acts: Array<Type>, mutable m: Map<int, Type>) uses alloc {
-  for (const k of Ranges.between(0, Arrays.length(pats))) {
-    unify(c, pats[k], acts[k], mutable m)
+function unifyAll(checker: Checker, patterns: Array<Type>, actuals: Array<Type>, mutable bindings: Map<int, Type>) uses alloc {
+  for (const index of Ranges.between(0, Arrays.length(patterns))) {
+    unify(checker, patterns[index], actuals[index], mutable bindings)
   }
 }
 
@@ -109,43 +109,43 @@ function unifyAll(c: Checker, pats: Array<Type>, acts: Array<Type>, mutable m: M
 // with the instance it names. grow: some argument holds a type parameter
 // without being one.
 struct GenericEdge {
-  to: int // Checker.generics
-  t: Type
+  target: int // Checker.generics
+  instance: Type
   grow: bool
 }
 
-// templateEdges lists the generic types t refers to, at any depth.
-function templateEdges(c: Checker, t: Type, mutable out: Array<GenericEdge>) uses alloc {
-  match (t) {
-    Type.TArray(e) => templateEdges(c, e, mutable out)
-    Type.TBox(e) => templateEdges(c, e, mutable out)
-    Type.TMap(k, v) => {
-      templateEdges(c, k, mutable out)
-      templateEdges(c, v, mutable out)
+// templateEdges lists the generic types a type refers to, at any depth.
+function templateEdges(checker: Checker, type: Type, mutable out: Array<GenericEdge>) uses alloc {
+  match (type) {
+    Type.TArray(element) => templateEdges(checker, element, mutable out)
+    Type.TBox(element) => templateEdges(checker, element, mutable out)
+    Type.TMap(key, value) => {
+      templateEdges(checker, key, mutable out)
+      templateEdges(checker, value, mutable out)
     }
-    Type.TFunc(ps, r) => {
-      for (const p of Arrays.values(ps)) {
-        templateEdges(c, p, mutable out)
+    Type.TFunc(parameters, result) => {
+      for (const parameter of Arrays.values(parameters)) {
+        templateEdges(checker, parameter, mutable out)
       }
-      templateEdges(c, r, mutable out)
+      templateEdges(checker, result, mutable out)
     }
-    Type.TStruct(i) => {
-      const s = c.structs[i]
-      if (Arrays.length(s.args) > 0) {
-        if (!s.tuple) {
-          Arrays.push(mutable out, GenericEdge { to: s.generic, t: t, grow: growsArgs(c, s.args) })
+    Type.TStruct(index) => {
+      const structInfo = checker.structs[index]
+      if (Arrays.length(structInfo.args) > 0) {
+        if (!structInfo.tuple) {
+          Arrays.push(mutable out, GenericEdge { target: structInfo.generic, instance: type, grow: growsArgs(checker, structInfo.args) })
         }
-        for (const a of Arrays.values(s.args)) {
-          templateEdges(c, a, mutable out)
+        for (const argument of Arrays.values(structInfo.args)) {
+          templateEdges(checker, argument, mutable out)
         }
       }
     }
-    Type.TEnum(i) => {
-      const e = c.enums[i]
-      if (Arrays.length(e.args) > 0) {
-        Arrays.push(mutable out, GenericEdge { to: e.generic, t: t, grow: growsArgs(c, e.args) })
-        for (const a of Arrays.values(e.args)) {
-          templateEdges(c, a, mutable out)
+    Type.TEnum(index) => {
+      const enumInfo = checker.enums[index]
+      if (Arrays.length(enumInfo.args) > 0) {
+        Arrays.push(mutable out, GenericEdge { target: enumInfo.generic, instance: type, grow: growsArgs(checker, enumInfo.args) })
+        for (const argument of Arrays.values(enumInfo.args)) {
+          templateEdges(checker, argument, mutable out)
         }
       }
     }
@@ -153,24 +153,24 @@ function templateEdges(c: Checker, t: Type, mutable out: Array<GenericEdge>) use
   }
 }
 
-function growsArgs(c: Checker, args: Array<Type>): bool {
-  for (const a of Arrays.values(args)) {
-    if (!(a is Type.TParam(_)) && containsTypeParam(c, a)) {
+function growsArgs(checker: Checker, args: Array<Type>): bool {
+  for (const argument of Arrays.values(args)) {
+    if (!(argument is Type.TParam(_)) && containsTypeParam(checker, argument)) {
       return true
     }
   }
   return false
 }
 
-function genericEdges(c: Checker, g: int): Array<GenericEdge> uses alloc {
+function genericEdges(checker: Checker, generic: int): Array<GenericEdge> uses alloc {
   let out: Array<GenericEdge> = []
-  const info = c.generics[g]
-  for (const f of Arrays.values(info.fields)) {
-    templateEdges(c, f.t, mutable out)
+  const info = checker.generics[generic]
+  for (const field of Arrays.values(info.fields)) {
+    templateEdges(checker, field.fieldType, mutable out)
   }
-  for (const v of Arrays.values(info.variants)) {
-    for (const f of Arrays.values(v.fields)) {
-      templateEdges(c, f.t, mutable out)
+  for (const variant of Arrays.values(info.variants)) {
+    for (const field of Arrays.values(variant.fields)) {
+      templateEdges(checker, field.fieldType, mutable out)
     }
   }
   return out
@@ -182,44 +182,44 @@ function genericEdges(c: Checker, g: int): Array<GenericEdge> uses alloc {
 // instance would need a larger one. Reaching itself with the same arguments
 // (List<T> holding Array<List<T>>) is fine. On failure the template's fields
 // are dropped, so no instance can grow forever.
-export function checkPolyRecursion(mutable c: Checker, g: int) uses alloc {
+export function checkPolyRecursion(mutable checker: Checker, generic: int) uses alloc {
   let seen: Map<string, bool> = Map {}
-  const found = walkEdges(c, g, g, false, None, mutable seen)
+  const found = walkEdges(checker, generic, generic, false, None, mutable seen)
   if (found is None) {
     return
   }
-  const info = c.generics[g]
-  const culprit = typeString(c, found.value)
-  errorf(mutable c, info.pos, `generic type ${info.name} contains ${culprit}, so each instance needs a larger one without end; every instance needs its own C type, so polymorphic recursion is not supported (use the same type arguments, or an enum or Box)`)
-  c.generics[g].fields = []
-  for (const k of Ranges.between(0, Arrays.length(info.variants))) {
-    c.generics[g].variants[k].fields = []
+  const info = checker.generics[generic]
+  const culprit = typeString(checker, found.value)
+  errorf(mutable checker, info.pos, `generic type ${info.name} contains ${culprit}, so each instance needs a larger one without end; every instance needs its own C type, so polymorphic recursion is not supported (use the same type arguments, or an enum or Box)`)
+  checker.generics[generic].fields = []
+  for (const index of Ranges.between(0, Arrays.length(info.variants))) {
+    checker.generics[generic].variants[index].fields = []
   }
 }
 
-// walkEdges searches from h for a path back to g that grew. It returns the
+// walkEdges searches from start for a path back to generic that grew. It returns the
 // first grown instance on that path.
-function walkEdges(c: Checker, g: int, h: int, grew: bool, via: Option<Type>, mutable seen: Map<string, bool>): Option<Type> uses alloc {
-  for (const e of Arrays.values(genericEdges(c, h))) {
-    if (e.to < 0) {
+function walkEdges(checker: Checker, generic: int, start: int, grew: bool, via: Option<Type>, mutable seen: Map<string, bool>): Option<Type> uses alloc {
+  for (const edge of Arrays.values(genericEdges(checker, start))) {
+    if (edge.target < 0) {
       continue
     }
-    const ng = grew || e.grow
-    let v = via
-    if (e.grow && via is None) {
-      v = Some(e.t)
+    const nowGrew = grew || edge.grow
+    let grownVia = via
+    if (edge.grow && via is None) {
+      grownVia = Some(edge.instance)
     }
-    if (e.to == g && ng) {
-      return v
+    if (edge.target == generic && nowGrew) {
+      return grownVia
     }
-    const key = `${Show.show(e.to)}|${Show.show(ng)}`
+    const key = `${Show.show(edge.target)}|${Show.show(nowGrew)}`
     if (seen[key] is Some(_)) {
       continue
     }
     seen[key] = true
-    const r = walkEdges(c, g, e.to, ng, v, mutable seen)
-    if (r is Some(_)) {
-      return r
+    const found = walkEdges(checker, generic, edge.target, nowGrew, grownVia, mutable seen)
+    if (found is Some(_)) {
+      return found
     }
   }
   return None

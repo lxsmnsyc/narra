@@ -116,10 +116,22 @@ func (c *Checker) checkImportNames(f *File) {
 		}
 	}
 	for _, imp := range f.Imports {
-		if s := c.mods[imp.Path]; s != nil && s.src != nil {
-			continue
-		}
+		s := c.mods[imp.Path]
+		pkg := s != nil && s.src != nil
 		for _, n := range imp.Names {
+			if pkg {
+				// A type or trait import is itself in the type table, and
+				// importPackageModule reports a function or constant that
+				// clashes with a declaration. A function can still clash
+				// with a type declared later or with an alias.
+				if _, isFunc := s.src.Exports[n.Name].(*FuncDecl); !isFunc {
+					continue
+				}
+				if _, isAlias := c.modules[n.Local]; isAlias || c.aliasTaken(n.Local) {
+					c.errorf(imp.Pos, "imported name %q is already declared in this module; rename the import with `as`", n.Local)
+				}
+				continue
+			}
 			_, isAlias := c.modules[n.Local]
 			if declared[n.Local] || c.mod.consts[n.Local] != nil || isAlias || c.aliasTaken(n.Local) {
 				c.errorf(imp.Pos, "imported name %q is already declared in this module; rename the import with `as`", n.Local)

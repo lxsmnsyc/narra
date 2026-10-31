@@ -24,7 +24,7 @@
 
 - Builtin names (`Array.push`) are not aliases. Do not rename them.
 - The E0421 fix is not offered when a template string mentions `Alias.`, because the parser keeps no positions inside `${}`.
-- When the alias is also an enum, the E0421 fix renames only `Alias.f` where `f` is an export of a std module, and offers no fix for a package module. E0423 also fires when a renamed import equals a type name or a namespace alias.
+- When the alias is also an enum, the E0421 fix renames only `Alias.f` where `f` is an export of a std module, and offers no fix for a package module. E0423 also fires when a renamed import (std, or a function of a package module) equals a type name or a namespace alias. Tests: `errors/import_rename_{type_clash,prelude_type,alias_clash}.nra`, `packages/errors/import_rename_type_clash`.
 - A module with several files may bind the same alias to the same path in each file.
 
 ## Proposed learnings

@@ -1,0 +1,237 @@
+// The statement checker, ported from compiler/internal/narra/check_stmt.go
+// (block, stmt, ifStmt, diverges, isResult; lvalueRoot is
+// findAssignedLocal in exprs.nra). Locals go into the current body's
+// tables (D70) through declareLocal; block scopes are pushScope and
+// popScope (check.nra).
+import { Pos, Expr, Stmt, Block, TypeExpr } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type } from "narrac/types"
+import { Checker, Ref, Walker, errorf, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
+import { resolveType } from "narrac/resolve"
+import { checkExpression, expectType, checkConstWrite, findAssignedLocal } from "narrac/exprs"
+import * as Arrays from "std/array"
+
+// checkBlock checks the statements of a block in a scope of their own.
+export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block: Block) uses alloc {
+  pushScope(mutable checker)
+  for (const statement of Arrays.values(block.stmts)) {
+    checkStatement(mutable checker, walker, statement)
+  }
+  popScope(mutable checker)
+}
+
+export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => checkBlock(mutable checker, walker, block)
+    Stmt.VarStmt(id, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, id, pos, isMutable, name, pattern is Some(_), type, value)
+    Stmt.AssignStmt(pos, target, value) => checkAssignment(mutable checker, walker, pos, target, value)
+    Stmt.ExprStmt(pos, expression) => checkExpressionStatement(mutable checker, walker, pos, expression)
+    Stmt.ReturnStmt(pos, value) => checkReturn(mutable checker, walker, pos, value)
+    Stmt.IfStmt(_, condition, then, orElse) => checkIf(mutable checker, walker, condition, then, orElse)
+    Stmt.WhileStmt(_, condition, body) => checkWhile(mutable checker, walker, condition, body)
+    Stmt.ForStmt(id, pos, name, iterable, body) => checkFor(mutable checker, walker, id, pos, name, iterable, body)
+    Stmt.BreakStmt(pos) => checkLoopExit(mutable checker, pos, "break must be inside a loop")
+    Stmt.ContinueStmt(pos) => checkLoopExit(mutable checker, pos, "continue must be inside a loop")
+  }
+}
+
+function checkLoopExit(mutable checker: Checker, pos: Pos, message: string) uses alloc {
+  if (checker.loops == 0) {
+    errorf(mutable checker, pos, message)
+  }
+}
+
+function checkCondition<W: Walker>(mutable checker: Checker, walker: W, condition: Expr) uses alloc {
+  const found = checkExpression(mutable checker, walker, condition, Some(Type.TBool))
+  expectType(mutable checker, getExpressionPos(condition), Some(Type.TBool), found)
+}
+
+function checkVariable<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, isMutable: bool, name: string, hasPattern: bool, type: Option<TypeExpr>, value: Expr) uses alloc {
+  if (hasPattern) {
+    unsupported(mutable checker, pos, "a destructuring declaration (selfhost-check-patterns)")
+    return
+  }
+
+  // The annotation, when written, is the variable's type.
+  let want: Option<Type> = None
+  if (type is Some(te)) {
+    want = Some(resolveType(mutable checker, te))
+  }
+  const errorCount = Arrays.length(checker.errs)
+  let found = checkExpression(mutable checker, walker, value, want)
+  if (want is Some(declared)) {
+    expectType(mutable checker, getExpressionPos(value), want, found)
+    found = declared
+  }
+
+  // A value whose check already failed is void; do not report it twice.
+  if (found == Type.TVoid && Arrays.length(checker.errs) == errorCount) {
+    errorf(mutable checker, pos, "this expression has no value")
+  }
+  declareLocal(mutable checker, id, pos, name, found, isMutable, false)
+}
+
+function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, target: Expr, value: Expr) uses alloc {
+  // A write through a constant is reported before the target is checked.
+  if (checkConstWrite(mutable checker, pos, target)) {
+    checkExpression(mutable checker, walker, value, None)
+    return
+  }
+  const targetType = checkExpression(mutable checker, walker, target, None)
+
+  // The root of the target must be a `let` variable.
+  const root = findAssignedLocal(checker, target)
+  if (root < 0) {
+    errorf(mutable checker, pos, "only variables, fields and array elements can be assigned")
+  } else if (!getLocal(checker, root).isMutable) {
+    const name = getLocal(checker, root).name
+    errorf(mutable checker, pos, `${quoteGo(name)} is constant; declare it with \`let\` to change it`)
+  }
+  const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
+  expectType(mutable checker, getExpressionPos(value), Some(targetType), valueType)
+}
+
+function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, expression: Expr) uses alloc {
+  if (expression is Expr.MatchExpr(_, matchPos, _, _)) {
+    unsupported(mutable checker, matchPos, "a match statement (selfhost-check-patterns)")
+    return
+  }
+  checkExpression(mutable checker, walker, expression, None)
+
+  // Only a call can stand alone, and a Result it returns must be used.
+  if (expression is Expr.CallExpr(id, _, _, _)) {
+    if (getNodeType(checker, id) is Some(found)) {
+      if (isResult(checker, found)) {
+        errorf(mutable checker, pos, "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`")
+      }
+    }
+  } else {
+    errorf(mutable checker, pos, "this expression does nothing")
+  }
+}
+
+function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, value: Option<Expr>) uses alloc {
+  const want = checker.resultType
+  if (value is Some(expression)) {
+    const found = checkExpression(mutable checker, walker, expression, Some(want))
+    if (want == Type.TVoid) {
+      errorf(mutable checker, pos, "this function returns nothing")
+      return
+    }
+    expectType(mutable checker, getExpressionPos(expression), Some(want), found)
+  } else if (want != Type.TVoid) {
+    const text = typeString(checker, want)
+    errorf(mutable checker, pos, `this function must return a ${text}`)
+  }
+}
+
+// checkIf checks a plain if statement. A condition with `is`, which
+// narrows the subject in the branches, is selfhost-check-patterns'.
+function checkIf<W: Walker>(mutable checker: Checker, walker: W, condition: Expr, then: Block, orElse: Option<Stmt>) uses alloc {
+  checkCondition(mutable checker, walker, condition)
+  pushScope(mutable checker)
+  for (const statement of Arrays.values(then.stmts)) {
+    checkStatement(mutable checker, walker, statement)
+  }
+  popScope(mutable checker)
+  if (orElse is Some(other)) {
+    pushScope(mutable checker)
+    checkStatement(mutable checker, walker, other)
+    popScope(mutable checker)
+  }
+}
+
+function checkWhile<W: Walker>(mutable checker: Checker, walker: W, condition: Expr, body: Block) uses alloc {
+  checkCondition(mutable checker, walker, condition)
+  checker.loops = checker.loops + 1
+  checkBlock(mutable checker, walker, body)
+  checker.loops = checker.loops - 1
+}
+
+function checkFor<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, name: string, iterable: Expr, body: Block) uses alloc {
+  // The iterable is a call of a std function that gives the element type.
+  const iterableType = checkExpression(mutable checker, walker, iterable, None)
+  let builtin = ""
+  let firstArgument = Type.TVoid
+  if (iterable is Expr.CallExpr(callId, _, _, args)) {
+    if (getRef(checker, callId) is Ref.Builtin(index)) {
+      builtin = checker.registry.funcs[index].name
+    }
+    if (Arrays.length(args) > 0) {
+      if (getNodeType(checker, getExpressionId(args[0].value)) is Some(t)) {
+        firstArgument = t
+      }
+    }
+  }
+  let element = Type.TInt
+  if (builtin == "Range.upTo" || builtin == "Range.between") {
+    element = Type.TInt
+  } else if (builtin == "Array.values") {
+    element = Type.TVoid
+    if (firstArgument is Type.TArray(t)) {
+      element = t
+    }
+  } else if (builtin == "Map.keys" || builtin == "Map.entries") {
+    element = Type.TVoid
+    if (iterableType is Type.TArray(t)) {
+      element = t
+    }
+  } else {
+    const text = typeString(checker, iterableType)
+    errorf(mutable checker, getExpressionPos(iterable), `for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found ${text}`)
+  }
+
+  // The loop variable lives in a scope around the body.
+  pushScope(mutable checker)
+  declareLocal(mutable checker, id, pos, name, element, false, false)
+  checker.loops = checker.loops + 1
+  checkBlock(mutable checker, walker, body)
+  checker.loops = checker.loops - 1
+  popScope(mutable checker)
+}
+
+// isResult reports a Result value, which a statement may not drop.
+export function isResult(checker: Checker, t: Type): bool {
+  if (t is Type.TEnum(index)) {
+    return checker.enums[index].name == "Result" && Arrays.length(checker.enums[index].args) == 2
+  }
+  return false
+}
+
+// diverges reports whether a block always leaves by return, break,
+// continue or panic.
+export function diverges(block: Block): bool {
+  const count = Arrays.length(block.stmts)
+  if (count == 0) {
+    return false
+  }
+  return statementDiverges(block.stmts[count - 1])
+}
+
+function statementDiverges(statement: Stmt): bool {
+  return match (statement) {
+    Stmt.ReturnStmt(_, _) => true
+    Stmt.BreakStmt(_) => true
+    Stmt.ContinueStmt(_) => true
+    Stmt.ExprStmt(_, expression) => isPanicCall(expression)
+    Stmt.IfStmt(_, _, then, orElse) => ifDiverges(then, orElse)
+    Stmt.BlockStmt(block) => diverges(block)
+    _ => false
+  }
+}
+
+function isPanicCall(expression: Expr): bool {
+  if (expression is Expr.CallExpr(_, _, callee, _)) {
+    if (callee is Expr.Ident(_, _, name)) {
+      return name == "panic"
+    }
+  }
+  return false
+}
+
+function ifDiverges(then: Block, orElse: Option<Stmt>): bool {
+  if (orElse is Some(other)) {
+    return diverges(then) && statementDiverges(other)
+  }
+  return false
+}

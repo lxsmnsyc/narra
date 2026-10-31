@@ -1,0 +1,1237 @@
+// The expression checker, ported from compiler/internal/narra:
+// check_expr.go (expr, exprInner, binary, structLit), the plain path of
+// check_call.go (call, args, builtinCall, checkMutableArg), check_const.go
+// (constType, checkConstValue, constWrite, moduleConstValue, calleeName),
+// isConstant and expectType (check_types.go) and the plain-name half of
+// check_closure.go.
+//
+// checkExpressionKind is one `match` on Expr. An arm that a later node
+// ports calls `unsupported` and names the node; that node replaces the arm
+// with a one-line call into its own module. The modules below this one
+// reach back through the Walker trait (check.nra): every function here takes
+// `walker: W` and passes it on, so a later module can call
+// `Walker.checkExpression(walker, mutable checker, ...)` without importing
+// this module.
+//
+// Results go into the side tables of the current body (D70): the type of
+// every checked expression (setNodeType) and what a name or call resolves to
+// (setRef).
+import { Pos, Expr, Arg, FieldInit, TypeExpr, Decl, Param } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type, Field } from "narrac/types"
+import { Checker, Ref, BodyRoot, Walker, CONST_NEW, CONST_BUSY, CONST_DONE, errorf, enter, typeString, startBody, finishBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, unsupported, getExpressionId, getExpressionPos, isNumeric, lookupTrait } from "narrac/check"
+import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
+import { unify } from "narrac/generics"
+import { checkEquatable } from "narrac/traits"
+import { stdType } from "narrac/stdlib"
+import { sourceScope, exported } from "narrac/scopes"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// checkExpression checks an expression and records its type (Go's expr).
+// want is the expected type, or None.
+export function checkExpression<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
+  const found = checkExpressionKind(mutable checker, walker, expression, want)
+  setNodeType(mutable checker, getExpressionId(expression), found)
+  return found
+}
+
+function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
+  return match (expression) {
+    Expr.IntLit(_, pos, text) => checkIntLiteral(mutable checker, pos, text)
+    Expr.FloatLit(_, _, _) => Type.TF64
+    Expr.StringLit(_, _, _, _) => Type.TStr
+    Expr.CharLit(_, _, _) => Type.TChar
+    Expr.BoolLit(_, _, _) => Type.TBool
+    Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
+    Expr.Ident(id, pos, name) => checkName(mutable checker, walker, id, pos, name)
+    Expr.FieldExpr(id, pos, target, name) => checkField(mutable checker, walker, id, pos, target, name)
+    Expr.IsExpr(_, pos, _, _) => unsupported(mutable checker, pos, "`is` (selfhost-check-patterns)")
+    Expr.IndexExpr(_, pos, target, index) => checkIndex(mutable checker, walker, pos, target, index)
+    Expr.MapLit(_, pos, _, _, _) => unsupported(mutable checker, pos, "a Map literal (selfhost-check-patterns)")
+    Expr.CallExpr(id, pos, callee, args) => checkCall(mutable checker, walker, id, pos, callee, args)
+    Expr.UnaryExpr(_, pos, op, operand) => checkUnary(mutable checker, walker, pos, op, operand, want)
+    Expr.BinaryExpr(_, pos, op, left, right) => checkBinary(mutable checker, walker, pos, op, left, right)
+    Expr.StructLit(_, pos, typeName, typeArgs, fields, spread) => checkStructLiteral(mutable checker, walker, pos, typeName, typeArgs, fields, spread, want)
+    Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(mutable checker, walker, pos, elements, isTuple, want)
+    Expr.MatchExpr(_, pos, _, _) => unsupported(mutable checker, pos, "a match expression (selfhost-check-patterns)")
+    Expr.ArrowExpr(_, pos, _, _, _, _) => unsupported(mutable checker, pos, "an arrow function (selfhost-check-closures)")
+  }
+}
+
+// expectType reports got when it is not the expected type. No expectation
+// accepts anything.
+export function expectType(mutable checker: Checker, pos: Pos, want: Option<Type>, got: Type) uses alloc {
+  if (want is Some(expected)) {
+    if (expected != got) {
+      const message = `expected ${describeType(checker, expected, got)}, found ${describeType(checker, got, expected)}`
+      errorf(mutable checker, pos, message)
+    }
+  }
+}
+
+// describeType prints t for a message about t and other. When both print
+// the same, a struct or enum gets its module (Go's typeName).
+export function describeType(checker: Checker, t: Type, other: Type): string uses alloc {
+  const text = typeString(checker, t)
+  if (text != typeString(checker, other)) {
+    return text
+  }
+  let module = ""
+  match (t) {
+    Type.TStruct(index) => {
+      module = checker.structs[index].module
+    }
+    Type.TEnum(index) => {
+      module = checker.enums[index].module
+    }
+    _ => {}
+  }
+  if (module != "") {
+    return `${module}.${text}`
+  }
+  return text
+}
+
+function checkIntLiteral(mutable checker: Checker, pos: Pos, text: string): Type uses alloc {
+  if (!intLiteralFits(text)) {
+    errorf(mutable checker, pos, `integer literal ${text} does not fit in int`)
+  }
+  return Type.TInt
+}
+
+// intLiteralFits reports whether Go's strconv.ParseInt(text, 0, 64)
+// accepts text: an optional base prefix (0x, 0b, 0o, or a leading 0 for
+// octal), digits of the base, and `_` only between digits.
+function intLiteralFits(text: string): bool uses alloc {
+  // Find the base and the digits after the prefix.
+  let base = 10
+  let digits = text
+  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
+    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
+      base = 16
+      digits = Str.sliceFrom(text, 2)
+    } else if (Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))) {
+      base = 2
+      digits = Str.sliceFrom(text, 2)
+    } else if (Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))) {
+      base = 8
+      digits = Str.sliceFrom(text, 2)
+    } else {
+      base = 8
+      digits = Str.sliceFrom(text, 1)
+    }
+  }
+
+  // Parse the digits without the underscores; "0" alone leaves none.
+  const plain = Str.replace(digits, "_", "")
+  if (plain != "") {
+    if (Int.parse(plain, base) is Err(_)) {
+      return false
+    }
+  }
+  if (Str.contains(text, "_")) {
+    return underscoresFit(text)
+  }
+  return true
+}
+
+// underscoresFit is Go's underscoreOK: every `_` separates two digits, or
+// follows a base prefix.
+function underscoresFit(text: string): bool {
+  let saw = '^'
+  let index = 0
+  let hex = false
+  const length = Str.length(text)
+  if (length >= 2 && Str.charAt(text, 0) == '0') {
+    const mark = Str.charAt(text, 1)
+    if (mark == 'b' || mark == 'B' || mark == 'o' || mark == 'O' || mark == 'x' || mark == 'X') {
+      index = 2
+      saw = '0'
+      hex = mark == 'x' || mark == 'X'
+    }
+  }
+  while (index < length) {
+    const ch = Str.charAt(text, index)
+    index = index + 1
+    const isDigit = ch >= '0' && ch <= '9'
+    const isHex = hex && ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))
+    if (isDigit || isHex) {
+      saw = '0'
+      continue
+    }
+    if (ch == '_') {
+      if (saw != '0') {
+        return false
+      }
+      saw = '_'
+      continue
+    }
+    if (saw == '_') {
+      return false
+    }
+    saw = '!'
+  }
+  return saw != '_'
+}
+
+function checkTemplate<W: Walker>(mutable checker: Checker, walker: W, parts: Array<Expr>): Type uses alloc {
+  for (const part of Arrays.values(parts)) {
+    const partType = checkExpression(mutable checker, walker, part, Some(Type.TStr))
+    if (partType != Type.TStr) {
+      const text = typeString(checker, partType)
+      errorf(mutable checker, getExpressionPos(part), `a template string part must be a string, found ${text}; convert it, for example with Int.toString`)
+    }
+  }
+  return Type.TStr
+}
+
+// checkName resolves a plain name used as a value: a local, then a
+// constant, then a function, a constructor and a module alias.
+function checkName<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, name: string): Type uses alloc {
+  // A local of the current body.
+  const local = findLocal(checker, name)
+  if (local >= 0) {
+    if (getLocal(checker, local).noEscape) {
+      return unsupported(mutable checker, pos, "a non-escaping function parameter (selfhost-check-closures)")
+    }
+    const body = checker.body
+    checker.bodies[body].locals[local].used = true
+    setRef(mutable checker, id, Ref.Local(local))
+    return getLocal(checker, local).t
+  }
+
+  // A top-level constant, own or imported.
+  const scope = checker.cur
+  if (checker.scopes[scope].consts[name] is Some(index)) {
+    setRef(mutable checker, id, Ref.Const(index))
+    return checkConstType(mutable checker, walker, index, pos)
+  }
+  if (checker.scopes[scope].funcs[name] is Some(_)) {
+    return unsupported(mutable checker, pos, "a function used as a value (selfhost-check-closures)")
+  }
+  if (hasConstructor(checker, name)) {
+    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+  }
+  if (checker.scopes[scope].modules[name] is Some(_)) {
+    errorf(mutable checker, pos, "a module is not a value")
+    return Type.TVoid
+  }
+  errorf(mutable checker, pos, `unknown name ${quoteGo(name)}`)
+  return Type.TVoid
+}
+
+// hasConstructor reports whether a bare name may be an enum constructor:
+// Some, None, Ok, Err or a variant of any enum. It errs on the side of yes,
+// since a yes only makes the input unsupported.
+function hasConstructor(checker: Checker, name: string): bool {
+  if (name == "Some" || name == "None" || name == "Ok" || name == "Err") {
+    return true
+  }
+  for (const info of Arrays.values(checker.enums)) {
+    for (const variant of Arrays.values(info.variants)) {
+      if (variant.name == name) {
+        return true
+      }
+    }
+  }
+  for (const generic of Arrays.values(checker.generics)) {
+    for (const variant of Arrays.values(generic.variantDecls)) {
+      if (variant.name == name) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+// isEnumName reports whether name is an enum or a generic enum here.
+function isEnumName(checker: Checker, name: string): bool {
+  const scope = checker.cur
+  if (checker.scopes[scope].types[name] is Some(Type.TEnum(_))) {
+    return true
+  }
+  if (checker.scopes[scope].generics[name] is Some(generic)) {
+    return !checker.generics[generic].isStruct
+  }
+  return false
+}
+
+// isMissingImport reports Array.f, Box.f, Map.f, Option.f, Range.f or
+// Result.f used without the import of their std module (Go's
+// missingImport, E0908, which selfhost-check-calls ports).
+function isMissingImport(checker: Checker, name: string): bool {
+  const scope = checker.cur
+  if (checker.scopes[scope].modules[name] is Some(_)) {
+    return false
+  }
+  if (name == "Box" || name == "Map") {
+    if (checker.scopes[scope].types[name] is Some(_) || checker.scopes[scope].generics[name] is Some(_)) {
+      return false
+    }
+  }
+  return name == "Array" || name == "Box" || name == "Map" || name == "Option" || name == "Range" || name == "Result"
+}
+
+// isModuleEnum reports `Alias.Enum` where Alias names a package module that
+// has an enum of that name (Go's moduleEnumName, for Geo.Shape.Circle).
+function isModuleEnum(checker: Checker, target: Expr): bool {
+  if (target is Expr.FieldExpr(_, _, inner, enumName)) {
+    if (inner is Expr.Ident(_, _, alias)) {
+      const scope = checker.cur
+      if (findLocal(checker, alias) >= 0 || checker.scopes[scope].consts[alias] is Some(_)) {
+        return false
+      }
+      if (checker.scopes[scope].modules[alias] is Some(path)) {
+        const moduleScope = sourceScope(checker, path)
+        if (moduleScope < 0) {
+          return false
+        }
+        if (checker.scopes[moduleScope].types[enumName] is Some(Type.TEnum(_))) {
+          return true
+        }
+        if (checker.scopes[moduleScope].generics[enumName] is Some(generic)) {
+          return !checker.generics[generic].isStruct
+        }
+      }
+    }
+  }
+  return false
+}
+
+// findModuleConst finds the constant name declared in the package module
+// of scope moduleScope: the last declaration of that name, as Go's
+// moduleConstValue does. It returns its Checker.consts index, -2 when the
+// module declares it twice (only the first is registered), or -1.
+function findModuleConst(checker: Checker, moduleScope: int, name: string): int {
+  let found: Option<Pos> = None
+  for (const decl of Arrays.values(checker.scopes[moduleScope].decls)) {
+    if (decl is Decl.Const(constDecl)) {
+      if (constDecl.name == name) {
+        found = Some(constDecl.pos)
+      }
+    }
+  }
+  if (found is Some(pos)) {
+    if (checker.scopes[moduleScope].consts[name] is Some(index)) {
+      if (checker.consts[index].decl.pos == pos) {
+        return index
+      }
+    }
+    return -2
+  }
+  return -1
+}
+
+function checkField<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, target: Expr, name: string): Type uses alloc {
+  // Alias.f and Alias.NAME of a package module, constructors and std
+  // namespaces are resolved by the syntax first.
+  const scope = checker.cur
+  if (target is Expr.Ident(targetId, _, alias)) {
+    if (findLocal(checker, alias) < 0) {
+      if (checker.scopes[scope].modules[alias] is Some(path)) {
+        const moduleScope = sourceScope(checker, path)
+        if (moduleScope >= 0) {
+          if (checker.scopes[moduleScope].exports[name] is Some(k)) {
+            if (checker.scopes[moduleScope].decls[k] is Decl.Func(_)) {
+              return unsupported(mutable checker, pos, "a module function used as a value (selfhost-check-closures)")
+            }
+          }
+          const index = findModuleConst(checker, moduleScope, name)
+          if (index == -2) {
+            return unsupported(mutable checker, pos, "a module constant declared twice")
+          }
+          if (index >= 0) {
+            if (exported(mutable checker, pos, moduleScope, name) is None) {
+              return Type.TVoid
+            }
+            setNodeType(mutable checker, targetId, Type.TModule(path))
+            setRef(mutable checker, id, Ref.Const(index))
+            return checkConstType(mutable checker, walker, index, pos)
+          }
+        }
+      }
+      if (isEnumName(checker, alias)) {
+        return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+      }
+    }
+  }
+  if (isModuleEnum(checker, target)) {
+    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+  }
+  if (target is Expr.Ident(_, _, alias)) {
+    if (findLocal(checker, alias) < 0 && checker.scopes[scope].consts[alias] is None && isMissingImport(checker, alias)) {
+      return unsupported(mutable checker, pos, "a namespace without its import (selfhost-check-calls)")
+    }
+  }
+
+  // Otherwise the target is a value with fields.
+  const targetType = checkExpression(mutable checker, walker, target, None)
+  match (targetType) {
+    Type.TStruct(index) => {
+      const fieldIndex = findField(checker.structs[index].fields, name)
+      const text = typeString(checker, targetType)
+      if (fieldIndex < 0) {
+        errorf(mutable checker, pos, `struct ${text} has no field ${quoteGo(name)}`)
+        return Type.TVoid
+      }
+      if (isHiddenStruct(checker, index)) {
+        const module = checker.structs[index].module
+        errorf(mutable checker, pos, `cannot read field ${quoteGo(name)} of ${text}: it is an opaque struct of module ${quoteGo(module)}`)
+      }
+      return checker.structs[index].fields[fieldIndex].t
+    }
+    Type.TEnum(_) => {
+      // Reading a variant field needs a value narrowed by `is` or match,
+      // which selfhost-check-patterns ports; without them none is narrowed.
+      const text = typeString(checker, targetType)
+      errorf(mutable checker, pos, `this ${text} may hold any of its variants; check it with \`is\` or \`match\` before reading ${quoteGo(name)}`)
+      return Type.TVoid
+    }
+    Type.TBox(element) => {
+      if (name != "value") {
+        const text = typeString(checker, targetType)
+        errorf(mutable checker, pos, `${text} has one field, value`)
+        return Type.TVoid
+      }
+      return element
+    }
+    _ => {}
+  }
+  const text = typeString(checker, targetType)
+  if (name == "length" && hasNoFields(targetType)) {
+    errorf(mutable checker, pos, "there is no .length; use Array.length(x) or Str.length(x)")
+  } else {
+    errorf(mutable checker, pos, `${text} has no fields`)
+  }
+  return Type.TVoid
+}
+
+// hasNoFields is true for the types Go names in its `.length` hint:
+// arrays, maps and the primitive types.
+function hasNoFields(t: Type): bool {
+  return match (t) {
+    Type.TArray(_) => true
+    Type.TMap(_, _) => true
+    Type.TInt => true
+    Type.TF64 => true
+    Type.TBool => true
+    Type.TChar => true
+    Type.TStr => true
+    Type.TVoid => true
+    Type.TStringBuilder => true
+    _ => false
+  }
+}
+
+export function findField(fields: Array<Field>, name: string): int {
+  for (const index of Ranges.between(0, Arrays.length(fields))) {
+    if (fields[index].name == name) {
+      return index
+    }
+  }
+  return -1
+}
+
+// isHiddenStruct reports an opaque struct of another module.
+export function isHiddenStruct(checker: Checker, index: int): bool {
+  return checker.structs[index].opaque && checker.structs[index].module != checker.scopes[checker.cur].path
+}
+
+function checkIndex<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, target: Expr, index: Expr): Type uses alloc {
+  const targetType = checkExpression(mutable checker, walker, target, None)
+  if (targetType is Type.TMap(_, _)) {
+    return unsupported(mutable checker, pos, "a Map index (selfhost-check-patterns)")
+  }
+  const indexType = checkExpression(mutable checker, walker, index, Some(Type.TInt))
+  expectType(mutable checker, getExpressionPos(index), Some(Type.TInt), indexType)
+  if (targetType is Type.TArray(element)) {
+    return element
+  }
+  const text = typeString(checker, targetType)
+  errorf(mutable checker, pos, `only arrays can be indexed, found ${text}`)
+  return Type.TVoid
+}
+
+function checkUnary<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, op: string, operand: Expr, want: Option<Type>): Type uses alloc {
+  const operandType = checkExpression(mutable checker, walker, operand, want)
+  if (op == "-") {
+    if (!isNumeric(operandType)) {
+      const text = typeString(checker, operandType)
+      errorf(mutable checker, pos, `- needs a number, found ${text}`)
+    }
+  } else if (op == "!") {
+    expectType(mutable checker, pos, Some(Type.TBool), operandType)
+  } else if (op == "~") {
+    expectType(mutable checker, pos, Some(Type.TInt), operandType)
+  }
+  return operandType
+}
+
+function checkBinary<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, op: string, left: Expr, right: Expr): Type uses alloc {
+  // The left operand gives the expected type of the right one.
+  const leftType = checkExpression(mutable checker, walker, left, None)
+  const rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+  const leftText = typeString(checker, leftType)
+  const rightText = typeString(checker, rightType)
+
+  // Then the rule of the operator.
+  if (op == "&&" || op == "||") {
+    expectType(mutable checker, getExpressionPos(left), Some(Type.TBool), leftType)
+    expectType(mutable checker, getExpressionPos(right), Some(Type.TBool), rightType)
+    return Type.TBool
+  }
+  if (op == "==" || op == "!=") {
+    if (leftType != rightType) {
+      errorf(mutable checker, pos, `cannot compare ${leftText} with ${rightText}`)
+    } else {
+      checkEquatable(mutable checker, pos, leftType)
+    }
+    return Type.TBool
+  }
+  if (op == "<" || op == "<=" || op == ">" || op == ">=") {
+    const ordered = isNumeric(leftType) || leftType == Type.TChar || leftType == Type.TStr
+    if (leftType != rightType || !ordered) {
+      errorf(mutable checker, pos, `cannot order ${leftText} and ${rightText}`)
+    }
+    return Type.TBool
+  }
+  if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
+    if (leftType != rightType || !isNumeric(leftType)) {
+      if (leftType == Type.TStr || rightType == Type.TStr) {
+        errorf(mutable checker, pos, "strings are joined with a template string, not +")
+      } else {
+        errorf(mutable checker, pos, `${op} needs two numbers of the same type, found ${leftText} and ${rightText}`)
+      }
+    }
+    return leftType
+  }
+  if (op == "+%" || op == "-%" || op == "*%" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
+    if (leftType != Type.TInt || rightType != Type.TInt) {
+      errorf(mutable checker, pos, `${op} needs two integers, found ${leftText} and ${rightText}`)
+    }
+    return Type.TInt
+  }
+  errorf(mutable checker, pos, `unknown operator ${op}`)
+  return Type.TVoid
+}
+
+// containsOpen reports whether t holds one of the type parameters params.
+function containsOpen(checker: Checker, t: Type, params: Array<int>): bool {
+  return match (t) {
+    Type.TParam(index) => isParamIn(index, params)
+    Type.TArray(element) => containsOpen(checker, element, params)
+    Type.TBox(element) => containsOpen(checker, element, params)
+    Type.TMap(key, value) => containsOpen(checker, key, params) || containsOpen(checker, value, params)
+    Type.TFunc(parameters, result) => anyOpen(checker, parameters, params) || containsOpen(checker, result, params)
+    Type.TStruct(index) => anyOpen(checker, checker.structs[index].args, params)
+    Type.TEnum(index) => anyOpen(checker, checker.enums[index].args, params)
+    _ => false
+  }
+}
+
+function isParamIn(index: int, params: Array<int>): bool {
+  for (const param of Arrays.values(params)) {
+    if (param == index) {
+      return true
+    }
+  }
+  return false
+}
+
+function anyOpen(checker: Checker, types: Array<Type>, params: Array<int>): bool {
+  for (const t of Arrays.values(types)) {
+    if (containsOpen(checker, t, params)) {
+      return true
+    }
+  }
+  return false
+}
+
+function checkStructLiteral<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, typeName: string, typeArgs: Array<TypeExpr>, fields: Array<FieldInit>, spread: Option<Expr>, want: Option<Type>): Type uses alloc {
+  // `Pair<int, string> { ... }`: the written type arguments give the
+  // literal's type. They must agree with the expected type, then stand in
+  // for it.
+  let expected = want
+  if (Arrays.length(typeArgs) > 0) {
+    const written = TypeExpr { pos: pos, name: typeName, args: typeArgs, isFunc: false, result: None, effects: [], isTuple: false }
+    const literalType = resolveType(mutable checker, written)
+    if (literalType is Type.TStruct(_)) {
+      if (want is Some(Type.TStruct(wanted))) {
+        if (Type.TStruct(wanted) != literalType) {
+          const message = `the type arguments make ${typeString(checker, literalType)}, but the expected type is ${typeString(checker, Type.TStruct(wanted))}`
+          errorf(mutable checker, pos, message)
+          return Type.TStruct(wanted)
+        }
+      }
+      expected = Some(literalType)
+    } else {
+      for (const field of Arrays.values(fields)) {
+        checkExpression(mutable checker, walker, field.value, None)
+      }
+      if (want is Some(t)) {
+        return t
+      }
+      return Type.TVoid
+    }
+  }
+  if (spread is Some(spreadExpression)) {
+    return unsupported(mutable checker, getExpressionPos(spreadExpression), "a spread in a struct literal (selfhost-check-patterns)")
+  }
+
+  // Find the struct: a generic one built from the field values, a named
+  // one, or the expected type.
+  const scope = checker.cur
+  let structIndex = -1
+  let genericIndex = -1
+  if (typeName != "") {
+    if (checker.scopes[scope].generics[typeName] is Some(generic)) {
+      if (checker.generics[generic].isStruct) {
+        genericIndex = generic
+      }
+    }
+  }
+  if (genericIndex >= 0) {
+    structIndex = inferGenericStruct(mutable checker, walker, pos, genericIndex, fields, expected)
+    if (structIndex < 0) {
+      return Type.TVoid
+    }
+  } else if (typeName != "") {
+    if (checker.scopes[scope].types[typeName] is Some(Type.TStruct(index))) {
+      structIndex = index
+    } else {
+      errorf(mutable checker, pos, `${quoteGo(typeName)} is not a struct`)
+      return Type.TVoid
+    }
+  } else {
+    if (expected is Some(Type.TStruct(index))) {
+      structIndex = index
+    } else {
+      errorf(mutable checker, pos, "the struct type is unknown here; write `TypeName { ... }`")
+      return Type.TVoid
+    }
+  }
+  const structType = Type.TStruct(structIndex)
+  const structText = typeString(checker, structType)
+  if (isHiddenStruct(checker, structIndex)) {
+    const module = checker.structs[structIndex].module
+    errorf(mutable checker, pos, `cannot build ${structText} with a literal: it is an opaque struct of module ${quoteGo(module)}; use that module's functions`)
+  }
+
+  // Check each field value against its field, once.
+  const structFields = checker.structs[structIndex].fields
+  let seen: Map<string, bool> = Map {}
+  for (const field of Arrays.values(fields)) {
+    const fieldIndex = findField(structFields, field.name)
+    if (fieldIndex < 0) {
+      errorf(mutable checker, field.pos, `struct ${structText} has no field ${quoteGo(field.name)}`)
+      continue
+    }
+    if (seen[field.name] is Some(_)) {
+      errorf(mutable checker, field.pos, `field ${quoteGo(field.name)} is given twice`)
+    }
+    seen[field.name] = true
+    const fieldType = structFields[fieldIndex].t
+    const valueId = getExpressionId(field.value)
+    let valueType = Type.TVoid
+    if (getNodeType(checker, valueId) is Some(t)) {
+      valueType = t
+    } else {
+      valueType = checkExpression(mutable checker, walker, field.value, Some(fieldType))
+    }
+    expectType(mutable checker, getExpressionPos(field.value), Some(fieldType), valueType)
+  }
+
+  // Every field without a default must be given.
+  for (const field of Arrays.values(structFields)) {
+    if (seen[field.name] is None && field.default is None) {
+      errorf(mutable checker, pos, `missing field ${quoteGo(field.name)} of ${structText}`)
+    }
+  }
+  return structType
+}
+
+// inferGenericStruct finds the instance a literal of a generic struct
+// builds: the expected type gives the type arguments it can, and the field
+// values the rest. It returns the Checker.structs index, or -1 after an
+// error.
+function inferGenericStruct<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, generic: int, fields: Array<FieldInit>, expected: Option<Type>): int uses alloc {
+  buildGeneric(mutable checker, generic)
+  const params = checker.generics[generic].params
+  let bindings: Map<int, Type> = Map {}
+  if (expected is Some(Type.TStruct(wanted))) {
+    if (checker.structs[wanted].generic == generic) {
+      for (const index of Ranges.between(0, Arrays.length(params))) {
+        bindings[params[index]] = checker.structs[wanted].args[index]
+      }
+    }
+  }
+
+  // Each field value is checked against its field with what is known so far.
+  const template = checker.generics[generic].fields
+  for (const field of Arrays.values(fields)) {
+    for (const templateField of Arrays.values(template)) {
+      if (templateField.name == field.name) {
+        const fieldType = substitute(mutable checker, templateField.t, bindings)
+        let fieldWant: Option<Type> = Some(fieldType)
+        if (containsOpen(checker, fieldType, params)) {
+          fieldWant = None
+        }
+        const valueType = checkExpression(mutable checker, walker, field.value, fieldWant)
+        unify(checker, templateField.t, valueType, mutable bindings)
+      }
+    }
+  }
+
+  // Every type parameter must be known.
+  let typeArgs: Array<Type> = []
+  for (const param of Arrays.values(params)) {
+    if (bindings[param] is Some(t)) {
+      Arrays.push(mutable typeArgs, t)
+    } else {
+      const message = `cannot tell type parameter ${checker.params[param].name} of ${checker.generics[generic].name} here; add a type annotation`
+      errorf(mutable checker, pos, message)
+      return -1
+    }
+  }
+  const instance = instantiate(mutable checker, generic, typeArgs)
+  if (instance is Type.TStruct(index)) {
+    return index
+  }
+  return -1
+}
+
+function checkArrayLiteral<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, elements: Array<Expr>, isTuple: bool, want: Option<Type>): Type uses alloc {
+  if (isTuple) {
+    return unsupported(mutable checker, pos, "a tuple literal (selfhost-check-patterns)")
+  }
+  // The expected type gives the element type, or else the first element.
+  let elementType: Option<Type> = None
+  if (want is Some(Type.TArray(element))) {
+    elementType = Some(element)
+  }
+  for (const element of Arrays.values(elements)) {
+    const found = checkExpression(mutable checker, walker, element, elementType)
+    if (elementType is None) {
+      elementType = Some(found)
+    }
+    expectType(mutable checker, getExpressionPos(element), elementType, found)
+  }
+  if (elementType is Some(t)) {
+    return Type.TArray(t)
+  }
+  errorf(mutable checker, pos, "the type of [] is unknown; add a type annotation")
+  return Type.TVoid
+}
+
+// checkCall checks a call. A plain call of a non-generic function and a
+// std function with a fixed signature are ported here; the other callees
+// belong to later nodes.
+function checkCall<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, callee: Expr, args: Array<Arg>): Type uses alloc {
+  return match (callee) {
+    Expr.Ident(_, calleePos, name) => checkNamedCall(mutable checker, walker, id, pos, calleePos, name, args)
+    Expr.FieldExpr(_, calleePos, target, name) => checkDottedCall(mutable checker, walker, id, pos, calleePos, target, name, args)
+    _ => unsupported(mutable checker, pos, "a call of a function value (selfhost-check-closures)")
+  }
+}
+
+function checkNamedCall<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, calleePos: Pos, name: string, args: Array<Arg>): Type uses alloc {
+  // A local or constant holds a function value.
+  const scope = checker.cur
+  if (findLocal(checker, name) >= 0 || checker.scopes[scope].consts[name] is Some(_)) {
+    return unsupported(mutable checker, pos, "a call of a function value (selfhost-check-closures)")
+  }
+
+  // Then print, assert and panic, std functions imported by name, and the
+  // module's functions.
+  if (checker.registry.prelude[name] is Some(builtin)) {
+    return checkBuiltinCall(mutable checker, walker, id, pos, args, builtin)
+  }
+  if (checker.scopes[scope].imported[name] is Some(builtin)) {
+    return checkBuiltinCall(mutable checker, walker, id, pos, args, builtin)
+  }
+  if (checker.scopes[scope].funcs[name] is Some(funcIndex)) {
+    if (Arrays.length(checker.funcs[funcIndex].typeParams) > 0) {
+      return unsupported(mutable checker, pos, "a call of a generic function (selfhost-check-calls)")
+    }
+    setRef(mutable checker, id, Ref.Function(funcIndex))
+    const params = checker.funcs[funcIndex].decl.params
+    checkArguments(mutable checker, walker, pos, args, params)
+    return checker.funcs[funcIndex].result
+  }
+  if (hasConstructor(checker, name)) {
+    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+  }
+  errorf(mutable checker, calleePos, `unknown function ${quoteGo(name)}`)
+  checkArgumentsLoosely(mutable checker, walker, args)
+  return Type.TVoid
+}
+
+function checkDottedCall<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, calleePos: Pos, target: Expr, name: string, args: Array<Arg>): Type uses alloc {
+  // `Name.f(...)` where Name is not a local: a trait, a module alias, a
+  // namespace, a distinct type, an enum or an unknown module.
+  const scope = checker.cur
+  if (target is Expr.Ident(_, targetPos, alias)) {
+    if (findLocal(checker, alias) < 0) {
+      if (lookupTrait(checker, alias) >= 0) {
+        return unsupported(mutable checker, pos, "a trait function call (selfhost-check-calls)")
+      }
+      if (checker.scopes[scope].modules[alias] is Some(path)) {
+        if (sourceScope(checker, path) >= 0) {
+          return unsupported(mutable checker, pos, "a call of a package module function (selfhost-check-calls)")
+        }
+        if (checker.registry.modules[path] is Some(module)) {
+          if (module.funcs[name] is Some(builtin)) {
+            return checkBuiltinCall(mutable checker, walker, id, pos, args, builtin)
+          }
+        }
+        errorf(mutable checker, calleePos, `module ${quoteGo(path)} has no function ${quoteGo(name)}`)
+        checkArgumentsLoosely(mutable checker, walker, args)
+        return Type.TVoid
+      }
+      if (isMissingImport(checker, alias)) {
+        return unsupported(mutable checker, pos, "a namespace without its import (selfhost-check-calls)")
+      }
+      if (checker.scopes[scope].types[alias] is Some(Type.TDistinct(_))) {
+        return unsupported(mutable checker, pos, "a distinct type function (selfhost-check-calls)")
+      }
+      if (isEnumName(checker, alias)) {
+        return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+      }
+      if (checker.scopes[scope].types[alias] is None && startsUpper(alias)) {
+        errorf(mutable checker, targetPos, `unknown module ${quoteGo(alias)}; import it first, for example \`import * as ${alias} from "std/..."\``)
+        checkArgumentsLoosely(mutable checker, walker, args)
+        return Type.TVoid
+      }
+    }
+  }
+  if (isModuleEnum(checker, target)) {
+    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+  }
+
+  // Otherwise `value.f(...)` is a method call, which Narra does not have,
+  // unless the field holds a function.
+  const targetType = checkExpression(mutable checker, walker, target, None)
+  if (targetType is Type.TStruct(index)) {
+    const fieldIndex = findField(checker.structs[index].fields, name)
+    if (fieldIndex >= 0) {
+      if (checker.structs[index].fields[fieldIndex].t is Type.TFunc(_, _)) {
+        return unsupported(mutable checker, pos, "a call of a function field (selfhost-check-closures)")
+      }
+    }
+  }
+  const text = typeString(checker, targetType)
+  errorf(mutable checker, calleePos, `there are no method calls; call a module function such as Module.${name}(value, ...) (value has type ${text})`)
+  checkArgumentsLoosely(mutable checker, walker, args)
+  return Type.TVoid
+}
+
+function startsUpper(name: string): bool {
+  if (Str.length(name) == 0) {
+    return false
+  }
+  const first = Str.charAt(name, 0)
+  return first >= 'A' && first <= 'Z'
+}
+
+function checkArgumentsLoosely<W: Walker>(mutable checker: Checker, walker: W, args: Array<Arg>) uses alloc {
+  for (const arg of Arrays.values(args)) {
+    checkExpression(mutable checker, walker, arg.value, None)
+  }
+}
+
+// nonEscapingParam reports a parameter written with a function type and
+// without `escaping` (check_closure.go).
+export function nonEscapingParam(param: Param): bool {
+  if (param.type is Some(te)) {
+    return te.isFunc && !param.escaping && !param.isMutable
+  }
+  return false
+}
+
+// checkArguments checks the arguments of a call of a non-generic function
+// (Go's args with the parameter types known).
+function checkArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, args: Array<Arg>, params: Array<Param>) uses alloc {
+  const argCount = Arrays.length(args)
+  const paramCount = Arrays.length(params)
+  if (argCount != paramCount) {
+    errorf(mutable checker, pos, `this call passes ${Int.toString(argCount)} arguments, the function takes ${Int.toString(paramCount)}`)
+  }
+  let mutables: Array<int> = []
+  for (const index of Ranges.between(0, argCount)) {
+    const arg = args[index]
+    if (index >= paramCount) {
+      checkExpression(mutable checker, walker, arg.value, None)
+      continue
+    }
+
+    // A non-escaping function parameter lets its argument through (closures).
+    const param = params[index]
+    if (nonEscapingParam(param)) {
+      unsupported(mutable checker, getExpressionPos(arg.value), "an argument for a non-escaping function parameter (selfhost-check-closures)")
+    }
+    const paramType = checker.paramTypes[param.id]
+    const argType = checkExpression(mutable checker, walker, arg.value, Some(paramType))
+    expectType(mutable checker, getExpressionPos(arg.value), Some(paramType), argType)
+
+    // The argument is mutable exactly when the parameter is.
+    const argPos = getExpressionPos(arg.value)
+    if (param.isMutable && !arg.isMutable) {
+      errorf(mutable checker, argPos, `parameter ${quoteGo(param.name)} is mutable; write \`mutable\` before the argument`)
+    } else if (!param.isMutable && arg.isMutable) {
+      errorf(mutable checker, argPos, `parameter ${quoteGo(param.name)} is not mutable; remove \`mutable\``)
+    } else if (param.isMutable) {
+      checkMutableArgument(mutable checker, arg.value)
+      Arrays.push(mutable mutables, index)
+    }
+  }
+  checkExclusive(mutable checker, pos, args, mutables)
+}
+
+// checkExclusive is the stub of Go's checkExclusive: a call that passes a
+// mutable argument and any other argument is unsupported until
+// selfhost-check-calls ports the rule (no other argument may use the
+// mutable one's variable).
+function checkExclusive(mutable checker: Checker, pos: Pos, args: Array<Arg>, mutables: Array<int>) uses alloc {
+  if (Arrays.length(mutables) > 0 && Arrays.length(args) > 1) {
+    unsupported(mutable checker, pos, "a mutable argument beside other arguments (selfhost-check-calls)")
+  }
+}
+
+// checkBuiltinCall checks a call of a std function (Go's builtinCall). A
+// builtin with a named check kind is selfhost-check-builtins'.
+function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, args: Array<Arg>, builtin: int): Type uses alloc {
+  setRef(mutable checker, id, Ref.Builtin(builtin))
+  const info = checker.registry.funcs[builtin]
+  if (info.check != "" && info.check != "fixed") {
+    return unsupported(mutable checker, pos, `the builtin ${info.name} (selfhost-check-builtins)`)
+  }
+
+  // The signature comes from the registry's type text.
+  let params: Array<Type> = []
+  for (const text of Arrays.values(info.params)) {
+    Arrays.push(mutable params, stdType(mutable checker, text))
+  }
+  let result = Type.TVoid
+  if (info.result != "") {
+    result = stdType(mutable checker, info.result)
+  }
+  if (info.check == "fixed") {
+    return checkFixedCall(mutable checker, walker, pos, args, info.name, params, result)
+  }
+
+  // A plain builtin checks every argument even when the count is wrong.
+  const argCount = Arrays.length(args)
+  const paramCount = Arrays.length(params)
+  if (argCount != paramCount) {
+    errorf(mutable checker, pos, `${info.name} takes ${Int.toString(paramCount)} arguments, found ${Int.toString(argCount)}`)
+  }
+  let mutables: Array<int> = []
+  for (const index of Ranges.between(0, argCount)) {
+    const arg = args[index]
+    const isMutable = index < Arrays.length(info.mutables) && info.mutables[index]
+    let want: Option<Type> = None
+    if (index < paramCount) {
+      want = Some(params[index])
+    }
+    const got = checkExpression(mutable checker, walker, arg.value, want)
+    if (isMutable && !arg.isMutable) {
+      errorf(mutable checker, pos, `${info.name} changes its argument; write \`mutable\` before it`)
+    } else if (!isMutable && arg.isMutable) {
+      errorf(mutable checker, pos, `${info.name} does not change its arguments; remove \`mutable\``)
+    } else if (isMutable) {
+      checkMutableArgument(mutable checker, arg.value)
+      Arrays.push(mutable mutables, index)
+    }
+    expectType(mutable checker, getExpressionPos(arg.value), want, got)
+  }
+  checkExclusive(mutable checker, pos, args, mutables)
+  return result
+}
+
+// checkFixedCall is Go's checkFixed: a wrong argument count stops the check
+// after a loose pass over the arguments.
+function checkFixedCall<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, args: Array<Arg>, name: string, params: Array<Type>, result: Type): Type uses alloc {
+  const argCount = Arrays.length(args)
+  if (argCount != Arrays.length(params)) {
+    errorf(mutable checker, pos, `${name} takes ${Int.toString(Arrays.length(params))} arguments, found ${Int.toString(argCount)}`)
+    checkArgumentsLoosely(mutable checker, walker, args)
+    return result
+  }
+  for (const index of Ranges.between(0, argCount)) {
+    const arg = args[index]
+    if (arg.isMutable) {
+      errorf(mutable checker, pos, `${name} does not change its arguments; remove \`mutable\``)
+    }
+    const got = checkExpression(mutable checker, walker, arg.value, Some(params[index]))
+    expectType(mutable checker, getExpressionPos(arg.value), Some(params[index]), got)
+  }
+  return result
+}
+
+// checkMutableArgument checks an argument passed as mutable: it must name
+// a `let` variable, a field or an element of one.
+export function checkMutableArgument(mutable checker: Checker, value: Expr) uses alloc {
+  const pos = getExpressionPos(value)
+  if (checkConstWrite(mutable checker, pos, value)) {
+    return
+  }
+  const root = findAssignedLocal(checker, value)
+  if (root < 0) {
+    errorf(mutable checker, pos, "a mutable argument must be a variable, a field or an element")
+    return
+  }
+  const local = getLocal(checker, root)
+  if (!local.isMutable) {
+    errorf(mutable checker, pos, `${quoteGo(local.name)} is constant; declare it with \`let\` to pass it as mutable`)
+  }
+}
+
+// findAssignedLocal returns the local at the root of an assignable
+// expression (Go's lvalueRoot), or -1.
+export function findAssignedLocal(checker: Checker, expression: Expr): int {
+  let current = expression
+  while (true) {
+    match (current) {
+      Expr.Ident(id, _, _) => {
+        if (getRef(checker, id) is Ref.Local(index)) {
+          return index
+        }
+        return -1
+      }
+      Expr.FieldExpr(id, _, target, _) => {
+        // A constant of another module (or later a constructor or narrowed
+        // field) is no variable.
+        if (getRef(checker, id) != Ref.Unresolved) {
+          return -1
+        }
+        current = target
+      }
+      Expr.IndexExpr(_, _, target, _) => {
+        current = target
+      }
+      _ => {
+        return -1
+      }
+    }
+  }
+  return -1
+}
+
+// checkConstWrite reports a write through a top-level constant and returns
+// true, or returns false when the root of expression is no constant. It
+// reads the syntax only, so it can run before the expression is checked.
+export function checkConstWrite(mutable checker: Checker, pos: Pos, expression: Expr): bool uses alloc {
+  const scope = checker.cur
+  let current = expression
+  while (true) {
+    match (current) {
+      Expr.Ident(_, _, name) => {
+        if (findLocal(checker, name) >= 0 || checker.scopes[scope].consts[name] is None) {
+          return false
+        }
+        errorf(mutable checker, pos, `constant ${quoteGo(name)} cannot be changed; copy it into a \`let\` variable first`)
+        return true
+      }
+      Expr.FieldExpr(_, _, target, name) => {
+        if (target is Expr.Ident(_, _, alias)) {
+          if (findLocal(checker, alias) < 0 && moduleHasConst(checker, alias, name)) {
+            errorf(mutable checker, pos, `constant ${quoteGo(name)} cannot be changed; copy it into a \`let\` variable first`)
+            return true
+          }
+        }
+        current = target
+      }
+      Expr.IndexExpr(_, _, target, _) => {
+        current = target
+      }
+      _ => {
+        return false
+      }
+    }
+  }
+  return false
+}
+
+// moduleHasConst reports whether alias names a package module that
+// declares the constant name.
+function moduleHasConst(checker: Checker, alias: string, name: string): bool {
+  if (checker.scopes[checker.cur].modules[alias] is Some(path)) {
+    const moduleScope = sourceScope(checker, path)
+    if (moduleScope >= 0) {
+      for (const decl of Arrays.values(checker.scopes[moduleScope].decls)) {
+        if (decl is Decl.Const(constDecl)) {
+          if (constDecl.name == name) {
+            return true
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+// checkConstType returns the type of constant index, checking its value
+// first when needed (Go's constType). The value is a body of its own
+// module, outside any function; pos is where the constant is used.
+export function checkConstType<W: Walker>(mutable checker: Checker, walker: W, index: int, pos: Pos): Type uses alloc {
+  const info = checker.consts[index]
+  if (info.state == CONST_DONE) {
+    if (info.valueType is Some(t)) {
+      return t
+    }
+    return Type.TVoid
+  }
+  if (info.state == CONST_BUSY) {
+    errorf(mutable checker, pos, `constant ${quoteGo(info.name)} is defined in terms of itself`)
+    return Type.TVoid
+  }
+  checker.consts[index].state = CONST_BUSY
+
+  // Check the value in the constant's module, in a body of its own.
+  const savedScope = enter(mutable checker, info.scope)
+  const savedBody = startBody(mutable checker, "const", info.name, [], BodyRoot.RootExpr(info.decl.value), Type.TVoid, Map {})
+  let want: Option<Type> = None
+  if (info.decl.type is Some(te)) {
+    want = Some(resolveType(mutable checker, te))
+  }
+  const errorCount = Arrays.length(checker.errs)
+  let found = checkExpression(mutable checker, walker, info.decl.value, want)
+  if (want is Some(declared)) {
+    expectType(mutable checker, getExpressionPos(info.decl.value), want, found)
+    found = declared
+  }
+
+  // A value without errors must also follow the constant rules.
+  if (Arrays.length(checker.errs) == errorCount) {
+    if (found == Type.TVoid) {
+      errorf(mutable checker, info.decl.pos, "this expression has no value")
+    } else {
+      checkConstValue(mutable checker, info.name, info.decl.value)
+    }
+  }
+  checker.consts[index].valueType = Some(found)
+  checker.consts[index].state = CONST_DONE
+  finishBody(mutable checker, savedBody)
+  enter(mutable checker, savedScope)
+  return found
+}
+
+// checkConstValue reports the first part of a constant's value that a
+// top-level constant cannot hold.
+function checkConstValue(mutable checker: Checker, name: string, value: Expr): bool uses alloc {
+  return match (value) {
+    Expr.IntLit(_, _, _) => true
+    Expr.FloatLit(_, _, _) => true
+    Expr.StringLit(_, _, _, _) => true
+    Expr.CharLit(_, _, _) => true
+    Expr.BoolLit(_, _, _) => true
+    Expr.TemplateLit(_, _, parts) => checkConstValues(mutable checker, name, parts)
+    Expr.Ident(_, _, _) => true
+    Expr.FieldExpr(id, pos, target, _) => checkConstField(mutable checker, name, id, target)
+    Expr.UnaryExpr(_, _, _, operand) => checkConstValue(mutable checker, name, operand)
+    Expr.BinaryExpr(_, _, _, left, right) => checkConstValue(mutable checker, name, left) && checkConstValue(mutable checker, name, right)
+    Expr.CallExpr(_, pos, callee, args) => checkConstCall(mutable checker, name, pos, callee, args)
+    Expr.StructLit(_, _, _, _, fields, spread) => checkConstStruct(mutable checker, name, fields, spread)
+    Expr.ArrayLit(_, _, elements, _) => checkConstValues(mutable checker, name, elements)
+    Expr.MapLit(_, _, _, keys, values) => checkConstMap(mutable checker, name, keys, values)
+    Expr.ArrowExpr(_, pos, _, _, _, _) => rejectConstPart(mutable checker, name, pos, "a closure")
+    Expr.MatchExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "a match")
+    Expr.IsExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "an `is` test")
+    Expr.IndexExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "an element read")
+  }
+}
+
+function rejectConstPart(mutable checker: Checker, name: string, pos: Pos, what: string): bool uses alloc {
+  errorf(mutable checker, pos, `constant ${quoteGo(name)} cannot use ${what}; a top-level constant holds literals, constructors, structs, arrays, function names and other constants`)
+  return false
+}
+
+function checkConstValues(mutable checker: Checker, name: string, values: Array<Expr>): bool uses alloc {
+  for (const value of Arrays.values(values)) {
+    if (!checkConstValue(mutable checker, name, value)) {
+      return false
+    }
+  }
+  return true
+}
+
+function checkConstField(mutable checker: Checker, name: string, id: int, target: Expr): bool uses alloc {
+  // A constant of another module (later a constructor or function) is fine.
+  if (getRef(checker, id) != Ref.Unresolved) {
+    return true
+  }
+  return checkConstValue(mutable checker, name, target)
+}
+
+function checkConstCall(mutable checker: Checker, name: string, pos: Pos, callee: Expr, args: Array<Arg>): bool uses alloc {
+  // Only constructor calls are allowed; selfhost-check-calls adds them.
+  errorf(mutable checker, pos, `constant ${quoteGo(name)} cannot call function ${quoteGo(describeCallee(callee))}; a top-level constant holds literals, constructors, structs, arrays, function names and other constants`)
+  return false
+}
+
+function checkConstStruct(mutable checker: Checker, name: string, fields: Array<FieldInit>, spread: Option<Expr>): bool uses alloc {
+  if (spread is Some(spreadExpression)) {
+    if (!checkConstValue(mutable checker, name, spreadExpression)) {
+      return false
+    }
+  }
+  for (const field of Arrays.values(fields)) {
+    if (!checkConstValue(mutable checker, name, field.value)) {
+      return false
+    }
+  }
+  return true
+}
+
+function checkConstMap(mutable checker: Checker, name: string, keys: Array<Expr>, values: Array<Expr>): bool uses alloc {
+  for (const index of Ranges.between(0, Arrays.length(keys))) {
+    if (!checkConstValue(mutable checker, name, keys[index]) || !checkConstValue(mutable checker, name, values[index])) {
+      return false
+    }
+  }
+  return true
+}
+
+// describeCallee prints the callee of a call for a message (Go's calleeName).
+export function describeCallee(callee: Expr): string uses alloc {
+  return match (callee) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, name) => trimDot(`${describeCallee(target)}.${name}`)
+    _ => "a function value"
+  }
+}
+
+function trimDot(text: string): string uses alloc {
+  if (Str.startsWith(text, ".")) {
+    return Str.sliceFrom(text, 1)
+  }
+  return text
+}
+
+// isConstantValue reports whether a field default is a constant: a
+// literal, a negated one, an array of them or a constructor (Go's
+// isConstant; constructors come with selfhost-check-calls).
+export function isConstantValue(expression: Expr): bool {
+  return match (expression) {
+    Expr.IntLit(_, _, _) => true
+    Expr.FloatLit(_, _, _) => true
+    Expr.StringLit(_, _, _, _) => true
+    Expr.CharLit(_, _, _) => true
+    Expr.BoolLit(_, _, _) => true
+    Expr.UnaryExpr(_, _, _, operand) => isConstantValue(operand)
+    Expr.ArrayLit(_, _, elements, _) => allConstant(elements)
+    _ => false
+  }
+}
+
+function allConstant(elements: Array<Expr>): bool {
+  for (const element of Arrays.values(elements)) {
+    if (!isConstantValue(element)) {
+      return false
+    }
+  }
+  return true
+}

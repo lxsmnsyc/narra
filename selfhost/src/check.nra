@@ -13,9 +13,10 @@
 // the checker have none, but every write checks the range anyway.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl } from "narrac/ast"
+import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl, Expr, Block } from "narrac/ast"
 import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, TraitInfo, TypeTraits, ImplInfo, ImplRef, MapKeyCheck, typeKey, isBoxedEnum } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
+import { funcIds, blockIds, exprIds } from "narrac/idcheck"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 
@@ -58,13 +59,80 @@ export struct FuncInfo {
 }
 
 // A top-level constant. t is the declared type, set by declareConstTypes;
-// None without an annotation until the body checker infers it.
+// None without an annotation until the body checker infers it. The body
+// checker checks the value once (state CONST_NEW, CONST_BUSY, CONST_DONE)
+// and keeps its type in valueType.
 export struct ConstInfo {
   name: string
   module: string
   scope: int
   decl: ConstDecl
   t: Option<Type>
+  state: int = 0
+  valueType: Option<Type> = None
+}
+
+export const CONST_NEW = 0
+export const CONST_BUSY = 1
+export const CONST_DONE = 2
+
+// What a name or call resolves to, kept per checked body by node id.
+export enum Ref {
+  Unresolved
+  Local(index: int) // BodyInfo.locals
+  Const(index: int) // Checker.consts
+  Function(index: int) // Checker.funcs
+  Builtin(index: int) // Registry.funcs
+}
+
+// A local variable, parameter or loop variable of one checked body (Go's
+// Local). noEscape marks a function-type parameter without `escaping`.
+// selfhost-check-patterns adds narrowing beside it.
+export struct LocalInfo {
+  name: string
+  t: Type
+  isMutable: bool
+  param: bool
+  pos: Pos
+  noEscape: bool
+  used: bool
+}
+
+// The syntax a checked body walks, for the types dump and later passes.
+export enum BodyRoot {
+  RootFunc(decl: FuncDecl)
+  RootBlock(block: Block)
+  RootExpr(expr: Expr)
+}
+
+// The results of one checked body (D70). A generic function is checked once
+// with its type parameters open and once per instance over the same syntax,
+// so results are kept per body, not per package: types, refs and declared
+// are indexed by `id - first`, where [first, first + length) covers the ids
+// of the body's nodes. declared gives the local a node declares (a
+// parameter, VarStmt or ForStmt), or -1.
+export struct BodyInfo {
+  module: string
+  kind: string // func, test, impl, const, default
+  name: string // the header text after the kind
+  targs: Array<Type>
+  root: BodyRoot
+  first: int
+  types: Array<Option<Type>>
+  refs: Array<Ref>
+  declared: Array<int>
+  locals: Array<LocalInfo>
+}
+
+// The entry point of the recursive body checker. Narra modules cannot
+// import in a cycle and a function value cannot take a mutable parameter,
+// so modules below narrac/exprs (calls, patterns, closures, builtins) reach
+// expressions and blocks through a type that implements this trait: the
+// functions that need it take `walker: W` with `<W: Walker>`, and
+// narrac/body passes its BodyWalker.
+export trait Walker {
+  function checkExpression(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
+  function checkBlock(walker: Self, mutable checker: Checker, block: Block) uses alloc
 }
 
 // A compile error. There are no codes or fixes yet: they go with the driver
@@ -129,6 +197,22 @@ export struct Checker {
   single: bool
   used: Array<string>
   entries: Array<EntryInfo>
+  // The body checker (body.nra, exprs.nra, stmts.nra). checkingBodies is
+  // set by `narrac types`; without it the declaration passes skip field
+  // defaults, as `narrac decls` did before bodies existed. bodies lists
+  // the checked bodies in the order their checks start; body is the one
+  // being checked, or -1. localScopes is the stack of block scopes of that
+  // body, each mapping a name to a BodyInfo.locals index. resultType is the
+  // result of the function being checked (void outside functions), loops
+  // the depth of loops, and inTest is set inside a test body.
+  checkingBodies: bool = false
+  bodies: Array<BodyInfo> = []
+  body: int = -1
+  localScopes: Array<Map<string, int>> = []
+  scopeDepth: int = 0
+  resultType: Type
+  loops: int = 0
+  inTest: bool = false
 }
 
 // newChecker makes an empty checker whose side tables hold ids [0, ids).
@@ -140,6 +224,7 @@ export function newChecker(ids: int): Checker uses alloc {
     traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, impls: [], implFuncs: Map {}, mapKeys: [],
     errs: [], errKeys: Map {}, order: [],
     registry: newRegistry(), scopeIndex: Map {}, pkgName: "", single: false, used: [], entries: [],
+    resultType: Type.TVoid,
   }
 }
 
@@ -422,4 +507,224 @@ function visitOrder(mutable c: Checker, mutable state: Map<string, int>, t: Type
   }
   state[key] = 2
   Arrays.push(mutable c.order, t)
+}
+
+// The state of the body being checked, saved while another body (a
+// constant checked at its first use) is checked in the middle of it.
+export struct BodyState {
+  body: int
+  localScopes: Array<Map<string, int>>
+  scopeDepth: int
+  resultType: Type
+  loops: int
+  env: Map<string, Type>
+}
+
+// startBody adds a body to Checker.bodies, makes it current with one empty
+// scope and returns the state to give back to finishBody. Its tables cover
+// the ids of the nodes under root.
+export function startBody(mutable checker: Checker, kind: string, name: string, targs: Array<Type>, root: BodyRoot, resultType: Type, env: Map<string, Type>): BodyState uses alloc {
+  // Find the id range of the body's nodes.
+  let ids: Array<int> = []
+  match (root) {
+    BodyRoot.RootFunc(decl) => funcIds(mutable ids, decl)
+    BodyRoot.RootBlock(block) => blockIds(mutable ids, block)
+    BodyRoot.RootExpr(expression) => exprIds(mutable ids, expression)
+  }
+  let first = 0
+  let last = -1
+  for (const id of Arrays.values(ids)) {
+    if (last < first || id < first) {
+      first = id
+    }
+    if (id > last) {
+      last = id
+    }
+  }
+  let size = 0
+  if (last >= first) {
+    size = last - first + 1
+  }
+
+  // Save the outer body's state and start the new one.
+  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, env: checker.env }
+  const module = checker.scopes[checker.cur].path
+  const info = BodyInfo { module: module, kind: kind, name: name, targs: targs, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [] }
+  Arrays.push(mutable checker.bodies, info)
+  checker.body = Arrays.length(checker.bodies) - 1
+  checker.localScopes = [Map {}]
+  checker.scopeDepth = 1
+  checker.resultType = resultType
+  checker.loops = 0
+  checker.env = env
+  return saved
+}
+
+// finishBody makes the saved body current again.
+export function finishBody(mutable checker: Checker, saved: BodyState) {
+  checker.body = saved.body
+  checker.localScopes = saved.localScopes
+  checker.scopeDepth = saved.scopeDepth
+  checker.resultType = saved.resultType
+  checker.loops = saved.loops
+  checker.env = saved.env
+}
+
+// findSlot is the table index of a node id in the current body, or -1.
+function findSlot(checker: Checker, id: int): int {
+  if (checker.body < 0) {
+    return -1
+  }
+  const slot = id - checker.bodies[checker.body].first
+  if (slot < 0 || slot >= Arrays.length(checker.bodies[checker.body].types)) {
+    return -1
+  }
+  return slot
+}
+
+export function setNodeType(mutable checker: Checker, id: int, t: Type) uses alloc {
+  const slot = findSlot(checker, id)
+  if (slot >= 0) {
+    const body = checker.body
+    checker.bodies[body].types[slot] = Some(t)
+  }
+}
+
+// getNodeType is the type the current body gave a node, or None.
+export function getNodeType(checker: Checker, id: int): Option<Type> {
+  const slot = findSlot(checker, id)
+  if (slot < 0) {
+    return None
+  }
+  return checker.bodies[checker.body].types[slot]
+}
+
+export function setRef(mutable checker: Checker, id: int, ref: Ref) uses alloc {
+  const slot = findSlot(checker, id)
+  if (slot >= 0) {
+    const body = checker.body
+    checker.bodies[body].refs[slot] = ref
+  }
+}
+
+export function getRef(checker: Checker, id: int): Ref {
+  const slot = findSlot(checker, id)
+  if (slot < 0) {
+    return Ref.Unresolved
+  }
+  return checker.bodies[checker.body].refs[slot]
+}
+
+// findLocal finds a name in the scopes of the current body, innermost
+// first, and returns its BodyInfo.locals index or -1 (Go's lookup).
+export function findLocal(checker: Checker, name: string): int {
+  let depth = checker.scopeDepth - 1
+  while (depth >= 0) {
+    if (checker.localScopes[depth][name] is Some(index)) {
+      return index
+    }
+    depth = depth - 1
+  }
+  return -1
+}
+
+export function getLocal(checker: Checker, index: int): LocalInfo {
+  return checker.bodies[checker.body].locals[index]
+}
+
+// declareLocal adds a local to the innermost scope (Go's declare); id is
+// the declaring node. Shadowing is an error, except for `_`.
+export function declareLocal(mutable checker: Checker, id: int, pos: Pos, name: string, t: Type, isMutable: bool, param: bool): int uses alloc {
+  if (name != "_" && findLocal(checker, name) >= 0) {
+    errorf(mutable checker, pos, `"${name}" is already declared in this function; shadowing is not allowed`)
+  }
+  checker.localN = checker.localN + 1
+
+  // Record the local and the node that declares it.
+  const body = checker.body
+  const local = LocalInfo { name: name, t: t, isMutable: isMutable, param: param, pos: pos, noEscape: false, used: false }
+  Arrays.push(mutable checker.bodies[body].locals, local)
+  const index = Arrays.length(checker.bodies[body].locals) - 1
+  const slot = findSlot(checker, id)
+  if (slot >= 0) {
+    checker.bodies[body].declared[slot] = index
+  }
+  const depth = checker.scopeDepth - 1
+  checker.localScopes[depth][name] = index
+  return index
+}
+
+// pushScope opens a block scope. The stack keeps popped slots and empties
+// them on reuse, since std/array has no pop.
+export function pushScope(mutable checker: Checker) uses alloc {
+  if (checker.scopeDepth < Arrays.length(checker.localScopes)) {
+    const depth = checker.scopeDepth
+    checker.localScopes[depth] = Map {}
+  } else {
+    Arrays.push(mutable checker.localScopes, Map {})
+  }
+  checker.scopeDepth = checker.scopeDepth + 1
+}
+
+export function popScope(mutable checker: Checker) {
+  checker.scopeDepth = checker.scopeDepth - 1
+}
+
+// unsupported reports a construct that a later roadmap node ports. The
+// harness (selfhost_bodies_test.go) skips any input whose output holds
+// `unsupported:`. what names the construct and the node, as in
+// "`is` (selfhost-check-patterns)".
+export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
+  errorf(mutable checker, pos, `unsupported: ${what}`)
+  return Type.TVoid
+}
+
+export function getExpressionId(expression: Expr): int {
+  return match (expression) {
+    Expr.IntLit(id, _, _) => id
+    Expr.FloatLit(id, _, _) => id
+    Expr.StringLit(id, _, _, _) => id
+    Expr.CharLit(id, _, _) => id
+    Expr.BoolLit(id, _, _) => id
+    Expr.TemplateLit(id, _, _) => id
+    Expr.Ident(id, _, _) => id
+    Expr.FieldExpr(id, _, _, _) => id
+    Expr.IsExpr(id, _, _, _) => id
+    Expr.IndexExpr(id, _, _, _) => id
+    Expr.MapLit(id, _, _, _, _) => id
+    Expr.CallExpr(id, _, _, _) => id
+    Expr.UnaryExpr(id, _, _, _) => id
+    Expr.BinaryExpr(id, _, _, _, _) => id
+    Expr.StructLit(id, _, _, _, _, _) => id
+    Expr.ArrayLit(id, _, _, _) => id
+    Expr.MatchExpr(id, _, _, _) => id
+    Expr.ArrowExpr(id, _, _, _, _, _) => id
+  }
+}
+
+export function getExpressionPos(expression: Expr): Pos {
+  return match (expression) {
+    Expr.IntLit(_, pos, _) => pos
+    Expr.FloatLit(_, pos, _) => pos
+    Expr.StringLit(_, pos, _, _) => pos
+    Expr.CharLit(_, pos, _) => pos
+    Expr.BoolLit(_, pos, _) => pos
+    Expr.TemplateLit(_, pos, _) => pos
+    Expr.Ident(_, pos, _) => pos
+    Expr.FieldExpr(_, pos, _, _) => pos
+    Expr.IsExpr(_, pos, _, _) => pos
+    Expr.IndexExpr(_, pos, _, _) => pos
+    Expr.MapLit(_, pos, _, _, _) => pos
+    Expr.CallExpr(_, pos, _, _) => pos
+    Expr.UnaryExpr(_, pos, _, _) => pos
+    Expr.BinaryExpr(_, pos, _, _, _) => pos
+    Expr.StructLit(_, pos, _, _, _, _) => pos
+    Expr.ArrayLit(_, pos, _, _) => pos
+    Expr.MatchExpr(_, pos, _, _) => pos
+    Expr.ArrowExpr(_, pos, _, _, _, _) => pos
+  }
+}
+
+export function isNumeric(t: Type): bool {
+  return t == Type.TInt || t == Type.TF64
 }

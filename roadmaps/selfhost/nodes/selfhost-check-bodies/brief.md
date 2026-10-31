@@ -34,6 +34,8 @@ shared:
   - compiler/cmd/narra/main.go
   - compiler/internal/narra/selfhost_test.go
   - compiler/README.md
+  - selfhost/src/scopes.nra
+  - compiler/internal/narra/selfhost_imports_test.go
 reserves: [decision D70]
 provides: []
 depends_on:
@@ -81,6 +83,7 @@ Port the core of the body checker to Narra: locals and scopes, the expression an
 - [ ] The ported error formats are tested: unknown name, type mismatch, wrong argument count, assignment to a constant or an immutable local, missing return, `break` outside a loop, constant rules, integer literal overflow, template part not a string, opaque field access.
 - [ ] `TestSelfhostDecls`, `TestSelfhostTraits` and `TestSelfhostImports` still pass; `narra emit`, `narra check` and `narra check --json` are byte-identical to main on all `compiler/testdata` inputs.
 - [ ] The outcome lists: the per-body side-table layout, the `unsupported` convention and every stub with the node that replaces it, the compared and skipped counts per skip reason, and the Go changes.
+- [ ] The Narra checker reports E0421 (alias equals a visible type name), E0423 (renamed import clashes with a declaration, a type name or an alias) and E0424 (a name renamed and imported twice), with the same messages as the Go checker. `TestSelfhostImports` no longer skips inputs with those errors, and the sentence about them in `compiler/README.md` (line 54, "The self-hosted compiler reports the duplicate alias but not ...") is removed.
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
@@ -102,4 +105,5 @@ L: about 1,350 Narra lines plus a 300-line Go dump. Uncertainty medium: the per-
 - Narra rules: `f(mutable c, g(c))` is rejected, and an `errorf(mutable c, ...)` message must not read `c` in the same call; build it into a local first. Do not use `implements`, `derives`, `trait`, `implement` as names. Loop over statements; recurse only on nesting.
 - Edit the Go checker only to expose what the dump needs or to fix a bug the comparison finds; list each in the outcome. Add a CLAUDE.md-style comment for new Go files only as the repo does.
 - Inbox, `narrac decls` quadratic cost: located during this refinement. It is not in the declaration passes: `sortStrings` in `selfhost/src/modules.nra` is an insertion sort over a module's exported names, quadratic on descending names (`narrac pkg` on 16000 exports: 3 s; single file, no exports: linear). Bodies do not make it worse, because they add no sort over module-wide lists. You may fix it (a merge sort, as traits did for impl blocks) as a small extra commit if it touches no other file; otherwise leave it in the inbox.
+- From import-alias-rules (PR #35): the Narra checker ports only E0422. Port E0421, E0423 and E0424 from `compiler/internal/narra/import_names.go` (`checkImportNames`, `aliasTaken`) to `selfhost/src/scopes.nra`, where E0422 already lives, and add their formats to `portedImportErrors` in `selfhost_imports_test.go`, which is how the harness stops skipping those inputs. The Go tests in `compiler/testdata/errors/import_*.nra` and `compiler/testdata/packages/errors/import_rename_type_clash/` are the inputs. Fixes (the rename suggestion) are not part of the Narra port. Added 2026-10-31.
 - Record the per-body side-table design (tables indexed by `id - first` per checked body, because a generic function is checked once per instance) as D70 in `DECISIONS.md`.

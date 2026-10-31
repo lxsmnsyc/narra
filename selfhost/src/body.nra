@@ -5,25 +5,29 @@
 //
 // checkPackage interleaves as Go does: each module is declared, then its
 // field defaults (the last step of Go's declareModule), then its bodies.
-// After all modules come the pending generic instances (none yet:
-// selfhost-check-calls queues them), the Map keys, the entry functions and
+// After all modules come the pending generic function instances (queued by
+// calls.nra, checked by checkPending), the Map keys, the entry functions and
 // finish. Every checked body gets its own side tables (BodyInfo, D70).
 //
 // BodyWalker is the Walker (check.nra) that the modules below narrac/exprs
 // use to reach the expression and block checkers.
-import { Pos, File, Decl, FuncDecl, ConstDecl, TestDecl, Expr, Block, Param } from "narrac/ast"
+import { Pos, File, Decl, FuncDecl, ConstDecl, TestDecl, ImplDecl, Expr, Block, Param, Arg } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
 import { Type, Field } from "narrac/types"
-import { Checker, BodyRoot, Walker, errorf, enter, startBody, finishBody, declareLocal, unsupported, getExpressionPos, finish } from "narrac/check"
+import { Checker, BodyRoot, Ref, Walker, errorf, enter, startBody, finishBody, declareLocal, unsupported, getExpressionPos, finish, setRef } from "narrac/check"
 import { newPackageChecker, declareSourceModule } from "narrac/declare"
 import { checkEntries } from "narrac/scopes"
 import { flushMapKeys } from "narrac/traits"
 import { makeEnv } from "narrac/generics"
+import { resolveOpt } from "narrac/resolve"
 import { dumpTypeString } from "narrac/declsdump"
 import * as Exprs from "narrac/exprs"
 import * as Stmts from "narrac/stmts"
+import * as Calls from "narrac/calls"
+import * as Ctors from "narrac/ctors"
 import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 
 struct BodyWalker implements Walker {}
 
@@ -34,6 +38,20 @@ implement Walker for BodyWalker {
 
   function checkBlock(walker: BodyWalker, mutable checker: Checker, block: Block) uses alloc {
     Stmts.checkBlock(mutable checker, walker, block)
+  }
+
+  function checkCall(walker: BodyWalker, mutable checker: Checker, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>, want: Option<Type>): Type uses alloc {
+    return Calls.checkCall(mutable checker, walker, nodeId, pos, callee, args, want)
+  }
+
+  function checkConstructorName(walker: BodyWalker, mutable checker: Checker, nodeId: int, pos: Pos, enumName: string, name: string, want: Option<Type>): Option<Type> uses alloc {
+    if (Ctors.checkConstructor(mutable checker, walker, pos, enumName, name, [], want) is Some(result)) {
+      if (result.enumIndex >= 0) {
+        setRef(mutable checker, nodeId, Ref.Constructor(result.enumIndex, result.variant))
+      }
+      return Some(result.ctorType)
+    }
+    return None
   }
 }
 
@@ -56,6 +74,7 @@ export function checkPackage(pkg: Package): Checker uses alloc {
   }
 
   // Then the checks that need every module.
+  checkPending(mutable checker, walker)
   flushMapKeys(mutable checker)
   checkEntries(mutable checker, pkg)
   const concrete = checker.concrete
@@ -129,7 +148,7 @@ function checkFieldDefaults(mutable checker: Checker, walker: BodyWalker, owner:
       const saved = startBody(mutable checker, "default", `${owner}.${field.name}`, [], BodyRoot.RootExpr(value), Type.TVoid, env)
       const found = Exprs.checkExpression(mutable checker, walker, value, Some(field.fieldType))
       Exprs.expectType(mutable checker, getExpressionPos(value), Some(field.fieldType), found)
-      if (!Exprs.isConstantValue(value)) {
+      if (!Exprs.isConstantValue(checker, value)) {
         errorf(mutable checker, getExpressionPos(value), "a field default must be a constant")
       }
       finishBody(mutable checker, saved)
@@ -144,7 +163,7 @@ function checkModuleBodies(mutable checker: Checker, walker: BodyWalker, file: F
     match (decl) {
       Decl.Func(funcDecl) => checkFunction(mutable checker, walker, funcDecl)
       Decl.Const(constDecl) => checkConstDecl(mutable checker, walker, constDecl)
-      Decl.Impl(implDecl) => checkImplBodies(mutable checker, implDecl.pos)
+      Decl.Impl(implDecl) => checkImplBodies(mutable checker, walker, implDecl)
       Decl.Test(testDecl) => checkTest(mutable checker, walker, testDecl)
       _ => {}
     }
@@ -181,19 +200,44 @@ function checkFunction(mutable checker: Checker, walker: BodyWalker, funcDecl: F
   const typeParams = checker.funcs[funcIndex].typeParams
   const env = makeEnv(checker, typeParams)
   const result = checker.funcs[funcIndex].result
-  const saved = startBody(mutable checker, "func", funcDecl.name, [], BodyRoot.RootFunc(funcDecl), result, env)
-  declareParams(mutable checker, funcDecl.params)
+  let paramTypes: Array<Type> = []
+  for (const param of Arrays.values(funcDecl.params)) {
+    Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
+  }
+  checkFunctionBody(mutable checker, walker, "func", funcDecl.name, [], funcDecl, paramTypes, result, env)
+}
+
+// checkFunctionBody checks a function's body in a body of its own (Go's
+// funcBody): a plain function, an instance or an implement block function.
+function checkFunctionBody(mutable checker: Checker, walker: BodyWalker, kind: string, name: string, targs: Array<Type>, funcDecl: FuncDecl, paramTypes: Array<Type>, result: Type, env: Map<string, Type>) uses alloc {
+  const saved = startBody(mutable checker, kind, name, targs, BodyRoot.RootFunc(funcDecl), result, env)
+  declareParams(mutable checker, funcDecl.params, paramTypes)
   if (funcDecl.body is Some(block)) {
     Stmts.checkBlock(mutable checker, walker, block)
   }
   finishBody(mutable checker, saved)
 }
 
+// checkPending checks the instances of generic functions as they are
+// discovered, each in the module that declares the generic function (Go's
+// checkPending). Checking one can queue more.
+function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
+  while (checker.pendingNext < Arrays.length(checker.pending)) {
+    const instance = checker.instanceList[checker.pending[checker.pendingNext]]
+    checker.pendingNext = checker.pendingNext + 1
+    const saved = enter(mutable checker, instance.scope)
+    const funcDecl = checker.funcs[instance.func].decl
+    checkFunctionBody(mutable checker, walker, "func", funcDecl.name, instance.targs, funcDecl, instance.params, instance.result, instance.env)
+    enter(mutable checker, saved)
+  }
+}
+
 // declareParams makes each parameter a local of the body (Go's funcBody
-// and funcParam).
-function declareParams(mutable checker: Checker, params: Array<Param>) uses alloc {
-  for (const param of Arrays.values(params)) {
-    const paramType = checker.paramTypes[param.id]
+// and funcParam). paramTypes has the type of each parameter.
+function declareParams(mutable checker: Checker, params: Array<Param>, paramTypes: Array<Type>) uses alloc {
+  for (const index of Ranges.between(0, Arrays.length(params))) {
+    const param = params[index]
+    const paramType = paramTypes[index]
     const local = declareLocal(mutable checker, param.id, param.pos, param.name, paramType, param.isMutable, true)
     let isFuncType = false
     if (param.type is Some(typeExpression)) {
@@ -219,16 +263,47 @@ function checkConstDecl(mutable checker: Checker, walker: BodyWalker, constDecl:
   unsupported(mutable checker, constDecl.pos, "a constant declared twice")
 }
 
-// checkImplBodies stands for Go's implBodies, which selfhost-check-calls
-// ports: a checked implement block with functions is unsupported.
-function checkImplBodies(mutable checker: Checker, pos: Pos) uses alloc {
+// checkImplBodies checks the functions of a checked implement block (Go's
+// implBodies), each in a body with Self set to the block's type. A block
+// that failed its checks is not in Checker.impls and is skipped.
+function checkImplBodies(mutable checker: Checker, walker: BodyWalker, implDecl: ImplDecl) uses alloc {
   const scope = checker.cur
-  for (const impl of Arrays.values(checker.impls)) {
-    if (impl.scope == scope && impl.decl.pos == pos && Arrays.length(impl.decl.funcs) > 0) {
-      unsupported(mutable checker, pos, "implement block bodies (selfhost-check-calls)")
-      return
+  let block = -1
+  for (const index of Ranges.between(0, Arrays.length(checker.impls))) {
+    if (checker.impls[index].scope == scope && checker.impls[index].decl.pos == implDecl.pos) {
+      block = index
     }
   }
+  if (block < 0) {
+    return
+  }
+  const impl = checker.impls[block]
+  const traitName = checker.traits[impl.traitIdx].name
+  const typeText = dumpTypeString(checker, impl.forType)
+  const env: Map<string, Type> = Map { "Self": impl.forType }
+  for (const funcDecl of Arrays.values(implDecl.funcs)) {
+    let paramTypes: Array<Type> = []
+    for (const param of Arrays.values(funcDecl.params)) {
+      Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
+    }
+    const result = findImplResult(mutable checker, block, funcDecl, env)
+    checkFunctionBody(mutable checker, walker, "impl", `${traitName} ${typeText}.${funcDecl.name}`, [], funcDecl, paramTypes, result, env)
+  }
+}
+
+// findImplResult is the result type of an implement block function: the
+// one resolveImpl recorded, or resolved again for a function it rejected.
+function findImplResult(mutable checker: Checker, block: int, funcDecl: FuncDecl, env: Map<string, Type>): Type uses alloc {
+  for (const implFunc of Arrays.values(checker.impls[block].funcs)) {
+    if (implFunc.decl.pos == funcDecl.pos) {
+      return implFunc.result
+    }
+  }
+  const savedEnv = checker.env
+  checker.env = env
+  const result = resolveOpt(mutable checker, funcDecl.result)
+  checker.env = savedEnv
+  return result
 }
 
 function checkTest(mutable checker: Checker, walker: BodyWalker, testDecl: TestDecl) uses alloc {

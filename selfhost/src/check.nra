@@ -92,6 +92,8 @@ export enum Ref {
   Implementation(block: int, index: int) // Checker.impls[block].funcs[index]
   TraitFunction(traitIndex: int, name: string) // a trait function the compiler implements
   Distinct(index: int) // Checker.distincts: T.from or T.toInt
+  // Added by selfhost-check-closures: a call through a function value.
+  Value
 }
 
 // A local variable, parameter or loop variable of one checked body (Go's
@@ -105,6 +107,27 @@ export struct LocalInfo {
   pos: Pos
   noEscape: bool
   used: bool
+}
+
+// What the checker knows about one arrow function of a body (Go's Closure).
+// captures are BodyInfo.locals indexes in order of first use; stack is set
+// when the arrow is passed straight to a non-escaping parameter. The hint
+// is the expected type from a generic call whose type arguments are not all
+// known yet: a None parameter or result is unknown.
+export struct ClosureInfo {
+  nodeId: int
+  stack: bool
+  captures: Array<int>
+  hasHint: bool
+  hintParams: Array<Option<Type>>
+  hintResult: Option<Type>
+}
+
+// An arrow function being checked: the depth of the scope it appears in.
+// A local declared at that depth or deeper belongs to the arrow.
+export struct ArrowContext {
+  outerDepth: int
+  closure: int // BodyInfo.closures
 }
 
 // The syntax a checked body walks, for the types dump and later passes.
@@ -131,6 +154,15 @@ export struct BodyInfo {
   refs: Array<Ref>
   declared: Array<int>
   locals: Array<LocalInfo>
+  // Closure state (selfhost-check-closures): closures in discovery order,
+  // found by arrow node id in closureIndex; arrows is the stack of arrows
+  // being checked (arrowDepth deep, popped slots are reused); allowedId is
+  // the one Ident that may name a non-escaping parameter.
+  closures: Array<ClosureInfo>
+  closureIndex: Map<int, int>
+  arrows: Array<ArrowContext>
+  arrowDepth: int
+  allowedId: int
 }
 
 // The entry point of the recursive body checker. Narra modules cannot
@@ -156,6 +188,8 @@ export trait Walker {
   // a bare name, and the result is None when no enum has the constructor.
   function checkCall(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>, want: Option<Type>): Type uses alloc
   function checkConstructorName(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, enumName: string, name: string, want: Option<Type>): Option<Type> uses alloc
+  // Arrow functions (narrac/closures).
+  function checkArrow(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
 }
 
 // An instance of a generic function (Go's pendingFunc with the cloned
@@ -250,6 +284,10 @@ export struct Checker {
   localScopes: Array<Map<string, int>> = []
   scopeDepth: int = 0
   resultType: Type
+  // Set while the result of an arrow function is inferred from its returns
+  // (selfhost-check-closures): a return checks its value without an
+  // expected type.
+  inferring: bool = false
   loops: int = 0
   inTest: bool = false
   // The id of the target of the assignment being checked, or -1 (Go's
@@ -599,7 +637,7 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   // Save the outer body's state and start the new one.
   const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, env: checker.env }
   const module = checker.scopes[checker.cur].path
-  const info = BodyInfo { module: module, kind: kind, name: name, targs: targs, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [] }
+  const info = BodyInfo { module: module, kind: kind, name: name, targs: targs, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1 }
   Arrays.push(mutable checker.bodies, info)
   checker.body = Arrays.length(checker.bodies) - 1
   checker.localScopes = [Map {}]

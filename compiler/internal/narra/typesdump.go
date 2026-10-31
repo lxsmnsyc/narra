@@ -63,6 +63,8 @@ import (
 //	    narrow=<Variant>          a field read through a narrowed enum value
 //	    trait=<Trait>.<function>  a trait function the compiler implements
 //	    value                     a call through a function value
+//	    stack                     an arrow function passed to a non-escaping parameter
+//	    captures=<local>,<local>  the locals an arrow function captures, in order of first use
 //	    distinct=<module>.<Name>  T.from or T.toInt on a distinct type
 //	A namespace alias that the checker resolved (Alias.NAME of a package
 //	module) has the type `module <path>`.
@@ -84,8 +86,8 @@ import (
 //	the `module <path>` type of Alias in Alias.Enum.Variant.
 //	selfhost-check-patterns: pattern lines, narrow, and pattern-binding
 //	locals (a `local` line right after the binding's pat-name line).
-//	selfhost-check-closures: value, func
-//	on function values, arrow parameters.
+//	selfhost-check-closures: value, stack, captures, func on function
+//	values and Alias.f, arrow lines and their parameter locals.
 
 // checkedBody is one body the checker checked, logged when it starts.
 type checkedBody struct {
@@ -396,7 +398,20 @@ func (d *typesDumper) expr(e Expr) {
 			}
 		}
 	case *ArrowExpr:
-		d.line(e.P, "arrow", nil, e.T)
+		var attrs []string
+		if e.Closure != nil {
+			if e.Closure.Stack {
+				attrs = append(attrs, "stack")
+			}
+			if len(e.Closure.Captures) > 0 {
+				names := make([]string, len(e.Closure.Captures))
+				for i, l := range e.Closure.Captures {
+					names[i] = l.Name
+				}
+				attrs = append(attrs, "captures="+strings.Join(names, ","))
+			}
+		}
+		d.line(e.P, "arrow", attrs, e.T)
 		d.params(e.Params)
 		if e.Body != nil {
 			d.expr(e.Body)

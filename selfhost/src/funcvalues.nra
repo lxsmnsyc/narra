@@ -1,0 +1,207 @@
+// The half of the closure rules that sits below narrac/exprs, ported from
+// compiler/internal/narra/check_closure.go: the closure tables of a body
+// (closureOf), the non-escaping parameter rule (funcArg, useLocal,
+// declaredBelow) and named functions used as values (funcValue,
+// moduleFuncValue). exprs.nra calls these from names, fields and
+// arguments. Arrow functions and calls of function values are in
+// closures.nra, above exprs.
+import { Pos, Expr, Param, FuncDecl } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type } from "narrac/types"
+import { Checker, ClosureInfo, Ref, errorf, setRef, anyTypeParam } from "narrac/check"
+import { substitute } from "narrac/resolve"
+import { unify } from "narrac/generics"
+import { checkBounds } from "narrac/traits"
+import { addFuncInstance } from "narrac/instances"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// findClosure returns the BodyInfo.closures index of an arrow node in the
+// current body and adds the entry on first use.
+export function findClosure(mutable checker: Checker, arrowId: int): int uses alloc {
+  const body = checker.body
+  if (checker.bodies[body].closureIndex[arrowId] is Some(index)) {
+    return index
+  }
+  const info = ClosureInfo { nodeId: arrowId, stack: false, captures: [], hasHint: false, hintParams: [], hintResult: None }
+  Arrays.push(mutable checker.bodies[body].closures, info)
+  const index = Arrays.length(checker.bodies[body].closures) - 1
+  checker.bodies[body].closureIndex[arrowId] = index
+  return index
+}
+
+// markArgument prepares an argument for a parameter before it is checked
+// (Go's funcArg): a non-escaping parameter takes a name of another
+// non-escaping parameter, or an arrow function with its environment on the
+// caller's stack.
+export function markArgument(mutable checker: Checker, param: Param, value: Expr) uses alloc {
+  if (!isNonEscaping(param)) {
+    return
+  }
+  match (value) {
+    Expr.Ident(nodeId, _, _) => {
+      const body = checker.body
+      checker.bodies[body].allowedId = nodeId
+    }
+    Expr.ArrowExpr(nodeId, _, _, _, _, _) => {
+      const closure = findClosure(mutable checker, nodeId)
+      const body = checker.body
+      checker.bodies[body].closures[closure].stack = true
+    }
+    _ => {}
+  }
+}
+
+// isNonEscaping reports a parameter written with a function type and
+// without `escaping`.
+export function isNonEscaping(param: Param): bool {
+  if (param.type is Some(typeExpression)) {
+    return typeExpression.isFunc && !param.escaping && !param.isMutable
+  }
+  return false
+}
+
+// useLocal checks a use of a local: a non-escaping parameter may only be
+// called or passed on, and the arrow functions being checked capture the
+// locals declared outside them.
+export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index: int) uses alloc {
+  const body = checker.body
+  const local = checker.bodies[body].locals[index]
+  const name = quoteGo(local.name)
+  if (local.noEscape && checker.bodies[body].allowedId != nodeId) {
+    errorf(mutable checker, pos, `parameter ${name} cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as \`escaping ${local.name}\` to store, return or capture it`)
+    return
+  }
+
+  // Walk the arrow functions from the innermost out.
+  const innermost = checker.bodies[body].arrowDepth - 1
+  let level = innermost
+  while (level >= 0) {
+    const context = checker.bodies[body].arrows[level]
+    if (isDeclaredBelow(checker, context.outerDepth, index, local.name)) {
+      return
+    }
+
+    // Only the innermost arrow reports what cannot be captured.
+    if (level == innermost) {
+      if (local.noEscape) {
+        errorf(mutable checker, pos, `a closure cannot capture parameter ${name} because it is not escaping; declare it as \`escaping ${local.name}\``)
+        return
+      }
+      if (local.isMutable && local.param) {
+        errorf(mutable checker, pos, `a closure cannot capture mutable parameter ${name}; copy it first with \`const copy = ${local.name}\``)
+        return
+      }
+      if (local.isMutable) {
+        errorf(mutable checker, pos, `a closure cannot capture ${name} because it is declared with let; closures capture only constants`)
+        return
+      }
+    }
+    addCapture(mutable checker, context.closure, index)
+    level = level - 1
+  }
+}
+
+function addCapture(mutable checker: Checker, closure: int, local: int) uses alloc {
+  const body = checker.body
+  for (const captured of Arrays.values(checker.bodies[body].closures[closure].captures)) {
+    if (captured == local) {
+      return
+    }
+  }
+  Arrays.push(mutable checker.bodies[body].closures[closure].captures, local)
+}
+
+// isDeclaredBelow reports whether a local is declared in a scope from the
+// current one up to, but not including, the scope at stopDepth (Go's
+// declaredBelow).
+function isDeclaredBelow(checker: Checker, stopDepth: int, local: int, name: string): bool {
+  let depth = checker.scopeDepth - 1
+  while (depth >= stopDepth) {
+    if (checker.localScopes[depth][name] is Some(found)) {
+      if (found == local) {
+        return true
+      }
+    }
+    depth = depth - 1
+  }
+  return false
+}
+
+// findModuleFunction finds the Checker.funcs entry of a function declared in
+// a module, or -1.
+export function findModuleFunction(checker: Checker, moduleScope: int, funcDecl: FuncDecl): int {
+  if (checker.scopes[moduleScope].funcs[funcDecl.name] is Some(index)) {
+    if (checker.funcs[index].scope == moduleScope && checker.funcs[index].decl.pos == funcDecl.pos) {
+      return index
+    }
+  }
+  let index = 0
+  for (const info of Arrays.values(checker.funcs)) {
+    if (info.scope == moduleScope && info.decl.pos == funcDecl.pos) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+// checkFunctionValue checks a named function used as a value (Go's
+// funcValue). A generic function takes its type arguments from the expected
+// function type. The node refers to the function; an instance is queued when
+// the type arguments are closed.
+export function checkFunctionValue(mutable checker: Checker, nodeId: int, pos: Pos, funcIndex: int, want: Option<Type>): Type uses alloc {
+  const info = checker.funcs[funcIndex]
+  const params = info.decl.params
+  for (const param of Arrays.values(params)) {
+    if (param.isMutable) {
+      errorf(mutable checker, pos, `function ${info.name} has a mutable parameter, so it cannot be used as a value`)
+      return Type.TVoid
+    }
+  }
+
+  // A plain function has its declared signature.
+  if (Arrays.length(info.typeParams) == 0) {
+    setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+    let plainTypes: Array<Type> = []
+    for (const param of Arrays.values(params)) {
+      Arrays.push(mutable plainTypes, checker.paramTypes[param.id])
+    }
+    return Type.TFunc(plainTypes, info.result)
+  }
+
+  // A generic one is unified with the expected function type.
+  let bindings: Map<int, Type> = Map {}
+  if (want is Some(Type.TFunc(wantParams, wantResult))) {
+    if (Arrays.length(wantParams) == Arrays.length(params)) {
+      for (const index of Ranges.between(0, Arrays.length(params))) {
+        unify(checker, checker.paramTypes[params[index].id], wantParams[index], mutable bindings)
+      }
+      unify(checker, info.result, wantResult, mutable bindings)
+    }
+  }
+  let typeArgs: Array<Type> = []
+  for (const typeParam of Arrays.values(info.typeParams)) {
+    if (bindings[typeParam] is Some(bound)) {
+      Arrays.push(mutable typeArgs, bound)
+    } else {
+      const message = `cannot tell type parameter ${checker.params[typeParam].name} of ${info.name} here; add a type annotation`
+      errorf(mutable checker, pos, message)
+      return Type.TVoid
+    }
+  }
+  checkBounds(mutable checker, pos, info.decl, info.typeParams, typeArgs)
+  setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+  if (!anyTypeParam(checker, typeArgs)) {
+    addFuncInstance(mutable checker, funcIndex, typeArgs)
+  }
+
+  // The signature with the type arguments in place.
+  let genericTypes: Array<Type> = []
+  for (const param of Arrays.values(params)) {
+    const declared = checker.paramTypes[param.id]
+    Arrays.push(mutable genericTypes, substitute(mutable checker, declared, bindings))
+  }
+  const result = substitute(mutable checker, info.result, bindings)
+  return Type.TFunc(genericTypes, result)
+}

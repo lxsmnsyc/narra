@@ -1,7 +1,7 @@
 ---
 id: import-alias-rules
 title: Import aliases never equal type names, and named imports can rename
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

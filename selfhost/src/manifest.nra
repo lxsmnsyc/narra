@@ -41,7 +41,7 @@ const OPEN = 91
 const CLOSE = 93
 const COMMA = 44
 
-function fail(line: int, message: string): LoadError {
+function createError(line: int, message: string): LoadError {
   return LoadError { file: "narra.toml", line: line, col: 1, message: message }
 }
 
@@ -54,94 +54,94 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   let search: Array<string> = []
   let table = ""
   let inBinary = false
-  let binName = ""
-  let binEntry = ""
+  let binaryName = ""
+  let binaryEntry = ""
   const lines = Str.split(text, "\n")
-  let i = 0
-  while (i < Arrays.length(lines)) {
-    const lineNo = i + 1
-    const line = Str.trim(stripComment(lines[i]))
-    i = i + 1
+  let index = 0
+  while (index < Arrays.length(lines)) {
+    const lineNumber = index + 1
+    const line = Str.trim(stripComment(lines[index]))
+    index = index + 1
     if (line == "") {
       continue
     }
     if (Str.startsWith(line, "[[")) {
       if (!Str.endsWith(line, "]]")) {
-        return Err(fail(lineNo, "expected `]]`"))
+        return Err(createError(lineNumber, "expected `]]`"))
       }
       if (inBinary) {
-        Arrays.push(mutable binaries, Binary { name: binName, entry: binEntry })
+        Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
       }
       table = `[[${Str.trim(Str.slice(line, 2, Str.length(line) - 2))}]]`
       inBinary = table == "[[binary]]"
-      binName = ""
-      binEntry = ""
+      binaryName = ""
+      binaryEntry = ""
       continue
     }
     if (Str.startsWith(line, "[")) {
       if (!Str.endsWith(line, "]")) {
-        return Err(fail(lineNo, "expected `]`"))
+        return Err(createError(lineNumber, "expected `]`"))
       }
       if (inBinary) {
-        Arrays.push(mutable binaries, Binary { name: binName, entry: binEntry })
+        Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
         inBinary = false
       }
       table = Str.trim(Str.slice(line, 1, Str.length(line) - 1))
       if (table == "dependencies") {
-        return Err(fail(lineNo, "[dependencies] is not supported by this compiler yet"))
+        return Err(createError(lineNumber, "[dependencies] is not supported by this compiler yet"))
       }
       continue
     }
     const known = table == "package" || table == "link" || table == "[[binary]]"
-    const eq = Str.indexOf(line, "=")
-    if (eq is None) {
+    const equalsIndex = Str.indexOf(line, "=")
+    if (equalsIndex is None) {
       if (!known) {
         continue
       }
-      return Err(fail(lineNo, "expected `key = value`"))
+      return Err(createError(lineNumber, "expected `key = value`"))
     }
-    const at = eq.value
-    const key = Str.trim(Str.slice(line, 0, at))
-    let raw = Str.trim(Str.sliceFrom(line, at + 1))
+    const equalsAt = equalsIndex.value
+    const key = Str.trim(Str.slice(line, 0, equalsAt))
+    let raw = Str.trim(Str.sliceFrom(line, equalsAt + 1))
     // An array may continue over several lines.
-    while (Str.startsWith(raw, "[") && !closedArray(raw) && i < Arrays.length(lines)) {
-      raw = `${raw} ${Str.trim(stripComment(lines[i]))}`
-      i = i + 1
+    while (Str.startsWith(raw, "[") && !isClosedArray(raw) && index < Arrays.length(lines)) {
+      raw = `${raw} ${Str.trim(stripComment(lines[index]))}`
+      index = index + 1
     }
     if (!known) {
       continue
     }
     const parsed = parseValue(raw)
-    if (parsed is Err(e)) {
-      return Err(fail(lineNo, `${key}: ${e}`))
+    if (parsed is Err(error)) {
+      return Err(createError(lineNumber, `${key}: ${error}`))
     }
-    const val = parsed.value
-    const which = `${table}.${key}`
-    if (which == "package.name") {
-      if (val is Value.VStr(s)) {
-        if (validPackageName(s)) {
-          if (s == "std") {
-            return Err(fail(lineNo, "package name \"std\" is reserved for the standard library"))
+    const value = parsed.value
+    const qualifiedKey = `${table}.${key}`
+    if (qualifiedKey == "package.name") {
+      if (value is Value.VStr(packageName)) {
+        if (isValidPackageName(packageName)) {
+          if (packageName == "std") {
+            return Err(createError(lineNumber, "package name \"std\" is reserved for the standard library"))
           }
-          name = s
+          name = packageName
           continue
         }
       }
-      return Err(fail(lineNo, "package name must be a string of letters, digits and `_`, starting with a letter"))
+      return Err(createError(lineNumber, "package name must be a string of letters, digits and `_`, starting with a letter"))
     }
-    if (which == "[[binary]].name" || which == "[[binary]].entry") {
-      if (val is Value.VStr(s)) {
+    if (qualifiedKey == "[[binary]].name" || qualifiedKey == "[[binary]].entry") {
+      if (value is Value.VStr(stringValue)) {
         if (key == "name") {
-          binName = s
+          binaryName = stringValue
         } else {
-          binEntry = s
+          binaryEntry = stringValue
         }
         continue
       }
-      return Err(fail(lineNo, `${key} must be a string`))
+      return Err(createError(lineNumber, `${key} must be a string`))
     }
-    if (which == "link.libraries" || which == "link.search") {
-      if (val is Value.VList(items)) {
+    if (qualifiedKey == "link.libraries" || qualifiedKey == "link.search") {
+      if (value is Value.VList(items)) {
         if (key == "libraries") {
           libraries = items
         } else {
@@ -149,114 +149,114 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         }
         continue
       }
-      return Err(fail(lineNo, `${key} must be an array of strings`))
+      return Err(createError(lineNumber, `${key} must be an array of strings`))
     }
   }
   if (inBinary) {
-    Arrays.push(mutable binaries, Binary { name: binName, entry: binEntry })
+    Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
   }
   if (name == "") {
-    return Err(fail(0, "[package] needs a name"))
+    return Err(createError(0, "[package] needs a name"))
   }
   let seen: Map<string, bool> = Map {}
-  for (const b of Arrays.values(binaries)) {
-    if (b.name == "" || b.entry == "") {
-      return Err(fail(0, "each [[binary]] needs a name and an entry such as \"cli.run\""))
+  for (const binary of Arrays.values(binaries)) {
+    if (binary.name == "" || binary.entry == "") {
+      return Err(createError(0, "each [[binary]] needs a name and an entry such as \"cli.run\""))
     }
-    if (seen[b.name] is Some(_)) {
-      return Err(fail(0, `two [[binary]] entries are named ${quoteGo(b.name)}`))
+    if (seen[binary.name] is Some(_)) {
+      return Err(createError(0, `two [[binary]] entries are named ${quoteGo(binary.name)}`))
     }
-    seen[b.name] = true
+    seen[binary.name] = true
   }
   return Ok(Manifest { name: name, binaries: binaries, libraries: libraries, search: search })
 }
 
-function validPackageName(s: string): bool {
-  const n = Str.length(s)
-  if (n == 0 || !isLetter(Str.byteAt(s, 0))) {
+function isValidPackageName(name: string): bool {
+  const length = Str.length(name)
+  if (length == 0 || !isLetter(Str.byteAt(name, 0))) {
     return false
   }
-  for (const k of Ranges.between(0, n)) {
-    const c = Str.byteAt(s, k)
-    if (!(c == 95 || isLetter(c) || (c >= 48 && c <= 57))) {
+  for (const index of Ranges.between(0, length)) {
+    const code = Str.byteAt(name, index)
+    if (!(code == 95 || isLetter(code) || (code >= 48 && code <= 57))) {
       return false
     }
   }
   return true
 }
 
-function isLetter(c: int): bool {
-  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+function isLetter(code: int): bool {
+  return (code >= 97 && code <= 122) || (code >= 65 && code <= 90)
 }
 
 // stripComment removes a `#` comment that is not inside a string.
 function stripComment(line: string): string uses alloc {
   let quote = 0
-  let i = 0
-  const n = Str.length(line)
-  while (i < n) {
-    const c = Str.byteAt(line, i)
+  let index = 0
+  const length = Str.length(line)
+  while (index < length) {
+    const code = Str.byteAt(line, index)
     if (quote != 0) {
-      if (c == BACKSLASH && quote == QUOTE) {
-        i = i + 1
-      } else if (c == quote) {
+      if (code == BACKSLASH && quote == QUOTE) {
+        index = index + 1
+      } else if (code == quote) {
         quote = 0
       }
-    } else if (c == QUOTE || c == APOSTROPHE) {
-      quote = c
-    } else if (c == HASH) {
-      return Str.slice(line, 0, i)
+    } else if (code == QUOTE || code == APOSTROPHE) {
+      quote = code
+    } else if (code == HASH) {
+      return Str.slice(line, 0, index)
     }
-    i = i + 1
+    index = index + 1
   }
   return line
 }
 
-// closedArray reports whether the brackets of an array value are balanced.
-function closedArray(s: string): bool {
+// isClosedArray reports whether the brackets of an array value are balanced.
+function isClosedArray(text: string): bool {
   let depth = 0
   let quote = 0
-  let i = 0
-  const n = Str.length(s)
-  while (i < n) {
-    const c = Str.byteAt(s, i)
+  let index = 0
+  const length = Str.length(text)
+  while (index < length) {
+    const code = Str.byteAt(text, index)
     if (quote != 0) {
-      if (c == BACKSLASH && quote == QUOTE) {
-        i = i + 1
-      } else if (c == quote) {
+      if (code == BACKSLASH && quote == QUOTE) {
+        index = index + 1
+      } else if (code == quote) {
         quote = 0
       }
-    } else if (c == QUOTE || c == APOSTROPHE) {
-      quote = c
-    } else if (c == OPEN) {
+    } else if (code == QUOTE || code == APOSTROPHE) {
+      quote = code
+    } else if (code == OPEN) {
       depth = depth + 1
-    } else if (c == CLOSE) {
+    } else if (code == CLOSE) {
       depth = depth - 1
     }
-    i = i + 1
+    index = index + 1
   }
   return depth == 0
 }
 
 // parseValue reads a string or an array of strings.
-function parseValue(s: string): Result<Value, string> uses alloc {
-  if (Str.startsWith(s, "[")) {
-    let out: Array<string> = []
-    let rest = Str.trim(Str.sliceFrom(s, 1))
+function parseValue(text: string): Result<Value, string> uses alloc {
+  if (Str.startsWith(text, "[")) {
+    let items: Array<string> = []
+    let rest = Str.trim(Str.sliceFrom(text, 1))
     while (true) {
       if (Str.startsWith(rest, "]")) {
         if (Str.trim(Str.sliceFrom(rest, 1)) != "") {
           return Err("unexpected text after the array")
         }
-        return Ok(Value.VList(out))
+        return Ok(Value.VList(items))
       }
-      const r = parseString(rest)
-      if (r is Err(e)) {
-        return Err(e)
+      const parsed = parseString(rest)
+      if (parsed is Err(error)) {
+        return Err(error)
       }
-      const #[str, n] = r.value
-      Arrays.push(mutable out, str)
-      rest = Str.trim(Str.sliceFrom(rest, n))
+      const #[item, consumed] = parsed.value
+      Arrays.push(mutable items, item)
+      rest = Str.trim(Str.sliceFrom(rest, consumed))
       if (Str.startsWith(rest, ",")) {
         rest = Str.trim(Str.sliceFrom(rest, 1))
       } else if (!Str.startsWith(rest, "]")) {
@@ -264,53 +264,53 @@ function parseValue(s: string): Result<Value, string> uses alloc {
       }
     }
   }
-  const r = parseString(s)
-  if (r is Err(e)) {
-    return Err(e)
+  const parsed = parseString(text)
+  if (parsed is Err(error)) {
+    return Err(error)
   }
-  const #[str, n] = r.value
-  if (Str.trim(Str.sliceFrom(s, n)) != "") {
+  const #[item, consumed] = parsed.value
+  if (Str.trim(Str.sliceFrom(text, consumed)) != "") {
     return Err("unexpected text after the string")
   }
-  return Ok(Value.VStr(str))
+  return Ok(Value.VStr(item))
 }
 
 // parseString reads a basic ("...") or literal ('...') string at the start
-// of s and returns its value and length in bytes.
-function parseString(s: string): Result<#[string, int], string> uses alloc {
-  const n = Str.length(s)
-  if (n == 0 || (Str.byteAt(s, 0) != QUOTE && Str.byteAt(s, 0) != APOSTROPHE)) {
+// of text and returns its value and length in bytes.
+function parseString(text: string): Result<#[string, int], string> uses alloc {
+  const length = Str.length(text)
+  if (length == 0 || (Str.byteAt(text, 0) != QUOTE && Str.byteAt(text, 0) != APOSTROPHE)) {
     return Err("expected a string")
   }
-  const quote = Str.byteAt(s, 0)
-  let sb = Str.builder()
-  let i = 1
-  while (i < n) {
-    const c = Str.byteAt(s, i)
-    if (c == quote) {
-      return Ok(#[Str.build(sb), i + 1])
+  const quote = Str.byteAt(text, 0)
+  let builder = Str.builder()
+  let index = 1
+  while (index < length) {
+    const code = Str.byteAt(text, index)
+    if (code == quote) {
+      return Ok(#[Str.build(builder), index + 1])
     }
-    if (c == BACKSLASH && quote == QUOTE && i + 1 < n) {
-      i = i + 1
-      const e = Str.byteAt(s, i)
-      if (e == 110) {
-        Str.append(mutable sb, "\n")
-      } else if (e == 116) {
-        Str.append(mutable sb, "\t")
-      } else if (e == QUOTE || e == BACKSLASH) {
-        Str.append(mutable sb, Str.slice(s, i, i + 1))
+    if (code == BACKSLASH && quote == QUOTE && index + 1 < length) {
+      index = index + 1
+      const escaped = Str.byteAt(text, index)
+      if (escaped == 110) {
+        Str.append(mutable builder, "\n")
+      } else if (escaped == 116) {
+        Str.append(mutable builder, "\t")
+      } else if (escaped == QUOTE || escaped == BACKSLASH) {
+        Str.append(mutable builder, Str.slice(text, index, index + 1))
       } else {
-        // Go prints %c of the byte; for a non-ASCII lead byte this is its
+        // Go prints %code of the byte; for a non-ASCII lead byte this is its
         // Latin-1 character, which the dump tests do not exercise.
-        return Err(`unsupported escape \\${Str.slice(s, i, i + 1)}`)
+        return Err(`unsupported escape \\${Str.slice(text, index, index + 1)}`)
       }
-      i = i + 1
+      index = index + 1
       continue
     }
     // Copy a whole character so multi-byte text stays valid.
-    const next = Str.nextChar(s, i)
-    Str.append(mutable sb, Str.slice(s, i, next))
-    i = next
+    const next = Str.nextChar(text, index)
+    Str.append(mutable builder, Str.slice(text, index, next))
+    index = next
   }
   return Err("unterminated string")
 }

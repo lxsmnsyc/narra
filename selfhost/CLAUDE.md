@@ -8,7 +8,7 @@ The Narra compiler written in Narra. Each part is checked against the Go compile
 - Keep the Go lexer's quirks (`0b102` is one int, `3.x` is `3` `.` `x`, `7e` is a float) unless both sides change together. The dump tests compare them.
 - Thread compiler state through one `mutable` context struct, and keep every array in it unique. A second owner makes each push copy the whole array.
 - Give every expression, pattern and local an integer id, and keep checker results in side tables indexed by id (`Array<T>`, `Map<int, T>`). Enum payloads are immutable and shared, so nothing can be written back into the AST.
-- Narra has no recover. The parser keeps a `failed` field; once set, functions return dummy nodes and loops stop. Start every loop condition with `ok(p)` and never index tokens past EOF (`tokAt` clamps).
+- Narra has no recover. The parser keeps a `failed` field; once set, functions return dummy nodes and loops stop. Start every loop condition with `isOk(parser)` and never index tokens past EOF (`peekToken` clamps).
 - Enum constructors are always qualified (`Token.TokIdent`). The `Tok` prefixes in token kinds are kept; renaming them is a separate change.
 - `f(mutable p, g(p))` is rejected. Read the value into a local first.
 - Loop over lists of tokens, statements and declarations. User code overflows the C stack at about 20000 frames; recurse only on nesting.

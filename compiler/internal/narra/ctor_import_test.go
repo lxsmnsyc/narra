@@ -7,7 +7,7 @@ import (
 )
 
 // The fix of `import { Teacher }` imports the enum, and the package then
-// reports only that the constructor is bare where it is used.
+// compiles.
 func TestCtorImportFix(t *testing.T) {
 	src := filepath.Join(testdata, "packages", "errors", "ctor_import")
 	dir := t.TempDir()

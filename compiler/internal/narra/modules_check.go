@@ -371,10 +371,9 @@ func (c *Checker) ctorImport(imp *ImportDecl, in ImportName, s *modScope) bool {
 			}
 			var fixes []Fix
 			if in.Pos.Line > 0 && !importsName(imp, n) {
-				end := Pos{in.Pos.Line, in.Pos.Col + len(in.Name)}
-				fixes = []Fix{{Title: "import the enum " + n, Edits: []Edit{{Start: in.Pos, End: end, Text: n}}}}
+				fixes = []Fix{{Title: "import the enum " + n, Edits: []Edit{{Start: in.Pos, End: in.End, Text: n}}}}
 			}
-			c.errorfFix(imp.Pos, fixes, "%q is a constructor of %s; import the enum and write %s.%s", in.Name, n, n, in.Name)
+			c.errorfFix(in.Pos, fixes, "%q is a constructor of %s; import the enum and write %s.%s", in.Name, n, n, in.Name)
 			return true
 		}
 	}

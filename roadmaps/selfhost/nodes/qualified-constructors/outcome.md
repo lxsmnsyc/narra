@@ -12,8 +12,10 @@
 
 - `export type A = B` is not implemented in the Go compiler, so constructors through an alias are untested. Noted in `compiler/README.md`.
 - Edited files outside the brief's paths: `compiler/internal/narra/parser.go`, `ast.go` (three-part patterns, `ImportName.Pos`), `compiler/internal/narra/ctor_import_test.go` (new), `selfhost/CLAUDE.md` (the "global constructors" rule).
+- The constructor-import diagnostics case is a Go test (`ctor_import_test.go`), not a `testdata/diagnostics` case, because that loader takes single files.
 - Removed `errors/traits_ctor_ambiguous.nra` and `packages/errors/ctor_imported_ambiguous`: the program is now valid.
-- The migration wrote `import { Decl } from "narrac/ast"` style lines into selfhost files that matched on enums they did not import.
+- The migration added enum imports to selfhost files that matched on enums they did not import (`resolve.nra` now lists `Decl` in its existing ast import).
+- Bare constructor shared by two enums of one rank is E0324 with no fix; the expected type picks the enum otherwise, also through a namespace (`Geo.Shape.Circle`).
 
 ## Stubs left
 

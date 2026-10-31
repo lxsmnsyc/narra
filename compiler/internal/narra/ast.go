@@ -35,6 +35,7 @@ type ImportName struct {
 	Name  string
 	Local string
 	Pos   Pos // where Name is written, for fixes
+	End   Pos // just after the last name written (Local when renamed)
 }
 
 type Decl interface{ declNode() }

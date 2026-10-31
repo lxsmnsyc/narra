@@ -181,10 +181,13 @@ func (p *Parser) importDecl() *ImportDecl {
 			np := p.tok().Pos
 			n := p.ident().Text
 			local := n
+			end := Pos{np.Line, np.Col + len(n)}
 			if p.accept("as") {
+				lp := p.tok().Pos
 				local = p.ident().Text
+				end = Pos{lp.Line, lp.Col + len(local)}
 			}
-			d.Names = append(d.Names, ImportName{Name: n, Local: local, Pos: np})
+			d.Names = append(d.Names, ImportName{Name: n, Local: local, Pos: np, End: end})
 			p.skipNewlines()
 			if !p.accept(",") {
 				break

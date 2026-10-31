@@ -155,6 +155,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0321", "%s.from is not available outside module %q: %s is an opaque distinct type"},
 	{"E0322", "%s has no function %q; a distinct type has from and %s"},
 	{"E0323", "constructor %s needs its enum; write %s.%s"},
+	{"E0324", "constructor %s needs its enum; %s all have it, for example %s.%s"},
 	{"E0400", "the entry function must be `export function %s(args: Array<string>): int`"},
 	{"E0401", "unknown module %q; package %s has no file src/%s.nra"},
 	{"E0402", "%q is not exported by module %q; add `export` to its declaration"},

@@ -27,11 +27,15 @@ func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (
 		if enum, ok := preludeCtors[name]; ok {
 			return c.ctorOf(pos, c.enumByName(enum), name, args, want)
 		}
-		owner := c.bareOwner(name, want)
+		owner, owners := c.bareOwner(name, want)
 		if owner == "" {
 			return nil, nil
 		}
-		c.errorfFix(pos, c.qualifyFix(pos, owner), "constructor %s needs its enum; write %s.%s", name, owner, name)
+		if len(owners) > 1 {
+			c.errorf(pos, "constructor %s needs its enum; %s all have it, for example %s.%s", name, strings.Join(owners, ", "), owner, name)
+		} else {
+			c.errorfFix(pos, c.qualifyFix(pos, owner), "constructor %s needs its enum; write %s.%s", name, owner, name)
+		}
 		return c.ctorOf(pos, c.enumByName(owner), name, args, want)
 	}
 	return c.ctorOf(pos, c.enumByName(enumName), name, args, want)
@@ -71,19 +75,18 @@ func (c *Checker) enumByName(name string) enumRef {
 // bareOwner picks the enum a bare constructor name should be written with:
 // the expected type's enum when it has the constructor, else the first enum
 // that does (declared, imported, then prelude). It returns "" when none does.
-func (c *Checker) bareOwner(name string, want Type) string {
+// The second result lists the enums of that rank when more than one has it.
+func (c *Checker) bareOwner(name string, want Type) (string, []string) {
 	if et, ok := want.(*EnumType); ok && et.Variant(name) != nil {
-		for _, n := range c.visibleEnums("") {
-			if c.namesEnum(n, et) {
-				return n
-			}
+		if n, ok := c.enumNameFor(et); ok {
+			return n, nil
 		}
 	}
 	owners := c.ctorOwners("", name)
 	if len(owners) == 0 {
-		return ""
+		return "", nil
 	}
-	return owners[0]
+	return owners[0], owners
 }
 
 // qualifyFix writes the enum name before the bare constructor at pos.

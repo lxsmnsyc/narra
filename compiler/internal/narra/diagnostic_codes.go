@@ -294,6 +294,7 @@ var explanations = map[string]string{
 	"E0038": "There is no `null` or `undefined`. A value that may be missing has type `Option<T>`.\nFix: `null` becomes `None`.",
 	"E0216": "Strings are joined with a template string.\nFix: `a + \"x\" + b` becomes `` `${a}x${b}` ``. The fix is offered when every operand is a string name or literal.",
 	"E0323": "A constructor of a user enum is always written with its enum, in expressions and in patterns. Some, None, Ok and Err stay bare.\nFix: `Circle(1.0)` becomes `Shape.Circle(1.0)`.",
+	"E0324": "Two enums visible here have this constructor, so the compiler cannot pick one.\nFix: write Enum.Name for the one you mean, for example `Level.Low`.",
 	"E0425": "Importing a constructor by name is not allowed. Import the enum; its constructors come with it.\nFix: `import { Teacher }` becomes `import { SchoolPerson }`, and uses become `SchoolPerson.Teacher`.",
 	"E0309": "Narra has no method calls. Functions belong to modules.\nFix: `xs.push(v)` becomes `Arrays.push(mutable xs, v)`.",
 }

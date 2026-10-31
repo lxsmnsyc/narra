@@ -123,6 +123,9 @@ func TestSelfhostCalls(t *testing.T) {
 				t.Parallel()
 				own := strings.HasPrefix(path, typesDumpCallsDir)
 				if _, err := Load(path); err != nil {
+					if own {
+						t.Fatalf("a call case must load: %v", err)
+					}
 					skip(t, "does not load")
 				}
 				want, ok := TypesDump(path)

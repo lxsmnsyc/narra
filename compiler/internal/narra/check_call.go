@@ -13,83 +13,152 @@ func (c *Checker) isEnumName(name string) bool {
 	return ok && g.edecl != nil
 }
 
-// ctor resolves an enum constructor by name and checks its arguments.
-// enumName restricts the search to one enum when the call is qualified, as
-// in Shape.Circle. It returns nil when no enum has a constructor of that name.
+// preludeCtors are the constructors that stay bare: prelude names of Option
+// and Result (D71).
+var preludeCtors = map[string]string{"Some": "Option", "None": "Option", "Ok": "Result", "Err": "Result"}
+
+// ctor resolves an enum constructor and checks its arguments. enumName is the
+// enum as written in the call, as in Shape.Circle or Geo.Shape.Circle. A bare
+// constructor (enumName empty) is an error whose fix qualifies it, except for
+// Some, None, Ok and Err. It returns nil when no enum has a constructor of
+// that name.
 func (c *Checker) ctor(pos Pos, enumName, name string, args []*Arg, want Type) (Type, *Variant) {
-	// The expected type decides first, so `None` takes its type from context.
-	if et, ok := want.(*EnumType); ok && (enumName == "" || c.namesEnum(enumName, et)) {
-		if v := et.Variant(name); v != nil {
-			c.ctorArgs(pos, v, args)
-			return et, v
+	if enumName == "" {
+		if enum, ok := preludeCtors[name]; ok {
+			return c.ctorOf(pos, c.enumByName(enum), name, args, want)
+		}
+		owner := c.bareOwner(name, want)
+		if owner == "" {
+			return nil, nil
+		}
+		c.errorfFix(pos, c.qualifyFix(pos, owner), "constructor %s needs its enum; write %s.%s", name, owner, name)
+		return c.ctorOf(pos, c.enumByName(owner), name, args, want)
+	}
+	return c.ctorOf(pos, c.enumByName(enumName), name, args, want)
+}
+
+// enumRef is an enum found by name: a plain enum or a generic template.
+type enumRef struct {
+	name string
+	et   *EnumType
+	g    *genericType
+}
+
+// enumByName finds the enum a name refers to in the current module. A dotted
+// name Alias.Enum looks in the module the namespace import Alias names.
+func (c *Checker) enumByName(name string) enumRef {
+	types, generics := c.types, c.generics
+	n := name
+	if alias, rest, ok := strings.Cut(name, "."); ok {
+		s := c.mods[c.modules[alias]]
+		if s == nil || s.src == nil {
+			return enumRef{name: name}
+		}
+		if _, ok := s.src.Exports[rest].(*EnumDecl); !ok {
+			return enumRef{name: name}
+		}
+		types, generics, n = s.types, s.generics, rest
+	}
+	if et, ok := types[n].(*EnumType); ok {
+		return enumRef{name: name, et: et}
+	}
+	if g := generics[n]; g != nil && g.edecl != nil {
+		return enumRef{name: name, g: g}
+	}
+	return enumRef{name: name}
+}
+
+// bareOwner picks the enum a bare constructor name should be written with:
+// the expected type's enum when it has the constructor, else the first enum
+// that does (declared, imported, then prelude). It returns "" when none does.
+func (c *Checker) bareOwner(name string, want Type) string {
+	if et, ok := want.(*EnumType); ok && et.Variant(name) != nil {
+		for _, n := range c.visibleEnums("") {
+			if c.namesEnum(n, et) {
+				return n
+			}
 		}
 	}
-	owners := c.ctorOwners(enumName, name)
-	if len(owners) > 1 {
-		c.errorf(pos, "constructor %s is ambiguous: %s all have it; write %s.%s", name, strings.Join(owners, ", "), owners[0], name)
-		for _, a := range args {
-			c.expr(a.Value, nil)
-		}
-		return TVoid, nil
+	owners := c.ctorOwners("", name)
+	if len(owners) == 0 {
+		return ""
 	}
-	for _, gn := range owners {
-		if et, ok := c.types[gn].(*EnumType); ok {
-			v := et.Variant(name)
-			c.ctorArgs(pos, v, args)
-			return et, v
+	return owners[0]
+}
+
+// qualifyFix writes the enum name before the bare constructor at pos.
+func (c *Checker) qualifyFix(pos Pos, enum string) []Fix {
+	return []Fix{{Title: "qualify the constructor with " + enum, Edits: []Edit{{Start: pos, End: pos, Text: enum + "."}}}}
+}
+
+// ctorOf builds constructor name of an enum found by enumByName.
+func (c *Checker) ctorOf(pos Pos, en enumRef, name string, args []*Arg, want Type) (Type, *Variant) {
+	if en.et != nil {
+		v := en.et.Variant(name)
+		if v == nil {
+			return c.noCtor(pos, en, name, args)
 		}
-		g := c.generics[gn]
-		c.buildGeneric(g)
-		for _, tv := range g.variants {
-			if tv.Name != name {
-				continue
+		c.ctorArgs(pos, v, args)
+		return en.et, v
+	}
+	g := en.g
+	if g == nil {
+		return c.noCtor(pos, en, name, args)
+	}
+	c.buildGeneric(g)
+	for _, tv := range g.variants {
+		if tv.Name != name {
+			continue
+		}
+		m := map[*TypeParamType]Type{}
+		if et, ok := want.(*EnumType); ok && et.Name == g.name && et.Module == g.mod.path {
+			for i, p := range g.params {
+				m[p] = et.Args[i]
 			}
-			m := map[*TypeParamType]Type{}
-			if et, ok := want.(*EnumType); ok && et.Name == g.name && et.Module == g.mod.path {
-				for i, p := range g.params {
-					m[p] = et.Args[i]
-				}
+		}
+		if len(args) != len(tv.Fields) {
+			c.errorf(pos, "%s takes %d fields, found %d", name, len(tv.Fields), len(args))
+			for _, a := range args {
+				c.expr(a.Value, nil)
 			}
-			if len(args) != len(tv.Fields) {
-				c.errorf(pos, "%s takes %d fields, found %d", name, len(tv.Fields), len(args))
-				for _, a := range args {
-					c.expr(a.Value, nil)
-				}
+			return TVoid, nil
+		}
+		for i, a := range args {
+			fw := c.substitute(tv.Fields[i].T, m)
+			if containsOpen(fw, g.params) {
+				fw = nil
+			}
+			at := c.expr(a.Value, fw)
+			unify(tv.Fields[i].T, at, m)
+		}
+		targs := make([]Type, len(g.params))
+		for i, p := range g.params {
+			t, ok := m[p]
+			if !ok {
+				c.errorf(pos, "cannot tell the type of %s here; add a type annotation", name)
 				return TVoid, nil
 			}
-			for i, a := range args {
-				fw := c.substitute(tv.Fields[i].T, m)
-				if containsOpen(fw, g.params) {
-					fw = nil
-				}
-				at := c.expr(a.Value, fw)
-				unify(tv.Fields[i].T, at, m)
-			}
-			targs := make([]Type, len(g.params))
-			for i, p := range g.params {
-				t, ok := m[p]
-				if !ok {
-					c.errorf(pos, "cannot tell the type of %s here; add a type annotation", name)
-					return TVoid, nil
-				}
-				targs[i] = t
-			}
-			et := c.instantiate(g, targs).(*EnumType)
-			v := et.Variants[tv.Index]
-			for i, a := range args {
-				c.expectType(a.Value.position(), v.Fields[i].T, a.Value.Type())
-				if a.Mutable {
-					c.errorf(pos, "constructor fields are not mutable")
-				}
-			}
-			return et, v
+			targs[i] = t
 		}
+		et := c.instantiate(g, targs).(*EnumType)
+		v := et.Variants[tv.Index]
+		for i, a := range args {
+			c.expectType(a.Value.position(), v.Fields[i].T, a.Value.Type())
+			if a.Mutable {
+				c.errorf(pos, "constructor fields are not mutable")
+			}
+		}
+		return et, v
 	}
-	if enumName != "" {
-		c.errorf(pos, "enum %s has no constructor %q", enumName, name)
-		return TVoid, nil
+	return c.noCtor(pos, en, name, args)
+}
+
+func (c *Checker) noCtor(pos Pos, en enumRef, name string, args []*Arg) (Type, *Variant) {
+	c.errorf(pos, "enum %s has no constructor %q", en.name, name)
+	for _, a := range args {
+		c.expr(a.Value, nil)
 	}
-	return nil, nil
+	return TVoid, nil
 }
 
 // ctorOwners lists the enums, by the name the current module uses for them,
@@ -297,6 +366,11 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				c.argsLoose(e)
 				return TVoid
 			}
+		}
+		if en := c.moduleEnumName(callee.Target); en != "" {
+			t, v := c.ctor(callee.P, en, callee.Name, e.Args, want)
+			e.Ctor = v
+			return t
 		}
 		t := c.expr(callee.Target, nil)
 		if ft := fieldFunc(callee, t); ft != nil {
@@ -573,4 +647,24 @@ func (c *Checker) missingImport(id *Ident, name string) bool {
 	fix[0].Edits = append(fix[0].Edits, rename)
 	c.errorfFix(id.P, fix, "%s.%s needs an import; add `import * as %s from %q`", id.Name, name, pluralAlias[id.Name], path)
 	return true
+}
+
+// moduleEnumName returns "Alias.Enum" when x is that expression, Alias being a
+// namespace import and Enum an enum the module exports. It returns "" for
+// anything else, so `Geo.Shape.Circle` can name a constructor.
+func (c *Checker) moduleEnumName(x Expr) string {
+	fe, ok := x.(*FieldExpr)
+	if !ok {
+		return ""
+	}
+	id, ok := fe.Target.(*Ident)
+	if !ok || c.lookup(id.Name) != nil || c.mod.consts[id.Name] != nil {
+		return ""
+	}
+	name := id.Name + "." + fe.Name
+	if en := c.enumByName(name); en.et != nil || en.g != nil {
+		id.setType(&ModuleType{Path: c.modules[id.Name]})
+		return name
+	}
+	return ""
 }

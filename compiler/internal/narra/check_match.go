@@ -2,6 +2,7 @@ package narra
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -21,6 +22,7 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 		if et, ok := t.(*EnumType); ok {
 			if v := et.Variant(p.Name); v != nil {
 				p.Variant = v
+				c.requireQualified(p, et)
 				return
 			}
 			if startsUpper(p.Name) {
@@ -61,6 +63,9 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 			return
 		}
 		p.Variant = v
+		if p.Enum == "" {
+			c.requireQualified(p, et)
+		}
 		if p.Args == nil {
 			return
 		}
@@ -455,4 +460,41 @@ func ctorText(t Type, k int, args []string) string {
 		return "false"
 	}
 	return "_"
+}
+
+// requireQualified reports a constructor pattern written without its enum.
+// Some, None, Ok and Err of the prelude stay bare (D71).
+func (c *Checker) requireQualified(p *Pattern, et *EnumType) {
+	if et.Module == "" && preludeCtors[p.Name] == et.Name {
+		return
+	}
+	enum, visible := c.enumNameFor(et)
+	fixes := c.qualifyFix(p.Pos, enum)
+	if !visible && et.Module != "" && c.mod.importAt.Line > 0 {
+		// The module does not name the enum yet, so the fix imports it too.
+		at := c.mod.importAt
+		fixes[0].Edits = append(fixes[0].Edits, Edit{Start: at, End: at, Text: "import { " + enum + " } from \"" + et.Module + "\"\n"})
+	}
+	c.errorfFix(p.Pos, fixes, "constructor %s needs its enum; write %s.%s", p.Name, enum, p.Name)
+}
+
+// enumNameFor returns the name the current module uses for et: a declared or
+// imported name, or a namespace path Alias.Enum, or the plain name (false when the module cannot name it).
+func (c *Checker) enumNameFor(et *EnumType) (string, bool) {
+	for _, n := range c.visibleEnums("") {
+		if c.namesEnum(n, et) {
+			return n, true
+		}
+	}
+	var aliases []string
+	for a := range c.modules {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+	for _, a := range aliases {
+		if c.modules[a] == et.Module && c.namesEnum(a+"."+et.Name, et) {
+			return a + "." + et.Name, true
+		}
+	}
+	return et.Name, false
 }

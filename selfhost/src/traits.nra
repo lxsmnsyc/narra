@@ -66,8 +66,8 @@ export function findTraitFunc(c: Checker, tr: int, name: string): int {
 // for any other type. Two modules may use one name.
 function typeTraitsKey(c: Checker, t: Type): string {
   return match (t) {
-    TStruct(i) => `${c.structs[i].module}|${c.structs[i].name}`
-    TEnum(i) => `${c.enums[i].module}|${c.enums[i].name}`
+    Type.TStruct(i) => `${c.structs[i].module}|${c.structs[i].name}`
+    Type.TEnum(i) => `${c.enums[i].module}|${c.enums[i].name}`
     _ => ""
   }
 }
@@ -84,7 +84,7 @@ export function typeTraitsOf(mutable c: Checker, t: Type): int uses alloc {
   if (c.typeTraitIndex[key] is Some(i)) {
     return i
   }
-  if (t is TStruct(s)) {
+  if (t is Type.TStruct(s)) {
     if (c.structs[s].tuple) {
       let derived: Map<int, bool> = Map {}
       const ordered = stdTrait(c, "Ordered")
@@ -127,12 +127,12 @@ export function declareTraits(mutable c: Checker, f: File) uses alloc {
   const mod = modPath(c)
   for (const d of Arrays.values(f.decls)) {
     match (d) {
-      Trait(td) => declareTrait(mutable c, td, mod)
-      Struct(sd) => {
+      Decl.Trait(td) => declareTrait(mutable c, td, mod)
+      Decl.Struct(sd) => {
         const info = TypeTraits { name: sd.name, module: mod, pos: sd.pos, generic: Arrays.length(sd.typeParams) > 0, implExprs: sd.impls, derivExprs: sd.derived, listed: Map {}, derived: Map {}, blocks: Map {} }
         const _ = addTypeTraitsEntry(mutable c, `${mod}|${sd.name}`, info)
       }
-      Enum(ed) => {
+      Decl.Enum(ed) => {
         const info = TypeTraits { name: ed.name, module: mod, pos: ed.pos, generic: Arrays.length(ed.typeParams) > 0, implExprs: ed.impls, derivExprs: ed.derived, listed: Map {}, derived: Map {}, blocks: Map {} }
         const _ = addTypeTraitsEntry(mutable c, `${mod}|${ed.name}`, info)
       }
@@ -141,8 +141,8 @@ export function declareTraits(mutable c: Checker, f: File) uses alloc {
   }
   for (const d of Arrays.values(f.decls)) {
     match (d) {
-      Struct(sd) => declareListed(mutable c, `${mod}|${sd.name}`)
-      Enum(ed) => declareListed(mutable c, `${mod}|${ed.name}`)
+      Decl.Struct(sd) => declareListed(mutable c, `${mod}|${sd.name}`)
+      Decl.Enum(ed) => declareListed(mutable c, `${mod}|${ed.name}`)
       _ => {}
     }
   }
@@ -242,7 +242,7 @@ export function funcBounds(mutable c: Checker, fd: FuncDecl, tps: Array<int>) us
 export function resolveTraits(mutable c: Checker, f: File) uses alloc {
   const mod = modPath(c)
   for (const d of Arrays.values(f.decls)) {
-    if (d is Trait(td)) {
+    if (d is Decl.Trait(td)) {
       if (c.scopes[c.cur].traits[td.name] is Some(ti)) {
         if (c.traits[ti].module == mod && c.traits[ti].decl.pos == td.pos) {
           resolveTraitDecl(mutable c, ti)
@@ -251,7 +251,7 @@ export function resolveTraits(mutable c: Checker, f: File) uses alloc {
     }
   }
   for (const d of Arrays.values(f.decls)) {
-    if (d is Impl(id)) {
+    if (d is Decl.Impl(id)) {
       resolveImpl(mutable c, id)
     }
   }
@@ -260,8 +260,8 @@ export function resolveTraits(mutable c: Checker, f: File) uses alloc {
   }
   for (const d of Arrays.values(f.decls)) {
     match (d) {
-      Struct(sd) => {
-        let t = TVoid
+      Decl.Struct(sd) => {
+        let t = Type.TVoid
         if (Arrays.length(sd.typeParams) == 0) {
           if (lookupType(c, sd.name) is Some(st)) {
             t = st
@@ -269,8 +269,8 @@ export function resolveTraits(mutable c: Checker, f: File) uses alloc {
         }
         checkListed(mutable c, mod, sd.name, t)
       }
-      Enum(ed) => {
-        let t = TVoid
+      Decl.Enum(ed) => {
+        let t = Type.TVoid
         if (Arrays.length(ed.typeParams) == 0) {
           if (lookupType(c, ed.name) is Some(et)) {
             t = et
@@ -315,7 +315,7 @@ function checkListed(mutable c: Checker, mod: string, name: string, t: Type) use
     }
     // A generic type derives a trait for the instances whose contents
     // implement it, so only concrete types are checked here.
-    if (t == TVoid) {
+    if (t == Type.TVoid) {
       continue
     }
     for (const fl of Arrays.values(fieldsOf(c, t))) {
@@ -329,13 +329,13 @@ function checkListed(mutable c: Checker, mod: string, name: string, t: Type) use
 
 function containsParam(c: Checker, t: Type, p: int): bool {
   return match (t) {
-    TParam(q) => q == p
-    TArray(e) => containsParam(c, e, p)
-    TBox(e) => containsParam(c, e, p)
-    TMap(k, v) => containsParam(c, k, p) || containsParam(c, v, p)
-    TFunc(ps, r) => anyParam(c, ps, p) || containsParam(c, r, p)
-    TStruct(i) => anyParam(c, c.structs[i].args, p)
-    TEnum(i) => anyParam(c, c.enums[i].args, p)
+    Type.TParam(q) => q == p
+    Type.TArray(e) => containsParam(c, e, p)
+    Type.TBox(e) => containsParam(c, e, p)
+    Type.TMap(k, v) => containsParam(c, k, p) || containsParam(c, v, p)
+    Type.TFunc(ps, r) => anyParam(c, ps, p) || containsParam(c, r, p)
+    Type.TStruct(i) => anyParam(c, c.structs[i].args, p)
+    Type.TEnum(i) => anyParam(c, c.enums[i].args, p)
     _ => false
   }
 }
@@ -353,7 +353,7 @@ function resolveTraitDecl(mutable c: Checker, ti: int) uses alloc {
   const td = c.traits[ti].decl
   const name = c.traits[ti].name
   const selfP = c.traits[ti].selfParam
-  c.env = Map { "Self": TParam(selfP) }
+  c.env = Map { "Self": Type.TParam(selfP) }
   let seen: Map<string, bool> = Map {}
   for (const fd of Arrays.values(td.funcs)) {
     if (Arrays.length(fd.typeParams) > 0) {
@@ -437,7 +437,7 @@ function resolveImpl(mutable c: Checker, d: ImplDecl) uses alloc {
     errorf(mutable c, te.pos, `type ${te.name} is not generic`)
     return
   }
-  let t = TVoid
+  let t = Type.TVoid
   if (lookupType(c, te.name) is Some(nt)) {
     t = nt
   }
@@ -535,7 +535,7 @@ function signatureText(mutable c: Checker, tr: int, k: int, selfMap: Map<int, Ty
   }
   let s = `function ${tf.name}(${Str.join(parts, ", ")})`
   const r = substitute(mutable c, tf.result, selfMap)
-  if (r != TVoid) {
+  if (r != Type.TVoid) {
     s = `${s}: ${typeString(c, r)}`
   }
   return s
@@ -545,10 +545,10 @@ function signatureText(mutable c: Checker, tr: int, k: int, selfMap: Map<int, Ty
 export function fieldsOf(c: Checker, t: Type): Array<Field> uses alloc {
   let out: Array<Field> = []
   match (t) {
-    TStruct(i) => {
+    Type.TStruct(i) => {
       out = c.structs[i].fields
     }
-    TEnum(i) => {
+    Type.TEnum(i) => {
       for (const v of Arrays.values(c.enums[i].variants)) {
         for (const f of Arrays.values(v.fields)) {
           Arrays.push(mutable out, f)
@@ -586,7 +586,7 @@ function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
   const std = c.traits[tr].std
   const name = c.traits[tr].name
   match (t) {
-    TParam(p) => {
+    Type.TParam(p) => {
       if (c.bounds[p] is Some(bs)) {
         for (const b of Arrays.values(bs)) {
           if (b == tr) {
@@ -596,19 +596,19 @@ function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
       }
       return false
     }
-    TVoid => {
+    Type.TVoid => {
       return false
     }
-    TStringBuilder => {
+    Type.TStringBuilder => {
       return false
     }
-    TArray(e) => {
+    Type.TArray(e) => {
       return std && typeImplements(mutable c, e, tr)
     }
-    TBox(e) => {
+    Type.TBox(e) => {
       return std && typeImplements(mutable c, e, tr)
     }
-    TDistinct(i) => {
+    Type.TDistinct(i) => {
       if (!std || !(name == "Equatable" || name == "Hashable")) {
         return false
       }
@@ -617,22 +617,22 @@ function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
       }
       return false
     }
-    TStruct(_) => {
+    Type.TStruct(_) => {
       return nominalImplements(mutable c, t, tr)
     }
-    TEnum(_) => {
+    Type.TEnum(_) => {
       return nominalImplements(mutable c, t, tr)
     }
-    TFunc(_, _) => {
+    Type.TFunc(_, _) => {
       return false
     }
-    TMap(_, _) => {
+    Type.TMap(_, _) => {
       return false
     }
-    TRange => {
+    Type.TRange => {
       return false
     }
-    TModule(_) => {
+    Type.TModule(_) => {
       return false
     }
     _ => {
@@ -640,7 +640,7 @@ function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
       if (!std) {
         return false
       }
-      return name != "Hashable" || t != TF64
+      return name != "Hashable" || t != Type.TF64
     }
   }
 }
@@ -691,7 +691,7 @@ export function checkBounds(mutable c: Checker, pos: Pos, fd: FuncDecl, tps: Arr
 // checkEquatable checks that `==` and `!=` work on t.
 export function checkEquatable(mutable c: Checker, pos: Pos, t: Type) uses alloc {
   const eq = stdTrait(c, "Equatable")
-  if (t == TVoid || typeImplements(mutable c, t, eq)) {
+  if (t == Type.TVoid || typeImplements(mutable c, t, eq)) {
     return
   }
   let seen: Map<string, bool> = Map {}
@@ -712,25 +712,25 @@ export function containsFunc(c: Checker, t: Type, mutable seen: Map<string, bool
   }
   seen[key] = true
   match (t) {
-    TFunc(_, _) => {
+    Type.TFunc(_, _) => {
       return true
     }
-    TArray(e) => {
+    Type.TArray(e) => {
       return containsFunc(c, e, mutable seen)
     }
-    TBox(e) => {
+    Type.TBox(e) => {
       return containsFunc(c, e, mutable seen)
     }
-    TDistinct(i) => {
+    Type.TDistinct(i) => {
       if (c.distincts[i].base is Some(b)) {
         return containsFunc(c, b, mutable seen)
       }
       return false
     }
-    TStruct(_) => {
+    Type.TStruct(_) => {
       return anyFunc(c, t, mutable seen)
     }
-    TEnum(_) => {
+    Type.TEnum(_) => {
       return anyFunc(c, t, mutable seen)
     }
     _ => {
@@ -759,34 +759,34 @@ export function mapKeyProblem(mutable c: Checker, t: Type, mutable seen: Map<str
   }
   seen[key] = true
   match (t) {
-    TF64 => {
+    Type.TF64 => {
       return "float keys are not allowed"
     }
-    TVoid => {
+    Type.TVoid => {
       return "void has no value"
     }
-    TArray(e) => {
+    Type.TArray(e) => {
       return mapKeyProblem(mutable c, e, mutable seen)
     }
-    TBox(e) => {
+    Type.TBox(e) => {
       return mapKeyProblem(mutable c, e, mutable seen)
     }
-    TDistinct(i) => {
+    Type.TDistinct(i) => {
       if (c.distincts[i].base is Some(b)) {
         return mapKeyProblem(mutable c, b, mutable seen)
       }
       return ""
     }
-    TFunc(_, _) => {
+    Type.TFunc(_, _) => {
       return "a function is not hashable"
     }
-    TMap(_, _) => {
+    Type.TMap(_, _) => {
       return "a map is not hashable"
     }
-    TStruct(_) => {
+    Type.TStruct(_) => {
       return nominalKeyProblem(mutable c, t, mutable seen)
     }
-    TEnum(_) => {
+    Type.TEnum(_) => {
       return nominalKeyProblem(mutable c, t, mutable seen)
     }
     _ => {

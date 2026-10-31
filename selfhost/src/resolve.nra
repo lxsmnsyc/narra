@@ -6,6 +6,7 @@
 //
 // qualifiedType resolves `Alias.Name` through the module scopes
 // (selfhost-check-imports, scopes.nra).
+import { Decl } from "narrac/ast"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { TypeExpr, FieldDecl, VariantDecl, Pos } from "narrac/ast"
@@ -22,7 +23,7 @@ export function resolveOpt(mutable c: Checker, te: Option<TypeExpr>): Type uses 
   if (te is Some(t)) {
     return resolveType(mutable c, t)
   }
-  return TVoid
+  return Type.TVoid
 }
 
 // funcResult resolves the result of a function type, where `void` means the
@@ -31,11 +32,11 @@ export function funcResult(mutable c: Checker, te: Option<Box<TypeExpr>>): Type 
   if (te is Some(b)) {
     const t = b.value
     if (t.name == "void" && Arrays.length(t.args) == 0 && !t.isFunc) {
-      return TVoid
+      return Type.TVoid
     }
     return resolveType(mutable c, t)
   }
-  return TVoid
+  return Type.TVoid
 }
 
 export function resolveType(mutable c: Checker, te: TypeExpr): Type uses alloc {
@@ -44,7 +45,7 @@ export function resolveType(mutable c: Checker, te: TypeExpr): Type uses alloc {
     for (const a of Arrays.values(te.args)) {
       Arrays.push(mutable params, resolveType(mutable c, a))
     }
-    return TFunc(params, funcResult(mutable c, te.result))
+    return Type.TFunc(params, funcResult(mutable c, te.result))
   }
   if (te.isTuple) {
     return tupleType(mutable c, te)
@@ -61,40 +62,40 @@ export function resolveType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   if (te.name == "Box" && !userType(c, "Box")) {
     if (nargs != 1) {
       errorf(mutable c, te.pos, "Box takes one type argument")
-      return TVoid
+      return Type.TVoid
     }
-    return TBox(resolveType(mutable c, te.args[0]))
+    return Type.TBox(resolveType(mutable c, te.args[0]))
   }
   if (te.name == "Map" && !userType(c, "Map")) {
     if (nargs != 2) {
       errorf(mutable c, te.pos, "Map takes two type arguments")
-      return TVoid
+      return Type.TVoid
     }
     const k = resolveType(mutable c, te.args[0])
     const v = resolveType(mutable c, te.args[1])
     checkMapKey(mutable c, te.pos, k)
-    return TMap(k, v)
+    return Type.TMap(k, v)
   }
   if (te.name == "Array") {
     if (nargs != 1) {
       errorf(mutable c, te.pos, "Array takes one type argument")
-      return TVoid
+      return Type.TVoid
     }
-    return TArray(resolveType(mutable c, te.args[0]))
+    return Type.TArray(resolveType(mutable c, te.args[0]))
   }
   if (te.name == "number") {
     errorf(mutable c, te.pos, "there is no `number`; use `int` or `f64`")
-    return TInt
+    return Type.TInt
   }
   if (te.name == "boolean") {
     errorf(mutable c, te.pos, "use `bool`")
-    return TBool
+    return Type.TBool
   }
   if (lookupGeneric(c, te.name) is Some(g)) {
     const want = Arrays.length(c.generics[g].params)
     if (nargs != want) {
       errorf(mutable c, te.pos, `${te.name} takes ${Int.toString(want)} type arguments`)
-      return TVoid
+      return Type.TVoid
     }
     let args: Array<Type> = []
     for (const a of Arrays.values(te.args)) {
@@ -105,17 +106,17 @@ export function resolveType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   const named = lookupType(c, te.name)
   if (named is None && te.name == "Tuple") {
     errorf(mutable c, te.pos, "there is no Tuple type; write a tuple type as #[A, B]")
-    return TVoid
+    return Type.TVoid
   }
   if (nargs > 0) {
     errorf(mutable c, te.pos, `type ${te.name} is not generic`)
-    return TVoid
+    return Type.TVoid
   }
   if (named is Some(t)) {
     return t
   }
   errorf(mutable c, te.pos, `unknown type ${quoteGo(te.name)}`)
-  return TVoid
+  return Type.TVoid
 }
 
 // qualifiedType resolves `Alias.Name`, where Alias is a namespace import of
@@ -129,19 +130,19 @@ function qualifiedType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   }
   if (s < 0) {
     errorf(mutable c, te.pos, `unknown module ${quoteGo(alias)} in type ${te.name}; import it with \`import * as ${alias} from "..."\``)
-    return TVoid
+    return Type.TVoid
   }
   const d = exported(mutable c, te.pos, s, name)
   if (d is None) {
-    return TVoid
+    return Type.TVoid
   }
   let isType = false
   match (d) {
     Some(decl) => {
       isType = match (decl) {
-        Struct(_) => true
-        Enum(_) => true
-        Distinct(_) => true
+        Decl.Struct(_) => true
+        Decl.Enum(_) => true
+        Decl.Distinct(_) => true
         _ => false
       }
     }
@@ -149,7 +150,7 @@ function qualifiedType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   }
   if (!isType) {
     errorf(mutable c, te.pos, `${te.name} is not a type`)
-    return TVoid
+    return Type.TVoid
   }
   const nargs = Arrays.length(te.args)
   if (c.scopes[s].generics[name] is Some(g)) {
@@ -157,7 +158,7 @@ function qualifiedType(mutable c: Checker, te: TypeExpr): Type uses alloc {
       const want = Arrays.length(c.generics[g].params)
       if (nargs != want) {
         errorf(mutable c, te.pos, `${te.name} takes ${Int.toString(want)} type arguments`)
-        return TVoid
+        return Type.TVoid
       }
       let args: Array<Type> = []
       for (const a of Arrays.values(te.args)) {
@@ -168,12 +169,12 @@ function qualifiedType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   }
   if (nargs > 0) {
     errorf(mutable c, te.pos, `type ${te.name} is not generic`)
-    return TVoid
+    return Type.TVoid
   }
   if (c.scopes[s].types[name] is Some(t)) {
     return t
   }
-  return TVoid
+  return Type.TVoid
 }
 
 // userType reports whether the module declares its own type with this name
@@ -187,7 +188,7 @@ function tupleType(mutable c: Checker, te: TypeExpr): Type uses alloc {
   const n = Arrays.length(te.args)
   if (n < 2) {
     errorf(mutable c, te.pos, `a tuple type needs at least two element types, found ${Int.toString(n)}`)
-    return TVoid
+    return Type.TVoid
   }
   let elems: Array<Type> = []
   for (const a of Arrays.values(te.args)) {
@@ -207,7 +208,7 @@ export function tupleOf(mutable c: Checker, elems: Array<Type>): Type uses alloc
   for (const k of Ranges.between(0, Arrays.length(elems))) {
     Arrays.push(mutable fields, Field { name: Int.toString(k), t: elems[k], default: None, pos: zeroPos() })
   }
-  const t = TStruct(Arrays.length(c.structs))
+  const t = Type.TStruct(Arrays.length(c.structs))
   Arrays.push(mutable c.structs, StructInfo { name: "Tuple", module: "", scope: 0, pos: zeroPos(), opaque: false, tuple: true, args: elems, generic: -1, fields: fields })
   c.instances[key] = t
   Arrays.push(mutable c.instTypes, t)
@@ -297,9 +298,9 @@ export function instantiate(mutable c: Checker, g: int, args: Array<Type>): Type
   if (info.module == "") {
     pos = zeroPos()
   }
-  let t = TEnum(Arrays.length(c.enums))
+  let t = Type.TEnum(Arrays.length(c.enums))
   if (info.isStruct) {
-    t = TStruct(Arrays.length(c.structs))
+    t = Type.TStruct(Arrays.length(c.structs))
     Arrays.push(mutable c.structs, StructInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, opaque: info.opaque, tuple: false, args: args, generic: g, fields: [] })
   } else {
     Arrays.push(mutable c.enums, EnumInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, args: args, generic: g, variants: [] })
@@ -318,7 +319,7 @@ export function instantiate(mutable c: Checker, g: int, args: Array<Type>): Type
 function fillInstance(mutable c: Checker, g: int, t: Type) uses alloc {
   const info = c.generics[g]
   let m: Map<int, Type> = Map {}
-  if (t is TStruct(idx)) {
+  if (t is Type.TStruct(idx)) {
     const args = c.structs[idx].args
     for (const k of Ranges.between(0, Arrays.length(info.params))) {
       m[info.params[k]] = args[k]
@@ -329,7 +330,7 @@ function fillInstance(mutable c: Checker, g: int, t: Type) uses alloc {
       Arrays.push(mutable fields, Field { name: f.name, t: ft, default: f.default, pos: f.pos })
     }
     c.structs[idx].fields = fields
-  } else if (t is TEnum(idx)) {
+  } else if (t is Type.TEnum(idx)) {
     const args = c.enums[idx].args
     for (const k of Ranges.between(0, Arrays.length(info.params))) {
       m[info.params[k]] = args[k]
@@ -352,30 +353,30 @@ function fillInstance(mutable c: Checker, g: int, t: Type) uses alloc {
 // instances it names.
 export function substitute(mutable c: Checker, t: Type, m: Map<int, Type>): Type uses alloc {
   match (t) {
-    TParam(p) => {
+    Type.TParam(p) => {
       if (m[p] is Some(r)) {
         return r
       }
       return t
     }
-    TArray(e) => {
-      return TArray(substitute(mutable c, e, m))
+    Type.TArray(e) => {
+      return Type.TArray(substitute(mutable c, e, m))
     }
-    TBox(e) => {
-      return TBox(substitute(mutable c, e, m))
+    Type.TBox(e) => {
+      return Type.TBox(substitute(mutable c, e, m))
     }
-    TMap(k, v) => {
+    Type.TMap(k, v) => {
       const nk = substitute(mutable c, k, m)
-      return TMap(nk, substitute(mutable c, v, m))
+      return Type.TMap(nk, substitute(mutable c, v, m))
     }
-    TFunc(ps, r) => {
+    Type.TFunc(ps, r) => {
       if (!containsTypeParam(c, t)) {
         return t
       }
       const nps = substituteAll(mutable c, ps, m)
-      return TFunc(nps, substitute(mutable c, r, m))
+      return Type.TFunc(nps, substitute(mutable c, r, m))
     }
-    TStruct(i) => {
+    Type.TStruct(i) => {
       const s = c.structs[i]
       if (Arrays.length(s.args) == 0) {
         return t
@@ -386,7 +387,7 @@ export function substitute(mutable c: Checker, t: Type, m: Map<int, Type>): Type
       }
       return instantiate(mutable c, s.generic, args)
     }
-    TEnum(i) => {
+    Type.TEnum(i) => {
       const e = c.enums[i]
       if (Arrays.length(e.args) == 0) {
         return t

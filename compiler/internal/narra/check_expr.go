@@ -72,6 +72,11 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			e.Ctor = v
 			return t
 		}
+		if en := c.moduleEnumName(e.Target); en != "" {
+			t, v := c.ctor(e.P, en, e.Name, nil, want)
+			e.Ctor = v
+			return t
+		}
 		if id, ok := e.Target.(*Ident); ok && c.lookup(id.Name) == nil && c.mod.consts[id.Name] == nil && c.missingImport(id, e.Name) {
 			return TVoid
 		}

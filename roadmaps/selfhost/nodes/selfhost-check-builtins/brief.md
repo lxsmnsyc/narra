@@ -61,6 +61,7 @@ Port to Narra the type checks of the generic standard library functions, the one
 
 - [ ] `TestSelfhostStdCalls` compares `narrac types` with `narra types` on earlier inputs plus `testdata/typesdump/stdcalls/`: one case per check name with a success and an error, `Array.push` on a mutable local, `Map.remove`, `Map.keys`/`entries` in a `for`, `Box.new`, `Range.upTo`/`between`, every Option and Result helper (capturing and non-capturing callbacks, `Err(...)` with a typed arrow, wrong callback type, void callback, not an Option), `Test.eq`/`ne`/`panics`/`panicsWith`/`golden` inside and outside a `test` block (E0907).
 - [ ] Skips: none for std calls; the test lists the remaining `unsupported:` skips by construct.
+- [ ] `testdata/closures.nra` and `testdata/closures_nested.nra` are compared, and their `stack`/`captures` attributes equal Go's. selfhost-check-closures deferred them here because they use the Array builtins.
 - [ ] Earlier harnesses pass; `narra emit` output unchanged.
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 

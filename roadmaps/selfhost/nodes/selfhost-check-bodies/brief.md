@@ -1,7 +1,7 @@
 ---
 id: selfhost-check-bodies
 title: Self-hosted checker: body core and the types dump
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

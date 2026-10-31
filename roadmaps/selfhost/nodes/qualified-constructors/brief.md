@@ -1,7 +1,8 @@
 ---
 id: qualified-constructors
 title: Enum constructors are always qualified
-status: active
+status: done
+spent: 637000
 priority: must
 type: feature
 outline: false
@@ -57,11 +58,11 @@ Implement D71. A user enum's constructors are written `Enum.Variant`, in express
 
 ## Acceptance
 
-- [ ] Error tests: a bare constructor in an expression, in a match arm and in an `is` pattern; `import { Teacher }`; a duplicate constructor in one enum. Each new format has a code.
-- [ ] `testdata/diagnostics/` cases for the bare constructor and the constructor import; the fixed files compile.
-- [ ] Samples run: two enums with the same constructor name and different fields in one module; `Maybe.None` next to the prelude `None`; a struct and a constructor with the same name; qualified access through an alias and a namespace import.
-- [ ] `compiler/testdata`, `selfhost` and `bench` are migrated; every selfhost harness passes.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] Error tests: a bare constructor in an expression, in a match arm and in an `is` pattern; `import { Teacher }`; a duplicate constructor in one enum. Each new format has a code.
+- [x] `testdata/diagnostics/` cases for the bare constructor and the constructor import; the fixed files compile.
+- [x] Samples run: two enums with the same constructor name and different fields in one module; `Maybe.None` next to the prelude `None`; a struct and a constructor with the same name; qualified access through an alias and a namespace import.
+- [x] `compiler/testdata`, `selfhost` and `bench` are migrated; every selfhost harness passes.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
@@ -71,3 +72,5 @@ M: the lookup moves from scope to the enum, two errors with fixes, and a scripte
 
 - Do not rename prefixed constructors (`Type.TStruct`, `Token.TokIdent`). That is a separate optional change.
 - Land this before any selfhost-check-* node starts.
+
+Shipped in PR #36 (merge 0dbba28). Qualified access through a type alias is not tested: `export type` aliases are not supported yet.

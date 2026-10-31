@@ -1,7 +1,8 @@
 ---
 id: import-alias-rules
 title: Import aliases never equal type names, and named imports can rename
-status: active
+status: done
+spent: 622000
 priority: must
 type: feature
 outline: false
@@ -55,11 +56,11 @@ Implement D72. An import alias that equals a type name visible in the module (pr
 
 ## Acceptance
 
-- [ ] Error tests: an alias equal to a prelude type, to a declared type, to an imported type; a duplicate alias; a renamed import that clashes with a declaration. Each new format has a code in `diagnosticCodes`.
-- [ ] A `testdata/diagnostics/` case: `import * as Array from "std/array"` with a call, fixed to `Arrays` in the import and the call, compiles.
-- [ ] `import { map as mapArray } from "std/array"` and `import { map as mapOption } from "std/option"` in one file run (sample with `.out`).
-- [ ] `compiler/testdata`, `selfhost` and `bench` use the plural aliases; the self-hosted parser and import harnesses pass.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] Error tests: an alias equal to a prelude type, to a declared type, to an imported type; a duplicate alias; a renamed import that clashes with a declaration. Each new format has a code in `diagnosticCodes`.
+- [x] A `testdata/diagnostics/` case: `import * as Array from "std/array"` with a call, fixed to `Arrays` in the import and the call, compiles.
+- [x] `import { map as mapArray } from "std/array"` and `import { map as mapOption } from "std/option"` in one file run (sample with `.out`).
+- [x] `compiler/testdata`, `selfhost` and `bench` use the plural aliases; the self-hosted parser and import harnesses pass.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
@@ -69,3 +70,5 @@ M: one parser form in two parsers, two checks with fixes, and a scripted migrati
 
 - Do not change module paths (`std/array` stays). Plural is only the convention: any alias that follows the rules must work.
 - Land this before any selfhost-check-* node starts, because the migration rewrites `selfhost/src`.
+
+Shipped in PR #35 (merge bb3e306).

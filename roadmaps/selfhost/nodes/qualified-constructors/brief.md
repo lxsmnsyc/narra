@@ -1,7 +1,7 @@
 ---
 id: qualified-constructors
 title: Enum constructors are always qualified
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

@@ -7,7 +7,7 @@
 import { StdFunc, Registry, newRegistry, register } from "narrac/builtins"
 import { Type } from "narrac/types"
 import { Checker, typeString } from "narrac/check"
-import { instantiate, tupleOf } from "narrac/resolve"
+import { instantiate, findTupleType } from "narrac/resolve"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -90,11 +90,11 @@ const STD_FUNCS: Array<StdFunc> = [
 // stdRegistry builds the registry from the table. Registration order gives
 // the module order of Go's moduleList.
 export function stdRegistry(): Registry uses alloc {
-  let r = newRegistry()
-  for (const f of Arrays.values(STD_FUNCS)) {
-    register(mutable r, f)
+  let registry = newRegistry()
+  for (const builtin of Arrays.values(STD_FUNCS)) {
+    register(mutable registry, builtin)
   }
-  return r
+  return registry
 }
 
 // stdType resolves the type text of a registry entry (`Option<int>`,
@@ -102,21 +102,21 @@ export function stdRegistry(): Registry uses alloc {
 // prelude's generics, so an instance is made on first use, as Go's
 // preludeEnum does when a builtin's Check runs. The body checker calls it
 // at the call site, never during the declaration passes.
-export function stdType(mutable c: Checker, text: string): Type uses alloc {
-  const n = Str.length(text)
+export function stdType(mutable checker: Checker, text: string): Type uses alloc {
+  const length = Str.length(text)
   if (Str.startsWith(text, "#[")) {
-    let elems: Array<Type> = []
-    for (const part of Arrays.values(splitTop(Str.slice(text, 2, n - 1)))) {
-      Arrays.push(mutable elems, stdType(mutable c, part))
+    let elements: Array<Type> = []
+    for (const part of Arrays.values(splitTop(Str.slice(text, 2, length - 1)))) {
+      Arrays.push(mutable elements, stdType(mutable checker, part))
     }
-    return tupleOf(mutable c, elems)
+    return findTupleType(mutable checker, elements)
   }
   const open = Str.indexOf(text, "<")
-  if (open is Some(i)) {
-    const head = Str.slice(text, 0, i)
+  if (open is Some(index)) {
+    const head = Str.slice(text, 0, index)
     let args: Array<Type> = []
-    for (const part of Arrays.values(splitTop(Str.slice(text, i + 1, n - 1)))) {
-      Arrays.push(mutable args, stdType(mutable c, part))
+    for (const part of Arrays.values(splitTop(Str.slice(text, index + 1, length - 1)))) {
+      Arrays.push(mutable args, stdType(mutable checker, part))
     }
     if (head == "Array") {
       return Type.TArray(args[0])
@@ -127,16 +127,16 @@ export function stdType(mutable c: Checker, text: string): Type uses alloc {
     if (head == "Map") {
       return Type.TMap(args[0], args[1])
     }
-    if (c.scopes[0].generics[head] is Some(g)) {
-      return instantiate(mutable c, g, args)
+    if (checker.scopes[0].generics[head] is Some(generic)) {
+      return instantiate(mutable checker, generic, args)
     }
     panic(`stdType: unknown generic ${head}`)
   }
   const prims = ["int", "f64", "bool", "char", "string", "void", "StringBuilder"]
   const types = [Type.TInt, Type.TF64, Type.TBool, Type.TChar, Type.TStr, Type.TVoid, Type.TStringBuilder]
-  for (const k of Ranges.between(0, Arrays.length(prims))) {
-    if (prims[k] == text) {
-      return types[k]
+  for (const index of Ranges.between(0, Arrays.length(prims))) {
+    if (prims[index] == text) {
+      return types[index]
     }
   }
   panic(`stdType: unknown type ${text}`)
@@ -148,16 +148,16 @@ function splitTop(text: string): Array<string> uses alloc {
   let parts: Array<string> = []
   let depth = 0
   let start = 0
-  const n = Str.length(text)
-  for (const k of Ranges.between(0, n)) {
-    const b = Str.byteAt(text, k)
-    if (b == 60 || b == 91) {
+  const length = Str.length(text)
+  for (const index of Ranges.between(0, length)) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 60 || byte == 91) {
       depth = depth + 1
-    } else if (b == 62 || b == 93) {
+    } else if (byte == 62 || byte == 93) {
       depth = depth - 1
-    } else if (b == 44 && depth == 0) {
-      Arrays.push(mutable parts, Str.trim(Str.slice(text, start, k)))
-      start = k + 1
+    } else if (byte == 44 && depth == 0) {
+      Arrays.push(mutable parts, Str.trim(Str.slice(text, start, index)))
+      start = index + 1
     }
   }
   Arrays.push(mutable parts, Str.trim(Str.sliceFrom(text, start)))
@@ -165,22 +165,22 @@ function splitTop(text: string): Array<string> uses alloc {
 }
 
 // typeProblems resolves every type text of the registry with stdType and
-// returns a line for each one that does not print back as written. c must
+// returns a line for each one that does not print back as written. The checker must
 // have declared the prelude. `narrac builtins` prints the lines, so a typo
 // in the table fails TestSelfhostBuiltins.
-export function typeProblems(mutable c: Checker): Array<string> uses alloc {
+export function typeProblems(mutable checker: Checker): Array<string> uses alloc {
   let out: Array<string> = []
-  const funcs = c.registry.funcs
-  for (const f of Arrays.values(funcs)) {
-    let texts = f.params
-    if (f.result != "") {
-      Arrays.push(mutable texts, f.result)
+  const funcs = checker.registry.funcs
+  for (const builtin of Arrays.values(funcs)) {
+    let texts = builtin.params
+    if (builtin.result != "") {
+      Arrays.push(mutable texts, builtin.result)
     }
     for (const text of Arrays.values(texts)) {
-      const t = stdType(mutable c, text)
-      const back = typeString(c, t)
+      const type = stdType(mutable checker, text)
+      const back = typeString(checker, type)
       if (back != text) {
-        Arrays.push(mutable out, `stdType ${f.name}: ${text} prints as ${back}`)
+        Arrays.push(mutable out, `stdType ${builtin.name}: ${text} prints as ${back}`)
       }
     }
   }

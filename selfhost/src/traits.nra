@@ -9,7 +9,7 @@
 // because `implements` is a keyword.
 //
 // Left to selfhost-check-bodies: traitCall (calls of trait functions),
-// implBodies (the bodies of the functions in c.impls) and the call-site use
+// implBodies (the bodies of the functions in checker.impls) and the call-site use
 // of checkBounds. Left to selfhost-check-imports: importTrait (an exported
 // trait of another module becomes visible by name in ModScope.traits).
 import * as Int from "std/int"
@@ -27,8 +27,8 @@ function isDerivable(name: string): bool {
   return name == "Equatable" || name == "Hashable" || name == "Ordered" || name == "Show"
 }
 
-function modPath(c: Checker): string {
-  return c.scopes[c.cur].path
+function modPath(checker: Checker): string {
+  return checker.scopes[checker.cur].path
 }
 
 function typeNamePos(): Pos {
@@ -37,26 +37,26 @@ function typeNamePos(): Pos {
 
 // ownsType reports whether the current module may write `implement` blocks
 // for the type: only the module that declares it.
-function ownsType(c: Checker, info: TypeTraits): bool {
-  return info.module == modPath(c)
+function ownsType(checker: Checker, info: TypeTraits): bool {
+  return info.module == modPath(checker)
 }
 
 // traitNamed finds the trait a type expression names, or reports it.
-function traitNamed(mutable c: Checker, te: TypeExpr): int uses alloc {
-  const tr = lookupTrait(c, te.name)
-  if (tr < 0) {
-    errorf(mutable c, te.pos, `unknown trait ${quoteGo(te.name)}`)
+function traitNamed(mutable checker: Checker, typeExpr: TypeExpr): int uses alloc {
+  const traitIndex = lookupTrait(checker, typeExpr.name)
+  if (traitIndex < 0) {
+    errorf(mutable checker, typeExpr.pos, `unknown trait ${quoteGo(typeExpr.name)}`)
   }
-  return tr
+  return traitIndex
 }
 
-// findTraitFunc is the index of function name in trait tr, or -1. The body
+// findTraitFunc is the index of a function in a trait by name, or -1. The body
 // checker uses it for `Trait.function(args)`.
-export function findTraitFunc(c: Checker, tr: int, name: string): int {
+export function findTraitFunc(checker: Checker, traitIndex: int, name: string): int {
   let found = -1
-  for (const k of Ranges.between(0, Arrays.length(c.traits[tr].funcs))) {
-    if (c.traits[tr].funcs[k].name == name) {
-      found = k
+  for (const index of Ranges.between(0, Arrays.length(checker.traits[traitIndex].funcs))) {
+    if (checker.traits[traitIndex].funcs[index].name == name) {
+      found = index
     }
   }
   return found
@@ -64,31 +64,31 @@ export function findTraitFunc(c: Checker, tr: int, name: string): int {
 
 // typeTraitsKey names a struct or enum declaration, "<module>|<name>", or ""
 // for any other type. Two modules may use one name.
-function typeTraitsKey(c: Checker, t: Type): string {
-  return match (t) {
-    Type.TStruct(i) => `${c.structs[i].module}|${c.structs[i].name}`
-    Type.TEnum(i) => `${c.enums[i].module}|${c.enums[i].name}`
+function typeTraitsKey(checker: Checker, type: Type): string {
+  return match (type) {
+    Type.TStruct(index) => `${checker.structs[index].module}|${checker.structs[index].name}`
+    Type.TEnum(index) => `${checker.enums[index].module}|${checker.enums[index].name}`
     _ => ""
   }
 }
 
-// typeTraitsOf is the Checker.typeTraits index for a struct or enum type
+// findTypeTraits is the Checker.typeTraits index for a struct or enum type
 // (an instance shares its template's), or -1. Tuples derive Show and
 // Ordered, and get Equatable and Hashable like any struct: Go records that
 // when the first tuple is made, here it is made on first use.
-export function typeTraitsOf(mutable c: Checker, t: Type): int uses alloc {
-  const key = typeTraitsKey(c, t)
+export function findTypeTraits(mutable checker: Checker, type: Type): int uses alloc {
+  const key = typeTraitsKey(checker, type)
   if (key == "") {
     return -1
   }
-  if (c.typeTraitIndex[key] is Some(i)) {
-    return i
+  if (checker.typeTraitIndex[key] is Some(index)) {
+    return index
   }
-  if (t is Type.TStruct(s)) {
-    if (c.structs[s].tuple) {
+  if (type is Type.TStruct(structIndex)) {
+    if (checker.structs[structIndex].tuple) {
       let derived: Map<int, bool> = Map {}
-      const ordered = stdTrait(c, "Ordered")
-      const show = stdTrait(c, "Show")
+      const ordered = stdTrait(checker, "Ordered")
+      const show = stdTrait(checker, "Show")
       if (ordered >= 0) {
         derived[ordered] = true
       }
@@ -96,142 +96,142 @@ export function typeTraitsOf(mutable c: Checker, t: Type): int uses alloc {
         derived[show] = true
       }
       const info = TypeTraits { name: "Tuple", module: "", pos: typeNamePos(), generic: true, implExprs: [], derivExprs: [], listed: Map {}, derived: derived, blocks: Map {} }
-      return addTypeTraitsEntry(mutable c, key, info)
+      return addTypeTraitsEntry(mutable checker, key, info)
     }
   }
   return -1
 }
 
-function typeTraitsAt(c: Checker, key: string): int {
-  if (c.typeTraitIndex[key] is Some(i)) {
-    return i
+function typeTraitsAt(checker: Checker, key: string): int {
+  if (checker.typeTraitIndex[key] is Some(index)) {
+    return index
   }
   return -1
 }
 
-function addTypeTraitsEntry(mutable c: Checker, key: string, info: TypeTraits): int uses alloc {
-  if (c.typeTraitIndex[key] is Some(i)) {
-    c.typeTraits[i] = info
-    return i
+function addTypeTraitsEntry(mutable checker: Checker, key: string, info: TypeTraits): int uses alloc {
+  if (checker.typeTraitIndex[key] is Some(index)) {
+    checker.typeTraits[index] = info
+    return index
   }
-  const idx = Arrays.length(c.typeTraits)
-  Arrays.push(mutable c.typeTraits, info)
-  c.typeTraitIndex[key] = idx
-  return idx
+  const newIndex = Arrays.length(checker.typeTraits)
+  Arrays.push(mutable checker.typeTraits, info)
+  checker.typeTraitIndex[key] = newIndex
+  return newIndex
 }
 
 // declareTraits records trait names and what each struct and enum lists in
 // `implements` and `derives`. It runs after type names are declared and
 // before function signatures, so constraints can name traits.
-export function declareTraits(mutable c: Checker, f: File) uses alloc {
-  const mod = modPath(c)
-  for (const d of Arrays.values(f.decls)) {
-    match (d) {
-      Decl.Trait(td) => declareTrait(mutable c, td, mod)
-      Decl.Struct(sd) => {
-        const info = TypeTraits { name: sd.name, module: mod, pos: sd.pos, generic: Arrays.length(sd.typeParams) > 0, implExprs: sd.impls, derivExprs: sd.derived, listed: Map {}, derived: Map {}, blocks: Map {} }
-        const _ = addTypeTraitsEntry(mutable c, `${mod}|${sd.name}`, info)
+export function declareTraits(mutable checker: Checker, file: File) uses alloc {
+  const modulePath = modPath(checker)
+  for (const decl of Arrays.values(file.decls)) {
+    match (decl) {
+      Decl.Trait(traitDecl) => declareTrait(mutable checker, traitDecl, modulePath)
+      Decl.Struct(structDecl) => {
+        const info = TypeTraits { name: structDecl.name, module: modulePath, pos: structDecl.pos, generic: Arrays.length(structDecl.typeParams) > 0, implExprs: structDecl.impls, derivExprs: structDecl.derived, listed: Map {}, derived: Map {}, blocks: Map {} }
+        const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${structDecl.name}`, info)
       }
-      Decl.Enum(ed) => {
-        const info = TypeTraits { name: ed.name, module: mod, pos: ed.pos, generic: Arrays.length(ed.typeParams) > 0, implExprs: ed.impls, derivExprs: ed.derived, listed: Map {}, derived: Map {}, blocks: Map {} }
-        const _ = addTypeTraitsEntry(mutable c, `${mod}|${ed.name}`, info)
+      Decl.Enum(enumDecl) => {
+        const info = TypeTraits { name: enumDecl.name, module: modulePath, pos: enumDecl.pos, generic: Arrays.length(enumDecl.typeParams) > 0, implExprs: enumDecl.impls, derivExprs: enumDecl.derived, listed: Map {}, derived: Map {}, blocks: Map {} }
+        const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${enumDecl.name}`, info)
       }
       _ => {}
     }
   }
-  for (const d of Arrays.values(f.decls)) {
-    match (d) {
-      Decl.Struct(sd) => declareListed(mutable c, `${mod}|${sd.name}`)
-      Decl.Enum(ed) => declareListed(mutable c, `${mod}|${ed.name}`)
+  for (const decl of Arrays.values(file.decls)) {
+    match (decl) {
+      Decl.Struct(structDecl) => declareListed(mutable checker, `${modulePath}|${structDecl.name}`)
+      Decl.Enum(enumDecl) => declareListed(mutable checker, `${modulePath}|${enumDecl.name}`)
       _ => {}
     }
   }
 }
 
-function declareTrait(mutable c: Checker, td: TraitDecl, mod: string) uses alloc {
-  const isType = lookupType(c, td.name) is Some(_)
-  const isGeneric = lookupGeneric(c, td.name) is Some(_)
-  if (lookupTrait(c, td.name) >= 0 || isType || isGeneric) {
-    errorf(mutable c, td.pos, `${quoteGo(td.name)} is declared twice`)
+function declareTrait(mutable checker: Checker, traitDecl: TraitDecl, modulePath: string) uses alloc {
+  const isType = lookupType(checker, traitDecl.name) is Some(_)
+  const isGeneric = lookupGeneric(checker, traitDecl.name) is Some(_)
+  if (lookupTrait(checker, traitDecl.name) >= 0 || isType || isGeneric) {
+    errorf(mutable checker, traitDecl.pos, `${quoteGo(traitDecl.name)} is declared twice`)
     return
   }
-  const selfParam = Arrays.length(c.params)
-  Arrays.push(mutable c.params, ParamInfo { name: "Self" })
-  const idx = Arrays.length(c.traits)
-  const info = TraitInfo { name: td.name, module: mod, std: mod == "" && isDerivable(td.name), decl: td, selfParam: selfParam, funcs: [] }
-  Arrays.push(mutable c.traits, info)
-  const s = c.cur
-  c.scopes[s].traits[td.name] = idx
+  const selfParam = Arrays.length(checker.params)
+  Arrays.push(mutable checker.params, ParamInfo { name: "Self" })
+  const index = Arrays.length(checker.traits)
+  const info = TraitInfo { name: traitDecl.name, module: modulePath, std: modulePath == "" && isDerivable(traitDecl.name), decl: traitDecl, selfParam: selfParam, funcs: [] }
+  Arrays.push(mutable checker.traits, info)
+  const scope = checker.cur
+  checker.scopes[scope].traits[traitDecl.name] = index
 }
 
 // declareListed resolves the `implements` and `derives` lists of one type.
-function declareListed(mutable c: Checker, key: string) uses alloc {
-  const ix = typeTraitsAt(c, key)
-  if (ix < 0) {
+function declareListed(mutable checker: Checker, key: string) uses alloc {
+  const entryIndex = typeTraitsAt(checker, key)
+  if (entryIndex < 0) {
     return
   }
-  c.typeTraits[ix].listed = Map {}
-  c.typeTraits[ix].derived = Map {}
-  c.typeTraits[ix].blocks = Map {}
-  const info = c.typeTraits[ix]
-  for (const te of Arrays.values(info.implExprs)) {
-    const tr = traitNamed(mutable c, te)
-    if (tr < 0) {
+  checker.typeTraits[entryIndex].listed = Map {}
+  checker.typeTraits[entryIndex].derived = Map {}
+  checker.typeTraits[entryIndex].blocks = Map {}
+  const info = checker.typeTraits[entryIndex]
+  for (const typeExpr of Arrays.values(info.implExprs)) {
+    const traitIndex = traitNamed(mutable checker, typeExpr)
+    if (traitIndex < 0) {
       continue
     }
-    if (c.typeTraits[ix].listed[tr] is Some(_)) {
-      const msg1 = `${c.traits[tr].name} is listed twice in \`implements\``
-      errorf(mutable c, te.pos, msg1)
+    if (checker.typeTraits[entryIndex].listed[traitIndex] is Some(_)) {
+      const message = `${checker.traits[traitIndex].name} is listed twice in \`implements\``
+      errorf(mutable checker, typeExpr.pos, message)
     }
-    c.typeTraits[ix].listed[tr] = true
+    checker.typeTraits[entryIndex].listed[traitIndex] = true
   }
-  for (const te of Arrays.values(info.derivExprs)) {
-    if (te.name == "Shape") {
-      errorf(mutable c, te.pos, "derives Shape is not supported by this compiler yet")
+  for (const typeExpr of Arrays.values(info.derivExprs)) {
+    if (typeExpr.name == "Shape") {
+      errorf(mutable checker, typeExpr.pos, "derives Shape is not supported by this compiler yet")
       continue
     }
-    const tr = traitNamed(mutable c, te)
-    if (tr < 0) {
+    const traitIndex = traitNamed(mutable checker, typeExpr)
+    if (traitIndex < 0) {
       continue
     }
-    if (!c.traits[tr].std) {
-      const msg2 = `${c.traits[tr].name} cannot be derived; only Equatable, Hashable, Ordered and Show can. List it in \`implements\` and write \`implement ${c.traits[tr].name} for ${info.name}\``
-      errorf(mutable c, te.pos, msg2)
+    if (!checker.traits[traitIndex].std) {
+      const message = `${checker.traits[traitIndex].name} cannot be derived; only Equatable, Hashable, Ordered and Show can. List it in \`implements\` and write \`implement ${checker.traits[traitIndex].name} for ${info.name}\``
+      errorf(mutable checker, typeExpr.pos, message)
       continue
     }
-    if (c.typeTraits[ix].derived[tr] is Some(_)) {
-      const msg3 = `${c.traits[tr].name} is listed twice in \`derives\``
-      errorf(mutable c, te.pos, msg3)
+    if (checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
+      const message = `${checker.traits[traitIndex].name} is listed twice in \`derives\``
+      errorf(mutable checker, typeExpr.pos, message)
     }
-    c.typeTraits[ix].derived[tr] = true
+    checker.typeTraits[entryIndex].derived[traitIndex] = true
   }
 }
 
 // funcBounds resolves the constraints of a generic function's type
-// parameters (tps are Checker.params indexes).
-export function funcBounds(mutable c: Checker, fd: FuncDecl, tps: Array<int>) uses alloc {
-  for (const i of Ranges.between(0, Arrays.length(fd.bounds))) {
-    if (i >= Arrays.length(tps)) {
+// parameters (typeParams are Checker.params indexes).
+export function funcBounds(mutable checker: Checker, funcDecl: FuncDecl, typeParams: Array<int>) uses alloc {
+  for (const i of Ranges.between(0, Arrays.length(funcDecl.bounds))) {
+    if (i >= Arrays.length(typeParams)) {
       continue
     }
     let seen: Map<int, bool> = Map {}
-    for (const te of Arrays.values(fd.bounds[i])) {
-      const tr = traitNamed(mutable c, te)
-      if (tr < 0) {
+    for (const typeExpr of Arrays.values(funcDecl.bounds[i])) {
+      const traitIndex = traitNamed(mutable checker, typeExpr)
+      if (traitIndex < 0) {
         continue
       }
-      if (seen[tr] is Some(_)) {
-        const msg4 = `${c.traits[tr].name} is listed twice in the constraint of ${fd.typeParams[i]}`
-        errorf(mutable c, te.pos, msg4)
+      if (seen[traitIndex] is Some(_)) {
+        const message = `${checker.traits[traitIndex].name} is listed twice in the constraint of ${funcDecl.typeParams[i]}`
+        errorf(mutable checker, typeExpr.pos, message)
         continue
       }
-      seen[tr] = true
-      let cur: Array<int> = []
-      if (c.bounds[tps[i]] is Some(bs)) {
-        cur = bs
+      seen[traitIndex] = true
+      let current: Array<int> = []
+      if (checker.bounds[typeParams[i]] is Some(bounds)) {
+        current = bounds
       }
-      Arrays.push(mutable cur, tr)
-      c.bounds[tps[i]] = cur
+      Arrays.push(mutable current, traitIndex)
+      checker.bounds[typeParams[i]] = current
     }
   }
 }
@@ -239,44 +239,44 @@ export function funcBounds(mutable c: Checker, fd: FuncDecl, tps: Array<int>) us
 // resolveTraits resolves trait signatures and `implement` blocks, then
 // checks that every listed trait is implemented and every derived trait can
 // be. It runs once every type's fields are known.
-export function resolveTraits(mutable c: Checker, f: File) uses alloc {
-  const mod = modPath(c)
-  for (const d of Arrays.values(f.decls)) {
-    if (d is Decl.Trait(td)) {
-      if (c.scopes[c.cur].traits[td.name] is Some(ti)) {
-        if (c.traits[ti].module == mod && c.traits[ti].decl.pos == td.pos) {
-          resolveTraitDecl(mutable c, ti)
+export function resolveTraits(mutable checker: Checker, file: File) uses alloc {
+  const modulePath = modPath(checker)
+  for (const decl of Arrays.values(file.decls)) {
+    if (decl is Decl.Trait(traitDecl)) {
+      if (checker.scopes[checker.cur].traits[traitDecl.name] is Some(traitIndex)) {
+        if (checker.traits[traitIndex].module == modulePath && checker.traits[traitIndex].decl.pos == traitDecl.pos) {
+          resolveTraitDecl(mutable checker, traitIndex)
         }
       }
     }
   }
-  for (const d of Arrays.values(f.decls)) {
-    if (d is Decl.Impl(id)) {
-      resolveImpl(mutable c, id)
+  for (const decl of Arrays.values(file.decls)) {
+    if (decl is Decl.Impl(implDecl)) {
+      resolveImpl(mutable checker, implDecl)
     }
   }
-  if (mod == "") {
+  if (modulePath == "") {
     return
   }
-  for (const d of Arrays.values(f.decls)) {
-    match (d) {
-      Decl.Struct(sd) => {
-        let t = Type.TVoid
-        if (Arrays.length(sd.typeParams) == 0) {
-          if (lookupType(c, sd.name) is Some(st)) {
-            t = st
+  for (const decl of Arrays.values(file.decls)) {
+    match (decl) {
+      Decl.Struct(structDecl) => {
+        let type = Type.TVoid
+        if (Arrays.length(structDecl.typeParams) == 0) {
+          if (lookupType(checker, structDecl.name) is Some(structType)) {
+            type = structType
           }
         }
-        checkListed(mutable c, mod, sd.name, t)
+        checkListed(mutable checker, modulePath, structDecl.name, type)
       }
-      Decl.Enum(ed) => {
-        let t = Type.TVoid
-        if (Arrays.length(ed.typeParams) == 0) {
-          if (lookupType(c, ed.name) is Some(et)) {
-            t = et
+      Decl.Enum(enumDecl) => {
+        let type = Type.TVoid
+        if (Arrays.length(enumDecl.typeParams) == 0) {
+          if (lookupType(checker, enumDecl.name) is Some(enumType)) {
+            type = enumType
           }
         }
-        checkListed(mutable c, mod, ed.name, t)
+        checkListed(mutable checker, modulePath, enumDecl.name, type)
       }
       _ => {}
     }
@@ -284,233 +284,233 @@ export function resolveTraits(mutable c: Checker, f: File) uses alloc {
 }
 
 // checkListed checks one type: every listed trait has a block or a derive,
-// and every derived trait holds for the fields. t is TVoid for a generic type.
-function checkListed(mutable c: Checker, mod: string, name: string, t: Type) uses alloc {
-  const ix = typeTraitsAt(c, `${mod}|${name}`)
-  if (ix < 0) {
+// and every derived trait holds for the fields. The type is TVoid for a generic type.
+function checkListed(mutable checker: Checker, modulePath: string, name: string, type: Type) uses alloc {
+  const entryIndex = typeTraitsAt(checker, `${modulePath}|${name}`)
+  if (entryIndex < 0) {
     return
   }
-  const info = c.typeTraits[ix]
-  for (const te of Arrays.values(info.implExprs)) {
-    const tr = lookupTrait(c, te.name)
-    if (tr >= 0) {
-      if (c.typeTraits[ix].blocks[tr] is None && c.typeTraits[ix].derived[tr] is None) {
-        const msg5 = `${info.name} implements ${c.traits[tr].name} but has no \`implement ${c.traits[tr].name} for ${info.name}\` block or \`derives ${c.traits[tr].name}\``
-        errorf(mutable c, te.pos, msg5)
+  const info = checker.typeTraits[entryIndex]
+  for (const typeExpr of Arrays.values(info.implExprs)) {
+    const traitIndex = lookupTrait(checker, typeExpr.name)
+    if (traitIndex >= 0) {
+      if (checker.typeTraits[entryIndex].blocks[traitIndex] is None && checker.typeTraits[entryIndex].derived[traitIndex] is None) {
+        const message = `${info.name} implements ${checker.traits[traitIndex].name} but has no \`implement ${checker.traits[traitIndex].name} for ${info.name}\` block or \`derives ${checker.traits[traitIndex].name}\``
+        errorf(mutable checker, typeExpr.pos, message)
       }
     }
   }
-  for (const te of Arrays.values(info.derivExprs)) {
-    const tr = lookupTrait(c, te.name)
-    if (tr < 0) {
+  for (const typeExpr of Arrays.values(info.derivExprs)) {
+    const traitIndex = lookupTrait(checker, typeExpr.name)
+    if (traitIndex < 0) {
       continue
     }
-    if (c.typeTraits[ix].derived[tr] is None) {
+    if (checker.typeTraits[entryIndex].derived[traitIndex] is None) {
       continue
     }
-    if (c.typeTraits[ix].blocks[tr] is Some(_)) {
-      const msg6 = `${info.name} both derives and implements ${c.traits[tr].name}; keep one`
-      errorf(mutable c, te.pos, msg6)
+    if (checker.typeTraits[entryIndex].blocks[traitIndex] is Some(_)) {
+      const message = `${info.name} both derives and implements ${checker.traits[traitIndex].name}; keep one`
+      errorf(mutable checker, typeExpr.pos, message)
       continue
     }
     // A generic type derives a trait for the instances whose contents
     // implement it, so only concrete types are checked here.
-    if (t == Type.TVoid) {
+    if (type == Type.TVoid) {
       continue
     }
-    for (const fl of Arrays.values(fieldsOf(c, t))) {
-      if (!typeImplements(mutable c, fl.t, tr)) {
-        const msg7 = `cannot derive ${c.traits[tr].name} for ${info.name}: field ${quoteGo(fl.name)} has type ${typeString(c, fl.t)}, which does not implement ${c.traits[tr].name}`
-        errorf(mutable c, te.pos, msg7)
+    for (const field of Arrays.values(listFields(checker, type))) {
+      if (!typeImplements(mutable checker, field.fieldType, traitIndex)) {
+        const message = `cannot derive ${checker.traits[traitIndex].name} for ${info.name}: field ${quoteGo(field.name)} has type ${typeString(checker, field.fieldType)}, which does not implement ${checker.traits[traitIndex].name}`
+        errorf(mutable checker, typeExpr.pos, message)
       }
     }
   }
 }
 
-function containsParam(c: Checker, t: Type, p: int): bool {
-  return match (t) {
-    Type.TParam(q) => q == p
-    Type.TArray(e) => containsParam(c, e, p)
-    Type.TBox(e) => containsParam(c, e, p)
-    Type.TMap(k, v) => containsParam(c, k, p) || containsParam(c, v, p)
-    Type.TFunc(ps, r) => anyParam(c, ps, p) || containsParam(c, r, p)
-    Type.TStruct(i) => anyParam(c, c.structs[i].args, p)
-    Type.TEnum(i) => anyParam(c, c.enums[i].args, p)
+function containsParam(checker: Checker, type: Type, param: int): bool {
+  return match (type) {
+    Type.TParam(found) => found == param
+    Type.TArray(element) => containsParam(checker, element, param)
+    Type.TBox(element) => containsParam(checker, element, param)
+    Type.TMap(key, value) => containsParam(checker, key, param) || containsParam(checker, value, param)
+    Type.TFunc(parameters, result) => anyParam(checker, parameters, param) || containsParam(checker, result, param)
+    Type.TStruct(index) => anyParam(checker, checker.structs[index].args, param)
+    Type.TEnum(index) => anyParam(checker, checker.enums[index].args, param)
     _ => false
   }
 }
 
-function anyParam(c: Checker, ts: Array<Type>, p: int): bool {
-  for (const t of Arrays.values(ts)) {
-    if (containsParam(c, t, p)) {
+function anyParam(checker: Checker, types: Array<Type>, param: int): bool {
+  for (const type of Arrays.values(types)) {
+    if (containsParam(checker, type, param)) {
       return true
     }
   }
   return false
 }
 
-function resolveTraitDecl(mutable c: Checker, ti: int) uses alloc {
-  const td = c.traits[ti].decl
-  const name = c.traits[ti].name
-  const selfP = c.traits[ti].selfParam
-  c.env = Map { "Self": Type.TParam(selfP) }
+function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc {
+  const traitDecl = checker.traits[traitIndex].decl
+  const name = checker.traits[traitIndex].name
+  const selfParam = checker.traits[traitIndex].selfParam
+  checker.env = Map { "Self": Type.TParam(selfParam) }
   let seen: Map<string, bool> = Map {}
-  for (const fd of Arrays.values(td.funcs)) {
-    if (Arrays.length(fd.typeParams) > 0) {
-      errorf(mutable c, fd.pos, "trait functions cannot have type parameters in this compiler yet")
+  for (const funcDecl of Arrays.values(traitDecl.funcs)) {
+    if (Arrays.length(funcDecl.typeParams) > 0) {
+      errorf(mutable checker, funcDecl.pos, "trait functions cannot have type parameters in this compiler yet")
     }
-    if (seen[fd.name] is Some(_)) {
-      errorf(mutable c, fd.pos, `${name} declares function ${quoteGo(fd.name)} twice`)
+    if (seen[funcDecl.name] is Some(_)) {
+      errorf(mutable checker, funcDecl.pos, `${name} declares function ${quoteGo(funcDecl.name)} twice`)
     }
-    seen[fd.name] = true
+    seen[funcDecl.name] = true
     let params: Array<Type> = []
     let mentionsSelf = false
-    for (const p of Arrays.values(fd.params)) {
-      const pt = resolveOpt(mutable c, p.type)
-      setParamType(mutable c, p.id, pt)
-      Arrays.push(mutable params, pt)
-      if (containsParam(c, pt, selfP)) {
+    for (const param of Arrays.values(funcDecl.params)) {
+      const paramType = resolveOpt(mutable checker, param.type)
+      setParamType(mutable checker, param.id, paramType)
+      Arrays.push(mutable params, paramType)
+      if (containsParam(checker, paramType, selfParam)) {
         mentionsSelf = true
       }
     }
-    const result = resolveOpt(mutable c, fd.result)
+    const result = resolveOpt(mutable checker, funcDecl.result)
     if (!mentionsSelf) {
-      errorf(mutable c, fd.pos, `a parameter of ${name}.${fd.name} must use Self, so a call can tell which implementation to run`)
+      errorf(mutable checker, funcDecl.pos, `a parameter of ${name}.${funcDecl.name} must use Self, so a call can tell which implementation to run`)
     }
-    const tf = TraitFunc { name: fd.name, decl: fd, params: params, result: result }
-    Arrays.push(mutable c.traits[ti].funcs, tf)
+    const traitFunc = TraitFunc { name: funcDecl.name, decl: funcDecl, params: params, result: result }
+    Arrays.push(mutable checker.traits[traitIndex].funcs, traitFunc)
   }
-  c.env = Map {}
+  checker.env = Map {}
 }
 
 // typeExprString prints a type as written, for error messages.
-export function typeExprString(te: TypeExpr): string uses alloc {
-  if (te.isFunc) {
+export function typeExprString(typeExpr: TypeExpr): string uses alloc {
+  if (typeExpr.isFunc) {
     return "a function type"
   }
-  if (Arrays.length(te.args) == 0 && !te.isTuple) {
-    return te.name
+  if (Arrays.length(typeExpr.args) == 0 && !typeExpr.isTuple) {
+    return typeExpr.name
   }
   let parts: Array<string> = []
-  for (const a of Arrays.values(te.args)) {
-    Arrays.push(mutable parts, typeExprString(a))
+  for (const argument of Arrays.values(typeExpr.args)) {
+    Arrays.push(mutable parts, typeExprString(argument))
   }
-  if (te.isTuple) {
+  if (typeExpr.isTuple) {
     return `#[${Str.join(parts, ", ")}]`
   }
-  return `${te.name}<${Str.join(parts, ", ")}>`
+  return `${typeExpr.name}<${Str.join(parts, ", ")}>`
 }
 
 // resolveImpl checks one `implement Trait for Type` block and records it in
 // Checker.impls and Checker.implFuncs.
-function resolveImpl(mutable c: Checker, d: ImplDecl) uses alloc {
-  const tr = traitNamed(mutable c, d.traitType)
-  if (tr < 0) {
+function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
+  const traitIndex = traitNamed(mutable checker, implDecl.traitType)
+  if (traitIndex < 0) {
     return
   }
-  const trName = c.traits[tr].name
-  const te = d.type
-  let ix = -1
-  if (!te.isFunc) {
-    if (lookupType(c, te.name) is Some(named)) {
-      const key = typeTraitsKey(c, named)
+  const traitName = checker.traits[traitIndex].name
+  const typeExpr = implDecl.type
+  let entryIndex = -1
+  if (!typeExpr.isFunc) {
+    if (lookupType(checker, typeExpr.name) is Some(named)) {
+      const key = typeTraitsKey(checker, named)
       if (key != "") {
-        ix = typeTraitsAt(c, key)
+        entryIndex = typeTraitsAt(checker, key)
       }
-    } else if (lookupGeneric(c, te.name) is Some(g)) {
-      ix = typeTraitsAt(c, `${c.generics[g].module}|${c.generics[g].name}`)
-    } else if (te.name != "Array") {
-      errorf(mutable c, te.pos, `unknown type ${quoteGo(te.name)}`)
+    } else if (lookupGeneric(checker, typeExpr.name) is Some(generic)) {
+      entryIndex = typeTraitsAt(checker, `${checker.generics[generic].module}|${checker.generics[generic].name}`)
+    } else if (typeExpr.name != "Array") {
+      errorf(mutable checker, typeExpr.pos, `unknown type ${quoteGo(typeExpr.name)}`)
       return
     }
   }
-  if (ix < 0 || !ownsType(c, c.typeTraits[ix])) {
-    errorf(mutable c, d.pos, `cannot implement ${trName} for ${typeExprString(te)}: the type is declared in another module; wrap it in a struct`)
+  if (entryIndex < 0 || !ownsType(checker, checker.typeTraits[entryIndex])) {
+    errorf(mutable checker, implDecl.pos, `cannot implement ${traitName} for ${typeExprString(typeExpr)}: the type is declared in another module; wrap it in a struct`)
     return
   }
-  const info = c.typeTraits[ix]
+  const info = checker.typeTraits[entryIndex]
   if (info.generic) {
-    errorf(mutable c, d.pos, "implement blocks for generic types are not supported by this compiler yet; use derives")
+    errorf(mutable checker, implDecl.pos, "implement blocks for generic types are not supported by this compiler yet; use derives")
     return
   }
-  if (Arrays.length(te.args) > 0) {
-    errorf(mutable c, te.pos, `type ${te.name} is not generic`)
+  if (Arrays.length(typeExpr.args) > 0) {
+    errorf(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
     return
   }
-  let t = Type.TVoid
-  if (lookupType(c, te.name) is Some(nt)) {
-    t = nt
+  let type = Type.TVoid
+  if (lookupType(checker, typeExpr.name) is Some(namedType)) {
+    type = namedType
   }
-  if (info.listed[tr] is None) {
-    errorf(mutable c, d.pos, `${info.name} does not list ${trName} in \`implements\`; add \`implements ${trName}\` to its declaration`)
+  if (info.listed[traitIndex] is None) {
+    errorf(mutable checker, implDecl.pos, `${info.name} does not list ${traitName} in \`implements\`; add \`implements ${traitName}\` to its declaration`)
     return
   }
-  if (info.blocks[tr] is Some(_)) {
-    errorf(mutable c, d.pos, `${trName} is implemented twice for ${info.name}`)
+  if (info.blocks[traitIndex] is Some(_)) {
+    errorf(mutable checker, implDecl.pos, `${traitName} is implemented twice for ${info.name}`)
     return
   }
-  const bi = Arrays.length(c.impls)
-  c.typeTraits[ix].blocks[tr] = bi
-  const block = ImplInfo { decl: d, scope: c.cur, traitIdx: tr, t: t, funcs: [] }
-  Arrays.push(mutable c.impls, block)
+  const blockIndex = Arrays.length(checker.impls)
+  checker.typeTraits[entryIndex].blocks[traitIndex] = blockIndex
+  const block = ImplInfo { decl: implDecl, scope: checker.cur, traitIdx: traitIndex, forType: type, funcs: [] }
+  Arrays.push(mutable checker.impls, block)
   let selfMap: Map<int, Type> = Map {}
-  selfMap[c.traits[tr].selfParam] = t
-  c.env = Map { "Self": t }
+  selfMap[checker.traits[traitIndex].selfParam] = type
+  checker.env = Map { "Self": type }
   let got: Map<string, bool> = Map {}
-  for (const fd of Arrays.values(d.funcs)) {
-    if (Arrays.length(fd.typeParams) > 0) {
-      errorf(mutable c, fd.pos, "functions in an implement block cannot have type parameters in this compiler yet")
+  for (const funcDecl of Arrays.values(implDecl.funcs)) {
+    if (Arrays.length(funcDecl.typeParams) > 0) {
+      errorf(mutable checker, funcDecl.pos, "functions in an implement block cannot have type parameters in this compiler yet")
     }
-    for (const p of Arrays.values(fd.params)) {
-      const pt = resolveOpt(mutable c, p.type)
-      setParamType(mutable c, p.id, pt)
+    for (const param of Arrays.values(funcDecl.params)) {
+      const paramType = resolveOpt(mutable checker, param.type)
+      setParamType(mutable checker, param.id, paramType)
     }
-    const result = resolveOpt(mutable c, fd.result)
-    const k = findTraitFunc(c, tr, fd.name)
-    if (k < 0) {
-      errorf(mutable c, fd.pos, `trait ${trName} has no function ${quoteGo(fd.name)}`)
+    const result = resolveOpt(mutable checker, funcDecl.result)
+    const funcIndex = findTraitFunc(checker, traitIndex, funcDecl.name)
+    if (funcIndex < 0) {
+      errorf(mutable checker, funcDecl.pos, `trait ${traitName} has no function ${quoteGo(funcDecl.name)}`)
       continue
     }
-    if (got[fd.name] is Some(_)) {
-      errorf(mutable c, fd.pos, `function ${quoteGo(fd.name)} is implemented twice`)
+    if (got[funcDecl.name] is Some(_)) {
+      errorf(mutable checker, funcDecl.pos, `function ${quoteGo(funcDecl.name)} is implemented twice`)
       continue
     }
-    got[fd.name] = true
-    if (!sameSignature(mutable c, fd, result, tr, k, selfMap)) {
-      const text = signatureText(mutable c, tr, k, selfMap)
-      errorf(mutable c, fd.pos, `${trName}.${fd.name} for ${info.name} must be \`${text}\``)
+    got[funcDecl.name] = true
+    if (!sameSignature(mutable checker, funcDecl, result, traitIndex, funcIndex, selfMap)) {
+      const text = signatureText(mutable checker, traitIndex, funcIndex, selfMap)
+      errorf(mutable checker, funcDecl.pos, `${traitName}.${funcDecl.name} for ${info.name} must be \`${text}\``)
     }
-    const fi = Arrays.length(c.impls[bi].funcs)
-    Arrays.push(mutable c.impls[bi].funcs, ImplFunc { name: fd.name, decl: fd, result: result })
-    c.implFuncs[`${typeKey(t)}|${trName}.${fd.name}`] = ImplRef { block: bi, index: fi }
+    const implIndex = Arrays.length(checker.impls[blockIndex].funcs)
+    Arrays.push(mutable checker.impls[blockIndex].funcs, ImplFunc { name: funcDecl.name, decl: funcDecl, result: result })
+    checker.implFuncs[`${typeKey(type)}|${traitName}.${funcDecl.name}`] = ImplRef { block: blockIndex, index: implIndex }
   }
-  c.env = Map {}
-  for (const tf of Arrays.values(c.traits[tr].funcs)) {
-    if (got[tf.name] is None) {
-      errorf(mutable c, d.pos, `implement ${trName} for ${info.name} is missing function ${tf.name}`)
+  checker.env = Map {}
+  for (const traitFunc of Arrays.values(checker.traits[traitIndex].funcs)) {
+    if (got[traitFunc.name] is None) {
+      errorf(mutable checker, implDecl.pos, `implement ${traitName} for ${info.name} is missing function ${traitFunc.name}`)
     }
   }
 }
 
 // sameSignature reports whether an implementing function has the trait
 // function's signature with Self replaced (selfMap).
-function sameSignature(mutable c: Checker, fd: FuncDecl, result: Type, tr: int, k: int, selfMap: Map<int, Type>): bool uses alloc {
-  const tf = c.traits[tr].funcs[k]
-  const want = tf.decl
-  if (Arrays.length(fd.params) != Arrays.length(want.params)) {
+function sameSignature(mutable checker: Checker, funcDecl: FuncDecl, result: Type, traitIndex: int, funcIndex: int, selfMap: Map<int, Type>): bool uses alloc {
+  const traitFunc = checker.traits[traitIndex].funcs[funcIndex]
+  const want = traitFunc.decl
+  if (Arrays.length(funcDecl.params) != Arrays.length(want.params)) {
     return false
   }
-  const wantResult = substitute(mutable c, tf.result, selfMap)
+  const wantResult = substitute(mutable checker, traitFunc.result, selfMap)
   if (result != wantResult) {
     return false
   }
-  for (const i of Ranges.between(0, Arrays.length(fd.params))) {
-    const p = fd.params[i]
-    if (p.isMutable != want.params[i].isMutable || p.escaping != want.params[i].escaping) {
+  for (const i of Ranges.between(0, Arrays.length(funcDecl.params))) {
+    const param = funcDecl.params[i]
+    if (param.isMutable != want.params[i].isMutable || param.escaping != want.params[i].escaping) {
       return false
     }
-    const wantType = substitute(mutable c, tf.params[i], selfMap)
-    if (c.paramTypes[p.id] != wantType) {
+    const wantType = substitute(mutable checker, traitFunc.params[i], selfMap)
+    if (checker.paramTypes[param.id] != wantType) {
       return false
     }
   }
@@ -518,40 +518,40 @@ function sameSignature(mutable c: Checker, fd: FuncDecl, result: Type, tr: int, 
 }
 
 // signatureText prints the trait function's signature for an error message.
-function signatureText(mutable c: Checker, tr: int, k: int, selfMap: Map<int, Type>): string uses alloc {
-  const tf = c.traits[tr].funcs[k]
+function signatureText(mutable checker: Checker, traitIndex: int, funcIndex: int, selfMap: Map<int, Type>): string uses alloc {
+  const traitFunc = checker.traits[traitIndex].funcs[funcIndex]
   let parts: Array<string> = []
-  for (const i of Ranges.between(0, Arrays.length(tf.decl.params))) {
-    const p = tf.decl.params[i]
-    let m = ""
-    if (p.isMutable) {
-      m = "mutable "
+  for (const i of Ranges.between(0, Arrays.length(traitFunc.decl.params))) {
+    const param = traitFunc.decl.params[i]
+    let flags = ""
+    if (param.isMutable) {
+      flags = "mutable "
     }
-    if (p.escaping) {
-      m = "escaping "
+    if (param.escaping) {
+      flags = "escaping "
     }
-    const pt = substitute(mutable c, tf.params[i], selfMap)
-    Arrays.push(mutable parts, `${m}${p.name}: ${typeString(c, pt)}`)
+    const paramType = substitute(mutable checker, traitFunc.params[i], selfMap)
+    Arrays.push(mutable parts, `${flags}${param.name}: ${typeString(checker, paramType)}`)
   }
-  let s = `function ${tf.name}(${Str.join(parts, ", ")})`
-  const r = substitute(mutable c, tf.result, selfMap)
-  if (r != Type.TVoid) {
-    s = `${s}: ${typeString(c, r)}`
+  let text = `function ${traitFunc.name}(${Str.join(parts, ", ")})`
+  const result = substitute(mutable checker, traitFunc.result, selfMap)
+  if (result != Type.TVoid) {
+    text = `${text}: ${typeString(checker, result)}`
   }
-  return s
+  return text
 }
 
-// fieldsOf lists the fields of a struct, or of every variant of an enum.
-export function fieldsOf(c: Checker, t: Type): Array<Field> uses alloc {
+// listFields lists the fields of a struct, or of every variant of an enum.
+export function listFields(checker: Checker, type: Type): Array<Field> uses alloc {
   let out: Array<Field> = []
-  match (t) {
-    Type.TStruct(i) => {
-      out = c.structs[i].fields
+  match (type) {
+    Type.TStruct(index) => {
+      out = checker.structs[index].fields
     }
-    Type.TEnum(i) => {
-      for (const v of Arrays.values(c.enums[i].variants)) {
-        for (const f of Arrays.values(v.fields)) {
-          Arrays.push(mutable out, f)
+    Type.TEnum(index) => {
+      for (const variant of Arrays.values(checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          Arrays.push(mutable out, field)
         }
       }
     }
@@ -560,36 +560,36 @@ export function fieldsOf(c: Checker, t: Type): Array<Field> uses alloc {
   return out
 }
 
-// typeImplements reports whether t implements the trait (Go's implements).
+// typeImplements reports whether a type implements the trait (Go's implements).
 //
 // Equatable and Hashable are automatic for types whose contents implement
 // them (Hashable excludes f64). Arrays, boxes and the prelude enums
 // implement a standard trait when their contents do. A struct or enum
 // implements a trait through an `implement` block or `derives`. A type
 // parameter implements the traits in its constraint.
-export function typeImplements(mutable c: Checker, t: Type, tr: int): bool uses alloc {
-  if (tr < 0) {
+export function typeImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  if (traitIndex < 0) {
     return false
   }
-  const key = `${Int.toString(tr)}|${typeKey(t)}`
-  if (c.busy[key] is Some(_)) {
+  const key = `${Int.toString(traitIndex)}|${typeKey(type)}`
+  if (checker.busy[key] is Some(_)) {
     // Reached again through an array, as in `struct Tree { kids: Array<Tree> }`.
     return true
   }
-  c.busy[key] = true
-  const r = implementsOf(mutable c, t, tr)
-  const _ = Maps.remove(mutable c.busy, key)
-  return r
+  checker.busy[key] = true
+  const result = computeImplements(mutable checker, type, traitIndex)
+  const _ = Maps.remove(mutable checker.busy, key)
+  return result
 }
 
-function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
-  const std = c.traits[tr].std
-  const name = c.traits[tr].name
-  match (t) {
-    Type.TParam(p) => {
-      if (c.bounds[p] is Some(bs)) {
-        for (const b of Arrays.values(bs)) {
-          if (b == tr) {
+function computeImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  const std = checker.traits[traitIndex].std
+  const name = checker.traits[traitIndex].name
+  match (type) {
+    Type.TParam(param) => {
+      if (checker.bounds[param] is Some(bounds)) {
+        for (const bound of Arrays.values(bounds)) {
+          if (bound == traitIndex) {
             return true
           }
         }
@@ -602,26 +602,26 @@ function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
     Type.TStringBuilder => {
       return false
     }
-    Type.TArray(e) => {
-      return std && typeImplements(mutable c, e, tr)
+    Type.TArray(element) => {
+      return std && typeImplements(mutable checker, element, traitIndex)
     }
-    Type.TBox(e) => {
-      return std && typeImplements(mutable c, e, tr)
+    Type.TBox(element) => {
+      return std && typeImplements(mutable checker, element, traitIndex)
     }
-    Type.TDistinct(i) => {
+    Type.TDistinct(index) => {
       if (!std || !(name == "Equatable" || name == "Hashable")) {
         return false
       }
-      if (c.distincts[i].base is Some(b)) {
-        return typeImplements(mutable c, b, tr)
+      if (checker.distincts[index].base is Some(base)) {
+        return typeImplements(mutable checker, base, traitIndex)
       }
       return false
     }
     Type.TStruct(_) => {
-      return nominalImplements(mutable c, t, tr)
+      return nominalImplements(mutable checker, type, traitIndex)
     }
     Type.TEnum(_) => {
-      return nominalImplements(mutable c, t, tr)
+      return nominalImplements(mutable checker, type, traitIndex)
     }
     Type.TFunc(_, _) => {
       return false
@@ -640,98 +640,98 @@ function implementsOf(mutable c: Checker, t: Type, tr: int): bool uses alloc {
       if (!std) {
         return false
       }
-      return name != "Hashable" || t != Type.TF64
+      return name != "Hashable" || type != Type.TF64
     }
   }
 }
 
-function nominalImplements(mutable c: Checker, t: Type, tr: int): bool uses alloc {
-  const ix = typeTraitsOf(mutable c, t)
-  if (ix < 0) {
+function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  const entryIndex = findTypeTraits(mutable checker, type)
+  if (entryIndex < 0) {
     return false
   }
-  if (c.typeTraits[ix].blocks[tr] is Some(_)) {
+  if (checker.typeTraits[entryIndex].blocks[traitIndex] is Some(_)) {
     return true
   }
-  const name = c.traits[tr].name
-  const auto = c.traits[tr].std && (name == "Equatable" || name == "Hashable")
-  if (!auto && c.typeTraits[ix].derived[tr] is None) {
+  const name = checker.traits[traitIndex].name
+  const auto = checker.traits[traitIndex].std && (name == "Equatable" || name == "Hashable")
+  if (!auto && checker.typeTraits[entryIndex].derived[traitIndex] is None) {
     return false
   }
-  for (const f of Arrays.values(fieldsOf(c, t))) {
-    if (!typeImplements(mutable c, f.t, tr)) {
+  for (const field of Arrays.values(listFields(checker, type))) {
+    if (!typeImplements(mutable checker, field.fieldType, traitIndex)) {
       return false
     }
   }
   return true
 }
 
-// implFunc is the user implementation of a trait function for t, or None
+// implFunc is the user implementation of a trait function for a type, or None
 // when the compiler provides it (automatic Equatable and Hashable, derives).
 // The function is Checker.impls[ref.block].funcs[ref.index].
-export function implFunc(c: Checker, t: Type, tr: int, name: string): Option<ImplRef> uses alloc {
-  return c.implFuncs[`${typeKey(t)}|${c.traits[tr].name}.${name}`]
+export function implFunc(checker: Checker, type: Type, traitIndex: int, name: string): Option<ImplRef> uses alloc {
+  return checker.implFuncs[`${typeKey(type)}|${checker.traits[traitIndex].name}.${name}`]
 }
 
 // checkBounds checks a generic call's type arguments against the
-// constraints of the function's type parameters (tps are params indexes).
-export function checkBounds(mutable c: Checker, pos: Pos, fd: FuncDecl, tps: Array<int>, targs: Array<Type>) uses alloc {
-  for (const i of Ranges.between(0, Arrays.length(tps))) {
-    if (c.bounds[tps[i]] is Some(bs)) {
-      for (const tr of Arrays.values(bs)) {
-        if (!typeImplements(mutable c, targs[i], tr)) {
-          const msg8 = `${typeString(c, targs[i])} does not implement ${c.traits[tr].name}, which ${fd.name} needs for type parameter ${c.params[tps[i]].name}`
-          errorf(mutable c, pos, msg8)
+// constraints of the function's type parameters (typeParams are params indexes).
+export function checkBounds(mutable checker: Checker, pos: Pos, funcDecl: FuncDecl, typeParams: Array<int>, targs: Array<Type>) uses alloc {
+  for (const i of Ranges.between(0, Arrays.length(typeParams))) {
+    if (checker.bounds[typeParams[i]] is Some(bounds)) {
+      for (const traitIndex of Arrays.values(bounds)) {
+        if (!typeImplements(mutable checker, targs[i], traitIndex)) {
+          const message = `${typeString(checker, targs[i])} does not implement ${checker.traits[traitIndex].name}, which ${funcDecl.name} needs for type parameter ${checker.params[typeParams[i]].name}`
+          errorf(mutable checker, pos, message)
         }
       }
     }
   }
 }
 
-// checkEquatable checks that `==` and `!=` work on t.
-export function checkEquatable(mutable c: Checker, pos: Pos, t: Type) uses alloc {
-  const eq = stdTrait(c, "Equatable")
-  if (t == Type.TVoid || typeImplements(mutable c, t, eq)) {
+// checkEquatable checks that `==` and `!=` work on a type.
+export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) uses alloc {
+  const equatable = stdTrait(checker, "Equatable")
+  if (type == Type.TVoid || typeImplements(mutable checker, type, equatable)) {
     return
   }
   let seen: Map<string, bool> = Map {}
-  const text = typeString(c, t)
-  if (containsFunc(c, t, mutable seen)) {
-    errorf(mutable c, pos, `cannot use == on ${text}: it contains a function`)
-  } else if (containsTypeParam(c, t)) {
-    errorf(mutable c, pos, `== on ${text} needs Equatable; declare the type parameter as <T: Equatable>`)
+  const text = typeString(checker, type)
+  if (containsFunc(checker, type, mutable seen)) {
+    errorf(mutable checker, pos, `cannot use == on ${text}: it contains a function`)
+  } else if (containsTypeParam(checker, type)) {
+    errorf(mutable checker, pos, `== on ${text} needs Equatable; declare the type parameter as <T: Equatable>`)
   } else {
-    errorf(mutable c, pos, `${text} does not implement Equatable`)
+    errorf(mutable checker, pos, `${text} does not implement Equatable`)
   }
 }
 
-export function containsFunc(c: Checker, t: Type, mutable seen: Map<string, bool>): bool uses alloc {
-  const key = typeKey(t)
+export function containsFunc(checker: Checker, type: Type, mutable seen: Map<string, bool>): bool uses alloc {
+  const key = typeKey(type)
   if (seen[key] is Some(_)) {
     return false
   }
   seen[key] = true
-  match (t) {
+  match (type) {
     Type.TFunc(_, _) => {
       return true
     }
-    Type.TArray(e) => {
-      return containsFunc(c, e, mutable seen)
+    Type.TArray(element) => {
+      return containsFunc(checker, element, mutable seen)
     }
-    Type.TBox(e) => {
-      return containsFunc(c, e, mutable seen)
+    Type.TBox(element) => {
+      return containsFunc(checker, element, mutable seen)
     }
-    Type.TDistinct(i) => {
-      if (c.distincts[i].base is Some(b)) {
-        return containsFunc(c, b, mutable seen)
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return containsFunc(checker, base, mutable seen)
       }
       return false
     }
     Type.TStruct(_) => {
-      return anyFunc(c, t, mutable seen)
+      return anyFunc(checker, type, mutable seen)
     }
     Type.TEnum(_) => {
-      return anyFunc(c, t, mutable seen)
+      return anyFunc(checker, type, mutable seen)
     }
     _ => {
       return false
@@ -739,41 +739,41 @@ export function containsFunc(c: Checker, t: Type, mutable seen: Map<string, bool
   }
 }
 
-function anyFunc(c: Checker, t: Type, mutable seen: Map<string, bool>): bool uses alloc {
-  for (const f of Arrays.values(fieldsOf(c, t))) {
-    if (containsFunc(c, f.t, mutable seen)) {
+function anyFunc(checker: Checker, type: Type, mutable seen: Map<string, bool>): bool uses alloc {
+  for (const field of Arrays.values(listFields(checker, type))) {
+    if (containsFunc(checker, field.fieldType, mutable seen)) {
       return true
     }
   }
   return false
 }
 
-// mapKeyProblem explains why t cannot be a map key, or returns "". A key
+// mapKeyProblem explains why a type cannot be a map key, or returns "". A key
 // needs Equatable and Hashable. A user Equatable without a user Hashable
 // keeps the field-based hash, so equal keys could hash differently: both or
 // neither must be written.
-export function mapKeyProblem(mutable c: Checker, t: Type, mutable seen: Map<string, bool>): string uses alloc {
-  const key = typeKey(t)
+export function mapKeyProblem(mutable checker: Checker, type: Type, mutable seen: Map<string, bool>): string uses alloc {
+  const key = typeKey(type)
   if (seen[key] is Some(_)) {
     return ""
   }
   seen[key] = true
-  match (t) {
+  match (type) {
     Type.TF64 => {
       return "float keys are not allowed"
     }
     Type.TVoid => {
       return "void has no value"
     }
-    Type.TArray(e) => {
-      return mapKeyProblem(mutable c, e, mutable seen)
+    Type.TArray(element) => {
+      return mapKeyProblem(mutable checker, element, mutable seen)
     }
-    Type.TBox(e) => {
-      return mapKeyProblem(mutable c, e, mutable seen)
+    Type.TBox(element) => {
+      return mapKeyProblem(mutable checker, element, mutable seen)
     }
-    Type.TDistinct(i) => {
-      if (c.distincts[i].base is Some(b)) {
-        return mapKeyProblem(mutable c, b, mutable seen)
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return mapKeyProblem(mutable checker, base, mutable seen)
       }
       return ""
     }
@@ -784,10 +784,10 @@ export function mapKeyProblem(mutable c: Checker, t: Type, mutable seen: Map<str
       return "a map is not hashable"
     }
     Type.TStruct(_) => {
-      return nominalKeyProblem(mutable c, t, mutable seen)
+      return nominalKeyProblem(mutable checker, type, mutable seen)
     }
     Type.TEnum(_) => {
-      return nominalKeyProblem(mutable c, t, mutable seen)
+      return nominalKeyProblem(mutable checker, type, mutable seen)
     }
     _ => {
       return ""
@@ -795,20 +795,20 @@ export function mapKeyProblem(mutable c: Checker, t: Type, mutable seen: Map<str
   }
 }
 
-function nominalKeyProblem(mutable c: Checker, t: Type, mutable seen: Map<string, bool>): string uses alloc {
-  for (const f of Arrays.values(fieldsOf(c, t))) {
-    const p = mapKeyProblem(mutable c, f.t, mutable seen)
-    if (p != "") {
-      return p
+function nominalKeyProblem(mutable checker: Checker, type: Type, mutable seen: Map<string, bool>): string uses alloc {
+  for (const field of Arrays.values(listFields(checker, type))) {
+    const problem = mapKeyProblem(mutable checker, field.fieldType, mutable seen)
+    if (problem != "") {
+      return problem
     }
   }
-  const ix = typeTraitsOf(mutable c, t)
-  if (ix >= 0) {
-    const eq = stdTrait(c, "Equatable")
-    const hash = stdTrait(c, "Hashable")
-    const hasEq = c.typeTraits[ix].blocks[eq] is Some(_)
-    const hasHash = c.typeTraits[ix].blocks[hash] is Some(_)
-    if (hasEq != hasHash) {
+  const entryIndex = findTypeTraits(mutable checker, type)
+  if (entryIndex >= 0) {
+    const equatable = stdTrait(checker, "Equatable")
+    const hash = stdTrait(checker, "Hashable")
+    const hasEquatable = checker.typeTraits[entryIndex].blocks[equatable] is Some(_)
+    const hasHash = checker.typeTraits[entryIndex].blocks[hash] is Some(_)
+    if (hasEquatable != hasHash) {
       return "it implements one of Equatable and Hashable but not the other"
     }
   }
@@ -817,15 +817,15 @@ function nominalKeyProblem(mutable c: Checker, t: Type, mutable seen: Map<string
 
 // flushMapKeys reports the queued Map key types that cannot be hashed. It
 // runs once every module is declared, as Go's flushMapKeys does.
-export function flushMapKeys(mutable c: Checker) uses alloc {
-  const keys = c.mapKeys
-  c.mapKeys = []
-  for (const k of Arrays.values(keys)) {
+export function flushMapKeys(mutable checker: Checker) uses alloc {
+  const keys = checker.mapKeys
+  checker.mapKeys = []
+  for (const check of Arrays.values(keys)) {
     let seen: Map<string, bool> = Map {}
-    const p = mapKeyProblem(mutable c, k.key, mutable seen)
-    if (p != "") {
-      const msg9 = `${typeString(c, k.key)} cannot be a map key: ${p}`
-      errorIn(mutable c, k.file, k.pos, msg9)
+    const problem = mapKeyProblem(mutable checker, check.key, mutable seen)
+    if (problem != "") {
+      const message = `${typeString(checker, check.key)} cannot be a map key: ${problem}`
+      errorIn(mutable checker, check.file, check.pos, message)
     }
   }
 }

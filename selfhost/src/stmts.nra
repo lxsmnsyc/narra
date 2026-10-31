@@ -23,13 +23,13 @@ export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block
 export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, statement: Stmt) uses alloc {
   match (statement) {
     Stmt.BlockStmt(block) => checkBlock(mutable checker, walker, block)
-    Stmt.VarStmt(id, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, id, pos, isMutable, name, pattern is Some(_), type, value)
+    Stmt.VarStmt(nodeId, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, nodeId, pos, isMutable, name, pattern is Some(_), type, value)
     Stmt.AssignStmt(pos, target, value) => checkAssignment(mutable checker, walker, pos, target, value)
     Stmt.ExprStmt(pos, expression) => checkExpressionStatement(mutable checker, walker, pos, expression)
     Stmt.ReturnStmt(pos, value) => checkReturn(mutable checker, walker, pos, value)
     Stmt.IfStmt(_, condition, then, orElse) => checkIf(mutable checker, walker, condition, then, orElse)
     Stmt.WhileStmt(_, condition, body) => checkWhile(mutable checker, walker, condition, body)
-    Stmt.ForStmt(id, pos, name, iterable, body) => checkFor(mutable checker, walker, id, pos, name, iterable, body)
+    Stmt.ForStmt(nodeId, pos, name, iterable, body) => checkFor(mutable checker, walker, nodeId, pos, name, iterable, body)
     Stmt.BreakStmt(pos) => checkLoopExit(mutable checker, pos, "break must be inside a loop")
     Stmt.ContinueStmt(pos) => checkLoopExit(mutable checker, pos, "continue must be inside a loop")
   }
@@ -46,7 +46,7 @@ function checkCondition<W: Walker>(mutable checker: Checker, walker: W, conditio
   expectType(mutable checker, getExpressionPos(condition), Some(Type.TBool), found)
 }
 
-function checkVariable<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, isMutable: bool, name: string, hasPattern: bool, type: Option<TypeExpr>, value: Expr) uses alloc {
+function checkVariable<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, isMutable: bool, name: string, hasPattern: bool, type: Option<TypeExpr>, value: Expr) uses alloc {
   if (hasPattern) {
     unsupported(mutable checker, pos, "a destructuring declaration (selfhost-check-patterns)")
     return
@@ -68,7 +68,7 @@ function checkVariable<W: Walker>(mutable checker: Checker, walker: W, id: int, 
   if (found == Type.TVoid && Arrays.length(checker.errs) == errorCount) {
     errorf(mutable checker, pos, "this expression has no value")
   }
-  declareLocal(mutable checker, id, pos, name, found, isMutable, false)
+  declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
 }
 
 function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, target: Expr, value: Expr) uses alloc {
@@ -99,8 +99,8 @@ function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W
   checkExpression(mutable checker, walker, expression, None)
 
   // Only a call can stand alone, and a Result it returns must be used.
-  if (expression is Expr.CallExpr(id, _, _, _)) {
-    if (getNodeType(checker, id) is Some(found)) {
+  if (expression is Expr.CallExpr(nodeId, _, _, _)) {
+    if (getNodeType(checker, nodeId) is Some(found)) {
       if (isResult(checker, found)) {
         errorf(mutable checker, pos, "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`")
       }
@@ -148,7 +148,7 @@ function checkWhile<W: Walker>(mutable checker: Checker, walker: W, condition: E
   checker.loops = checker.loops - 1
 }
 
-function checkFor<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: Pos, name: string, iterable: Expr, body: Block) uses alloc {
+function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, name: string, iterable: Expr, body: Block) uses alloc {
   // The iterable is a call of a std function that gives the element type.
   const iterableType = checkExpression(mutable checker, walker, iterable, None)
   let builtin = ""
@@ -183,7 +183,7 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, id: int, pos: 
 
   // The loop variable lives in a scope around the body.
   pushScope(mutable checker)
-  declareLocal(mutable checker, id, pos, name, element, false, false)
+  declareLocal(mutable checker, nodeId, pos, name, element, false, false)
   checker.loops = checker.loops + 1
   checkBlock(mutable checker, walker, body)
   checker.loops = checker.loops - 1

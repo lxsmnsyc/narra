@@ -1,7 +1,7 @@
 ---
 id: selfhost-check-closures
 title: Self-hosted checker: arrow functions and function values
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

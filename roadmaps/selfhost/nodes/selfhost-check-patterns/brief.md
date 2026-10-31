@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-patterns
 title: Self-hosted checker: patterns, match and aggregate literals
-status: active
+status: done
+spent: 431000
 priority: must
 type: feature
 outline: false

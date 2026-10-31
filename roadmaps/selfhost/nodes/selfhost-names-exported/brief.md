@@ -1,7 +1,8 @@
 ---
 id: selfhost-names-exported
 title: Readable exported names across the selfhost modules
-status: active
+status: done
+spent: 144000
 priority: must
 type: refactor
 outline: false

@@ -9,7 +9,7 @@
 
 ### Compared and skipped
 
-TestSelfhostBodies: compared 341, skipped 37 (main: 271 and 101). TestSelfhostStdCalls: compared 366, skipped 37 (it also runs the stdcalls cases and the closures inputs; the same skips).
+TestSelfhostBodies: compared 341, skipped 37 (main: 271 and 101). TestSelfhostStdCalls: compared 342, skipped 37 (it also runs the stdcalls cases and the closures inputs, each input once; the same skips). The test fails if `closures.nra` or `closures_nested.nra` is skipped.
 
 | count | reason | node |
 | --- | --- | --- |

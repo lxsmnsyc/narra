@@ -79,9 +79,18 @@ func TestTypesDumpStdCallsCoverage(t *testing.T) {
 // closure samples, which use the Array builtins (moved here from the
 // closures node), plus every input of TestSelfhostBodies.
 func stdcallsInputs(t *testing.T) []string {
-	inputs := declDumpCases(t, stdcallsDir)
-	inputs = append(inputs, closuresInputs(t)...)
-	return append(inputs, bodiesInputs(t)...)
+	var inputs []string
+	seen := map[string]bool{}
+	groups := [][]string{declDumpCases(t, stdcallsDir), closuresInputs(t), bodiesInputs(t)}
+	for _, group := range groups {
+		for _, path := range group {
+			if !seen[path] {
+				seen[path] = true
+				inputs = append(inputs, path)
+			}
+		}
+	}
+	return inputs
 }
 
 // TestSelfhostStdCalls checks that `narrac types <path>` prints the same dump
@@ -96,6 +105,9 @@ func TestSelfhostStdCalls(t *testing.T) {
 	skip := func(t *testing.T, reason string) {
 		if strings.Contains(t.Name(), "typesdump/stdcalls/") {
 			t.Fatalf("a std call case may not be skipped: %s", reason)
+		}
+		if strings.HasSuffix(t.Name(), "testdata/closures.nra") || strings.HasSuffix(t.Name(), "testdata/closures_nested.nra") {
+			t.Fatalf("closures samples may not be skipped: %s", reason)
 		}
 		if strings.Contains(reason, "builtin") {
 			t.Fatalf("a std call may not be skipped: %s", reason)

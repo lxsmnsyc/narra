@@ -23,12 +23,12 @@ Other tables: a pattern naming a variant records `Ref.Variant(enum, variant)`; a
 - Pattern lines carry `ctor=<Enum>.<Variant>` when they name a variant.
 - A binding pat-name line is followed by its `local` line (`mutable` for `let` destructuring).
 - `narrow=<Variant>` on narrowed field reads (already in the Go format).
-- Goldens: `compiler/testdata/typesdump/patterns/` (match_values, destructure, narrowing, literals, err_match, err_patterns, err_literals); `TestTypesDumpPatterns` and `TestTypesDumpPatternsCoverage` in selfhost_patterns_test.go.
+- Goldens: `compiler/testdata/typesdump/patterns/` (match_values, destructure, narrowing, literals, err_match, err_patterns, err_literals, err_narrowing: leaks past if and else, mutable local, wrong variant field, the 10-case limit); `TestTypesDumpPatterns` and `TestTypesDumpPatternsCoverage` in selfhost_patterns_test.go.
 
 ### Tests
 
-- `TestSelfhostPatterns`: same comparison as `TestSelfhostBodies` over the same inputs plus the patterns cases. No compared input differs. The missing-case text (order, limit 10) equals Go's on the error goldens.
-- `TestSelfhostBodies` (which now also walks testdata/typesdump/patterns, since declInputs include all typesdump files): compared 165, skipped 187. Before: 143 compared, 202 skipped. 7 of the new compared inputs are mine; 15 more existing inputs became comparable.
+- `TestSelfhostPatterns`: same comparison as `TestSelfhostBodies` over the patterns cases only (TestSelfhostBodies compares the earlier inputs): 8 compared, 0 skipped. No compared input differs. The missing-case text (order, limit 10) equals Go's on the error goldens.
+- `TestSelfhostBodies` (which now also walks testdata/typesdump/patterns, since declInputs include all typesdump files): compared 166, skipped 187. Before: 143 compared, 202 skipped. 8 of the new compared inputs are mine; 15 more existing inputs became comparable.
 
 ### Skip reasons now (TestSelfhostBodies)
 

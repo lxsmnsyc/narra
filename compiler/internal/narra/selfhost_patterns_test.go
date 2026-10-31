@@ -67,20 +67,10 @@ func TestTypesDumpPatternsCoverage(t *testing.T) {
 	}
 }
 
-// patternsInputs are the inputs of TestSelfhostBodies plus the cases of
-// testdata/typesdump/patterns.
+// patternsInputs are the cases of testdata/typesdump/patterns. The earlier
+// inputs are compared by TestSelfhostBodies.
 func patternsInputs(t *testing.T) []string {
-	inputs := bodiesInputs(t)
-	seen := map[string]bool{}
-	for _, path := range inputs {
-		seen[filepath.Clean(path)] = true
-	}
-	for _, path := range declDumpCases(t, patternsDir) {
-		if !seen[filepath.Clean(path)] {
-			inputs = append(inputs, path)
-		}
-	}
-	return inputs
+	return declDumpCases(t, patternsDir)
 }
 
 // TestSelfhostPatterns checks that `narrac types <path>` prints the same

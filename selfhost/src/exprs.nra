@@ -917,12 +917,12 @@ function fieldsUseLocal(checker: Checker, fields: Array<FieldInit>, local: int):
 }
 
 // checkBuiltinCall checks a call of a std function (Go's builtinCall). A
-// builtin with a named check kind is selfhost-check-builtins'.
-export function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, args: Array<Arg>, builtin: int): Type uses alloc {
+// builtin with a named check kind goes to narrac/stdcalls.
+export function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, args: Array<Arg>, builtin: int, want: Option<Type>): Type uses alloc {
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
   const info = checker.registry.funcs[builtin]
   if (info.check != "" && info.check != "fixed") {
-    return unsupported(mutable checker, pos, `the builtin ${info.name} (selfhost-check-builtins)`)
+    return Walker.checkStdCall(walker, mutable checker, pos, args, info.name, info.check, want)
   }
 
   // The signature comes from the registry's type text.
@@ -948,11 +948,11 @@ export function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W,
   for (const index of Ranges.between(0, argCount)) {
     const arg = args[index]
     const isMutable = index < Arrays.length(info.mutables) && info.mutables[index]
-    let want: Option<Type> = None
+    let paramWant: Option<Type> = None
     if (index < paramCount) {
-      want = Some(params[index])
+      paramWant = Some(params[index])
     }
-    const got = checkExpression(mutable checker, walker, arg.value, want)
+    const got = checkExpression(mutable checker, walker, arg.value, paramWant)
     if (isMutable && !arg.isMutable) {
       errorf(mutable checker, pos, `${info.name} changes its argument; write \`mutable\` before it`)
     } else if (!isMutable && arg.isMutable) {
@@ -961,7 +961,7 @@ export function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W,
       checkMutableArgument(mutable checker, arg.value)
       Arrays.push(mutable mutables, index)
     }
-    expectType(mutable checker, getExpressionPos(arg.value), want, got)
+    expectType(mutable checker, getExpressionPos(arg.value), paramWant, got)
   }
   checkExclusive(mutable checker, args, mutables)
   return result
@@ -969,7 +969,7 @@ export function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W,
 
 // checkFixedCall is Go's checkFixed: a wrong argument count stops the check
 // after a loose pass over the arguments.
-function checkFixedCall<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, args: Array<Arg>, name: string, params: Array<Type>, result: Type): Type uses alloc {
+export function checkFixedCall<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, args: Array<Arg>, name: string, params: Array<Type>, result: Type): Type uses alloc {
   const argCount = Arrays.length(args)
   if (argCount != Arrays.length(params)) {
     errorf(mutable checker, pos, `${name} takes ${Int.toString(Arrays.length(params))} arguments, found ${Int.toString(argCount)}`)

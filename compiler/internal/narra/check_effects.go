@@ -54,7 +54,7 @@ type effectWalker struct {
 	out effSet
 }
 
-func (c *Checker) checkEffects() {
+func (c *Checker) checkEffects() *effectState {
 	s := &effectState{
 		c:     c,
 		fx:    map[*FuncDecl]effSet{},
@@ -75,7 +75,7 @@ func (c *Checker) checkEffects() {
 		c.enter(saved)
 	}
 	if len(c.errs) > 0 {
-		return
+		return s
 	}
 	// Grow the sets until nothing changes. Sets only grow, so an unchanged
 	// size means an unchanged set, and the loop ends.
@@ -87,6 +87,7 @@ func (c *Checker) checkEffects() {
 		}
 	}
 	s.walkAll(true)
+	return s
 }
 
 // eachBody calls f for every function with a body in a module, and every test.

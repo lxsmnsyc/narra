@@ -1,0 +1,743 @@
+// The effect pass, ported from compiler/internal/narra/check_effects.go
+// (SPEC.md section 7). It runs after the body checker, over the syntax of the
+// checked bodies and the refs they recorded, and changes no types.
+//
+// An effect set is an array of Effect: the name (`alloc`, `io`, `unsafe`, or
+// an effect variable of the function being analysed), the position of the
+// first thing that caused it and the callee that brought it, for the message.
+// A name appears once; the first cause stays.
+//
+// Each function gets the set its body gives (a fixed point over the call
+// graph, so recursion works). An exported function states its set after
+// `uses`, and callers use the stated one; its body must stay inside it. An
+// arrow function has a set of its own, added to the enclosing function only
+// when something calls it.
+//
+// Go keys its tables by pointer. Here a function is found by its module and
+// position (functionKey), a local by its body and BodyInfo.locals index, and
+// an arrow by its node id. Only the open body of a function is walked (kind
+// func or impl, no type arguments), as Go walks the declarations and not the
+// instances.
+//
+// Differences from Go: an implement block function called from an exported
+// function shows its source name in the "through" part of a message, where
+// Go shows the C name resolveImpl gave it.
+import { Pos, Decl, FuncDecl, Param, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
+import { quoteDump } from "narrac/modules"
+import { Type } from "narrac/types"
+import { Checker, BodyRoot, Ref, errorf, enter, findBodySlot, getExpressionId, getExpressionPos } from "narrac/check"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export struct Effect {
+  name: string
+  pos: Pos
+  via: string
+}
+
+// A function a call or a name resolves to, with the key of its tables.
+struct Callee {
+  decl: FuncDecl
+  key: string
+}
+
+export struct EffectState {
+  bodyIndex: Map<string, int> // functionKey of a func, impl or test body -> Checker.bodies
+  functions: Map<string, Array<Effect>> // body effects of every analysed function
+  locals: Map<string, Array<Effect>> // effects of the function a local holds
+  arrows: Map<int, Array<Effect>>
+  entries: Map<string, bool> // the entry functions
+  report: bool
+  changed: bool
+  body: int // the body being walked
+}
+
+const KNOWN_EFFECTS = ["alloc", "io", "unsafe"]
+
+function functionKey(module: string, pos: Pos): string uses alloc {
+  return `${module}|${Int.toString(pos.line)}:${Int.toString(pos.col)}`
+}
+
+function localKey(bodyIndex: int, localIndex: int): string uses alloc {
+  return `${Int.toString(bodyIndex)}:${Int.toString(localIndex)}`
+}
+
+function containsName(names: Array<string>, name: string): bool {
+  for (const candidate of Arrays.values(names)) {
+    if (candidate == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasEffect(effects: Array<Effect>, name: string): bool {
+  for (const effect of Arrays.values(effects)) {
+    if (effect.name == name) {
+      return true
+    }
+  }
+  return false
+}
+
+// addEffect adds a name with its cause, unless the set has it already.
+function addEffect(mutable out: Array<Effect>, name: string, pos: Pos, via: string) uses alloc {
+  if (hasEffect(out, name)) {
+    return
+  }
+  Arrays.push(mutable out, Effect { name: name, pos: pos, via: via })
+}
+
+// sortEffectNames lists the names of a set in byte order.
+function sortEffectNames(effects: Array<Effect>): Array<string> uses alloc {
+  let sorted: Array<string> = []
+  for (const effect of Arrays.values(effects)) {
+    Arrays.push(mutable sorted, effect.name)
+    let index = Arrays.length(sorted) - 1
+    while (index > 0 && sorted[index] < sorted[index - 1]) {
+      const swap = sorted[index]
+      sorted[index] = sorted[index - 1]
+      sorted[index - 1] = swap
+      index = index - 1
+    }
+  }
+  return sorted
+}
+
+function findEffect(effects: Array<Effect>, name: string): Effect {
+  for (const effect of Arrays.values(effects)) {
+    if (effect.name == name) {
+      return effect
+    }
+  }
+  return Effect { name: name, pos: Pos { line: 0, col: 0 }, via: "" }
+}
+
+// checkEffects runs the pass over every module of the package. The caller
+// has checked that the bodies have no errors.
+export function checkEffects(mutable checker: Checker): EffectState uses alloc {
+  let state = EffectState { bodyIndex: Map {}, functions: Map {}, locals: Map {}, arrows: Map {}, entries: Map {}, report: false, changed: false, body: -1 }
+  for (const index of Ranges.between(0, Arrays.length(checker.bodies))) {
+    const body = checker.bodies[index]
+    if (Arrays.length(body.targs) > 0) {
+      continue
+    }
+    if (body.root is BodyRoot.RootFunc(decl)) {
+      if (body.kind == "func" || body.kind == "impl") {
+        state.bodyIndex[functionKey(body.module, decl.pos)] = index
+      }
+    }
+    if (body.root is BodyRoot.RootBlock(block)) {
+      if (body.kind == "test") {
+        state.bodyIndex[functionKey(body.module, block.pos)] = index
+      }
+    }
+  }
+  for (const entry of Arrays.values(checker.entries)) {
+    if (entry.func >= 0) {
+      const decl = checker.funcs[entry.func].decl
+      state.entries[functionKey(checker.funcs[entry.func].module, decl.pos)] = true
+    }
+  }
+
+  // Signatures first, module by module.
+  for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
+    const saved = enter(mutable checker, scope)
+    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
+      match (decl) {
+        Decl.Func(funcDecl) => {
+          if (funcDecl.body is Some(_)) {
+            checkSignature(mutable checker, funcDecl)
+          }
+        }
+        Decl.Impl(implDecl) => {
+          for (const funcDecl of Arrays.values(implDecl.funcs)) {
+            if (funcDecl.body is Some(_)) {
+              checkSignature(mutable checker, funcDecl)
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    enter(mutable checker, saved)
+  }
+  if (Arrays.length(checker.errs) > 0) {
+    return state
+  }
+
+  // Grow the sets until nothing changes. Sets only grow, so an unchanged
+  // size means an unchanged set, and the loop ends.
+  for (const pass of Ranges.between(0, 100)) {
+    state.changed = false
+    walkAll(mutable checker, mutable state, false)
+    if (!state.changed) {
+      break
+    }
+  }
+  walkAll(mutable checker, mutable state, true)
+  return state
+}
+
+function walkAll(mutable checker: Checker, mutable state: EffectState, report: bool) uses alloc {
+  state.report = report
+  for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
+    const saved = enter(mutable checker, scope)
+    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
+      match (decl) {
+        Decl.Func(funcDecl) => analyseFunction(mutable checker, mutable state, scope, funcDecl)
+        Decl.Impl(implDecl) => {
+          for (const funcDecl of Arrays.values(implDecl.funcs)) {
+            analyseFunction(mutable checker, mutable state, scope, funcDecl)
+          }
+        }
+        Decl.Test(testDecl) => walkTest(mutable checker, mutable state, scope, testDecl.body)
+        _ => {}
+      }
+    }
+    enter(mutable checker, saved)
+  }
+}
+
+// walkTest walks a test body. Its effects are discarded.
+function walkTest(mutable checker: Checker, mutable state: EffectState, scope: int, block: Block) uses alloc {
+  const key = functionKey(checker.scopes[scope].path, block.pos)
+  if (state.bodyIndex[key] is Some(bodyIndex)) {
+    state.body = bodyIndex
+    let out: Array<Effect> = []
+    walkBlock(mutable checker, mutable state, mutable out, block)
+  }
+}
+
+// analyseFunction walks one function body, stores its set, and in the
+// reporting pass checks an exported function against its declaration.
+function analyseFunction(mutable checker: Checker, mutable state: EffectState, scope: int, decl: FuncDecl) uses alloc {
+  const key = functionKey(checker.scopes[scope].path, decl.pos)
+  if (decl.body is None) {
+    return
+  }
+  let bodyIndex = -1
+  if (state.bodyIndex[key] is Some(found)) {
+    bodyIndex = found
+  }
+  if (bodyIndex < 0) {
+    return
+  }
+  state.body = bodyIndex
+
+  // A parameter with a function type holds a function with the declared effects.
+  for (const param of Arrays.values(decl.params)) {
+    if (param.type is Some(typeExpression)) {
+      if (typeExpression.isFunc) {
+        const localIndex = findDeclaredLocal(checker, bodyIndex, param.id)
+        if (localIndex >= 0) {
+          let declaredSet: Array<Effect> = []
+          for (const name of Arrays.values(typeExpression.effects)) {
+            addEffect(mutable declaredSet, name, param.pos, "")
+          }
+          state.locals[localKey(bodyIndex, localIndex)] = declaredSet
+        }
+      }
+    }
+  }
+  let out: Array<Effect> = []
+  if (decl.body is Some(block)) {
+    walkBlock(mutable checker, mutable state, mutable out, block)
+  }
+  let previousLength = 0
+  if (state.functions[key] is Some(previous)) {
+    previousLength = Arrays.length(previous)
+  }
+  if (Arrays.length(out) != previousLength) {
+    state.changed = true
+  }
+  state.functions[key] = out
+  if (!state.report || !decl.exported || state.entries[key] is Some(_)) {
+    return
+  }
+
+  // The body may use only the declared effects.
+  for (const name of Arrays.values(sortEffectNames(out))) {
+    if (containsName(decl.effects, name)) {
+      continue
+    }
+    const cause = findEffect(out, name)
+    let causePos = cause.pos
+    if (causePos.line == 0 && causePos.col == 0) {
+      causePos = decl.pos
+    }
+    let through = ""
+    if (cause.via != "") {
+      through = ` (through \`${cause.via}\`)`
+    }
+    errorf(mutable checker, causePos, `Function \`${decl.name}\` uses \`${name}\`${through} but its signature does not declare it; write \`uses ${name}\``)
+  }
+}
+
+// findDeclaredLocal is the BodyInfo.locals index of the local a node declares, or -1.
+function findDeclaredLocal(checker: Checker, bodyIndex: int, nodeId: int): int {
+  const slot = findBodySlot(checker.bodies[bodyIndex], nodeId)
+  if (slot < 0) {
+    return -1
+  }
+  return checker.bodies[bodyIndex].declared[slot]
+}
+
+function findRef(checker: Checker, bodyIndex: int, nodeId: int): Ref {
+  const slot = findBodySlot(checker.bodies[bodyIndex], nodeId)
+  if (slot < 0) {
+    return Ref.Unresolved
+  }
+  return checker.bodies[bodyIndex].refs[slot]
+}
+
+function findNodeType(checker: Checker, bodyIndex: int, nodeId: int): Option<Type> {
+  const slot = findBodySlot(checker.bodies[bodyIndex], nodeId)
+  if (slot < 0) {
+    return None
+  }
+  return checker.bodies[bodyIndex].types[slot]
+}
+
+// checkSignature reports unknown effect names and effect variables that no
+// parameter binds.
+function checkSignature(mutable checker: Checker, decl: FuncDecl) uses alloc {
+  let bound: Array<string> = []
+  for (const param of Arrays.values(decl.params)) {
+    if (param.type is Some(typeExpression)) {
+      scanEffects(mutable checker, decl.effectParams, mutable bound, typeExpression, true)
+    }
+  }
+  for (const name of Arrays.values(decl.effects)) {
+    if (isKnownEffect(mutable checker, decl.pos, decl.effectParams, name) && containsName(decl.effectParams, name) && !containsName(bound, name)) {
+      errorf(mutable checker, decl.pos, `effect variable \`${name}\` in the \`uses\` list of \`${decl.name}\` must appear in the function type of a parameter`)
+    }
+  }
+}
+
+function scanEffects(mutable checker: Checker, variables: Array<string>, mutable bound: Array<string>, typeExpression: TypeExpr, top: bool) uses alloc {
+  for (const name of Arrays.values(typeExpression.effects)) {
+    if (isKnownEffect(mutable checker, typeExpression.pos, variables, name) && top) {
+      Arrays.push(mutable bound, name)
+    }
+  }
+  for (const argument of Arrays.values(typeExpression.args)) {
+    scanEffects(mutable checker, variables, mutable bound, argument, false)
+  }
+  if (typeExpression.result is Some(boxed)) {
+    scanEffects(mutable checker, variables, mutable bound, boxed.value, false)
+  }
+}
+
+function isKnownEffect(mutable checker: Checker, pos: Pos, variables: Array<string>, name: string): bool uses alloc {
+  if (containsName(KNOWN_EFFECTS, name) || containsName(variables, name)) {
+    return true
+  }
+  errorf(mutable checker, pos, `unknown effect \`${name}\`; the effects are alloc, io and unsafe, or an effect variable declared as \`<effect ${name}>\``)
+  return false
+}
+
+// findCallee is the function a ref names: a declared function or an implement
+// block function.
+function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
+  return match (ref) {
+    Ref.Function(index) => Some(Callee { decl: checker.funcs[index].decl, key: functionKey(checker.funcs[index].module, checker.funcs[index].decl.pos) })
+    Ref.Implementation(block, index) => Some(Callee { decl: checker.impls[block].funcs[index].decl, key: functionKey(checker.scopes[checker.impls[block].scope].path, checker.impls[block].funcs[index].decl.pos) })
+    _ => None
+  }
+}
+
+// funcEffects is the set callers see: the declared one for an exported
+// function, the inferred one for a private function.
+function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
+  const nowhere = Pos { line: 0, col: 0 }
+  let set: Array<Effect> = []
+  if (state.entries[callee.key] is Some(_)) {
+    for (const name of Arrays.values(KNOWN_EFFECTS)) {
+      addEffect(mutable set, name, nowhere, "")
+    }
+    return set
+  }
+  if (callee.decl.exported) {
+    for (const name of Arrays.values(callee.decl.effects)) {
+      addEffect(mutable set, name, nowhere, "")
+    }
+    return set
+  }
+  if (state.functions[callee.key] is Some(inferred)) {
+    return inferred
+  }
+  return set
+}
+
+// concreteEffects is funcEffects without the effect variables, for a named
+// function used as a value.
+function concreteEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
+  let set: Array<Effect> = []
+  for (const effect of Arrays.values(funcEffects(state, callee))) {
+    if (!containsName(callee.decl.effectParams, effect.name)) {
+      Arrays.push(mutable set, effect)
+    }
+  }
+  return set
+}
+
+// valueEffects is the set of a function value written as an expression, or
+// None when it is not known.
+function valueEffects(checker: Checker, state: EffectState, expression: Expr): Option<Array<Effect>> uses alloc {
+  const bodyIndex = state.body
+  return match (expression) {
+    Expr.ArrowExpr(nodeId, _, _, _, _, _) => state.arrows[nodeId]
+    Expr.Ident(nodeId, _, _) => findNamedValue(checker, state, bodyIndex, nodeId)
+    Expr.FieldExpr(nodeId, _, _, _) => findFunctionValue(checker, state, bodyIndex, nodeId)
+    _ => None
+  }
+}
+
+function findNamedValue(checker: Checker, state: EffectState, bodyIndex: int, nodeId: int): Option<Array<Effect>> uses alloc {
+  const ref = findRef(checker, bodyIndex, nodeId)
+  if (ref is Ref.Local(localIndex)) {
+    return state.locals[localKey(bodyIndex, localIndex)]
+  }
+  return findFunctionValue(checker, state, bodyIndex, nodeId)
+}
+
+function findFunctionValue(checker: Checker, state: EffectState, bodyIndex: int, nodeId: int): Option<Array<Effect>> uses alloc {
+  if (findCallee(checker, findRef(checker, bodyIndex, nodeId)) is Some(callee)) {
+    return Some(concreteEffects(state, callee))
+  }
+  return None
+}
+
+function walkBlock(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, block: Block) uses alloc {
+  for (const statement of Arrays.values(block.stmts)) {
+    walkStatement(mutable checker, mutable state, mutable out, statement)
+  }
+}
+
+function walkStatement(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => walkBlock(mutable checker, mutable state, mutable out, block)
+    Stmt.VarStmt(nodeId, _, _, _, _, _, value) => {
+      walkExpression(mutable checker, mutable state, mutable out, value)
+      // A local bound to a function value holds its effects.
+      const localIndex = findDeclaredLocal(checker, state.body, nodeId)
+      if (localIndex >= 0) {
+        if (valueEffects(checker, state, value) is Some(set)) {
+          state.locals[localKey(state.body, localIndex)] = set
+        }
+      }
+    }
+    Stmt.AssignStmt(_, target, value) => {
+      walkAssignTarget(mutable checker, mutable state, mutable out, target)
+      walkExpression(mutable checker, mutable state, mutable out, value)
+      walkLocalAssignment(checker, mutable state, target, value)
+    }
+    Stmt.ExprStmt(_, expression) => walkExpression(mutable checker, mutable state, mutable out, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        walkExpression(mutable checker, mutable state, mutable out, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      walkExpression(mutable checker, mutable state, mutable out, condition)
+      walkBlock(mutable checker, mutable state, mutable out, then)
+      if (orElse is Some(other)) {
+        walkStatement(mutable checker, mutable state, mutable out, other)
+      }
+    }
+    Stmt.WhileStmt(_, condition, body) => {
+      walkExpression(mutable checker, mutable state, mutable out, condition)
+      walkBlock(mutable checker, mutable state, mutable out, body)
+    }
+    Stmt.ForStmt(_, _, _, iterable, body) => {
+      walkExpression(mutable checker, mutable state, mutable out, iterable)
+      walkBlock(mutable checker, mutable state, mutable out, body)
+    }
+    Stmt.BreakStmt(_) => {}
+    Stmt.ContinueStmt(_) => {}
+  }
+}
+
+// walkLocalAssignment merges the effects of a function value assigned to a
+// local into the ones the local holds.
+function walkLocalAssignment(checker: Checker, mutable state: EffectState, target: Expr, value: Expr) uses alloc {
+  if (target is Expr.Ident(targetId, _, _)) {
+    if (findRef(checker, state.body, targetId) is Ref.Local(localIndex)) {
+      if (valueEffects(checker, state, value) is Some(set)) {
+        const key = localKey(state.body, localIndex)
+        let merged: Array<Effect> = []
+        if (state.locals[key] is Some(existing)) {
+          merged = existing
+        }
+        for (const effect of Arrays.values(set)) {
+          if (hasEffect(merged, effect.name)) {
+            // The new cause replaces the old one.
+            let replaced: Array<Effect> = []
+            for (const old of Arrays.values(merged)) {
+              if (old.name == effect.name) {
+                Arrays.push(mutable replaced, effect)
+              } else {
+                Arrays.push(mutable replaced, old)
+              }
+            }
+            merged = replaced
+          } else {
+            Arrays.push(mutable merged, effect)
+          }
+        }
+        state.locals[key] = merged
+      }
+    }
+  }
+}
+
+// walkAssignTarget walks the target of an assignment. A Map index there is
+// a write: it allocates (Go's IndexExpr.MapSet).
+function walkAssignTarget(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, target: Expr) uses alloc {
+  if (target is Expr.IndexExpr(_, pos, indexed, index)) {
+    walkExpression(mutable checker, mutable state, mutable out, indexed)
+    walkExpression(mutable checker, mutable state, mutable out, index)
+    if (findNodeType(checker, state.body, getExpressionId(indexed)) is Some(Type.TMap(_, _))) {
+      addEffect(mutable out, "alloc", pos, "map update")
+    }
+    return
+  }
+  walkExpression(mutable checker, mutable state, mutable out, target)
+}
+
+function walkExpression(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, expression: Expr) uses alloc {
+  match (expression) {
+    Expr.TemplateLit(_, pos, parts) => {
+      for (const part of Arrays.values(parts)) {
+        walkExpression(mutable checker, mutable state, mutable out, part)
+      }
+      if (Arrays.length(parts) > 1) {
+        addEffect(mutable out, "alloc", pos, "template string")
+      }
+    }
+    Expr.FieldExpr(_, _, target, _) => walkExpression(mutable checker, mutable state, mutable out, target)
+    Expr.IsExpr(_, _, subject, _) => walkExpression(mutable checker, mutable state, mutable out, subject)
+    Expr.IndexExpr(_, _, target, index) => {
+      walkExpression(mutable checker, mutable state, mutable out, target)
+      walkExpression(mutable checker, mutable state, mutable out, index)
+    }
+    Expr.MapLit(_, pos, _, keys, vals) => {
+      for (const index of Ranges.between(0, Arrays.length(keys))) {
+        walkExpression(mutable checker, mutable state, mutable out, keys[index])
+        walkExpression(mutable checker, mutable state, mutable out, vals[index])
+      }
+      addEffect(mutable out, "alloc", pos, "map literal")
+    }
+    Expr.UnaryExpr(_, _, _, operand) => walkExpression(mutable checker, mutable state, mutable out, operand)
+    Expr.BinaryExpr(nodeId, pos, op, left, right) => {
+      walkExpression(mutable checker, mutable state, mutable out, left)
+      walkExpression(mutable checker, mutable state, mutable out, right)
+      if (op == "+" && findNodeType(checker, state.body, nodeId) is Some(Type.TStr)) {
+        addEffect(mutable out, "alloc", pos, "string +")
+      }
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        walkExpression(mutable checker, mutable state, mutable out, field.value)
+      }
+      if (spread is Some(base)) {
+        walkExpression(mutable checker, mutable state, mutable out, base)
+      }
+    }
+    Expr.ArrayLit(_, pos, elems, isTuple) => {
+      for (const element of Arrays.values(elems)) {
+        walkExpression(mutable checker, mutable state, mutable out, element)
+      }
+      if (!isTuple) {
+        addEffect(mutable out, "alloc", pos, "array literal")
+      }
+    }
+    Expr.MatchExpr(_, _, subject, arms) => {
+      walkExpression(mutable checker, mutable state, mutable out, subject)
+      for (const arm of Arrays.values(arms)) {
+        if (arm.guard is Some(guard)) {
+          walkExpression(mutable checker, mutable state, mutable out, guard)
+        }
+        if (arm.body is Some(armBody)) {
+          walkExpression(mutable checker, mutable state, mutable out, armBody)
+        }
+        if (arm.block is Some(armBlock)) {
+          walkBlock(mutable checker, mutable state, mutable out, armBlock)
+        }
+      }
+    }
+    Expr.ArrowExpr(nodeId, _, _, _, body, block) => {
+      // An arrow has a set of its own.
+      let inner: Array<Effect> = []
+      if (body is Some(bodyExpression)) {
+        walkExpression(mutable checker, mutable state, mutable inner, bodyExpression)
+      }
+      if (block is Some(bodyBlock)) {
+        walkBlock(mutable checker, mutable state, mutable inner, bodyBlock)
+      }
+      state.arrows[nodeId] = inner
+    }
+    Expr.CallExpr(nodeId, pos, callee, args) => walkCall(mutable checker, mutable state, mutable out, nodeId, pos, callee, args)
+    _ => {}
+  }
+}
+
+function walkCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>) uses alloc {
+  walkExpression(mutable checker, mutable state, mutable out, callee)
+  for (const argument of Arrays.values(args)) {
+    walkExpression(mutable checker, mutable state, mutable out, argument.value)
+  }
+  const ref = findRef(checker, state.body, nodeId)
+  if (findCallee(checker, ref) is Some(found)) {
+    walkUserCall(mutable checker, mutable state, mutable out, pos, found, args)
+    return
+  }
+  match (ref) {
+    Ref.Builtin(index) => {
+      // The effects of the builtin, and of the function arguments it calls.
+      const builtin = checker.registry.funcs[index]
+      for (const name of Arrays.values(builtin.effects)) {
+        addEffect(mutable out, name, pos, builtin.name)
+      }
+      for (const position of Arrays.values(builtin.callbacks)) {
+        if (position < Arrays.length(args)) {
+          if (valueEffects(checker, state, args[position].value) is Some(set)) {
+            for (const effect of Arrays.values(set)) {
+              addEffect(mutable out, effect.name, pos, effect.via)
+            }
+          }
+        }
+      }
+    }
+    Ref.Value => {
+      if (valueEffects(checker, state, callee) is Some(set)) {
+        for (const effect of Arrays.values(set)) {
+          addEffect(mutable out, effect.name, pos, effect.via)
+        }
+      }
+    }
+    Ref.Constructor(enumIndex, variant) => {
+      if (Arrays.length(args) > 0) {
+        addEffect(mutable out, "alloc", pos, checker.enums[enumIndex].variants[variant].name)
+      }
+    }
+    _ => {}
+  }
+}
+
+// walkUserCall adds the effects of a call to a declared function. A variable
+// of the callee takes the effects of the arguments bound to it.
+function walkUserCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, pos: Pos, callee: Callee, args: Array<Arg>) uses alloc {
+  const decl = callee.decl
+  const variables = decl.effectParams
+  for (const effect of Arrays.values(funcEffects(state, callee))) {
+    if (!containsName(variables, effect.name)) {
+      addEffect(mutable out, effect.name, pos, decl.name)
+      continue
+    }
+    for (const index of Ranges.between(0, Arrays.length(decl.params))) {
+      if (index >= Arrays.length(args)) {
+        continue
+      }
+      if (decl.params[index].type is Some(parameterType)) {
+        if (parameterType.isFunc && containsName(parameterType.effects, effect.name)) {
+          if (valueEffects(checker, state, args[index].value) is Some(set)) {
+            for (const passed of Arrays.values(set)) {
+              addEffect(mutable out, passed.name, pos, decl.name)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // A private function is inferred, so a function-type parameter without
+  // `uses` acts as an implicit effect variable: the call has the effects of
+  // the argument.
+  if (!decl.exported) {
+    for (const index of Ranges.between(0, Arrays.length(decl.params))) {
+      if (index >= Arrays.length(args)) {
+        continue
+      }
+      if (decl.params[index].type is Some(parameterType)) {
+        if (parameterType.isFunc && Arrays.length(parameterType.effects) == 0) {
+          if (valueEffects(checker, state, args[index].value) is Some(set)) {
+            for (const passed of Arrays.values(set)) {
+              addEffect(mutable out, passed.name, pos, passed.via)
+            }
+          }
+        }
+      }
+    }
+  }
+  if (!state.report) {
+    return
+  }
+
+  // A parameter whose function type has no variable accepts only the
+  // effects it lists.
+  for (const index of Ranges.between(0, Arrays.length(decl.params))) {
+    if (index >= Arrays.length(args)) {
+      continue
+    }
+    const param = decl.params[index]
+    let isFunction = false
+    let parameterEffects: Array<string> = []
+    if (param.type is Some(parameterType)) {
+      isFunction = parameterType.isFunc
+      parameterEffects = parameterType.effects
+    }
+    if (!isFunction) {
+      continue
+    }
+    let hasVariable = false
+    for (const name of Arrays.values(parameterEffects)) {
+      if (containsName(variables, name)) {
+        hasVariable = true
+      }
+    }
+    if (hasVariable || (!decl.exported && Arrays.length(parameterEffects) == 0)) {
+      continue
+    }
+    let extra: Array<string> = []
+    if (valueEffects(checker, state, args[index].value) is Some(set)) {
+      for (const name of Arrays.values(sortEffectNames(set))) {
+        if (!containsName(parameterEffects, name)) {
+          Arrays.push(mutable extra, name)
+        }
+      }
+    }
+    if (Arrays.length(extra) > 0) {
+      const argumentPos = getExpressionPos(args[index].value)
+      const quoted = Str.join(extra, "`, `")
+      const listed = Str.join(extra, ", ")
+      errorf(mutable checker, argumentPos, `the argument for \`${param.name}\` of \`${decl.name}\` uses \`${quoted}\`, but its function type does not declare it; write \`uses ${listed}\` in the type, or \`uses E\` with \`<effect E>\` on \`${decl.name}\``)
+    }
+  }
+}
+
+// dump prints the effects of every function: one line per open func or impl
+// body, in checking order, with the set callers see (the declared one for an
+// exported function, the inferred one for a private function).
+//     effects module="<m>" <kind> <name> <effect>,<effect>   or `-` when empty
+export function dump(checker: Checker, state: EffectState): string uses alloc {
+  let builder = Str.builder()
+  for (const body of Arrays.values(checker.bodies)) {
+    if (Arrays.length(body.targs) > 0 || (body.kind != "func" && body.kind != "impl")) {
+      continue
+    }
+    if (body.root is BodyRoot.RootFunc(decl)) {
+      const callee = Callee { decl: decl, key: functionKey(body.module, decl.pos) }
+      const names = sortEffectNames(funcEffects(state, callee))
+      let text = "-"
+      if (Arrays.length(names) > 0) {
+        text = Str.join(names, ",")
+      }
+      Str.append(mutable builder, `effects module=${quoteDump(body.module)} ${body.kind} ${body.name} ${text}\n`)
+    }
+  }
+  return Str.build(builder)
+}

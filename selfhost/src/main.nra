@@ -9,8 +9,7 @@
 // narrac pkg <path>: prints the loaded package in the format of `narra pkg`.
 // narrac decls <path>: runs the declaration passes of the checker and prints
 // the format of `narra decls`.
-// narrac types <path>: checks the package (every pass of `narra check` but
-// the effect pass) and prints the format of `narra types` (typesdump.go).
+// narrac types <path>: checks the package (every pass of `narra check`) and prints the format of `narra types` (typesdump.go).
 // narrac builtins: prints the std registry in the `builtin` format of
 // decldump.go (BuiltinDump), after a line per registry type text that does
 // not resolve back to itself.
@@ -28,6 +27,7 @@ import * as Declare from "narrac/declare"
 import * as DeclsDump from "narrac/declsdump"
 import * as Body from "narrac/body"
 import * as TypesDump from "narrac/typesdump"
+import * as Effects from "narrac/effects"
 import * as IdCheck from "narrac/idcheck"
 import * as Builtins from "narrac/builtins"
 import * as Stdlib from "narrac/stdlib"
@@ -174,12 +174,16 @@ function typesDump(path: string): int uses io, alloc {
     const _ = Fs.writeText("/dev/stderr", Modules.errorText(errors))
     return 1
   }
-  const checker = Body.checkPackage(loaded.value)
-  if (Arrays.length(checker.errs) > 0) {
-    const _ = Fs.writeText("/dev/stderr", Check.errorText(checker.errs))
-    return 1
+  let checker = Body.checkPackage(loaded.value)
+  if (Arrays.length(checker.errs) == 0) {
+    // The effect pass runs only on a package whose bodies have no errors.
+    const effects = Effects.checkEffects(mutable checker)
+    if (Arrays.length(checker.errs) == 0) {
+      return writeStdout(`${TypesDump.dump(checker)}${Effects.dump(checker, effects)}`)
+    }
   }
-  return writeStdout(TypesDump.dump(checker))
+  const _ = Fs.writeText("/dev/stderr", Check.errorText(checker.errs))
+  return 1
 }
 
 // builtinsDump prints the std registry. The type texts are resolved in a

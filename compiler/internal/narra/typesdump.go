@@ -177,7 +177,11 @@ func (d *typesDumper) body(b checkedBody) {
 	// The header names the body; an instance adds its type arguments.
 	header := "body module=" + quoteDump(b.module) + " " + b.kind + " " + b.name
 	if b.targs != nil {
-		header += " targs=" + strings.ReplaceAll(dumpTypeList(b.targs), ", ", ",")
+		var parts []string
+		for _, targ := range b.targs {
+			parts = append(parts, dumpTypeString(targ))
+		}
+		header += " targs=" + strings.Join(parts, ",")
 	}
 	d.b.WriteString(header + "\n")
 

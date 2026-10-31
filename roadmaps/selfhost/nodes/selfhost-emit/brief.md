@@ -38,6 +38,9 @@ depends_on:
   - on: selfhost-check-effects
     kind: hard
     why: emits from the checked tree; the complete checker
+  - on: selfhost-names-exported
+    kind: hard
+    why: reads the AST and checker fields under their final names
 ---
 
 # Self-hosted C emitter

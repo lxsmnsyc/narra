@@ -88,6 +88,9 @@ import (
 //	locals (a `local` line right after the binding's pat-name line).
 //	selfhost-check-closures: value, stack, captures, func on function
 //	values and Alias.f, arrow lines and their parameter locals.
+//	selfhost-check-builtins: the builtin= attribute and the type of every
+//	std call whose check function is named in the registry (Array.push,
+//	Option.map, Test.eq and the like).
 
 // checkedBody is one body the checker checked, logged when it starts.
 type checkedBody struct {

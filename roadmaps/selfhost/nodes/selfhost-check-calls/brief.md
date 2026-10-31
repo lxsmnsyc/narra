@@ -1,7 +1,8 @@
 ---
 id: selfhost-check-calls
 title: Self-hosted checker: constructors, generic calls and trait calls
-status: active
+status: done
+spent: 383000
 priority: must
 type: feature
 outline: false

@@ -9,7 +9,7 @@
 //
 // A pattern's results go into the side tables of the current body (D70):
 // its type (setNodeType), the variant a name or constructor pattern means
-// (Ref.Variant on the pattern id) and the local a binding declares
+// (Ref.Constructor on the pattern id) and the local a binding declares
 // (BodyInfo.declared). A binding is created when the pattern resolves but
 // is put into scope later by the caller (bindPatternLocals), as in Go.
 import { Pos, Expr, Decl, Pattern, FieldPattern, MatchArm, Block, TypeExpr } from "narrac/ast"
@@ -20,6 +20,7 @@ import { LocalInfo } from "narrac/check"
 import { resolveType } from "narrac/resolve"
 import { sourceScope } from "narrac/scopes"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
+import { namesEnum, findEnumName } from "narrac/ctors"
 import { getPatternId, getPatternPos, collectPatternLocals, bindPatternLocals, irrefutable, findMissingCases } from "narrac/patterns"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -86,7 +87,7 @@ function resolveName(mutable checker: Checker, nodeId: int, pos: Pos, name: stri
   if (valueType is Type.TEnum(enumIndex)) {
     const variantIndex = findVariant(checker, enumIndex, name)
     if (variantIndex >= 0) {
-      setRef(mutable checker, nodeId, Ref.Variant(enumIndex, variantIndex))
+      setRef(mutable checker, nodeId, Ref.Constructor(enumIndex, variantIndex))
       requireQualified(mutable checker, pos, name, enumIndex)
       return
     }
@@ -132,7 +133,7 @@ function resolveConstructor<W: Walker>(mutable checker: Checker, walker: W, patt
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
-  setRef(mutable checker, nodeId, Ref.Variant(enumIndex, variantIndex))
+  setRef(mutable checker, nodeId, Ref.Constructor(enumIndex, variantIndex))
   if (enumName == "") {
     requireQualified(mutable checker, pos, name, enumIndex)
   }
@@ -263,152 +264,6 @@ function bindRest(mutable checker: Checker, pattern: Pattern, mutable seen: Map<
   }
 }
 
-// ---- naming an enum in a message ----
-
-// isEnumNamed reports whether a name is an enum or a generic enum here.
-function isEnumNamed(checker: Checker, name: string): bool {
-  const scope = checker.scopes[checker.cur]
-  if (scope.types[name] is Some(Type.TEnum(_))) {
-    return true
-  }
-  if (scope.generics[name] is Some(generic)) {
-    return !checker.generics[generic].isStruct
-  }
-  return false
-}
-
-// namesEnum reports whether name, as written in the current module, refers
-// to the enum enumIndex. Two modules may declare enums with the same name.
-function namesEnum(checker: Checker, name: string, enumIndex: int): bool {
-  const info = checker.enums[enumIndex]
-  let scope = checker.scopes[checker.cur]
-  let key = name
-  if (Str.contains(name, ".")) {
-    // Alias.Enum: the enum must be exported by the aliased package module.
-    const dot = indexOfDot(name)
-    const alias = Str.slice(name, 0, dot)
-    key = Str.sliceFrom(name, dot + 1)
-    let moduleScope = -1
-    if (scope.modules[alias] is Some(path)) {
-      moduleScope = sourceScope(checker, path)
-    }
-    if (moduleScope < 0) {
-      return false
-    }
-    scope = checker.scopes[moduleScope]
-    if (scope.exports[key] is Some(exportIndex)) {
-      if (!(scope.decls[exportIndex] is Decl.Enum(_))) {
-        return false
-      }
-    } else {
-      return false
-    }
-    if (scope.types[key] is Some(type)) {
-      return type == Type.TEnum(enumIndex)
-    }
-    return isGenericEnumNamed(checker, scope.generics[key], info.name, info.module)
-  }
-  if (scope.types[key] is Some(type)) {
-    return type == Type.TEnum(enumIndex)
-  }
-  return isGenericEnumNamed(checker, scope.generics[key], info.name, info.module)
-}
-
-function isGenericEnumNamed(checker: Checker, generic: Option<int>, name: string, module: string): bool {
-  if (generic is Some(index)) {
-    return !checker.generics[index].isStruct && checker.generics[index].name == name && checker.generics[index].module == module
-  }
-  return false
-}
-
-function indexOfDot(text: string): int {
-  for (const index of Ranges.between(0, Str.length(text))) {
-    if (Str.charAt(text, index) == '.') {
-      return index
-    }
-  }
-  return -1
-}
-
-function addEnumName(checker: Checker, mutable names: Array<string>, mutable seen: Map<string, bool>, name: string) uses alloc {
-  if (seen[name] is None && isEnumNamed(checker, name)) {
-    seen[name] = true
-    Arrays.push(mutable names, name)
-  }
-}
-
-function sortNames(mutable names: Array<string>) uses alloc {
-  let sorted: Array<string> = []
-  for (const name of Arrays.values(names)) {
-    Arrays.push(mutable sorted, name)
-    let index = Arrays.length(sorted) - 1
-    while (index > 0 && sorted[index] < sorted[index - 1]) {
-      const swap = sorted[index]
-      sorted[index] = sorted[index - 1]
-      sorted[index - 1] = swap
-      index = index - 1
-    }
-  }
-  names = sorted
-}
-
-// listVisibleEnums lists the names of the enums visible in the current
-// module without duplicates: its declarations in order, its imports in
-// order, then the rest (the prelude) sorted by name (Go's visibleEnums).
-function listVisibleEnums(checker: Checker): Array<string> uses alloc {
-  const scope = checker.scopes[checker.cur]
-  let names: Array<string> = []
-  let seen: Map<string, bool> = Map {}
-  if (scope.isSource) {
-    for (const decl of Arrays.values(scope.decls)) {
-      if (decl is Decl.Enum(enumDecl)) {
-        addEnumName(checker, mutable names, mutable seen, enumDecl.name)
-      }
-    }
-    for (const importDecl of Arrays.values(scope.imports)) {
-      for (const importName of Arrays.values(importDecl.names)) {
-        addEnumName(checker, mutable names, mutable seen, importName.local)
-      }
-    }
-  }
-  let rest: Array<string> = []
-  for (const name of Maps.keys(scope.types)) {
-    Arrays.push(mutable rest, name)
-  }
-  for (const name of Maps.keys(scope.generics)) {
-    Arrays.push(mutable rest, name)
-  }
-  sortNames(mutable rest)
-  for (const name of Arrays.values(rest)) {
-    addEnumName(checker, mutable names, mutable seen, name)
-  }
-  return names
-}
-
-// findEnumName is the name the current module uses for the enum: a declared
-// or imported name, or a namespace path Alias.Enum, or the plain name.
-function findEnumName(checker: Checker, enumIndex: int): string uses alloc {
-  for (const name of Arrays.values(listVisibleEnums(checker))) {
-    if (namesEnum(checker, name, enumIndex)) {
-      return name
-    }
-  }
-  const info = checker.enums[enumIndex]
-  let aliases: Array<string> = []
-  for (const alias of Maps.keys(checker.scopes[checker.cur].modules)) {
-    Arrays.push(mutable aliases, alias)
-  }
-  sortNames(mutable aliases)
-  for (const alias of Arrays.values(aliases)) {
-    if (checker.scopes[checker.cur].modules[alias] is Some(path)) {
-      if (path == info.module && namesEnum(checker, `${alias}.${info.name}`, enumIndex)) {
-        return `${alias}.${info.name}`
-      }
-    }
-  }
-  return info.name
-}
-
 // requireQualified reports a constructor pattern written without its enum.
 // Some, None, Ok and Err of the prelude stay bare (D71).
 function requireQualified(mutable checker: Checker, pos: Pos, name: string, enumIndex: int) uses alloc {
@@ -421,7 +276,7 @@ function requireQualified(mutable checker: Checker, pos: Pos, name: string, enum
       return
     }
   }
-  const enumName = findEnumName(checker, enumIndex)
+  const enumName = findEnumName(mutable checker, enumIndex)
   errorf(mutable checker, pos, `constructor ${name} needs its enum; write ${enumName}.${name}`)
 }
 

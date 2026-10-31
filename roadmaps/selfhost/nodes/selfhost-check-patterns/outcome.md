@@ -7,7 +7,7 @@ Patterns, `is`, `match`, destructuring declarations, narrowing, and Map, tuple a
 | module | ports |
 | --- | --- |
 | `narrac/patterns` (patterns.nra, below exprs) | narrowing helpers (`findNarrowable`, `findNarrowed`, `setNarrowed`, `findOtherVariant`), `irrefutable`, `areArgsIrrefutable`, `isWild`, `collectPatternLocals`, `bindPatternLocals`, the exhaustiveness algorithm (`findMissingCases`, `specialize`, `describeConstructor`) |
-| `narrac/match` (match.nra, above exprs) | `resolvePattern` (resolvePat, bindRest), `requireQualified` and `findEnumName`, `checkIs`, `checkMatch`, `checkDestructure`, `checkPatternExpression` |
+| `narrac/match` (match.nra, above exprs) | `resolvePattern` (resolvePat, bindRest), `requireQualified`, `checkIs`, `checkMatch`, `checkDestructure`, `checkPatternExpression` |
 | `narrac/literals` (literals.nra, above exprs) | `checkMapLiteral` (with type arguments), `checkMapIndex`, `checkTuple`, `checkSpread` |
 
 Edits in shared files: `Walker` gained `checkPatterns`, `checkMapLiteral`, `checkTuple`, `checkSpread`, `checkMapIndex` (implemented by `BodyWalker` in body.nra); exprs.nra arms call them. `checkField` reads the narrowing. stmts.nra: `checkIf` (binding, narrowing, early-return narrowing), match statements, destructuring, `assigningId` around an assignment target. typesdump.nra and typesdump.go print the new attributes.
@@ -16,7 +16,7 @@ Edits in shared files: `Walker` gained `checkPatterns`, `checkMapLiteral`, `chec
 
 No field on the local. Narrowing is a key `narrow|<local index>` with the variant index as value, in the same per-scope maps as local names (`Checker.localScopes`). `pushScope`/`popScope` therefore save and restore it. `setNarrowed` writes to the innermost scope, so the early-return case (`if (x is A) { return }` narrows `x` to the other variant for the rest of the block) lands in the enclosing scope. Only `const` locals narrow. A narrowed field read records `Ref.Narrow(enum, variant)` on the FieldExpr node.
 
-Other tables: a pattern naming a variant records `Ref.Variant(enum, variant)`; a binding is the local its PatName node declares (`BodyInfo.declared`), created at resolve time and put in scope by the caller, as in Go.
+Other tables: a pattern naming a variant records `Ref.Constructor(enum, variant)` (the ref of selfhost-check-calls, which prints the same `ctor=`); a binding is the local its PatName node declares (`BodyInfo.declared`), created at resolve time and put in scope by the caller, as in Go.
 
 ### Dump (Go and Narra)
 
@@ -28,27 +28,24 @@ Other tables: a pattern naming a variant records `Ref.Variant(enum, variant)`; a
 ### Tests
 
 - `TestSelfhostPatterns`: same comparison as `TestSelfhostBodies` over the patterns cases only (TestSelfhostBodies compares the earlier inputs): 8 compared, 0 skipped. No compared input differs. The missing-case text (order, limit 10) equals Go's on the error goldens.
-- `TestSelfhostBodies` (which now also walks testdata/typesdump/patterns, since declInputs include all typesdump files): compared 166, skipped 187. Before: 143 compared, 202 skipped. 8 of the new compared inputs are mine; 15 more existing inputs became comparable.
+- After merging origin/main (selfhost-check-calls, merge commit instead of a rebase because both commits conflicted): `TestSelfhostBodies` compared 245, skipped 122; `TestSelfhostCalls` compared 247, skipped 122; `TestSelfhostPatterns` (patterns cases only) compared 8, skipped 0. No compared input differs, including the inputs that need both patterns and calls (before the merge: bodies 166/187).
 
 ### Skip reasons now (TestSelfhostBodies)
 
 | count | reason | node |
 | --- | --- | --- |
-| 47 | an enum constructor | calls |
 | 30 | does not load | (TestSelfhostModules) |
-| 20 | implement block bodies | calls |
-| 10 | a distinct type function | calls |
-| 7 + 6 + 4 + 3 | trait function call; namespace without its import; mutable argument beside others; generic function call | calls |
-| 11 + 8 | an arrow function; a call of a function value (+ non-escaping parameters) | closures |
-| 8, 5, 4, 3, 3 and a few more | builtins with a named check: Array.length, Array.values, Test.eq, Array.push, Map.size, ... | builtins |
-| 5 | a constant declared twice | (see check-bodies) |
+| 16 + 8 + 2 + 1 | an arrow function; a call of a function value; a non-escaping parameter; a function used as a value | closures |
+| 12, 10, 8, 5, 4, 4, 3, 3, 2 and 8 more | builtins with a named check: Array.length, Array.values, Box.new, Array.push, Map.size, Test.eq, Option.map, Range.upTo, Result.andThen, ... | builtins |
+| 6 | a constant declared twice | (bodies stub) |
+| 1 | an import of a constructor (E0425) | calls |
 
-No pattern, match, `is`, Map, tuple or spread construct is skipped any more.
+By node: builtins 54, closures 27, does not load 30, constant declared twice 6, calls 1, patterns 0.
 
 ## Deviations
 
 - The brief says to put the module "below exprs.nra". Only `patterns.nra` is. match.nra and literals.nra need `expectType`, `describeType`, `findField` from exprs.nra, so they sit above it and exprs reaches them through five new `Walker` trait functions.
-- Shared files touched beyond new arms: check.nra (`Ref.Variant`, `Ref.Narrow`, the trait functions, `Checker.assigningId`), body.nra (trait implementation), stmts.nra (`checkVariable` takes the `Option<Pattern>` instead of a bool).
+- Shared files touched beyond new arms: check.nra (`Ref.Narrow`, the trait functions, `Checker.assigningId`), body.nra (trait implementation), stmts.nra (`checkVariable` takes the `Option<Pattern>` instead of a bool).
 - "Unreachable arm": Go has no such error, so none is ported or tested. The other listed errors (non-exhaustive, unknown variant, arity, wrong type, duplicate binding, refutable declaration, float map key, map type arguments) are in the goldens.
 - No new diagnostic codes.
 
@@ -62,7 +59,7 @@ No pattern, match, `is`, Map, tuple or spread construct is skipped any more.
 - `x is Pat(a, b) && cond` is not an allowed shape in Narra; an `is` with bindings must be the whole condition of an `if`. This applies to selfhost code too.
 - `f(mutable checker, ... typeString(checker, ...) ...)` is rejected; compute the message into a `const message` first.
 - Pattern ids are `-1` for the synthetic wildcard used by exhaustiveness; `getRef` ignores ids outside the body.
-- A later node that needs `ctor=` for constructor expressions can reuse `Ref.Variant` (same dump text).
+- `namesEnum` and `findEnumName` now come from ctors.nra (exported there, `namesEnum` declared `uses alloc`); match.nra no longer has its own copies.
 
 ## Proposed learnings
 

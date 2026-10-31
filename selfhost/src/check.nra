@@ -13,7 +13,7 @@
 // the checker have none, but every write checks the range anyway.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl, Expr, Block, FieldInit } from "narrac/ast"
+import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl, Expr, Block, Arg, FieldInit } from "narrac/ast"
 import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, TraitInfo, TypeTraits, ImplInfo, ImplRef, MapKeyCheck, typeKey, isBoxedEnum } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
 import { funcIds, blockIds, exprIds } from "narrac/idcheck"
@@ -83,10 +83,15 @@ export enum Ref {
   Const(index: int) // Checker.consts
   Function(index: int) // Checker.funcs
   Builtin(index: int) // Registry.funcs
-  // A pattern that names an enum variant: Checker.enums and its variants.
-  Variant(enumIndex: int, variantIndex: int)
-  // A field read through an enum value narrowed to one variant.
+  // A field read through an enum value narrowed to one variant
+  // (selfhost-check-patterns). A pattern that names a variant records
+  // Constructor.
   Narrow(enumIndex: int, variantIndex: int)
+  // Added by selfhost-check-calls (calls.nra, ctors.nra):
+  Constructor(enumIndex: int, variant: int) // Checker.enums, EnumInfo.variants
+  Implementation(block: int, index: int) // Checker.impls[block].funcs[index]
+  TraitFunction(traitIndex: int, name: string) // a trait function the compiler implements
+  Distinct(index: int) // Checker.distincts: T.from or T.toInt
 }
 
 // A local variable, parameter or loop variable of one checked body (Go's
@@ -145,6 +150,25 @@ export trait Walker {
   function checkTuple(walker: Self, mutable checker: Checker, pos: Pos, elements: Array<Expr>, want: Option<Type>): Type uses alloc
   function checkSpread(walker: Self, mutable checker: Checker, pos: Pos, typeName: string, fields: Array<FieldInit>, spread: Expr, want: Option<Type>): Type uses alloc
   function checkMapIndex(walker: Self, mutable checker: Checker, nodeId: int, index: Expr, mapKey: Type, mapValue: Type): Type uses alloc
+  // Calls and constructors (calls.nra, ctors.nra) sit above narrac/exprs,
+  // which reaches them through these two. checkConstructorName checks a
+  // constructor used as a value (`None`, `Shape.Empty`); enumName is "" for
+  // a bare name, and the result is None when no enum has the constructor.
+  function checkCall(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>, want: Option<Type>): Type uses alloc
+  function checkConstructorName(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, enumName: string, name: string, want: Option<Type>): Option<Type> uses alloc
+}
+
+// An instance of a generic function (Go's pendingFunc with the cloned
+// declaration): the syntax stays shared, so the instance keeps its
+// signature here and its results in its own body (D70). scope is the
+// declaring module and env maps the type parameter names to targs.
+export struct FuncInstance {
+  func: int // Checker.funcs
+  scope: int
+  env: Map<string, Type>
+  targs: Array<Type>
+  params: Array<Type>
+  result: Type
 }
 
 // A compile error. There are no codes or fixes yet: they go with the driver
@@ -231,6 +255,14 @@ export struct Checker {
   // The id of the target of the assignment being checked, or -1 (Go's
   // c.assigning): a Map index there is a write.
   assigningId: int = -1
+  // Generic function instances (instances.nra) in discovery order, found by
+  // "<func>|<typeKeys>" in funcInstances. pending is the queue of instances
+  // to check (instanceList indexes); checkPending (body.nra) works through
+  // it from pendingNext after every module's bodies.
+  instanceList: Array<FuncInstance> = []
+  funcInstances: Map<string, int>
+  pending: Array<int> = []
+  pendingNext: int = 0
 }
 
 // newChecker makes an empty checker whose side tables hold ids [0, ids).
@@ -242,7 +274,7 @@ export function newChecker(ids: int): Checker uses alloc {
     traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, impls: [], implFuncs: Map {}, mapKeys: [],
     errs: [], errKeys: Map {}, order: [],
     registry: newRegistry(), scopeIndex: Map {}, pkgName: "", single: false, used: [], entries: [],
-    resultType: Type.TVoid,
+    resultType: Type.TVoid, funcInstances: Map {},
   }
 }
 

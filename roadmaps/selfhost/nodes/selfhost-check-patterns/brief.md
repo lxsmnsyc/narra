@@ -38,6 +38,12 @@ depends_on:
   - on: selfhost-check-bodies
     kind: hard
     why: defines the body context, locals, per-body tables, the dispatch arms to replace and the dump; no frozen interface exists yet
+  - on: selfhost-names-frontend
+    kind: hard
+    why: renames the files this node edits; building first would conflict on every line it touches
+  - on: selfhost-names-checker
+    kind: hard
+    why: renames the files this node edits; building first would conflict on every line it touches
 ---
 
 # Self-hosted checker: patterns, match and aggregate literals

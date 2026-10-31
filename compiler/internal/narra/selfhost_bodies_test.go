@@ -34,9 +34,8 @@ func unsupportedConstruct(out string) string {
 // TestSelfhostBodies checks that `narrac types <path>` prints the same dump
 // as `narra types` (TypesDump), or the same errors on stderr with exit 1,
 // on every input of bodiesInputs. An input is skipped only when it does not
-// load or when the Narra checker reports a construct a later node ports
-// (`unsupported:`); each skip is logged with its construct, and the counts
-// per reason are printed at the end.
+// load; a construct the Narra checker reports as `unsupported:` fails the
+// test. The counts are printed at the end.
 func TestSelfhostBodies(t *testing.T) {
 	exe := buildSelfhost(t)
 	var mu sync.Mutex
@@ -58,7 +57,7 @@ func TestSelfhostBodies(t *testing.T) {
 				want, ok := TypesDump(path)
 				out, errOut, code := runNarracRaw(t, exe, "types", path)
 				if construct := unsupportedConstruct(errOut); construct != "" {
-					skip(t, "unsupported: "+construct)
+					t.Fatalf("unsupported: %s", construct)
 				}
 				mu.Lock()
 				compared++

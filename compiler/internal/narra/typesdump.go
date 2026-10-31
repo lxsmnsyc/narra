@@ -14,10 +14,11 @@ import (
 // Input
 //
 //	path is a package directory or a single .nra file, as Load accepts. The
-//	dump runs what `narra check` runs except the effect pass: the
-//	declaration passes and the bodies of each module in load order, the
-//	pending generic function instances, the Map keys, the entry functions
-//	and finish (checkPackageBodies).
+//	dump runs what `narra check` runs: the declaration passes and the
+//	bodies of each module in load order, the pending generic function
+//	instances, the Map keys, the entry functions and finish
+//	(checkPackageBodies), then the effect pass (checkEffects) when the
+//	bodies have no errors.
 //
 // Blocks
 //
@@ -69,6 +70,15 @@ import (
 //	A namespace alias that the checker resolved (Alias.NAME of a package
 //	module) has the type `module <path>`.
 //
+// Effects
+//
+//	After the last block, one line per function body that is not a generic
+//	instance (kind func or impl), in the order of the blocks:
+//	    effects module="<m>" <kind> <name> <effect>,<effect>
+//	The set is the one callers see: the declared one for an exported
+//	function (effect variables included), the inferred one for a private
+//	function, all three for an entry function. Sorted, `-` when empty.
+//
 // Errors
 //
 //	A failed load or check prints only the errors, as the decls dump does:
@@ -90,7 +100,8 @@ import (
 //	values and Alias.f, arrow lines and their parameter locals.
 //	selfhost-check-builtins: the builtin= attribute and the type of every
 //	std call whose check function is named in the registry (Array.push,
-//	Option.map, Test.eq and the like).
+//	Option.map, Test.eq and the like). selfhost-check-effects: the effects
+//	lines and the effect errors (selfhost/src/effects.nra).
 
 // checkedBody is one body the checker checked, logged when it starts.
 type checkedBody struct {
@@ -145,6 +156,10 @@ func TypesDump(path string) (dump string, ok bool) {
 	if err != nil {
 		return errorLines(err), false
 	}
+	var effects *effectState
+	if len(c.errs) == 0 {
+		effects = c.checkEffects()
+	}
 	if len(c.errs) > 0 {
 		return errorLines(Diagnostics(c.errs)), false
 	}
@@ -152,6 +167,7 @@ func TypesDump(path string) (dump string, ok bool) {
 	for _, b := range c.bodies {
 		d.body(b)
 	}
+	d.effects(c, effects)
 	return d.b.String(), true
 }
 
@@ -196,6 +212,21 @@ func (d *typesDumper) body(b checkedBody) {
 		d.block(b.block)
 	case b.expr != nil:
 		d.expr(b.expr)
+	}
+}
+
+// effects writes the effects lines: the set callers see for each function
+// body that is not an instance.
+func (d *typesDumper) effects(c *Checker, s *effectState) {
+	for _, b := range c.bodies {
+		if b.fd == nil || b.targs != nil || (b.kind != "func" && b.kind != "impl") {
+			continue
+		}
+		text := "-"
+		if names := sortedEffects(s.funcEffects(b.fd)); len(names) > 0 {
+			text = strings.Join(names, ",")
+		}
+		d.b.WriteString(fmt.Sprintf("effects module=%s %s %s %s\n", quoteDump(b.module), b.kind, b.name, text))
 	}
 }
 

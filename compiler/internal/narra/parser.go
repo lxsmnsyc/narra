@@ -26,7 +26,7 @@ func Parse(src string) (*File, error) {
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
 	}
-	f.dotUses = map[string][]Pos{}
+	f.dotUses = map[string][]dotUse{}
 	f.inTemplate = map[string]bool{}
 	for i := 0; i < len(toks); i++ {
 		if toks[i].Kind == TokTemplate {
@@ -36,7 +36,11 @@ func Parse(src string) (*File, error) {
 		}
 		if i+1 < len(toks) && toks[i].Kind == TokIdent && toks[i+1].Kind == TokPunct && toks[i+1].Text == "." &&
 			(i == 0 || toks[i-1].Kind != TokPunct || toks[i-1].Text != ".") {
-			f.dotUses[toks[i].Text] = append(f.dotUses[toks[i].Text], toks[i].Pos)
+			member := ""
+			if i+2 < len(toks) && toks[i+2].Kind == TokIdent {
+				member = toks[i+2].Text
+			}
+			f.dotUses[toks[i].Text] = append(f.dotUses[toks[i].Text], dotUse{toks[i].Pos, member})
 		}
 	}
 	// The header ends at the last leading comment line that a blank line

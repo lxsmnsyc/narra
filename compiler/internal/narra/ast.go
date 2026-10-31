@@ -12,7 +12,13 @@ type File struct {
 	// not after one, such as `Arrays` in `Arrays.push(...)`. A fix that
 	// renames an import alias edits them.
 	inTemplate map[string]bool // names written before a `.` inside a template string
-	dotUses map[string][]Pos
+	dotUses map[string][]dotUse
+}
+
+// dotUse is an identifier written before a `.`, with the name after the dot.
+type dotUse struct {
+	Pos    Pos
+	Member string
 }
 
 type ImportDecl struct {

@@ -89,10 +89,21 @@ func (c *Checker) checkImportNames(f *File) {
 			sugg = imp.Alias + "s"
 		}
 		var fixes []Fix
-		if !c.aliasTaken(sugg) && c.modules[sugg] == "" && !f.inTemplate[imp.Alias] {
+		// When the alias is also an enum, `Alias.Ctor(...)` is a constructor
+		// and stays. Only the uses of an export of a std module are renamed,
+		// and a package module gets no fix.
+		mod := stdModules[imp.Path]
+		ok := !c.aliasTaken(sugg) && c.modules[sugg] == "" && !f.inTemplate[imp.Alias]
+		if c.isEnumName(imp.Alias) && mod == nil {
+			ok = false
+		}
+		if ok {
 			edits := []Edit{{Start: imp.AliasPos, End: Pos{imp.AliasPos.Line, imp.AliasPos.Col + len(imp.Alias)}, Text: sugg}}
-			for _, p := range f.dotUses[imp.Alias] {
-				edits = append(edits, Edit{Start: p, End: Pos{p.Line, p.Col + len(imp.Alias)}, Text: sugg})
+			for _, u := range f.dotUses[imp.Alias] {
+				if c.isEnumName(imp.Alias) && mod.Funcs[u.Member] == nil {
+					continue
+				}
+				edits = append(edits, Edit{Start: u.Pos, End: Pos{u.Pos.Line, u.Pos.Col + len(imp.Alias)}, Text: sugg})
 			}
 			fixes = []Fix{{Title: "rename the alias to " + sugg, Edits: edits}}
 		}
@@ -109,7 +120,8 @@ func (c *Checker) checkImportNames(f *File) {
 			continue
 		}
 		for _, n := range imp.Names {
-			if declared[n.Local] || c.mod.consts[n.Local] != nil {
+			_, isAlias := c.modules[n.Local]
+			if declared[n.Local] || c.mod.consts[n.Local] != nil || isAlias || c.aliasTaken(n.Local) {
 				c.errorf(imp.Pos, "imported name %q is already declared in this module; rename the import with `as`", n.Local)
 			}
 		}

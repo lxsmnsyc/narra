@@ -1,7 +1,7 @@
 ---
 id: selfhost-check-calls
 title: Self-hosted checker: constructors, generic calls and trait calls
-status: todo
+status: active
 priority: must
 type: feature
 outline: false

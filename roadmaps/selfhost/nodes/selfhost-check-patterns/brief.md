@@ -1,7 +1,7 @@
 ---
 id: selfhost-check-patterns
 title: Self-hosted checker: patterns, match and aggregate literals
-status: todo
+status: active
 priority: must
 type: feature
 outline: false
@@ -54,7 +54,7 @@ Port to Narra the checks of `is` and `match`, pattern resolution and bindings, e
 
 ## Context
 
-- Read the selfhost-check-bodies outcome. Go source (about 740 lines, 1,000 Narra): `check_match.go` (`resolvePattern`, `resolvePat`, `bindRest`, `irrefutable`, `isExpr`, `match`, `isWild`, `ctorCount`, `ctorArgTypes`, `specialize`, `missingCases`, `ctorText`), `check_patterns.go` (`destructure`, `spreadLit`, `tupleType`/`tupleOf` if still needed, `tupleLit`), the narrowing helpers of `check.go` and `check_stmt.go` (`narrowed`, `setNarrow`, `narrowable`, `otherVariant`, the narrowing in `ifStmt` and `diverges`), and `mapLit`, `mapIndex` from `std_map.go`.
+- Read the selfhost-check-bodies outcome. Go source (about 740 lines, 1,000 Narra): `check_match.go` (`resolvePattern`, `resolvePat`, `bindRest`, `irrefutable`, `isExpr`, `match`, `isWild`, `ctorCount`, `ctorArgTypes`, `specialize`, `missingCases`, `ctorText`), `check_patterns.go` (`destructure`, `spreadLit`, `tupleType`/`tupleOf` if still needed, `tupleLit`; in Narra, Go's `tupleOf` and `fieldsOf` are now `findTupleType` and `listFields` after selfhost-names-checker), the narrowing helpers of `check.go` and `check_stmt.go` (`narrowed`, `setNarrow`, `narrowable`, `otherVariant`, the narrowing in `ifStmt` and `diverges`), and `mapLit`, `mapIndex` from `std_map.go`.
 - Dump: you own `Pattern` lines (kind as `astdump.go` prints it) with the resolved variant or binding, `Local` lines for pattern bindings, `narrow=<Variant>` on identifiers that are narrowed, and the `IsExpr`, `MatchExpr`, `MapLit`, tuple and spread literal lines. Add them to both printers and the Owners list.
 - Skipped until later nodes land: arrow functions in arms or scrutinees (closures), calls to generic functions and constructors in a scrutinee (calls). They show as `unsupported:`.
 

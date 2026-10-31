@@ -1,7 +1,8 @@
 ---
 id: selfhost-names-frontend
 title: Readable names in the selfhost front end
-status: active
+status: done
+spent: 288000
 priority: must
 type: refactor
 outline: false

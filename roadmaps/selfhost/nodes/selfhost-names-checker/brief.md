@@ -1,7 +1,8 @@
 ---
 id: selfhost-names-checker
 title: Readable names in the selfhost checker
-status: active
+status: done
+spent: 309000
 priority: must
 type: refactor
 outline: false

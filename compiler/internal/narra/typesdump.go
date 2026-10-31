@@ -57,6 +57,7 @@ import (
 //	    local=<name>              a name that resolves to a local
 //	    const=<module>.<name>     a top-level constant
 //	    func=<module>.<name>      a function (an instance names its generic function)
+//	    func=<Type>.<Trait>.<f>   an implement block function, called as Trait.f
 //	    ctor=<Enum>.<Variant>     an enum constructor
 //	    builtin=<Builtin.Name>    a std function (Array.push, print)
 //	    narrow=<Variant>          a field read through a narrowed enum value
@@ -77,8 +78,10 @@ import (
 //	selfhost-check-bodies: the block headers, local, the expression lines
 //	of literals, names, fields, index, unary, binary, struct and array
 //	literals and plain calls, and the attributes local, const, func (plain
-//	functions) and builtin. selfhost-check-calls: ctor, trait, distinct, func
-//	on instances and impl blocks. selfhost-check-patterns: pattern lines,
+//	functions) and builtin. selfhost-check-calls: the impl and targs
+//	headers, the attributes ctor, trait and distinct, func on generic
+//	functions, package-module functions and implement block functions, and
+//	the `module <path>` type of Alias in Alias.Enum.Variant. selfhost-check-patterns: pattern lines,
 //	narrow, and pattern-binding locals. selfhost-check-closures: value, func
 //	on function values, arrow parameters.
 
@@ -138,7 +141,7 @@ func TypesDump(path string) (dump string, ok bool) {
 	if len(c.errs) > 0 {
 		return errorLines(Diagnostics(c.errs)), false
 	}
-	d := &typesDumper{}
+	d := &typesDumper{implNames: implDumpNames(c)}
 	for _, b := range c.bodies {
 		d.body(b)
 	}
@@ -147,6 +150,20 @@ func TypesDump(path string) (dump string, ok bool) {
 
 type typesDumper struct {
 	b strings.Builder
+	// implNames names each implement block function <Type>.<Trait>.<f>;
+	// resolveImpl renamed the declarations to their C names.
+	implNames map[*FuncDecl]string
+}
+
+// implDumpNames lists the implement block functions by their dump names.
+func implDumpNames(c *Checker) map[*FuncDecl]string {
+	names := map[*FuncDecl]string{}
+	for t, funcs := range c.traits.implFuncs {
+		for key, fd := range funcs {
+			names[fd] = dumpTypeString(t) + "." + key
+		}
+	}
+	return names
 }
 
 func (d *typesDumper) body(b checkedBody) {
@@ -245,8 +262,12 @@ func (d *typesDumper) stmt(s Stmt) {
 }
 
 // funcName names a function for the func attribute: an instance by the
-// generic function it was made from.
-func funcName(fd *FuncDecl) string {
+// generic function it was made from, an implement block function by its
+// type, trait and name.
+func (d *typesDumper) funcName(fd *FuncDecl) string {
+	if name, ok := d.implNames[fd]; ok {
+		return name
+	}
 	if fd.Origin != nil {
 		fd = fd.Origin
 	}
@@ -261,7 +282,7 @@ func ctorName(v *Variant) string {
 }
 
 // refAttrs lists the resolution attributes of a node, in the documented order.
-func refAttrs(local *Local, cd *ConstDecl, fd *FuncDecl, ctor *Variant, builtin string) []string {
+func (d *typesDumper) refAttrs(local *Local, cd *ConstDecl, fd *FuncDecl, ctor *Variant, builtin string) []string {
 	var out []string
 	if local != nil {
 		out = append(out, "local="+local.Name)
@@ -270,7 +291,7 @@ func refAttrs(local *Local, cd *ConstDecl, fd *FuncDecl, ctor *Variant, builtin 
 		out = append(out, "const="+qualifiedName(cd.Module, cd.Name))
 	}
 	if fd != nil {
-		out = append(out, "func="+funcName(fd))
+		out = append(out, "func="+d.funcName(fd))
 	}
 	if ctor != nil {
 		out = append(out, "ctor="+ctorName(ctor))
@@ -303,9 +324,9 @@ func (d *typesDumper) expr(e Expr) {
 		d.line(e.P, "template", nil, e.T)
 		d.exprs(e.Parts)
 	case *Ident:
-		d.line(e.P, "ident", refAttrs(e.Local, e.Const, e.Func, e.Ctor, ""), e.T)
+		d.line(e.P, "ident", d.refAttrs(e.Local, e.Const, e.Func, e.Ctor, ""), e.T)
 	case *FieldExpr:
-		attrs := refAttrs(nil, e.Const, e.Func, e.Ctor, e.Builtin)
+		attrs := d.refAttrs(nil, e.Const, e.Func, e.Ctor, e.Builtin)
 		if e.Narrow != nil {
 			attrs = append(attrs, "narrow="+e.Narrow.Name)
 		}
@@ -324,7 +345,7 @@ func (d *typesDumper) expr(e Expr) {
 		d.exprs(e.Keys)
 		d.exprs(e.Vals)
 	case *CallExpr:
-		attrs := refAttrs(nil, nil, e.Func, e.Ctor, e.Builtin)
+		attrs := d.refAttrs(nil, nil, e.Func, e.Ctor, e.Builtin)
 		if e.Trait != nil {
 			attrs = append(attrs, "trait="+e.Trait.Trait.Name+"."+e.Trait.Func)
 		}

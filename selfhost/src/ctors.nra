@@ -1,0 +1,397 @@
+// Enum constructors, ported from compiler/internal/narra/check_call.go
+// (ctor, enumByName, bareOwner, ctorOf, noCtor, ctorOwners, visibleEnums,
+// ctorArgs) and enumNameFor and namesEnum (check_match.go,
+// modules_check.go).
+//
+// This module sits above narrac/exprs: exprs reaches it through
+// Walker.checkConstructorName (check.nra), which body.nra's BodyWalker
+// implements, and calls.nra calls checkConstructor for `Name(...)` calls.
+// A resolved constructor is recorded as Ref.Constructor on the node.
+import { Pos, Arg, Decl, Expr } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type, Variant } from "narrac/types"
+import { Checker, Walker, errorf, getExpressionId, getExpressionPos, getNodeType } from "narrac/check"
+import { buildGeneric, substitute, instantiate } from "narrac/resolve"
+import { unify } from "narrac/generics"
+import { sourceScope } from "narrac/scopes"
+import { checkExpression, checkArgumentsLoosely, expectType, isEnumName, containsOpen } from "narrac/exprs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+
+// What a constructor resolved to. enumIndex and variant are -1 after an
+// error, when the node gets no constructor.
+export struct ConstructorResult {
+  ctorType: Type
+  enumIndex: int // Checker.enums
+  variant: int
+}
+
+// An enum found by name (Go's enumRef): a plain enum, a generic template, or
+// neither (both -1).
+struct EnumRef {
+  name: string
+  enumIndex: int // Checker.enums
+  generic: int // Checker.generics
+}
+
+// checkConstructor resolves an enum constructor and checks its arguments
+// (Go's ctor). enumName is the enum as written (`Shape`, `Geo.Shape`), or ""
+// for a bare name, which must be qualified unless it is Some, None, Ok or
+// Err. It returns None when no enum has a constructor of that name.
+export function checkConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, enumName: string, name: string, args: Array<Arg>, want: Option<Type>): Option<ConstructorResult> uses alloc {
+  if (enumName != "") {
+    const named = findEnum(checker, enumName)
+    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+  }
+
+  // The prelude constructors stay bare.
+  if (name == "Some" || name == "None") {
+    const named = findEnum(checker, "Option")
+    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+  }
+  if (name == "Ok" || name == "Err") {
+    const named = findEnum(checker, "Result")
+    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+  }
+
+  // Any other bare constructor is an error that names its enum.
+  let owners: Array<string> = []
+  let owner = ""
+  const wanted = findWantedOwner(mutable checker, name, want)
+  if (wanted != "") {
+    owner = wanted
+  } else {
+    owners = listConstructorOwners(mutable checker, name)
+    if (Arrays.length(owners) == 0) {
+      return None
+    }
+    owner = owners[0]
+  }
+  if (Arrays.length(owners) > 1) {
+    errorf(mutable checker, pos, `constructor ${name} needs its enum; ${Str.join(owners, ", ")} all have it, for example ${owner}.${name}`)
+  } else {
+    errorf(mutable checker, pos, `constructor ${name} needs its enum; write ${owner}.${name}`)
+  }
+  const named = findEnum(checker, owner)
+  return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+}
+
+// findEnum finds the enum a name refers to in the current module (Go's
+// enumByName). `Alias.Enum` looks in the package module the alias names.
+function findEnum(checker: Checker, name: string): EnumRef {
+  let scope = checker.cur
+  let typeName = name
+  if (Str.indexOf(name, ".") is Some(dot)) {
+    // Alias.Enum: an enum the module behind the alias exports.
+    const alias = Str.slice(name, 0, dot)
+    typeName = Str.sliceFrom(name, dot + 1)
+    let moduleScope = -1
+    if (checker.scopes[scope].modules[alias] is Some(path)) {
+      moduleScope = sourceScope(checker, path)
+    }
+    if (moduleScope < 0 || !exportsEnum(checker, moduleScope, typeName)) {
+      return EnumRef { name: name, enumIndex: -1, generic: -1 }
+    }
+    scope = moduleScope
+  }
+  if (checker.scopes[scope].types[typeName] is Some(Type.TEnum(index))) {
+    return EnumRef { name: name, enumIndex: index, generic: -1 }
+  }
+  if (checker.scopes[scope].generics[typeName] is Some(generic)) {
+    if (!checker.generics[generic].isStruct) {
+      return EnumRef { name: name, enumIndex: -1, generic: generic }
+    }
+  }
+  return EnumRef { name: name, enumIndex: -1, generic: -1 }
+}
+
+function exportsEnum(checker: Checker, scope: int, name: string): bool {
+  if (checker.scopes[scope].exports[name] is Some(index)) {
+    return checker.scopes[scope].decls[index] is Decl.Enum(_)
+  }
+  return false
+}
+
+// findWantedOwner is the name the expected type's enum has here when that
+// enum has the constructor, or "" (the first half of Go's bareOwner).
+function findWantedOwner(mutable checker: Checker, name: string, want: Option<Type>): string uses alloc {
+  if (want is Some(Type.TEnum(wanted))) {
+    if (findVariant(checker.enums[wanted].variants, name) >= 0) {
+      return findEnumName(mutable checker, wanted)
+    }
+  }
+  return ""
+}
+
+function findVariant(variants: Array<Variant>, name: string): int {
+  for (const variant of Arrays.values(variants)) {
+    if (variant.name == name) {
+      return variant.index
+    }
+  }
+  return -1
+}
+
+// checkEnumConstructor builds a constructor of an enum found by findEnum
+// (Go's ctorOf).
+function checkEnumConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, named: EnumRef, name: string, args: Array<Arg>, want: Option<Type>): ConstructorResult uses alloc {
+  if (named.enumIndex >= 0) {
+    const variant = findVariant(checker.enums[named.enumIndex].variants, name)
+    if (variant < 0) {
+      return reportNoConstructor(mutable checker, walker, pos, named, name, args)
+    }
+    checkConstructorArguments(mutable checker, walker, pos, named.enumIndex, variant, args)
+    return ConstructorResult { ctorType: Type.TEnum(named.enumIndex), enumIndex: named.enumIndex, variant: variant }
+  }
+  if (named.generic < 0) {
+    return reportNoConstructor(mutable checker, walker, pos, named, name, args)
+  }
+  buildGeneric(mutable checker, named.generic)
+  for (const variant of Arrays.values(checker.generics[named.generic].variants)) {
+    if (variant.name == name) {
+      return checkGenericConstructor(mutable checker, walker, pos, named.generic, variant, args, want)
+    }
+  }
+  return reportNoConstructor(mutable checker, walker, pos, named, name, args)
+}
+
+// checkGenericConstructor infers the instance a constructor of a generic
+// enum builds: the expected type gives the type arguments it can, the
+// arguments the rest.
+function checkGenericConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, generic: int, variant: Variant, args: Array<Arg>, want: Option<Type>): ConstructorResult uses alloc {
+  const failed = ConstructorResult { ctorType: Type.TVoid, enumIndex: -1, variant: -1 }
+  const params = checker.generics[generic].params
+  let bindings: Map<int, Type> = Map {}
+  if (want is Some(Type.TEnum(wanted))) {
+    const info = checker.enums[wanted]
+    if (info.name == checker.generics[generic].name && info.module == checker.generics[generic].module) {
+      for (const index of Ranges.between(0, Arrays.length(params))) {
+        bindings[params[index]] = info.args[index]
+      }
+    }
+  }
+  const argCount = Arrays.length(args)
+  const fieldCount = Arrays.length(variant.fields)
+  if (argCount != fieldCount) {
+    errorf(mutable checker, pos, `${variant.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`)
+    checkArgumentsLoosely(mutable checker, walker, args)
+    return failed
+  }
+
+  // Each argument is checked against its field with what is known so far.
+  for (const index of Ranges.between(0, argCount)) {
+    const fieldType = variant.fields[index].fieldType
+    const substituted = substitute(mutable checker, fieldType, bindings)
+    let fieldWant: Option<Type> = Some(substituted)
+    if (containsOpen(checker, substituted, params)) {
+      fieldWant = None
+    }
+    const argType = checkExpression(mutable checker, walker, args[index].value, fieldWant)
+    unify(checker, fieldType, argType, mutable bindings)
+  }
+
+  // Every type parameter must be known.
+  let typeArgs: Array<Type> = []
+  for (const param of Arrays.values(params)) {
+    if (bindings[param] is Some(bound)) {
+      Arrays.push(mutable typeArgs, bound)
+    } else {
+      errorf(mutable checker, pos, `cannot tell the type of ${variant.name} here; add a type annotation`)
+      return failed
+    }
+  }
+  const instance = instantiate(mutable checker, generic, typeArgs)
+  let enumIndex = -1
+  if (instance is Type.TEnum(index)) {
+    enumIndex = index
+  }
+  if (enumIndex < 0) {
+    return failed
+  }
+  const fields = checker.enums[enumIndex].variants[variant.index].fields
+  for (const index of Ranges.between(0, argCount)) {
+    const value = args[index].value
+    let argType = Type.TVoid
+    if (getNodeType(checker, getExpressionId(value)) is Some(checked)) {
+      argType = checked
+    }
+    expectType(mutable checker, getExpressionPos(value), Some(fields[index].fieldType), argType)
+    if (args[index].isMutable) {
+      errorf(mutable checker, pos, "constructor fields are not mutable")
+    }
+  }
+  return ConstructorResult { ctorType: instance, enumIndex: enumIndex, variant: variant.index }
+}
+
+function reportNoConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, named: EnumRef, name: string, args: Array<Arg>): ConstructorResult uses alloc {
+  errorf(mutable checker, pos, `enum ${named.name} has no constructor ${quoteGo(name)}`)
+  checkArgumentsLoosely(mutable checker, walker, args)
+  return ConstructorResult { ctorType: Type.TVoid, enumIndex: -1, variant: -1 }
+}
+
+// checkConstructorArguments checks the arguments of a constructor of a
+// plain enum (Go's ctorArgs).
+function checkConstructorArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, enumIndex: int, variant: int, args: Array<Arg>) uses alloc {
+  const info = checker.enums[enumIndex].variants[variant]
+  const argCount = Arrays.length(args)
+  const fieldCount = Arrays.length(info.fields)
+  if (argCount != fieldCount) {
+    errorf(mutable checker, pos, `${info.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`)
+  }
+  for (const index of Ranges.between(0, argCount)) {
+    const arg = args[index]
+    if (arg.isMutable) {
+      errorf(mutable checker, pos, "constructor fields are not mutable")
+    }
+    if (index < fieldCount) {
+      const fieldType = info.fields[index].fieldType
+      const argType = checkExpression(mutable checker, walker, arg.value, Some(fieldType))
+      expectType(mutable checker, getExpressionPos(arg.value), Some(fieldType), argType)
+    } else {
+      checkExpression(mutable checker, walker, arg.value, None)
+    }
+  }
+}
+
+// listConstructorOwners lists the enums, by the name the current module
+// uses for them, that have a constructor of this name (Go's ctorOwners
+// without an enum). Enums are ranked: those the module declares, then those
+// it imports, then the prelude. Only the first rank with a match counts.
+function listConstructorOwners(mutable checker: Checker, name: string): Array<string> uses alloc {
+  let declared: Array<string> = []
+  let imported: Array<string> = []
+  let prelude: Array<string> = []
+  const scope = checker.cur
+  const modulePath = checker.scopes[scope].path
+  for (const enumName of Arrays.values(listVisibleEnums(checker))) {
+    // Find the enum's module and whether it has the constructor.
+    let module = ""
+    let has = false
+    if (checker.scopes[scope].types[enumName] is Some(Type.TEnum(index))) {
+      module = checker.enums[index].module
+      has = findVariant(checker.enums[index].variants, name) >= 0
+    } else if (checker.scopes[scope].generics[enumName] is Some(generic)) {
+      buildGeneric(mutable checker, generic)
+      module = checker.generics[generic].module
+      has = findVariant(checker.generics[generic].variants, name) >= 0
+    }
+    if (!has) {
+      continue
+    }
+    if (module == modulePath) {
+      Arrays.push(mutable declared, enumName)
+    } else if (module == "") {
+      Arrays.push(mutable prelude, enumName)
+    } else {
+      Arrays.push(mutable imported, enumName)
+    }
+  }
+  if (Arrays.length(declared) > 0) {
+    return declared
+  }
+  if (Arrays.length(imported) > 0) {
+    return imported
+  }
+  return prelude
+}
+
+// listVisibleEnums lists the enums visible in the current module, once each:
+// its declarations in order, its imports in order, then the rest (the
+// prelude) by name (Go's visibleEnums).
+function listVisibleEnums(checker: Checker): Array<string> uses alloc {
+  let names: Array<string> = []
+  let seen: Map<string, bool> = Map {}
+  const scope = checker.cur
+  let candidates: Array<string> = []
+  if (checker.scopes[scope].isSource) {
+    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
+      if (decl is Decl.Enum(enumDecl)) {
+        Arrays.push(mutable candidates, enumDecl.name)
+      }
+    }
+    for (const importDecl of Arrays.values(checker.scopes[scope].imports)) {
+      for (const importName of Arrays.values(importDecl.names)) {
+        Arrays.push(mutable candidates, importName.local)
+      }
+    }
+  }
+  let rest: Array<string> = []
+  for (const typeName of Arrays.values(Maps.keys(checker.scopes[scope].types))) {
+    Arrays.push(mutable rest, typeName)
+  }
+  for (const genericName of Arrays.values(Maps.keys(checker.scopes[scope].generics))) {
+    Arrays.push(mutable rest, genericName)
+  }
+  sortNames(mutable rest)
+  for (const restName of Arrays.values(rest)) {
+    Arrays.push(mutable candidates, restName)
+  }
+  for (const candidate of Arrays.values(candidates)) {
+    if (seen[candidate] is None && isEnumName(checker, candidate)) {
+      seen[candidate] = true
+      Arrays.push(mutable names, candidate)
+    }
+  }
+  return names
+}
+
+// sortNames sorts a short list of names in place (insertion sort).
+function sortNames(mutable names: Array<string>) {
+  for (const i of Ranges.between(1, Arrays.length(names))) {
+    let j = i
+    while (j > 0 && names[j - 1] > names[j]) {
+      const swapped = names[j - 1]
+      names[j - 1] = names[j]
+      names[j] = swapped
+      j = j - 1
+    }
+  }
+}
+
+// findEnumName is the name the current module uses for an enum (Go's
+// enumNameFor): a visible name, then `Alias.Name` through a namespace
+// import, else "".
+function findEnumName(mutable checker: Checker, enumIndex: int): string uses alloc {
+  for (const enumName of Arrays.values(listVisibleEnums(checker))) {
+    if (namesEnum(checker, enumName, enumIndex)) {
+      return enumName
+    }
+  }
+  const scope = checker.cur
+  let aliases = Maps.keys(checker.scopes[scope].modules)
+  sortNames(mutable aliases)
+  const info = checker.enums[enumIndex]
+  for (const alias of Arrays.values(aliases)) {
+    if (checker.scopes[scope].modules[alias] is Some(path)) {
+      const qualified = `${alias}.${info.name}`
+      if (path == info.module && namesEnum(checker, qualified, enumIndex)) {
+        return qualified
+      }
+    }
+  }
+  return ""
+}
+
+// namesEnum reports whether a name, as written in the current module,
+// refers to the enum (an instance names its generic enum).
+function namesEnum(checker: Checker, name: string, enumIndex: int): bool {
+  const info = checker.enums[enumIndex]
+  if (Str.contains(name, ".")) {
+    const named = findEnum(checker, name)
+    if (named.enumIndex >= 0) {
+      return named.enumIndex == enumIndex
+    }
+    return named.generic >= 0 && checker.generics[named.generic].name == info.name && checker.generics[named.generic].module == info.module
+  }
+  const scope = checker.cur
+  if (checker.scopes[scope].types[name] is Some(type)) {
+    return type == Type.TEnum(enumIndex)
+  }
+  if (checker.scopes[scope].generics[name] is Some(generic)) {
+    return checker.generics[generic].name == info.name && checker.generics[generic].module == info.module
+  }
+  return false
+}

@@ -1,9 +1,14 @@
 // The expression checker, ported from compiler/internal/narra:
-// check_expr.go (expr, exprInner, binary, structLit), the plain path of
-// check_call.go (call, args, builtinCall, checkMutableArg), check_const.go
+// check_expr.go (expr, exprInner, binary, structLit), the argument half of
+// check_call.go (args, builtinCall, checkMutableArg, checkExclusive,
+// missingImport, moduleEnumName), check_const.go
 // (constType, checkConstValue, constWrite, moduleConstValue, calleeName),
 // isConstant and expectType (check_types.go) and the plain-name half of
 // check_closure.go.
+//
+// Calls and constructors are in calls.nra and ctors.nra, above this module:
+// the CallExpr arm and constructor names go through Walker.checkCall and
+// Walker.checkConstructorName.
 //
 // checkExpressionKind is one `match` on Expr. An arm that a later node
 // ports calls `unsupported` and names the node; that node replaces the arm
@@ -19,15 +24,16 @@
 import { Pos, Expr, Arg, FieldInit, TypeExpr, Decl, Param } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field } from "narrac/types"
-import { Checker, Ref, BodyRoot, Walker, CONST_NEW, CONST_BUSY, CONST_DONE, errorf, enter, typeString, startBody, finishBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, unsupported, getExpressionId, getExpressionPos, isNumeric, lookupTrait } from "narrac/check"
+import { Checker, Ref, BodyRoot, Walker, CONST_NEW, CONST_BUSY, CONST_DONE, errorf, enter, typeString, startBody, finishBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, unsupported, getExpressionId, getExpressionPos, isNumeric } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdlib"
-import { sourceScope, exported, isNamespaceName } from "narrac/scopes"
+import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
+import * as Maps from "std/map"
 import * as Ranges from "std/range"
 
 // checkExpression checks an expression and records its type (Go's expr).
@@ -46,12 +52,12 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.CharLit(_, _, _) => Type.TChar
     Expr.BoolLit(_, _, _) => Type.TBool
     Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
-    Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name)
-    Expr.FieldExpr(nodeId, pos, target, name) => checkField(mutable checker, walker, nodeId, pos, target, name)
+    Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name, want)
+    Expr.FieldExpr(nodeId, pos, target, name) => checkField(mutable checker, walker, nodeId, pos, target, name, want)
     Expr.IsExpr(_, pos, _, _) => unsupported(mutable checker, pos, "`is` (selfhost-check-patterns)")
     Expr.IndexExpr(_, pos, target, index) => checkIndex(mutable checker, walker, pos, target, index)
     Expr.MapLit(_, pos, _, _, _) => unsupported(mutable checker, pos, "a Map literal (selfhost-check-patterns)")
-    Expr.CallExpr(nodeId, pos, callee, args) => checkCall(mutable checker, walker, nodeId, pos, callee, args)
+    Expr.CallExpr(nodeId, pos, callee, args) => Walker.checkCall(walker, mutable checker, nodeId, pos, callee, args, want)
     Expr.UnaryExpr(_, pos, operator, operand) => checkUnary(mutable checker, walker, pos, operator, operand, want)
     Expr.BinaryExpr(_, pos, operator, left, right) => checkBinary(mutable checker, walker, pos, operator, left, right)
     Expr.StructLit(_, pos, typeName, typeArgs, fields, spread) => checkStructLiteral(mutable checker, walker, pos, typeName, typeArgs, fields, spread, want)
@@ -190,7 +196,7 @@ function checkTemplate<W: Walker>(mutable checker: Checker, walker: W, parts: Ar
 
 // checkName resolves a plain name used as a value: a local, then a
 // constant, then a function, a constructor and a module alias.
-function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, name: string): Type uses alloc {
+function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, name: string, want: Option<Type>): Type uses alloc {
   // A local of the current body.
   const local = findLocal(checker, name)
   if (local >= 0) {
@@ -212,8 +218,8 @@ function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, 
   if (checker.scopes[scope].funcs[name] is Some(_)) {
     return unsupported(mutable checker, pos, "a function used as a value (selfhost-check-closures)")
   }
-  if (hasConstructor(checker, name)) {
-    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+  if (Walker.checkConstructorName(walker, mutable checker, nodeId, pos, "", name, want) is Some(constructorType)) {
+    return constructorType
   }
   if (checker.scopes[scope].modules[name] is Some(_)) {
     errorf(mutable checker, pos, "a module is not a value")
@@ -223,32 +229,8 @@ function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, 
   return Type.TVoid
 }
 
-// hasConstructor reports whether a bare name may be an enum constructor:
-// Some, None, Ok, Err or a variant of any enum. It errs on the side of yes,
-// since a yes only makes the input unsupported.
-function hasConstructor(checker: Checker, name: string): bool {
-  if (name == "Some" || name == "None" || name == "Ok" || name == "Err") {
-    return true
-  }
-  for (const info of Arrays.values(checker.enums)) {
-    for (const variant of Arrays.values(info.variants)) {
-      if (variant.name == name) {
-        return true
-      }
-    }
-  }
-  for (const generic of Arrays.values(checker.generics)) {
-    for (const variant of Arrays.values(generic.variantDecls)) {
-      if (variant.name == name) {
-        return true
-      }
-    }
-  }
-  return false
-}
-
 // isEnumName reports whether name is an enum or a generic enum here.
-function isEnumName(checker: Checker, name: string): bool {
+export function isEnumName(checker: Checker, name: string): bool {
   const scope = checker.cur
   if (checker.scopes[scope].types[name] is Some(Type.TEnum(_))) {
     return true
@@ -260,8 +242,8 @@ function isEnumName(checker: Checker, name: string): bool {
 }
 
 // isMissingImport reports Array.f, Box.f, Map.f, Option.f, Range.f or
-// Result.f used without the import of their std module (Go's
-// missingImport, E0908, which selfhost-check-calls ports).
+// Result.f used without the import of their std module. A type the
+// program declares named Box or Map hides the prelude one.
 function isMissingImport(checker: Checker, name: string): bool {
   const scope = checker.cur
   if (checker.scopes[scope].modules[name] is Some(_)) {
@@ -275,28 +257,76 @@ function isMissingImport(checker: Checker, name: string): bool {
   return isNamespaceName(name)
 }
 
-// isModuleEnum reports `Alias.Enum` where Alias names a package module that
-// has an enum of that name (Go's moduleEnumName, for Geo.Shape.Circle).
-function isModuleEnum(checker: Checker, target: Expr): bool {
+// reportMissingImport reports `Namespace.name` used without the import of
+// the namespace's std module (E0908) and returns true when it did (Go's
+// missingImport; the fixes are not ported). pos is the namespace's.
+export function reportMissingImport(mutable checker: Checker, pos: Pos, namespace: string, name: string): bool uses alloc {
+  if (!isMissingImport(checker, namespace)) {
+    return false
+  }
+  let path = ""
+  let plural = ""
+  if (findNamespace(namespace) is Some(found)) {
+    path = found.path
+    plural = found.plural
+  }
+  const alias = findAlias(checker, path)
+  if (alias != "") {
+    errorf(mutable checker, pos, `${namespace}.${name} names a type; this module imports ${quoteGo(path)} as ${alias}`)
+    return true
+  }
+  errorf(mutable checker, pos, `${namespace}.${name} needs an import; add \`import * as ${plural} from ${quoteGo(path)}\``)
+  return true
+}
+
+// findAlias is the first alias, by name, under which the current module
+// imports a module path, or "" (Go's aliasFor).
+function findAlias(checker: Checker, path: string): string uses alloc {
+  let best = ""
+  for (const entry of Maps.entries(checker.scopes[checker.cur].modules)) {
+    const #[alias, aliasPath] = entry
+    if (aliasPath == path && (best == "" || alias < best)) {
+      best = alias
+    }
+  }
+  return best
+}
+
+// findModuleEnum returns "Alias.Enum" when target is that expression,
+// Alias being an import of a package module that exports an enum of that
+// name, and gives the alias the type of its module (Go's moduleEnumName,
+// for Geo.Shape.Circle). It returns "" for anything else.
+export function findModuleEnum(mutable checker: Checker, target: Expr): string uses alloc {
   if (target is Expr.FieldExpr(_, _, inner, enumName)) {
-    if (inner is Expr.Ident(_, _, alias)) {
+    if (inner is Expr.Ident(aliasId, _, alias)) {
       const scope = checker.cur
       if (findLocal(checker, alias) >= 0 || checker.scopes[scope].consts[alias] is Some(_)) {
-        return false
+        return ""
       }
       if (checker.scopes[scope].modules[alias] is Some(path)) {
         const moduleScope = sourceScope(checker, path)
-        if (moduleScope < 0) {
-          return false
+        if (moduleScope < 0 || !exportsEnum(checker, moduleScope, enumName)) {
+          return ""
         }
+        let isEnum = false
         if (checker.scopes[moduleScope].types[enumName] is Some(Type.TEnum(_))) {
-          return true
+          isEnum = true
+        } else if (checker.scopes[moduleScope].generics[enumName] is Some(generic)) {
+          isEnum = !checker.generics[generic].isStruct
         }
-        if (checker.scopes[moduleScope].generics[enumName] is Some(generic)) {
-          return !checker.generics[generic].isStruct
+        if (isEnum) {
+          setNodeType(mutable checker, aliasId, Type.TModule(path))
+          return `${alias}.${enumName}`
         }
       }
     }
+  }
+  return ""
+}
+
+function exportsEnum(checker: Checker, scope: int, name: string): bool {
+  if (checker.scopes[scope].exports[name] is Some(index)) {
+    return checker.scopes[scope].decls[index] is Decl.Enum(_)
   }
   return false
 }
@@ -325,7 +355,7 @@ function findModuleConst(checker: Checker, moduleScope: int, name: string): int 
   return -1
 }
 
-function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, target: Expr, name: string): Type uses alloc {
+function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, target: Expr, name: string, want: Option<Type>): Type uses alloc {
   // Alias.f and Alias.NAME of a package module, constructors and std
   // namespaces are resolved by the syntax first.
   const scope = checker.cur
@@ -354,16 +384,17 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int,
         }
       }
       if (isEnumName(checker, alias)) {
-        return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+        return checkConstructorField(mutable checker, walker, nodeId, pos, alias, name, want)
       }
     }
   }
-  if (isModuleEnum(checker, target)) {
-    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
+  const moduleEnum = findModuleEnum(mutable checker, target)
+  if (moduleEnum != "") {
+    return checkConstructorField(mutable checker, walker, nodeId, pos, moduleEnum, name, want)
   }
-  if (target is Expr.Ident(_, _, alias)) {
-    if (findLocal(checker, alias) < 0 && checker.scopes[scope].consts[alias] is None && isMissingImport(checker, alias)) {
-      return unsupported(mutable checker, pos, "a namespace without its import (selfhost-check-calls)")
+  if (target is Expr.Ident(_, aliasPos, alias)) {
+    if (findLocal(checker, alias) < 0 && checker.scopes[scope].consts[alias] is None && reportMissingImport(mutable checker, aliasPos, alias, name)) {
+      return Type.TVoid
     }
   }
 
@@ -405,6 +436,15 @@ function checkField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int,
     errorf(mutable checker, pos, "there is no .length; use Array.length(x) or Str.length(x)")
   } else {
     errorf(mutable checker, pos, `${text} has no fields`)
+  }
+  return Type.TVoid
+}
+
+// checkConstructorField checks `Enum.Variant` or `Alias.Enum.Variant` used
+// as a value, through the constructor check of ctors.nra.
+function checkConstructorField<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, enumName: string, name: string, want: Option<Type>): Type uses alloc {
+  if (Walker.checkConstructorName(walker, mutable checker, nodeId, pos, enumName, name, want) is Some(constructorType)) {
+    return constructorType
   }
   return Type.TVoid
 }
@@ -519,7 +559,7 @@ function checkBinary<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, o
 }
 
 // containsOpen reports whether a type holds one of the given type parameters.
-function containsOpen(checker: Checker, searched: Type, params: Array<int>): bool {
+export function containsOpen(checker: Checker, searched: Type, params: Array<int>): bool {
   return match (searched) {
     Type.TParam(index) => isParamIn(index, params)
     Type.TArray(element) => containsOpen(checker, element, params)
@@ -726,109 +766,7 @@ function checkArrayLiteral<W: Walker>(mutable checker: Checker, walker: W, pos: 
   return Type.TVoid
 }
 
-// checkCall checks a call. A plain call of a non-generic function and a
-// std function with a fixed signature are ported here; the other callees
-// belong to later nodes.
-function checkCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>): Type uses alloc {
-  return match (callee) {
-    Expr.Ident(_, calleePos, name) => checkNamedCall(mutable checker, walker, nodeId, pos, calleePos, name, args)
-    Expr.FieldExpr(_, calleePos, target, name) => checkDottedCall(mutable checker, walker, nodeId, pos, calleePos, target, name, args)
-    _ => unsupported(mutable checker, pos, "a call of a function value (selfhost-check-closures)")
-  }
-}
-
-function checkNamedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, calleePos: Pos, name: string, args: Array<Arg>): Type uses alloc {
-  // A local or constant holds a function value.
-  const scope = checker.cur
-  if (findLocal(checker, name) >= 0 || checker.scopes[scope].consts[name] is Some(_)) {
-    return unsupported(mutable checker, pos, "a call of a function value (selfhost-check-closures)")
-  }
-
-  // Then print, assert and panic, std functions imported by name, and the
-  // module's functions.
-  if (checker.registry.prelude[name] is Some(builtin)) {
-    return checkBuiltinCall(mutable checker, walker, nodeId, pos, args, builtin)
-  }
-  if (checker.scopes[scope].imported[name] is Some(builtin)) {
-    return checkBuiltinCall(mutable checker, walker, nodeId, pos, args, builtin)
-  }
-  if (checker.scopes[scope].funcs[name] is Some(funcIndex)) {
-    if (Arrays.length(checker.funcs[funcIndex].typeParams) > 0) {
-      return unsupported(mutable checker, pos, "a call of a generic function (selfhost-check-calls)")
-    }
-    setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-    const params = checker.funcs[funcIndex].decl.params
-    checkArguments(mutable checker, walker, pos, args, params)
-    return checker.funcs[funcIndex].result
-  }
-  if (hasConstructor(checker, name)) {
-    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
-  }
-  errorf(mutable checker, calleePos, `unknown function ${quoteGo(name)}`)
-  checkArgumentsLoosely(mutable checker, walker, args)
-  return Type.TVoid
-}
-
-function checkDottedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, calleePos: Pos, target: Expr, name: string, args: Array<Arg>): Type uses alloc {
-  // `Name.f(...)` where Name is not a local: a trait, a module alias, a
-  // namespace, a distinct type, an enum or an unknown module.
-  const scope = checker.cur
-  if (target is Expr.Ident(_, targetPos, alias)) {
-    if (findLocal(checker, alias) < 0) {
-      if (lookupTrait(checker, alias) >= 0) {
-        return unsupported(mutable checker, pos, "a trait function call (selfhost-check-calls)")
-      }
-      if (checker.scopes[scope].modules[alias] is Some(path)) {
-        if (sourceScope(checker, path) >= 0) {
-          return unsupported(mutable checker, pos, "a call of a package module function (selfhost-check-calls)")
-        }
-        if (checker.registry.modules[path] is Some(module)) {
-          if (module.funcs[name] is Some(builtin)) {
-            return checkBuiltinCall(mutable checker, walker, nodeId, pos, args, builtin)
-          }
-        }
-        errorf(mutable checker, calleePos, `module ${quoteGo(path)} has no function ${quoteGo(name)}`)
-        checkArgumentsLoosely(mutable checker, walker, args)
-        return Type.TVoid
-      }
-      if (isMissingImport(checker, alias)) {
-        return unsupported(mutable checker, pos, "a namespace without its import (selfhost-check-calls)")
-      }
-      if (checker.scopes[scope].types[alias] is Some(Type.TDistinct(_))) {
-        return unsupported(mutable checker, pos, "a distinct type function (selfhost-check-calls)")
-      }
-      if (isEnumName(checker, alias)) {
-        return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
-      }
-      if (checker.scopes[scope].types[alias] is None && startsUpper(alias)) {
-        errorf(mutable checker, targetPos, `unknown module ${quoteGo(alias)}; import it first, for example \`import * as ${alias} from "std/..."\``)
-        checkArgumentsLoosely(mutable checker, walker, args)
-        return Type.TVoid
-      }
-    }
-  }
-  if (isModuleEnum(checker, target)) {
-    return unsupported(mutable checker, pos, "an enum constructor (selfhost-check-calls)")
-  }
-
-  // Otherwise `value.f(...)` is a method call, which Narra does not have,
-  // unless the field holds a function.
-  const targetType = checkExpression(mutable checker, walker, target, None)
-  if (targetType is Type.TStruct(index)) {
-    const fieldIndex = findField(checker.structs[index].fields, name)
-    if (fieldIndex >= 0) {
-      if (checker.structs[index].fields[fieldIndex].fieldType is Type.TFunc(_, _)) {
-        return unsupported(mutable checker, pos, "a call of a function field (selfhost-check-closures)")
-      }
-    }
-  }
-  const text = typeString(checker, targetType)
-  errorf(mutable checker, calleePos, `there are no method calls; call a module function such as Module.${name}(value, ...) (value has type ${text})`)
-  checkArgumentsLoosely(mutable checker, walker, args)
-  return Type.TVoid
-}
-
-function startsUpper(name: string): bool {
+export function startsUpper(name: string): bool {
   if (Str.length(name) == 0) {
     return false
   }
@@ -836,7 +774,7 @@ function startsUpper(name: string): bool {
   return first >= 'A' && first <= 'Z'
 }
 
-function checkArgumentsLoosely<W: Walker>(mutable checker: Checker, walker: W, args: Array<Arg>) uses alloc {
+export function checkArgumentsLoosely<W: Walker>(mutable checker: Checker, walker: W, args: Array<Arg>) uses alloc {
   for (const arg of Arrays.values(args)) {
     checkExpression(mutable checker, walker, arg.value, None)
   }
@@ -851,9 +789,10 @@ export function nonEscapingParam(param: Param): bool {
   return false
 }
 
-// checkArguments checks the arguments of a call of a non-generic function
-// (Go's args with the parameter types known).
-function checkArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, args: Array<Arg>, params: Array<Param>) uses alloc {
+// checkArguments checks the arguments of a call of a function (Go's args).
+// wants gives the expected type of each parameter's argument, or None while
+// it is not known (an open type parameter).
+export function checkArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, args: Array<Arg>, params: Array<Param>, wants: Array<Option<Type>>) uses alloc {
   const argCount = Arrays.length(args)
   const paramCount = Arrays.length(params)
   if (argCount != paramCount) {
@@ -872,9 +811,9 @@ function checkArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos
     if (nonEscapingParam(param)) {
       unsupported(mutable checker, getExpressionPos(arg.value), "an argument for a non-escaping function parameter (selfhost-check-closures)")
     }
-    const paramType = checker.paramTypes[param.id]
-    const argType = checkExpression(mutable checker, walker, arg.value, Some(paramType))
-    expectType(mutable checker, getExpressionPos(arg.value), Some(paramType), argType)
+    const want = wants[index]
+    const argType = checkExpression(mutable checker, walker, arg.value, want)
+    expectType(mutable checker, getExpressionPos(arg.value), want, argType)
 
     // The argument is mutable exactly when the parameter is.
     const argPos = getExpressionPos(arg.value)
@@ -887,22 +826,77 @@ function checkArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos
       Arrays.push(mutable mutables, index)
     }
   }
-  checkExclusive(mutable checker, pos, args, mutables)
+  checkExclusive(mutable checker, args, mutables)
 }
 
-// checkExclusive is the stub of Go's checkExclusive: a call that passes a
-// mutable argument and any other argument is unsupported until
-// selfhost-check-calls ports the rule (no other argument may use the
-// mutable one's variable).
-function checkExclusive(mutable checker: Checker, pos: Pos, args: Array<Arg>, mutables: Array<int>) uses alloc {
-  if (Arrays.length(mutables) > 0 && Arrays.length(args) > 1) {
-    unsupported(mutable checker, pos, "a mutable argument beside other arguments (selfhost-check-calls)")
+// checkExclusive rejects a call that passes a variable as mutable and also
+// passes it, or reads it, in another argument. It runs after the arguments
+// are checked, so their names are resolved.
+function checkExclusive(mutable checker: Checker, args: Array<Arg>, mutables: Array<int>) uses alloc {
+  for (const mutableIndex of Arrays.values(mutables)) {
+    const root = findAssignedLocal(checker, args[mutableIndex].value)
+    if (root < 0) {
+      continue
+    }
+    for (const index of Ranges.between(0, Arrays.length(args))) {
+      if (index != mutableIndex && usesLocal(checker, args[index].value, root)) {
+        const localName = getLocal(checker, root).name
+        errorf(mutable checker, getExpressionPos(args[index].value), `${quoteGo(localName)} is passed as mutable in this call, so no other argument can use it`)
+      }
+    }
   }
+}
+
+// usesLocal reports whether an expression reads a local (a BodyInfo.locals
+// index). It does not look into closures or match arms.
+function usesLocal(checker: Checker, expression: Expr, local: int): bool {
+  return match (expression) {
+    Expr.Ident(nodeId, _, _) => getRef(checker, nodeId) == Ref.Local(local)
+    Expr.FieldExpr(_, _, target, _) => usesLocal(checker, target, local)
+    Expr.IndexExpr(_, _, target, index) => usesLocal(checker, target, local) || usesLocal(checker, index, local)
+    Expr.UnaryExpr(_, _, _, operand) => usesLocal(checker, operand, local)
+    Expr.BinaryExpr(_, _, _, left, right) => usesLocal(checker, left, local) || usesLocal(checker, right, local)
+    Expr.IsExpr(_, _, subject, _) => usesLocal(checker, subject, local)
+    Expr.CallExpr(_, _, _, args) => argumentsUseLocal(checker, args, local)
+    Expr.TemplateLit(_, _, parts) => anyUsesLocal(checker, parts, local)
+    Expr.StructLit(_, _, _, _, fields, _) => fieldsUseLocal(checker, fields, local)
+    Expr.ArrayLit(_, _, elements, _) => anyUsesLocal(checker, elements, local)
+    Expr.MapLit(_, _, _, keys, values) => anyUsesLocal(checker, keys, local) || anyUsesLocal(checker, values, local)
+    Expr.MatchExpr(_, _, subject, _) => usesLocal(checker, subject, local)
+    _ => false
+  }
+}
+
+function anyUsesLocal(checker: Checker, expressions: Array<Expr>, local: int): bool {
+  for (const expression of Arrays.values(expressions)) {
+    if (usesLocal(checker, expression, local)) {
+      return true
+    }
+  }
+  return false
+}
+
+function argumentsUseLocal(checker: Checker, args: Array<Arg>, local: int): bool {
+  for (const arg of Arrays.values(args)) {
+    if (usesLocal(checker, arg.value, local)) {
+      return true
+    }
+  }
+  return false
+}
+
+function fieldsUseLocal(checker: Checker, fields: Array<FieldInit>, local: int): bool {
+  for (const field of Arrays.values(fields)) {
+    if (usesLocal(checker, field.value, local)) {
+      return true
+    }
+  }
+  return false
 }
 
 // checkBuiltinCall checks a call of a std function (Go's builtinCall). A
 // builtin with a named check kind is selfhost-check-builtins'.
-function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, args: Array<Arg>, builtin: int): Type uses alloc {
+export function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, args: Array<Arg>, builtin: int): Type uses alloc {
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
   const info = checker.registry.funcs[builtin]
   if (info.check != "" && info.check != "fixed") {
@@ -947,7 +941,7 @@ function checkBuiltinCall<W: Walker>(mutable checker: Checker, walker: W, nodeId
     }
     expectType(mutable checker, getExpressionPos(arg.value), want, got)
   }
-  checkExclusive(mutable checker, pos, args, mutables)
+  checkExclusive(mutable checker, args, mutables)
   return result
 }
 
@@ -1133,7 +1127,7 @@ function checkConstValue(mutable checker: Checker, name: string, value: Expr): b
     Expr.FieldExpr(nodeId, pos, target, _) => checkConstField(mutable checker, name, nodeId, target)
     Expr.UnaryExpr(_, _, _, operand) => checkConstValue(mutable checker, name, operand)
     Expr.BinaryExpr(_, _, _, left, right) => checkConstValue(mutable checker, name, left) && checkConstValue(mutable checker, name, right)
-    Expr.CallExpr(_, pos, callee, args) => checkConstCall(mutable checker, name, pos, callee, args)
+    Expr.CallExpr(nodeId, pos, callee, args) => checkConstCall(mutable checker, name, nodeId, pos, callee, args)
     Expr.StructLit(_, _, _, _, fields, spread) => checkConstStruct(mutable checker, name, fields, spread)
     Expr.ArrayLit(_, _, elements, _) => checkConstValues(mutable checker, name, elements)
     Expr.MapLit(_, _, _, keys, values) => checkConstMap(mutable checker, name, keys, values)
@@ -1166,8 +1160,16 @@ function checkConstField(mutable checker: Checker, name: string, nodeId: int, ta
   return checkConstValue(mutable checker, name, target)
 }
 
-function checkConstCall(mutable checker: Checker, name: string, pos: Pos, callee: Expr, args: Array<Arg>): bool uses alloc {
-  // Only constructor calls are allowed; selfhost-check-calls adds them.
+function checkConstCall(mutable checker: Checker, name: string, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>): bool uses alloc {
+  // Only constructor calls are allowed, with constant arguments.
+  if (getRef(checker, nodeId) is Ref.Constructor(_, _)) {
+    for (const arg of Arrays.values(args)) {
+      if (!checkConstValue(mutable checker, name, arg.value)) {
+        return false
+      }
+    }
+    return true
+  }
   errorf(mutable checker, pos, `constant ${quoteGo(name)} cannot call function ${quoteGo(describeCallee(callee))}; a top-level constant holds literals, constructors, structs, arrays, function names and other constants`)
   return false
 }
@@ -1212,24 +1214,36 @@ function trimDot(text: string): string uses alloc {
 }
 
 // isConstantValue reports whether a field default is a constant: a
-// literal, a negated one, an array of them or a constructor (Go's
-// isConstant; constructors come with selfhost-check-calls).
-export function isConstantValue(expression: Expr): bool {
+// literal, a negated one, an array of them, a bare constructor or a
+// constructor call with constant arguments (Go's isConstant). It reads the
+// refs of the current body.
+export function isConstantValue(checker: Checker, expression: Expr): bool {
   return match (expression) {
     Expr.IntLit(_, _, _) => true
     Expr.FloatLit(_, _, _) => true
     Expr.StringLit(_, _, _, _) => true
     Expr.CharLit(_, _, _) => true
     Expr.BoolLit(_, _, _) => true
-    Expr.UnaryExpr(_, _, _, operand) => isConstantValue(operand)
-    Expr.ArrayLit(_, _, elements, _) => allConstant(elements)
+    Expr.UnaryExpr(_, _, _, operand) => isConstantValue(checker, operand)
+    Expr.ArrayLit(_, _, elements, _) => allConstant(checker, elements)
+    Expr.Ident(nodeId, _, _) => getRef(checker, nodeId) is Ref.Constructor(_, _)
+    Expr.CallExpr(nodeId, _, _, args) => getRef(checker, nodeId) is Ref.Constructor(_, _) && allArgumentsConstant(checker, args)
     _ => false
   }
 }
 
-function allConstant(elements: Array<Expr>): bool {
+function allArgumentsConstant(checker: Checker, args: Array<Arg>): bool {
+  for (const arg of Arrays.values(args)) {
+    if (!isConstantValue(checker, arg.value)) {
+      return false
+    }
+  }
+  return true
+}
+
+function allConstant(checker: Checker, elements: Array<Expr>): bool {
   for (const element of Arrays.values(elements)) {
-    if (!isConstantValue(element)) {
+    if (!isConstantValue(checker, element)) {
       return false
     }
   }

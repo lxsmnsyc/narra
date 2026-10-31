@@ -57,7 +57,7 @@ go test ./...
 - `std/fs` (`readText`, `writeText`, `exists`, `listDir`), `std/process` (`run`) and `std/env` (`get`, `args`). Fallible functions return `Result<T, string>`; the string is `<subject>: <reason>`. `writeText` returns the byte count, `listDir` the sorted names (Err for the whole listing if any entry name is not valid UTF-8), `Process.run(command, args)` returns `#[exit code, stdout, stderr]` (stdin closed; killed by signal gives 128 + signal), `Env.get` returns `Option<string>`, and `Env.args()` equals the entry function's `args`.
 - `std/string` also has `slice`, `sliceFrom`, `byteAt`, `charAt`, `nextChar`, `charCount`, `indexOf` (returns `Option<int>`), `startsWith`, `trim` (ASCII whitespace), `split` (panics on an empty separator), `chars` (`Array<char>`) and a `StringBuilder` (`Str.builder()`, `Str.append(mutable sb, s)`, `Str.appendChar(mutable sb, c)`, `Str.build(sb)`). Slicing, `charAt` and `nextChar` panic on a position out of range or inside a character.
 - `std/char` has `Char.code` and `Char.fromCode` (`Option<char>`). `std/int` also has `Int.parse(s, base)` (`Result<int, string>`, bases 2 to 36; no prefix, and a leading `+` or whitespace is rejected) and `Int.toHex`. `std/string` also has `endsWith`, `contains`, `replace` (an empty `from` returns `s` unchanged) and `join`.
-- Names from a namespace import: calls `X.f(...)` and types `X.T`. Named imports bring functions, and structs and enums with their constructors.
+- Names from a namespace import: calls `X.f(...)` and types `X.T`. Named imports bring functions, and structs and enums. Constructors come with their enum and are always written qualified: `Shape.Circle(1)`, `Geo.Shape.Circle(1)`, in expressions and in patterns (D71). `import { Circle }` of a constructor is E0425.
 - Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `break`, `continue`.
 - `int`, `f64`, `bool`, `char` and `string`.
 - Structs with constant field defaults, typed literals (`Point { x: 1 }`) and literals typed from context.
@@ -90,7 +90,7 @@ go test ./...
 
 - `@const` functions and `lazy` values. A top-level constant cannot call a function.
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
-- `export type` aliases, and enum constructors through a namespace (`X.Token.Word`).
+- `export type` aliases (so constructors through an alias are not available either).
 - `Dynamic<Trait>`, `derives Shape` and `Hash.of`.
 - Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
@@ -122,7 +122,7 @@ go test ./...
 - `implement` blocks work for non-generic structs and enums only. A generic type gets traits through `derives`, and an instance implements a derived trait when its contents do.
 - An `implement` block must be in the module that declares the type. The prelude (`Option`, `Result`, `Ordering`) and primitive and array types belong to no user module, so they cannot get `implement` blocks.
 - Traits are imported by name (`import { Area } from "app/shapes"`). `Alias.Trait.f(x)` and `<T: Alias.Trait>` are not supported.
-- A bare constructor name resolves from the expected type first. Otherwise the enums visible in the module are searched in three ranks: those the module declares, then those it imports by name, then the prelude. The first rank with a match wins, so a user `Less` is not `Ordering.Less`. Two enums of the same rank sharing the name are an ambiguity error; write `Enum.Name`.
+- A bare constructor is E0323 with a fix that writes `Enum.Name`, except `Some`, `None`, `Ok` and `Err`, which stay bare as prelude names. The fix picks the expected type's enum first, then the enum the module declares, imports or the prelude, in that order; when the module cannot name the enum in a pattern, the fix also adds `import { Enum } from "module"`. A bare name shared by two enums of one rank is E0324, with no fix. Two enums may share a constructor name; a duplicate name in one enum is E0194.
 - `trait`, `implement`, `implements` and `derives` are keywords, so they cannot be used as names. `Ordering` (with `Less`, `Equal`, `Greater`) and the traits `Equatable`, `Hashable`, `Ordered` and `Show` are prelude names, like `Option`, so a program cannot declare its own type or trait with those names.
 - `Hashable.hash(x)` returns `int`. `Hash.of` does not exist yet.
 - A function type carries no `escaping` marker, so the parameters of a function value are escaping: an argument passed through a function value must be escaping, and a parameter of an arrow function that has a function type may be stored.

@@ -2,6 +2,7 @@ package narra
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -162,6 +163,9 @@ func (c *Checker) importPackageModule(imp *ImportDecl, aliases map[string]bool) 
 	c.bindAlias(imp, aliases)
 	for _, in := range imp.Names {
 		n, local := in.Name, in.Local
+		if c.ctorImport(imp, in, s) {
+			continue
+		}
 		d := c.exported(imp.Pos, s, n)
 		switch d := d.(type) {
 		case *FuncDecl:
@@ -267,6 +271,12 @@ func (c *Checker) genericOf(module, name string) *genericType {
 // namesEnum reports whether name, as written in the current module, refers
 // to the enum et. Two modules may declare enums with the same name.
 func (c *Checker) namesEnum(name string, et *EnumType) bool {
+	if en := c.enumByName(name); strings.Contains(name, ".") {
+		if en.et != nil {
+			return en.et == et
+		}
+		return en.g != nil && en.g.name == et.Name && en.g.mod.path == et.Module
+	}
 	if t, ok := c.types[name]; ok {
 		return t == et
 	}
@@ -336,4 +346,47 @@ func declPos(d Decl) Pos {
 		return d.Pos
 	}
 	return Pos{}
+}
+
+// ctorImport reports `import { Teacher }` where Teacher is a constructor of an
+// enum that module s exports. The fix imports the enum instead (D71). It
+// returns true when it reported.
+func (c *Checker) ctorImport(imp *ImportDecl, in ImportName, s *modScope) bool {
+	if _, ok := s.src.Exports[in.Name]; ok {
+		return false
+	}
+	var names []string
+	for n := range s.src.Exports {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		ed, ok := s.src.Exports[n].(*EnumDecl)
+		if !ok {
+			continue
+		}
+		for _, v := range ed.Variants {
+			if v.Name != in.Name {
+				continue
+			}
+			var fixes []Fix
+			if in.Pos.Line > 0 && !importsName(imp, n) {
+				fixes = []Fix{{Title: "import the enum " + n, Edits: []Edit{{Start: in.Pos, End: in.End, Text: n}}}}
+			}
+			c.errorfFix(in.Pos, fixes, "%q is a constructor of %s; import the enum and write %s.%s", in.Name, n, n, in.Name)
+			return true
+		}
+	}
+	return false
+}
+
+// importsName reports whether the import lists the name, as written or as
+// the enum chosen by a constructor fix.
+func importsName(imp *ImportDecl, name string) bool {
+	for _, n := range imp.Names {
+		if n.Name == name || n.Local == name {
+			return true
+		}
+	}
+	return false
 }

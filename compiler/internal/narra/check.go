@@ -217,6 +217,13 @@ func (c *Checker) declareModule(f *File) []Type {
 		case *DistinctDecl:
 			c.declareDistinct(d)
 		case *EnumDecl:
+			seenCtor := map[string]bool{}
+			for _, v := range d.Variants {
+				if seenCtor[v.Name] {
+					c.errorf(v.Pos, "enum %s declares the constructor %q twice", d.Name, v.Name)
+				}
+				seenCtor[v.Name] = true
+			}
 			if len(d.TypeParams) > 0 {
 				g := &genericType{name: d.Name, params: makeParams(d.TypeParams), edecl: d, mod: c.mod}
 				c.declareGeneric(d.Pos, g)

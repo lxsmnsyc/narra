@@ -178,12 +178,16 @@ func (p *Parser) importDecl() *ImportDecl {
 	} else if p.accept("{") {
 		p.skipNewlines()
 		for !p.is("}") {
+			np := p.tok().Pos
 			n := p.ident().Text
 			local := n
+			end := Pos{np.Line, np.Col + len(n)}
 			if p.accept("as") {
+				lp := p.tok().Pos
 				local = p.ident().Text
+				end = Pos{lp.Line, lp.Col + len(local)}
 			}
-			d.Names = append(d.Names, ImportName{Name: n, Local: local})
+			d.Names = append(d.Names, ImportName{Name: n, Local: local, Pos: np, End: end})
 			p.skipNewlines()
 			if !p.accept(",") {
 				break
@@ -1197,9 +1201,13 @@ func (p *Parser) pattern() *Pattern {
 	}
 	pat.Kind = PatName
 	pat.Name = t.Text
-	if p.accept(".") {
+	// Enum.Name, or Alias.Enum.Name through a namespace import.
+	for p.accept(".") {
 		pat.Kind = PatCtor
-		pat.Enum = t.Text
+		if pat.Enum != "" {
+			pat.Enum += "."
+		}
+		pat.Enum += pat.Name
 		pat.Name = p.ident().Text
 	}
 	if p.accept("(") {

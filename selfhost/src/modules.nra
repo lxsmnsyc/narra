@@ -24,7 +24,7 @@ export struct SourceModule {
 
 export struct Package {
   name: string
-  dir: string
+  directory: string
   modules: Array<SourceModule> // dependency order, imports first
   binaries: Array<Binary>
   libraries: Array<string>
@@ -35,7 +35,7 @@ export struct Package {
 
 // A load error that is not a diagnostic (an unreadable file).
 function plain(message: string): Array<LoadError> {
-  return [LoadError { file: "", line: 0, col: 0, message: message }]
+  return [LoadError { file: "", line: 0, column: 0, message: message }]
 }
 
 // load reads a package directory, or a single .nra file as a package with
@@ -80,12 +80,12 @@ function loadFile(path: string): Result<Package, Array<LoadError>> uses io, allo
   }
   const parsed = parse(read.value, 0)
   if (parsed is Err(diagnostic)) {
-    return Err([LoadError { file: base, line: diagnostic.pos.line, col: diagnostic.pos.col, message: diagnostic.message }])
+    return Err([LoadError { file: base, line: diagnostic.pos.line, column: diagnostic.pos.column, message: diagnostic.message }])
   }
   const module = newModule(stem, base, parsed.value.file, 0, parsed.value.nextId)
   return Ok(Package {
     name: stem,
-    dir: dirName(path),
+    directory: dirName(path),
     modules: [module],
     binaries: [Binary { name: stem, entry: `${stem}.run` }],
     libraries: [],
@@ -98,8 +98,8 @@ function loadFile(path: string): Result<Package, Array<LoadError>> uses io, allo
 // loadPackage reads narra.toml and every file under src/, and orders the
 // modules so that each comes after the modules it imports. The files are
 // numbered in one id sequence, in sorted path order (not load order).
-function loadPackage(dir: string): Result<Package, Array<LoadError>> uses io, alloc {
-  const text = Fs.readText(`${dir}/narra.toml`)
+function loadPackage(directory: string): Result<Package, Array<LoadError>> uses io, alloc {
+  const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(message)) {
     return Err(plain(message))
   }
@@ -109,44 +109,44 @@ function loadPackage(dir: string): Result<Package, Array<LoadError>> uses io, al
   }
   const config = manifest.value
   let paths: Array<string> = []
-  const listed = Fs.listDir(`${dir}/src`)
+  const listed = Fs.listDir(`${directory}/src`)
   if (listed is Err(message)) {
     return Err(plain(message))
   }
-  collect(`${dir}/src`, "", mutable paths)
+  collect(`${directory}/src`, "", mutable paths)
   if (Arrays.length(paths) == 0) {
     return Err(plain(`narra.toml: package ${config.name} has no .nra files in src/`))
   }
   sortStrings(mutable paths)
-  let mods: Array<SourceModule> = []
-  let errs: Array<LoadError> = []
+  let modules: Array<SourceModule> = []
+  let errors: Array<LoadError> = []
   let nextId = 0
   for (const path of Arrays.values(paths)) {
     const relative = Str.slice(path, 0, Str.length(path) - 4)
     const display = `src/${path}`
-    const read = Fs.readText(`${dir}/src/${path}`)
+    const read = Fs.readText(`${directory}/src/${path}`)
     if (read is Err(message)) {
       return Err(plain(message))
     }
     const parsed = parse(read.value, nextId)
     if (parsed is Err(diagnostic)) {
-      Arrays.push(mutable errs, LoadError { file: display, line: diagnostic.pos.line, col: diagnostic.pos.col, message: diagnostic.message })
+      Arrays.push(mutable errors, LoadError { file: display, line: diagnostic.pos.line, column: diagnostic.pos.column, message: diagnostic.message })
       continue
     }
-    Arrays.push(mutable mods, newModule(`${config.name}/${relative}`, display, parsed.value.file, nextId, parsed.value.nextId))
+    Arrays.push(mutable modules, newModule(`${config.name}/${relative}`, display, parsed.value.file, nextId, parsed.value.nextId))
     nextId = parsed.value.nextId
   }
-  if (Arrays.length(errs) > 0) {
-    return Err(errs)
+  if (Arrays.length(errors) > 0) {
+    return Err(errors)
   }
-  const ordered = orderModules(mods)
-  if (Arrays.length(ordered.errs) > 0) {
-    return Err(ordered.errs)
+  const ordered = orderModules(modules)
+  if (Arrays.length(ordered.errors) > 0) {
+    return Err(ordered.errors)
   }
   return Ok(Package {
     name: config.name,
-    dir: dir,
-    modules: ordered.mods,
+    directory: directory,
+    modules: ordered.modules,
     binaries: config.binaries,
     libraries: config.libraries,
     search: config.search,
@@ -200,8 +200,8 @@ function sortStrings(mutable items: Array<string>) uses alloc {
 
 function newModule(path: string, file: string, ast: File, firstId: int, endId: int): SourceModule uses alloc {
   let names: Array<string> = []
-  for (const decl of Arrays.values(ast.decls)) {
-    const name = exportedName(decl)
+  for (const declaration of Arrays.values(ast.declarations)) {
+    const name = exportedName(declaration)
     if (name != "") {
       Arrays.push(mutable names, name)
     }
@@ -218,8 +218,8 @@ function newModule(path: string, file: string, ast: File, firstId: int, endId: i
 
 // exportedName gives the name of an exported function, const, struct, enum,
 // trait or distinct type, and "" for anything else.
-function exportedName(decl: Decl): string {
-  match (decl) {
+function exportedName(declaration: Decl): string {
+  match (declaration) {
     Decl.Func(funcDecl) => {
       if (funcDecl.exported) {
         return funcDecl.name
@@ -256,40 +256,40 @@ function exportedName(decl: Decl): string {
 }
 
 struct Ordered {
-  mods: Array<SourceModule>
-  errs: Array<LoadError>
+  modules: Array<SourceModule>
+  errors: Array<LoadError>
 }
 
 struct Walk {
-  mods: Array<SourceModule>
+  modules: Array<SourceModule>
   index: Map<string, int> // module path -> position in mods
   state: Array<int> // 0 new, 1 visiting, 2 done
   order: Array<SourceModule>
   stack: Array<string>
-  errs: Array<LoadError>
+  errors: Array<LoadError>
 }
 
 // orderModules sorts modules so imports come first, and reports import
 // cycles. Imports of modules outside the package are skipped; the checker
 // reports unknown modules.
-function orderModules(mods: Array<SourceModule>): Ordered uses alloc {
+function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
   let index: Map<string, int> = Map {}
   let state: Array<int> = []
-  for (const i of Ranges.between(0, Arrays.length(mods))) {
-    index[mods[i].path] = i
+  for (const i of Ranges.between(0, Arrays.length(modules))) {
+    index[modules[i].path] = i
     Arrays.push(mutable state, 0)
   }
-  let walk = Walk { mods: mods, index: index, state: state, order: [], stack: [], errs: [] }
-  for (const i of Ranges.between(0, Arrays.length(mods))) {
+  let walk = Walk { modules: modules, index: index, state: state, order: [], stack: [], errors: [] }
+  for (const i of Ranges.between(0, Arrays.length(modules))) {
     if (walk.state[i] == 0) {
       visit(mutable walk, i)
     }
   }
-  return Ordered { mods: walk.order, errs: walk.errs }
+  return Ordered { modules: walk.order, errors: walk.errors }
 }
 
 function visit(mutable walk: Walk, index: int) uses alloc {
-  const module = walk.mods[index]
+  const module = walk.modules[index]
   walk.state[index] = 1
   Arrays.push(mutable walk.stack, module.path)
   for (const importDecl of Arrays.values(module.ast.imports)) {
@@ -311,10 +311,10 @@ function visit(mutable walk: Walk, index: int) uses alloc {
         Arrays.push(mutable cycle, walk.stack[i])
       }
       Arrays.push(mutable cycle, importDecl.path)
-      Arrays.push(mutable walk.errs, LoadError {
+      Arrays.push(mutable walk.errors, LoadError {
         file: module.file,
         line: importDecl.pos.line,
-        col: importDecl.pos.col,
+        column: importDecl.pos.column,
         message: `import cycle: ${Str.join(cycle, " -> ")}`,
       })
     } else if (visitState == 0) {
@@ -335,33 +335,33 @@ function popLast(items: Array<string>): Array<string> uses alloc {
 }
 
 // binary finds a binary by name. An empty name selects the only binary.
-export function binary(pkg: Package, name: string): Result<Binary, string> uses alloc {
+export function binary(package: Package, name: string): Result<Binary, string> uses alloc {
   if (name != "") {
-    for (const candidate of Arrays.values(pkg.binaries)) {
+    for (const candidate of Arrays.values(package.binaries)) {
       if (candidate.name == name) {
         return Ok(candidate)
       }
     }
-    return Err(`narra.toml: package ${pkg.name} has no binary ${quoteDump(name)}`)
+    return Err(`narra.toml: package ${package.name} has no binary ${quoteDump(name)}`)
   }
-  const count = Arrays.length(pkg.binaries)
+  const count = Arrays.length(package.binaries)
   if (count == 0) {
-    return Err(`narra.toml: package ${pkg.name} has no [[binary]]; it is a library`)
+    return Err(`narra.toml: package ${package.name} has no [[binary]]; it is a library`)
   }
   if (count == 1) {
-    return Ok(pkg.binaries[0])
+    return Ok(package.binaries[0])
   }
   let names: Array<string> = []
-  for (const candidate of Arrays.values(pkg.binaries)) {
+  for (const candidate of Arrays.values(package.binaries)) {
     Arrays.push(mutable names, candidate.name)
   }
-  return Err(`narra.toml: package ${pkg.name} has several binaries (${Str.join(names, ", ")}); choose one with -bin`)
+  return Err(`narra.toml: package ${package.name} has several binaries (${Str.join(names, ", ")}); choose one with -bin`)
 }
 
 // entryModule resolves the module part of a binary's entry. It accepts the
 // contract form "cli.run" and the spec form "app/cli.run". The module is
 // returned as written when no module of the package matches.
-export function entryModule(pkg: Package, entry: string): #[string, string] uses alloc {
+export function entryModule(package: Package, entry: string): #[string, string] uses alloc {
   let last = -1
   for (const index of Ranges.between(0, Str.length(entry))) {
     if (Str.byteAt(entry, index) == 46) {
@@ -373,8 +373,8 @@ export function entryModule(pkg: Package, entry: string): #[string, string] uses
   }
   const modulePath = Str.slice(entry, 0, last)
   const functionName = Str.sliceFrom(entry, last + 1)
-  for (const module of Arrays.values(pkg.modules)) {
-    if (module.path == `${pkg.name}/${modulePath}`) {
+  for (const module of Arrays.values(package.modules)) {
+    if (module.path == `${package.name}/${modulePath}`) {
       return #[module.path, functionName]
     }
   }
@@ -389,13 +389,13 @@ export function quoteDump(text: string): string uses alloc {
 
 // errorText prints load errors as the Go dump does, one `error ...` line per
 // diagnostic, each ending with a newline.
-export function errorText(errs: Array<LoadError>): string uses alloc {
+export function errorText(errors: Array<LoadError>): string uses alloc {
   let builder = Str.builder()
-  for (const error of Arrays.values(errs)) {
+  for (const error of Arrays.values(errors)) {
     if (error.file == "" && error.line == 0) {
       Str.append(mutable builder, `error ${error.message}\n`)
     } else {
-      Str.append(mutable builder, `error ${error.file}:${Int.toString(error.line)}:${Int.toString(error.col)}: ${error.message}\n`)
+      Str.append(mutable builder, `error ${error.file}:${Int.toString(error.line)}:${Int.toString(error.column)}: ${error.message}\n`)
     }
   }
   return Str.build(builder)
@@ -413,22 +413,22 @@ function listLine(mutable builder: StringBuilder, name: string, items: Array<str
 }
 
 // dump returns the package dump of pkgdump.go, ending with a newline.
-export function dump(pkg: Package): string uses alloc {
+export function dump(package: Package): string uses alloc {
   let builder = Str.builder()
-  Str.append(mutable builder, `package ${quoteDump(pkg.name)}\n`)
-  for (const binaryInfo of Arrays.values(pkg.binaries)) {
-    const #[modulePath, functionName] = entryModule(pkg, binaryInfo.entry)
+  Str.append(mutable builder, `package ${quoteDump(package.name)}\n`)
+  for (const binaryInfo of Arrays.values(package.binaries)) {
+    const #[modulePath, functionName] = entryModule(package, binaryInfo.entry)
     Str.append(mutable builder, `binary ${quoteDump(binaryInfo.name)} entry=${quoteDump(binaryInfo.entry)} module=${quoteDump(modulePath)} fn=${quoteDump(functionName)}\n`)
   }
-  listLine(mutable builder, "libraries", pkg.libraries)
-  listLine(mutable builder, "search", pkg.search)
-  for (const module of Arrays.values(pkg.modules)) {
+  listLine(mutable builder, "libraries", package.libraries)
+  listLine(mutable builder, "search", package.search)
+  for (const module of Arrays.values(package.modules)) {
     Str.append(mutable builder, `module ${quoteDump(module.path)} file=${quoteDump(module.file)}\n`)
     if (Arrays.length(module.exports) > 0) {
       Str.append(mutable builder, `  exports ${Str.join(module.exports, ",")}\n`)
     }
     for (const importDecl of Arrays.values(module.ast.imports)) {
-      Str.append(mutable builder, `  import ${Int.toString(importDecl.pos.line)}:${Int.toString(importDecl.pos.col)} ${quoteDump(importDecl.path)}\n`)
+      Str.append(mutable builder, `  import ${Int.toString(importDecl.pos.line)}:${Int.toString(importDecl.pos.column)} ${quoteDump(importDecl.path)}\n`)
     }
   }
   return Str.build(builder)
@@ -437,24 +437,24 @@ export function dump(pkg: Package): string uses alloc {
 // checkIds verifies the id sequence of a package: the id ranges of the files
 // are disjoint, together they cover [0, nextId) with no gap, and none passes
 // nextId. It returns "ids ok <nextId>" or a description of the problem.
-export function checkIds(pkg: Package): Result<string, string> uses alloc {
+export function checkIds(package: Package): Result<string, string> uses alloc {
   let total = 0
-  const count = Arrays.length(pkg.modules)
+  const count = Arrays.length(package.modules)
   for (const first of Ranges.between(0, count)) {
-    const module = pkg.modules[first]
-    if (module.firstId < 0 || module.endId < module.firstId || module.endId > pkg.nextId) {
-      return Err(`ids bad: ${module.path} has ${Int.toString(module.firstId)}..${Int.toString(module.endId)} with nextId ${Int.toString(pkg.nextId)}`)
+    const module = package.modules[first]
+    if (module.firstId < 0 || module.endId < module.firstId || module.endId > package.nextId) {
+      return Err(`ids bad: ${module.path} has ${Int.toString(module.firstId)}..${Int.toString(module.endId)} with nextId ${Int.toString(package.nextId)}`)
     }
     total = total + module.endId - module.firstId
     for (const second of Ranges.between(first + 1, count)) {
-      const other = pkg.modules[second]
+      const other = package.modules[second]
       if (module.firstId < other.endId && other.firstId < module.endId) {
         return Err(`ids bad: ${module.path} and ${other.path} overlap`)
       }
     }
   }
-  if (total != pkg.nextId) {
-    return Err(`ids bad: the files use ${Int.toString(total)} ids but nextId is ${Int.toString(pkg.nextId)}`)
+  if (total != package.nextId) {
+    return Err(`ids bad: the files use ${Int.toString(total)} ids but nextId is ${Int.toString(package.nextId)}`)
   }
-  return Ok(`ids ok ${Int.toString(pkg.nextId)}`)
+  return Ok(`ids ok ${Int.toString(package.nextId)}`)
 }

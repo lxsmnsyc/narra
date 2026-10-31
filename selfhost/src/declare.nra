@@ -19,10 +19,10 @@ import { Pos, File, Decl, FuncDecl, ConstDecl, DistinctDecl, FieldDecl, VariantD
 import { parse, quoteGo } from "narrac/parser"
 import { Package, SourceModule } from "narrac/modules"
 import { Type, StructInfo, EnumInfo, DistinctInfo, GenericInfo } from "narrac/types"
-import { Checker, FuncInfo, ConstInfo, CheckError, newChecker, newScope, enter, errorf, errorIn, setParamType, lookupType, lookupGeneric, lookupTrait, finish } from "narrac/check"
+import { Checker, FuncInfo, ConstInfo, CheckError, newChecker, newScope, enter, reportError, reportErrorIn, setParameterType, lookupType, lookupGeneric, lookupTrait, finish } from "narrac/check"
 import { stdRegistry } from "narrac/stdlib"
 import { collectExports, checkTypeName, declareType, importModules, typeNamed, checkImportedConsts, checkEntries, checkImportNames } from "narrac/scopes"
-import { makeParams, makeEnv } from "narrac/generics"
+import { makeParameters, makeEnv } from "narrac/generics"
 import { declareTraits, resolveTraits, funcBounds, flushMapKeys } from "narrac/traits"
 import { resolveType, resolveOpt, resolveFields, resolveVariants, buildGeneric } from "narrac/resolve"
 import * as Arrays from "std/array"
@@ -66,18 +66,18 @@ enum Result<T, E> derives Show, Ordered {
 
 // newPackageChecker makes the checker for pkg and runs the declaration
 // passes of the prelude. Its non-generic types start Checker.concrete.
-export function newPackageChecker(pkg: Package): Checker uses alloc {
-  const parsed = parse(PRELUDE, pkg.nextId)
+export function newPackageChecker(package: Package): Checker uses alloc {
+  const parsed = parse(PRELUDE, package.nextId)
   if (parsed is Err(diagnostic)) {
-    let checker = newChecker(pkg.nextId)
-    errorIn(mutable checker, "prelude", diagnostic.pos, diagnostic.message)
+    let checker = newChecker(package.nextId)
+    reportErrorIn(mutable checker, "prelude", diagnostic.pos, diagnostic.message)
     return checker
   }
   let checker = newChecker(parsed.value.nextId)
   checker.registry = stdRegistry()
-  checker.pkgName = pkg.name
-  checker.single = pkg.single
-  const scope = newScope(mutable checker, "", "prelude", false, [], parsed.value.file.decls)
+  checker.packageName = package.name
+  checker.single = package.single
+  const scope = newScope(mutable checker, "", "prelude", false, [], parsed.value.file.declarations)
   enter(mutable checker, scope)
   declareModule(mutable checker, parsed.value.file)
   return checker
@@ -86,8 +86,8 @@ export function newPackageChecker(pkg: Package): Checker uses alloc {
 // declareSourceModule makes a module the current module, in a new scope, and runs
 // its declaration passes. The full checker checks the module's bodies right after.
 export function declareSourceModule(mutable checker: Checker, module: SourceModule) uses alloc {
-  const scope = newScope(mutable checker, module.path, module.file, true, module.ast.imports, module.ast.decls)
-  checker.scopes[scope].exports = collectExports(module.ast.decls)
+  const scope = newScope(mutable checker, module.path, module.file, true, module.ast.imports, module.ast.declarations)
+  checker.scopes[scope].exports = collectExports(module.ast.declarations)
   enter(mutable checker, scope)
   declareModule(mutable checker, module.ast)
 }
@@ -101,15 +101,15 @@ export function declareModule(mutable checker: Checker, file: File) uses alloc {
   // made holds the type created for each declaration, by position.
   let made: Array<Type> = []
   let own: Array<int> = []
-  for (const decl of Arrays.values(file.decls)) {
+  for (const declaration of Arrays.values(file.declarations)) {
     let type = Type.TVoid
-    match (decl) {
+    match (declaration) {
       Decl.Struct(structDecl) => {
-        if (Arrays.length(structDecl.typeParams) > 0) {
-          Arrays.push(mutable own, declareGeneric(mutable checker, structDecl.pos, structDecl.name, structDecl.typeParams, true, structDecl.opaque, structDecl.fields, []))
+        if (Arrays.length(structDecl.typeParameters) > 0) {
+          Arrays.push(mutable own, declareGeneric(mutable checker, structDecl.pos, structDecl.name, structDecl.typeParameters, true, structDecl.opaque, structDecl.fields, []))
         } else {
           type = Type.TStruct(Arrays.length(checker.structs))
-          const info = StructInfo { name: structDecl.name, module: modPath(checker), scope: checker.cur, pos: declPos(checker, structDecl.pos), opaque: structDecl.opaque, tuple: false, args: [], generic: -1, fields: [] }
+          const info = StructInfo { name: structDecl.name, module: modPath(checker), scope: checker.current, pos: declPos(checker, structDecl.pos), opaque: structDecl.opaque, tuple: false, arguments: [], generic: -1, fields: [] }
           Arrays.push(mutable checker.structs, info)
           declareType(mutable checker, structDecl.pos, structDecl.name, type)
           Arrays.push(mutable checker.concrete, type)
@@ -123,11 +123,11 @@ export function declareModule(mutable checker: Checker, file: File) uses alloc {
       }
       Decl.Enum(enumDecl) => {
         checkConstructorNames(mutable checker, enumDecl.name, enumDecl.variants)
-        if (Arrays.length(enumDecl.typeParams) > 0) {
-          Arrays.push(mutable own, declareGeneric(mutable checker, enumDecl.pos, enumDecl.name, enumDecl.typeParams, false, false, [], enumDecl.variants))
+        if (Arrays.length(enumDecl.typeParameters) > 0) {
+          Arrays.push(mutable own, declareGeneric(mutable checker, enumDecl.pos, enumDecl.name, enumDecl.typeParameters, false, false, [], enumDecl.variants))
         } else {
           type = Type.TEnum(Arrays.length(checker.enums))
-          const info = EnumInfo { name: enumDecl.name, module: modPath(checker), scope: checker.cur, pos: declPos(checker, enumDecl.pos), args: [], generic: -1, variants: [] }
+          const info = EnumInfo { name: enumDecl.name, module: modPath(checker), scope: checker.current, pos: declPos(checker, enumDecl.pos), arguments: [], generic: -1, variants: [] }
           Arrays.push(mutable checker.enums, info)
           declareType(mutable checker, enumDecl.pos, enumDecl.name, type)
           Arrays.push(mutable checker.concrete, type)
@@ -139,9 +139,9 @@ export function declareModule(mutable checker: Checker, file: File) uses alloc {
   }
   declareTraits(mutable checker, file)
   checkImportNames(mutable checker, file)
-  for (const index of Ranges.between(0, Arrays.length(file.decls))) {
+  for (const index of Ranges.between(0, Arrays.length(file.declarations))) {
     const type = made[index]
-    match (file.decls[index]) {
+    match (file.declarations[index]) {
       Decl.Struct(structDecl) => {
         if (type is Type.TStruct(structIndex)) {
           const fields = resolveFields(mutable checker, structDecl.fields)
@@ -172,33 +172,33 @@ function checkConstructorNames(mutable checker: Checker, enumName: string, varia
   let seen: Map<string, bool> = Map {}
   for (const variant of Arrays.values(variants)) {
     if (seen[variant.name] is Some(_)) {
-      errorf(mutable checker, variant.pos, `enum ${enumName} declares the constructor ${quoteGo(variant.name)} twice`)
+      reportError(mutable checker, variant.pos, `enum ${enumName} declares the constructor ${quoteGo(variant.name)} twice`)
     }
     seen[variant.name] = true
   }
 }
 
 function modPath(checker: Checker): string {
-  return checker.scopes[checker.cur].path
+  return checker.scopes[checker.current].path
 }
 
-// declPos is where typeErrorf reports a type: its declaration, or the zero
+// declPos is where reportTypeError reports a type: its declaration, or the zero
 // position in the prelude, which has no source file.
 function declPos(checker: Checker, pos: Pos): Pos {
   if (modPath(checker) == "") {
-    return Pos { line: 0, col: 0 }
+    return Pos { line: 0, column: 0 }
   }
   return pos
 }
 
 // declareGeneric adds a generic struct or enum template and returns its index.
-function declareGeneric(mutable checker: Checker, pos: Pos, name: string, typeParams: Array<string>, isStruct: bool, opaque: bool, fields: Array<FieldDecl>, variants: Array<VariantDecl>): int uses alloc {
-  const params = makeParams(mutable checker, typeParams)
+function declareGeneric(mutable checker: Checker, pos: Pos, name: string, typeParameters: Array<string>, isStruct: bool, opaque: bool, fields: Array<FieldDecl>, variants: Array<VariantDecl>): int uses alloc {
+  const parameters = makeParameters(mutable checker, typeParameters)
   checkTypeName(mutable checker, pos, name)
   const generic = Arrays.length(checker.generics)
-  const info = GenericInfo { name: name, module: modPath(checker), scope: checker.cur, pos: pos, params: params, isStruct: isStruct, opaque: opaque, fieldDecls: fields, variantDecls: variants, built: false, building: false, pending: [], fields: [], variants: [] }
+  const info = GenericInfo { name: name, module: modPath(checker), scope: checker.current, pos: pos, parameters: parameters, isStruct: isStruct, opaque: opaque, fieldDeclarations: fields, variantDeclarations: variants, built: false, building: false, pending: [], fields: [], variants: [] }
   Arrays.push(mutable checker.generics, info)
-  const scope = checker.cur
+  const scope = checker.current
   checker.scopes[scope].generics[name] = generic
   return generic
 }
@@ -210,7 +210,7 @@ function resolveDistinct(mutable checker: Checker, distinctDecl: DistinctDecl, t
   let base = resolveType(mutable checker, distinctDecl.base)
   if (base is Type.TDistinct(baseIndex)) {
     if (checker.distincts[baseIndex].base is None) {
-      errorf(mutable checker, distinctDecl.pos, `distinct type ${distinctDecl.name} cannot be defined in terms of itself`)
+      reportError(mutable checker, distinctDecl.pos, `distinct type ${distinctDecl.name} cannot be defined in terms of itself`)
       base = Type.TInt
     }
   }
@@ -222,44 +222,44 @@ function resolveDistinct(mutable checker: Checker, distinctDecl: DistinctDecl, t
 // declareFunc records a function's signature: its type parameters, the
 // parameter types (side table paramTypes by Param.id) and the result.
 function declareFunc(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
-  const scope = checker.cur
-  if (checker.scopes[scope].funcs[funcDecl.name] is Some(_)) {
-    errorf(mutable checker, funcDecl.pos, `function ${quoteGo(funcDecl.name)} is declared twice`)
+  const scope = checker.current
+  if (checker.scopes[scope].functions[funcDecl.name] is Some(_)) {
+    reportError(mutable checker, funcDecl.pos, `function ${quoteGo(funcDecl.name)} is declared twice`)
   }
-  checker.env = Map {}
-  let typeParams: Array<int> = []
-  if (Arrays.length(funcDecl.typeParams) > 0) {
-    typeParams = makeParams(mutable checker, funcDecl.typeParams)
-    funcBounds(mutable checker, funcDecl, typeParams)
-    checker.env = makeEnv(checker, typeParams)
+  checker.environment = Map {}
+  let typeParameters: Array<int> = []
+  if (Arrays.length(funcDecl.typeParameters) > 0) {
+    typeParameters = makeParameters(mutable checker, funcDecl.typeParameters)
+    funcBounds(mutable checker, funcDecl, typeParameters)
+    checker.environment = makeEnv(checker, typeParameters)
   }
-  for (const param of Arrays.values(funcDecl.params)) {
+  for (const param of Arrays.values(funcDecl.parameters)) {
     const type = resolveOpt(mutable checker, param.type)
-    setParamType(mutable checker, param.id, type)
+    setParameterType(mutable checker, param.id, type)
   }
   const result = resolveOpt(mutable checker, funcDecl.result)
-  checker.env = Map {}
-  const index = Arrays.length(checker.funcs)
-  const info = FuncInfo { name: funcDecl.name, module: modPath(checker), scope: scope, decl: funcDecl, typeParams: typeParams, result: result }
-  Arrays.push(mutable checker.funcs, info)
-  checker.scopes[scope].funcs[funcDecl.name] = index
+  checker.environment = Map {}
+  const index = Arrays.length(checker.functions)
+  const info = FuncInfo { name: funcDecl.name, module: modPath(checker), scope: scope, declaration: funcDecl, typeParameters: typeParameters, result: result }
+  Arrays.push(mutable checker.functions, info)
+  checker.scopes[scope].functions[funcDecl.name] = index
 }
 
 // declareConsts registers the constants of a file in the current module. A
 // constant may not share a name with a function, a type or another constant.
 function declareConsts(mutable checker: Checker, file: File) uses alloc {
   checkImportedConsts(mutable checker, file)
-  const scope = checker.cur
-  for (const decl of Arrays.values(file.decls)) {
-    if (decl is Decl.Const(constDecl)) {
-      const isFunction = checker.scopes[scope].funcs[constDecl.name] is Some(_)
+  const scope = checker.current
+  for (const declaration of Arrays.values(file.declarations)) {
+    if (declaration is Decl.Const(constDecl)) {
+      const isFunction = checker.scopes[scope].functions[constDecl.name] is Some(_)
       const isConst = checker.scopes[scope].consts[constDecl.name] is Some(_)
       if (isConst || isFunction || typeNamed(checker, constDecl.name)) {
-        errorf(mutable checker, constDecl.pos, `constant ${quoteGo(constDecl.name)} is declared twice`)
+        reportError(mutable checker, constDecl.pos, `constant ${quoteGo(constDecl.name)} is declared twice`)
         continue
       }
       const index = Arrays.length(checker.consts)
-      const info = ConstInfo { name: constDecl.name, module: modPath(checker), scope: scope, decl: constDecl, declaredType: None }
+      const info = ConstInfo { name: constDecl.name, module: modPath(checker), scope: scope, declaration: constDecl, declaredType: None }
       Arrays.push(mutable checker.consts, info)
       checker.scopes[scope].consts[constDecl.name] = index
     }
@@ -274,12 +274,12 @@ function declareConsts(mutable checker: Checker, file: File) uses alloc {
 export function declareConstTypes(mutable checker: Checker) uses alloc {
   for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
     enter(mutable checker, scope)
-    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
-      if (decl is Decl.Const(constDecl)) {
+    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+      if (declaration is Decl.Const(constDecl)) {
         if (constDecl.type is Some(typeExpr)) {
           const type = resolveType(mutable checker, typeExpr)
           if (checker.scopes[scope].consts[constDecl.name] is Some(index)) {
-            if (checker.consts[index].decl.pos == constDecl.pos) {
+            if (checker.consts[index].declaration.pos == constDecl.pos) {
               checker.consts[index].declaredType = Some(type)
             }
           }
@@ -293,17 +293,17 @@ export function declareConstTypes(mutable checker: Checker) uses alloc {
 // order, resolves the constant types, checks the Map keys and the entry
 // functions and orders the types (finish), as DeclDump does. Bodies are not
 // checked.
-export function declarePackage(pkg: Package): Checker uses alloc {
-  let checker = newPackageChecker(pkg)
-  if (Arrays.length(checker.errs) > 0 && Arrays.length(checker.scopes) == 0) {
+export function declarePackage(package: Package): Checker uses alloc {
+  let checker = newPackageChecker(package)
+  if (Arrays.length(checker.errors) > 0 && Arrays.length(checker.scopes) == 0) {
     return checker
   }
-  for (const module of Arrays.values(pkg.modules)) {
+  for (const module of Arrays.values(package.modules)) {
     declareSourceModule(mutable checker, module)
   }
   declareConstTypes(mutable checker)
   flushMapKeys(mutable checker)
-  checkEntries(mutable checker, pkg)
+  checkEntries(mutable checker, package)
   const concrete = checker.concrete
   finish(mutable checker, concrete)
   return checker

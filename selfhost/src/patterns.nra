@@ -1,5 +1,5 @@
 // What the pattern checks share, ported from compiler/internal/narra:
-// check_match.go (irrefutable, argsIrrefutable, isWild, ctorCount,
+// check_match.go (isIrrefutable, argsIrrefutable, isWild, ctorCount,
 // ctorArgTypes, specialize, missingCases, ctorText) and the narrowing
 // helpers of check.go and check_stmt.go (narrowed, setNarrow, narrowable,
 // otherVariant).
@@ -57,8 +57,8 @@ export function collectPatternLocals(checker: Checker, pattern: Pattern, mutable
         Arrays.push(mutable locals, body.declared[slot])
       }
     }
-    Pattern.PatCtor(_, _, _, _, args, _) => {
-      for (const argument of Arrays.values(args)) {
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
         collectPatternLocals(checker, argument, mutable locals)
       }
     }
@@ -67,8 +67,8 @@ export function collectPatternLocals(checker: Checker, pattern: Pattern, mutable
         collectPatternLocals(checker, field.pattern, mutable locals)
       }
     }
-    Pattern.PatTuple(_, _, args) => {
-      for (const argument of Arrays.values(args)) {
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
         collectPatternLocals(checker, argument, mutable locals)
       }
     }
@@ -133,16 +133,16 @@ export function findOtherVariant(checker: Checker, enumIndex: int, variantIndex:
   return 1 - variantIndex
 }
 
-// ---- irrefutable patterns ----
+// ---- isIrrefutable patterns ----
 
-// irrefutable reports whether a pattern matches every value of its type.
-export function irrefutable(checker: Checker, pattern: Pattern): bool {
+// isIrrefutable reports whether a pattern matches every value of its type.
+export function isIrrefutable(checker: Checker, pattern: Pattern): bool {
   return match (pattern) {
     Pattern.PatWildcard(_, _) => true
     Pattern.PatName(nodeId, _, _) => isSingleVariantOrBinding(checker, nodeId)
-    Pattern.PatCtor(nodeId, _, _, _, args, _) => isSingleVariant(checker, nodeId) && allIrrefutable(checker, args)
+    Pattern.PatCtor(nodeId, _, _, _, arguments, _) => isSingleVariant(checker, nodeId) && allIrrefutable(checker, arguments)
     Pattern.PatStruct(_, _, fields) => structFieldsIrrefutable(checker, fields)
-    Pattern.PatTuple(_, _, args) => allIrrefutable(checker, args)
+    Pattern.PatTuple(_, _, arguments) => allIrrefutable(checker, arguments)
     Pattern.PatLit(_, _, _) => false
   }
 }
@@ -163,7 +163,7 @@ function isSingleVariant(checker: Checker, nodeId: int): bool {
 
 function allIrrefutable(checker: Checker, patterns: Array<Pattern>): bool {
   for (const pattern of Arrays.values(patterns)) {
-    if (!irrefutable(checker, pattern)) {
+    if (!isIrrefutable(checker, pattern)) {
       return false
     }
   }
@@ -172,19 +172,19 @@ function allIrrefutable(checker: Checker, patterns: Array<Pattern>): bool {
 
 function structFieldsIrrefutable(checker: Checker, fields: Array<FieldPattern>): bool {
   for (const field of Arrays.values(fields)) {
-    if (!irrefutable(checker, field.pattern)) {
+    if (!isIrrefutable(checker, field.pattern)) {
       return false
     }
   }
   return true
 }
 
-// areArgsIrrefutable reports whether a constructor or tuple pattern matches
+// areArgumentsIrrefutable reports whether a constructor or tuple pattern matches
 // every value of its variant, so `x is Some(_)` failing means x is None.
-export function areArgsIrrefutable(checker: Checker, pattern: Pattern): bool {
+export function areArgumentsIrrefutable(checker: Checker, pattern: Pattern): bool {
   return match (pattern) {
-    Pattern.PatCtor(_, _, _, _, args, _) => allIrrefutable(checker, args)
-    Pattern.PatTuple(_, _, args) => allIrrefutable(checker, args)
+    Pattern.PatCtor(_, _, _, _, arguments, _) => allIrrefutable(checker, arguments)
+    Pattern.PatTuple(_, _, arguments) => allIrrefutable(checker, arguments)
     _ => true
   }
 }
@@ -201,7 +201,7 @@ export function areArgsIrrefutable(checker: Checker, pattern: Pattern): bool {
 // so only wildcards and bindings cover them.
 
 function createWildcard(): Pattern {
-  return Pattern.PatWildcard(-1, Pos { line: 0, col: 0 })
+  return Pattern.PatWildcard(-1, Pos { line: 0, column: 0 })
 }
 
 function createWildcards(count: int): Array<Pattern> uses alloc {
@@ -262,23 +262,23 @@ function specialize(checker: Checker, pattern: Pattern, type: Type, constructorI
     }
     return Some(createWildcards(count))
   }
-  if (pattern is Pattern.PatCtor(nodeId, _, _, _, args, bare)) {
+  if (pattern is Pattern.PatCtor(nodeId, _, _, _, arguments, bare)) {
     if (getRef(checker, nodeId) is Ref.Constructor(_, variantIndex)) {
       if (variantIndex != constructorIndex) {
         return None
       }
-      if (bare || Arrays.length(args) != count) {
+      if (bare || Arrays.length(arguments) != count) {
         return Some(createWildcards(count))
       }
-      return Some(args)
+      return Some(arguments)
     }
     return Some(createWildcards(count))
   }
-  if (pattern is Pattern.PatTuple(_, _, args)) {
-    if (Arrays.length(args) != count) {
+  if (pattern is Pattern.PatTuple(_, _, arguments)) {
+    if (Arrays.length(arguments) != count) {
       return Some(createWildcards(count))
     }
-    return Some(args)
+    return Some(arguments)
   }
   if (pattern is Pattern.PatStruct(_, _, fields)) {
     let out = createWildcards(count)
@@ -383,9 +383,9 @@ export function findMissingCases(checker: Checker, rows: Array<Array<Pattern>>, 
 
 // describeConstructor prints constructor constructorIndex of type applied
 // to the example arguments (Go's ctorText).
-function describeConstructor(checker: Checker, type: Type, constructorIndex: int, args: Array<string>): string uses alloc {
+function describeConstructor(checker: Checker, type: Type, constructorIndex: int, arguments: Array<string>): string uses alloc {
   let allWild = true
-  for (const argument of Arrays.values(args)) {
+  for (const argument of Arrays.values(arguments)) {
     if (argument != "_") {
       allWild = false
     }
@@ -395,19 +395,19 @@ function describeConstructor(checker: Checker, type: Type, constructorIndex: int
     if (Arrays.length(variant.fields) == 0) {
       return variant.name
     }
-    return `${variant.name}(${Str.join(args, ", ")})`
+    return `${variant.name}(${Str.join(arguments, ", ")})`
   }
   if (type is Type.TStruct(index)) {
     if (allWild) {
       return "_"
     }
     if (checker.structs[index].tuple) {
-      return `#[${Str.join(args, ", ")}]`
+      return `#[${Str.join(arguments, ", ")}]`
     }
     let parts: Array<string> = []
-    for (const position of Ranges.between(0, Arrays.length(args))) {
-      if (args[position] != "_") {
-        Arrays.push(mutable parts, `${checker.structs[index].fields[position].name}: ${args[position]}`)
+    for (const position of Ranges.between(0, Arrays.length(arguments))) {
+      if (arguments[position] != "_") {
+        Arrays.push(mutable parts, `${checker.structs[index].fields[position].name}: ${arguments[position]}`)
       }
     }
     return `{ ${Str.join(parts, ", ")} }`

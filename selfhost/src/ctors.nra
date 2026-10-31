@@ -10,7 +10,7 @@
 import { Pos, Arg, Decl, Expr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Variant } from "narrac/types"
-import { Checker, Walker, errorf, getExpressionId, getExpressionPos, getNodeType } from "narrac/check"
+import { Checker, Walker, reportError, getExpressionId, getExpressionPos, getNodeType } from "narrac/check"
 import { buildGeneric, substitute, instantiate } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { sourceScope } from "narrac/scopes"
@@ -24,7 +24,7 @@ import * as Ranges from "std/range"
 // What a constructor resolved to. enumIndex and variant are -1 after an
 // error, when the node gets no constructor.
 export struct ConstructorResult {
-  ctorType: Type
+  constructorType: Type
   enumIndex: int // Checker.enums
   variant: int
 }
@@ -41,20 +41,20 @@ struct EnumRef {
 // (Go's ctor). enumName is the enum as written (`Shape`, `Geo.Shape`), or ""
 // for a bare name, which must be qualified unless it is Some, None, Ok or
 // Err. It returns None when no enum has a constructor of that name.
-export function checkConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, enumName: string, name: string, args: Array<Arg>, want: Option<Type>): Option<ConstructorResult> uses alloc {
+export function checkConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, enumName: string, name: string, arguments: Array<Arg>, want: Option<Type>): Option<ConstructorResult> uses alloc {
   if (enumName != "") {
     const named = findEnum(checker, enumName)
-    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, arguments, want))
   }
 
   // The prelude constructors stay bare.
   if (name == "Some" || name == "None") {
     const named = findEnum(checker, "Option")
-    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, arguments, want))
   }
   if (name == "Ok" || name == "Err") {
     const named = findEnum(checker, "Result")
-    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+    return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, arguments, want))
   }
 
   // Any other bare constructor is an error that names its enum.
@@ -71,18 +71,18 @@ export function checkConstructor<W: Walker>(mutable checker: Checker, walker: W,
     owner = owners[0]
   }
   if (Arrays.length(owners) > 1) {
-    errorf(mutable checker, pos, `constructor ${name} needs its enum; ${Str.join(owners, ", ")} all have it, for example ${owner}.${name}`)
+    reportError(mutable checker, pos, `constructor ${name} needs its enum; ${Str.join(owners, ", ")} all have it, for example ${owner}.${name}`)
   } else {
-    errorf(mutable checker, pos, `constructor ${name} needs its enum; write ${owner}.${name}`)
+    reportError(mutable checker, pos, `constructor ${name} needs its enum; write ${owner}.${name}`)
   }
   const named = findEnum(checker, owner)
-  return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, args, want))
+  return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, arguments, want))
 }
 
 // findEnum finds the enum a name refers to in the current module (Go's
 // enumByName). `Alias.Enum` looks in the package module the alias names.
 function findEnum(checker: Checker, name: string): EnumRef {
-  let scope = checker.cur
+  let scope = checker.current
   let typeName = name
   if (Str.indexOf(name, ".") is Some(dot)) {
     // Alias.Enum: an enum the module behind the alias exports.
@@ -110,7 +110,7 @@ function findEnum(checker: Checker, name: string): EnumRef {
 
 function exportsEnum(checker: Checker, scope: int, name: string): bool {
   if (checker.scopes[scope].exports[name] is Some(index)) {
-    return checker.scopes[scope].decls[index] is Decl.Enum(_)
+    return checker.scopes[scope].declarations[index] is Decl.Enum(_)
   }
   return false
 }
@@ -137,47 +137,47 @@ function findVariant(variants: Array<Variant>, name: string): int {
 
 // checkEnumConstructor builds a constructor of an enum found by findEnum
 // (Go's ctorOf).
-function checkEnumConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, named: EnumRef, name: string, args: Array<Arg>, want: Option<Type>): ConstructorResult uses alloc {
+function checkEnumConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, named: EnumRef, name: string, arguments: Array<Arg>, want: Option<Type>): ConstructorResult uses alloc {
   if (named.enumIndex >= 0) {
     const variant = findVariant(checker.enums[named.enumIndex].variants, name)
     if (variant < 0) {
-      return reportNoConstructor(mutable checker, walker, pos, named, name, args)
+      return reportNoConstructor(mutable checker, walker, pos, named, name, arguments)
     }
-    checkConstructorArguments(mutable checker, walker, pos, named.enumIndex, variant, args)
-    return ConstructorResult { ctorType: Type.TEnum(named.enumIndex), enumIndex: named.enumIndex, variant: variant }
+    checkConstructorArguments(mutable checker, walker, pos, named.enumIndex, variant, arguments)
+    return ConstructorResult { constructorType: Type.TEnum(named.enumIndex), enumIndex: named.enumIndex, variant: variant }
   }
   if (named.generic < 0) {
-    return reportNoConstructor(mutable checker, walker, pos, named, name, args)
+    return reportNoConstructor(mutable checker, walker, pos, named, name, arguments)
   }
   buildGeneric(mutable checker, named.generic)
   for (const variant of Arrays.values(checker.generics[named.generic].variants)) {
     if (variant.name == name) {
-      return checkGenericConstructor(mutable checker, walker, pos, named.generic, variant, args, want)
+      return checkGenericConstructor(mutable checker, walker, pos, named.generic, variant, arguments, want)
     }
   }
-  return reportNoConstructor(mutable checker, walker, pos, named, name, args)
+  return reportNoConstructor(mutable checker, walker, pos, named, name, arguments)
 }
 
 // checkGenericConstructor infers the instance a constructor of a generic
 // enum builds: the expected type gives the type arguments it can, the
 // arguments the rest.
-function checkGenericConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, generic: int, variant: Variant, args: Array<Arg>, want: Option<Type>): ConstructorResult uses alloc {
-  const failed = ConstructorResult { ctorType: Type.TVoid, enumIndex: -1, variant: -1 }
-  const params = checker.generics[generic].params
+function checkGenericConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, generic: int, variant: Variant, arguments: Array<Arg>, want: Option<Type>): ConstructorResult uses alloc {
+  const failed = ConstructorResult { constructorType: Type.TVoid, enumIndex: -1, variant: -1 }
+  const parameters = checker.generics[generic].parameters
   let bindings: Map<int, Type> = Map {}
   if (want is Some(Type.TEnum(wanted))) {
     const info = checker.enums[wanted]
     if (info.name == checker.generics[generic].name && info.module == checker.generics[generic].module) {
-      for (const index of Ranges.between(0, Arrays.length(params))) {
-        bindings[params[index]] = info.args[index]
+      for (const index of Ranges.between(0, Arrays.length(parameters))) {
+        bindings[parameters[index]] = info.arguments[index]
       }
     }
   }
-  const argCount = Arrays.length(args)
+  const argCount = Arrays.length(arguments)
   const fieldCount = Arrays.length(variant.fields)
   if (argCount != fieldCount) {
-    errorf(mutable checker, pos, `${variant.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`)
-    checkArgumentsLoosely(mutable checker, walker, args)
+    reportError(mutable checker, pos, `${variant.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`)
+    checkArgumentsLoosely(mutable checker, walker, arguments)
     return failed
   }
 
@@ -186,24 +186,24 @@ function checkGenericConstructor<W: Walker>(mutable checker: Checker, walker: W,
     const fieldType = variant.fields[index].fieldType
     const substituted = substitute(mutable checker, fieldType, bindings)
     let fieldWant: Option<Type> = Some(substituted)
-    if (containsOpen(checker, substituted, params)) {
+    if (containsOpen(checker, substituted, parameters)) {
       fieldWant = None
     }
-    const argType = checkExpression(mutable checker, walker, args[index].value, fieldWant)
+    const argType = checkExpression(mutable checker, walker, arguments[index].value, fieldWant)
     unify(checker, fieldType, argType, mutable bindings)
   }
 
   // Every type parameter must be known.
-  let typeArgs: Array<Type> = []
-  for (const param of Arrays.values(params)) {
+  let typeArguments: Array<Type> = []
+  for (const param of Arrays.values(parameters)) {
     if (bindings[param] is Some(bound)) {
-      Arrays.push(mutable typeArgs, bound)
+      Arrays.push(mutable typeArguments, bound)
     } else {
-      errorf(mutable checker, pos, `cannot tell the type of ${variant.name} here; add a type annotation`)
+      reportError(mutable checker, pos, `cannot tell the type of ${variant.name} here; add a type annotation`)
       return failed
     }
   }
-  const instance = instantiate(mutable checker, generic, typeArgs)
+  const instance = instantiate(mutable checker, generic, typeArguments)
   let enumIndex = -1
   if (instance is Type.TEnum(index)) {
     enumIndex = index
@@ -213,38 +213,38 @@ function checkGenericConstructor<W: Walker>(mutable checker: Checker, walker: W,
   }
   const fields = checker.enums[enumIndex].variants[variant.index].fields
   for (const index of Ranges.between(0, argCount)) {
-    const value = args[index].value
+    const value = arguments[index].value
     let argType = Type.TVoid
     if (getNodeType(checker, getExpressionId(value)) is Some(checked)) {
       argType = checked
     }
     expectType(mutable checker, getExpressionPos(value), Some(fields[index].fieldType), argType)
-    if (args[index].isMutable) {
-      errorf(mutable checker, pos, "constructor fields are not mutable")
+    if (arguments[index].isMutable) {
+      reportError(mutable checker, pos, "constructor fields are not mutable")
     }
   }
-  return ConstructorResult { ctorType: instance, enumIndex: enumIndex, variant: variant.index }
+  return ConstructorResult { constructorType: instance, enumIndex: enumIndex, variant: variant.index }
 }
 
-function reportNoConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, named: EnumRef, name: string, args: Array<Arg>): ConstructorResult uses alloc {
-  errorf(mutable checker, pos, `enum ${named.name} has no constructor ${quoteGo(name)}`)
-  checkArgumentsLoosely(mutable checker, walker, args)
-  return ConstructorResult { ctorType: Type.TVoid, enumIndex: -1, variant: -1 }
+function reportNoConstructor<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, named: EnumRef, name: string, arguments: Array<Arg>): ConstructorResult uses alloc {
+  reportError(mutable checker, pos, `enum ${named.name} has no constructor ${quoteGo(name)}`)
+  checkArgumentsLoosely(mutable checker, walker, arguments)
+  return ConstructorResult { constructorType: Type.TVoid, enumIndex: -1, variant: -1 }
 }
 
 // checkConstructorArguments checks the arguments of a constructor of a
 // plain enum (Go's ctorArgs).
-function checkConstructorArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, enumIndex: int, variant: int, args: Array<Arg>) uses alloc {
+function checkConstructorArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, enumIndex: int, variant: int, arguments: Array<Arg>) uses alloc {
   const info = checker.enums[enumIndex].variants[variant]
-  const argCount = Arrays.length(args)
+  const argCount = Arrays.length(arguments)
   const fieldCount = Arrays.length(info.fields)
   if (argCount != fieldCount) {
-    errorf(mutable checker, pos, `${info.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`)
+    reportError(mutable checker, pos, `${info.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`)
   }
   for (const index of Ranges.between(0, argCount)) {
-    const arg = args[index]
+    const arg = arguments[index]
     if (arg.isMutable) {
-      errorf(mutable checker, pos, "constructor fields are not mutable")
+      reportError(mutable checker, pos, "constructor fields are not mutable")
     }
     if (index < fieldCount) {
       const fieldType = info.fields[index].fieldType
@@ -264,7 +264,7 @@ function listConstructorOwners(mutable checker: Checker, name: string): Array<st
   let declared: Array<string> = []
   let imported: Array<string> = []
   let prelude: Array<string> = []
-  const scope = checker.cur
+  const scope = checker.current
   const modulePath = checker.scopes[scope].path
   for (const enumName of Arrays.values(listVisibleEnums(checker))) {
     // Find the enum's module and whether it has the constructor.
@@ -304,11 +304,11 @@ function listConstructorOwners(mutable checker: Checker, name: string): Array<st
 function listVisibleEnums(checker: Checker): Array<string> uses alloc {
   let names: Array<string> = []
   let seen: Map<string, bool> = Map {}
-  const scope = checker.cur
+  const scope = checker.current
   let candidates: Array<string> = []
   if (checker.scopes[scope].isSource) {
-    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
-      if (decl is Decl.Enum(enumDecl)) {
+    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+      if (declaration is Decl.Enum(enumDecl)) {
         Arrays.push(mutable candidates, enumDecl.name)
       }
     }
@@ -360,7 +360,7 @@ export function findEnumName(mutable checker: Checker, enumIndex: int): string u
       return enumName
     }
   }
-  const scope = checker.cur
+  const scope = checker.current
   let aliases = Maps.keys(checker.scopes[scope].modules)
   sortNames(mutable aliases)
   const info = checker.enums[enumIndex]
@@ -386,7 +386,7 @@ export function namesEnum(checker: Checker, name: string, enumIndex: int): bool 
     }
     return named.generic >= 0 && checker.generics[named.generic].name == info.name && checker.generics[named.generic].module == info.module
   }
-  const scope = checker.cur
+  const scope = checker.current
   if (checker.scopes[scope].types[name] is Some(type)) {
     return type == Type.TEnum(enumIndex)
   }

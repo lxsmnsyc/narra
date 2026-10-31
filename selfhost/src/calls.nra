@@ -11,7 +11,7 @@
 import { Pos, Expr, Arg, Decl, Param, FuncDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Ref, Walker, errorf, typeString, setRef, setNodeType, getNodeType, findLocal, unsupported, getExpressionId, getExpressionPos, lookupTrait, containsTypeParam, anyTypeParam } from "narrac/check"
+import { Checker, Ref, Walker, reportError, typeString, setRef, setNodeType, getNodeType, findLocal, unsupported, getExpressionId, getExpressionPos, lookupTrait, containsTypeParameter, anyTypeParameter } from "narrac/check"
 import { substitute } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { findTraitFunc, typeImplements, implFunc, checkBounds } from "narrac/traits"
@@ -28,102 +28,102 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
 // checkCall checks a call (Go's call) and returns its type.
-export function checkCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>, want: Option<Type>): Type uses alloc {
+export function checkCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
   return match (callee) {
-    Expr.Ident(_, calleePos, name) => checkNamedCall(mutable checker, walker, nodeId, pos, callee, calleePos, name, args, want)
-    Expr.FieldExpr(calleeId, calleePos, target, name) => checkDottedCall(mutable checker, walker, nodeId, pos, callee, calleeId, calleePos, target, name, args, want)
-    _ => checkValueCall(mutable checker, walker, nodeId, pos, callee, args)
+    Expr.Ident(_, calleePos, name) => checkNamedCall(mutable checker, walker, nodeId, pos, callee, calleePos, name, arguments, want)
+    Expr.FieldExpr(calleeId, calleePos, target, name) => checkDottedCall(mutable checker, walker, nodeId, pos, callee, calleeId, calleePos, target, name, arguments, want)
+    _ => checkValueCall(mutable checker, walker, nodeId, pos, callee, arguments)
   }
 }
 
-function checkNamedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, calleePos: Pos, name: string, args: Array<Arg>, want: Option<Type>): Type uses alloc {
+function checkNamedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, calleePos: Pos, name: string, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
   // A local or constant holds a function value.
-  const scope = checker.cur
+  const scope = checker.current
   if (findLocal(checker, name) >= 0 || checker.scopes[scope].consts[name] is Some(_)) {
-    return checkValueCall(mutable checker, walker, nodeId, pos, callee, args)
+    return checkValueCall(mutable checker, walker, nodeId, pos, callee, arguments)
   }
 
   // Then print, assert and panic, std functions imported by name, the
   // module's functions and the constructors.
   if (checker.registry.prelude[name] is Some(builtin)) {
-    return checkBuiltinCall(mutable checker, walker, nodeId, pos, args, builtin, want)
+    return checkBuiltinCall(mutable checker, walker, nodeId, pos, arguments, builtin, want)
   }
   if (checker.scopes[scope].imported[name] is Some(builtin)) {
-    return checkBuiltinCall(mutable checker, walker, nodeId, pos, args, builtin, want)
+    return checkBuiltinCall(mutable checker, walker, nodeId, pos, arguments, builtin, want)
   }
-  if (checker.scopes[scope].funcs[name] is Some(funcIndex)) {
-    return checkFunctionCall(mutable checker, walker, nodeId, pos, funcIndex, args, want)
+  if (checker.scopes[scope].functions[name] is Some(funcIndex)) {
+    return checkFunctionCall(mutable checker, walker, nodeId, pos, funcIndex, arguments, want)
   }
-  if (checkConstructor(mutable checker, walker, calleePos, "", name, args, want) is Some(result)) {
+  if (checkConstructor(mutable checker, walker, calleePos, "", name, arguments, want) is Some(result)) {
     if (result.enumIndex >= 0) {
       setRef(mutable checker, nodeId, Ref.Constructor(result.enumIndex, result.variant))
     }
-    return result.ctorType
+    return result.constructorType
   }
-  errorf(mutable checker, calleePos, `unknown function ${quoteGo(name)}`)
-  checkArgumentsLoosely(mutable checker, walker, args)
+  reportError(mutable checker, calleePos, `unknown function ${quoteGo(name)}`)
+  checkArgumentsLoosely(mutable checker, walker, arguments)
   return Type.TVoid
 }
 
 // checkFunctionCall checks a call of a top-level function, generic or not.
-function checkFunctionCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, funcIndex: int, args: Array<Arg>, want: Option<Type>): Type uses alloc {
-  if (Arrays.length(checker.funcs[funcIndex].typeParams) > 0) {
-    return checkGenericCall(mutable checker, walker, nodeId, pos, funcIndex, args, want)
+function checkFunctionCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, funcIndex: int, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
+  if (Arrays.length(checker.functions[funcIndex].typeParameters) > 0) {
+    return checkGenericCall(mutable checker, walker, nodeId, pos, funcIndex, arguments, want)
   }
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-  const params = checker.funcs[funcIndex].decl.params
+  const parameters = checker.functions[funcIndex].declaration.parameters
   let wants: Array<Option<Type>> = []
-  for (const param of Arrays.values(params)) {
+  for (const param of Arrays.values(parameters)) {
     Arrays.push(mutable wants, Some(checker.paramTypes[param.id]))
   }
-  checkArguments(mutable checker, walker, pos, args, params, wants)
-  return checker.funcs[funcIndex].result
+  checkArguments(mutable checker, walker, pos, arguments, parameters, wants)
+  return checker.functions[funcIndex].result
 }
 
-function checkDottedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, calleeId: int, calleePos: Pos, target: Expr, name: string, args: Array<Arg>, want: Option<Type>): Type uses alloc {
+function checkDottedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, calleeId: int, calleePos: Pos, target: Expr, name: string, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
   // `Name.f(...)` where Name is not a local: a trait, a module alias, a
   // namespace, a distinct type, an enum or an unknown module.
-  const scope = checker.cur
+  const scope = checker.current
   if (target is Expr.Ident(_, targetPos, alias)) {
     if (findLocal(checker, alias) < 0) {
       const traitIndex = lookupTrait(checker, alias)
       if (traitIndex >= 0) {
-        return checkTraitCall(mutable checker, walker, nodeId, pos, traitIndex, name, args, want)
+        return checkTraitCall(mutable checker, walker, nodeId, pos, traitIndex, name, arguments, want)
       }
       if (checker.scopes[scope].modules[alias] is Some(path)) {
         const moduleScope = sourceScope(checker, path)
         if (moduleScope >= 0) {
-          return checkModuleCall(mutable checker, walker, nodeId, pos, callee, calleePos, moduleScope, name, args, want)
+          return checkModuleCall(mutable checker, walker, nodeId, pos, callee, calleePos, moduleScope, name, arguments, want)
         }
         if (checker.registry.modules[path] is Some(module)) {
-          if (module.funcs[name] is Some(builtin)) {
-            return checkBuiltinCall(mutable checker, walker, nodeId, pos, args, builtin, want)
+          if (module.functions[name] is Some(builtin)) {
+            return checkBuiltinCall(mutable checker, walker, nodeId, pos, arguments, builtin, want)
           }
         }
-        errorf(mutable checker, calleePos, `module ${quoteGo(path)} has no function ${quoteGo(name)}`)
-        checkArgumentsLoosely(mutable checker, walker, args)
+        reportError(mutable checker, calleePos, `module ${quoteGo(path)} has no function ${quoteGo(name)}`)
+        checkArgumentsLoosely(mutable checker, walker, arguments)
         return Type.TVoid
       }
       if (reportMissingImport(mutable checker, targetPos, alias, name)) {
-        checkArgumentsLoosely(mutable checker, walker, args)
+        checkArgumentsLoosely(mutable checker, walker, arguments)
         return Type.TVoid
       }
       if (checker.scopes[scope].types[alias] is Some(Type.TDistinct(distinctIndex))) {
-        return checkDistinctCall(mutable checker, walker, nodeId, pos, calleePos, distinctIndex, name, args)
+        return checkDistinctCall(mutable checker, walker, nodeId, pos, calleePos, distinctIndex, name, arguments)
       }
       if (isEnumName(checker, alias)) {
-        return checkConstructorCall(mutable checker, walker, nodeId, calleePos, alias, name, args, want)
+        return checkConstructorCall(mutable checker, walker, nodeId, calleePos, alias, name, arguments, want)
       }
       if (checker.scopes[scope].types[alias] is None && startsUpper(alias)) {
-        errorf(mutable checker, targetPos, `unknown module ${quoteGo(alias)}; import it first, for example \`import * as ${alias} from "std/..."\``)
-        checkArgumentsLoosely(mutable checker, walker, args)
+        reportError(mutable checker, targetPos, `unknown module ${quoteGo(alias)}; import it first, for example \`import * as ${alias} from "std/..."\``)
+        checkArgumentsLoosely(mutable checker, walker, arguments)
         return Type.TVoid
       }
     }
   }
   const moduleEnum = findModuleEnum(mutable checker, target)
   if (moduleEnum != "") {
-    return checkConstructorCall(mutable checker, walker, nodeId, calleePos, moduleEnum, name, args, want)
+    return checkConstructorCall(mutable checker, walker, nodeId, calleePos, moduleEnum, name, arguments, want)
   }
 
   // Otherwise `value.f(...)` is a method call, which Narra does not have,
@@ -135,41 +135,41 @@ function checkDottedCall<W: Walker>(mutable checker: Checker, walker: W, nodeId:
       const fieldType = checker.structs[index].fields[fieldIndex].fieldType
       if (fieldType is Type.TFunc(funcParams, funcResult)) {
         setNodeType(mutable checker, calleeId, fieldType)
-        return checkValueCallOf(mutable checker, walker, nodeId, pos, callee, args, funcParams, funcResult)
+        return checkValueCallOf(mutable checker, walker, nodeId, pos, callee, arguments, funcParams, funcResult)
       }
     }
   }
   const text = typeString(checker, targetType)
-  errorf(mutable checker, calleePos, `there are no method calls; call a module function such as Module.${name}(value, ...) (value has type ${text})`)
-  checkArgumentsLoosely(mutable checker, walker, args)
+  reportError(mutable checker, calleePos, `there are no method calls; call a module function such as Module.${name}(value, ...) (value has type ${text})`)
+  checkArgumentsLoosely(mutable checker, walker, arguments)
   return Type.TVoid
 }
 
 // checkConstructorCall checks `Enum.Variant(...)` and `Alias.Enum.Variant(...)`.
-function checkConstructorCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, calleePos: Pos, enumName: string, name: string, args: Array<Arg>, want: Option<Type>): Type uses alloc {
-  if (checkConstructor(mutable checker, walker, calleePos, enumName, name, args, want) is Some(result)) {
+function checkConstructorCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, calleePos: Pos, enumName: string, name: string, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
+  if (checkConstructor(mutable checker, walker, calleePos, enumName, name, arguments, want) is Some(result)) {
     if (result.enumIndex >= 0) {
       setRef(mutable checker, nodeId, Ref.Constructor(result.enumIndex, result.variant))
     }
-    return result.ctorType
+    return result.constructorType
   }
   return Type.TVoid
 }
 
 // checkModuleCall checks `Alias.f(...)` where Alias names a package module
 // (Go's moduleCall).
-function checkModuleCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, calleePos: Pos, moduleScope: int, name: string, args: Array<Arg>, want: Option<Type>): Type uses alloc {
+function checkModuleCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, calleePos: Pos, moduleScope: int, name: string, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
   const found = exported(mutable checker, calleePos, moduleScope, name)
   if (found is Some(Decl.Const(_))) {
-    return checkValueCall(mutable checker, walker, nodeId, pos, callee, args)
+    return checkValueCall(mutable checker, walker, nodeId, pos, callee, arguments)
   }
   if (found is Some(Decl.Func(funcDecl))) {
     const funcIndex = findModuleFunction(checker, moduleScope, funcDecl)
     if (funcIndex >= 0) {
-      return checkFunctionCall(mutable checker, walker, nodeId, pos, funcIndex, args, want)
+      return checkFunctionCall(mutable checker, walker, nodeId, pos, funcIndex, arguments, want)
     }
   }
-  checkArgumentsLoosely(mutable checker, walker, args)
+  checkArgumentsLoosely(mutable checker, walker, arguments)
   return Type.TVoid
 }
 
@@ -185,10 +185,10 @@ function getArgumentType(checker: Checker, arg: Arg): Type {
 // expected type and the arguments, and finds or queues the instance (Go's
 // genericCall). Inside a generic body the call can stay open; each instance
 // resolves it again.
-function checkGenericCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, funcIndex: int, args: Array<Arg>, want: Option<Type>): Type uses alloc {
-  const info = checker.funcs[funcIndex]
-  const typeParams = info.typeParams
-  const params = info.decl.params
+function checkGenericCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, funcIndex: int, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
+  const info = checker.functions[funcIndex]
+  const typeParameters = info.typeParameters
+  const parameters = info.declaration.parameters
   let bindings: Map<int, Type> = Map {}
   if (want is Some(wanted)) {
     unify(checker, info.result, wanted, mutable bindings)
@@ -196,55 +196,55 @@ function checkGenericCall<W: Walker>(mutable checker: Checker, walker: W, nodeId
 
   // An argument whose parameter type is still open is checked without an
   // expected type; an arrow function argument gets a hint.
-  checkGenericArguments(mutable checker, walker, pos, args, params, typeParams, bindings)
-  for (const index of Ranges.between(0, Arrays.length(args))) {
-    if (index < Arrays.length(params)) {
-      const argType = getArgumentType(checker, args[index])
-      unify(checker, checker.paramTypes[params[index].id], argType, mutable bindings)
+  checkGenericArguments(mutable checker, walker, pos, arguments, parameters, typeParameters, bindings)
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    if (index < Arrays.length(parameters)) {
+      const argType = getArgumentType(checker, arguments[index])
+      unify(checker, checker.paramTypes[parameters[index].id], argType, mutable bindings)
     }
   }
 
   // Every type parameter must be known and meet its bounds.
-  let typeArgs: Array<Type> = []
-  for (const param of Arrays.values(typeParams)) {
+  let typeArguments: Array<Type> = []
+  for (const param of Arrays.values(typeParameters)) {
     if (bindings[param] is Some(bound)) {
-      Arrays.push(mutable typeArgs, bound)
+      Arrays.push(mutable typeArguments, bound)
     } else {
-      const message = `cannot tell type parameter ${checker.params[param].name} of ${info.name} here; add a type annotation`
-      errorf(mutable checker, pos, message)
+      const message = `cannot tell type parameter ${checker.parameters[param].name} of ${info.name} here; add a type annotation`
+      reportError(mutable checker, pos, message)
       return Type.TVoid
     }
   }
-  checkBounds(mutable checker, pos, info.decl, typeParams, typeArgs)
-  for (const index of Ranges.between(0, Arrays.length(args))) {
-    if (index < Arrays.length(params)) {
-      const declared = checker.paramTypes[params[index].id]
+  checkBounds(mutable checker, pos, info.declaration, typeParameters, typeArguments)
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    if (index < Arrays.length(parameters)) {
+      const declared = checker.paramTypes[parameters[index].id]
       const paramType = substitute(mutable checker, declared, bindings)
-      const argType = getArgumentType(checker, args[index])
-      expectType(mutable checker, getExpressionPos(args[index].value), Some(paramType), argType)
+      const argType = getArgumentType(checker, arguments[index])
+      expectType(mutable checker, getExpressionPos(arguments[index].value), Some(paramType), argType)
     }
   }
   const result = substitute(mutable checker, info.result, bindings)
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-  if (!anyTypeParam(checker, typeArgs)) {
-    addFuncInstance(mutable checker, funcIndex, typeArgs)
+  if (!anyTypeParameter(checker, typeArguments)) {
+    addFuncInstance(mutable checker, funcIndex, typeArguments)
   }
   return result
 }
 
-// checkTraitCall checks `Trait.function(args)` (Go's traitCall): the
+// checkTraitCall checks `Trait.function(arguments)` (Go's traitCall): the
 // arguments tell which type's implementation runs.
-function checkTraitCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, traitIndex: int, name: string, args: Array<Arg>, want: Option<Type>): Type uses alloc {
+function checkTraitCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, traitIndex: int, name: string, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
   const traitName = checker.traits[traitIndex].name
   const funcIndex = findTraitFunc(checker, traitIndex, name)
   if (funcIndex < 0) {
-    errorf(mutable checker, pos, `trait ${traitName} has no function ${quoteGo(name)}`)
-    checkArgumentsLoosely(mutable checker, walker, args)
+    reportError(mutable checker, pos, `trait ${traitName} has no function ${quoteGo(name)}`)
+    checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
   }
-  const traitFunc = checker.traits[traitIndex].funcs[funcIndex]
-  const selfParam = checker.traits[traitIndex].selfParam
-  const self = [selfParam]
+  const traitFunc = checker.traits[traitIndex].functions[funcIndex]
+  const selfParameter = checker.traits[traitIndex].selfParameter
+  const self = [selfParameter]
   let bindings: Map<int, Type> = Map {}
   if (want is Some(wanted)) {
     unify(checker, traitFunc.result, wanted, mutable bindings)
@@ -252,7 +252,7 @@ function checkTraitCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: 
 
   // Check the arguments, then find Self from them.
   let wants: Array<Option<Type>> = []
-  for (const paramType of Arrays.values(traitFunc.params)) {
+  for (const paramType of Arrays.values(traitFunc.parameters)) {
     const paramWant = substitute(mutable checker, paramType, bindings)
     if (containsOpen(checker, paramWant, self)) {
       Arrays.push(mutable wants, None)
@@ -260,27 +260,27 @@ function checkTraitCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: 
       Arrays.push(mutable wants, Some(paramWant))
     }
   }
-  const params = traitFunc.decl.params
-  checkArguments(mutable checker, walker, pos, args, params, wants)
-  const paramCount = Arrays.length(traitFunc.params)
-  for (const index of Ranges.between(0, Arrays.length(args))) {
+  const parameters = traitFunc.declaration.parameters
+  checkArguments(mutable checker, walker, pos, arguments, parameters, wants)
+  const paramCount = Arrays.length(traitFunc.parameters)
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < paramCount) {
-      const argType = getArgumentType(checker, args[index])
-      unify(checker, traitFunc.params[index], argType, mutable bindings)
+      const argType = getArgumentType(checker, arguments[index])
+      unify(checker, traitFunc.parameters[index], argType, mutable bindings)
     }
   }
   let selfType = Type.TVoid
-  if (bindings[selfParam] is Some(bound)) {
+  if (bindings[selfParameter] is Some(bound)) {
     selfType = bound
   } else {
-    errorf(mutable checker, pos, `cannot tell which type's ${traitName}.${name} to call here; add a type annotation`)
+    reportError(mutable checker, pos, `cannot tell which type's ${traitName}.${name} to call here; add a type annotation`)
     return Type.TVoid
   }
-  for (const index of Ranges.between(0, Arrays.length(args))) {
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < paramCount) {
-      const paramType = substitute(mutable checker, traitFunc.params[index], bindings)
-      const argType = getArgumentType(checker, args[index])
-      expectType(mutable checker, getExpressionPos(args[index].value), Some(paramType), argType)
+      const paramType = substitute(mutable checker, traitFunc.parameters[index], bindings)
+      const argType = getArgumentType(checker, arguments[index])
+      expectType(mutable checker, getExpressionPos(arguments[index].value), Some(paramType), argType)
     }
   }
   const result = substitute(mutable checker, traitFunc.result, bindings)
@@ -288,15 +288,15 @@ function checkTraitCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: 
   // Self must implement the trait; a type parameter only through its bounds.
   if (!typeImplements(mutable checker, selfType, traitIndex)) {
     if (selfType is Type.TParam(param)) {
-      const paramName = checker.params[param].name
-      errorf(mutable checker, pos, `${traitName}.${name} needs ${paramName} to implement ${traitName}; declare it as <${paramName}: ${traitName}>`)
+      const paramName = checker.parameters[param].name
+      reportError(mutable checker, pos, `${traitName}.${name} needs ${paramName} to implement ${traitName}; declare it as <${paramName}: ${traitName}>`)
     } else {
       const message = `${typeString(checker, selfType)} does not implement ${traitName}`
-      errorf(mutable checker, pos, message)
+      reportError(mutable checker, pos, message)
     }
     return result
   }
-  if (containsTypeParam(checker, selfType)) {
+  if (containsTypeParameter(checker, selfType)) {
     return result
   }
   if (implFunc(checker, selfType, traitIndex, name) is Some(implementation)) {
@@ -309,7 +309,7 @@ function checkTraitCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: 
 
 // checkDistinctCall checks `T.from(x)` and `T.toInt(x)` on a distinct type
 // (Go's distinctCall).
-function checkDistinctCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, calleePos: Pos, distinctIndex: int, name: string, args: Array<Arg>): Type uses alloc {
+function checkDistinctCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, calleePos: Pos, distinctIndex: int, name: string, arguments: Array<Arg>): Type uses alloc {
   setRef(mutable checker, nodeId, Ref.Distinct(distinctIndex))
   const info = checker.distincts[distinctIndex]
   const distinctType = Type.TDistinct(distinctIndex)
@@ -323,22 +323,22 @@ function checkDistinctCall<W: Walker>(mutable checker: Checker, walker: W, nodeI
   // of an opaque type.
   const isFrom = name == "from"
   if (isFrom) {
-    if (info.opaque && info.module != checker.scopes[checker.cur].path) {
-      errorf(mutable checker, calleePos, `${info.name}.from is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`)
+    if (info.opaque && info.module != checker.scopes[checker.current].path) {
+      reportError(mutable checker, calleePos, `${info.name}.from is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`)
     }
   } else if (name != unwrap) {
-    errorf(mutable checker, calleePos, `${info.name} has no function ${quoteGo(name)}; a distinct type has from and ${unwrap}`)
-    checkArgumentsLoosely(mutable checker, walker, args)
+    reportError(mutable checker, calleePos, `${info.name} has no function ${quoteGo(name)}; a distinct type has from and ${unwrap}`)
+    checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
   }
-  if (Arrays.length(args) != 1) {
-    errorf(mutable checker, pos, `${info.name}.${name} takes 1 arguments, found ${Int.toString(Arrays.length(args))}`)
-    checkArgumentsLoosely(mutable checker, walker, args)
+  if (Arrays.length(arguments) != 1) {
+    reportError(mutable checker, pos, `${info.name}.${name} takes 1 arguments, found ${Int.toString(Arrays.length(arguments))}`)
+    checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
   }
 
   // from wraps a base value; the unwrap function unwraps a distinct one.
-  const value = args[0].value
+  const value = arguments[0].value
   const valuePos = getExpressionPos(value)
   if (isFrom) {
     const valueType = checkExpression(mutable checker, walker, value, Some(base))

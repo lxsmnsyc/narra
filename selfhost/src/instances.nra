@@ -7,7 +7,7 @@
 // names the same instances as Go's C-name key. body.nra's checkPending
 // checks each one in its own body, in discovery order.
 import { Type, typeKeys } from "narrac/types"
-import { Checker, FuncInstance, errorf, enter } from "narrac/check"
+import { Checker, FuncInstance, reportError, enter } from "narrac/check"
 import { resolveOpt } from "narrac/resolve"
 import { envWith } from "narrac/generics"
 import * as Int from "std/int"
@@ -17,33 +17,33 @@ import * as Arrays from "std/array"
 const MAX_INSTANCES = 10000
 
 // addFuncInstance returns the Checker.instanceList index of the instance of
-// function funcIndex for targs, making and queueing it on first use.
-export function addFuncInstance(mutable checker: Checker, funcIndex: int, targs: Array<Type>): int uses alloc {
-  const key = `${Int.toString(funcIndex)}|${typeKeys(targs)}`
+// function funcIndex for typeArguments, making and queueing it on first use.
+export function addFuncInstance(mutable checker: Checker, funcIndex: int, typeArguments: Array<Type>): int uses alloc {
+  const key = `${Int.toString(funcIndex)}|${typeKeys(typeArguments)}`
   if (checker.funcInstances[key] is Some(found)) {
     return found
   }
 
   // Resolve the signature in the declaring module with the type arguments.
-  const info = checker.funcs[funcIndex]
+  const info = checker.functions[funcIndex]
   const savedScope = enter(mutable checker, info.scope)
-  const savedEnv = checker.env
-  const env = envWith(checker, info.typeParams, targs)
-  checker.env = env
-  let params: Array<Type> = []
-  for (const param of Arrays.values(info.decl.params)) {
-    Arrays.push(mutable params, resolveOpt(mutable checker, param.type))
+  const savedEnv = checker.environment
+  const environment = envWith(checker, info.typeParameters, typeArguments)
+  checker.environment = environment
+  let parameters: Array<Type> = []
+  for (const param of Arrays.values(info.declaration.parameters)) {
+    Arrays.push(mutable parameters, resolveOpt(mutable checker, param.type))
   }
-  const result = resolveOpt(mutable checker, info.decl.result)
-  checker.env = savedEnv
+  const result = resolveOpt(mutable checker, info.declaration.result)
+  checker.environment = savedEnv
 
   // Record it and queue its body; past the limit it is not checked, as in Go.
   const index = Arrays.length(checker.instanceList)
-  const instance = FuncInstance { func: funcIndex, scope: info.scope, env: env, targs: targs, params: params, result: result }
+  const instance = FuncInstance { funcIndex: funcIndex, scope: info.scope, environment: environment, typeArguments: typeArguments, parameters: parameters, result: result }
   Arrays.push(mutable checker.instanceList, instance)
   checker.funcInstances[key] = index
   if (Arrays.length(checker.instanceList) > MAX_INSTANCES) {
-    errorf(mutable checker, info.decl.pos, `too many instances of generic functions; ${info.name} may recurse with ever larger types`)
+    reportError(mutable checker, info.declaration.pos, `too many instances of generic functions; ${info.name} may recurse with ever larger types`)
   } else {
     Arrays.push(mutable checker.pending, index)
   }

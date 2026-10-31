@@ -19,9 +19,9 @@ export function dump(checker: Checker): string uses alloc {
   for (const body of Arrays.values(checker.bodies)) {
     // The header names the body; an instance adds its type arguments.
     Str.append(mutable out, `body module=${quoteDump(body.module)} ${body.kind} ${body.name}`)
-    if (Arrays.length(body.targs) > 0) {
+    if (Arrays.length(body.typeArguments) > 0) {
       let parts: Array<string> = []
-      for (const typeArgument of Arrays.values(body.targs)) {
+      for (const typeArgument of Arrays.values(body.typeArguments)) {
         Arrays.push(mutable parts, dumpTypeString(checker, typeArgument))
       }
       // Only the separator is a bare comma; each type keeps its own text.
@@ -32,9 +32,9 @@ export function dump(checker: Checker): string uses alloc {
 
     // Then the nodes, parameters first.
     match (body.root) {
-      BodyRoot.RootFunc(decl) => {
-        writeParams(mutable out, checker, body, decl.params)
-        if (decl.body is Some(block)) {
+      BodyRoot.RootFunc(declaration) => {
+        writeParams(mutable out, checker, body, declaration.parameters)
+        if (declaration.body is Some(block)) {
           writeBlock(mutable out, checker, body, block)
         }
       }
@@ -73,8 +73,8 @@ function describeRef(checker: Checker, bodyInfo: BodyInfo, nodeId: int): string 
     Ref.Unresolved => ""
     Ref.Local(index) => ` local=${bodyInfo.locals[index].name}`
     Ref.Const(index) => ` const=${qualifiedName(checker.consts[index].module, checker.consts[index].name)}`
-    Ref.Function(index) => ` func=${qualifiedName(checker.funcs[index].module, checker.funcs[index].name)}`
-    Ref.Builtin(index) => ` builtin=${checker.registry.funcs[index].name}`
+    Ref.Function(index) => ` func=${qualifiedName(checker.functions[index].module, checker.functions[index].name)}`
+    Ref.Builtin(index) => ` builtin=${checker.registry.functions[index].name}`
     Ref.Constructor(enumIndex, variant) => ` ctor=${checker.enums[enumIndex].name}.${checker.enums[enumIndex].variants[variant].name}`
     Ref.Implementation(block, index) => ` func=${describeImplementation(checker, block, index)}`
     Ref.TraitFunction(traitIndex, name) => ` trait=${checker.traits[traitIndex].name}.${name}`
@@ -85,10 +85,10 @@ function describeRef(checker: Checker, bodyInfo: BodyInfo, nodeId: int): string 
 }
 
 // describeImplementation names an implement block function as
-// <Type>.<Trait>.<function>, the type written as in the decls dump.
+// <Type>.<Trait>.<function>, the type written as in the declarations dump.
 function describeImplementation(checker: Checker, block: int, index: int): string uses alloc {
-  const impl = checker.impls[block]
-  return `${dumpTypeString(checker, impl.forType)}.${checker.traits[impl.traitIdx].name}.${impl.funcs[index].name}`
+  const impl = checker.implementations[block]
+  return `${dumpTypeString(checker, impl.forType)}.${checker.traits[impl.traitIndex].name}.${impl.functions[index].name}`
 }
 
 // describeClosure prints the stack and captures attributes of an arrow
@@ -115,7 +115,7 @@ function describeClosure(bodyInfo: BodyInfo, nodeId: int): string uses alloc {
 function writeNode(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyInfo, nodeId: int, pos: Pos, kind: string) uses alloc {
   const attrs = describeRef(checker, bodyInfo, nodeId)
   const text = describeNodeType(checker, bodyInfo, nodeId)
-  Str.append(mutable out, `  ${Int.toString(pos.line)}:${Int.toString(pos.col)} ${kind}${attrs} ${text}\n`)
+  Str.append(mutable out, `  ${Int.toString(pos.line)}:${Int.toString(pos.column)} ${kind}${attrs} ${text}\n`)
 }
 
 // writeLocal prints the local a node declares, if any.
@@ -130,17 +130,17 @@ function writeLocal(mutable out: StringBuilder, checker: Checker, bodyInfo: Body
     flag = " mutable"
   }
   const text = dumpTypeString(checker, local.localType)
-  Str.append(mutable out, `  ${Int.toString(local.pos.line)}:${Int.toString(local.pos.col)} local ${local.name}${flag} ${text}\n`)
+  Str.append(mutable out, `  ${Int.toString(local.pos.line)}:${Int.toString(local.pos.column)} local ${local.name}${flag} ${text}\n`)
 }
 
-function writeParams(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyInfo, params: Array<Param>) uses alloc {
-  for (const param of Arrays.values(params)) {
+function writeParams(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyInfo, parameters: Array<Param>) uses alloc {
+  for (const param of Arrays.values(parameters)) {
     writeLocal(mutable out, checker, bodyInfo, param.id)
   }
 }
 
 function writeBlock(mutable out: StringBuilder, checker: Checker, bodyInfo: BodyInfo, block: Block) uses alloc {
-  for (const statement of Arrays.values(block.stmts)) {
+  for (const statement of Arrays.values(block.statements)) {
     writeStatement(mutable out, checker, bodyInfo, statement)
   }
 }
@@ -223,10 +223,10 @@ function writeExpression(mutable out: StringBuilder, checker: Checker, bodyInfo:
       writeExpressions(mutable out, checker, bodyInfo, keys)
       writeExpressions(mutable out, checker, bodyInfo, values)
     }
-    Expr.CallExpr(nodeId, pos, callee, args) => {
+    Expr.CallExpr(nodeId, pos, callee, arguments) => {
       writeNode(mutable out, checker, bodyInfo, nodeId, pos, "call")
       writeExpression(mutable out, checker, bodyInfo, callee)
-      for (const arg of Arrays.values(args)) {
+      for (const arg of Arrays.values(arguments)) {
         writeExpression(mutable out, checker, bodyInfo, arg.value)
       }
     }
@@ -259,9 +259,9 @@ function writeExpression(mutable out: StringBuilder, checker: Checker, bodyInfo:
         writeArm(mutable out, checker, bodyInfo, arm)
       }
     }
-    Expr.ArrowExpr(nodeId, pos, params, _, body, block) => {
+    Expr.ArrowExpr(nodeId, pos, parameters, _, body, block) => {
       writeNode(mutable out, checker, bodyInfo, nodeId, pos, `arrow${describeClosure(bodyInfo, nodeId)}`)
-      writeParams(mutable out, checker, bodyInfo, params)
+      writeParams(mutable out, checker, bodyInfo, parameters)
       if (body is Some(expressionBody)) {
         writeExpression(mutable out, checker, bodyInfo, expressionBody)
       }
@@ -292,9 +292,9 @@ function writePattern(mutable out: StringBuilder, checker: Checker, bodyInfo: Bo
       writeNode(mutable out, checker, bodyInfo, nodeId, pos, "pat-name")
       writeLocal(mutable out, checker, bodyInfo, nodeId)
     }
-    Pattern.PatCtor(nodeId, pos, _, _, args, _) => {
+    Pattern.PatCtor(nodeId, pos, _, _, arguments, _) => {
       writeNode(mutable out, checker, bodyInfo, nodeId, pos, "pat-ctor")
-      for (const arg of Arrays.values(args)) {
+      for (const arg of Arrays.values(arguments)) {
         writePattern(mutable out, checker, bodyInfo, arg)
       }
     }
@@ -304,9 +304,9 @@ function writePattern(mutable out: StringBuilder, checker: Checker, bodyInfo: Bo
         writePattern(mutable out, checker, bodyInfo, field.pattern)
       }
     }
-    Pattern.PatTuple(nodeId, pos, args) => {
+    Pattern.PatTuple(nodeId, pos, arguments) => {
       writeNode(mutable out, checker, bodyInfo, nodeId, pos, "pat-tuple")
-      for (const arg of Arrays.values(args)) {
+      for (const arg of Arrays.values(arguments)) {
         writePattern(mutable out, checker, bodyInfo, arg)
       }
     }

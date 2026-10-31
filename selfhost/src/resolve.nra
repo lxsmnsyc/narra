@@ -11,7 +11,7 @@ import * as Str from "std/string"
 import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
-import { Checker, checkMapKey, errorf, enter, lookupType, lookupGeneric, containsTypeParam } from "narrac/check"
+import { Checker, checkMapKey, reportError, enter, lookupType, lookupGeneric, containsTypeParameter } from "narrac/check"
 import { makeEnv, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
 import * as Arrays from "std/array"
@@ -30,7 +30,7 @@ export function resolveOpt(mutable checker: Checker, typeExpr: Option<TypeExpr>)
 export function funcResult(mutable checker: Checker, typeExpr: Option<Box<TypeExpr>>): Type uses alloc {
   if (typeExpr is Some(boxed)) {
     const resultExpr = boxed.value
-    if (resultExpr.name == "void" && Arrays.length(resultExpr.args) == 0 && !resultExpr.isFunc) {
+    if (resultExpr.name == "void" && Arrays.length(resultExpr.arguments) == 0 && !resultExpr.isFunc) {
       return Type.TVoid
     }
     return resolveType(mutable checker, resultExpr)
@@ -40,17 +40,17 @@ export function funcResult(mutable checker: Checker, typeExpr: Option<Box<TypeEx
 
 export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
   if (typeExpr.isFunc) {
-    let params: Array<Type> = []
-    for (const argument of Arrays.values(typeExpr.args)) {
-      Arrays.push(mutable params, resolveType(mutable checker, argument))
+    let parameters: Array<Type> = []
+    for (const argument of Arrays.values(typeExpr.arguments)) {
+      Arrays.push(mutable parameters, resolveType(mutable checker, argument))
     }
-    return Type.TFunc(params, funcResult(mutable checker, typeExpr.result))
+    return Type.TFunc(parameters, funcResult(mutable checker, typeExpr.result))
   }
   if (typeExpr.isTuple) {
     return tupleType(mutable checker, typeExpr)
   }
-  const argCount = Arrays.length(typeExpr.args)
-  if (checker.env[typeExpr.name] is Some(paramType)) {
+  const argCount = Arrays.length(typeExpr.arguments)
+  if (checker.environment[typeExpr.name] is Some(paramType)) {
     if (argCount == 0) {
       return paramType
     }
@@ -60,61 +60,61 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (typeExpr.name == "Box" && !userType(checker, "Box")) {
     if (argCount != 1) {
-      errorf(mutable checker, typeExpr.pos, "Box takes one type argument")
+      reportError(mutable checker, typeExpr.pos, "Box takes one type argument")
       return Type.TVoid
     }
-    return Type.TBox(resolveType(mutable checker, typeExpr.args[0]))
+    return Type.TBox(resolveType(mutable checker, typeExpr.arguments[0]))
   }
   if (typeExpr.name == "Map" && !userType(checker, "Map")) {
     if (argCount != 2) {
-      errorf(mutable checker, typeExpr.pos, "Map takes two type arguments")
+      reportError(mutable checker, typeExpr.pos, "Map takes two type arguments")
       return Type.TVoid
     }
-    const keyType = resolveType(mutable checker, typeExpr.args[0])
-    const valueType = resolveType(mutable checker, typeExpr.args[1])
+    const keyType = resolveType(mutable checker, typeExpr.arguments[0])
+    const valueType = resolveType(mutable checker, typeExpr.arguments[1])
     checkMapKey(mutable checker, typeExpr.pos, keyType)
     return Type.TMap(keyType, valueType)
   }
   if (typeExpr.name == "Array") {
     if (argCount != 1) {
-      errorf(mutable checker, typeExpr.pos, "Array takes one type argument")
+      reportError(mutable checker, typeExpr.pos, "Array takes one type argument")
       return Type.TVoid
     }
-    return Type.TArray(resolveType(mutable checker, typeExpr.args[0]))
+    return Type.TArray(resolveType(mutable checker, typeExpr.arguments[0]))
   }
   if (typeExpr.name == "number") {
-    errorf(mutable checker, typeExpr.pos, "there is no `number`; use `int` or `f64`")
+    reportError(mutable checker, typeExpr.pos, "there is no `number`; use `int` or `f64`")
     return Type.TInt
   }
   if (typeExpr.name == "boolean") {
-    errorf(mutable checker, typeExpr.pos, "use `bool`")
+    reportError(mutable checker, typeExpr.pos, "use `bool`")
     return Type.TBool
   }
   if (lookupGeneric(checker, typeExpr.name) is Some(generic)) {
-    const want = Arrays.length(checker.generics[generic].params)
+    const want = Arrays.length(checker.generics[generic].parameters)
     if (argCount != want) {
-      errorf(mutable checker, typeExpr.pos, `${typeExpr.name} takes ${Int.toString(want)} type arguments`)
+      reportError(mutable checker, typeExpr.pos, `${typeExpr.name} takes ${Int.toString(want)} type arguments`)
       return Type.TVoid
     }
-    let args: Array<Type> = []
-    for (const argument of Arrays.values(typeExpr.args)) {
-      Arrays.push(mutable args, resolveType(mutable checker, argument))
+    let arguments: Array<Type> = []
+    for (const argument of Arrays.values(typeExpr.arguments)) {
+      Arrays.push(mutable arguments, resolveType(mutable checker, argument))
     }
-    return instantiate(mutable checker, generic, args)
+    return instantiate(mutable checker, generic, arguments)
   }
   const named = lookupType(checker, typeExpr.name)
   if (named is None && typeExpr.name == "Tuple") {
-    errorf(mutable checker, typeExpr.pos, "there is no Tuple type; write a tuple type as #[A, B]")
+    reportError(mutable checker, typeExpr.pos, "there is no Tuple type; write a tuple type as #[A, B]")
     return Type.TVoid
   }
   if (argCount > 0) {
-    errorf(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
+    reportError(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
     return Type.TVoid
   }
   if (named is Some(namedType)) {
     return namedType
   }
-  errorf(mutable checker, typeExpr.pos, `unknown type ${quoteGo(typeExpr.name)}`)
+  reportError(mutable checker, typeExpr.pos, `unknown type ${quoteGo(typeExpr.name)}`)
   return Type.TVoid
 }
 
@@ -124,11 +124,11 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
   const alias = Str.split(typeExpr.name, ".")[0]
   const name = Str.sliceFrom(typeExpr.name, Str.length(alias) + 1)
   let scope = -1
-  if (checker.scopes[checker.cur].modules[alias] is Some(path)) {
+  if (checker.scopes[checker.current].modules[alias] is Some(path)) {
     scope = sourceScope(checker, path)
   }
   if (scope < 0) {
-    errorf(mutable checker, typeExpr.pos, `unknown module ${quoteGo(alias)} in type ${typeExpr.name}; import it with \`import * as ${alias} from "..."\``)
+    reportError(mutable checker, typeExpr.pos, `unknown module ${quoteGo(alias)} in type ${typeExpr.name}; import it with \`import * as ${alias} from "..."\``)
     return Type.TVoid
   }
   const found = exported(mutable checker, typeExpr.pos, scope, name)
@@ -137,8 +137,8 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
   }
   let isType = false
   match (found) {
-    Some(decl) => {
-      isType = match (decl) {
+    Some(declaration) => {
+      isType = match (declaration) {
         Decl.Struct(_) => true
         Decl.Enum(_) => true
         Decl.Distinct(_) => true
@@ -148,26 +148,26 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
     None => {}
   }
   if (!isType) {
-    errorf(mutable checker, typeExpr.pos, `${typeExpr.name} is not a type`)
+    reportError(mutable checker, typeExpr.pos, `${typeExpr.name} is not a type`)
     return Type.TVoid
   }
-  const argCount = Arrays.length(typeExpr.args)
+  const argCount = Arrays.length(typeExpr.arguments)
   if (checker.scopes[scope].generics[name] is Some(generic)) {
     if (checker.scopes[scope].types[name] is None) {
-      const want = Arrays.length(checker.generics[generic].params)
+      const want = Arrays.length(checker.generics[generic].parameters)
       if (argCount != want) {
-        errorf(mutable checker, typeExpr.pos, `${typeExpr.name} takes ${Int.toString(want)} type arguments`)
+        reportError(mutable checker, typeExpr.pos, `${typeExpr.name} takes ${Int.toString(want)} type arguments`)
         return Type.TVoid
       }
-      let args: Array<Type> = []
-      for (const argument of Arrays.values(typeExpr.args)) {
-        Arrays.push(mutable args, resolveType(mutable checker, argument))
+      let arguments: Array<Type> = []
+      for (const argument of Arrays.values(typeExpr.arguments)) {
+        Arrays.push(mutable arguments, resolveType(mutable checker, argument))
       }
-      return instantiate(mutable checker, generic, args)
+      return instantiate(mutable checker, generic, arguments)
     }
   }
   if (argCount > 0) {
-    errorf(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
+    reportError(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
     return Type.TVoid
   }
   if (checker.scopes[scope].types[name] is Some(namedType)) {
@@ -184,13 +184,13 @@ function userType(checker: Checker, name: string): bool {
 
 // tupleType resolves #[A, B, ...].
 function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
-  const count = Arrays.length(typeExpr.args)
+  const count = Arrays.length(typeExpr.arguments)
   if (count < 2) {
-    errorf(mutable checker, typeExpr.pos, `a tuple type needs at least two element types, found ${Int.toString(count)}`)
+    reportError(mutable checker, typeExpr.pos, `a tuple type needs at least two element types, found ${Int.toString(count)}`)
     return Type.TVoid
   }
   let elements: Array<Type> = []
-  for (const argument of Arrays.values(typeExpr.args)) {
+  for (const argument of Arrays.values(typeExpr.arguments)) {
     Arrays.push(mutable elements, resolveType(mutable checker, argument))
   }
   return findTupleType(mutable checker, elements)
@@ -208,24 +208,24 @@ export function findTupleType(mutable checker: Checker, elements: Array<Type>): 
     Arrays.push(mutable fields, Field { name: Int.toString(index), fieldType: elements[index], default: None, pos: zeroPos() })
   }
   const type = Type.TStruct(Arrays.length(checker.structs))
-  Arrays.push(mutable checker.structs, StructInfo { name: "Tuple", module: "", scope: 0, pos: zeroPos(), opaque: false, tuple: true, args: elements, generic: -1, fields: fields })
+  Arrays.push(mutable checker.structs, StructInfo { name: "Tuple", module: "", scope: 0, pos: zeroPos(), opaque: false, tuple: true, arguments: elements, generic: -1, fields: fields })
   checker.instances[key] = type
-  Arrays.push(mutable checker.instTypes, type)
+  Arrays.push(mutable checker.instanceTypes, type)
   // Tuples derive Show and Ordered: findTypeTraits (traits.nra) makes that
   // entry on first use.
   return type
 }
 
 function zeroPos(): Pos {
-  return Pos { line: 0, col: 0 }
+  return Pos { line: 0, column: 0 }
 }
 
-export function resolveFields(mutable checker: Checker, decls: Array<FieldDecl>): Array<Field> uses alloc {
+export function resolveFields(mutable checker: Checker, declarations: Array<FieldDecl>): Array<Field> uses alloc {
   let fields: Array<Field> = []
   let seen: Map<string, bool> = Map {}
-  for (const fieldDecl of Arrays.values(decls)) {
+  for (const fieldDecl of Arrays.values(declarations)) {
     if (seen[fieldDecl.name] is Some(_)) {
-      errorf(mutable checker, fieldDecl.pos, `field ${quoteGo(fieldDecl.name)} is declared twice`)
+      reportError(mutable checker, fieldDecl.pos, `field ${quoteGo(fieldDecl.name)} is declared twice`)
     }
     seen[fieldDecl.name] = true
     const fieldType = resolveType(mutable checker, fieldDecl.type)
@@ -234,11 +234,11 @@ export function resolveFields(mutable checker: Checker, decls: Array<FieldDecl>)
   return fields
 }
 
-export function resolveVariants(mutable checker: Checker, decls: Array<VariantDecl>): Array<Variant> uses alloc {
+export function resolveVariants(mutable checker: Checker, declarations: Array<VariantDecl>): Array<Variant> uses alloc {
   let variants: Array<Variant> = []
-  for (const index of Ranges.between(0, Arrays.length(decls))) {
-    const fields = resolveFields(mutable checker, decls[index].fields)
-    Arrays.push(mutable variants, Variant { name: decls[index].name, index: index, fields: fields })
+  for (const index of Ranges.between(0, Arrays.length(declarations))) {
+    const fields = resolveFields(mutable checker, declarations[index].fields)
+    Arrays.push(mutable variants, Variant { name: declarations[index].name, index: index, fields: fields })
   }
   return variants
 }
@@ -255,13 +255,13 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
   checker.generics[generic].building = true
   const info = checker.generics[generic]
   const savedScope = enter(mutable checker, info.scope)
-  const savedEnv = checker.env
-  checker.env = makeEnv(checker, info.params)
+  const savedEnv = checker.environment
+  checker.environment = makeEnv(checker, info.parameters)
   if (info.isStruct) {
-    let fields = resolveFields(mutable checker, info.fieldDecls)
+    let fields = resolveFields(mutable checker, info.fieldDeclarations)
     for (const index of Ranges.between(0, Arrays.length(fields))) {
-      if (fields[index].default is Some(_) && containsTypeParam(checker, fields[index].fieldType)) {
-        errorf(mutable checker, info.fieldDecls[index].pos, "a default for a field whose type uses a type parameter is not supported by this compiler yet")
+      if (fields[index].default is Some(_) && containsTypeParameter(checker, fields[index].fieldType)) {
+        reportError(mutable checker, info.fieldDeclarations[index].pos, "a default for a field whose type uses a type parameter is not supported by this compiler yet")
         fields[index].default = None
       }
     }
@@ -272,10 +272,10 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
     }
     checker.generics[generic].fields = fields
   } else {
-    const variants = resolveVariants(mutable checker, info.variantDecls)
+    const variants = resolveVariants(mutable checker, info.variantDeclarations)
     checker.generics[generic].variants = variants
   }
-  checker.env = savedEnv
+  checker.environment = savedEnv
   checkPolyRecursion(mutable checker, generic)
   checker.generics[generic].building = false
   const pending = checker.generics[generic].pending
@@ -289,10 +289,10 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
 // instantiate returns the instance of a generic for its type arguments, creating it on
 // first use. The instance is cached before its fields are substituted, so a
 // template that holds itself (List<T> in Array<List<T>>) finds it; it joins
-// instTypes after its fields, as in Go.
-export function instantiate(mutable checker: Checker, generic: int, args: Array<Type>): Type uses alloc {
+// instanceTypes after its fields, as in Go.
+export function instantiate(mutable checker: Checker, generic: int, arguments: Array<Type>): Type uses alloc {
   buildGeneric(mutable checker, generic)
-  const key = `${Int.toString(generic)}|${typeKeys(args)}`
+  const key = `${Int.toString(generic)}|${typeKeys(arguments)}`
   if (checker.instances[key] is Some(type)) {
     return type
   }
@@ -304,9 +304,9 @@ export function instantiate(mutable checker: Checker, generic: int, args: Array<
   let type = Type.TEnum(Arrays.length(checker.enums))
   if (info.isStruct) {
     type = Type.TStruct(Arrays.length(checker.structs))
-    Arrays.push(mutable checker.structs, StructInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, opaque: info.opaque, tuple: false, args: args, generic: generic, fields: [] })
+    Arrays.push(mutable checker.structs, StructInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, opaque: info.opaque, tuple: false, arguments: arguments, generic: generic, fields: [] })
   } else {
-    Arrays.push(mutable checker.enums, EnumInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, args: args, generic: generic, variants: [] })
+    Arrays.push(mutable checker.enums, EnumInfo { name: info.name, module: info.module, scope: info.scope, pos: pos, arguments: arguments, generic: generic, variants: [] })
   }
   checker.instances[key] = type
   if (info.building) {
@@ -318,14 +318,14 @@ export function instantiate(mutable checker: Checker, generic: int, args: Array<
 }
 
 // fillInstance copies the template's fields into the instance, substituting
-// its type arguments, and adds it to instTypes.
+// its type arguments, and adds it to instanceTypes.
 function fillInstance(mutable checker: Checker, generic: int, instance: Type) uses alloc {
   const info = checker.generics[generic]
   let bindings: Map<int, Type> = Map {}
   if (instance is Type.TStruct(index)) {
-    const args = checker.structs[index].args
-    for (const i of Ranges.between(0, Arrays.length(info.params))) {
-      bindings[info.params[i]] = args[i]
+    const arguments = checker.structs[index].arguments
+    for (const i of Ranges.between(0, Arrays.length(info.parameters))) {
+      bindings[info.parameters[i]] = arguments[i]
     }
     let fields: Array<Field> = []
     for (const field of Arrays.values(info.fields)) {
@@ -334,9 +334,9 @@ function fillInstance(mutable checker: Checker, generic: int, instance: Type) us
     }
     checker.structs[index].fields = fields
   } else if (instance is Type.TEnum(index)) {
-    const args = checker.enums[index].args
-    for (const i of Ranges.between(0, Arrays.length(info.params))) {
-      bindings[info.params[i]] = args[i]
+    const arguments = checker.enums[index].arguments
+    for (const i of Ranges.between(0, Arrays.length(info.parameters))) {
+      bindings[info.parameters[i]] = arguments[i]
     }
     let variants: Array<Variant> = []
     for (const variant of Arrays.values(info.variants)) {
@@ -349,7 +349,7 @@ function fillInstance(mutable checker: Checker, generic: int, instance: Type) us
     }
     checker.enums[index].variants = variants
   }
-  Arrays.push(mutable checker.instTypes, instance)
+  Arrays.push(mutable checker.instanceTypes, instance)
 }
 
 // substitute replaces the parameters in a type by their bindings, creating the
@@ -373,7 +373,7 @@ export function substitute(mutable checker: Checker, type: Type, bindings: Map<i
       return Type.TMap(newKey, substitute(mutable checker, value, bindings))
     }
     Type.TFunc(parameters, result) => {
-      if (!containsTypeParam(checker, type)) {
+      if (!containsTypeParameter(checker, type)) {
         return type
       }
       const newParams = substituteAll(mutable checker, parameters, bindings)
@@ -381,22 +381,22 @@ export function substitute(mutable checker: Checker, type: Type, bindings: Map<i
     }
     Type.TStruct(index) => {
       const info = checker.structs[index]
-      if (Arrays.length(info.args) == 0) {
+      if (Arrays.length(info.arguments) == 0) {
         return type
       }
-      const args = substituteAll(mutable checker, info.args, bindings)
+      const arguments = substituteAll(mutable checker, info.arguments, bindings)
       if (info.tuple) {
-        return findTupleType(mutable checker, args)
+        return findTupleType(mutable checker, arguments)
       }
-      return instantiate(mutable checker, info.generic, args)
+      return instantiate(mutable checker, info.generic, arguments)
     }
     Type.TEnum(index) => {
       const info = checker.enums[index]
-      if (Arrays.length(info.args) == 0) {
+      if (Arrays.length(info.arguments) == 0) {
         return type
       }
-      const args = substituteAll(mutable checker, info.args, bindings)
-      return instantiate(mutable checker, info.generic, args)
+      const arguments = substituteAll(mutable checker, info.arguments, bindings)
+      return instantiate(mutable checker, info.generic, arguments)
     }
     _ => {
       return type

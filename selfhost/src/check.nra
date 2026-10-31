@@ -16,7 +16,7 @@ import * as Str from "std/string"
 import { Pos, FuncDecl, ConstDecl, Decl, File, ImportDecl, Expr, Block, Arg, FieldInit } from "narrac/ast"
 import { Type, Field, StructInfo, EnumInfo, DistinctInfo, ParamInfo, GenericInfo, TraitInfo, TypeTraits, ImplInfo, ImplRef, MapKeyCheck, typeKey, isBoxedEnum } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
-import { funcIds, blockIds, exprIds } from "narrac/idcheck"
+import { collectFuncIds, collectBlockIds, collectExpressionIds } from "narrac/idcheck"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 
@@ -29,32 +29,32 @@ export struct ModScope {
   file: string // for diagnostics: "prelude", "src/text.nra", "hello.nra"
   isSource: bool // a module of the package (Go's src != nil); false for the prelude
   imports: Array<ImportDecl> // the module's imports, in source order
-  decls: Array<Decl> // the module's declarations, for typeErrorf
-  exports: Map<string, int> // exported name -> index in decls (Go's SourceModule.Exports; the last one wins)
+  declarations: Array<Decl> // the module's declarations, for reportTypeError
+  exports: Map<string, int> // exported name -> index in declarations (Go's SourceModule.Exports; the last one wins)
   types: Map<string, Type> // non-generic named types, with the primitives
   generics: Map<string, int> // Checker.generics
-  funcs: Map<string, int> // Checker.funcs, own and imported
+  functions: Map<string, int> // Checker.functions, own and imported
   consts: Map<string, int> // Checker.consts, own and imported
   traits: Map<string, int> // Checker.traits: the module's own traits and its imports'
   modules: Map<string, string> // namespace alias -> module path, package or std
-  imported: Map<string, int> // std function imported by name -> Registry.funcs index
+  imported: Map<string, int> // std function imported by name -> Registry.functions index
 }
 
-// The entry function of one binary: a Checker.funcs index, or -1 when the
+// The entry function of one binary: a Checker.functions index, or -1 when the
 // entry names no exported function of the package.
 export struct EntryInfo {
   binary: string
-  func: int
+  funcIndex: int
 }
 
-// A top-level function. typeParams is empty for a non-generic function.
+// A top-level function. typeParameters is empty for a non-generic function.
 // Parameter types are in the side table Checker.paramTypes by Param.id.
 export struct FuncInfo {
   name: string
   module: string
   scope: int
-  decl: FuncDecl
-  typeParams: Array<int> // Checker.params
+  declaration: FuncDecl
+  typeParameters: Array<int> // Checker.parameters
   result: Type
 }
 
@@ -66,7 +66,7 @@ export struct ConstInfo {
   name: string
   module: string
   scope: int
-  decl: ConstDecl
+  declaration: ConstDecl
   declaredType: Option<Type>
   state: int = 0
   valueType: Option<Type> = None
@@ -81,15 +81,15 @@ export enum Ref {
   Unresolved
   Local(index: int) // BodyInfo.locals
   Const(index: int) // Checker.consts
-  Function(index: int) // Checker.funcs
-  Builtin(index: int) // Registry.funcs
+  Function(index: int) // Checker.functions
+  Builtin(index: int) // Registry.functions
   // A field read through an enum value narrowed to one variant
   // (selfhost-check-patterns). A pattern that names a variant records
   // Constructor.
   Narrow(enumIndex: int, variantIndex: int)
   // Added by selfhost-check-calls (calls.nra, ctors.nra):
   Constructor(enumIndex: int, variant: int) // Checker.enums, EnumInfo.variants
-  Implementation(block: int, index: int) // Checker.impls[block].funcs[index]
+  Implementation(block: int, index: int) // Checker.implementations[block].functions[index]
   TraitFunction(traitIndex: int, name: string) // a trait function the compiler implements
   Distinct(index: int) // Checker.distincts: T.from or T.toInt
   // Added by selfhost-check-closures: a call through a function value.
@@ -119,7 +119,7 @@ export struct ClosureInfo {
   stack: bool
   captures: Array<int>
   hasHint: bool
-  hintParams: Array<Option<Type>>
+  hintParameters: Array<Option<Type>>
   hintResult: Option<Type>
 }
 
@@ -132,9 +132,9 @@ export struct ArrowContext {
 
 // The syntax a checked body walks, for the types dump and later passes.
 export enum BodyRoot {
-  RootFunc(decl: FuncDecl)
+  RootFunc(declaration: FuncDecl)
   RootBlock(block: Block)
-  RootExpr(expr: Expr)
+  RootExpr(expression: Expr)
 }
 
 // The results of one checked body (D70). A generic function is checked once
@@ -147,7 +147,7 @@ export struct BodyInfo {
   module: string
   kind: string // func, test, impl, const, default
   name: string // the header text after the kind
-  targs: Array<Type>
+  typeArguments: Array<Type>
   root: BodyRoot
   first: int
   types: Array<Option<Type>>
@@ -186,24 +186,24 @@ export trait Walker {
   // which reaches them through these two. checkConstructorName checks a
   // constructor used as a value (`None`, `Shape.Empty`); enumName is "" for
   // a bare name, and the result is None when no enum has the constructor.
-  function checkCall(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>, want: Option<Type>): Type uses alloc
+  function checkCall(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>, want: Option<Type>): Type uses alloc
   function checkConstructorName(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, enumName: string, name: string, want: Option<Type>): Option<Type> uses alloc
   // Arrow functions (narrac/closures).
   function checkArrow(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
   // Std functions with a named check (narrac/stdcalls).
-  function checkStdCall(walker: Self, mutable checker: Checker, pos: Pos, args: Array<Arg>, name: string, kind: string, want: Option<Type>): Type uses alloc
+  function checkStdCall(walker: Self, mutable checker: Checker, pos: Pos, arguments: Array<Arg>, name: string, kind: string, want: Option<Type>): Type uses alloc
 }
 
 // An instance of a generic function (Go's pendingFunc with the cloned
 // declaration): the syntax stays shared, so the instance keeps its
 // signature here and its results in its own body (D70). scope is the
-// declaring module and env maps the type parameter names to targs.
+// declaring module and env maps the type parameter names to typeArguments.
 export struct FuncInstance {
-  func: int // Checker.funcs
+  funcIndex: int // Checker.functions
   scope: int
-  env: Map<string, Type>
-  targs: Array<Type>
-  params: Array<Type>
+  environment: Map<string, Type>
+  typeArguments: Array<Type>
+  parameters: Array<Type>
   result: Type
 }
 
@@ -220,42 +220,42 @@ export struct Checker {
   structs: Array<StructInfo>
   enums: Array<EnumInfo>
   distincts: Array<DistinctInfo>
-  params: Array<ParamInfo>
+  parameters: Array<ParamInfo>
   generics: Array<GenericInfo>
-  funcs: Array<FuncInfo>
+  functions: Array<FuncInfo>
   consts: Array<ConstInfo>
   // Generic instances and tuple types by "<generic>|<typeKeys>" or
-  // "T|<typeKeys>", and the instances in creation order (Go's instTypes).
+  // "T|<typeKeys>", and the instances in creation order (Go's instanceTypes).
   instances: Map<string, Type>
-  instTypes: Array<Type>
+  instanceTypes: Array<Type>
   // Non-generic structs and enums in declaration order, prelude first
   // (the concrete list Go passes to finish).
   concrete: Array<Type>
   // Module scopes; cur is the module being checked (Go's c.mod).
   scopes: Array<ModScope>
-  cur: int
+  current: int
   // The type parameters in scope by name (Go's c.env).
-  env: Map<string, Type>
+  environment: Map<string, Type>
   // Side tables by node id.
   paramTypes: Array<Type> // the type of each Param, TVoid until set
   // Locals declared so far, for unique local names (body checker).
-  localN: int
+  localCount: int
   // Traits (traits.nra). traits holds every declared trait; a module's
   // ModScope.traits maps names to indexes. typeTraits has one entry per
   // struct and enum declaration (and the prelude's), found by
   // "<module>|<name>" in typeTraitIndex. bounds maps a type parameter to the
-  // traits in its constraint. impls are the checked implement blocks, and
-  // implFuncs maps "<typeKey>|Trait.function" to the implementing function.
+  // traits in its constraint. implementations are the checked implement blocks, and
+  // implFunctions maps "<typeKey>|Trait.function" to the implementing function.
   traits: Array<TraitInfo>
   typeTraits: Array<TypeTraits>
   typeTraitIndex: Map<string, int>
   bounds: Map<int, Array<int>>
   busy: Map<string, bool>
-  impls: Array<ImplInfo>
-  implFuncs: Map<string, ImplRef>
+  implementations: Array<ImplInfo>
+  implFunctions: Map<string, ImplRef>
   mapKeys: Array<MapKeyCheck>
-  errs: Array<CheckError>
-  errKeys: Map<string, bool> // file, line, column and message of each error in errs
+  errors: Array<CheckError>
+  errorKeys: Map<string, bool> // file, line, column and message of each error in errors
   // Structs and enums in C definition order, set by finish (Go's
   // Program.Types).
   order: Array<Type>
@@ -265,13 +265,13 @@ export struct Checker {
   // function of each binary.
   registry: Registry
   scopeIndex: Map<string, int>
-  pkgName: string
+  packageName: string
   single: bool
   used: Array<string>
   entries: Array<EntryInfo>
-  // The body checker (body.nra, exprs.nra, stmts.nra). checkingBodies is
+  // The body checker (body.nra, exprs.nra, statements.nra). checkingBodies is
   // set by `narrac types`; without it the declaration passes skip field
-  // defaults, as `narrac decls` did before bodies existed. bodies lists
+  // defaults, as `narrac declarations` did before bodies existed. bodies lists
   // the checked bodies in the order their checks start; body is the one
   // being checked, or -1. localScopes is the stack of block scopes of that
   // body, each mapping a name to a BodyInfo.locals index. resultType is the
@@ -308,47 +308,47 @@ export struct Checker {
 // newChecker makes an empty checker whose side tables hold ids [0, ids).
 export function newChecker(ids: int): Checker uses alloc {
   return Checker {
-    structs: [], enums: [], distincts: [], params: [], generics: [], funcs: [], consts: [],
-    instances: Map {}, instTypes: [], concrete: [], scopes: [], cur: 0, env: Map {},
-    paramTypes: Arrays.filled(Type.TVoid, ids), localN: 0,
-    traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, impls: [], implFuncs: Map {}, mapKeys: [],
-    errs: [], errKeys: Map {}, order: [],
-    registry: newRegistry(), scopeIndex: Map {}, pkgName: "", single: false, used: [], entries: [],
+    structs: [], enums: [], distincts: [], parameters: [], generics: [], functions: [], consts: [],
+    instances: Map {}, instanceTypes: [], concrete: [], scopes: [], current: 0, environment: Map {},
+    paramTypes: Arrays.filled(Type.TVoid, ids), localCount: 0,
+    traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, implementations: [], implFunctions: Map {}, mapKeys: [],
+    errors: [], errorKeys: Map {}, order: [],
+    registry: newRegistry(), scopeIndex: Map {}, packageName: "", single: false, used: [], entries: [],
     resultType: Type.TVoid, funcInstances: Map {},
   }
 }
 
-// errorf records an error in the current module's file. An error equal to
+// reportError records an error in the current module's file. An error equal to
 // one already recorded is dropped, as Go's report does.
-export function errorf(mutable checker: Checker, pos: Pos, message: string) uses alloc {
+export function reportError(mutable checker: Checker, pos: Pos, message: string) uses alloc {
   let file = ""
   if (Arrays.length(checker.scopes) > 0) {
-    file = checker.scopes[checker.cur].file
+    file = checker.scopes[checker.current].file
   }
-  errorIn(mutable checker, file, pos, message)
+  reportErrorIn(mutable checker, file, pos, message)
 }
 
-export function errorIn(mutable checker: Checker, file: string, pos: Pos, message: string) uses alloc {
-  const key = `${file}|${Int.toString(pos.line)}|${Int.toString(pos.col)}|${message}`
-  if (checker.errKeys[key] is Some(_)) {
+export function reportErrorIn(mutable checker: Checker, file: string, pos: Pos, message: string) uses alloc {
+  const key = `${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
+  if (checker.errorKeys[key] is Some(_)) {
     return
   }
-  checker.errKeys[key] = true
-  Arrays.push(mutable checker.errs, CheckError { file: file, pos: pos, message: message })
+  checker.errorKeys[key] = true
+  Arrays.push(mutable checker.errors, CheckError { file: file, pos: pos, message: message })
 }
 
 // errorText prints the errors as the Go dumps do, one line each.
 export function errorText(errors: Array<CheckError>): string uses alloc {
   let builder = Str.builder()
   for (const error of Arrays.values(errors)) {
-    Str.append(mutable builder, `error ${error.file}:${Int.toString(error.pos.line)}:${Int.toString(error.pos.col)}: ${error.message}\n`)
+    Str.append(mutable builder, `error ${error.file}:${Int.toString(error.pos.line)}:${Int.toString(error.pos.column)}: ${error.message}\n`)
   }
   return Str.build(builder)
 }
 
 // newScope adds the scope of a module and returns its index. Every module
 // sees the primitive names and the prelude's types and generics.
-export function newScope(mutable checker: Checker, path: string, file: string, isSource: bool, imports: Array<ImportDecl>, decls: Array<Decl>) : int uses alloc {
+export function newScope(mutable checker: Checker, path: string, file: string, isSource: bool, imports: Array<ImportDecl>, declarations: Array<Decl>) : int uses alloc {
   let types: Map<string, Type> = Map { "int": Type.TInt, "i64": Type.TInt, "f64": Type.TF64, "bool": Type.TBool, "char": Type.TChar, "string": Type.TStr }
   let generics: Map<string, int> = Map {}
   if (Arrays.length(checker.scopes) > 0) {
@@ -361,7 +361,7 @@ export function newScope(mutable checker: Checker, path: string, file: string, i
       generics[name] = generic
     }
   }
-  const scope = ModScope { path: path, file: file, isSource: isSource, imports: imports, decls: decls, exports: Map {}, types: types, generics: generics, funcs: Map {}, consts: Map {}, traits: Map {}, modules: Map {}, imported: Map {} }
+  const scope = ModScope { path: path, file: file, isSource: isSource, imports: imports, declarations: declarations, exports: Map {}, types: types, generics: generics, functions: Map {}, consts: Map {}, traits: Map {}, modules: Map {}, imported: Map {} }
   Arrays.push(mutable checker.scopes, scope)
   const index = Arrays.length(checker.scopes) - 1
   checker.scopeIndex[path] = index
@@ -370,23 +370,23 @@ export function newScope(mutable checker: Checker, path: string, file: string, i
 
 // enter makes a scope current and returns the previous one.
 export function enter(mutable checker: Checker, scope: int): int {
-  const previous = checker.cur
-  checker.cur = scope
+  const previous = checker.current
+  checker.current = scope
   return previous
 }
 
 // lookupType finds a non-generic named type in the current scope.
 export function lookupType(checker: Checker, name: string): Option<Type> {
-  return checker.scopes[checker.cur].types[name]
+  return checker.scopes[checker.current].types[name]
 }
 
 export function lookupGeneric(checker: Checker, name: string): Option<int> {
-  return checker.scopes[checker.cur].generics[name]
+  return checker.scopes[checker.current].generics[name]
 }
 
-// setParamType records the type of a parameter in the side table. Ids
+// setParameterType records the type of a parameter in the side table. Ids
 // outside the table are ignored.
-export function setParamType(mutable checker: Checker, nodeId: int, type: Type) {
+export function setParameterType(mutable checker: Checker, nodeId: int, type: Type) {
   if (nodeId >= 0 && nodeId < Arrays.length(checker.paramTypes)) {
     checker.paramTypes[nodeId] = type
   }
@@ -396,7 +396,7 @@ export function setParamType(mutable checker: Checker, nodeId: int, type: Type) 
 // own and imported traits, then the prelude's. It returns the Checker.traits
 // index, or -1.
 export function lookupTrait(checker: Checker, name: string): int {
-  if (checker.scopes[checker.cur].traits[name] is Some(index)) {
+  if (checker.scopes[checker.current].traits[name] is Some(index)) {
     return index
   }
   if (checker.scopes[0].traits[name] is Some(preludeIndex)) {
@@ -420,12 +420,12 @@ export function stdTrait(checker: Checker, name: string): int {
 // module is declared (flushMapKeys in traits.nra), when the trait facts of
 // later types are known.
 export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses alloc {
-  if (containsTypeParam(checker, key)) {
+  if (containsTypeParameter(checker, key)) {
     return
   }
   let file = ""
   if (Arrays.length(checker.scopes) > 0) {
-    file = checker.scopes[checker.cur].file
+    file = checker.scopes[checker.current].file
   }
   const item = MapKeyCheck { pos: pos, key: key, file: file }
   Arrays.push(mutable checker.mapKeys, item)
@@ -443,9 +443,9 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TVoid => "void"
     Type.TStringBuilder => "StringBuilder"
     Type.TStruct(index) => structString(checker, index)
-    Type.TEnum(index) => `${checker.enums[index].name}${typeArgs(checker, checker.enums[index].args)}`
+    Type.TEnum(index) => `${checker.enums[index].name}${typeArguments(checker, checker.enums[index].arguments)}`
     Type.TDistinct(index) => checker.distincts[index].name
-    Type.TParam(index) => checker.params[index].name
+    Type.TParam(index) => checker.parameters[index].name
     Type.TArray(element) => `Array<${typeString(checker, element)}>`
     Type.TBox(element) => `Box<${typeString(checker, element)}>`
     Type.TMap(key, value) => `Map<${typeString(checker, key)}, ${typeString(checker, value)}>`
@@ -458,16 +458,16 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
 function structString(checker: Checker, index: int): string uses alloc {
   const info = checker.structs[index]
   if (info.tuple) {
-    return `#[${typeList(checker, info.args)}]`
+    return `#[${typeList(checker, info.arguments)}]`
   }
-  return `${info.name}${typeArgs(checker, info.args)}`
+  return `${info.name}${typeArguments(checker, info.arguments)}`
 }
 
-function typeArgs(checker: Checker, args: Array<Type>): string uses alloc {
-  if (Arrays.length(args) == 0) {
+function typeArguments(checker: Checker, arguments: Array<Type>): string uses alloc {
+  if (Arrays.length(arguments) == 0) {
     return ""
   }
-  return `<${typeList(checker, args)}>`
+  return `<${typeList(checker, arguments)}>`
 }
 
 export function typeList(checker: Checker, types: Array<Type>): string uses alloc {
@@ -489,33 +489,33 @@ export function typeModule(checker: Checker, type: Type): string {
   }
 }
 
-export function containsTypeParam(checker: Checker, type: Type): bool {
+export function containsTypeParameter(checker: Checker, type: Type): bool {
   return match (type) {
     Type.TParam(_) => true
-    Type.TFunc(parameters, result) => anyTypeParam(checker, parameters) || containsTypeParam(checker, result)
-    Type.TArray(element) => containsTypeParam(checker, element)
-    Type.TBox(element) => containsTypeParam(checker, element)
-    Type.TMap(key, value) => containsTypeParam(checker, key) || containsTypeParam(checker, value)
-    Type.TStruct(index) => anyTypeParam(checker, checker.structs[index].args)
-    Type.TEnum(index) => anyTypeParam(checker, checker.enums[index].args)
+    Type.TFunc(parameters, result) => anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
+    Type.TArray(element) => containsTypeParameter(checker, element)
+    Type.TBox(element) => containsTypeParameter(checker, element)
+    Type.TMap(key, value) => containsTypeParameter(checker, key) || containsTypeParameter(checker, value)
+    Type.TStruct(index) => anyTypeParameter(checker, checker.structs[index].arguments)
+    Type.TEnum(index) => anyTypeParameter(checker, checker.enums[index].arguments)
     _ => false
   }
 }
 
-export function anyTypeParam(checker: Checker, types: Array<Type>): bool {
+export function anyTypeParameter(checker: Checker, types: Array<Type>): bool {
   for (const type of Arrays.values(types)) {
-    if (containsTypeParam(checker, type)) {
+    if (containsTypeParameter(checker, type)) {
       return true
     }
   }
   return false
 }
 
-// typeErrorf reports an error at the declaration of a struct or enum, in the
+// reportTypeError reports an error at the declaration of a struct or enum, in the
 // file of the module that declares it.
-export function typeErrorf(mutable checker: Checker, type: Type, message: string) uses alloc {
+export function reportTypeError(mutable checker: Checker, type: Type, message: string) uses alloc {
   let scope = 0
-  let pos = Pos { line: 0, col: 0 }
+  let pos = Pos { line: 0, column: 0 }
   match (type) {
     Type.TStruct(index) => {
       scope = checker.structs[index].scope
@@ -528,7 +528,7 @@ export function typeErrorf(mutable checker: Checker, type: Type, message: string
     _ => {}
   }
   const saved = enter(mutable checker, scope)
-  errorf(mutable checker, pos, message)
+  reportError(mutable checker, pos, message)
   enter(mutable checker, saved)
 }
 
@@ -538,8 +538,8 @@ export function typeErrorf(mutable checker: Checker, type: Type, message: string
 // function types; the emitter collects those itself (selfhost-emit).
 export function finish(mutable checker: Checker, concrete: Array<Type>) uses alloc {
   let all = concrete
-  for (const type of Arrays.values(checker.instTypes)) {
-    if (!containsTypeParam(checker, type)) {
+  for (const type of Arrays.values(checker.instanceTypes)) {
+    if (!containsTypeParameter(checker, type)) {
       Arrays.push(mutable all, type)
     }
   }
@@ -580,7 +580,7 @@ function visitOrder(mutable checker: Checker, mutable state: Map<string, int>, t
   }
   if (mark == 1) {
     const text = typeString(checker, type)
-    typeErrorf(mutable checker, type, `type ${text} contains itself; put the recursive field in an enum, Box or array`)
+    reportTypeError(mutable checker, type, `type ${text} contains itself; put the recursive field in an enum, Box or array`)
     return
   }
   if (boxed) {
@@ -607,19 +607,19 @@ export struct BodyState {
   scopeDepth: int
   resultType: Type
   loops: int
-  env: Map<string, Type>
+  environment: Map<string, Type>
 }
 
 // startBody adds a body to Checker.bodies, makes it current with one empty
 // scope and returns the state to give back to finishBody. Its tables cover
 // the ids of the nodes under root.
-export function startBody(mutable checker: Checker, kind: string, name: string, targs: Array<Type>, root: BodyRoot, resultType: Type, env: Map<string, Type>): BodyState uses alloc {
+export function startBody(mutable checker: Checker, kind: string, name: string, typeArguments: Array<Type>, root: BodyRoot, resultType: Type, environment: Map<string, Type>): BodyState uses alloc {
   // Find the id range of the body's nodes.
   let ids: Array<int> = []
   match (root) {
-    BodyRoot.RootFunc(decl) => funcIds(mutable ids, decl)
-    BodyRoot.RootBlock(block) => blockIds(mutable ids, block)
-    BodyRoot.RootExpr(expression) => exprIds(mutable ids, expression)
+    BodyRoot.RootFunc(declaration) => collectFuncIds(mutable ids, declaration)
+    BodyRoot.RootBlock(block) => collectBlockIds(mutable ids, block)
+    BodyRoot.RootExpr(expression) => collectExpressionIds(mutable ids, expression)
   }
   let first = 0
   let last = -1
@@ -637,16 +637,16 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   }
 
   // Save the outer body's state and start the new one.
-  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, env: checker.env }
-  const module = checker.scopes[checker.cur].path
-  const info = BodyInfo { module: module, kind: kind, name: name, targs: targs, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1 }
+  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, environment: checker.environment }
+  const module = checker.scopes[checker.current].path
+  const info = BodyInfo { module: module, kind: kind, name: name, typeArguments: typeArguments, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1 }
   Arrays.push(mutable checker.bodies, info)
   checker.body = Arrays.length(checker.bodies) - 1
   checker.localScopes = [Map {}]
   checker.scopeDepth = 1
   checker.resultType = resultType
   checker.loops = 0
-  checker.env = env
+  checker.environment = environment
   return saved
 }
 
@@ -657,7 +657,7 @@ export function finishBody(mutable checker: Checker, saved: BodyState) {
   checker.scopeDepth = saved.scopeDepth
   checker.resultType = saved.resultType
   checker.loops = saved.loops
-  checker.env = saved.env
+  checker.environment = saved.environment
 }
 
 // findBodySlot is the table index of a node id in a body, or -1.
@@ -731,9 +731,9 @@ export function getLocal(checker: Checker, index: int): LocalInfo {
 // the declaring node. Shadowing is an error, except for `_`.
 export function declareLocal(mutable checker: Checker, nodeId: int, pos: Pos, name: string, localType: Type, isMutable: bool, param: bool): int uses alloc {
   if (name != "_" && findLocal(checker, name) >= 0) {
-    errorf(mutable checker, pos, `"${name}" is already declared in this function; shadowing is not allowed`)
+    reportError(mutable checker, pos, `"${name}" is already declared in this function; shadowing is not allowed`)
   }
-  checker.localN = checker.localN + 1
+  checker.localCount = checker.localCount + 1
 
   // Record the local and the node that declares it.
   const body = checker.body
@@ -770,7 +770,7 @@ export function popScope(mutable checker: Checker) {
 // `unsupported:`. what names the construct and the node, as in
 // "`is` (selfhost-check-patterns)".
 export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
-  errorf(mutable checker, pos, `unsupported: ${what}`)
+  reportError(mutable checker, pos, `unsupported: ${what}`)
   return Type.TVoid
 }
 

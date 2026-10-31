@@ -25,7 +25,7 @@
 import { Pos, Decl, FuncDecl, Param, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Type } from "narrac/types"
-import { Checker, BodyRoot, Ref, errorf, enter, findBodySlot, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, BodyRoot, Ref, reportError, enter, findBodySlot, getExpressionId, getExpressionPos } from "narrac/check"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -39,7 +39,7 @@ export struct Effect {
 
 // A function a call or a name resolves to, with the key of its tables.
 struct Callee {
-  decl: FuncDecl
+  declaration: FuncDecl
   key: string
 }
 
@@ -57,7 +57,7 @@ export struct EffectState {
 const KNOWN_EFFECTS = ["alloc", "io", "unsafe"]
 
 function functionKey(module: string, pos: Pos): string uses alloc {
-  return `${module}|${Int.toString(pos.line)}:${Int.toString(pos.col)}`
+  return `${module}|${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
 function localKey(bodyIndex: int, localIndex: int): string uses alloc {
@@ -112,7 +112,7 @@ function findEffect(effects: Array<Effect>, name: string): Effect {
       return effect
     }
   }
-  return Effect { name: name, pos: Pos { line: 0, col: 0 }, via: "" }
+  return Effect { name: name, pos: Pos { line: 0, column: 0 }, via: "" }
 }
 
 // checkEffects runs the pass over every module of the package. The caller
@@ -121,12 +121,12 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
   let state = EffectState { bodyIndex: Map {}, functions: Map {}, locals: Map {}, arrows: Map {}, entries: Map {}, report: false, changed: false, body: -1 }
   for (const index of Ranges.between(0, Arrays.length(checker.bodies))) {
     const body = checker.bodies[index]
-    if (Arrays.length(body.targs) > 0) {
+    if (Arrays.length(body.typeArguments) > 0) {
       continue
     }
-    if (body.root is BodyRoot.RootFunc(decl)) {
+    if (body.root is BodyRoot.RootFunc(declaration)) {
       if (body.kind == "func" || body.kind == "impl") {
-        state.bodyIndex[functionKey(body.module, decl.pos)] = index
+        state.bodyIndex[functionKey(body.module, declaration.pos)] = index
       }
     }
     if (body.root is BodyRoot.RootBlock(block)) {
@@ -136,24 +136,24 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     }
   }
   for (const entry of Arrays.values(checker.entries)) {
-    if (entry.func >= 0) {
-      const decl = checker.funcs[entry.func].decl
-      state.entries[functionKey(checker.funcs[entry.func].module, decl.pos)] = true
+    if (entry.funcIndex >= 0) {
+      const declaration = checker.functions[entry.funcIndex].declaration
+      state.entries[functionKey(checker.functions[entry.funcIndex].module, declaration.pos)] = true
     }
   }
 
   // Signatures first, module by module.
   for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
     const saved = enter(mutable checker, scope)
-    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
-      match (decl) {
+    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+      match (declaration) {
         Decl.Func(funcDecl) => {
           if (funcDecl.body is Some(_)) {
             checkSignature(mutable checker, funcDecl)
           }
         }
         Decl.Impl(implDecl) => {
-          for (const funcDecl of Arrays.values(implDecl.funcs)) {
+          for (const funcDecl of Arrays.values(implDecl.functions)) {
             if (funcDecl.body is Some(_)) {
               checkSignature(mutable checker, funcDecl)
             }
@@ -164,7 +164,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     }
     enter(mutable checker, saved)
   }
-  if (Arrays.length(checker.errs) > 0) {
+  if (Arrays.length(checker.errors) > 0) {
     return state
   }
 
@@ -185,11 +185,11 @@ function walkAll(mutable checker: Checker, mutable state: EffectState, report: b
   state.report = report
   for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
     const saved = enter(mutable checker, scope)
-    for (const decl of Arrays.values(checker.scopes[scope].decls)) {
-      match (decl) {
+    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+      match (declaration) {
         Decl.Func(funcDecl) => analyseFunction(mutable checker, mutable state, scope, funcDecl)
         Decl.Impl(implDecl) => {
-          for (const funcDecl of Arrays.values(implDecl.funcs)) {
+          for (const funcDecl of Arrays.values(implDecl.functions)) {
             analyseFunction(mutable checker, mutable state, scope, funcDecl)
           }
         }
@@ -213,9 +213,9 @@ function walkTest(mutable checker: Checker, mutable state: EffectState, scope: i
 
 // analyseFunction walks one function body, stores its set, and in the
 // reporting pass checks an exported function against its declaration.
-function analyseFunction(mutable checker: Checker, mutable state: EffectState, scope: int, decl: FuncDecl) uses alloc {
-  const key = functionKey(checker.scopes[scope].path, decl.pos)
-  if (decl.body is None) {
+function analyseFunction(mutable checker: Checker, mutable state: EffectState, scope: int, declaration: FuncDecl) uses alloc {
+  const key = functionKey(checker.scopes[scope].path, declaration.pos)
+  if (declaration.body is None) {
     return
   }
   let bodyIndex = -1
@@ -228,7 +228,7 @@ function analyseFunction(mutable checker: Checker, mutable state: EffectState, s
   state.body = bodyIndex
 
   // A parameter with a function type holds a function with the declared effects.
-  for (const param of Arrays.values(decl.params)) {
+  for (const param of Arrays.values(declaration.parameters)) {
     if (param.type is Some(typeExpression)) {
       if (typeExpression.isFunc) {
         const localIndex = findDeclaredLocal(checker, bodyIndex, param.id)
@@ -243,7 +243,7 @@ function analyseFunction(mutable checker: Checker, mutable state: EffectState, s
     }
   }
   let out: Array<Effect> = []
-  if (decl.body is Some(block)) {
+  if (declaration.body is Some(block)) {
     walkBlock(mutable checker, mutable state, mutable out, block)
   }
   let previousLength = 0
@@ -254,25 +254,25 @@ function analyseFunction(mutable checker: Checker, mutable state: EffectState, s
     state.changed = true
   }
   state.functions[key] = out
-  if (!state.report || !decl.exported || state.entries[key] is Some(_)) {
+  if (!state.report || !declaration.exported || state.entries[key] is Some(_)) {
     return
   }
 
   // The body may use only the declared effects.
   for (const name of Arrays.values(sortEffectNames(out))) {
-    if (containsName(decl.effects, name)) {
+    if (containsName(declaration.effects, name)) {
       continue
     }
     const cause = findEffect(out, name)
     let causePos = cause.pos
-    if (causePos.line == 0 && causePos.col == 0) {
-      causePos = decl.pos
+    if (causePos.line == 0 && causePos.column == 0) {
+      causePos = declaration.pos
     }
     let through = ""
     if (cause.via != "") {
       through = ` (through \`${cause.via}\`)`
     }
-    errorf(mutable checker, causePos, `Function \`${decl.name}\` uses \`${name}\`${through} but its signature does not declare it; write \`uses ${name}\``)
+    reportError(mutable checker, causePos, `Function \`${declaration.name}\` uses \`${name}\`${through} but its signature does not declare it; write \`uses ${name}\``)
   }
 }
 
@@ -303,16 +303,16 @@ function findNodeType(checker: Checker, bodyIndex: int, nodeId: int): Option<Typ
 
 // checkSignature reports unknown effect names and effect variables that no
 // parameter binds.
-function checkSignature(mutable checker: Checker, decl: FuncDecl) uses alloc {
+function checkSignature(mutable checker: Checker, declaration: FuncDecl) uses alloc {
   let bound: Array<string> = []
-  for (const param of Arrays.values(decl.params)) {
+  for (const param of Arrays.values(declaration.parameters)) {
     if (param.type is Some(typeExpression)) {
-      scanEffects(mutable checker, decl.effectParams, mutable bound, typeExpression, true)
+      scanEffects(mutable checker, declaration.effectParameters, mutable bound, typeExpression, true)
     }
   }
-  for (const name of Arrays.values(decl.effects)) {
-    if (isKnownEffect(mutable checker, decl.pos, decl.effectParams, name) && containsName(decl.effectParams, name) && !containsName(bound, name)) {
-      errorf(mutable checker, decl.pos, `effect variable \`${name}\` in the \`uses\` list of \`${decl.name}\` must appear in the function type of a parameter`)
+  for (const name of Arrays.values(declaration.effects)) {
+    if (isKnownEffect(mutable checker, declaration.pos, declaration.effectParameters, name) && containsName(declaration.effectParameters, name) && !containsName(bound, name)) {
+      reportError(mutable checker, declaration.pos, `effect variable \`${name}\` in the \`uses\` list of \`${declaration.name}\` must appear in the function type of a parameter`)
     }
   }
 }
@@ -323,7 +323,7 @@ function scanEffects(mutable checker: Checker, variables: Array<string>, mutable
       Arrays.push(mutable bound, name)
     }
   }
-  for (const argument of Arrays.values(typeExpression.args)) {
+  for (const argument of Arrays.values(typeExpression.arguments)) {
     scanEffects(mutable checker, variables, mutable bound, argument, false)
   }
   if (typeExpression.result is Some(boxed)) {
@@ -335,7 +335,7 @@ function isKnownEffect(mutable checker: Checker, pos: Pos, variables: Array<stri
   if (containsName(KNOWN_EFFECTS, name) || containsName(variables, name)) {
     return true
   }
-  errorf(mutable checker, pos, `unknown effect \`${name}\`; the effects are alloc, io and unsafe, or an effect variable declared as \`<effect ${name}>\``)
+  reportError(mutable checker, pos, `unknown effect \`${name}\`; the effects are alloc, io and unsafe, or an effect variable declared as \`<effect ${name}>\``)
   return false
 }
 
@@ -343,8 +343,8 @@ function isKnownEffect(mutable checker: Checker, pos: Pos, variables: Array<stri
 // block function.
 function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
   return match (ref) {
-    Ref.Function(index) => Some(Callee { decl: checker.funcs[index].decl, key: functionKey(checker.funcs[index].module, checker.funcs[index].decl.pos) })
-    Ref.Implementation(block, index) => Some(Callee { decl: checker.impls[block].funcs[index].decl, key: functionKey(checker.scopes[checker.impls[block].scope].path, checker.impls[block].funcs[index].decl.pos) })
+    Ref.Function(index) => Some(Callee { declaration: checker.functions[index].declaration, key: functionKey(checker.functions[index].module, checker.functions[index].declaration.pos) })
+    Ref.Implementation(block, index) => Some(Callee { declaration: checker.implementations[block].functions[index].declaration, key: functionKey(checker.scopes[checker.implementations[block].scope].path, checker.implementations[block].functions[index].declaration.pos) })
     _ => None
   }
 }
@@ -352,7 +352,7 @@ function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
 // funcEffects is the set callers see: the declared one for an exported
 // function, the inferred one for a private function.
 function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
-  const nowhere = Pos { line: 0, col: 0 }
+  const nowhere = Pos { line: 0, column: 0 }
   let set: Array<Effect> = []
   if (state.entries[callee.key] is Some(_)) {
     for (const name of Arrays.values(KNOWN_EFFECTS)) {
@@ -360,8 +360,8 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses all
     }
     return set
   }
-  if (callee.decl.exported) {
-    for (const name of Arrays.values(callee.decl.effects)) {
+  if (callee.declaration.exported) {
+    for (const name of Arrays.values(callee.declaration.effects)) {
       addEffect(mutable set, name, nowhere, "")
     }
     return set
@@ -377,7 +377,7 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses all
 function concreteEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
   let set: Array<Effect> = []
   for (const effect of Arrays.values(funcEffects(state, callee))) {
-    if (!containsName(callee.decl.effectParams, effect.name)) {
+    if (!containsName(callee.declaration.effectParameters, effect.name)) {
       Arrays.push(mutable set, effect)
     }
   }
@@ -412,7 +412,7 @@ function findFunctionValue(checker: Checker, state: EffectState, bodyIndex: int,
 }
 
 function walkBlock(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, block: Block) uses alloc {
-  for (const statement of Arrays.values(block.stmts)) {
+  for (const statement of Arrays.values(block.statements)) {
     walkStatement(mutable checker, mutable state, mutable out, statement)
   }
 }
@@ -524,18 +524,18 @@ function walkExpression(mutable checker: Checker, mutable state: EffectState, mu
       walkExpression(mutable checker, mutable state, mutable out, target)
       walkExpression(mutable checker, mutable state, mutable out, index)
     }
-    Expr.MapLit(_, pos, _, keys, vals) => {
+    Expr.MapLit(_, pos, _, keys, values) => {
       for (const index of Ranges.between(0, Arrays.length(keys))) {
         walkExpression(mutable checker, mutable state, mutable out, keys[index])
-        walkExpression(mutable checker, mutable state, mutable out, vals[index])
+        walkExpression(mutable checker, mutable state, mutable out, values[index])
       }
       addEffect(mutable out, "alloc", pos, "map literal")
     }
     Expr.UnaryExpr(_, _, _, operand) => walkExpression(mutable checker, mutable state, mutable out, operand)
-    Expr.BinaryExpr(nodeId, pos, op, left, right) => {
+    Expr.BinaryExpr(nodeId, pos, operator, left, right) => {
       walkExpression(mutable checker, mutable state, mutable out, left)
       walkExpression(mutable checker, mutable state, mutable out, right)
-      if (op == "+" && findNodeType(checker, state.body, nodeId) is Some(Type.TStr)) {
+      if (operator == "+" && findNodeType(checker, state.body, nodeId) is Some(Type.TStr)) {
         addEffect(mutable out, "alloc", pos, "string +")
       }
     }
@@ -547,8 +547,8 @@ function walkExpression(mutable checker: Checker, mutable state: EffectState, mu
         walkExpression(mutable checker, mutable state, mutable out, base)
       }
     }
-    Expr.ArrayLit(_, pos, elems, isTuple) => {
-      for (const element of Arrays.values(elems)) {
+    Expr.ArrayLit(_, pos, elements, isTuple) => {
+      for (const element of Arrays.values(elements)) {
         walkExpression(mutable checker, mutable state, mutable out, element)
       }
       if (!isTuple) {
@@ -580,31 +580,31 @@ function walkExpression(mutable checker: Checker, mutable state: EffectState, mu
       }
       state.arrows[nodeId] = inner
     }
-    Expr.CallExpr(nodeId, pos, callee, args) => walkCall(mutable checker, mutable state, mutable out, nodeId, pos, callee, args)
+    Expr.CallExpr(nodeId, pos, callee, arguments) => walkCall(mutable checker, mutable state, mutable out, nodeId, pos, callee, arguments)
     _ => {}
   }
 }
 
-function walkCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, nodeId: int, pos: Pos, callee: Expr, args: Array<Arg>) uses alloc {
+function walkCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>) uses alloc {
   walkExpression(mutable checker, mutable state, mutable out, callee)
-  for (const argument of Arrays.values(args)) {
+  for (const argument of Arrays.values(arguments)) {
     walkExpression(mutable checker, mutable state, mutable out, argument.value)
   }
   const ref = findRef(checker, state.body, nodeId)
   if (findCallee(checker, ref) is Some(found)) {
-    walkUserCall(mutable checker, mutable state, mutable out, pos, found, args)
+    walkUserCall(mutable checker, mutable state, mutable out, pos, found, arguments)
     return
   }
   match (ref) {
     Ref.Builtin(index) => {
       // The effects of the builtin, and of the function arguments it calls.
-      const builtin = checker.registry.funcs[index]
+      const builtin = checker.registry.functions[index]
       for (const name of Arrays.values(builtin.effects)) {
         addEffect(mutable out, name, pos, builtin.name)
       }
       for (const position of Arrays.values(builtin.callbacks)) {
-        if (position < Arrays.length(args)) {
-          if (valueEffects(checker, state, args[position].value) is Some(set)) {
+        if (position < Arrays.length(arguments)) {
+          if (valueEffects(checker, state, arguments[position].value) is Some(set)) {
             for (const effect of Arrays.values(set)) {
               addEffect(mutable out, effect.name, pos, effect.via)
             }
@@ -620,7 +620,7 @@ function walkCall(mutable checker: Checker, mutable state: EffectState, mutable 
       }
     }
     Ref.Constructor(enumIndex, variant) => {
-      if (Arrays.length(args) > 0) {
+      if (Arrays.length(arguments) > 0) {
         addEffect(mutable out, "alloc", pos, checker.enums[enumIndex].variants[variant].name)
       }
     }
@@ -630,23 +630,23 @@ function walkCall(mutable checker: Checker, mutable state: EffectState, mutable 
 
 // walkUserCall adds the effects of a call to a declared function. A variable
 // of the callee takes the effects of the arguments bound to it.
-function walkUserCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, pos: Pos, callee: Callee, args: Array<Arg>) uses alloc {
-  const decl = callee.decl
-  const variables = decl.effectParams
+function walkUserCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, pos: Pos, callee: Callee, arguments: Array<Arg>) uses alloc {
+  const declaration = callee.declaration
+  const variables = declaration.effectParameters
   for (const effect of Arrays.values(funcEffects(state, callee))) {
     if (!containsName(variables, effect.name)) {
-      addEffect(mutable out, effect.name, pos, decl.name)
+      addEffect(mutable out, effect.name, pos, declaration.name)
       continue
     }
-    for (const index of Ranges.between(0, Arrays.length(decl.params))) {
-      if (index >= Arrays.length(args)) {
+    for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
+      if (index >= Arrays.length(arguments)) {
         continue
       }
-      if (decl.params[index].type is Some(parameterType)) {
+      if (declaration.parameters[index].type is Some(parameterType)) {
         if (parameterType.isFunc && containsName(parameterType.effects, effect.name)) {
-          if (valueEffects(checker, state, args[index].value) is Some(set)) {
+          if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
             for (const passed of Arrays.values(set)) {
-              addEffect(mutable out, passed.name, pos, decl.name)
+              addEffect(mutable out, passed.name, pos, declaration.name)
             }
           }
         }
@@ -657,14 +657,14 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
   // A private function is inferred, so a function-type parameter without
   // `uses` acts as an implicit effect variable: the call has the effects of
   // the argument.
-  if (!decl.exported) {
-    for (const index of Ranges.between(0, Arrays.length(decl.params))) {
-      if (index >= Arrays.length(args)) {
+  if (!declaration.exported) {
+    for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
+      if (index >= Arrays.length(arguments)) {
         continue
       }
-      if (decl.params[index].type is Some(parameterType)) {
+      if (declaration.parameters[index].type is Some(parameterType)) {
         if (parameterType.isFunc && Arrays.length(parameterType.effects) == 0) {
-          if (valueEffects(checker, state, args[index].value) is Some(set)) {
+          if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
             for (const passed of Arrays.values(set)) {
               addEffect(mutable out, passed.name, pos, passed.via)
             }
@@ -679,11 +679,11 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
 
   // A parameter whose function type has no variable accepts only the
   // effects it lists.
-  for (const index of Ranges.between(0, Arrays.length(decl.params))) {
-    if (index >= Arrays.length(args)) {
+  for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
+    if (index >= Arrays.length(arguments)) {
       continue
     }
-    const param = decl.params[index]
+    const param = declaration.parameters[index]
     let isFunction = false
     let parameterEffects: Array<string> = []
     if (param.type is Some(parameterType)) {
@@ -699,11 +699,11 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
         hasVariable = true
       }
     }
-    if (hasVariable || (!decl.exported && Arrays.length(parameterEffects) == 0)) {
+    if (hasVariable || (!declaration.exported && Arrays.length(parameterEffects) == 0)) {
       continue
     }
     let extra: Array<string> = []
-    if (valueEffects(checker, state, args[index].value) is Some(set)) {
+    if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
       for (const name of Arrays.values(sortEffectNames(set))) {
         if (!containsName(parameterEffects, name)) {
           Arrays.push(mutable extra, name)
@@ -711,10 +711,10 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
       }
     }
     if (Arrays.length(extra) > 0) {
-      const argumentPos = getExpressionPos(args[index].value)
+      const argumentPos = getExpressionPos(arguments[index].value)
       const quoted = Str.join(extra, "`, `")
       const listed = Str.join(extra, ", ")
-      errorf(mutable checker, argumentPos, `the argument for \`${param.name}\` of \`${decl.name}\` uses \`${quoted}\`, but its function type does not declare it; write \`uses ${listed}\` in the type, or \`uses E\` with \`<effect E>\` on \`${decl.name}\``)
+      reportError(mutable checker, argumentPos, `the argument for \`${param.name}\` of \`${declaration.name}\` uses \`${quoted}\`, but its function type does not declare it; write \`uses ${listed}\` in the type, or \`uses E\` with \`<effect E>\` on \`${declaration.name}\``)
     }
   }
 }
@@ -726,11 +726,11 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
 export function dump(checker: Checker, state: EffectState): string uses alloc {
   let builder = Str.builder()
   for (const body of Arrays.values(checker.bodies)) {
-    if (Arrays.length(body.targs) > 0 || (body.kind != "func" && body.kind != "impl")) {
+    if (Arrays.length(body.typeArguments) > 0 || (body.kind != "func" && body.kind != "impl")) {
       continue
     }
-    if (body.root is BodyRoot.RootFunc(decl)) {
-      const callee = Callee { decl: decl, key: functionKey(body.module, decl.pos) }
+    if (body.root is BodyRoot.RootFunc(declaration)) {
+      const callee = Callee { declaration: declaration, key: functionKey(body.module, declaration.pos) }
       const names = sortEffectNames(funcEffects(state, callee))
       let text = "-"
       if (Arrays.length(names) > 0) {

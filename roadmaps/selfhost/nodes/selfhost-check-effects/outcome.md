@@ -5,7 +5,7 @@
 - `selfhost/src/effects.nra` (743 lines): the effect pass, a port of `check_effects.go`. `checkEffects(mutable checker): EffectState` (signature checks, then the fixpoint over the call graph, then the reporting pass) and `dump(checker, state)`. `narrac types` runs it when the bodies have no errors (`main.nra`).
 - The Go dump (`typesdump.go`) now runs `checkEffects` and ends with one `effects module="<m>" <kind> <name> <set>` line per func or impl body that is not an instance. The set is what callers see: declared for exported functions, inferred for private ones, all three for entry functions. The doc comment is updated. All `testdata/typesdump/*/*.dump` goldens gained these lines.
 - `check_effects.go`: `checkEffects` returns the `*effectState`.
-- Tests: `TestSelfhostEffects` (every input of `TestSelfhostBodies`, the cases in `testdata/typesdump/effects/`, and the `selfhost/` package; logs the timing), `TestTypesDumpEffects`, `TestTypesDumpEffectsCoverage`, `TestSelfhostPackageIsClean`. New cases: `basics.nra` (inferred and declared sets, recursion and mutual recursion, generic instances, effect variables, `io` callback to `Option.map`, impl function, function values in locals, Map write, test block), `err_undeclared.nra`, `err_signature.nra`.
+- Tests: `TestSelfhostEffects` (the cases in `testdata/typesdump/effects/` and the `selfhost/` package; logs the timing; `TestSelfhostBodies` compares the effects lines on its inputs), `TestTypesDumpEffects`, `TestTypesDumpEffectsCoverage`, `TestSelfhostPackageIsClean`. New cases: `basics.nra` (inferred and declared sets, recursion and mutual recursion, generic instances, effect variables, `io` callback to `Option.map`, impl function, function values in locals, Map write, test block), `err_undeclared.nra`, `err_signature.nra`.
 - The last `unsupported:` stubs are gone. `TestSelfhostBodies` now fails on an `unsupported:` line: 352 compared, 30 skipped (all "does not load"). Main had 341 compared, 37 skipped.
   - Duplicate constants (`const_twice` and others, and `Alias.NAME` of a duplicate): `findConstInfo` in `exprs.nra` gives a rejected duplicate its own `Checker.consts` entry, as Go checks every `ConstDecl`.
   - E0425 constructor import: `ImportName` has a `pos` now (`ast.nra`, `parser.nra`); `scopes.nra` reports at the name (`findConstructorOwner`).
@@ -14,7 +14,7 @@
 
 - Touched `ast.nra`, `parser.nra`, `scopes.nra` (not in the brief's paths), minimally, for the E0425 position. `exprs.nra` and `body.nra` are shared paths.
 - The dump format gained the `effects` section; the brief left the format open.
-- An implement block function appears by its source name in the "through" part of an effect error; Go shows the C name `resolveImpl` gave it. Only an exported function calling an impl function with an effect that it does not declare shows this.
+- An implement block function appears by its source name in the "through" part of an effect error; Go shows the C name `resolveImpl` gave it. This is a Go-side bug (the message leaks a C name); it gets its own fix node, and Narra keeps the source name until then.
 - "string +" in the Go pass is ported but cannot fire (Narra rejects `+` on strings before the pass).
 
 ## Stubs left

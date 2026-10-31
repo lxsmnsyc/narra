@@ -65,17 +65,17 @@ func TestTypesDumpEffectsCoverage(t *testing.T) {
 	}
 }
 
-// effectsInputs are the inputs of TestSelfhostBodies, the cases of
-// testdata/typesdump/effects and the selfhost package itself.
+// effectsInputs are the cases of testdata/typesdump/effects and the selfhost
+// package itself. TestSelfhostBodies compares the full dump, effects lines
+// included, on all its other inputs.
 func effectsInputs(t *testing.T) []string {
-	inputs := bodiesInputs(t)
-	inputs = append(inputs, declDumpCases(t, effectsDir)...)
+	inputs := declDumpCases(t, effectsDir)
 	return append(inputs, "../../../selfhost")
 }
 
 // TestSelfhostEffects checks that `narrac types <path>` prints the same dump
-// (now with the effects lines) as `narra types`, or the same errors on
-// stderr with exit 1, on every input of effectsInputs. Only an input that
+// (with the effects lines) as `narra types`, or the same errors on stderr
+// with exit 1, on every input of effectsInputs. Only an input that
 // does not load is skipped. It logs the time of both on the selfhost package.
 func TestSelfhostEffects(t *testing.T) {
 	exe := buildSelfhost(t)

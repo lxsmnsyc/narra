@@ -1,56 +1,80 @@
 ---
 id: selfhost-emit
-title: Self-hosted C emitter
+title: Self-hosted C emitter: no skips left, and the selfhost package compares
 status: todo
 priority: must
 type: feature
-outline: true
+story:
+early: false
+outline: false
 milestone: m8-selfhost
 target:
+ship: auto
 from:
-size: L
+size: S
 spike: false
-verify:
+hypothesis:
+verify: cd compiler && go test -count=1 ./internal/narra -run 'TestSelfhostEmit'
 exclusive: []
 fulfilled_by:
 gate: false
-added:
-owns: []
-shared: []
+added: 2026-11-01
+spent:
+owns:
+  - roadmaps/selfhost/nodes/selfhost-emit/**
+shared:
+  - compiler/internal/narra/selfhost_emit_test.go
+  - compiler/testdata/emit/skips/**
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:
-  - on: selfhost-check-bodies
+  - on: selfhost-emit-program
     kind: hard
-    why: emits from the checked tree; per-body type tables and the dump format
-  - on: selfhost-check-calls
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-decls
     kind: hard
-    why: emits from the checked tree; call resolution and generic instances
-  - on: selfhost-check-patterns
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-bodies
     kind: hard
-    why: emits from the checked tree; patterns and narrowing
-  - on: selfhost-check-closures
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-match
     kind: hard
-    why: emits from the checked tree; closure captures and stack environments
-  - on: selfhost-check-builtins
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-closures
     kind: hard
-    why: emits from the checked tree; builtin calls
-  - on: selfhost-check-effects
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-traits
     kind: hard
-    why: emits from the checked tree; the complete checker
-  - on: selfhost-names-exported
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-maps
     kind: hard
-    why: reads the AST and checker fields under their final names
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-std
+    kind: hard
+    why: closes the skip ratchet; needs every emitter node merged
+  - on: selfhost-emit-options
+    kind: hard
+    why: closes the skip ratchet; needs every emitter node merged
 ---
 
-# Self-hosted C emitter
+# Self-hosted C emitter: no skips left, and the selfhost package compares
 
 ## Goal
 
-C emitter and driver in Narra, producing the same C as the Go compiler.
+Remove the last skip files and make any `unsupported:` line a test failure. Add the selfhost package itself as an input: `narrac emit selfhost` equals `narra emit selfhost` (58,893 lines of C). This is the input selfhost-bootstrap starts from.
 
-## Notes
+## Context
 
-- 2026-10-30: port the xxHash32 check that two modules' relative paths do not hash alike (`module-graph` contract); selfhost-modules deferred it here.
+- narrac runs under AddressSanitizer, UBSan and the leak check in every harness (`buildSelfhost`), so the emitter is already sanitizer-checked on all inputs. The generated C is byte-identical to Go's, which `TestPrograms` already runs under ASan, so running it again is not needed.
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+## Acceptance
+
+- [ ] `compiler/testdata/emit/skips/` is gone; the harness fails on any `unsupported:` and on exit code 3.
+- [ ] The selfhost package is an input and compares byte-for-byte. The outcome gives the time of `narrac emit selfhost` against Go.
+- [ ] `compiler/README.md` says the self-hosted compiler emits C.
+- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+
+## Sizing
+
+S: a few harness lines plus fixes for divergences that only the selfhost package shows. If those fixes grow past S, split them into fix nodes.

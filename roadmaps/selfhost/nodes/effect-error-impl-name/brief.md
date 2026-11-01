@@ -1,7 +1,8 @@
 ---
 id: effect-error-impl-name
 title: Name implement functions by their source name in effect errors
-status: active
+status: done
+spent: 122000
 priority: should
 type: fix
 outline: false

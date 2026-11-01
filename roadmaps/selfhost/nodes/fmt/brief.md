@@ -2,10 +2,10 @@
 id: fmt
 title: narra fmt
 status: todo
-priority: later
+priority: should
 type: feature
 outline: true
-milestone: m7-tooling
+milestone: m9-adoption
 target:
 from:
 size: M
@@ -14,22 +14,22 @@ verify:
 exclusive: []
 fulfilled_by:
 gate: false
-added:
+added: 2026-11-01
 owns: []
 shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: split-compiler
+  - on: selfhost-bootstrap
     kind: hard
-    why: needs the parser to keep comments, which touches files split-compiler settles
+    why: written in Narra on the self-hosted parser, which must keep comments
 ---
 
 # narra fmt
 
 ## Goal
 
-A formatter that defines the one valid layout, with `--check`.
+A formatter that defines the one valid layout, with `--check`. Written in Narra on the self-hosted parser (decision 2026-11-01), so it is not built in Go and ported.
 
 ## Notes
 

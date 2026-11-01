@@ -1,5 +1,5 @@
 ---
-milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost]
+milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption]
 merge:
   mode: auto
   method: squash
@@ -12,7 +12,7 @@ branches:
 
 ## Outcome
 
-The Narra compiler is written in Narra and compiles itself. The Go bootstrap compiler `narra` first grows to cover the language features the compiler needs. The compiled compiler (stage 1) builds itself (stage 2), and stage 1 and stage 2 produce byte-identical C for the test programs. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Narra with Go and Rust. The language was named Narra on 2026-10-28, before self-hosting.
+The Narra compiler is written in Narra and compiles itself. The Go bootstrap compiler `narra` first grows to cover the language features the compiler needs. The compiled compiler (stage 1) builds itself (stage 2), and stage 1 and stage 2 produce byte-identical C for the test programs. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Narra with Go and Rust. After self-hosting, milestone m9-adoption makes Narra usable by others: a language guide, an installation guide, `narra fmt`, `narra query`, a language server, agent skills and maybe a linter (should, except the linter: could). The language was named Narra on 2026-10-28, before self-hosting.
 
 ## Acceptance
 
@@ -77,6 +77,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - benchmarks against Go and Rust -> bench-harness
 - self-hosting -> selfhost-spike, selfhost-ast, selfhost-front, selfhost-modules, selfhost-check-decls, selfhost-check-bodies, selfhost-emit, selfhost-bootstrap
 - renaming the language -> rename (done early: Narra)
+- language guide -> language-guide; installation guide -> install-guide; agent skills -> narra-skills; language service -> language-service; linter -> lint (user request 2026-11-01)
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 
 ## Decisions
@@ -87,6 +88,8 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-10-28: the user switched merging to auto. The orchestrator merges a pull request without the user when `plan.py can-merge` allows it: clean fresh-context review, local checks pass on the rebased branch, size M or smaller. Gated nodes, contract-freezing nodes, releases and hotfixes still go to the user. This replaces "every pull request waits for the user" from the first decision.
 - 2026-10-30: wave 3 showed that two reviewed pull requests can break main together (io-std built enum values the old way after box-recursive merged). Rule: before merging a second pull request of the same wave, rebase it on main and rerun the fast check. `can-merge` answers hold only for the base they were run on.
 - 2026-10-30: selfhost-spike gate, user decisions. Add `top-level-const` (should). The self-hosted compiler uses integer node ids and side tables, not an arena library. selfhost-check is split into selfhost-check-decls and selfhost-check-bodies. Port soon: every m4-m7 node except opaque-distinct is parked (`later`) until after self-hosting, because each feature built in Go first must also be ported. std-convert names approved (Char.code, Char.fromCode, Int.parse, Int.toHex, Str.endsWith, contains, replace, join).
+
+- 2026-11-01: the user added milestone m9-adoption. fmt, query-cli, the language service and lint are written in Narra after selfhost-bootstrap, not in Go. Docs and skills are should; lint is could and may fold into checker warnings. fmt and query-cli move from m7-tooling (later) to m9-adoption (should). Editor plugins stay a non-goal; the LSP server is in scope.
 
 ## Gates
 

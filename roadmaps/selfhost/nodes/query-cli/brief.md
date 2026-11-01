@@ -2,10 +2,10 @@
 id: query-cli
 title: narra query
 status: todo
-priority: later
+priority: should
 type: feature
 outline: true
-milestone: m7-tooling
+milestone: m9-adoption
 target:
 from:
 size: M
@@ -14,7 +14,7 @@ verify:
 exclusive: []
 fulfilled_by:
 gate: false
-added:
+added: 2026-11-01
 owns: []
 shared: []
 reserves: []
@@ -23,13 +23,16 @@ depends_on:
   - on: modules
     kind: behavior
     via: module-graph
+  - on: selfhost-bootstrap
+    kind: hard
+    why: written in Narra on the self-hosted checker; the language service, lint and skills build on it
 ---
 
 # narra query
 
 ## Goal
 
-`narra query type-of|def|refs|callers|interface|recursion`, with `--json`.
+`narra query type-of|def|refs|callers|interface|recursion`, with `--json`. Written in Narra on the self-hosted checker (decision 2026-11-01).
 
 ## Notes
 

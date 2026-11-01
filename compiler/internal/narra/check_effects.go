@@ -40,13 +40,15 @@ type effSet map[string]effCause
 var knownEffects = map[string]bool{"alloc": true, "io": true, "unsafe": true}
 
 type effectState struct {
-	c       *Checker
-	fx      map[*FuncDecl]effSet // body effects of every analysed function
-	local   map[*Local]effSet    // effects of the function a local holds
-	arrow   map[*ArrowExpr]effSet
-	entry   map[*FuncDecl]bool
-	report  bool
-	changed bool
+	c     *Checker
+	fx    map[*FuncDecl]effSet // body effects of every analysed function
+	local map[*Local]effSet    // effects of the function a local holds
+	arrow map[*ArrowExpr]effSet
+	entry map[*FuncDecl]bool
+	// implNames names implement block functions in messages; built on first use.
+	implNames map[*FuncDecl]string
+	report    bool
+	changed   bool
 }
 
 type effectWalker struct {
@@ -443,13 +445,27 @@ func (w *effectWalker) userCall(e *CallExpr) {
 	if g.Origin != nil {
 		g = g.Origin
 	}
+	// An implement block function shows as <Type>.<Trait>.<function>, not
+	// as the C name resolveImpl gave it.
+	via := g.Name
+	if s.implNames == nil {
+		s.implNames = map[*FuncDecl]string{}
+		for t, funcs := range s.c.traits.implFuncs {
+			for key, fd := range funcs {
+				s.implNames[fd] = t.String() + "." + key
+			}
+		}
+	}
+	if name, ok := s.implNames[g]; ok {
+		via = name
+	}
 	vars := map[string]bool{}
 	for _, v := range g.EffectParams {
 		vars[v] = true
 	}
 	for n := range s.funcEffects(g) {
 		if !vars[n] {
-			w.add(n, e.P, g.Name)
+			w.add(n, e.P, via)
 			continue
 		}
 		for i, p := range g.Params {
@@ -457,7 +473,7 @@ func (w *effectWalker) userCall(e *CallExpr) {
 				continue
 			}
 			for m := range s.valueEffects(e.Args[i].Value) {
-				w.add(m, e.P, g.Name)
+				w.add(m, e.P, via)
 			}
 		}
 	}

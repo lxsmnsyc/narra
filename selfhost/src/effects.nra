@@ -18,14 +18,11 @@
 // an arrow by its node id. Only the open body of a function is walked (kind
 // func or impl, no type arguments), as Go walks the declarations and not the
 // instances.
-//
-// Differences from Go: an implement block function called from an exported
-// function shows its source name in the "through" part of a message, where
-// Go shows the C name resolveImpl gave it.
+
 import { Pos, Decl, FuncDecl, Param, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Type } from "narrac/types"
-import { Checker, BodyRoot, Ref, reportError, enter, findBodySlot, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, BodyRoot, Ref, typeString, reportError, enter, findBodySlot, getExpressionId, getExpressionPos } from "narrac/check"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -41,6 +38,8 @@ export struct Effect {
 struct Callee {
   declaration: FuncDecl
   key: string
+  // label is the name an effect error shows after "through".
+  label: string
 }
 
 export struct EffectState {
@@ -339,12 +338,19 @@ function isKnownEffect(mutable checker: Checker, pos: Pos, variables: Array<stri
   return false
 }
 
+// describeImplementation names an implement block function as
+// <Type>.<Trait>.<function>, the type written without its module.
+function describeImplementation(checker: Checker, block: int, index: int): string uses alloc {
+  const impl = checker.implementations[block]
+  return `${typeString(checker, impl.forType)}.${checker.traits[impl.traitIndex].name}.${impl.functions[index].name}`
+}
+
 // findCallee is the function a ref names: a declared function or an implement
 // block function.
 function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
   return match (ref) {
-    Ref.Function(index) => Some(Callee { declaration: checker.functions[index].declaration, key: functionKey(checker.functions[index].module, checker.functions[index].declaration.pos) })
-    Ref.Implementation(block, index) => Some(Callee { declaration: checker.implementations[block].functions[index].declaration, key: functionKey(checker.scopes[checker.implementations[block].scope].path, checker.implementations[block].functions[index].declaration.pos) })
+    Ref.Function(index) => Some(Callee { declaration: checker.functions[index].declaration, key: functionKey(checker.functions[index].module, checker.functions[index].declaration.pos), label: checker.functions[index].declaration.name })
+    Ref.Implementation(block, index) => Some(Callee { declaration: checker.implementations[block].functions[index].declaration, key: functionKey(checker.scopes[checker.implementations[block].scope].path, checker.implementations[block].functions[index].declaration.pos), label: describeImplementation(checker, block, index) })
     _ => None
   }
 }
@@ -635,7 +641,7 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
   const variables = declaration.effectParameters
   for (const effect of Arrays.values(funcEffects(state, callee))) {
     if (!containsName(variables, effect.name)) {
-      addEffect(mutable out, effect.name, pos, declaration.name)
+      addEffect(mutable out, effect.name, pos, callee.label)
       continue
     }
     for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
@@ -646,7 +652,7 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
         if (parameterType.isFunc && containsName(parameterType.effects, effect.name)) {
           if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
             for (const passed of Arrays.values(set)) {
-              addEffect(mutable out, passed.name, pos, declaration.name)
+              addEffect(mutable out, passed.name, pos, callee.label)
             }
           }
         }
@@ -730,7 +736,7 @@ export function dump(checker: Checker, state: EffectState): string uses alloc {
       continue
     }
     if (body.root is BodyRoot.RootFunc(declaration)) {
-      const callee = Callee { declaration: declaration, key: functionKey(body.module, declaration.pos) }
+      const callee = Callee { declaration: declaration, key: functionKey(body.module, declaration.pos), label: declaration.name }
       const names = sortEffectNames(funcEffects(state, callee))
       let text = "-"
       if (Arrays.length(names) > 0) {

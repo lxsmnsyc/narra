@@ -26,6 +26,12 @@ depends_on:
   - on: fmt
     kind: hard
     why: document formatting calls the formatter
+  - on: std-json
+    kind: hard
+    why: LSP messages are JSON-RPC
+  - on: std-io-more
+    kind: hard
+    why: LSP reads framed messages from stdin
 ---
 
 # Narra language service
@@ -36,4 +42,4 @@ depends_on:
 
 ## Notes
 
-Outline. Likely splits into a protocol and incremental-check node and a features node. Needs JSON and stdin/stdout framing in std; check `io-std` for gaps when refining.
+Outline. Likely splits into a protocol and incremental-check node and a features node.

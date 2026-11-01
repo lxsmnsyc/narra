@@ -34,3 +34,5 @@ depends_on:
 ## Notes
 
 Outline. Break into full briefs when `plan.py refine` lists it.
+
+Cycles (added 2026-11-01): identity types can form reference cycles that never free. Examples: `const cell = Shared.create(None)` then `Shared.update(cell, (mutable value) => { value = Some(cell) })`, or sending a `Sender` into its own channel. Pick one before refining: a type rule that a `Shared`, channel or task payload cannot hold identity types (breaks reply channels), a cycle collector limited to identity types (trial deletion, as in Nim ORC), or documented leaks like Rust caught by the debug leak check. Update SPEC section 7 to match.

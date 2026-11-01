@@ -2,7 +2,7 @@
 id: generators
 title: Generators with function* and yield
 status: todo
-priority: later
+priority: should
 type: feature
 outline: true
 milestone: m5-concurrency
@@ -14,15 +14,15 @@ verify:
 exclusive: []
 fulfilled_by:
 gate: false
-added:
+added: 2026-11-01
 owns: []
 shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: split-compiler
+  - on: selfhost-bootstrap
     kind: hard
-    why: adds a state-machine transform to the emitter files split-compiler creates
+    why: built on the self-hosted compiler (raised from later on 2026-11-01 for std-iterator)
 ---
 
 # Generators with function* and yield

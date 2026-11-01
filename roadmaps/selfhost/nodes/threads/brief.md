@@ -23,6 +23,9 @@ depends_on:
   - on: closures
     kind: hard
     why: thread functions are escaping closures
+  - on: identity-cycles
+    kind: hard
+    why: Shared, channels and tasks follow the cycle decision
 ---
 
 # Scoped threads, channels and shared state
@@ -35,4 +38,4 @@ depends_on:
 
 Outline. Break into full briefs when `plan.py refine` lists it.
 
-Cycles (added 2026-11-01): identity types can form reference cycles that never free. Examples: `const cell = Shared.create(None)` then `Shared.update(cell, (mutable value) => { value = Some(cell) })`, or sending a `Sender` into its own channel. Pick one before refining: a type rule that a `Shared`, channel or task payload cannot hold identity types (breaks reply channels), a cycle collector limited to identity types (trial deletion, as in Nim ORC), or documented leaks like Rust caught by the debug leak check. Update SPEC section 7 to match.
+Cycles: the identity-cycles node decides how reference cycles through `Shared`, channels and tasks are handled. Implement its answer here.

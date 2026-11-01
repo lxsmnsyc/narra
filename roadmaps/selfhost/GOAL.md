@@ -1,5 +1,5 @@
 ---
-milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std]
+milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures]
 merge:
   mode: auto
   method: squash
@@ -78,7 +78,8 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - self-hosting -> selfhost-spike, selfhost-ast, selfhost-front, selfhost-modules, selfhost-check-decls, selfhost-check-bodies, selfhost-emit, selfhost-bootstrap
 - renaming the language -> rename (done early: Narra)
 - language guide -> language-guide; installation guide -> install-guide; agent skills -> narra-skills; language service -> language-service; linter -> lint (user request 2026-11-01)
-- std library growth -> std-source, std-json, std-io-more, std-basics, std-unicode, std-arena, std-iterator (2026-11-01); `Range.stepped` -> std-basics; std modules of parked features stay with those nodes
+- std library growth -> std-source, std-json, std-io-more, std-basics, std-unicode, std-arena, std-iterator (2026-11-01)
+- closure capture of `let` and `mutable` -> closure-borrow, cell-capture; identity type cycles -> identity-cycles (2026-11-01); `Range.stepped` -> std-basics; std modules of parked features stay with those nodes
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 
 ## Decisions
@@ -92,6 +93,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 
 - 2026-11-01: the user added milestone m9-adoption. fmt, query-cli, the language service and lint are written in Narra after selfhost-bootstrap, not in Go. Docs and skills are should; lint is could and may fold into checker warnings. fmt and query-cli move from m7-tooling (later) to m9-adoption (should). Editor plugins stay a non-goal; the LSP server is in scope.
 - 2026-11-01: the user added milestone m10-std. A gated spike (std-source) first decides whether std modules can be Narra source with only primitives as builtins. The language service waits for std-json and std-io-more. std-iterator adds lazy operators over generators, so generators moves from later to should, after bootstrap. No built-in ReactiveX: generators, channels and async cover its uses, and its subscription graphs would form reference cycles.
+- 2026-11-01: the user kept `let` and `mutable` (a full ban was weighed: 2750 `mutable` and 453 `let` uses in `selfhost/src`). Milestone m11-closures: non-escaping closures capture `let` and `mutable` by reference (closure-borrow), escaping closures share mutable state through an explicit `Cell<T>` (cell-capture), after a gated decision on identity type cycles (identity-cycles), which threads also waits for. Direction: later work should keep moving closures closer to TypeScript semantics, as far as memory safety and visible costs allow.
 
 ## Gates
 

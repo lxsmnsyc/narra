@@ -29,7 +29,7 @@ depends_on:
 
 ## Goal
 
-A linter for problems the checker accepts on purpose: unused bindings and imports, unreachable code, and style rules from the guide. JSON output like the compiler diagnostics, and the language service shows the findings.
+A linter for problems the checker accepts on purpose: unused bindings and imports, unreachable code, a `let` that is never reassigned (should be `const`), and style rules from the guide. JSON output like the compiler diagnostics, and the language service shows the findings.
 
 ## Notes
 

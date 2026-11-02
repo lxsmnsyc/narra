@@ -20,7 +20,7 @@
 ## Stubs left
 
 - `Range.upTo/between` outside a `for`, and unresolved refs, report `unsupported (selfhost-emit-bodies)`.
-- Diffs from Go that remain belong to other nodes: `selfhost-emit-decls` (heap typedefs, type definitions, enum allocation, rc functions; all 60 inputs), and the stubs of match, closures, traits, std, maps and options. No input is byte-identical yet (0 of 60), so function bodies have not been compared with Go; the harness compares only the first marker-free prefix of each section.
+- After rebasing on main with program and decls merged: 4 of 59 inputs are byte-identical (the single-file run shows hello.nra, std_test.nra and tests.nra; the harness counts one more among the packages). The other 55 are blocked only by stubs of match (37 inputs), std (52), closures (14), traits (14), options (7) and maps (2). I diffed whole outputs against Go for single-stub inputs (structs.nra: std only; effects.nra and param_after_uses.nra: closures only): every difference is a stub marker or the temp numbers it shifts. No diff comes from the bodies sections.
 
 ## Gotchas
 

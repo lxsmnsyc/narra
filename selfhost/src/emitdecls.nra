@@ -12,7 +12,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
-import { Type, Variant } from "narrac/types"
+import { Type, Variant, isBoxedEnum } from "narrac/types"
 import { Checker } from "narrac/check"
 import { typeId, cType, payloadName, opFuncName } from "narrac/cnames"
 import { Emitter, Code, reportUnsupported, writeLine, needsRc, underlyingType, retainCode, releaseCode } from "narrac/emitstate"
@@ -32,16 +32,6 @@ function variantName(variant: Variant): string uses alloc {
   return `v_${variant.name}`
 }
 
-// isBoxedEnum is true for an enum with at least one variant that has fields.
-function isBoxedEnum(checker: Checker, index: int): bool {
-  for (const variant of Arrays.values(checker.enums[index].variants)) {
-    if (Arrays.length(variant.fields) > 0) {
-      return true
-    }
-  }
-  return false
-}
-
 // findEnumIndex is the Checker.enums index of an enum type, or -1.
 function findEnumIndex(type: Type): int {
   return match (type) {
@@ -52,7 +42,7 @@ function findEnumIndex(type: Type): int {
 
 function isBoxedEnumType(checker: Checker, type: Type): bool {
   const index = findEnumIndex(type)
-  return index >= 0 && isBoxedEnum(checker, index)
+  return index >= 0 && isBoxedEnum(checker.enums[index])
 }
 
 // An array or box type with the key Go sorts it by.
@@ -181,7 +171,7 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
     return `${text} };\n`
   }
   if (type is Type.TEnum(enumIndex)) {
-    if (isBoxedEnum(emitter.checker, enumIndex)) {
+    if (isBoxedEnum(emitter.checker.enums[enumIndex])) {
       return `struct ${name} { int32_t tag; ${payloadName(emitter.checker, type)}* u; };\n`
     }
     return `struct ${name} { int32_t tag; };\n`
@@ -410,7 +400,8 @@ static void ${n}_release(${n}* a) {
 // The result is not owned: the caller wraps it in an owned temporary when it
 // needs one.
 export function enumAllocation(mutable emitter: Emitter, enumType: Type, variant: int, fields: Array<string>): Code uses alloc {
-  const enumIndex = match (underlyingType(emitter, enumType)) {
+  const baseType = underlyingType(emitter, enumType)
+  const enumIndex = match (baseType) {
     Type.TEnum(index) => index
     _ => 0 - 1
   }
@@ -418,7 +409,7 @@ export function enumAllocation(mutable emitter: Emitter, enumType: Type, variant
     return Code { text: reportUnsupported(mutable emitter, "enum allocation", "selfhost-emit-decls"), owned: false }
   }
   const info = emitter.checker.enums[enumIndex].variants[variant]
-  const name = cType(emitter.checker, enumType)
+  const name = cType(emitter.checker, baseType)
   const tag = Int.toString(info.index)
   if (Arrays.length(fields) == 0) {
     return Code { text: `((${name}){.tag = ${tag}})`, owned: false }
@@ -426,7 +417,7 @@ export function enumAllocation(mutable emitter: Emitter, enumType: Type, variant
   // A variant with fields lives in a heap payload.
   emitter.tempCount = emitter.tempCount + 1
   const pointer = `q${Int.toString(emitter.tempCount)}`
-  const payload = payloadName(emitter.checker, enumType)
+  const payload = payloadName(emitter.checker, baseType)
   writeLine(mutable emitter, `${payload}* ${pointer} = narra_alloc(sizeof(${payload}));`)
   writeLine(mutable emitter, `${pointer}->rc = 1; ${pointer}->tag = ${tag};`)
   for (const index of Ranges.between(0, Arrays.length(info.fields))) {

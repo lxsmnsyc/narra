@@ -9,6 +9,7 @@
 
 ## Deviations
 
+- `isBoxedEnum` is reused from `types.nra` (already exported); `emitstate.nra` is untouched. 
 - The skip file `compiler/testdata/emit/skips/selfhost-emit-decls.txt` is not deleted: `TestSelfhostEmit` opens a file for every node and fails if it is missing. It keeps only its comment line (empty list). The orchestrator may delete it if the harness is changed to skip missing files.
 - Acceptance 1 ("match Go on every input") cannot be run until selfhost-emit-program sets `programRecorded`, fills `composites` and ships the real `typeId`, `cType`, `payloadName` and `opFuncName`. Today the code is checked by type-checking and by a smoke run with the guard disabled and stub names (output shape matches Go). After emit-program merges, run `TestSelfhostEmit` and fix any diff in the Types and Reference counting parts.
 

@@ -1,16 +1,11 @@
 // Function bodies, test bodies and top-level constants (emit.go function and
 // the test bodies, emit_const.go). The owner is selfhost-emit-bodies.
-//
-// Until selfhost-emit-program sets Checker.programRecorded, Go's function and
-// constant lists are unknown, so the constant sections report a marker that
-// keeps the inputs listed in the skip file. The marker goes away by itself
-// when the facts are recorded.
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Expr, Stmt, Block, Param, Pos } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, BodyRoot, findBody } from "narrac/check"
-import { cType, functionName, constName, constGetterName, declName } from "narrac/cnames"
+import { cType, functionName, functionSignature, constName, constGetterName, declName } from "narrac/cnames"
 import { Emitter, Code, EmitWalker, ScopeFrame, reportUnsupported, writeLine, where, consume, beginStatement, endStatement, unwindAll, releaseCode, localOf } from "narrac/emitstate"
 import * as Exprs from "narrac/emitexprs"
 import * as Stmts from "narrac/emitstmts"
@@ -58,9 +53,6 @@ function lazyConstants(emitter: Emitter): Array<int> uses alloc {
 // emitConstPrototypes writes the variable, the flag and the getter prototype
 // of each lazy constant.
 export function emitConstPrototypes(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return `${reportUnsupported(mutable emitter, "constant prototypes", NODE)}\n`
-  }
   let builder = Str.builder()
   for (const constIndex of Arrays.values(lazyConstants(emitter))) {
     const info = emitter.checker.consts[constIndex]
@@ -99,9 +91,6 @@ function moduleFile(checker: Checker, module: string): string {
 
 // emitConstBodies writes the getter of each lazy constant and narra_consts_release.
 export function emitConstBodies(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return `${reportUnsupported(mutable emitter, "constant bodies", NODE)}\n`
-  }
   const lazy = lazyConstants(emitter)
   for (const constIndex of Arrays.values(lazy)) {
     emitGetter(mutable emitter, constIndex)
@@ -158,45 +147,22 @@ function emitGetter(mutable emitter: Emitter, constIndex: int) uses alloc {
 // FunctionFacts is what the emitter reads about one function of Go's Program.Funcs.
 struct FunctionFacts {
   key: string
-  parameters: Array<Param>
   result: Type
   pos: Pos
 }
 
 function describeFunction(checker: Checker, program: ProgramFunc): FunctionFacts uses alloc {
   return match (program) {
-    ProgramFunc.PlainFunc(funcIndex) => FunctionFacts { key: `func|${Int.toString(funcIndex)}`, parameters: checker.functions[funcIndex].declaration.parameters, result: checker.functions[funcIndex].result, pos: checker.functions[funcIndex].declaration.pos }
+    ProgramFunc.PlainFunc(funcIndex) => FunctionFacts { key: `func|${Int.toString(funcIndex)}`, result: checker.functions[funcIndex].result, pos: checker.functions[funcIndex].declaration.pos }
     ProgramFunc.InstanceFunc(instance) => describeInstance(checker, instance)
-    ProgramFunc.ImplFunc(block, index) => FunctionFacts { key: `impl|${Int.toString(block)}|${Int.toString(index)}`, parameters: checker.implementations[block].functions[index].declaration.parameters, result: checker.implementations[block].functions[index].result, pos: checker.implementations[block].functions[index].declaration.pos }
+    ProgramFunc.ImplFunc(block, index) => FunctionFacts { key: `impl|${Int.toString(block)}|${Int.toString(index)}`, result: checker.implementations[block].functions[index].result, pos: checker.implementations[block].functions[index].declaration.pos }
   }
 }
 
 function describeInstance(checker: Checker, instance: int): FunctionFacts uses alloc {
   const funcIndex = checker.instanceList[instance].funcIndex
   const declaration = checker.functions[funcIndex].declaration
-  return FunctionFacts { key: `inst|${Int.toString(instance)}`, parameters: declaration.parameters, result: checker.instanceList[instance].result, pos: declaration.pos }
-}
-
-// functionSignature is `static R name(T a, T* b)` for a body being emitted; a
-// mutable parameter is passed as a pointer.
-export function functionSignature(emitter: Emitter, program: ProgramFunc): string uses alloc {
-  const facts = describeFunction(emitter.checker, program)
-  let parameters: Array<string> = []
-  for (const parameter of Arrays.values(facts.parameters)) {
-    const localIndex = Exprs.declaredLocal(emitter, parameter.id)
-    const local = localOf(emitter, localIndex)
-    const typeName = cType(emitter.checker, local.localType)
-    const name = `v_${local.name}_${Int.toString(local.number)}`
-    if (parameter.isMutable) {
-      Arrays.push(mutable parameters, `${typeName}* ${name}`)
-    } else {
-      Arrays.push(mutable parameters, `${typeName} ${name}`)
-    }
-  }
-  if (Arrays.length(parameters) == 0) {
-    Arrays.push(mutable parameters, "void")
-  }
-  return `static ${cType(emitter.checker, facts.result)} ${functionName(emitter.checker, program)}(${Str.join(parameters, ", ")})`
+  return FunctionFacts { key: `inst|${Int.toString(instance)}`, result: checker.instanceList[instance].result, pos: declaration.pos }
 }
 
 // bodyBlock is the block of a checked function body.
@@ -217,7 +183,7 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   const owner = functionName(emitter.checker, program)
   startFunction(mutable emitter, body, owner)
   emitter.resultType = facts.result
-  const signature = functionSignature(emitter, program)
+  const signature = functionSignature(emitter.checker, program)
   writeLine(mutable emitter, `${signature} {`)
   emitter.indent = emitter.indent + 1
   const walker = BodyWalker {}
@@ -237,23 +203,13 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   return takeOutput(mutable emitter)
 }
 
-// emitTestBody writes the n-th test of the program (test builds only).
-export function emitTestBody(mutable emitter: Emitter, number: int): string uses alloc {
-  // The n-th checked body of kind "test".
-  let found = -1
-  let seen = 0
-  for (const index of Ranges.between(0, Arrays.length(emitter.checker.bodies))) {
-    if (emitter.checker.bodies[index].kind == "test") {
-      if (seen == number) {
-        found = index
-      }
-      seen = seen + 1
-    }
-  }
+// emitTestBody writes test_<number>, the test numbered moduleNumber in its
+// module (test builds only).
+export function emitTestBody(mutable emitter: Emitter, number: int, module: string, moduleNumber: int): string uses alloc {
+  const found = findBody(emitter.checker, `test|${module}|${Int.toString(moduleNumber)}`)
   if (found < 0) {
     return `${reportUnsupported(mutable emitter, "test body", NODE)}\n`
   }
-  const module = emitter.checker.bodies[found].module
   startFunction(mutable emitter, found, declName("f", module, "test"))
   writeLine(mutable emitter, `static void test_${Int.toString(number)}(void) {`)
   emitter.indent = emitter.indent + 1

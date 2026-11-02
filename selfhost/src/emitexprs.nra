@@ -15,7 +15,7 @@ import { Expr, Stmt, Block, Arg, Pos, FieldInit } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, Ref, ProgramFunc, getExpressionId, findBody, findBodySlot } from "narrac/check"
 import { cType, functionName, constGetterName } from "narrac/cnames"
-import { Emitter, Code, EmitWalker, reportUnsupported, writeLine, literal, where, temp, ownedTemp, consume, beginStatement, endStatement, typeOf, refOf, localOf, localRef, switchBody, underlyingType } from "narrac/emitstate"
+import { Emitter, Code, EmitWalker, reportUnsupported, writeLine, literal, where, temp, ownedTemp, consume, beginStatement, endStatement, typeOf, refOf, localOf, localRef, switchBody, underlyingType, localName } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
 import * as Closures from "narrac/emitclosures"
@@ -286,32 +286,32 @@ function emitBinary<W: EmitWalker>(walker: W, mutable emitter: Emitter, expressi
   }
   const leftCode = EmitWalker.emitExpression(walker, mutable emitter, left)
   const rightCode = EmitWalker.emitExpression(walker, mutable emitter, right)
-  const l = leftCode.text
-  const r = rightCode.text
+  const leftText = leftCode.text
+  const rightText = rightCode.text
   if (leftType == Type.TStr) {
     if (operator == "==") {
-      return plain(`lstr_eq(${l}, ${r})`)
+      return plain(`lstr_eq(${leftText}, ${rightText})`)
     }
     if (operator == "!=") {
-      return plain(`(!lstr_eq(${l}, ${r}))`)
+      return plain(`(!lstr_eq(${leftText}, ${rightText}))`)
     }
-    return plain(`(lstr_cmp(${l}, ${r}) ${operator} 0)`)
+    return plain(`(lstr_cmp(${leftText}, ${rightText}) ${operator} 0)`)
   }
   if (leftType == Type.TInt) {
     const position = where(emitter, pos)
     const checked = checkedFunction(operator)
     if (checked != "") {
-      return plain(temp(mutable emitter, Type.TInt, `${checked}(${l}, ${r}, ${position})`))
+      return plain(temp(mutable emitter, Type.TInt, `${checked}(${leftText}, ${rightText}, ${position})`))
     }
     const wrapping = wrappingFunction(operator)
     if (wrapping != "") {
-      return plain(`${wrapping}(${l}, ${r})`)
+      return plain(`${wrapping}(${leftText}, ${rightText})`)
     }
   }
   if (leftType == Type.TF64 && operator == "%") {
-    return plain(`fmod(${l}, ${r})`)
+    return plain(`fmod(${leftText}, ${rightText})`)
   }
-  return plain(`(${l} ${operator} ${r})`)
+  return plain(`(${leftText} ${operator} ${rightText})`)
 }
 
 function emitCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, nodeId: int, pos: Pos, arguments: Array<Arg>): Code uses alloc {
@@ -574,12 +574,6 @@ function emitArrayLiteral<W: EmitWalker>(walker: W, mutable emitter: Emitter, ex
   return unsupportedCode(mutable emitter, "array literal")
 }
 
-// localName is the C name of a local without the by-reference parentheses.
-function localName(emitter: Emitter, index: int): string uses alloc {
-  const local = localOf(emitter, index)
-  return `v_${local.name}_${Int.toString(local.number)}`
-}
-
 // pointerTemp declares a temporary that holds a pointer to a value of the type.
 export function pointerTemp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   emitter.tempCount = emitter.tempCount + 1
@@ -606,9 +600,9 @@ function identPointer(mutable emitter: Emitter, nodeId: int): string uses alloc 
     const local = localOf(emitter, index)
     // A mutable parameter is already a pointer.
     if (local.param && local.isMutable) {
-      return localName(emitter, index)
+      return localName(localOf(emitter, index))
     }
-    return `&${localName(emitter, index)}`
+    return `&${localName(localOf(emitter, index))}`
   }
   return reportUnsupported(mutable emitter, "lvalue", NODE)
 }

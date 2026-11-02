@@ -3,28 +3,29 @@
 ## Built
 
 - `selfhost/src/emitexprs.nra`: `emitExpression` (one arm per expression kind), literals, templates, name and field reads, index reads, unary and binary operators, calls (user functions, generic instances through `instanceRefs`, impl functions, enum constructors, distinct calls), the prelude (`print`, `assert`, `panic`), `Array.length/push/filled`, `Box.new`, struct and array literals with field defaults emitted inside `switchBody(default body)`, `emitLvaluePointer`, `argumentCode`, `constRef` (static constants re-emitted inside `switchBody(const body)`, others through the getter), `isStaticConstant`, `constType`, `pointerTemp`, `declaredLocal`. Dispatch arms to feature modules are one line each, with the contract's signatures.
-- `selfhost/src/emitstmts.nra`: `emitStatement`, `emitBlock`, `emitBlockInScope`; var, assign (with release of the old value), expression, return, if, while, for over ranges and arrays, break and continue. `beginStatement`/`endStatement` surround the calls into `emitMapSet`, `emitMatchStatement` and `emitMapFor`, as Go does, so the feature modules must not open the frame again.
-- `selfhost/src/emitconsts.nra`: `emitConstPrototypes`, `emitConstBodies` (getters and `narra_consts_release`), `emitFunction`, `emitTestBody`, `functionSignature` (exported, for the prototype section of emit.nra). A `BodyWalker` forwards to the expression and statement modules.
+- `selfhost/src/emitstmts.nra`: `emitStatement`, `emitBlock`, `emitBlockInScope`; var, assign (releases the old value), expression, return, if, while, for over ranges and arrays, break and continue. `beginStatement`/`endStatement` surround the calls into `emitMapSet`, `emitMatchStatement` and `emitMapFor`, as Go does, so those modules must not open the frame again.
+- `selfhost/src/emitconsts.nra`: `emitConstPrototypes`, `emitConstBodies` (getters and `narra_consts_release`), `emitFunction`, `emitTestBody(emitter, number, module, moduleNumber)`. Prototypes and signatures come from `cnames.functionSignature`. A `BodyWalker` forwards to the expression and statement modules.
+- The skip file `selfhost-emit-bodies.txt` is deleted (it listed 63 inputs; now no input reports this node).
 
 ## Deviations
 
-- Not run against real C: `Checker.programRecorded` is still false (selfhost-emit-program), so `programFunctions`, `programConsts`, `findBody`, C names and `LocalInfo.number` are placeholders. The code type-checks and follows Go line by line; no body has been compared byte for byte.
-- While `programRecorded` is false, `emitConstPrototypes` and `emitConstBodies` report their old markers so the skip file stays valid. Once program records the facts they stop reporting by themselves.
-- `constRef` keeps the stub signature (no walker). It uses a private `ConstWalker` (expressions only) defined in emitexprs.nra, because static constants only hold literals, operators and constructors.
-- `findBody` keys I rely on: `func|i`, `inst|n`, `impl|b|i`, `const|i`, and `default|<module>.<name>|<field>` (module omitted for the prelude; the generic's declared name for instances), matching the body names the checker gives. Tests are found by walking `checker.bodies` for `kind == "test"`, not by key. selfhost-emit-program must make `findBody` agree.
-- `emitter.file` comes from `ModScope.file` of the body's module.
-- Skip file `compiler/testdata/emit/skips/selfhost-emit-bodies.txt` is unchanged (63 inputs): it can only shrink once program and decls land.
+- `emitTestBody` has two more parameters (`module`, `moduleNumber`) so the test is found by the key `test|<module>|<n>`; `emit.nra` `emitTestBodies` computes them (shared edit).
+- `emitstate.nra`: `localName(local)` is now exported and used by `localRef` and by emitexprs.nra (one helper for `v_<name>_<number>`).
+- `calls.nra` and `funcvalues.nra`: after `addFuncInstance`, the call records `checker.bodies[checker.body].instanceRefs[nodeId] = instance`. The contract gives this field to selfhost-emit-program, but nothing filled it, so every generic call reported "generic call without an instance".
+- `compiler/testdata/emit/skips/selfhost-emit-match.txt` gains `Tuple.nra`, `patterns_tuple_shapes.nra` and `literal_type_args.nra`: with real expression dispatch, their tuple literals now reach the match stub, which reports.
+- The probe calls `reportMatchWork`, `reportStdWork` and `reportOptionsWork` stay in `emit.nra`; each belongs to its own node.
+- `constRef` keeps the stub signature (no walker) and uses a private expressions-only `ConstWalker`.
+- `findBody` keys: `default|<module>.<name>|<field>` for field defaults (module omitted for the prelude).
 
 ## Stubs left
 
-- `Range.upTo/between` outside a `for` and unresolved refs report `unsupported (selfhost-emit-bodies)`.
-- Everything the other emit nodes own is still their stub: closures, maps, traits, match, std, options, decls.
+- `Range.upTo/between` outside a `for`, and unresolved refs, report `unsupported (selfhost-emit-bodies)`.
+- Diffs from Go that remain belong to other nodes: `selfhost-emit-decls` (heap typedefs, type definitions, enum allocation, rc functions; all 60 inputs), and the stubs of match, closures, traits, std, maps and options. No input is byte-identical yet (0 of 60), so function bodies have not been compared with Go; the harness compares only the first marker-free prefix of each section.
 
 ## Gotchas
 
 - `test` is a keyword; Narra rejects `f(mutable emitter, g(emitter...))` even inside a template argument, so read tables into locals first.
-- Acceptance "skip file deleted" needs the program and decls nodes merged first; the orchestrator should rerun this node's check after them and delete the file then.
-- Each `Ref.Function` call to a generic function needs `BodyInfo.instanceRefs[callId]`; without it the call reports unsupported.
+- Once decls and the feature nodes land, run `TestSelfhostEmit` again: the first full byte comparison of function bodies happens then.
 
 ## Proposed learnings
 
@@ -32,9 +33,8 @@
 
 ## Verification
 
-- `cd selfhost && narra check .`: clean.
-- `cd compiler && go test -count=1 ./internal/narra -run 'TestSelfhostEmit|TestSelfhostRuntimeText|TestSelfhostPackageIsClean'`: pass.
-- `cd compiler && go vet ./... && go test -count=1 ./...`: pass (go vet clean; narra/internal/narra ok in 234 s).
+- `cd compiler && go test -count=1 ./internal/narra -run TestSelfhostEmit`: pass.
+- `cd compiler && go vet ./... && go test -count=1 ./...`: pass (go vet clean; narra/internal/narra ok in 193 s).
 
 ## Size
 

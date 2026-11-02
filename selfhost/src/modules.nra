@@ -8,6 +8,7 @@ import * as Str from "std/string"
 import * as Lexer from "narrac/lexer"
 import { Pos, File, Decl } from "narrac/ast"
 import { parse } from "narrac/parser"
+import { moduleHash } from "narrac/hash"
 import { Binary, LoadError, parseManifest } from "narrac/manifest"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -121,6 +122,7 @@ function loadPackage(directory: string): Result<Package, Array<LoadError>> uses 
   let modules: Array<SourceModule> = []
   let errors: Array<LoadError> = []
   let nextId = 0
+  let hashes: Map<string, string> = Map {}
   for (const path of Arrays.values(paths)) {
     const relative = Str.slice(path, 0, Str.length(path) - 4)
     const display = `src/${path}`
@@ -133,7 +135,14 @@ function loadPackage(directory: string): Result<Package, Array<LoadError>> uses 
       Arrays.push(mutable errors, LoadError { file: display, line: diagnostic.pos.line, column: diagnostic.pos.column, message: diagnostic.message })
       continue
     }
-    Arrays.push(mutable modules, newModule(`${config.name}/${relative}`, display, parsed.value.file, nextId, parsed.value.nextId))
+    const modulePath = `${config.name}/${relative}`
+    // Two modules whose hashes agree would share C names.
+    const hash = moduleHash(modulePath)
+    if (hashes[hash] is Some(other)) {
+      Arrays.push(mutable errors, LoadError { file: display, line: 0, column: 0, message: `modules "${other}" and "${modulePath}" have the same C name hash; rename one file` })
+    }
+    hashes[hash] = modulePath
+    Arrays.push(mutable modules, newModule(modulePath, display, parsed.value.file, nextId, parsed.value.nextId))
     nextId = parsed.value.nextId
   }
   if (Arrays.length(errors) > 0) {

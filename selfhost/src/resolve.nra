@@ -11,7 +11,7 @@ import * as Str from "std/string"
 import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
-import { Checker, checkMapKey, reportError, enter, lookupType, lookupGeneric, containsTypeParameter } from "narrac/check"
+import { Checker, internComposite, checkMapKey, reportError, enter, lookupType, lookupGeneric, containsTypeParameter } from "narrac/check"
 import { makeEnv, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
 import * as Arrays from "std/array"
@@ -44,7 +44,8 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
     for (const argument of Arrays.values(typeExpr.arguments)) {
       Arrays.push(mutable parameters, resolveType(mutable checker, argument))
     }
-    return Type.TFunc(parameters, funcResult(mutable checker, typeExpr.result))
+    const resultType = funcResult(mutable checker, typeExpr.result)
+    return internComposite(mutable checker, Type.TFunc(parameters, resultType))
   }
   if (typeExpr.isTuple) {
     return tupleType(mutable checker, typeExpr)
@@ -63,7 +64,8 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
       reportError(mutable checker, typeExpr.pos, "Box takes one type argument")
       return Type.TVoid
     }
-    return Type.TBox(resolveType(mutable checker, typeExpr.arguments[0]))
+    const boxed = resolveType(mutable checker, typeExpr.arguments[0])
+    return internComposite(mutable checker, Type.TBox(boxed))
   }
   if (typeExpr.name == "Map" && !userType(checker, "Map")) {
     if (argCount != 2) {
@@ -73,14 +75,15 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
     const keyType = resolveType(mutable checker, typeExpr.arguments[0])
     const valueType = resolveType(mutable checker, typeExpr.arguments[1])
     checkMapKey(mutable checker, typeExpr.pos, keyType)
-    return Type.TMap(keyType, valueType)
+    return internComposite(mutable checker, Type.TMap(keyType, valueType))
   }
   if (typeExpr.name == "Array") {
     if (argCount != 1) {
       reportError(mutable checker, typeExpr.pos, "Array takes one type argument")
       return Type.TVoid
     }
-    return Type.TArray(resolveType(mutable checker, typeExpr.arguments[0]))
+    const element = resolveType(mutable checker, typeExpr.arguments[0])
+    return internComposite(mutable checker, Type.TArray(element))
   }
   if (typeExpr.name == "number") {
     reportError(mutable checker, typeExpr.pos, "there is no `number`; use `int` or `f64`")
@@ -363,21 +366,25 @@ export function substitute(mutable checker: Checker, type: Type, bindings: Map<i
       return type
     }
     Type.TArray(element) => {
-      return Type.TArray(substitute(mutable checker, element, bindings))
+      const newElement = substitute(mutable checker, element, bindings)
+      return internComposite(mutable checker, Type.TArray(newElement))
     }
     Type.TBox(element) => {
-      return Type.TBox(substitute(mutable checker, element, bindings))
+      const newElement = substitute(mutable checker, element, bindings)
+      return internComposite(mutable checker, Type.TBox(newElement))
     }
     Type.TMap(key, value) => {
       const newKey = substitute(mutable checker, key, bindings)
-      return Type.TMap(newKey, substitute(mutable checker, value, bindings))
+      const newValue = substitute(mutable checker, value, bindings)
+      return internComposite(mutable checker, Type.TMap(newKey, newValue))
     }
     Type.TFunc(parameters, result) => {
       if (!containsTypeParameter(checker, type)) {
         return type
       }
       const newParams = substituteAll(mutable checker, parameters, bindings)
-      return Type.TFunc(newParams, substitute(mutable checker, result, bindings))
+      const newResult = substitute(mutable checker, result, bindings)
+      return internComposite(mutable checker, Type.TFunc(newParams, newResult))
     }
     Type.TStruct(index) => {
       const info = checker.structs[index]

@@ -326,7 +326,9 @@ export struct Checker {
   programFunctions: Array<ProgramFunc> = []
   programConsts: Array<int> = []
   composites: Map<string, Type>
-  programRecorded: bool = false
+  // BodyInfo index by the keys findBody documents (see keyBody).
+  bodyKeys: Map<string, int>
+  programRecorded: bool = true
 }
 
 // newChecker makes an empty checker whose side tables hold ids [0, ids).
@@ -338,7 +340,7 @@ export function newChecker(ids: int): Checker uses alloc {
     traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, implementations: [], implFunctions: Map {}, mapKeys: [],
     errors: [], errorKeys: Map {}, order: [],
     registry: newRegistry(), scopeIndex: Map {}, packageName: "", single: false, used: [], entries: [],
-    resultType: Type.TVoid, funcInstances: Map {}, composites: Map {},
+    resultType: Type.TVoid, funcInstances: Map {}, composites: Map {}, bodyKeys: Map {},
   }
 }
 
@@ -761,7 +763,7 @@ export function declareLocal(mutable checker: Checker, nodeId: int, pos: Pos, na
 
   // Record the local and the node that declares it.
   const body = checker.body
-  const local = LocalInfo { name: name, localType: localType, isMutable: isMutable, param: param, pos: pos, noEscape: false, used: false }
+  const local = LocalInfo { name: name, localType: localType, isMutable: isMutable, param: param, pos: pos, noEscape: false, used: false, number: checker.localCount }
   Arrays.push(mutable checker.bodies[body].locals, local)
   const index = Arrays.length(checker.bodies[body].locals) - 1
   const slot = findSlot(checker, nodeId)
@@ -850,8 +852,28 @@ export function isNumeric(valueType: Type): bool {
 
 // findBody returns the BodyInfo index for a key, or -1. Keys: "func|<funcIndex>",
 // "inst|<instance>", "impl|<block>|<index>", "test|<module>|<n-th test of the module>",
-// "const|<constIndex>", "default|<struct or generic key>|<field>". The lookup is
-// filled by selfhost-emit-program; until then no body is found.
+// "const|<constIndex>", "default|<owner>|<field>", where the owner is "S<index>"
+// for a struct (Type.TStruct, typeKey) or "G<index>" for a generic struct
+// (Checker.generics). Every instance of a generic struct shares its default.
 export function findBody(checker: Checker, key: string): int {
+  if (checker.bodyKeys[key] is Some(index)) {
+    return index
+  }
   return -1
+}
+
+// internComposite records an array, box, map or function type the checker made
+// (Go's arrayOf, boxOf, mapOf and funcOf, which intern by type id) and returns it.
+// Types that hold a type parameter are recorded too; the emitter skips them.
+export function internComposite(mutable checker: Checker, type: Type): Type uses alloc {
+  const key = typeKey(type)
+  if (checker.composites[key] is None) {
+    checker.composites[key] = type
+  }
+  return type
+}
+
+// keyBody names the body just started (the current one) for findBody.
+export function keyBody(mutable checker: Checker, key: string) uses alloc {
+  checker.bodyKeys[key] = checker.body
 }

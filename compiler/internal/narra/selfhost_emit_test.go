@@ -81,6 +81,10 @@ func readEmitSkips(t *testing.T) map[string]map[string]bool {
 	skips := map[string]map[string]bool{}
 	for _, node := range emitNodes {
 		data, err := os.ReadFile(filepath.Join(testdata, "emit", "skips", node+".txt"))
+		if os.IsNotExist(err) {
+			// A node that is done deletes its skip file.
+			continue
+		}
 		if err != nil {
 			t.Fatalf("skip file of %s: %v", node, err)
 		}
@@ -287,5 +291,34 @@ func TestSelfhostEmitErrors(t *testing.T) {
 				t.Fatalf("message differs: %s", firstDiff(want, errOut))
 			}
 		})
+	}
+}
+
+// TestSelfhostXXH32 checks narrac's xxHash32 against the vectors of TestXXH32.
+func TestSelfhostXXH32(t *testing.T) {
+	exe := buildSelfhost(t)
+	alpha := "abcdefghijklmnopqrstuvwxyz"
+	cases := []struct {
+		in   string
+		seed uint32
+		want uint32
+	}{
+		{"", 0, 0x02cc5d05},
+		{"abc", 0, 0x32d153ff},
+		{"Nobody inspects the spammish repetition", 0, 0xe2293b2f},
+		{alpha[:15], 0, 0xb918a375},
+		{alpha[:16], 0, 0x9d2d8b62},
+		{alpha[:17], 0, 0xb3b873e1},
+		{"abc", 0x9e3779b1, 0xa1ae7709},
+		{alpha[:16], 0x9e3779b1, 0x3fab7bd8},
+	}
+	for _, c := range cases {
+		out, errOut, code := runNarracRaw(t, exe, "hash", strconv.FormatUint(uint64(c.seed), 10), c.in)
+		if code != 0 {
+			t.Fatalf("hash %q: exit code %d: %s", c.in, code, errOut)
+		}
+		if want := hex8(c.want) + "\n"; out != want {
+			t.Errorf("hash(%q, %#x) = %q, want %q", c.in, c.seed, out, want)
+		}
 	}
 }

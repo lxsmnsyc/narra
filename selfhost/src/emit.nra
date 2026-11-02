@@ -2,16 +2,16 @@
 // the C file in Go's order and calls the module of each roadmap node at its
 // dispatch point (contracts/emitter.md).
 //
-// Until selfhost-emit-program sets Checker.programRecorded, the emitter does
-// not know Go's function and constant lists or the composite types, so the
-// Types and Functions sections start with a "program facts" marker and only
-// the nodes' stubs and the preamble are written.
+// The checker records Go's function and constant lists and the composite
+// types (selfhost-emit-program), so the comment table, the typedef lines and
+// the function prototypes are real. The stubs of the other nodes still write
+// their marker lines.
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Type } from "narrac/types"
-import { Checker, ProgramFunc, typeString } from "narrac/check"
+import { Checker, ProgramFunc, typeString, containsTypeParameter } from "narrac/check"
 import { Emitter, newEmitter, reportUnsupported, literal } from "narrac/emitstate"
-import { typeId, cType, functionName } from "narrac/cnames"
+import { typeId, cType, functionName, functionSignature } from "narrac/cnames"
 import { RUNTIME_H, runtimeFor } from "narrac/runtimetext"
 import * as Decls from "narrac/emitdecls"
 import * as EmitMaps from "narrac/emitmaps"
@@ -32,8 +32,6 @@ export struct EmitResult {
   unsupported: Array<string>
 }
 
-const FACTS_NODE = "selfhost-emit-program"
-
 // emitProgram emits the C of a checked package. entry is the Checker.functions
 // index of the binary's entry function (ignored in a test build).
 export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResult uses alloc {
@@ -52,7 +50,6 @@ export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResu
 
   // Types.
   Str.append(mutable builder, "\n// Types\n")
-  Str.append(mutable builder, factsMarker(mutable emitter))
   Str.append(mutable builder, emitCommentTable(mutable emitter))
   Str.append(mutable builder, emitArrayTypedefs(mutable emitter))
   Str.append(mutable builder, EmitMaps.emitMapTypedefs(mutable emitter))
@@ -87,12 +84,11 @@ export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResu
   if (tests) {
     emitTestBodies(mutable emitter, mutable bodies)
   }
-  if (!checker.programRecorded) {
-    // These nodes have no section of their own yet; each reports if the input needs it.
-    Str.append(mutable bodies, Match.reportMatchWork(mutable emitter))
-    Str.append(mutable bodies, Std.reportStdWork(mutable emitter))
-    Str.append(mutable bodies, Options.reportOptionsWork(mutable emitter))
-  }
+  // These nodes have no section of their own yet; each reports if the input
+  // needs it. The node that makes the bodies real removes these calls.
+  Str.append(mutable bodies, Match.reportMatchWork(mutable emitter))
+  Str.append(mutable bodies, Std.reportStdWork(mutable emitter))
+  Str.append(mutable bodies, Options.reportOptionsWork(mutable emitter))
 
   // String literals, then the text that depends on what the bodies used.
   Str.append(mutable builder, "\n// String literals\n")
@@ -110,19 +106,8 @@ export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResu
   return EmitResult { text: Str.build(builder), unsupported: emitter.unsupported }
 }
 
-// factsMarker is the program-facts marker line, or "" once the facts are recorded.
-function factsMarker(mutable emitter: Emitter): string uses alloc {
-  if (emitter.checker.programRecorded) {
-    return ""
-  }
-  return `${reportUnsupported(mutable emitter, "program facts", FACTS_NODE)}\n`
-}
-
 // emitTestBodies writes the test blocks of a test build: test_<n>.
 function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder) uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return
-  }
   let number = 0
   for (const body of Arrays.values(emitter.checker.bodies)) {
     if (body.kind == "test") {
@@ -134,14 +119,11 @@ function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder)
 
 // emitPrototypes writes a prototype for each function of Go's Program.Funcs.
 function emitPrototypes(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return factsMarker(mutable emitter)
+  let builder = Str.builder()
+  for (const program of Arrays.values(emitter.checker.programFunctions)) {
+    Str.append(mutable builder, `${functionSignature(emitter.checker, program)};\n`)
   }
-  if (Arrays.length(emitter.checker.programFunctions) == 0) {
-    return ""
-  }
-  // The signature needs each parameter's C name, which selfhost-emit-program records.
-  return `${reportUnsupported(mutable emitter, "function signatures", FACTS_NODE)}\n`
+  return Str.build(builder)
 }
 
 // An element of a sorted list of composite types.
@@ -199,7 +181,7 @@ function arrays(emitter: Emitter): Array<Type> uses alloc {
   let items: Array<SortItem> = []
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
-    if (composite is Type.TArray(_)) {
+    if (composite is Type.TArray(_) && !containsTypeParameter(emitter.checker, composite)) {
       Arrays.push(mutable items, SortItem { key: sortKey(emitter, composite), type: composite })
     }
   }
@@ -217,9 +199,6 @@ function arrayName(emitter: Emitter, type: Type): string uses alloc {
 }
 
 function emitArrayTypedefs(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return ""
-  }
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
     const name = arrayName(emitter, type)
@@ -230,9 +209,6 @@ function emitArrayTypedefs(mutable emitter: Emitter): string uses alloc {
 
 // emitTypeTypedefs forward-declares the struct of each struct and enum, in definition order.
 function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return ""
-  }
   let builder = Str.builder()
   for (const type of Arrays.values(emitter.checker.order)) {
     const name = cType(emitter.checker, type)
@@ -243,9 +219,6 @@ function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
 
 // emitArrayStructs defines the struct of each array type.
 function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return ""
-  }
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
     if (type is Type.TArray(element)) {
@@ -258,9 +231,6 @@ function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
 // emitCommentTable writes the comment that maps each interned C name to its
 // Narra type, sorted by name (Go's writeCNameTable).
 function emitCommentTable(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return ""
-  }
   let items: Array<SortItem> = []
   for (const type of Arrays.values(emitter.checker.order)) {
     if (isInterned(emitter, type)) {
@@ -269,7 +239,9 @@ function emitCommentTable(mutable emitter: Emitter): string uses alloc {
   }
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
-    Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, composite), type: composite })
+    if (!containsTypeParameter(emitter.checker, composite)) {
+      Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, composite), type: composite })
+    }
   }
   let builder = Str.builder()
   for (const item of Arrays.values(mergeSort(items))) {
@@ -289,9 +261,6 @@ function isInterned(emitter: Emitter, type: Type): bool {
 
 // emitMain writes the C main of a non-test build: it passes argv to the entry function.
 function emitMain(mutable emitter: Emitter): string uses alloc {
-  if (!emitter.checker.programRecorded) {
-    return ""
-  }
   const arrayType = arrayName(emitter, Type.TArray(Type.TStr))
   const entryName = functionName(emitter.checker, ProgramFunc.PlainFunc(emitter.entry))
   let builder = Str.builder()

@@ -36,3 +36,7 @@ Notes:
 | selfhost | selfhost-check-traits | M | M+ | 2 | 340k tokens. About 1050 Narra lines against 850 estimated. Review found a quadratic impl lookup in the dump (4.6 s to 0.85 s at 2000 types). Merged automatically. |
 | selfhost | std-option-result | M | M | 2 | 375k tokens. Gate. Capturing arrows passed to helpers use a stack environment: 0 heap allocations per call besides the result payload. Review found Err(...) callbacks needing annotations; fixed by taking the result type from the call's expected type. |
 | selfhost | selfhost-check-imports | L | M+ | 1 | 369k tokens. About 930 Narra lines against 1000 estimated. Clean review; whole selfhost/ package now compared. Reviewer found a quadratic cost per module on main (inbox). |
+| selfhost | selfhost-emit-core | M | M | 1 | 262k tokens. Gate. Contract change request accepted (v2). Clean review. |
+| selfhost | selfhost-emit-program | M | M | 1 | 268k tokens. Clean review. Edited emit.nra, body.nra, main.nra and the test helper outside its paths. |
+| selfhost | selfhost-emit-decls | M | M | 1 | 196k tokens. Clean review with nits. Output proven only after program merged; no diffs then. |
+| selfhost | selfhost-emit-bodies | M | M+ | 2 | 441k tokens. Round 1: functionSignature read an unset body, test lookup bypassed the findBody key. Round 2: a built binary committed at the repo root. |

@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-bodies
 title: Self-hosted emitter: functions, statements, expressions, calls and constants
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 440730
 owns:
   - selfhost/src/emitexprs.nra
   - selfhost/src/emitstmts.nra

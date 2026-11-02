@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-decls
 title: Self-hosted emitter: struct, enum, array and box declarations and reference counting
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 196108
 owns:
   - selfhost/src/emitdecls.nra
   - compiler/testdata/emit/skips/selfhost-emit-decls.txt

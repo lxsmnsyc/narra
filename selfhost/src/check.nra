@@ -96,6 +96,13 @@ export enum Ref {
   Value
 }
 
+// One function of Go's Program.Funcs, in the order Go lists them (contracts/emitter.md).
+export enum ProgramFunc {
+  PlainFunc(funcIndex: int) // Checker.functions, non-generic
+  InstanceFunc(instance: int) // Checker.instanceList
+  ImplFunc(block: int, index: int) // Checker.implementations[block].functions[index]
+}
+
 // A local variable, parameter or loop variable of one checked body (Go's
 // Local). noEscape marks a function-type parameter without `escaping`.
 // selfhost-check-patterns adds narrowing beside it.
@@ -107,6 +114,9 @@ export struct LocalInfo {
   pos: Pos
   noEscape: bool
   used: bool
+  // checker.localCount right after the increment; the C name is v_<name>_<number>
+  // (filled by selfhost-emit-program).
+  number: int = 0
 }
 
 // What the checker knows about one arrow function of a body (Go's Closure).
@@ -163,6 +173,11 @@ export struct BodyInfo {
   arrows: Array<ArrowContext>
   arrowDepth: int
   allowedId: int
+  // Facts for the emitter (contracts/emitter.md, filled by selfhost-emit-program):
+  // the call, Ident or FieldExpr ids that name a generic function, to a
+  // Checker.instanceList index; and the Self type of each trait function call.
+  instanceRefs: Map<int, int>
+  traitSelf: Map<int, Type>
 }
 
 // The entry point of the recursive body checker. Narra modules cannot
@@ -303,6 +318,15 @@ export struct Checker {
   funcInstances: Map<string, int>
   pending: Array<int> = []
   pendingNext: int = 0
+  // Facts for the emitter (contracts/emitter.md, filled by selfhost-emit-program).
+  // programFunctions is Go's Program.Funcs order, programConsts the constants in
+  // the order each reaches CONST_DONE, composites every array, box, map and
+  // function type by typeKey. Until programRecorded is set the emitter reports
+  // "program facts" as unsupported.
+  programFunctions: Array<ProgramFunc> = []
+  programConsts: Array<int> = []
+  composites: Map<string, Type>
+  programRecorded: bool = false
 }
 
 // newChecker makes an empty checker whose side tables hold ids [0, ids).
@@ -314,7 +338,7 @@ export function newChecker(ids: int): Checker uses alloc {
     traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, implementations: [], implFunctions: Map {}, mapKeys: [],
     errors: [], errorKeys: Map {}, order: [],
     registry: newRegistry(), scopeIndex: Map {}, packageName: "", single: false, used: [], entries: [],
-    resultType: Type.TVoid, funcInstances: Map {},
+    resultType: Type.TVoid, funcInstances: Map {}, composites: Map {},
   }
 }
 
@@ -639,7 +663,7 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   // Save the outer body's state and start the new one.
   const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, environment: checker.environment }
   const module = checker.scopes[checker.current].path
-  const info = BodyInfo { module: module, kind: kind, name: name, typeArguments: typeArguments, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1 }
+  const info = BodyInfo { module: module, kind: kind, name: name, typeArguments: typeArguments, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1, instanceRefs: Map {}, traitSelf: Map {} }
   Arrays.push(mutable checker.bodies, info)
   checker.body = Arrays.length(checker.bodies) - 1
   checker.localScopes = [Map {}]
@@ -822,4 +846,12 @@ export function getExpressionPos(expression: Expr): Pos {
 
 export function isNumeric(valueType: Type): bool {
   return valueType == Type.TInt || valueType == Type.TF64
+}
+
+// findBody returns the BodyInfo index for a key, or -1. Keys: "func|<funcIndex>",
+// "inst|<instance>", "impl|<block>|<index>", "test|<module>|<n-th test of the module>",
+// "const|<constIndex>", "default|<struct or generic key>|<field>". The lookup is
+// filled by selfhost-emit-program; until then no body is found.
+export function findBody(checker: Checker, key: string): int {
+  return -1
 }

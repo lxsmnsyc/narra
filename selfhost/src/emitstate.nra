@@ -1,0 +1,498 @@
+// The state of the C emitter and the helpers every emit module shares, ported
+// from emit.go (the Emitter, line, where, temp, consume, scopes, unwind),
+// retain and release (emit_types.go), needsRC (types.go) and cString and
+// literal (emit_expr.go). The contract is contracts/emitter.md.
+//
+// Ownership rules for reference-counted values in generated C:
+//   - A local variable owns one reference. It is released when its scope ends.
+//   - Parameters are borrowed. The caller keeps them alive for the call.
+//   - A call returns an owned reference.
+//   - Each expression produces either an owned temporary or a borrowed value.
+//     Owned temporaries are released at the end of the statement unless a
+//     binding, field or return takes them over.
+//
+// The Emitter holds the Checker read-only. Never pass `emitter.checker` as
+// `mutable`: a write would copy every checker table.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Pos, Expr, Stmt, Block } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, BodyInfo, LocalInfo, Ref, findBodySlot } from "narrac/check"
+import { cType, opFuncName, typeId } from "narrac/cnames"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// An expression's C text and whether it is an owned reference (Go's (string, bool)).
+export struct Code {
+  text: string
+  owned: bool
+}
+
+export struct TempVar {
+  name: string
+  tempType: Type
+}
+
+// locals are BodyInfo.locals indexes that need a release when the scope ends.
+export struct ScopeFrame {
+  locals: Array<int>
+  loop: bool
+}
+
+export struct TraitNeed {
+  operation: string
+  needType: Type
+  name: string
+}
+
+export struct Emitter {
+  checker: Checker
+  typeNames: Map<string, string>
+  entry: int
+  tests: bool
+  file: string
+  body: int
+  owner: string
+  resultType: Type
+  literals: StringBuilder
+  literalCount: int
+  out: StringBuilder
+  indent: int
+  tempCount: int
+  frames: Array<Array<TempVar>>
+  scopes: Array<ScopeFrame>
+  loopFrames: Array<int>
+  traitNeeds: Array<TraitNeed>
+  traitSeen: Map<string, bool>
+  closureCounts: Map<string, int>
+  thunks: Map<string, bool>
+  closureEnvs: StringBuilder
+  closurePrototypes: StringBuilder
+  closureDefinitions: StringBuilder
+  unsupported: Array<string>
+}
+
+// The recursion entry points of the body emitter. Narra function types cannot
+// take `mutable` and modules cannot import in a cycle, so modules that
+// recurse take `<W: EmitWalker>` (the same pattern as the checker's Walker).
+export trait EmitWalker {
+  function emitExpression(walker: Self, mutable emitter: Emitter, expression: Expr): Code uses alloc
+  function emitStatement(walker: Self, mutable emitter: Emitter, statement: Stmt) uses alloc
+  function emitBlock(walker: Self, mutable emitter: Emitter, block: Block, loop: bool) uses alloc
+  function emitBlockInScope(walker: Self, mutable emitter: Emitter, block: Block) uses alloc
+  function emitLvaluePointer(walker: Self, mutable emitter: Emitter, expression: Expr): string uses alloc
+}
+
+// newEmitter makes the state for one program. The checker is shared, not copied.
+export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter uses alloc {
+  return Emitter {
+    checker: checker, typeNames: Map {}, entry: entry, tests: tests, file: "", body: -1, owner: "",
+    resultType: Type.TVoid, literals: Str.builder(), literalCount: 0, out: Str.builder(), indent: 0, tempCount: 0,
+    frames: [], scopes: [], loopFrames: [], traitNeeds: [], traitSeen: Map {}, closureCounts: Map {}, thunks: Map {},
+    closureEnvs: Str.builder(), closurePrototypes: Str.builder(), closureDefinitions: Str.builder(), unsupported: [],
+  }
+}
+
+// reportUnsupported records a construct a stub cannot emit yet (once per
+// distinct text) and returns the marker line text for the C output.
+export function reportUnsupported(mutable emitter: Emitter, construct: string, node: string): string uses alloc {
+  const text = `${construct} (${node})`
+  let seen = false
+  for (const known of Arrays.values(emitter.unsupported)) {
+    if (known == text) {
+      seen = true
+    }
+  }
+  if (!seen) {
+    Arrays.push(mutable emitter.unsupported, text)
+  }
+  return `/* unsupported: ${text} */`
+}
+
+// writeLine writes one indented line to the current function body.
+export function writeLine(mutable emitter: Emitter, text: string) uses alloc {
+  const padding = Str.repeat("  ", emitter.indent)
+  Str.append(mutable emitter.out, `${padding}${text}\n`)
+}
+
+// cString is a C string literal for text, with octal escapes for bytes
+// outside printable ASCII and for `?`.
+export function cString(text: string): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, "\"")
+  for (const index of Ranges.between(0, Str.length(text))) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 34 || byte == 92) {
+      Str.append(mutable builder, "\\")
+      Str.appendChar(mutable builder, charOfByte(byte))
+    } else if (byte >= 32 && byte < 127 && byte != 63) {
+      Str.appendChar(mutable builder, charOfByte(byte))
+    } else {
+      const high = byte / 64
+      const middle = (byte / 8) % 8
+      const low = byte % 8
+      Str.append(mutable builder, `\\${Int.toString(high)}${Int.toString(middle)}${Int.toString(low)}`)
+    }
+  }
+  Str.append(mutable builder, "\"")
+  return Str.build(builder)
+}
+
+function charOfByte(byte: int): char {
+  return Str.charAt(Str.slice(ASCII, byte - 32, byte - 31), 0)
+}
+
+// The printable ASCII characters from space (32) to tilde (126).
+const ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
+// literal adds a string to the literal pool and returns the C expression for it.
+export function literal(mutable emitter: Emitter, text: string): string uses alloc {
+  emitter.literalCount = emitter.literalCount + 1
+  const name = `L${Int.toString(emitter.literalCount)}`
+  Str.append(mutable emitter.literals, `static lstr ${name} = {-1, ${Int.toString(Str.length(text))}, ${cString(text)}};\n`)
+  return `(&${name})`
+}
+
+// where is the C string "file:line:col" of a position, for panic messages.
+export function where(emitter: Emitter, pos: Pos): string uses alloc {
+  return cString(`${emitter.file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}`)
+}
+
+// typeOf is the type the emitted body gave a node. refOf is its Ref.
+export function typeOf(emitter: Emitter, nodeId: int): Type {
+  const info = emitter.checker.bodies[emitter.body]
+  const slot = findBodySlot(info, nodeId)
+  if (slot >= 0) {
+    if (info.types[slot] is Some(found)) {
+      return found
+    }
+  }
+  return Type.TVoid
+}
+
+export function refOf(emitter: Emitter, nodeId: int): Ref {
+  const info = emitter.checker.bodies[emitter.body]
+  const slot = findBodySlot(info, nodeId)
+  if (slot < 0) {
+    return Ref.Unresolved
+  }
+  return info.refs[slot]
+}
+
+export function localOf(emitter: Emitter, index: int): LocalInfo {
+  return emitter.checker.bodies[emitter.body].locals[index]
+}
+
+// localRef is the C expression for a local: a mutable parameter is passed as a pointer.
+export function localRef(emitter: Emitter, index: int): string uses alloc {
+  const local = localOf(emitter, index)
+  const name = `v_${local.name}_${Int.toString(local.number)}`
+  if (local.param && local.isMutable) {
+    return `(*${name})`
+  }
+  return name
+}
+
+// switchBody makes another body the one being emitted and returns the saved index.
+export function switchBody(mutable emitter: Emitter, body: int): int {
+  const saved = emitter.body
+  emitter.body = body
+  return saved
+}
+
+// underlyingType strips distinct types down to their base.
+export function underlyingType(emitter: Emitter, type: Type): Type {
+  if (type is Type.TDistinct(index)) {
+    if (emitter.checker.distincts[index].base is Some(base)) {
+      return underlyingType(emitter, base)
+    }
+  }
+  return type
+}
+
+// needsRc reports whether values of the type hold reference-counted data.
+export function needsRc(emitter: Emitter, type: Type): bool {
+  return match (type) {
+    Type.TStr => true
+    Type.TStringBuilder => true
+    Type.TArray(_) => true
+    Type.TFunc(_, _) => true
+    Type.TBox(_) => true
+    Type.TMap(_, _) => true
+    Type.TStruct(index) => structNeedsRc(emitter, index)
+    Type.TEnum(index) => isBoxed(emitter, index)
+    Type.TDistinct(_) => needsRc(emitter, underlyingType(emitter, type))
+    _ => false
+  }
+}
+
+function structNeedsRc(emitter: Emitter, index: int): bool {
+  for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
+    if (needsRc(emitter, field.fieldType)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isBoxed(emitter: Emitter, index: int): bool {
+  for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+    if (Arrays.length(variant.fields) > 0) {
+      return true
+    }
+  }
+  return false
+}
+
+// containerName is a C array, box or map type without its "*".
+function containerName(emitter: Emitter, type: Type): string uses alloc {
+  const name = cType(emitter.checker, type)
+  return Str.slice(name, 0, Str.length(name) - 1)
+}
+
+// retainCode is the C statement that retains one value of the type, or "".
+export function retainCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  return refCountCode(emitter, "retain", type, value)
+}
+
+// releaseCode is the C statement that releases one value of the type, or "".
+export function releaseCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  return refCountCode(emitter, "release", type, value)
+}
+
+function refCountCode(emitter: Emitter, operation: string, type: Type, value: string): string uses alloc {
+  const base = underlyingType(emitter, type)
+  return match (base) {
+    Type.TStr => `lstr_${operation}(${value});`
+    Type.TStringBuilder => `narra_sb_${operation}(${value});`
+    Type.TArray(_) => `${containerName(emitter, base)}_${operation}(${value});`
+    Type.TBox(_) => `${containerName(emitter, base)}_${operation}(${value});`
+    Type.TMap(_, _) => `${containerName(emitter, base)}_${operation}(${value});`
+    Type.TFunc(_, _) => `narra_env_${operation}((${value}).env);`
+    Type.TStruct(_) => structOrEnumCode(emitter, operation, base, value)
+    Type.TEnum(_) => structOrEnumCode(emitter, operation, base, value)
+    _ => ""
+  }
+}
+
+function structOrEnumCode(emitter: Emitter, operation: string, base: Type, value: string): string uses alloc {
+  if (!needsRc(emitter, base)) {
+    return ""
+  }
+  return `${opFuncName(operation, typeId(emitter.checker, base))}(${value});`
+}
+
+// temp declares a C temporary holding code and returns its name. The counter
+// is program-wide: it is never reset per function.
+export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
+  emitter.tempCount = emitter.tempCount + 1
+  const name = `t${Int.toString(emitter.tempCount)}`
+  const declaration = `${cType(emitter.checker, type)} ${name} = ${code};`
+  writeLine(mutable emitter, declaration)
+  return name
+}
+
+// ownedTemp is a temporary the current statement releases at its end.
+export function ownedTemp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
+  const name = temp(mutable emitter, type, code)
+  if (needsRc(emitter, type)) {
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name: name, tempType: type })
+  }
+  return name
+}
+
+export function beginStatement(mutable emitter: Emitter) uses alloc {
+  Arrays.push(mutable emitter.frames, [])
+}
+
+// endStatement releases the statement's owned temporaries, newest first.
+export function endStatement(mutable emitter: Emitter) uses alloc {
+  const top = emitter.frames[Arrays.length(emitter.frames) - 1]
+  releaseTemporaries(mutable emitter, top)
+  emitter.frames = withoutLast(emitter.frames)
+}
+
+function withoutLast<T>(items: Array<Array<T>>): Array<Array<T>> uses alloc {
+  let kept: Array<Array<T>> = []
+  for (const index of Ranges.between(0, Arrays.length(items) - 1)) {
+    Arrays.push(mutable kept, items[index])
+  }
+  return kept
+}
+
+function releaseTemporaries(mutable emitter: Emitter, temporaries: Array<TempVar>) uses alloc {
+  let index = Arrays.length(temporaries) - 1
+  while (index >= 0) {
+    const text = releaseCode(emitter, temporaries[index].tempType, temporaries[index].name)
+    if (text != "") {
+      writeLine(mutable emitter, text)
+    }
+    index = index - 1
+  }
+}
+
+// consume turns an expression result into an owned reference the caller takes over.
+export function consume(mutable emitter: Emitter, code: string, owned: bool, type: Type): string uses alloc {
+  if (!needsRc(emitter, type)) {
+    return code
+  }
+  if (owned) {
+    const frame = Arrays.length(emitter.frames) - 1
+    const top = emitter.frames[frame]
+    for (const index of Ranges.between(0, Arrays.length(top))) {
+      if (top[index].name == code) {
+        // The statement no longer releases it.
+        let kept: Array<TempVar> = []
+        for (const other of Ranges.between(0, Arrays.length(top))) {
+          if (other != index) {
+            Arrays.push(mutable kept, top[other])
+          }
+        }
+        emitter.frames[frame] = kept
+        return code
+      }
+    }
+  }
+  const name = temp(mutable emitter, type, code)
+  const retainText = retainCode(emitter, type, name)
+  writeLine(mutable emitter, retainText)
+  return name
+}
+
+// pushScope opens a block scope; a loop scope is where break and continue unwind to.
+export function pushScope(mutable emitter: Emitter, loop: bool) uses alloc {
+  Arrays.push(mutable emitter.scopes, ScopeFrame { locals: [], loop: loop })
+}
+
+export function popScope(mutable emitter: Emitter) uses alloc {
+  const top = emitter.scopes[Arrays.length(emitter.scopes) - 1]
+  releaseLocals(mutable emitter, top)
+  let kept: Array<ScopeFrame> = []
+  for (const index of Ranges.between(0, Arrays.length(emitter.scopes) - 1)) {
+    Arrays.push(mutable kept, emitter.scopes[index])
+  }
+  emitter.scopes = kept
+}
+
+function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
+  let index = Arrays.length(frame.locals) - 1
+  while (index >= 0) {
+    const local = localOf(emitter, frame.locals[index])
+    const text = releaseCode(emitter, local.localType, localName(local))
+    if (text != "") {
+      writeLine(mutable emitter, text)
+    }
+    index = index - 1
+  }
+}
+
+// localName is the C name of a local without the by-reference parentheses.
+function localName(local: LocalInfo): string uses alloc {
+  return `v_${local.name}_${Int.toString(local.number)}`
+}
+
+// addLocal registers a BodyInfo.locals index for release at the end of the scope.
+export function addLocal(mutable emitter: Emitter, localIndex: int) uses alloc {
+  const local = localOf(emitter, localIndex)
+  if (needsRc(emitter, local.localType)) {
+    const top = Arrays.length(emitter.scopes) - 1
+    Arrays.push(mutable emitter.scopes[top].locals, localIndex)
+  }
+}
+
+// unwindAll releases every temporary and local, for a return.
+export function unwindAll(mutable emitter: Emitter) uses alloc {
+  let frame = Arrays.length(emitter.frames) - 1
+  while (frame >= 0) {
+    const temporaries = emitter.frames[frame]
+    releaseTemporaries(mutable emitter, temporaries)
+    frame = frame - 1
+  }
+  let scope = Arrays.length(emitter.scopes) - 1
+  while (scope >= 0) {
+    const frameScope = emitter.scopes[scope]
+    releaseLocals(mutable emitter, frameScope)
+    scope = scope - 1
+  }
+}
+
+// unwindLoop releases the temporaries and locals made inside the innermost
+// loop, for a break or continue.
+export function unwindLoop(mutable emitter: Emitter) uses alloc {
+  const depth = emitter.loopFrames[Arrays.length(emitter.loopFrames) - 1]
+  let frame = Arrays.length(emitter.frames) - 1
+  while (frame >= depth) {
+    const temporaries = emitter.frames[frame]
+    releaseTemporaries(mutable emitter, temporaries)
+    frame = frame - 1
+  }
+  let scope = Arrays.length(emitter.scopes) - 1
+  while (scope >= 0) {
+    const frameScope = emitter.scopes[scope]
+    releaseLocals(mutable emitter, frameScope)
+    if (frameScope.loop) {
+      return
+    }
+    scope = scope - 1
+  }
+}
+
+// hasWork tells a stub whether the checked program needs the feature of a
+// roadmap node, so the stub reports `unsupported:` only when it has work. It
+// scans the facts the checker keeps for every body. Real emitters replace
+// their stub and stop calling it.
+export function hasWork(emitter: Emitter, node: string): bool {
+  for (const info of Arrays.values(emitter.checker.bodies)) {
+    if (bodyNeeds(emitter, info, node)) {
+      return true
+    }
+  }
+  return false
+}
+
+function bodyNeeds(emitter: Emitter, info: BodyInfo, node: string): bool {
+  if (node == "selfhost-emit-closures" && Arrays.length(info.closures) > 0) {
+    return true
+  }
+  for (const slot of Ranges.between(0, Arrays.length(info.refs))) {
+    if (refNeeds(emitter, info.refs[slot], node)) {
+      return true
+    }
+    if (info.types[slot] is Some(slotType)) {
+      if (typeNeeds(slotType, node)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function typeNeeds(type: Type, node: string): bool {
+  if (node == "selfhost-emit-maps") {
+    return type is Type.TMap(_, _)
+  }
+  if (node == "selfhost-emit-closures") {
+    return type is Type.TFunc(_, _)
+  }
+  return false
+}
+
+function refNeeds(emitter: Emitter, ref: Ref, node: string): bool {
+  if (node == "selfhost-emit-traits") {
+    return ref is Ref.TraitFunction(_, _) || ref is Ref.Implementation(_, _)
+  }
+  if (node == "selfhost-emit-match") {
+    return ref is Ref.Narrow(_, _) || ref is Ref.Constructor(_, _)
+  }
+  if (ref is Ref.Builtin(index)) {
+    const module = emitter.checker.registry.functions[index].module
+    if (node == "selfhost-emit-options") {
+      return module == "std/option" || module == "std/result" || module == "std/test"
+    }
+    if (node == "selfhost-emit-std") {
+      return module != "" && module != "std/array" && module != "std/range" && module != "std/box" && module != "std/map" && module != "std/option" && module != "std/result" && module != "std/test"
+    }
+  }
+  return false
+}

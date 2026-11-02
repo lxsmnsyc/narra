@@ -1,0 +1,139 @@
+// The top of the emitter: `narrac emit` (the port of CompileBinary in
+// driver.go) and EmitterWalker, the EmitWalker that the body modules use to
+// reach expressions and statements (contracts/emitter.md).
+import * as Fs from "std/fs"
+import * as Str from "std/string"
+import { Expr, Stmt, Block } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import * as Modules from "narrac/modules"
+import { Package } from "narrac/modules"
+import * as Check from "narrac/check"
+import * as Body from "narrac/body"
+import * as Effects from "narrac/effects"
+import { Emitter, Code, EmitWalker } from "narrac/emitstate"
+import { emitProgram } from "narrac/emit"
+import * as EmitExprs from "narrac/emitexprs"
+import * as EmitStmts from "narrac/emitstmts"
+import * as Arrays from "std/array"
+
+// EmitterWalker forwards the recursion points to the bodies modules.
+struct EmitterWalker implements EmitWalker {}
+
+implement EmitWalker for EmitterWalker {
+  function emitExpression(walker: EmitterWalker, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+    return EmitExprs.emitExpression(walker, mutable emitter, expression)
+  }
+
+  function emitStatement(walker: EmitterWalker, mutable emitter: Emitter, statement: Stmt) uses alloc {
+    EmitStmts.emitStatement(walker, mutable emitter, statement)
+  }
+
+  function emitBlock(walker: EmitterWalker, mutable emitter: Emitter, block: Block, loop: bool) uses alloc {
+    EmitStmts.emitBlock(walker, mutable emitter, block, loop)
+  }
+
+  function emitBlockInScope(walker: EmitterWalker, mutable emitter: Emitter, block: Block) uses alloc {
+    EmitStmts.emitBlockInScope(walker, mutable emitter, block)
+  }
+
+  function emitLvaluePointer(walker: EmitterWalker, mutable emitter: Emitter, expression: Expr): string uses alloc {
+    return EmitExprs.emitLvaluePointer(walker, mutable emitter, expression)
+  }
+}
+
+function printError(text: string) uses io {
+  const _ = Fs.writeText("/dev/stderr", text)
+}
+
+// runEmit is `narrac emit [--tests] [--bin name] <path>`. Exit 0: the C on
+// stdout. Exit 1: load, check or effect errors, or a missing or unknown
+// binary or entry function. Exit 3: C with unsupported markers on stdout, and
+// one `unsupported: ...` line per distinct construct on stderr. Exit 2: usage.
+export function runEmit(arguments: Array<string>): int uses io, alloc {
+  // Options come first, then the path.
+  let tests = false
+  let binaryName = ""
+  let path = ""
+  let index = 2
+  while (index < Arrays.length(arguments)) {
+    const argument = arguments[index]
+    if (argument == "--tests") {
+      tests = true
+    } else if (argument == "--bin" && index + 1 < Arrays.length(arguments)) {
+      index = index + 1
+      binaryName = arguments[index]
+    } else if (path == "" && !Str.startsWith(argument, "--")) {
+      path = argument
+    } else {
+      path = ""
+      index = Arrays.length(arguments)
+    }
+    index = index + 1
+  }
+  if (path == "") {
+    printError("usage: narrac emit [--tests] [--bin name] <path>\n")
+    return 2
+  }
+
+  // Load and check; every error is an `error ...` line on stderr.
+  const loaded = Modules.load(path)
+  if (loaded is Err(errors)) {
+    printError(Modules.errorText(errors))
+    return 1
+  }
+  let checker = Body.checkPackage(loaded.value)
+  if (Arrays.length(checker.errors) == 0) {
+    // The effect pass runs only on a package whose bodies have no errors.
+    const _ = Effects.checkEffects(mutable checker)
+  }
+  if (Arrays.length(checker.errors) > 0) {
+    printError(Check.errorText(checker.errors))
+    return 1
+  }
+
+  // A test build has no entry function; otherwise find the binary's.
+  let entry = -1
+  if (!tests) {
+    const found = findEntry(checker, loaded.value, binaryName)
+    if (found is Err(message)) {
+      printError(`${message}\n`)
+      return 1
+    }
+    entry = found.value
+  }
+
+  // Emit. Markers in the C mean unsupported constructs: exit 3.
+  const result = emitProgram(checker, entry, tests)
+  const written = Fs.writeText("/dev/stdout", result.text)
+  if (written is Err(message)) {
+    printError(`${message}\n`)
+    return 1
+  }
+  if (Arrays.length(result.unsupported) > 0) {
+    for (const construct of Arrays.values(result.unsupported)) {
+      printError(`unsupported: ${construct}\n`)
+    }
+    return 3
+  }
+  return 0
+}
+
+// findEntry returns the Checker.functions index of the entry function of a
+// binary, or Go's CompileBinary message for an unknown binary or a missing entry.
+function findEntry(checker: Check.Checker, package: Package, binaryName: string): Result<int, string> uses alloc {
+  const selected = Modules.binary(package, binaryName)
+  if (selected is Err(message)) {
+    return Err(message)
+  }
+  const binary = selected.value
+  for (const entry of Arrays.values(checker.entries)) {
+    if (entry.binary == binary.name && entry.funcIndex >= 0) {
+      return Ok(entry.funcIndex)
+    }
+  }
+  if (package.single) {
+    return Err(`${package.modules[0].file}: no entry function; declare \`export function run(args: Array<string>): int\``)
+  }
+  const #[modulePath, functionName] = Modules.entryModule(package, binary.entry)
+  return Err(`narra.toml: binary ${quoteGo(binary.name)}: no entry function ${quoteGo(binary.entry)}; declare \`export function ${functionName}(args: Array<string>): int\` in module ${quoteGo(modulePath)}`)
+}

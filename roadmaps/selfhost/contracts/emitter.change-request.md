@@ -1,7 +1,7 @@
 # Change request: emitter v1 to v2
 
 - From node: selfhost-emit-core
-- Status: open
+- Status: accepted
 
 ## Problem
 
@@ -26,3 +26,4 @@ The code already follows the proposed change; `selfhost/src/cnames.nra` is a stu
 
 ## Decision
 
+Accepted by the maintainer on 2026-11-02. emitter.md is v2 and frozen. Points 1 and 2 are forced by the language (no import cycles; `function` is a keyword). Points 3 and 4 add to the contract and change nothing that exists. No affected node has started, so their briefs need no change beyond reading v2.

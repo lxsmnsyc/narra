@@ -1,39 +1,403 @@
 // Type declarations, definitions, reference counting functions and enum
-// allocation (emit_types.go, emit_box.go). Stub from selfhost-emit-core; the
-// owner is selfhost-emit-decls. Every program has types and arrays, so the
-// stubs always have work.
-import { Type } from "narrac/types"
-import { Emitter, Code, reportUnsupported } from "narrac/emitstate"
+// allocation, ported from emit_types.go and emit_box.go by
+// selfhost-emit-decls.
+//
+// The section functions return the C text of one block of Go's Emit. The
+// types come from Checker.order and the arrays and boxes from
+// Checker.composites, sorted as Go sorts Program.Arrays and Program.Boxes.
+import * as Int from "std/int"
+import * as Str from "std/string"
 import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import { Type, Variant, isBoxedEnum } from "narrac/types"
+import { Checker } from "narrac/check"
+import { typeId, cType, payloadName, opFuncName } from "narrac/cnames"
+import { Emitter, Code, reportUnsupported, writeLine, needsRc, underlyingType, retainCode, releaseCode } from "narrac/emitstate"
 
-const NODE = "selfhost-emit-decls"
+function fieldName(name: string): string uses alloc {
+  return `f_${name}`
+}
+
+function variantName(variant: Variant): string uses alloc {
+  return `v_${variant.name}`
+}
+
+// findEnumIndex is the Checker.enums index of an enum type, or -1.
+function findEnumIndex(type: Type): int {
+  return match (type) {
+    Type.TEnum(index) => index
+    _ => 0 - 1
+  }
+}
+
+function isBoxedEnumType(checker: Checker, type: Type): bool {
+  const index = findEnumIndex(type)
+  return index >= 0 && isBoxedEnum(checker.enums[index])
+}
+
+// An array or box type with the key Go sorts it by.
+struct SortItem {
+  key: string
+  type: Type
+}
+
+// mergeSort orders items by key in byte order. It is stable.
+function mergeSort(items: Array<SortItem>): Array<SortItem> uses alloc {
+  const count = Arrays.length(items)
+  if (count < 2) {
+    return items
+  }
+  const middle = count / 2
+  let left: Array<SortItem> = []
+  let right: Array<SortItem> = []
+  for (const index of Ranges.between(0, count)) {
+    if (index < middle) {
+      Arrays.push(mutable left, items[index])
+    } else {
+      Arrays.push(mutable right, items[index])
+    }
+  }
+  const sortedLeft = mergeSort(left)
+  const sortedRight = mergeSort(right)
+  let merged: Array<SortItem> = []
+  let leftIndex = 0
+  let rightIndex = 0
+  while (leftIndex < Arrays.length(sortedLeft) || rightIndex < Arrays.length(sortedRight)) {
+    if (rightIndex >= Arrays.length(sortedRight) || (leftIndex < Arrays.length(sortedLeft) && sortedLeft[leftIndex].key <= sortedRight[rightIndex].key)) {
+      Arrays.push(mutable merged, sortedLeft[leftIndex])
+      leftIndex = leftIndex + 1
+    } else {
+      Arrays.push(mutable merged, sortedRight[rightIndex])
+      rightIndex = rightIndex + 1
+    }
+  }
+  return merged
+}
+
+// compositeTypes lists the program's array types (boxes false) or box types
+// (boxes true) by the type id of their element, as Go's Program.Arrays and
+// Program.Boxes.
+function compositeTypes(emitter: Emitter, boxes: bool): Array<Type> uses alloc {
+  let items: Array<SortItem> = []
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (!boxes) {
+      if (composite is Type.TArray(element)) {
+        Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, element), type: composite })
+      }
+    } else {
+      if (composite is Type.TBox(boxElement)) {
+        Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, boxElement), type: composite })
+      }
+    }
+  }
+  let sorted: Array<Type> = []
+  for (const item of Arrays.values(mergeSort(items))) {
+    Arrays.push(mutable sorted, item.type)
+  }
+  return sorted
+}
+
+// containerName is the C struct name of an array or box type (its C type without "*").
+function containerName(emitter: Emitter, type: Type): string uses alloc {
+  const name = cType(emitter.checker, type)
+  return Str.slice(name, 0, Str.length(name) - 1)
+}
+
+// getElementType is the element type of an array or box type.
+function getElementType(type: Type): Type {
+  return match (type) {
+    Type.TArray(element) => element
+    Type.TBox(element) => element
+    _ => type
+  }
+}
 
 // emitHeapTypedefs writes the forward declarations of box and enum payload structs.
 export function emitHeapTypedefs(mutable emitter: Emitter): string uses alloc {
-  return `${reportUnsupported(mutable emitter, "heap typedefs", NODE)}\n`
+  let builder = Str.builder()
+  // Boxes first, then the payload of each boxed enum.
+  for (const box of Arrays.values(compositeTypes(emitter, true))) {
+    const name = containerName(emitter, box)
+    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+  }
+  for (const type of Arrays.values(emitter.checker.order)) {
+    if (isBoxedEnumType(emitter.checker, type)) {
+      const payload = payloadName(emitter.checker, type)
+      Str.append(mutable builder, `typedef struct ${payload} ${payload};\n`)
+    }
+  }
+  return Str.build(builder)
 }
 
-// emitTypeDefinitions writes the struct of every type and the array structs.
+// emitTypeDefinitions writes the struct of every struct and enum. The array
+// structs are written by emit.nra.
 export function emitTypeDefinitions(mutable emitter: Emitter): string uses alloc {
-  return `${reportUnsupported(mutable emitter, "type definitions", NODE)}\n`
+  let builder = Str.builder()
+  for (const type of Arrays.values(emitter.checker.order)) {
+    Str.append(mutable builder, typeDefinition(emitter, type))
+  }
+  return Str.build(builder)
 }
 
+// typeDefinition is the C struct of one struct or enum (Go's typeDef).
+function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
+  const name = cType(emitter.checker, type)
+  if (type is Type.TStruct(structIndex)) {
+    let text = `struct ${name} {`
+    const fields = emitter.checker.structs[structIndex].fields
+    if (Arrays.length(fields) == 0) {
+      text = `${text} char unused;`
+    }
+    for (const field of Arrays.values(fields)) {
+      text = `${text} ${cType(emitter.checker, field.fieldType)} ${fieldName(field.name)};`
+    }
+    return `${text} };\n`
+  }
+  if (type is Type.TEnum(enumIndex)) {
+    if (isBoxedEnum(emitter.checker.enums[enumIndex])) {
+      return `struct ${name} { int32_t tag; ${payloadName(emitter.checker, type)}* u; };\n`
+    }
+    return `struct ${name} { int32_t tag; };\n`
+  }
+  return ""
+}
+
+// emitHeapDefinitions writes the enum payload structs and the box structs,
+// after every value type is complete.
 export function emitHeapDefinitions(mutable emitter: Emitter): string uses alloc {
-  return `${reportUnsupported(mutable emitter, "heap definitions", NODE)}\n`
+  let builder = Str.builder()
+  for (const type of Arrays.values(emitter.checker.order)) {
+    if (isBoxedEnumType(emitter.checker, type)) {
+      Str.append(mutable builder, `struct ${payloadName(emitter.checker, type)} { int64_t rc; int32_t tag; union {`)
+      const index = findEnumIndex(type)
+      for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+        if (Arrays.length(variant.fields) > 0) {
+          Str.append(mutable builder, " struct {")
+          for (const field of Arrays.values(variant.fields)) {
+            Str.append(mutable builder, ` ${cType(emitter.checker, field.fieldType)} ${fieldName(field.name)};`)
+          }
+          Str.append(mutable builder, ` } ${variantName(variant)};`)
+        }
+      }
+      Str.append(mutable builder, " }; };\n")
+    }
+  }
+  for (const box of Arrays.values(compositeTypes(emitter, true))) {
+    Str.append(mutable builder, `struct ${containerName(emitter, box)} { int64_t rc; ${cType(emitter.checker, getElementType(box))} ${fieldName("value")}; };\n`)
+  }
+  return Str.build(builder)
 }
 
+// emitBoxPrototypes declares the retain and release function of each box.
 export function emitBoxPrototypes(mutable emitter: Emitter): string uses alloc {
-  return `${reportUnsupported(mutable emitter, "box prototypes", NODE)}\n`
+  let builder = Str.builder()
+  for (const box of Arrays.values(compositeTypes(emitter, true))) {
+    const name = containerName(emitter, box)
+    Str.append(mutable builder, `static void ${name}_retain(${name}* a);\nstatic void ${name}_release(${name}* a);\n`)
+  }
+  return Str.build(builder)
 }
 
 // emitRcFunctions writes the retain and release prototypes and functions of
 // types, arrays and boxes.
 export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
-  return `${reportUnsupported(mutable emitter, "reference counting functions", NODE)}\n`
+  let builder = Str.builder()
+  const arrays = compositeTypes(emitter, false)
+  // Prototypes: types that need counting, then arrays.
+  for (const type of Arrays.values(emitter.checker.order)) {
+    if (needsRc(emitter, type)) {
+      const retainName = opFuncName("retain", typeId(emitter.checker, type))
+      const releaseName = opFuncName("release", typeId(emitter.checker, type))
+      const name = cType(emitter.checker, type)
+      Str.append(mutable builder, `static void ${retainName}(${name} v);\nstatic void ${releaseName}(${name} v);\n`)
+    }
+  }
+  for (const array of Arrays.values(arrays)) {
+    const name = containerName(emitter, array)
+    Str.append(mutable builder, `static void ${name}_retain(${name}* a);\nstatic void ${name}_release(${name}* a);\n`)
+  }
+  // Functions: types, then arrays, then boxes.
+  for (const type of Arrays.values(emitter.checker.order)) {
+    Str.append(mutable builder, typeRcFunctions(emitter, type))
+  }
+  for (const array of Arrays.values(arrays)) {
+    Str.append(mutable builder, arrayFunctions(emitter, array))
+  }
+  for (const box of Arrays.values(compositeTypes(emitter, true))) {
+    Str.append(mutable builder, boxFunctions(emitter, box))
+  }
+  return Str.build(builder)
 }
 
-// enumAllocation is the C expression that builds an enum value of a variant
-// from the C texts of its fields.
+// typeRcFunctions writes the drop, retain and release functions of one struct
+// or enum (Go's rcFuncs).
+function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
+  if (!needsRc(emitter, type)) {
+    return ""
+  }
+  let builder = Str.builder()
+  const name = cType(emitter.checker, type)
+  const id = typeId(emitter.checker, type)
+  if (type is Type.TEnum(enumIndex)) {
+    // The drop function runs when the count reaches zero. Releasing a child
+    // there queues it (narra_drop) instead of recursing, so the depth of a
+    // structure does not use the C stack.
+    const payload = payloadName(emitter.checker, type)
+    Str.append(mutable builder, `static void ${opFuncName("drop", id)}(void* p) {\n  ${payload}* q = p;\n  switch (q->tag) {\n`)
+    for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+      let statements: Array<string> = []
+      for (const field of Arrays.values(variant.fields)) {
+        const statement = releaseCode(emitter, field.fieldType, `q->${variantName(variant)}.${fieldName(field.name)}`)
+        if (statement != "") {
+          Arrays.push(mutable statements, statement)
+        }
+      }
+      if (Arrays.length(statements) > 0) {
+        Str.append(mutable builder, `  case ${Int.toString(variant.index)}: ${Str.join(statements, " ")} break;\n`)
+      }
+    }
+    Str.append(mutable builder, "  default: break;\n  }\n  narra_free(q);\n}\n")
+  }
+  for (const operation of Arrays.values(["retain", "release"])) {
+    Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${name} v) {\n`)
+    if (type is Type.TStruct(structIndex)) {
+      for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+        const value = `v.${fieldName(field.name)}`
+        let statement = retainCode(emitter, field.fieldType, value)
+        if (operation == "release") {
+          statement = releaseCode(emitter, field.fieldType, value)
+        }
+        if (statement != "") {
+          Str.append(mutable builder, `  ${statement}\n`)
+        }
+      }
+    }
+    if (type is Type.TEnum(_)) {
+      if (operation == "retain") {
+        Str.append(mutable builder, "  if (v.u) v.u->rc++;\n")
+      } else {
+        Str.append(mutable builder, `  if (v.u && --v.u->rc == 0) narra_drop(v.u, ${opFuncName("drop", id)});\n`)
+      }
+    }
+    Str.append(mutable builder, "}\n")
+  }
+  return Str.build(builder)
+}
+
+// arrayFunctions writes the C functions of one array type (Go's arrayFuncs).
+function arrayFunctions(emitter: Emitter, array: Type): string uses alloc {
+  const n = containerName(emitter, array)
+  const element = getElementType(array)
+  const et = cType(emitter.checker, element)
+  const rel = releaseCode(emitter, element, "a->items[i]")
+  const ret = retainCode(emitter, element, "c->items[i]")
+  const retAll = retainCode(emitter, element, "a->items[i]")
+  return `
+static ${n}* ${n}_new(int64_t cap) {
+  ${n}* a = narra_alloc(sizeof(${n}));
+  a->rc = 1; a->len = 0; a->cap = cap;
+  a->items = narra_alloc(sizeof(${et}) * (size_t)(cap > 0 ? cap : 1));
+  return a;
+}
+static void ${n}_retain(${n}* a) { a->rc++; }
+static void ${n}_release(${n}* a) {
+  if (--a->rc == 0) {
+    for (int64_t i = 0; i < a->len; i++) { ${rel} }
+    narra_free(a->items);
+    narra_free(a);
+  }
+}
+// Returns an array the caller owns alone, copying it when it is shared.
+static ${n}* ${n}_unique(${n}* a) {
+  if (a->rc == 1) return a;
+  ${n}* c = ${n}_new(a->cap);
+  memcpy(c->items, a->items, sizeof(${et}) * (size_t)a->len);
+  c->len = a->len;
+  for (int64_t i = 0; i < c->len; i++) { ${ret} }
+  a->rc--;
+  return c;
+}
+static void ${n}_push(${n}** p, ${et} v) {
+  ${n}* a = ${n}_unique(*p);
+  if (a->len == a->cap) {
+    a->cap = a->cap ? a->cap * 2 : 4;
+    a->items = narra_realloc(a->items, sizeof(${et}) * (size_t)a->cap);
+  }
+  a->items[a->len++] = v;
+  *p = a;
+}
+static ${et} ${n}_get(${n}* a, int64_t i, const char* where) {
+  narra_bounds(i, a->len, where);
+  return a->items[i];
+}
+static ${et}* ${n}_at(${n}** p, int64_t i, const char* where) {
+  *p = ${n}_unique(*p);
+  narra_bounds(i, (*p)->len, where);
+  return &(*p)->items[i];
+}
+static ${n}* ${n}_filled(${et} v, int64_t n, const char* where) {
+  if (n < 0) narra_panic(where, "Array.filled with a negative count");
+  ${n}* a = ${n}_new(n);
+  for (int64_t i = 0; i < n; i++) { a->items[i] = v; ${retAll} }
+  a->len = n;
+  return a;
+}
+`
+}
+
+// boxFunctions writes the C functions of one box type (Go's boxFuncs).
+function boxFunctions(emitter: Emitter, box: Type): string uses alloc {
+  const n = containerName(emitter, box)
+  const element = getElementType(box)
+  const et = cType(emitter.checker, element)
+  const rel = releaseCode(emitter, element, "a->f_value")
+  return `
+static ${n}* ${n}_new(${et} v) {
+  ${n}* a = narra_alloc(sizeof(${n}));
+  a->rc = 1; a->f_value = v;
+  return a;
+}
+static void ${n}_retain(${n}* a) { a->rc++; }
+static void ${n}_drop(void* p) {
+  ${n}* a = p;
+  ${rel}
+  narra_free(a);
+}
+static void ${n}_release(${n}* a) {
+  if (--a->rc == 0) narra_drop(a, ${n}_drop);
+}
+`
+}
+
+// enumAllocation emits the allocation of a variant's payload and returns the C
+// value of the enum. fields are the already consumed field values, in order.
+// The result is not owned: the caller wraps it in an owned temporary when it
+// needs one.
 export function enumAllocation(mutable emitter: Emitter, enumType: Type, variant: int, fields: Array<string>): Code uses alloc {
-  return Code { text: reportUnsupported(mutable emitter, "enum allocation", NODE), owned: false }
+  const baseType = underlyingType(emitter, enumType)
+  const enumIndex = match (baseType) {
+    Type.TEnum(index) => index
+    _ => 0 - 1
+  }
+  if (enumIndex < 0) {
+    return Code { text: reportUnsupported(mutable emitter, "enum allocation", "selfhost-emit-decls"), owned: false }
+  }
+  const info = emitter.checker.enums[enumIndex].variants[variant]
+  const name = cType(emitter.checker, baseType)
+  const tag = Int.toString(info.index)
+  if (Arrays.length(fields) == 0) {
+    return Code { text: `((${name}){.tag = ${tag}})`, owned: false }
+  }
+  // A variant with fields lives in a heap payload.
+  emitter.tempCount = emitter.tempCount + 1
+  const pointer = `q${Int.toString(emitter.tempCount)}`
+  const payload = payloadName(emitter.checker, baseType)
+  writeLine(mutable emitter, `${payload}* ${pointer} = narra_alloc(sizeof(${payload}));`)
+  writeLine(mutable emitter, `${pointer}->rc = 1; ${pointer}->tag = ${tag};`)
+  for (const index of Ranges.between(0, Arrays.length(info.fields))) {
+    writeLine(mutable emitter, `${pointer}->${variantName(info)}.${fieldName(info.fields[index].name)} = ${fields[index]};`)
+  }
+  return Code { text: `((${name}){.tag = ${tag}, .u = ${pointer}})`, owned: false }
 }

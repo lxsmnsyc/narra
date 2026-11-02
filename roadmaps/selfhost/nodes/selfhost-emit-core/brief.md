@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-core
 title: Self-hosted emitter: contract, state, skeleton, driver and harness
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 262000
 owns:
   - selfhost/src/emitstate.nra
   - selfhost/src/emit.nra

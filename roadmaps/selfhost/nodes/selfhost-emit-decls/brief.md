@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-decls
 title: Self-hosted emitter: struct, enum, array and box declarations and reference counting
-status: todo
+status: active
 priority: must
 type: feature
 story:

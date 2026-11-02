@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-program
 title: Self-hosted emitter: C names, xxHash32 and the checker facts the emitter reads
-status: todo
+status: active
 priority: must
 type: feature
 story:

@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-bodies
 title: Self-hosted emitter: functions, statements, expressions, calls and constants
-status: todo
+status: active
 priority: must
 type: feature
 story:

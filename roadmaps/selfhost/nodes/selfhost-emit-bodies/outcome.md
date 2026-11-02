@@ -36,6 +36,11 @@
 - `cd compiler && go test -count=1 ./internal/narra -run TestSelfhostEmit`: pass.
 - `cd compiler && go vet ./... && go test -count=1 ./...`: pass (go vet clean; narra/internal/narra ok in 193 s).
 
+## Review fixes
+
+- `.gitignore` gains `/narrac` and `/narrac.dSYM/` (a built binary at the repo root had been committed by mistake and was removed from the branch history).
+- The match skip entries are real: `patterns_tuple_shapes.nra` reports `destructuring (selfhost-emit-match)` and `literal_type_args.nra` reports `spread literal (selfhost-emit-match)`.
+
 ## Size
 
 - Estimated M, actual M (about 1,000 Narra lines).

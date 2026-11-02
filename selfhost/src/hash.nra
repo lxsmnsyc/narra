@@ -1,20 +1,97 @@
-// Hashing for C names (xxh32 and the module hash), ported from cnames.go by
-// selfhost-emit-program. Stub from selfhost-emit-core: the frozen signatures
-// return placeholders, and nothing calls them while Checker.programRecorded is
-// false.
+// Hashing for C names: xxHash32 and the module hash, ported from cnames.go.
+// This module imports std only, so modules.nra can use it for the module hash
+// clash check.
+//
+// An int is 64 bits, so every 32-bit value is kept in 0 <= value < 2^32 and a
+// wrapping product or sum is cut with MASK.
+import * as Int from "std/int"
+import * as Str from "std/string"
 
+const MASK = 4294967295
+const PRIME1 = 2654435761
+const PRIME2 = 2246822519
+const PRIME3 = 3266489917
+const PRIME4 = 668265263
+const PRIME5 = 374761393
+
+// rotateLeft32 rotates a 32-bit value left by 1 to 31 bits.
+function rotateLeft32(value: int, bits: int): int {
+  return ((value << bits) | (value >> (32 - bits))) & MASK
+}
+
+// multiply32 is the low 32 bits of a product.
+function multiply32(left: int, right: int): int {
+  return (left *% right) & MASK
+}
+
+// readWord32 reads four bytes at offset as a little-endian word.
+function readWord32(text: string, offset: int): int {
+  return Str.byteAt(text, offset) | (Str.byteAt(text, offset + 1) << 8) | (Str.byteAt(text, offset + 2) << 16) | (Str.byteAt(text, offset + 3) << 24)
+}
+
+// round32 folds one word into a lane of the 16-byte loop.
+function round32(accumulator: int, word: int): int {
+  return multiply32(rotateLeft32((accumulator +% multiply32(word, PRIME2)) & MASK, 13), PRIME1)
+}
+
+// xxh32 is the xxHash32 of the bytes of text with a seed.
 export function xxh32(text: string, seed: int): int {
-  return 0
+  const length = Str.length(text)
+  let offset = 0
+  let hash = 0
+  if (length >= 16) {
+    // Four lanes take 16 bytes at a time.
+    let lane1 = (seed +% PRIME1 +% PRIME2) & MASK
+    let lane2 = (seed +% PRIME2) & MASK
+    let lane3 = seed & MASK
+    let lane4 = (seed -% PRIME1) & MASK
+    while (offset + 16 <= length) {
+      lane1 = round32(lane1, readWord32(text, offset))
+      lane2 = round32(lane2, readWord32(text, offset + 4))
+      lane3 = round32(lane3, readWord32(text, offset + 8))
+      lane4 = round32(lane4, readWord32(text, offset + 12))
+      offset = offset + 16
+    }
+    hash = (rotateLeft32(lane1, 1) +% rotateLeft32(lane2, 7) +% rotateLeft32(lane3, 12) +% rotateLeft32(lane4, 18)) & MASK
+  } else {
+    hash = (seed +% PRIME5) & MASK
+  }
+  hash = (hash +% length) & MASK
+  // Whole words, then single bytes.
+  while (offset + 4 <= length) {
+    hash = multiply32(rotateLeft32((hash +% multiply32(readWord32(text, offset), PRIME3)) & MASK, 17), PRIME4)
+    offset = offset + 4
+  }
+  while (offset < length) {
+    hash = multiply32(rotateLeft32((hash +% multiply32(Str.byteAt(text, offset), PRIME5)) & MASK, 11), PRIME1)
+    offset = offset + 1
+  }
+  // Final mix.
+  hash = hash ^ (hash >> 15)
+  hash = multiply32(hash, PRIME2)
+  hash = hash ^ (hash >> 13)
+  hash = multiply32(hash, PRIME3)
+  hash = hash ^ (hash >> 16)
+  return hash
 }
 
-export function hex8(value: int): string {
-  return "00000000"
+// hex8 is a 32-bit value as eight lowercase hex digits.
+export function hex8(value: int): string uses alloc {
+  const digits = Int.toHex(value)
+  return `${Str.repeat("0", 8 - Str.length(digits))}${digits}`
 }
 
-export function relativeModule(path: string): string {
+// relativeModule drops the package name from a module path ("app/text" gives
+// "text"). A path with no "/" stays whole.
+export function relativeModule(path: string): string uses alloc {
+  if (Str.indexOf(path, "/") is Some(index)) {
+    return Str.sliceFrom(path, index + 1)
+  }
   return path
 }
 
-export function moduleHash(path: string): string {
-  return hex8(xxh32(path, 0))
+// moduleHash is the hash segment of a module's names. It does not depend on
+// the package name or on where the package is on disk.
+export function moduleHash(path: string): string uses alloc {
+  return hex8(xxh32(relativeModule(path), 0))
 }

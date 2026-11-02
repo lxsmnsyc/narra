@@ -1,57 +1,190 @@
-// C names, ported from cnames.go by selfhost-emit-program. Stub from
-// selfhost-emit-core: the signatures are the contract's, but they take the
-// Checker instead of the Emitter (emitstate.nra imports this module, so it
-// cannot take an Emitter; see contracts/emitter.change-request.md). Nothing
-// calls them while Checker.programRecorded is false.
-import { Type } from "narrac/types"
-import { Checker, ProgramFunc } from "narrac/check"
+// C names, ported from cnames.go. The functions take the Checker, not the
+// Emitter: emitstate.nra defines the Emitter and imports this module (see
+// contracts/emitter.md).
+//
+// Go registers each name lazily in a process-wide table. Here the names are
+// pure functions of the Checker, and checkNameCollisions checks the table once
+// over everything that has a name.
+//
+// - A declaration is <kind>_<module hash>_<name>: f_3fa9c1e7_show. The prelude
+//   (module "") has no hash: f_show, E_Ordering.
+// - A composite type (generic instance, tuple, function type, array) is
+//   interned: its name is <kind>_<head>_<hash>, where the hash folds the head,
+//   the arity and the names of the arguments in order.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import { Type, typeKey } from "narrac/types"
+import { Checker, ProgramFunc, findBody, containsTypeParameter } from "narrac/check"
+import { xxh32, hex8, relativeModule, moduleHash } from "narrac/hash"
 
-export function typeId(checker: Checker, type: Type): string {
-  return "x"
+// declHead is <module hash>_<name>, or the name alone in the prelude.
+function declHead(module: string, name: string): string uses alloc {
+  if (module == "") {
+    return name
+  }
+  return `${moduleHash(module)}_${name}`
+}
+
+// joinIds joins type ids with "|".
+function joinIds(typeIds: Array<string>): string uses alloc {
+  return Str.join(typeIds, "|")
+}
+
+// typeIds lists the type id of each type.
+function typeIds(checker: Checker, types: Array<Type>): Array<string> uses alloc {
+  let ids: Array<string> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable ids, typeId(checker, type))
+  }
+  return ids
+}
+
+// declName names a declaration: kind is "f", "S", "E", "D", "G" or "g".
+export function declName(kind: string, module: string, name: string): string uses alloc {
+  return `${kind}_${declHead(module, name)}`
+}
+
+// internedName names a composite type from its head and the names of its arguments.
+export function internedName(kind: string, head: string, arguments: Array<string>): string uses alloc {
+  const fold = `${head}|${Int.toString(Arrays.length(arguments))}|${joinIds(arguments)}`
+  return `${kind}_${head}_${hex8(xxh32(fold, 0))}`
+}
+
+// structName is the C struct name of a struct type, without a pointer star.
+function structName(checker: Checker, index: int): string uses alloc {
+  const info = checker.structs[index]
+  if (info.tuple) {
+    return internedName("S", `Tuple${Int.toString(Arrays.length(info.arguments))}`, typeIds(checker, info.arguments))
+  }
+  if (Arrays.length(info.arguments) == 0) {
+    return declName("S", info.module, info.name)
+  }
+  return internedName("S", declHead(info.module, info.name), typeIds(checker, info.arguments))
+}
+
+function enumName(checker: Checker, index: int): string uses alloc {
+  const info = checker.enums[index]
+  if (Arrays.length(info.arguments) == 0) {
+    return declName("E", info.module, info.name)
+  }
+  return internedName("E", declHead(info.module, info.name), typeIds(checker, info.arguments))
+}
+
+// functionTypeName is the struct of a function value: the parameters, then the
+// result, as arguments of the head Fn<n>.
+function functionTypeName(checker: Checker, parameters: Array<Type>, result: Type): string uses alloc {
+  let ids = typeIds(checker, parameters)
+  Arrays.push(mutable ids, typeId(checker, result))
+  return internedName("F", `Fn${Int.toString(Arrays.length(parameters))}`, ids)
+}
+
+// typeId is the C name of a type without a pointer star: the name that stands
+// for the type inside a bigger type's name (Go's typeID).
+export function typeId(checker: Checker, type: Type): string uses alloc {
+  return match (type) {
+    Type.TInt => "int"
+    Type.TF64 => "f64"
+    Type.TBool => "bool"
+    Type.TChar => "char"
+    Type.TStr => "string"
+    Type.TVoid => "void"
+    Type.TStringBuilder => "StringBuilder"
+    Type.TStruct(index) => structName(checker, index)
+    Type.TEnum(index) => enumName(checker, index)
+    Type.TDistinct(index) => declName("D", checker.distincts[index].module, checker.distincts[index].name)
+    Type.TParam(index) => `P_${checker.parameters[index].name}_${Int.toString(index)}`
+    Type.TArray(element) => internedName("A", "Array", [typeId(checker, element)])
+    Type.TBox(element) => internedName("B", "Box", [typeId(checker, element)])
+    Type.TMap(key, valueType) => internedName("M", "Map", [typeId(checker, key), typeId(checker, valueType)])
+    Type.TFunc(parameters, result) => functionTypeName(checker, parameters, result)
+    _ => "x"
+  }
 }
 
 // cType is Go's CName(): the C type, with "*" for arrays, boxes and maps and
 // "void*" for a type parameter.
-export function cType(checker: Checker, type: Type): string {
-  return "x"
+export function cType(checker: Checker, type: Type): string uses alloc {
+  return match (type) {
+    Type.TInt => "int64_t"
+    Type.TF64 => "double"
+    Type.TBool => "bool"
+    Type.TChar => "uint32_t"
+    Type.TStr => "lstr*"
+    Type.TStringBuilder => "narra_sb*"
+    Type.TVoid => "void"
+    Type.TParam(_) => "void*"
+    Type.TArray(_) => `${typeId(checker, type)}*`
+    Type.TBox(_) => `${typeId(checker, type)}*`
+    Type.TMap(_, _) => `${typeId(checker, type)}*`
+    Type.TDistinct(index) => cDistinctType(checker, index)
+    Type.TStruct(_) => typeId(checker, type)
+    Type.TEnum(_) => typeId(checker, type)
+    Type.TFunc(_, _) => typeId(checker, type)
+    _ => "void"
+  }
 }
 
-export function declName(kind: string, module: string, name: string): string uses alloc {
-  return `${kind}_${name}`
+// cDistinctType is the C type of a distinct type: its base's.
+function cDistinctType(checker: Checker, index: int): string uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return cType(checker, base)
+  }
+  return "void"
 }
 
-export function internedName(kind: string, head: string, arguments: Array<string>): string uses alloc {
-  return `${kind}_${head}`
+// payloadName is the heap struct that holds the fields of a boxed enum's
+// variants. Its kind letter is its own, so no declaration name can equal it.
+export function payloadName(checker: Checker, enumType: Type): string uses alloc {
+  return `Q${Str.sliceFrom(typeId(checker, enumType), 1)}`
 }
 
-export function payloadName(checker: Checker, enumType: Type): string {
-  return "x"
+// instanceName is the function name of a generic function instance.
+export function instanceName(module: string, name: string, typeIds: Array<string>): string uses alloc {
+  const fold = `${declHead(module, name)}|${Int.toString(Arrays.length(typeIds))}|${joinIds(typeIds)}`
+  return `${name}_${hex8(xxh32(fold, 0))}`
 }
 
-export function functionName(checker: Checker, program: ProgramFunc): string {
-  return "x"
+// implName is the function name of a function in an `implement` block. The
+// hash folds the type, the trait with its module, and the function, so no
+// separator rule is needed.
+export function implName(typeName: string, traitModule: string, traitName: string, member: string): string uses alloc {
+  const fold = `${typeName}|${relativeModule(traitModule)}|${traitName}|${member}`
+  return `${typeName}_${traitName}_${member}_${hex8(xxh32(fold, 0))}`
 }
 
-export function instanceName(module: string, name: string, typeIds: Array<string>): string {
-  return name
+// declaredTypeName is the declared name of a struct or enum, without type arguments.
+function declaredTypeName(checker: Checker, type: Type): string {
+  return match (type) {
+    Type.TStruct(index) => checker.structs[index].name
+    Type.TEnum(index) => checker.enums[index].name
+    _ => ""
+  }
 }
 
-export function implName(typeName: string, traitModule: string, traitName: string, member: string): string {
-  return member
-}
-
+// opFuncName names a function the emitter generates for a type, such as eq,
+// retain or release. The operation comes first, so no declaration name can
+// equal it.
 export function opFuncName(operation: string, typeIdText: string): string uses alloc {
   return `${operation}_${typeIdText}`
 }
 
+// closureName names the C function, environment or drop function of an arrow
+// function: kind is "k", "K" or "D". The owner is the C name of the enclosing
+// function (f_<hash>_<name>), and count counts its arrows from 1.
 export function closureName(kind: string, owner: string, count: int): string uses alloc {
-  return `${kind}${owner}`
+  return `${kind}${Str.sliceFrom(owner, 1)}_${Int.toString(count)}`
 }
 
+// thunkName names the thunk of a named function used as a value.
 export function thunkName(owner: string): string uses alloc {
-  return `w${owner}`
+  return `w${Str.sliceFrom(owner, 1)}`
 }
 
+// constName and constGetterName name the storage and the getter of a
+// top-level constant that is built on first use.
 export function constName(module: string, name: string): string uses alloc {
   return declName("G", module, name)
 }
@@ -60,7 +193,132 @@ export function constGetterName(module: string, name: string): string uses alloc
   return declName("g", module, name)
 }
 
-// checkNameCollisions runs once after naming; Some(message) is an internal error.
-export function checkNameCollisions(checker: Checker): Option<string> {
+// The module and the function name Go gives a function of the program (its
+// FuncDecl.Module and FuncDecl.Name).
+struct FuncNames {
+  module: string
+  name: string
+}
+
+function funcNames(checker: Checker, program: ProgramFunc): FuncNames uses alloc {
+  return match (program) {
+    ProgramFunc.PlainFunc(funcIndex) => FuncNames { module: checker.functions[funcIndex].module, name: checker.functions[funcIndex].name }
+    ProgramFunc.InstanceFunc(instance) => instanceFuncNames(checker, instance)
+    ProgramFunc.ImplFunc(block, index) => implFuncNames(checker, block, index)
+  }
+}
+
+function instanceFuncNames(checker: Checker, instance: int): FuncNames uses alloc {
+  const info = checker.functions[checker.instanceList[instance].funcIndex]
+  const ids = typeIds(checker, checker.instanceList[instance].typeArguments)
+  return FuncNames { module: info.module, name: instanceName(info.module, info.name, ids) }
+}
+
+// implFuncNames: the function's module is the module of the implement block.
+function implFuncNames(checker: Checker, block: int, index: int): FuncNames uses alloc {
+  const impl = checker.implementations[block]
+  const traitInfo = checker.traits[impl.traitIndex]
+  const member = impl.functions[index].name
+  const name = implName(declaredTypeName(checker, impl.forType), traitInfo.module, traitInfo.name, member)
+  return FuncNames { module: checker.scopes[impl.scope].path, name: name }
+}
+
+// functionName is the C name of a function of the program: f_<hash>_<name>.
+export function functionName(checker: Checker, program: ProgramFunc): string uses alloc {
+  const names = funcNames(checker, program)
+  return declName("f", names.module, names.name)
+}
+
+// functionSignature is Go's signature(): `static <result> <name>(<parameters>)`.
+// The parameter names are the C names of the body's locals, which the checker
+// declares first, in order.
+export function functionSignature(checker: Checker, program: ProgramFunc): string uses alloc {
+  let parameterTypes: Array<Type> = []
+  let declared = checker.functions[0].declaration
+  let result = Type.TVoid
+  let key = ""
+  match (program) {
+    ProgramFunc.PlainFunc(funcIndex) => {
+      declared = checker.functions[funcIndex].declaration
+      result = checker.functions[funcIndex].result
+      for (const param of Arrays.values(declared.parameters)) {
+        Arrays.push(mutable parameterTypes, checker.paramTypes[param.id])
+      }
+      key = `func|${Int.toString(funcIndex)}`
+    }
+    ProgramFunc.InstanceFunc(instance) => {
+      declared = checker.functions[checker.instanceList[instance].funcIndex].declaration
+      result = checker.instanceList[instance].result
+      parameterTypes = checker.instanceList[instance].parameters
+      key = `inst|${Int.toString(instance)}`
+    }
+    ProgramFunc.ImplFunc(block, index) => {
+      declared = checker.implementations[block].functions[index].declaration
+      result = checker.implementations[block].functions[index].result
+      for (const param of Arrays.values(declared.parameters)) {
+        Arrays.push(mutable parameterTypes, checker.paramTypes[param.id])
+      }
+      key = `impl|${Int.toString(block)}|${Int.toString(index)}`
+    }
+  }
+  const bodyIndex = findBody(checker, key)
+  let parts: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(declared.parameters))) {
+    let name = "v"
+    if (bodyIndex >= 0) {
+      const local = checker.bodies[bodyIndex].locals[index]
+      name = `v_${local.name}_${Int.toString(local.number)}`
+    }
+    let star = ""
+    if (declared.parameters[index].isMutable) {
+      star = "*"
+    }
+    Arrays.push(mutable parts, `${cType(checker, parameterTypes[index])}${star} ${name}`)
+  }
+  if (Arrays.length(parts) == 0) {
+    parts = ["void"]
+  }
+  return `static ${cType(checker, result)} ${functionName(checker, program)}(${Str.join(parts, ", ")})`
+}
+
+// checkNameCollisions checks, once after naming, that no two different things
+// got one C name. Some(message) is an internal error.
+export function checkNameCollisions(checker: Checker): Option<string> uses alloc {
+  let seen: Map<string, string> = Map {}
+  for (const program of Arrays.values(checker.programFunctions)) {
+    const names = funcNames(checker, program)
+    const key = `f|${relativeModule(names.module)}|${names.name}`
+    const clash = noteName(mutable seen, functionName(checker, program), key)
+    if (clash is Some(_)) {
+      return clash
+    }
+  }
+  for (const type of Arrays.values(checker.order)) {
+    const clash = noteName(mutable seen, typeId(checker, type), `type|${typeKey(type)}`)
+    if (clash is Some(_)) {
+      return clash
+    }
+  }
+  for (const entry of Maps.entries(checker.composites)) {
+    const #[_, type] = entry
+    if (!containsTypeParameter(checker, type)) {
+      const clash = noteName(mutable seen, typeId(checker, type), `type|${typeKey(type)}`)
+      if (clash is Some(_)) {
+        return clash
+      }
+    }
+  }
+  return None
+}
+
+// noteName records what a C name stands for and returns the error if it already
+// stands for something else.
+function noteName(mutable seen: Map<string, string>, name: string, key: string): Option<string> uses alloc {
+  if (seen[name] is Some(have)) {
+    if (have != key) {
+      return Some(`internal error: C name ${name} is used for both "${have}" and "${key}"`)
+    }
+  }
+  seen[name] = key
   return None
 }

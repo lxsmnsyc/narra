@@ -15,7 +15,7 @@ import { Pos, File, Decl, FuncDecl, ConstDecl, TestDecl, ImplDecl, Expr, Block, 
 import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
 import { Type, Field } from "narrac/types"
-import { Checker, BodyRoot, Ref, Walker, reportError, enter, startBody, finishBody, declareLocal, getExpressionPos, finish, setRef } from "narrac/check"
+import { Checker, BodyRoot, Ref, Walker, reportError, enter, startBody, finishBody, keyBody, declareLocal, getExpressionPos, finish, setRef } from "narrac/check"
 import { newPackageChecker, declareSourceModule } from "narrac/declare"
 import { checkEntries } from "narrac/scopes"
 import { flushMapKeys } from "narrac/traits"
@@ -31,6 +31,7 @@ import * as Ctors from "narrac/ctors"
 import * as Closures from "narrac/closures"
 import * as StdCalls from "narrac/stdcalls"
 import { isNonEscaping } from "narrac/funcvalues"
+import * as Int from "std/int"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -136,7 +137,8 @@ function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File)
       if (structIndex >= 0) {
         const owner = dumpTypeString(checker, Type.TStruct(structIndex))
         const fields = checker.structs[structIndex].fields
-        checkFieldDefaults(mutable checker, walker, owner, fields, Map {})
+        const ownerKey = qualifiedName(checker.structs[structIndex].module, checker.structs[structIndex].name)
+        checkFieldDefaults(mutable checker, walker, owner, ownerKey, fields, Map {})
       }
     }
   }
@@ -152,8 +154,17 @@ function checkGenericDefaults(mutable checker: Checker, walker: BodyWalker, gene
     owner = `${info.module}.${info.name}`
   }
   const environment = makeEnv(checker, info.parameters)
-  checkFieldDefaults(mutable checker, walker, owner, info.fields, environment)
+  checkFieldDefaults(mutable checker, walker, owner, qualifiedName(info.module, info.name), info.fields, environment)
   enter(mutable checker, saved)
+}
+
+// qualifiedName is "<module>.<name>", or the name alone in the prelude. It is the
+// owner part of a "default|<owner>|<field>" body key.
+function qualifiedName(module: string, name: string): string uses alloc {
+  if (module == "") {
+    return name
+  }
+  return `${module}.${name}`
 }
 
 // findStruct finds the struct declared as name at pos in scope, or -1.
@@ -174,11 +185,12 @@ function findStruct(checker: Checker, scope: int, name: string, pos: Pos): int {
   return -1
 }
 
-function checkFieldDefaults(mutable checker: Checker, walker: BodyWalker, owner: string, fields: Array<Field>, environment: Map<string, Type>) uses alloc {
+function checkFieldDefaults(mutable checker: Checker, walker: BodyWalker, owner: string, ownerKey: string, fields: Array<Field>, environment: Map<string, Type>) uses alloc {
   for (const field of Arrays.values(fields)) {
     if (field.default is Some(value)) {
       // Each default is a body of its own, outside any function.
       const saved = startBody(mutable checker, "default", `${owner}.${field.name}`, [], BodyRoot.RootExpr(value), Type.TVoid, environment)
+      keyBody(mutable checker, `default|${ownerKey}|${field.name}`)
       const found = Exprs.checkExpression(mutable checker, walker, value, Some(field.fieldType))
       Exprs.expectType(mutable checker, getExpressionPos(value), Some(field.fieldType), found)
       if (!Exprs.isConstantValue(checker, value)) {
@@ -237,13 +249,20 @@ function checkFunction(mutable checker: Checker, walker: BodyWalker, funcDecl: F
   for (const param of Arrays.values(funcDecl.parameters)) {
     Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
   }
-  checkFunctionBody(mutable checker, walker, "func", funcDecl.name, [], funcDecl, paramTypes, result, environment)
+  let key = ""
+  if (Arrays.length(typeParameters) == 0) {
+    key = `func|${Int.toString(funcIndex)}`
+  }
+  checkFunctionBody(mutable checker, walker, "func", funcDecl.name, [], funcDecl, paramTypes, result, environment, key)
 }
 
 // checkFunctionBody checks a function's body in a body of its own (Go's
 // funcBody): a plain function, an instance or an implement block function.
-function checkFunctionBody(mutable checker: Checker, walker: BodyWalker, kind: string, name: string, typeArguments: Array<Type>, funcDecl: FuncDecl, paramTypes: Array<Type>, result: Type, environment: Map<string, Type>) uses alloc {
+function checkFunctionBody(mutable checker: Checker, walker: BodyWalker, kind: string, name: string, typeArguments: Array<Type>, funcDecl: FuncDecl, paramTypes: Array<Type>, result: Type, environment: Map<string, Type>, key: string) uses alloc {
   const saved = startBody(mutable checker, kind, name, typeArguments, BodyRoot.RootFunc(funcDecl), result, environment)
+  if (key != "") {
+    keyBody(mutable checker, key)
+  }
   declareParams(mutable checker, funcDecl.parameters, paramTypes)
   if (funcDecl.body is Some(block)) {
     Stmts.checkBlock(mutable checker, walker, block)
@@ -256,11 +275,12 @@ function checkFunctionBody(mutable checker: Checker, walker: BodyWalker, kind: s
 // checkPending). Checking one can queue more.
 function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
   while (checker.pendingNext < Arrays.length(checker.pending)) {
-    const instance = checker.instanceList[checker.pending[checker.pendingNext]]
+    const instanceIndex = checker.pending[checker.pendingNext]
+    const instance = checker.instanceList[instanceIndex]
     checker.pendingNext = checker.pendingNext + 1
     const saved = enter(mutable checker, instance.scope)
     const funcDecl = checker.functions[instance.funcIndex].declaration
-    checkFunctionBody(mutable checker, walker, "func", funcDecl.name, instance.typeArguments, funcDecl, instance.parameters, instance.result, instance.environment)
+    checkFunctionBody(mutable checker, walker, "func", funcDecl.name, instance.typeArguments, funcDecl, instance.parameters, instance.result, instance.environment, `inst|${Int.toString(instanceIndex)}`)
     enter(mutable checker, saved)
   }
 }
@@ -316,8 +336,25 @@ function checkImplBodies(mutable checker: Checker, walker: BodyWalker, implDecl:
       Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
     }
     const result = findImplResult(mutable checker, block, funcDecl, environment)
-    checkFunctionBody(mutable checker, walker, "impl", `${traitName} ${typeText}.${funcDecl.name}`, [], funcDecl, paramTypes, result, environment)
+    let key = ""
+    const implIndex = findImplIndex(checker, block, funcDecl)
+    if (implIndex >= 0) {
+      key = `impl|${Int.toString(block)}|${Int.toString(implIndex)}`
+    }
+    checkFunctionBody(mutable checker, walker, "impl", `${traitName} ${typeText}.${funcDecl.name}`, [], funcDecl, paramTypes, result, environment, key)
   }
+}
+
+// findImplIndex is the index of a function in Checker.implementations[block].functions, or -1.
+function findImplIndex(checker: Checker, block: int, funcDecl: FuncDecl): int {
+  let index = 0
+  for (const implFunc of Arrays.values(checker.implementations[block].functions)) {
+    if (implFunc.declaration.pos == funcDecl.pos) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
 }
 
 // findImplResult is the result type of an implement block function: the
@@ -337,6 +374,14 @@ function findImplResult(mutable checker: Checker, block: int, funcDecl: FuncDecl
 
 function checkTest(mutable checker: Checker, walker: BodyWalker, testDecl: TestDecl) uses alloc {
   const saved = startBody(mutable checker, "test", quoteDump(testDecl.name), [], BodyRoot.RootBlock(testDecl.body), Type.TVoid, Map {})
+  let testNumber = 0
+  const module = checker.scopes[checker.current].path
+  for (const other of Arrays.values(checker.bodies)) {
+    if (other.kind == "test" && other.module == module) {
+      testNumber = testNumber + 1
+    }
+  }
+  keyBody(mutable checker, `test|${module}|${Int.toString(testNumber - 1)}`)
   checker.inTest = true
   Stmts.checkBlock(mutable checker, walker, testDecl.body)
   checker.inTest = false

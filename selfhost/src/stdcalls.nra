@@ -16,7 +16,7 @@
 // reaches it through Walker.checkStdCall.
 import { Pos, Expr, Arg } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Checker, Walker, reportError, typeString, lookupTrait, getExpressionPos } from "narrac/check"
+import { Checker, internComposite, Walker, reportError, typeString, lookupTrait, getExpressionPos } from "narrac/check"
 import { instantiate, findTupleType } from "narrac/resolve"
 import { typeImplements } from "narrac/traits"
 import { checkExpression, expectType, checkExclusive, checkArgumentsLoosely, checkMutableArgument, checkFixedCall } from "narrac/exprs"
@@ -169,7 +169,7 @@ function checkArrayFilled<W: Walker>(mutable checker: Checker, walker: W, pos: P
   }
   const element = checkExpression(mutable checker, walker, arguments[0].value, hint)
   checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
-  return Type.TArray(element)
+  return internComposite(mutable checker, Type.TArray(element))
 }
 
 // ---- std/box ----
@@ -185,7 +185,7 @@ function checkBoxNew<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, a
     }
   }
   const element = checkExpression(mutable checker, walker, arguments[0].value, hint)
-  return Type.TBox(element)
+  return internComposite(mutable checker, Type.TBox(element))
 }
 
 // ---- std/range ----
@@ -256,9 +256,10 @@ function checkMapIter<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, 
   if (mapType is Some(foundMap)) {
     if (foundMap is Type.TMap(keyType, valueType)) {
       if (name == "Map.keys") {
-        return Type.TArray(keyType)
+        return internComposite(mutable checker, Type.TArray(keyType))
       }
-      return Type.TArray(findTupleType(mutable checker, [keyType, valueType]))
+      const tupleType = findTupleType(mutable checker, [keyType, valueType])
+      return internComposite(mutable checker, Type.TArray(tupleType))
     }
   }
   return Type.TVoid
@@ -346,10 +347,12 @@ function checkCallback<W: Walker>(mutable checker: Checker, walker: W, pos: Pos,
       return None
     }
     if (result is Some(requiredResult)) {
-      expectType(mutable checker, argumentPos, Some(Type.TFunc(parameters, requiredResult)), found)
+      const requiredType = internComposite(mutable checker, Type.TFunc(parameters, requiredResult))
+      expectType(mutable checker, argumentPos, Some(requiredType), found)
       return Some(requiredResult)
     }
-    expectType(mutable checker, argumentPos, Some(Type.TFunc(parameters, foundResult)), found)
+    const foundType = internComposite(mutable checker, Type.TFunc(parameters, foundResult))
+    expectType(mutable checker, argumentPos, Some(foundType), found)
     return Some(foundResult)
   }
   if (found != Type.TVoid) {

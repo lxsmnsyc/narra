@@ -1,0 +1,304 @@
+// The program emitter, ported from Emit (emit.go). It writes the sections of
+// the C file in Go's order and calls the module of each roadmap node at its
+// dispatch point (contracts/emitter.md).
+//
+// Until selfhost-emit-program sets Checker.programRecorded, the emitter does
+// not know Go's function and constant lists or the composite types, so the
+// Types and Functions sections start with a "program facts" marker and only
+// the nodes' stubs and the preamble are written.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Type } from "narrac/types"
+import { Checker, ProgramFunc, typeString } from "narrac/check"
+import { Emitter, newEmitter, reportUnsupported, literal } from "narrac/emitstate"
+import { typeId, cType, functionName } from "narrac/cnames"
+import { RUNTIME_H, runtimeFor } from "narrac/runtimetext"
+import * as Decls from "narrac/emitdecls"
+import * as EmitMaps from "narrac/emitmaps"
+import * as Maps from "std/map"
+import * as Closures from "narrac/emitclosures"
+import * as Traits from "narrac/emittraits"
+import * as Match from "narrac/emitmatch"
+import * as Std from "narrac/emitstd"
+import * as Options from "narrac/emitoptions"
+import * as Consts from "narrac/emitconsts"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// The result of emitting a program: the C text, which has a marker line for
+// each unsupported construct, and the distinct constructs in first-seen order.
+export struct EmitResult {
+  text: string
+  unsupported: Array<string>
+}
+
+const FACTS_NODE = "selfhost-emit-program"
+
+// emitProgram emits the C of a checked package. entry is the Checker.functions
+// index of the binary's entry function (ignored in a test build).
+export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResult uses alloc {
+  let emitter = newEmitter(checker, entry, tests)
+  let builder = Str.builder()
+
+  // Preamble: the runtime, then the runtime of each std module in use. std/test
+  // is called only from test blocks, which a non-test build drops.
+  Str.append(mutable builder, RUNTIME_H)
+  for (const path of Arrays.values(checker.used)) {
+    const runtime = runtimeFor(path)
+    if (runtime != "" && (tests || path != "std/test")) {
+      Str.append(mutable builder, `\n${runtime}`)
+    }
+  }
+
+  // Types.
+  Str.append(mutable builder, "\n// Types\n")
+  Str.append(mutable builder, factsMarker(mutable emitter))
+  Str.append(mutable builder, emitCommentTable(mutable emitter))
+  Str.append(mutable builder, emitArrayTypedefs(mutable emitter))
+  Str.append(mutable builder, EmitMaps.emitMapTypedefs(mutable emitter))
+  Str.append(mutable builder, emitTypeTypedefs(mutable emitter))
+  Str.append(mutable builder, Decls.emitHeapTypedefs(mutable emitter))
+  Str.append(mutable builder, Closures.emitFuncTypeDefinitions(mutable emitter))
+  Str.append(mutable builder, Decls.emitTypeDefinitions(mutable emitter))
+  Str.append(mutable builder, emitArrayStructs(mutable emitter))
+  Str.append(mutable builder, EmitMaps.emitMapStructs(mutable emitter))
+  Str.append(mutable builder, Decls.emitHeapDefinitions(mutable emitter))
+
+  // Reference counting.
+  Str.append(mutable builder, "\n// Reference counting\n")
+  Str.append(mutable builder, Decls.emitBoxPrototypes(mutable emitter))
+  Str.append(mutable builder, EmitMaps.emitMapPrototypes(mutable emitter))
+  Str.append(mutable builder, Decls.emitRcFunctions(mutable emitter))
+  // The map functions call the key's eq and hash, so their text goes after the trait functions.
+  const mapFunctions = EmitMaps.emitMapFunctions(mutable emitter)
+
+  // Constants and function prototypes.
+  Str.append(mutable builder, "\n// Constants\n")
+  Str.append(mutable builder, Consts.emitConstPrototypes(mutable emitter))
+  Str.append(mutable builder, "\n// Functions\n")
+  Str.append(mutable builder, emitPrototypes(mutable emitter))
+
+  // Bodies.
+  let bodies = Str.builder()
+  Str.append(mutable bodies, Consts.emitConstBodies(mutable emitter))
+  for (const program of Arrays.values(checker.programFunctions)) {
+    Str.append(mutable bodies, Consts.emitFunction(mutable emitter, program))
+  }
+  if (tests) {
+    emitTestBodies(mutable emitter, mutable bodies)
+  }
+  if (!checker.programRecorded) {
+    // These nodes have no section of their own yet; each reports if the input needs it.
+    Str.append(mutable bodies, Match.reportMatchWork(mutable emitter))
+    Str.append(mutable bodies, Std.reportStdWork(mutable emitter))
+    Str.append(mutable bodies, Options.reportOptionsWork(mutable emitter))
+  }
+
+  // String literals, then the text that depends on what the bodies used.
+  Str.append(mutable builder, "\n// String literals\n")
+  Str.append(mutable builder, Str.build(emitter.literals))
+  Str.append(mutable builder, Traits.emitTraitFunctions(mutable emitter))
+  Str.append(mutable builder, mapFunctions)
+  Str.append(mutable builder, Closures.emitClosureFunctions(mutable emitter))
+  Str.append(mutable builder, "\n")
+  Str.append(mutable builder, Str.build(bodies))
+  if (tests) {
+    Str.append(mutable builder, Options.emitTestMain(mutable emitter))
+  } else {
+    Str.append(mutable builder, emitMain(mutable emitter))
+  }
+  return EmitResult { text: Str.build(builder), unsupported: emitter.unsupported }
+}
+
+// factsMarker is the program-facts marker line, or "" once the facts are recorded.
+function factsMarker(mutable emitter: Emitter): string uses alloc {
+  if (emitter.checker.programRecorded) {
+    return ""
+  }
+  return `${reportUnsupported(mutable emitter, "program facts", FACTS_NODE)}\n`
+}
+
+// emitTestBodies writes the test blocks of a test build: test_<n>.
+function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder) uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return
+  }
+  let number = 0
+  for (const body of Arrays.values(emitter.checker.bodies)) {
+    if (body.kind == "test") {
+      Str.append(mutable bodies, Consts.emitTestBody(mutable emitter, number))
+      number = number + 1
+    }
+  }
+}
+
+// emitPrototypes writes a prototype for each function of Go's Program.Funcs.
+function emitPrototypes(mutable emitter: Emitter): string uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return factsMarker(mutable emitter)
+  }
+  if (Arrays.length(emitter.checker.programFunctions) == 0) {
+    return ""
+  }
+  // The signature needs each parameter's C name, which selfhost-emit-program records.
+  return `${reportUnsupported(mutable emitter, "function signatures", FACTS_NODE)}\n`
+}
+
+// An element of a sorted list of composite types.
+struct SortItem {
+  key: string
+  type: Type
+}
+
+// mergeSort orders items by key in byte order. It is stable.
+function mergeSort(items: Array<SortItem>): Array<SortItem> uses alloc {
+  const count = Arrays.length(items)
+  if (count < 2) {
+    return items
+  }
+  const middle = count / 2
+  let left: Array<SortItem> = []
+  let right: Array<SortItem> = []
+  for (const index of Ranges.between(0, count)) {
+    if (index < middle) {
+      Arrays.push(mutable left, items[index])
+    } else {
+      Arrays.push(mutable right, items[index])
+    }
+  }
+  const sortedLeft = mergeSort(left)
+  const sortedRight = mergeSort(right)
+  let merged: Array<SortItem> = []
+  let leftIndex = 0
+  let rightIndex = 0
+  while (leftIndex < Arrays.length(sortedLeft) || rightIndex < Arrays.length(sortedRight)) {
+    if (rightIndex >= Arrays.length(sortedRight) || (leftIndex < Arrays.length(sortedLeft) && sortedLeft[leftIndex].key <= sortedRight[rightIndex].key)) {
+      Arrays.push(mutable merged, sortedLeft[leftIndex])
+      leftIndex = leftIndex + 1
+    } else {
+      Arrays.push(mutable merged, sortedRight[rightIndex])
+      rightIndex = rightIndex + 1
+    }
+  }
+  return merged
+}
+
+// sortKey is the key Go's finish sorts a composite type by: the type id of an
+// array or box element, and "<key id>|<value id>" for a Map.
+function sortKey(emitter: Emitter, type: Type): string uses alloc {
+  return match (type) {
+    Type.TArray(element) => typeId(emitter.checker, element)
+    Type.TBox(element) => typeId(emitter.checker, element)
+    Type.TMap(key, valueType) => `${typeId(emitter.checker, key)}|${typeId(emitter.checker, valueType)}`
+    _ => typeId(emitter.checker, type)
+  }
+}
+
+// arrays lists the program's array types in Go's order (Program.Arrays).
+function arrays(emitter: Emitter): Array<Type> uses alloc {
+  let items: Array<SortItem> = []
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (composite is Type.TArray(_)) {
+      Arrays.push(mutable items, SortItem { key: sortKey(emitter, composite), type: composite })
+    }
+  }
+  let sorted: Array<Type> = []
+  for (const item of Arrays.values(mergeSort(items))) {
+    Arrays.push(mutable sorted, item.type)
+  }
+  return sorted
+}
+
+// arrayName is the C struct name of an array type (its C type without "*").
+function arrayName(emitter: Emitter, type: Type): string uses alloc {
+  const name = cType(emitter.checker, type)
+  return Str.slice(name, 0, Str.length(name) - 1)
+}
+
+function emitArrayTypedefs(mutable emitter: Emitter): string uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return ""
+  }
+  let builder = Str.builder()
+  for (const type of Arrays.values(arrays(emitter))) {
+    const name = arrayName(emitter, type)
+    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+  }
+  return Str.build(builder)
+}
+
+// emitTypeTypedefs forward-declares the struct of each struct and enum, in definition order.
+function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return ""
+  }
+  let builder = Str.builder()
+  for (const type of Arrays.values(emitter.checker.order)) {
+    const name = cType(emitter.checker, type)
+    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+  }
+  return Str.build(builder)
+}
+
+// emitArrayStructs defines the struct of each array type.
+function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return ""
+  }
+  let builder = Str.builder()
+  for (const type of Arrays.values(arrays(emitter))) {
+    if (type is Type.TArray(element)) {
+      Str.append(mutable builder, `struct ${arrayName(emitter, type)} { int64_t rc; int64_t len; int64_t cap; ${cType(emitter.checker, element)}* items; };\n`)
+    }
+  }
+  return Str.build(builder)
+}
+
+// emitCommentTable writes the comment that maps each interned C name to its
+// Narra type, sorted by name (Go's writeCNameTable).
+function emitCommentTable(mutable emitter: Emitter): string uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return ""
+  }
+  let items: Array<SortItem> = []
+  for (const type of Arrays.values(emitter.checker.order)) {
+    if (isInterned(emitter, type)) {
+      Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, type), type: type })
+    }
+  }
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, composite), type: composite })
+  }
+  let builder = Str.builder()
+  for (const item of Arrays.values(mergeSort(items))) {
+    Str.append(mutable builder, `/* ${item.key} = ${typeString(emitter.checker, item.type)} */\n`)
+  }
+  return Str.build(builder)
+}
+
+// isInterned is true for a tuple or generic instance, which has a hashed C name.
+function isInterned(emitter: Emitter, type: Type): bool {
+  return match (type) {
+    Type.TStruct(index) => emitter.checker.structs[index].tuple || Arrays.length(emitter.checker.structs[index].arguments) > 0
+    Type.TEnum(index) => Arrays.length(emitter.checker.enums[index].arguments) > 0
+    _ => false
+  }
+}
+
+// emitMain writes the C main of a non-test build: it passes argv to the entry function.
+function emitMain(mutable emitter: Emitter): string uses alloc {
+  if (!emitter.checker.programRecorded) {
+    return ""
+  }
+  const arrayType = arrayName(emitter, Type.TArray(Type.TStr))
+  const entryName = functionName(emitter.checker, ProgramFunc.PlainFunc(emitter.entry))
+  let builder = Str.builder()
+  Str.append(mutable builder, "\nint main(int argc, char** argv) {\n")
+  Str.append(mutable builder, `  ${arrayType}* args = ${arrayType}_new(argc);\n`)
+  Str.append(mutable builder, "  for (int i = 0; i < argc; i++) {\n    args->items[args->len++] = lstr_from_cstr(argv[i]);\n  }\n")
+  Str.append(mutable builder, `  int64_t code = ${entryName}(args);\n  ${arrayType}_release(args);\n`)
+  Str.append(mutable builder, "  fflush(stdout);\n  narra_consts_release();\n  narra_report_leaks();\n  return (int)code;\n}\n")
+  return Str.build(builder)
+}

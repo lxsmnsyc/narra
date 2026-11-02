@@ -1,7 +1,7 @@
 ---
 name: emitter
-version: 1
-status: draft
+version: 2
+status: frozen
 defined_by: selfhost-emit-core
 ---
 
@@ -41,22 +41,22 @@ The emitter never mutates the Checker. It holds it read-only in Emitter.checker,
       export function relativeModule(path: string): string
       export function moduleHash(path: string): string
     cnames.nra (imports types, check, hash):
-      export function typeId(emitter: Emitter, type: Type): string      // Go typeID
-      export function cType(emitter: Emitter, type: Type): string       // Go CName(): adds "*" for arrays, boxes, maps; "void*" for TParam
+      export function typeId(checker: Checker, type: Type): string      // Go typeID
+      export function cType(checker: Checker, type: Type): string       // Go CName(): adds "*" for arrays, boxes, maps; "void*" for TParam
       export function declName(kind: string, module: string, name: string): string
       export function internedName(kind: string, head: string, arguments: Array<string>): string
-      export function payloadName(emitter: Emitter, enumType: Type): string
-      export function functionName(emitter: Emitter, func: ProgramFunc): string   // f_<hash>_<name>, instance and impl names included
+      export function payloadName(checker: Checker, enumType: Type): string
+      export function functionName(checker: Checker, program: ProgramFunc): string   // f_<hash>_<name>, instance and impl names included
       export function instanceName(module: string, name: string, typeIds: Array<string>): string
-      export function implName(typeName: string, traitModule: string, traitName: string, function: string): string
+      export function implName(typeName: string, traitModule: string, traitName: string, member: string): string
       export function opFuncName(operation: string, typeIdText: string): string
       export function closureName(kind: string, owner: string, count: int): string
       export function thunkName(owner: string): string
       export function constName(module: string, name: string): string          // G_...
       export function constGetterName(module: string, name: string): string    // g_...
-      export function checkNameCollisions(emitter: Emitter): Option<string>   // runs once after naming; Some(message) is an internal error
+      export function checkNameCollisions(checker: Checker): Option<string>   // runs once after naming; Some(message) is an internal error
 
-Names are pure functions. Go registers each name lazily in a process-wide table. Here one pass over all named things replaces that, which gives the same output for every valid program. Emitter.typeNames caches typeId by typeKey; core precomputes it for every table type and composite.
+Names are pure functions of the Checker. cnames.nra takes a Checker, not an Emitter, because emitstate.nra defines Emitter and imports cnames.nra for cType and opFuncName. Go registers each name lazily in a process-wide table. Here one pass over all named things replaces that, which gives the same output for every valid program. A typeId cache, if needed, is a Checker field filled by selfhost-emit-program; Emitter.typeNames stays unused until then and may be removed.
 
 ### Emitter state (emitstate.nra; selfhost-emit-core)
 
@@ -91,6 +91,9 @@ Names are pure functions. Go registers each name lazily in a process-wide table.
       pushScope, popScope, addLocal, unwindAll, unwindLoop, localRef, literal, cString, retainCode [retain], releaseCode [release],
       needsRc, underlyingType [underlying], typeOf(emitter, id), refOf(emitter, id), localOf(emitter, index),
       switchBody(mutable emitter, body): int (returns the saved body), reportUnsupported(mutable emitter, construct, node): string
+    stub probes (temporary): hasWork(emitter, node): bool scans the checker's body tables for a node's feature;
+      reportMatchWork (match), reportStdWork (std), reportOptionsWork (options) report for nodes with no section function.
+      Each node deletes its probe and its hasWork arm when its emitter lands.
 
 emitter.nra (the top module, core) has `struct EmitterWalker implements EmitWalker {}`, which forwards to the bodies modules. Modules that need recursion take `<W: EmitWalker>` and pass `walker` on. This is the same pattern as the checker's Walker (D70 outcome), because Narra function types cannot take `mutable` and modules cannot import in a cycle.
 
@@ -109,7 +112,7 @@ emitter.nra (the top module, core) has `struct EmitterWalker implements EmitWalk
     emitconsts.nra, emitexprs.nra, emitstmts.nra ........ selfhost-emit-bodies
     emit.nra, emitter.nra ............................... selfhost-emit-core
 
-selfhost-emit-core creates every file with the signatures below as stubs. Each stub calls reportUnsupported only when it has work: a type, a map, a function type or an expression to emit.
+selfhost-emit-core creates every file with the signatures below as stubs. Each stub calls reportUnsupported only when it has work (hasWork): a type, a map, a function type or an expression to emit. The section stubs emitHeapTypedefs, emitTypeDefinitions, emitHeapDefinitions, emitBoxPrototypes, emitRcFunctions (decls), emitMapTypedefs, emitMapStructs, emitMapPrototypes, emitMapFunctions (maps), emitFuncTypeDefinitions, emitClosureFunctions (closures), emitTraitFunctions (traits), emitConstPrototypes, emitConstBodies, emitFunction, emitTestBody (bodies) and emitTestMain (options) take `mutable emitter` and return the C text as a string.
 
 ### Dispatch points (section order = Go's Emit, emit.go:46-160)
 
@@ -184,3 +187,4 @@ selfhost-emit-core ships every module above with the frozen signatures. The stub
 ## Changes
 
 - v1: initial.
+- v2 (2026-11-02, from selfhost-emit-core's change request): cnames.nra takes Checker instead of Emitter (import cycle); parameters `function`/`func` renamed to `member`/`program` (keyword); stub probes hasWork, reportMatchWork, reportStdWork, reportOptionsWork; section stub names and signature listed.

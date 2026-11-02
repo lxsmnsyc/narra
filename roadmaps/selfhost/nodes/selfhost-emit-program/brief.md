@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-program
 title: Self-hosted emitter: C names, xxHash32 and the checker facts the emitter reads
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 268404
 owns:
   - selfhost/src/hash.nra
   - selfhost/src/cnames.nra

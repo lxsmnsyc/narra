@@ -1,18 +1,287 @@
-// Statements and blocks (emit_stmt.go, emit.go block). Stub from
-// selfhost-emit-core; the owner is selfhost-emit-bodies.
-import { Stmt, Block } from "narrac/ast"
-import { Emitter, EmitWalker, reportUnsupported } from "narrac/emitstate"
+// Statements and blocks (emit_stmt.go, emit.go block and blockInScope). The
+// owner is selfhost-emit-bodies. Statements that open and close the owned
+// temporaries of their expressions do so here, as in Go, before and after
+// the call into a feature module.
+import * as Int from "std/int"
+import { Stmt, Block, Expr, Pattern } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Ref, getExpressionId } from "narrac/check"
+import { cType } from "narrac/cnames"
+import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, typeOf, refOf, localRef, retainCode, releaseCode } from "narrac/emitstate"
+import { pointerTemp, declaredLocal } from "narrac/emitexprs"
+import * as Maps from "narrac/emitmaps"
+import * as Match from "narrac/emitmatch"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 
 const NODE = "selfhost-emit-bodies"
 
-export function emitStatement<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt) uses alloc {
-  const _ = reportUnsupported(mutable emitter, "statement", NODE)
-}
-
+// emitBlock emits the statements of a block in a scope of their own.
 export function emitBlock<W: EmitWalker>(walker: W, mutable emitter: Emitter, block: Block, loop: bool) uses alloc {
-  const _ = reportUnsupported(mutable emitter, "block", NODE)
+  pushScope(mutable emitter, loop)
+  emitBlockInScope(walker, mutable emitter, block)
+  popScope(mutable emitter)
 }
 
+// emitBlockInScope emits the statements in the scope already open.
 export function emitBlockInScope<W: EmitWalker>(walker: W, mutable emitter: Emitter, block: Block) uses alloc {
-  const _ = reportUnsupported(mutable emitter, "block", NODE)
+  for (const statement of Arrays.values(block.statements)) {
+    emitStatement(walker, mutable emitter, statement)
+  }
+}
+
+export function emitStatement<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => emitNestedBlock(walker, mutable emitter, block)
+    Stmt.VarStmt(nodeId, _, _, _, pattern, _, value) => emitVariable(walker, mutable emitter, statement, nodeId, pattern, value)
+    Stmt.AssignStmt(_, target, value) => emitAssignment(walker, mutable emitter, statement, target, value)
+    Stmt.ExprStmt(_, expression) => emitExpressionStatement(walker, mutable emitter, statement, expression)
+    Stmt.ReturnStmt(_, value) => emitReturn(walker, mutable emitter, value)
+    Stmt.IfStmt(_, condition, then, orElse) => emitIf(walker, mutable emitter, statement, condition, then, orElse)
+    Stmt.WhileStmt(_, condition, body) => emitWhile(walker, mutable emitter, condition, body)
+    Stmt.ForStmt(nodeId, _, _, iterable, body) => emitFor(walker, mutable emitter, statement, nodeId, iterable, body)
+    Stmt.BreakStmt(_) => emitLoopExit(mutable emitter, "break;")
+    Stmt.ContinueStmt(_) => emitLoopExit(mutable emitter, "continue;")
+  }
+}
+
+function emitNestedBlock<W: EmitWalker>(walker: W, mutable emitter: Emitter, block: Block) uses alloc {
+  writeLine(mutable emitter, "{")
+  emitter.indent = emitter.indent + 1
+  emitBlock(walker, mutable emitter, block, false)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+}
+
+function emitLoopExit(mutable emitter: Emitter, text: string) uses alloc {
+  unwindLoop(mutable emitter)
+  writeLine(mutable emitter, text)
+}
+
+function emitVariable<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, nodeId: int, pattern: Option<Pattern>, value: Expr) uses alloc {
+  if (pattern is Some(_)) {
+    Match.emitDestructure(walker, mutable emitter, statement)
+    return
+  }
+  beginStatement(mutable emitter)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  const localIndex = declaredLocal(emitter, nodeId)
+  const local = emitter.checker.bodies[emitter.body].locals[localIndex]
+  const consumed = consume(mutable emitter, code.text, code.owned, local.localType)
+  const typeName = cType(emitter.checker, local.localType)
+  const name = localRef(emitter, localIndex)
+  writeLine(mutable emitter, `${typeName} ${name} = ${consumed};`)
+  endStatement(mutable emitter)
+  addLocal(mutable emitter, localIndex)
+}
+
+function emitAssignment<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, target: Expr, value: Expr) uses alloc {
+  beginStatement(mutable emitter)
+  // A write to a Map index is the maps module's.
+  if (target is Expr.IndexExpr(_, _, indexTarget, _)) {
+    if (typeOf(emitter, getExpressionId(indexTarget)) is Type.TMap(_, _)) {
+      Maps.emitMapSet(walker, mutable emitter, statement)
+      endStatement(mutable emitter)
+      return
+    }
+  }
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  const valueType = typeOf(emitter, getExpressionId(value))
+  const consumed = consume(mutable emitter, code.text, code.owned, valueType)
+  const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
+  const targetType = typeOf(emitter, getExpressionId(target))
+  const releaseText = releaseCode(emitter, targetType, `(*${location})`)
+  if (releaseText != "") {
+    // The old value is released before the new one is stored.
+    const pointer = pointerTemp(mutable emitter, targetType, location)
+    const releaseOld = releaseCode(emitter, targetType, `(*${pointer})`)
+    writeLine(mutable emitter, releaseOld)
+    writeLine(mutable emitter, `*${pointer} = ${consumed};`)
+  } else {
+    writeLine(mutable emitter, `*${location} = ${consumed};`)
+  }
+  endStatement(mutable emitter)
+}
+
+function emitExpressionStatement<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, expression: Expr) uses alloc {
+  beginStatement(mutable emitter)
+  if (expression is Expr.MatchExpr(_, _, _, _)) {
+    Match.emitMatchStatement(walker, mutable emitter, statement)
+  } else {
+    // Only a call that returns nothing is a statement of its own.
+    const code = EmitWalker.emitExpression(walker, mutable emitter, expression)
+    if (code.text != "" && typeOf(emitter, getExpressionId(expression)) == Type.TVoid) {
+      writeLine(mutable emitter, `${code.text};`)
+    }
+  }
+  endStatement(mutable emitter)
+}
+
+function emitReturn<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Option<Expr>) uses alloc {
+  beginStatement(mutable emitter)
+  if (value is Some(returned)) {
+    const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
+    const returnedType = typeOf(emitter, getExpressionId(returned))
+    const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
+    const result = temp(mutable emitter, returnedType, consumed)
+    unwindAll(mutable emitter)
+    writeLine(mutable emitter, `return ${result};`)
+  } else {
+    unwindAll(mutable emitter)
+    writeLine(mutable emitter, "return;")
+  }
+  // unwindAll released everything, so the frame closes without releasing again.
+  emitter.frames = withoutLastFrame(emitter.frames)
+}
+
+function withoutLastFrame(frames: Array<Array<TempVar>>): Array<Array<TempVar>> uses alloc {
+  let kept: Array<Array<TempVar>> = []
+  for (const index of Ranges.between(0, Arrays.length(frames) - 1)) {
+    Arrays.push(mutable kept, frames[index])
+  }
+  return kept
+}
+
+function emitIf<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, condition: Expr, then: Block, orElse: Option<Stmt>) uses alloc {
+  if (condition is Expr.IsExpr(_, _, _, _)) {
+    Match.emitIfIs(walker, mutable emitter, statement)
+    return
+  }
+  beginStatement(mutable emitter)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, condition)
+  const holds = temp(mutable emitter, Type.TBool, code.text)
+  endStatement(mutable emitter)
+  writeLine(mutable emitter, `if (${holds}) {`)
+  emitter.indent = emitter.indent + 1
+  emitBlock(walker, mutable emitter, then, false)
+  emitter.indent = emitter.indent - 1
+  if (orElse is Some(otherwise)) {
+    writeLine(mutable emitter, "} else {")
+    emitter.indent = emitter.indent + 1
+    if (otherwise is Stmt.BlockStmt(elseBlock)) {
+      emitBlock(walker, mutable emitter, elseBlock, false)
+    } else {
+      emitStatement(walker, mutable emitter, otherwise)
+    }
+    emitter.indent = emitter.indent - 1
+  }
+  writeLine(mutable emitter, "}")
+}
+
+// emitLoopBody emits a loop body with the frame depth recorded for break and continue.
+function emitLoopBody<W: EmitWalker>(walker: W, mutable emitter: Emitter, body: Block) uses alloc {
+  const depth = Arrays.length(emitter.frames)
+  Arrays.push(mutable emitter.loopFrames, depth)
+  emitBlock(walker, mutable emitter, body, true)
+  popLoopFrame(mutable emitter)
+}
+
+function popLoopFrame(mutable emitter: Emitter) uses alloc {
+  let kept: Array<int> = []
+  for (const index of Ranges.between(0, Arrays.length(emitter.loopFrames) - 1)) {
+    Arrays.push(mutable kept, emitter.loopFrames[index])
+  }
+  emitter.loopFrames = kept
+}
+
+function emitWhile<W: EmitWalker>(walker: W, mutable emitter: Emitter, condition: Expr, body: Block) uses alloc {
+  writeLine(mutable emitter, "while (1) {")
+  emitter.indent = emitter.indent + 1
+  beginStatement(mutable emitter)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, condition)
+  const holds = temp(mutable emitter, Type.TBool, code.text)
+  endStatement(mutable emitter)
+  writeLine(mutable emitter, `if (!${holds}) break;`)
+  emitLoopBody(walker, mutable emitter, body)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+}
+
+// iterableName is the std function a for loop iterates: Range.upTo, Array.values and so on.
+function iterableName(emitter: Emitter, iterable: Expr): string {
+  if (iterable is Expr.CallExpr(callId, _, _, _)) {
+    if (refOf(emitter, callId) is Ref.Builtin(index)) {
+      return emitter.checker.registry.functions[index].name
+    }
+  }
+  return ""
+}
+
+function emitFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, nodeId: int, iterable: Expr, body: Block) uses alloc {
+  const name = iterableName(emitter, iterable)
+  beginStatement(mutable emitter)
+  if (name == "Range.upTo" || name == "Range.between") {
+    emitRangeFor(walker, mutable emitter, nodeId, iterable, body, name)
+  } else if (name == "Map.keys" || name == "Map.entries") {
+    Maps.emitMapFor(walker, mutable emitter, statement)
+  } else if (name == "Array.values") {
+    emitArrayFor(walker, mutable emitter, nodeId, iterable, body)
+  } else {
+    const _ = reportUnsupported(mutable emitter, "for loop", NODE)
+  }
+  endStatement(mutable emitter)
+}
+
+function emitRangeFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, iterable: Expr, body: Block, name: string) uses alloc {
+  let arguments: Array<Expr> = []
+  if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
+    for (const argument of Arrays.values(callArguments)) {
+      Arrays.push(mutable arguments, argument.value)
+    }
+  }
+  let low = "0"
+  let high = ""
+  if (name == "Range.upTo") {
+    const upper = EmitWalker.emitExpression(walker, mutable emitter, arguments[0])
+    high = temp(mutable emitter, Type.TInt, upper.text)
+  } else {
+    const lower = EmitWalker.emitExpression(walker, mutable emitter, arguments[0])
+    low = temp(mutable emitter, Type.TInt, lower.text)
+    const upper = EmitWalker.emitExpression(walker, mutable emitter, arguments[1])
+    high = temp(mutable emitter, Type.TInt, upper.text)
+  }
+  const variable = localRef(emitter, declaredLocal(emitter, nodeId))
+  writeLine(mutable emitter, `for (int64_t ${variable} = ${low}; ${variable} < ${high}; ${variable}++) {`)
+  emitter.indent = emitter.indent + 1
+  emitLoopBody(walker, mutable emitter, body)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+}
+
+function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, iterable: Expr, body: Block) uses alloc {
+  let source = iterable
+  if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
+    source = callArguments[0].value
+  }
+  const arrayType = typeOf(emitter, getExpressionId(source))
+  if (arrayType is Type.TArray(element)) {
+    const code = EmitWalker.emitExpression(walker, mutable emitter, source)
+    const array = consume(mutable emitter, code.text, code.owned, arrayType)
+    // The loop owns the array until the statement ends.
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name: array, tempType: arrayType })
+    emitter.tempCount = emitter.tempCount + 1
+    const index = `i${Int.toString(emitter.tempCount)}`
+    writeLine(mutable emitter, `for (int64_t ${index} = 0; ${index} < ${array}->len; ${index}++) {`)
+    emitter.indent = emitter.indent + 1
+    const depth = Arrays.length(emitter.frames)
+    Arrays.push(mutable emitter.loopFrames, depth)
+    pushScope(mutable emitter, true)
+    const localIndex = declaredLocal(emitter, nodeId)
+    const variable = localRef(emitter, localIndex)
+    const elementName = cType(emitter.checker, element)
+    writeLine(mutable emitter, `${elementName} ${variable} = ${array}->items[${index}];`)
+    const retainText = retainCode(emitter, element, variable)
+    if (retainText != "") {
+      writeLine(mutable emitter, retainText)
+    }
+    addLocal(mutable emitter, localIndex)
+    emitBlockInScope(walker, mutable emitter, body)
+    popScope(mutable emitter)
+    popLoopFrame(mutable emitter)
+    emitter.indent = emitter.indent - 1
+    writeLine(mutable emitter, "}")
+    return
+  }
+  const _ = reportUnsupported(mutable emitter, "for loop", NODE)
 }

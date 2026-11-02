@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-core
 title: Self-hosted emitter: contract, state, skeleton, driver and harness
-status: todo
+status: active
 priority: must
 type: feature
 story:

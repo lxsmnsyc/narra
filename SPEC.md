@@ -326,8 +326,8 @@ const { host, port: serverPort } = config
 
 match (point) {
   { x: 0.0, y: 0.0 } => print("origin")
-  { x: 0.0, y } => print(`on the y axis at ${F64.toString(y)}`)
-  { x, y } => print(`${F64.toString(x)}, ${F64.toString(y)}`)
+  { x: 0.0, y } => print(`on the y axis at ${Float.toString(y)}`)
+  { x, y } => print(`${Float.toString(x)}, ${Float.toString(y)}`)
 }
 ```
 
@@ -531,7 +531,7 @@ const label = Show.show(price)
 
 - Integer overflow panics in debug builds and wraps in release builds. `+%`, `-%` and `*%` always wrap.
 - Integer division or remainder by zero panics in every build.
-- Conversions are explicit: `I32.from(x)`, `F64.fromInt(x)`, `Int.truncate(f)`.
+- Conversions are explicit: `Float.fromInt(x)`, `Float.truncate(f)`, and for sized numbers (planned) `Int.toI32(x)`.
 
 ### Strings
 
@@ -549,7 +549,7 @@ export struct Pair {
   value: string
 }
 
-export function parsePair(line: string): Option<Pair> {
+export function parsePair(line: string): Option<Pair> uses alloc {
   const found = Str.indexOf(line, "=")
   if (found is None) {
     return None
@@ -575,7 +575,7 @@ export function parsePair(line: string): Option<Pair> {
 export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc {
   const text = File.readText(path)
   if (text is Err(e)) {
-    return Err(IoFailed(e))
+    return Err(ConfigError.IoFailed(e))
   }
 
   const config = Config.parse(text.value)

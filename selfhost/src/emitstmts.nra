@@ -3,11 +3,11 @@
 // temporaries of their expressions do so here, as in Go, before and after
 // the call into a feature module.
 import * as Int from "std/int"
-import { Stmt, Block, Expr, Pattern } from "narrac/ast"
+import { Pos, Stmt, Block, Expr, Pattern } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId } from "narrac/check"
 import { cType } from "narrac/cnames"
-import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, typeOf, refOf, localRef, localOf, retainCode, releaseCode } from "narrac/emitstate"
+import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, enterLoop, leaveLoop, emitContinueLabel, emitBreakLabel, emitLabeledExit, typeOf, refOf, localRef, localOf, retainCode, releaseCode } from "narrac/emitstate"
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
@@ -39,10 +39,10 @@ export function emitStatement<W: EmitWalker>(walker: W, mutable emitter: Emitter
     Stmt.ExprStmt(_, expression) => emitExpressionStatement(walker, mutable emitter, statement, expression)
     Stmt.ReturnStmt(_, value) => emitReturn(walker, mutable emitter, value)
     Stmt.IfStmt(_, condition, then, orElse) => emitIf(walker, mutable emitter, statement, condition, then, orElse)
-    Stmt.WhileStmt(_, condition, body) => emitWhile(walker, mutable emitter, condition, body)
-    Stmt.ForStmt(nodeId, _, _, iterable, body) => emitFor(walker, mutable emitter, statement, nodeId, iterable, body)
-    Stmt.BreakStmt(_) => emitLoopExit(mutable emitter, "break;")
-    Stmt.ContinueStmt(_) => emitLoopExit(mutable emitter, "continue;")
+    Stmt.WhileStmt(pos, label, condition, body) => emitWhile(walker, mutable emitter, pos, label, condition, body)
+    Stmt.ForStmt(nodeId, pos, label, _, iterable, body) => emitFor(walker, mutable emitter, statement, nodeId, pos, label, iterable, body)
+    Stmt.BreakStmt(_, label) => emitLoopExit(mutable emitter, label, true)
+    Stmt.ContinueStmt(_, label) => emitLoopExit(mutable emitter, label, false)
   }
 }
 
@@ -54,9 +54,17 @@ function emitNestedBlock<W: EmitWalker>(walker: W, mutable emitter: Emitter, blo
   writeLine(mutable emitter, "}")
 }
 
-function emitLoopExit(mutable emitter: Emitter, text: string) uses alloc {
+function emitLoopExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
+  if (label != "") {
+    emitLabeledExit(mutable emitter, label, isBreak)
+    return
+  }
   unwindLoop(mutable emitter)
-  writeLine(mutable emitter, text)
+  if (isBreak) {
+    writeLine(mutable emitter, "break;")
+  } else {
+    writeLine(mutable emitter, "continue;")
+  }
 }
 
 function emitVariable<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, nodeId: int, pattern: Option<Pattern>, value: Expr) uses alloc {
@@ -178,22 +186,13 @@ function emitIf<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: S
 }
 
 // emitLoopBody emits a loop body with the frame depth recorded for break and continue.
-function emitLoopBody<W: EmitWalker>(walker: W, mutable emitter: Emitter, body: Block) uses alloc {
-  const depth = Arrays.length(emitter.frames)
-  Arrays.push(mutable emitter.loopFrames, depth)
+function emitLoopBody<W: EmitWalker>(walker: W, mutable emitter: Emitter, label: string, pos: Pos, body: Block) uses alloc {
+  enterLoop(mutable emitter, label, pos)
   emitBlock(walker, mutable emitter, body, true)
-  popLoopFrame(mutable emitter)
+  emitContinueLabel(mutable emitter)
 }
 
-function popLoopFrame(mutable emitter: Emitter) uses alloc {
-  let kept: Array<int> = []
-  for (const index of Ranges.between(0, Arrays.length(emitter.loopFrames) - 1)) {
-    Arrays.push(mutable kept, emitter.loopFrames[index])
-  }
-  emitter.loopFrames = kept
-}
-
-function emitWhile<W: EmitWalker>(walker: W, mutable emitter: Emitter, condition: Expr, body: Block) uses alloc {
+function emitWhile<W: EmitWalker>(walker: W, mutable emitter: Emitter, pos: Pos, label: string, condition: Expr, body: Block) uses alloc {
   writeLine(mutable emitter, "while (1) {")
   emitter.indent = emitter.indent + 1
   beginStatement(mutable emitter)
@@ -201,9 +200,11 @@ function emitWhile<W: EmitWalker>(walker: W, mutable emitter: Emitter, condition
   const holds = temp(mutable emitter, Type.TBool, code.text)
   endStatement(mutable emitter)
   writeLine(mutable emitter, `if (!${holds}) break;`)
-  emitLoopBody(walker, mutable emitter, body)
+  emitLoopBody(walker, mutable emitter, label, pos, body)
+  const info = leaveLoop(mutable emitter)
   emitter.indent = emitter.indent - 1
   writeLine(mutable emitter, "}")
+  emitBreakLabel(mutable emitter, info)
 }
 
 // iterableName is the std function a for loop iterates: Range.upTo, Array.values and so on.
@@ -216,22 +217,22 @@ function iterableName(emitter: Emitter, iterable: Expr): string {
   return ""
 }
 
-function emitFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, nodeId: int, iterable: Expr, body: Block) uses alloc {
+function emitFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, nodeId: int, pos: Pos, label: string, iterable: Expr, body: Block) uses alloc {
   const name = iterableName(emitter, iterable)
   beginStatement(mutable emitter)
   if (name == "Range.upTo" || name == "Range.between") {
-    emitRangeFor(walker, mutable emitter, nodeId, iterable, body, name)
+    emitRangeFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name)
   } else if (name == "Map.keys" || name == "Map.entries") {
     Maps.emitMapFor(walker, mutable emitter, statement)
   } else if (name == "Array.values" || name == "Array.entries") {
-    emitArrayFor(walker, mutable emitter, nodeId, iterable, body, name == "Array.entries")
+    emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name == "Array.entries")
   } else {
     const _ = reportUnsupported(mutable emitter, "for loop", NODE)
   }
   endStatement(mutable emitter)
 }
 
-function emitRangeFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, iterable: Expr, body: Block, name: string) uses alloc {
+function emitRangeFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, label: string, iterable: Expr, body: Block, name: string) uses alloc {
   let arguments: Array<Expr> = []
   if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
     for (const argument of Arrays.values(callArguments)) {
@@ -252,12 +253,14 @@ function emitRangeFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
   const variable = localRef(emitter, declaredLocal(emitter, nodeId))
   writeLine(mutable emitter, `for (int64_t ${variable} = ${low}; ${variable} < ${high}; ${variable}++) {`)
   emitter.indent = emitter.indent + 1
-  emitLoopBody(walker, mutable emitter, body)
+  emitLoopBody(walker, mutable emitter, label, pos, body)
+  const info = leaveLoop(mutable emitter)
   emitter.indent = emitter.indent - 1
   writeLine(mutable emitter, "}")
+  emitBreakLabel(mutable emitter, info)
 }
 
-function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, iterable: Expr, body: Block, entries: bool) uses alloc {
+function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, label: string, iterable: Expr, body: Block, entries: bool) uses alloc {
   let source = iterable
   if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
     source = callArguments[0].value
@@ -273,8 +276,7 @@ function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
     const index = `i${Int.toString(emitter.tempCount)}`
     writeLine(mutable emitter, `for (int64_t ${index} = 0; ${index} < ${array}->len; ${index}++) {`)
     emitter.indent = emitter.indent + 1
-    const depth = Arrays.length(emitter.frames)
-    Arrays.push(mutable emitter.loopFrames, depth)
+    enterLoop(mutable emitter, label, pos)
     pushScope(mutable emitter, true)
     const localIndex = declaredLocal(emitter, nodeId)
     const variable = localRef(emitter, localIndex)
@@ -293,9 +295,11 @@ function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
     addLocal(mutable emitter, localIndex)
     emitBlockInScope(walker, mutable emitter, body)
     popScope(mutable emitter)
-    popLoopFrame(mutable emitter)
+    emitContinueLabel(mutable emitter)
+    const info = leaveLoop(mutable emitter)
     emitter.indent = emitter.indent - 1
     writeLine(mutable emitter, "}")
+    emitBreakLabel(mutable emitter, info)
     return
   }
   const _ = reportUnsupported(mutable emitter, "for loop", NODE)

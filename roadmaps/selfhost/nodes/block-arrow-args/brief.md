@@ -1,7 +1,7 @@
 ---
 id: block-arrow-args
 title: "Block-body arrows with several statements as call arguments"
-status: todo
+status: active
 priority: should
 type: feature
 story:

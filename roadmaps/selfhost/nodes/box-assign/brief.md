@@ -1,7 +1,7 @@
 ---
 id: box-assign
 title: "Assigning to b.value on a Box"
-status: todo
+status: active
 priority: should
 type: feature
 story:

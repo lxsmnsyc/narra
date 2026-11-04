@@ -1,7 +1,7 @@
 ---
 id: spec-gap-audit
 title: Audit SPEC.md against the compiler
-status: active
+status: done
 priority: should
 type: chore
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-04
-spent:
+spent: 163504
 owns:
   - roadmaps/selfhost/nodes/spec-gap-audit/**
 shared: []

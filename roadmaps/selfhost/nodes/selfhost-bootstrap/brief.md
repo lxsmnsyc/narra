@@ -1,7 +1,7 @@
 ---
 id: selfhost-bootstrap
 title: "Bootstrap: the compiler compiles itself"
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-04
-spent:
+spent: 123839
 owns:
   - compiler/internal/narra/selfhost_bootstrap_test.go
   - selfhost/bootstrap.sh

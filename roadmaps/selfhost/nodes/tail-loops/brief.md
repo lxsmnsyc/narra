@@ -1,7 +1,7 @@
 ---
 id: tail-loops
 title: "Self tail calls compile to loops"
-status: todo
+status: active
 priority: should
 type: feature
 story:

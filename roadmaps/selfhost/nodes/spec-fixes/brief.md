@@ -1,7 +1,7 @@
 ---
 id: spec-fixes
 title: "Fix spec text that is wrong, not the compiler"
-status: active
+status: done
 priority: should
 type: docs
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 60047
 owns:
   - roadmaps/selfhost/nodes/spec-fixes/**
 shared:

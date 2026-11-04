@@ -1,7 +1,7 @@
 ---
 id: mutable-escape
 title: "A mutable parameter cannot be returned or stored"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 114319
 owns:
   - compiler/testdata/errors/mutable_escape*
   - roadmaps/selfhost/nodes/mutable-escape/**

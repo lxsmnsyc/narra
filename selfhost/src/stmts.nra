@@ -7,7 +7,7 @@ import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
 import { Checker, Ref, Walker, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
-import { resolveType } from "narrac/resolve"
+import { resolveType, findTupleType } from "narrac/resolve"
 import { checkExpression, expectType, checkConstWrite, checkNoMutableEscape, findAssignedLocal } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
 import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgumentsIrrefutable } from "narrac/patterns"
@@ -230,13 +230,16 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
       }
     }
   }
-  let element = Type.TInt
+  let element = Type.TVoid
   if (builtin == "Range.upTo" || builtin == "Range.between") {
     element = Type.TInt
-  } else if (builtin == "Array.values") {
+  } else if (builtin == "Array.values" || builtin == "Array.entries") {
     element = Type.TVoid
     if (firstArgument is Type.TArray(arrayElement)) {
       element = arrayElement
+      if (builtin == "Array.entries") {
+        element = findTupleType(mutable checker, [Type.TInt, arrayElement])
+      }
     }
   } else if (builtin == "Map.keys" || builtin == "Map.entries") {
     element = Type.TVoid
@@ -245,7 +248,7 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
     }
   } else {
     const text = typeString(checker, iterableType)
-    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found ${text}`)
+    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs Range.upTo, Range.between, Array.values, Array.entries, Map.keys or Map.entries, found ${text}`)
   }
 
   // The loop variable lives in a scope around the body.

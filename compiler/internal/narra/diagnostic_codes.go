@@ -124,7 +124,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0229", "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`"},
 	{"E0230", "this function must return a %s"},
 	{"E0231", "this function returns nothing"},
-	{"E0232", "for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found %s"},
+	{"E0232", "for ... of needs Range.upTo, Range.between, Array.values, Array.entries, Map.keys or Map.entries, found %s"},
 	{"E0233", "break must be inside a loop"},
 	{"E0234", "continue must be inside a loop"},
 	{"E0235", "cannot read field %q of %s: it is an opaque struct of module %q"},

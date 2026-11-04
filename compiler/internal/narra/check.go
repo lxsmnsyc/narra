@@ -8,6 +8,7 @@ import (
 const (
 	forRange forKind = iota
 	forArray
+	forArrayEntries
 	forMapKeys
 	forMapEntries
 )

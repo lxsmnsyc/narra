@@ -68,7 +68,7 @@ go test ./...
 - `std/string` also has `slice`, `sliceFrom`, `byteAt`, `charAt`, `nextChar`, `charCount`, `indexOf` (returns `Option<int>`), `startsWith`, `trim` (ASCII whitespace), `split` (panics on an empty separator), `chars` (`Array<char>`) and a `StringBuilder` (`Str.builder()`, `Str.append(mutable sb, s)`, `Str.appendChar(mutable sb, c)`, `Str.build(sb)`). Slicing, `charAt` and `nextChar` panic on a position out of range or inside a character.
 - `std/char` has `Char.code` and `Char.fromCode` (`Option<char>`). `std/int` also has `Int.parse(s, base)` (`Result<int, string>`, bases 2 to 36; no prefix, and a leading `+` or whitespace is rejected) and `Int.toHex`. `std/string` also has `endsWith`, `contains`, `replace` (an empty `from` returns `s` unchanged) and `join`.
 - Names from a namespace import: calls `X.f(...)` and types `X.T`. Named imports bring functions, and structs and enums. Constructors come with their enum and are always written qualified: `Shape.Circle(1)`, `Geo.Shape.Circle(1)`, in expressions and in patterns (D71). `import { Circle }` of a constructor is E0425.
-- Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `break`, `continue`.
+- Functions, `const`, `let`, `if`, `while`, `for (const x of Range.upTo(n))`, `Range.between(a, b)` and `Array.values(items)`, `Array.entries(items)` (yields `#[index, item]`), `for (const #[i, x] of ...)` and `for (const { x, y } of ...)` heads (the parser rewrites them to a hidden loop name `__for_<line>_<column>` and a `const`/`let` declaration at the top of the body), `break`, `continue`.
 - `int`, `f64`, `bool`, `char` and `string`.
 - Structs with constant field defaults, typed literals (`Point { x: 1 }`) and literals typed from context.
 - Type arguments on map and generic struct literals: `Map<string, int> {}`, `Pair<int, string> { a: 1, b: "x" }` (D68). The checker resolves them like an annotation and reports E0237 when they differ from the expected type. Function types are not accepted inside them.
@@ -106,7 +106,7 @@ go test ./...
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
-- Destructuring in `for (const #[i, x] of ...)` loops, and reading a tuple element by index.
+- Reading a tuple element by index.
 - Generators, async functions, threads and channels.
 - `unsafe` and `extern`.
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.

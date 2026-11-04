@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-match
 title: Self-hosted emitter: is, match, destructuring, tuples and spreads
-status: todo
+status: active
 priority: must
 type: feature
 story:

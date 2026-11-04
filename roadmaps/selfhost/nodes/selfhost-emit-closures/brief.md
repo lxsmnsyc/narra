@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-closures
 title: Self-hosted emitter: function values, arrow functions and environments
-status: todo
+status: active
 priority: must
 type: feature
 story:

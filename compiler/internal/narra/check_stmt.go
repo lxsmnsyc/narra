@@ -283,6 +283,8 @@ func (c *Checker) stmt(s Stmt) {
 	case *ForStmt:
 		c.endExprNarrowing(s.Iter)
 	}
+	// After the statement is checked, its names are resolved.
+	defer c.checkMutableConflicts(s)
 	switch s := s.(type) {
 	case *Block:
 		c.block(s)

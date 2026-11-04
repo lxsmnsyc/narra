@@ -6,6 +6,7 @@ package narra
 type File struct {
 	Path    string // source path relative to the package directory, for diagnostics
 	Header  int    // line after the leading comment lines; where a fix adds the first import
+	Src     string // the source text, for fixes that move text
 	Imports []*ImportDecl
 	Decls   []Decl
 	// dotUses lists, by name, the identifiers written right before a `.` and
@@ -354,6 +355,7 @@ type CallExpr struct {
 	exprBase
 	Callee  Expr
 	Args    []*Arg
+	End     Pos    // just after the closing parenthesis
 	Builtin string // set for standard functions
 	Func    *FuncDecl
 	Ctor    *Variant

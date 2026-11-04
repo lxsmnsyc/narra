@@ -2,6 +2,7 @@ package narra
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -680,4 +681,375 @@ func (c *Checker) moduleEnumName(x Expr) string {
 		return name
 	}
 	return ""
+}
+
+// localUse is one use of a local in a statement's expression: a read, an
+// assignment target, or a `mutable` argument.
+type localUse struct {
+	local *Local
+	pos   Pos
+	kind  int       // useRead, useAssign or useMutable
+	call  *CallExpr // for useMutable: the call it is an argument of
+	chain []*CallExpr
+	hoist bool // the call can move to its own statement
+	arms  []armStep
+	order int
+	// calleeOf is the call whose callee holds the use, when it does.
+	calleeOf *CallExpr
+}
+
+// armStep says a use sits in one arm of a match, or on one side of && or ||.
+// Uses in different arms of the same match never run together, and the left
+// side of && and || is finished before the right side starts.
+type armStep struct {
+	key     any // the match, the && or || expression, or the block
+	arm     int
+	isMatch bool // an arm of a match or a block expression
+	calls   int  // how many calls enclosed the step when it began
+}
+
+const (
+	useRead = iota
+	useAssign
+	useMutable
+)
+
+// useCollector walks the expressions of one statement in evaluation order.
+type useCollector struct {
+	c    *Checker
+	uses []*localUse
+	arms []armStep
+}
+
+func (u *useCollector) add(l *Local, pos Pos, kind int, call *CallExpr, chain []*CallExpr, hoist bool) {
+	if l != nil {
+		u.uses = append(u.uses, &localUse{local: l, pos: pos, kind: kind, call: call, chain: append([]*CallExpr(nil), chain...), hoist: hoist, arms: append([]armStep(nil), u.arms...), order: len(u.uses)})
+	}
+}
+
+// root records the local at the root of an assignable expression and walks
+// the index expressions on the way.
+func (u *useCollector) root(x Expr, kind int, call *CallExpr, chain []*CallExpr, hoist bool) {
+	switch x := x.(type) {
+	case *Ident:
+		u.add(x.Local, x.P, kind, call, chain, hoist)
+	case *FieldExpr:
+		if u.c.lvalueRoot(x) != nil {
+			u.root(x.Target, kind, call, chain, hoist)
+		} else {
+			u.walk(x.Target, chain, hoist)
+		}
+	case *IndexExpr:
+		u.root(x.Target, kind, call, chain, hoist)
+		u.walk(x.Index, chain, hoist)
+	default:
+		u.walk(x, chain, hoist)
+	}
+}
+
+func (u *useCollector) walk(x Expr, chain []*CallExpr, hoist bool) {
+	switch x := x.(type) {
+	case *Ident:
+		u.add(x.Local, x.P, useRead, nil, chain, hoist)
+	case *FieldExpr:
+		u.walk(x.Target, chain, hoist)
+	case *IndexExpr:
+		u.walk(x.Target, chain, hoist)
+		u.walk(x.Index, chain, hoist)
+	case *IsExpr:
+		u.walk(x.Subject, chain, hoist)
+	case *UnaryExpr:
+		u.walk(x.Operand, chain, hoist)
+	case *BinaryExpr:
+		short := x.Op == "&&" || x.Op == "||"
+		if short {
+			u.arms = append(u.arms, armStep{key: x, arm: 0, calls: len(chain)})
+		}
+		u.walk(x.Left, chain, hoist)
+		if short {
+			u.arms[len(u.arms)-1].arm = 1
+		}
+		// The right side of && and || may not run, so a call there stays put.
+		u.walk(x.Right, chain, hoist && !short)
+		if short {
+			u.arms = u.arms[:len(u.arms)-1]
+		}
+	case *CallExpr:
+		inner := append(append([]*CallExpr(nil), chain...), x)
+		// A mutable argument that is also the function called is reported
+		// by the closure check, so the callee's uses are marked.
+		first := len(u.uses)
+		u.walk(x.Callee, chain, hoist)
+		for _, use := range u.uses[first:] {
+			if use.calleeOf == nil {
+				use.calleeOf = x
+			}
+		}
+		for _, a := range x.Args {
+			if a.Mutable {
+				u.root(a.Value, useMutable, x, inner, hoist)
+			} else {
+				u.walk(a.Value, inner, hoist)
+			}
+		}
+	case *TemplateLit:
+		for _, part := range x.Parts {
+			u.walk(part, chain, hoist)
+		}
+	case *StructLit:
+		for _, f := range x.Fields {
+			u.walk(f.Value, chain, hoist)
+		}
+		if x.Spread != nil {
+			u.walk(x.Spread, chain, hoist)
+		}
+	case *ArrayLit:
+		for _, el := range x.Elems {
+			u.walk(el, chain, hoist)
+		}
+	case *MapLit:
+		for i := range x.Keys {
+			u.walk(x.Keys[i], chain, hoist)
+			u.walk(x.Vals[i], chain, hoist)
+		}
+	case *BlockExpr:
+		// A block expression is one value. checkExclusive looks inside it
+		// too, but its statements run one after the other.
+		u.arms = append(u.arms, armStep{key: x, arm: 0, isMatch: true, calls: len(chain)})
+		u.block(x.Block, chain)
+		u.arms = u.arms[:len(u.arms)-1]
+	case *MatchExpr:
+		// The subject is finished before the first arm starts.
+		u.arms = append(u.arms, armStep{key: x, arm: -1, calls: len(chain)})
+		u.walk(x.Subject, chain, hoist)
+		u.arms = u.arms[:len(u.arms)-1]
+		for i, arm := range x.Arms {
+			u.arms = append(u.arms, armStep{key: x, arm: i, isMatch: true, calls: len(chain)})
+			if arm.Guard != nil {
+				u.walk(arm.Guard, chain, false)
+			}
+			if arm.Body != nil {
+				u.walk(arm.Body, chain, false)
+			}
+			if arm.Block != nil {
+				u.block(arm.Block, chain)
+			}
+			u.arms = u.arms[:len(u.arms)-1]
+		}
+	}
+}
+
+// block walks the statements of a block inside an expression, such as a match
+// arm. The statements run one after the other, so each has a step of its own.
+func (u *useCollector) block(b *Block, chain []*CallExpr) {
+	for i, st := range b.Stmts {
+		u.arms = append(u.arms, armStep{key: b, arm: i, calls: len(chain)})
+		u.stmt(st, chain)
+		u.arms = u.arms[:len(u.arms)-1]
+	}
+}
+
+func (u *useCollector) stmt(st Stmt, chain []*CallExpr) {
+	switch st := st.(type) {
+	case *Block:
+		u.block(st, chain)
+	case *VarStmt:
+		if st.Value != nil {
+			u.walk(st.Value, chain, false)
+		}
+	case *AssignStmt:
+		u.root(st.Target, useAssign, nil, chain, false)
+		u.walk(st.Value, chain, false)
+	case *ExprStmt:
+		u.walk(st.Expr, chain, false)
+	case *ReturnStmt:
+		if st.Value != nil {
+			u.walk(st.Value, chain, false)
+		}
+	case *IfStmt:
+		// The condition is finished before the branches start.
+		u.arms = append(u.arms, armStep{key: st, arm: 0, calls: len(chain)})
+		u.walk(st.Cond, chain, false)
+		u.arms[len(u.arms)-1].arm = 1
+		u.block(st.Then, chain)
+		// The two branches never run together.
+		u.arms[len(u.arms)-1].arm = 2
+		if st.Else != nil {
+			u.stmt(st.Else, chain)
+		}
+		u.arms = u.arms[:len(u.arms)-1]
+	case *WhileStmt:
+		u.arms = append(u.arms, armStep{key: st, arm: 0, calls: len(chain)})
+		u.walk(st.Cond, chain, false)
+		u.arms[len(u.arms)-1].arm = 1
+		u.block(st.Body, chain)
+		u.arms = u.arms[:len(u.arms)-1]
+	case *ForStmt:
+		u.arms = append(u.arms, armStep{key: st, arm: 0, calls: len(chain)})
+		u.walk(st.Iter, chain, false)
+		u.arms[len(u.arms)-1].arm = 1
+		u.block(st.Body, chain)
+		u.arms = u.arms[:len(u.arms)-1]
+	}
+}
+
+// checkMutableConflicts rejects a statement whose expressions pass a local as
+// `mutable` and also use it anywhere else, at any depth. The emitter runs a
+// `mutable` call before the rest of its statement, so the other use would
+// see the new value. Uses inside the arguments of the call itself belong to
+// checkExclusive.
+func (c *Checker) checkMutableConflicts(s Stmt) {
+	u := &useCollector{c: c}
+	fixable := true
+	switch s := s.(type) {
+	case *VarStmt:
+		if s.Value != nil {
+			u.walk(s.Value, nil, true)
+		}
+	case *AssignStmt:
+		u.root(s.Target, useAssign, nil, nil, true)
+		u.walk(s.Value, nil, true)
+	case *ExprStmt:
+		u.walk(s.Expr, nil, true)
+	case *ReturnStmt:
+		if s.Value != nil {
+			u.walk(s.Value, nil, true)
+		}
+	case *IfStmt:
+		u.walk(s.Cond, nil, true)
+		fixable = false
+	case *WhileStmt:
+		u.walk(s.Cond, nil, false)
+		fixable = false
+	case *ForStmt:
+		u.walk(s.Iter, nil, true)
+		fixable = false
+	default:
+		return
+	}
+	reported := map[*Local]bool{}
+	for _, v := range u.uses {
+		if reported[v.local] {
+			continue
+		}
+		for _, m := range u.uses {
+			if m == v || m.local != v.local || m.kind != useMutable || (v.kind == useMutable && m.order > v.order) {
+				continue
+			}
+			if (v.calleeOf != nil && inChain(m.chain, v.calleeOf)) || differentArms(v.arms, m.arms) || insideCall(v, m.call) || (v.kind == useMutable && insideCall(m, v.call)) {
+				continue
+			}
+			reported[v.local] = true
+			var fixes []Fix
+			if fixable && m.hoist {
+				fixes = c.hoistFix(s, m.call)
+			}
+			c.errorfFix(v.pos, fixes, "%q is passed as mutable in one call, so the rest of the expression cannot use it", v.local.Name)
+			break
+		}
+	}
+}
+
+func inChain(chain []*CallExpr, call *CallExpr) bool {
+	for _, x := range chain {
+		if x == call {
+			return true
+		}
+	}
+	return false
+}
+
+// callStart is where a call's text begins: the start of its callee.
+func callStart(x Expr) Pos {
+	switch x := x.(type) {
+	case *FieldExpr:
+		return callStart(x.Target)
+	case *IndexExpr:
+		return callStart(x.Target)
+	case *CallExpr:
+		return callStart(x.Callee)
+	}
+	return x.position()
+}
+
+// hoistFix binds a `mutable` call to a fresh const on the line before its
+// statement and puts the name in its place. It needs the source text, a
+// statement that starts its line and a call that returns a value.
+func (c *Checker) hoistFix(s Stmt, call *CallExpr) []Fix {
+	if c.mod == nil || c.mod.src == nil || len(c.mod.src.Files) != 1 || call.End.Line == 0 || call.Type() == TVoid {
+		return nil
+	}
+	start, end := callStart(call), call.End
+	if start.Line != end.Line || start.Col == 1 {
+		return nil
+	}
+	var stmtPos Pos
+	switch s := s.(type) {
+	case *VarStmt:
+		stmtPos = s.Pos
+	case *AssignStmt:
+		stmtPos = s.Pos
+	case *ExprStmt:
+		stmtPos = s.Pos
+	case *ReturnStmt:
+		stmtPos = s.Pos
+	}
+	lines := strings.Split(c.mod.src.Files[0].Src, "\n")
+	if stmtPos.Line < 1 || stmtPos.Line > len(lines) || start.Line > len(lines) {
+		return nil
+	}
+	stmtLine := []rune(lines[stmtPos.Line-1])
+	if stmtPos.Col-1 > len(stmtLine) || strings.TrimSpace(string(stmtLine[:stmtPos.Col-1])) != "" {
+		return nil
+	}
+	indent := string(stmtLine[:stmtPos.Col-1])
+	callLine := []rune(lines[start.Line-1])
+	if end.Col-1 > len(callLine) {
+		return nil
+	}
+	text := string(callLine[start.Col-1 : end.Col-1])
+	base := "result"
+	switch callee := call.Callee.(type) {
+	case *Ident:
+		base = callee.Name + "Result"
+	case *FieldExpr:
+		base = callee.Name + "Result"
+	}
+	name := base
+	for n := 2; c.lookup(name) != nil; n++ {
+		name = base + strconv.Itoa(n)
+	}
+	return []Fix{{Title: "bind the call to a const before the statement", Edits: []Edit{
+		{Start: Pos{stmtPos.Line, 1}, End: Pos{stmtPos.Line, 1}, Text: indent + "const " + name + " = " + text + "\n"},
+		{Start: start, End: end, Text: name},
+	}}}
+}
+
+// insideCall tells whether a use is in the arguments of a call and not in a
+// match arm there: checkExclusive reports those. A match arm in the arguments
+// is not covered by it.
+func insideCall(use *localUse, call *CallExpr) bool {
+	for i, x := range use.chain {
+		if x != call {
+			continue
+		}
+		for _, step := range use.arms {
+			if step.isMatch && step.calls > i {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func differentArms(a, b []armStep) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x.key == y.key && x.arm != y.arm {
+				return true
+			}
+		}
+	}
+	return false
 }

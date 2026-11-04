@@ -46,3 +46,7 @@ Notes:
 | selfhost | selfhost-emit-options | M | M | 1 | 212k tokens. Clean review with nits. |
 | selfhost | selfhost-emit-traits | M | M | 1 | 169k tokens. Clean review; filled traitSelf in the checker. |
 | selfhost | selfhost-emit-maps | S | S | 1 | 134k tokens. Self-review; `can-merge` sent it to the maintainer as a PR. |
+| selfhost | selfhost-emit | S | S | 1 | 67k tokens. Self-review. The selfhost package compared byte-identical on the first run; no divergence fixes. |
+| selfhost | selfhost-bootstrap | M | S | 2 | 124k tokens (worker 67k, fresh review 57k). Fixed point on the first run. Round 2: `time` in a `/bin/sh` script, error wrapping. |
+| selfhost | spec-gap-audit | M | M | 1 | 164k tokens. 241 programs, 21 confirmed gaps, 18 proposed fix nodes. |
+| selfhost | spec-fixes | S | S | 1 | 60k tokens. Invented a placeholder name (`Int.toI32`) in SPEC.md; left to sized-numbers. |

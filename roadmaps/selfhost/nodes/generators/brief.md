@@ -34,3 +34,4 @@ depends_on:
 ## Notes
 
 Outline. Break into full briefs when `plan.py refine` lists it.
+- Syntax stays `function*` (D19), confirmed by the maintainer on 2026-11-04 against a `generator` keyword and marking generators by return type only.

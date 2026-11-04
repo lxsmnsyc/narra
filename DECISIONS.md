@@ -648,7 +648,7 @@ Decision: a block has two forms. A block in statement position is a block statem
 
 - **Reason.** The two forms are told apart by position, so each `return` has one target: the nearest enclosing function body or block expression.
 - **Reason.** Narra never returns implicitly. A block's value comes from `return`, not from its last expression as in Rust or ML.
-- **Reason.** Narra has no object literals: struct literals are named and maps write `Map<K, V> { ... }`. A bare `{` in value position has no other meaning to clash with.
+- **Reason.** Narra has no object literals. Struct literals are named (`P { x: 1 }`), or context-typed when the first tokens after `{` are `}`, `...` or `name:` (`const p: P = { x: 1 }`; field shorthand `{ x }` is already an error). Maps write `Map<K, V> { ... }`. Every other `{` in value position starts a block expression.
 - **Rejected: the last expression of a block as its value.** That is an implicit return, which Narra does not have.
 - **Rejected: a keyword for block expressions (`do { ... }`).** Position already tells the forms apart.
 - **Rejected: `break` and `continue` crossing a block expression.** The block would then have no value on that path. One boundary rule for all three jumps is simpler.

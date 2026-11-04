@@ -8,7 +8,7 @@ import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
 import { Checker, Ref, Walker, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
 import { resolveType } from "narrac/resolve"
-import { checkExpression, expectType, checkConstWrite, findAssignedLocal } from "narrac/exprs"
+import { checkExpression, expectType, checkConstWrite, checkNoMutableEscape, findAssignedLocal } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
 import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgumentsIrrefutable } from "narrac/patterns"
 import * as Arrays from "std/array"
@@ -91,6 +91,10 @@ function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Po
     const name = getLocal(checker, root).name
     reportError(mutable checker, pos, `${quoteGo(name)} is constant; declare it with \`let\` to change it`)
   }
+  // Storing a mutable parameter in a field or element is an escape.
+  if (!(target is Expr.Ident(_, _, _))) {
+    checkNoMutableEscape(mutable checker, value)
+  }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
   expectType(mutable checker, getExpressionPos(value), Some(targetType), valueType)
 }
@@ -119,12 +123,14 @@ function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, v
   // returns are compared once its block is checked (closures.nra).
   if (checker.inferring) {
     if (value is Some(inferred)) {
+      checkNoMutableEscape(mutable checker, inferred)
       checkExpression(mutable checker, walker, inferred, None)
     }
     return
   }
   const want = checker.resultType
   if (value is Some(expression)) {
+    checkNoMutableEscape(mutable checker, expression)
     const found = checkExpression(mutable checker, walker, expression, Some(want))
     if (want == Type.TVoid) {
       reportError(mutable checker, pos, "this function returns nothing")

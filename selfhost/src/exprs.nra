@@ -47,6 +47,28 @@ export function checkExpression<W: Walker>(mutable checker: Checker, walker: W, 
 }
 
 function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
+  // A literal stores its values, so a mutable parameter cannot be one.
+  match (expression) {
+    Expr.StructLit(_, _, _, _, fields, _) => {
+      for (const field of Arrays.values(fields)) {
+        checkNoMutableEscape(mutable checker, field.value)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => {
+      for (const element of Arrays.values(elements)) {
+        checkNoMutableEscape(mutable checker, element)
+      }
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      for (const key of Arrays.values(keys)) {
+        checkNoMutableEscape(mutable checker, key)
+      }
+      for (const value of Arrays.values(values)) {
+        checkNoMutableEscape(mutable checker, value)
+      }
+    }
+    _ => {}
+  }
   return match (expression) {
     Expr.IntLit(_, pos, text) => checkIntLiteral(mutable checker, pos, text)
     Expr.FloatLit(_, _, _) => Type.TF64
@@ -66,6 +88,20 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(mutable checker, walker, pos, elements, isTuple, want)
     Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
     Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(walker, mutable checker, expression, want)
+  }
+}
+
+// checkNoMutableEscape rejects a mutable parameter used as the value that is
+// returned or stored. Reading it into a copy (`const copy = p`) is allowed.
+export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses alloc {
+  if (value is Expr.Ident(_, pos, name)) {
+    const index = findLocal(checker, name)
+    if (index >= 0) {
+      const local = getLocal(checker, index)
+      if (local.isMutable && local.param) {
+        reportError(mutable checker, pos, `mutable parameter ${quoteGo(name)} cannot be returned or stored; copy it first with \`const copy = ${name}\``)
+      }
+    }
   }
 }
 

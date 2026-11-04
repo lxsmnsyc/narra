@@ -157,8 +157,14 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 	case *CallExpr:
 		return c.call(e, want)
 	case *StructLit:
+		for _, fi := range e.Fields {
+			c.noMutableEscape(fi.Value)
+		}
 		return c.structLit(e, want)
 	case *ArrayLit:
+		for _, el := range e.Elems {
+			c.noMutableEscape(el)
+		}
 		if e.IsTuple {
 			return c.tupleLit(e, want)
 		}
@@ -179,6 +185,12 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		}
 		return c.arrayOf(elem)
 	case *MapLit:
+		for _, k := range e.Keys {
+			c.noMutableEscape(k)
+		}
+		for _, v := range e.Vals {
+			c.noMutableEscape(v)
+		}
 		return c.mapLit(e, want)
 	case *MatchExpr:
 		return c.match(e, want, true)
@@ -331,4 +343,16 @@ func (c *Checker) structLit(e *StructLit, want Type) Type {
 		}
 	}
 	return st
+}
+
+// noMutableEscape rejects a mutable parameter used as the value that is
+// returned or stored. Reading it into a copy (`const copy = p`) is allowed.
+func (c *Checker) noMutableEscape(v Expr) {
+	id, ok := v.(*Ident)
+	if !ok {
+		return
+	}
+	if l := c.lookup(id.Name); l != nil && l.Mutable && l.Param {
+		c.errorf(id.P, "mutable parameter %q cannot be returned or stored; copy it first with `const copy = %s`", l.Name, l.Name)
+	}
 }

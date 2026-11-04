@@ -96,6 +96,10 @@ func (c *Checker) qualifyFix(pos Pos, enum string) []Fix {
 
 // ctorOf builds constructor name of an enum found by enumByName.
 func (c *Checker) ctorOf(pos Pos, en enumRef, name string, args []*Arg, want Type) (Type, *Variant) {
+	// A constructor stores its arguments.
+	for _, a := range args {
+		c.noMutableEscape(a.Value)
+	}
 	if en.et != nil {
 		v := en.et.Variant(name)
 		if v == nil {

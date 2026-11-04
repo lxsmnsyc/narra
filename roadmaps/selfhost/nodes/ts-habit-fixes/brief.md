@@ -1,7 +1,7 @@
 ---
 id: ts-habit-fixes
 title: "Diagnostics with fixes for every TypeScript habit"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 226956
 owns:
   - compiler/internal/narra/diagnostic_test.go
   - compiler/testdata/errors/ts_*

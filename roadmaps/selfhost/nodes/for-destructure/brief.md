@@ -33,6 +33,14 @@ shared:
   - selfhost/src/ast.nra
   - selfhost/src/astdump.nra
   - compiler/README.md
+  - compiler/internal/narra/std_array.go
+  - compiler/internal/narra/check_stmt.go
+  - compiler/internal/narra/emit_stmt.go
+  - selfhost/src/stdlib.nra
+  - selfhost/src/stdcalls.nra
+  - selfhost/src/stmts.nra
+  - selfhost/src/emitstmts.nra
+  - SPEC.md
 reserves: []
 provides: []
 depends_on:
@@ -52,6 +60,10 @@ Accept in a for-of head every pattern a `const`/`let` declaration accepts: tuple
 ## Approach
 
 Prefer a desugaring in the parser, done the same way in `parser.go` and `selfhost/src/parser.nra`: `for (const <pattern> of iter) body` becomes `for (const <fresh name> of iter) { const <pattern> = <fresh name>; body }`. The checker and emitter then need no change, and errors from the pattern (wrong arity, missing field) come from the existing declaration checks. Pick the fresh name so it cannot clash with user names (shadowing is an error in Narra) and so the two compilers produce the same AST dump and the same C. If the desugaring gives poor error positions or a wrong effect or closure capture, report it in the outcome and move to a real pattern field on `ForStmt` only if needed (then also `clone.go`, checker and emitter in both compilers; that is past M, so split it).
+
+## Arrays.entries
+
+`Arrays.entries` does not exist yet (spec-gap audit F18); this node adds it (maintainer decision 2026-11-04). `Arrays.entries(items)` yields `#[int, T]` with indexes from 0, as a for-of source like `Arrays.values` (checker and emitter, in both compilers). If SPEC.md's std list does not name it, add it there.
 
 ## Acceptance
 

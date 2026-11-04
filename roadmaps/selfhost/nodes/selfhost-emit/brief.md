@@ -73,7 +73,7 @@ Remove the last skip files and make any `unsupported:` line a test failure. Add 
 - [ ] `compiler/testdata/emit/skips/` is gone; the harness fails on any `unsupported:` and on exit code 3.
 - [ ] The selfhost package is an input and compares byte-for-byte. The outcome gives the time of `narrac emit selfhost` against Go.
 - [ ] `compiler/README.md` says the self-hosted compiler emits C.
-- [ ] No stub probes are left: `emit.nra` calls no `report*Work` function, and the probes and their unused `refNeeds` arms in `emitstate.nra` are deleted (selfhost-emit-std left `Std.reportStdWork` returning an empty string, to avoid a conflict with selfhost-emit-options).
+- [ ] No stub probes are left: `emit.nra` calls no `report*Work` function, and the probes, their unused `refNeeds` arms and the unused `hasWork` arms (such as `selfhost-emit-traits`) in `emitstate.nra` are deleted (selfhost-emit-std left `Std.reportStdWork` returning an empty string, to avoid a conflict with selfhost-emit-options).
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing

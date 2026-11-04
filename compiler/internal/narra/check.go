@@ -116,7 +116,8 @@ type Checker struct {
 	scope     *scope
 	fn        *FuncDecl
 	loops     int
-	labels    []string // labels of the enclosing loops, innermost last
+	labels    []string    // labels of the enclosing loops, innermost last
+	blocks    []*blockCtx // the block expressions being checked, innermost last (check_stmt.go)
 	arrays    map[string]*ArrayType
 	boxes     map[string]*BoxType
 	maps      map[string]*MapType

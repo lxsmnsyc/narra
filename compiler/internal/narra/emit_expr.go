@@ -187,6 +187,8 @@ func (e *Emitter) expr(x Expr) (string, bool) {
 		return e.mapLitCode(x)
 	case *MatchExpr:
 		return e.matchValue(x)
+	case *BlockExpr:
+		return e.blockExpr(x)
 	case *ArrowExpr:
 		return e.arrow(x)
 	}

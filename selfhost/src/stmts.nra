@@ -6,7 +6,7 @@
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Ref, Walker, findLocal, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, BlockContext, Ref, Walker, findLocal, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
 import { resolveType, findTupleType } from "narrac/resolve"
 import { checkExpression, expectType, checkConstWrite, checkNoMutableEscape, findAssignedLocal } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
@@ -51,13 +51,26 @@ export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, s
     Stmt.IfStmt(_, condition, then, orElse) => checkIf(mutable checker, walker, condition, then, orElse)
     Stmt.WhileStmt(pos, label, condition, body) => checkWhile(mutable checker, walker, pos, label, condition, body)
     Stmt.ForStmt(nodeId, pos, label, name, iterable, body) => checkFor(mutable checker, walker, nodeId, pos, label, name, iterable, body)
-    Stmt.BreakStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "break must be inside a loop")
-    Stmt.ContinueStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "continue must be inside a loop")
+    Stmt.BreakStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "break", "break must be inside a loop")
+    Stmt.ContinueStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "continue", "continue must be inside a loop")
   }
 }
 
 // checkLoopExit checks a break or continue, with or without a label.
-function checkLoopExit(mutable checker: Checker, pos: Pos, label: string, message: string) uses alloc {
+function checkLoopExit(mutable checker: Checker, pos: Pos, label: string, word: string, message: string) uses alloc {
+  const blockCount = Arrays.length(checker.blocks)
+  if (blockCount > 0) {
+    // Inside a block expression only its own loops can be left.
+    const outer = checker.blocks[blockCount - 1]
+    let reaches = checker.loops == 0 && outer.loops > 0
+    if (label != "") {
+      reaches = !hasLabel(checker.labels, label) && hasLabel(outer.labels, label)
+    }
+    if (reaches) {
+      reportError(mutable checker, pos, `${word} cannot leave a block expression; it can only leave a loop inside the block`)
+      return
+    }
+  }
   if (label == "") {
     if (checker.loops == 0) {
       reportError(mutable checker, pos, message)
@@ -70,6 +83,15 @@ function checkLoopExit(mutable checker: Checker, pos: Pos, label: string, messag
     }
   }
   reportError(mutable checker, pos, `no enclosing loop is labeled "${label}"`)
+}
+
+function hasLabel(labels: Array<string>, label: string): bool {
+  for (const name of Arrays.values(labels)) {
+    if (name == label) {
+      return true
+    }
+  }
+  return false
 }
 
 // withoutLast copies a list of labels without its last one.
@@ -180,6 +202,11 @@ function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W
 }
 
 function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, value: Option<Expr>) uses alloc {
+  // Inside a block expression a return ends the block and gives its value.
+  if (Arrays.length(checker.blocks) > 0) {
+    checkBlockReturn(mutable checker, walker, pos, value)
+    return
+  }
   // An arrow function whose result is inferred takes any value; the
   // returns are compared once its block is checked (closures.nra).
   if (checker.inferring) {
@@ -202,6 +229,117 @@ function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, v
     const text = typeString(checker, want)
     reportError(mutable checker, pos, `this function must return a ${text}`)
   }
+}
+
+// checkBlockExpression checks a block in value position. Its value is the
+// common type of its returns, and every path must end in a return (Go's
+// blockExpr).
+export function checkBlockExpression<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
+  if (expression is Expr.BlockExpr(_, pos, block)) {
+    const context = BlockContext { result: want, returns: 0, loops: checker.loops, labels: checker.labels }
+    Arrays.push(mutable checker.blocks, context)
+    checker.loops = 0
+    checker.labels = []
+    checkBlock(mutable checker, walker, block)
+    const finished = checker.blocks[Arrays.length(checker.blocks) - 1]
+    checker.loops = context.loops
+    checker.labels = context.labels
+    checker.blocks = withoutLastBlock(checker.blocks)
+    if (finished.returns == 0) {
+      reportError(mutable checker, pos, "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`")
+      return Type.TVoid
+    }
+    if (!endsInReturn(block)) {
+      reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+    }
+    if (finished.result is Some(found)) {
+      return found
+    }
+  }
+  return Type.TVoid
+}
+
+// withoutLastBlock copies a list of block contexts without its last one.
+function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> uses alloc {
+  let kept: Array<BlockContext> = []
+  for (const i of Ranges.upTo(Arrays.length(blocks) - 1)) {
+    Arrays.push(mutable kept, blocks[i])
+  }
+  return kept
+}
+
+// checkBlockReturn checks a return inside a block expression (Go's blockReturn).
+function checkBlockReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, value: Option<Expr>) uses alloc {
+  const last = Arrays.length(checker.blocks) - 1
+  checker.blocks[last].returns = checker.blocks[last].returns + 1
+  if (value is Some(expression)) {
+    checkNoMutableEscape(mutable checker, expression)
+    const expected = checker.blocks[last].result
+    const found = checkExpression(mutable checker, walker, expression, expected)
+    if (found == Type.TVoid) {
+      reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+      return
+    }
+    if (expected is Some(_)) {
+      expectType(mutable checker, getExpressionPos(expression), expected, found)
+    } else {
+      checker.blocks[last].result = Some(found)
+    }
+  } else {
+    reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+  }
+}
+
+// endsInReturn reports whether every path through a block ends in a return
+// or a panic.
+function endsInReturn(block: Block): bool {
+  const count = Arrays.length(block.statements)
+  if (count == 0) {
+    return false
+  }
+  return statementEndsInReturn(block.statements[count - 1])
+}
+
+function statementEndsInReturn(statement: Stmt): bool {
+  return match (statement) {
+    Stmt.ReturnStmt(_, _) => true
+    Stmt.BlockStmt(block) => endsInReturn(block)
+    Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(then, orElse)
+    Stmt.ExprStmt(_, expression) => isPanicCall(expression) || matchEndsInReturn(expression)
+    _ => false
+  }
+}
+
+function ifEndsInReturn(then: Block, orElse: Option<Stmt>): bool {
+  if (orElse is Some(other)) {
+    return endsInReturn(then) && statementEndsInReturn(other)
+  }
+  return false
+}
+
+// matchEndsInReturn is true for a match statement whose every arm ends in a
+// return or a panic.
+function matchEndsInReturn(expression: Expr): bool {
+  if (expression is Expr.MatchExpr(_, _, _, arms)) {
+    if (Arrays.length(arms) == 0) {
+      return false
+    }
+    for (const arm of Arrays.values(arms)) {
+      if (arm.block is Some(armBlock)) {
+        if (!endsInReturn(armBlock)) {
+          return false
+        }
+      } else if (arm.body is Some(armBody)) {
+        if (!isPanicCall(armBody)) {
+          return false
+        }
+      } else {
+        return false
+      }
+    }
+    return true
+  }
+  return false
 }
 
 // checkIf checks an if statement. A condition that is an `is` test may bind
@@ -493,6 +631,7 @@ function collectAssignedInExpr(expression: Expr, mutable names: Array<string>) u
       }
     }
     Expr.ArrayLit(_, _, elements, _) => collectAssignedInExprs(elements, mutable names)
+    Expr.BlockExpr(_, _, block) => collectAssignedInBlock(block, mutable names)
     Expr.MatchExpr(_, _, subject, arms) => {
       collectAssignedInExpr(subject, mutable names)
       for (const arm of Arrays.values(arms)) {

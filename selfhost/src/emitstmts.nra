@@ -7,7 +7,7 @@ import { Pos, Stmt, Block, Expr, Pattern } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId } from "narrac/check"
 import { cType } from "narrac/cnames"
-import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, enterLoop, leaveLoop, emitContinueLabel, emitBreakLabel, emitLabeledExit, typeOf, refOf, localRef, localOf, retainCode, releaseCode } from "narrac/emitstate"
+import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindBlock, unwindLoop, enterLoop, leaveLoop, emitContinueLabel, emitBreakLabel, emitLabeledExit, typeOf, refOf, localRef, localOf, retainCode, releaseCode } from "narrac/emitstate"
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
@@ -130,7 +130,28 @@ function emitExpressionStatement<W: EmitWalker>(walker: W, mutable emitter: Emit
   endStatement(mutable emitter)
 }
 
+// emitBlockReturn emits a return inside a block expression: it stores the
+// value, releases what the block holds and jumps past the block.
+function emitBlockReturn<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Option<Expr>) uses alloc {
+  const info = emitter.blocks[Arrays.length(emitter.blocks) - 1]
+  beginStatement(mutable emitter)
+  if (value is Some(returned)) {
+    const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
+    const returnedType = typeOf(emitter, getExpressionId(returned))
+    const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
+    writeLine(mutable emitter, `${info.result} = ${consumed};`)
+  }
+  unwindBlock(mutable emitter, info)
+  writeLine(mutable emitter, `goto ${info.label};`)
+  // unwindBlock released everything, so the frame closes without releasing again.
+  emitter.frames = Tail.withoutLastFrame(emitter.frames)
+}
+
 function emitReturn<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Option<Expr>) uses alloc {
+  if (Arrays.length(emitter.blocks) > 0) {
+    emitBlockReturn(walker, mutable emitter, value)
+    return
+  }
   if (value is Some(tailValue)) {
     if (Tail.isTailCall(emitter, tailValue)) {
       Tail.emitTailJump(walker, mutable emitter, tailValue)

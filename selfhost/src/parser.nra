@@ -1325,8 +1325,72 @@ function getExpressionPos(expression: Expr): Pos {
     Expr.StructLit(_, pos, _, _, _, _) => pos
     Expr.ArrayLit(_, pos, _, _) => pos
     Expr.MatchExpr(_, pos, _, _) => pos
+    Expr.BlockExpr(_, pos, _) => pos
     Expr.ArrowExpr(_, pos, _, _, _, _) => pos
   }
+}
+
+// isStructLitAhead reports whether the `{` at the current token starts a
+// struct literal whose type comes from context: `{}`, `{ ...spread }` or
+// `{ name: value }`. Any other `{` in value position is a block expression.
+// A label (`name: for`, `name: while`) starts a block.
+function isStructLitAhead(parser: Parser): bool {
+  let offset = 1
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset = offset + 1
+  }
+  if (parser.index + offset + 1 >= Arrays.length(parser.tokens)) {
+    return false
+  }
+  const first = peekToken(parser, offset)
+  if (first.kind == TokenKind.TokPunct && (first.text == "}" || first.text == "...")) {
+    return true
+  }
+  const second = peekToken(parser, offset + 1)
+  if (first.kind != TokenKind.TokIdent || second.kind != TokenKind.TokPunct || second.text != ":" || parser.index + offset + 2 >= Arrays.length(parser.tokens)) {
+    return false
+  }
+  const third = peekToken(parser, offset + 2)
+  return !(third.kind == TokenKind.TokKeyword && (third.text == "for" || third.text == "while"))
+}
+
+// parseBlockExpr parses a block in value position.
+function parseBlockExpr(mutable parser: Parser): Expr {
+  const pos = getPos(currentToken(parser))
+  const block = parseBlock(mutable parser)
+  return Expr.BlockExpr(newId(mutable parser), pos, block)
+}
+
+// createReturnBlock is a block holding `return value`, positioned at the value.
+function createReturnBlock(value: Expr): Block {
+  const pos = getExpressionPos(value)
+  return Block { pos: pos, statements: [Stmt.ReturnStmt(pos, Some(value))] }
+}
+
+// parseIfExpr parses `if (c) { ... } else { ... }` in value position. It
+// becomes a block expression holding one if statement whose branches each
+// return a block expression. The else branch is required; `else if` chains
+// are allowed.
+function parseIfExpr(mutable parser: Parser): Expr {
+  const pos = getPos(expect(mutable parser, "if"))
+  expect(mutable parser, "(")
+  const condition = parseExpr(mutable parser)
+  expect(mutable parser, ")")
+  const thenBranch = parseBlockExpr(mutable parser)
+  const savedIndex = parser.index
+  skipNewlines(mutable parser)
+  if (isOk(parser) && !accept(mutable parser, "else")) {
+    parser.index = savedIndex
+    expect(mutable parser, "else")
+  }
+  let elseBranch = createDummyExpr()
+  if (isAt(parser, "if")) {
+    elseBranch = parseIfExpr(mutable parser)
+  } else {
+    elseBranch = parseBlockExpr(mutable parser)
+  }
+  const ifStatement = Stmt.IfStmt(pos, condition, createReturnBlock(thenBranch), Some(Stmt.BlockStmt(createReturnBlock(elseBranch))))
+  return Expr.BlockExpr(newId(mutable parser), pos, Block { pos: pos, statements: [ifStatement] })
 }
 
 // parseStructLit parses `{ ...spread, field: value }`. typeName is empty and pos
@@ -1409,6 +1473,9 @@ function parsePrimary(mutable parser: Parser): Expr {
     if (token.text == "match") {
       return parseMatch(mutable parser)
     }
+    if (token.text == "if") {
+      return parseIfExpr(mutable parser)
+    }
   }
   if (token.kind == TokenKind.TokPunct) {
     if (token.text == "(") {
@@ -1433,7 +1500,10 @@ function parsePrimary(mutable parser: Parser): Expr {
       return Expr.ArrayLit(newId(mutable parser), pos, elements, token.text == "#[")
     }
     if (token.text == "{") {
-      return parseStructLit(mutable parser, "", [], pos)
+      if (isStructLitAhead(parser)) {
+        return parseStructLit(mutable parser, "", [], pos)
+      }
+      return parseBlockExpr(mutable parser)
     }
   }
   failAt(mutable parser, pos, `expected an expression, found ${describeToken(token)}`)

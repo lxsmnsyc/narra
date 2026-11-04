@@ -1,6 +1,7 @@
 package narra
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +36,7 @@ func buildStage2Executable() {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		stage2Build.err = &bootstrapError{"stage 1 emit failed: " + err.Error() + "\n" + stderr.String()}
+		stage2Build.err = fmt.Errorf("stage 1 emit: %w\n%s", err, stderr.String())
 		return
 	}
 	stage2Build.c = string(out)
@@ -45,7 +46,7 @@ func buildStage2Executable() {
 		return
 	}
 	stage2Build.exe = filepath.Join(dir, "narrac2")
-	// The same command and flags as Build runs for modes[0].
+	// The same command and flags as Build runs for modes[0] (driver.go, Build).
 	args := append([]string{"-O0", "-g", "-std=c11", "-w"}, modes[0].opts.CFlags...)
 	args = append(args, "-o", stage2Build.exe, cfile, "-lm")
 	cc := os.Getenv("CC")
@@ -55,13 +56,9 @@ func buildStage2Executable() {
 	build := exec.Command(cc, args...)
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
-		stage2Build.err = err
+		stage2Build.err = fmt.Errorf("C compiler failed: %w", err)
 	}
 }
-
-type bootstrapError struct{ message string }
-
-func (e *bootstrapError) Error() string { return e.message }
 
 // buildStage2 builds the stage-2 compiler once per test run.
 func buildStage2(t *testing.T) string {

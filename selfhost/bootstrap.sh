@@ -16,13 +16,13 @@ echo "stage 1: Go compiler builds selfhost"
 "$work/narra" emit "$root/selfhost" > "$work/go.c"
 
 echo "stage 2: narrac1 emits selfhost, cc builds it"
-time "$work/narrac1" emit "$root/selfhost" > "$work/stage1.c"
+"$work/narrac1" emit "$root/selfhost" > "$work/stage1.c"
 cc -O2 -DNARRA_RELEASE -std=c11 -w -o "$work/narrac2" "$work/stage1.c" -lm
 
 echo "stage 2 binary: $(wc -c < "$work/narrac2" | tr -d ' ') bytes"
 
 echo "fixed point: narrac2 emits selfhost"
-time "$work/narrac2" emit "$root/selfhost" > "$work/stage2.c"
+"$work/narrac2" emit "$root/selfhost" > "$work/stage2.c"
 
 status=0
 cmp "$work/go.c" "$work/stage1.c" || { echo "FAIL: stage 1 C differs from Go" >&2; status=1; }

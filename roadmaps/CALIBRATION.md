@@ -55,3 +55,13 @@ Notes:
 | selfhost | mutable-escape | S | S | 2 | 114k tokens. Round 2: maintainer decided constructors count as stores. |
 | selfhost | tail-loops | M | M+ | 2 | 328k tokens (worker 231k, review 96k). Round 1 missed returned match arms and void tail calls; round 2 redid tail detection as a pre-pass. |
 | selfhost | for-destructure | M | S | 2 | 204k tokens (worker 126k, review 79k). Parser desugaring; round 2: E0232 list, error positions, cascading error. |
+| selfhost | labels | M | M | 1 | 230k tokens (worker 134k, review 96k). Clean review; the new `label` field on four Stmt variants made every open branch conflict. |
+| selfhost | let-narrowing | M | M+ | 3 | 237k tokens. Review found a blocking soundness bug (`.value` of None read at run time through hoisted `mutable` calls); orchestrator found a third hole (for-of source). |
+| selfhost | for-of-sources | M | M | 2 | 256k tokens. Round 2: Range map keys, nested for-of state, Range typedef without import. |
+| selfhost | local-functions | M | dropped | 1 | 221k tokens (worker 146k, review 75k) plus a 149k goal debate. Six defects from parse-time renaming; debate dropped the feature (D74). |
+| selfhost | ts-habit-fixes | M | M | 2 | 227k tokens. Round 2: four fixes produced code that still failed to check; TestHabitCases now applies every fix and re-checks. |
+| selfhost | nested-function-error | S | S | 1 | 73k tokens. Self-review clean; orchestrator confirmed selfhost parity. |
+| selfhost | mutable-read-conflict | S | M+ | 3 | 225k tokens. Found by the let-narrowing review; rounds added match arms and block expressions to the scan. |
+| selfhost | block-expressions | M | L | 2 | 413k tokens (worker 298k, review 115k). Round 2: exclusivity walkers skipped BlockExpr, nested break codes, duplicate labels. |
+| selfhost | match-block-values | S | S | 1 | 137k tokens. Self-review clean; reused block-expression checking. |
+| selfhost | ternary | S | M | 2 | 264k tokens (worker 162k, review 102k). Round 2: `c ? (a + b) : 0` parsed as an arrow (blocking), messages naming the hidden block expression. |

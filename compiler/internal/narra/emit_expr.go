@@ -23,6 +23,10 @@ func (e *Emitter) lvaluePtr(x Expr) string {
 		}
 		return "&" + x.Local.CName
 	case *FieldExpr:
+		if bt, ok := x.Target.Type().(*BoxType); ok {
+			// Writing through a box copies a shared cell first.
+			return e.temp(&ptrType{bt.Elem}, fmt.Sprintf("%s_at(%s)", boxName(bt), e.lvaluePtr(x.Target)))
+		}
 		return fmt.Sprintf("&(%s)->%s", e.lvaluePtr(x.Target), fieldName(x.Name))
 	case *IndexExpr:
 		at := x.Target.Type().(*ArrayType)

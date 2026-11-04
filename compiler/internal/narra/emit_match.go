@@ -196,7 +196,13 @@ func (e *Emitter) matchValue(m *MatchExpr) (string, bool) {
 	e.line("%s %s;", t.CName(), result)
 	e.matchArms(m, func(arm *MatchArm) {
 		e.beginStmt()
-		code, owned := e.expr(arm.Body)
+		var code string
+		var owned bool
+		if arm.Block != nil {
+			code, owned = e.blockBody(arm.Block, t)
+		} else {
+			code, owned = e.expr(arm.Body)
+		}
 		v := e.consume(code, owned, t)
 		e.line("%s = %s;", result, v)
 		e.endStmt()

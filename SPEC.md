@@ -460,7 +460,7 @@ const label = match (status) {
 
 - Each arm is `pattern => expression` or `pattern => { statements }`.
 - Patterns can bind fields, test literals, and add an `if (...)` guard.
-- **`match` as a value.** When every arm is a single expression, `match` produces a value.
+- **`match` as a value.** In value position (after `=`, as an argument, an operand or a `return` value), `match` produces a value. An arm written `pattern => expression` gives the expression. An arm written `pattern => { ... }` is a block expression (see "Block expressions" in section 2): its value comes from `return v`, a `return` inside it ends the arm and not the function, `break` and `continue` cannot leave it, and every path must end in `return`. All arms have the same type. A `match` in statement position keeps block-statement arms, where `return` leaves the function.
 - `match` on an `Option<T>` uses `Some(v) =>` and `None =>`.
 
 ### Generics

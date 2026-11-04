@@ -21,7 +21,7 @@
 // Results go into the side tables of the current body (D70): the type of
 // every checked expression (setNodeType) and what a name or call resolves to
 // (setRef).
-import { Pos, Expr, Stmt, Block, Arg, FieldInit, TypeExpr, Decl, Param, ConstDecl } from "narrac/ast"
+import { Pos, Expr, Stmt, Block, Arg, FieldInit, TypeExpr, Decl, Param, ConstDecl, MatchArm } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field } from "narrac/types"
 import { Checker, internComposite, Ref, BodyRoot, Walker, ConstInfo, CONST_NEW, CONST_BUSY, CONST_DONE, reportError, enter, typeString, startBody, finishBody, keyBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, getExpressionId, getExpressionPos, isNumeric } from "narrac/check"
@@ -942,7 +942,7 @@ export function usesLocal(checker: Checker, expression: Expr, local: int): bool 
     Expr.StructLit(_, _, _, _, fields, _) => fieldsUseLocal(checker, fields, local)
     Expr.ArrayLit(_, _, elements, _) => anyUsesLocal(checker, elements, local)
     Expr.MapLit(_, _, _, keys, values) => anyUsesLocal(checker, keys, local) || anyUsesLocal(checker, values, local)
-    Expr.MatchExpr(_, _, subject, _) => usesLocal(checker, subject, local)
+    Expr.MatchExpr(_, _, subject, arms) => usesLocal(checker, subject, local) || armsUseLocal(checker, arms, local)
     Expr.BlockExpr(_, _, block) => anyUsesLocal(checker, listBlockExpressions(block), local)
     _ => false
   }
@@ -1013,6 +1013,28 @@ function collectExpressionAndArms(expression: Expr, mutable found: Array<Expr>) 
       }
     }
   }
+}
+
+// armsUseLocal looks in the guards, bodies and blocks of match arms.
+function armsUseLocal(checker: Checker, arms: Array<MatchArm>, local: int): bool {
+  for (const arm of Arrays.values(arms)) {
+    if (arm.guard is Some(guard)) {
+      if (usesLocal(checker, guard, local)) {
+        return true
+      }
+    }
+    if (arm.body is Some(armBody)) {
+      if (usesLocal(checker, armBody, local)) {
+        return true
+      }
+    }
+    if (arm.block is Some(armBlock)) {
+      if (anyUsesLocal(checker, listBlockExpressions(armBlock), local)) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 function anyUsesLocal(checker: Checker, expressions: Array<Expr>, local: int): bool {

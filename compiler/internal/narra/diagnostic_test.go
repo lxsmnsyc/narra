@@ -150,6 +150,16 @@ func TestGenericErrorOnce(t *testing.T) {
 	}
 }
 
+// Each code of the TypeScript habit diagnostics has a long explanation.
+func TestHabitExplain(t *testing.T) {
+	for _, code := range []string{"E0923", "E0924", "E0925", "E0926", "E0927", "E0928"} {
+		text, err := Explain(code)
+		if err != nil || !strings.Contains(text, "Narra has no") {
+			t.Errorf("explain %s: %q, %v", code, text, err)
+		}
+	}
+}
+
 func TestExplain(t *testing.T) {
 	if _, err := Explain("e0003"); err != nil {
 		t.Fatal(err)

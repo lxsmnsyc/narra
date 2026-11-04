@@ -270,6 +270,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0926", "there is no `try` or `catch`; return a `Result` and check it with `is Err` or `match`"},
 	{"E0927", "there is no `throw`; return `Err(value)`, or call `panic` for a bug"},
 	{"E0928", "there is no `this`; pass the value as a parameter"},
+	{"E0930", "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments"},
 	{"E0916", "no enclosing loop is labeled %q"},
 	{"E0917", "label %q is already used by an enclosing loop"},
 	{"E0918", "label %q must be on a for or while loop"},
@@ -315,6 +316,7 @@ var explanations = map[string]string{
 	"E0925": "Narra has no `new`. A struct is built with a literal, other values with a function call.\nFix: `new A()` becomes `A {}` when A is a struct without fields.",
 	"E0926": "Narra has no exceptions. A function that can fail returns `Result<T, E>`; the caller checks it with `is Err` or `match`.",
 	"E0927": "Narra has no `throw`. Return `Err(value)` from a function that returns a Result.\nFix: `throw \"x\"` becomes `return Err(\"x\")`.",
+	"E0930": "Narra has no function declarations inside a function. Declare the function at module level as a private function and pass the enclosing values as arguments.\nThere is no automatic fix: moving it changes the meaning when its body reads a name that a local shadows, and breaks helpers that use the enclosing type parameters.\nFor a helper that captures, bind an arrow function: `const helper = (x: int): int => x + offset`.\nExample: `function run() { function add(a: int): int { return a + 1 } }` becomes `function add(a: int): int { return a + 1 }` followed by `function run() { ... }`.",
 	"E0928": "Narra has no `this`. A function gets the value as a parameter.",
 	"E0309": "Narra has no method calls. Functions belong to modules.\nFix: `xs.push(v)` becomes `Arrays.push(mutable xs, v)`.",
 }

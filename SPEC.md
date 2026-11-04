@@ -59,7 +59,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 ### Functions
 
-- `function name(a: int, b: int): int { ... }` declares a function. A function is private to its module unless declared with `export function` (section 3). A function declared inside another function is local to that function.
+- `function name(a: int, b: int): int { ... }` declares a function. A function is private to its module unless declared with `export function` (section 3). A function cannot be declared inside another function (E0930): declare it at module level as a private function and pass the enclosing values as arguments. A nested declaration in TypeScript captures the enclosing locals, and a module-level copy could read a different name where a local shadows it (D74). To keep a helper that captures, bind an arrow function to a `const`.
 - A function with no return type returns nothing.
 - **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
 - **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
@@ -209,6 +209,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `const o = { a }` builds an object | Not present. `{ a }` in value position is a block expression, which needs `return` (E0933). Write a struct literal: `Point { x: 1 }` |
 | `Promise<T>` | Not present. `Async.spawn` returns a `Task<T>` |
 | `async function*` | Not present in the first version |
+| A `function` declared inside a function | A compile error (E0930). Declare it at module level as a private function and pass the enclosing values as arguments |
 
 ## 3. Modules and imports
 

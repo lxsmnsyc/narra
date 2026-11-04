@@ -504,10 +504,14 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 	}
 	switch te.Name {
 	case "number":
-		c.errorf(te.Pos, "there is no `number`; use `int` or `f64`")
+		end := Pos{te.Pos.Line, te.Pos.Col + len("number")}
+		c.errorfFix(te.Pos, []Fix{
+			{Title: "use int", Edits: []Edit{{Start: te.Pos, End: end, Text: "int"}}},
+			{Title: "use f64", Edits: []Edit{{Start: te.Pos, End: end, Text: "f64"}}},
+		}, "there is no `number`; use `int` or `f64`")
 		return TInt
 	case "boolean":
-		c.errorf(te.Pos, "use `bool`")
+		c.errorfFix(te.Pos, []Fix{{Title: "use bool", Edits: []Edit{{Start: te.Pos, End: Pos{te.Pos.Line, te.Pos.Col + len("boolean")}, Text: "bool"}}}}, "use `bool`")
 		return TBool
 	}
 	if g, ok := c.generics[te.Name]; ok {

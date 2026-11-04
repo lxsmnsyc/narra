@@ -1,7 +1,7 @@
 ---
 id: nested-function-error
 title: "A function inside a function is a dedicated compile error"
-status: todo
+status: active
 priority: should
 type: feature
 story:

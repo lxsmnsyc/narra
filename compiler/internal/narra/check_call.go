@@ -370,7 +370,11 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 				return t
 			}
 			if _, ok := c.types[id.Name]; !ok && startsUpper(id.Name) {
-				c.errorf(id.P, "unknown module %q; import it first, for example `import * as %s from \"std/...\"`", id.Name, id.Name)
+				var fixes []Fix
+				if path, ok := stdAliasPaths[id.Name]; ok {
+					fixes = c.importFix(id.Name, path)
+				}
+				c.errorfFix(id.P, fixes, "unknown module %q; import it first, for example `import * as %s from \"std/...\"`", id.Name, id.Name)
 				c.argsLoose(e)
 				return TVoid
 			}

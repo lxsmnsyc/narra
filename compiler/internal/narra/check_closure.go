@@ -357,6 +357,7 @@ func (c *Checker) mutableRoots(x Expr) []*Local {
 			for _, arm := range x.Arms {
 				walk(arm.Guard)
 				walk(arm.Body)
+				eachBlockExpr(arm.Block, walk)
 			}
 		case *BlockExpr:
 			eachBlockExpr(x.Block, walk)

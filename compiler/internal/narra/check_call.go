@@ -636,6 +636,11 @@ func usesLocal(e Expr, l *Local) bool {
 			}
 		case *MatchExpr:
 			walk(e.Subject)
+			for _, arm := range e.Arms {
+				walk(arm.Guard)
+				walk(arm.Body)
+				eachBlockExpr(arm.Block, walk)
+			}
 		case *BlockExpr:
 			eachBlockExpr(e.Block, walk)
 		}

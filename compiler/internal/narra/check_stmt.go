@@ -528,18 +528,24 @@ func (c *Checker) outerLabel(label string) bool {
 // blockExpr checks a block in value position. Its value is the common type
 // of its returns, and every path must end in a return.
 func (c *Checker) blockExpr(x *BlockExpr, want Type) Type {
+	return c.blockBody(x.Block, x.P, want)
+}
+
+// blockBody checks a block as a block expression; a match arm with a block
+// in value position uses it too.
+func (c *Checker) blockBody(block *Block, pos Pos, want Type) Type {
 	ctx := &blockCtx{result: want, loops: c.loops, labels: c.labels}
 	c.blocks = append(c.blocks, ctx)
 	c.loops, c.labels = 0, nil
-	c.block(x.Block)
+	c.block(block)
 	c.loops, c.labels = ctx.loops, ctx.labels
 	c.blocks = c.blocks[:len(c.blocks)-1]
 	if ctx.returns == 0 {
-		c.errorf(x.P, "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`")
+		c.errorf(pos, "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`")
 		return TVoid
 	}
-	if !endsInReturn(x.Block) {
-		c.errorf(x.P, "a block expression must end every path with `return value`")
+	if !endsInReturn(block) {
+		c.errorf(pos, "a block expression must end every path with `return value`")
 	}
 	if ctx.result == nil {
 		return TVoid

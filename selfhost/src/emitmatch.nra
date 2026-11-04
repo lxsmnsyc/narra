@@ -8,12 +8,12 @@
 // local owns one reference and is released with its scope.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Expr, Stmt, Pattern, MatchArm } from "narrac/ast"
+import { Expr, Stmt, Block, Pattern, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId, findBodySlot } from "narrac/check"
 import { getPatternId } from "narrac/patterns"
 import { cType } from "narrac/cnames"
-import { Emitter, Code, EmitWalker, TempVar, reportUnsupported, writeLine, temp, ownedTemp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, needsRc, typeOf, refOf, localOf, retainCode, localName } from "narrac/emitstate"
+import { Emitter, Code, EmitWalker, TempVar, BlockInfo, withoutLastBlock, unwindAll, reportUnsupported, writeLine, temp, ownedTemp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, needsRc, typeOf, refOf, localOf, retainCode, localName } from "narrac/emitstate"
 import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -235,6 +235,8 @@ function emitMatchArms<W: EmitWalker>(walker: W, mutable emitter: Emitter, subje
     if (returning) {
       if (arm.body is Some(armBody)) {
         Tail.emitReturnArm(walker, mutable emitter, armBody, resultType)
+      } else if (arm.block is Some(armBlock)) {
+        emitReturnBlockArm(walker, mutable emitter, armBlock, resultType)
       }
     } else if (isValue) {
       emitValueArm(walker, mutable emitter, arm, result, resultType)
@@ -272,7 +274,54 @@ function emitStatementArm<W: EmitWalker>(walker: W, mutable emitter: Emitter, ar
   }
 }
 
+// emitReturnBlockArm returns the value of a block arm of a returned match.
+function emitReturnBlockArm<W: EmitWalker>(walker: W, mutable emitter: Emitter, block: Block, type: Type) uses alloc {
+  beginStatement(mutable emitter)
+  const code = emitBlockBody(walker, mutable emitter, block, type)
+  const value = consume(mutable emitter, code.text, code.owned, type)
+  const result = temp(mutable emitter, type, value)
+  unwindAll(mutable emitter)
+  writeLine(mutable emitter, `return ${result};`)
+  emitter.frames = Tail.withoutLastFrame(emitter.frames)
+}
+
+// emitBlockBody emits a block in value position as a C block with a result
+// variable (Go's blockBody). Each return stores its value, releases what the
+// block holds and jumps to the label after the block. A match arm written as
+// a block uses it too.
+export function emitBlockBody<W: EmitWalker>(walker: W, mutable emitter: Emitter, block: Block, resultType: Type): Code uses alloc {
+  emitter.tempCount = emitter.tempCount + 1
+  const number = Int.toString(emitter.tempCount)
+  const info = BlockInfo { result: `r${number}`, label: `narra_block_${number}`, frames: Arrays.length(emitter.frames), scopes: Arrays.length(emitter.scopes) }
+  const declaration = `${cType(emitter.checker, resultType)} ${info.result};`
+  writeLine(mutable emitter, declaration)
+  writeLine(mutable emitter, "{")
+  emitter.indent = emitter.indent + 1
+  Arrays.push(mutable emitter.blocks, info)
+  pushScope(mutable emitter, false)
+  EmitWalker.emitBlockInScope(walker, mutable emitter, block)
+  popScope(mutable emitter)
+  emitter.blocks = withoutLastBlock(emitter.blocks)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `${info.label}:;`)
+  if (needsRc(emitter, resultType)) {
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name: info.result, tempType: resultType })
+    return Code { text: info.result, owned: true }
+  }
+  return Code { text: info.result, owned: false }
+}
+
 function emitValueArm<W: EmitWalker>(walker: W, mutable emitter: Emitter, arm: MatchArm, result: string, resultType: Type) uses alloc {
+  if (arm.block is Some(block)) {
+    beginStatement(mutable emitter)
+    const code = emitBlockBody(walker, mutable emitter, block, resultType)
+    const value = consume(mutable emitter, code.text, code.owned, resultType)
+    writeLine(mutable emitter, `${result} = ${value};`)
+    endStatement(mutable emitter)
+    return
+  }
   if (arm.body is Some(body)) {
     beginStatement(mutable emitter)
     const code = EmitWalker.emitExpression(walker, mutable emitter, body)

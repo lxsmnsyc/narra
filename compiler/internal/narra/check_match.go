@@ -223,18 +223,24 @@ func (c *Checker) match(m *MatchExpr, want Type, isValue bool) Type {
 		if arm.Guard != nil {
 			c.expectType(arm.Guard.position(), TBool, c.expr(arm.Guard, TBool))
 		}
-		if arm.Block != nil {
-			if isValue {
-				c.errorf(arm.Pos, "a match used as a value needs a single expression in each arm")
-			}
+		if arm.Block != nil && !isValue {
 			c.block(arm.Block)
 		} else {
-			t := c.expr(arm.Body, result)
+			var t Type
+			var at Pos
+			if arm.Block != nil {
+				// In value position a block arm is a block expression (D75).
+				t = c.blockBody(arm.Block, arm.Block.Pos, result)
+				at = arm.Block.Pos
+			} else {
+				t = c.expr(arm.Body, result)
+				at = arm.Body.position()
+			}
 			if isValue {
 				if result == nil {
 					result = t
 				}
-				c.expectType(arm.Body.position(), result, t)
+				c.expectType(at, result, t)
 			}
 		}
 		c.pop()

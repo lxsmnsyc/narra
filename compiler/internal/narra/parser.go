@@ -10,8 +10,9 @@ import (
 type Parser struct {
 	toks    []Token
 	i       int
-	src     string
-	imports []*ImportDecl // the imports parsed so far, for fixes
+	// resultFunc is true inside a function declared to return Result, where
+	// the throw fix is right. Closures clear it.
+	resultFunc bool
 }
 
 // templateDot finds `Name.` inside a template string. The parser does not keep
@@ -23,7 +24,7 @@ func Parse(src string) (*File, error) {
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
 	}
-	p := &Parser{toks: toks, src: src}
+	p := &Parser{toks: toks}
 	f, err := p.file()
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
@@ -96,6 +97,9 @@ func (p *Parser) ident() Token {
 	if p.tok().Kind != TokIdent {
 		p.fail(p.tok().Pos, "expected a name, found %s", describe(p.tok()))
 	}
+	if p.tok().Text == "this" {
+		p.fail(p.tok().Pos, "there is no `this`; pass the value as a parameter")
+	}
 	return p.next()
 }
 
@@ -155,7 +159,6 @@ func (p *Parser) file() (f *File, err error) {
 	p.skipNewlines()
 	for p.is("import") {
 		f.Imports = append(f.Imports, p.importDecl())
-		p.imports = f.Imports
 		p.skipNewlines()
 	}
 	for p.tok().Kind != TokEOF {
@@ -367,7 +370,10 @@ func (p *Parser) constDecl(exported bool) *ConstDecl {
 
 func (p *Parser) funcDecl(exported bool) *FuncDecl {
 	fd := p.funcHeader(exported)
+	saved := p.resultFunc
+	p.resultFunc = fd.Result != nil && fd.Result.Name == "Result"
 	fd.Body = p.block()
+	p.resultFunc = saved
 	return fd
 }
 
@@ -624,11 +630,14 @@ func (p *Parser) arrow() Expr {
 		a.Result = p.typeExpr()
 	}
 	p.expect("=>")
+	saved := p.resultFunc
+	p.resultFunc = false
 	if p.is("{") {
 		a.Block = p.block()
 	} else {
 		a.Body = p.expr()
 	}
+	p.resultFunc = saved
 	return a
 }
 
@@ -701,7 +710,7 @@ func (p *Parser) stmt() Stmt {
 			name = p.ident().Text
 		}
 		if p.is("in") || (p.tok().Kind == TokIdent && p.tok().Text == "in") {
-			p.failForIn()
+			p.fail(p.tok().Pos, "use `of`; `for ... in` is not part of the language")
 		}
 		p.expect("of")
 		iter := p.expr()

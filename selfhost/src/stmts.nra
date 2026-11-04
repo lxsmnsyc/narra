@@ -217,7 +217,12 @@ function checkWhile<W: Walker>(mutable checker: Checker, walker: W, condition: E
 
 function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, name: string, iterable: Expr, body: Block) uses alloc {
   // The iterable is a call of a std function that gives the element type.
+  const sourcePos = getExpressionPos(iterable)
+  checker.forSourceLine = sourcePos.line
+  checker.forSourceColumn = sourcePos.column
   const iterableType = checkExpression(mutable checker, walker, iterable, None)
+  checker.forSourceLine = 0
+  checker.forSourceColumn = 0
   let builtin = ""
   let firstArgument = Type.TVoid
   if (iterable is Expr.CallExpr(callId, _, _, arguments)) {
@@ -246,9 +251,15 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
     if (iterableType is Type.TArray(arrayElement)) {
       element = arrayElement
     }
+  } else if (iterableType is Type.TRange) {
+    // A Range value: its bounds are read once, before the loop.
+    element = Type.TInt
+  } else if (iterableType is Type.TArray(arrayElement)) {
+    // An array value, as with Array.values.
+    element = arrayElement
   } else {
     const text = typeString(checker, iterableType)
-    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs Range.upTo, Range.between, Array.values, Array.entries, Map.keys or Map.entries, found ${text}`)
+    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs a Range, an Array, Str.chars, Array.entries, Map.keys or Map.entries, found ${text}`)
   }
 
   // The loop variable lives in a scope around the body.

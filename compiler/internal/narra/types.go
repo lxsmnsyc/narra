@@ -188,11 +188,15 @@ func (t *MapType) CName() string  { return mapCName(t) + "*" }
 func (t *ArrayType) String() string { return "Array<" + t.Elem.String() + ">" }
 func (t *ArrayType) CName() string  { return arrayCName(t) + "*" }
 
-// Range values exist only as the subject of a for loop.
+// RangeType is Range: the bounds of a counting loop, a plain value of two ints
+// (narra_range, defined in the std/range runtime). Use the TRange singleton.
 type RangeType struct{}
 
+// TRange is the one Range type.
+var TRange = &RangeType{}
+
 func (t *RangeType) String() string { return "Range" }
-func (t *RangeType) CName() string  { return "void" }
+func (t *RangeType) CName() string  { return "narra_range" }
 
 // ModuleType is the type of a namespace import such as `Int`.
 type ModuleType struct{ Path string }

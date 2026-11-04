@@ -101,6 +101,7 @@ type pendingFunc struct {
 }
 
 type Checker struct {
+	forSource Expr // the iterable of the for loop being checked: Array.values and Array.entries are valid only there
 	prog      *Program
 	types     map[string]Type // non-generic named types
 	generics  map[string]*genericType

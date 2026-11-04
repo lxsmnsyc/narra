@@ -530,6 +530,9 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		return TVoid
 	}
 	t, ok := c.types[te.Name]
+	if !ok && te.Name == "Range" {
+		return TRange
+	}
 	if !ok {
 		c.errorf(te.Pos, "unknown type %q", te.Name)
 		return TVoid

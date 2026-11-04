@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-options
 title: Self-hosted emitter: Option, Result and std/test builtins and the test main
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 212384
 owns:
   - selfhost/src/emitoptions.nra
   - compiler/testdata/emit/skips/selfhost-emit-options.txt
@@ -58,3 +58,5 @@ Emit the std/option, std/result and std/test builtins (callbacks through `callFu
 ## Sizing
 
 M: about 380 Narra lines in one file.
+
+Shipped in PR #53 (merge commit ef34958).

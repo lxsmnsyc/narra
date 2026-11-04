@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-traits
 title: Self-hosted emitter: eq, hash, cmp and show functions and trait calls
-status: todo
+status: active
 priority: must
 type: feature
 story:

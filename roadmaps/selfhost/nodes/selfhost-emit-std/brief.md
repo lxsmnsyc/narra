@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-std
 title: Self-hosted emitter: string, char, int, float, env, fs and process builtins
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 182927
 owns:
   - selfhost/src/emitstd.nra
   - compiler/testdata/emit/skips/selfhost-emit-std.txt
@@ -56,3 +56,5 @@ Emit every std builtin of std/string, std/char, std/int, std/float, std/env, std
 ## Sizing
 
 M: about 400 Narra lines in one file of many small cases.
+
+Shipped in PR #52 (merge commit f03c43d).

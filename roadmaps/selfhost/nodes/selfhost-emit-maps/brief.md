@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-maps
 title: Self-hosted emitter: Map types, literals, indexes, loops and std/map
-status: todo
+status: active
 priority: must
 type: feature
 story:

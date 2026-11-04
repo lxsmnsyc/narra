@@ -28,7 +28,7 @@
 
 ## Verification
 
-- `cd compiler && go vet ./... && go test ./...`: see PR.
+- `cd compiler && go vet ./... && go test ./...`: pass after merging origin/main (about 360 s), including TestSelfhostBootstrap. Added match_block_values_exclusive (sibling arms legal) and errors/match_block_values_mutable_conflict (E0929 covered by the merged scan, no code change).
 
 ## Size
 

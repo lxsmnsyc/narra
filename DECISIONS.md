@@ -629,3 +629,15 @@ Decision: sum types are declared with `enum`, not with ML-style `type T = | A | 
 - **Reason.** `type` already declares aliases. Making it declare a nominal type depending on the first token after `=` gives it two meanings.
 - **Rejected: `type Point = { x: f64 }` for structs.** In TypeScript that is a structural alias, while Narra structs are nominal. No case in the checker or emitter would go away.
 - **Cost.** None beyond the `Red = 1` diagnostic.
+
+## D74. No local function declarations
+
+Decision: a function cannot be declared inside another function. `function` in a function body is a compile error (E0930) that says to declare the function at module level as a private function and pass the enclosing values as arguments. The error offers no automatic fix. Arrow functions bound to `const` stay the way to write a helper that captures (section 2). Debate: `roadmaps/selfhost/debate/local-functions/debate.md`.
+
+- **Reason.** In TypeScript a nested function captures the enclosing locals. A non-capturing version reads a module-level name where TypeScript reads the local that shadows it, so the same text would print 2 in Narra and 11 in TypeScript. D2 forbids that.
+- **Reason.** Module-level private functions already recurse and call each other. The self-hosted compiler writes all 648 of its helpers that way.
+- **Reason.** An error can later become local functions without changing any program that compiles. Shipping non-capturing local functions and adding capture later would change working programs.
+- **Rejected: non-capturing local functions, hoisted within their block (PR #66).** Renaming at parse time left six defects, and fixing them needs scope analysis in both compilers. The design is recorded in `roadmaps/selfhost/nodes/local-functions/outcome.md`.
+- **Rejected: capturing local functions.** Nothing uses them, and they would add capture analysis, an ordering rule for hoisting and environments to both compilers.
+- **Rejected: a fix that moves the function to module level.** It changes the meaning when the body reads a shadowed name, and it breaks helpers that use the enclosing type parameters.
+- **Cost.** TypeScript code with nested functions must be rewritten by hand.

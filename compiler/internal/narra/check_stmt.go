@@ -277,6 +277,8 @@ func (c *Checker) stmt(s Stmt) {
 		c.endExprNarrowing(s.Value)
 	case *IfStmt:
 		c.endExprNarrowing(s.Cond)
+	case *ForStmt:
+		c.endExprNarrowing(s.Iter)
 	}
 	switch s := s.(type) {
 	case *Block:

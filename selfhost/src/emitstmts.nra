@@ -11,6 +11,7 @@ import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consu
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
+import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -104,6 +105,10 @@ function emitAssignment<W: EmitWalker>(walker: W, mutable emitter: Emitter, stat
 }
 
 function emitExpressionStatement<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, expression: Expr) uses alloc {
+  if (Tail.isTailCall(emitter, expression)) {
+    Tail.emitTailJump(walker, mutable emitter, expression)
+    return
+  }
   beginStatement(mutable emitter)
   if (expression is Expr.MatchExpr(_, _, _, _)) {
     Match.emitMatchStatement(walker, mutable emitter, statement)
@@ -118,6 +123,18 @@ function emitExpressionStatement<W: EmitWalker>(walker: W, mutable emitter: Emit
 }
 
 function emitReturn<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Option<Expr>) uses alloc {
+  if (value is Some(tailValue)) {
+    if (Tail.isTailCall(emitter, tailValue)) {
+      Tail.emitTailJump(walker, mutable emitter, tailValue)
+      return
+    }
+    if (tailValue is Expr.MatchExpr(_, _, _, arms)) {
+      if (Tail.matchHasTailCall(emitter, arms)) {
+        Match.emitReturnMatch(walker, mutable emitter, tailValue)
+        return
+      }
+    }
+  }
   beginStatement(mutable emitter)
   if (value is Some(returned)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
@@ -131,15 +148,7 @@ function emitReturn<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: O
     writeLine(mutable emitter, "return;")
   }
   // unwindAll released everything, so the frame closes without releasing again.
-  emitter.frames = withoutLastFrame(emitter.frames)
-}
-
-function withoutLastFrame(frames: Array<Array<TempVar>>): Array<Array<TempVar>> uses alloc {
-  let kept: Array<Array<TempVar>> = []
-  for (const index of Ranges.between(0, Arrays.length(frames) - 1)) {
-    Arrays.push(mutable kept, frames[index])
-  }
-  return kept
+  emitter.frames = Tail.withoutLastFrame(emitter.frames)
 }
 
 function emitIf<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt, condition: Expr, then: Block, orElse: Option<Stmt>) uses alloc {

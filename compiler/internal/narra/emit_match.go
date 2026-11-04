@@ -176,6 +176,10 @@ func (e *Emitter) matchStmt(m *MatchExpr) {
 			e.block(arm.Block, false)
 			return
 		}
+		if call := e.tailCallOf(arm.Body); call != nil {
+			e.tailJump(call)
+			return
+		}
 		e.beginStmt()
 		code, _ := e.expr(arm.Body)
 		if code != "" && arm.Body.Type() == TVoid {

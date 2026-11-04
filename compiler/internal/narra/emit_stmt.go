@@ -43,6 +43,10 @@ func (e *Emitter) stmt(s Stmt) {
 		}
 		e.endStmt()
 	case *ExprStmt:
+		if call := e.tailCallOf(s.Expr); call != nil {
+			e.tailJump(call)
+			return
+		}
 		e.beginStmt()
 		if m, ok := s.Expr.(*MatchExpr); ok {
 			e.matchStmt(m)
@@ -54,6 +58,14 @@ func (e *Emitter) stmt(s Stmt) {
 		}
 		e.endStmt()
 	case *ReturnStmt:
+		if call := e.tailCallOf(s.Value); call != nil {
+			e.tailJump(call)
+			return
+		}
+		if m, ok := s.Value.(*MatchExpr); ok && e.matchHasTailCall(m) {
+			e.returnMatch(m)
+			return
+		}
 		e.beginStmt()
 		if s.Value != nil {
 			code, owned := e.expr(s.Value)

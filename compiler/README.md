@@ -1,6 +1,6 @@
 # narra
 
-`narra` is the bootstrap compiler for Narra, written in Go. It compiles a `.nra` file or a package to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Narra.
+`narra` is the bootstrap compiler for Narra, written in Go. It compiles a `.nra` file or a package to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Narra. The rewrite is in `selfhost/`: its checker and C emitter are done, and `narrac emit` prints the same C as `narra emit` for every test program and for the selfhost package itself. `TestSelfhostEmit` checks this byte for byte.
 
 ## Usage
 

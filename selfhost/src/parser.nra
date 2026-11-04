@@ -884,8 +884,44 @@ function isArrowAhead(parser: Parser): bool {
             return false
           }
           const after = parser.tokens[index + 1].text
-          return after == "=>" || after == ":"
+          if (after == ":") {
+            return isResultTypeThenArrow(parser, index + 2)
+          }
+          return after == "=>"
         }
+      }
+    }
+    index = index + 1
+  }
+  return false
+}
+
+// isResultTypeThenArrow tells an arrow's `: R =>` from the `:` of a conditional
+// expression such as `c ? (a) : b`. From the token after the `:`, it looks for
+// a `=>` outside brackets before anything that ends an expression.
+function isResultTypeThenArrow(parser: Parser, start: int): bool {
+  let depth = 0
+  let index = start
+  const count = Arrays.length(parser.tokens)
+  while (index < count) {
+    const token = parser.tokens[index]
+    if (token.kind == TokenKind.TokNewline || token.kind == TokenKind.TokEof) {
+      return false
+    }
+    if (token.kind == TokenKind.TokPunct) {
+      if (token.text == "(" || token.text == "[" || token.text == "<") {
+        depth = depth + 1
+      } else if (token.text == ")" || token.text == "]" || token.text == ">") {
+        depth = depth - 1
+      } else if (token.text == ">>") {
+        depth = depth - 2
+      } else if (token.text == "=>" && depth == 0) {
+        return true
+      } else if (depth == 0 && (token.text == "?" || token.text == ":" || token.text == "," || token.text == "{" || token.text == "}" || token.text == ";")) {
+        return false
+      }
+      if (depth < 0) {
+        return false
       }
     }
     index = index + 1
@@ -1134,6 +1170,7 @@ function parseIf(mutable parser: Parser): Stmt {
 // expression holding one if statement whose branches each return one value,
 // like an `if` in value position. Only the chosen branch runs.
 function parseExpr(mutable parser: Parser): Expr {
+  const start = getPos(currentToken(parser))
   const condition = parseBinary(mutable parser, 0)
   if (!isAt(parser, "?")) {
     return condition
@@ -1141,7 +1178,16 @@ function parseExpr(mutable parser: Parser): Expr {
   const pos = getPos(advance(mutable parser))
   const thenValue = parseExpr(mutable parser)
   if (!isAt(parser, ":")) {
-    failHere(mutable parser, "a conditional expression needs `:` and a second value, as in `cond ? a : b`")
+    // A `:` on the next line is a ternary that spans lines.
+    const savedIndex = parser.index
+    skipNewlines(mutable parser)
+    const spans = isAt(parser, ":")
+    parser.index = savedIndex
+    if (spans) {
+      failHere(mutable parser, "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`")
+    } else {
+      failHere(mutable parser, "a conditional expression needs `:` and a second value, as in `cond ? a : b`")
+    }
     return createDummyExpr()
   }
   advance(mutable parser)
@@ -1149,7 +1195,9 @@ function parseExpr(mutable parser: Parser): Expr {
   const ifStatement = Stmt.IfStmt(pos, condition, createReturnBlock(thenValue), Some(Stmt.BlockStmt(createReturnBlock(elseValue))))
   const ternaryId = newId(mutable parser)
   Arrays.push(mutable parser.ternaryIds, ternaryId)
-  return Expr.BlockExpr(ternaryId, pos, Block { pos: pos, statements: [ifStatement] })
+  // The expression starts at the condition and its block at the `?`, which is
+  // how isConditional tells it from a plain block and an `if` value.
+  return Expr.BlockExpr(ternaryId, start, Block { pos: pos, statements: [ifStatement] })
 }
 
 // isTernary tells whether the expression came from `c ? a : b`.
@@ -1618,6 +1666,10 @@ function parsePrimary(mutable parser: Parser): Expr {
       }
       return parseBlockExpr(mutable parser)
     }
+  }
+  if (isAt(parser, "?")) {
+    failAt(mutable parser, pos, "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`")
+    return createDummyExpr()
   }
   failAt(mutable parser, pos, `expected an expression, found ${describeToken(token)}`)
   return createDummyExpr()

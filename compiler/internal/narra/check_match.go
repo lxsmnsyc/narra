@@ -188,7 +188,7 @@ func (c *Checker) isExpr(e *IsExpr) Type {
 	t := c.expr(e.Subject, nil)
 	c.resolvePattern(e.Pattern, t)
 	if len(e.Pattern.Locals) > 0 && !binds {
-		c.errorf(e.P, "an `is` pattern can only bind names when it is the whole condition of an if")
+		c.errorf(e.P, "an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression")
 	}
 	return TBool
 }

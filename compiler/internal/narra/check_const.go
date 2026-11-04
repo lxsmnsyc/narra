@@ -238,6 +238,9 @@ func (c *Checker) checkConstValue(d *ConstDecl, x Expr) bool {
 	case *MatchExpr:
 		return bad("a match")
 	case *BlockExpr:
+		if isConditional(x) {
+			return bad("a conditional expression")
+		}
 		return bad("a block expression")
 	case *IsExpr:
 		return bad("an `is` test")

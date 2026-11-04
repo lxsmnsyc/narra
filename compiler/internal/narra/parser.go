@@ -604,8 +604,47 @@ func (p *Parser) arrowAhead() bool {
 					return false
 				}
 				next := p.toks[j+1].Text
-				return next == "=>" || next == ":"
+				if next == ":" {
+					return p.resultTypeThenArrow(j + 2)
+				}
+				return next == "=>"
 			}
+		}
+	}
+	return false
+}
+
+// resultTypeThenArrow tells an arrow's `: R =>` from the `:` of a conditional
+// expression such as `c ? (a) : b`. From the token after the `:`, it looks for
+// a `=>` outside brackets before anything that ends an expression.
+func (p *Parser) resultTypeThenArrow(start int) bool {
+	depth := 0
+	for k := start; k < len(p.toks); k++ {
+		t := p.toks[k]
+		if t.Kind == TokNewline || t.Kind == TokEOF {
+			return false
+		}
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(", "[", "<":
+			depth++
+		case ")", "]", ">":
+			depth--
+		case ">>":
+			depth -= 2
+		case "=>":
+			if depth == 0 {
+				return true
+			}
+		case "?", ":", ",", "{", "}", ";":
+			if depth == 0 {
+				return false
+			}
+		}
+		if depth < 0 {
+			return false
 		}
 	}
 	return false
@@ -902,6 +941,7 @@ const isLevel = 2
 // `if` in value position, so the checker and emitter need no node of their
 // own. Only the chosen branch runs.
 func (p *Parser) expr() Expr {
+	start := p.tok().Pos
 	cond := p.binary(0)
 	if !p.is("?") {
 		return cond
@@ -909,12 +949,22 @@ func (p *Parser) expr() Expr {
 	pos := p.next().Pos
 	thenValue := p.expr()
 	if !p.is(":") {
+		// A `:` on the next line is a ternary that spans lines.
+		saved := p.i
+		p.skipNewlines()
+		spans := p.is(":")
+		p.i = saved
+		if spans {
+			p.fail(p.tok().Pos, "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`")
+		}
 		p.fail(p.tok().Pos, "a conditional expression needs `:` and a second value, as in `cond ? a : b`")
 	}
 	p.next()
 	elseValue := p.expr()
 	ifStmt := &IfStmt{Pos: pos, Cond: cond, Then: returnBlock(thenValue), Else: returnBlock(elseValue)}
-	ternary := &BlockExpr{exprBase: exprBase{P: pos}, Block: &Block{Pos: pos, Stmts: []Stmt{ifStmt}}}
+	// The expression starts at the condition and its block at the `?`, which
+	// is how isConditional tells it from a plain block and an `if` value.
+	ternary := &BlockExpr{exprBase: exprBase{P: start}, Block: &Block{Pos: pos, Stmts: []Stmt{ifStmt}}}
 	p.ternaries[ternary] = true
 	return ternary
 }
@@ -1239,6 +1289,9 @@ func (p *Parser) primary() Expr {
 			p.expect("]")
 			return lit
 		}
+	}
+	if p.is("?") {
+		p.fail(t.Pos, "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`")
 	}
 	p.fail(t.Pos, "expected an expression, found %s", describe(t))
 	return nil

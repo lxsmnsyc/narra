@@ -6,7 +6,7 @@
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, BlockContext, Ref, Walker, findLocal, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
+import { isConditional, Checker, BlockContext, Ref, Walker, findLocal, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
 import { resolveType, findTupleType } from "narrac/resolve"
 import { checkExpression, expectType, checkConstWrite, checkNoMutableEscape, findAssignedLocal } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
@@ -206,6 +206,10 @@ function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W
     checkMatch(mutable checker, walker, matchPos, subject, arms, None, false)
     return
   }
+  if (isConditional(expression)) {
+    reportError(mutable checker, getExpressionPos(expression), "the value of a conditional expression must be used; write an `if` statement instead")
+    return
+  }
   checkExpression(mutable checker, walker, expression, None)
 
   // Only a call can stand alone, and a Result it returns must be used.
@@ -255,7 +259,7 @@ function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, v
 // blockExpr).
 export function checkBlockExpression<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
   if (expression is Expr.BlockExpr(_, pos, block)) {
-    const context = BlockContext { result: want, returns: 0, loops: checker.loops, labels: checker.labels }
+    const context = BlockContext { result: want, returns: 0, loops: checker.loops, labels: checker.labels, cond: isConditional(expression), reported: false }
     Arrays.push(mutable checker.blocks, context)
     checker.loops = 0
     checker.labels = []
@@ -299,7 +303,14 @@ function checkBlockReturn<W: Walker>(mutable checker: Checker, walker: W, pos: P
     if (found == Type.TVoid) {
       // A value whose check already failed is void; do not report it twice.
       if (Arrays.length(checker.errors) == errorCount) {
-        reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+        if (checker.blocks[last].cond) {
+          if (!checker.blocks[last].reported) {
+            checker.blocks[last].reported = true
+            reportError(mutable checker, pos, "both branches of a conditional expression must have a value")
+          }
+        } else {
+          reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+        }
       }
       return
     }

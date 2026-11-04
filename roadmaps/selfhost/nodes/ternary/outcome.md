@@ -38,3 +38,11 @@
 ## Size
 
 - Estimated S, actual S.
+
+## Review fixes
+
+- Arrow lookahead (`arrowAhead`, `isArrowAhead`): `(...) :` is an arrow only when a result type and `=>` follow (`resultTypeThenArrow`, `isResultTypeThenArrow`). `c ? (a + b) : 0`, `c ? (a) : b`, `c ? ((a)) : b` parse as ternaries; `c ? (x: int): int => x : f` stays an arrow. Sample `ternary_parens.nra`.
+- A ternary is told from a plain block and an `if` value by `isConditional`: its `BlockExpr` starts at the condition and its block at the `?` (no AST field). Inside a template string all positions are equal, so a ternary there reads as an `if` value in messages.
+- E0934 now also covers: both branches must have a value (reported once), a conditional expression as a statement, a conditional in a top-level constant (the existing constant message with "a conditional expression", at the start), and a ternary spanning lines without parentheses (a line starting with `?`, or `:` on the next line). All have error tests.
+- The `is` binding message now ends "the whole condition of an if or a conditional expression" (also `typesdump/patterns/err_patterns.dump`, outside the owned paths).
+- SPEC.md states the parentheses rule. The line rule is unchanged.

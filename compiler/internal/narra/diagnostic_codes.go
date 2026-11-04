@@ -233,7 +233,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0707", "a tuple pattern needs a tuple value, found %s"},
 	{"E0708", "%s has %d elements, the pattern lists %d"},
 	{"E0709", "a literal pattern needs an int, f64, bool, char or string value, found %s"},
-	{"E0710", "an `is` pattern can only bind names when it is the whole condition of an if"},
+	{"E0710", "an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression"},
 	{"E0711", "match needs a value, found void"},
 	{"E0712", "a match used as a value needs a single expression in each arm"},
 	{"E0713", "match does not cover every %s value; add a `_` arm"},
@@ -280,6 +280,9 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0932", "%s cannot leave a block expression; it can only leave a loop inside the block"},
 	{"E0933", "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`"},
 	{"E0934", "a conditional expression needs `:` and a second value, as in `cond ? a : b`"},
+	{"E0934", "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`"},
+	{"E0934", "both branches of a conditional expression must have a value"},
+	{"E0934", "the value of a conditional expression must be used; write an `if` statement instead"},
 }
 
 var codeByFormat = func() map[string]string {

@@ -101,6 +101,7 @@ type pendingFunc struct {
 }
 
 type Checker struct {
+	forSource Expr // the iterable of the for loop being checked: Array.values and Array.entries are valid only there
 	prog      *Program
 	types     map[string]Type // non-generic named types
 	generics  map[string]*genericType
@@ -115,6 +116,7 @@ type Checker struct {
 	scope     *scope
 	fn        *FuncDecl
 	loops     int
+	labels    []string // labels of the enclosing loops, innermost last
 	arrays    map[string]*ArrayType
 	boxes     map[string]*BoxType
 	maps      map[string]*MapType

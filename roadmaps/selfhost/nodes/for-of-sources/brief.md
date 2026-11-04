@@ -1,7 +1,7 @@
 ---
 id: for-of-sources
 title: "for-of over any Range, Array or Str.chars value"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 256099
 owns:
   - compiler/testdata/for_of_sources*
   - compiler/testdata/errors/for_of_sources_*

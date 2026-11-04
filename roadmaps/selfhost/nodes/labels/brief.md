@@ -1,7 +1,7 @@
 ---
 id: labels
 title: "Labeled break and continue"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 230049
 owns:
   - compiler/testdata/labels*
   - compiler/testdata/errors/labels_*

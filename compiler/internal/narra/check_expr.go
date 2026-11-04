@@ -155,7 +155,14 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 	case *IsExpr:
 		return c.isExpr(e)
 	case *CallExpr:
-		return c.call(e, want)
+		t := c.call(e, want)
+		// A callee can change what it receives as `mutable`.
+		for _, a := range e.Args {
+			if a.Mutable {
+				c.endNarrowing(c.lvalueRoot(a.Value))
+			}
+		}
+		return t
 	case *StructLit:
 		for _, fi := range e.Fields {
 			c.noMutableEscape(fi.Value)

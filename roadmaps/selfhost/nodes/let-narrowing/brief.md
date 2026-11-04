@@ -1,7 +1,7 @@
 ---
 id: let-narrowing
 title: "Narrowing a let after an is test"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 237044
 owns:
   - compiler/testdata/let_narrowing*
   - compiler/testdata/errors/let_narrowing_*

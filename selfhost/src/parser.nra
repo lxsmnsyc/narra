@@ -941,9 +941,40 @@ function parseBlock(mutable parser: Parser): Block {
   return Block { pos: pos, statements: statements }
 }
 
+// parseLoopExitLabel reads the optional label after break or continue.
+function parseLoopExitLabel(mutable parser: Parser): string {
+  if (currentToken(parser).kind == TokenKind.TokIdent) {
+    return advance(mutable parser).text
+  }
+  return ""
+}
+
+// parseLabeledStmt parses `name: for ...` and `name: while ...`.
+function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
+  const labelToken = advance(mutable parser)
+  const labelPos = getPos(labelToken)
+  advance(mutable parser)
+  if (!isAt(parser, "for") && !isAt(parser, "while")) {
+    failAt(mutable parser, labelPos, `label "${labelToken.text}" must be on a for or while loop`)
+    return Stmt.BreakStmt(labelPos, "")
+  }
+  const loop = parseStmt(mutable parser)
+  if (loop is Stmt.WhileStmt(_, _, condition, body)) {
+    return Stmt.WhileStmt(labelPos, labelToken.text, condition, body)
+  }
+  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body)) {
+    return Stmt.ForStmt(nodeId, labelPos, labelToken.text, name, iterable, body)
+  }
+  return loop
+}
+
 function parseStmt(mutable parser: Parser): Stmt {
   const token = currentToken(parser)
   const pos = getPos(token)
+  const following = peekToken(parser, 1)
+  if (token.kind == TokenKind.TokIdent && following.kind == TokenKind.TokPunct && following.text == ":") {
+    return parseLabeledStmt(mutable parser)
+  }
   if (isAt(parser, "const") || isAt(parser, "let")) {
     const isMutable = advance(mutable parser).text == "let"
     const after = peekToken(parser, 1)
@@ -983,14 +1014,14 @@ function parseStmt(mutable parser: Parser): Stmt {
     expect(mutable parser, ")")
     const body = parseBlock(mutable parser)
     skipNewlines(mutable parser)
-    return Stmt.WhileStmt(pos, condition, body)
+    return Stmt.WhileStmt(pos, "", condition, body)
   }
   if (isAt(parser, "for")) {
     advance(mutable parser)
     expect(mutable parser, "(")
     if (!isAt(parser, "const") && !isAt(parser, "let")) {
       failHere(mutable parser, "write `for (const item of items)`")
-      return Stmt.BreakStmt(pos)
+      return Stmt.BreakStmt(pos, "")
     }
     const isMutable = advance(mutable parser).text == "let"
     const headPos = getPos(currentToken(parser))
@@ -1005,7 +1036,7 @@ function parseStmt(mutable parser: Parser): Stmt {
     }
     if (isAt(parser, "in") || isWord(parser, "in")) {
       failHere(mutable parser, "use `of`; `for ... in` is not part of the language")
-      return Stmt.BreakStmt(pos)
+      return Stmt.BreakStmt(pos, "")
     }
     expect(mutable parser, "of")
     const iterable = parseExpr(mutable parser)
@@ -1026,21 +1057,23 @@ function parseStmt(mutable parser: Parser): Stmt {
       body = Block { pos: body.pos, statements: statements }
       name = hidden
     }
-    return Stmt.ForStmt(newId(mutable parser), pos, name, iterable, body)
+    return Stmt.ForStmt(newId(mutable parser), pos, "", name, iterable, body)
   }
   if (isAt(parser, "break")) {
     advance(mutable parser)
+    const label = parseLoopExitLabel(mutable parser)
     endStatement(mutable parser)
-    return Stmt.BreakStmt(pos)
+    return Stmt.BreakStmt(pos, label)
   }
   if (isAt(parser, "continue")) {
     advance(mutable parser)
+    const label = parseLoopExitLabel(mutable parser)
     endStatement(mutable parser)
-    return Stmt.ContinueStmt(pos)
+    return Stmt.ContinueStmt(pos, label)
   }
   if (isAt(parser, "{")) {
     failAt(mutable parser, pos, "a block must belong to a statement such as if or while")
-    return Stmt.BreakStmt(pos)
+    return Stmt.BreakStmt(pos, "")
   }
   const expression = parseExpr(mutable parser)
   if (accept(mutable parser, "=")) {

@@ -196,6 +196,14 @@ func flag(name string, on bool) []string {
 	return nil
 }
 
+// labelAttr is the label attribute of a loop, break or continue, or nothing.
+func labelAttr(label string) []string {
+	if label == "" {
+		return nil
+	}
+	return strAttr("label", label)
+}
+
 func strAttr(name, v string) []string { return []string{name + "=" + quoteDump(v)} }
 
 func listAttr(name string, vs []string) []string {
@@ -421,19 +429,19 @@ func (d *astDumper) stmt(s Stmt) {
 			}
 		})
 	case *WhileStmt:
-		d.node("while", n.Pos, nil, func() {
+		d.node("while", n.Pos, labelAttr(n.Label), func() {
 			d.exprSlot("cond", n.Cond)
 			d.blockSlot("body", n.Body)
 		})
 	case *ForStmt:
-		d.node("for", n.Pos, strAttr("name", n.Name), func() {
+		d.node("for", n.Pos, append(strAttr("name", n.Name), labelAttr(n.Label)...), func() {
 			d.exprSlot("iter", n.Iter)
 			d.blockSlot("body", n.Body)
 		})
 	case *BreakStmt:
-		d.node("break", n.Pos, nil, nil)
+		d.node("break", n.Pos, labelAttr(n.Label), nil)
 	case *ContinueStmt:
-		d.node("continue", n.Pos, nil, nil)
+		d.node("continue", n.Pos, labelAttr(n.Label), nil)
 	default:
 		panic(fmt.Sprintf("astdump: unknown statement %T", s))
 	}

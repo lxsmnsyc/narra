@@ -216,13 +216,15 @@ type IfStmt struct {
 }
 
 type WhileStmt struct {
-	Pos  Pos
-	Cond Expr
-	Body *Block
+	Pos   Pos // the label when there is one, else the keyword
+	Label string
+	Cond  Expr
+	Body  *Block
 }
 
 type ForStmt struct {
-	Pos   Pos
+	Pos   Pos // the label when there is one, else the keyword
+	Label string
 	Name  string
 	Iter  Expr
 	Body  *Block
@@ -230,8 +232,15 @@ type ForStmt struct {
 	Kind  forKind
 }
 
-type BreakStmt struct{ Pos Pos }
-type ContinueStmt struct{ Pos Pos }
+type BreakStmt struct {
+	Pos   Pos
+	Label string
+}
+
+type ContinueStmt struct {
+	Pos   Pos
+	Label string
+}
 
 func (*Block) stmtNode()        {}
 func (*VarStmt) stmtNode()      {}

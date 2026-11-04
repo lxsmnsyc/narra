@@ -1,7 +1,7 @@
 ---
 id: mutable-read-conflict
 title: "A variable passed as mutable cannot be read elsewhere in the same expression"
-status: todo
+status: active
 priority: should
 type: fix
 story:

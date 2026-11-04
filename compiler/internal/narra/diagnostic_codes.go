@@ -124,7 +124,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0229", "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`"},
 	{"E0230", "this function must return a %s"},
 	{"E0231", "this function returns nothing"},
-	{"E0232", "for ... of needs Range.upTo, Range.between, Array.values, Array.entries, Map.keys or Map.entries, found %s"},
+	{"E0232", "for ... of needs a Range, an Array, Str.chars, Array.entries, Map.keys or Map.entries, found %s"},
 	{"E0233", "break must be inside a loop"},
 	{"E0234", "continue must be inside a loop"},
 	{"E0235", "cannot read field %q of %s: it is an opaque struct of module %q"},
@@ -270,6 +270,10 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0926", "there is no `try` or `catch`; return a `Result` and check it with `is Err` or `match`"},
 	{"E0927", "there is no `throw`; return `Err(value)`, or call `panic` for a bug"},
 	{"E0928", "there is no `this`; pass the value as a parameter"},
+	{"E0916", "no enclosing loop is labeled %q"},
+	{"E0917", "label %q is already used by an enclosing loop"},
+	{"E0918", "label %q must be on a for or while loop"},
+	{"E0920", "%s can only be the source of a for ... of loop; use the array itself"},
 }
 
 var codeByFormat = func() map[string]string {

@@ -29,7 +29,7 @@ import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resol
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdlib"
-import { findNarrowable, findNarrowed } from "narrac/patterns"
+import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
 import { useLocal, markArgument, isNonEscaping, checkFunctionValue, findModuleFunction } from "narrac/funcvalues"
 import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
@@ -81,7 +81,7 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.IsExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
     Expr.IndexExpr(nodeId, pos, target, index) => checkIndex(mutable checker, walker, nodeId, pos, target, index)
     Expr.MapLit(_, _, _, _, _) => Walker.checkMapLiteral(walker, mutable checker, expression, want)
-    Expr.CallExpr(nodeId, pos, callee, arguments) => Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+    Expr.CallExpr(nodeId, pos, callee, arguments) => checkCallEndingNarrowing(mutable checker, walker, nodeId, pos, callee, arguments, want)
     Expr.UnaryExpr(_, pos, operator, operand) => checkUnary(mutable checker, walker, pos, operator, operand, want)
     Expr.BinaryExpr(_, pos, operator, left, right) => checkBinary(mutable checker, walker, pos, operator, left, right)
     Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => checkStructLiteral(mutable checker, walker, pos, typeName, typeArguments, fields, spread, want)
@@ -89,6 +89,19 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
     Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(walker, mutable checker, expression, want)
   }
+}
+
+// checkCallEndingNarrowing checks a call. A callee can change what it
+// receives as `mutable`, so the narrowing of those locals ends.
+function checkCallEndingNarrowing<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
+  const found = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+  for (const argument of Arrays.values(arguments)) {
+    if (argument.isMutable) {
+      const local = findAssignedLocal(checker, argument.value)
+      endNarrowing(mutable checker, local)
+    }
+  }
+  return found
 }
 
 // checkNoMutableEscape rejects a mutable parameter used as the value that is

@@ -64,6 +64,9 @@ static void narra_free(void* p) {
 // worklist grows and is reused by later drops; it is never freed. It is not
 // counted by narra_live (plain realloc), and it stays reachable through a
 // global, so neither the leak check nor LeakSanitizer reports it.
+// A Range value is its two bounds.
+typedef struct narra_range { int64_t low; int64_t high; } narra_range;
+
 typedef struct narra_pending { void* p; void (*drop)(void*); } narra_pending;
 static _Thread_local narra_pending* narra_pend = NULL;
 static _Thread_local size_t narra_pend_n = 0, narra_pend_cap = 0;

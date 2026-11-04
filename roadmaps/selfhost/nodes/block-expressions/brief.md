@@ -1,7 +1,7 @@
 ---
 id: block-expressions
 title: "Block expressions and if/else as a value"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 413440
 owns:
   - compiler/testdata/block_expressions*
   - compiler/testdata/errors/block_expressions_*

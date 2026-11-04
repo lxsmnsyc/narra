@@ -1,7 +1,7 @@
 ---
 id: match-block-values
 title: "match arms with blocks produce values"
-status: todo
+status: active
 priority: should
 type: feature
 story:

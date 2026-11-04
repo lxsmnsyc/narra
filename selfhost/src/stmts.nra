@@ -525,11 +525,14 @@ const USE_READ = 0
 const USE_ASSIGN = 1
 const USE_MUTABLE = 2
 
-// One place in a match arm or on one side of && or ||. Uses in different
-// arms of one node never run together.
+// One place in a match arm, on one side of && or ||, or at one statement of
+// a block. Uses in different arms of one node never run together. A block
+// has a negative node (-1, -2, ...) from UseCollector.blocks.
 struct ArmStep {
   node: int
   arm: int
+  isMatch: bool // an arm of a match
+  calls: int // how many calls enclosed the step when it began
 }
 
 // One use of a local in a statement's expressions (Go's localUse). For a
@@ -548,6 +551,7 @@ struct LocalUse {
 
 struct UseCollector {
   found: Array<LocalUse>
+  blocks: int
 }
 
 function extendCalls(chain: Array<int>, callId: int): Array<int> uses alloc {
@@ -559,12 +563,12 @@ function extendCalls(chain: Array<int>, callId: int): Array<int> uses alloc {
   return inner
 }
 
-function extendArms(arms: Array<ArmStep>, node: int, arm: int): Array<ArmStep> uses alloc {
+function extendArms(arms: Array<ArmStep>, node: int, arm: int, isMatch: bool, calls: int): Array<ArmStep> uses alloc {
   let extended: Array<ArmStep> = []
   for (const step of Arrays.values(arms)) {
     Arrays.push(mutable extended, step)
   }
-  Arrays.push(mutable extended, ArmStep { node: node, arm: arm })
+  Arrays.push(mutable extended, ArmStep { node: node, arm: arm, isMatch: isMatch, calls: calls })
   return extended
 }
 
@@ -621,8 +625,8 @@ function collectUses(checker: Checker, mutable collector: UseCollector, expressi
     Expr.BinaryExpr(nodeId, _, operator, left, right) => {
       if (operator == "&&" || operator == "||") {
         // The left side is finished before the right side starts.
-        collectUses(checker, mutable collector, left, chain, extendArms(arms, nodeId, 0))
-        collectUses(checker, mutable collector, right, chain, extendArms(arms, nodeId, 1))
+        collectUses(checker, mutable collector, left, chain, extendArms(arms, nodeId, 0, false, Arrays.length(chain)))
+        collectUses(checker, mutable collector, right, chain, extendArms(arms, nodeId, 1, false, Arrays.length(chain)))
       } else {
         collectUses(checker, mutable collector, left, chain, arms)
         collectUses(checker, mutable collector, right, chain, arms)
@@ -660,16 +664,73 @@ function collectUses(checker: Checker, mutable collector: UseCollector, expressi
       }
     }
     Expr.MatchExpr(nodeId, _, subject, matchArms) => {
-      collectUses(checker, mutable collector, subject, chain, arms)
+      // The subject is finished before the first arm starts.
+      collectUses(checker, mutable collector, subject, chain, extendArms(arms, nodeId, -1, false, Arrays.length(chain)))
       for (const i of Ranges.upTo(Arrays.length(matchArms))) {
-        const armSteps = extendArms(arms, nodeId, i)
+        const armSteps = extendArms(arms, nodeId, i, true, Arrays.length(chain))
         if (matchArms[i].guard is Some(guard)) {
           collectUses(checker, mutable collector, guard, chain, armSteps)
         }
         if (matchArms[i].body is Some(armBody)) {
           collectUses(checker, mutable collector, armBody, chain, armSteps)
         }
+        if (matchArms[i].block is Some(armBlock)) {
+          collectBlockUses(checker, mutable collector, armBlock, chain, armSteps)
+        }
       }
+    }
+    _ => {}
+  }
+}
+
+// collectBlockUses walks the statements of a block inside an expression,
+// such as a match arm. The statements run one after the other, so each has a
+// step of its own (Go's useCollector.block).
+function collectBlockUses(checker: Checker, mutable collector: UseCollector, block: Block, chain: Array<int>, arms: Array<ArmStep>) uses alloc {
+  collector.blocks = collector.blocks + 1
+  const blockNode = -collector.blocks
+  for (const i of Ranges.upTo(Arrays.length(block.statements))) {
+    const steps = extendArms(arms, blockNode, i, false, Arrays.length(chain))
+    collectStatementUses(checker, mutable collector, block.statements[i], chain, steps)
+  }
+}
+
+function collectStatementUses(checker: Checker, mutable collector: UseCollector, statement: Stmt, chain: Array<int>, arms: Array<ArmStep>) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectBlockUses(checker, mutable collector, block, chain, arms)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectUses(checker, mutable collector, value, chain, arms)
+    Stmt.AssignStmt(_, target, value) => {
+      collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, chain, arms)
+      collectUses(checker, mutable collector, value, chain, arms)
+    }
+    Stmt.ExprStmt(_, expression) => collectUses(checker, mutable collector, expression, chain, arms)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectUses(checker, mutable collector, returned, chain, arms)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      // The condition is finished before the branches start.
+      collector.blocks = collector.blocks + 1
+      const stepNode = -collector.blocks
+      collectUses(checker, mutable collector, condition, chain, extendArms(arms, stepNode, 0, false, Arrays.length(chain)))
+      collectBlockUses(checker, mutable collector, then, chain, extendArms(arms, stepNode, 1, false, Arrays.length(chain)))
+      // The two branches never run together.
+      if (orElse is Some(other)) {
+        collectStatementUses(checker, mutable collector, other, chain, extendArms(arms, stepNode, 2, false, Arrays.length(chain)))
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collector.blocks = collector.blocks + 1
+      const stepNode = -collector.blocks
+      collectUses(checker, mutable collector, condition, chain, extendArms(arms, stepNode, 0, false, Arrays.length(chain)))
+      collectBlockUses(checker, mutable collector, body, chain, extendArms(arms, stepNode, 1, false, Arrays.length(chain)))
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+      collector.blocks = collector.blocks + 1
+      const stepNode = -collector.blocks
+      collectUses(checker, mutable collector, iterable, chain, extendArms(arms, stepNode, 0, false, Arrays.length(chain)))
+      collectBlockUses(checker, mutable collector, body, chain, extendArms(arms, stepNode, 1, false, Arrays.length(chain)))
     }
     _ => {}
   }
@@ -692,6 +753,23 @@ function chainHas(chain: Array<int>, callId: int): bool {
   return false
 }
 
+// isInsideCall tells whether a use is in the arguments of a call and not in a
+// match arm there: checkExclusive reports those (Go's insideCall).
+function isInsideCall(use: LocalUse, callId: int): bool {
+  for (const i of Ranges.upTo(Arrays.length(use.chain))) {
+    if (use.chain[i] != callId) {
+      continue
+    }
+    for (const step of Arrays.values(use.arms)) {
+      if (step.isMatch && step.calls > i) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
 function inDifferentArms(first: Array<ArmStep>, second: Array<ArmStep>): bool {
   for (const left of Arrays.values(first)) {
     for (const right of Arrays.values(second)) {
@@ -708,7 +786,7 @@ function inDifferentArms(first: Array<ArmStep>, second: Array<ArmStep>): bool {
 // checkMutableConflicts, E0929). Uses inside the arguments of the call
 // itself belong to checkExclusive. It runs after the statement is checked.
 function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses alloc {
-  let collector = UseCollector { found: [] }
+  let collector = UseCollector { found: [], blocks: 0 }
   const noCalls: Array<int> = []
   const noArms: Array<ArmStep> = []
   match (statement) {
@@ -740,10 +818,10 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
       if (use.kind == USE_MUTABLE && other.order > use.order) {
         continue
       }
-      if ((use.calleeOf >= 0 && chainHas(other.chain, use.calleeOf)) || inDifferentArms(use.arms, other.arms) || chainHas(use.chain, other.call)) {
+      if ((use.calleeOf >= 0 && chainHas(other.chain, use.calleeOf)) || inDifferentArms(use.arms, other.arms) || isInsideCall(use, other.call)) {
         continue
       }
-      if (use.kind == USE_MUTABLE && chainHas(other.chain, use.call)) {
+      if (use.kind == USE_MUTABLE && isInsideCall(other, use.call)) {
         continue
       }
       Arrays.push(mutable reported, use.local)

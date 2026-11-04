@@ -700,8 +700,10 @@ type localUse struct {
 // Uses in different arms of the same match never run together, and the left
 // side of && and || is finished before the right side starts.
 type armStep struct {
-	match Expr
-	arm   int
+	key     any // the match, the && or || expression, or the block
+	arm     int
+	isMatch bool // an arm of a match
+	calls   int  // how many calls enclosed the step when it began
 }
 
 const (
@@ -759,7 +761,7 @@ func (u *useCollector) walk(x Expr, chain []*CallExpr, hoist bool) {
 	case *BinaryExpr:
 		short := x.Op == "&&" || x.Op == "||"
 		if short {
-			u.arms = append(u.arms, armStep{x, 0})
+			u.arms = append(u.arms, armStep{key: x, arm: 0, calls: len(chain)})
 		}
 		u.walk(x.Left, chain, hoist)
 		if short {
@@ -809,17 +811,77 @@ func (u *useCollector) walk(x Expr, chain []*CallExpr, hoist bool) {
 			u.walk(x.Vals[i], chain, hoist)
 		}
 	case *MatchExpr:
+		// The subject is finished before the first arm starts.
+		u.arms = append(u.arms, armStep{key: x, arm: -1, calls: len(chain)})
 		u.walk(x.Subject, chain, hoist)
+		u.arms = u.arms[:len(u.arms)-1]
 		for i, arm := range x.Arms {
-			u.arms = append(u.arms, armStep{x, i})
+			u.arms = append(u.arms, armStep{key: x, arm: i, isMatch: true, calls: len(chain)})
 			if arm.Guard != nil {
 				u.walk(arm.Guard, chain, false)
 			}
 			if arm.Body != nil {
 				u.walk(arm.Body, chain, false)
 			}
+			if arm.Block != nil {
+				u.block(arm.Block, chain)
+			}
 			u.arms = u.arms[:len(u.arms)-1]
 		}
+	}
+}
+
+// block walks the statements of a block inside an expression, such as a match
+// arm. The statements run one after the other, so each has a step of its own.
+func (u *useCollector) block(b *Block, chain []*CallExpr) {
+	for i, st := range b.Stmts {
+		u.arms = append(u.arms, armStep{key: b, arm: i, calls: len(chain)})
+		u.stmt(st, chain)
+		u.arms = u.arms[:len(u.arms)-1]
+	}
+}
+
+func (u *useCollector) stmt(st Stmt, chain []*CallExpr) {
+	switch st := st.(type) {
+	case *Block:
+		u.block(st, chain)
+	case *VarStmt:
+		if st.Value != nil {
+			u.walk(st.Value, chain, false)
+		}
+	case *AssignStmt:
+		u.root(st.Target, useAssign, nil, chain, false)
+		u.walk(st.Value, chain, false)
+	case *ExprStmt:
+		u.walk(st.Expr, chain, false)
+	case *ReturnStmt:
+		if st.Value != nil {
+			u.walk(st.Value, chain, false)
+		}
+	case *IfStmt:
+		// The condition is finished before the branches start.
+		u.arms = append(u.arms, armStep{key: st, arm: 0, calls: len(chain)})
+		u.walk(st.Cond, chain, false)
+		u.arms[len(u.arms)-1].arm = 1
+		u.block(st.Then, chain)
+		// The two branches never run together.
+		u.arms[len(u.arms)-1].arm = 2
+		if st.Else != nil {
+			u.stmt(st.Else, chain)
+		}
+		u.arms = u.arms[:len(u.arms)-1]
+	case *WhileStmt:
+		u.arms = append(u.arms, armStep{key: st, arm: 0, calls: len(chain)})
+		u.walk(st.Cond, chain, false)
+		u.arms[len(u.arms)-1].arm = 1
+		u.block(st.Body, chain)
+		u.arms = u.arms[:len(u.arms)-1]
+	case *ForStmt:
+		u.arms = append(u.arms, armStep{key: st, arm: 0, calls: len(chain)})
+		u.walk(st.Iter, chain, false)
+		u.arms[len(u.arms)-1].arm = 1
+		u.block(st.Body, chain)
+		u.arms = u.arms[:len(u.arms)-1]
 	}
 }
 
@@ -866,7 +928,7 @@ func (c *Checker) checkMutableConflicts(s Stmt) {
 			if m == v || m.local != v.local || m.kind != useMutable || (v.kind == useMutable && m.order > v.order) {
 				continue
 			}
-			if (v.calleeOf != nil && inChain(m.chain, v.calleeOf)) || differentArms(v.arms, m.arms) || inChain(v.chain, m.call) || (v.kind == useMutable && inChain(m.chain, v.call)) {
+			if (v.calleeOf != nil && inChain(m.chain, v.calleeOf)) || differentArms(v.arms, m.arms) || insideCall(v, m.call) || (v.kind == useMutable && insideCall(m, v.call)) {
 				continue
 			}
 			reported[v.local] = true
@@ -955,10 +1017,28 @@ func (c *Checker) hoistFix(s Stmt, call *CallExpr) []Fix {
 	}}}
 }
 
+// insideCall tells whether a use is in the arguments of a call and not in a
+// match arm there: checkExclusive reports those. A match arm in the arguments
+// is not covered by it.
+func insideCall(use *localUse, call *CallExpr) bool {
+	for i, x := range use.chain {
+		if x != call {
+			continue
+		}
+		for _, step := range use.arms {
+			if step.isMatch && step.calls > i {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func differentArms(a, b []armStep) bool {
 	for _, x := range a {
 		for _, y := range b {
-			if x.match == y.match && x.arm != y.arm {
+			if x.key == y.key && x.arm != y.arm {
 				return true
 			}
 		}

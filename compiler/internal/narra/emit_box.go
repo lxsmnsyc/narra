@@ -71,6 +71,18 @@ static %[1]s* %[1]s_new(%[2]s v) {
   return a;
 }
 static void %[1]s_retain(%[1]s* a) { a->rc++; }
+// Returns a box the caller owns alone, copying it when it is shared.
+static %[1]s* %[1]s_unique(%[1]s* a) {
+  if (a->rc == 1) return a;
+  %[1]s* c = %[1]s_new(a->f_value);
+  %[4]s
+  a->rc--;
+  return c;
+}
+static %[2]s* %[1]s_at(%[1]s** p) {
+  *p = %[1]s_unique(*p);
+  return &(*p)->f_value;
+}
 static void %[1]s_drop(void* p) {
   %[1]s* a = p;
   %[3]s
@@ -79,7 +91,7 @@ static void %[1]s_drop(void* p) {
 static void %[1]s_release(%[1]s* a) {
   if (--a->rc == 0) narra_drop(a, %[1]s_drop);
 }
-`, n, bt.Elem.CName(), release(bt.Elem, "a->f_value"))
+`, n, bt.Elem.CName(), release(bt.Elem, "a->f_value"), retain(bt.Elem, "c->f_value"))
 }
 
 // enumAlloc emits the allocation of a variant's payload and returns the C

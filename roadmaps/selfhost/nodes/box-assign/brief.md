@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent: 72396
+spent: 72907
 owns:
   - compiler/testdata/box_assign*
   - roadmaps/selfhost/nodes/box-assign/**

@@ -39,4 +39,5 @@ SPEC lines 110-111 (F6). `for ... of` accepts only direct calls to `Ranges.upTo`
 ## Notes
 
 - From the spec-gap audit (`roadmaps/selfhost/nodes/spec-gap-audit/outcome.md`): its findings table has the minimal program and the exact error.
+- Found in the for-destructure review: `Arrays.values` and `Arrays.entries` used outside a for-of panic the Go emitter (`emit: unknown builtin`) instead of giving a compile error. Fix that here.
 - Outline. Break into a full brief when `plan.py refine` lists it.

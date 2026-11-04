@@ -16,12 +16,11 @@
 
 ## Stubs left
 
-- `Maps.keys` / `Maps.entries` outside a loop head still hit the emitter (unchanged; they are arrays in the checker).
-- `Range` has no `==`, `Show` or hashing.
+- `Range` has no `==`, `Show` or hashing. A `Range` map key is a compile error ("a Range is not hashable"); SPEC line 379 is about a user opaque struct named `Range`, not the prelude type.
 
 ## Gotchas
 
-- A program that names `Range` in a signature needs `std/range` imported somewhere in the program, because the C type comes with that module's runtime.
+- `narra_range` is defined in `runtime.h`, so a program may name `Range` without importing `std/range`.
 - Selfhost field defaults must be constants, so the loop source is kept as `forSourceLine`/`forSourceColumn`.
 
 ## Proposed learnings

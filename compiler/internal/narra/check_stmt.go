@@ -204,9 +204,10 @@ func (c *Checker) stmt(s Stmt) {
 	case *ForStmt:
 		var elem Type
 		call, isCall := s.Iter.(*CallExpr)
+		outerSource := c.forSource
 		c.forSource = s.Iter
 		t := c.expr(s.Iter, nil)
-		c.forSource = nil
+		c.forSource = outerSource
 		switch {
 		case isCall && (call.Builtin == "Range.upTo" || call.Builtin == "Range.between"):
 			s.Kind = forRange

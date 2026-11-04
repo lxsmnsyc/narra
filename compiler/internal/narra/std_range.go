@@ -6,11 +6,6 @@ import "fmt"
 // ints. As the source of `for ... of` the statement emitter reads the bounds
 // from the call directly; any other Range value is read from the struct.
 
-// runtimeRange defines the C type of a Range value.
-const runtimeRange = `// std/range runtime: a Range is its two bounds.
-typedef struct narra_range { int64_t low; int64_t high; } narra_range;
-`
-
 func init() {
 	registerNamespaceModule("Range", "std/range", map[string]*Builtin{
 		"upTo": {Check: checkRangeUpTo,
@@ -28,7 +23,6 @@ func init() {
 				return fmt.Sprintf("((narra_range){%s, %s})", low, high), false
 			}},
 	})
-	stdModules["std/range"].Runtime = runtimeRange
 }
 
 func checkRangeUpTo(c *Checker, e *CallExpr, want Type) Type {

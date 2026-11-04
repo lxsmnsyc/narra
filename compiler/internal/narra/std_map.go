@@ -95,6 +95,8 @@ func (c *Checker) mapKeyProblem(t Type, seen map[Type]bool) string {
 		return "a function is not hashable"
 	case *MapType:
 		return "a map is not hashable"
+	case *RangeType:
+		return "a Range is not hashable"
 	case *StructType, *EnumType:
 		for _, f := range fieldsOf(t) {
 			if p := c.mapKeyProblem(f.T, seen); p != "" {

@@ -688,17 +688,39 @@ func (p *Parser) stmt() Stmt {
 	case p.is("for"):
 		p.next()
 		p.expect("(")
-		if !p.accept("const") {
+		if !p.is("const") && !p.is("let") {
 			p.fail(p.tok().Pos, "write `for (const item of items)`")
 		}
-		name := p.ident().Text
+		mutable := p.next().Text == "let"
+		headPos := p.tok().Pos
+		next := p.toks[p.i+1] // the token stream always ends with EOF
+		ctor := p.tok().Kind == TokIdent && next.Kind == TokPunct && (next.Text == "(" || next.Text == ".")
+		var pattern *Pattern
+		name := ""
+		if p.is("{") || p.is("#[") || ctor {
+			pattern = p.pattern()
+		} else {
+			name = p.ident().Text
+		}
 		if p.is("in") || (p.tok().Kind == TokIdent && p.tok().Text == "in") {
 			p.fail(p.tok().Pos, "use `of`; `for ... in` is not part of the language")
 		}
 		p.expect("of")
 		iter := p.expr()
 		p.expect(")")
-		s := &ForStmt{Pos: t.Pos, Name: name, Iter: iter, Body: p.block()}
+		body := p.block()
+		if pattern != nil || mutable {
+			// for (const <pattern> of xs) body becomes
+			// for (const __for_L_C of xs) { const <pattern> = __for_L_C; body }
+			// where L and C are the line and column of the pattern. A user
+			// name cannot clash with it because each loop has its own position.
+			hidden := fmt.Sprintf("__for_%d_%d", headPos.Line, headPos.Col)
+			decl := &VarStmt{Pos: headPos, Mutable: mutable, Name: name, Pattern: pattern,
+				Value: &Ident{exprBase: exprBase{P: headPos}, Name: hidden}}
+			body.Stmts = append([]Stmt{decl}, body.Stmts...)
+			name = hidden
+		}
+		s := &ForStmt{Pos: t.Pos, Name: name, Iter: iter, Body: body}
 		p.skipNewlines()
 		return s
 	case p.is("break"):

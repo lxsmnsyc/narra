@@ -7,7 +7,7 @@ import { Stmt, Block, Expr, Pattern } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId } from "narrac/check"
 import { cType } from "narrac/cnames"
-import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, typeOf, refOf, localRef, retainCode, releaseCode } from "narrac/emitstate"
+import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, typeOf, refOf, localRef, localOf, retainCode, releaseCode } from "narrac/emitstate"
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
@@ -214,8 +214,8 @@ function emitFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: 
     emitRangeFor(walker, mutable emitter, nodeId, iterable, body, name)
   } else if (name == "Map.keys" || name == "Map.entries") {
     Maps.emitMapFor(walker, mutable emitter, statement)
-  } else if (name == "Array.values") {
-    emitArrayFor(walker, mutable emitter, nodeId, iterable, body)
+  } else if (name == "Array.values" || name == "Array.entries") {
+    emitArrayFor(walker, mutable emitter, nodeId, iterable, body, name == "Array.entries")
   } else {
     const _ = reportUnsupported(mutable emitter, "for loop", NODE)
   }
@@ -248,7 +248,7 @@ function emitRangeFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
   writeLine(mutable emitter, "}")
 }
 
-function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, iterable: Expr, body: Block) uses alloc {
+function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, iterable: Expr, body: Block, entries: bool) uses alloc {
   let source = iterable
   if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
     source = callArguments[0].value
@@ -269,9 +269,15 @@ function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
     pushScope(mutable emitter, true)
     const localIndex = declaredLocal(emitter, nodeId)
     const variable = localRef(emitter, localIndex)
-    const elementName = cType(emitter.checker, element)
-    writeLine(mutable emitter, `${elementName} ${variable} = ${array}->items[${index}];`)
-    const retainText = retainCode(emitter, element, variable)
+    if (entries) {
+      // Array.entries gives #[index, item].
+      const tupleName = cType(emitter.checker, localOf(emitter, localIndex).localType)
+      writeLine(mutable emitter, `${tupleName} ${variable} = {.f_0 = ${index}, .f_1 = ${array}->items[${index}]};`)
+    } else {
+      const elementName = cType(emitter.checker, element)
+      writeLine(mutable emitter, `${elementName} ${variable} = ${array}->items[${index}];`)
+    }
+    const retainText = retainCode(emitter, localOf(emitter, localIndex).localType, variable)
     if (retainText != "") {
       writeLine(mutable emitter, retainText)
     }

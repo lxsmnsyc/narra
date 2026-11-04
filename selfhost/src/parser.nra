@@ -954,11 +954,21 @@ function parseStmt(mutable parser: Parser): Stmt {
   if (isAt(parser, "for")) {
     advance(mutable parser)
     expect(mutable parser, "(")
-    if (!accept(mutable parser, "const")) {
+    if (!isAt(parser, "const") && !isAt(parser, "let")) {
       failHere(mutable parser, "write `for (const item of items)`")
       return Stmt.BreakStmt(pos)
     }
-    const name = expectIdent(mutable parser).text
+    const isMutable = advance(mutable parser).text == "let"
+    const headPos = getPos(currentToken(parser))
+    const after = peekToken(parser, 1)
+    const isConstructor = currentToken(parser).kind == TokenKind.TokIdent && after.kind == TokenKind.TokPunct && (after.text == "(" || after.text == ".")
+    let name = ""
+    let pattern: Option<Pattern> = None
+    if (isAt(parser, "{") || isAt(parser, "#[") || isConstructor) {
+      pattern = Some(parsePattern(mutable parser))
+    } else {
+      name = expectIdent(mutable parser).text
+    }
     if (isAt(parser, "in") || isWord(parser, "in")) {
       failHere(mutable parser, "use `of`; `for ... in` is not part of the language")
       return Stmt.BreakStmt(pos)
@@ -966,8 +976,22 @@ function parseStmt(mutable parser: Parser): Stmt {
     expect(mutable parser, "of")
     const iterable = parseExpr(mutable parser)
     expect(mutable parser, ")")
-    const body = parseBlock(mutable parser)
+    let body = parseBlock(mutable parser)
     skipNewlines(mutable parser)
+    if (isMutable || pattern is Some(_)) {
+      // for (const <pattern> of xs) body becomes
+      // for (const __for_L_C of xs) { const <pattern> = __for_L_C; body }
+      // where L and C are the line and column of the pattern. A user name
+      // cannot clash with it because each loop has its own position.
+      const hidden = `__for_${Int.toString(headPos.line)}_${Int.toString(headPos.column)}`
+      const declaration = Stmt.VarStmt(newId(mutable parser), headPos, isMutable, name, pattern, None, Expr.Ident(newId(mutable parser), headPos, hidden))
+      let statements: Array<Stmt> = [declaration]
+      for (const statement of Arrays.values(body.statements)) {
+        Arrays.push(mutable statements, statement)
+      }
+      body = Block { pos: body.pos, statements: statements }
+      name = hidden
+    }
     return Stmt.ForStmt(newId(mutable parser), pos, name, iterable, body)
   }
   if (isAt(parser, "break")) {

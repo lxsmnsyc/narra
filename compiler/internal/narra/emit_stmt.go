@@ -141,7 +141,7 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		e.mapFor(s, call, false)
 	case forMapEntries:
 		e.mapFor(s, call, true)
-	case forArray:
+	case forArray, forArrayEntries:
 		at := call.Args[0].Value.Type().(*ArrayType)
 		code, owned := e.expr(call.Args[0].Value)
 		arr := e.consume(code, owned, at)
@@ -152,8 +152,15 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		e.indent++
 		e.loopTemp = append(e.loopTemp, len(e.frames))
 		e.pushScope(true)
-		e.line("%s %s = %s->items[%s];", at.Elem.CName(), s.Local.CName, arr, idx)
-		if r := retain(at.Elem, s.Local.CName); r != "" {
+		if s.Kind == forArrayEntries {
+			// Array.entries gives #[index, item].
+			st := s.Local.T.(*StructType)
+			e.line("%s %s = {.%s = %s, .%s = %s->items[%s]};", st.CName(), s.Local.CName,
+				fieldName("0"), idx, fieldName("1"), arr, idx)
+		} else {
+			e.line("%s %s = %s->items[%s];", at.Elem.CName(), s.Local.CName, arr, idx)
+		}
+		if r := retain(s.Local.T, s.Local.CName); r != "" {
 			e.line("%s", r)
 		}
 		e.addLocal(s.Local)

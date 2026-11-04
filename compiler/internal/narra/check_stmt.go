@@ -209,11 +209,15 @@ func (c *Checker) stmt(s Stmt) {
 		case isCall && (call.Builtin == "Range.upTo" || call.Builtin == "Range.between"):
 			s.Kind = forRange
 			elem = TInt
-		case isCall && call.Builtin == "Array.values":
+		case isCall && (call.Builtin == "Array.values" || call.Builtin == "Array.entries"):
 			s.Kind = forArray
 			elem = TVoid
 			if at, ok := call.Args[0].Value.Type().(*ArrayType); ok {
 				elem = at.Elem
+				if call.Builtin == "Array.entries" {
+					s.Kind = forArrayEntries
+					elem = c.tupleOf([]Type{TInt, at.Elem})
+				}
 			}
 		case isCall && (call.Builtin == "Map.keys" || call.Builtin == "Map.entries"):
 			s.Kind = forMapKeys

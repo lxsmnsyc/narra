@@ -2,7 +2,7 @@ package narra
 
 import "fmt"
 
-// std/array: Array.length, Array.values, Array.push and Array.filled.
+// std/array: Array.length, Array.values, Array.entries, Array.push and Array.filled.
 
 func init() {
 	registerNamespaceModule("Array", "std/array", map[string]*Builtin{
@@ -12,7 +12,8 @@ func init() {
 				return fmt.Sprintf("(%s)->len", e.argCode(x, 0)), false
 			},
 		},
-		"values": {Check: checkArrayLength},
+		"values":  {Check: checkArrayLength},
+		"entries": {Check: checkArrayLength},
 		"push": {
 			Check: checkArrayPush, Mutable: []bool{true, false}, Effects: []string{"alloc"},
 			Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
@@ -34,7 +35,7 @@ func init() {
 	})
 }
 
-// checkArrayLength checks Array.length and Array.values.
+// checkArrayLength checks Array.length, Array.values and Array.entries.
 func checkArrayLength(c *Checker, e *CallExpr, want Type) Type {
 	if !c.argCount(e, 1) {
 		return TVoid
@@ -47,6 +48,9 @@ func checkArrayLength(c *Checker, e *CallExpr, want Type) Type {
 	}
 	if e.Builtin == "Array.length" {
 		return TInt
+	}
+	if e.Builtin == "Array.entries" {
+		return c.arrayOf(c.tupleOf([]Type{TInt, at.Elem}))
 	}
 	return at
 }

@@ -107,6 +107,16 @@ func (c *Checker) endLoopNarrowing(cond Expr, body *Block) {
 	}
 }
 
+// endExprNarrowing ends the narrowing of every local that an expression
+// passes as `mutable` (or assigns, inside a match arm block).
+func (c *Checker) endExprNarrowing(x Expr) {
+	names := map[string]bool{}
+	assignedInExpr(x, names)
+	for name := range names {
+		c.endNarrowing(c.lookup(name))
+	}
+}
+
 // rootName is the variable name at the root of an assignable expression.
 func rootName(e Expr) string {
 	switch e := e.(type) {
@@ -253,6 +263,21 @@ func (c *Checker) ifStmt(s *IfStmt) {
 }
 
 func (c *Checker) stmt(s Stmt) {
+	// The emitter runs `mutable` calls before the rest of the statement, so
+	// a read of the local anywhere in the statement may see the new value.
+	switch s := s.(type) {
+	case *VarStmt:
+		c.endExprNarrowing(s.Value)
+	case *AssignStmt:
+		c.endExprNarrowing(s.Target)
+		c.endExprNarrowing(s.Value)
+	case *ExprStmt:
+		c.endExprNarrowing(s.Expr)
+	case *ReturnStmt:
+		c.endExprNarrowing(s.Value)
+	case *IfStmt:
+		c.endExprNarrowing(s.Cond)
+	}
 	switch s := s.(type) {
 	case *Block:
 		c.block(s)

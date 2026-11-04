@@ -24,6 +24,23 @@ export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block
 }
 
 export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, statement: Stmt) uses alloc {
+  // The emitter runs `mutable` calls before the rest of the statement, so a
+  // read of the local anywhere in the statement may see the new value.
+  match (statement) {
+    Stmt.VarStmt(_, _, _, _, _, _, value) => endExpressionNarrowing(mutable checker, value)
+    Stmt.AssignStmt(_, target, value) => {
+      endExpressionNarrowing(mutable checker, target)
+      endExpressionNarrowing(mutable checker, value)
+    }
+    Stmt.ExprStmt(_, expression) => endExpressionNarrowing(mutable checker, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        endExpressionNarrowing(mutable checker, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
+    _ => {}
+  }
   match (statement) {
     Stmt.BlockStmt(block) => checkBlock(mutable checker, walker, block)
     Stmt.VarStmt(nodeId, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, nodeId, pos, isMutable, name, pattern, type, value)
@@ -361,6 +378,17 @@ function endLoopNarrowing(mutable checker: Checker, condition: Option<Expr>, bod
     collectAssignedInExpr(testExpression, mutable names)
   }
   collectAssignedInBlock(body, mutable names)
+  for (const name of Arrays.values(names)) {
+    const local = findLocal(checker, name)
+    endNarrowing(mutable checker, local)
+  }
+}
+
+// endExpressionNarrowing ends the narrowing of every local that an
+// expression passes as `mutable` (Go's endExprNarrowing).
+function endExpressionNarrowing(mutable checker: Checker, expression: Expr) uses alloc {
+  let names: Array<string> = []
+  collectAssignedInExpr(expression, mutable names)
   for (const name of Arrays.values(names)) {
     const local = findLocal(checker, name)
     endNarrowing(mutable checker, local)

@@ -141,6 +141,7 @@ const label = {
 - **Every path must end in `return value`** (E0931), and every returned value has the same type. A bare `return` is an error. A block expression with no `return` at all, such as `const o = { a }`, is a compile error (E0933) that points to struct literals.
 - A `{` that starts `{}`, `{ ...s, f: v }` or `{ name: value }` in value position is still a struct literal whose type comes from context. The exception is `{ name: for` and `{ name: while`, where `name:` labels a loop and the `{` starts a block expression.
 - `if (c) { ... } else { ... }` in value position is an expression whose branches are block expressions, each ending in `return`. The `else` branch is required, and `else if` chains are allowed. At the start of a statement `if` is still a statement.
+- `cond ? a : b` is a conditional expression, as in TypeScript. `cond` must be `bool` (no truthiness), `a` and `b` have the same type, and only the chosen branch runs. It binds looser than `||` and is right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`. A missing `:` is E0934. It is a block expression holding an `if` whose branches each `return` one value, so a self call in a returned branch (`return n < 0 ? f(n + 1) : n`) is still a tail call.
 
 ```ts
 const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" } else { return "positive" }

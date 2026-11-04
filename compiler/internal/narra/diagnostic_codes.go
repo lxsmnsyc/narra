@@ -278,6 +278,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0931", "a block expression must end every path with `return value`"},
 	{"E0932", "%s cannot leave a block expression; it can only leave a loop inside the block"},
 	{"E0933", "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`"},
+	{"E0934", "a conditional expression needs `:` and a second value, as in `cond ? a : b`"},
 }
 
 var codeByFormat = func() map[string]string {

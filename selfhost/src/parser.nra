@@ -41,6 +41,8 @@ struct Parser {
   index: int
   nextId: int
   failed: Option<Diagnostic>
+  // ternaryIds holds the ids of the block expressions that `c ? a : b` produced.
+  ternaryIds: Array<int>
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -79,7 +81,7 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
   if (lexed is Err(error)) {
     return Err(splitLexError(error))
   }
-  let parser = Parser { tokens: lexed.value, index: 0, nextId: firstId, failed: None }
+  let parser = Parser { tokens: lexed.value, index: 0, nextId: firstId, failed: None, ternaryIds: [] }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
     return Err(diagnostic)
@@ -1006,7 +1008,12 @@ function parseStmt(mutable parser: Parser): Stmt {
     advance(mutable parser)
     let value: Option<Expr> = None
     if (currentToken(parser).kind != TokenKind.TokNewline && !isAt(parser, "}")) {
-      value = Some(parseExpr(mutable parser))
+      const returned = parseExpr(mutable parser)
+      if (isTernary(parser, returned)) {
+        endStatement(mutable parser)
+        return convertReturnedTernary(parser, returned)
+      }
+      value = Some(returned)
     }
     endStatement(mutable parser)
     return Stmt.ReturnStmt(pos, value)
@@ -1120,8 +1127,66 @@ function parseIf(mutable parser: Parser): Stmt {
 
 // ---- Expressions
 
+// parseExpr parses an expression: a binary expression, or `cond ? a : b`,
+// which is looser than `||` and right-associative. It becomes a block
+// expression holding one if statement whose branches each return one value,
+// like an `if` in value position. Only the chosen branch runs.
 function parseExpr(mutable parser: Parser): Expr {
-  return parseBinary(mutable parser, 0)
+  const condition = parseBinary(mutable parser, 0)
+  if (!isAt(parser, "?")) {
+    return condition
+  }
+  const pos = getPos(advance(mutable parser))
+  const thenValue = parseExpr(mutable parser)
+  if (!isAt(parser, ":")) {
+    failHere(mutable parser, "a conditional expression needs `:` and a second value, as in `cond ? a : b`")
+    return createDummyExpr()
+  }
+  advance(mutable parser)
+  const elseValue = parseExpr(mutable parser)
+  const ifStatement = Stmt.IfStmt(pos, condition, createReturnBlock(thenValue), Some(Stmt.BlockStmt(createReturnBlock(elseValue))))
+  const ternaryId = newId(mutable parser)
+  Arrays.push(mutable parser.ternaryIds, ternaryId)
+  return Expr.BlockExpr(ternaryId, pos, Block { pos: pos, statements: [ifStatement] })
+}
+
+// isTernary tells whether the expression came from `c ? a : b`.
+function isTernary(parser: Parser, expression: Expr): bool {
+  if (expression is Expr.BlockExpr(expressionId, _, _)) {
+    for (const ternaryId of Arrays.values(parser.ternaryIds)) {
+      if (ternaryId == expressionId) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+// getReturnedValue is the value of the `return value` that a ternary branch holds.
+function getReturnedValue(block: Block): Expr {
+  if (block.statements[0] is Stmt.ReturnStmt(_, Some(value))) {
+    return value
+  }
+  return createDummyExpr()
+}
+
+// convertReturnedTernary turns `return c ? a : b` into `if (c) { return a }
+// else { return b }`, so a self call in a branch is a tail call. A branch that
+// is itself a ternary is turned the same way.
+function convertReturnedTernary(parser: Parser, value: Expr): Stmt {
+  if (!isTernary(parser, value)) {
+    return Stmt.ReturnStmt(getExpressionPos(value), Some(value))
+  }
+  if (value is Expr.BlockExpr(_, _, block)) {
+    if (block.statements[0] is Stmt.IfStmt(pos, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
+      const thenStatement = convertReturnedTernary(parser, getReturnedValue(thenBlock))
+      const elseStatement = convertReturnedTernary(parser, getReturnedValue(elseBlock))
+      const newThen = Block { pos: thenBlock.pos, statements: [thenStatement] }
+      const newElse = Block { pos: elseBlock.pos, statements: [elseStatement] }
+      return Stmt.IfStmt(pos, condition, newThen, Some(Stmt.BlockStmt(newElse)))
+    }
+  }
+  return Stmt.ReturnStmt(getExpressionPos(value), Some(value))
 }
 
 function parseBinary(mutable parser: Parser, level: int): Expr {
@@ -1617,7 +1682,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       for (const innerToken of Arrays.values(lexed.value)) {
         Arrays.push(mutable inner, Token { ...innerToken, line: token.line, column: token.column })
       }
-      let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None }
+      let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None, ternaryIds: [] }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
       if (innerParser.failed is Some(diagnostic)) {

@@ -1,7 +1,7 @@
 ---
 id: block-arrow-args
 title: "Block-body arrows with several statements as call arguments"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 59925
 owns:
   - compiler/testdata/block_arrow_args*
   - roadmaps/selfhost/nodes/block-arrow-args/**

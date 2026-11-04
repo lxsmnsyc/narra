@@ -1,7 +1,7 @@
 ---
 id: for-destructure
 title: Tuple and struct destructuring in for-of heads
-status: todo
+status: active
 priority: should
 type: feature
 story:

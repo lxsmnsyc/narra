@@ -1,5 +1,5 @@
 ---
-milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures]
+milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures, m12-spec-gaps]
 merge:
   mode: auto
   method: squash
@@ -99,3 +99,4 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 
 - Contract freeze after split-compiler (the diagnostic and builtin registry contracts).
 - selfhost-spike: the user reviews the list of missing features before the port starts.
+- SPEC gaps found by the maintainer 2026-11-04 (for-of destructuring) -> spec-gap-audit, for-destructure; enum payload cost -> option-inline

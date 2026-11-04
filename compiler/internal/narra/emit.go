@@ -39,6 +39,9 @@ type Emitter struct {
 	scopes   []*scopeFrame
 	loopTemp []int // frame depth when each enclosing loop started
 	fn       *FuncDecl
+	// tailScope is the outer scope of a function that jumps to its start on
+	// a self tail call. A closure body has another outer scope.
+	tailScope *scopeFrame
 	traits   *traitEmit   // trait functions used so far
 	closures *closureEmit // emit_closure.go
 }
@@ -299,8 +302,21 @@ func (e *Emitter) function(fd *FuncDecl) {
 	e.line("%s {", e.signature(fd))
 	e.indent++
 	e.funcScope(fd.Params)
+	e.tailScope = nil
+	if hasSelfTailCall(fd) {
+		// The function owns its parameters, so a jump can replace them.
+		e.tailScope = e.scopes[0]
+		for _, p := range fd.Params {
+			if !p.Mutable && needsRC(p.T) {
+				e.line("%s", retain(p.T, p.Local.CName))
+				e.addLocal(p.Local)
+			}
+		}
+		e.line("narra_tail:;")
+	}
 	e.blockInScope(fd.Body)
 	e.unwindAll()
+	e.tailScope = nil
 	if fd.ResultT != TVoid {
 		e.line("narra_panic(%s, \"function ended without returning a value\");", e.where(fd.Pos))
 		e.line("return (%s){0};", fd.ResultT.CName())

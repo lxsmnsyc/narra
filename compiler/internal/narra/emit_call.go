@@ -58,3 +58,99 @@ func (e *Emitter) argCode(x *CallExpr, i int) string {
 	code, _ := e.expr(x.Args[i].Value)
 	return code
 }
+
+// selfTailCall returns the call of `return f(...)` when f is the function
+// being emitted and the call can become a jump to the function start. A
+// function-type parameter keeps the plain call, because a closure made for
+// the call may live on the stack of the iteration that ends at the jump. A
+// mutable parameter must be passed on as it is.
+func selfTailCall(fn *FuncDecl, s *ReturnStmt) *CallExpr {
+	if fn == nil || s.Value == nil {
+		return nil
+	}
+	call, ok := s.Value.(*CallExpr)
+	if !ok || call.Func != fn || call.Builtin != "" || call.Ctor != nil || call.Trait != nil || call.FuncValue != nil || call.Distinct != nil {
+		return nil
+	}
+	if len(call.Args) != len(fn.Params) {
+		return nil
+	}
+	for i, p := range fn.Params {
+		if _, isFunc := p.T.(*FuncType); isFunc {
+			return nil
+		}
+		if p.Mutable {
+			id, isIdent := call.Args[i].Value.(*Ident)
+			if !isIdent || id.Local != p.Local {
+				return nil
+			}
+		}
+	}
+	return call
+}
+
+// hasSelfTailCall reports whether the body of fn has a self tail call.
+func hasSelfTailCall(fn *FuncDecl) bool {
+	return stmtHasTailCall(fn, fn.Body)
+}
+
+func stmtHasTailCall(fn *FuncDecl, s Stmt) bool {
+	switch s := s.(type) {
+	case *Block:
+		for _, inner := range s.Stmts {
+			if stmtHasTailCall(fn, inner) {
+				return true
+			}
+		}
+	case *ReturnStmt:
+		return selfTailCall(fn, s) != nil
+	case *IfStmt:
+		if stmtHasTailCall(fn, s.Then) {
+			return true
+		}
+		if s.Else != nil {
+			return stmtHasTailCall(fn, s.Else)
+		}
+	case *WhileStmt:
+		return stmtHasTailCall(fn, s.Body)
+	case *ForStmt:
+		return stmtHasTailCall(fn, s.Body)
+	case *ExprStmt:
+		if m, ok := s.Expr.(*MatchExpr); ok {
+			for _, arm := range m.Arms {
+				if arm.Block != nil && stmtHasTailCall(fn, arm.Block) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// tailJump emits a self tail call: the new arguments are evaluated and
+// owned, everything the function holds is released, then the parameters
+// take the new values and control jumps to the function start.
+func (e *Emitter) tailJump(call *CallExpr) {
+	e.beginStmt()
+	values := make([]string, len(call.Args))
+	for i, a := range call.Args {
+		p := e.fn.Params[i]
+		if p.Mutable {
+			continue
+		}
+		code, owned := e.expr(a.Value)
+		v := e.consume(code, owned, p.T)
+		if !needsRC(p.T) {
+			v = e.temp(p.T, v)
+		}
+		values[i] = v
+	}
+	e.unwindAll()
+	for i, p := range e.fn.Params {
+		if !p.Mutable {
+			e.line("%s = %s;", p.Local.CName, values[i])
+		}
+	}
+	e.line("goto narra_tail;")
+	e.frames = e.frames[:len(e.frames)-1]
+}

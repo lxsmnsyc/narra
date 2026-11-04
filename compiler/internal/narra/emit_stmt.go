@@ -54,6 +54,12 @@ func (e *Emitter) stmt(s Stmt) {
 		}
 		e.endStmt()
 	case *ReturnStmt:
+		if e.tailScope != nil && e.scopes[0] == e.tailScope {
+			if call := selfTailCall(e.fn, s); call != nil {
+				e.tailJump(call)
+				return
+			}
+		}
 		e.beginStmt()
 		if s.Value != nil {
 			code, owned := e.expr(s.Value)

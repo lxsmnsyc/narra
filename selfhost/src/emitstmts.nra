@@ -3,11 +3,11 @@
 // temporaries of their expressions do so here, as in Go, before and after
 // the call into a feature module.
 import * as Int from "std/int"
-import { Stmt, Block, Expr, Pattern } from "narrac/ast"
+import { Stmt, Block, Expr, Pattern, Arg, FuncDecl } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Ref, getExpressionId } from "narrac/check"
-import { cType } from "narrac/cnames"
-import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, typeOf, refOf, localRef, retainCode, releaseCode } from "narrac/emitstate"
+import { Ref, ProgramFunc, Checker, getExpressionId } from "narrac/check"
+import { cType, functionName } from "narrac/cnames"
+import { Emitter, EmitWalker, TempVar, reportUnsupported, writeLine, temp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, unwindAll, unwindLoop, typeOf, refOf, localOf, localName, localRef, needsRc, retainCode, releaseCode } from "narrac/emitstate"
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
@@ -118,6 +118,10 @@ function emitExpressionStatement<W: EmitWalker>(walker: W, mutable emitter: Emit
 }
 
 function emitReturn<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Option<Expr>) uses alloc {
+  if (selfTailArguments(emitter, value) is Some(arguments)) {
+    emitTailJump(walker, mutable emitter, arguments)
+    return
+  }
   beginStatement(mutable emitter)
   if (value is Some(returned)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
@@ -284,4 +288,185 @@ function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
     return
   }
   const _ = reportUnsupported(mutable emitter, "for loop", NODE)
+}
+
+// functionDeclaration is the declaration behind a program function.
+function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl {
+  return match (program) {
+    ProgramFunc.PlainFunc(funcIndex) => checker.functions[funcIndex].declaration
+    ProgramFunc.InstanceFunc(instance) => checker.functions[checker.instanceList[instance].funcIndex].declaration
+    ProgramFunc.ImplFunc(block, index) => checker.implementations[block].functions[index].declaration
+  }
+}
+
+// parameterTypes is the type of each parameter of a program function.
+function parameterTypes(checker: Checker, program: ProgramFunc): Array<Type> uses alloc {
+  if (program is ProgramFunc.InstanceFunc(instance)) {
+    return checker.instanceList[instance].parameters
+  }
+  let types: Array<Type> = []
+  for (const parameter of Arrays.values(functionDeclaration(checker, program).parameters)) {
+    Arrays.push(mutable types, checker.paramTypes[parameter.id])
+  }
+  return types
+}
+
+// callTarget is the program function a call node names, when it names one.
+function callTarget(emitter: Emitter, nodeId: int): Option<ProgramFunc> {
+  const ref = refOf(emitter, nodeId)
+  if (ref is Ref.Implementation(block, index)) {
+    return Some(ProgramFunc.ImplFunc(block, index))
+  }
+  if (ref is Ref.Function(funcIndex)) {
+    if (emitter.checker.bodies[emitter.body].instanceRefs[nodeId] is Some(instance)) {
+      return Some(ProgramFunc.InstanceFunc(instance))
+    }
+    if (Arrays.length(emitter.checker.functions[funcIndex].typeParameters) == 0) {
+      return Some(ProgramFunc.PlainFunc(funcIndex))
+    }
+  }
+  return None
+}
+
+// passesParameter is true when the argument is the mutable parameter at index, as it is.
+function passesParameter(emitter: Emitter, argument: Expr, index: int): bool {
+  if (argument is Expr.Ident(identId, _, _)) {
+    if (refOf(emitter, identId) is Ref.Local(localIndex)) {
+      return localIndex == index
+    }
+  }
+  return false
+}
+
+// selfTailArguments is the argument list of `return f(...)` when f is the
+// function being emitted and the call can become a jump to its start (Go's
+// selfTailCall). A function-type parameter keeps the plain call, because a
+// closure made for the call may live on the stack of the iteration that ends
+// at the jump. A mutable parameter must be passed on as it is.
+export function selfTailArguments(emitter: Emitter, value: Option<Expr>): Option<Array<Arg>> uses alloc {
+  if (emitter.tailProgram is Some(program)) {
+    if (value is Some(returned)) {
+      if (returned is Expr.CallExpr(nodeId, _, _, arguments)) {
+        if (callTarget(emitter, nodeId) is Some(target)) {
+          if (functionName(emitter.checker, target) == emitter.owner) {
+            const parameters = functionDeclaration(emitter.checker, program).parameters
+            const types = parameterTypes(emitter.checker, program)
+            if (Arrays.length(arguments) != Arrays.length(parameters)) {
+              return None
+            }
+            for (const index of Ranges.between(0, Arrays.length(parameters))) {
+              if (types[index] is Type.TFunc(_, _)) {
+                return None
+              }
+              if (parameters[index].isMutable) {
+                if (!passesParameter(emitter, arguments[index].value, index)) {
+                  return None
+                }
+              }
+            }
+            return Some(arguments)
+          }
+        }
+      }
+    }
+  }
+  return None
+}
+
+// hasSelfTailCall reports whether the block has a self tail call.
+export function hasSelfTailCall(emitter: Emitter, block: Block): bool uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    if (statementHasTailCall(emitter, statement)) {
+      return true
+    }
+  }
+  return false
+}
+
+function statementHasTailCall(emitter: Emitter, statement: Stmt): bool uses alloc {
+  if (statement is Stmt.BlockStmt(block)) {
+    return hasSelfTailCall(emitter, block)
+  }
+  if (statement is Stmt.ReturnStmt(_, value)) {
+    if (selfTailArguments(emitter, value) is Some(_)) {
+      return true
+    }
+    return false
+  }
+  if (statement is Stmt.IfStmt(_, _, then, orElse)) {
+    if (hasSelfTailCall(emitter, then)) {
+      return true
+    }
+    if (orElse is Some(other)) {
+      return statementHasTailCall(emitter, other)
+    }
+    return false
+  }
+  if (statement is Stmt.WhileStmt(_, _, whileBody)) {
+    return hasSelfTailCall(emitter, whileBody)
+  }
+  if (statement is Stmt.ForStmt(_, _, _, _, forBody)) {
+    return hasSelfTailCall(emitter, forBody)
+  }
+  if (statement is Stmt.ExprStmt(_, expression)) {
+    if (expression is Expr.MatchExpr(_, _, _, arms)) {
+      for (const arm of Arrays.values(arms)) {
+        if (arm.block is Some(armBlock)) {
+          if (hasSelfTailCall(emitter, armBlock)) {
+            return true
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+// openTailLoop makes the function own its parameters, so a jump can replace
+// them, and writes the jump target.
+export function openTailLoop(mutable emitter: Emitter, program: ProgramFunc) uses alloc {
+  const parameters = functionDeclaration(emitter.checker, program).parameters
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (!parameters[index].isMutable) {
+      const local = localOf(emitter, index)
+      const retainText = retainCode(emitter, local.localType, localName(local))
+      if (retainText != "") {
+        writeLine(mutable emitter, retainText)
+        addLocal(mutable emitter, index)
+      }
+    }
+  }
+  writeLine(mutable emitter, "narra_tail:;")
+}
+
+// emitTailJump evaluates the new arguments into owned temporaries, releases
+// everything the function holds, assigns the parameters and jumps to the start.
+function emitTailJump<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>) uses alloc {
+  beginStatement(mutable emitter)
+  if (emitter.tailProgram is Some(program)) {
+    const parameters = functionDeclaration(emitter.checker, program).parameters
+    const types = parameterTypes(emitter.checker, program)
+    let values: Array<string> = []
+    for (const index of Ranges.between(0, Arrays.length(arguments))) {
+      if (parameters[index].isMutable) {
+        Arrays.push(mutable values, "")
+      } else {
+        const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
+        let value = consume(mutable emitter, code.text, code.owned, types[index])
+        if (!needsRc(emitter, types[index])) {
+          value = temp(mutable emitter, types[index], value)
+        }
+        Arrays.push(mutable values, value)
+      }
+    }
+    unwindAll(mutable emitter)
+    for (const index of Ranges.between(0, Arrays.length(parameters))) {
+      if (!parameters[index].isMutable) {
+        const parameterName = localName(localOf(emitter, index))
+        writeLine(mutable emitter, `${parameterName} = ${values[index]};`)
+      }
+    }
+    writeLine(mutable emitter, "goto narra_tail;")
+  }
+  emitter.frames = withoutLastFrame(emitter.frames)
 }

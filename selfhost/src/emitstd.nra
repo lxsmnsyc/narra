@@ -1,20 +1,396 @@
 // Calls of the std modules other than array, range, box, map, option, result
-// and test (std_*.go). Stub from selfhost-emit-core; the owner is
-// selfhost-emit-std.
-import { Expr } from "narrac/ast"
-import { Emitter, Code, EmitWalker, reportUnsupported, hasWork } from "narrac/emitstate"
+// and test (std_string.go, std_char.go, std_int.go, std_float.go, std_env.go,
+// std_fs.go, std_process.go). The owner is selfhost-emit-std.
+//
+// Dispatch is by StdFunc.name. Most builtins are one runtime call and live in
+// the FIXED_CALLS table; the rest have a case of their own. The fallible ones
+// build an Option or Result through ioEither and ioResult.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Expr, Arg, Pos } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Ref, getExpressionId } from "narrac/check"
+import { cType } from "narrac/cnames"
+import { Emitter, Code, EmitWalker, reportUnsupported, writeLine, where, temp, ownedTemp, typeOf, refOf, underlyingType } from "narrac/emitstate"
+import * as Decls from "narrac/emitdecls"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 
 const NODE = "selfhost-emit-std"
 
-// reportStdWork is called by the driver while the program facts are missing,
-// so an input that needs this node is listed. selfhost-emit-std removes it.
+// FixedCall is a builtin whose C is one runtime call. withPos adds the panic
+// position as the last argument. A result is owned (an owned temporary),
+// temporary (a plain temporary) or neither (the call text itself).
+struct FixedCall {
+  name: string
+  call: string
+  withPos: bool
+  owned: bool
+  temporary: bool
+}
+
+const FIXED_CALLS: Array<FixedCall> = [
+  FixedCall { name: "Str.slice", call: "narra_str_slice", withPos: true, owned: true, temporary: false },
+  FixedCall { name: "Str.sliceFrom", call: "narra_str_slice_from", withPos: true, owned: true, temporary: false },
+  FixedCall { name: "Str.byteAt", call: "narra_str_byte_at", withPos: true, owned: false, temporary: false },
+  FixedCall { name: "Str.charAt", call: "narra_str_char_at", withPos: true, owned: false, temporary: false },
+  FixedCall { name: "Str.nextChar", call: "narra_str_next_char", withPos: true, owned: false, temporary: false },
+  FixedCall { name: "Str.charCount", call: "narra_str_char_count", withPos: false, owned: false, temporary: false },
+  FixedCall { name: "Str.trim", call: "narra_str_trim", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Str.startsWith", call: "narra_str_starts_with", withPos: false, owned: false, temporary: false },
+  FixedCall { name: "Str.endsWith", call: "narra_str_ends_with", withPos: false, owned: false, temporary: false },
+  FixedCall { name: "Str.contains", call: "narra_str_contains", withPos: false, owned: false, temporary: false },
+  FixedCall { name: "Str.replace", call: "narra_str_replace", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Str.builder", call: "narra_sb_new", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Str.build", call: "narra_sb_build", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Str.concat", call: "lstr_concat", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Str.fromChar", call: "lstr_from_char", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Str.repeat", call: "lstr_repeat", withPos: true, owned: true, temporary: false },
+  FixedCall { name: "Int.toString", call: "lstr_from_int", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Int.toHex", call: "narra_int_to_hex", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Int.abs", call: "narra_abs", withPos: true, owned: false, temporary: true },
+  FixedCall { name: "Float.toString", call: "lstr_from_f64", withPos: false, owned: true, temporary: false },
+  FixedCall { name: "Float.sqrt", call: "sqrt", withPos: false, owned: false, temporary: false },
+  FixedCall { name: "Float.truncate", call: "narra_truncate", withPos: true, owned: false, temporary: true },
+  FixedCall { name: "Fs.exists", call: "narra_fs_exists", withPos: false, owned: false, temporary: false },
+]
+
+// reportStdWork was the stub probe of the driver. The emitter is real now, so
+// it reports nothing; the call in emit.nra goes away with the next cleanup.
 export function reportStdWork(mutable emitter: Emitter): string uses alloc {
-  if (hasWork(emitter, NODE)) {
-    return `${reportUnsupported(mutable emitter, "std calls", NODE)}\n`
-  }
   return ""
 }
 
+function plain(text: string): Code {
+  return Code { text: text, owned: false }
+}
+
+function owned(text: string): Code {
+  return Code { text: text, owned: true }
+}
+
+// emitStdCall emits a call of a builtin of std/string, char, int, float, env,
+// fs or process.
 export function emitStdCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
-  return Code { text: reportUnsupported(mutable emitter, "std call", NODE), owned: false }
+  if (expression is Expr.CallExpr(nodeId, pos, _, arguments)) {
+    const ref = refOf(emitter, nodeId)
+    if (ref is Ref.Builtin(index)) {
+      const name = emitter.checker.registry.functions[index].name
+      return emitNamedCall(walker, mutable emitter, name, nodeId, pos, arguments)
+    }
+  }
+  return plain(reportUnsupported(mutable emitter, "std call without a builtin", NODE))
+}
+
+function emitNamedCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, nodeId: int, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+  for (const fixed of Arrays.values(FIXED_CALLS)) {
+    if (fixed.name == name) {
+      return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+    }
+  }
+  if (name == "Str.join") {
+    return emitJoin(walker, mutable emitter, arguments)
+  }
+  if (name == "Str.indexOf") {
+    return emitIndexOf(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Str.split") {
+    return emitSplit(walker, mutable emitter, nodeId, pos, arguments)
+  }
+  if (name == "Str.chars") {
+    return emitChars(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Str.append") {
+    return emitAppend(walker, mutable emitter, "narra_sb_append", arguments)
+  }
+  if (name == "Str.appendChar") {
+    return emitAppend(walker, mutable emitter, "narra_sb_append_char", arguments)
+  }
+  if (name == "Str.length") {
+    const text = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`(${text})->len`)
+  }
+  if (name == "Char.code") {
+    const character = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`((int64_t)${character})`)
+  }
+  if (name == "Char.fromCode") {
+    return emitFromCode(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Int.parse") {
+    return emitParse(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Float.fromInt") {
+    const number = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`((double)${number})`)
+  }
+  if (name == "Env.get") {
+    return emitEnvGet(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Env.args") {
+    return emitEnvArgs(mutable emitter, nodeId)
+  }
+  if (name == "Fs.readText") {
+    return emitReadText(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.writeText") {
+    return emitWriteText(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.listDir") {
+    return emitListDir(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Process.run") {
+    return emitProcessRun(walker, mutable emitter, nodeId, arguments)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}
+
+// argumentText is the C text of the n-th argument.
+function argumentText<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, number: int): string uses alloc {
+  const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[number].value)
+  return code.text
+}
+
+// rawTemp declares a temporary of a C type given as text.
+function rawTemp(mutable emitter: Emitter, cTypeText: string, code: string): string uses alloc {
+  emitter.tempCount = emitter.tempCount + 1
+  const name = `t${Int.toString(emitter.tempCount)}`
+  writeLine(mutable emitter, `${cTypeText} ${name} = ${code};`)
+  return name
+}
+
+// stringOut declares a string out-parameter for a runtime call.
+function stringOut(mutable emitter: Emitter): string uses alloc {
+  return temp(mutable emitter, Type.TStr, "NULL")
+}
+
+// arrayStruct is the C struct name of an array type: its C name without `*`.
+function arrayStruct(emitter: Emitter, type: Type): string uses alloc {
+  const name = cType(emitter.checker, type)
+  return Str.slice(name, 0, Str.length(name) - 1)
+}
+
+// findVariant is the index of the variant with the name, in the enum type.
+function findVariant(emitter: Emitter, enumType: Type, name: string): int {
+  const baseType = underlyingType(emitter, enumType)
+  if (baseType is Type.TEnum(enumIndex)) {
+    for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+      if (variant.name == name) {
+        return variant.index
+      }
+    }
+  }
+  return 0 - 1
+}
+
+// variantFieldType is the type of the first field of a variant.
+function variantFieldType(emitter: Emitter, enumType: Type, variant: int): Type {
+  const baseType = underlyingType(emitter, enumType)
+  if (baseType is Type.TEnum(enumIndex)) {
+    return emitter.checker.enums[enumIndex].variants[variant].fields[0].fieldType
+  }
+  return Type.TVoid
+}
+
+// ioEither sets an owned temporary of the enum type to variant `first` holding
+// firstValues when the condition holds, and to `second` otherwise. Each payload
+// is allocated only in the branch taken.
+function ioEither(mutable emitter: Emitter, enumType: Type, condition: string, first: int, firstValues: Array<string>, second: int, secondValues: Array<string>): Code uses alloc {
+  const enumName = cType(emitter.checker, enumType)
+  const result = ownedTemp(mutable emitter, enumType, `((${enumName}){0})`)
+  writeLine(mutable emitter, `if (${condition}) {`)
+  emitter.indent = emitter.indent + 1
+  const firstCode = Decls.enumAllocation(mutable emitter, enumType, first, firstValues)
+  writeLine(mutable emitter, `${result} = ${firstCode.text};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "} else {")
+  emitter.indent = emitter.indent + 1
+  const secondCode = Decls.enumAllocation(mutable emitter, enumType, second, secondValues)
+  writeLine(mutable emitter, `${result} = ${secondCode.text};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  return owned(result)
+}
+
+// ioResult builds a Result from the pieces a runtime function filled in: the
+// success value moves into Ok when `success` holds, the error into Err.
+function ioResult(mutable emitter: Emitter, resultType: Type, success: string, okValue: string, errorValue: string): Code uses alloc {
+  const okVariant = findVariant(emitter, resultType, "Ok")
+  const errorVariant = findVariant(emitter, resultType, "Err")
+  return ioEither(mutable emitter, resultType, success, okVariant, [okValue], errorVariant, [errorValue])
+}
+
+// emitFixedCall is a builtin that is one runtime call.
+function emitFixedCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, fixed: FixedCall, nodeId: int, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+  let texts: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    Arrays.push(mutable texts, argumentText(walker, mutable emitter, arguments, index))
+  }
+  if (fixed.withPos) {
+    Arrays.push(mutable texts, where(emitter, pos))
+  }
+  const callText = `${fixed.call}(${Str.join(texts, ", ")})`
+  const resultType = typeOf(emitter, nodeId)
+  if (fixed.owned) {
+    return owned(ownedTemp(mutable emitter, resultType, callText))
+  }
+  if (fixed.temporary) {
+    return plain(temp(mutable emitter, resultType, callText))
+  }
+  return plain(callText)
+}
+
+// Str.join(parts, separator)
+function emitJoin<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>): Code uses alloc {
+  const parts = argumentText(walker, mutable emitter, arguments, 0)
+  const separator = argumentText(walker, mutable emitter, arguments, 1)
+  return owned(ownedTemp(mutable emitter, Type.TStr, `narra_str_join(${parts}->items, ${parts}->len, ${separator})`))
+}
+
+// Str.indexOf(text, needle): Some(position) or None.
+function emitIndexOf<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const needle = argumentText(walker, mutable emitter, arguments, 1)
+  const position = temp(mutable emitter, Type.TInt, `narra_str_index_of(${text}, ${needle})`)
+  return ioEither(mutable emitter, optionType, `${position} >= 0`, some, [position], none, [])
+}
+
+// Str.split(text, separator)
+function emitSplit<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const separator = argumentText(walker, mutable emitter, arguments, 1)
+  const count = temp(mutable emitter, Type.TInt, "0")
+  const position = where(emitter, pos)
+  const pieces = rawTemp(mutable emitter, "lstr***", `narra_str_split(${text}, ${separator}, &${count}, ${position})`)
+  const structName = arrayStruct(emitter, arrayType)
+  const array = ownedTemp(mutable emitter, arrayType, `${structName}_new(${count})`)
+  writeLine(mutable emitter, `for (int64_t i = 0; i < ${count}; i++) ${array}->items[${array}->len++] = ${pieces}[i];`)
+  writeLine(mutable emitter, `narra_free(${pieces});`)
+  return owned(array)
+}
+
+// Str.chars(text)
+function emitChars<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const structName = arrayStruct(emitter, arrayType)
+  const array = ownedTemp(mutable emitter, arrayType, `${structName}_new(narra_str_char_count(${text}))`)
+  writeLine(mutable emitter, `for (int64_t i = 0; i < ${text}->len; i += narra_str_char_len(${text}, i)) ${array}->items[${array}->len++] = narra_str_decode(${text}, i);`)
+  return owned(array)
+}
+
+// Str.append and Str.appendChar: the builder is passed by pointer.
+function emitAppend<W: EmitWalker>(walker: W, mutable emitter: Emitter, call: string, arguments: Array<Arg>): Code uses alloc {
+  const value = argumentText(walker, mutable emitter, arguments, 1)
+  const builder = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  return plain(`${call}(${builder}, ${value})`)
+}
+
+// Char.fromCode(number): None for surrogates, negatives and values above 0x10FFFF.
+function emitFromCode<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const value = argumentText(walker, mutable emitter, arguments, 0)
+  const number = temp(mutable emitter, Type.TInt, value)
+  const character = temp(mutable emitter, Type.TChar, `(uint32_t)${number}`)
+  const condition = `${number} >= 0 && ${number} <= 0x10FFFF && !(${number} >= 0xD800 && ${number} <= 0xDFFF)`
+  return ioEither(mutable emitter, optionType, condition, some, [character], none, [])
+}
+
+// Int.parse(text, base): Ok(number) or Err(message).
+function emitParse<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const base = argumentText(walker, mutable emitter, arguments, 1)
+  const number = temp(mutable emitter, Type.TInt, "0")
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_int_parse(${text}, ${base}, &${number}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, number, bad)
+}
+
+// Env.get(name): Some(value) or None.
+function emitEnvGet<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const name = argumentText(walker, mutable emitter, arguments, 0)
+  const value = temp(mutable emitter, Type.TStr, `narra_env_get(${name})`)
+  return ioEither(mutable emitter, optionType, value, some, [value], none, [])
+}
+
+// Env.args()
+function emitEnvArgs(mutable emitter: Emitter, nodeId: int): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const structName = arrayStruct(emitter, arrayType)
+  const array = ownedTemp(mutable emitter, arrayType, `${structName}_new(narra_env_argc())`)
+  writeLine(mutable emitter, `for (int64_t i = 0, n = narra_env_argc(); i < n; i++) ${array}->items[${array}->len++] = narra_env_arg(i);`)
+  return owned(array)
+}
+
+// Fs.readText(path)
+function emitReadText<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const output = stringOut(mutable emitter)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_fs_read(${path}, &${output}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, output, bad)
+}
+
+// Fs.writeText(path, text): Ok holds the number of bytes written.
+function emitWriteText<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const text = argumentText(walker, mutable emitter, arguments, 1)
+  const written = temp(mutable emitter, Type.TInt, "0")
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_fs_write(${path}, ${text}, &${written}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, written, bad)
+}
+
+// Fs.listDir(path): the names move from the runtime's list into an array.
+function emitListDir<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const okVariant = findVariant(emitter, resultType, "Ok")
+  const arrayType = variantFieldType(emitter, resultType, okVariant)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  emitter.tempCount = emitter.tempCount + 1
+  const names = `t${Int.toString(emitter.tempCount)}`
+  writeLine(mutable emitter, `narra_fs_names ${names} = {0};`)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_fs_list(${path}, &${names}, &${bad})`)
+  const array = temp(mutable emitter, arrayType, "NULL")
+  const structName = arrayStruct(emitter, arrayType)
+  writeLine(mutable emitter, `if (${success}) {`)
+  writeLine(mutable emitter, `  ${array} = ${structName}_new(${names}.len);`)
+  writeLine(mutable emitter, `  for (int64_t i = 0; i < ${names}.len; i++) ${array}->items[${array}->len++] = ${names}.items[i];`)
+  writeLine(mutable emitter, `  free(${names}.items);`)
+  writeLine(mutable emitter, "}")
+  return ioResult(mutable emitter, resultType, success, array, bad)
+}
+
+// Process.run(command, args): Ok(#[exit code, stdout, stderr]) or Err(message).
+function emitProcessRun<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, arguments: Array<Arg>): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const okVariant = findVariant(emitter, resultType, "Ok")
+  const tupleType = variantFieldType(emitter, resultType, okVariant)
+  const command = argumentText(walker, mutable emitter, arguments, 0)
+  const argumentsType = typeOf(emitter, getExpressionId(arguments[1].value))
+  const argumentsValue = argumentText(walker, mutable emitter, arguments, 1)
+  const list = temp(mutable emitter, argumentsType, argumentsValue)
+  const code = temp(mutable emitter, Type.TInt, "0")
+  const output = stringOut(mutable emitter)
+  const errorOutput = stringOut(mutable emitter)
+  const bad = stringOut(mutable emitter)
+  const runCall = `narra_proc_run(${command}, ${list}->items, ${list}->len, &${code}, &${output}, &${errorOutput}, &${bad})`
+  const success = temp(mutable emitter, Type.TBool, runCall)
+  const tupleName = cType(emitter.checker, tupleType)
+  const value = `((${tupleName}){.f_0 = ${code}, .f_1 = ${output}, .f_2 = ${errorOutput}})`
+  return ioResult(mutable emitter, resultType, success, value, bad)
 }

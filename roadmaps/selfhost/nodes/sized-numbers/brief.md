@@ -39,4 +39,5 @@ SPEC lines 131 and 231-238 (F7). `i8` to `u64`, `i32`, `f32` and `bytes` are unk
 ## Notes
 
 - From the spec-gap audit (`roadmaps/selfhost/nodes/spec-gap-audit/outcome.md`): its findings table has the minimal program and the exact error.
+- SPEC.md line 534 names `Int.toI32(x)` as a placeholder (spec-fixes, PR #59). Choose the real conversion names and fix that line.
 - Outline. Break into a full brief when `plan.py refine` lists it.

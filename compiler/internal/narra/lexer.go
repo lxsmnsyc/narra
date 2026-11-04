@@ -55,7 +55,8 @@ type Lexer struct {
 	i      int
 	line   int
 	col    int
-	depth  int // nesting of ( and [, where line breaks never end a statement
+	depth  int   // nesting of ( and [, where line breaks never end a statement
+	saved  []int // depth outside each open {, where line breaks end statements again
 	last   *Token
 	tokens []Token
 }
@@ -196,6 +197,14 @@ func (lx *Lexer) run() error {
 					switch p {
 					case "(", "[", "#[":
 						lx.depth++
+					case "{":
+						lx.saved = append(lx.saved, lx.depth)
+						lx.depth = 0
+					case "}":
+						if n := len(lx.saved); n > 0 {
+							lx.depth = lx.saved[n-1]
+							lx.saved = lx.saved[:n-1]
+						}
 					case ")", "]":
 						if lx.depth > 0 {
 							lx.depth--

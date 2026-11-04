@@ -1,52 +1,378 @@
-// Map types, functions, literals, reads, writes and loops (std_map.go).
-// Stub from selfhost-emit-core; the owner is selfhost-emit-maps. The section
-// stubs report only when the program has a Map type.
+// Map types, functions, literals, reads, writes and loops (std_map.go,
+// emitter half), ported by selfhost-emit-maps.
+//
+// The C for one map type is the template RUNTIME_MAP_H with the @...@ names
+// filled in. The key's equality and hash come from emittraits.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
 import { Expr, Stmt } from "narrac/ast"
-import { Emitter, Code, EmitWalker, reportUnsupported, hasWork } from "narrac/emitstate"
+import { Type } from "narrac/types"
+import { Ref, getExpressionId, findBodySlot } from "narrac/check"
+import { typeId, cType } from "narrac/cnames"
+import { Emitter, Code, TempVar, EmitWalker, reportUnsupported, writeLine, temp, ownedTemp, consume, typeOf, refOf, localRef, localOf, underlyingType, retainCode, releaseCode, addLocal, pushScope, popScope } from "narrac/emitstate"
+import { enumAllocation } from "narrac/emitdecls"
+import { useEq, useHash } from "narrac/emittraits"
+import { RUNTIME_MAP_H } from "narrac/runtimetext"
 
 const NODE = "selfhost-emit-maps"
 
-function sectionMarker(mutable emitter: Emitter, construct: string): string uses alloc {
-  if (hasWork(emitter, NODE)) {
-    return `${reportUnsupported(mutable emitter, construct, NODE)}\n`
+struct MapItem {
+  key: string
+  type: Type
+}
+
+// mergeSort orders items by key in byte order. It is stable.
+function mergeSort(items: Array<MapItem>): Array<MapItem> uses alloc {
+  const count = Arrays.length(items)
+  if (count < 2) {
+    return items
   }
-  return ""
+  const middle = count / 2
+  let left: Array<MapItem> = []
+  let right: Array<MapItem> = []
+  for (const index of Ranges.between(0, count)) {
+    if (index < middle) {
+      Arrays.push(mutable left, items[index])
+    } else {
+      Arrays.push(mutable right, items[index])
+    }
+  }
+  const sortedLeft = mergeSort(left)
+  const sortedRight = mergeSort(right)
+  let merged: Array<MapItem> = []
+  let leftIndex = 0
+  let rightIndex = 0
+  while (leftIndex < Arrays.length(sortedLeft) || rightIndex < Arrays.length(sortedRight)) {
+    if (rightIndex >= Arrays.length(sortedRight) || (leftIndex < Arrays.length(sortedLeft) && sortedLeft[leftIndex].key <= sortedRight[rightIndex].key)) {
+      Arrays.push(mutable merged, sortedLeft[leftIndex])
+      leftIndex = leftIndex + 1
+    } else {
+      Arrays.push(mutable merged, sortedRight[rightIndex])
+      rightIndex = rightIndex + 1
+    }
+  }
+  return merged
+}
+
+// mapTypes lists the program's map types in Go's order (Program.Maps): sorted
+// by "<key id>|<value id>", without types that hold a type parameter.
+function mapTypes(emitter: Emitter): Array<Type> uses alloc {
+  let items: Array<MapItem> = []
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (composite is Type.TMap(keyType, valueType)) {
+      const sortKey = `${typeId(emitter.checker, keyType)}|${typeId(emitter.checker, valueType)}`
+      Arrays.push(mutable items, MapItem { key: sortKey, type: composite })
+    }
+  }
+  let sorted: Array<Type> = []
+  for (const item of Arrays.values(mergeSort(items))) {
+    Arrays.push(mutable sorted, item.type)
+  }
+  return sorted
+}
+
+// containerName is the C struct name of an array or map type (its C type
+// without "*").
+function containerName(emitter: Emitter, type: Type): string uses alloc {
+  const name = cType(emitter.checker, type)
+  return Str.slice(name, 0, Str.length(name) - 1)
+}
+
+function getKeyType(type: Type): Type {
+  return match (type) {
+    Type.TMap(keyType, _) => keyType
+    _ => type
+  }
+}
+
+function getValueType(type: Type): Type {
+  return match (type) {
+    Type.TMap(_, valueType) => valueType
+    _ => type
+  }
 }
 
 export function emitMapTypedefs(mutable emitter: Emitter): string uses alloc {
-  return sectionMarker(mutable emitter, "map types")
+  let builder = Str.builder()
+  for (const type of Arrays.values(mapTypes(emitter))) {
+    const name = containerName(emitter, type)
+    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+  }
+  return Str.build(builder)
 }
 
 export function emitMapStructs(mutable emitter: Emitter): string uses alloc {
-  return sectionMarker(mutable emitter, "map structs")
+  let builder = Str.builder()
+  for (const type of Arrays.values(mapTypes(emitter))) {
+    const keyName = cType(emitter.checker, getKeyType(type))
+    const valueName = cType(emitter.checker, getValueType(type))
+    Str.append(mutable builder, `struct ${containerName(emitter, type)} { int64_t rc; int64_t len; int64_t used; int64_t cap; int64_t mask; ${keyName}* keys; ${valueName}* vals; uint64_t* hashes; uint8_t* alive; int64_t* idx; };\n`)
+  }
+  return Str.build(builder)
 }
 
+// emitMapPrototypes declares what the reference-counting functions of other
+// types call.
 export function emitMapPrototypes(mutable emitter: Emitter): string uses alloc {
-  return sectionMarker(mutable emitter, "map prototypes")
+  let builder = Str.builder()
+  for (const type of Arrays.values(mapTypes(emitter))) {
+    const name = containerName(emitter, type)
+    const keyName = cType(emitter.checker, getKeyType(type))
+    const valueName = cType(emitter.checker, getValueType(type))
+    Str.append(mutable builder, `static void ${name}_retain(${name}* a);\nstatic void ${name}_release(${name}* a);\n`)
+    Str.append(mutable builder, `static ${name}* ${name}_new(int64_t n);\nstatic int64_t ${name}_lookup(${name}* m, ${keyName} k);\n`)
+    Str.append(mutable builder, `static void ${name}_set(${name}** p, ${keyName} k, ${valueName} v);\nstatic bool ${name}_remove(${name}** p, ${keyName} k);\n`)
+  }
+  return Str.build(builder)
 }
 
 // emitMapFunctions runs before the constants, because it registers trait
 // needs; its text goes after the trait functions.
 export function emitMapFunctions(mutable emitter: Emitter): string uses alloc {
-  return sectionMarker(mutable emitter, "map functions")
+  let builder = Str.builder()
+  for (const type of Arrays.values(mapTypes(emitter))) {
+    Str.append(mutable builder, mapFunctions(mutable emitter, type))
+  }
+  return Str.build(builder)
 }
 
+// mapFunctions fills the template for one map type.
+function mapFunctions(mutable emitter: Emitter, type: Type): string uses alloc {
+  const keyType = getKeyType(type)
+  const valueType = getValueType(type)
+  // The key's eq and hash are asked for in this order, as Go does.
+  const equalsName = useEq(mutable emitter, keyType)
+  const hashName = useHash(mutable emitter, keyType)
+  let text = RUNTIME_MAP_H
+  text = Str.replace(text, "@M@", containerName(emitter, type))
+  text = Str.replace(text, "@K@", cType(emitter.checker, keyType))
+  text = Str.replace(text, "@V@", cType(emitter.checker, valueType))
+  text = Str.replace(text, "@EQ@", equalsName)
+  text = Str.replace(text, "@HASH@", hashName)
+  text = Str.replace(text, "@REL_KEY_I@", releaseCode(emitter, keyType, "m->keys[i]"))
+  text = Str.replace(text, "@REL_VAL_I@", releaseCode(emitter, valueType, "m->vals[i]"))
+  text = Str.replace(text, "@RET_KEY_C@", retainCode(emitter, keyType, "c->keys[i]"))
+  text = Str.replace(text, "@RET_VAL_C@", retainCode(emitter, valueType, "c->vals[i]"))
+  text = Str.replace(text, "@REL_KEY_ARG@", releaseCode(emitter, keyType, "k"))
+  text = Str.replace(text, "@REL_KEY_E@", releaseCode(emitter, keyType, "m->keys[e]"))
+  text = Str.replace(text, "@REL_VAL_E@", releaseCode(emitter, valueType, "m->vals[e]"))
+  return `\n${text}`
+}
+
+// emitMapLiteral emits Map { k: v, ... }.
 export function emitMapLiteral<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  if (expression is Expr.MapLit(nodeId, _, _, keys, values)) {
+    const mapType = typeOf(emitter, nodeId)
+    const name = containerName(emitter, mapType)
+    const map = ownedTemp(mutable emitter, mapType, `${name}_new(${Int.toString(Arrays.length(keys))})`)
+    for (const index of Ranges.between(0, Arrays.length(keys))) {
+      const keyCode = EmitWalker.emitExpression(walker, mutable emitter, keys[index])
+      const key = consume(mutable emitter, keyCode.text, keyCode.owned, getKeyType(mapType))
+      const valueCode = EmitWalker.emitExpression(walker, mutable emitter, values[index])
+      const value = consume(mutable emitter, valueCode.text, valueCode.owned, getValueType(mapType))
+      writeLine(mutable emitter, `${name}_set(&${map}, ${key}, ${value});`)
+    }
+    return Code { text: map, owned: true }
+  }
   return Code { text: reportUnsupported(mutable emitter, "map literal", NODE), owned: false }
 }
 
+// variantPosition is the position of the named variant in the enum's variants.
+function variantPosition(emitter: Emitter, enumType: Type, name: string): int {
+  if (underlyingType(emitter, enumType) is Type.TEnum(enumIndex)) {
+    const variants = emitter.checker.enums[enumIndex].variants
+    for (const index of Ranges.between(0, Arrays.length(variants))) {
+      if (variants[index].name == name) {
+        return index
+      }
+    }
+  }
+  return 0 - 1
+}
+
+// findOptionEnumIndex is the index into checker.enums of an Option type.
+function findOptionEnumIndex(emitter: Emitter, optionType: Type): int {
+  return match (underlyingType(emitter, optionType)) {
+    Type.TEnum(enumIndex) => enumIndex
+    _ => 0
+  }
+}
+
+// emitMapGet emits m[k] as an Option<V>.
 export function emitMapGet<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  if (expression is Expr.IndexExpr(nodeId, _, target, index)) {
+    const mapType = typeOf(emitter, getExpressionId(target))
+    const optionType = typeOf(emitter, nodeId)
+    const name = containerName(emitter, mapType)
+    const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
+    const map = temp(mutable emitter, mapType, targetCode.text)
+    const keyCode = EmitWalker.emitExpression(walker, mutable emitter, index)
+    const entry = temp(mutable emitter, Type.TInt, `${name}_lookup(${map}, ${keyCode.text})`)
+    emitter.tempCount = emitter.tempCount + 1
+    const result = `t${Int.toString(emitter.tempCount)}`
+    const optionName = cType(emitter.checker, optionType)
+    writeLine(mutable emitter, `${optionName} ${result};`)
+    writeLine(mutable emitter, `if (${entry} >= 0) {`)
+    emitter.indent = emitter.indent + 1
+    const valueType = getValueType(mapType)
+    const value = temp(mutable emitter, valueType, `${map}->vals[${entry}]`)
+    const retainText = retainCode(emitter, valueType, value)
+    if (retainText != "") {
+      writeLine(mutable emitter, retainText)
+    }
+    const somePosition = variantPosition(emitter, optionType, "Some")
+    const some = enumAllocation(mutable emitter, optionType, somePosition, [value])
+    writeLine(mutable emitter, `${result} = ${some.text};`)
+    emitter.indent = emitter.indent - 1
+    writeLine(mutable emitter, "} else {")
+    emitter.indent = emitter.indent + 1
+    const noneVariant = emitter.checker.enums[findOptionEnumIndex(emitter, optionType)].variants[variantPosition(emitter, optionType, "None")]
+    writeLine(mutable emitter, `${result} = (${optionName}){.tag = ${Int.toString(noneVariant.index)}};`)
+    emitter.indent = emitter.indent - 1
+    writeLine(mutable emitter, "}")
+    // The statement releases the Option at its end.
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name: result, tempType: optionType })
+    return Code { text: result, owned: true }
+  }
   return Code { text: reportUnsupported(mutable emitter, "map index", NODE), owned: false }
 }
 
+// emitMapBuiltin emits Map.size, Map.remove, Map.keys and Map.entries.
 export function emitMapBuiltin<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  if (expression is Expr.CallExpr(nodeId, _, _, arguments)) {
+    if (refOf(emitter, nodeId) is Ref.Builtin(builtinIndex)) {
+      const name = emitter.checker.registry.functions[builtinIndex].name
+      const mapType = typeOf(emitter, getExpressionId(arguments[0].value))
+      if (name == "Map.size") {
+        const map = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+        return Code { text: `(${map.text})->len`, owned: false }
+      }
+      if (name == "Map.remove") {
+        const key = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+        const pointer = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+        const removeName = containerName(emitter, mapType)
+        const removed = temp(mutable emitter, Type.TBool, `${removeName}_remove(${pointer}, ${key.text})`)
+        return Code { text: removed, owned: false }
+      }
+      if (name == "Map.keys" || name == "Map.entries") {
+        return emitMapToArray(walker, mutable emitter, nodeId, arguments[0].value, mapType, name == "Map.entries")
+      }
+    }
+  }
   return Code { text: reportUnsupported(mutable emitter, "map builtin", NODE), owned: false }
 }
 
+// entryValue is the C code for entry `position` of `map`: the key, or a
+// #[key, value] tuple.
+function entryValue(emitter: Emitter, map: string, position: string, elementType: Type, entries: bool): string uses alloc {
+  if (!entries) {
+    return `${map}->keys[${position}]`
+  }
+  const tupleName = cType(emitter.checker, elementType)
+  return `((${tupleName}){.f_0 = ${map}->keys[${position}], .f_1 = ${map}->vals[${position}]})`
+}
+
+// emitMapToArray emits Map.keys(m) or Map.entries(m) outside a loop.
+function emitMapToArray<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, source: Expr, mapType: Type, entries: bool): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const elementType = match (arrayType) {
+    Type.TArray(element) => element
+    _ => arrayType
+  }
+  const sourceCode = EmitWalker.emitExpression(walker, mutable emitter, source)
+  const map = temp(mutable emitter, mapType, sourceCode.text)
+  const arrayName = containerName(emitter, arrayType)
+  const array = ownedTemp(mutable emitter, arrayType, `${arrayName}_new(${map}->len)`)
+  emitter.tempCount = emitter.tempCount + 1
+  const position = `i${Int.toString(emitter.tempCount)}`
+  writeLine(mutable emitter, `for (int64_t ${position} = 0; ${position} < ${map}->used; ${position}++) {`)
+  emitter.indent = emitter.indent + 1
+  writeLine(mutable emitter, `if (!${map}->alive[${position}]) continue;`)
+  const entryCode = entryValue(emitter, map, position, elementType, entries)
+  const value = temp(mutable emitter, elementType, entryCode)
+  const retainText = retainCode(emitter, elementType, value)
+  if (retainText != "") {
+    writeLine(mutable emitter, retainText)
+  }
+  writeLine(mutable emitter, `${array}->items[${array}->len++] = ${value};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  return Code { text: array, owned: true }
+}
+
+// emitMapSet emits m[k] = v. The caller wraps the statement.
 export function emitMapSet<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt) uses alloc {
+  if (statement is Stmt.AssignStmt(_, target, value)) {
+    if (target is Expr.IndexExpr(_, _, mapTarget, index)) {
+      const mapType = typeOf(emitter, getExpressionId(mapTarget))
+      const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
+      const consumedValue = consume(mutable emitter, valueCode.text, valueCode.owned, getValueType(mapType))
+      const keyCode = EmitWalker.emitExpression(walker, mutable emitter, index)
+      const consumedKey = consume(mutable emitter, keyCode.text, keyCode.owned, getKeyType(mapType))
+      const pointer = EmitWalker.emitLvaluePointer(walker, mutable emitter, mapTarget)
+      const setName = containerName(emitter, mapType)
+      writeLine(mutable emitter, `${setName}_set(${pointer}, ${consumedKey}, ${consumedValue});`)
+      return
+    }
+  }
   const _ = reportUnsupported(mutable emitter, "map assignment", NODE)
 }
 
+// emitMapFor emits `for (const x of Map.keys(m))` and Map.entries. The caller
+// wraps the statement.
 export function emitMapFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt) uses alloc {
+  if (statement is Stmt.ForStmt(nodeId, _, _, iterable, body)) {
+    if (iterable is Expr.CallExpr(callId, _, _, arguments)) {
+      if (refOf(emitter, callId) is Ref.Builtin(builtinIndex)) {
+        const entries = emitter.checker.registry.functions[builtinIndex].name == "Map.entries"
+        const source = arguments[0].value
+        const mapType = typeOf(emitter, getExpressionId(source))
+        const code = EmitWalker.emitExpression(walker, mutable emitter, source)
+        const map = consume(mutable emitter, code.text, code.owned, mapType)
+        // The loop owns the map until the statement ends.
+        const top = Arrays.length(emitter.frames) - 1
+        Arrays.push(mutable emitter.frames[top], TempVar { name: map, tempType: mapType })
+        emitter.tempCount = emitter.tempCount + 1
+        const position = `i${Int.toString(emitter.tempCount)}`
+        writeLine(mutable emitter, `for (int64_t ${position} = 0; ${position} < ${map}->used; ${position}++) {`)
+        emitter.indent = emitter.indent + 1
+        writeLine(mutable emitter, `if (!${map}->alive[${position}]) continue;`)
+        const depth = Arrays.length(emitter.frames)
+        Arrays.push(mutable emitter.loopFrames, depth)
+        pushScope(mutable emitter, true)
+        const info = emitter.checker.bodies[emitter.body]
+        const localIndex = info.declared[findBodySlot(info, nodeId)]
+        const variable = localRef(emitter, localIndex)
+        const localType = localOf(emitter, localIndex).localType
+        const value = entryValue(emitter, map, position, localType, entries)
+        const localName = cType(emitter.checker, localType)
+        writeLine(mutable emitter, `${localName} ${variable} = ${value};`)
+        const retainText = retainCode(emitter, localType, variable)
+        if (retainText != "") {
+          writeLine(mutable emitter, retainText)
+        }
+        addLocal(mutable emitter, localIndex)
+        EmitWalker.emitBlockInScope(walker, mutable emitter, body)
+        popScope(mutable emitter)
+        popLastLoopFrame(mutable emitter)
+        emitter.indent = emitter.indent - 1
+        writeLine(mutable emitter, "}")
+        return
+      }
+    }
+  }
   const _ = reportUnsupported(mutable emitter, "map loop", NODE)
+}
+
+function popLastLoopFrame(mutable emitter: Emitter) uses alloc {
+  let kept: Array<int> = []
+  for (const index of Ranges.between(0, Arrays.length(emitter.loopFrames) - 1)) {
+    Arrays.push(mutable kept, emitter.loopFrames[index])
+  }
+  emitter.loopFrames = kept
 }

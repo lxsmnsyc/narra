@@ -190,6 +190,9 @@ func TestMain(m *testing.M) {
 	if selfhostBuild.dir != "" {
 		os.RemoveAll(selfhostBuild.dir)
 	}
+	if stage2Build.dir != "" {
+		os.RemoveAll(stage2Build.dir)
+	}
 	os.Exit(code)
 }
 

@@ -437,7 +437,12 @@ type blockInfo struct {
 // variable. Each return stores its value, releases what the block holds and
 // jumps to the label after the block.
 func (e *Emitter) blockExpr(x *BlockExpr) (string, bool) {
-	t := x.Type()
+	return e.blockBody(x.Block, x.Type())
+}
+
+// blockBody emits a block as a block expression of type t. A match arm with a
+// block in value position uses it too.
+func (e *Emitter) blockBody(block *Block, t Type) (string, bool) {
 	e.tempN++
 	info := &blockInfo{result: fmt.Sprintf("r%d", e.tempN), t: t, label: fmt.Sprintf("narra_block_%d", e.tempN), frames: len(e.frames), scopes: len(e.scopes)}
 	e.line("%s %s;", t.CName(), info.result)
@@ -445,7 +450,7 @@ func (e *Emitter) blockExpr(x *BlockExpr) (string, bool) {
 	e.indent++
 	e.blocks = append(e.blocks, info)
 	e.pushScope(false)
-	e.blockInScope(x.Block)
+	e.blockInScope(block)
 	e.popScope()
 	e.blocks = e.blocks[:len(e.blocks)-1]
 	e.indent--

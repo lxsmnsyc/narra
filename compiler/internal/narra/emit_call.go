@@ -183,7 +183,13 @@ func (e *Emitter) returnMatch(m *MatchExpr) {
 			return
 		}
 		e.beginStmt()
-		code, owned := e.expr(arm.Body)
+		var code string
+		var owned bool
+		if arm.Block != nil {
+			code, owned = e.blockBody(arm.Block, t)
+		} else {
+			code, owned = e.expr(arm.Body)
+		}
 		v := e.consume(code, owned, t)
 		r := e.temp(t, v)
 		e.unwindAll()

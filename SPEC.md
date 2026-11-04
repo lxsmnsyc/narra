@@ -121,6 +121,33 @@ for (const i of Ranges.upTo(Arrays.length(items))) {
 - There is no C-style `for (init; cond; step)`, no `do ... while`, no `switch` and no `goto`.
 - `match` replaces `switch` (section 4).
 
+#### Block expressions and `if` as a value
+
+A block has two forms, told apart by position (D75). A block in statement position is a block statement. A block in value position is a block expression: after `=`, as a call argument, as an operand, as a `return` value, inside `${...}`, or as an element of an array, tuple or struct literal.
+
+```ts
+const label = {
+  const name = lookup(code)
+  if (name == "") {
+    return "unknown"
+  }
+  return name
+}
+```
+
+- **The value comes from `return`.** Narra never returns implicitly, so the last expression of a block is not its value.
+- **`return` stops at the nearest block expression**, as at a function body. A `return` anywhere inside it, also in nested block statements, loops and `match` arms, ends the block expression and not the function. A block expression cannot return from the enclosing function.
+- **`break` and `continue` cannot leave a block expression.** A `break` or `continue` to a loop outside it is a compile error (E0932). Loops inside the block work as usual.
+- **Every path must end in `return value`** (E0931), and every returned value has the same type. A bare `return` is an error. A block expression with no `return` at all, such as `const o = { a }`, is a compile error (E0933) that points to struct literals.
+- A `{` that starts `{}`, `{ ...s, f: v }` or `{ name: value }` in value position is still a struct literal whose type comes from context. The exception is `{ name: for` and `{ name: while`, where `name:` labels a loop and the `{` starts a block expression.
+- `if (c) { ... } else { ... }` in value position is an expression whose branches are block expressions, each ending in `return`. The `else` branch is required, and `else if` chains are allowed. At the start of a statement `if` is still a statement.
+
+```ts
+const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" } else { return "positive" }
+```
+
+- A self call in a `return` inside a block expression is not a tail call of the function.
+
 ### Literals
 
 - **Strings** use double quotes: `"text"`. They have no interpolation.
@@ -179,6 +206,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
 | Calling an async function without `await` starts it in the background | A compile error. Use `await f()`, or start a task with `Async.spawn` (section 8) |
+| `const o = { a }` builds an object | Not present. `{ a }` in value position is a block expression, which needs `return` (E0933). Write a struct literal: `Point { x: 1 }` |
 | `Promise<T>` | Not present. `Async.spawn` returns a `Task<T>` |
 | `async function*` | Not present in the first version |
 | A `function` declared inside a function | A compile error (E0930). Declare it at module level as a private function and pass the enclosing values as arguments |

@@ -635,6 +635,8 @@ func usesLocal(e Expr, l *Local) bool {
 			}
 		case *MatchExpr:
 			walk(e.Subject)
+		case *BlockExpr:
+			eachBlockExpr(e.Block, walk)
 		}
 	}
 	walk(e)

@@ -203,6 +203,8 @@ export trait Walker {
   // a bare name, and the result is None when no enum has the constructor.
   function checkCall(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>, want: Option<Type>): Type uses alloc
   function checkConstructorName(walker: Self, mutable checker: Checker, nodeId: int, pos: Pos, enumName: string, name: string, want: Option<Type>): Option<Type> uses alloc
+  // A block in value position (narrac/stmts).
+  function checkBlockExpression(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
   // Arrow functions (narrac/closures).
   function checkArrow(walker: Self, mutable checker: Checker, expression: Expr, want: Option<Type>): Type uses alloc
   // Std functions with a named check (narrac/stdcalls).
@@ -228,6 +230,15 @@ export struct CheckError {
   file: string
   pos: Pos
   message: string
+}
+
+// A block expression being checked (Go's blockCtx): the type its returns
+// agree on, and the loops and labels outside it, which it cannot leave.
+export struct BlockContext {
+  result: Option<Type> // the expected type, or the type of the first return
+  returns: int
+  loops: int
+  labels: Array<string>
 }
 
 export struct Checker {
@@ -312,6 +323,8 @@ export struct Checker {
   forSourceColumn: int = 0
   // The labels of the enclosing loops, innermost last.
   labels: Array<string> = []
+  // The block expressions being checked, innermost last.
+  blocks: Array<BlockContext> = []
   inTest: bool = false
   // The id of the target of the assignment being checked, or -1 (Go's
   // c.assigning): a Map index there is a write.
@@ -640,6 +653,7 @@ export struct BodyState {
   resultType: Type
   loops: int
   labels: Array<string>
+  blocks: Array<BlockContext>
   environment: Map<string, Type>
 }
 
@@ -670,7 +684,7 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   }
 
   // Save the outer body's state and start the new one.
-  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, labels: checker.labels, environment: checker.environment }
+  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, labels: checker.labels, blocks: checker.blocks, environment: checker.environment }
   const module = checker.scopes[checker.current].path
   const info = BodyInfo { module: module, kind: kind, name: name, typeArguments: typeArguments, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1, instanceRefs: Map {}, traitSelf: Map {} }
   Arrays.push(mutable checker.bodies, info)
@@ -680,6 +694,7 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   checker.resultType = resultType
   checker.loops = 0
   checker.labels = []
+  checker.blocks = []
   checker.environment = environment
   return saved
 }
@@ -692,6 +707,7 @@ export function finishBody(mutable checker: Checker, saved: BodyState) {
   checker.resultType = saved.resultType
   checker.loops = saved.loops
   checker.labels = saved.labels
+  checker.blocks = saved.blocks
   checker.environment = saved.environment
 }
 
@@ -828,6 +844,7 @@ export function getExpressionId(expression: Expr): int {
     Expr.StructLit(nodeId, _, _, _, _, _) => nodeId
     Expr.ArrayLit(nodeId, _, _, _) => nodeId
     Expr.MatchExpr(nodeId, _, _, _) => nodeId
+    Expr.BlockExpr(nodeId, _, _) => nodeId
     Expr.ArrowExpr(nodeId, _, _, _, _, _) => nodeId
   }
 }
@@ -851,6 +868,7 @@ export function getExpressionPos(expression: Expr): Pos {
     Expr.StructLit(_, pos, _, _, _, _) => pos
     Expr.ArrayLit(_, pos, _, _) => pos
     Expr.MatchExpr(_, pos, _, _) => pos
+    Expr.BlockExpr(_, pos, _) => pos
     Expr.ArrowExpr(_, pos, _, _, _, _) => pos
   }
 }

@@ -131,6 +131,8 @@ func cloneExpr(e Expr) Expr {
 		return c
 	case *IsExpr:
 		return &IsExpr{exprBase: exprBase{P: e.P}, Subject: cloneExpr(e.Subject), Pattern: clonePattern(e.Pattern)}
+	case *BlockExpr:
+		return &BlockExpr{exprBase: exprBase{P: e.P}, Block: cloneBlock(e.Block)}
 	case *ArrowExpr:
 		return cloneArrow(e)
 	}

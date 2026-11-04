@@ -60,11 +60,11 @@ func (c *Checker) constType(d *ConstDecl, pos Pos) Type {
 	d.state = constBusy
 	// The value is checked as a body of its own module, outside any function.
 	saved := c.enter(c.mods[d.Module])
-	fn, sc, env, loops, labels := c.fn, c.scope, c.env, c.loops, c.labels
+	fn, sc, env, loops, labels, blocks := c.fn, c.scope, c.env, c.loops, c.labels, c.blocks
 	c.fn = &FuncDecl{Name: "const " + d.Name, ResultT: TVoid, Module: d.Module}
 	c.logBody(checkedBody{kind: "const", name: d.Name, expr: d.Value})
 	c.scope = &scope{names: map[string]*Local{}}
-	c.env, c.loops, c.labels = nil, 0, nil
+	c.env, c.loops, c.labels, c.blocks = nil, 0, nil, nil
 
 	var want Type
 	if d.Type != nil {
@@ -87,7 +87,7 @@ func (c *Checker) constType(d *ConstDecl, pos Pos) Type {
 	d.state = constDone
 	c.prog.Consts = append(c.prog.Consts, d)
 
-	c.fn, c.scope, c.env, c.loops, c.labels = fn, sc, env, loops, labels
+	c.fn, c.scope, c.env, c.loops, c.labels, c.blocks = fn, sc, env, loops, labels, blocks
 	c.enter(saved)
 	return t
 }
@@ -237,6 +237,8 @@ func (c *Checker) checkConstValue(d *ConstDecl, x Expr) bool {
 		return bad("a closure")
 	case *MatchExpr:
 		return bad("a match")
+	case *BlockExpr:
+		return bad("a block expression")
 	case *IsExpr:
 		return bad("an `is` test")
 	case *IndexExpr:

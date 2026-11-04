@@ -79,6 +79,18 @@ export struct Emitter {
   tailCalls: Array<int> = []
   // The enclosing loops, parallel to loopFrames (Go: loops).
   loopInfos: Array<LoopInfo> = []
+  // The block expressions being emitted, innermost last (Go: blocks).
+  blocks: Array<BlockInfo> = []
+}
+
+// BlockInfo is a block expression being emitted: where a return stores its
+// value and jumps to, and how deep the frames and scopes were at its start
+// (Go's blockInfo).
+export struct BlockInfo {
+  result: string
+  label: string
+  frames: int
+  scopes: int
 }
 
 // LoopInfo is an enclosing loop: its label and the C labels that a labeled
@@ -443,6 +455,32 @@ export function unwindAll(mutable emitter: Emitter) uses alloc {
     releaseLocals(mutable emitter, frameScope)
     scope = scope - 1
   }
+}
+
+// unwindBlock releases what a block expression holds, down to where it
+// started, for a return inside it.
+export function unwindBlock(mutable emitter: Emitter, info: BlockInfo) uses alloc {
+  let frame = Arrays.length(emitter.frames) - 1
+  while (frame >= info.frames) {
+    const temporaries = emitter.frames[frame]
+    releaseTemporaries(mutable emitter, temporaries)
+    frame = frame - 1
+  }
+  let scope = Arrays.length(emitter.scopes) - 1
+  while (scope >= info.scopes) {
+    const frameScope = emitter.scopes[scope]
+    releaseLocals(mutable emitter, frameScope)
+    scope = scope - 1
+  }
+}
+
+// withoutLastBlock copies the block expressions without the innermost one.
+export function withoutLastBlock(blocks: Array<BlockInfo>): Array<BlockInfo> uses alloc {
+  let kept: Array<BlockInfo> = []
+  for (const index of Ranges.upTo(Arrays.length(blocks) - 1)) {
+    Arrays.push(mutable kept, blocks[index])
+  }
+  return kept
 }
 
 // unwindLoop releases the temporaries and locals made inside the innermost

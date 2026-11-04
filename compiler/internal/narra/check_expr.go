@@ -201,6 +201,8 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 		return c.mapLit(e, want)
 	case *MatchExpr:
 		return c.match(e, want, true)
+	case *BlockExpr:
+		return c.blockExpr(e, want)
 	case *ArrowExpr:
 		return c.arrow(e, want)
 	}

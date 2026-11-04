@@ -394,6 +394,8 @@ func (w *effectWalker) expr(x Expr) {
 			w.expr(arm.Body)
 			w.block(arm.Block)
 		}
+	case *BlockExpr:
+		w.block(x.Block)
 	case *ArrowExpr:
 		sub := &effectWalker{s: w.s, out: effSet{}}
 		sub.expr(x.Body)

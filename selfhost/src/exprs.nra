@@ -21,7 +21,7 @@
 // Results go into the side tables of the current body (D70): the type of
 // every checked expression (setNodeType) and what a name or call resolves to
 // (setRef).
-import { Pos, Expr, Arg, FieldInit, TypeExpr, Decl, Param, ConstDecl } from "narrac/ast"
+import { Pos, Expr, Stmt, Block, Arg, FieldInit, TypeExpr, Decl, Param, ConstDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field } from "narrac/types"
 import { Checker, internComposite, Ref, BodyRoot, Walker, ConstInfo, CONST_NEW, CONST_BUSY, CONST_DONE, reportError, enter, typeString, startBody, finishBody, keyBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, getExpressionId, getExpressionPos, isNumeric } from "narrac/check"
@@ -87,6 +87,7 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
     Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => checkStructLiteral(mutable checker, walker, pos, typeName, typeArguments, fields, spread, want)
     Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(mutable checker, walker, pos, elements, isTuple, want)
     Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
+    Expr.BlockExpr(_, _, _) => Walker.checkBlockExpression(walker, mutable checker, expression, want)
     Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(walker, mutable checker, expression, want)
   }
 }
@@ -942,7 +943,75 @@ export function usesLocal(checker: Checker, expression: Expr, local: int): bool 
     Expr.ArrayLit(_, _, elements, _) => anyUsesLocal(checker, elements, local)
     Expr.MapLit(_, _, _, keys, values) => anyUsesLocal(checker, keys, local) || anyUsesLocal(checker, values, local)
     Expr.MatchExpr(_, _, subject, _) => usesLocal(checker, subject, local)
+    Expr.BlockExpr(_, _, block) => anyUsesLocal(checker, listBlockExpressions(block), local)
     _ => false
+  }
+}
+
+// listBlockExpressions lists the expressions that the statements of a block
+// hold, at any statement depth, including the guards, bodies and blocks of
+// match statements. It does not look inside the expressions (Go's
+// eachBlockExpr).
+export function listBlockExpressions(block: Block): Array<Expr> uses alloc {
+  let found: Array<Expr> = []
+  collectBlockExpressions(block, mutable found)
+  return found
+}
+
+function collectBlockExpressions(block: Block, mutable found: Array<Expr>) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    collectStatementExpressions(statement, mutable found)
+  }
+}
+
+function collectStatementExpressions(statement: Stmt, mutable found: Array<Expr>) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectBlockExpressions(block, mutable found)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectExpressionAndArms(value, mutable found)
+    Stmt.AssignStmt(_, target, value) => {
+      collectExpressionAndArms(target, mutable found)
+      collectExpressionAndArms(value, mutable found)
+    }
+    Stmt.ExprStmt(_, expression) => collectExpressionAndArms(expression, mutable found)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectExpressionAndArms(returned, mutable found)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      collectExpressionAndArms(condition, mutable found)
+      collectBlockExpressions(then, mutable found)
+      if (orElse is Some(other)) {
+        collectStatementExpressions(other, mutable found)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collectExpressionAndArms(condition, mutable found)
+      collectBlockExpressions(body, mutable found)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+      collectExpressionAndArms(iterable, mutable found)
+      collectBlockExpressions(body, mutable found)
+    }
+    _ => {}
+  }
+}
+
+// collectExpressionAndArms adds an expression, and the arms of a match when it is one.
+function collectExpressionAndArms(expression: Expr, mutable found: Array<Expr>) uses alloc {
+  Arrays.push(mutable found, expression)
+  if (expression is Expr.MatchExpr(_, _, _, arms)) {
+    for (const arm of Arrays.values(arms)) {
+      if (arm.guard is Some(guard)) {
+        collectExpressionAndArms(guard, mutable found)
+      }
+      if (arm.body is Some(armBody)) {
+        collectExpressionAndArms(armBody, mutable found)
+      }
+      if (arm.block is Some(armBlock)) {
+        collectBlockExpressions(armBlock, mutable found)
+      }
+    }
   }
 }
 
@@ -1214,6 +1283,7 @@ function checkConstValue(mutable checker: Checker, name: string, value: Expr): b
     Expr.MapLit(_, _, _, keys, values) => checkConstMap(mutable checker, name, keys, values)
     Expr.ArrowExpr(_, pos, _, _, _, _) => rejectConstPart(mutable checker, name, pos, "a closure")
     Expr.MatchExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "a match")
+    Expr.BlockExpr(_, pos, _) => rejectConstPart(mutable checker, name, pos, "a block expression")
     Expr.IsExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "an `is` test")
     Expr.IndexExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "an element read")
   }

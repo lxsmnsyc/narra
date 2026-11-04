@@ -813,6 +813,68 @@ func (p *Parser) ifStmt() *IfStmt {
 	return s
 }
 
+// structLitAhead reports whether the `{` at the current token starts a struct
+// literal whose type comes from context: `{}`, `{ ...spread }` or
+// `{ name: value }`. Any other `{` in value position is a block expression.
+// A label (`name: for`, `name: while`) starts a block.
+func (p *Parser) structLitAhead() bool {
+	j := p.i + 1
+	for j < len(p.toks) && p.toks[j].Kind == TokNewline {
+		j++
+	}
+	if j+1 >= len(p.toks) {
+		return false
+	}
+	first := p.toks[j]
+	if first.Kind == TokPunct && (first.Text == "}" || first.Text == "...") {
+		return true
+	}
+	second := p.toks[j+1]
+	if first.Kind == TokString && second.Kind == TokPunct && second.Text == ":" {
+		return true // a TypeScript object literal: structLit reports it
+	}
+	if first.Kind != TokIdent || second.Kind != TokPunct || second.Text != ":" || j+2 >= len(p.toks) {
+		return false
+	}
+	third := p.toks[j+2]
+	return !(third.Kind == TokKeyword && (third.Text == "for" || third.Text == "while"))
+}
+
+// blockExpr parses a block in value position.
+func (p *Parser) blockExpr() *BlockExpr {
+	pos := p.tok().Pos
+	return &BlockExpr{exprBase: exprBase{P: pos}, Block: p.block()}
+}
+
+// ifExpr parses `if (c) { ... } else { ... }` in value position. It becomes a
+// block expression holding one if statement whose branches each return a
+// block expression, so the checker and emitter need no node of their own.
+// The else branch is required; `else if` chains are allowed.
+func (p *Parser) ifExpr() Expr {
+	pos := p.expect("if").Pos
+	p.expect("(")
+	cond := p.expr()
+	p.expect(")")
+	thenBranch := p.blockExpr()
+	save := p.i
+	p.skipNewlines()
+	if !p.accept("else") {
+		p.i = save
+		p.expect("else")
+	}
+	var elseBranch Expr
+	if p.is("if") {
+		elseBranch = p.ifExpr()
+	} else {
+		elseBranch = p.blockExpr()
+	}
+	branch := func(value Expr) *Block {
+		return &Block{Pos: value.position(), Stmts: []Stmt{&ReturnStmt{Pos: value.position(), Value: value}}}
+	}
+	ifStmt := &IfStmt{Pos: pos, Cond: cond, Then: branch(thenBranch), Else: branch(elseBranch)}
+	return &BlockExpr{exprBase: exprBase{P: pos}, Block: &Block{Pos: pos, Stmts: []Stmt{ifStmt}}}
+}
+
 // Operator precedence, lowest first.
 var binaryLevels = [][]string{
 	{"||"},
@@ -1095,9 +1157,16 @@ func (p *Parser) primary() Expr {
 			return &BoolLit{exprBase: base, Value: t.Text == "true"}
 		case "match":
 			return p.matchExpr()
+		case "if":
+			return p.ifExpr()
 		}
 	case TokPunct:
 		switch t.Text {
+		case "{":
+			if p.structLitAhead() {
+				return p.structLit()
+			}
+			return p.blockExpr()
 		case "(":
 			if p.arrowAhead() {
 				return p.arrow()
@@ -1117,8 +1186,6 @@ func (p *Parser) primary() Expr {
 			}
 			p.expect("]")
 			return lit
-		case "{":
-			return p.structLit()
 		}
 	}
 	p.fail(t.Pos, "expected an expression, found %s", describe(t))

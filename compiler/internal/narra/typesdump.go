@@ -435,6 +435,9 @@ func (d *typesDumper) expr(e Expr) {
 				d.block(arm.Block)
 			}
 		}
+	case *BlockExpr:
+		d.line(e.P, "blockexpr", nil, e.T)
+		d.block(e.Block)
 	case *ArrowExpr:
 		var attrs []string
 		if e.Closure != nil {

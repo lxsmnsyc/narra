@@ -358,6 +358,8 @@ func (c *Checker) mutableRoots(x Expr) []*Local {
 				walk(arm.Guard)
 				walk(arm.Body)
 			}
+		case *BlockExpr:
+			eachBlockExpr(x.Block, walk)
 		}
 	}
 	walk(x)
@@ -433,10 +435,10 @@ func (c *Checker) arrow(e *ArrowExpr, want Type) Type {
 	}
 
 	st := c.cl()
-	savedFn, savedLoops, savedScope, savedBinds, savedLabels := c.fn, c.loops, c.scope, c.isBinds, c.labels
+	savedFn, savedLoops, savedScope, savedBinds, savedLabels, savedBlocks := c.fn, c.loops, c.scope, c.isBinds, c.labels, c.blocks
 	st.arrows = append(st.arrows, &arrowCtx{outer: c.scope, clo: clo})
 	c.scope = &scope{names: map[string]*Local{}, parent: savedScope}
-	c.loops, c.isBinds, c.labels = 0, false, nil
+	c.loops, c.isBinds, c.labels, c.blocks = 0, false, nil, nil
 	fn := &FuncDecl{Pos: e.P, Name: "arrow", Params: e.Params, Module: c.mod.path}
 	for _, p := range e.Params {
 		l := c.declare(p.Pos, p.Name, p.T, false)
@@ -470,7 +472,7 @@ func (c *Checker) arrow(e *ArrowExpr, want Type) Type {
 		}
 		fn.Body = &Block{Pos: e.P, Stmts: []Stmt{s}}
 	}
-	c.fn, c.loops, c.scope, c.isBinds, c.labels = savedFn, savedLoops, savedScope, savedBinds, savedLabels
+	c.fn, c.loops, c.scope, c.isBinds, c.labels, c.blocks = savedFn, savedLoops, savedScope, savedBinds, savedLabels, savedBlocks
 	st.arrows = st.arrows[:len(st.arrows)-1]
 	clo.Fn = fn
 	clo.Type = c.funcOf(params, fn.ResultT)

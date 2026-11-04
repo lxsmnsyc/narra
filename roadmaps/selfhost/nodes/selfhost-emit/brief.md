@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit
 title: Self-hosted C emitter: no skips left, and the selfhost package compares
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 67074
 owns:
   - roadmaps/selfhost/nodes/selfhost-emit/**
 shared:

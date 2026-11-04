@@ -1,7 +1,7 @@
 ---
 id: selfhost-bootstrap
 title: "Bootstrap: the compiler compiles itself"
-status: todo
+status: active
 priority: must
 type: feature
 story:
@@ -53,7 +53,7 @@ Close the loop. narrac only emits C (`narrac emit <path>`); the C file is self-c
 
 - Read the selfhost-emit outcome first: it gives the selfhost package input, the emit times and any divergences left.
 - `buildSelfhost` in `selfhost_test.go` builds stage 1 once per test run with `modes[0].opts` (ASan and UBSan). Build stage 2 with the same flags so the stage-2 compiler is sanitizer-checked too. Cache it like `buildSelfhost` so it builds once per run.
-- A stage-2 build costs one stage-1 emit of about 59k lines of C plus a C compile. Keep the whole test under about 60 s; if it is slower, report the time and gate it behind `testing.Short()`.
+- A stage-2 build costs one stage-1 emit of about 95k lines of C (0.19 s release, about 4 s under sanitizers) plus a C compile. Keep the whole test under about 60 s; if it is slower, report the time and gate it behind `testing.Short()`.
 
 ## Acceptance
 

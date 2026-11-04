@@ -1,0 +1,363 @@
+{
+  "round": 1,
+  "claims": {
+    "J1": {
+      "id": "J1",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "SPEC.md line 62 says only: 'A function declared inside another function is local to that function.' It says nothing about capture, hoisting, recursion or shadowing.",
+      "evidence": {
+        "type": "source",
+        "source": "SPEC.md:62",
+        "detail": ""
+      }
+    },
+    "J2": {
+      "id": "J2",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Closures capture only constant values (const bindings and parameters); an arrow function that captures nothing compiles to a plain C function pointer; function-type parameters do not escape by default (D46).",
+      "evidence": {
+        "type": "source",
+        "source": "SPEC.md:84-93, DECISIONS.md D46",
+        "detail": ""
+      }
+    },
+    "J3": {
+      "id": "J3",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "An arrow bound to a const cannot call itself: `const fact = (n: int): int => { ... fact(n - 1) }` fails with `unknown function \"fact\"` on main (Go compiler). So recursion and mutual recursion are the one thing a local function gives that a const-bound arrow does not today.",
+      "evidence": {
+        "type": "measured",
+        "source": "go run ./cmd/narra run evidence/arrow-recursion.nra",
+        "detail": "evidence/arrow-recursion.nra"
+      }
+    },
+    "J4": {
+      "id": "J4",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "tokens",
+      "text": "The self-hosted compiler (selfhost/src, about 48 files) has 1 const-bound arrow function and no local function declarations (they did not parse before PR #66). Helpers are module-level private functions.",
+      "evidence": {
+        "type": "measured",
+        "source": "grep over selfhost/src/*.nra",
+        "detail": ""
+      }
+    },
+    "J5": {
+      "id": "J5",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "tokens",
+      "text": "PR #66 (option B: hoisted, no capture, shadowing an error, desugared to a private module-level function named __local_<name>_<line>_<col>) is +495/-6 lines in 16 files, both compilers, worker spend 146k tokens; a fresh review is running. Known limits: error messages about a local function's signature show the hidden __local_ name; a user function named like __local_x_1_2 is treated as local.",
+      "evidence": {
+        "type": "measured",
+        "source": "gh pr view 66; worker report",
+        "detail": ""
+      }
+    },
+    "J6": {
+      "id": "J6",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Every language change is built twice, in the Go compiler and in selfhost/, and must keep the bootstrap fixed point (stage 1 and stage 2 emit identical C). Recent spec-gap nodes cost 60k-330k tokens each (CALIBRATION.md).",
+      "evidence": {
+        "type": "calibration",
+        "source": "roadmaps/CALIBRATION.md, roadmaps/selfhost/GOAL.md",
+        "detail": ""
+      }
+    },
+    "J7": {
+      "id": "J7",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Prior art: Go has no named nested functions, only func literals (a recursive one needs `var f func(int) int; f = func...`). Rust nested `fn` items cannot capture; closures capture but cannot name themselves. JavaScript/TypeScript function declarations are hoisted and capture. Swift and Kotlin local functions capture and may recurse. Zig has no nested functions.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "Go spec (Function literals), Rust reference (Items: nested fn cannot capture, E0434), ECMAScript function hoisting, Swift book (Nested Functions), Kotlin docs (Local functions)",
+        "detail": ""
+      }
+    },
+    "J8": {
+      "id": "J8",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Narra follows TypeScript syntax where it can and lists departures from it in SPEC.md section 2 'Differences from TypeScript'; the maintainer's naming rules say helpers are 'function declarations named for their action'.",
+      "evidence": {
+        "type": "inferred",
+        "source": "SPEC.md section 2 (lines 160-185), roadmaps/selfhost/CLAUDE.md",
+        "detail": ""
+      }
+    },
+    "P1": {
+      "id": "P1",
+      "round": 1,
+      "by": "proponent",
+      "kind": "proposal",
+      "text": "Keep local function declarations (reject A). They are the only form that gives a named helper recursion and mutual recursion inside a function (J3), they are TypeScript syntax (J8), and Rust, Swift and Kotlin all ship named nested functions (J7). The self-hosted compiler has 337 of 648 private functions with a single call site, the helpers a local function would hold.",
+      "evidence": {
+        "type": "measured",
+        "source": "sh evidence/single-caller-helpers.sh",
+        "detail": "evidence/single-caller-helpers.txt: private=648 single_call_site=337"
+      },
+      "estimate": {
+        "value": 0,
+        "unit": "extra tokens over PR #66 for keeping the line"
+      }
+    },
+    "P2": {
+      "id": "P2",
+      "round": 1,
+      "by": "proponent",
+      "kind": "proposal",
+      "text": "Phase 1, ship B as PR #66 builds it, with two small fixes in both compilers: diagnostics print the source name instead of __local_<name>_<line>_<col>, and the hidden name can no longer collide with a user name (reject user identifiers starting with `__local_`, or check the position against a parser-held set instead of the prefix). Already built and tested: hoisting, recursion, mutual recursion, use as a value, inside arrows and nested blocks.",
+      "evidence": {
+        "type": "source",
+        "source": "gh pr diff 66 (compiler/testdata/local_functions.nra, errors/local_functions_*.nra); J5 known limits",
+        "detail": "PR #66 test covers before-declaration call, factorial, isEven/isOdd, apply(inc, 1) and inc inside an arrow"
+      },
+      "estimate": {
+        "value": 30000,
+        "unit": "tokens for the two fixes, both compilers (estimate, low end of J6 range since the change is local to parser.go/parser.nra and the error path)"
+      }
+    },
+    "P3": {
+      "id": "P3",
+      "round": 1,
+      "by": "proponent",
+      "kind": "proposal",
+      "text": "Phase 1 also writes the rule into SPEC.md section 2: a local function is hoisted within its block, may call itself and its siblings, captures nothing (E0919 with a fix that says pass the value as an argument), and cannot shadow; plus one row in 'Differences from TypeScript' ('a nested function captures enclosing variables' -> 'it captures nothing; E0919'). Because capture is an error, not a different meaning, allowing it later is purely additive: no program that compiles under B changes meaning under C.",
+      "evidence": {
+        "type": "inferred",
+        "source": "SPEC.md section 2 'Differences from TypeScript': 'Code that is valid TypeScript but means something different in Narra is a compile error with a fix'; prior-art Rust nested fn E0434 (J7)",
+        "detail": "B satisfies the TS rule the same way `let` capture does: an error, not a silent change. Rust has kept non-capturing nested fn since 1.0 without users needing capture in fn items, since closures exist alongside"
+      },
+      "estimate": {
+        "value": 10,
+        "unit": "lines of SPEC.md"
+      }
+    },
+    "P4": {
+      "id": "P4",
+      "round": 1,
+      "by": "proponent",
+      "kind": "proposal",
+      "text": "Phase 2, only if capture is wanted: a local function captures consts and parameters under the closure rules (option C), compiled by lambda lifting. Captured values become hidden trailing parameters at every direct call, so self and mutual recursion are plain direct calls with no environment and no allocation; an environment is built, as for an arrow, only where the function is used as a value. The environment never holds the function itself, so no reference cycle forms (SPEC section 6 Cycles keeps holding). The capture analysis already exists for arrows (check_closure.go Closure.Captures) and works today.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "Johnsson 1985, 'Lambda lifting: transforming programs to recursive equations'; Swift and Kotlin local functions capture and recurse (J7); measured: go run ./cmd/narra run evidence/arrow-capture.nra",
+        "detail": "evidence/arrow-capture.txt: a const-bound arrow capturing `base` runs both direct and passed to a function-type parameter (11, 12). GHC and OCaml lambda-lift local recursive functions to avoid closure allocation"
+      },
+      "estimate": {
+        "value": 200000,
+        "unit": "tokens, both compilers plus fixed point (estimate inside J6 range 60k-330k; touches parser desugaring, checker capture analysis and the emitter call path)"
+      }
+    },
+    "P5": {
+      "id": "P5",
+      "round": 1,
+      "by": "proponent",
+      "kind": "proposal",
+      "text": "Phase 2's ordering rule, which makes hoisting and capture compatible: a call or value use of a capturing local function must come after the declaration of every const it captures, followed through the sibling functions it calls; otherwise a compile error names the const. Non-capturing local functions keep the full hoisting of phase 1.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "Swift compiler diagnostic 'closure captures X before it is declared' for local functions used before a captured let; ECMAScript temporal dead zone for let/const captured by hoisted functions",
+        "detail": "Swift checks this statically; JS checks it at run time and throws ReferenceError, which Narra would turn into a compile error"
+      },
+      "estimate": {
+        "value": 20000,
+        "unit": "tokens, part of phase 2 (estimate)"
+      }
+    },
+    "P6": {
+      "id": "P6",
+      "round": 1,
+      "by": "proponent",
+      "kind": "alternative",
+      "text": "Drop local functions (A) and instead put a const-bound arrow's own name in scope inside its body, so `const fact = (n: int): int => ... fact(n - 1)` works. One function form, one capture rule. Self-calls compile as direct calls with the same environment, so no cycle. It does not give mutual recursion or use before declaration, and it is new work in both compilers, while B is already built.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "OCaml `let rec f = fun ...`, Scheme letrec; J3 measured the gap on main",
+        "detail": "letrec covers self recursion with closures; mutual recursion needs `let rec ... and ...`, a new syntax Narra does not have"
+      },
+      "estimate": {
+        "value": 80000,
+        "unit": "tokens, both compilers (estimate, low-middle of J6 range)"
+      }
+    },
+    "P7": {
+      "id": "P7",
+      "round": 1,
+      "by": "proponent",
+      "kind": "alternative",
+      "text": "Ship phase 1 (P2, P3) and stop: no phase 2. Cheapest on tokens, since PR #66 is already spent (146k, J5) and only the two fixes remain. A helper that needs an enclosing value takes it as an argument, as all 648 private helpers in selfhost/src do today.",
+      "evidence": {
+        "type": "measured",
+        "source": "J4, J5; evidence/single-caller-helpers.txt",
+        "detail": "selfhost has no capturing local functions and no demand recorded for one; every helper threads its context as parameters"
+      },
+      "estimate": {
+        "value": 30000,
+        "unit": "tokens total remaining"
+      }
+    },
+    "J9": {
+      "id": "J9",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Fresh review of PR #66 (comment review on the PR): 3 should-fix findings, all from renaming uses at parse time. (1) Pattern bindings skip the shadowing check and their uses get renamed to the local function: with `function x()` in scope, `const { x, y } = ...; return x + y` gives a type error; `const #[a, b] = #[2, 3]` with a local function `a` compiles silently (parser.go:1275, same in selfhost parser). (2) The enclosing function's or arrow's own parameters are not checked against its local functions: `function outer(n: int): int { function n(): int {...} return n() }` compiles and runs (parameters parsed before the per-block pre-scan). (3) The hidden name reaches users: `Function quiet uses io (through __local_loud_2_12)` (check_effects.go:170). Also: a local function inside `wrap<T>` cannot see `T` (`unknown type \"T\"` plus 4 follow-on errors). Narrac and narra agree on all 30 review programs.",
+      "evidence": {
+        "type": "measured",
+        "source": "gh pr view 66 --comments (fresh review); programs in scratchpad/t66/",
+        "detail": ""
+      }
+    },
+    "O1": {
+      "id": "O1",
+      "round": 1,
+      "by": "opponent",
+      "kind": "rebuttal",
+      "answers": [
+        "P3"
+      ],
+      "text": "B as built is not a strict error-subset of C. When an enclosing local shadows a module-level name (allowed: D38 forbids shadowing only inside a function), PR #66 compiles the local function silently against the module name: `const base = 1` at top level, `const base = 10` in run, `function add(x) { return x + base }` prints 2 under PR #66 and 11 as TypeScript. Adding capture later would change that program's output, and today it breaks SPEC section 2's rule that valid TypeScript never means something different.",
+      "evidence": {
+        "type": "measured",
+        "source": "PR #66 diff applied with patch -p1 to a git-archive copy of main's compiler/ under evidence/pr66 (removed after), then go run ./cmd/narra run|check evidence/shadow-module-const.nra; node evidence/shadow-ts.ts",
+        "detail": "evidence/pr66-probes.txt: Narra (PR #66) prints 2, TypeScript prints 11"
+      }
+    },
+    "O2": {
+      "id": "O2",
+      "round": 1,
+      "by": "opponent",
+      "kind": "cost",
+      "axis": "tokens",
+      "severity": "high",
+      "answers": [
+        "P2"
+      ],
+      "text": "P2 lists two fixes, but the known defects of PR #66 are six: J9's pattern-binding shadowing, enclosing-parameter shadowing and hidden name in effect errors, J9's generic `T`, O1's silent module fallback, and the `__local_` collision. All come from renaming at parse time without knowing the enclosing scope, so the fix is a scope tracker for every binding form (params, const, let, patterns, for) in both parsers, not an error-path tweak. 30k is under every calibrated node (smallest 60k); a parser-desugaring node with a second review round cost 204k (for-destructure) and 328k (tail-loops).",
+      "estimate": {
+        "value": 150000,
+        "unit": "tokens to fix PR #66 in both compilers (estimate from CALIBRATION.md S/M rows with 2 review rounds: 114k-328k)"
+      },
+      "evidence": {
+        "type": "calibration",
+        "source": "roadmaps/CALIBRATION.md rows spec-fixes 60k, block-arrow-args 60k, mutable-escape 114k, for-destructure 204k, tail-loops 328k; J9; O1",
+        "detail": ""
+      }
+    },
+    "O3": {
+      "id": "O3",
+      "round": 1,
+      "by": "opponent",
+      "kind": "risk",
+      "axis": "time",
+      "severity": "high",
+      "answers": [
+        "P2",
+        "P3"
+      ],
+      "text": "The lab has already rejected structures where a local can silently change what a name means: the qualified-enum-constructors debate rejected keeping bare constructors with a written ambiguity rule (P5) because a local can silently change their meaning (D2), and sum-type-syntax rejected `type X = | A | B` as 'same text, two meanings'. B as built has the same defect (O1), so phase 1 cannot ship without a rule that makes any free name bound in an enclosing scope an error; it is likely (the probe already hits it) and changes P2's scope.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "roadmaps/debates/qualified-enum-constructors/debate.md (Rejected, P5, J3); roadmaps/debates/sum-type-syntax/debate.md (Rejected, P1/O1); SPEC.md section 2 'Differences from TypeScript'",
+        "detail": "both past debates settled on D2: valid TypeScript text must be an error or keep its meaning"
+      }
+    },
+    "O4": {
+      "id": "O4",
+      "round": 1,
+      "by": "opponent",
+      "kind": "risk",
+      "axis": "tokens",
+      "severity": "medium",
+      "answers": [
+        "P2"
+      ],
+      "text": "Lifting a local function to module level drops the enclosing function's type parameters, so a local helper inside any generic function cannot name `T` (`function pair<T>(x: T)` with a local `two(y: T)` fails with `unknown type \"T\"` plus follow-on errors). Fixing it means copying the enclosing type parameters onto the lifted function and threading them through every call and through monomorphization, which is a form of capture (of types) that neither P2 nor P3 states; leaving it means B is unusable in generic code.",
+      "evidence": {
+        "type": "measured",
+        "source": "PR #66 diff applied with patch -p1 to a git-archive copy of main's compiler/ under evidence/pr66 (removed after), then go run ./cmd/narra run|check check evidence/generic-local.nra",
+        "detail": "evidence/pr66-probes.txt"
+      }
+    },
+    "O5": {
+      "id": "O5",
+      "round": 1,
+      "by": "opponent",
+      "kind": "cost",
+      "axis": "tokens",
+      "severity": "medium",
+      "answers": [
+        "P4",
+        "P5"
+      ],
+      "text": "Phase 2 (capture by lambda lifting plus the P5 ordering rule) has no consumer: selfhost/src has zero local functions and one const arrow (J4), every helper threads its context as parameters, and no roadmap node asks for capturing helpers. 220k tokens (P4 + P5) on a feature the self-hosting goal does not use, with hidden trailing parameters that also have to pass through D46 escape checks, `mutable` parameters and effect inference, is the highest-cost part of the plan for no measured demand.",
+      "estimate": {
+        "value": 220000,
+        "unit": "tokens (P4 200k + P5 20k, proponent's own numbers)"
+      },
+      "evidence": {
+        "type": "inferred",
+        "source": "roadmaps/selfhost/GOAL.md (goal is a self-hosting compiler); J4; roadmaps/selfhost/CLAUDE.md helper naming rule",
+        "detail": "inferred: capture is not needed to reach the selfhost goal; it can be its own later debate if a user asks"
+      }
+    },
+    "O6": {
+      "id": "O6",
+      "round": 1,
+      "by": "opponent",
+      "kind": "rebuttal",
+      "answers": [
+        "P1"
+      ],
+      "text": "The 337 'single call site' figure counts names with at most two `name(` matches including the declaration, so it adds 108 private functions with no direct call (used as values) to the 229 with exactly one call. The real count is 229 of 648, and it measures candidates, not demand: none of them was written as a local function when the form was unavailable, and none needs recursion inside its caller.",
+      "evidence": {
+        "type": "measured",
+        "source": "sh evidence/call-site-count.sh",
+        "detail": "evidence/call-site-count.txt: zero_calls=108 one_call=229 two_calls=108"
+      }
+    },
+    "O7": {
+      "id": "O7",
+      "round": 1,
+      "by": "opponent",
+      "kind": "alternative",
+      "answers": [
+        "P1",
+        "P2",
+        "P7"
+      ],
+      "text": "Close PR #66 and keep local functions out for now: `function` inside a body becomes a compile error with a fix ('move it to module level as a private function'), and SPEC.md line 62 says so, with a row in 'Differences from TypeScript'. Recursion and mutual recursion stay available through module-level private functions, as all 648 helpers do. An error later turned into B or C is purely additive, which B-then-C is not (O1), and none of O2-O4's defects need fixing. The 146k already spent on PR #66 is sunk under every option.",
+      "estimate": {
+        "value": 60000,
+        "unit": "tokens, both compilers (CALIBRATION.md S rows spec-fixes and block-arrow-args, 60k each)"
+      },
+      "evidence": {
+        "type": "calibration",
+        "source": "roadmaps/CALIBRATION.md (spec-fixes 60k, block-arrow-args 60k); main already rejects the form with `expected an expression, found \"function\"` (roadmaps/selfhost/nodes/local-functions/brief.md line 54)",
+        "detail": ""
+      }
+    }
+  }
+}

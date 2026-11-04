@@ -6,11 +6,11 @@
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, Ref, Walker, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, Ref, Walker, findLocal, reportError, typeString, declareLocal, pushScope, popScope, getLocal, getRef, getNodeType, setNodeType, unsupported, getExpressionId, getExpressionPos } from "narrac/check"
 import { resolveType, findTupleType } from "narrac/resolve"
 import { checkExpression, expectType, checkConstWrite, checkNoMutableEscape, findAssignedLocal } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
-import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgumentsIrrefutable } from "narrac/patterns"
+import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, endNarrowing, findOtherVariant, areArgumentsIrrefutable } from "narrac/patterns"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -24,6 +24,24 @@ export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block
 }
 
 export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, statement: Stmt) uses alloc {
+  // The emitter runs `mutable` calls before the rest of the statement, so a
+  // read of the local anywhere in the statement may see the new value.
+  match (statement) {
+    Stmt.VarStmt(_, _, _, _, _, _, value) => endExpressionNarrowing(mutable checker, value)
+    Stmt.AssignStmt(_, target, value) => {
+      endExpressionNarrowing(mutable checker, target)
+      endExpressionNarrowing(mutable checker, value)
+    }
+    Stmt.ExprStmt(_, expression) => endExpressionNarrowing(mutable checker, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        endExpressionNarrowing(mutable checker, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
+    Stmt.ForStmt(_, _, _, _, iterable, _) => endExpressionNarrowing(mutable checker, iterable)
+    _ => {}
+  }
   match (statement) {
     Stmt.BlockStmt(block) => checkBlock(mutable checker, walker, block)
     Stmt.VarStmt(nodeId, pos, isMutable, name, pattern, type, value) => checkVariable(mutable checker, walker, nodeId, pos, isMutable, name, pattern, type, value)
@@ -139,6 +157,7 @@ function checkAssignment<W: Walker>(mutable checker: Checker, walker: W, pos: Po
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
   expectType(mutable checker, getExpressionPos(value), Some(targetType), valueType)
+  endNarrowing(mutable checker, root)
 }
 
 function checkExpressionStatement<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, expression: Expr) uses alloc {
@@ -251,6 +270,7 @@ function checkIf<W: Walker>(mutable checker: Checker, walker: W, condition: Expr
 }
 
 function checkWhile<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, label: string, condition: Expr, body: Block) uses alloc {
+  endLoopNarrowing(mutable checker, Some(condition), body)
   checkCondition(mutable checker, walker, condition)
   enterLoop(mutable checker, pos, label)
   checkBlock(mutable checker, walker, body)
@@ -279,6 +299,7 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
       }
     }
   }
+  endLoopNarrowing(mutable checker, None, body)
   let element = Type.TVoid
   if (builtin == "Range.upTo" || builtin == "Range.between") {
     element = Type.TInt
@@ -359,4 +380,142 @@ function ifDiverges(then: Block, orElse: Option<Stmt>): bool {
     return diverges(then) && statementDiverges(other)
   }
   return false
+}
+
+// endLoopNarrowing ends the narrowing of every local that the condition or
+// the body of a loop assigns or passes as `mutable`: the next iteration sees
+// the changed value. Names are matched without scopes, which can only end
+// more narrowing than needed (Go's endLoopNarrowing).
+function endLoopNarrowing(mutable checker: Checker, condition: Option<Expr>, body: Block) uses alloc {
+  let names: Array<string> = []
+  if (condition is Some(testExpression)) {
+    collectAssignedInExpr(testExpression, mutable names)
+  }
+  collectAssignedInBlock(body, mutable names)
+  for (const name of Arrays.values(names)) {
+    const local = findLocal(checker, name)
+    endNarrowing(mutable checker, local)
+  }
+}
+
+// endExpressionNarrowing ends the narrowing of every local that an
+// expression passes as `mutable` (Go's endExprNarrowing).
+function endExpressionNarrowing(mutable checker: Checker, expression: Expr) uses alloc {
+  let names: Array<string> = []
+  collectAssignedInExpr(expression, mutable names)
+  for (const name of Arrays.values(names)) {
+    const local = findLocal(checker, name)
+    endNarrowing(mutable checker, local)
+  }
+}
+
+// findRootName is the variable name at the root of an assignable expression,
+// or an empty string.
+function findRootName(expression: Expr): string {
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, _) => findRootName(target)
+    Expr.IndexExpr(_, _, target, _) => findRootName(target)
+    _ => ""
+  }
+}
+
+function collectAssignedInBlock(block: Block, mutable names: Array<string>) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    collectAssignedInStatement(statement, mutable names)
+  }
+}
+
+function collectAssignedInStatement(statement: Stmt, mutable names: Array<string>) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectAssignedInBlock(block, mutable names)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectAssignedInExpr(value, mutable names)
+    Stmt.AssignStmt(_, target, value) => {
+      Arrays.push(mutable names, findRootName(target))
+      collectAssignedInExpr(target, mutable names)
+      collectAssignedInExpr(value, mutable names)
+    }
+    Stmt.ExprStmt(_, expression) => collectAssignedInExpr(expression, mutable names)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectAssignedInExpr(returned, mutable names)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      collectAssignedInExpr(condition, mutable names)
+      collectAssignedInBlock(then, mutable names)
+      if (orElse is Some(other)) {
+        collectAssignedInStatement(other, mutable names)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collectAssignedInExpr(condition, mutable names)
+      collectAssignedInBlock(body, mutable names)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+      collectAssignedInExpr(iterable, mutable names)
+      collectAssignedInBlock(body, mutable names)
+    }
+    _ => {}
+  }
+}
+
+function collectAssignedInExprs(expressions: Array<Expr>, mutable names: Array<string>) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    collectAssignedInExpr(expression, mutable names)
+  }
+}
+
+function collectAssignedInExpr(expression: Expr, mutable names: Array<string>) uses alloc {
+  match (expression) {
+    Expr.TemplateLit(_, _, parts) => collectAssignedInExprs(parts, mutable names)
+    Expr.FieldExpr(_, _, target, _) => collectAssignedInExpr(target, mutable names)
+    Expr.IsExpr(_, _, subject, _) => collectAssignedInExpr(subject, mutable names)
+    Expr.IndexExpr(_, _, target, index) => {
+      collectAssignedInExpr(target, mutable names)
+      collectAssignedInExpr(index, mutable names)
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      collectAssignedInExprs(keys, mutable names)
+      collectAssignedInExprs(values, mutable names)
+    }
+    Expr.UnaryExpr(_, _, _, operand) => collectAssignedInExpr(operand, mutable names)
+    Expr.BinaryExpr(_, _, _, left, right) => {
+      collectAssignedInExpr(left, mutable names)
+      collectAssignedInExpr(right, mutable names)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        collectAssignedInExpr(field.value, mutable names)
+      }
+      if (spread is Some(source)) {
+        collectAssignedInExpr(source, mutable names)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => collectAssignedInExprs(elements, mutable names)
+    Expr.MatchExpr(_, _, subject, arms) => {
+      collectAssignedInExpr(subject, mutable names)
+      for (const arm of Arrays.values(arms)) {
+        if (arm.guard is Some(guard)) {
+          collectAssignedInExpr(guard, mutable names)
+        }
+        if (arm.body is Some(armBody)) {
+          collectAssignedInExpr(armBody, mutable names)
+        }
+        if (arm.block is Some(armBlock)) {
+          collectAssignedInBlock(armBlock, mutable names)
+        }
+      }
+    }
+    Expr.CallExpr(_, _, callee, arguments) => {
+      collectAssignedInExpr(callee, mutable names)
+      for (const argument of Arrays.values(arguments)) {
+        if (argument.isMutable) {
+          Arrays.push(mutable names, findRootName(argument.value))
+        }
+        collectAssignedInExpr(argument.value, mutable names)
+      }
+    }
+    _ => {}
+  }
 }

@@ -76,10 +76,146 @@ func otherVariant(v *Variant) *Variant {
 
 func (c *Checker) narrowable(e Expr) *Local {
 	id, ok := e.(*Ident)
-	if !ok || id.Local == nil || id.Local.Mutable {
+	if !ok || id.Local == nil {
 		return nil
 	}
 	return id.Local
+}
+
+// endNarrowing forgets what an `is` test told about l, in every scope. A
+// `let` or `mutable` local is narrowed only until it is assigned, passed as
+// `mutable` to a call, or reached again by a loop that assigns it.
+func (c *Checker) endNarrowing(l *Local) {
+	if l == nil || !l.Mutable {
+		return
+	}
+	for s := c.scope; s != nil; s = s.parent {
+		delete(s.narrow, l)
+	}
+}
+
+// endLoopNarrowing ends the narrowing of every local that the condition or
+// the body of a loop assigns or passes as `mutable`: the next iteration sees
+// the changed value. Names are matched without scopes, which can only end
+// more narrowing than needed.
+func (c *Checker) endLoopNarrowing(cond Expr, body *Block) {
+	names := map[string]bool{}
+	assignedInExpr(cond, names)
+	assignedInBlock(body, names)
+	for name := range names {
+		c.endNarrowing(c.lookup(name))
+	}
+}
+
+// endExprNarrowing ends the narrowing of every local that an expression
+// passes as `mutable` (or assigns, inside a match arm block).
+func (c *Checker) endExprNarrowing(x Expr) {
+	names := map[string]bool{}
+	assignedInExpr(x, names)
+	for name := range names {
+		c.endNarrowing(c.lookup(name))
+	}
+}
+
+// rootName is the variable name at the root of an assignable expression.
+func rootName(e Expr) string {
+	switch e := e.(type) {
+	case *Ident:
+		return e.Name
+	case *FieldExpr:
+		return rootName(e.Target)
+	case *IndexExpr:
+		return rootName(e.Target)
+	}
+	return ""
+}
+
+func assignedInBlock(b *Block, names map[string]bool) {
+	if b == nil {
+		return
+	}
+	for _, st := range b.Stmts {
+		assignedInStmt(st, names)
+	}
+}
+
+func assignedInStmt(st Stmt, names map[string]bool) {
+	switch st := st.(type) {
+	case *Block:
+		assignedInBlock(st, names)
+	case *VarStmt:
+		assignedInExpr(st.Value, names)
+	case *AssignStmt:
+		names[rootName(st.Target)] = true
+		assignedInExpr(st.Target, names)
+		assignedInExpr(st.Value, names)
+	case *ExprStmt:
+		assignedInExpr(st.Expr, names)
+	case *ReturnStmt:
+		assignedInExpr(st.Value, names)
+	case *IfStmt:
+		assignedInExpr(st.Cond, names)
+		assignedInBlock(st.Then, names)
+		if st.Else != nil {
+			assignedInStmt(st.Else, names)
+		}
+	case *WhileStmt:
+		assignedInExpr(st.Cond, names)
+		assignedInBlock(st.Body, names)
+	case *ForStmt:
+		assignedInExpr(st.Iter, names)
+		assignedInBlock(st.Body, names)
+	}
+}
+
+func assignedInExpr(x Expr, names map[string]bool) {
+	switch x := x.(type) {
+	case *TemplateLit:
+		for _, p := range x.Parts {
+			assignedInExpr(p, names)
+		}
+	case *FieldExpr:
+		assignedInExpr(x.Target, names)
+	case *IsExpr:
+		assignedInExpr(x.Subject, names)
+	case *IndexExpr:
+		assignedInExpr(x.Target, names)
+		assignedInExpr(x.Index, names)
+	case *MapLit:
+		for i := range x.Keys {
+			assignedInExpr(x.Keys[i], names)
+			assignedInExpr(x.Vals[i], names)
+		}
+	case *UnaryExpr:
+		assignedInExpr(x.Operand, names)
+	case *BinaryExpr:
+		assignedInExpr(x.Left, names)
+		assignedInExpr(x.Right, names)
+	case *StructLit:
+		for _, f := range x.Fields {
+			assignedInExpr(f.Value, names)
+		}
+		assignedInExpr(x.Spread, names)
+	case *ArrayLit:
+		for _, e := range x.Elems {
+			assignedInExpr(e, names)
+		}
+	case *MatchExpr:
+		assignedInExpr(x.Subject, names)
+		for _, arm := range x.Arms {
+			assignedInExpr(arm.Guard, names)
+			assignedInExpr(arm.Body, names)
+			assignedInBlock(arm.Block, names)
+		}
+	case *CallExpr:
+		assignedInExpr(x.Callee, names)
+		for _, a := range x.Args {
+			if a.Mutable {
+				names[rootName(a.Value)] = true
+			}
+			assignedInExpr(a.Value, names)
+		}
+	}
 }
 
 func (c *Checker) ifStmt(s *IfStmt) {
@@ -127,6 +263,23 @@ func (c *Checker) ifStmt(s *IfStmt) {
 }
 
 func (c *Checker) stmt(s Stmt) {
+	// The emitter runs `mutable` calls before the rest of the statement, so
+	// a read of the local anywhere in the statement may see the new value.
+	switch s := s.(type) {
+	case *VarStmt:
+		c.endExprNarrowing(s.Value)
+	case *AssignStmt:
+		c.endExprNarrowing(s.Target)
+		c.endExprNarrowing(s.Value)
+	case *ExprStmt:
+		c.endExprNarrowing(s.Expr)
+	case *ReturnStmt:
+		c.endExprNarrowing(s.Value)
+	case *IfStmt:
+		c.endExprNarrowing(s.Cond)
+	case *ForStmt:
+		c.endExprNarrowing(s.Iter)
+	}
 	switch s := s.(type) {
 	case *Block:
 		c.block(s)
@@ -169,6 +322,7 @@ func (c *Checker) stmt(s Stmt) {
 		}
 		v := c.expr(s.Value, t)
 		c.expectType(s.Value.position(), t, v)
+		c.endNarrowing(root)
 	case *ExprStmt:
 		if m, ok := s.Expr.(*MatchExpr); ok {
 			c.match(m, nil, false)
@@ -198,6 +352,7 @@ func (c *Checker) stmt(s Stmt) {
 	case *IfStmt:
 		c.ifStmt(s)
 	case *WhileStmt:
+		c.endLoopNarrowing(s.Cond, s.Body)
 		c.expectType(s.Cond.position(), TBool, c.expr(s.Cond, TBool))
 		c.enterLoop(s.Pos, s.Label)
 		c.block(s.Body)
@@ -246,6 +401,7 @@ func (c *Checker) stmt(s Stmt) {
 			c.errorf(s.Iter.position(), "for ... of needs a Range, an Array, Str.chars, Array.entries, Map.keys or Map.entries, found %s", t)
 			elem = TVoid
 		}
+		c.endLoopNarrowing(nil, s.Body)
 		c.push()
 		s.Local = c.declare(s.Pos, s.Name, elem, false)
 		c.enterLoop(s.Pos, s.Label)

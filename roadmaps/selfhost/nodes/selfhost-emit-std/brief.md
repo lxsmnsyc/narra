@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-std
 title: Self-hosted emitter: string, char, int, float, env, fs and process builtins
-status: todo
+status: active
 priority: must
 type: feature
 story:

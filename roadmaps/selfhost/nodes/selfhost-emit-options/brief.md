@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-options
 title: Self-hosted emitter: Option, Result and std/test builtins and the test main
-status: todo
+status: active
 priority: must
 type: feature
 story:

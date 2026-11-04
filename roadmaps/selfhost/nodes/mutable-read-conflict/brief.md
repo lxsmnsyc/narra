@@ -1,7 +1,7 @@
 ---
 id: mutable-read-conflict
 title: "A variable passed as mutable cannot be read elsewhere in the same expression"
-status: active
+status: done
 priority: should
 type: fix
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 224600
 owns:
   - compiler/testdata/errors/mutable_read_conflict_*
   - roadmaps/selfhost/nodes/mutable-read-conflict/**

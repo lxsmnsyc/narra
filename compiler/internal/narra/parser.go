@@ -29,6 +29,7 @@ func Parse(src string) (*File, error) {
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
 	}
+	f.Src = src
 	f.dotUses = map[string][]dotUse{}
 	f.inTemplate = map[string]bool{}
 	for i := 0; i < len(toks); i++ {
@@ -959,7 +960,9 @@ func (p *Parser) postfix(e Expr) Expr {
 					break
 				}
 			}
+			closing := p.tok()
 			p.expect(")")
+			call.End = Pos{closing.Pos.Line, closing.Pos.Col + 1}
 			e = call
 		case p.is("["):
 			p.next()

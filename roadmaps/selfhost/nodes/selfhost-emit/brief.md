@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit
 title: Self-hosted C emitter: no skips left, and the selfhost package compares
-status: todo
+status: active
 priority: must
 type: feature
 story:
@@ -9,7 +9,7 @@ early: false
 outline: false
 milestone: m8-selfhost
 target:
-ship: auto
+ship: pr
 from:
 size: S
 spike: false

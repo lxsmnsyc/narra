@@ -389,7 +389,7 @@ func (e *Emitter) mapFor(s *ForStmt, call *CallExpr, entries bool) {
 	e.line("for (int64_t %s = 0; %s < %s->used; %s++) {", idx, idx, m, idx)
 	e.indent++
 	e.line("if (!%s->alive[%s]) continue;", m, idx)
-	e.loopTemp = append(e.loopTemp, len(e.frames))
+	e.enterLoop(s.Label, s.Pos)
 	e.pushScope(true)
 	e.line("%s %s = %s;", s.Local.T.CName(), s.Local.CName, e.mapEntryValue(m, idx, s.Local.T, entries))
 	if r := retain(s.Local.T, s.Local.CName); r != "" {
@@ -398,7 +398,9 @@ func (e *Emitter) mapFor(s *ForStmt, call *CallExpr, entries bool) {
 	e.addLocal(s.Local)
 	e.blockInScope(s.Body)
 	e.popScope()
-	e.loopTemp = e.loopTemp[:len(e.loopTemp)-1]
+	e.continueLabel()
+	info := e.leaveLoop()
 	e.indent--
 	e.line("}")
+	e.breakLabel(info)
 }

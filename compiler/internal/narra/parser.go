@@ -647,8 +647,37 @@ func (p *Parser) block() *Block {
 	return b
 }
 
+// loopExitLabel reads the optional label after break or continue.
+func (p *Parser) loopExitLabel() string {
+	if p.tok().Kind == TokIdent {
+		return p.next().Text
+	}
+	return ""
+}
+
+// labeledStmt parses `name: for ...` and `name: while ...`.
+func (p *Parser) labeledStmt() Stmt {
+	t := p.next()
+	p.next() // the colon
+	if !p.is("for") && !p.is("while") {
+		p.fail(t.Pos, "label %q must be on a for or while loop", t.Text)
+	}
+	switch s := p.stmt().(type) {
+	case *WhileStmt:
+		s.Label, s.Pos = t.Text, t.Pos
+		return s
+	case *ForStmt:
+		s.Label, s.Pos = t.Text, t.Pos
+		return s
+	}
+	panic("labeledStmt: a loop keyword did not give a loop")
+}
+
 func (p *Parser) stmt() Stmt {
 	t := p.tok()
+	if t.Kind == TokIdent && p.toks[p.i+1].Kind == TokPunct && p.toks[p.i+1].Text == ":" {
+		return p.labeledStmt()
+	}
 	switch {
 	case p.is("const") || p.is("let"):
 		mutable := p.next().Text == "let"
@@ -725,12 +754,14 @@ func (p *Parser) stmt() Stmt {
 		return s
 	case p.is("break"):
 		p.next()
+		label := p.loopExitLabel()
 		p.endStatement()
-		return &BreakStmt{Pos: t.Pos}
+		return &BreakStmt{Pos: t.Pos, Label: label}
 	case p.is("continue"):
 		p.next()
+		label := p.loopExitLabel()
 		p.endStatement()
-		return &ContinueStmt{Pos: t.Pos}
+		return &ContinueStmt{Pos: t.Pos, Label: label}
 	case p.is("{"):
 		p.fail(t.Pos, "a block must belong to a statement such as if or while")
 	}

@@ -12,7 +12,7 @@ import { Expr, Stmt } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId, findBodySlot } from "narrac/check"
 import { typeId, cType } from "narrac/cnames"
-import { Emitter, Code, TempVar, EmitWalker, reportUnsupported, writeLine, temp, ownedTemp, consume, typeOf, refOf, localRef, localOf, underlyingType, retainCode, releaseCode, addLocal, pushScope, popScope } from "narrac/emitstate"
+import { Emitter, Code, TempVar, EmitWalker, reportUnsupported, writeLine, temp, ownedTemp, consume, typeOf, refOf, localRef, localOf, underlyingType, retainCode, releaseCode, addLocal, pushScope, popScope, enterLoop, leaveLoop, emitContinueLabel, emitBreakLabel } from "narrac/emitstate"
 import { enumAllocation } from "narrac/emitdecls"
 import { useEq, useHash } from "narrac/emittraits"
 import { RUNTIME_MAP_H } from "narrac/runtimetext"
@@ -326,7 +326,7 @@ export function emitMapSet<W: EmitWalker>(walker: W, mutable emitter: Emitter, s
 // emitMapFor emits `for (const x of Map.keys(m))` and Map.entries. The caller
 // wraps the statement.
 export function emitMapFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt) uses alloc {
-  if (statement is Stmt.ForStmt(nodeId, _, _, iterable, body)) {
+  if (statement is Stmt.ForStmt(nodeId, pos, label, _, iterable, body)) {
     if (iterable is Expr.CallExpr(callId, _, _, arguments)) {
       if (refOf(emitter, callId) is Ref.Builtin(builtinIndex)) {
         const entries = emitter.checker.registry.functions[builtinIndex].name == "Map.entries"
@@ -342,8 +342,7 @@ export function emitMapFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, s
         writeLine(mutable emitter, `for (int64_t ${position} = 0; ${position} < ${map}->used; ${position}++) {`)
         emitter.indent = emitter.indent + 1
         writeLine(mutable emitter, `if (!${map}->alive[${position}]) continue;`)
-        const depth = Arrays.length(emitter.frames)
-        Arrays.push(mutable emitter.loopFrames, depth)
+        enterLoop(mutable emitter, label, pos)
         pushScope(mutable emitter, true)
         const info = emitter.checker.bodies[emitter.body]
         const localIndex = info.declared[findBodySlot(info, nodeId)]
@@ -359,9 +358,11 @@ export function emitMapFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, s
         addLocal(mutable emitter, localIndex)
         EmitWalker.emitBlockInScope(walker, mutable emitter, body)
         popScope(mutable emitter)
-        popLastLoopFrame(mutable emitter)
+        emitContinueLabel(mutable emitter)
+        const loopInfo = leaveLoop(mutable emitter)
         emitter.indent = emitter.indent - 1
         writeLine(mutable emitter, "}")
+        emitBreakLabel(mutable emitter, loopInfo)
         return
       }
     }
@@ -369,10 +370,3 @@ export function emitMapFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, s
   const _ = reportUnsupported(mutable emitter, "map loop", NODE)
 }
 
-function popLastLoopFrame(mutable emitter: Emitter) uses alloc {
-  let kept: Array<int> = []
-  for (const index of Ranges.between(0, Arrays.length(emitter.loopFrames) - 1)) {
-    Arrays.push(mutable kept, emitter.loopFrames[index])
-  }
-  emitter.loopFrames = kept
-}

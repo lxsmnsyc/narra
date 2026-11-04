@@ -38,13 +38,13 @@ func cloneStmt(s Stmt) Stmt {
 	case *IfStmt:
 		return &IfStmt{Pos: s.Pos, Cond: cloneExpr(s.Cond), Then: cloneBlock(s.Then), Else: cloneStmt(s.Else)}
 	case *WhileStmt:
-		return &WhileStmt{Pos: s.Pos, Cond: cloneExpr(s.Cond), Body: cloneBlock(s.Body)}
+		return &WhileStmt{Pos: s.Pos, Label: s.Label, Cond: cloneExpr(s.Cond), Body: cloneBlock(s.Body)}
 	case *ForStmt:
-		return &ForStmt{Pos: s.Pos, Name: s.Name, Iter: cloneExpr(s.Iter), Body: cloneBlock(s.Body)}
+		return &ForStmt{Pos: s.Pos, Label: s.Label, Name: s.Name, Iter: cloneExpr(s.Iter), Body: cloneBlock(s.Body)}
 	case *BreakStmt:
-		return &BreakStmt{Pos: s.Pos}
+		return &BreakStmt{Pos: s.Pos, Label: s.Label}
 	case *ContinueStmt:
-		return &ContinueStmt{Pos: s.Pos}
+		return &ContinueStmt{Pos: s.Pos, Label: s.Label}
 	}
 	return nil
 }

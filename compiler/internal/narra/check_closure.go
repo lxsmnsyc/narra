@@ -433,10 +433,10 @@ func (c *Checker) arrow(e *ArrowExpr, want Type) Type {
 	}
 
 	st := c.cl()
-	savedFn, savedLoops, savedScope, savedBinds := c.fn, c.loops, c.scope, c.isBinds
+	savedFn, savedLoops, savedScope, savedBinds, savedLabels := c.fn, c.loops, c.scope, c.isBinds, c.labels
 	st.arrows = append(st.arrows, &arrowCtx{outer: c.scope, clo: clo})
 	c.scope = &scope{names: map[string]*Local{}, parent: savedScope}
-	c.loops, c.isBinds = 0, false
+	c.loops, c.isBinds, c.labels = 0, false, nil
 	fn := &FuncDecl{Pos: e.P, Name: "arrow", Params: e.Params, Module: c.mod.path}
 	for _, p := range e.Params {
 		l := c.declare(p.Pos, p.Name, p.T, false)
@@ -470,7 +470,7 @@ func (c *Checker) arrow(e *ArrowExpr, want Type) Type {
 		}
 		fn.Body = &Block{Pos: e.P, Stmts: []Stmt{s}}
 	}
-	c.fn, c.loops, c.scope, c.isBinds = savedFn, savedLoops, savedScope, savedBinds
+	c.fn, c.loops, c.scope, c.isBinds, c.labels = savedFn, savedLoops, savedScope, savedBinds, savedLabels
 	st.arrows = st.arrows[:len(st.arrows)-1]
 	clo.Fn = fn
 	clo.Type = c.funcOf(params, fn.ResultT)

@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-traits
 title: Self-hosted emitter: eq, hash, cmp and show functions and trait calls
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 168971
 owns:
   - selfhost/src/emittraits.nra
   - compiler/testdata/emit/skips/selfhost-emit-traits.txt
@@ -56,3 +56,5 @@ Emit the standard trait functions on demand (`useEq`, `useHash`, `useCmp`, `useS
 ## Sizing
 
 M: about 450 Narra lines in one file.
+
+Shipped in PR #54 (merge commit db4b2f1).

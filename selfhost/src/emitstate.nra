@@ -37,6 +37,9 @@ export struct TempVar {
 export struct ScopeFrame {
   locals: Array<int>
   loop: bool
+  // Values the scope holds without a BodyInfo local, such as the subject of
+  // `if (x is P)`; released after the locals (selfhost-emit-match).
+  held: Array<TempVar> = []
 }
 
 export struct TraitNeed {
@@ -385,6 +388,15 @@ function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
     }
     index = index - 1
   }
+  let heldIndex = Arrays.length(frame.held) - 1
+  while (heldIndex >= 0) {
+    const heldValue = frame.held[heldIndex]
+    const heldText = releaseCode(emitter, heldValue.tempType, heldValue.name)
+    if (heldText != "") {
+      writeLine(mutable emitter, heldText)
+    }
+    heldIndex = heldIndex - 1
+  }
 }
 
 // localName is the C name of a local without the by-reference parentheses.
@@ -481,9 +493,6 @@ function typeNeeds(type: Type, node: string): bool {
 function refNeeds(emitter: Emitter, ref: Ref, node: string): bool {
   if (node == "selfhost-emit-traits") {
     return ref is Ref.TraitFunction(_, _) || ref is Ref.Implementation(_, _)
-  }
-  if (node == "selfhost-emit-match") {
-    return ref is Ref.Narrow(_, _) || ref is Ref.Constructor(_, _)
   }
   if (ref is Ref.Builtin(index)) {
     const module = emitter.checker.registry.functions[index].module

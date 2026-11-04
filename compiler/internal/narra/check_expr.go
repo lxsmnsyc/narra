@@ -117,7 +117,7 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			return tt.Elem
 		case *ArrayType, *PrimType, *MapType:
 			if e.Name == "length" {
-				c.errorf(e.P, "there is no .length; use Array.length(x) or Str.length(x)")
+				c.errorfFix(e.P, c.lengthFix(e, t), "there is no .length; use Array.length(x) or Str.length(x)")
 			} else {
 				c.errorf(e.P, "%s has no fields", t)
 			}

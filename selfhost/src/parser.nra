@@ -155,6 +155,31 @@ function currentToken(parser: Parser): Token {
 }
 
 // peekToken reads the token offset places ahead, or the last token (EOF) past the end.
+// reportHabitWord fails on a TypeScript word that starts an expression: this,
+// new, try and throw. token is the identifier just consumed.
+function reportHabitWord(mutable parser: Parser, token: Token) {
+  const pos = getPos(token)
+  const next = currentToken(parser)
+  if (token.text == "this") {
+    failAt(mutable parser, pos, "there is no `this`; pass the value as a parameter")
+  }
+  if (token.text == "new" && next.kind == TokenKind.TokIdent) {
+    failAt(mutable parser, pos, "there is no `new`; write a struct literal such as `Name { field: value }`, or call a function")
+  }
+  if (token.text == "try" && next.kind == TokenKind.TokPunct && next.text == "{") {
+    failAt(mutable parser, pos, "there is no `try` or `catch`; return a `Result` and check it with `is Err` or `match`")
+  }
+  if (token.text == "throw" && isThrowOperand(next)) {
+    failAt(mutable parser, pos, "there is no `throw`; return `Err(value)`, or call `panic` for a bug")
+  }
+}
+
+// isThrowOperand tells whether a token can start the value after `throw`.
+function isThrowOperand(token: Token): bool {
+  const kind = token.kind
+  return kind == TokenKind.TokIdent || kind == TokenKind.TokString || kind == TokenKind.TokTemplate || kind == TokenKind.TokInt || kind == TokenKind.TokFloat || kind == TokenKind.TokChar
+}
+
 function peekToken(parser: Parser, offset: int): Token {
   const count = Arrays.length(parser.tokens)
   if (parser.index + offset < count) {
@@ -200,6 +225,9 @@ function expectIdent(mutable parser: Parser): Token {
   if (token.kind != TokenKind.TokIdent) {
     failAt(mutable parser, getPos(token), `expected a name, found ${describeToken(token)}`)
     return token
+  }
+  if (token.text == "this") {
+    failAt(mutable parser, getPos(token), "there is no `this`; pass the value as a parameter")
   }
   return advance(mutable parser)
 }
@@ -412,6 +440,12 @@ function parseDecl(mutable parser: Parser): Decl {
     return Decl.Test(TestDecl { pos: pos, name: name, body: parseBlock(mutable parser) })
   }
   const token = currentToken(parser)
+  if (token.kind == TokenKind.TokIdent && token.text == "class") {
+    failAt(mutable parser, getPos(token), "there is no `class`; use a `struct` and functions in a module")
+  }
+  if (token.kind == TokenKind.TokIdent && token.text == "interface") {
+    failAt(mutable parser, getPos(token), "there is no `interface`; use a `struct` for data or a `trait` for behavior")
+  }
   failAt(mutable parser, getPos(token), `expected a declaration, found ${describeToken(token)}`)
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
 }
@@ -1395,6 +1429,7 @@ function parsePrimary(mutable parser: Parser): Expr {
   }
   if (token.kind == TokenKind.TokIdent) {
     advance(mutable parser)
+    reportHabitWord(mutable parser, token)
     if (token.text == "null" || token.text == "undefined") {
       failAt(mutable parser, pos, `there is no ${token.text}; use \`None\` with an \`Option\` type`)
       return createDummyExpr()

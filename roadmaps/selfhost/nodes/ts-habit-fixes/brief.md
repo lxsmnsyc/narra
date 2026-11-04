@@ -1,7 +1,7 @@
 ---
 id: ts-habit-fixes
 title: "Diagnostics with fixes for every TypeScript habit"
-status: todo
+status: active
 priority: should
 type: feature
 story:

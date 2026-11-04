@@ -1,7 +1,7 @@
 ---
 id: nested-function-error
 title: "A function inside a function is a dedicated compile error"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 72917
 owns:
   - compiler/testdata/errors/nested_function_*
   - roadmaps/selfhost/nodes/nested-function-error/**

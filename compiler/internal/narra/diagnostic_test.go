@@ -162,6 +162,8 @@ var habitCases = []habitCase{
 	{"this_use", "export function run(args: Array<string>): int {\n  return this.count\n}\n", "E0928", false},
 	{"this_const", "export function run(args: Array<string>): int {\n  const this = 1\n  return 0\n}\n", "E0928", false},
 	{"this_param", "function f(this: int): int {\n  return 1\n}\n" + habitMain, "E0928", false},
+	{"nested_function", "export function run(args: Array<string>): int {\n  function add(a: int): int {\n    return a + 1\n  }\n  return add(1)\n}\n", "E0930", false},
+	{"nested_async_function", "export function run(args: Array<string>): int {\n  async function work(): int {\n    return 1\n  }\n  return 0\n}\n", "E0930", false},
 	{"for_in_array", "export function run(args: Array<string>): int {\n  const xs = [1, 2]\n  for (const k in xs) {\n    print(k)\n  }\n  return 0\n}\n", "E0031", false},
 }
 
@@ -216,7 +218,7 @@ func TestGenericErrorOnce(t *testing.T) {
 
 // Each code of the TypeScript habit diagnostics has a long explanation.
 func TestHabitExplain(t *testing.T) {
-	for _, code := range []string{"E0923", "E0924", "E0925", "E0926", "E0927", "E0928"} {
+	for _, code := range []string{"E0923", "E0924", "E0925", "E0926", "E0927", "E0928", "E0930"} {
 		text, err := Explain(code)
 		if err != nil || !strings.Contains(text, "Narra has no") {
 			t.Errorf("explain %s: %q, %v", code, text, err)

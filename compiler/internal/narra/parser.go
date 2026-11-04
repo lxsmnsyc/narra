@@ -686,7 +686,12 @@ func (p *Parser) stmt() Stmt {
 	if t.Kind == TokIdent && p.toks[p.i+1].Kind == TokPunct && p.toks[p.i+1].Text == ":" {
 		return p.labeledStmt()
 	}
+	if t.Kind == TokIdent && t.Text == "async" && p.toks[p.i+1].Kind == TokKeyword && p.toks[p.i+1].Text == "function" {
+		p.fail(p.toks[p.i+1].Pos, "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments")
+	}
 	switch {
+	case p.is("function"):
+		p.fail(t.Pos, "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments")
 	case p.is("const") || p.is("let"):
 		mutable := p.next().Text == "let"
 		s := &VarStmt{Pos: t.Pos, Mutable: mutable}

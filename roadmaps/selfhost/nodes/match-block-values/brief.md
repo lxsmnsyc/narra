@@ -1,7 +1,7 @@
 ---
 id: match-block-values
 title: "match arms with blocks produce values"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 136983
 owns:
   - compiler/testdata/match_block_values*
   - compiler/testdata/errors/match_block_values_*

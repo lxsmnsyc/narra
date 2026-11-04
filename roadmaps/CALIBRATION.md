@@ -40,3 +40,9 @@ Notes:
 | selfhost | selfhost-emit-program | M | M | 1 | 268k tokens. Clean review. Edited emit.nra, body.nra, main.nra and the test helper outside its paths. |
 | selfhost | selfhost-emit-decls | M | M | 1 | 196k tokens. Clean review with nits. Output proven only after program merged; no diffs then. |
 | selfhost | selfhost-emit-bodies | M | M+ | 2 | 441k tokens. Round 1: functionSignature read an unset body, test lookup bypassed the findBody key. Round 2: a built binary committed at the repo root. |
+| selfhost | selfhost-emit-closures | M | M | 1 | 180k tokens. Clean review with nits. |
+| selfhost | selfhost-emit-match | M | M | 2 | 210k tokens. Round 1: outcome.md uncommitted after a blocked commit. Edited emitstate.nra and emit.nra outside its paths. |
+| selfhost | selfhost-emit-std | M | M | 1 | 183k tokens. Clean review. |
+| selfhost | selfhost-emit-options | M | M | 1 | 212k tokens. Clean review with nits. |
+| selfhost | selfhost-emit-traits | M | M | 1 | 169k tokens. Clean review; filled traitSelf in the checker. |
+| selfhost | selfhost-emit-maps | S | S | 1 | 134k tokens. Self-review; `can-merge` sent it to the maintainer as a PR. |

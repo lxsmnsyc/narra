@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-maps
 title: Self-hosted emitter: Map types, literals, indexes, loops and std/map
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 134144
 owns:
   - selfhost/src/emitmaps.nra
   - compiler/testdata/emit/skips/selfhost-emit-maps.txt
@@ -59,3 +59,5 @@ Emit map typedefs, structs, prototypes and functions from the `runtime_map.h` te
 ## Sizing
 
 S: about 250 Narra lines in one file, with one template substitution.
+
+Shipped in PR #55 (merge commit ec17693).

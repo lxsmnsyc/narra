@@ -11,7 +11,7 @@
 ## Deviations
 
 - `compiler/testdata/typesdump/stdcalls/arrays_maps.nra` and `.dump` (outside the brief's paths): added an `Arrays.entries` loop, because `TestTypesDumpStdCallsCoverage` needs a golden call for every `Array.*` builtin.
-- `diagnostic_codes.go` text for E0232 still lists only `Array.values`; it is not in the brief's paths.
+- Review fixes outside the brief's paths: E0232 text now lists `Array.entries` (`diagnostic_codes.go`, `check_stmt.go`, `selfhost/src/stmts.nra`); a non-iterable gives the loop variable type void, and tuple and struct patterns stay quiet on void (`check_match.go`, `selfhost/src/match.nra`), so no second error follows.
 
 ## Stubs left
 
@@ -20,7 +20,7 @@
 ## Gotchas
 
 - The loop variable shows up in C as `v___for_L_C_N`. Error messages never name it, because the pattern errors come from the declaration.
-- Two heads on one line and column cannot exist, so names cannot clash.
+- Known limit: the hidden name is unique among loops, but a user binding named `__for_<line>_<column>` for the same position (for example `const __for_5_14 = 1` before a loop at 5:14) gives a shadowing error.
 
 ## Proposed learnings
 

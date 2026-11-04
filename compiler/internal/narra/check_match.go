@@ -80,7 +80,9 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 	case PatStruct:
 		st, ok := t.(*StructType)
 		if !ok || st.Tuple {
-			c.errorf(p.Pos, "a struct pattern needs a struct value, found %s", t)
+			if t != TVoid { // void marks a value that already had an error
+				c.errorf(p.Pos, "a struct pattern needs a struct value, found %s", t)
+			}
 			c.bindRest(p, root, seen)
 			return
 		}
@@ -106,7 +108,9 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 	case PatTuple:
 		st, ok := t.(*StructType)
 		if !ok || !st.Tuple {
-			c.errorf(p.Pos, "a tuple pattern needs a tuple value, found %s", t)
+			if t != TVoid {
+				c.errorf(p.Pos, "a tuple pattern needs a tuple value, found %s", t)
+			}
 			c.bindRest(p, root, seen)
 			return
 		}

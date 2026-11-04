@@ -229,8 +229,8 @@ func (c *Checker) stmt(s Stmt) {
 				elem = at.Elem
 			}
 		default:
-			c.errorf(s.Iter.position(), "for ... of needs Range.upTo, Range.between, Array.values, Map.keys or Map.entries, found %s", t)
-			elem = TInt
+			c.errorf(s.Iter.position(), "for ... of needs Range.upTo, Range.between, Array.values, Array.entries, Map.keys or Map.entries, found %s", t)
+			elem = TVoid
 		}
 		c.push()
 		s.Local = c.declare(s.Pos, s.Name, elem, false)

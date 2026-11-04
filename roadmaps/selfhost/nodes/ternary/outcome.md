@@ -7,6 +7,7 @@
 - Tail calls: `return c ? a : b` is parsed into an `if` statement (`returnedTernary`, `convertReturnedTernary`), nested ternaries too, so the existing tail-call pre-pass sees `return f(...)` in a branch. `climb(-5000000)` and `countdown(5000000, 0)` in the sample run as loops.
 - Code E0934: a missing `:` ("a conditional expression needs `:` and a second value, as in `cond ? a : b`"), in `diagnostic_codes.go`.
 - Tests: `compiler/testdata/ternary.nra` and `.out`; `compiler/testdata/errors/ternary_{condition_not_bool,branch_types,missing_colon}.nra`.
+- E0929 (mutable-read-conflict) needed no code: a ternary is a block expression holding an `if`, and the use scan already treats the two branches of an `if` as exclusive. Tests: `errors/ternary_mutable_conflict.nra` (`x + (c ? bump(mutable x) : 0)`) and `ternary_mutable.nra` (`c ? bump(mutable x) : x` is legal).
 - Docs: SPEC.md section 2 (block expressions list), DECISIONS.md D75 line, `compiler/README.md` "Supported".
 
 ## Deviations

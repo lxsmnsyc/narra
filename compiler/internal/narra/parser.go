@@ -10,6 +10,9 @@ import (
 type Parser struct {
 	toks []Token
 	i    int
+	// resultFunc is true inside a function declared to return Result, where
+	// the throw fix is right. Closures clear it.
+	resultFunc bool
 }
 
 // templateDot finds `Name.` inside a template string. The parser does not keep
@@ -45,13 +48,7 @@ func Parse(src string) (*File, error) {
 	}
 	// The header ends at the last leading comment line that a blank line
 	// follows; a comment right above a declaration is its doc comment.
-	f.Header = 1
-	lines := strings.Split(src, "\n")
-	for i := 0; i < len(lines) && strings.HasPrefix(lines[i], "//"); i++ {
-		if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
-			f.Header = i + 2
-		}
-	}
+	f.Header = headerLine(src)
 	return f, nil
 }
 
@@ -99,6 +96,9 @@ func (p *Parser) expect(text string) Token {
 func (p *Parser) ident() Token {
 	if p.tok().Kind != TokIdent {
 		p.fail(p.tok().Pos, "expected a name, found %s", describe(p.tok()))
+	}
+	if p.tok().Text == "this" {
+		p.fail(p.tok().Pos, "there is no `this`; pass the value as a parameter")
 	}
 	return p.next()
 }
@@ -245,6 +245,7 @@ func (p *Parser) decl() Decl {
 		name := p.next().Text
 		return &TestDecl{Pos: pos, Name: name, Body: p.block()}
 	}
+	p.habitDecl()
 	p.fail(p.tok().Pos, "expected a declaration, found %s", describe(p.tok()))
 	return nil
 }
@@ -369,7 +370,10 @@ func (p *Parser) constDecl(exported bool) *ConstDecl {
 
 func (p *Parser) funcDecl(exported bool) *FuncDecl {
 	fd := p.funcHeader(exported)
+	saved := p.resultFunc
+	p.resultFunc = fd.Result != nil && fd.Result.Name == "Result"
 	fd.Body = p.block()
+	p.resultFunc = saved
 	return fd
 }
 
@@ -626,11 +630,14 @@ func (p *Parser) arrow() Expr {
 		a.Result = p.typeExpr()
 	}
 	p.expect("=>")
+	saved := p.resultFunc
+	p.resultFunc = false
 	if p.is("{") {
 		a.Block = p.block()
 	} else {
 		a.Body = p.expr()
 	}
+	p.resultFunc = saved
 	return a
 }
 
@@ -1129,6 +1136,7 @@ func (p *Parser) primary() Expr {
 		return p.template(t)
 	case TokIdent:
 		p.next()
+		p.habitExpr(t)
 		if t.Text == "null" || t.Text == "undefined" {
 			fix := Fix{Title: "use None", Edits: []Edit{{Start: t.Pos, End: Pos{t.Pos.Line, t.Pos.Col + len(t.Text)}, Text: "None"}}}
 			p.failFix(t.Pos, []Fix{fix}, "there is no %s; use `None` with an `Option` type", t.Text)
@@ -1363,4 +1371,17 @@ func (p *Parser) paramAfterComma() bool {
 	}
 	n := p.toks[p.i+2]
 	return n.Kind == TokIdent || (n.Kind == TokPunct && n.Text == ":")
+}
+
+// headerLine returns the line after the leading comment block that a blank
+// line follows, or 1. A comment right above a declaration is its doc comment.
+func headerLine(src string) int {
+	header := 1
+	lines := strings.Split(src, "\n")
+	for i := 0; i < len(lines) && strings.HasPrefix(lines[i], "//"); i++ {
+		if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
+			header = i + 2
+		}
+	}
+	return header
 }

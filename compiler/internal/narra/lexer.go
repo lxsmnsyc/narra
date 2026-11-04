@@ -168,12 +168,15 @@ func (lx *Lexer) run() error {
 			}
 			lx.emit(TokString, s, pos)
 		case r == '\'':
+			start := lx.i
 			s, err := lx.quoted('\'', pos)
 			if err != nil {
 				return err
 			}
 			if len([]rune(s)) != 1 {
-				return lx.errorf(pos, "a character literal holds exactly one character; use double quotes for strings")
+				d := lx.errorf(pos, "a character literal holds exactly one character; use double quotes for strings").(Diagnostic)
+				d.Fixes = quoteFix(pos, Pos{lx.line, lx.col - 1}, string(lx.src[start:lx.i]))
+				return d
 			}
 			lx.emit(TokChar, s, pos)
 		case r == '`':

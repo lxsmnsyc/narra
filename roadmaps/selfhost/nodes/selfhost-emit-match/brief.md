@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-match
 title: Self-hosted emitter: is, match, destructuring, tuples and spreads
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 210192
 owns:
   - selfhost/src/emitmatch.nra
   - compiler/testdata/emit/skips/selfhost-emit-match.txt
@@ -56,3 +56,5 @@ Emit `is` conditions, `if (x is P)`, `match` as a statement and as a value, dest
 ## Sizing
 
 M: about 350 Narra lines in one file.
+
+Shipped in PR #51 (merge commit c80b6d2).

@@ -693,6 +693,7 @@ damage(mutable hero, 10)      // hero.hp is now 90
 
 - **The argument must be changeable.** It must be a `let` variable, a `mutable` parameter, or a field or element of one. A `const`, a literal or a function result is a compile error.
 - **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
+- **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `x + bump(mutable x)` and `pair(y, bump(mutable y))` are compile errors. Bind the call first: `const bumped = bump(mutable x)`, then `x + bumped`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`.
 - **A `mutable` parameter cannot escape.** It cannot be stored, captured by a closure, or returned. Copying its value with `const copy = player` is allowed.
 - **No copies.** The compiler passes a pointer to the caller's variable. Changes are written in place, with no copy and no reference count change for the variable itself.
 - **Other parameters are values.** A parameter without `mutable` is a constant copy. To build new data instead of changing the caller's data, return a new value.

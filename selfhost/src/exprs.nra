@@ -22,7 +22,7 @@
 // every checked expression (setNodeType) and what a name or call resolves to
 // (setRef).
 import { Pos, Expr, Arg, FieldInit, TypeExpr, Decl, Param, ConstDecl } from "narrac/ast"
-import { quoteGo } from "narrac/parser"
+import { quoteGo, localFuncSource } from "narrac/parser"
 import { Type, Field } from "narrac/types"
 import { Checker, internComposite, Ref, BodyRoot, Walker, ConstInfo, CONST_NEW, CONST_BUSY, CONST_DONE, reportError, enter, typeString, startBody, finishBody, keyBody, setNodeType, getNodeType, setRef, getRef, findLocal, getLocal, getExpressionId, getExpressionPos, isNumeric } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
@@ -260,6 +260,15 @@ function checkName<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, 
   if (checker.scopes[scope].modules[name] is Some(_)) {
     reportError(mutable checker, pos, "a module is not a value")
     return Type.TVoid
+  }
+  // Inside a hoisted local function, the name is probably a local of the
+  // enclosing function.
+  if (checker.body >= 0 && checker.bodies[checker.body].kind == "func" && checker.bodies[checker.body].arrowDepth == 0) {
+    const source = localFuncSource(checker.bodies[checker.body].name)
+    if (source != "") {
+      reportError(mutable checker, pos, `unknown name ${quoteGo(name)}; local function ${quoteGo(source)} cannot use the locals of its enclosing function, pass them as arguments`)
+      return Type.TVoid
+    }
   }
   reportError(mutable checker, pos, `unknown name ${quoteGo(name)}`)
   return Type.TVoid

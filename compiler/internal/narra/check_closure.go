@@ -558,3 +558,40 @@ func cloneArrow(e *ArrowExpr) *ArrowExpr {
 	}
 	return a
 }
+
+// checkLocalFuncNames reports a local function whose source name is also the
+// name of a function, constant, type or import of its module. The parser has
+// given every local function a hidden module-level name, so nothing else
+// would catch the shadowing.
+func (c *Checker) checkLocalFuncNames(f *File) {
+	taken := map[string]bool{}
+	for _, imp := range f.Imports {
+		if imp.Alias != "" {
+			taken[imp.Alias] = true
+		}
+		for _, n := range imp.Names {
+			taken[n.Local] = true
+		}
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *FuncDecl:
+			if _, local := localFuncSource(d.Name); !local {
+				taken[d.Name] = true
+			}
+		case *ConstDecl:
+			taken[d.Name] = true
+		case *StructDecl:
+			taken[d.Name] = true
+		case *EnumDecl:
+			taken[d.Name] = true
+		}
+	}
+	for _, d := range f.Decls {
+		if fd, ok := d.(*FuncDecl); ok {
+			if src, local := localFuncSource(fd.Name); local && taken[src] {
+				c.errorf(fd.Pos, "local function %q has the name of a declaration of this module; shadowing is not allowed", src)
+			}
+		}
+	}
+}

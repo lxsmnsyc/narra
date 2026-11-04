@@ -264,6 +264,9 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0913", "%s needs a function that returns a value"},
 	{"E0914", "%s.%s names a type; this module imports %q as %s"},
 	{"E0915", "mutable parameter %q cannot be returned or stored; copy it first with `const copy = %s`"},
+	{"E0919", "%q is the name of a local function in this scope; shadowing is not allowed"},
+	{"E0919", "local function %q has the name of a declaration of this module; shadowing is not allowed"},
+	{"E0919", "unknown name %q; local function %q cannot use the locals of its enclosing function, pass them as arguments"},
 }
 
 var codeByFormat = func() map[string]string {

@@ -10,6 +10,90 @@ import (
 type Parser struct {
 	toks []Token
 	i    int
+	// locals are the local functions visible at the current point, innermost
+	// last. hoisted holds the finished local functions of the declaration
+	// being parsed; file moves them to module level after it.
+	locals  []localFunc
+	hoisted []Decl
+}
+
+// localFunc maps the source name of a local function to its module-level name.
+type localFunc struct{ name, hidden string }
+
+// localFuncName is the module-level name of a local function: its source name
+// and the position of that name, so it is unique and both compilers agree.
+func localFuncName(name Token) string {
+	return fmt.Sprintf("__local_%s_%d_%d", name.Text, name.Pos.Line, name.Pos.Col)
+}
+
+// localFuncSource gives the source name of a hoisted local function.
+func localFuncSource(hidden string) (string, bool) {
+	rest, ok := strings.CutPrefix(hidden, "__local_")
+	if !ok {
+		return "", false
+	}
+	for range 2 {
+		cut := strings.LastIndex(rest, "_")
+		if cut < 0 {
+			return "", false
+		}
+		rest = rest[:cut]
+	}
+	return rest, rest != ""
+}
+
+func (p *Parser) findLocalFunc(name string) (localFunc, int, bool) {
+	for i := len(p.locals) - 1; i >= 0; i-- {
+		if p.locals[i].name == name {
+			return p.locals[i], i, true
+		}
+	}
+	return localFunc{}, 0, false
+}
+
+// notLocalFunc rejects a binding that would shadow a local function.
+func (p *Parser) notLocalFunc(pos Pos, name string) {
+	if _, _, ok := p.findLocalFunc(name); ok {
+		p.fail(pos, "%q is the name of a local function in this scope; shadowing is not allowed", name)
+	}
+}
+
+// declareLocalFuncs finds the `function name` declarations that sit directly
+// in the block that starts at the current token, so a call may come before
+// the declaration.
+func (p *Parser) declareLocalFuncs(mark int) {
+	depth := 0
+	for i := p.i; i+1 < len(p.toks); i++ {
+		t := p.toks[i]
+		if t.Kind == TokPunct && t.Text == "{" {
+			depth++
+		} else if t.Kind == TokPunct && t.Text == "}" {
+			if depth == 0 {
+				return
+			}
+			depth--
+		} else if depth == 0 && t.Text == "function" && t.Kind == TokKeyword && p.toks[i+1].Kind == TokIdent {
+			name := p.toks[i+1]
+			if _, at, ok := p.findLocalFunc(name.Text); ok {
+				if at >= mark {
+					p.fail(name.Pos, "function %q is declared twice", name.Text)
+				}
+				p.fail(name.Pos, "%q is the name of a local function in this scope; shadowing is not allowed", name.Text)
+			}
+			p.locals = append(p.locals, localFunc{name.Text, localFuncName(name)})
+		}
+	}
+}
+
+// localFuncDecl parses a function declared inside a function body. It becomes
+// a private module-level function with a hidden name, and the block keeps no
+// statement for it.
+func (p *Parser) localFuncDecl() {
+	hidden := localFuncName(p.toks[p.i+1]) // the token stream always ends with EOF
+	fd := p.funcDecl(false)
+	fd.Name = hidden
+	p.hoisted = append(p.hoisted, fd)
+	p.skipNewlines()
 }
 
 // templateDot finds `Name.` inside a template string. The parser does not keep
@@ -163,6 +247,8 @@ func (p *Parser) file() (f *File, err error) {
 	}
 	for p.tok().Kind != TokEOF {
 		f.Decls = append(f.Decls, p.decl())
+		f.Decls = append(f.Decls, p.hoisted...)
+		p.hoisted = nil
 		p.skipNewlines()
 	}
 	return f, nil
@@ -386,6 +472,7 @@ func (p *Parser) funcHeader(exported bool) *FuncDecl {
 		param := &Param{Pos: p.tok().Pos}
 		param.Mutable = p.accept("mutable")
 		param.Escaping = !param.Mutable && p.acceptEscaping()
+		p.notLocalFunc(param.Pos, p.tok().Text)
 		param.Name = p.ident().Text
 		p.expect(":")
 		param.Type = p.typeExpr()
@@ -612,6 +699,7 @@ func (p *Parser) arrow() Expr {
 		if p.is("mutable") {
 			p.fail(p.tok().Pos, "arrow function parameters cannot be mutable")
 		}
+		p.notLocalFunc(p.tok().Pos, p.tok().Text)
 		param := &Param{Pos: p.tok().Pos, Name: p.ident().Text}
 		if p.accept(":") {
 			param.Type = p.typeExpr()
@@ -636,14 +724,21 @@ func (p *Parser) arrow() Expr {
 
 func (p *Parser) block() *Block {
 	b := &Block{Pos: p.expect("{").Pos}
+	mark := len(p.locals)
+	p.declareLocalFuncs(mark)
 	p.skipNewlines()
 	for !p.is("}") {
 		if p.tok().Kind == TokEOF {
 			p.fail(p.tok().Pos, "unexpected end of file inside a block")
 		}
+		if p.is("function") {
+			p.localFuncDecl()
+			continue
+		}
 		b.Stmts = append(b.Stmts, p.stmt())
 	}
 	p.expect("}")
+	p.locals = p.locals[:mark]
 	return b
 }
 
@@ -658,6 +753,7 @@ func (p *Parser) stmt() Stmt {
 		if p.is("{") || p.is("#[") || ctor {
 			s.Pattern = p.pattern()
 		} else {
+			p.notLocalFunc(p.tok().Pos, p.tok().Text)
 			s.Name = p.ident().Text
 		}
 		if p.accept(":") {
@@ -700,6 +796,7 @@ func (p *Parser) stmt() Stmt {
 		if p.is("{") || p.is("#[") || ctor {
 			pattern = p.pattern()
 		} else {
+			p.notLocalFunc(p.tok().Pos, p.tok().Text)
 			name = p.ident().Text
 		}
 		if p.is("in") || (p.tok().Kind == TokIdent && p.tok().Text == "in") {
@@ -1043,7 +1140,11 @@ func (p *Parser) primary() Expr {
 			fix := Fix{Title: "use None", Edits: []Edit{{Start: t.Pos, End: Pos{t.Pos.Line, t.Pos.Col + len(t.Text)}, Text: "None"}}}
 			p.failFix(t.Pos, []Fix{fix}, "there is no %s; use `None` with an `Option` type", t.Text)
 		}
-		return &Ident{exprBase: base, Name: t.Text}
+		name := t.Text
+		if local, _, ok := p.findLocalFunc(name); ok {
+			name = local.hidden
+		}
+		return &Ident{exprBase: base, Name: name}
 	case TokKeyword:
 		switch t.Text {
 		case "true", "false":
@@ -1129,7 +1230,7 @@ func (p *Parser) template(t Token) Expr {
 			for k := range inner {
 				inner[k].Pos = t.Pos
 			}
-			sub := &Parser{toks: inner}
+			sub := &Parser{toks: inner, locals: p.locals}
 			e := sub.expr()
 			lit.Parts = append(lit.Parts, e)
 			i = j

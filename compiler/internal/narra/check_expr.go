@@ -58,6 +58,12 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 			c.errorf(e.P, "a module is not a value")
 			return TVoid
 		}
+		if c.fn != nil {
+			if src, local := localFuncSource(c.fn.Name); local {
+				c.errorf(e.P, "unknown name %q; local function %q cannot use the locals of its enclosing function, pass them as arguments", e.Name, src)
+				return TVoid
+			}
+		}
 		c.errorf(e.P, "unknown name %q", e.Name)
 		return TVoid
 	case *FieldExpr:

@@ -242,6 +242,7 @@ func (c *Checker) declareModule(f *File) []Type {
 	}
 	c.declareTraits(f)
 	c.checkImportNames(f)
+	c.checkLocalFuncNames(f)
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *StructDecl:

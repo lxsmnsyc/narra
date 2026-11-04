@@ -41,6 +41,12 @@ struct Parser {
   index: int
   nextId: int
   failed: Option<Diagnostic>
+  // The local functions visible at this point (source name and hidden
+  // module-level name, innermost last), and the finished local functions of
+  // the declaration being parsed. parseFile moves those to module level.
+  localNames: Array<string> = []
+  localHidden: Array<string> = []
+  hoisted: Array<Decl> = []
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -327,6 +333,10 @@ function parseFile(mutable parser: Parser): File {
   }
   while (isOk(parser) && currentToken(parser).kind != TokenKind.TokEof) {
     Arrays.push(mutable declarations, parseDecl(mutable parser))
+    for (const hoisted of Arrays.values(parser.hoisted)) {
+      Arrays.push(mutable declarations, hoisted)
+    }
+    parser.hoisted = []
     skipNewlines(mutable parser)
   }
   return File { imports: imports, declarations: declarations }
@@ -592,6 +602,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     if (!isMutable) {
       escaping = acceptEscaping(mutable parser)
     }
+    rejectLocalFunc(mutable parser, paramPos)
     const paramName = expectIdent(mutable parser).text
     expect(mutable parser, ":")
     const paramType = parseType(mutable parser)
@@ -868,6 +879,7 @@ function parseArrow(mutable parser: Parser): Expr {
       return createDummyExpr()
     }
     const paramPos = getPos(currentToken(parser))
+    rejectLocalFunc(mutable parser, paramPos)
     const paramName = expectIdent(mutable parser).text
     let paramType: Option<TypeExpr> = None
     if (accept(mutable parser, ":")) {
@@ -892,8 +904,110 @@ function parseArrow(mutable parser: Parser): Expr {
   return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, Some(body), None)
 }
 
+// localFuncName is the module-level name of a local function: its source name
+// and the position of that name.
+function localFuncName(name: Token): string uses alloc {
+  return `__local_${name.text}_${Int.toString(name.line)}_${Int.toString(name.column)}`
+}
+
+// localFuncSource gives the source name of a hoisted local function, or the
+// empty string when the name is not one.
+export function localFuncSource(hidden: string): string uses alloc {
+  if (!Str.startsWith(hidden, "__local_")) {
+    return ""
+  }
+  let rest = Str.sliceFrom(hidden, 8)
+  // Drop the "_<line>_<column>" suffix.
+  for (const _ of Ranges.between(0, 2)) {
+    let cut = Str.length(rest) - 1
+    while (cut >= 0 && Str.charAt(rest, cut) != '_') {
+      cut = cut - 1
+    }
+    if (cut < 0) {
+      return ""
+    }
+    rest = Str.slice(rest, 0, cut)
+  }
+  return rest
+}
+
+// findLocalFunc is the index of a local function in scope, or -1.
+function findLocalFunc(parser: Parser, name: string): int {
+  let index = Arrays.length(parser.localNames) - 1
+  while (index >= 0) {
+    if (parser.localNames[index] == name) {
+      return index
+    }
+    index = index - 1
+  }
+  return -1
+}
+
+// rejectLocalFunc fails when the name at the current token, about to be bound,
+// would shadow a local function.
+function rejectLocalFunc(mutable parser: Parser, pos: Pos) {
+  const name = currentToken(parser).text
+  if (findLocalFunc(parser, name) >= 0) {
+    failAt(mutable parser, pos, `${quoteGo(name)} is the name of a local function in this scope; shadowing is not allowed`)
+  }
+}
+
+// declareLocalFuncs finds the `function name` declarations that sit directly in
+// the block that starts at the current token, so a call may come before the
+// declaration.
+function declareLocalFuncs(mutable parser: Parser, mark: int) uses alloc {
+  let depth = 0
+  let index = parser.index
+  while (index + 1 < Arrays.length(parser.tokens) && isOk(parser)) {
+    const token = parser.tokens[index]
+    if (token.kind == TokenKind.TokPunct && token.text == "{") {
+      depth = depth + 1
+    } else if (token.kind == TokenKind.TokPunct && token.text == "}") {
+      if (depth == 0) {
+        return
+      }
+      depth = depth - 1
+    } else if (depth == 0 && token.kind == TokenKind.TokKeyword && token.text == "function" && parser.tokens[index + 1].kind == TokenKind.TokIdent) {
+      const name = parser.tokens[index + 1]
+      const found = findLocalFunc(parser, name.text)
+      if (found >= mark) {
+        failAt(mutable parser, getPos(name), `function ${quoteGo(name.text)} is declared twice`)
+      } else if (found >= 0) {
+        failAt(mutable parser, getPos(name), `${quoteGo(name.text)} is the name of a local function in this scope; shadowing is not allowed`)
+      }
+      Arrays.push(mutable parser.localNames, name.text)
+      Arrays.push(mutable parser.localHidden, localFuncName(name))
+    }
+    index = index + 1
+  }
+}
+
+// dropLocalFuncs forgets the local functions of a block that ended.
+function dropLocalFuncs(mutable parser: Parser, mark: int) {
+  let names: Array<string> = []
+  let hidden: Array<string> = []
+  for (const index of Ranges.between(0, mark)) {
+    Arrays.push(mutable names, parser.localNames[index])
+    Arrays.push(mutable hidden, parser.localHidden[index])
+  }
+  parser.localNames = names
+  parser.localHidden = hidden
+}
+
+// parseLocalFunc parses a function declared inside a function body. It becomes
+// a private module-level function with a hidden name, and the block keeps no
+// statement for it.
+function parseLocalFunc(mutable parser: Parser) uses alloc {
+  const hidden = localFuncName(peekToken(parser, 1))
+  const declaration = parseFuncDecl(mutable parser, false)
+  Arrays.push(mutable parser.hoisted, Decl.Func(FuncDecl { ...declaration, name: hidden }))
+  skipNewlines(mutable parser)
+}
+
 function parseBlock(mutable parser: Parser): Block {
   const pos = getPos(expect(mutable parser, "{"))
+  const mark = Arrays.length(parser.localNames)
+  declareLocalFuncs(mutable parser, mark)
   skipNewlines(mutable parser)
   let statements: Array<Stmt> = []
   while (isOk(parser) && !isAt(parser, "}")) {
@@ -901,9 +1015,14 @@ function parseBlock(mutable parser: Parser): Block {
       failHere(mutable parser, "unexpected end of file inside a block")
       break
     }
+    if (isAt(parser, "function")) {
+      parseLocalFunc(mutable parser)
+      continue
+    }
     Arrays.push(mutable statements, parseStmt(mutable parser))
   }
   expect(mutable parser, "}")
+  dropLocalFuncs(mutable parser, mark)
   return Block { pos: pos, statements: statements }
 }
 
@@ -919,6 +1038,8 @@ function parseStmt(mutable parser: Parser): Stmt {
     if (isAt(parser, "{") || isAt(parser, "#[") || isConstructor) {
       pattern = Some(parsePattern(mutable parser))
     } else {
+      const namePos = getPos(currentToken(parser))
+      rejectLocalFunc(mutable parser, namePos)
       name = expectIdent(mutable parser).text
     }
     let declaredType: Option<TypeExpr> = None
@@ -967,6 +1088,8 @@ function parseStmt(mutable parser: Parser): Stmt {
     if (isAt(parser, "{") || isAt(parser, "#[") || isConstructor) {
       pattern = Some(parsePattern(mutable parser))
     } else {
+      const namePos = getPos(currentToken(parser))
+      rejectLocalFunc(mutable parser, namePos)
       name = expectIdent(mutable parser).text
     }
     if (isAt(parser, "in") || isWord(parser, "in")) {
@@ -1366,7 +1489,12 @@ function parsePrimary(mutable parser: Parser): Expr {
       failAt(mutable parser, pos, `there is no ${token.text}; use \`None\` with an \`Option\` type`)
       return createDummyExpr()
     }
-    return Expr.Ident(newId(mutable parser), pos, token.text)
+    let identName = token.text
+    const localIndex = findLocalFunc(parser, identName)
+    if (localIndex >= 0) {
+      identName = parser.localHidden[localIndex]
+    }
+    return Expr.Ident(newId(mutable parser), pos, identName)
   }
   if (token.kind == TokenKind.TokKeyword) {
     if (token.text == "true" || token.text == "false") {
@@ -1468,7 +1596,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       for (const innerToken of Arrays.values(lexed.value)) {
         Arrays.push(mutable inner, Token { ...innerToken, line: token.line, column: token.column })
       }
-      let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None }
+      let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None, localNames: parser.localNames, localHidden: parser.localHidden }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
       if (innerParser.failed is Some(diagnostic)) {

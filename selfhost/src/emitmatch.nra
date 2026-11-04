@@ -14,6 +14,7 @@ import { Ref, getExpressionId, findBodySlot } from "narrac/check"
 import { getPatternId } from "narrac/patterns"
 import { cType } from "narrac/cnames"
 import { Emitter, Code, EmitWalker, TempVar, reportUnsupported, writeLine, temp, ownedTemp, consume, beginStatement, endStatement, pushScope, popScope, addLocal, needsRc, typeOf, refOf, localOf, retainCode, localName } from "narrac/emitstate"
+import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -204,7 +205,7 @@ export function emitIfIs<W: EmitWalker>(walker: W, mutable emitter: Emitter, sta
 
 // emitMatchArms emits an if-chain over the arms. A value match assigns each
 // arm's value to result; a statement match runs each arm.
-function emitMatchArms<W: EmitWalker>(walker: W, mutable emitter: Emitter, subject: Expr, arms: Array<MatchArm>, isValue: bool, result: string, resultType: Type) uses alloc {
+function emitMatchArms<W: EmitWalker>(walker: W, mutable emitter: Emitter, subject: Expr, arms: Array<MatchArm>, isValue: bool, returning: bool, result: string, resultType: Type) uses alloc {
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
   const subjectType = typeOf(emitter, getExpressionId(subject))
   const held = temp(mutable emitter, subjectType, code.text)
@@ -231,7 +232,11 @@ function emitMatchArms<W: EmitWalker>(walker: W, mutable emitter: Emitter, subje
       emitter.indent = emitter.indent + 1
     }
     writeLine(mutable emitter, `${done} = true;`)
-    if (isValue) {
+    if (returning) {
+      if (arm.body is Some(armBody)) {
+        Tail.emitReturnArm(walker, mutable emitter, armBody, resultType)
+      }
+    } else if (isValue) {
       emitValueArm(walker, mutable emitter, arm, result, resultType)
     } else {
       emitStatementArm(walker, mutable emitter, arm)
@@ -254,6 +259,10 @@ function emitStatementArm<W: EmitWalker>(walker: W, mutable emitter: Emitter, ar
     return
   }
   if (arm.body is Some(body)) {
+    if (Tail.isTailCall(emitter, body)) {
+      Tail.emitTailJump(walker, mutable emitter, body)
+      return
+    }
     beginStatement(mutable emitter)
     const code = EmitWalker.emitExpression(walker, mutable emitter, body)
     if (code.text != "" && typeOf(emitter, getExpressionId(body)) == Type.TVoid) {
@@ -278,11 +287,24 @@ function emitValueArm<W: EmitWalker>(walker: W, mutable emitter: Emitter, arm: M
 export function emitMatchStatement<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: Stmt) uses alloc {
   if (statement is Stmt.ExprStmt(_, expression)) {
     if (expression is Expr.MatchExpr(_, _, subject, arms)) {
-      emitMatchArms(walker, mutable emitter, subject, arms, false, "", Type.TVoid)
+      emitMatchArms(walker, mutable emitter, subject, arms, false, false, "", Type.TVoid)
       return
     }
   }
   const _ = reportUnsupported(mutable emitter, "match statement", NODE)
+}
+
+// emitReturnMatch emits `return match ...` with each arm returning its own
+// value, so an arm that is a tail call becomes a jump (Go's returnMatch).
+export function emitReturnMatch<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr) uses alloc {
+  if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
+    const resultType = typeOf(emitter, nodeId)
+    beginStatement(mutable emitter)
+    emitMatchArms(walker, mutable emitter, subject, arms, false, true, "", resultType)
+    emitter.frames = Tail.withoutLastFrame(emitter.frames)
+    return
+  }
+  const _ = reportUnsupported(mutable emitter, "match expression", NODE)
 }
 
 // emitMatchValue emits a match used as a value into a result variable.
@@ -293,7 +315,7 @@ export function emitMatchValue<W: EmitWalker>(walker: W, mutable emitter: Emitte
     const result = `r${Int.toString(emitter.tempCount)}`
     const resultName = cType(emitter.checker, resultType)
     writeLine(mutable emitter, `${resultName} ${result};`)
-    emitMatchArms(walker, mutable emitter, subject, arms, true, result, resultType)
+    emitMatchArms(walker, mutable emitter, subject, arms, true, false, result, resultType)
     if (needsRc(emitter, resultType)) {
       const top = Arrays.length(emitter.frames) - 1
       Arrays.push(mutable emitter.frames[top], TempVar { name: result, tempType: resultType })

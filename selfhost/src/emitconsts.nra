@@ -9,6 +9,7 @@ import { cType, functionName, functionSignature, constName, constGetterName, dec
 import { Emitter, Code, EmitWalker, ScopeFrame, reportUnsupported, writeLine, where, consume, beginStatement, endStatement, unwindAll, releaseCode, localOf } from "narrac/emitstate"
 import * as Exprs from "narrac/emitexprs"
 import * as Stmts from "narrac/emitstmts"
+import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -190,14 +191,14 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   if (bodyBlock(emitter.checker, body) is Some(block)) {
     // A function with a self tail call owns its parameters and has a jump target.
     emitter.tailProgram = Some(program)
-    if (Stmts.hasSelfTailCall(emitter, block)) {
-      Stmts.openTailLoop(mutable emitter, program)
-    } else {
-      emitter.tailProgram = None
+    emitter.tailCalls = Tail.findTailCalls(emitter, program, block, facts.result == Type.TVoid)
+    if (Arrays.length(emitter.tailCalls) > 0) {
+      Tail.openTailLoop(mutable emitter, program)
     }
     EmitWalker.emitBlockInScope(walker, mutable emitter, block)
   }
   emitter.tailProgram = None
+  emitter.tailCalls = []
   unwindAll(mutable emitter)
   if (facts.result != Type.TVoid) {
     const position = where(emitter, facts.pos)

@@ -12,6 +12,7 @@ import { checkExpression, expectType, checkConstWrite, checkNoMutableEscape, fin
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
 import { getPatternId, collectPatternLocals, bindPatternLocals, findNarrowable, setNarrowed, findOtherVariant, areArgumentsIrrefutable } from "narrac/patterns"
 import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 
 // checkBlock checks the statements of a block in a scope of their own.
 export function checkBlock<W: Walker>(mutable checker: Checker, walker: W, block: Block) uses alloc {
@@ -30,16 +31,57 @@ export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, s
     Stmt.ExprStmt(pos, expression) => checkExpressionStatement(mutable checker, walker, pos, expression)
     Stmt.ReturnStmt(pos, value) => checkReturn(mutable checker, walker, pos, value)
     Stmt.IfStmt(_, condition, then, orElse) => checkIf(mutable checker, walker, condition, then, orElse)
-    Stmt.WhileStmt(_, condition, body) => checkWhile(mutable checker, walker, condition, body)
-    Stmt.ForStmt(nodeId, pos, name, iterable, body) => checkFor(mutable checker, walker, nodeId, pos, name, iterable, body)
-    Stmt.BreakStmt(pos) => checkLoopExit(mutable checker, pos, "break must be inside a loop")
-    Stmt.ContinueStmt(pos) => checkLoopExit(mutable checker, pos, "continue must be inside a loop")
+    Stmt.WhileStmt(pos, label, condition, body) => checkWhile(mutable checker, walker, pos, label, condition, body)
+    Stmt.ForStmt(nodeId, pos, label, name, iterable, body) => checkFor(mutable checker, walker, nodeId, pos, label, name, iterable, body)
+    Stmt.BreakStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "break must be inside a loop")
+    Stmt.ContinueStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "continue must be inside a loop")
   }
 }
 
-function checkLoopExit(mutable checker: Checker, pos: Pos, message: string) uses alloc {
-  if (checker.loops == 0) {
-    reportError(mutable checker, pos, message)
+// checkLoopExit checks a break or continue, with or without a label.
+function checkLoopExit(mutable checker: Checker, pos: Pos, label: string, message: string) uses alloc {
+  if (label == "") {
+    if (checker.loops == 0) {
+      reportError(mutable checker, pos, message)
+    }
+    return
+  }
+  for (const name of Arrays.values(checker.labels)) {
+    if (name == label) {
+      return
+    }
+  }
+  reportError(mutable checker, pos, `no enclosing loop is labeled "${label}"`)
+}
+
+// withoutLast copies a list of labels without its last one.
+function withoutLast(labels: Array<string>): Array<string> uses alloc {
+  let kept: Array<string> = []
+  for (const i of Ranges.upTo(Arrays.length(labels) - 1)) {
+    Arrays.push(mutable kept, labels[i])
+  }
+  return kept
+}
+
+// enterLoop opens a loop body; its label is in scope inside the body only.
+function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc {
+  checker.loops = checker.loops + 1
+  if (label == "") {
+    return
+  }
+  for (const name of Arrays.values(checker.labels)) {
+    if (name == label) {
+      reportError(mutable checker, pos, `label "${label}" is already used by an enclosing loop`)
+      break
+    }
+  }
+  Arrays.push(mutable checker.labels, label)
+}
+
+function leaveLoop(mutable checker: Checker, label: string) uses alloc {
+  checker.loops = checker.loops - 1
+  if (label != "") {
+    checker.labels = withoutLast(checker.labels)
   }
 }
 
@@ -208,14 +250,14 @@ function checkIf<W: Walker>(mutable checker: Checker, walker: W, condition: Expr
   }
 }
 
-function checkWhile<W: Walker>(mutable checker: Checker, walker: W, condition: Expr, body: Block) uses alloc {
+function checkWhile<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, label: string, condition: Expr, body: Block) uses alloc {
   checkCondition(mutable checker, walker, condition)
-  checker.loops = checker.loops + 1
+  enterLoop(mutable checker, pos, label)
   checkBlock(mutable checker, walker, body)
-  checker.loops = checker.loops - 1
+  leaveLoop(mutable checker, label)
 }
 
-function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, name: string, iterable: Expr, body: Block) uses alloc {
+function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, label: string, name: string, iterable: Expr, body: Block) uses alloc {
   // The iterable is a call of a std function that gives the element type.
   const outerLine = checker.forSourceLine
   const outerColumn = checker.forSourceColumn
@@ -267,9 +309,9 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
   // The loop variable lives in a scope around the body.
   pushScope(mutable checker)
   declareLocal(mutable checker, nodeId, pos, name, element, false, false)
-  checker.loops = checker.loops + 1
+  enterLoop(mutable checker, pos, label)
   checkBlock(mutable checker, walker, body)
-  checker.loops = checker.loops - 1
+  leaveLoop(mutable checker, label)
   popScope(mutable checker)
 }
 
@@ -294,8 +336,8 @@ export function diverges(block: Block): bool {
 function statementDiverges(statement: Stmt): bool {
   return match (statement) {
     Stmt.ReturnStmt(_, _) => true
-    Stmt.BreakStmt(_) => true
-    Stmt.ContinueStmt(_) => true
+    Stmt.BreakStmt(_, _) => true
+    Stmt.ContinueStmt(_, _) => true
     Stmt.ExprStmt(_, expression) => isPanicCall(expression)
     Stmt.IfStmt(_, _, then, orElse) => ifDiverges(then, orElse)
     Stmt.BlockStmt(block) => diverges(block)

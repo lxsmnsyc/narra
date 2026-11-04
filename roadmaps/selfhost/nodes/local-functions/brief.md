@@ -1,7 +1,7 @@
 ---
 id: local-functions
 title: "Functions declared inside functions"
-status: active
+status: dropped
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 221332
 owns:
   - compiler/testdata/local_functions*
   - compiler/testdata/errors/local_functions_*

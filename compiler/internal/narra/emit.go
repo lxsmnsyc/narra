@@ -37,7 +37,8 @@ type Emitter struct {
 	tempN    int
 	frames   [][]tempVar // owned temporaries, one list per statement in progress
 	scopes   []*scopeFrame
-	loopTemp []int // frame depth when each enclosing loop started
+	loopTemp []int       // frame depth when each enclosing loop started
+	loops    []*loopInfo // the enclosing loops, parallel to loopTemp
 	fn       *FuncDecl
 	// tailCalls are the self calls of the function being emitted that
 	// become jumps to its start (findTailCalls).
@@ -223,6 +224,7 @@ func (e *Emitter) funcScope(params []*Param) {
 	e.scopes = []*scopeFrame{{}}
 	e.frames = nil
 	e.loopTemp = nil
+	e.loops = nil
 }
 
 func (e *Emitter) pushScope(loop bool) { e.scopes = append(e.scopes, &scopeFrame{loop: loop}) }
@@ -265,7 +267,78 @@ func (e *Emitter) unwindAll() {
 // unwindLoop releases the temporaries and locals created inside the
 // innermost loop, for a break or continue.
 func (e *Emitter) unwindLoop() {
-	depth := e.loopTemp[len(e.loopTemp)-1]
+	e.unwindToLoop(len(e.loopTemp) - 1)
+}
+
+// loopInfo is an enclosing loop: its label and the C labels that a labeled
+// break or continue jumps to. A C label is written only when used.
+type loopInfo struct {
+	label        string
+	pos          Pos
+	breakUsed    bool
+	continueUsed bool
+}
+
+func (l *loopInfo) breakName() string {
+	return fmt.Sprintf("narra_break_%d_%d", l.pos.Line, l.pos.Col)
+}
+
+func (l *loopInfo) continueName() string {
+	return fmt.Sprintf("narra_continue_%d_%d", l.pos.Line, l.pos.Col)
+}
+
+// enterLoop records a loop that starts at the current frame depth.
+func (e *Emitter) enterLoop(label string, pos Pos) {
+	e.loopTemp = append(e.loopTemp, len(e.frames))
+	e.loops = append(e.loops, &loopInfo{label: label, pos: pos})
+}
+
+func (e *Emitter) leaveLoop() *loopInfo {
+	info := e.loops[len(e.loops)-1]
+	e.loopTemp = e.loopTemp[:len(e.loopTemp)-1]
+	e.loops = e.loops[:len(e.loops)-1]
+	return info
+}
+
+// continueLabel ends a loop body with the label that `continue name` jumps to.
+func (e *Emitter) continueLabel() {
+	if info := e.loops[len(e.loops)-1]; info.continueUsed {
+		e.line("%s:;", info.continueName())
+	}
+}
+
+// breakLabel follows a loop with the label that `break name` jumps to.
+func (e *Emitter) breakLabel(info *loopInfo) {
+	if info.breakUsed {
+		e.line("%s:;", info.breakName())
+	}
+}
+
+// labeledExit leaves the loop called label and jumps to its break or
+// continue label.
+func (e *Emitter) labeledExit(label string, isBreak bool) {
+	for k := len(e.loops) - 1; k >= 0; k-- {
+		info := e.loops[k]
+		if info.label != label {
+			continue
+		}
+		e.unwindToLoop(k)
+		if isBreak {
+			info.breakUsed = true
+			e.line("goto %s;", info.breakName())
+		} else {
+			info.continueUsed = true
+			e.line("goto %s;", info.continueName())
+		}
+		return
+	}
+	panic("labeledExit: unknown label " + label)
+}
+
+// unwindToLoop releases what the loops inside loop k, and loop k's own body,
+// hold. The scope of loop k is the k-th loop scope from the outside.
+func (e *Emitter) unwindToLoop(k int) {
+	depth := e.loopTemp[k]
 	for i := len(e.frames) - 1; i >= depth; i-- {
 		for j := len(e.frames[i]) - 1; j >= 0; j-- {
 			if s := release(e.frames[i][j].t, e.frames[i][j].name); s != "" {
@@ -273,10 +346,14 @@ func (e *Emitter) unwindLoop() {
 			}
 		}
 	}
+	stop := len(e.loops) - 1 - k // loop scopes to pass before the target's
 	for i := len(e.scopes) - 1; i >= 0; i-- {
 		e.releaseLocals(e.scopes[i])
 		if e.scopes[i].loop {
-			break
+			if stop == 0 {
+				break
+			}
+			stop--
 		}
 	}
 }

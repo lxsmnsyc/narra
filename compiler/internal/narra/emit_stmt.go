@@ -110,17 +110,27 @@ func (e *Emitter) stmt(s Stmt) {
 		c := e.temp(TBool, cond)
 		e.endStmt()
 		e.line("if (!%s) break;", c)
-		e.loopTemp = append(e.loopTemp, len(e.frames))
+		e.enterLoop(s.Label, s.Pos)
 		e.block(s.Body, true)
-		e.loopTemp = e.loopTemp[:len(e.loopTemp)-1]
+		e.continueLabel()
+		info := e.leaveLoop()
 		e.indent--
 		e.line("}")
+		e.breakLabel(info)
 	case *ForStmt:
 		e.forStmt(s)
 	case *BreakStmt:
+		if s.Label != "" {
+			e.labeledExit(s.Label, true)
+			return
+		}
 		e.unwindLoop()
 		e.line("break;")
 	case *ContinueStmt:
+		if s.Label != "" {
+			e.labeledExit(s.Label, false)
+			return
+		}
 		e.unwindLoop()
 		e.line("continue;")
 	}
@@ -149,11 +159,13 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		}
 		e.line("for (int64_t %s = %s; %s < %s; %s++) {", s.Local.CName, lo, s.Local.CName, hi, s.Local.CName)
 		e.indent++
-		e.loopTemp = append(e.loopTemp, len(e.frames))
+		e.enterLoop(s.Label, s.Pos)
 		e.block(s.Body, true)
-		e.loopTemp = e.loopTemp[:len(e.loopTemp)-1]
+		e.continueLabel()
+		info := e.leaveLoop()
 		e.indent--
 		e.line("}")
+		e.breakLabel(info)
 	case forMapKeys:
 		e.mapFor(s, call, false)
 	case forMapEntries:
@@ -171,7 +183,7 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		idx := fmt.Sprintf("i%d", e.tempN)
 		e.line("for (int64_t %s = 0; %s < %s->len; %s++) {", idx, idx, arr, idx)
 		e.indent++
-		e.loopTemp = append(e.loopTemp, len(e.frames))
+		e.enterLoop(s.Label, s.Pos)
 		e.pushScope(true)
 		if s.Kind == forArrayEntries {
 			// Array.entries gives #[index, item].
@@ -187,9 +199,11 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		e.addLocal(s.Local)
 		e.blockInScope(s.Body)
 		e.popScope()
-		e.loopTemp = e.loopTemp[:len(e.loopTemp)-1]
+		e.continueLabel()
+		info := e.leaveLoop()
 		e.indent--
 		e.line("}")
+		e.breakLabel(info)
 	}
 	e.endStmt()
 }

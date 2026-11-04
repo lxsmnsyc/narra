@@ -77,6 +77,18 @@ export struct Emitter {
   // of those calls (Go: tailCalls). A call inside a closure is never listed.
   tailProgram: Option<ProgramFunc> = None
   tailCalls: Array<int> = []
+  // The enclosing loops, parallel to loopFrames (Go: loops).
+  loopInfos: Array<LoopInfo> = []
+}
+
+// LoopInfo is an enclosing loop: its label and the C labels that a labeled
+// break or continue jumps to. A C label is written only when used.
+export struct LoopInfo {
+  label: string
+  line: int
+  column: int
+  breakUsed: bool
+  continueUsed: bool
 }
 
 // The recursion entry points of the body emitter. Narra function types cannot
@@ -436,7 +448,74 @@ export function unwindAll(mutable emitter: Emitter) uses alloc {
 // unwindLoop releases the temporaries and locals made inside the innermost
 // loop, for a break or continue.
 export function unwindLoop(mutable emitter: Emitter) uses alloc {
-  const depth = emitter.loopFrames[Arrays.length(emitter.loopFrames) - 1]
+  const innermost = Arrays.length(emitter.loopFrames) - 1
+  unwindToLoop(mutable emitter, innermost)
+}
+
+// enterLoop records a loop that starts at the current frame depth.
+export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) uses alloc {
+  const depth = Arrays.length(emitter.frames)
+  Arrays.push(mutable emitter.loopFrames, depth)
+  Arrays.push(mutable emitter.loopInfos, LoopInfo { label: label, line: pos.line, column: pos.column, breakUsed: false, continueUsed: false })
+}
+
+// leaveLoop forgets the innermost loop and gives its record back.
+export function leaveLoop(mutable emitter: Emitter): LoopInfo uses alloc {
+  const last = Arrays.length(emitter.loopInfos) - 1
+  const info = emitter.loopInfos[last]
+  let keptFrames: Array<int> = []
+  let keptInfos: Array<LoopInfo> = []
+  for (const index of Ranges.upTo(last)) {
+    Arrays.push(mutable keptFrames, emitter.loopFrames[index])
+    Arrays.push(mutable keptInfos, emitter.loopInfos[index])
+  }
+  emitter.loopFrames = keptFrames
+  emitter.loopInfos = keptInfos
+  return info
+}
+
+// emitContinueLabel ends a loop body with the label that `continue name` jumps to.
+export function emitContinueLabel(mutable emitter: Emitter) uses alloc {
+  const info = emitter.loopInfos[Arrays.length(emitter.loopInfos) - 1]
+  if (info.continueUsed) {
+    writeLine(mutable emitter, `narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}:;`)
+  }
+}
+
+// emitBreakLabel follows a loop with the label that `break name` jumps to.
+export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses alloc {
+  if (info.breakUsed) {
+    writeLine(mutable emitter, `narra_break_${Int.toString(info.line)}_${Int.toString(info.column)}:;`)
+  }
+}
+
+// emitLabeledExit leaves the loop called label and jumps to its break or
+// continue label.
+export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
+  let index = Arrays.length(emitter.loopInfos) - 1
+  while (index >= 0) {
+    const info = emitter.loopInfos[index]
+    if (info.label == label) {
+      unwindToLoop(mutable emitter, index)
+      const where = `${Int.toString(info.line)}_${Int.toString(info.column)}`
+      if (isBreak) {
+        emitter.loopInfos[index].breakUsed = true
+        writeLine(mutable emitter, `goto narra_break_${where};`)
+      } else {
+        emitter.loopInfos[index].continueUsed = true
+        writeLine(mutable emitter, `goto narra_continue_${where};`)
+      }
+      return
+    }
+    index = index - 1
+  }
+}
+
+// unwindToLoop releases what the loops inside loop k, and loop k's own body,
+// hold. The scope of loop k is the k-th loop scope from the outside.
+function unwindToLoop(mutable emitter: Emitter, loopIndex: int) uses alloc {
+  const depth = emitter.loopFrames[loopIndex]
+  let remaining = Arrays.length(emitter.loopFrames) - 1 - loopIndex
   let frame = Arrays.length(emitter.frames) - 1
   while (frame >= depth) {
     const temporaries = emitter.frames[frame]
@@ -448,7 +527,10 @@ export function unwindLoop(mutable emitter: Emitter) uses alloc {
     const frameScope = emitter.scopes[scope]
     releaseLocals(mutable emitter, frameScope)
     if (frameScope.loop) {
-      return
+      if (remaining == 0) {
+        return
+      }
+      remaining = remaining - 1
     }
     scope = scope - 1
   }

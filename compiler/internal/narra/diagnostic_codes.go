@@ -264,6 +264,9 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0913", "%s needs a function that returns a value"},
 	{"E0914", "%s.%s names a type; this module imports %q as %s"},
 	{"E0915", "mutable parameter %q cannot be returned or stored; copy it first with `const copy = %s`"},
+	{"E0916", "no enclosing loop is labeled %q"},
+	{"E0917", "label %q is already used by an enclosing loop"},
+	{"E0918", "label %q must be on a for or while loop"},
 	{"E0920", "%s can only be the source of a for ... of loop; use the array itself"},
 }
 

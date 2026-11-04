@@ -4,6 +4,7 @@ func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	c.fn = fd
 	c.env = env
 	c.loops = 0
+	c.labels = nil
 	c.scope = &scope{names: map[string]*Local{}}
 	for _, p := range fd.Params {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
@@ -198,9 +199,9 @@ func (c *Checker) stmt(s Stmt) {
 		c.ifStmt(s)
 	case *WhileStmt:
 		c.expectType(s.Cond.position(), TBool, c.expr(s.Cond, TBool))
-		c.loops++
+		c.enterLoop(s.Pos, s.Label)
 		c.block(s.Body)
-		c.loops--
+		c.leaveLoop(s.Label)
 	case *ForStmt:
 		var elem Type
 		call, isCall := s.Iter.(*CallExpr)
@@ -247,19 +248,55 @@ func (c *Checker) stmt(s Stmt) {
 		}
 		c.push()
 		s.Local = c.declare(s.Pos, s.Name, elem, false)
-		c.loops++
+		c.enterLoop(s.Pos, s.Label)
 		c.block(s.Body)
-		c.loops--
+		c.leaveLoop(s.Label)
 		c.pop()
 	case *BreakStmt:
-		if c.loops == 0 {
-			c.errorf(s.Pos, "break must be inside a loop")
-		}
+		c.loopExit(s.Pos, s.Label, "break")
 	case *ContinueStmt:
-		if c.loops == 0 {
-			c.errorf(s.Pos, "continue must be inside a loop")
+		c.loopExit(s.Pos, s.Label, "continue")
+	}
+}
+
+// enterLoop opens a loop body; its label is in scope inside the body only.
+func (c *Checker) enterLoop(pos Pos, label string) {
+	c.loops++
+	if label == "" {
+		return
+	}
+	for _, outer := range c.labels {
+		if outer == label {
+			c.errorf(pos, "label %q is already used by an enclosing loop", label)
+			break
 		}
 	}
+	c.labels = append(c.labels, label)
+}
+
+func (c *Checker) leaveLoop(label string) {
+	c.loops--
+	if label != "" {
+		c.labels = c.labels[:len(c.labels)-1]
+	}
+}
+
+// loopExit checks a break or continue, with or without a label.
+func (c *Checker) loopExit(pos Pos, label, word string) {
+	if label == "" {
+		if c.loops == 0 && word == "break" {
+			c.errorf(pos, "break must be inside a loop")
+		} else if c.loops == 0 {
+			c.errorf(pos, "continue must be inside a loop")
+		}
+		return
+	}
+	for _, name := range c.labels {
+		if name == label {
+			return
+		}
+	}
+	c.errorf(pos, "no enclosing loop is labeled %q", label)
 }
 
 func isResult(t Type) bool {

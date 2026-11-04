@@ -636,6 +636,8 @@ func usesLocal(e Expr, l *Local) bool {
 			}
 		case *MatchExpr:
 			walk(e.Subject)
+		case *BlockExpr:
+			eachBlockExpr(e.Block, walk)
 		}
 	}
 	walk(e)
@@ -702,7 +704,7 @@ type localUse struct {
 type armStep struct {
 	key     any // the match, the && or || expression, or the block
 	arm     int
-	isMatch bool // an arm of a match
+	isMatch bool // an arm of a match or a block expression
 	calls   int  // how many calls enclosed the step when it began
 }
 
@@ -810,6 +812,12 @@ func (u *useCollector) walk(x Expr, chain []*CallExpr, hoist bool) {
 			u.walk(x.Keys[i], chain, hoist)
 			u.walk(x.Vals[i], chain, hoist)
 		}
+	case *BlockExpr:
+		// A block expression is one value. checkExclusive looks inside it
+		// too, but its statements run one after the other.
+		u.arms = append(u.arms, armStep{key: x, arm: 0, isMatch: true, calls: len(chain)})
+		u.block(x.Block, chain)
+		u.arms = u.arms[:len(u.arms)-1]
 	case *MatchExpr:
 		// The subject is finished before the first arm starts.
 		u.arms = append(u.arms, armStep{key: x, arm: -1, calls: len(chain)})

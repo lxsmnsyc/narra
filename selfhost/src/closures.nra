@@ -21,7 +21,7 @@ import { Type } from "narrac/types"
 import { Checker, internComposite, Ref, Walker, reportError, typeString, setRef, setParameterType, getNodeType, getRef, declareLocal, pushScope, popScope, getExpressionId, getExpressionPos, ArrowContext } from "narrac/check"
 import { resolveType, substitute } from "narrac/resolve"
 import { unify } from "narrac/generics"
-import { checkExpression, expectType, checkArgument, checkExclusive, checkArgumentsLoosely, containsOpen, findAssignedLocal, usesLocal } from "narrac/exprs"
+import { checkExpression, expectType, checkArgument, checkExclusive, checkArgumentsLoosely, containsOpen, findAssignedLocal, usesLocal, listBlockExpressions } from "narrac/exprs"
 import { findClosure } from "narrac/funcvalues"
 import * as Int from "std/int"
 import * as Arrays from "std/array"
@@ -93,6 +93,7 @@ function checkArrowParts<W: Walker>(mutable checker: Checker, walker: W, nodeId:
   // Check the body as a function of its own.
   const savedLoops = checker.loops
   const savedLabels = checker.labels
+  const savedBlocks = checker.blocks
   const savedResult = checker.resultType
   const savedInferring = checker.inferring
   const outerDepth = checker.scopeDepth
@@ -100,6 +101,7 @@ function checkArrowParts<W: Walker>(mutable checker: Checker, walker: W, nodeId:
   pushScope(mutable checker)
   checker.loops = 0
   checker.labels = []
+  checker.blocks = []
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     const param = parameters[index]
     declareLocal(mutable checker, param.id, param.pos, param.name, paramTypes[index], false, true)
@@ -135,6 +137,7 @@ function checkArrowParts<W: Walker>(mutable checker: Checker, walker: W, nodeId:
   popArrow(mutable checker)
   checker.loops = savedLoops
   checker.labels = savedLabels
+  checker.blocks = savedBlocks
   checker.resultType = savedResult
   checker.inferring = savedInferring
 
@@ -442,6 +445,7 @@ function collectMutableRoots(checker: Checker, expression: Expr, mutable roots: 
       }
     }
     Expr.ArrayLit(_, _, elements, _) => collectAllRoots(checker, elements, mutable roots)
+    Expr.BlockExpr(_, _, block) => collectAllRoots(checker, listBlockExpressions(block), mutable roots)
     Expr.MapLit(_, _, _, keys, values) => {
       for (const index of Ranges.between(0, Arrays.length(keys))) {
         collectMutableRoots(checker, keys[index], mutable roots)

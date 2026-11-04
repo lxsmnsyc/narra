@@ -58,6 +58,10 @@ func (e *Emitter) stmt(s Stmt) {
 		}
 		e.endStmt()
 	case *ReturnStmt:
+		if len(e.blocks) > 0 {
+			e.blockReturn(s)
+			return
+		}
 		if call := e.tailCallOf(s.Value); call != nil {
 			e.tailJump(call)
 			return

@@ -180,7 +180,7 @@ func (e *Emitter) closureFunc(name, envT string, clo *Closure) {
 
 	savedOut := e.out.String()
 	e.out.Reset()
-	savedIndent, savedFrames, savedScopes, savedLoop, savedLoops := e.indent, e.frames, e.scopes, e.loopTemp, e.loops
+	savedIndent, savedFrames, savedScopes, savedLoop, savedLoops, savedBlocks := e.indent, e.frames, e.scopes, e.loopTemp, e.loops, e.blocks
 	e.indent = 0
 	e.line("%s {", sig)
 	e.indent++
@@ -205,7 +205,7 @@ func (e *Emitter) closureFunc(name, envT string, clo *Closure) {
 	st.defs.WriteString(e.out.String())
 	e.out.Reset()
 	e.out.WriteString(savedOut)
-	e.indent, e.frames, e.scopes, e.loopTemp, e.loops = savedIndent, savedFrames, savedScopes, savedLoop, savedLoops
+	e.indent, e.frames, e.scopes, e.loopTemp, e.loops, e.blocks = savedIndent, savedFrames, savedScopes, savedLoop, savedLoops, savedBlocks
 }
 
 // valueCall emits a call through a function value.

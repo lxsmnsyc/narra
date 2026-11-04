@@ -5,6 +5,7 @@ func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	c.env = env
 	c.loops = 0
 	c.labels = nil
+	c.blocks = nil
 	c.scope = &scope{names: map[string]*Local{}}
 	for _, p := range fd.Params {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
@@ -200,6 +201,8 @@ func assignedInExpr(x Expr, names map[string]bool) {
 		for _, e := range x.Elems {
 			assignedInExpr(e, names)
 		}
+	case *BlockExpr:
+		assignedInBlock(x.Block, names)
 	case *MatchExpr:
 		assignedInExpr(x.Subject, names)
 		for _, arm := range x.Arms {
@@ -337,6 +340,10 @@ func (c *Checker) stmt(s Stmt) {
 			c.errorf(s.Pos, "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`")
 		}
 	case *ReturnStmt:
+		if len(c.blocks) > 0 {
+			c.blockReturn(s, c.blocks[len(c.blocks)-1])
+			return
+		}
 		want := c.fn.ResultT
 		if s.Value == nil {
 			if want != TVoid {
@@ -423,11 +430,8 @@ func (c *Checker) enterLoop(pos Pos, label string) {
 	if label == "" {
 		return
 	}
-	for _, outer := range c.labels {
-		if outer == label {
-			c.errorf(pos, "label %q is already used by an enclosing loop", label)
-			break
-		}
+	if contains(c.labels, label) || c.outerLabel(label) {
+		c.errorf(pos, "label %q is already used by an enclosing loop", label)
 	}
 	c.labels = append(c.labels, label)
 }
@@ -441,6 +445,19 @@ func (c *Checker) leaveLoop(label string) {
 
 // loopExit checks a break or continue, with or without a label.
 func (c *Checker) loopExit(pos Pos, label, word string) {
+	if len(c.blocks) > 0 {
+		// Inside a block expression only its own loops can be left. The
+		// loops outside it, also outside an enclosing block expression, are
+		// out of reach.
+		reaches := c.loops == 0 && c.outerLoops()
+		if label != "" {
+			reaches = !contains(c.labels, label) && c.outerLabel(label)
+		}
+		if reaches {
+			c.errorf(pos, "%s cannot leave a block expression; it can only leave a loop inside the block", word)
+			return
+		}
+	}
 	if label == "" {
 		if c.loops == 0 && word == "break" {
 			c.errorf(pos, "break must be inside a loop")
@@ -476,4 +493,179 @@ func (c *Checker) lvalueRoot(e Expr) *Local {
 		return c.lvalueRoot(e.Target)
 	}
 	return nil
+}
+
+// blockCtx is a block expression being checked: the type its returns agree
+// on, and the loops and labels outside it, which it cannot leave.
+type blockCtx struct {
+	result  Type // the expected type, or the type of the first return
+	returns int
+	loops   int
+	labels  []string
+}
+
+// outerLoops reports whether a loop encloses a block expression being checked.
+func (c *Checker) outerLoops() bool {
+	for _, ctx := range c.blocks {
+		if ctx.loops > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// outerLabel reports whether a loop labeled label encloses a block
+// expression being checked.
+func (c *Checker) outerLabel(label string) bool {
+	for _, ctx := range c.blocks {
+		if contains(ctx.labels, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockExpr checks a block in value position. Its value is the common type
+// of its returns, and every path must end in a return.
+func (c *Checker) blockExpr(x *BlockExpr, want Type) Type {
+	ctx := &blockCtx{result: want, loops: c.loops, labels: c.labels}
+	c.blocks = append(c.blocks, ctx)
+	c.loops, c.labels = 0, nil
+	c.block(x.Block)
+	c.loops, c.labels = ctx.loops, ctx.labels
+	c.blocks = c.blocks[:len(c.blocks)-1]
+	if ctx.returns == 0 {
+		c.errorf(x.P, "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`")
+		return TVoid
+	}
+	if !endsInReturn(x.Block) {
+		c.errorf(x.P, "a block expression must end every path with `return value`")
+	}
+	if ctx.result == nil {
+		return TVoid
+	}
+	return ctx.result
+}
+
+// blockReturn checks a return inside a block expression: it ends the block
+// and gives its value.
+func (c *Checker) blockReturn(s *ReturnStmt, ctx *blockCtx) {
+	ctx.returns++
+	if s.Value == nil {
+		c.errorf(s.Pos, "a block expression must end every path with `return value`")
+		return
+	}
+	c.noMutableEscape(s.Value)
+	nerrs := len(c.errs)
+	t := c.expr(s.Value, ctx.result)
+	if t == TVoid {
+		// A value whose check already failed is void; do not report it twice.
+		if len(c.errs) == nerrs {
+			c.errorf(s.Pos, "a block expression must end every path with `return value`")
+		}
+		return
+	}
+	if ctx.result == nil {
+		ctx.result = t
+		return
+	}
+	c.expectType(s.Value.position(), ctx.result, t)
+}
+
+// endsInReturn reports whether every path through a block ends in a return
+// or a panic.
+func endsInReturn(b *Block) bool {
+	if b == nil || len(b.Stmts) == 0 {
+		return false
+	}
+	switch s := b.Stmts[len(b.Stmts)-1].(type) {
+	case *ReturnStmt:
+		return true
+	case *Block:
+		return endsInReturn(s)
+	case *IfStmt:
+		if s.Else == nil || !endsInReturn(s.Then) {
+			return false
+		}
+		if eb, ok := s.Else.(*Block); ok {
+			return endsInReturn(eb)
+		}
+		return endsInReturn(&Block{Stmts: []Stmt{s.Else}})
+	case *ExprStmt:
+		if call, ok := s.Expr.(*CallExpr); ok {
+			if id, ok := call.Callee.(*Ident); ok && id.Name == "panic" {
+				return true
+			}
+		}
+		if m, ok := s.Expr.(*MatchExpr); ok && len(m.Arms) > 0 {
+			for _, arm := range m.Arms {
+				if arm.Block != nil && endsInReturn(arm.Block) {
+					continue
+				}
+				if call, ok := arm.Body.(*CallExpr); ok && arm.Block == nil {
+					if id, ok := call.Callee.(*Ident); ok && id.Name == "panic" {
+						continue
+					}
+				}
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// eachBlockExpr calls visit for every expression that the statements of a
+// block hold, at any statement depth, including the guards, bodies and
+// blocks of match statements. It does not look inside the expressions.
+func eachBlockExpr(b *Block, visit func(Expr)) {
+	if b == nil {
+		return
+	}
+	for _, s := range b.Stmts {
+		eachStmtExpr(s, visit)
+	}
+}
+
+func eachStmtExpr(s Stmt, visit func(Expr)) {
+	switch s := s.(type) {
+	case *Block:
+		eachBlockExpr(s, visit)
+	case *VarStmt:
+		visitExpr(s.Value, visit)
+	case *AssignStmt:
+		visitExpr(s.Target, visit)
+		visitExpr(s.Value, visit)
+	case *ExprStmt:
+		visitExpr(s.Expr, visit)
+	case *ReturnStmt:
+		visitExpr(s.Value, visit)
+	case *IfStmt:
+		visitExpr(s.Cond, visit)
+		eachBlockExpr(s.Then, visit)
+		if s.Else != nil {
+			eachStmtExpr(s.Else, visit)
+		}
+	case *WhileStmt:
+		visitExpr(s.Cond, visit)
+		eachBlockExpr(s.Body, visit)
+	case *ForStmt:
+		visitExpr(s.Iter, visit)
+		eachBlockExpr(s.Body, visit)
+	}
+}
+
+// visitExpr visits an expression, and the arms of a match when it is one.
+func visitExpr(x Expr, visit func(Expr)) {
+	if x == nil {
+		return
+	}
+	visit(x)
+	if m, ok := x.(*MatchExpr); ok {
+		for _, arm := range m.Arms {
+			visitExpr(arm.Guard, visit)
+			visitExpr(arm.Body, visit)
+			eachBlockExpr(arm.Block, visit)
+		}
+	}
 }

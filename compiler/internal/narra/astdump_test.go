@@ -17,7 +17,7 @@ var astKinds = []string{
 	"assign", "exprstmt", "return", "if", "while", "for", "break", "continue",
 	"int", "float", "string", "char", "bool", "template", "ident", "field-expr",
 	"is", "index", "map", "call", "arg", "unary", "binary", "structlit", "init",
-	"array", "match", "arm", "arrow", "pat-wildcard", "pat-name", "pat-ctor",
+	"array", "match", "arm", "blockexpr", "arrow", "pat-wildcard", "pat-name", "pat-ctor",
 	"pat-struct", "fieldpat", "pat-tuple", "pat-lit",
 }
 

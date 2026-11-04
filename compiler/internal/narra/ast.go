@@ -451,6 +451,15 @@ type MatchExpr struct {
 	IsValue bool
 }
 
+// BlockExpr is a block in value position: `{ ...; return v }`. Its value
+// comes from `return`, which ends the block and not the function. An
+// `if (c) { ... } else { ... }` in value position is parsed into a BlockExpr
+// holding one `if` statement whose branches each return a BlockExpr.
+type BlockExpr struct {
+	exprBase
+	Block *Block
+}
+
 // ArrowExpr is an arrow function, `(x: int): int => x + 1` or
 // `(x) => { ... }`. See check_closure.go and emit_closure.go.
 type ArrowExpr struct {

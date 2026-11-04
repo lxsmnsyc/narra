@@ -100,6 +100,9 @@ import (
 //	                             .block
 //	arrow L:C                    .params  .result  .body (an expression) or
 //	                             .block
+//	blockexpr L:C                direct: one block node (a block in value
+//	                             position; an if as a value is a blockexpr
+//	                             holding an if whose branches return blockexprs)
 //	pat-wildcard L:C
 //	pat-name L:C                 name=""
 //	pat-ctor L:C                 enum="" (only when set) name="" bare
@@ -547,6 +550,10 @@ func (d *astDumper) expr(e Expr) {
 					}
 				})
 			}
+		})
+	case *BlockExpr:
+		d.node("blockexpr", pos, nil, func() {
+			d.block(n.Block)
 		})
 	case *ArrowExpr:
 		d.node("arrow", pos, nil, func() {

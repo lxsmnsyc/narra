@@ -37,8 +37,9 @@ type Emitter struct {
 	tempN    int
 	frames   [][]tempVar // owned temporaries, one list per statement in progress
 	scopes   []*scopeFrame
-	loopTemp []int       // frame depth when each enclosing loop started
-	loops    []*loopInfo // the enclosing loops, parallel to loopTemp
+	loopTemp []int        // frame depth when each enclosing loop started
+	loops    []*loopInfo  // the enclosing loops, parallel to loopTemp
+	blocks   []*blockInfo // the block expressions being emitted, innermost last
 	fn       *FuncDecl
 	// tailCalls are the self calls of the function being emitted that
 	// become jumps to its start (findTailCalls).
@@ -225,6 +226,7 @@ func (e *Emitter) funcScope(params []*Param) {
 	e.frames = nil
 	e.loopTemp = nil
 	e.loops = nil
+	e.blocks = nil
 }
 
 func (e *Emitter) pushScope(loop bool) { e.scopes = append(e.scopes, &scopeFrame{loop: loop}) }
@@ -419,4 +421,61 @@ func (e *Emitter) localRef(l *Local) string {
 		return "(*" + l.CName + ")"
 	}
 	return l.CName
+}
+
+// blockInfo is a block expression being emitted: where a return stores its
+// value and jumps to, and how deep the frames and scopes were at its start.
+type blockInfo struct {
+	result string
+	t      Type
+	label  string
+	frames int
+	scopes int
+}
+
+// blockExpr emits a block in value position as a C block with a result
+// variable. Each return stores its value, releases what the block holds and
+// jumps to the label after the block.
+func (e *Emitter) blockExpr(x *BlockExpr) (string, bool) {
+	t := x.Type()
+	e.tempN++
+	info := &blockInfo{result: fmt.Sprintf("r%d", e.tempN), t: t, label: fmt.Sprintf("narra_block_%d", e.tempN), frames: len(e.frames), scopes: len(e.scopes)}
+	e.line("%s %s;", t.CName(), info.result)
+	e.line("{")
+	e.indent++
+	e.blocks = append(e.blocks, info)
+	e.pushScope(false)
+	e.blockInScope(x.Block)
+	e.popScope()
+	e.blocks = e.blocks[:len(e.blocks)-1]
+	e.indent--
+	e.line("}")
+	e.line("%s:;", info.label)
+	if needsRC(t) {
+		e.frames[len(e.frames)-1] = append(e.frames[len(e.frames)-1], tempVar{info.result, t})
+		return info.result, true
+	}
+	return info.result, false
+}
+
+// blockReturn emits a return inside a block expression.
+func (e *Emitter) blockReturn(s *ReturnStmt) {
+	info := e.blocks[len(e.blocks)-1]
+	e.beginStmt()
+	code, owned := e.expr(s.Value)
+	v := e.consume(code, owned, s.Value.Type())
+	e.line("%s = %s;", info.result, v)
+	// Release what the block holds, down to where it started.
+	for i := len(e.frames) - 1; i >= info.frames; i-- {
+		for j := len(e.frames[i]) - 1; j >= 0; j-- {
+			if r := release(e.frames[i][j].t, e.frames[i][j].name); r != "" {
+				e.line("%s", r)
+			}
+		}
+	}
+	for i := len(e.scopes) - 1; i >= info.scopes; i-- {
+		e.releaseLocals(e.scopes[i])
+	}
+	e.line("goto %s;", info.label)
+	e.frames = e.frames[:len(e.frames)-1]
 }

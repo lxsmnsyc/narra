@@ -1,7 +1,7 @@
 ---
 id: ternary
 title: "Conditional expression c ? a : b"
-status: todo
+status: active
 priority: should
 type: feature
 story:

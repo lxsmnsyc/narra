@@ -276,6 +276,9 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0918", "label %q must be on a for or while loop"},
 	{"E0920", "%s can only be the source of a for ... of loop; use the array itself"},
 	{"E0929", "%q is passed as mutable in one call, so the rest of the expression cannot use it"},
+	{"E0931", "a block expression must end every path with `return value`"},
+	{"E0932", "%s cannot leave a block expression; it can only leave a loop inside the block"},
+	{"E0933", "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`"},
 }
 
 var codeByFormat = func() map[string]string {

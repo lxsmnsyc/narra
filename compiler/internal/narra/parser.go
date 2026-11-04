@@ -13,6 +13,8 @@ type Parser struct {
 	// resultFunc is true inside a function declared to return Result, where
 	// the throw fix is right. Closures clear it.
 	resultFunc bool
+	// ternaries holds the block expressions that `c ? a : b` produced.
+	ternaries map[*BlockExpr]bool
 }
 
 // templateDot finds `Name.` inside a template string. The parser does not keep
@@ -24,7 +26,7 @@ func Parse(src string) (*File, error) {
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
 	}
-	p := &Parser{toks: toks}
+	p := &Parser{toks: toks, ternaries: map[*BlockExpr]bool{}}
 	f, err := p.file()
 	if err != nil {
 		return nil, syntaxDiagnostic(err)
@@ -602,8 +604,47 @@ func (p *Parser) arrowAhead() bool {
 					return false
 				}
 				next := p.toks[j+1].Text
-				return next == "=>" || next == ":"
+				if next == ":" {
+					return p.resultTypeThenArrow(j + 2)
+				}
+				return next == "=>"
 			}
+		}
+	}
+	return false
+}
+
+// resultTypeThenArrow tells an arrow's `: R =>` from the `:` of a conditional
+// expression such as `c ? (a) : b`. From the token after the `:`, it looks for
+// a `=>` outside brackets before anything that ends an expression.
+func (p *Parser) resultTypeThenArrow(start int) bool {
+	depth := 0
+	for k := start; k < len(p.toks); k++ {
+		t := p.toks[k]
+		if t.Kind == TokNewline || t.Kind == TokEOF {
+			return false
+		}
+		if t.Kind != TokPunct {
+			continue
+		}
+		switch t.Text {
+		case "(", "[", "<":
+			depth++
+		case ")", "]", ">":
+			depth--
+		case ">>":
+			depth -= 2
+		case "=>":
+			if depth == 0 {
+				return true
+			}
+		case "?", ":", ",", "{", "}", ";":
+			if depth == 0 {
+				return false
+			}
+		}
+		if depth < 0 {
+			return false
 		}
 	}
 	return false
@@ -714,6 +755,10 @@ func (p *Parser) stmt() Stmt {
 		s := &ReturnStmt{Pos: t.Pos}
 		if p.tok().Kind != TokNewline && !p.is("}") {
 			s.Value = p.expr()
+			if p.isTernary(s.Value) {
+				p.endStatement()
+				return p.returnedTernary(s.Value)
+			}
 		}
 		p.endStatement()
 		return s
@@ -869,10 +914,7 @@ func (p *Parser) ifExpr() Expr {
 	} else {
 		elseBranch = p.blockExpr()
 	}
-	branch := func(value Expr) *Block {
-		return &Block{Pos: value.position(), Stmts: []Stmt{&ReturnStmt{Pos: value.position(), Value: value}}}
-	}
-	ifStmt := &IfStmt{Pos: pos, Cond: cond, Then: branch(thenBranch), Else: branch(elseBranch)}
+	ifStmt := &IfStmt{Pos: pos, Cond: cond, Then: returnBlock(thenBranch), Else: returnBlock(elseBranch)}
 	return &BlockExpr{exprBase: exprBase{P: pos}, Block: &Block{Pos: pos, Stmts: []Stmt{ifStmt}}}
 }
 
@@ -893,7 +935,64 @@ var binaryLevels = [][]string{
 // `x is Pattern` binds tighter than == and looser than < and +.
 const isLevel = 2
 
-func (p *Parser) expr() Expr { return p.binary(0) }
+// expr parses an expression: a binary expression, or `cond ? a : b`, which
+// is looser than `||` and right-associative. It becomes a block expression
+// holding one if statement whose branches each return one value, like an
+// `if` in value position, so the checker and emitter need no node of their
+// own. Only the chosen branch runs.
+func (p *Parser) expr() Expr {
+	start := p.tok().Pos
+	cond := p.binary(0)
+	if !p.is("?") {
+		return cond
+	}
+	pos := p.next().Pos
+	thenValue := p.expr()
+	if !p.is(":") {
+		// A `:` on the next line is a ternary that spans lines.
+		saved := p.i
+		p.skipNewlines()
+		spans := p.is(":")
+		p.i = saved
+		if spans {
+			p.fail(p.tok().Pos, "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`")
+		}
+		p.fail(p.tok().Pos, "a conditional expression needs `:` and a second value, as in `cond ? a : b`")
+	}
+	p.next()
+	elseValue := p.expr()
+	ifStmt := &IfStmt{Pos: pos, Cond: cond, Then: returnBlock(thenValue), Else: returnBlock(elseValue)}
+	// The expression starts at the condition and its block at the `?`, which
+	// is how isConditional tells it from a plain block and an `if` value.
+	ternary := &BlockExpr{exprBase: exprBase{P: start}, Block: &Block{Pos: pos, Stmts: []Stmt{ifStmt}}}
+	p.ternaries[ternary] = true
+	return ternary
+}
+
+// returnBlock is a block holding `return value`, positioned at the value.
+func returnBlock(value Expr) *Block {
+	return &Block{Pos: value.position(), Stmts: []Stmt{&ReturnStmt{Pos: value.position(), Value: value}}}
+}
+
+func (p *Parser) isTernary(value Expr) bool {
+	block, ok := value.(*BlockExpr)
+	return ok && p.ternaries[block]
+}
+
+// returnedTernary turns `return c ? a : b` into `if (c) { return a } else {
+// return b }`, so a self call in a branch is a tail call (tail-loops). A
+// branch that is itself a ternary is turned the same way.
+func (p *Parser) returnedTernary(value Expr) Stmt {
+	if !p.isTernary(value) {
+		return &ReturnStmt{Pos: value.position(), Value: value}
+	}
+	ifStmt := value.(*BlockExpr).Block.Stmts[0].(*IfStmt)
+	branch := func(block *Block) *Block {
+		branchValue := block.Stmts[0].(*ReturnStmt).Value
+		return &Block{Pos: block.Pos, Stmts: []Stmt{p.returnedTernary(branchValue)}}
+	}
+	return &IfStmt{Pos: ifStmt.Pos, Cond: ifStmt.Cond, Then: branch(ifStmt.Then), Else: branch(ifStmt.Else.(*Block))}
+}
 
 func (p *Parser) binary(level int) Expr {
 	if level == len(binaryLevels) {
@@ -1191,6 +1290,9 @@ func (p *Parser) primary() Expr {
 			return lit
 		}
 	}
+	if p.is("?") {
+		p.fail(t.Pos, "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`")
+	}
 	p.fail(t.Pos, "expected an expression, found %s", describe(t))
 	return nil
 }
@@ -1243,7 +1345,7 @@ func (p *Parser) template(t Token) Expr {
 			for k := range inner {
 				inner[k].Pos = t.Pos
 			}
-			sub := &Parser{toks: inner}
+			sub := &Parser{toks: inner, ternaries: map[*BlockExpr]bool{}}
 			e := sub.expr()
 			lit.Parts = append(lit.Parts, e)
 			i = j

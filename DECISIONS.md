@@ -653,3 +653,4 @@ Decision: a block has two forms. A block in statement position is a block statem
 - **Rejected: a keyword for block expressions (`do { ... }`).** Position already tells the forms apart.
 - **Rejected: `break` and `continue` crossing a block expression.** The block would then have no value on that path. One boundary rule for all three jumps is simpler.
 - **Cost.** A block expression cannot return from the enclosing function, as in JavaScript's `(() => { ... })()`. TypeScript's `const o = { a }` is an object literal there and a block expression with no `return` here, which is a compile error. Every path of a block expression must end in `return`, and every returned value must have the same type.
+- **Ternary.** The conditional expression `c ? a : b` is part of this decision (maintainer, 2026-11-04). It is an `if` in value position with one expression per branch and the TypeScript precedence: looser than `||`, right-associative.

@@ -333,6 +333,10 @@ func (c *Checker) stmt(s Stmt) {
 			c.match(m, nil, false)
 			return
 		}
+		if b, ok := s.Expr.(*BlockExpr); ok && isConditional(b) {
+			c.errorf(b.P, "the value of a conditional expression must be used; write an `if` statement instead")
+			return
+		}
 		c.expr(s.Expr, nil)
 		if call, ok := s.Expr.(*CallExpr); !ok {
 			c.errorf(s.Pos, "this expression does nothing")
@@ -498,10 +502,12 @@ func (c *Checker) lvalueRoot(e Expr) *Local {
 // blockCtx is a block expression being checked: the type its returns agree
 // on, and the loops and labels outside it, which it cannot leave.
 type blockCtx struct {
-	result  Type // the expected type, or the type of the first return
-	returns int
-	loops   int
-	labels  []string
+	result   Type // the expected type, or the type of the first return
+	returns  int
+	cond     bool // a conditional expression `c ? a : b`
+	reported bool // the valueless-branch error was reported
+	loops    int
+	labels   []string
 }
 
 // outerLoops reports whether a loop encloses a block expression being checked.
@@ -534,7 +540,8 @@ func (c *Checker) blockExpr(x *BlockExpr, want Type) Type {
 // blockBody checks a block as a block expression; a match arm with a block
 // in value position uses it too.
 func (c *Checker) blockBody(block *Block, pos Pos, want Type) Type {
-	ctx := &blockCtx{result: want, loops: c.loops, labels: c.labels}
+	// A conditional expression starts its block at the `?`, not at pos.
+	ctx := &blockCtx{result: want, loops: c.loops, labels: c.labels, cond: block.Pos != pos}
 	c.blocks = append(c.blocks, ctx)
 	c.loops, c.labels = 0, nil
 	c.block(block)
@@ -553,6 +560,12 @@ func (c *Checker) blockBody(block *Block, pos Pos, want Type) Type {
 	return ctx.result
 }
 
+// isConditional tells `c ? a : b` from a plain block and an `if` value: the
+// parser starts its block at the `?` and the expression at the condition.
+func isConditional(x *BlockExpr) bool {
+	return x.Block.Pos != x.P
+}
+
 // blockReturn checks a return inside a block expression: it ends the block
 // and gives its value.
 func (c *Checker) blockReturn(s *ReturnStmt, ctx *blockCtx) {
@@ -567,7 +580,14 @@ func (c *Checker) blockReturn(s *ReturnStmt, ctx *blockCtx) {
 	if t == TVoid {
 		// A value whose check already failed is void; do not report it twice.
 		if len(c.errs) == nerrs {
-			c.errorf(s.Pos, "a block expression must end every path with `return value`")
+			if ctx.cond {
+				if !ctx.reported {
+					ctx.reported = true
+					c.errorf(s.Pos, "both branches of a conditional expression must have a value")
+				}
+			} else {
+				c.errorf(s.Pos, "a block expression must end every path with `return value`")
+			}
 		}
 		return
 	}

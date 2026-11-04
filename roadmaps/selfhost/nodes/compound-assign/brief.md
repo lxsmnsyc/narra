@@ -5,7 +5,7 @@ status: todo
 priority: should
 type: feature
 outline: true
-milestone: m9-adoption
+milestone: m12-spec-gaps
 target:
 from:
 size: M
@@ -33,4 +33,4 @@ depends_on:
 
 ## Notes
 
-Outline. This reverses SPEC section 2 ("There are no compound assignments (`+=`, `++`)"), so it needs a decision record and a SPEC update. Rules to settle there: the statement form only (no value, as with `=`), so `x++` and `++x` mean the same and the decision record picks one spelling, or allows both; overflow, division by zero and shift checks as for the binary operator; Map index targets (`counts[key] += 1`) and what happens when the key is missing; reference counting of the old value for string `+=`. Add samples and compile-error tests, then use it in the selfhost compiler where `x = x + 1` and `index = index + 1` are common.
+Outline. Kept by the maintainer on 2026-11-04 together with C-style for loops (DECISIONS.md D76, which amends D45). This reverses SPEC section 2 ("There are no compound assignments (`+=`, `++`)"), so it needs a decision record and a SPEC update. Rules to settle there: the statement form only (no value, as with `=`), so `x++` and `++x` mean the same and the decision record picks one spelling, or allows both; overflow, division by zero and shift checks as for the binary operator; Map index targets (`counts[key] += 1`) and what happens when the key is missing; reference counting of the old value for string `+=`. Add samples and compile-error tests, then use it in the selfhost compiler where `x = x + 1` and `index = index + 1` are common.

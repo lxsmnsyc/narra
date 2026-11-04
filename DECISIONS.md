@@ -654,3 +654,12 @@ Decision: a block has two forms. A block in statement position is a block statem
 - **Rejected: `break` and `continue` crossing a block expression.** The block would then have no value on that path. One boundary rule for all three jumps is simpler.
 - **Cost.** A block expression cannot return from the enclosing function, as in JavaScript's `(() => { ... })()`. TypeScript's `const o = { a }` is an object literal there and a block expression with no `return` here, which is a compile error. Every path of a block expression must end in `return`, and every returned value must have the same type.
 - **Ternary.** The conditional expression `c ? a : b` is part of this decision (maintainer, 2026-11-04). It is an `if` in value position with one expression per branch and the TypeScript precedence: looser than `||`, right-associative.
+
+## D76. C-style `for` loops and compound assignment
+
+Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;)`, next to `for ... of`. It also has compound assignment (`+=`, `-=`, `*=`, `/=`, `%=` and the bitwise and shift forms) and `++`/`--`. All are statements with the same meaning as in TypeScript. Amends D45, whose rejections of the C-style loop and of `++` and compound assignment no longer hold. Decided by the maintainer on 2026-11-04.
+
+- **Reason.** Loops whose step is not a fixed range (two indexes moving together, a step computed in the body, scanning until a condition) read more directly as `for (init; cond; step)` than as `while` with the step at the end of the body.
+- **Reason.** TypeScript code and models write these forms constantly. Accepting them with TypeScript's meaning is allowed by D2, and spares a rewrite.
+- **Kept from D45.** `for (const i of Ranges.upTo(n))` stays the usual way to count over indexes.
+- **Cost.** Two loop forms where D45 had one. The details (whether `init` must be `let`, whether `++` has a value, `continue` jumping to the step, labels, the semicolon rule inside the parentheses) are settled by nodes c-style-for and compound-assign.

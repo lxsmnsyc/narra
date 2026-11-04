@@ -10,7 +10,8 @@
 
 ## Deviations
 
-- None. `diagnostic_codes.go` text for E0232 still lists only `Array.values`; it is not in the brief's paths.
+- `compiler/testdata/typesdump/stdcalls/arrays_maps.nra` and `.dump` (outside the brief's paths): added an `Arrays.entries` loop, because `TestTypesDumpStdCallsCoverage` needs a golden call for every `Array.*` builtin.
+- `diagnostic_codes.go` text for E0232 still lists only `Array.values`; it is not in the brief's paths.
 
 ## Stubs left
 
@@ -27,7 +28,7 @@
 
 ## Verification
 
-- `cd compiler && go vet ./... && go test ./...`: see the PR.
+- `cd compiler && go vet ./... && go test ./...`: pass (5939 tests, includes the bootstrap fixed point).
 
 ## Size
 

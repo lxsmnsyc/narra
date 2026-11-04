@@ -163,6 +163,9 @@ func (c *Checker) stmt(s Stmt) {
 		} else if !root.Mutable {
 			c.errorf(s.Pos, "%q is constant; declare it with `let` to change it", root.Name)
 		}
+		if _, plain := s.Target.(*Ident); !plain {
+			c.noMutableEscape(s.Value)
+		}
 		v := c.expr(s.Value, t)
 		c.expectType(s.Value.position(), t, v)
 	case *ExprStmt:
@@ -184,6 +187,7 @@ func (c *Checker) stmt(s Stmt) {
 			}
 			return
 		}
+		c.noMutableEscape(s.Value)
 		t := c.expr(s.Value, want)
 		if want == TVoid {
 			c.errorf(s.Pos, "this function returns nothing")

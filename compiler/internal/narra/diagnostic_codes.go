@@ -263,6 +263,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0912", "%s needs a function that returns %s, found one that returns %s"},
 	{"E0913", "%s needs a function that returns a value"},
 	{"E0914", "%s.%s names a type; this module imports %q as %s"},
+	{"E0915", "mutable parameter %q cannot be returned or stored; copy it first with `const copy = %s`"},
 }
 
 var codeByFormat = func() map[string]string {

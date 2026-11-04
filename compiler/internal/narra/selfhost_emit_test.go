@@ -10,33 +10,6 @@ import (
 	"testing"
 )
 
-// emitNodes are the roadmap nodes whose stubs report `unsupported:`. Each has
-// a skip file compiler/testdata/emit/skips/<node>.txt that lists, one per line
-// relative to testdata/, the inputs on which narrac reports that node. A node
-// removes its inputs from its file as its emitter grows, and deletes the file
-// content when it is done.
-var emitNodes = []string{
-	"selfhost-emit-program",
-	"selfhost-emit-decls",
-	"selfhost-emit-bodies",
-	"selfhost-emit-match",
-	"selfhost-emit-closures",
-	"selfhost-emit-traits",
-	"selfhost-emit-maps",
-	"selfhost-emit-std",
-	"selfhost-emit-options",
-}
-
-// emitSections are the headers that split the C file, in order. The text
-// before the first header is the preamble.
-var emitSections = []string{
-	"\n// Types\n",
-	"\n// Reference counting\n",
-	"\n// Constants\n",
-	"\n// Functions\n",
-	"\n// String literals\n",
-}
-
 // emitInput is one program the emit tests run.
 type emitInput struct {
 	path  string // as passed to the compiler
@@ -46,7 +19,7 @@ type emitInput struct {
 
 // emitInputs lists testdata/*.nra (test mode for tests.nra and std_test*),
 // testdata/panics/*.nra, the packages except errors/ (test mode for runner),
-// and testdata/runner/mixed.nra (test mode).
+// testdata/runner/mixed.nra (test mode) and the selfhost package.
 func emitInputs(t *testing.T) []emitInput {
 	t.Helper()
 	var inputs []emitInput
@@ -65,6 +38,8 @@ func emitInputs(t *testing.T) []emitInput {
 	add("panics/*.nra", func(string) bool { return false })
 	add("packages/*", func(base string) bool { return base == "runner" })
 	add("runner/mixed.nra", func(string) bool { return true })
+	// The selfhost package itself, the input of the bootstrap.
+	inputs = append(inputs, emitInput{path: "../../../selfhost", name: "selfhost"})
 	var kept []emitInput
 	for _, in := range inputs {
 		if in.name == "packages/errors" {
@@ -75,110 +50,13 @@ func emitInputs(t *testing.T) []emitInput {
 	return kept
 }
 
-// readEmitSkips returns, for each input name, the nodes whose skip file lists it.
-func readEmitSkips(t *testing.T) map[string]map[string]bool {
-	t.Helper()
-	skips := map[string]map[string]bool{}
-	for _, node := range emitNodes {
-		data, err := os.ReadFile(filepath.Join(testdata, "emit", "skips", node+".txt"))
-		if os.IsNotExist(err) {
-			// A node that is done deletes its skip file.
-			continue
-		}
-		if err != nil {
-			t.Fatalf("skip file of %s: %v", node, err)
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if skips[line] == nil {
-				skips[line] = map[string]bool{}
-			}
-			skips[line][node] = true
-		}
-	}
-	return skips
-}
-
-// emitUnsupportedNodes returns the nodes named by the `unsupported: <construct> (<node>)`
-// lines of narrac's stderr.
-func emitUnsupportedNodes(stderr string) map[string]bool {
-	nodes := map[string]bool{}
-	for _, line := range strings.Split(stderr, "\n") {
-		rest, ok := strings.CutPrefix(line, "unsupported: ")
-		if !ok {
-			continue
-		}
-		open := strings.LastIndex(rest, " (")
-		if open < 0 || !strings.HasSuffix(rest, ")") {
-			continue
-		}
-		nodes[rest[open+2:len(rest)-1]] = true
-	}
-	return nodes
-}
-
-// splitEmitSections cuts the C text at the section headers. A header that is
-// missing leaves the following parts empty.
-func splitEmitSections(text string) []string {
-	parts := make([]string, 0, len(emitSections)+1)
-	rest := text
-	for _, header := range emitSections {
-		at := strings.Index(rest, header)
-		if at < 0 {
-			parts = append(parts, rest)
-			rest = ""
-			continue
-		}
-		parts = append(parts, rest[:at])
-		rest = rest[at:]
-	}
-	return append(parts, rest)
-}
-
-// beforeMarker is the text of a part before its first marker line, and whether there is one.
-func beforeMarker(part string) (string, bool) {
-	at := strings.Index(part, "/* unsupported:")
-	if at < 0 {
-		return part, false
-	}
-	// Cut at the start of the marker's line.
-	if nl := strings.LastIndex(part[:at], "\n"); nl >= 0 {
-		return part[:nl+1], true
-	}
-	return "", true
-}
-
-// compareEmitted checks the first five parts of narrac's C against Go's. The
-// last part is not compared: a stub shifts the literal and temp counters. A
-// part with a marker must agree up to the marker line; one without must be equal.
-func compareEmitted(want, got string) string {
-	wantParts, gotParts := splitEmitSections(want), splitEmitSections(got)
-	for i := 0; i < len(emitSections); i++ {
-		prefix, marked := beforeMarker(gotParts[i])
-		if marked {
-			if !strings.HasPrefix(wantParts[i], prefix) {
-				return "part " + strconv.Itoa(i) + " differs before its marker: " + firstDiff(wantParts[i], prefix)
-			}
-		} else if wantParts[i] != gotParts[i] {
-			return "part " + strconv.Itoa(i) + " differs: " + firstDiff(wantParts[i], gotParts[i])
-		}
-	}
-	return ""
-}
-
 // TestSelfhostEmit runs `narrac emit` on every input and checks it against
-// Go's CompileBinary. The nodes narrac reports (U) must equal the nodes whose
-// skip file lists the input (S). With U empty the C must be byte-equal and the
-// exit code 0; otherwise the exit code is 3 and the parts of the file agree
-// up to the first marker. The counts per node are logged.
+// Go's CompileBinary: the C must be byte-equal and the exit code 0, and stderr
+// must hold no `unsupported:` line. An input Go cannot compile must fail the
+// same way, with exit code 1.
 func TestSelfhostEmit(t *testing.T) {
 	exe := buildSelfhost(t)
-	skips := readEmitSkips(t)
 	var mu sync.Mutex
-	compared, skipped := map[string]int{}, map[string]int{}
 	identical, failedToCompile := 0, 0
 	t.Run("inputs", func(t *testing.T) {
 		for _, in := range emitInputs(t) {
@@ -200,58 +78,22 @@ func TestSelfhostEmit(t *testing.T) {
 					mu.Unlock()
 					return
 				}
-				got := emitUnsupportedNodes(errOut)
-				listed := skips[in.name]
-				for node := range got {
-					if !listed[node] {
-						t.Errorf("narrac reports %s but its skip file does not list %s", node, in.name)
-					}
+				if strings.Contains(errOut, "unsupported:") {
+					t.Fatalf("narrac reports an unsupported construct (exit code %d); stderr:\n%s", code, errOut)
 				}
-				for node := range listed {
-					if !got[node] {
-						t.Errorf("the skip file of %s lists %s but narrac does not report it", node, in.name)
-					}
+				if code != 0 {
+					t.Fatalf("exit code %d, want 0; stderr:\n%s", code, errOut)
 				}
-				if t.Failed() {
-					return
+				if out != want {
+					t.Fatalf("C differs: %s", firstDiff(want, out))
 				}
 				mu.Lock()
-				for node := range got {
-					skipped[node]++
-				}
-				mu.Unlock()
-				if len(got) == 0 {
-					if code != 0 {
-						t.Fatalf("exit code %d, want 0; stderr:\n%s", code, errOut)
-					}
-					if out != want {
-						t.Fatalf("C differs: %s", firstDiff(want, out))
-					}
-					mu.Lock()
-					identical++
-					mu.Unlock()
-					return
-				}
-				if code != 3 {
-					t.Fatalf("exit code %d, want 3; stderr:\n%s", code, errOut)
-				}
-				if diff := compareEmitted(want, out); diff != "" {
-					t.Fatal(diff)
-				}
-				mu.Lock()
-				for _, node := range emitNodes {
-					if !got[node] {
-						compared[node]++
-					}
-				}
+				identical++
 				mu.Unlock()
 			})
 		}
 	})
 	t.Logf("byte-identical %d, did not compile %d", identical, failedToCompile)
-	for _, node := range emitNodes {
-		t.Logf("  %-24s skipped %3d, compared without it %3d", node, skipped[node], compared[node])
-	}
 }
 
 // TestSelfhostEmitErrors checks the messages Go's CompileBinary gives for a

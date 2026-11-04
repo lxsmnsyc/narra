@@ -1,26 +1,451 @@
-// Option, Result and test calls, and the C main of a test build
-// (std_option.go, std_result.go, std_testing.go, test_runner.go). Stub from
-// selfhost-emit-core; the owner is selfhost-emit-options.
-import { Expr } from "narrac/ast"
-import { Emitter, Code, EmitWalker, reportUnsupported, hasWork } from "narrac/emitstate"
+// Option, Result and std/test calls, and the C main of a test build
+// (std_option.go, std_result.go, std_testing.go, test_runner.go). The owner
+// is selfhost-emit-options.
+//
+// Callbacks are called through callFunctionValue. An argument that is an enum
+// or a function value goes into a temporary first and is only borrowed: its
+// own owner keeps it alive for the statement.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import { Pos, Expr, Decl, Arg } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, Ref, getExpressionId } from "narrac/check"
+import { cType } from "narrac/cnames"
+import { Emitter, Code, EmitWalker, reportUnsupported, writeLine, cString, where, temp, ownedTemp, consume, typeOf, refOf, underlyingType, retainCode } from "narrac/emitstate"
+import { enumAllocation } from "narrac/emitdecls"
+import { callFunctionValue } from "narrac/emitclosures"
+import { useEq, useShow } from "narrac/emittraits"
+import { TEST_RUNNER_C } from "narrac/runtimetext"
 
 const NODE = "selfhost-emit-options"
 
-// reportOptionsWork is called by the driver while the program facts are
-// missing, so an input that needs this node is listed. selfhost-emit-options
-// removes it.
-export function reportOptionsWork(mutable emitter: Emitter): string uses alloc {
-  if (hasWork(emitter, NODE)) {
-    return `${reportUnsupported(mutable emitter, "option and result calls", NODE)}\n`
+// emitOptionCall emits a call of a std/option, std/result or std/test
+// function.
+export function emitOptionCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  if (expression is Expr.CallExpr(nodeId, pos, _, arguments)) {
+    if (refOf(emitter, nodeId) is Ref.Builtin(index)) {
+      const name = emitter.checker.registry.functions[index].name
+      const resultType = typeOf(emitter, nodeId)
+      return emitNamedCall(walker, mutable emitter, name, pos, arguments, resultType)
+    }
+  }
+  return Code { text: reportUnsupported(mutable emitter, "option call", NODE), owned: false }
+}
+
+function emitNamedCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, pos: Pos, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  if (name == "Option.map") {
+    return emitOptionMap(walker, mutable emitter, arguments, resultType)
+  }
+  if (name == "Option.andThen") {
+    return emitOptionAndThen(walker, mutable emitter, arguments, resultType)
+  }
+  if (name == "Option.withDefault" || name == "Result.withDefault") {
+    return emitWithDefault(walker, mutable emitter, name, arguments, resultType)
+  }
+  if (name == "Option.orElse") {
+    return emitOptionOrElse(walker, mutable emitter, arguments)
+  }
+  if (name == "Option.isSome" || name == "Option.isNone") {
+    return emitOptionIs(walker, mutable emitter, name, arguments)
+  }
+  if (name == "Option.okOr") {
+    return emitOptionOkOr(walker, mutable emitter, arguments, resultType)
+  }
+  if (name == "Result.map" || name == "Result.mapErr") {
+    return emitResultMap(walker, mutable emitter, name, arguments, resultType)
+  }
+  if (name == "Result.andThen") {
+    return emitResultAndThen(walker, mutable emitter, arguments, resultType)
+  }
+  if (name == "Result.ok" || name == "Result.err") {
+    return emitResultToOption(walker, mutable emitter, name, arguments, resultType)
+  }
+  if (name == "Test.eq" || name == "Test.ne") {
+    return emitTestCompare(walker, mutable emitter, name, pos, arguments)
+  }
+  if (name == "Test.panics" || name == "Test.panicsWith") {
+    return emitTestPanics(walker, mutable emitter, pos, arguments)
+  }
+  if (name == "Test.golden") {
+    return emitTestGolden(walker, mutable emitter, pos, arguments)
+  }
+  return Code { text: reportUnsupported(mutable emitter, "option call", NODE), owned: false }
+}
+
+// argumentType is the type of the n-th argument.
+function argumentType(emitter: Emitter, arguments: Array<Arg>, number: int): Type {
+  return typeOf(emitter, getExpressionId(arguments[number].value))
+}
+
+// borrowArgument emits argument number into a temporary and returns its name.
+function borrowArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, number: int): string uses alloc {
+  const type = argumentType(emitter, arguments, number)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[number].value)
+  return temp(mutable emitter, type, code.text)
+}
+
+// findVariant is the position of the named variant in the enum's variants.
+function findVariant(emitter: Emitter, enumType: Type, name: string): int {
+  const base = underlyingType(emitter, enumType)
+  if (base is Type.TEnum(enumIndex)) {
+    const variants = emitter.checker.enums[enumIndex].variants
+    for (const index of Ranges.between(0, Arrays.length(variants))) {
+      if (variants[index].name == name) {
+        return index
+      }
+    }
+  }
+  return 0 - 1
+}
+
+// variantTag is the tag number of the named variant.
+function variantTag(emitter: Emitter, enumType: Type, name: string): int {
+  const base = underlyingType(emitter, enumType)
+  if (base is Type.TEnum(enumIndex)) {
+    const position = findVariant(emitter, enumType, name)
+    return emitter.checker.enums[enumIndex].variants[position].index
+  }
+  return 0 - 1
+}
+
+// payloadType is the type of the first field of the named variant.
+function payloadType(emitter: Emitter, enumType: Type, name: string): Type {
+  const base = underlyingType(emitter, enumType)
+  if (base is Type.TEnum(enumIndex)) {
+    const position = findVariant(emitter, enumType, name)
+    return emitter.checker.enums[enumIndex].variants[position].fields[0].fieldType
+  }
+  return Type.TVoid
+}
+
+// payloadRead reads the first field of the named variant from the borrowed
+// value.
+function payloadRead(emitter: Emitter, enumValue: string, enumType: Type, name: string): string uses alloc {
+  const base = underlyingType(emitter, enumType)
+  if (base is Type.TEnum(enumIndex)) {
+    const position = findVariant(emitter, enumType, name)
+    const variant = emitter.checker.enums[enumIndex].variants[position]
+    return `${enumValue}.u->v_${variant.name}.f_${variant.fields[0].name}`
+  }
+  return enumValue
+}
+
+// retained copies a borrowed value into a new reference.
+function retained(mutable emitter: Emitter, code: string, type: Type): string uses alloc {
+  return consume(mutable emitter, code, false, type)
+}
+
+// zeroResult declares the owned temporary a branching builtin fills.
+function zeroResult(mutable emitter: Emitter, type: Type): string uses alloc {
+  const typeName = cType(emitter.checker, type)
+  return ownedTemp(mutable emitter, type, `((${typeName}){0})`)
+}
+
+// allocateVariant emits the allocation of the named variant of resultType.
+function allocateVariant(mutable emitter: Emitter, resultType: Type, name: string, fields: Array<string>): string uses alloc {
+  const position = findVariant(emitter, resultType, name)
+  const allocated = enumAllocation(mutable emitter, resultType, position, fields)
+  return allocated.text
+}
+
+// openBranch starts `if (value is variant) {`.
+function openBranch(mutable emitter: Emitter, enumValue: string, tag: int) uses alloc {
+  writeLine(mutable emitter, `if (${enumValue}.tag == ${Int.toString(tag)}) {`)
+  emitter.indent = emitter.indent + 1
+}
+
+function elseBranch(mutable emitter: Emitter) uses alloc {
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "} else {")
+  emitter.indent = emitter.indent + 1
+}
+
+function closeBranch(mutable emitter: Emitter) uses alloc {
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+}
+
+// assignCopy sets result to a new reference to the borrowed value.
+function assignCopy(mutable emitter: Emitter, result: string, value: string, type: Type) uses alloc {
+  writeLine(mutable emitter, `${result} = ${value};`)
+  const retain = retainCode(emitter, type, result)
+  if (retain != "") {
+    writeLine(mutable emitter, retain)
+  }
+}
+
+// callCallback calls the function value with arguments and returns the
+// temporary that holds the result.
+function callCallback(mutable emitter: Emitter, callbackType: Type, callback: string, callbackArguments: Array<string>): string uses alloc {
+  return callFunctionValue(mutable emitter, callbackType, callback, callbackArguments).text
+}
+
+// passOn sets result to the named variant of resultType, holding a new
+// reference to the payload of the borrowed variant `from` of source.
+function passOn(mutable emitter: Emitter, result: string, source: string, sourceType: Type, fromName: string, resultType: Type, toName: string) uses alloc {
+  const read = payloadRead(emitter, source, sourceType, fromName)
+  const fieldType = payloadType(emitter, sourceType, fromName)
+  const value = retained(mutable emitter, read, fieldType)
+  const allocated = allocateVariant(mutable emitter, resultType, toName, [value])
+  writeLine(mutable emitter, `${result} = ${allocated};`)
+}
+
+// emitOptionMap is Option.map(option, function).
+function emitOptionMap<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  const option = borrowArgument(walker, mutable emitter, arguments, 0)
+  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
+  const optionType = argumentType(emitter, arguments, 0)
+  const callbackType = argumentType(emitter, arguments, 1)
+  const result = zeroResult(mutable emitter, resultType)
+  const someTag = variantTag(emitter, optionType, "Some")
+  openBranch(mutable emitter, option, someTag)
+  const payload = payloadRead(emitter, option, optionType, "Some")
+  const mapped = callCallback(mutable emitter, callbackType, callback, [payload])
+  const some = allocateVariant(mutable emitter, resultType, "Some", [mapped])
+  writeLine(mutable emitter, `${result} = ${some};`)
+  elseBranch(mutable emitter)
+  const none = allocateVariant(mutable emitter, resultType, "None", [])
+  writeLine(mutable emitter, `${result} = ${none};`)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitOptionAndThen is Option.andThen(option, function).
+function emitOptionAndThen<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  const option = borrowArgument(walker, mutable emitter, arguments, 0)
+  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
+  const optionType = argumentType(emitter, arguments, 0)
+  const callbackType = argumentType(emitter, arguments, 1)
+  const result = zeroResult(mutable emitter, resultType)
+  const someTag = variantTag(emitter, optionType, "Some")
+  openBranch(mutable emitter, option, someTag)
+  const payload = payloadRead(emitter, option, optionType, "Some")
+  const chained = callCallback(mutable emitter, callbackType, callback, [payload])
+  writeLine(mutable emitter, `${result} = ${chained};`)
+  elseBranch(mutable emitter)
+  const none = allocateVariant(mutable emitter, resultType, "None", [])
+  writeLine(mutable emitter, `${result} = ${none};`)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitWithDefault is Option.withDefault and Result.withDefault: the payload
+// of Some or Ok, else the default.
+function emitWithDefault<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  let hit = "Ok"
+  if (name == "Option.withDefault") {
+    hit = "Some"
+  }
+  const subject = borrowArgument(walker, mutable emitter, arguments, 0)
+  const subjectType = argumentType(emitter, arguments, 0)
+  const defaultCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+  const defaultValue = temp(mutable emitter, resultType, defaultCode.text)
+  const result = zeroResult(mutable emitter, resultType)
+  const hitTag = variantTag(emitter, subjectType, hit)
+  openBranch(mutable emitter, subject, hitTag)
+  const payload = payloadRead(emitter, subject, subjectType, hit)
+  assignCopy(mutable emitter, result, payload, resultType)
+  elseBranch(mutable emitter)
+  assignCopy(mutable emitter, result, defaultValue, resultType)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitOptionOrElse is Option.orElse(option, function).
+function emitOptionOrElse<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>): Code uses alloc {
+  const option = borrowArgument(walker, mutable emitter, arguments, 0)
+  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
+  const optionType = argumentType(emitter, arguments, 0)
+  const callbackType = argumentType(emitter, arguments, 1)
+  const result = zeroResult(mutable emitter, optionType)
+  const someTag = variantTag(emitter, optionType, "Some")
+  openBranch(mutable emitter, option, someTag)
+  assignCopy(mutable emitter, result, option, optionType)
+  elseBranch(mutable emitter)
+  const fallback = callCallback(mutable emitter, callbackType, callback, [])
+  writeLine(mutable emitter, `${result} = ${fallback};`)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitOptionIs is Option.isSome and Option.isNone.
+function emitOptionIs<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, arguments: Array<Arg>): Code uses alloc {
+  const option = borrowArgument(walker, mutable emitter, arguments, 0)
+  const optionType = argumentType(emitter, arguments, 0)
+  let variantName = "Some"
+  if (name == "Option.isNone") {
+    variantName = "None"
+  }
+  const tag = variantTag(emitter, optionType, variantName)
+  return Code { text: `(${option}.tag == ${Int.toString(tag)})`, owned: false }
+}
+
+// emitOptionOkOr is Option.okOr(option, error).
+function emitOptionOkOr<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  const option = borrowArgument(walker, mutable emitter, arguments, 0)
+  const optionType = argumentType(emitter, arguments, 0)
+  const errorType = argumentType(emitter, arguments, 1)
+  const errorCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+  const errorValue = temp(mutable emitter, errorType, errorCode.text)
+  const result = zeroResult(mutable emitter, resultType)
+  const someTag = variantTag(emitter, optionType, "Some")
+  openBranch(mutable emitter, option, someTag)
+  const payload = payloadRead(emitter, option, optionType, "Some")
+  const someType = payloadType(emitter, optionType, "Some")
+  const okValue = retained(mutable emitter, payload, someType)
+  const ok = allocateVariant(mutable emitter, resultType, "Ok", [okValue])
+  writeLine(mutable emitter, `${result} = ${ok};`)
+  elseBranch(mutable emitter)
+  const errorCopy = retained(mutable emitter, errorValue, errorType)
+  const failure = allocateVariant(mutable emitter, resultType, "Err", [errorCopy])
+  writeLine(mutable emitter, `${result} = ${failure};`)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitResultMap is Result.map (changes Ok) and Result.mapErr (changes Err).
+function emitResultMap<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  const subject = borrowArgument(walker, mutable emitter, arguments, 0)
+  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
+  const subjectType = argumentType(emitter, arguments, 0)
+  const callbackType = argumentType(emitter, arguments, 1)
+  const result = zeroResult(mutable emitter, resultType)
+  let hit = "Ok"
+  let miss = "Err"
+  if (name == "Result.mapErr") {
+    hit = "Err"
+    miss = "Ok"
+  }
+  const hitTag = variantTag(emitter, subjectType, hit)
+  openBranch(mutable emitter, subject, hitTag)
+  const payload = payloadRead(emitter, subject, subjectType, hit)
+  const mapped = callCallback(mutable emitter, callbackType, callback, [payload])
+  const allocated = allocateVariant(mutable emitter, resultType, hit, [mapped])
+  writeLine(mutable emitter, `${result} = ${allocated};`)
+  elseBranch(mutable emitter)
+  passOn(mutable emitter, result, subject, subjectType, miss, resultType, miss)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitResultAndThen is Result.andThen(result, function).
+function emitResultAndThen<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  const subject = borrowArgument(walker, mutable emitter, arguments, 0)
+  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
+  const subjectType = argumentType(emitter, arguments, 0)
+  const callbackType = argumentType(emitter, arguments, 1)
+  const result = zeroResult(mutable emitter, resultType)
+  const okTag = variantTag(emitter, subjectType, "Ok")
+  openBranch(mutable emitter, subject, okTag)
+  const payload = payloadRead(emitter, subject, subjectType, "Ok")
+  const chained = callCallback(mutable emitter, callbackType, callback, [payload])
+  writeLine(mutable emitter, `${result} = ${chained};`)
+  elseBranch(mutable emitter)
+  passOn(mutable emitter, result, subject, subjectType, "Err", resultType, "Err")
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitResultToOption is Result.ok (the Ok value as Some) and Result.err (the
+// Err value as Some).
+function emitResultToOption<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, arguments: Array<Arg>, resultType: Type): Code uses alloc {
+  const subject = borrowArgument(walker, mutable emitter, arguments, 0)
+  const subjectType = argumentType(emitter, arguments, 0)
+  const result = zeroResult(mutable emitter, resultType)
+  let hit = "Ok"
+  if (name == "Result.err") {
+    hit = "Err"
+  }
+  const hitTag = variantTag(emitter, subjectType, hit)
+  openBranch(mutable emitter, subject, hitTag)
+  passOn(mutable emitter, result, subject, subjectType, hit, resultType, "Some")
+  elseBranch(mutable emitter)
+  const none = allocateVariant(mutable emitter, resultType, "None", [])
+  writeLine(mutable emitter, `${result} = ${none};`)
+  closeBranch(mutable emitter)
+  return Code { text: result, owned: true }
+}
+
+// emitTestCompare is Test.eq and Test.ne.
+function emitTestCompare<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+  const type = argumentType(emitter, arguments, 0)
+  const actual = borrowArgument(walker, mutable emitter, arguments, 0)
+  const other = borrowArgument(walker, mutable emitter, arguments, 1)
+  const equal = useEq(mutable emitter, type)
+  const show = useShow(mutable emitter, type)
+  const position = where(emitter, pos)
+  if (name == "Test.eq") {
+    writeLine(mutable emitter, `if (!${equal}(${actual}, ${other})) narra_test_fail_eq(${show}(${other}), ${show}(${actual}), ${position});`)
+  } else {
+    writeLine(mutable emitter, `if (${equal}(${actual}, ${other})) narra_test_fail_ne(${show}(${other}), ${position});`)
+  }
+  return Code { text: "", owned: false }
+}
+
+// emitTestPanics runs the closure in a child process (runtime_test.h).
+function emitTestPanics<W: EmitWalker>(walker: W, mutable emitter: Emitter, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+  const callback = borrowArgument(walker, mutable emitter, arguments, 0)
+  let expected = "NULL"
+  if (Arrays.length(arguments) == 2) {
+    const message = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+    expected = message.text
+  }
+  emitter.tempCount = emitter.tempCount + 1
+  const process = `t${Int.toString(emitter.tempCount)}`
+  const position = where(emitter, pos)
+  writeLine(mutable emitter, `narra_test_proc ${process};`)
+  writeLine(mutable emitter, `if (narra_test_fork(&${process}, ${position})) {`)
+  writeLine(mutable emitter, `  ${callback}.fn(${callback}.env);`)
+  writeLine(mutable emitter, "  narra_test_returned();")
+  writeLine(mutable emitter, "}")
+  return Code { text: `narra_test_expect(&${process}, ${expected}, ${position})`, owned: false }
+}
+
+// emitTestGolden is Test.golden(name, actual).
+function emitTestGolden<W: EmitWalker>(walker: W, mutable emitter: Emitter, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+  const goldenName = borrowArgument(walker, mutable emitter, arguments, 0)
+  const actual = borrowArgument(walker, mutable emitter, arguments, 1)
+  const position = where(emitter, pos)
+  return Code { text: `narra_test_golden(${goldenName}, ${actual}, ${position})`, owned: false }
+}
+
+// testName finds the name of the test numbered moduleNumber in its module.
+function testName(checker: Checker, module: string, moduleNumber: int): string {
+  if (checker.scopeIndex[module] is Some(scopeNumber)) {
+    let seen = 0
+    for (const declaration of Arrays.values(checker.scopes[scopeNumber].declarations)) {
+      if (declaration is Decl.Test(testDecl)) {
+        if (seen == moduleNumber) {
+          return testDecl.name
+        }
+        seen = seen + 1
+      }
+    }
   }
   return ""
 }
 
-export function emitOptionCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
-  return Code { text: reportUnsupported(mutable emitter, "option call", NODE), owned: false }
-}
-
 // emitTestMain writes the test runner and the C main of a test build.
 export function emitTestMain(mutable emitter: Emitter): string uses alloc {
-  return `${reportUnsupported(mutable emitter, "test main", NODE)}\n`
+  let builder = Str.builder()
+  Str.append(mutable builder, TEST_RUNNER_C)
+  Str.append(mutable builder, "\nint main(int argc, char** argv) {\n  static const narra_test_case cases[] = {\n")
+  let number = 0
+  let moduleNumbers: Map<string, int> = Map {}
+  for (const body of Arrays.values(emitter.checker.bodies)) {
+    if (body.kind == "test") {
+      let moduleNumber = 0
+      if (moduleNumbers[body.module] is Some(seen)) {
+        moduleNumber = seen
+      }
+      moduleNumbers[body.module] = moduleNumber + 1
+      const name = testName(emitter.checker, body.module, moduleNumber)
+      Str.append(mutable builder, `    {${cString(name)}, test_${Int.toString(number)}},\n`)
+      number = number + 1
+    }
+  }
+  Str.append(mutable builder, "    {NULL, NULL}\n  };\n  return narra_test_run(cases, argc, argv);\n}\n")
+  return Str.build(builder)
 }

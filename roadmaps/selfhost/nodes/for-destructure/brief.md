@@ -1,7 +1,7 @@
 ---
 id: for-destructure
 title: Tuple and struct destructuring in for-of heads
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 204418
 owns:
   - compiler/testdata/for_destructure*
   - compiler/testdata/errors/for_destructure*

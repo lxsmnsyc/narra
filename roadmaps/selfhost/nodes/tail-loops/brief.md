@@ -1,7 +1,7 @@
 ---
 id: tail-loops
 title: "Self tail calls compile to loops"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 327601
 owns:
   - compiler/testdata/tail_loops*
   - roadmaps/selfhost/nodes/tail-loops/**

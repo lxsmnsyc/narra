@@ -50,3 +50,8 @@ Notes:
 | selfhost | selfhost-bootstrap | M | S | 2 | 124k tokens (worker 67k, fresh review 57k). Fixed point on the first run. Round 2: `time` in a `/bin/sh` script, error wrapping. |
 | selfhost | spec-gap-audit | M | M | 1 | 164k tokens. 241 programs, 21 confirmed gaps, 18 proposed fix nodes. |
 | selfhost | spec-fixes | S | S | 1 | 60k tokens. Invented a placeholder name (`Int.toI32`) in SPEC.md; left to sized-numbers. |
+| selfhost | box-assign | S | S | 1 | 73k tokens. Self-review, no findings. Only the emitter was broken. |
+| selfhost | block-arrow-args | S | S | 1 | 60k tokens. Cause was in the lexer (paren depth), not the parser. |
+| selfhost | mutable-escape | S | S | 2 | 114k tokens. Round 2: maintainer decided constructors count as stores. |
+| selfhost | tail-loops | M | M+ | 2 | 328k tokens (worker 231k, review 96k). Round 1 missed returned match arms and void tail calls; round 2 redid tail detection as a pre-pass. |
+| selfhost | for-destructure | M | S | 2 | 204k tokens (worker 126k, review 79k). Parser desugaring; round 2: E0232 list, error positions, cascading error. |

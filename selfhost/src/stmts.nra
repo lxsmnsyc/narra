@@ -60,11 +60,11 @@ export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, s
 function checkLoopExit(mutable checker: Checker, pos: Pos, label: string, word: string, message: string) uses alloc {
   const blockCount = Arrays.length(checker.blocks)
   if (blockCount > 0) {
-    // Inside a block expression only its own loops can be left.
-    const outer = checker.blocks[blockCount - 1]
-    let reaches = checker.loops == 0 && outer.loops > 0
+    // Inside a block expression only its own loops can be left. The loops
+    // outside it, also outside an enclosing block expression, are out of reach.
+    let reaches = checker.loops == 0 && hasOuterLoops(checker)
     if (label != "") {
-      reaches = !hasLabel(checker.labels, label) && hasLabel(outer.labels, label)
+      reaches = !hasLabel(checker.labels, label) && hasOuterLabel(checker, label)
     }
     if (reaches) {
       reportError(mutable checker, pos, `${word} cannot leave a block expression; it can only leave a loop inside the block`)
@@ -83,6 +83,27 @@ function checkLoopExit(mutable checker: Checker, pos: Pos, label: string, word: 
     }
   }
   reportError(mutable checker, pos, `no enclosing loop is labeled "${label}"`)
+}
+
+// hasOuterLoops reports whether a loop encloses a block expression being checked.
+function hasOuterLoops(checker: Checker): bool {
+  for (const context of Arrays.values(checker.blocks)) {
+    if (context.loops > 0) {
+      return true
+    }
+  }
+  return false
+}
+
+// hasOuterLabel reports whether a loop labeled label encloses a block
+// expression being checked.
+function hasOuterLabel(checker: Checker, label: string): bool {
+  for (const context of Arrays.values(checker.blocks)) {
+    if (hasLabel(context.labels, label)) {
+      return true
+    }
+  }
+  return false
 }
 
 function hasLabel(labels: Array<string>, label: string): bool {
@@ -109,11 +130,8 @@ function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc
   if (label == "") {
     return
   }
-  for (const name of Arrays.values(checker.labels)) {
-    if (name == label) {
-      reportError(mutable checker, pos, `label "${label}" is already used by an enclosing loop`)
-      break
-    }
+  if (hasLabel(checker.labels, label) || hasOuterLabel(checker, label)) {
+    reportError(mutable checker, pos, `label "${label}" is already used by an enclosing loop`)
   }
   Arrays.push(mutable checker.labels, label)
 }
@@ -275,9 +293,13 @@ function checkBlockReturn<W: Walker>(mutable checker: Checker, walker: W, pos: P
   if (value is Some(expression)) {
     checkNoMutableEscape(mutable checker, expression)
     const expected = checker.blocks[last].result
+    const errorCount = Arrays.length(checker.errors)
     const found = checkExpression(mutable checker, walker, expression, expected)
     if (found == Type.TVoid) {
-      reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+      // A value whose check already failed is void; do not report it twice.
+      if (Arrays.length(checker.errors) == errorCount) {
+        reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+      }
       return
     }
     if (expected is Some(_)) {

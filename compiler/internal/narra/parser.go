@@ -830,6 +830,9 @@ func (p *Parser) structLitAhead() bool {
 		return true
 	}
 	second := p.toks[j+1]
+	if first.Kind == TokString && second.Kind == TokPunct && second.Text == ":" {
+		return true // a TypeScript object literal: structLit reports it
+	}
 	if first.Kind != TokIdent || second.Kind != TokPunct || second.Text != ":" || j+2 >= len(p.toks) {
 		return false
 	}

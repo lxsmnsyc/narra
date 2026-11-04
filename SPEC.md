@@ -139,7 +139,7 @@ const label = {
 - **`return` stops at the nearest block expression**, as at a function body. A `return` anywhere inside it, also in nested block statements, loops and `match` arms, ends the block expression and not the function. A block expression cannot return from the enclosing function.
 - **`break` and `continue` cannot leave a block expression.** A `break` or `continue` to a loop outside it is a compile error (E0932). Loops inside the block work as usual.
 - **Every path must end in `return value`** (E0931), and every returned value has the same type. A bare `return` is an error. A block expression with no `return` at all, such as `const o = { a }`, is a compile error (E0933) that points to struct literals.
-- A `{` that starts `{}`, `{ ...s, f: v }` or `{ name: value }` in value position is still a struct literal whose type comes from context.
+- A `{` that starts `{}`, `{ ...s, f: v }` or `{ name: value }` in value position is still a struct literal whose type comes from context. The exception is `{ name: for` and `{ name: while`, where `name:` labels a loop and the `{` starts a block expression.
 - `if (c) { ... } else { ... }` in value position is an expression whose branches are block expressions, each ending in `return`. The `else` branch is required, and `else if` chains are allowed. At the start of a statement `if` is still a statement.
 
 ```ts

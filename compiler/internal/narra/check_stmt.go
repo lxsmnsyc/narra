@@ -428,11 +428,8 @@ func (c *Checker) enterLoop(pos Pos, label string) {
 	if label == "" {
 		return
 	}
-	for _, outer := range c.labels {
-		if outer == label {
-			c.errorf(pos, "label %q is already used by an enclosing loop", label)
-			break
-		}
+	if contains(c.labels, label) || c.outerLabel(label) {
+		c.errorf(pos, "label %q is already used by an enclosing loop", label)
 	}
 	c.labels = append(c.labels, label)
 }
@@ -446,12 +443,13 @@ func (c *Checker) leaveLoop(label string) {
 
 // loopExit checks a break or continue, with or without a label.
 func (c *Checker) loopExit(pos Pos, label, word string) {
-	if n := len(c.blocks); n > 0 {
-		// Inside a block expression only its own loops can be left.
-		outer := c.blocks[n-1]
-		reaches := c.loops == 0 && outer.loops > 0
+	if len(c.blocks) > 0 {
+		// Inside a block expression only its own loops can be left. The
+		// loops outside it, also outside an enclosing block expression, are
+		// out of reach.
+		reaches := c.loops == 0 && c.outerLoops()
 		if label != "" {
-			reaches = !contains(c.labels, label) && contains(outer.labels, label)
+			reaches = !contains(c.labels, label) && c.outerLabel(label)
 		}
 		if reaches {
 			c.errorf(pos, "%s cannot leave a block expression; it can only leave a loop inside the block", word)
@@ -504,6 +502,27 @@ type blockCtx struct {
 	labels  []string
 }
 
+// outerLoops reports whether a loop encloses a block expression being checked.
+func (c *Checker) outerLoops() bool {
+	for _, ctx := range c.blocks {
+		if ctx.loops > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// outerLabel reports whether a loop labeled label encloses a block
+// expression being checked.
+func (c *Checker) outerLabel(label string) bool {
+	for _, ctx := range c.blocks {
+		if contains(ctx.labels, label) {
+			return true
+		}
+	}
+	return false
+}
+
 // blockExpr checks a block in value position. Its value is the common type
 // of its returns, and every path must end in a return.
 func (c *Checker) blockExpr(x *BlockExpr, want Type) Type {
@@ -520,6 +539,9 @@ func (c *Checker) blockExpr(x *BlockExpr, want Type) Type {
 	if !endsInReturn(x.Block) {
 		c.errorf(x.P, "a block expression must end every path with `return value`")
 	}
+	if ctx.result == nil {
+		return TVoid
+	}
 	return ctx.result
 }
 
@@ -532,9 +554,13 @@ func (c *Checker) blockReturn(s *ReturnStmt, ctx *blockCtx) {
 		return
 	}
 	c.noMutableEscape(s.Value)
+	nerrs := len(c.errs)
 	t := c.expr(s.Value, ctx.result)
 	if t == TVoid {
-		c.errorf(s.Pos, "a block expression must end every path with `return value`")
+		// A value whose check already failed is void; do not report it twice.
+		if len(c.errs) == nerrs {
+			c.errorf(s.Pos, "a block expression must end every path with `return value`")
+		}
 		return
 	}
 	if ctx.result == nil {
@@ -585,4 +611,59 @@ func endsInReturn(b *Block) bool {
 		}
 	}
 	return false
+}
+
+// eachBlockExpr calls visit for every expression that the statements of a
+// block hold, at any statement depth, including the guards, bodies and
+// blocks of match statements. It does not look inside the expressions.
+func eachBlockExpr(b *Block, visit func(Expr)) {
+	if b == nil {
+		return
+	}
+	for _, s := range b.Stmts {
+		eachStmtExpr(s, visit)
+	}
+}
+
+func eachStmtExpr(s Stmt, visit func(Expr)) {
+	switch s := s.(type) {
+	case *Block:
+		eachBlockExpr(s, visit)
+	case *VarStmt:
+		visitExpr(s.Value, visit)
+	case *AssignStmt:
+		visitExpr(s.Target, visit)
+		visitExpr(s.Value, visit)
+	case *ExprStmt:
+		visitExpr(s.Expr, visit)
+	case *ReturnStmt:
+		visitExpr(s.Value, visit)
+	case *IfStmt:
+		visitExpr(s.Cond, visit)
+		eachBlockExpr(s.Then, visit)
+		if s.Else != nil {
+			eachStmtExpr(s.Else, visit)
+		}
+	case *WhileStmt:
+		visitExpr(s.Cond, visit)
+		eachBlockExpr(s.Body, visit)
+	case *ForStmt:
+		visitExpr(s.Iter, visit)
+		eachBlockExpr(s.Body, visit)
+	}
+}
+
+// visitExpr visits an expression, and the arms of a match when it is one.
+func visitExpr(x Expr, visit func(Expr)) {
+	if x == nil {
+		return
+	}
+	visit(x)
+	if m, ok := x.(*MatchExpr); ok {
+		for _, arm := range m.Arms {
+			visitExpr(arm.Guard, visit)
+			visitExpr(arm.Body, visit)
+			eachBlockExpr(arm.Block, visit)
+		}
+	}
 }

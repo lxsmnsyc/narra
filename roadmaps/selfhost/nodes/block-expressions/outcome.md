@@ -40,7 +40,7 @@ For match-block-values and ternary:
 
 ## Gotchas
 
-- `mutableRoots` and `usesLocal` (Go and selfhost) do not look into block expressions, as they do not look into match arm blocks. A `mutable` argument inside a block expression is not seen by the "passed as mutable and also the callee" rule.
+- `mutableRoots` and `usesLocal` (Go `eachBlockExpr`, selfhost `listBlockExpressions`) descend into block expressions; they still skip the arms of a `match` used as a value. Any walker over expression kinds needs a `BlockExpr` case.
 - E0931 and E0933 are reported at the block's `{` (the `if` keyword for an `if` value); the error for different branch types is at the second branch's `{`.
 - An error inside a block (for example `const o = { a }` also reports "this expression does nothing" for `a`) appears with the block errors.
 - The result variable is declared without an initializer (`T rN;`), like `match` values; every path assigns it before the `goto`.

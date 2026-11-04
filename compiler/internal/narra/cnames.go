@@ -151,6 +151,8 @@ func typeID(t Type) string {
 		return mapCName(t)
 	case *FuncType:
 		return funcTypeCName(t)
+	case *RangeType:
+		return "Range"
 	}
 	return "x"
 }

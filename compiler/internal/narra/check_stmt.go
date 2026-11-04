@@ -205,7 +205,10 @@ func (c *Checker) stmt(s Stmt) {
 	case *ForStmt:
 		var elem Type
 		call, isCall := s.Iter.(*CallExpr)
+		outerSource := c.forSource
+		c.forSource = s.Iter
 		t := c.expr(s.Iter, nil)
+		c.forSource = outerSource
 		switch {
 		case isCall && (call.Builtin == "Range.upTo" || call.Builtin == "Range.between"):
 			s.Kind = forRange
@@ -229,8 +232,18 @@ func (c *Checker) stmt(s Stmt) {
 			if at, ok := t.(*ArrayType); ok {
 				elem = at.Elem
 			}
+		case t == Type(TRange):
+			// A Range value: its bounds are read once, before the loop.
+			s.Kind = forRange
+			elem = TInt
 		default:
-			c.errorf(s.Iter.position(), "for ... of needs Range.upTo, Range.between, Array.values, Array.entries, Map.keys or Map.entries, found %s", t)
+			if at, ok := t.(*ArrayType); ok {
+				// An array value, as with Array.values.
+				s.Kind = forArray
+				elem = at.Elem
+				break
+			}
+			c.errorf(s.Iter.position(), "for ... of needs a Range, an Array, Str.chars, Array.entries, Map.keys or Map.entries, found %s", t)
 			elem = TVoid
 		}
 		c.push()

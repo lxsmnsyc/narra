@@ -222,10 +222,14 @@ function emitFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, statement: 
   beginStatement(mutable emitter)
   if (name == "Range.upTo" || name == "Range.between") {
     emitRangeFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name)
+  } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TRange) {
+    emitRangeValueFor(walker, mutable emitter, nodeId, pos, label, iterable, body)
   } else if (name == "Map.keys" || name == "Map.entries") {
     Maps.emitMapFor(walker, mutable emitter, statement)
   } else if (name == "Array.values" || name == "Array.entries") {
-    emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name == "Array.entries")
+    emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name == "Array.entries", true)
+  } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TArray(_)) {
+    emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, false, false)
   } else {
     const _ = reportUnsupported(mutable emitter, "for loop", NODE)
   }
@@ -260,10 +264,27 @@ function emitRangeFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId
   emitBreakLabel(mutable emitter, info)
 }
 
-function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, label: string, iterable: Expr, body: Block, entries: bool) uses alloc {
+// emitRangeValueFor loops over a Range value, reading both bounds once.
+function emitRangeValueFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, label: string, iterable: Expr, body: Block) uses alloc {
+  const code = EmitWalker.emitExpression(walker, mutable emitter, iterable)
+  const range = temp(mutable emitter, Type.TRange, code.text)
+  const variable = localRef(emitter, declaredLocal(emitter, nodeId))
+  writeLine(mutable emitter, `for (int64_t ${variable} = ${range}.low; ${variable} < ${range}.high; ${variable}++) {`)
+  emitter.indent = emitter.indent + 1
+  emitLoopBody(walker, mutable emitter, label, pos, body)
+  const info = leaveLoop(mutable emitter)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  emitBreakLabel(mutable emitter, info)
+}
+
+function emitArrayFor<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, label: string, iterable: Expr, body: Block, entries: bool, isCall: bool) uses alloc {
+  // Array.values and Array.entries loop over their argument; any other array is the source itself.
   let source = iterable
-  if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
-    source = callArguments[0].value
+  if (isCall) {
+    if (iterable is Expr.CallExpr(_, _, _, callArguments)) {
+      source = callArguments[0].value
+    }
   }
   const arrayType = typeOf(emitter, getExpressionId(source))
   if (arrayType is Type.TArray(element)) {

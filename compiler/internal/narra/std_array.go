@@ -49,6 +49,10 @@ func checkArrayLength(c *Checker, e *CallExpr, want Type) Type {
 	if e.Builtin == "Array.length" {
 		return TInt
 	}
+	if Expr(e) != c.forSource {
+		c.errorf(e.P, "%s can only be the source of a for ... of loop; use the array itself", e.Builtin)
+		return TVoid
+	}
 	if e.Builtin == "Array.entries" {
 		return c.arrayOf(c.tupleOf([]Type{TInt, at.Elem}))
 	}

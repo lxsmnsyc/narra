@@ -137,12 +137,17 @@ func (e *Emitter) stmt(s Stmt) {
 }
 
 func (e *Emitter) forStmt(s *ForStmt) {
-	call := s.Iter.(*CallExpr)
+	call, _ := s.Iter.(*CallExpr)
 	e.beginStmt()
 	switch s.Kind {
 	case forRange:
 		var lo, hi string
-		if call.Builtin == "Range.upTo" {
+		if call == nil || (call.Builtin != "Range.upTo" && call.Builtin != "Range.between") {
+			// A Range value: read both bounds once.
+			code, _ := e.expr(s.Iter)
+			r := e.temp(TRange, code)
+			lo, hi = r+".low", r+".high"
+		} else if call.Builtin == "Range.upTo" {
 			lo = "0"
 			c, _ := e.expr(call.Args[0].Value)
 			hi = e.temp(TInt, c)
@@ -166,8 +171,12 @@ func (e *Emitter) forStmt(s *ForStmt) {
 	case forMapEntries:
 		e.mapFor(s, call, true)
 	case forArray, forArrayEntries:
-		at := call.Args[0].Value.Type().(*ArrayType)
-		code, owned := e.expr(call.Args[0].Value)
+		source := s.Iter
+		if call != nil && (call.Builtin == "Array.values" || call.Builtin == "Array.entries") {
+			source = call.Args[0].Value
+		}
+		at := source.Type().(*ArrayType)
+		code, owned := e.expr(source)
 		arr := e.consume(code, owned, at)
 		e.frames[len(e.frames)-1] = append(e.frames[len(e.frames)-1], tempVar{arr, at})
 		e.tempN++

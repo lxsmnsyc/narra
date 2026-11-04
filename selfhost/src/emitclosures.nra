@@ -1,44 +1,387 @@
-// Function types, arrow functions, function values and calls through them
-// (emit_closure.go). Stub from selfhost-emit-core; the owner is
-// selfhost-emit-closures. The section stubs report only when the program has
-// a function type or an arrow function.
-import { Expr } from "narrac/ast"
+// Function types, arrow functions, function values and calls through them,
+// ported from emit_closure.go.
+//
+// A function type such as (int) => int is a struct holding a C function
+// pointer and an environment. A call passes the environment first. A named
+// function used as a value is a thunk with a NULL environment. An arrow
+// function is a C function of its own, emitted while the enclosing body is
+// being emitted, so its text goes to the closure buffers of the Emitter and
+// the per-function state is saved and restored around it.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import { Pos, Expr, Stmt, Block, Param } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Emitter, Code, EmitWalker, reportUnsupported, hasWork } from "narrac/emitstate"
+import { ProgramFunc, ClosureInfo, Ref, getExpressionId } from "narrac/check"
+import { cType, typeId, functionName, closureName, thunkName } from "narrac/cnames"
+import { Emitter, Code, TempVar, ScopeFrame, EmitWalker, reportUnsupported, writeLine, where, typeOf, refOf, localOf, localName, localRef, ownedTemp, temp, consume, unwindAll, retainCode, releaseCode } from "narrac/emitstate"
 
 const NODE = "selfhost-emit-closures"
+
+const ENV_RUNTIME = `
+// Closure environments. A count below zero marks an environment on the
+// caller's stack, which is never counted or freed.
+typedef struct narra_env { int64_t rc; void (*drop)(struct narra_env*); } narra_env;
+static void narra_env_retain(narra_env* e) {
+  if (e && e->rc >= 0) e->rc++;
+}
+static void narra_env_release(narra_env* e) {
+  if (e && e->rc >= 0 && --e->rc == 0) {
+    e->drop(e);
+    narra_free(e);
+  }
+}
+`
+
+// A function type with the key Go sorts it by.
+struct FunctionTypeItem {
+  key: string
+  type: Type
+}
+
+// sortFunctionTypes orders function types by their type id in byte order
+// (Go's finishFuncTypes). It is a stable insertion sort.
+function sortFunctionTypes(items: Array<FunctionTypeItem>): Array<FunctionTypeItem> uses alloc {
+  let sorted: Array<FunctionTypeItem> = []
+  for (const item of Arrays.values(items)) {
+    // Find the first place whose key is greater than the new key.
+    let position = Arrays.length(sorted)
+    for (const index of Ranges.between(0, Arrays.length(sorted))) {
+      if (position == Arrays.length(sorted) && sorted[index].key > item.key) {
+        position = index
+      }
+    }
+    let next: Array<FunctionTypeItem> = []
+    for (const index of Ranges.between(0, position)) {
+      Arrays.push(mutable next, sorted[index])
+    }
+    Arrays.push(mutable next, item)
+    for (const index of Ranges.between(position, Arrays.length(sorted))) {
+      Arrays.push(mutable next, sorted[index])
+    }
+    sorted = next
+  }
+  return sorted
+}
+
+// listFunctionTypes lists the program's function types in Go's order (Program.FuncTypes).
+function listFunctionTypes(emitter: Emitter): Array<Type> uses alloc {
+  let items: Array<FunctionTypeItem> = []
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (composite is Type.TFunc(_, _)) {
+      Arrays.push(mutable items, FunctionTypeItem { key: typeId(emitter.checker, composite), type: composite })
+    }
+  }
+  let types: Array<Type> = []
+  for (const item of Arrays.values(sortFunctionTypes(items))) {
+    Arrays.push(mutable types, item.type)
+  }
+  return types
+}
 
 // emitFuncTypeDefinitions writes envRuntime and the struct of each function
 // type, only when function types exist.
 export function emitFuncTypeDefinitions(mutable emitter: Emitter): string uses alloc {
-  if (hasWork(emitter, NODE)) {
-    return `${reportUnsupported(mutable emitter, "function types", NODE)}\n`
+  const types = listFunctionTypes(emitter)
+  if (Arrays.length(types) == 0) {
+    return ""
   }
-  return ""
+  let builder = Str.builder()
+  Str.append(mutable builder, ENV_RUNTIME)
+  // Forward declarations first, since structs hold function values inline.
+  for (const type of Arrays.values(types)) {
+    const name = cType(emitter.checker, type)
+    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+  }
+  for (const type of Arrays.values(types)) {
+    if (type is Type.TFunc(parameters, result)) {
+      let parts = ["narra_env*"]
+      for (const parameter of Arrays.values(parameters)) {
+        Arrays.push(mutable parts, cType(emitter.checker, parameter))
+      }
+      const name = cType(emitter.checker, type)
+      Str.append(mutable builder, `struct ${name} { ${cType(emitter.checker, result)} (*fn)(${Str.join(parts, ", ")}); narra_env* env; };\n`)
+    }
+  }
+  return Str.build(builder)
 }
 
 // emitClosureFunctions writes the "\n// Closures\n" section: environments,
-// prototypes and definitions. It saves and restores the per-function state.
+// prototypes and definitions made while the bodies were emitted. Go writes
+// the section only when a thunk or an arrow function made one.
 export function emitClosureFunctions(mutable emitter: Emitter): string uses alloc {
-  if (hasWork(emitter, NODE)) {
-    return `\n// Closures\n${reportUnsupported(mutable emitter, "closure functions", NODE)}\n`
+  const prototypes = Str.build(emitter.closurePrototypes)
+  if (prototypes == "") {
+    return ""
   }
-  return ""
+  const environments = Str.build(emitter.closureEnvs)
+  const definitions = Str.build(emitter.closureDefinitions)
+  return `\n// Closures\n${environments}${prototypes}${definitions}`
 }
 
+// emitFuncValue returns a named function as a value, through its thunk.
 export function emitFuncValue<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
-  return Code { text: reportUnsupported(mutable emitter, "function value", NODE), owned: false }
+  const nodeId = getExpressionId(expression)
+  const checker = emitter.checker
+  let funcIndex = -1
+  if (refOf(emitter, nodeId) is Ref.Function(found)) {
+    funcIndex = found
+  }
+  if (funcIndex < 0) {
+    return Code { text: reportUnsupported(mutable emitter, "function value", NODE), owned: false }
+  }
+  // A generic function goes through its instance.
+  let program = ProgramFunc.PlainFunc(funcIndex)
+  let parameterTypes: Array<Type> = []
+  let result = checker.functions[funcIndex].result
+  if (checker.bodies[emitter.body].instanceRefs[nodeId] is Some(instance)) {
+    program = ProgramFunc.InstanceFunc(instance)
+    parameterTypes = checker.instanceList[instance].parameters
+    result = checker.instanceList[instance].result
+  } else if (Arrays.length(checker.functions[funcIndex].typeParameters) > 0) {
+    return Code { text: reportUnsupported(mutable emitter, "generic function value without an instance", NODE), owned: false }
+  } else {
+    for (const parameter of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
+      Arrays.push(mutable parameterTypes, checker.paramTypes[parameter.id])
+    }
+  }
+  const functionText = functionName(checker, program)
+  const name = thunkName(functionText)
+  if (emitter.thunks[name] is None) {
+    emitter.thunks[name] = true
+    let parts = ["narra_env* env"]
+    let arguments: Array<string> = []
+    for (const index of Ranges.between(0, Arrays.length(parameterTypes))) {
+      Arrays.push(mutable parts, `${cType(checker, parameterTypes[index])} p${Int.toString(index)}`)
+      Arrays.push(mutable arguments, `p${Int.toString(index)}`)
+    }
+    const signature = `static ${cType(checker, result)} ${name}(${Str.join(parts, ", ")})`
+    Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
+    let returnText = "return "
+    if (result == Type.TVoid) {
+      returnText = ""
+    }
+    Str.append(mutable emitter.closureDefinitions, `${signature} {\n  (void)env;\n  ${returnText}${functionText}(${Str.join(arguments, ", ")});\n}\n\n`)
+  }
+  const functionType = cType(checker, typeOf(emitter, nodeId))
+  return Code { text: `((${functionType}){.fn = ${name}, .env = NULL})`, owned: false }
 }
 
+// emitArrow emits an arrow function's C function and returns the value.
 export function emitArrow<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  if (expression is Expr.ArrowExpr(nodeId, pos, parameters, _, bodyExpression, block)) {
+    return emitArrowParts(walker, mutable emitter, nodeId, pos, parameters, bodyExpression, block)
+  }
   return Code { text: reportUnsupported(mutable emitter, "arrow function", NODE), owned: false }
 }
 
+function emitArrowParts<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, parameters: Array<Param>, bodyExpression: Option<Expr>, block: Option<Block>): Code uses alloc {
+  const checker = emitter.checker
+  const info = checker.bodies[emitter.body]
+  let closure = ClosureInfo { nodeId: nodeId, stack: false, captures: [], hasHint: false, hintParameters: [], hintResult: None }
+  if (info.closureIndex[nodeId] is Some(closureIndex)) {
+    closure = info.closures[closureIndex]
+  } else {
+    return Code { text: reportUnsupported(mutable emitter, "arrow function without closure facts", NODE), owned: false }
+  }
+  const functionType = typeOf(emitter, nodeId)
+  const functionTypeName = cType(checker, functionType)
+  let result = Type.TVoid
+  if (functionType is Type.TFunc(_, resultType)) {
+    result = resultType
+  }
+
+  // Arrows are counted per owner, from 1.
+  const owner = emitter.owner
+  let count = 1
+  if (emitter.closureCounts[owner] is Some(previous)) {
+    count = previous + 1
+  }
+  emitter.closureCounts[owner] = count
+  const name = closureName("k", owner, count)
+  const environmentType = closureName("K", owner, count)
+  const dropName = closureName("D", owner, count)
+  if (Arrays.length(closure.captures) > 0) {
+    emitEnvironmentStruct(mutable emitter, environmentType, dropName, closure)
+  }
+
+  // The body is a block; an expression body is a return or an expression statement.
+  let body = Block { pos: pos, statements: [] }
+  if (block is Some(arrowBlock)) {
+    body = arrowBlock
+  } else if (bodyExpression is Some(arrowBody)) {
+    if (result == Type.TVoid) {
+      body = Block { pos: pos, statements: [Stmt.ExprStmt(pos, arrowBody)] }
+    } else {
+      body = Block { pos: pos, statements: [Stmt.ReturnStmt(pos, Some(arrowBody))] }
+    }
+  }
+  emitClosureFunction(walker, mutable emitter, name, environmentType, closure, parameters, body, result, pos)
+
+  if (Arrays.length(closure.captures) == 0) {
+    return Code { text: `((${functionTypeName}){.fn = ${name}, .env = NULL})`, owned: false }
+  }
+  emitter.tempCount = emitter.tempCount + 1
+  const environment = `k${Int.toString(emitter.tempCount)}`
+  if (closure.stack) {
+    // The environment lives on the caller's stack, with a count of -1.
+    let parts = [".h = {-1, NULL}"]
+    for (const capture of Arrays.values(closure.captures)) {
+      const local = localOf(emitter, capture)
+      Arrays.push(mutable parts, `.c_${localName(local)} = ${localRef(emitter, capture)}`)
+    }
+    writeLine(mutable emitter, `${environmentType} ${environment} = {${Str.join(parts, ", ")}};`)
+    return Code { text: `((${functionTypeName}){.fn = ${name}, .env = &${environment}.h})`, owned: false }
+  }
+  // A heap environment owns a reference to each capture.
+  writeLine(mutable emitter, `${environmentType}* ${environment} = narra_alloc(sizeof(${environmentType}));`)
+  writeLine(mutable emitter, `${environment}->h.rc = 1;`)
+  writeLine(mutable emitter, `${environment}->h.drop = ${dropName};`)
+  for (const capture of Arrays.values(closure.captures)) {
+    const local = localOf(emitter, capture)
+    const field = `${environment}->c_${localName(local)}`
+    const captureRef = localRef(emitter, capture)
+    writeLine(mutable emitter, `${field} = ${captureRef};`)
+    const retainText = retainCode(emitter, local.localType, field)
+    if (retainText != "") {
+      writeLine(mutable emitter, retainText)
+    }
+  }
+  const value = ownedTemp(mutable emitter, functionType, `((${functionTypeName}){.fn = ${name}, .env = &${environment}->h})`)
+  return Code { text: value, owned: true }
+}
+
+// emitEnvironmentStruct writes the environment struct of an arrow function
+// and the function that releases its captures.
+function emitEnvironmentStruct(mutable emitter: Emitter, environmentType: string, dropName: string, closure: ClosureInfo) uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, `typedef struct ${environmentType} { narra_env h;`)
+  for (const capture of Arrays.values(closure.captures)) {
+    const local = localOf(emitter, capture)
+    Str.append(mutable builder, ` ${cType(emitter.checker, local.localType)} c_${localName(local)};`)
+  }
+  Str.append(mutable builder, ` } ${environmentType};\n`)
+  Str.append(mutable builder, `static void ${dropName}(narra_env* h) {\n  ${environmentType}* k = (${environmentType}*)h;\n  (void)k;\n`)
+  for (const capture of Arrays.values(closure.captures)) {
+    const local = localOf(emitter, capture)
+    const releaseText = releaseCode(emitter, local.localType, `k->c_${localName(local)}`)
+    if (releaseText != "") {
+      Str.append(mutable builder, `  ${releaseText}\n`)
+    }
+  }
+  Str.append(mutable builder, "}\n")
+  Str.append(mutable emitter.closureEnvs, Str.build(builder))
+}
+
+// emitClosureFunction emits the C function of an arrow function. Captures
+// are read from the environment into locals with their usual C names,
+// borrowed. It runs in the middle of another body, so every piece of
+// per-function state of the Emitter is saved and restored.
+function emitClosureFunction<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, environmentType: string, closure: ClosureInfo, parameters: Array<Param>, body: Block, result: Type, pos: Pos) uses alloc {
+  const checker = emitter.checker
+  const info = checker.bodies[emitter.body]
+
+  // The signature: the parameters are locals of the enclosing body.
+  let parts = ["narra_env* env"]
+  for (const parameter of Arrays.values(parameters)) {
+    const local = info.locals[info.declared[parameter.id - info.first]]
+    Arrays.push(mutable parts, `${cType(checker, local.localType)} ${localName(local)}`)
+  }
+  const signature = `static ${cType(checker, result)} ${name}(${Str.join(parts, ", ")})`
+  Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
+
+  // Save the state of the body being emitted.
+  const savedOut = emitter.out
+  const savedIndent = emitter.indent
+  const savedFrames = emitter.frames
+  const savedScopes = emitter.scopes
+  const savedLoopFrames = emitter.loopFrames
+  const savedResultType = emitter.resultType
+  emitter.out = Str.builder()
+  emitter.indent = 0
+  emitter.resultType = result
+
+  writeLine(mutable emitter, `${signature} {`)
+  emitter.indent = emitter.indent + 1
+  if (Arrays.length(closure.captures) == 0) {
+    writeLine(mutable emitter, "(void)env;")
+  } else {
+    writeLine(mutable emitter, `${environmentType}* k_env = (${environmentType}*)env;`)
+    for (const capture of Arrays.values(closure.captures)) {
+      const local = localOf(emitter, capture)
+      writeLine(mutable emitter, `${cType(checker, local.localType)} ${localName(local)} = k_env->c_${localName(local)};`)
+    }
+  }
+  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
+  emitter.frames = []
+  emitter.loopFrames = []
+  EmitWalker.emitBlockInScope(walker, mutable emitter, body)
+  unwindAll(mutable emitter)
+  if (result != Type.TVoid) {
+    const position = where(emitter, pos)
+    writeLine(mutable emitter, `narra_panic(${position}, "function ended without returning a value");`)
+    writeLine(mutable emitter, `return (${cType(checker, result)}){0};`)
+  }
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, "")
+  const text = Str.build(emitter.out)
+  Str.append(mutable emitter.closureDefinitions, text)
+
+  // Restore the state.
+  emitter.out = savedOut
+  emitter.indent = savedIndent
+  emitter.frames = savedFrames
+  emitter.scopes = savedScopes
+  emitter.loopFrames = savedLoopFrames
+  emitter.resultType = savedResultType
+}
+
+// emitValueCall emits a call through a function value.
 export function emitValueCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  if (expression is Expr.CallExpr(_, _, callee, arguments)) {
+    const functionType = typeOf(emitter, getExpressionId(callee))
+    // The call owns a reference to the callee until the statement ends, so
+    // an argument that reassigns the variable holding it cannot free the
+    // environment before the call. Stack and NULL environments ignore it.
+    const calleeCode = EmitWalker.emitExpression(walker, mutable emitter, callee)
+    const holder = consume(mutable emitter, calleeCode.text, calleeCode.owned, functionType)
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name: holder, tempType: functionType })
+    let parts = [`${holder}.env`]
+    for (const argument of Arrays.values(arguments)) {
+      const argumentCode = EmitWalker.emitExpression(walker, mutable emitter, argument.value)
+      Arrays.push(mutable parts, argumentCode.text)
+    }
+    const callText = `${holder}.fn(${Str.join(parts, ", ")})`
+    if (functionType is Type.TFunc(_, resultType)) {
+      if (resultType == Type.TVoid) {
+        return Code { text: callText, owned: false }
+      }
+      const value = ownedTemp(mutable emitter, resultType, callText)
+      return Code { text: value, owned: true }
+    }
+  }
   return Code { text: reportUnsupported(mutable emitter, "call through a function value", NODE), owned: false }
 }
 
-// callFunctionValue calls a function value held in the C expression callee.
+// callFunctionValue calls a function value held in the C expression callee
+// (Go's callFn). A void call is the call text; any other result goes into a
+// block-local temporary that the caller moves into a payload or the result.
 export function callFunctionValue(mutable emitter: Emitter, functionType: Type, callee: string, arguments: Array<string>): Code uses alloc {
+  let parts = [`${callee}.env`]
+  for (const argument of Arrays.values(arguments)) {
+    Arrays.push(mutable parts, argument)
+  }
+  const callText = `${callee}.fn(${Str.join(parts, ", ")})`
+  if (functionType is Type.TFunc(_, resultType)) {
+    if (resultType == Type.TVoid) {
+      return Code { text: callText, owned: false }
+    }
+    return Code { text: temp(mutable emitter, resultType, callText), owned: false }
+  }
   return Code { text: reportUnsupported(mutable emitter, "call through a function value", NODE), owned: false }
 }

@@ -1,45 +1,440 @@
 // Trait functions the compiler writes (eq, hash, cmp, show), trait calls and
-// equality (emit_traits.go). Stub from selfhost-emit-core; the owner is
-// selfhost-emit-traits.
+// equality, ported from emit_traits.go by selfhost-emit-traits.
+//
+// useEq, useHash, useCmp and useShow register the need for a function and
+// return its C name. emitTraitFunctions writes every needed function; the
+// definitions can register more needs, so it loops by index as Go does.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 import { Expr } from "narrac/ast"
-import { Type } from "narrac/types"
-import { Emitter, Code, EmitWalker, reportUnsupported, hasWork } from "narrac/emitstate"
+import { Type, typeKey } from "narrac/types"
+import { Ref, ProgramFunc, getExpressionId } from "narrac/check"
+import { cType, typeId, opFuncName, functionName } from "narrac/cnames"
+import { Emitter, Code, TraitNeed, EmitWalker, typeOf, refOf, underlyingType, ownedTemp, cString } from "narrac/emitstate"
 
-const NODE = "selfhost-emit-traits"
-
-// emitTraitFunctions writes the trait functions registered by useEq, useHash,
-// useCmp and useShow.
-export function emitTraitFunctions(mutable emitter: Emitter): string uses alloc {
-  if (hasWork(emitter, NODE)) {
-    return `${reportUnsupported(mutable emitter, "trait functions", NODE)}\n`
+// The member of the standard trait that each operation implements.
+function traitMember(operation: string): string {
+  return match (operation) {
+    "eq" => "Equatable.equals"
+    "hash" => "Hashable.hash"
+    "cmp" => "Ordered.compare"
+    _ => "Show.show"
   }
-  return ""
+}
+
+function fieldName(name: string): string uses alloc {
+  return `f_${name}`
+}
+
+// variantField is the C access of a variant field of a boxed payload, as Go
+// writes it: u->v_<variant>.f_<field>.
+function variantField(variantName: string, name: string): string uses alloc {
+  return `u->v_${variantName}.${fieldName(name)}`
+}
+
+function isPrimitive(type: Type): bool {
+  return match (type) {
+    Type.TInt => true
+    Type.TF64 => true
+    Type.TBool => true
+    Type.TChar => true
+    Type.TStr => true
+    _ => false
+  }
+}
+
+// primitiveName is the name of the runtime function of a primitive type.
+function primitiveName(operation: string, type: Type): string uses alloc {
+  if (type == Type.TStr) {
+    return match (operation) {
+      "eq" => "lstr_eq"
+      "hash" => "lstr_hash"
+      "cmp" => "lstr_cmp"
+      _ => "narra_show_string"
+    }
+  }
+  const name = match (type) {
+    Type.TInt => "int"
+    Type.TF64 => "f64"
+    Type.TBool => "bool"
+    _ => "char"
+  }
+  if (operation == "show" && (type == Type.TInt || type == Type.TF64)) {
+    return `lstr_from_${name}`
+  }
+  return `narra_${operation}_${name}`
+}
+
+// standardName is the C name of an operation on a type.
+function standardName(emitter: Emitter, operation: string, type: Type): string uses alloc {
+  if (isPrimitive(type)) {
+    return primitiveName(operation, type)
+  }
+  return opFuncName(operation, typeId(emitter.checker, type))
+}
+
+// useTraitFunction names the function and, for a type that is not primitive,
+// adds it to the needs list the first time.
+function useTraitFunction(mutable emitter: Emitter, operation: string, type: Type): string uses alloc {
+  const stripped = underlyingType(emitter, type)
+  const name = standardName(emitter, operation, stripped)
+  if (isPrimitive(stripped)) {
+    return name
+  }
+  if (emitter.traitSeen[name] is None) {
+    emitter.traitSeen[name] = true
+    Arrays.push(mutable emitter.traitNeeds, TraitNeed { operation: operation, needType: stripped, name: name })
+  }
+  return name
 }
 
 // useEq, useHash, useCmp and useShow register the need for the function of a
 // type and return its C name.
 export function useEq(mutable emitter: Emitter, type: Type): string uses alloc {
-  return reportUnsupported(mutable emitter, "equality function", NODE)
+  return useTraitFunction(mutable emitter, "eq", type)
 }
 
 export function useHash(mutable emitter: Emitter, type: Type): string uses alloc {
-  return reportUnsupported(mutable emitter, "hash function", NODE)
+  return useTraitFunction(mutable emitter, "hash", type)
 }
 
 export function useCmp(mutable emitter: Emitter, type: Type): string uses alloc {
-  return reportUnsupported(mutable emitter, "compare function", NODE)
+  return useTraitFunction(mutable emitter, "cmp", type)
 }
 
 export function useShow(mutable emitter: Emitter, type: Type): string uses alloc {
-  return reportUnsupported(mutable emitter, "show function", NODE)
+  return useTraitFunction(mutable emitter, "show", type)
 }
 
 // emitEquality is == and != on a struct, enum or array.
 export function emitEquality<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
-  return Code { text: reportUnsupported(mutable emitter, "equality", NODE), owned: false }
+  if (expression is Expr.BinaryExpr(_, _, operator, left, right)) {
+    const leftCode = EmitWalker.emitExpression(walker, mutable emitter, left)
+    const rightCode = EmitWalker.emitExpression(walker, mutable emitter, right)
+    const operandType = underlyingType(emitter, typeOf(emitter, getExpressionId(left)))
+    const equal = useEq(mutable emitter, operandType)
+    const call = `${equal}(${leftCode.text}, ${rightCode.text})`
+    if (operator == "!=") {
+      return Code { text: `(!${call})`, owned: false }
+    }
+    return Code { text: call, owned: false }
+  }
+  return Code { text: "0", owned: false }
 }
 
 // emitTraitCall is a call of a trait function the compiler implements.
 export function emitTraitCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
-  return Code { text: reportUnsupported(mutable emitter, "trait call", NODE), owned: false }
+  if (expression is Expr.CallExpr(nodeId, _, _, arguments)) {
+    // The arguments are evaluated first, as in Go.
+    let argumentTexts: Array<string> = []
+    for (const argument of Arrays.values(arguments)) {
+      const code = EmitWalker.emitExpression(walker, mutable emitter, argument.value)
+      Arrays.push(mutable argumentTexts, code.text)
+    }
+    let selfType = Type.TVoid
+    if (emitter.checker.bodies[emitter.body].traitSelf[nodeId] is Some(recorded)) {
+      selfType = recorded
+    }
+    let member = ""
+    if (refOf(emitter, nodeId) is Ref.TraitFunction(traitIndex, name)) {
+      member = `${emitter.checker.traits[traitIndex].name}.${name}`
+    }
+    if (member == "Equatable.equals") {
+      const equal = useEq(mutable emitter, selfType)
+      return Code { text: `${equal}(${argumentTexts[0]}, ${argumentTexts[1]})`, owned: false }
+    }
+    if (member == "Hashable.hash") {
+      const hash = useHash(mutable emitter, selfType)
+      return Code { text: `((int64_t)${hash}(${argumentTexts[0]}))`, owned: false }
+    }
+    if (member == "Ordered.compare") {
+      const compare = useCmp(mutable emitter, selfType)
+      const orderingType = cType(emitter.checker, typeOf(emitter, nodeId))
+      return Code { text: `((${orderingType}){.tag = narra_ordering(${compare}(${argumentTexts[0]}, ${argumentTexts[1]}))})`, owned: false }
+    }
+    if (member == "Show.show") {
+      const show = useShow(mutable emitter, selfType)
+      const shown = ownedTemp(mutable emitter, Type.TStr, `${show}(${argumentTexts[0]})`)
+      return Code { text: shown, owned: true }
+    }
+  }
+  return Code { text: "0", owned: false }
+}
+
+// emitTraitFunctions writes the prototypes and definitions of every trait
+// function used so far. Definitions can use more, so the list grows while it
+// runs.
+export function emitTraitFunctions(mutable emitter: Emitter): string uses alloc {
+  if (Arrays.length(emitter.traitNeeds) == 0) {
+    return ""
+  }
+  let prototypes: Array<string> = []
+  let definitions = Str.builder()
+  let index = 0
+  while (index < Arrays.length(emitter.traitNeeds)) {
+    const need = emitter.traitNeeds[index]
+    Arrays.push(mutable prototypes, writeDefinition(mutable emitter, mutable definitions, need))
+    index = index + 1
+  }
+  let builder = Str.builder()
+  Str.append(mutable builder, "\n// Trait functions\n")
+  for (const prototype of Arrays.values(prototypes)) {
+    Str.append(mutable builder, `${prototype};\n`)
+  }
+  Str.append(mutable builder, Str.build(definitions))
+  return Str.build(builder)
+}
+
+function addLine(mutable builder: StringBuilder, text: string) uses alloc {
+  Str.append(mutable builder, text)
+  Str.append(mutable builder, "\n")
+}
+
+// writeDefinition writes one function and returns its prototype.
+function writeDefinition(mutable emitter: Emitter, mutable builder: StringBuilder, need: TraitNeed): string uses alloc {
+  const ctype = cType(emitter.checker, need.needType)
+  let prototype = ""
+  if (need.operation == "eq") {
+    prototype = `static bool ${need.name}(${ctype} a, ${ctype} b)`
+  } else if (need.operation == "hash") {
+    prototype = `static uint64_t ${need.name}(${ctype} v)`
+  } else if (need.operation == "cmp") {
+    prototype = `static int ${need.name}(${ctype} a, ${ctype} b)`
+  } else {
+    prototype = `static lstr* ${need.name}(${ctype} v)`
+  }
+  addLine(mutable builder, `${prototype} {`)
+
+  // A user implementation, when there is one, is called as is.
+  const key = `${typeKey(need.needType)}|${traitMember(need.operation)}`
+  if (emitter.checker.implFunctions[key] is Some(implementation)) {
+    const call = functionName(emitter.checker, ProgramFunc.ImplFunc(implementation.block, implementation.index))
+    if (need.operation == "eq") {
+      addLine(mutable builder, `  return ${call}(a, b);`)
+    } else if (need.operation == "hash") {
+      addLine(mutable builder, `  return (uint64_t)${call}(v);`)
+    } else if (need.operation == "cmp") {
+      // Ordering's tags are Less = 0, Equal = 1, Greater = 2.
+      addLine(mutable builder, `  return ${call}(a, b).tag - 1;`)
+    } else {
+      addLine(mutable builder, `  return ${call}(v);`)
+    }
+    addLine(mutable builder, "}")
+    return prototype
+  }
+  if (need.operation == "eq") {
+    writeEquality(mutable emitter, mutable builder, need.needType)
+  } else if (need.operation == "hash") {
+    writeHash(mutable emitter, mutable builder, need.needType)
+  } else if (need.operation == "cmp") {
+    writeCompare(mutable emitter, mutable builder, need.needType)
+  } else {
+    writeShow(mutable emitter, mutable builder, need.needType)
+  }
+  addLine(mutable builder, "}")
+  return prototype
+}
+
+function writeEquality(mutable emitter: Emitter, mutable builder: StringBuilder, type: Type) uses alloc {
+  if (type is Type.TBox(element)) {
+    const equal = useEq(mutable emitter, element)
+    addLine(mutable builder, `  return a == b || ${equal}(a->f_value, b->f_value);`)
+  } else if (type is Type.TArray(element)) {
+    const equal = useEq(mutable emitter, element)
+    addLine(mutable builder, "  if (a->len != b->len) return false;")
+    addLine(mutable builder, "  for (int64_t i = 0; i < a->len; i++) {")
+    addLine(mutable builder, `    if (!${equal}(a->items[i], b->items[i])) return false;`)
+    addLine(mutable builder, "  }")
+    addLine(mutable builder, "  return true;")
+  } else if (type is Type.TStruct(index)) {
+    let parts = ["true"]
+    for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
+      const name = fieldName(field.name)
+      const equal = useEq(mutable emitter, field.fieldType)
+      Arrays.push(mutable parts, `${equal}(a.${name}, b.${name})`)
+    }
+    addLine(mutable builder, `  return ${Str.join(parts, " && ")};`)
+  } else if (type is Type.TEnum(index)) {
+    addLine(mutable builder, "  if (a.tag != b.tag) return false;")
+    addLine(mutable builder, "  switch (a.tag) {")
+    for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+      if (Arrays.length(variant.fields) == 0) {
+        continue
+      }
+      let parts: Array<string> = []
+      for (const field of Arrays.values(variant.fields)) {
+        const access = variantField(variant.name, field.name)
+        const equal = useEq(mutable emitter, field.fieldType)
+        Arrays.push(mutable parts, `${equal}(a.${access}, b.${access})`)
+      }
+      addLine(mutable builder, `  case ${Int.toString(variant.index)}: return ${Str.join(parts, " && ")};`)
+    }
+    addLine(mutable builder, "  default: return true;")
+    addLine(mutable builder, "  }")
+  }
+}
+
+function writeHash(mutable emitter: Emitter, mutable builder: StringBuilder, type: Type) uses alloc {
+  addLine(mutable builder, "  uint64_t h = UINT64_C(14695981039346656037);")
+  if (type is Type.TBox(element)) {
+    const hash = useHash(mutable emitter, element)
+    addLine(mutable builder, `  h = narra_hash_mix(h, ${hash}(v->f_value));`)
+  } else if (type is Type.TArray(element)) {
+    const hash = useHash(mutable emitter, element)
+    addLine(mutable builder, `  for (int64_t i = 0; i < v->len; i++) h = narra_hash_mix(h, ${hash}(v->items[i]));`)
+  } else if (type is Type.TStruct(index)) {
+    for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
+      const hash = useHash(mutable emitter, field.fieldType)
+      addLine(mutable builder, `  h = narra_hash_mix(h, ${hash}(v.${fieldName(field.name)}));`)
+    }
+  } else if (type is Type.TEnum(index)) {
+    addLine(mutable builder, "  h = narra_hash_mix(h, (uint64_t)v.tag);")
+    addLine(mutable builder, "  switch (v.tag) {")
+    for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+      if (Arrays.length(variant.fields) == 0) {
+        continue
+      }
+      let line = `  case ${Int.toString(variant.index)}:`
+      for (const field of Arrays.values(variant.fields)) {
+        const hash = useHash(mutable emitter, field.fieldType)
+        line = `${line} h = narra_hash_mix(h, ${hash}(v.${variantField(variant.name, field.name)}));`
+      }
+      addLine(mutable builder, `${line} break;`)
+    }
+    addLine(mutable builder, "  default: break;")
+    addLine(mutable builder, "  }")
+  }
+  addLine(mutable builder, "  return h;")
+}
+
+function writeCompare(mutable emitter: Emitter, mutable builder: StringBuilder, type: Type) uses alloc {
+  addLine(mutable builder, "  int c = 0;")
+  if (type is Type.TBox(element)) {
+    const compare = useCmp(mutable emitter, element)
+    addLine(mutable builder, `  return ${compare}(a->f_value, b->f_value);`)
+    return
+  }
+  if (type is Type.TArray(element)) {
+    const compare = useCmp(mutable emitter, element)
+    addLine(mutable builder, "  for (int64_t i = 0; i < a->len && i < b->len; i++) {")
+    addLine(mutable builder, `    if ((c = ${compare}(a->items[i], b->items[i])) != 0) return c;`)
+    addLine(mutable builder, "  }")
+    addLine(mutable builder, "  return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);")
+    return
+  }
+  if (type is Type.TStruct(index)) {
+    for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
+      const name = fieldName(field.name)
+      const compare = useCmp(mutable emitter, field.fieldType)
+      addLine(mutable builder, `  if ((c = ${compare}(a.${name}, b.${name})) != 0) return c;`)
+    }
+  } else if (type is Type.TEnum(index)) {
+    addLine(mutable builder, "  if (a.tag != b.tag) return a.tag < b.tag ? -1 : 1;")
+    addLine(mutable builder, "  switch (a.tag) {")
+    for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+      if (Arrays.length(variant.fields) == 0) {
+        continue
+      }
+      let line = `  case ${Int.toString(variant.index)}:`
+      for (const field of Arrays.values(variant.fields)) {
+        const access = variantField(variant.name, field.name)
+        const compare = useCmp(mutable emitter, field.fieldType)
+        line = `${line} if ((c = ${compare}(a.${access}, b.${access})) != 0) return c;`
+      }
+      addLine(mutable builder, `${line} break;`)
+    }
+    addLine(mutable builder, "  default: break;")
+    addLine(mutable builder, "  }")
+  }
+  addLine(mutable builder, "  return c;")
+}
+
+// appendText is the C statement that appends a constant text to s.
+function appendText(indent: string, text: string): string uses alloc {
+  return `${indent}lstr_append_c(&s, ${cString(text)});`
+}
+
+// writeShow writes text such as `Point { x: 1, y: 2 }`, `Some(1)` and
+// `[1, 2]`. Strings and chars inside are quoted.
+function writeShow(mutable emitter: Emitter, mutable builder: StringBuilder, type: Type) uses alloc {
+  if (type is Type.TBox(element)) {
+    const show = useShow(mutable emitter, element)
+    addLine(mutable builder, "  lstr* s = lstr_from_cstr(\"Box(\");")
+    addLine(mutable builder, `  lstr_append_owned(&s, ${show}(v->f_value));`)
+    addLine(mutable builder, appendText("  ", ")"))
+  } else if (type is Type.TArray(element)) {
+    const show = useShow(mutable emitter, element)
+    addLine(mutable builder, "  lstr* s = lstr_from_cstr(\"[\");")
+    addLine(mutable builder, "  for (int64_t i = 0; i < v->len; i++) {")
+    addLine(mutable builder, "    if (i > 0) lstr_append_c(&s, \", \");")
+    addLine(mutable builder, `    lstr_append_owned(&s, ${show}(v->items[i]));`)
+    addLine(mutable builder, "  }")
+    addLine(mutable builder, appendText("  ", "]"))
+  } else if (type is Type.TStruct(index)) {
+    writeStructShow(mutable emitter, mutable builder, index)
+  } else if (type is Type.TEnum(index)) {
+    addLine(mutable builder, "  lstr* s = NULL;")
+    addLine(mutable builder, "  switch (v.tag) {")
+    for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+      addLine(mutable builder, `  case ${Int.toString(variant.index)}:`)
+      if (Arrays.length(variant.fields) == 0) {
+        addLine(mutable builder, `    s = lstr_from_cstr(${cString(variant.name)});`)
+        addLine(mutable builder, "    break;")
+        continue
+      }
+      const opening = cString(`${variant.name}(`)
+      addLine(mutable builder, `    s = lstr_from_cstr(${opening});`)
+      for (const position of Ranges.between(0, Arrays.length(variant.fields))) {
+        const field = variant.fields[position]
+        if (position > 0) {
+          addLine(mutable builder, appendText("    ", ", "))
+        }
+        const show = useShow(mutable emitter, field.fieldType)
+        addLine(mutable builder, `    lstr_append_owned(&s, ${show}(v.${variantField(variant.name, field.name)}));`)
+      }
+      addLine(mutable builder, appendText("    ", ")"))
+      addLine(mutable builder, "    break;")
+    }
+    addLine(mutable builder, "  default: s = lstr_from_cstr(\"?\"); break;")
+    addLine(mutable builder, "  }")
+  }
+  addLine(mutable builder, "  return s;")
+}
+
+function writeStructShow(mutable emitter: Emitter, mutable builder: StringBuilder, index: int) uses alloc {
+  const info = emitter.checker.structs[index]
+  if (info.tuple) {
+    // #[1, "a"], as the literal is written.
+    addLine(mutable builder, "  lstr* s = lstr_from_cstr(\"#[\");")
+    for (const position of Ranges.between(0, Arrays.length(info.fields))) {
+      const field = info.fields[position]
+      if (position > 0) {
+        addLine(mutable builder, appendText("  ", ", "))
+      }
+      const show = useShow(mutable emitter, field.fieldType)
+      addLine(mutable builder, `  lstr_append_owned(&s, ${show}(v.${fieldName(field.name)}));`)
+    }
+    addLine(mutable builder, appendText("  ", "]"))
+    return
+  }
+  if (Arrays.length(info.fields) == 0) {
+    const emptyText = cString(`${info.name} {}`)
+    addLine(mutable builder, `  lstr* s = lstr_from_cstr(${emptyText});`)
+    return
+  }
+  const openingText = cString(`${info.name} { `)
+  addLine(mutable builder, `  lstr* s = lstr_from_cstr(${openingText});`)
+  for (const position of Ranges.between(0, Arrays.length(info.fields))) {
+    const field = info.fields[position]
+    let separator = ", "
+    if (position == 0) {
+      separator = ""
+    }
+    addLine(mutable builder, appendText("  ", `${separator}${field.name}: `))
+    const show = useShow(mutable emitter, field.fieldType)
+    addLine(mutable builder, `  lstr_append_owned(&s, ${show}(v.${fieldName(field.name)}));`)
+  }
+  addLine(mutable builder, appendText("  ", " }"))
 }

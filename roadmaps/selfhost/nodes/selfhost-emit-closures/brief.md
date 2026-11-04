@@ -1,7 +1,7 @@
 ---
 id: selfhost-emit-closures
 title: Self-hosted emitter: function values, arrow functions and environments
-status: active
+status: done
 priority: must
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 180142
 owns:
   - selfhost/src/emitclosures.nra
   - compiler/testdata/emit/skips/selfhost-emit-closures.txt
@@ -57,3 +57,5 @@ Emit function type structs and the environment runtime, thunks for named functio
 ## Sizing
 
 M: about 320 Narra lines in one file. The save and restore around nested bodies is the main trap.
+
+Shipped in PR #50 (merge commit 1351c9c).

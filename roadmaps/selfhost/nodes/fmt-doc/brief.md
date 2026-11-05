@@ -1,7 +1,7 @@
 ---
 id: fmt-doc
 title: "fmt: document IR and printer"
-status: active
+status: done
 priority:
 type: feature
 story: fmt
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 280000
 owns:
   - selfhost/src/fmtdoc.nra
   - compiler/internal/narra/selfhost_fmtdoc_test.go

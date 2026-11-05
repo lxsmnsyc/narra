@@ -63,6 +63,7 @@ Both follow `contracts/guide-samples.md` (draft, frozen by guide-basics) on the 
 - [ ] `docs/guide/README.md` lists the chapters in order with links.
 - [ ] Every chapter is written, and every code sample in it is checked by `TestGuide`.
 - [ ] Chapters 1 to 10 read standalone: no `SPEC.md`, section or D-number references, no "the author decided" framing, no TypeScript or Rust knowledge assumed. TypeScript comparisons live only in chapter 11.
+- [ ] Chapters teach in a guided, tutorial voice: each section starts from something the reader wants to do, builds a program, shows its output, then explains. Rules come out of the examples (often a `narra error` sample), not bullet lists of restrictions. No mechanism is explained before the concept under it is taught. (Maintainer review of #87, 2026-11-05.)
 - [ ] Only implemented features are taught. Parked spec features (m4 to m7: generators, async, threads, regions, C interop) appear only in a short "Planned" list in the index.
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 

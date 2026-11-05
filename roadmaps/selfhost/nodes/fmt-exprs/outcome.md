@@ -32,6 +32,8 @@
 - A comment between an operand and its operator moves after the operator (`x /* c */ + y` becomes `x + /* c */ y`).
 - Layout on the right of `=` is fmt-cli's. The driver used: a binary, `is` or `if` value breaks after `=` and indents; everything else stays after `=`. An arrow body that is a binary chain is indented once, not twice (`printBody`).
 - Doc `Text` with a newline inside (a multi-line template) is printed as written; the width of that line is then counted wrongly.
+- `Trivia.ends` of a parenthesized expression includes its parentheses. Literals copied from the source cut the text after their last token that is not `)` (`cutClosingParens`); without that `(1)` printed as `(1))` (review finding on PR #81).
+- Comments in an empty struct literal (`Point { /* c */ }`) and right inside grouping parentheses (`(/* in */ x)`, `(x /* out */)`) are not printed; `narrac fmt` stops with `comment not printed` and leaves the file unchanged. `f(/* c */)` prints as `f /* c */()` and `a./* c */b` as `a /* c */.b`.
 - A Block comment is always printed inline (`/* c */ node`); a Line comment gets a hard line. fmt-cli's `withComments` decides this for statements.
 
 ## Proposed learnings

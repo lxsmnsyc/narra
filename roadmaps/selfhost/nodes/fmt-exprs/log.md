@@ -11,3 +11,4 @@
 - First corpus run found two things. (1) `endsLineAfterComments` in trivia.nra let a later comment on the same line decide for an earlier one even with code between, so `x + /* m */ y /* a */` attached `/* m */` as trailing of `x`. Fixed with `isOnlySpaceBetween`; golden `comment_operands`. (2) The strict token check failed on `((a))` (printer keeps one pair; the flag cannot count) and on a broken conditional that gets parentheses; `tokensOf` now ignores grouping parentheses.
 - `printAssigned` put `if` and ternary values on the line after `=`; fixed to keep them on the `=` line.
 - Nested-callback guard is now the golden `expr_nested_hug`.
+- Review fix (PR #81): parenthesized literals kept the `)` from Trivia.ends and printed as `(1))`; cutClosingParens cuts the copied text after the last token that is not `)`. Goldens in expr_parens. Comments inside grouping parentheses and empty struct literals recorded as known limits.

@@ -307,7 +307,33 @@ function getLiteralText(printer: Printer, start: Pos, end: Pos, fallback: string
 function getEndedText(printer: Printer, id: int, start: Pos, fallback: string): string uses alloc {
   const end = printer.trivia.ends[getIdKey(id)]
   if (end is Some(endPos)) {
-    return getLiteralText(printer, start, endPos, fallback)
+    const text = getLiteralText(printer, start, endPos, fallback)
+    if (isParenthesized(printer, id)) {
+      return cutClosingParens(text, fallback)
+    }
+    return text
+  }
+  return fallback
+}
+
+// cutClosingParens drops the `)` of grouping parentheses, and any comments
+// before them, from the text of a parenthesized literal: Trivia.ends of a
+// parenthesized expression includes its parentheses. The text ends after the
+// last token that is not `)`.
+function cutClosingParens(text: string, fallback: string): string uses alloc {
+  const lexed = lex(text)
+  if (lexed is Err(_)) {
+    return fallback
+  }
+  let last: Option<Token> = None
+  for (const token of Arrays.values(lexed.value)) {
+    const isSkipped = token.kind == TokenKind.TokNewline || token.kind == TokenKind.TokEof || token.text == ")"
+    if (!isSkipped) {
+      last = Some(token)
+    }
+  }
+  if (last is Some(token)) {
+    return Str.slice(text, 0, getOffset(text, Pos { line: token.endLine, column: token.endColumn }))
   }
   return fallback
 }

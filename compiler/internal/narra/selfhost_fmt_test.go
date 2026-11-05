@@ -339,7 +339,9 @@ func stripPositions(dump string) string {
 // conditional that spans lines. A pair is a grouping pair when the token
 // before the `(` cannot end an expression (an operator, `,`, `(`, `?`, `:`,
 // `return` or nothing); call, parameter and condition parentheses stay in the
-// sequence. The tree comparison covers what the grouping pairs mean.
+// sequence. The tree comparison covers what the grouping pairs mean. An arrow
+// function's parameter list after `=`, `,` or `(` also counts as a grouping
+// pair here, so only the tree comparison checks it.
 func tokensOf(dump string) string {
 	var tokens []string
 	for _, line := range strings.Split(dump, "\n") {

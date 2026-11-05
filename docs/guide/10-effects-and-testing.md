@@ -1,225 +1,255 @@
 # 10. Effects and testing
 
-An effect marks something a function can do beyond computing a value. The signature says it, and the compiler checks it, so you can tell from a declaration whether a call can allocate, read a file or print. The second half of this chapter covers `test` blocks and `std/test`.
+This chapter writes a small module that converts temperatures, then tests it. On the way it explains the `uses alloc` that chapter 8 needed. An exported function says in its signature whether it allocates memory or does input and output, and the compiler checks it.
 
-## The three effects
+## What a function does, in its signature
 
-| Effect | Meaning |
+Start with a conversion and a function that formats a reading:
+
+```narra error
+// error: 9:10: Function `describe` uses `alloc` (through `Int.toString`) but its signature does not declare it; write `uses alloc`
+import * as Int from "std/int"
+
+export function toFahrenheit(celsius: int): int {
+  return celsius * 9 / 5 + 32
+}
+
+export function describe(celsius: int): string {
+  return `${Int.toString(celsius)} C is ${Int.toString(toFahrenheit(celsius))} F`
+}
+
+export function run(args: Array<string>): int {
+  print(describe(21))
+  return 0
+}
+```
+
+`toFahrenheit` compiles: it only computes a number. `describe` builds new strings, and a new string needs memory from the heap. Allocating memory is an effect: something a function does besides computing its result. An exported function must list its effects after the result type, with `uses`. The message says which call brought the effect and what to write.
+
+There are two effects you will meet:
+
+| Effect | The function may |
 | --- | --- |
-| `alloc` | May allocate heap memory |
-| `io` | May perform input or output, read the clock, or read the environment |
-| `unsafe` | Calls code the compiler cannot check |
+| `alloc` | allocate heap memory: build strings, arrays, maps, closures, or enum values with fields |
+| `io` | do input or output: print, read or write files, run a process, read the environment |
 
-The set is fixed. `unsafe` belongs to C interop, which this guide does not cover yet. Panics are not an effect: any function can panic.
-
-## Declaring and inferring
-
-An exported function declares its effects after the return type with `uses`. A private function or an arrow function does not: the compiler infers them. A function's effects include those of everything it calls.
+A function that prints needs `io` as well. With both declared, the program runs:
 
 ```narra
 import * as Int from "std/int"
 
-// Private: the effects are inferred from the body.
-function announce(number: int): string {
-  print("announcing")
-  return Int.toString(number)
+export function toFahrenheit(celsius: int): int {
+  return celsius * 9 / 5 + 32
 }
 
-// Exported: the effects are written in the signature.
-export function report(number: int): string uses io, alloc {
-  return announce(number)
+export function describe(celsius: int): string uses alloc {
+  return `${Int.toString(celsius)} C is ${Int.toString(toFahrenheit(celsius))} F`
 }
 
-export function twice(number: int): int {
-  return number * 2
+export function announce(celsius: int) uses io, alloc {
+  print(describe(celsius))
 }
 
 export function run(args: Array<string>): int {
-  print(report(twice(21)))
+  announce(21)
+  announce(-40)
   return 0
 }
 ```
 
 ```text
-announcing
-42
+21 C is 69 F
+-40 C is -40 F
 ```
 
-`twice` is pure and has no `uses`. `report` calls `announce`, which prints and builds a string, so `report` must say `io, alloc`. The entry function `run` has every effect.
+Now each signature tells a caller what to expect. `toFahrenheit` has no `uses`, so it does nothing but compute, and calling it twice with the same number gives the same answer. `describe` may allocate but never prints. `announce` may print. `run`, the function a program starts from, may do anything, so it never needs a `uses` list.
 
-Calling an effectful function from one that does not declare the effect is a compile error. The message names the call that brings it:
+A panic is not an effect. Any function may panic, whatever its `uses` list says.
+
+## Private functions work it out themselves
+
+Only exported functions write `uses`. For a private function, the compiler finds the effects from the body:
 
 ```narra error
-// error: Function `log` uses `io` (through `print`) but its signature does not declare it
-export function log(message: string) {
+// error: 7:6: Function `report` uses `io` (through `log`) but its signature does not declare it; write `uses io`
+function log(message: string) {
   print(message)
 }
 
+export function report(reading: int): int {
+  log("reading taken")
+  return reading
+}
+
 export function run(args: Array<string>): int {
-  log("x")
+  return report(1)
+}
+```
+
+`log` has no `uses` list, and the compiler accepts that. It still knows that `log` prints, so the exported `report`, which calls `log`, must declare `io`. Effects pass up through every call. To find out what a private function does, follow its calls, or read the error when an exported caller misses something.
+
+The split follows how code changes. A private function is used only inside its file, where you can change it and its callers together. An exported function is used by other files, and its `uses` list is part of what they rely on. If you later add a `print` to it, its signature changes, and the change is visible to anyone who reads it.
+
+## Functions that take functions
+
+An exported function that calls a function it receives has a problem: its effects depend on what it is given. Here is a first try:
+
+```narra error
+// error: 14:25: the argument for `visit` of `eachReading` uses `io`, but its function type does not declare it; write `uses io` in the type, or `uses E` with `<effect E>` on `eachReading`
+export function eachReading(readings: Array<int>, visit: (reading: int) => void) {
+  for (const reading of readings) {
+    visit(reading)
+  }
+}
+
+export function run(args: Array<string>): int {
+  const readings = [21, 23]
+  const noisy = (reading: int) => {
+    print("visiting")
+    return
+  }
+  eachReading(readings, noisy)
   return 0
 }
 ```
 
-Why make exported functions say it? Private functions can be changed freely, so inference keeps them light. An exported function is a promise to other modules, and its effects are part of that promise. Adding a `print` to an exported function is a visible change to its signature.
+In an exported function, the function type `(reading: int) => void` with no `uses` means a function with no effects. `eachReading` itself then has no effects either, and passing it a function that prints breaks that.
 
-## Effect variables
-
-A function that calls a function it receives has the effects of that function, whichever it is. An effect variable states this. It is declared in the type parameters with `effect`, and used only after `uses`:
+The message offers two fixes. Writing `uses io` in the parameter's type would allow a printing `visit`. But then `eachReading` would have `io` even when `visit` only computes. The better fix says "`eachReading` has the effects of whatever `visit` does", with an effect variable. It is declared with the type parameters as `effect E`, attached to the parameter's function type, and repeated in the function's own `uses` list:
 
 ```narra
-import * as Arrays from "std/array"
 import * as Int from "std/int"
 
-export function applyAll<T, U, effect E>(
-  items: Array<T>,
-  transform: (item: T) => U uses E
-): Array<U> uses alloc, E {
-  let results: Array<U> = []
-  for (const item of items) {
-    Arrays.push(mutable results, transform(item))
+export function eachReading<effect E>(readings: Array<int>, visit: (reading: int) => void uses E) uses E {
+  for (const reading of readings) {
+    visit(reading)
   }
-  return results
 }
 
 export function run(args: Array<string>): int {
-  // A pure callback: applyAll only allocates.
-  const doubled = applyAll([1, 2, 3], (number) => number * 2)
-  // A callback that prints: this call has io, and so does run.
-  const noisy = applyAll([1, 2], (number) => {
-    print("visiting")
-    return number
+  eachReading([21, 23, 19], (reading) => {
+    print(Int.toString(reading))
   })
-  print(Int.toString(doubled[2] + noisy[1]))
   return 0
 }
 ```
 
 ```text
-visiting
-visiting
-8
+21
+23
+19
 ```
 
-At each call, `E` takes the effects of the function passed in. This is how `Arrays.map`, `Options.map` and the other std helpers can take any callback: a pure callback keeps the call pure, an `io` callback makes the caller need `io`. The variable must appear in one of the parameters' function types, so the compiler knows where it comes from.
+At each call, `E` becomes the effects of the function passed in. Here that function prints, so this call of `eachReading` has `io`. Passed a function that only computes, the same `eachReading` would have no effects. The `std/option` and `std/result` helpers from chapter 6 are written this way, which is why a callback that prints makes the call print.
 
-A callback that does `io` passed where the parameter's function type does not allow it is an error, because a plain function type is pure:
+A private function does not need this. A function-type parameter of a private function takes on the effects of whatever is passed in, without an effect variable.
 
-```narra error
-// error: but its function type does not declare it
-export function apply(f: (x: int) => int, x: int): int {
-  return f(x)
-}
+## Writing tests
 
-export function run(args: Array<string>): int {
-  const noisy = (x: int): int => {
-    print("hi")
-    return x
-  }
-  return apply(noisy, 1)
-}
-```
-
-## Tests
-
-A `test "name" { ... }` block sits next to the code it checks. `narra test` builds and runs the blocks. In a normal build, test blocks are removed, so they cost nothing in the program you ship.
-
-Assertions come from `std/test`:
-
-| Call | Passes when |
-| --- | --- |
-| `Test.eq(actual, expected)` | the values are equal. Needs `Equatable` and `Show`. |
-| `Test.ne(actual, other)` | the values differ |
-| `Test.panics(f)` | `f()` panics |
-| `Test.panicsWith(f, message)` | `f()` panics with a message that contains `message` |
-| `Test.golden(name, actual)` | `actual` matches the file `testdata/<name>.golden` |
-
-A failed assertion is a panic that fails that test only. Both values are written with `Show`, and the failure names the `file:line:col` of the call.
-
-`TestGuide` runs every sample with `run`, so the test file below is shown as a fragment. Save it as `age.nra` and run `narra test age.nra`.
+Tests go in the same file as the code, in `test` blocks. Here is the temperature module with a parser, an average, and five tests. Save it as `temperature.nra`:
 
 ```narra fragment
-import * as Test from "std/test"
+import * as Arrays from "std/array"
 import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Test from "std/test"
 
-struct Point derives Show {
-  x: int
-  y: int
+export function toFahrenheit(celsius: int): int {
+  return celsius * 9 / 5 + 32
 }
 
-function divide(a: int, b: int): int {
-  return a / b
-}
-
-function parseAge(text: string): Result<int, string> {
-  const parsed = Int.parse(text, 10)
-  if (parsed is Err(reason)) {
-    return Err(`not a number: ${text}`)
+export function parseCelsius(text: string): Result<int, string> uses alloc {
+  if (!Str.endsWith(text, "C")) {
+    return Err(`missing unit: ${text}`)
   }
-  return Ok(parsed.value)
+  return Int.parse(Str.slice(text, 0, Str.length(text) - 1), 10)
 }
 
-test "parse accepts digits" {
-  Test.eq(parseAge("42"), Ok(42))
+export function average(readings: Array<int>): int {
+  let total = 0
+  for (const reading of readings) {
+    total = total + reading
+  }
+  return total / Arrays.length(readings)
 }
 
-test "parse rejects text" {
-  Test.eq(parseAge("x"), Err("not a number: x"))
+test "water freezes at 32 F" {
+  Test.eq(toFahrenheit(0), 32)
 }
 
-test "points compare by value" {
-  Test.eq(Point { x: 1, y: 2 }, Point { x: 1, y: 2 })
-  Test.ne(Point { x: 1, y: 2 }, Point { x: 2, y: 1 })
+test "parse reads a reading" {
+  Test.eq(parseCelsius("21C"), Ok(21))
 }
 
-test "division by zero panics" {
-  Test.panicsWith(() => divide(1, 0), "division by zero")
+test "parse rejects a missing unit" {
+  Test.eq(parseCelsius("21"), Err("missing unit: 21"))
 }
 
-test "this one fails" {
-  Test.eq(divide(7, 2), 4)
+test "average of no readings panics" {
+  Test.panicsWith(() => average([]), "division by zero")
+}
+
+test "water boils at 211 F" {
+  Test.eq(toFahrenheit(100), 211)
 }
 ```
 
-`narra test` runs each test in its own process, in source order, and goes on after a failure. It prints one line per test, then a summary:
+A `test "name" { ... }` block holds statements, like a function body with no parameters. The checks come from the module `std/test`:
 
-```narra fragment
-$ narra test age.nra
-ok - parse accepts digits
-ok - parse rejects text
-ok - points compare by value
-ok - division by zero panics
-FAIL - this one fails: expected 4, got 3 (age.nra:39:10)
+- `Test.eq(actual, expected)` passes when the two values are equal. `Test.ne(actual, other)` passes when they differ.
+- `Test.panicsWith(f, message)` calls `f` and passes when it panics with a message that contains `message`. `Test.panics(f)` passes on any panic.
+
+Because errors are values (chapter 6), a test of a failure compares with an `Err` like any other value, as `"parse rejects a missing unit"` does. `Test.panicsWith` is for failures that stop the program, such as the division by zero in `average([])`.
+
+Run the tests with `narra test`:
+
+```sh
+narra test temperature.nra
+```
+
+```text
+ok - water freezes at 32 F
+ok - parse reads a reading
+ok - parse rejects a missing unit
+ok - average of no readings panics
+FAIL - water boils at 211 F: expected 211, got 212 (temperature.nra:42:10)
 4 passed, 1 failed
 ```
 
-The exit code is 1 when any test failed, otherwise 0. Output that a test prints appears before its line. A separate process per test means a crash, a leak or a timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails that one test and nothing else.
+`narra test` runs the tests in the order they appear and prints a line for each. A failure shows both values and the line and column of the check that failed. Here the test is wrong, since water boils at 212 F. The runner goes on after a failure. It exits with code 1 when any test failed and 0 otherwise, so a script can stop on a failure.
 
-Options:
+Each test runs in a process of its own. A test that crashes, leaks memory or runs longer than 10 seconds fails on its own, and the tests after it still run. To allow a slower test, set the limit in seconds with the `NARRA_TEST_TIMEOUT` environment variable.
 
-- `narra test -filter parse age.nra` runs only the tests whose name contains `parse`. A filter that matches nothing prints `no tests match "parse"` and exits 1.
-- `narra test -time age.nra` adds the milliseconds of each test.
+To run some of the tests, give part of their names with `-filter`. `-time` adds how long each test took:
 
-### Testing with the pieces from this guide
+```sh
+narra test -filter parse temperature.nra
+```
 
-Because errors are values, tests of failure paths are plain `Test.eq` calls on an `Err`. Use `Test.panics` for the cases that must abort, and keep in mind that its closure runs in a child process: nothing the closure changes reaches the test, and it needs a POSIX system.
+```text
+ok - parse reads a reading
+ok - parse rejects a missing unit
+2 passed, 0 failed
+```
 
-`Test.eq` needs `Show` and `Equatable`. Types without functions are `Equatable` automatically, and `derives Show` (chapter 7) gives the text. Leaving it out is an error at the assertion.
+A filter that matches no test prints `no tests match "..."` and exits with code 1, so a typo in the filter does not pass silently.
 
-### Rules for `std/test`
+`narra build` and `narra run` leave the test blocks out, so tests add nothing to the program you ship. The file can import `std/test` and still build as a program.
 
-- Its functions can be called only inside a `test` block, arrow functions inside it included. A call in an ordinary function is a compile error, even if a test calls that function:
+### Values a test can compare
+
+`Test.eq` prints both values when it fails, so their type needs `Show` as well as `==` (chapter 7). A struct without `Show` stops at the check:
 
 ```narra error
-// error: Test.eq can only be called inside a `test` block
+// error: Point does not implement Show
 import * as Test from "std/test"
 
-function check(number: int) {
-  Test.eq(number, 1)
+struct Point {
+  x: int
 }
 
-test "a" {
-  check(1)
+test "points" {
+  Test.eq(Point { x: 1 }, Point { x: 1 })
 }
 
 export function run(args: Array<string>): int {
@@ -227,6 +257,29 @@ export function run(args: Array<string>): int {
 }
 ```
 
-- A test block may use any effect without declaring it. The `import` may stay in a file that is also built as a program, because the test blocks are not part of that build.
+Adding `derives Show` to `Point` fixes it.
 
-That is the end of the guide.
+### Checks belong in test blocks
+
+The `Test` functions only work inside a `test` block, including arrow functions written inside one. A helper function that calls `Test.eq` is an error, even when only tests call the helper:
+
+```narra error
+// error: 5:10: Test.eq can only be called inside a `test` block
+import * as Test from "std/test"
+
+function checkFreezing(celsius: int) {
+  Test.eq(celsius * 9 / 5 + 32, 32)
+}
+
+test "freezing" {
+  checkFreezing(0)
+}
+
+export function run(args: Array<string>): int {
+  return 0
+}
+```
+
+`checkFreezing` is an ordinary function, so it is part of every build of the file, and only `narra test` builds include the code behind `std/test`. Have the helper return the value, and check it in the test: `Test.eq(toFahrenheit(0), 32)`.
+
+A test block may print or do any other effect without a `uses` list.

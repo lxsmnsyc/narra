@@ -1,57 +1,92 @@
 # 8. Modules and packages
 
-One file is one module. Names are private until exported, and a module sees only what it imports.
+Every file you have written so far is a module. This chapter starts with imports from the standard library. Then it splits a word counter into a package of three files, and shows how the files share names.
 
-## Imports
+## Importing from the standard library
 
-An import names a module by a package-rooted string path and gives it an alias. There are two forms:
+The word counter splits a text on spaces and counts each word. It needs string, array and number functions, which live in the standard modules `std/string`, `std/array` and `std/int`:
 
 ```narra
-import * as Str from "std/string"
 import * as Arrays from "std/array"
-import { toString as intToString } from "std/int"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+struct Tally {
+  word: string
+  count: int
+}
+
+function addWord(mutable tallies: Array<Tally>, word: string) {
+  for (const #[index, tally] of Arrays.entries(tallies)) {
+    if (tally.word == word) {
+      tallies[index].count = tally.count + 1
+      return
+    }
+  }
+  Arrays.push(mutable tallies, Tally { word: word, count: 1 })
+}
 
 export function run(args: Array<string>): int {
-  const words = [" narra ", " guide "]
-  print(Str.trim(words[0]))
-  print(Str.repeat("ab", Arrays.length(words)))
-  print(intToString(Arrays.length(words)))
+  let tallies: Array<Tally> = []
+  for (const word of Str.split("the cat saw the dog", " ")) {
+    addWord(mutable tallies, word)
+  }
+  for (const tally of tallies) {
+    print(`${tally.word} ${Int.toString(tally.count)}`)
+  }
   return 0
 }
 ```
 
 ```text
-narra
-abab
-2
+the 2
+cat 1
+saw 1
+dog 1
 ```
 
-- `import * as Name from "path"` binds a namespace. You use `Name.function(...)`. This is the main style, and it is how almost all std modules are used.
-- `import { name } from "path"` binds specific names, and `name as other` renames one. A renamed import follows the same rules as any other name: it may not clash with a declaration, another import or a type.
+`import * as Str from "std/string"` makes every exported name of `std/string` reachable through the alias `Str`, as in `Str.split`. You pick the alias. This form is the usual one, because the alias shows at each call which module a function comes from.
 
-Imports sit at the top of the file with a string literal path. They never run code, and `import(...)` as an expression is a compile error: imports are static.
+When you only need one or two functions, you can import them by name. `as` gives an imported name a different one in your file:
 
-### The prelude
+```narra
+import { split } from "std/string"
+import { toString as intToString } from "std/int"
 
-Some names need no import: `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box`, the primitive types, and the three functions `print`, `assert` and `panic`. Nothing else is global.
-
-A type in the prelude does not bring its functions. `Array` is always there, but `Arrays.push` needs `import * as Arrays from "std/array"`. Forget it, and the error tells you the line to add:
-
-```narra error
-// error: Array.push needs an import; add `import * as Arrays from "std/array"`
 export function run(args: Array<string>): int {
-  let numbers: Array<int> = []
-  Array.push(mutable numbers, 1)
+  const words = split("the cat saw the dog", " ")
+  print(intToString(5))
+  print(words[1])
   return 0
 }
 ```
 
-### Alias names
+```text
+5
+cat
+```
 
-By convention the std module of a capitalized prelude type gets the plural: `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options`, `Results`. The rule behind it is that an alias may not equal a type name, so `Shape.Circle` always names a constructor of the type `Shape` and never a function of a module `Shape`:
+Without `as`, `toString` would be a vague name in this file, so the import renames it.
+
+### What needs no import
+
+`print`, `assert` and `panic` work in every file. So do the types `Array`, `Map`, `Range`, `Box`, `Option` and `Result`, and the constructors `Some`, `None`, `Ok` and `Err`. Every other name comes from an import.
+
+The functions that work on those types are in their own modules. Writing an array type needs no import, but pushing to an array does. If you forget it, the error gives the line to add:
 
 ```narra error
-// error: the import alias Array is also a type name; rename it, for example `import * as Arrays from "std/array"`
+// error: 4:3: Array.push needs an import; add `import * as Arrays from "std/array"`
+export function run(args: Array<string>): int {
+  let words: Array<string> = []
+  Array.push(mutable words, "cat")
+  return 0
+}
+```
+
+The alias `Arrays` is plural because an alias cannot have the same name as a type. `Array` already names the type, so `Array.length` would be unclear:
+
+```narra error
+// error: 2:1: the import alias Array is also a type name; rename it, for example `import * as Arrays from "std/array"`
 import * as Array from "std/array"
 
 export function run(args: Array<string>): int {
@@ -59,136 +94,220 @@ export function run(args: Array<string>): int {
 }
 ```
 
-### The standard modules
+The same goes for the other prelude types. Their modules are imported as `Arrays` (`std/array`), `Maps` (`std/map`), `Ranges` (`std/range`), `Boxes` (`std/box`), `Options` (`std/option`) and `Results` (`std/result`).
 
-`std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/option`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`. An unknown path is an error that lists the modules the compiler supports. Modules under `std/internal/` are for the standard library only; importing one from your code is an error (E0426).
+The other standard modules are `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/process`, `std/string` and `std/test`. Importing a path that does not exist is an error that lists them all.
 
-## Exports
+## Splitting a program into files
 
-`export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`. Everything else is private to the file.
+When the counter grows, you want the counting in one file and the command-line code in another. Several files that build together are a package. A package is a folder with a `narra.toml` file and a `src/` folder:
 
-Rules for exports:
+```text
+words/
+  narra.toml
+  src/
+    cli.nra
+    count.nra
+```
 
-- No `export { x } from "m"`, no `export *` and no `export default`. An exported name is always declared in the file that exports it.
-- To expose an imported name, declare a new one from it: `export const classify = Text.classify` for a function, `export type Token = Text.Token` for a type.
-- No top-level `let`. A module level holds functions, types, traits, `const` and `lazy` values, so importing a module never runs code.
+`narra.toml` gives the package a name and says where its program starts:
 
-## Constructors are always qualified
+```toml
+[package]
+name = "words"
 
-Importing an enum brings its constructors, but you always write them with the enum name, in expressions and in patterns. `Some`, `None`, `Ok` and `Err` are prelude names and stay bare.
+[[binary]]
+name = "words"
+entry = "cli.run"
+```
 
-```narra
-enum Shape {
-  Circle(radius: int)
-  Dot
+`entry = "cli.run"` means the function `run` in `src/cli.nra`. Each file's name inside the package comes from its path: `src/count.nra` is the module `"words/count"`, and a file `src/text/split.nra` would be `"words/text/split"`. An import always writes this full path, starting with the package name. A path relative to the current file, such as `"./count"`, is not accepted.
+
+Move the counting into `src/count.nra`:
+
+```narra fragment
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+
+export struct Tally {
+  word: string
+  count: int
 }
 
-enum Maybe {
-  None
-  Just(value: int)
-}
-
-function describe(shape: Shape): string {
-  return match (shape) {
-    Shape.Circle(radius) => "circle"
-    Shape.Dot => "dot"
+export function countWords(text: string): Array<Tally> {
+  let tallies: Array<Tally> = []
+  for (const word of Str.split(text, " ")) {
+    addWord(mutable tallies, word)
   }
+  return tallies
 }
+
+function addWord(mutable tallies: Array<Tally>, word: string) {
+  for (const #[index, tally] of Arrays.entries(tallies)) {
+    if (tally.word == word) {
+      tallies[index].count = tally.count + 1
+      return
+    }
+  }
+  Arrays.push(mutable tallies, Tally { word: word, count: 1 })
+}
+```
+
+A name in a module is private to that file unless its declaration starts with `export`. Here `Tally` and `countWords` are exported, and `addWord` stays private, so `count.nra` can change it later without breaking any other file.
+
+`src/cli.nra` imports what it needs from `"words/count"`:
+
+```narra fragment
+import * as Int from "std/int"
+import { countWords } from "words/count"
 
 export function run(args: Array<string>): int {
-  print(describe(Shape.Circle(2)))
-  print(describe(Shape.Dot))
-  const none: Option<int> = None
-  const maybe = Maybe.None
-  if (none is None && maybe is Maybe.None) {
-    print("two different Nones")
+  for (const tally of countWords("the cat saw the dog")) {
+    print(`${tally.word} ${Int.toString(tally.count)}`)
+  }
+  return 0
+}
+```
+
+Run the package from its folder. `.` names the package in the current folder:
+
+```sh
+cd words
+narra run .
+```
+
+The compiler stops before it runs anything:
+
+```text
+src/count.nra:10:31: Function `countWords` uses `alloc` (through `array literal`) but its signature does not declare it; write `uses alloc`
+```
+
+An exported function must say in its signature what it does besides computing a value. `countWords` builds an array, which allocates memory, so its signature needs `uses alloc` after the result type:
+
+```narra fragment
+export function countWords(text: string): Array<Tally> uses alloc {
+```
+
+Chapter 10 explains these effects. With the change, the program runs:
+
+```text
+the 2
+cat 1
+saw 1
+dog 1
+```
+
+`narra build .` builds the program as the file `words` instead of running it.
+
+### Importing a private name
+
+If `cli.nra` tries to import `addWord`, the compiler points at the import and says what would make it work:
+
+```text
+src/cli.nra:2:1: "addWord" is not exported by module "words/count"; add `export` to its declaration
+```
+
+Before you add `export`, decide whether other files should depend on that function. Every exported name is something you have to keep working for them.
+
+## What a module can hold
+
+Besides functions and structs, a module can export enums, traits and constants. A constant at the top of a file is a `const` whose value the compiler can work out. That can be a number, a string, or an array or struct of them:
+
+```narra
+import * as Str from "std/string"
+
+const SEPARATOR = " "
+const STOP_WORDS = ["the", "a"]
+
+export function run(args: Array<string>): int {
+  for (const word of Str.split("the cat saw a dog", SEPARATOR)) {
+    let skip = false
+    for (const stop of STOP_WORDS) {
+      if (word == stop) {
+        skip = true
+      }
+    }
+    if (!skip) {
+      print(word)
+    }
   }
   return 0
 }
 ```
 
 ```text
-circle
-dot
-two different Nones
+cat
+saw
+dog
 ```
 
-Because constructors never go bare, two enums can use the same constructor name without a clash, and a user enum can even have its own `None`. A bare `Circle(2)` is a compile error, and the message gives the fix:
+A variable at the top of a file is not allowed:
 
 ```narra error
-// error: constructor Circle needs its enum; write Shape.Circle
-enum Shape {
-  Circle(radius: int)
-  Dot
-}
+// error: 2:1: expected a declaration, found "let"
+let wordsSeen = 0
 
 export function run(args: Array<string>): int {
-  const shape = Circle(2)
   return 0
 }
 ```
 
-## A package with several modules
+A module holds declarations only, so importing it never runs any code and no file can change state that another file reads. To keep a running total, declare the `let` inside a function. Pass it to the functions that update it, as `run` does with `tallies` above. Chapter 9 covers how that works.
 
-The samples in this guide are one file each, because a file is the unit the tests run. Real programs have several files, in a package. A package is a directory with `narra.toml` and a `src/` folder, and the path of a file under `src/` is its module name:
+## Using a module through an alias
 
-```narra fragment
-app/
-  narra.toml
-  src/
-    cli.nra          module "app/cli"
-    text.nra         module "app/text"
-    text/
-      words.nra      module "app/text/words"
-```
-
-`narra.toml` names the package and its binaries. `entry` is a module inside the package, then the function:
+The counter gets a third file, `src/report.nra`, that formats a tally in one of two styles. The styles are an enum:
 
 ```narra fragment
-[package]
-name = "app"
-
-[[binary]]
-name = "app"
-entry = "cli.run"
-```
-
-Paths are package rooted. Your own modules start with the package name, the standard library with `std`, and a dependency with its package name. Relative paths such as `"./text"` are not allowed.
-
-```narra fragment
-// src/text.nra
-export struct Token {
-  word: string
-}
-
-export function classify(word: string): Token {
-  return Token { word: word }
-}
-
-function secret(): int {   // private: no other module can import it
-  return 1
-}
-```
-
-```narra fragment
-// src/cli.nra
+import * as Int from "std/int"
 import * as Str from "std/string"
-import { classify, Token } from "app/text"
+import { Tally } from "words/count"
+
+export enum Style {
+  Numbers
+  Bars
+}
+
+export function render(tally: Tally, style: Style): string uses alloc {
+  return match (style) {
+    Style.Numbers => `${tally.word} ${Int.toString(tally.count)}`
+    Style.Bars => `${tally.word} ${Str.repeat("#", tally.count)}`
+  }
+}
+```
+
+`cli.nra` can import your own modules with an alias, like the standard ones. Through the alias you reach functions, types, and the constructors of an enum:
+
+```narra fragment
+import * as Count from "words/count"
+import * as Report from "words/report"
 
 export function run(args: Array<string>): int {
-  const token: Token = classify(Str.trim(" hello "))
-  print(token.word)
+  const tallies: Array<Count.Tally> = Count.countWords("the cat saw the dog")
+  for (const tally of tallies) {
+    print(Report.render(tally, Report.Style.Bars))
+  }
   return 0
 }
 ```
 
-Build and run the whole package from its directory:
-
-```narra fragment
-narra build app             # every [[binary]] of the package in app/
-narra run -bin app app      # run one of them
+```text
+the ##
+cat #
+saw #
+dog #
 ```
 
-The import graph must have no cycles. If `app/a` imports `app/b` and `app/b` imports `app/a`, the compiler reports the loop as a list of modules. To break a cycle, move the shared declarations into a third module that both import.
+`Count.Tally` is the type `Tally` from `"words/count"`, and `Report.Style.Bars` is the constructor `Bars` of the enum `Style`. A constructor is always written with its enum, also inside the module that declares it (`Style.Bars` in `report.nra`). Two enums in different modules can then use the same constructor names without a clash.
 
-Next: [Memory and `mutable`](09-memory-and-mutable.md).
+### Import cycles
+
+`report.nra` imports `count.nra`. If `count.nra` also imported `report.nra`, neither module could be checked first, and the compiler reports the loop:
+
+```text
+src/report.nra:3:1: import cycle: words/count -> words/report -> words/count
+```
+
+To break a cycle, find the declarations both files need and move them into a new module that both import.
+
+Next: [9. Memory and `mutable`](09-memory-and-mutable.md).

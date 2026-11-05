@@ -5,7 +5,21 @@
 - `docs/guide/06-option-and-result.md`, `07-traits.md`, `08-modules-and-packages.md`, `09-memory-and-mutable.md`, `10-effects-and-testing.md`. 36 `narra`-family blocks: tested programs with `text` output, `narra error` samples, and `narra fragment` blocks (chapter 8 package layout, `narra.toml`, two-module example, shell commands; chapter 10 test file and `narra test` output).
 - Chapter 9 explains why a closure cannot capture `let` or a `mutable` parameter (error samples for both) and compares `mutable` with a TypeScript object reference. It describes today's rules and does not promise the m11 closure work.
 - Chapter 10 shows a `std/test` file and `narra test` output as fragments (TestGuide runs `run`), plus `-filter`, `-time`, and the rule that `Test.*` works only in test blocks (error sample).
-- Rules link to `SPEC.md` sections and D-numbers in prose, as plain text (no link targets to SPEC anchors).
+- Chapters carry no `SPEC.md`, `DECISIONS.md` or D-number references and no TypeScript, Rust or JavaScript comparisons (maintainer's change of 2026-11-05). Removed: about 40 references (SPEC section mentions and D-numbers across the 5 chapters, plus the closing pointer to the spec) and 11 comparisons.
+
+## For chapter 11
+
+- ch6 Option/Result: `Option<T>` is like `T | undefined` that the compiler makes you check; `Result<T, E>` replaces exceptions.
+- ch6 Option/Result: for Rust readers, same types, but no `?` operator and no `unwrap`.
+- ch7 Traits: a trait is like a TypeScript `interface` or Rust `trait`, with a narrower design (functions only; all traits listed with the type).
+- ch7 Traits: the implementation rule is a stricter form of Rust's orphan rule (only the declaring module implements a trait).
+- ch8 Modules: the import syntax is the same subset as ES modules; for Rust readers a file is a `mod` with `pub` replaced by `export`.
+- ch8 Modules: export rules that differ from TypeScript (no `export { x } from`, no `export *`, no `export default`, no top-level `let`).
+- ch9 Memory: in TypeScript `const b = a` on an object gives two names for one object; in Narra assignment copies the value.
+- ch9 Memory: table comparing a TypeScript object parameter with a `mutable` parameter (callee can change it silently vs only if declared; visible at the call; cannot be kept; exclusive access; argument must be a `let`, `mutable` parameter or part of one); closer to Rust `&mut`.
+- ch9 Memory: JavaScript closures capture the variable itself; Narra closures cannot capture `let` or `mutable`.
+- ch9 Memory: no garbage collector, no borrow checker, no lifetimes or `&` (for Go/Rust readers).
+- ch10 Effects: closer to a checked capability list than Rust `async` or `unsafe` coloring; TypeScript has nothing like it (a printing and a pure function have the same type).
 
 ## Deviations
 

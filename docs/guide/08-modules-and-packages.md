@@ -1,6 +1,6 @@
 # 8. Modules and packages
 
-One file is one module. Names are private until exported, and a module sees only what it imports. If you know ES modules, the syntax is the same subset. If you know Rust, think of a file as a `mod` with `pub` replaced by `export` (`SPEC.md` section 3; D3, D4, D25).
+One file is one module. Names are private until exported, and a module sees only what it imports.
 
 ## Imports
 
@@ -27,15 +27,15 @@ abab
 ```
 
 - `import * as Name from "path"` binds a namespace. You use `Name.function(...)`. This is the main style, and it is how almost all std modules are used.
-- `import { name } from "path"` binds specific names, and `name as other` renames one. A renamed import follows the same rules as any other name: it may not clash with a declaration, another import or a type (D72).
+- `import { name } from "path"` binds specific names, and `name as other` renames one. A renamed import follows the same rules as any other name: it may not clash with a declaration, another import or a type.
 
-Imports sit at the top of the file with a string literal path. They never run code, and `import(...)` as an expression is a compile error: imports are static (D4).
+Imports sit at the top of the file with a string literal path. They never run code, and `import(...)` as an expression is a compile error: imports are static.
 
 ### The prelude
 
 Some names need no import: `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box`, the primitive types, and the three functions `print`, `assert` and `panic`. Nothing else is global.
 
-A type in the prelude does not bring its functions. `Array` is always there, but `Arrays.push` needs `import * as Arrays from "std/array"` (D67). Forget it, and the error tells you the line to add:
+A type in the prelude does not bring its functions. `Array` is always there, but `Arrays.push` needs `import * as Arrays from "std/array"`. Forget it, and the error tells you the line to add:
 
 ```narra error
 // error: Array.push needs an import; add `import * as Arrays from "std/array"`
@@ -67,7 +67,7 @@ export function run(args: Array<string>): int {
 
 `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`. Everything else is private to the file.
 
-Some rules differ from what TypeScript allows (D4):
+Rules for exports:
 
 - No `export { x } from "m"`, no `export *` and no `export default`. An exported name is always declared in the file that exports it.
 - To expose an imported name, declare a new one from it: `export const classify = Text.classify` for a function, `export type Token = Text.Token` for a type.
@@ -75,7 +75,7 @@ Some rules differ from what TypeScript allows (D4):
 
 ## Constructors are always qualified
 
-Importing an enum brings its constructors, but you always write them with the enum name, in expressions and in patterns (D71). `Some`, `None`, `Ok` and `Err` are prelude names and stay bare.
+Importing an enum brings its constructors, but you always write them with the enum name, in expressions and in patterns. `Some`, `None`, `Ok` and `Err` are prelude names and stay bare.
 
 ```narra
 enum Shape {
@@ -153,7 +153,7 @@ name = "app"
 entry = "cli.run"
 ```
 
-Paths are package rooted. Your own modules start with the package name, the standard library with `std`, and a dependency with its package name. Relative paths such as `"./text"` are not allowed (D3).
+Paths are package rooted. Your own modules start with the package name, the standard library with `std`, and a dependency with its package name. Relative paths such as `"./text"` are not allowed.
 
 ```narra fragment
 // src/text.nra
@@ -189,6 +189,6 @@ narra build app             # every [[binary]] of the package in app/
 narra run -bin app app      # run one of them
 ```
 
-The import graph must have no cycles. If `app/a` imports `app/b` and `app/b` imports `app/a`, the compiler reports the loop as a list of modules (D4). To break a cycle, move the shared declarations into a third module that both import.
+The import graph must have no cycles. If `app/a` imports `app/b` and `app/b` imports `app/a`, the compiler reports the loop as a list of modules. To break a cycle, move the shared declarations into a third module that both import.
 
 Next: [Memory and `mutable`](09-memory-and-mutable.md).

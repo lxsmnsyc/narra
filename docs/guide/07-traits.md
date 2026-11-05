@@ -1,6 +1,6 @@
 # 7. Traits
 
-A trait is a named set of functions that a type implements. It plays the role of a TypeScript `interface` or a Rust `trait`, with a narrower design: a trait has functions only, and a type lists all its traits where the type is declared (`SPEC.md` section 4 "Traits"; D5).
+A trait is a named set of functions that a type implements. A trait has functions only, and a type lists all its traits where the type is declared.
 
 ## Declaring and implementing
 
@@ -57,9 +57,9 @@ square: 9.0
 rect: 9.0
 ```
 
-Two differences from the languages you know:
+Two rules to remember:
 
-- **You call a trait function through the trait name.** `Area.area(square)`, not `square.area()`. There is no method call syntax (D12).
+- **You call a trait function through the trait name.** `Area.area(square)`, not `square.area()`. There is no method call syntax.
 - **A trait has no fields, no default bodies, no associated types and no supertraits.** It lists functions and nothing else.
 
 Listing a trait without implementing it is an error:
@@ -77,7 +77,7 @@ export function run(args: Array<string>): int {
 
 ## Implementations live with the type
 
-Only the module that declares a type can implement a trait for it. This is the orphan rule of Rust, in a stricter form (D5). You cannot implement `Show` for `int`, or for a type from another module:
+Only the module that declares a type can implement a trait for it. You cannot implement `Show` for `int`, or for a type from another module:
 
 ```narra error
 // error: cannot implement Show for int: the type is declared in another module
@@ -159,7 +159,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Generic code is checked once against the constraints, not once per call. Without the bound `T: Show`, calling `Show.show(value)` on a `T` is an error (D7, D13).
+Generic code is checked once against the constraints, not once per call. Without the bound `T: Show`, calling `Show.show(value)` on a `T` is an error.
 
 ## Standard traits and `derives`
 
@@ -219,7 +219,7 @@ A field whose type lacks the trait stops the `derives`. A struct holding a funct
 
 ### Equality and hashing are automatic
 
-You do not write `derives Equatable`. Any struct, enum, array, map, `Option` or `Result` whose contents can be compared supports `==` and `!=`, and also works as a map key unless a float is involved (D30).
+You do not write `derives Equatable`. Any struct, enum, array, map, `Option` or `Result` whose contents can be compared supports `==` and `!=`, and also works as a map key unless a float is involved.
 
 ```narra
 struct Plain {
@@ -258,6 +258,6 @@ Equality is always by value. There is no identity comparison, and `==` on a type
 
 ## Not yet
 
-`Dynamic<Trait>` (values of different types behind one trait) and `derives Shape` are in `SPEC.md` but the compiler does not implement them yet, so this guide does not teach them.
+`Dynamic<Trait>` (values of different types behind one trait) and `derives Shape` are planned but not implemented yet, so this guide does not teach them.
 
 Next: [Modules and packages](08-modules-and-packages.md).

@@ -1,8 +1,8 @@
 # 6. Option and Result
 
-Narra has no `null`, `undefined`, `throw` or `try`. A value that may be missing is an `Option<T>`. A call that may fail returns a `Result<T, E>`. Both are ordinary enums from the prelude, so you can use them without an import (`SPEC.md` section 4 "Optional values" and section 5; D9, D21).
+Narra has no `null`, `undefined`, `throw` or `try`. A value that may be missing is an `Option<T>`. A call that may fail returns a `Result<T, E>`. Both are ordinary enums from the prelude, so you can use them without an import.
 
-If you come from TypeScript, think of `Option<T>` as `T | undefined` that the compiler makes you check, and of `Result<T, E>` as a return value in place of an exception. If you come from Rust, they are the same types, with one difference: there is no `?` operator and no `unwrap`. Every error path is a visible `if` or `match` (D9).
+There is no `?` operator and no `unwrap`. Every error path is a visible `if` or `match`, so you can see in the code where a failure is handled.
 
 ## Option
 
@@ -74,11 +74,11 @@ export function run(args: Array<string>): int {
 }
 ```
 
-There is no `unwrap` and no `expect`. To read an `Option` you either test it or give a fallback (D69).
+There is no `unwrap` and no `expect`. To read an `Option` you either test it or give a fallback.
 
 ## Helpers in `std/option`
 
-Small transformations do not need a branch. Import the module with the plural alias `Options` (D67, D72):
+Small transformations do not need a branch. Import the module with the plural alias `Options`:
 
 | Function | Meaning |
 | --- | --- |
@@ -142,7 +142,7 @@ The helpers never return early from your function. They build values. When a mis
 
 ## Result
 
-`Ok(value)` is success and `Err(error)` is failure. The error type is part of the signature, so callers know what can go wrong (D9, D57).
+`Ok(value)` is success and `Err(error)` is failure. The error type is part of the signature, so callers know what can go wrong.
 
 ```narra
 import * as Int from "std/int"
@@ -207,7 +207,7 @@ If you really do not care, say so with `const _ = save()`.
 
 ### Helpers in `std/result`
 
-`import * as Results from "std/result"` gives `map`, `mapErr`, `andThen`, `withDefault`, and `ok` and `err`, which return the `Ok` or `Err` content as an `Option` (D69).
+`import * as Results from "std/result"` gives `map`, `mapErr`, `andThen`, `withDefault`, and `ok` and `err`, which return the `Ok` or `Err` content as an `Option`.
 
 ```narra
 import * as Results from "std/result"
@@ -249,6 +249,6 @@ no error
 
 ## Panics are not errors
 
-`panic("message")`, a failed `assert`, an index out of bounds and overflow in a debug build abort the program. A panic cannot be caught (D36). Use `Result` for failures a caller can handle, and a panic for a bug.
+`panic("message")`, a failed `assert`, an index out of bounds and overflow in a debug build abort the program. A panic cannot be caught. Use `Result` for failures a caller can handle, and a panic for a bug.
 
 Next: [Traits](07-traits.md).

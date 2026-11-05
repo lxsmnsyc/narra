@@ -1,10 +1,10 @@
 # 9. Memory and `mutable`
 
-Narra has no garbage collector and no borrow checker. Memory is managed by reference counting, and the compiler inserts the counts. You do not write `free`, lifetimes or `&`. What you do see in the source is where a value can change, because change is marked by three words: `let`, `mutable` and the call-site `mutable` (`SPEC.md` section 6; D1, D24, D27).
+Memory is managed by reference counting, and the compiler inserts the counts. You never free memory by hand. What you do see in the source is where a value can change, because change is marked by three words: `let`, `mutable` and the call-site `mutable`.
 
 ## Values, not references
 
-Every value behaves like a value. Assigning or passing a struct, an array or a map gives the receiver its own value, and changing one never changes the other. In TypeScript, `const b = a` for an object gives two names for one object. In Narra it does not:
+Every value behaves like a value. Assigning or passing a struct, an array or a map gives the receiver its own value, and changing one never changes the other:
 
 ```narra
 import * as Arrays from "std/array"
@@ -38,16 +38,16 @@ export function run(args: Array<string>): int {
 4
 ```
 
-You might expect this to be slow. It is usually not, because of the reference count. Heap values (arrays, maps, strings, closures, enums with fields, `Box<T>`) carry a count. Numbers, `bool`, `char` and structs live inline. `let copy = original` shares the heap parts and bumps their counts. A write checks the count of the value it is about to change:
+Copying is cheap because of the reference count. Heap values (arrays, maps, strings, closures, enums with fields, `Box<T>`) carry a count. Numbers, `bool`, `char` and structs live inline. `let copy = original` shares the heap parts and bumps their counts. A write checks the count of the value it is about to change:
 
 - count 1 (one owner): the write happens in place, with no copy.
 - count above 1 (shared): the value is copied first, then written.
 
-So the program above copies `scores` once, on the `push`, because `snapshot` still holds the old array. A loop that keeps a single owner writes in place all the way (D1, D49).
+So the program above copies `scores` once, on the `push`, because `snapshot` still holds the old array. A loop that keeps a single owner writes in place all the way.
 
 ### Seeing the copies
 
-A copy on a shared value is correct but costs time in proportion to the value's size, and the source does not show it. `SPEC.md` section 6 ("Copies on shared values", D49) describes tools for this (`narra check --report-copies`, `NARRA_TRACE_COPIES=1` and `@unique`). The bootstrap compiler does not implement them yet, so this guide does not use them.
+A copy on a shared value is correct but costs time in proportion to the value's size, and the source does not show it. Tools that report such copies are planned but not available yet.
 
 ## `const` and `let`
 
@@ -117,19 +117,9 @@ export function run(args: Array<string>): int {
 | Change the caller's data | `damage(mutable hero, 10)` |
 | Build new data | `const stronger = withBonus(hero, 5)` |
 
-### How `mutable` differs from a TypeScript reference
+### What a `mutable` parameter allows
 
-In TypeScript every object parameter is a reference: the callee can change the caller's object, and nothing at either end says so. A `mutable` parameter is closer to a Rust `&mut`, with fewer moving parts:
-
-| | TypeScript object parameter | Narra `mutable` parameter |
-| --- | --- | --- |
-| Can the callee change the caller's value? | Always, silently | Only if declared `mutable` |
-| Visible at the call? | No | Yes, `f(mutable x)` |
-| Can the callee keep it after returning? | Yes, store it anywhere | No, it cannot escape |
-| Can two names alias it during the call? | Yes | No, access is exclusive |
-| Argument may be | any expression | a `let`, a `mutable` parameter, or a field or element of one |
-
-The rules, each enforced by the compiler (D27, D50):
+Only a function that declares `mutable` can change its argument, and the call says so with `mutable` too. The function sees the caller's variable, not a copy, for the length of the call, under these rules.
 
 **The argument must be changeable.** A `const`, a literal or a function result is not (see the `ITEMS` error above).
 
@@ -233,7 +223,7 @@ export function run(args: Array<string>): int {
 
 ## Why a closure cannot capture `let`
 
-A closure can capture a `const`. It cannot capture a `let` variable or a `mutable` parameter. In JavaScript a closure captures the variable itself, so two closures and the surrounding code all see the same changing cell. Narra values do not work that way: a `let` is a value owned by one place, which is what makes in-place writes safe. If a closure could hold on to it, there would be two owners of a thing that is written in place, and the closure could outlive the variable (D1, D46, `SPEC.md` section 6 "Cycles").
+A closure can capture a `const`. It cannot capture a `let` variable or a `mutable` parameter. A `let` is a value owned by one place, which is what makes in-place writes safe. If a closure could hold on to it, there would be two owners of a thing that is written in place, and the closure could outlive the variable.
 
 ```narra error
 // error: a closure cannot capture "count" because it is declared with let
@@ -287,7 +277,7 @@ The closure sees the value of `count` at the moment `current` was bound, not lat
 
 ## No cycles, no collector
 
-Reference counting cannot free a cycle. Narra avoids the problem by construction. Immutable values cannot point back at themselves, and a `let` or `mutable` parameter can neither be captured nor stored, so a cycle cannot be built in safe code. Graphs that need cycles use handles into an arena (`std/arena`, planned; `SPEC.md` section 6, "Cycles").
+Reference counting cannot free a cycle. Narra avoids the problem by construction. Immutable values cannot point back at themselves, and a `let` or `mutable` parameter can neither be captured nor stored, so a cycle cannot be built in safe code. Graphs that need cycles use handles into an arena (`std/arena`, planned).
 
 ## What you do not do
 

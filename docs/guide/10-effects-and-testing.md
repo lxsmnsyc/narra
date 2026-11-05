@@ -1,6 +1,6 @@
 # 10. Effects and testing
 
-An effect marks something a function can do beyond computing a value. The signature says it, and the compiler checks it, so you can tell from a declaration whether a call can allocate, read a file or print (`SPEC.md` section 7; D8, D14, D58). The second half of this chapter covers `test` blocks and `std/test`.
+An effect marks something a function can do beyond computing a value. The signature says it, and the compiler checks it, so you can tell from a declaration whether a call can allocate, read a file or print. The second half of this chapter covers `test` blocks and `std/test`.
 
 ## The three effects
 
@@ -11,8 +11,6 @@ An effect marks something a function can do beyond computing a value. The signat
 | `unsafe` | Calls code the compiler cannot check |
 
 The set is fixed. `unsafe` belongs to C interop, which this guide does not cover yet. Panics are not an effect: any function can panic.
-
-If you know Rust, this is closer to a checked capability list than to `async` or `unsafe` coloring. If you know TypeScript, there is nothing like it. A function that prints and one that does not have the same type in TypeScript.
 
 ## Declaring and inferring
 
@@ -63,7 +61,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Why make exported functions say it? Private functions can be changed freely, so inference keeps them light. An exported function is a promise to other modules, and its effects are part of that promise. Adding a `print` to an exported function is a visible change to its signature (D58).
+Why make exported functions say it? Private functions can be changed freely, so inference keeps them light. An exported function is a promise to other modules, and its effects are part of that promise. Adding a `print` to an exported function is a visible change to its signature.
 
 ## Effect variables
 
@@ -103,7 +101,7 @@ visiting
 8
 ```
 
-At each call, `E` takes the effects of the function passed in. This is how `Arrays.map`, `Options.map` and the other std helpers can take any callback: a pure callback keeps the call pure, an `io` callback makes the caller need `io`. The variable must appear in one of the parameters' function types, so the compiler knows where it comes from (D14).
+At each call, `E` takes the effects of the function passed in. This is how `Arrays.map`, `Options.map` and the other std helpers can take any callback: a pure callback keeps the call pure, an `io` callback makes the caller need `io`. The variable must appear in one of the parameters' function types, so the compiler knows where it comes from.
 
 A callback that does `io` passed where the parameter's function type does not allow it is an error, because a plain function type is pure:
 
@@ -124,7 +122,7 @@ export function run(args: Array<string>): int {
 
 ## Tests
 
-A `test "name" { ... }` block sits next to the code it checks. `narra test` builds and runs the blocks. In a normal build, test blocks are removed, so they cost nothing in the program you ship (`SPEC.md` section 13).
+A `test "name" { ... }` block sits next to the code it checks. `narra test` builds and runs the blocks. In a normal build, test blocks are removed, so they cost nothing in the program you ship.
 
 Assertions come from `std/test`:
 
@@ -195,7 +193,7 @@ FAIL - this one fails: expected 4, got 3 (age.nra:39:10)
 4 passed, 1 failed
 ```
 
-The exit code is 1 when any test failed, otherwise 0. Output that a test prints appears before its line. A separate process per test means a crash, a leak or a timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails that one test and nothing else (D65, D66).
+The exit code is 1 when any test failed, otherwise 0. Output that a test prints appears before its line. A separate process per test means a crash, a leak or a timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails that one test and nothing else.
 
 Options:
 
@@ -231,4 +229,4 @@ export function run(args: Array<string>): int {
 
 - A test block may use any effect without declaring it. The `import` may stay in a file that is also built as a program, because the test blocks are not part of that build.
 
-That is the end of the guide. For the full rules, `SPEC.md` is the reference, and `DECISIONS.md` gives the reason behind each one.
+That is the end of the guide.

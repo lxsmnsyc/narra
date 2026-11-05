@@ -1,7 +1,7 @@
 ---
 id: std-foundation
 title: Groundwork for std modules written in Narra
-status: todo
+status: active
 priority: should
 type: feature
 story:

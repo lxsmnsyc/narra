@@ -1,7 +1,7 @@
 ---
 id: fmt-exprs
 title: "fmt: expressions, types and patterns"
-status: todo
+status: active
 priority:
 type: feature
 story: fmt

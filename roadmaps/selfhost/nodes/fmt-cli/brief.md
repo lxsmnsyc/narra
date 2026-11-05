@@ -1,7 +1,7 @@
 ---
 id: fmt-cli
 title: "fmt: config, CLI, declarations and statements"
-status: todo
+status: active
 priority:
 type: feature
 story: fmt

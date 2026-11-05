@@ -1,7 +1,7 @@
 ---
 id: guide-advanced
 title: "Language guide: chapters 6 to 10"
-status: active
+status: done
 priority:
 type: docs
 story: language-guide
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 514220
 owns:
   - docs/guide/06-*.md
   - docs/guide/07-*.md
@@ -51,11 +51,11 @@ Write chapters 6 to 10 of `docs/guide/`: Option and Result, traits, modules and 
 
 ## Acceptance
 
-- [ ] Chapters `06-` to `10-`, each with several tested programs. Write for a reader who is new to Narra and may not know TypeScript or Rust: every chapter must make sense on its own. Do not cite `SPEC.md` sections, D-numbers or `DECISIONS.md`, and do not frame rules as the author's decisions; state the rule and, where it helps, the practical reason. Comparisons with TypeScript or Rust ("unlike TypeScript...") go in chapter 11, not in chapters 1 to 10. List each comparison you leave out in `outcome.md` under "For chapter 11". (Changed 2026-11-05 by the maintainer.)
-- [ ] Chapter 9 explains why `let` cannot be captured by a closure and what a `mutable` parameter allows, with error samples for both. The comparison with TypeScript references goes to chapter 11.
-- [ ] Chapter 10 shows a `std/test` test and how `narra test` runs it (as a fragment, since `TestGuide` runs `run`).
-- [ ] `TestGuide` passes on the story branch once guide-basics has landed.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] Chapters `06-` to `10-`, each with several tested programs. Write for a reader who is new to Narra and may not know TypeScript or Rust: every chapter must make sense on its own. Do not cite `SPEC.md` sections, D-numbers or `DECISIONS.md`, and do not frame rules as the author's decisions; state the rule and, where it helps, the practical reason. Comparisons with TypeScript or Rust ("unlike TypeScript...") go in chapter 11, not in chapters 1 to 10. List each comparison you leave out in `outcome.md` under "For chapter 11". (Changed 2026-11-05 by the maintainer.)
+- [x] Chapter 9 explains why `let` cannot be captured by a closure and what a `mutable` parameter allows, with error samples for both. The comparison with TypeScript references goes to chapter 11.
+- [x] Chapter 10 shows a `std/test` test and how `narra test` runs it (as a fragment, since `TestGuide` runs `run`).
+- [x] `TestGuide` passes on the story branch once guide-basics has landed.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
@@ -65,3 +65,5 @@ M. Uncertainty low, coupling low (one behavior dependency), blast radius low (ne
 
 - closure-borrow and cell-capture (m11) will change what chapter 9 says about closures and `let`. Describe today's rules and do not promise the change.
 - Do not edit `SPEC.md` or the chapters 1 to 5.
+
+Landed: d8eb59f on feat/language-guide (2026-11-05).

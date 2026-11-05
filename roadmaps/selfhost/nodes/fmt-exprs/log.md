@@ -1,0 +1,14 @@
+# Log: fmt-exprs
+
+- fmt-cli had not landed, so `selfhost/src/fmtprinter.nra` was written from the contract text. Take fmt-cli's copy on rebase.
+- Narra reads a line break only inside `(` and `[` (the lexer ends a statement at a newline after a name, literal, `)`, `]` or `}`). So type argument lists never break (a break before `>` would end the statement), and a broken `c ? a : b` is wrapped in parentheses (the parser rejects a conditional that spans lines otherwise). Inside call arguments and array elements the parentheses are left out.
+- The AST drops the parameter names of a function type; `getParameterNames` lexes the type's source text (from `Trivia.ends`) to get them back.
+- Number literals are copied from the source: the AST keeps the normalised token text (`0x1F_F` became `0x1FF`).
+- Test driver: no CLI exists, so `testdata/fmt/expr_driver.txt` is a replacement main.nra for a copy of `selfhost/` that `selfhost_fmtexprs_test.go` builds. It formats top-level `const` declarations; a block is printed by copying its statements. `FMT_UPDATE=1` rewrites the `.fmt` goldens.
+- `--check` mode of the driver prints every statement expression of a file, reads it back as `const x = <text>`, prints again and requires equal text (run on all `.nra` under testdata/ and selfhost/src at width 30 with commas and width 100 without).
+- Hug fallback: the last argument is hugged only when the arguments before it are short (flat width under printWidth/3); else every argument gets its own line. A first version put the last argument in the document twice (conditional layout); fmtdoc's flatten copies shared parts per use, so 30 nested callbacks took exponential time. `TestSelfhostFmtExprsNested` (30 nested last-argument callbacks, under 1 s) guards this.
+- Rebase on fmt-cli: merged feat/fmt, took its fmtprinter.nra. Wired `createPrinter` to the real printers, deleted the stubs, moved the goldens under `TestSelfhostFmt`, deleted the temporary driver and test files.
+- First corpus run found two things. (1) `endsLineAfterComments` in trivia.nra let a later comment on the same line decide for an earlier one even with code between, so `x + /* m */ y /* a */` attached `/* m */` as trailing of `x`. Fixed with `isOnlySpaceBetween`; golden `comment_operands`. (2) The strict token check failed on `((a))` (printer keeps one pair; the flag cannot count) and on a broken conditional that gets parentheses; `tokensOf` now ignores grouping parentheses.
+- `printAssigned` put `if` and ternary values on the line after `=`; fixed to keep them on the `=` line.
+- Nested-callback guard is now the golden `expr_nested_hug`.
+- Review fix (PR #81): parenthesized literals kept the `)` from Trivia.ends and printed as `(1))`; cutClosingParens cuts the copied text after the last token that is not `)`. Goldens in expr_parens. Comments inside grouping parentheses and empty struct literals recorded as known limits.

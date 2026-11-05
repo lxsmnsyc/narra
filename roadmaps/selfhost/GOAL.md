@@ -80,6 +80,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - language guide -> language-guide; installation guide -> install-guide; agent skills -> narra-skills; language service -> language-service; linter -> lint (user request 2026-11-01)
 - website (user request 2026-11-05, later) -> website
 - flat `selfhost/src/` grouped into directories (user request 2026-11-05) -> selfhost-layout
+- std-source gate follow-ups (2026-11-05) -> std-foundation; option (c), retiring the Go compiler -> c-seed
 - std library growth -> std-source, std-json, std-io-more, std-basics, std-unicode, std-arena, std-iterator (2026-11-01)
 - closure capture of `let` and `mutable` -> closure-borrow, cell-capture; identity type cycles -> identity-cycles (2026-11-01); `Range.stepped` -> std-basics; std modules of parked features stay with those nodes
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
@@ -96,6 +97,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-01: the user added milestone m9-adoption. fmt, query-cli, the language service and lint are written in Narra after selfhost-bootstrap, not in Go. Docs and skills are should; lint is could and may fold into checker warnings. fmt and query-cli move from m7-tooling (later) to m9-adoption (should). Editor plugins stay a non-goal; the LSP server is in scope.
 - 2026-11-01: the user added milestone m10-std. A gated spike (std-source) first decides whether std modules can be Narra source with only primitives as builtins. The language service waits for std-json and std-io-more. std-iterator adds lazy operators over generators, so generators moves from later to should, after bootstrap. No built-in ReactiveX: generators, channels and async cover its uses, and its subscription graphs would form reference cycles.
 - 2026-11-01: the user kept `let` and `mutable` (a full ban was weighed: 2750 `mutable` and 453 `let` uses in `selfhost/src`). Milestone m11-closures: non-escaping closures capture `let` and `mutable` by reference (closure-borrow), escaping closures share mutable state through an explicit `Cell<T>` (cell-capture), after a gated decision on identity type cycles (identity-cycles), which threads also waits for. Direction: later work should keep moving closures closer to TypeScript semantics, as far as memory safety and visible costs allow.
+- 2026-11-05: std-source gate, decided by the orchestrator at the user's request. (1) Merge the std/option prototype once its review is clean. (2) Option (b): the Go compiler loads a std source module only when `selfhost/src` imports it; every other new std module is selfhost-only and tested with stage 2. Option (c), a checked-in C seed that retires the Go compiler, is the parked node c-seed. (3) Primitives behind source modules are builtin modules under `std/internal/`, importable only from `std/` modules. (4) Generic calls report the real mismatch before more modules move to source. Items 3 and 4 and the stage 2 tests are node std-foundation, which every later m10 node waits for.
 
 ## Gates
 

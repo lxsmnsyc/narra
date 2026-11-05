@@ -40,7 +40,7 @@ depends_on:
 
 Outline. Decide when refined:
 
-- Whether `selfhost/` is final. If the std-source gate chooses to retire the Go compiler, decide the final location first (for example `selfhost/` becomes `compiler/`), and do the move and the regrouping in one change.
+- Where the compiler lives. The std-source gate (2026-11-05) parked option (c), retiring the Go compiler, as node c-seed. So regroup inside `selfhost/src/` now; moving the top directory later (for example to `compiler/`) is one rename in c-seed.
 - Whether the module system resolves nested paths (`src/check/body.nra` as `"narrac/check/body"`). SPEC section 15 only shows flat files. If it does not, adding nested paths to both compilers is a separate early node.
 - Hashed C names include module paths, so check whether the emitted C stays identical or every golden C file changes.
 - The move touches every file in `selfhost/src/` and conflicts with every open node that edits it. Run it in a quiet window with no open selfhost nodes, next to the "reformat the repo" item in `inbox.md`, and land it before the next wide wave starts.

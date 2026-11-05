@@ -47,7 +47,7 @@ So the program above copies `scores` once, on the `push`, because `snapshot` sti
 
 ### Seeing the copies
 
-The copy on a shared value is correct but it costs time in proportion to the value's size, and the source does not show it. Three tools make it visible: `narra check --report-copies` lists the updates where the compiler cannot prove the count is 1, `NARRA_TRACE_COPIES=1` logs each copy of a running program, and `@unique` on a `let` declares that the variable is never shared (debug builds panic on a copy). See `SPEC.md` section 6, "Copies on shared values".
+A copy on a shared value is correct but costs time in proportion to the value's size, and the source does not show it. `SPEC.md` section 6 ("Copies on shared values", D49) describes tools for this (`narra check --report-copies`, `NARRA_TRACE_COPIES=1` and `@unique`). The bootstrap compiler does not implement them yet, so this guide does not use them.
 
 ## `const` and `let`
 
@@ -283,7 +283,7 @@ export function run(args: Array<string>): int {
 20
 ```
 
-The closure sees the value of `count` at the moment `current` was bound, not later changes. If you need several functions to share a changing value, pass it to them as a `mutable` parameter, or return the new value and thread it through. These are the rules today; the roadmap lists work on closures that may relax them, and this chapter will follow whatever ships.
+The closure sees the value of `count` at the moment `current` was bound, not later changes. If you need several functions to share a changing value, pass it to them as a `mutable` parameter, or return the new value and thread it through. These are the rules of the current compiler.
 
 ## No cycles, no collector
 

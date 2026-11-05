@@ -191,6 +191,4 @@ narra run -bin app app      # run one of them
 
 The import graph must have no cycles. If `app/a` imports `app/b` and `app/b` imports `app/a`, the compiler reports the loop as a list of modules (D4). To break a cycle, move the shared declarations into a third module that both import.
 
-`narra move old new` renames a file and rewrites every import that points to it.
-
 Next: [Memory and `mutable`](09-memory-and-mutable.md).

@@ -1,6 +1,6 @@
 # 5. Pattern matching
 
-In this chapter the shop gets a till that reads typed commands such as `add tea 2` or `pay 500`. Turning a line of text into a command, and acting on it, means asking "what shape is this value?" over and over. Patterns are how Narra asks that question. You met them in `match` in chapter 4. Here you see what else they can test, and the other places they appear.
+In this chapter the shop gets a till that reads commands from lines of text such as `add tea 2` or `pay 500`. Turning a line of text into a command, and acting on it, means asking "what shape is this value?" over and over. Patterns are how Narra asks that question. You met them in `match` in chapter 4. Here you see what else they can test, and the other places they appear.
 
 ## Decide by kind, and by condition
 
@@ -40,9 +40,9 @@ remove tea
 pay 500
 ```
 
-An arm can add a condition after its pattern, `if (quantity >= 10)`, called a guard. The arm is taken only when the pattern matches and the guard is true. `match` tries the arms from top to bottom and takes the first that fits. `Add("cups", 12)` goes to the bulk arm, and `Add("tea", 2)` falls past it to the next one. Once an arm is taken, the others are skipped.
+An arm can add a condition after its pattern, `if (quantity >= 10)`, called a guard. The arm is taken only when the pattern matches and the guard is true. `match` tries the arms from top to bottom and takes the first that fits. `Add("cups", 12)` goes to the bulk arm, and `Add("tea", 2)` falls past it to the next one.
 
-Here `match` is a value: the function returns whatever the chosen arm gives, so every arm gives a `string`. A `match` can also stand alone as a statement. Then each arm can run a block of statements, and a `return` in it returns from the function:
+Here `match` is a value: the function returns whatever the chosen arm gives, so every arm gives a `string`. A `match` can also stand alone as a statement, as `checkWeight` did in chapter 4. Then each arm can run a block of statements, and a `return` in it returns from the function:
 
 ```narra
 enum Command {
@@ -76,7 +76,7 @@ checked
 a payment must be positive
 ```
 
-`_` matches anything, so the last arm covers `Add` and `Remove` together. `assert` stops the program with a message when its condition is false. Here both conditions hold.
+`_` matches anything, so the last arm covers `Add` and `Remove` together.
 
 ## Match on numbers, text and tuples
 
@@ -330,7 +330,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-An `is` that binds names must be the whole condition of its `if`. On the other side of an `&&`, the names would not exist:
+An `is` that binds names must be the whole condition of its `if`. On the other side of an `&&`, the names would not exist. The message also mentions the conditional expression, `? :`, which comes at the end of this chapter:
 
 ```narra error
 // error: 4:13: an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression

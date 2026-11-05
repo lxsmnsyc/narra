@@ -76,7 +76,7 @@ export function run(args: Array<string>): int {
 
 Use `const` for every name that does not need to change, and `let` only where it does. A reader then knows which values to watch.
 
-A name can be declared once in a function. Declaring it again, even inside an inner block, is an error, so a name always means the same value:
+An inner block, such as the body of an `if` or a loop, cannot declare a name that is still in scope from outside it. That way a name never silently changes meaning partway through a function:
 
 ```narra error
 // error: 5:5: "weeks" is already declared in this function; shadowing is not allowed
@@ -88,6 +88,8 @@ export function run(args: Array<string>): int {
   return 0
 }
 ```
+
+Pick another name, such as `cappedWeeks`. Two blocks side by side, such as two loops, can each declare a `const` of the same name. The first one is out of scope when the second begins.
 
 ## Whole numbers and decimals
 
@@ -173,9 +175,9 @@ tea..........250
 ================
 ```
 
-A `string` is text in double quotes. A template string, in backticks, joins strings together. The functions for strings come from `std/string`, imported here as `Str`: `Str.length` counts the bytes of a string, and `Str.repeat` repeats it.
+A `string` is text in double quotes. The functions for strings come from `std/string`, imported here as `Str`: `Str.length` counts the bytes of a string, and `Str.repeat` repeats it.
 
-There is no `+` for strings. If you reach for it, the compiler points you to templates:
+To join strings, put them in a template string, as the line above does. `+` does not join strings, and the compiler points you to templates:
 
 ```narra error
 // error: 3:15: strings are joined with a template string, not +
@@ -257,6 +259,30 @@ discount applied: 1150
 even total
 ```
 
+With more than two cases, chain them with `else if`. The conditions are tested from the top, and only the first true one runs its block:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const totalCents = 2400
+  let discountCents = 0
+  if (totalCents >= 5000) {
+    discountCents = 500
+  } else if (totalCents >= 2000) {
+    discountCents = 200
+  } else if (totalCents >= 1000) {
+    discountCents = 100
+  }
+  print(`discount: ${Int.toString(discountCents)}`)
+  return 0
+}
+```
+
+```text
+discount: 200
+```
+
 `totalCents >= 1000` is a `bool`, a value that is either `true` or `false`. The comparisons are `==`, `!=`, `<`, `<=`, `>` and `>=`, and you combine conditions with `&&` (and), `||` (or) and `!` (not).
 
 A condition must be a `bool`. A number is not one, so `if (count)` does not compile. Write the comparison you mean, such as `count > 0`:
@@ -301,9 +327,9 @@ first: 200
 
 `prices[0]` is the first element, because positions start at 0. Reading a position past the end stops the program with a message. `for (const price of prices)` runs its block once per element, with `price` bound to each element in turn.
 
-The functions for arrays come from `std/array`, imported as `Arrays`. `Arrays.push(mutable prices, 400)` adds an element at the end. The word `mutable` in the call marks the argument that the function changes. You can see at the call which of your values may change. Only a `let` name can be passed that way. Chapter 9 explains `mutable` in full.
+The functions for arrays come from `std/array`, imported as `Arrays`, and each takes the array as its first argument. `Arrays.push(mutable prices, 400)` adds an element at the end. The word `mutable` in the call marks the argument that the function changes. You can see at the call which of your values may change. Only a `let` name can be passed that way. Chapter 9 explains `mutable` in full.
 
-Arrays have no methods, so writing `prices.push(400)` gives an error that points you to the module function:
+Writing the call as a method on the array, `prices.push(400)`, is an error that points you back to the module function:
 
 ```narra error
 // error: 6:10: there are no method calls; call a module function such as Module.push(value, ...)
@@ -316,7 +342,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-To count through positions, loop over a range. `Ranges.upTo(3)` counts 0, 1, 2, and `Arrays.entries` gives each position together with its element:
+To count through positions, loop over a range. `Ranges.upTo(4)` counts 0, 1, 2, 3, and `Arrays.entries` gives each position together with its element:
 
 ```narra
 import * as Int from "std/int"
@@ -342,7 +368,39 @@ export function run(args: Array<string>): int {
 3: 9
 ```
 
-`Arrays.filled(0, 4)` makes an array of four zeros, and `Ranges.between(2, 5)` counts 2, 3, 4. The `#[position, square]` in the loop takes apart a pair of values. Pairs come at the end of this chapter.
+`Arrays.filled(0, 4)` makes an array of four zeros. The `#[position, square]` in the loop takes apart a pair of values. Pairs come at the end of this chapter.
+
+### Stop early or skip an element
+
+You want the first price above 300, and you want to skip prices of 0, which are free samples. `break` leaves a loop at once, and `continue` skips to the next pass:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const prices = [250, 0, 320, 180, 400]
+  let paidItems = 0
+  for (const price of prices) {
+    if (price == 0) {
+      continue
+    }
+    paidItems = paidItems + 1
+    if (price > 300) {
+      print(`first price above 300: ${Int.toString(price)}`)
+      break
+    }
+  }
+  print(`paid items looked at: ${Int.toString(paidItems)}`)
+  return 0
+}
+```
+
+```text
+first price above 300: 320
+paid items looked at: 2
+```
+
+Both work in `while` loops too.
 
 ### Arrays are values
 
@@ -448,7 +506,7 @@ tea is gone
 0
 ```
 
-An empty map has no entries to tell the compiler its types, so you write them: `Map<string, int> {}`.
+`Maps.remove` returns `true` when the key was there and `false` when it was not. An empty map has no entries to tell the compiler its types, so you write them: `Map<string, int> {}`.
 
 ## Group a few values
 
@@ -475,7 +533,7 @@ tea=250
 coffee=320
 ```
 
-`const #[name, priceCents] = cheapest` takes the tuple apart into two names. That is the only way to read a tuple: it has no positions to index. Square brackets alone, `[a, b]`, always make an array, so a tuple needs the `#`.
+`const #[name, priceCents] = cheapest` takes the tuple apart into two names. That is the only way to read a tuple: it has no positions to index.
 
 The next chapter moves the receipt code into functions, so that each piece has a name and can be used again.
 

@@ -120,9 +120,7 @@ compared field by field
 
 A struct behaves like the arrays of chapter 2: `let moreTea = tea` makes a copy, and changing `moreTea` leaves `tea` as it was. You can assign a field only through a `let` name.
 
-Often you want a new value that differs in one or two fields. `{ ...tea, priceCents: 200 }` copies every field of `tea`, then sets the fields listed after it. It is a new value, and `tea` does not change.
-
-`==` and `!=` compare two structs field by field.
+Often you want a new value that differs in one or two fields. `{ ...tea, priceCents: 200 }` copies every field of `tea`, then sets the fields listed after it. It is a new value, and `tea` does not change. The last `if` shows that `==` and `!=` compare two structs field by field.
 
 ## A value of one of several kinds
 
@@ -182,7 +180,10 @@ function isVoucher(payment: Payment): bool {
 }
 
 export function run(args: Array<string>): int {
-  return isVoucher(Payment.Cash(1)) ? 1 : 0
+  if (isVoucher(Payment.Cash(1))) {
+    return 1
+  }
+  return 0
 }
 ```
 
@@ -231,15 +232,62 @@ export function run(args: Array<string>): int {
 2000
 ```
 
-Recursion, from chapter 3, is the natural way to walk such data. `price` of a basket is the sum of the prices of its contents, and an inner basket is handled by the same function. A single product is the stopping case. An arm whose result needs several statements gets a block, which ends with `return`.
+Recursion, from chapter 3, is the natural way to walk such data. `price` of a basket is the sum of the prices of its contents, and an inner basket is handled by the same function. A single product is the stopping case.
 
-A struct cannot hold a field of its own type directly. An order that points to the previous order is an error:
+The `Basket` arm needs several statements to work out its result, so it gets a block. In a `match` used as a value, a `return` inside an arm's block gives the value of that arm. It does not leave `price`: the `match` takes the value, and `price` returns it. In a `match` used as a statement, a `return` in a block leaves the whole function, as anywhere else. Here are blocks of the same shape used both ways:
+
+```narra
+import * as Int from "std/int"
+
+function shippingCents(weightGrams: int): int {
+  const base = match (weightGrams) {
+    0 => 0
+    _ => {
+      if (weightGrams > 1000) {
+        return 900
+      }
+      return 400
+    }
+  }
+  print(`base ${Int.toString(base)}`)
+  return base + 50
+}
+
+function checkWeight(weightGrams: int): bool {
+  match (weightGrams) {
+    0 => {
+      print("nothing to ship")
+      return false
+    }
+    _ => print("weight ok")
+  }
+  return true
+}
+
+export function run(args: Array<string>): int {
+  print(Int.toString(shippingCents(1500)))
+  assert(checkWeight(200))
+  assert(!checkWeight(0))
+  return 0
+}
+```
+
+```text
+base 900
+950
+weight ok
+nothing to ship
+```
+
+In `shippingCents`, `return 900` sets `base`, and the function goes on to print it. In `checkWeight`, `return false` ends the function at once. `assert` stops the program with a message when its condition is false. Here both conditions hold.
+
+A struct cannot hold a field of its own type directly. Each order points to the one before it, and a first try is an error:
 
 ```narra error
 // error: 2:1: type Order contains itself; put the recursive field in an enum, Box or array
 struct Order {
   id: int
-  previous: Option<Order>
+  previous: Order
 }
 
 export function run(args: Array<string>): int {
@@ -247,7 +295,9 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A struct value holds its fields in place, so an `Order` that holds an `Order` would need infinite room. The message lists the ways out. An array or an enum variant with fields keeps its contents in separate memory, as `Basket` above does. For a single value, use a `Box`: it holds one value in separate memory, and the struct holds only a small reference to it. `Boxes.new(value)` makes a box, and `box.value` reads what is inside:
+A struct value holds its fields in place, so an `Order` that holds an `Order` would need infinite room. The message lists the ways out. An array or the fields of an enum variant you declare live in separate memory, as `Basket` above does.
+
+The first order has no previous one, so the field should be optional: an `Option<Order>`, which is `Some(order)` or `None`, as in chapter 2. Unlike the enums you declare, `Option` holds its value in place (so does `Result`), so `previous: Option<Order>` gives the same error. For a single value, use a `Box`: it holds one value in separate memory, and the struct holds only a small reference to it. `Boxes.new(value)` makes a box, and `box.value` reads what is inside:
 
 ```narra
 import * as Int from "std/int"
@@ -278,7 +328,7 @@ export function run(args: Array<string>): int {
 3
 ```
 
-`Option<Box<Order>>` is either `Some(box)` or `None`, the same `Option` that reading a map gives. `Option` is an enum too. Its variants and the `Ok` and `Err` of `Result` are written without the enum name in front. Every other variant needs it. The first order has no previous one, so its field defaults to `None`.
+`previous` is either `Some(box)` or `None`, and it defaults to `None` for the first order. `Some` and `None`, and the `Ok` and `Err` of `Result`, are written without an enum name in front. Every other variant needs it.
 
 The memory behind a box, an array or an enum variant is freed as soon as nothing uses it any more. You never free it yourself. Chapter 9 explains how that works.
 
@@ -338,7 +388,7 @@ export opaque struct Span {
   end: int
 }
 
-export function makeSpan(start: int, end: int): Result<Span, string> {
+export function makeSpan(start: int, end: int): Result<Span, string> uses alloc {
   if (end < start) {
     return Err("the span ends before it starts")
   }
@@ -350,7 +400,28 @@ export function spanLength(span: Span): int {
 }
 ```
 
-Another module can import `Span`, `makeSpan` and `spanLength`, but `Span { start: 5, end: 1 }` and `span.start` are errors there. Every `Span` comes from `makeSpan`, so every `Span` follows the rule. `makeSpan` returns a `Result`, which is either `Ok` with the span or `Err` with a message. Chapter 6 covers it.
+`makeSpan` returns a `Result`, which is either `Ok` with the span or `Err` with a message. Chapter 6 covers it. An exported function that builds such a value writes `uses alloc` after its result type, because it allocates memory. Chapter 10 explains `uses`.
+
+Another module, here `src/main.nra` of a package named `timeline`, imports the functions and goes through them:
+
+```narra fragment
+import * as Int from "std/int"
+import { makeSpan, spanLength } from "timeline/span"
+
+export function run(args: Array<string>): int {
+  match (makeSpan(2, 9)) {
+    Ok(span) => print(Int.toString(spanLength(span)))
+    Err(message) => print(message)
+  }
+  match (makeSpan(5, 1)) {
+    Ok(span) => print(Int.toString(spanLength(span)))
+    Err(message) => print(message)
+  }
+  return 0
+}
+```
+
+It prints `7`, then `the span ends before it starts`. Writing `Span { start: 5, end: 1 }` or `span.start` in `main.nra` is an error. The message says that `Span` is an opaque struct of module `"timeline/span"`, and to use that module's functions. Every `Span` comes from `makeSpan`, so every `Span` follows the rule.
 
 The next chapter looks closer at `match` and the patterns it uses, and at the other places patterns appear.
 

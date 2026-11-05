@@ -50,12 +50,13 @@ export function run(args: Array<string>): int {
 }
 ```
 
-The comment on the first line shows the message the compiler prints for this file. `3:11` is the line and column of the problem, with the comment counted as line 1: `print` wants a `string`, and `1 + 2` is an `int`. Narra never turns a number into text for you, so you convert it yourself with `Int.toString`:
+The first line is a comment. `//` starts a note for the reader that runs to the end of the line, and the compiler skips it. In this guide, such a comment on the first line of a sample shows the message the compiler prints for that file. `3:11` is the line and column of the problem, with the comment counted as line 1: `print` wants a `string`, and `1 + 2` is an `int`. Narra never turns a number into text for you, so you convert it yourself with `Int.toString`:
 
 ```narra
 import * as Int from "std/int"
 
 export function run(args: Array<string>): int {
+  // Int.toString turns a number into text.
   print(Int.toString(1 + 2))
   return 0
 }
@@ -134,7 +135,6 @@ From inside the `shop` folder, `narra run .` builds and runs the package and pri
 | `narra build -release -o app file.nra` | build an optimized executable |
 | `narra check file.nra` | report errors without building |
 | `narra test file.nra` | run the tests in the file (chapter 10) |
-| `narra explain E0003` | explain an error code |
 
 Each command also takes a package folder in place of a file.
 

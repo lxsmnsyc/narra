@@ -35,7 +35,7 @@ total: 820
 
 A function declaration names each parameter with its type, then gives the type of the result after the parentheses. `return` ends the function and hands back the value. `printLine` has no result type, so it returns nothing and is called as a statement.
 
-The parameter and result types are always written, even where the compiler could work them out. They are what a caller reads to learn how to use the function. Without `export`, a function is visible only in its own file.
+A named function writes the type of every parameter, and its result type when it returns a value. The compiler does not guess them, because they are what a caller reads to learn how to use the function. Without `export`, a function is visible only in its own file.
 
 A call passes exactly the arguments the function declares:
 
@@ -47,18 +47,6 @@ function lineTotal(priceCents: int, quantity: int): int {
 
 export function run(args: Array<string>): int {
   return lineTotal(250)
-}
-```
-
-A function is declared at the top level of a file, next to `run`, not inside another function. When a helper needs values from the function that calls it, pass them as arguments:
-
-```narra error
-// error: 3:3: a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments
-export function run(args: Array<string>): int {
-  function lineTotal(priceCents: int, quantity: int): int {
-    return priceCents * quantity
-  }
-  return lineTotal(250, 2)
 }
 ```
 
@@ -192,7 +180,37 @@ export function run(args: Array<string>): int {
 }
 ```
 
-The fixed version, `const discount = (cents: int): int => cents - 50`, compiles: the parameter type is in the parentheses and the result type after them.
+Write the type of each parameter in the parentheses: `const discount = (cents: int) => cents - 50` compiles. The compiler works out the result type from the body. You can still write it after the parentheses, as in `(cents: int): int => cents - 50`.
+
+### A small helper inside a function
+
+Sometimes a helper is useful only inside one function, and you want it there, not at the top of the file. A named function cannot go inside another one:
+
+```narra error
+// error: 3:3: a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments
+export function run(args: Array<string>): int {
+  function lineTotal(priceCents: int, quantity: int): int {
+    return priceCents * quantity
+  }
+  return lineTotal(250, 2)
+}
+```
+
+"Module level" is the top level of the file, next to `run`, and "private" means without `export`. When the helper should stay inside the function, bind an arrow function to a `const` instead. That is the local form of a function:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const lineTotal = (priceCents: int, quantity: int) => priceCents * quantity
+  print(Int.toString(lineTotal(250, 2) + lineTotal(320, 1)))
+  return 0
+}
+```
+
+```text
+820
+```
 
 ## One function for many types
 
@@ -300,7 +318,7 @@ export function run(args: Array<string>): int {
 
 The returned closure keeps `amountCents`, so it still works after `makeDiscount` has returned.
 
-Now try to build a rule that applies another rule twice:
+Now you want a rule that applies another rule twice, and you want to keep it to use later. The first try does not compile:
 
 ```narra error
 // error: 3:21: a closure cannot capture parameter "rule" because it is not escaping; declare it as `escaping rule`
@@ -313,7 +331,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A function passed as a parameter may only be called during the call it was passed to, or passed on to another such parameter. That is why passing a closure costs nothing extra: the values it captured stay in the caller's memory, which lives until the call returns. Returning a closure that uses `rule` would keep `rule` past that point, so the compiler asks you to say so with `escaping`:
+The closure returned by `twice` uses `rule`, so `rule` has to outlive the call to `twice`. A function parameter can only be used while the call is running, unless you mark it `escaping`, as the message says:
 
 ```narra
 import * as Int from "std/int"
@@ -333,7 +351,7 @@ export function run(args: Array<string>): int {
 80
 ```
 
-An `escaping` parameter may be returned, stored or captured. Its captured values are moved to memory that is freed when the last user of the function is done with it, which costs an allocation. Mark a parameter `escaping` only when the function keeps it.
+An `escaping` parameter may be returned, stored or captured. A closure passed to it needs a memory allocation for the values it captures, which a plain function parameter avoids. Add `escaping` only when the function keeps the parameter.
 
 The next chapter gives the shop's data a shape of its own: items with named fields, and values that can be one of several kinds.
 

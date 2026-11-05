@@ -10,3 +10,4 @@
 - Removed "Recursion needs no keyword" and the "Tail calls are loops" section. Recursion is taught with counting the ways to make change; a short note and sample follow on a call in last position running like a loop.
 - Found the old chapter 2 claimed sized integers (`i32`, `u8`) and unused-local errors; neither is in the compiler. Removed; sized numbers added to Planned.
 - TestGuide passes (71 sample subtests). No Go code touched.
+- Review of b5f6121: fixed the Span fragment (`uses alloc` and a chapter 10 pointer, plus a main.nra fragment), built the chapter 1 and 4 fragments as real packages. Added value-block versus statement-block `return` sample to chapter 4, the Option-holds-in-place note, the correct shadowing rule, the helper-inside-a-function section after arrow functions, the escaping section from the want, `else if`, `break`/`continue`, `//` comments; dropped `narra explain` from the table; fixed the nits. TestGuide passes (76 sample subtests).

@@ -6,6 +6,8 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import { Pos } from "narrac/ast"
+import { Comment, CommentKind } from "narrac/trivia"
 
 // The kinds carry a Tok prefix, as in Go, so they do not clash with the
 // expression variants of narrac/ast (IntLit, Ident, ...).
@@ -43,6 +45,8 @@ struct Lexer {
   savedCount: int // how many entries of savedDepths are in use
   tokens: Array<Token>
   punctuationChars: Array<Array<char>>
+  keepComments: bool // lexWithComments: collect the comments the tokens skip
+  comments: Array<Comment>
 }
 
 const KEYWORDS = Map {
@@ -61,7 +65,7 @@ const PUNCTS = [
   "(", ")", "{", "}", "[", "]", ",", ":", ".", ";", "?",
 ]
 
-function createLexer(source: string): Lexer {
+function createLexer(source: string, keepComments: bool): Lexer {
   let punctuationChars: Array<Array<char>> = []
   for (const punctuation of Arrays.values(PUNCTS)) {
     Arrays.push(mutable punctuationChars, Str.chars(punctuation))
@@ -76,17 +80,54 @@ function createLexer(source: string): Lexer {
     savedCount: 0,
     tokens: [],
     punctuationChars: punctuationChars,
+    keepComments: keepComments,
+    comments: [],
   }
 }
 
 // lex returns the tokens of source, or the first error as "line:col: message".
 export function lex(source: string): Result<Array<Token>, string> uses alloc {
-  let lexer = createLexer(source)
+  let lexer = createLexer(source, false)
   const failed = runLexer(mutable lexer)
   if (failed is Some(message)) {
     return Err(message)
   }
   return Ok(lexer.tokens)
+}
+
+// lexWithComments returns the same tokens as lex, and the comments in source
+// order.
+export function lexWithComments(source: string): Result<#[Array<Token>, Array<Comment>], string> uses alloc {
+  let lexer = createLexer(source, true)
+  const failed = runLexer(mutable lexer)
+  if (failed is Some(message)) {
+    return Err(message)
+  }
+  return Ok(#[lexer.tokens, lexer.comments])
+}
+
+// recordComment keeps the comment that starts at source index `first` and
+// ends at the current position.
+function recordComment(mutable lexer: Lexer, first: int, line: int, column: int) {
+  const text = readText(lexer, first, lexer.index)
+  let kind = CommentKind.Block
+  if (Str.startsWith(text, "///")) {
+    kind = CommentKind.Doc
+  } else if (Str.startsWith(text, "//")) {
+    kind = CommentKind.Line
+  }
+  // only whitespace before it on its line?
+  let ownLine = true
+  let back = first
+  while (back > 0 && lexer.source[back - 1] != '\n') {
+    back = back - 1
+    const before = lexer.source[back]
+    if (before != ' ' && before != '\t' && before != '\r') {
+      ownLine = false
+    }
+  }
+  const comment = Comment { kind: kind, text: text, pos: Pos { line: line, column: column }, end: Pos { line: lexer.line, column: lexer.column }, ownLine: ownLine }
+  Arrays.push(mutable lexer.comments, comment)
 }
 
 function errorAt(line: int, column: int, message: string): Option<string> {
@@ -166,10 +207,15 @@ function runLexer(mutable lexer: Lexer): Option<string> {
     } else if (character == ' ' || character == '\t' || character == '\r') {
       advance(mutable lexer)
     } else if (character == '/' && peek(lexer, 1) == '/') {
+      const commentStart = lexer.index
       while (lexer.index < getSize(lexer) && peek(lexer, 0) != '\n') {
         advance(mutable lexer)
       }
+      if (lexer.keepComments) {
+        recordComment(mutable lexer, commentStart, line, column)
+      }
     } else if (character == '/' && peek(lexer, 1) == '*') {
+      const commentStart = lexer.index
       advance(mutable lexer)
       advance(mutable lexer)
       while (lexer.index < getSize(lexer) && !(peek(lexer, 0) == '*' && peek(lexer, 1) == '/')) {
@@ -180,6 +226,9 @@ function runLexer(mutable lexer: Lexer): Option<string> {
       }
       advance(mutable lexer)
       advance(mutable lexer)
+      if (lexer.keepComments) {
+        recordComment(mutable lexer, commentStart, line, column)
+      }
     } else if (isLetter(character)) {
       const start = lexer.index
       while (lexer.index < getSize(lexer) && (isLetter(peek(lexer, 0)) || isDigit(peek(lexer, 0)))) {

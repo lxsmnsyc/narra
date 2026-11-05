@@ -1,0 +1,448 @@
+// The source details the syntax tree drops, kept in side tables for
+// `narrac fmt` (contract fmt-trivia): comments, blank lines, written
+// parentheses and the end of each node.
+//
+// How it works. The lexer keeps the comments (lexWithComments). While
+// parseWithTrivia runs, the parser notes every node it finishes as a
+// record: an anchor key, the node's first token and the end of its last
+// token. Records come in post order, so one pass with a stack turns them
+// into a tree. buildTrivia then attaches each comment to that tree the way
+// Prettier does (enclosing, preceding and following node), and finds blank
+// lines. The tree is not the syntax tree: it holds only the nodes that have
+// an anchor key.
+//
+// Anchor keys: `e<id>` for an expression, pattern or parameter, and a kind
+// letter with the start position for the nodes that have no id: `s`
+// statement, `d` declaration, `t` type, `f` field (struct field, field
+// initializer, field pattern), `v` variant, `a` match arm, `i` import and
+// `b` block. The position is the node's `pos` field, not its first token
+// (a declaration's `pos` is its keyword, after `export`). The root, the
+// file, has the key `file`.
+//
+// Comment keys: `c<index>` in blankBefore (see buildTrivia).
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Maps from "std/map"
+import { Pos, Decl, Stmt, Expr, Pattern } from "narrac/ast"
+
+export enum CommentKind { Line, Block, Doc }
+
+export enum Placement { Leading, Trailing, Dangling }
+
+// A comment as written. text has the markers; pos is its first character
+// and end the position after its last. ownLine is true when only whitespace
+// comes before it on its line.
+export struct Comment {
+  kind: CommentKind
+  text: string
+  pos: Pos
+  end: Pos
+  ownLine: bool
+}
+
+export struct Attached {
+  comment: int // index into Trivia.comments
+  placement: Placement
+}
+
+export struct Trivia {
+  comments: Array<Comment> // source order
+  attached: Map<string, Array<Attached>> // by anchor key, in source order
+  blankBefore: Map<string, bool> // anchors with a blank line before them
+  parenthesized: Map<int, bool> // expression ids written inside ( )
+  ends: Map<string, Pos> // anchor key to the position after the node's last token
+}
+
+// One finished node. start is its first token (including `export` and
+// parentheses), end the position after its last token.
+export struct NodeRecord {
+  key: string
+  start: Pos
+  end: Pos
+}
+
+// What the parser collects. With enabled false nothing is added, so a plain
+// parse costs the same as before.
+export struct Collector {
+  enabled: bool
+  records: Array<NodeRecord> // in the order the nodes finish: children first
+  recordIndex: Map<string, int> // key to index in records
+  parenthesized: Map<int, bool>
+}
+
+export function createCollector(enabled: bool): Collector uses alloc {
+  return Collector { enabled: enabled, records: [], recordIndex: Map {}, parenthesized: Map {} }
+}
+
+// ---- Keys
+
+export function getPosKey(letter: string, pos: Pos): string uses alloc {
+  return `${letter}${Int.toString(pos.line)}:${Int.toString(pos.column)}`
+}
+
+export function getIdKey(id: int): string uses alloc {
+  return `e${Int.toString(id)}`
+}
+
+export function getDeclPos(declaration: Decl): Pos {
+  return match (declaration) {
+    Decl.Func(inner) => inner.pos
+    Decl.Const(inner) => inner.pos
+    Decl.Struct(inner) => inner.pos
+    Decl.Enum(inner) => inner.pos
+    Decl.Distinct(inner) => inner.pos
+    Decl.Test(inner) => inner.pos
+    Decl.Trait(inner) => inner.pos
+    Decl.Impl(inner) => inner.pos
+  }
+}
+
+export function getStmtPos(statement: Stmt): Pos {
+  return match (statement) {
+    Stmt.BlockStmt(block) => block.pos
+    Stmt.VarStmt(_, pos, _, _, _, _, _) => pos
+    Stmt.AssignStmt(pos, _, _) => pos
+    Stmt.ExprStmt(pos, _) => pos
+    Stmt.ReturnStmt(pos, _) => pos
+    Stmt.IfStmt(pos, _, _, _) => pos
+    Stmt.WhileStmt(pos, _, _, _) => pos
+    Stmt.ForStmt(_, pos, _, _, _, _) => pos
+    Stmt.BreakStmt(pos, _) => pos
+    Stmt.ContinueStmt(pos, _) => pos
+  }
+}
+
+export function getExprId(expression: Expr): int {
+  return match (expression) {
+    Expr.IntLit(id, _, _) => id
+    Expr.FloatLit(id, _, _) => id
+    Expr.StringLit(id, _, _, _) => id
+    Expr.CharLit(id, _, _) => id
+    Expr.BoolLit(id, _, _) => id
+    Expr.TemplateLit(id, _, _) => id
+    Expr.Ident(id, _, _) => id
+    Expr.FieldExpr(id, _, _, _) => id
+    Expr.IsExpr(id, _, _, _) => id
+    Expr.IndexExpr(id, _, _, _) => id
+    Expr.MapLit(id, _, _, _, _) => id
+    Expr.CallExpr(id, _, _, _) => id
+    Expr.UnaryExpr(id, _, _, _) => id
+    Expr.BinaryExpr(id, _, _, _, _) => id
+    Expr.StructLit(id, _, _, _, _, _) => id
+    Expr.ArrayLit(id, _, _, _) => id
+    Expr.MatchExpr(id, _, _, _) => id
+    Expr.BlockExpr(id, _, _) => id
+    Expr.ArrowExpr(id, _, _, _, _, _) => id
+  }
+}
+
+export function getPatternId(pattern: Pattern): int {
+  return match (pattern) {
+    Pattern.PatWildcard(id, _) => id
+    Pattern.PatName(id, _, _) => id
+    Pattern.PatCtor(id, _, _, _, _, _) => id
+    Pattern.PatStruct(id, _, _) => id
+    Pattern.PatTuple(id, _, _) => id
+    Pattern.PatLit(id, _, _) => id
+  }
+}
+
+// ---- Positions
+
+function isBefore(left: Pos, right: Pos): bool {
+  return left.line < right.line || (left.line == right.line && left.column < right.column)
+}
+
+function isSamePos(left: Pos, right: Pos): bool {
+  return left.line == right.line && left.column == right.column
+}
+
+// ---- Collecting
+
+// noteNode records a finished node. A node noted again (the same expression
+// returned by each parse level) keeps its first range, unless the new range
+// is larger: a parenthesized expression grows to include its parentheses.
+export function noteNode(mutable collector: Collector, key: string, start: Pos, end: Pos) uses alloc {
+  if (collector.recordIndex[key] is Some(index)) {
+    const old = collector.records[index]
+    const grows = !isBefore(old.start, start) && !isBefore(end, old.end)
+    const changes = !isSamePos(old.start, start) || !isSamePos(old.end, end)
+    if (grows && changes) {
+      collector.records[index] = NodeRecord { key: key, start: start, end: end }
+    }
+    return
+  }
+  collector.recordIndex[key] = Arrays.length(collector.records)
+  Arrays.push(mutable collector.records, NodeRecord { key: key, start: start, end: end })
+}
+
+// ---- Building
+
+// The tree of records: childLists[i] are the records inside record i, and
+// rootChildren the ones inside no other.
+struct RecordTree {
+  childLists: Array<Array<int>>
+  rootChildren: Array<int>
+}
+
+// buildTree nests the records. They come in post order, so when a record
+// arrives, every pending record that starts at or after its start is inside
+// it.
+function buildTree(records: Array<NodeRecord>): RecordTree uses alloc {
+  let childLists: Array<Array<int>> = []
+  let stack: Array<int> = []
+  let stackSize = 0
+  for (const index of Ranges.upTo(Arrays.length(records))) {
+    const record = records[index]
+    // pop the records inside this one (last first)
+    let reversed: Array<int> = []
+    while (stackSize > 0 && !isBefore(records[stack[stackSize - 1]].start, record.start)) {
+      Arrays.push(mutable reversed, stack[stackSize - 1])
+      stackSize = stackSize - 1
+    }
+    let children: Array<int> = []
+    let position = Arrays.length(reversed)
+    while (position > 0) {
+      position = position - 1
+      Arrays.push(mutable children, reversed[position])
+    }
+    Arrays.push(mutable childLists, children)
+    if (stackSize < Arrays.length(stack)) {
+      stack[stackSize] = index
+    } else {
+      Arrays.push(mutable stack, index)
+    }
+    stackSize = stackSize + 1
+  }
+  let rootChildren: Array<int> = []
+  for (const index of Ranges.upTo(stackSize)) {
+    Arrays.push(mutable rootChildren, stack[index])
+  }
+  return RecordTree { childLists: childLists, rootChildren: rootChildren }
+}
+
+function isSpace(character: char): bool {
+  return character == ' ' || character == '\t' || character == '\r'
+}
+
+// isBlankLine tells whether line number `line` (from 1) has only whitespace.
+function isBlankLine(lines: Array<string>, line: int): bool uses alloc {
+  if (line < 1 || line > Arrays.length(lines)) {
+    return false
+  }
+  for (const character of Arrays.values(Str.chars(lines[line - 1]))) {
+    if (!isSpace(character)) {
+      return false
+    }
+  }
+  return true
+}
+
+// hasBlankLineBetween tells whether a blank line lies between two lines.
+function hasBlankLineBetween(lines: Array<string>, fromLine: int, toLine: int): bool uses alloc {
+  let line = fromLine + 1
+  while (line < toLine) {
+    if (isBlankLine(lines, line)) {
+      return true
+    }
+    line = line + 1
+  }
+  return false
+}
+
+// endsLine tells whether only whitespace follows the comment on its last line.
+function endsLine(lines: Array<string>, comment: Comment): bool uses alloc {
+  const isLine = match (comment.kind) {
+    CommentKind.Line => true
+    CommentKind.Doc => true
+    CommentKind.Block => false
+  }
+  if (isLine) {
+    return true
+  }
+  if (comment.end.line < 1 || comment.end.line > Arrays.length(lines)) {
+    return true
+  }
+  const characters = Str.chars(lines[comment.end.line - 1])
+  for (const index of Ranges.between(comment.end.column - 1, Arrays.length(characters))) {
+    if (!isSpace(characters[index])) {
+      return false
+    }
+  }
+  return true
+}
+
+function addAttached(mutable attached: Map<string, Array<Attached>>, key: string, commentIndex: int, placement: Placement) uses alloc {
+  let list: Array<Attached> = []
+  if (attached[key] is Some(existing)) {
+    list = existing
+  }
+  Arrays.push(mutable list, Attached { comment: commentIndex, placement: placement })
+  attached[key] = list
+}
+
+// attachComments gives each comment to a node, as Prettier does. The
+// enclosing node is the deepest one that contains the comment; its
+// children give the preceding and following node.
+//   own line:            leading of the following node, else trailing of the
+//                        preceding one, else dangling on the enclosing node
+//   end of line:         trailing of the preceding node, else leading of the
+//                        following one, else dangling
+//   code follows on the line: leading of the following node, else trailing of
+//                        the preceding one, else dangling
+function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: Array<Comment>, lines: Array<string>): Map<string, Array<Attached>> uses alloc {
+  let attached: Map<string, Array<Attached>> = Map {}
+  for (const commentIndex of Ranges.upTo(Arrays.length(comments))) {
+    const comment = comments[commentIndex]
+    // descend to the deepest node that contains the comment
+    let scopeKey = "file"
+    let children = tree.rootChildren
+    let descending = true
+    while (descending) {
+      descending = false
+      for (const child of Arrays.values(children)) {
+        const record = records[child]
+        if (!isBefore(comment.pos, record.start) && !isBefore(record.end, comment.end)) {
+          scopeKey = record.key
+          children = tree.childLists[child]
+          descending = true
+          break
+        }
+      }
+    }
+    // the last child before the comment and the first one after it
+    let preceding = ""
+    let following = ""
+    for (const child of Arrays.values(children)) {
+      const record = records[child]
+      if (!isBefore(comment.pos, record.end)) {
+        preceding = record.key
+      } else if (following == "" && !isBefore(record.start, comment.end)) {
+        following = record.key
+      }
+    }
+    if (comment.ownLine) {
+      if (following != "") {
+        addAttached(mutable attached, following, commentIndex, Placement.Leading)
+      } else if (preceding != "") {
+        addAttached(mutable attached, preceding, commentIndex, Placement.Trailing)
+      } else {
+        addAttached(mutable attached, scopeKey, commentIndex, Placement.Dangling)
+      }
+    } else if (endsLine(lines, comment)) {
+      if (preceding != "") {
+        addAttached(mutable attached, preceding, commentIndex, Placement.Trailing)
+      } else if (following != "") {
+        addAttached(mutable attached, following, commentIndex, Placement.Leading)
+      } else {
+        addAttached(mutable attached, scopeKey, commentIndex, Placement.Dangling)
+      }
+    } else {
+      if (following != "") {
+        addAttached(mutable attached, following, commentIndex, Placement.Leading)
+      } else if (preceding != "") {
+        addAttached(mutable attached, preceding, commentIndex, Placement.Trailing)
+      } else {
+        addAttached(mutable attached, scopeKey, commentIndex, Placement.Dangling)
+      }
+    }
+  }
+  return attached
+}
+
+// isListKey tells whether a key names a node that sits in a list where the
+// printer keeps blank lines: statement, declaration, field, variant, arm,
+// import.
+function isListKey(key: string): bool {
+  const letter = Str.slice(key, 0, 1)
+  return letter == "s" || letter == "d" || letter == "f" || letter == "v" || letter == "a" || letter == "i"
+}
+
+// getTrailingEndLine is the last line of the previous sibling, with the
+// comments that trail it.
+function getTrailingEndLine(record: NodeRecord, attached: Map<string, Array<Attached>>, comments: Array<Comment>): int {
+  let endLine = record.end.line
+  if (attached[record.key] is Some(list)) {
+    for (const item of Arrays.values(list)) {
+      if (item.placement is Placement.Trailing) {
+        const commentEnd = comments[item.comment].end.line
+        if (commentEnd > endLine) {
+          endLine = commentEnd
+        }
+      }
+    }
+  }
+  return endLine
+}
+
+// findBlankLines marks the nodes and comments with a blank line before
+// them. In each list of siblings, what comes before a node is its leading
+// comments and, before those, the previous sibling (with its trailing
+// comments). Nothing comes before the first item unless it has leading
+// comments, so the first item never has a blank line before it, nor its
+// first comment.
+function findBlankLines(records: Array<NodeRecord>, tree: RecordTree, attached: Map<string, Array<Attached>>, comments: Array<Comment>, lines: Array<string>): Map<string, bool> uses alloc {
+  let blank: Map<string, bool> = Map {}
+  markBlankLines(mutable blank, records, tree.rootChildren, attached, comments, lines)
+  for (const children of Arrays.values(tree.childLists)) {
+    markBlankLines(mutable blank, records, children, attached, comments, lines)
+  }
+  return blank
+}
+
+function markBlankLines(mutable blank: Map<string, bool>, records: Array<NodeRecord>, siblings: Array<int>, attached: Map<string, Array<Attached>>, comments: Array<Comment>, lines: Array<string>) uses alloc {
+  let previousLine = 0 // 0: nothing before
+  for (const sibling of Arrays.values(siblings)) {
+    const record = records[sibling]
+    if (attached[record.key] is Some(list)) {
+      for (const item of Arrays.values(list)) {
+        if (item.placement is Placement.Leading) {
+          const comment = comments[item.comment]
+          if (previousLine > 0 && hasBlankLineBetween(lines, previousLine, comment.pos.line)) {
+            blank[`c${Int.toString(item.comment)}`] = true
+          }
+          previousLine = comment.end.line
+        }
+      }
+    }
+    if (previousLine > 0 && isListKey(record.key) && hasBlankLineBetween(lines, previousLine, record.start.line)) {
+      blank[record.key] = true
+    }
+    previousLine = getTrailingEndLine(record, attached, comments)
+  }
+}
+
+// buildTrivia turns what the parser collected, and the comments the lexer
+// kept, into the side tables.
+export function buildTrivia(collector: Collector, comments: Array<Comment>, source: string): Trivia uses alloc {
+  const lines = Str.split(source, "\n")
+  const tree = buildTree(collector.records)
+  const attached = attachComments(collector.records, tree, comments, lines)
+  const blank = findBlankLines(collector.records, tree, attached, comments, lines)
+  let ends: Map<string, Pos> = Map {}
+  for (const record of Arrays.values(collector.records)) {
+    ends[record.key] = record.end
+  }
+  return Trivia { comments: comments, attached: attached, blankBefore: blank, parenthesized: collector.parenthesized, ends: ends }
+}
+
+// checkAttached fails when a comment is not attached exactly once.
+export function checkAttached(trivia: Trivia): Option<string> uses alloc {
+  let counts: Array<int> = Arrays.filled(0, Arrays.length(trivia.comments))
+  for (const key of Arrays.values(Maps.keys(trivia.attached))) {
+    if (trivia.attached[key] is Some(list)) {
+      for (const item of Arrays.values(list)) {
+        counts[item.comment] = counts[item.comment] + 1
+      }
+    }
+  }
+  for (const index of Ranges.upTo(Arrays.length(counts))) {
+    if (counts[index] != 1) {
+      const comment = trivia.comments[index]
+      return Some(`comment ${Int.toString(index)} at ${Int.toString(comment.pos.line)}:${Int.toString(comment.pos.column)} is attached ${Int.toString(counts[index])} times`)
+    }
+  }
+  return None
+}

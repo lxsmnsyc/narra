@@ -42,7 +42,7 @@ Layout choices (Prettier's TypeScript output where Narra has the same construct)
 
 - `getOffset` scans the source from the start for every call, so the stub and the comment helpers are quadratic in the file size. Fine for the repo's files (the largest takes a few seconds under AddressSanitizer in the test).
 - `Doc.Text` may hold newlines (the stub and block comments rely on it); the printer writes them as they are and counts them in the width.
-- A comment attached to a node the statement printer does not visit is lost. The corpus test finds this by comparing comment texts. Known unhandled placements: a comment before `else`, and a comment between `)` and `{`.
+- A comment attached to a node the statement printer does not visit is lost. The corpus test finds this by comparing comment texts. Known unhandled placements: a comment before `else`, and a comment between `)` and `{`. Comments inside import braces and around enum variants parentheses are hoisted above the first name (import braces) or reported as not printed (empty variant parentheses); they do not stay next to the nearest name. A block comment followed on its line by more comments or by `,` `)` `]` `}` `;` is trailing of the node on its left (`endsLineAfterComments` in `trivia.nra`).
 - The parser drops hidden for-loop names, ternary returns and parameter names of function types. fmt-exprs must keep function type parameter names (`(x: int) => int`) from the source; the AST does not hold them.
 - `Printer` fields are called as `printer.printExpression(printer, expression)`.
 

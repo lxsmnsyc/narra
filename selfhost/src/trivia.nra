@@ -274,6 +274,41 @@ function endsLine(lines: Array<string>, comment: Comment): bool uses alloc {
   return true
 }
 
+// isFollowedByCloser tells whether the next character after a block comment
+// on its line is a comma, a closing bracket or a semicolon, which end the
+// node the comment sits behind.
+function isFollowedByCloser(lines: Array<string>, comment: Comment): bool uses alloc {
+  if (comment.end.line < 1 || comment.end.line > Arrays.length(lines)) {
+    return false
+  }
+  const characters = Str.chars(lines[comment.end.line - 1])
+  for (const index of Ranges.between(comment.end.column - 1, Arrays.length(characters))) {
+    const character = characters[index]
+    if (!isSpace(character)) {
+      return character == ',' || character == ')' || character == ']' || character == '}' || character == ';'
+    }
+  }
+  return false
+}
+
+// endsLineAfterComments tells whether only whitespace, further comments or a
+// closing character follow a comment on its last line, so a run of comments
+// after one node attaches the same way and keeps its order, and a comment
+// before a comma stays with the node on its left.
+function endsLineAfterComments(lines: Array<string>, comments: Array<Comment>, index: int): bool uses alloc {
+  const comment = comments[index]
+  if (endsLine(lines, comment) || isFollowedByCloser(lines, comment)) {
+    return true
+  }
+  if (index + 1 < Arrays.length(comments)) {
+    const next = comments[index + 1]
+    if (next.pos.line == comment.end.line && !isBefore(next.pos, comment.end)) {
+      return endsLineAfterComments(lines, comments, index + 1)
+    }
+  }
+  return false
+}
+
 function addAttached(mutable attached: Map<string, Array<Attached>>, key: string, commentIndex: int, placement: Placement) uses alloc {
   let list: Array<Attached> = []
   if (attached[key] is Some(existing)) {
@@ -331,7 +366,7 @@ function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: 
       } else {
         addAttached(mutable attached, scopeKey, commentIndex, Placement.Dangling)
       }
-    } else if (endsLine(lines, comment)) {
+    } else if (endsLineAfterComments(lines, comments, commentIndex)) {
       if (preceding != "") {
         addAttached(mutable attached, preceding, commentIndex, Placement.Trailing)
       } else if (following != "") {

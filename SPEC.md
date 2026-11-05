@@ -45,6 +45,13 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - Blocks use `{ }`.
 - **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error.
 - `narra fmt` defines the one valid layout. CI is expected to run `narra fmt --check`.
+- `narra fmt` reads a `[fmt]` table of `narra.toml` (the nearest one above the file). Keys, with their defaults:
+  - `printWidth = 100`: the line width.
+  - `tabWidth = 2`: spaces per indent level.
+  - `useTabs = false`: indent with tabs.
+  - `trailingComma = "all"`: a trailing comma in broken lists, or `"none"`.
+
+  There are no other options.
 - Comments: `//` to the end of the line, `/* ... */` for blocks, `///` before a declaration for documentation.
 
 ### Bindings

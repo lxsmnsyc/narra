@@ -46,6 +46,18 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 
 The fixed point shows that the Narra compiler, compiled by itself, translates the source of the compiler into the same C as the Go compiler does. Go is no longer needed to produce a working compiler from that C. `TestSelfhostBootstrap` does the same under AddressSanitizer, UBSan and the leak check, and also compares stage 2 with Go on every emit input.
 
+## Formatting
+
+`narrac fmt` (the self-hosted compiler, `selfhost/src/fmt.nra`) formats Narra source. The Go compiler has no formatter.
+
+- `narrac fmt [paths]` rewrites the files in place. A directory means every `.nra` file under it (hidden directories are skipped); no path means the current directory.
+- `narrac fmt --check [paths]` prints each file that would change and exits 1, or exits 0.
+- `narrac fmt --stdin` (or `-`) reads one file from stdin and writes the result to stdout.
+- A file that does not parse prints `error <path>:<line>:<col>: <message>`, stays unchanged, and the exit code is 1. A bad `[fmt]` key or value prints `error narra.toml:<line>: <message>` and the exit code is 1.
+- Options come from the `[fmt]` table of the nearest `narra.toml` above each file (`printWidth`, `tabWidth`, `useTabs`, `trailingComma`; see `SPEC.md` section 2). Without one the defaults apply.
+- Declarations and statements are printed by `fmt.nra`. Expressions, types and patterns are copied as written until `fmt-exprs` lands.
+- `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
+
 ## Tests
 
 ```sh

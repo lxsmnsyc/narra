@@ -1,0 +1,284 @@
+// How the statement printer (fmt.nra) and the expression printer (fmtexprs.nra)
+// of `narrac fmt` call each other (contract fmt-printer). Narra modules cannot
+// import each other in a cycle, and an arrow function body is a block while a
+// statement holds expressions, so the two meet through the function fields of
+// one Printer. The comment helpers below wrap a node's document with the
+// comments that fmt-trivia attached to its anchor key.
+import * as Docs from "narrac/fmtdoc"
+import { Doc, Options } from "narrac/fmtdoc"
+import { Trivia, Comment, CommentKind, Placement, Attached } from "narrac/trivia"
+import { Pos, Expr, Pattern, TypeExpr, Block } from "narrac/ast"
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Maps from "std/map"
+
+export struct Settings {
+  options: Options
+  trailingComma: bool // true for "all"
+}
+
+export struct Printer {
+  source: string
+  trivia: Trivia
+  settings: Settings
+  printExpression: (printer: Printer, expression: Expr) => Doc
+  printPattern: (printer: Printer, pattern: Pattern) => Doc
+  printType: (printer: Printer, type: TypeExpr) => Doc
+  printBlock: (printer: Printer, block: Block) => Doc
+}
+
+// ---- Source text
+
+// getOffset is the byte offset of a position. Lines count `\n`; columns count
+// characters.
+export function getOffset(source: string, pos: Pos): int {
+  const length = Str.length(source)
+  let offset = 0
+  let line = 1
+  while (line < pos.line && offset < length) {
+    if (Str.byteAt(source, offset) == 10) {
+      line = line + 1
+    }
+    offset = offset + 1
+  }
+  let column = 1
+  while (column < pos.column && offset < length) {
+    offset = Str.nextChar(source, offset)
+    column = column + 1
+  }
+  return offset
+}
+
+// isNewlineAfter tells whether only blanks come between the offset and the
+// end of its line.
+export function isNewlineAfter(source: string, offset: int): bool {
+  const length = Str.length(source)
+  let index = offset
+  while (index < length) {
+    const byte = Str.byteAt(source, index)
+    if (byte == 10) {
+      return true
+    }
+    if (byte != 32 && byte != 9 && byte != 13) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+// trimEnd removes the blanks and line ends at the end of a text.
+function trimEnd(value: string): string uses alloc {
+  let end = Str.length(value)
+  while (end > 0) {
+    const byte = Str.byteAt(value, end - 1)
+    if (byte != 32 && byte != 9 && byte != 13 && byte != 10) {
+      break
+    }
+    end = end - 1
+  }
+  return Str.slice(value, 0, end)
+}
+
+// ---- Comments
+
+function getAttached(printer: Printer, anchor: string): Array<Attached> {
+  if (printer.trivia.attached[anchor] is Some(items)) {
+    return items
+  }
+  return []
+}
+
+function hasBlank(printer: Printer, key: string): bool {
+  if (printer.trivia.blankBefore[key] is Some(blank)) {
+    return blank
+  }
+  return false
+}
+
+function getCommentKey(index: int): string uses alloc {
+  return `c${Int.toString(index)}`
+}
+
+// getLeading lists the indexes of the leading comments of an anchor.
+function getLeading(printer: Printer, anchor: string): Array<int> uses alloc {
+  let indexes: Array<int> = []
+  for (const attached of Arrays.values(getAttached(printer, anchor))) {
+    if (attached.placement is Placement.Leading) {
+      Arrays.push(mutable indexes, attached.comment)
+    }
+  }
+  return indexes
+}
+
+// getBlankKey is the blankBefore key that says whether a blank line comes
+// before an item together with its leading comments: the first leading
+// comment, or the item itself.
+export function getBlankKey(printer: Printer, anchor: string): string uses alloc {
+  const leading = getLeading(printer, anchor)
+  if (Arrays.length(leading) > 0) {
+    return getCommentKey(leading[0])
+  }
+  return anchor
+}
+
+// hasBlankBefore tells whether the source has a blank line before an item.
+export function hasBlankBefore(printer: Printer, anchor: string): bool uses alloc {
+  return hasBlank(printer, getBlankKey(printer, anchor))
+}
+
+// hasDangling tells whether an anchor has dangling comments.
+export function hasDangling(printer: Printer, anchor: string): bool uses alloc {
+  for (const attached of Arrays.values(getAttached(printer, anchor))) {
+    if (attached.placement is Placement.Dangling) {
+      return true
+    }
+  }
+  return false
+}
+
+// hasTrailing tells whether an anchor has trailing comments.
+export function hasTrailing(printer: Printer, anchor: string): bool uses alloc {
+  for (const attached of Arrays.values(getAttached(printer, anchor))) {
+    if (attached.placement is Placement.Trailing) {
+      return true
+    }
+  }
+  return false
+}
+
+// hasLeading tells whether an anchor has leading comments.
+export function hasLeading(printer: Printer, anchor: string): bool uses alloc {
+  return Arrays.length(getLeading(printer, anchor)) > 0
+}
+
+// getLeadingBefore lists the leading comments of an anchor that start before
+// a source offset.
+export function getLeadingBefore(printer: Printer, anchor: string, offset: int): Array<int> uses alloc {
+  let indexes: Array<int> = []
+  for (const index of Arrays.values(getLeading(printer, anchor))) {
+    if (getOffset(printer.source, printer.trivia.comments[index].pos) < offset) {
+      Arrays.push(mutable indexes, index)
+    }
+  }
+  return indexes
+}
+
+// removeComments is the printer without some leading comments of an anchor,
+// for a node whose comments were printed elsewhere.
+export function removeComments(printer: Printer, anchor: string, removed: Array<int>): Printer uses alloc {
+  let attached: Map<string, Array<Attached>> = Map {}
+  for (const key of Arrays.values(Maps.keys(printer.trivia.attached))) {
+    if (key == anchor) {
+      let kept: Array<Attached> = []
+      for (const item of Arrays.values(getAttached(printer, key))) {
+        let isRemoved = false
+        for (const index of Arrays.values(removed)) {
+          if (index == item.comment) {
+            isRemoved = true
+          }
+        }
+        if (!isRemoved) {
+          Arrays.push(mutable kept, item)
+        }
+      }
+      attached[key] = kept
+    } else {
+      attached[key] = getAttached(printer, key)
+    }
+  }
+  return Printer { ...printer, trivia: Trivia { ...printer.trivia, attached: attached } }
+}
+
+function printComment(comment: Comment): Doc uses alloc {
+  return Docs.text(trimEnd(comment.text))
+}
+
+// withComments puts the comments of an anchor around the document of its
+// node: leading comments before it, trailing comments after it.
+export function withComments(printer: Printer, anchor: string, document: Doc): Doc uses alloc {
+  const attachedList = getAttached(printer, anchor)
+  if (Arrays.length(attachedList) == 0) {
+    return document
+  }
+  const leading = getLeading(printer, anchor)
+  let parts: Array<Doc> = []
+  // Leading comments, each on its own line unless a block comment shares the line with the node.
+  for (const position of Ranges.upTo(Arrays.length(leading))) {
+    const comment = printer.trivia.comments[leading[position]]
+    Arrays.push(mutable parts, printComment(comment))
+    let nextKey = anchor
+    if (position + 1 < Arrays.length(leading)) {
+      nextKey = getCommentKey(leading[position + 1])
+    }
+    const endOffset = getOffset(printer.source, comment.end)
+    if (comment.kind is CommentKind.Block && !isNewlineAfter(printer.source, endOffset)) {
+      Arrays.push(mutable parts, Docs.text(" "))
+    } else {
+      Arrays.push(mutable parts, Doc.HardLine)
+      if (hasBlank(printer, nextKey)) {
+        Arrays.push(mutable parts, Doc.HardLine)
+      }
+    }
+  }
+  Arrays.push(mutable parts, document)
+  // Trailing comments: a line comment waits for the end of the line.
+  for (const attached of Arrays.values(attachedList)) {
+    if (!(attached.placement is Placement.Trailing)) {
+      continue
+    }
+    const comment = printer.trivia.comments[attached.comment]
+    if (comment.ownLine) {
+      let lines: Array<Doc> = [Doc.HardLine]
+      if (hasBlank(printer, getCommentKey(attached.comment))) {
+        Arrays.push(mutable lines, Doc.HardLine)
+      }
+      Arrays.push(mutable lines, printComment(comment))
+      Arrays.push(mutable parts, Doc.LineSuffix(Docs.concat(lines)))
+      Arrays.push(mutable parts, Doc.BreakParent)
+    } else if (comment.kind is CommentKind.Block) {
+      Arrays.push(mutable parts, Docs.text(" "))
+      Arrays.push(mutable parts, printComment(comment))
+    } else {
+      Arrays.push(mutable parts, Doc.LineSuffix(Docs.concat([Docs.text(" "), printComment(comment)])))
+      Arrays.push(mutable parts, Doc.BreakParent)
+    }
+  }
+  return Docs.concat(parts)
+}
+
+// printDangling prints the dangling comments of an anchor, one per line, or
+// an empty document.
+export function printDangling(printer: Printer, anchor: string): Doc uses alloc {
+  let parts: Array<Doc> = []
+  let first = true
+  for (const attached of Arrays.values(getAttached(printer, anchor))) {
+    if (!(attached.placement is Placement.Dangling)) {
+      continue
+    }
+    if (!first) {
+      Arrays.push(mutable parts, Doc.HardLine)
+      if (hasBlank(printer, getCommentKey(attached.comment))) {
+        Arrays.push(mutable parts, Doc.HardLine)
+      }
+    }
+    first = false
+    const comment = printer.trivia.comments[attached.comment]
+    Arrays.push(mutable parts, printComment(comment))
+    if (!(comment.kind is CommentKind.Block)) {
+      Arrays.push(mutable parts, Doc.BreakParent)
+    }
+  }
+  return Docs.concat(parts)
+}
+
+// trailingComma is a comma that shows only in a broken list, when the
+// settings ask for trailing commas.
+export function trailingComma(printer: Printer): Doc uses alloc {
+  if (printer.settings.trailingComma) {
+    return Doc.IfBreak(Docs.text(","), Docs.concat([]), -1)
+  }
+  return Docs.concat([])
+}

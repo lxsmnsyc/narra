@@ -1,0 +1,103 @@
+// The context the statement printer (fmt-cli) and the expression printer
+// (fmt-exprs) share, written from contracts/fmt-printer.md. The two printers
+// call each other through the function fields of Printer, because Narra
+// modules cannot import each other in a cycle.
+//
+// This copy comes from fmt-exprs, which needed it before fmt-cli landed; the
+// copy of fmt-cli replaces it.
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Doc from "narrac/fmtdoc"
+import { Doc as Document } from "narrac/fmtdoc"
+import { Trivia, CommentKind, Placement } from "narrac/trivia"
+import { Expr, Pattern, TypeExpr, Block } from "narrac/ast"
+
+export struct Settings {
+  options: Doc.Options
+  trailingComma: bool // true for "all"
+}
+
+export struct Printer {
+  source: string
+  trivia: Trivia
+  settings: Settings
+  printExpression: (printer: Printer, expression: Expr) => Document
+  printPattern: (printer: Printer, pattern: Pattern) => Document
+  printType: (printer: Printer, type: TypeExpr) => Document
+  printBlock: (printer: Printer, block: Block) => Document
+}
+
+function getEmpty(): Document uses alloc {
+  return Document.Concat([])
+}
+
+// printComment is one comment: its text, with a hard line after it when it
+// stands on its own line or ends with the end of the line.
+function printLeadingComment(printer: Printer, commentIndex: int): Document uses alloc {
+  const comment = printer.trivia.comments[commentIndex]
+  let parts: Array<Document> = [Document.Text(comment.text)]
+  if (comment.kind != CommentKind.Block) {
+    parts = [Document.Text(comment.text), Document.HardLine]
+    // A blank line after the comment is kept.
+    if (printer.trivia.blankBefore[`c${Int.toString(commentIndex + 1)}`] is Some(_)) {
+      Arrays.push(mutable parts, Document.HardLine)
+    }
+  } else {
+    parts = [Document.Text(comment.text), Document.Text(" ")]
+  }
+  return Document.Concat(parts)
+}
+
+// withComments wraps a node's document with the comments attached to its
+// anchor: leading ones before it, trailing ones as a LineSuffix after it.
+export function withComments(printer: Printer, anchor: string, document: Document): Document uses alloc {
+  let before: Array<Document> = []
+  let after: Array<Document> = []
+  const attached = printer.trivia.attached[anchor]
+  if (attached is Some(list)) {
+    for (const item of Arrays.values(list)) {
+      if (item.placement == Placement.Leading) {
+        Arrays.push(mutable before, printLeadingComment(printer, item.comment))
+      } else if (item.placement == Placement.Trailing) {
+        const comment = printer.trivia.comments[item.comment]
+        if (comment.kind == CommentKind.Block) {
+          Arrays.push(mutable after, Document.Text(` ${comment.text}`))
+        } else {
+          Arrays.push(mutable after, Document.LineSuffix(Document.Text(` ${comment.text}`)))
+          Arrays.push(mutable after, Document.BreakParent)
+        }
+      }
+    }
+  }
+  Arrays.push(mutable before, document)
+  for (const part of Arrays.values(after)) {
+    Arrays.push(mutable before, part)
+  }
+  return Document.Concat(before)
+}
+
+// printDangling prints the dangling comments of an anchor, one per line, or
+// an empty Concat.
+export function printDangling(printer: Printer, anchor: string): Document uses alloc {
+  let parts: Array<Document> = []
+  if (printer.trivia.attached[anchor] is Some(list)) {
+    for (const item of Arrays.values(list)) {
+      if (item.placement == Placement.Dangling) {
+        if (Arrays.length(parts) > 0) {
+          Arrays.push(mutable parts, Document.HardLine)
+        }
+        Arrays.push(mutable parts, Document.Text(printer.trivia.comments[item.comment].text))
+      }
+    }
+  }
+  return Document.Concat(parts)
+}
+
+// trailingComma is the comma after the last item of a list, printed only when
+// the list breaks and trailingComma is "all".
+export function trailingComma(printer: Printer): Document uses alloc {
+  if (printer.settings.trailingComma) {
+    return Document.IfBreak(Document.Text(","), getEmpty(), -1)
+  }
+  return getEmpty()
+}

@@ -1,0 +1,859 @@
+// The expression, pattern and type printers of `narrac fmt` (contract
+// fmt-printer). They turn a node into a document of narrac/fmtdoc and leave
+// the layout to the document printer: groups fit on one line or break, as
+// Prettier does for TypeScript.
+//
+// What the printers rely on:
+// - Literal text (strings, characters, templates) is copied from the source
+//   by position, so escapes and spellings stay as written. Numbers use the
+//   token text the AST keeps.
+// - Parentheses: the ones the author wrote (Trivia.parenthesized) are kept,
+//   and the printer adds a pair where precedence needs one.
+// - `c ? a : b` is a BlockExpr whose block starts at the `?` (the parser's
+//   `isConditional`), and an `if` value is a BlockExpr that holds one IfStmt
+//   at its own position. Both print back in the source form.
+// - A function type keeps no parameter names in the AST, so they are read
+//   again from the source text of the type.
+// - Every node handles its own comments (withComments) and parentheses, so the
+//   caller never does. A block is printed by printer.printBlock.
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import { Doc as Document } from "narrac/fmtdoc"
+import { Token, TokenKind, lex } from "narrac/lexer"
+import { Pos, TypeExpr, Param, Block, Arg, FieldInit, FieldPattern, MatchArm, Stmt, Expr, Pattern } from "narrac/ast"
+import { getPosKey, getIdKey, getExprId, getPatternId } from "narrac/trivia"
+import { Printer, withComments, printDangling, trailingComma } from "narrac/fmtprinter"
+
+// Operator precedence, lowest first, as in the parser. The numbers below are
+// the level plus one; a ternary and an arrow function are 0.
+const BINARY_LEVELS = [
+  ["||"],
+  ["&&"],
+  ["==", "!="],
+  ["<", "<=", ">", ">="],
+  ["|"],
+  ["^"],
+  ["&"],
+  ["<<", ">>"],
+  ["+", "-", "+%", "-%"],
+  ["*", "/", "%", "*%"],
+]
+
+// `x is Pattern` sits on the level of `==`.
+const IS_PRECEDENCE = 3
+const UNARY_PRECEDENCE = 11
+const PRIMARY_PRECEDENCE = 12
+
+// ---- Small helpers
+
+function createText(value: string): Document {
+  return Document.Text(value)
+}
+
+function createConcat(parts: Array<Document>): Document {
+  return Document.Concat(parts)
+}
+
+function createEmpty(): Document {
+  return Document.Concat([])
+}
+
+function createGroup(contents: Document): Document {
+  return Document.Group(contents, -1)
+}
+
+function createIndent(contents: Document): Document {
+  return Document.Indent(contents)
+}
+
+function isParenthesized(printer: Printer, id: int): bool {
+  return printer.trivia.parenthesized[id] is Some(_)
+}
+
+function hasAttached(printer: Printer, anchor: string): bool {
+  return printer.trivia.attached[anchor] is Some(_)
+}
+
+// getOffset is the byte offset of a position (columns count characters).
+function getOffset(source: string, position: Pos): int {
+  const length = Str.length(source)
+  let offset = 0
+  let line = 1
+  while (line < position.line && offset < length) {
+    if (Str.byteAt(source, offset) == 10) {
+      line = line + 1
+    }
+    offset = offset + 1
+  }
+  let column = 1
+  while (column < position.column && offset < length) {
+    offset = Str.nextChar(source, offset)
+    column = column + 1
+  }
+  return offset
+}
+
+function getSourceText(printer: Printer, start: Pos, end: Pos): string uses alloc {
+  return Str.slice(printer.source, getOffset(printer.source, start), getOffset(printer.source, end))
+}
+
+function getBinaryPrecedence(operator: string): int {
+  for (const index of Ranges.between(0, Arrays.length(BINARY_LEVELS))) {
+    for (const candidate of Arrays.values(BINARY_LEVELS[index])) {
+      if (candidate == operator) {
+        return index + 1
+      }
+    }
+  }
+  return 1
+}
+
+// isConditional tells `c ? a : b` from a plain block and an `if` value: the
+// parser starts its block at the `?` and the expression at the condition.
+function isConditional(expression: Expr): bool {
+  if (expression is Expr.BlockExpr(_, pos, block)) {
+    return block.pos.line != pos.line || block.pos.column != pos.column
+  }
+  return false
+}
+
+// isIfValue tells an `if` in value position: its block holds one IfStmt that
+// starts where the expression does.
+function isIfValue(expression: Expr): bool {
+  if (expression is Expr.BlockExpr(_, pos, block)) {
+    if (Arrays.length(block.statements) == 1 && !isConditional(expression)) {
+      if (block.statements[0] is Stmt.IfStmt(ifPos, _, _, _)) {
+        return ifPos.line == pos.line && ifPos.column == pos.column
+      }
+    }
+  }
+  return false
+}
+
+function getPrecedence(expression: Expr): int {
+  return match (expression) {
+    Expr.BinaryExpr(_, _, operator, _, _) => getBinaryPrecedence(operator)
+    Expr.IsExpr(_, _, _, _) => IS_PRECEDENCE
+    Expr.UnaryExpr(_, _, _, _) => UNARY_PRECEDENCE
+    Expr.ArrowExpr(_, _, _, _, _, _) => 0
+    Expr.BlockExpr(_, _, _) => isConditional(expression) ? 0 : PRIMARY_PRECEDENCE
+    _ => PRIMARY_PRECEDENCE
+  }
+}
+
+// printWithMinimum prints an operand, in parentheses when its precedence is
+// lower than the position needs and the author did not write them.
+function printWithMinimum(printer: Printer, expression: Expr, minimum: int): Document uses alloc {
+  const document = printExpression(printer, expression)
+  if (getPrecedence(expression) < minimum && !isParenthesized(printer, getExprId(expression))) {
+    if (expression is Expr.BlockExpr(conditionalId, _, conditionalBlock)) {
+      if (isConditional(expression)) {
+        return withComments(printer, getIdKey(conditionalId), printConditional(printer, conditionalBlock, true, false))
+      }
+    }
+    return createConcat([createText("("), document, createText(")")])
+  }
+  return document
+}
+
+// getReturnedValue is the value of the `return value` that a branch holds.
+function getReturnedValue(block: Block): Expr {
+  if (block.statements[0] is Stmt.ReturnStmt(_, Some(value))) {
+    return value
+  }
+  return Expr.BoolLit(-1, block.pos, false)
+}
+
+// printElement prints an item of a call, array or tuple. Those sit inside
+// brackets, where a conditional may span lines without parentheses.
+function printElement(printer: Printer, expression: Expr): Document uses alloc {
+  if (expression is Expr.BlockExpr(id, _, block)) {
+    if (isConditional(expression) && !isParenthesized(printer, id)) {
+      return withComments(printer, getIdKey(id), printConditional(printer, block, false, true))
+    }
+  }
+  return printExpression(printer, expression)
+}
+
+// printList prints items between open and close: on one line when they fit,
+// else one per line with a trailing comma. blanks says which items have a
+// blank line before them (empty for none); that keeps the list broken.
+// spaced puts a space inside the braces of a flat list.
+function printList(printer: Printer, open: string, close: string, items: Array<Document>, blanks: Array<bool>, spaced: bool, hasComma: bool): Document uses alloc {
+  return printListWith(printer, open, close, items, blanks, spaced, hasComma, false)
+}
+
+// printListWith is printList; forceBreak keeps the list broken.
+function printListWith(printer: Printer, open: string, close: string, items: Array<Document>, blanks: Array<bool>, spaced: bool, hasComma: bool, forceBreak: bool): Document uses alloc {
+  if (Arrays.length(items) == 0) {
+    return createText(`${open}${close}`)
+  }
+  let edge = Document.SoftLine
+  if (spaced) {
+    edge = Document.Line
+  }
+  let inner: Array<Document> = [edge]
+  let forced = forceBreak
+  for (const index of Ranges.between(0, Arrays.length(items))) {
+    if (index > 0) {
+      Arrays.push(mutable inner, createText(","))
+      Arrays.push(mutable inner, Document.Line)
+      if (index < Arrays.length(blanks) && blanks[index]) {
+        Arrays.push(mutable inner, Document.SoftLine)
+        forced = true
+      }
+    }
+    Arrays.push(mutable inner, items[index])
+  }
+  let parts: Array<Document> = [createText(open), createIndent(createConcat(inner))]
+  if (hasComma) {
+    Arrays.push(mutable parts, Document.IfBreak(trailingComma(printer), createEmpty(), -1))
+  }
+  Arrays.push(mutable parts, edge)
+  Arrays.push(mutable parts, createText(close))
+  if (forced) {
+    Arrays.push(mutable parts, Document.BreakParent)
+  }
+  return createGroup(createConcat(parts))
+}
+
+// printTypeArguments prints `<A, B>`. It never breaks: a line break before the
+// closing `>` would end the statement, and Narra reads a break only inside
+// parentheses and brackets.
+function printTypeArguments(printer: Printer, typeArguments: Array<TypeExpr>): Document uses alloc {
+  if (Arrays.length(typeArguments) == 0) {
+    return createEmpty()
+  }
+  let parts: Array<Document> = [createText("<")]
+  for (const index of Ranges.between(0, Arrays.length(typeArguments))) {
+    if (index > 0) {
+      Arrays.push(mutable parts, createText(", "))
+    }
+    Arrays.push(mutable parts, printType(printer, typeArguments[index]))
+  }
+  Arrays.push(mutable parts, createText(">"))
+  return createConcat(parts)
+}
+
+// printEmptyBraces prints `{}` or, when a comment is inside, the comment
+// between the braces on its own line.
+function printEmptyBraces(printer: Printer, anchor: string, open: string, close: string): Document uses alloc {
+  if (hasAttached(printer, anchor)) {
+    return createConcat([createText(open), createIndent(createConcat([Document.HardLine, printDangling(printer, anchor)])), Document.HardLine, createText(close)])
+  }
+  return createText(`${open}${close}`)
+}
+
+// ---- Expressions
+
+export function printExpression(printer: Printer, expression: Expr): Document uses alloc {
+  const id = getExprId(expression)
+  let document = printExpressionBody(printer, expression, isParenthesized(printer, id))
+  if (isParenthesized(printer, id) && !isConditional(expression)) {
+    document = createConcat([createText("("), document, createText(")")])
+  }
+  return withComments(printer, getIdKey(id), document)
+}
+
+function printExpressionBody(printer: Printer, expression: Expr, written: bool): Document uses alloc {
+  return match (expression) {
+    Expr.IntLit(id, pos, value) => createText(getEndedText(printer, id, pos, value))
+    Expr.FloatLit(id, pos, value) => createText(getEndedText(printer, id, pos, value))
+    Expr.StringLit(_, pos, value, end) => createText(getLiteralText(printer, pos, end, `"${value}"`))
+    Expr.CharLit(id, pos, value) => createText(getEndedText(printer, id, pos, `'${value}'`))
+    Expr.BoolLit(_, _, value) => createText(value ? "true" : "false")
+    Expr.TemplateLit(id, pos, _) => createText(getEndedText(printer, id, pos, "``"))
+    Expr.Ident(_, _, name) => createText(name)
+    Expr.FieldExpr(_, _, target, name) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText(`.${name}`)])
+    Expr.IsExpr(_, _, subject, pattern) => createConcat([printWithMinimum(printer, subject, IS_PRECEDENCE), createText(" is "), printPattern(printer, pattern)])
+    Expr.IndexExpr(_, _, target, index) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText("["), printExpression(printer, index), createText("]")])
+    Expr.MapLit(id, _, typeArguments, keys, values) => printMapLiteral(printer, id, typeArguments, keys, values)
+    Expr.CallExpr(_, _, callee, arguments) => createConcat([printWithMinimum(printer, callee, PRIMARY_PRECEDENCE), printArguments(printer, arguments)])
+    Expr.UnaryExpr(_, _, operator, operand) => printUnary(printer, operator, operand)
+    Expr.BinaryExpr(_, _, _, _, _) => printBinary(printer, expression)
+    Expr.StructLit(id, pos, typeName, typeArguments, fields, spread) => printStructLiteral(printer, id, pos, typeName, typeArguments, fields, spread)
+    Expr.ArrayLit(id, _, elements, isTuple) => printArrayLiteral(printer, id, elements, isTuple)
+    Expr.MatchExpr(_, _, subject, arms) => printMatch(printer, subject, arms)
+    Expr.BlockExpr(_, _, block) => printBlockExpression(printer, expression, block, written)
+    Expr.ArrowExpr(_, _, parameters, result, body, block) => printArrow(printer, parameters, result, body, block)
+  }
+}
+
+// getLiteralText is the source text between two positions, or fallback when
+// the positions do not lie in the source.
+function getLiteralText(printer: Printer, start: Pos, end: Pos, fallback: string): string uses alloc {
+  if (end.line < start.line || (end.line == start.line && end.column <= start.column)) {
+    return fallback
+  }
+  return getSourceText(printer, start, end)
+}
+
+// getEndedText is the source text of a node that ends where Trivia.ends says.
+function getEndedText(printer: Printer, id: int, start: Pos, fallback: string): string uses alloc {
+  const end = printer.trivia.ends[getIdKey(id)]
+  if (end is Some(endPos)) {
+    return getLiteralText(printer, start, endPos, fallback)
+  }
+  return fallback
+}
+
+// printUnary prints `-x`. Two minus signs get a space, so `- -x` stays two tokens.
+function printUnary(printer: Printer, operator: string, operand: Expr): Document uses alloc {
+  let separator = ""
+  if (operand is Expr.UnaryExpr(operandId, _, operandOperator, _)) {
+    if (operator == "-" && operandOperator == "-" && !isParenthesized(printer, operandId)) {
+      separator = " "
+    }
+  }
+  return createConcat([createText(operator), createText(separator), printWithMinimum(printer, operand, UNARY_PRECEDENCE)])
+}
+
+// printBinary prints a chain of binary operators of one precedence. A broken
+// chain breaks after each operator and indents the rest. The chain is walked
+// along the left operands in a loop, so a long chain does not recurse.
+function printBinary(printer: Printer, expression: Expr): Document uses alloc {
+  return printBinaryChain(printer, expression, true)
+}
+
+// printBinaryChain is printBinary; indentRest false leaves the operands after
+// the first at the indentation of the caller, for a chain that is already
+// indented, such as an arrow function body.
+function printBinaryChain(printer: Printer, expression: Expr, indentRest: bool): Document uses alloc {
+  let operators: Array<string> = []
+  let rights: Array<Expr> = []
+  let first = expression
+  let precedence = 1
+  if (expression is Expr.BinaryExpr(_, _, topOperator, _, _)) {
+    precedence = getBinaryPrecedence(topOperator)
+  }
+  let current = expression
+  let walking = true
+  while (walking) {
+    walking = false
+    if (current is Expr.BinaryExpr(_, _, operator, left, right)) {
+      Arrays.push(mutable operators, operator)
+      Arrays.push(mutable rights, right)
+      first = left
+      // Keep walking when the left operand continues the same chain.
+      if (left is Expr.BinaryExpr(leftId, _, leftOperator, _, _)) {
+        if (getBinaryPrecedence(leftOperator) == precedence && !isParenthesized(printer, leftId) && !hasAttached(printer, getIdKey(leftId))) {
+          current = left
+          walking = true
+        }
+      }
+    }
+  }
+  let rest: Array<Document> = []
+  let index = Arrays.length(operators) - 1
+  while (index >= 0) {
+    Arrays.push(mutable rest, createText(" "))
+    Arrays.push(mutable rest, createText(operators[index]))
+    Arrays.push(mutable rest, Document.Line)
+    Arrays.push(mutable rest, printWithMinimum(printer, rights[index], precedence + 1))
+    index = index - 1
+  }
+  if (!indentRest) {
+    return createGroup(createConcat([printWithMinimum(printer, first, precedence), createConcat(rest)]))
+  }
+  return createGroup(createConcat([printWithMinimum(printer, first, precedence), createIndent(createConcat(rest))]))
+}
+
+// isHuggable tells the last argument that stays on the line of the call and
+// opens its own lines: an arrow function or a non-empty literal.
+function isHuggable(expression: Expr): bool {
+  return match (expression) {
+    Expr.ArrowExpr(_, _, _, _, body, _) => isCompactArrowBody(body)
+    Expr.StructLit(_, _, _, _, fields, spread) => Arrays.length(fields) > 0 || spread is Some(_)
+    Expr.ArrayLit(_, _, elements, _) => Arrays.length(elements) > 0
+    Expr.MapLit(_, _, _, keys, _) => Arrays.length(keys) > 0
+    _ => false
+  }
+}
+
+// isCompactArrowBody tells an arrow function that is worth hugging: a block
+// body (None) or a compact expression body.
+function isCompactArrowBody(body: Option<Expr>): bool {
+  if (body is Some(bodyExpression)) {
+    return isCompactBody(bodyExpression)
+  }
+  return true
+}
+
+// printArguments prints a call's `(a, b)`. When the last argument is huggable
+// and the one before it is not, the arguments stay on the line of the call and
+// only the last one breaks, as in `f(a, (x) => { ... })`.
+function printArguments(printer: Printer, arguments: Array<Arg>): Document uses alloc {
+  const count = Arrays.length(arguments)
+  if (count == 0) {
+    return createText("()")
+  }
+  let items: Array<Document> = []
+  for (const argument of Arrays.values(arguments)) {
+    const value = printElement(printer, argument.value)
+    if (argument.isMutable) {
+      Arrays.push(mutable items, createConcat([createText("mutable "), value]))
+    } else {
+      Arrays.push(mutable items, value)
+    }
+  }
+  const last = arguments[count - 1].value
+  let hug = isHuggable(last)
+  if (hug && count > 1 && isHuggable(arguments[count - 2].value)) {
+    hug = false
+  }
+  if (hug) {
+    let parts: Array<Document> = [createText("(")]
+    for (const index of Ranges.between(0, count)) {
+      if (index > 0) {
+        Arrays.push(mutable parts, createText(", "))
+      }
+      Arrays.push(mutable parts, items[index])
+    }
+    Arrays.push(mutable parts, createText(")"))
+    return createConcat(parts)
+  }
+  return printList(printer, "(", ")", items, [], false, true)
+}
+
+function printBlockExpression(printer: Printer, expression: Expr, block: Block, written: bool): Document uses alloc {
+  if (isConditional(expression)) {
+    return printConditional(printer, block, written, false)
+  }
+  if (isIfValue(expression)) {
+    return printIfValue(printer, block)
+  }
+  return printer.printBlock(printer, block)
+}
+
+// printConditional prints `c ? a : b`. A chain of conditionals in the else
+// branch stays at one level: `a ? b : c ? d : e`. Narra does not read a
+// conditional that spans lines unless it is in parentheses, so a broken one
+// gets them (written says that they are already there).
+function printConditional(printer: Printer, block: Block, written: bool, bare: bool): Document uses alloc {
+  let parts: Array<Document> = []
+  let current = block
+  let walking = true
+  while (walking) {
+    walking = false
+    if (current.statements[0] is Stmt.IfStmt(_, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
+      const elseValue = getReturnedValue(elseBlock)
+      Arrays.push(mutable parts, printWithMinimum(printer, condition, 1))
+      Arrays.push(mutable parts, Document.Line)
+      Arrays.push(mutable parts, createText("? "))
+      Arrays.push(mutable parts, printExpression(printer, getReturnedValue(thenBlock)))
+      Arrays.push(mutable parts, Document.Line)
+      Arrays.push(mutable parts, createText(": "))
+      let continues = false
+      if (elseValue is Expr.BlockExpr(elseId, _, elseInner)) {
+        if (isConditional(elseValue) && !isParenthesized(printer, elseId) && !hasAttached(printer, getIdKey(elseId))) {
+          // Put the next condition on the same line as the colon.
+          current = elseInner
+          walking = true
+          continues = true
+        }
+      }
+      if (!continues) {
+        Arrays.push(mutable parts, printExpression(printer, elseValue))
+      }
+    }
+  }
+  // The first condition leads, then the rest is indented.
+  const head = parts[0]
+  let tail: Array<Document> = []
+  for (const index of Ranges.between(1, Arrays.length(parts))) {
+    Arrays.push(mutable tail, parts[index])
+  }
+  const body = createConcat([head, createIndent(createConcat(tail))])
+  let open = Document.IfBreak(createText("("), createEmpty(), -1)
+  let close = Document.IfBreak(createText(")"), createEmpty(), -1)
+  if (written) {
+    open = createText("(")
+    close = createText(")")
+  }
+  if (bare) {
+    return createGroup(body)
+  }
+  return createGroup(createConcat([open, createIndent(createConcat([Document.SoftLine, body])), Document.SoftLine, close]))
+}
+
+// printIfValue prints `if (c) { ... } else { ... }`, following `else if`.
+function printIfValue(printer: Printer, block: Block): Document uses alloc {
+  let parts: Array<Document> = []
+  let current = block
+  let walking = true
+  while (walking) {
+    walking = false
+    if (current.statements[0] is Stmt.IfStmt(_, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
+      Arrays.push(mutable parts, createText("if ("))
+      Arrays.push(mutable parts, printExpression(printer, condition))
+      Arrays.push(mutable parts, createText(") "))
+      Arrays.push(mutable parts, printBranch(printer, getReturnedValue(thenBlock)))
+      Arrays.push(mutable parts, createText(" else "))
+      const elseValue = getReturnedValue(elseBlock)
+      let continues = false
+      if (elseValue is Expr.BlockExpr(_, _, elseInner)) {
+        if (isIfValue(elseValue)) {
+          current = elseInner
+          walking = true
+          continues = true
+        }
+      }
+      if (!continues) {
+        Arrays.push(mutable parts, printBranch(printer, elseValue))
+      }
+    }
+  }
+  return createConcat(parts)
+}
+
+// printBranch prints the block of an `if` value branch.
+function printBranch(printer: Printer, branch: Expr): Document uses alloc {
+  if (branch is Expr.BlockExpr(_, _, inner)) {
+    return printer.printBlock(printer, inner)
+  }
+  return printExpression(printer, branch)
+}
+
+function printArrayLiteral(printer: Printer, id: int, elements: Array<Expr>, isTuple: bool): Document uses alloc {
+  let open = "["
+  if (isTuple) {
+    open = "#["
+  }
+  if (Arrays.length(elements) == 0) {
+    return printEmptyBraces(printer, getIdKey(id), open, "]")
+  }
+  let items: Array<Document> = []
+  for (const element of Arrays.values(elements)) {
+    Arrays.push(mutable items, printElement(printer, element))
+  }
+  return printList(printer, open, "]", items, [], false, true)
+}
+
+function printStructLiteral(printer: Printer, id: int, pos: Pos, typeName: string, typeArguments: Array<TypeExpr>, fields: Array<FieldInit>, spread: Option<Expr>): Document uses alloc {
+  let head: Array<Document> = []
+  if (typeName != "") {
+    Arrays.push(mutable head, createText(typeName))
+    Arrays.push(mutable head, printTypeArguments(printer, typeArguments))
+    Arrays.push(mutable head, createText(" "))
+  }
+  if (Arrays.length(fields) == 0 && spread is None) {
+    Arrays.push(mutable head, printEmptyBraces(printer, getIdKey(id), "{", "}"))
+    return createConcat(head)
+  }
+  let items: Array<Document> = []
+  let blanks: Array<bool> = []
+  if (spread is Some(spreadValue)) {
+    Arrays.push(mutable items, createConcat([createText("..."), printExpression(printer, spreadValue)]))
+    Arrays.push(mutable blanks, false)
+  }
+  for (const field of Arrays.values(fields)) {
+    const key = getPosKey("f", field.pos)
+    Arrays.push(mutable items, withComments(printer, key, createConcat([createText(`${field.name}: `), printExpression(printer, field.value)])))
+    Arrays.push(mutable blanks, printer.trivia.blankBefore[key] is Some(_))
+  }
+  // As in Prettier, an object that starts on a new line after the brace stays broken.
+  let keepBroken = false
+  if (spread is None && fields[0].pos.line > pos.line) {
+    keepBroken = true
+  }
+  Arrays.push(mutable head, printListWith(printer, "{", "}", items, blanks, true, true, keepBroken))
+  return createConcat(head)
+}
+
+function isLiteralKey(expression: Expr): bool {
+  return match (expression) {
+    Expr.IntLit(_, _, _) => true
+    Expr.FloatLit(_, _, _) => true
+    Expr.StringLit(_, _, _, _) => true
+    Expr.CharLit(_, _, _) => true
+    Expr.BoolLit(_, _, _) => true
+    Expr.UnaryExpr(_, _, operator, operand) => operator == "-" && isLiteralKey(operand)
+    _ => false
+  }
+}
+
+function printMapLiteral(printer: Printer, id: int, typeArguments: Array<TypeExpr>, keys: Array<Expr>, values: Array<Expr>): Document uses alloc {
+  let head: Array<Document> = [createText("Map"), printTypeArguments(printer, typeArguments), createText(" ")]
+  if (Arrays.length(keys) == 0) {
+    Arrays.push(mutable head, printEmptyBraces(printer, getIdKey(id), "{", "}"))
+    return createConcat(head)
+  }
+  let items: Array<Document> = []
+  for (const index of Ranges.between(0, Arrays.length(keys))) {
+    let key = printExpression(printer, keys[index])
+    if (!isLiteralKey(keys[index])) {
+      key = createConcat([createText("["), key, createText("]")])
+    }
+    Arrays.push(mutable items, createConcat([key, createText(": "), printExpression(printer, values[index])]))
+  }
+  Arrays.push(mutable head, printList(printer, "{", "}", items, [], true, true))
+  return createConcat(head)
+}
+
+// isCompactBody tells an arm or arrow body that stays on the line of its `=>`
+// and opens its own lines.
+function isCompactBody(expression: Expr): bool {
+  return match (expression) {
+    Expr.StructLit(_, _, _, _, _, _) => true
+    Expr.MapLit(_, _, _, _, _) => true
+    Expr.ArrayLit(_, _, _, _) => true
+    Expr.MatchExpr(_, _, _, _) => true
+    Expr.ArrowExpr(_, _, _, _, _, _) => true
+    Expr.TemplateLit(_, _, _) => true
+    Expr.CallExpr(_, _, _, _) => true
+    Expr.BlockExpr(_, _, _) => !isConditional(expression)
+    _ => false
+  }
+}
+
+// printBody prints ` body` after an `=>`: on the same line for a compact body,
+// else on the next line, indented, when it does not fit.
+function printBody(printer: Printer, body: Expr): Document uses alloc {
+  if (isCompactBody(body)) {
+    return createConcat([createText(" "), printExpression(printer, body)])
+  }
+  // The chain of a binary body is already indented by the line before it.
+  if (body is Expr.BinaryExpr(bodyId, _, _, _, _)) {
+    if (!isParenthesized(printer, bodyId) && !hasAttached(printer, getIdKey(bodyId))) {
+      return createGroup(createIndent(createConcat([Document.Line, printBinaryChain(printer, body, false)])))
+    }
+  }
+  return createGroup(createIndent(createConcat([Document.Line, printExpression(printer, body)])))
+}
+
+function printMatch(printer: Printer, subject: Expr, arms: Array<MatchArm>): Document uses alloc {
+  const head = createConcat([createText("match ("), printExpression(printer, subject), createText(") {")])
+  if (Arrays.length(arms) == 0) {
+    return createConcat([head, createText("}")])
+  }
+  let inner: Array<Document> = [Document.Line]
+  let forced = false
+  for (const index of Ranges.between(0, Arrays.length(arms))) {
+    const arm = arms[index]
+    const key = getPosKey("a", arm.pos)
+    if (index > 0) {
+      // Flat arms are separated by commas; broken ones by lines alone.
+      Arrays.push(mutable inner, Document.IfBreak(createEmpty(), createText(","), -1))
+      Arrays.push(mutable inner, Document.Line)
+      if (printer.trivia.blankBefore[key] is Some(_)) {
+        Arrays.push(mutable inner, Document.SoftLine)
+        forced = true
+      }
+    }
+    let parts: Array<Document> = [printPattern(printer, arm.pattern)]
+    if (arm.guard is Some(guard)) {
+      Arrays.push(mutable parts, createText(" if ("))
+      Arrays.push(mutable parts, printExpression(printer, guard))
+      Arrays.push(mutable parts, createText(")"))
+    }
+    Arrays.push(mutable parts, createText(" =>"))
+    if (arm.block is Some(armBlock)) {
+      Arrays.push(mutable parts, createText(" "))
+      Arrays.push(mutable parts, printer.printBlock(printer, armBlock))
+    } else if (arm.body is Some(armBody)) {
+      Arrays.push(mutable parts, printBody(printer, armBody))
+    }
+    Arrays.push(mutable inner, withComments(printer, key, createConcat(parts)))
+  }
+  let parts: Array<Document> = [head, createIndent(createConcat(inner)), Document.Line, createText("}")]
+  if (forced) {
+    Arrays.push(mutable parts, Document.BreakParent)
+  }
+  return createGroup(createConcat(parts))
+}
+
+function printArrow(printer: Printer, parameters: Array<Param>, result: Option<TypeExpr>, body: Option<Expr>, block: Option<Block>): Document uses alloc {
+  let items: Array<Document> = []
+  for (const parameter of Arrays.values(parameters)) {
+    let parts: Array<Document> = [createText(parameter.name)]
+    if (parameter.type is Some(parameterType)) {
+      Arrays.push(mutable parts, createText(": "))
+      Arrays.push(mutable parts, printType(printer, parameterType))
+    }
+    Arrays.push(mutable items, withComments(printer, getIdKey(parameter.id), createConcat(parts)))
+  }
+  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, true)]
+  if (result is Some(resultType)) {
+    Arrays.push(mutable parts, createText(": "))
+    Arrays.push(mutable parts, printType(printer, resultType))
+  }
+  Arrays.push(mutable parts, createText(" =>"))
+  if (block is Some(arrowBlock)) {
+    Arrays.push(mutable parts, createText(" "))
+    Arrays.push(mutable parts, printer.printBlock(printer, arrowBlock))
+  } else if (body is Some(arrowBody)) {
+    Arrays.push(mutable parts, printBody(printer, arrowBody))
+  }
+  return createConcat(parts)
+}
+
+// ---- Patterns
+
+export function printPattern(printer: Printer, pattern: Pattern): Document uses alloc {
+  const id = getPatternId(pattern)
+  return withComments(printer, getIdKey(id), printPatternBody(printer, pattern))
+}
+
+function printPatternList(printer: Printer, open: string, close: string, patterns: Array<Pattern>): Document uses alloc {
+  let items: Array<Document> = []
+  for (const pattern of Arrays.values(patterns)) {
+    Arrays.push(mutable items, printPattern(printer, pattern))
+  }
+  return printList(printer, open, close, items, [], false, true)
+}
+
+function printPatternBody(printer: Printer, pattern: Pattern): Document uses alloc {
+  return match (pattern) {
+    Pattern.PatWildcard(_, _) => createText("_")
+    Pattern.PatName(_, _, name) => createText(name)
+    Pattern.PatCtor(_, _, enumName, name, arguments, bare) => printConstructorPattern(printer, enumName, name, arguments, bare)
+    Pattern.PatStruct(id, _, fields) => printStructPattern(printer, id, fields)
+    Pattern.PatTuple(_, _, arguments) => printPatternList(printer, "#[", "]", arguments)
+    Pattern.PatLit(_, _, literal) => printExpression(printer, literal)
+  }
+}
+
+function printConstructorPattern(printer: Printer, enumName: string, name: string, arguments: Array<Pattern>, bare: bool): Document uses alloc {
+  let fullName = name
+  if (enumName != "") {
+    fullName = `${enumName}.${name}`
+  }
+  if (bare) {
+    return createText(fullName)
+  }
+  return createConcat([createText(fullName), printPatternList(printer, "(", ")", arguments)])
+}
+
+// printStructPattern prints `{ a, b: pattern }`. A field is shorthand when its
+// pattern is a name the parser made at the field's own position.
+function printStructPattern(printer: Printer, id: int, fields: Array<FieldPattern>): Document uses alloc {
+  if (Arrays.length(fields) == 0) {
+    return printEmptyBraces(printer, getIdKey(id), "{", "}")
+  }
+  let items: Array<Document> = []
+  let blanks: Array<bool> = []
+  for (const field of Arrays.values(fields)) {
+    const key = getPosKey("f", field.pos)
+    let isShorthand = false
+    if (field.pattern is Pattern.PatName(_, namePos, _)) {
+      isShorthand = namePos.line == field.pos.line && namePos.column == field.pos.column
+    }
+    let document = createText(field.name)
+    if (!isShorthand) {
+      document = createConcat([createText(`${field.name}: `), printPattern(printer, field.pattern)])
+    }
+    Arrays.push(mutable items, withComments(printer, key, document))
+    Arrays.push(mutable blanks, printer.trivia.blankBefore[key] is Some(_))
+  }
+  return printList(printer, "{", "}", items, blanks, true, true)
+}
+
+// ---- Types
+
+export function printType(printer: Printer, type: TypeExpr): Document uses alloc {
+  return withComments(printer, getPosKey("t", type.pos), printTypeBody(printer, type))
+}
+
+function printTypeBody(printer: Printer, type: TypeExpr): Document uses alloc {
+  if (type.isTuple) {
+    let items: Array<Document> = []
+    for (const element of Arrays.values(type.arguments)) {
+      Arrays.push(mutable items, printType(printer, element))
+    }
+    return printList(printer, "#[", "]", items, [], false, true)
+  }
+  if (type.isFunc) {
+    return printFunctionType(printer, type)
+  }
+  return createConcat([createText(type.name), printTypeArguments(printer, type.arguments)])
+}
+
+// printFunctionType prints `(a: A, B) => R uses e`.
+function printFunctionType(printer: Printer, type: TypeExpr): Document uses alloc {
+  const names = getParameterNames(printer, type)
+  let items: Array<Document> = []
+  for (const index of Ranges.between(0, Arrays.length(type.arguments))) {
+    const argument = printType(printer, type.arguments[index])
+    if (index < Arrays.length(names) && names[index] != "") {
+      Arrays.push(mutable items, createConcat([createText(`${names[index]}: `), argument]))
+    } else {
+      Arrays.push(mutable items, argument)
+    }
+  }
+  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, true), createText(" => ")]
+  if (type.result is Some(resultType)) {
+    Arrays.push(mutable parts, printType(printer, resultType.value))
+  }
+  if (Arrays.length(type.effects) > 0) {
+    Arrays.push(mutable parts, createText(` uses ${Str.join(type.effects, ", ")}`))
+  }
+  return createConcat(parts)
+}
+
+// getParameterNames reads the parameter names of a function type from its
+// source text, because the syntax tree does not keep them. An unnamed
+// parameter gives an empty string.
+function getParameterNames(printer: Printer, type: TypeExpr): Array<string> uses alloc {
+  let names: Array<string> = []
+  const end = printer.trivia.ends[getPosKey("t", type.pos)]
+  let source = ""
+  if (end is Some(endPos)) {
+    source = getSourceText(printer, type.pos, endPos)
+  }
+  if (source == "") {
+    return names
+  }
+  const lexed = lex(source)
+  if (lexed is Err(_)) {
+    return names
+  }
+  let tokens: Array<Token> = []
+  for (const token of Arrays.values(lexed.value)) {
+    if (token.kind != TokenKind.TokNewline) {
+      Arrays.push(mutable tokens, token)
+    }
+  }
+  let depth = 0
+  let atStart = false
+  let index = 0
+  while (index < Arrays.length(tokens)) {
+    const token = tokens[index]
+    index = index + 1
+    if (token.kind != TokenKind.TokPunct && depth == 1 && atStart) {
+      // The first token of a parameter: a name when a `:` follows.
+      atStart = false
+      if (token.kind == TokenKind.TokIdent && index < Arrays.length(tokens) && tokens[index].text == ":") {
+        Arrays.push(mutable names, token.text)
+        index = index + 1
+      } else {
+        Arrays.push(mutable names, "")
+      }
+      continue
+    }
+    if (token.kind != TokenKind.TokPunct) {
+      continue
+    }
+    if (token.text == ")" && depth == 1) {
+      break
+    }
+    if (depth == 1 && atStart) {
+      // A parameter that starts with punctuation, such as `(` or `#[`.
+      atStart = false
+      Arrays.push(mutable names, "")
+    }
+    if (token.text == "(" || token.text == "[" || token.text == "#[" || token.text == "<") {
+      depth = depth + 1
+      if (depth == 1) {
+        atStart = true
+      }
+    } else if (token.text == ")" || token.text == "]" || token.text == ">") {
+      depth = depth - 1
+    } else if (token.text == ">>") {
+      depth = depth - 2
+    } else if (token.text == "," && depth == 1) {
+      atStart = true
+    }
+  }
+  return names
+}

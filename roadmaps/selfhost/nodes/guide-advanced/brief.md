@@ -11,6 +11,7 @@ milestone:
 target:
 ship: auto
 from:
+model: opus
 size: M
 spike: false
 hypothesis:

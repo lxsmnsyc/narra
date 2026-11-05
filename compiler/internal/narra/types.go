@@ -243,8 +243,9 @@ func (t *GeneratorType) String() string {
 	return "Generator<" + t.Elem.String() + ">" + usesSuffix(t.effects())
 }
 
-// CName is a placeholder: generators are not emitted yet (node generators).
-func (t *GeneratorType) CName() string { return "narra_generator" }
+// CName is the C type of every generator value: a pointer to the header of
+// its frame (emit_generator.go). The element type is not part of it.
+func (t *GeneratorType) CName() string { return "narra_gen*" }
 
 // usesSuffix writes an effect list as it follows a type, ` uses a, b`.
 func usesSuffix(effects []string) string {
@@ -316,7 +317,7 @@ func needsRC(t Type) bool {
 	switch t := t.(type) {
 	case *PrimType:
 		return t == TStr || t == TStringBuilder
-	case *ArrayType, *FuncType, *BoxType, *MapType:
+	case *ArrayType, *FuncType, *BoxType, *MapType, *GeneratorType:
 		return true
 	case *StructType:
 		for _, f := range t.Fields {

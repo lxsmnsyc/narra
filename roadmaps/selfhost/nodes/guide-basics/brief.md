@@ -1,7 +1,7 @@
 ---
 id: guide-basics
 title: "Language guide: sample test and chapters 1 to 5"
-status: active
+status: done
 priority:
 type: docs
 story: language-guide
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 528507
 owns:
   - compiler/internal/narra/guide_test.go
   - docs/guide/README.md
@@ -50,11 +50,11 @@ Write `TestGuide`, which checks every code sample in `docs/guide/*.md` by the fo
 
 ## Acceptance
 
-- [ ] `TestGuide` reads `../../../docs/guide/*.md`, extracts samples, runs programs in every mode and compares stdout with the `text` block, checks error samples against their message, and fails on a `narra` block with no `text` block. Each sample is a subtest named `<file>:<line>`.
-- [ ] A broken sample makes `TestGuide` fail with the file and line (checked once by hand, noted in `outcome.md`).
-- [ ] `docs/guide/README.md` with the chapter list for all ten chapters (links to 6 to 10 may be dead until guide-advanced lands) and the "Planned" list of parked features.
-- [ ] Chapters `01-` to `05-`, each with several tested programs. Write for a reader who is new to Narra and may not know TypeScript or Rust: every chapter must make sense on its own. Do not cite `SPEC.md` sections, D-numbers or `DECISIONS.md`, and do not frame rules as the author's decisions; state the rule and, where it helps, the practical reason. Comparisons with TypeScript or Rust ("unlike TypeScript...") go in chapter 11, not in chapters 1 to 10. List each comparison you leave out in `outcome.md` under "For chapter 11". (Changed 2026-11-05 by the maintainer.)
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `TestGuide` reads `../../../docs/guide/*.md`, extracts samples, runs programs in every mode and compares stdout with the `text` block, checks error samples against their message, and fails on a `narra` block with no `text` block. Each sample is a subtest named `<file>:<line>`.
+- [x] A broken sample makes `TestGuide` fail with the file and line (checked once by hand, noted in `outcome.md`).
+- [x] `docs/guide/README.md` with the chapter list for all ten chapters (links to 6 to 10 may be dead until guide-advanced lands) and the "Planned" list of parked features.
+- [x] Chapters `01-` to `05-`, each with several tested programs. Write for a reader who is new to Narra and may not know TypeScript or Rust: every chapter must make sense on its own. Do not cite `SPEC.md` sections, D-numbers or `DECISIONS.md`, and do not frame rules as the author's decisions; state the rule and, where it helps, the practical reason. Comparisons with TypeScript or Rust ("unlike TypeScript...") go in chapter 11, not in chapters 1 to 10. List each comparison you leave out in `outcome.md` under "For chapter 11". (Changed 2026-11-05 by the maintainer.)
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
@@ -65,3 +65,5 @@ M. Uncertainty low (test pattern exists in run_test.go), coupling low, blast rad
 - Prefer one small program per idea over one big program per chapter.
 - Use the names the maintainer uses (roadmap CLAUDE.md): full descriptive names, action-named functions.
 - Do not edit `SPEC.md`. If the spec and the compiler disagree, follow the compiler, and list the disagreement in `outcome.md`.
+
+Merged: PR #87 into feat/language-guide (2026-11-05).

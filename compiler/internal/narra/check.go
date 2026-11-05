@@ -73,9 +73,6 @@ type Program struct {
 	Impls map[Type]map[string]*FuncDecl
 	// FuncTypes are the function types the program uses, for C typedefs.
 	FuncTypes []*FuncType
-	// Unemitted is the error for a program the emitter cannot compile yet:
-	// the first function* declared (node generators removes it).
-	Unemitted *Diagnostic
 }
 
 type scope struct {
@@ -457,9 +454,6 @@ func (c *Checker) resolveSignature(fd, origin *FuncDecl) {
 			fd.ResultT = c.resolveType(fd.Result)
 		}
 		return
-	}
-	if report && c.prog.Unemitted == nil {
-		c.prog.Unemitted = &Diagnostic{Code: codeFor("generators are not compiled yet"), Pos: fd.Pos, File: c.mod.file, Message: "generators are not compiled yet"}
 	}
 	if fd.Result == nil || fd.Result.Name != "Generator" || len(fd.Result.Args) != 1 {
 		if report {

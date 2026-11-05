@@ -42,7 +42,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0019", "expected a declaration, found %s"},
 	{"E0020", "there is no `T[]` array type; write `Array<T>`"},
 	{"E0021", "trait constraints on struct and enum type parameters are not supported by this compiler yet"},
-	{"E0022", "generators are not compiled yet"},
+	{"E0022", "retired: generators are compiled now, so this error is no longer reported"}, // the code is not reused
 	{"E0023", "a trait has no type parameters; use Self for the implementing type"},
 	{"E0024", "a trait has functions only, found %s"},
 	{"E0025", "trait functions have no default implementation; remove the body"},

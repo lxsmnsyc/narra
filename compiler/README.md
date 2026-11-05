@@ -59,6 +59,20 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 - `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
 - `TestSourcesFormatted` runs `narrac fmt --check` over `selfhost/src` and every sample under `testdata/` except `testdata/fmt/`, whose inputs are unformatted on purpose, and the samples in `layoutSamples`, which test a layout the formatter would change. A sample that does not parse is skipped only if its path contains `error` or `/diagnostics/`. `bench/` and `std/` are not checked. After editing Narra source, run `narrac fmt` on it. A sample whose `// error:` line or dump golden holds positions must be updated after formatting.
 
+## Queries
+
+`narrac query` (the self-hosted compiler, `selfhost/src/query.nra`) answers the questions of `SPEC.md` section 14 about a package. The Go compiler has no `query` command. The command line and the `--json` shapes are the frozen contract `roadmaps/selfhost/contracts/query-output.md`.
+
+- `narrac query [--package DIR] [--json] <command> <operand>`, where the command is `type-of FILE:LINE:COL`, `def NAME`, `refs NAME`, `callers FUNCTION`, `interface MODULE` or `recursion MODULE`. `DIR` defaults to `.`.
+- The package is loaded and checked as `narrac types` does it. Load or check errors print as there (with `--json`: `{"errors": [...]}`, code `E0000` until the self-hosted checker has codes) and the exit code is 1. Any other query error prints `error <message>` (with `--json`: `{"error": ...}` on stdout) and exits 1. A usage error exits 2.
+- `type-of` reports the innermost expression, local name or function or constant name at the position. `type` is the type of the value there, function types with their `uses` list (from the declaration or the annotation; an unannotated local holding a function shows none). `effects` is what evaluating the expression there does: a name has none, a call has the call's. A builtin or constructor name in a call answers for the call, because the checker records nothing for the name. A generic function shows its type parameter names. A position inside a template string with `${...}` parts is an error for now: the parser gives the nodes there the template's position.
+- `def` lists every declaration a qualified (`app/text.helper`, `app/text.Shape.Circle`) or bare (`helper`, `Shape.Circle`, `Circle`) name finds. `refs` and `callers` need a name that finds one declaration.
+- `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked. A use inside a template string is reported at the whole template, with `"inTemplate": true`; `callers` does the same.
+- `callers` and `recursion` read the call graph of the effect pass (`EffectState.calls`). Calls through function values are not edges. A call inside an arrow function belongs to the enclosing function.
+- Only the package's own modules are searched, not std source modules.
+- `selfhost/src/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
+- `TestSelfhostQuery` runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by `# exit N` when the exit code is not 0, the expected stdout, and `# stderr` with the expected stderr when there is any) against the package in that folder. `NARRA_UPDATE=1` rewrites the expected output.
+
 ## Tests
 
 ```sh
@@ -110,6 +124,7 @@ go test ./...
 - The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
 - Effects (`check_effects.go`): exported functions must declare `uses alloc, io, unsafe` for everything they do; private functions and arrows are inferred; `<effect E>` and `uses E` on function types work. On an exported function a function-type parameter without `uses` accepts only pure arguments; on a private function it acts as an implicit effect variable. `alloc` also comes from array literals, template strings, string `+` and constructors with fields.
 - Opaque structs and distinct types (`check_opaque.go`): `export opaque struct`, `distinct type A = B`, `export opaque distinct type`. Another module cannot build, read, assign, spread or match the fields of an opaque struct. `A.from(x)` and `A.toInt(x)` (`toString` for a string base, named after the base type) are generated and emit no code. Distinct types have no `Show`/`Ordered`. `opaque`, `distinct` and `type` are contextual words, not keywords.
+- Generators (`emit_generator.go`, SPEC.md section 8): `function*`, `yield`, `yield*`, `Generator<T> uses E`, generic generators and `for ... of` over a generator. Each `function*` is a state machine over a heap frame with a counted header (`narra_gen` in `runtime.h`): every C variable of the body is a frame field, and the drop and clone functions switch on the state to release or retain what is live at that yield. Every `Generator<T>` is the C type `narra_gen*`. A `for ... of` and a `yield*` resume their own copy, so iterating a generator variable twice runs it twice.
 
 - Top-level `const` (`export const` too): literals, operators on constants, constructors, structs, arrays, maps, function names and other constants, in any order; cycles are errors. Scalar constants are emitted at each use. Other constants are built on first use (see Differences).
 
@@ -124,7 +139,7 @@ go test ./...
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Reading a tuple element by index.
-- Generators are parsed and checked (`function*`, `yield`, `yield*`, `Generator<T> uses E`, `for ... of` over a generator) but not compiled: building a program that declares a `function*` stops with "generators are not compiled yet" (node generators). `Coroutine<In, Out>` and `Co.resume` are not there yet.
+- `Coroutine<In, Out>` and `Co.resume`.
 - Async functions, threads and channels.
 - `unsafe` and `extern`.
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.

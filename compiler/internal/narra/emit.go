@@ -46,6 +46,9 @@ type Emitter struct {
 	tailCalls map[*CallExpr]bool
 	traits    *traitEmit   // trait functions used so far
 	closures  *closureEmit // emit_closure.go
+	// gen is the generator body being emitted, nil in any other body
+	// (emit_generator.go). Its C variables are frame fields.
+	gen *genState
 }
 
 func Emit(prog *Program, entry *FuncDecl, tests bool) string {
@@ -176,8 +179,8 @@ func (e *Emitter) where(p Pos) string {
 
 func (e *Emitter) temp(t Type, code string) string {
 	e.tempN++
-	name := fmt.Sprintf("t%d", e.tempN)
-	e.line("%s %s = %s;", t.CName(), name, code)
+	decl, name := e.cVar(t.CName(), fmt.Sprintf("t%d", e.tempN))
+	e.line("%s = %s;", decl, code)
 	return name
 }
 
@@ -239,7 +242,7 @@ func (e *Emitter) popScope() {
 
 func (e *Emitter) releaseLocals(s *scopeFrame) {
 	for i := len(s.locals) - 1; i >= 0; i-- {
-		if r := release(s.locals[i].T, s.locals[i].CName); r != "" {
+		if r := release(s.locals[i].T, e.localRef(s.locals[i])); r != "" {
 			e.line("%s", r)
 		}
 	}
@@ -376,6 +379,10 @@ func (e *Emitter) signature(fd *FuncDecl) string {
 }
 
 func (e *Emitter) function(fd *FuncDecl) {
+	if fd.Generator {
+		e.generator(fd)
+		return
+	}
 	e.fn = fd
 	e.file = e.prog.Files[fd.Module]
 	e.line("%s {", e.signature(fd))
@@ -420,6 +427,9 @@ func (e *Emitter) localRef(l *Local) string {
 	if l.ByRef {
 		return "(*" + l.CName + ")"
 	}
+	if e.gen != nil && e.gen.locals[l] {
+		return "f->" + l.CName
+	}
 	return l.CName
 }
 
@@ -444,8 +454,8 @@ func (e *Emitter) blockExpr(x *BlockExpr) (string, bool) {
 // block in value position uses it too.
 func (e *Emitter) blockBody(block *Block, t Type) (string, bool) {
 	e.tempN++
-	info := &blockInfo{result: fmt.Sprintf("r%d", e.tempN), t: t, label: fmt.Sprintf("narra_block_%d", e.tempN), frames: len(e.frames), scopes: len(e.scopes)}
-	e.line("%s %s;", t.CName(), info.result)
+	result := e.declareUnset(t.CName(), fmt.Sprintf("r%d", e.tempN))
+	info := &blockInfo{result: result, t: t, label: fmt.Sprintf("narra_block_%d", e.tempN), frames: len(e.frames), scopes: len(e.scopes)}
 	e.line("{")
 	e.indent++
 	e.blocks = append(e.blocks, info)

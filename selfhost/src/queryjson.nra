@@ -1,0 +1,81 @@
+// JSON text for narrac query (contracts/query-output.md). std/json does not
+// exist yet, so this module writes the few shapes the queries need: strings,
+// string lists, locations and diagnostics. Objects are written with `": "` and
+// `", "` between parts, on one line.
+import * as Char from "std/char"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import { Pos } from "narrac/ast"
+import { hex } from "narrac/lexer"
+
+// A source range in a file of the package. end is the position after the
+// last character.
+export struct Location {
+  file: string
+  start: Pos
+  end: Pos
+}
+
+// quoteJson writes text as a JSON string: `"` and `\` are escaped, control
+// characters become \n, \t, \r or \u00XX, everything else is kept.
+export function quoteJson(text: string): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, "\"")
+  for (const character of Arrays.values(Str.chars(text))) {
+    const code = Char.code(character)
+    if (character == '"') {
+      Str.append(mutable builder, "\\\"")
+    } else if (character == '\\') {
+      Str.append(mutable builder, "\\\\")
+    } else if (character == '\n') {
+      Str.append(mutable builder, "\\n")
+    } else if (character == '\t') {
+      Str.append(mutable builder, "\\t")
+    } else if (character == '\r') {
+      Str.append(mutable builder, "\\r")
+    } else if (code < 32) {
+      Str.append(mutable builder, `\\u${hex(code, 4)}`)
+    } else {
+      Str.appendChar(mutable builder, character)
+    }
+  }
+  Str.append(mutable builder, "\"")
+  return Str.build(builder)
+}
+
+// writeStringList writes `["a", "b"]`.
+export function writeStringList(items: Array<string>): string uses alloc {
+  let parts: Array<string> = []
+  for (const item of Arrays.values(items)) {
+    Arrays.push(mutable parts, quoteJson(item))
+  }
+  return `[${Str.join(parts, ", ")}]`
+}
+
+function writePair(pos: Pos): string uses alloc {
+  return `[${Int.toString(pos.line)}, ${Int.toString(pos.column)}]`
+}
+
+// writeLocation writes `{"file": ..., "range": {"start": [l, c], "end": [l, c]}}`.
+export function writeLocation(location: Location): string uses alloc {
+  return `{"file": ${quoteJson(location.file)}, "range": {"start": ${writePair(location.start)}, "end": ${writePair(location.end)}}}`
+}
+
+// writeLocationText writes `file:line:column` for the text form.
+export function writeLocationText(location: Location): string uses alloc {
+  return `${location.file}:${Int.toString(location.start.line)}:${Int.toString(location.start.column)}`
+}
+
+// writeDiagnostic writes one diagnostic as `narra check --json` does. The
+// self-hosted checker has no codes yet, so code is the placeholder E0000,
+// and the range is empty at the error's position. An error with no file (an
+// unreadable path) has no file and no range.
+export function writeDiagnostic(file: string, pos: Pos, message: string): string uses alloc {
+  const head = `{"code": "E0000", "severity": "error", "message": ${quoteJson(message)}`
+  if (file == "" && pos.line == 0) {
+    return `${head}, "fixes": []}`
+  }
+  const pair = writePair(pos)
+  return `${head}, "file": ${quoteJson(file)}, "range": {"start": ${pair}, "end": ${pair}}, "fixes": []}`
+}

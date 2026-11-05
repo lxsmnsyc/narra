@@ -47,7 +47,7 @@ space
 first is hi
 ```
 
-Used as a value (after `=`, as an argument or after `return`), `match` gives the value of the arm, and every arm has the same type. As a statement, an arm with a block can `return` from the function. A missing case is a compile error that names it (see the example in chapter 4). `match` works on any value: integers, strings, bools, structs and tuples, not just enums. TypeScript's `switch` falls through and checks nothing; this does neither.
+Used as a value (after `=`, as an argument or after `return`), `match` gives the value of the arm, and every arm has the same type. As a statement, an arm with a block can `return` from the function. A missing case is a compile error that names it (see the example in chapter 4). `match` works on any value: integers, strings, bools, structs and tuples, not just enums. Arms do not fall through.
 
 ## Literals, structs and tuples
 
@@ -198,7 +198,7 @@ export function run(args: Array<string>): int {
 
 ## Block expressions and the ternary
 
-In TypeScript, `{ ... }` in value position is an object literal. In Narra it is a block expression: a block whose value comes from `return`. A `return` inside it ends the block, not the function. Every path must end in `return value` ([SPEC.md section 2](../../SPEC.md), D75). To build a struct you write its name, `Point { x: 1 }`, so `const o = { a }` is an error rather than a silent object.
+A `{ ... }` in value position is a block expression: a block whose value comes from `return`. A `return` inside it ends the block, not the function. Every path must end in `return value`. To build a struct you write its name, `Point { x: 1 }`, so `const o = { a }` is an error.
 
 ```narra
 import * as Arrays from "std/array"
@@ -259,6 +259,6 @@ zero
 none
 ```
 
-`c ? a : b` works as in TypeScript, with a `bool` condition and the same type in both branches. It chains to the right. An `if` in value position needs an `else` and each branch returns its value. `break` and `continue` cannot leave a block expression.
+`c ? a : b` is the conditional expression: a `bool` condition and the same type in both branches. It chains to the right. An `if` in value position needs an `else` and each branch returns its value. `break` and `continue` cannot leave a block expression.
 
 Next: [6. Option and Result](06-option-and-result.md).

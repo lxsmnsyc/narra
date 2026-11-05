@@ -1,6 +1,6 @@
 # The Narra guide
 
-A guide to Narra for a programmer who knows TypeScript or Rust. Each chapter builds on the ones before it. [SPEC.md](../../SPEC.md) is the reference and [DECISIONS.md](../../DECISIONS.md) says why the language is the way it is; the chapters link to both.
+A guide to Narra for a programmer who has written code before. Each chapter builds on the ones before it. You do not need to know any other particular language.
 
 Every program in the guide is compiled and run by a test (`TestGuide`), so what you read is what the compiler does today.
 
@@ -16,6 +16,7 @@ Every program in the guide is compiled and run by a test (`TestGuide`), so what 
 8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
 9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, `mutable` parameters and their rules.
 10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narra test`.
+11. [Narra for TypeScript programmers](11-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 
 ## Reading the samples
 
@@ -36,13 +37,13 @@ A sample marked as an error shows the message the compiler gives. Save a sample 
 
 ## Planned
 
-The spec describes these features, and the compiler does not have them yet. The guide does not teach them.
+The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
-- Generators and iterators written by users: `function*`, `yield` ([SPEC.md section 8](../../SPEC.md)). They parse and type-check, but a program that declares one does not build.
-- `async` and `await`, threads, channels and shared state ([SPEC.md section 8](../../SPEC.md)).
-- Regions ([SPEC.md section 6](../../SPEC.md)) and fixed-size arrays and SIMD vectors ([SPEC.md section 4](../../SPEC.md)).
-- `unsafe`, `extern` and C interop ([SPEC.md section 9](../../SPEC.md)).
-- Build conditions ([SPEC.md section 12](../../SPEC.md)).
-- `@inline`, `@const` functions and `lazy` values ([SPEC.md section 2](../../SPEC.md)).
-- C-style `for` loops and compound assignment (`+=`, `++`), accepted in D76 and not yet in the compiler.
-- Dependencies on other packages ([SPEC.md section 15](../../SPEC.md)).
+- Generators and iterators written by users: `function*`, `yield`. They parse and type-check, but a program that declares one does not build.
+- `async` and `await`, threads, channels and shared state.
+- Regions, fixed-size arrays and SIMD vectors.
+- `unsafe`, `extern` and C interop.
+- Build conditions.
+- `@inline`, `@const` functions and `lazy` values.
+- C-style `for` loops and compound assignment (`+=`, `++`).
+- Dependencies on other packages.

@@ -26,10 +26,10 @@ export function run(args: Array<string>): int {
 total 6
 ```
 
-Where this differs from TypeScript ([SPEC.md section 2, Bindings](../../SPEC.md), D24 and D38 in [DECISIONS.md](../../DECISIONS.md)):
+The rules:
 
-- `const` is deep. A `const` array cannot change, while a TypeScript one can.
-- The compiler has no compound assignment yet. Write `total = total + step`, not `total += step` or `step++`. D76 accepts both forms, and the guide will use them when the compiler does.
+- `const` is deep. The value behind a `const` never changes, so a `const` array cannot be added to or edited.
+- There is no compound assignment yet. Write `total = total + step`, not `total += step` or `step++`.
 - Shadowing is an error. You cannot declare a name while an earlier binding with that name is in scope.
 - An unused local, parameter or import is an error. Start the name with `_` to say it is unused on purpose.
 - A closure cannot capture a `let` binding (chapter 3).
@@ -55,7 +55,7 @@ Types are inferred for locals: `const n = 1` is an `int`. Function parameters an
 | `i8` `i16` `i32` `i64`, `u8` `u16` `u32` `u64` | sized integers |
 | `f64`, `f32` | floats |
 
-TypeScript has one `number`. Narra has these types and no implicit conversions between them (D30), so `1 + 2.0` is a compile error. Convert with `Float.fromInt` and `Float.truncate`.
+There are no implicit conversions between these types, so `1 + 2.0` is a compile error. Convert with `Float.fromInt` and `Float.truncate`.
 
 ```narra
 import * as Int from "std/int"
@@ -106,9 +106,9 @@ export function run(args: Array<string>): int {
 
 ## Strings, characters and templates
 
-A `string` is immutable UTF-8 text in double quotes. A `char` is one Unicode scalar value in single quotes. In TypeScript, both quote styles make strings. Here `'a'` is a `char`.
+A `string` is immutable UTF-8 text in double quotes. A `char` is one Unicode scalar value in single quotes. `"a"` is a string of one character and `'a'` is a `char`; they are different types.
 
-A template string uses backticks. Each `${...}` holds an expression of type `string`, so a number goes through `Int.toString` first. There is no implicit conversion, and there is no `+` for strings (D12). Join with a template or with `Str.concat`.
+A template string uses backticks. Each `${...}` holds an expression of type `string`, so a number goes through `Int.toString` first. There is no implicit conversion, and there is no `+` for strings. Join with a template or with `Str.concat`.
 
 ```narra
 import * as Int from "std/int"
@@ -138,7 +138,7 @@ abcd
 strings compare in order
 ```
 
-`Str.length` is a length in bytes. Positions in a string are byte offsets, and slicing checks that they fall on a character boundary (D15, D60).
+`Str.length` is a length in bytes. Positions in a string are byte offsets, and slicing checks that they fall on a character boundary.
 
 ```narra
 import * as Int from "std/int"
@@ -166,7 +166,7 @@ key|value
 
 ## Booleans and conditions
 
-`bool` is `true` or `false`, and a condition must be a `bool`. There is no truthiness: `0`, `""` and `None` are not conditions (D21). `==` compares by structure with no conversion, and `===` is a compile error.
+`bool` is `true` or `false`, and a condition must be a `bool`. There is no truthiness: `0`, `""` and `None` are not conditions. `==` compares by structure with no conversion, and `===` is a compile error.
 
 ```narra error
 // error: 3:7: expected bool, found int
@@ -180,7 +180,7 @@ export function run(args: Array<string>): int {
 
 ## Arrays
 
-`Array<T>` is a growable array. There is no `T[]` type (D23). Indexes start at 0, and an index out of range panics. The functions on arrays come from `std/array`, imported as `Arrays` by convention, and there are no methods (D12): `Arrays.push(mutable items, 4)`, not `items.push(4)`.
+`Array<T>` is a growable array. The type is always written `Array<T>`. Indexes start at 0, and an index out of range panics. The functions on arrays come from `std/array`, imported as `Arrays` by convention, and there are no methods: write `Arrays.push(mutable items, 4)`, not `items.push(4)`.
 
 The word `mutable` at the call says that the function may change your variable. Chapter 9 explains the rules.
 
@@ -216,9 +216,9 @@ export function run(args: Array<string>): int {
 2: 4
 ```
 
-`Arrays.values` and `Arrays.entries` are the ways to loop over an array, and `Ranges.upTo(n)` and `Ranges.between(start, end)` are the way to count. There is no `for ... in`. A C-style `for (init; cond; step)` loop was accepted in D76 but the compiler does not have it yet, so use `while` when the step is not a range.
+`Arrays.values` and `Arrays.entries` are the ways to loop over an array, and `Ranges.upTo(n)` and `Ranges.between(start, end)` are the way to count. There is no C-style `for (init; cond; step)` loop yet, so use `while` when the step is not a range.
 
-An array behaves as a value. Assigning it copies it, and the copy happens only when one of the two is changed (copy on write, [SPEC.md section 6](../../SPEC.md)).
+An array behaves as a value. Assigning it copies it, and the copy happens only when one of the two is changed, which is called copy on write.
 
 ```narra
 import * as Int from "std/int"
@@ -239,7 +239,7 @@ export function run(args: Array<string>): int {
 3
 ```
 
-In TypeScript both names would point to the same array. In Narra `snapshot` keeps its three items.
+`snapshot` keeps its three items. Two names never share one changing array.
 
 ## Maps
 
@@ -280,11 +280,11 @@ no such key
 0
 ```
 
-Writing the type arguments, as in `Map<string, int> {}`, gives the literal its type without an annotation (D68).
+Writing the type arguments, as in `Map<string, int> {}`, gives the literal its type without an annotation.
 
 ## Tuples
 
-A tuple groups two or more values of different types. The type and the literal both use `#[...]`, because `[a, b]` is always an array (D53). A function that returns several values returns a tuple.
+A tuple groups two or more values of different types. The type and the literal both use `#[...]`, because `[a, b]` is always an array. A function that returns several values returns a tuple.
 
 ```narra
 import * as Int from "std/int"
@@ -308,6 +308,6 @@ export function run(args: Array<string>): int {
 ready yes
 ```
 
-A tuple has no element access by index. Take it apart with a pattern, as above. The conditional expression `c ? a : b` works as in TypeScript, with a `bool` condition.
+A tuple has no element access by index. Take it apart with a pattern, as above. The conditional expression `c ? a : b` picks one of two values by a `bool` condition.
 
 Next: [3. Functions and closures](03-functions-and-closures.md).

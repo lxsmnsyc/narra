@@ -1,6 +1,6 @@
 # 1. Getting started
 
-Narra has TypeScript syntax and Rust semantics: static types, enums that carry data, pattern matching, no `null` and no exceptions. It compiles to C, and a C compiler builds the program. This chapter builds and runs a first program, then a package with a `narra.toml`.
+Narra is a statically typed language with enums that carry data, pattern matching, no `null` and no exceptions. It compiles to C, and a C compiler builds the program. This chapter builds and runs a first program, then a package with a `narra.toml`.
 
 You need Go (to build the bootstrap compiler `narra`) and a C compiler (`cc`, `clang` or `gcc`).
 
@@ -32,10 +32,10 @@ Save it as `hello.nra` and run it:
 
 `print`, `assert` and `panic` are the only functions you can call without an import. Everything else comes from a module you import (chapter 8).
 
-Compared with TypeScript:
+What to notice:
 
-- There are no semicolons. A line break ends a statement, and a `;` is a compile error. See [SPEC.md section 2](../../SPEC.md) and D43 in [DECISIONS.md](../../DECISIONS.md).
-- Every named function writes its parameter and return types (D22). A function with no return type returns nothing.
+- There are no semicolons. A line break ends a statement, and a `;` is a compile error.
+- Every named function writes its parameter and return types. A function with no return type returns nothing.
 - `narra fmt` defines the one layout, so there is nothing to configure or argue about.
 
 ## Commands
@@ -49,11 +49,11 @@ Compared with TypeScript:
 | `narra test file.nra` | run the `test` blocks of the file |
 | `narra emit file.nra` | print the generated C |
 
-A debug build checks integer overflow, and a program run with `NARRA_CHECK_LEAKS=1` reports memory that was never freed. A release build wraps on integer overflow. Division by zero and out-of-range indexes panic in both. See [SPEC.md section 4, Numbers](../../SPEC.md).
+A debug build checks integer overflow, and a program run with `NARRA_CHECK_LEAKS=1` reports memory that was never freed. A release build wraps on integer overflow. Division by zero and out-of-range indexes panic in both.
 
 ## Errors say what to write instead
 
-A compile error names the line and column. A habit from another language gets a message that says what to write.
+A compile error names the line and column, and says what to write instead when it can.
 
 ```narra error
 // error: 3:11: semicolons are not used
@@ -92,7 +92,7 @@ The file `src/text.nra` of package `app` is the module `"app/text"`. The `entry`
 ./narra run -bin app app
 ```
 
-Chapter 8 covers imports and exports. `narra.toml` also has a `[fmt]` table for the formatter ([SPEC.md section 2](../../SPEC.md)).
+Chapter 8 covers imports and exports. `narra.toml` also has a `[fmt]` table for the formatter.
 
 ## Tests
 

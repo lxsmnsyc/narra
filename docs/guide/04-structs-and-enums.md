@@ -1,6 +1,6 @@
 # 4. Structs and enums
 
-Narra has no `class`, `this`, `new` or `interface`. Data is a `struct` (a fixed set of named fields) or an `enum` (a choice between variants that carry their own fields). Behavior is a function that takes the data, or a trait (chapter 7).
+Data is a `struct` (a fixed set of named fields) or an `enum` (a choice between variants that carry their own fields). Behavior is a function that takes the data, or a trait (chapter 7).
 
 ## Structs
 
@@ -51,11 +51,11 @@ localhost:8080 (0 tags)
 localhost 9001
 ```
 
-What to notice, from [SPEC.md section 4, Structs](../../SPEC.md) and D20 and D26:
+What to notice:
 
 - A field may have a constant default. A field without one must be given when you build the struct.
 - Write `TypeName { field: value }`. When the expected type is known, from an annotation, a parameter or a result type, you can leave the name out.
-- Every field is written `name: value`. The shorthand `{ name }` is not an object literal here: in value position a `{ ... }` is a block expression (chapter 5).
+- Every field is written `name: value`. The shorthand `{ name }` does not build a struct: in value position a `{ ... }` is a block expression (chapter 5).
 - `{ ...s, field: v }` copies `s` and changes some fields. The spread comes first, and the original does not change.
 - A struct is a value. `let current = config` makes a copy, and `current.port = 9001` changes only `current`. You can assign to a field only through a `let` variable or a `mutable` parameter.
 - `==` compares structs field by field.
@@ -63,7 +63,7 @@ What to notice, from [SPEC.md section 4, Structs](../../SPEC.md) and D20 and D26
 
 ## Enums
 
-An enum is a set of variants, and each variant can carry named fields. This replaces the TypeScript `enum` (which only names numbers or strings), tagged unions with a `kind` field, and class hierarchies. Constructors are always written with the enum name: `Shape.Circle(1.0)`, `Shape.Dot`. The only bare constructors are `Some`, `None`, `Ok` and `Err`.
+An enum is a set of variants, and each variant can carry named fields. Use an enum for any value that is one of several kinds, each with its own data. Constructors are always written with the enum name: `Shape.Circle(1.0)`, `Shape.Dot`. The only bare constructors are `Some`, `None`, `Ok` and `Err`.
 
 ```narra
 import * as Float from "std/float"
@@ -115,7 +115,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A fielded variant lives on the heap, and the compiler counts its references. An enum value is a small handle that you copy freely (D55).
+A fielded variant lives on the heap, and the compiler counts its references. An enum value is a small handle that you copy freely.
 
 ## Recursive types and `Box`
 
@@ -201,7 +201,7 @@ export function run(args: Array<string>): int {
 
 ## Opaque and distinct types
 
-A `distinct type` makes a new type from an existing one, so the compiler keeps `UserId` and `OrderId` apart even though both are `int` (D40, D62). You convert by name: `UserId.from(42)` and `UserId.toInt(id)`. Arithmetic and `Show` do not carry over, but `==` does when the base type supports it.
+A `distinct type` makes a new type from an existing one, so the compiler keeps `UserId` and `OrderId` apart even though both are `int`. You convert by name: `UserId.from(42)` and `UserId.toInt(id)`. Arithmetic and `Show` do not carry over, but `==` does when the base type supports it.
 
 ```narra
 import * as Int from "std/int"
@@ -230,7 +230,7 @@ export function run(args: Array<string>): int {
 
 Passing an `OrderId` where a `UserId` is wanted is a compile error.
 
-An `opaque struct` is exported without its fields, so only its own module can build it or read its fields (D39). That is how a module keeps an invariant. This needs two modules, so it is a fragment. In `src/range.nra`:
+An `opaque struct` is exported without its fields, so only its own module can build it or read its fields. That is how a module keeps an invariant. This needs two modules, so it is a fragment. In `src/range.nra`:
 
 ```narra fragment
 export opaque struct Span {
@@ -250,6 +250,6 @@ export function spanLength(span: Span): int {
 }
 ```
 
-Another module imports `Span`, `makeSpan` and `spanLength`, and it cannot write `Span { ... }` or read `span.start`. A distinct type can be exported opaque too (`export opaque distinct type`). See [SPEC.md section 4](../../SPEC.md).
+Another module imports `Span`, `makeSpan` and `spanLength`, and it cannot write `Span { ... }` or read `span.start`. A distinct type can be exported opaque too (`export opaque distinct type`).
 
 Next: [5. Pattern matching](05-pattern-matching.md).

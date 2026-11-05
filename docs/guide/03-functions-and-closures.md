@@ -30,11 +30,11 @@ export function run(args: Array<string>): int {
 gcd: 21
 ```
 
-Where Narra differs from TypeScript ([SPEC.md section 2, Functions](../../SPEC.md)):
+The rules:
 
 - A call passes every argument. There are no optional parameters, no varargs, no overloads and no currying. To fix some arguments, write an arrow function. To pass options, pass a struct with default field values (chapter 4).
-- There are no method calls. `items.push(1)` is a compile error, and the message tells you to write `Arrays.push(mutable items, 1)` (D12). `value.field(args)` is valid only when `field` is a struct field that holds a function.
-- You cannot declare a function inside a function (D74). Declare it at module level and pass what it needs as arguments, or bind an arrow function to a `const`.
+- There are no method calls. `items.push(1)` is a compile error, and the message tells you to write `Arrays.push(mutable items, 1)`. `value.field(args) is valid only when `field` is a struct field that holds a function.
+- You cannot declare a function inside a function. Declare it at module level and pass what it needs as arguments, or bind an arrow function to a `const`.
 - Parameters are constant. A parameter changes only if it is declared `mutable` (chapter 9).
 - Recursion needs no keyword.
 
@@ -50,7 +50,7 @@ export function run(args: Array<string>): int {
 
 ## Tail calls are loops
 
-A call to the same function in tail position compiles to a jump, so it does not grow the stack (D37). Other recursion uses the stack, and an overflow aborts the program.
+A call to the same function in tail position compiles to a jump, so it does not grow the stack. Other recursion uses the stack, and an overflow aborts the program.
 
 ```narra
 import * as Int from "std/int"
@@ -121,7 +121,7 @@ export function run(args: Array<string>): int {
 
 ## Closures capture constants
 
-A closure can read the `const` bindings and parameters around it. It cannot capture a `let` binding, because the environment of a closure never changes after it is made (D24). This is the opposite of TypeScript, where a closure sees later assignments.
+A closure can read the `const` bindings and parameters around it. It cannot capture a `let` binding, because the environment of a closure never changes after it is made, so a closure can never see a later assignment.
 
 ```narra error
 // error: 8:22: a closure cannot capture "count" because it is declared with let; closures capture only constants
@@ -139,7 +139,7 @@ Copy the value into a `const` first, and capture that.
 
 ## Function parameters do not escape
 
-A parameter of function type can only be called inside the function. It cannot be stored, returned, or captured by another closure. In return, the compiler puts the closure's environment on the caller's stack, so passing a closure costs no allocation (D46).
+A parameter of function type can only be called inside the function. It cannot be stored, returned, or captured by another closure. In return, the compiler puts the closure's environment on the caller's stack, so passing a closure costs no allocation.
 
 To keep a function beyond the call, mark the parameter `escaping`. Its environment is then allocated on the heap and reference counted.
 
@@ -185,6 +185,6 @@ export function run(args: Array<string>): int {
 clicked 3
 ```
 
-The function in a struct field or array element always counts as escaping, so it needs no keyword there. A parameter whose type is a type parameter (`T`) is escaping as well (D52).
+The function in a struct field or array element always counts as escaping, so it needs no keyword there. A parameter whose type is a type parameter (`T`) is escaping as well.
 
 Next: [4. Structs and enums](04-structs-and-enums.md).

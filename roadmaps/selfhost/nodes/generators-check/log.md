@@ -6,6 +6,5 @@
 - generator_emit moved from testdata/errors to TestGeneratorEmitStub (TestErrorCodes needs checker diagnostics). go test needs -timeout above 10m on this loaded machine.
 - Full fast check passes (vet + test, -timeout 40m).
 - Review fix: bound call results (Bound / boundGenerators) so effect variables never escape by name; 4 more error tests and bound.nra dump.
-- Review fix: bound call results (Bound / boundGenerators) so effect variables never escape by name; 4 more error tests and bound.nra dump.
 - Second review fix: only the creating call fills a bound type. Probes: id, local+id, two generic layers, closure (escaped before, now errors); generic struct field, match arm, pass to pure param (already errors). All kept as generator_bound_* tests.
 - Rebased on std-foundation (#79): added GeneratorType to shapeMismatch (E0325) in both compilers; tests generator_generic_effects, generator_generic_shape.

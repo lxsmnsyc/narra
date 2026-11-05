@@ -674,4 +674,3 @@ Decision: a generator type carries the effects of its body, written as on a func
 - **Reason.** A statement-only `yield` keeps the state machine simple: no expression is ever suspended halfway.
 - **Rejected: charging the body's effects at creation.** A pure function could then run I/O through a generator value it was given, with no effect in its signature.
 - **Cost.** A function that returns a generator it did not declare with `function*` cannot write `uses` for itself after the result type, since the list belongs to the type; it writes a second list (`(): Generator<T> uses io uses alloc`). A private function's parameter of type `Generator<T>` accepts only pure generators; it does not act as an implicit effect variable, as a private function-type parameter does.
-

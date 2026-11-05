@@ -15,7 +15,7 @@ Script: `python3 <skill>/scripts/plan.py <root> context <id>` lists the files to
 
 Project rules:
 
-- Run `cd compiler && go vet ./... && go test -timeout 20m ./...` before finishing (about 7 minutes). Every sample program must stay clean under AddressSanitizer and the leak check.
+- Run `cd compiler && go vet ./... && go test -timeout 45m ./...` before finishing (7 to 24 minutes, depending on load). Every sample program must stay clean under AddressSanitizer and the leak check.
 - Format edited `.nra` files with `narrac fmt` (see `selfhost/CLAUDE.md`); `TestSourcesFormatted` checks it.
 - Follow `SPEC.md`. Record any difference in `compiler/README.md`.
 - New AST node types need a case in `clone.go` and in the checker and emitter switches.

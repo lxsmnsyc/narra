@@ -65,3 +65,7 @@ Notes:
 | selfhost | block-expressions | M | L | 2 | 413k tokens (worker 298k, review 115k). Round 2: exclusivity walkers skipped BlockExpr, nested break codes, duplicate labels. |
 | selfhost | match-block-values | S | S | 1 | 137k tokens. Self-review clean; reused block-expression checking. |
 | selfhost | ternary | S | M | 2 | 264k tokens (worker 162k, review 102k). Round 2: `c ? (a + b) : 0` parsed as an arrow (blocking), messages naming the hidden block expression. |
+| selfhost | generators | L | L | 2 | 482k tokens (worker 310k, review 173k). Round 2: three emitter sites kept raw C locals across a yield; Go and selfhost emitted the same wrong C, so TestSelfhostEmit could not catch it. |
+| selfhost | query-cli | L | L | 3 | 528k tokens (worker 353k, review 175k). Rounds 2 and 3: template positions, function-type effects, one rule for `effects`, stream checks, then contract wording. |
+| selfhost | guide-basics | M | L | 4 | 529k tokens. Sonnet draft, two maintainer-direction rewrites (standalone, tutorial voice), then an Opus rewrite and review; the briefs set the wrong audience. |
+| selfhost | guide-advanced | M | L | 3 | 514k tokens. Sonnet draft replaced by an Opus rewrite; two Opus review rounds, mostly reteaching chapters 1 to 5. |

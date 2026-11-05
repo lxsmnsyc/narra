@@ -41,7 +41,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 
 ## Verification
 
-- Fast check (safe to run in parallel worktrees): `cd compiler && go vet ./... && go test -timeout 20m ./...` (about 7 minutes on 2026-11-05, past `go test`'s default 10-minute timeout under load; no shared resources)
+- Fast check (safe to run in parallel worktrees): `cd compiler && go vet ./... && go test -timeout 45m ./...` (about 7 minutes alone, up to 24 minutes with four suites in parallel worktrees; no shared resources)
 - Full check: the same, plus `bench/run.sh` once it exists (exclusive: benchmarks need a quiet machine).
 
 ## Numbered resources

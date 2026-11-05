@@ -25,6 +25,9 @@ shared: []
 reserves: []
 provides: []
 depends_on:
+  - on: std-foundation
+    kind: hard
+    why: source std modules need the generic mismatch errors, std/internal and the stage 2 tests (std-source gate, 2026-11-05)
   - on: selfhost-bootstrap
     kind: hard
     why: language changes land in the Go compiler and selfhost/ together, after the bootstrap fixed point

@@ -3,6 +3,7 @@ package narra
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 const (
@@ -11,6 +12,7 @@ const (
 	forArrayEntries
 	forMapKeys
 	forMapEntries
+	forGenerator // a Generator<T> value (node generators emits it)
 )
 
 type forKind int
@@ -71,6 +73,9 @@ type Program struct {
 	Impls map[Type]map[string]*FuncDecl
 	// FuncTypes are the function types the program uses, for C typedefs.
 	FuncTypes []*FuncType
+	// Unemitted is the error for a program the emitter cannot compile yet:
+	// the first function* declared (node generators removes it).
+	Unemitted *Diagnostic
 }
 
 type scope struct {
@@ -101,32 +106,35 @@ type pendingFunc struct {
 }
 
 type Checker struct {
-	forSource Expr // the iterable of the for loop being checked: Array.values and Array.entries are valid only there
-	prog      *Program
-	types     map[string]Type // non-generic named types
-	generics  map[string]*genericType
-	funcs     map[string]*FuncDecl
-	funcTP    map[*FuncDecl][]*TypeParamType
-	funcInsts map[string]*FuncDecl
-	pending   []pendingFunc
-	env       map[string]Type // type parameter names in scope
-	modules   map[string]string
-	imported  map[string]*Builtin
-	errs      []Diagnostic
-	scope     *scope
-	fn        *FuncDecl
-	loops     int
-	labels    []string    // labels of the enclosing loops, innermost last
-	blocks    []*blockCtx // the block expressions being checked, innermost last (check_stmt.go)
-	arrays    map[string]*ArrayType
-	boxes     map[string]*BoxType
-	maps      map[string]*MapType
-	mapKeys   []mapKeyCheck
-	assigning Expr // the target of the assignment being checked (check_map.go)
-	instTypes []Type
-	localN    int
-	isBinds   bool                   // an `is` pattern may bind names here
-	tuples    map[string]*StructType // tuple types by element mangle (check_patterns.go)
+	forSource     Expr // the iterable of the for loop being checked: Array.values and Array.entries are valid only there
+	prog          *Program
+	types         map[string]Type // non-generic named types
+	generics      map[string]*genericType
+	funcs         map[string]*FuncDecl
+	funcTP        map[*FuncDecl][]*TypeParamType
+	funcInsts     map[string]*FuncDecl
+	pending       []pendingFunc
+	env           map[string]Type // type parameter names in scope
+	modules       map[string]string
+	imported      map[string]*Builtin
+	errs          []Diagnostic
+	scope         *scope
+	fn            *FuncDecl
+	boundCalls    int            // call results with bound generator effects, for their ids
+	generatorUses []generatorUse // checked after the effect pass (check_types.go)
+	sigFunc       *FuncDecl      // the function whose signature or body is being checked (an instance's generic function): it binds the effect variables of generator types
+	loops         int
+	labels        []string    // labels of the enclosing loops, innermost last
+	blocks        []*blockCtx // the block expressions being checked, innermost last (check_stmt.go)
+	arrays        map[string]*ArrayType
+	boxes         map[string]*BoxType
+	maps          map[string]*MapType
+	mapKeys       []mapKeyCheck
+	assigning     Expr // the target of the assignment being checked (check_map.go)
+	instTypes     []Type
+	localN        int
+	isBinds       bool                   // an `is` pattern may bind names here
+	tuples        map[string]*StructType // tuple types by element mangle (check_patterns.go)
 	// The name tables above (types, generics, funcs, modules, imported)
 	// belong to mod, the module being checked; enter swaps them (modules_check.go).
 	mod     *modScope
@@ -146,7 +154,8 @@ type Checker struct {
 // Check checks one parsed file as the only module of package "main".
 func Check(f *File) (*Program, error) {
 	pkg := &Package{Name: "main", Binaries: []Binary{{Name: "main", Entry: "main.run"}}}
-	pkg.Modules = []*SourceModule{newSourceModule("main", f)}
+	own := newSourceModule("main", f)
+	pkg.Modules = append(stdSourceModules([]*SourceModule{own}), own)
 	return CheckPackage(pkg)
 }
 
@@ -186,6 +195,10 @@ func (c *Checker) declareModule(f *File) []Type {
 		mod, ok := stdModules[imp.Path]
 		if !ok {
 			c.errorf(imp.Pos, "unknown module %q (this compiler supports %s)", imp.Path, moduleList())
+			continue
+		}
+		if isInternalModule(imp.Path) && !strings.HasPrefix(c.mod.path, "std/") {
+			c.errorf(imp.Pos, "%s is internal to the standard library", imp.Path)
 			continue
 		}
 		c.useModule(mod)
@@ -271,13 +284,7 @@ func (c *Checker) declareModule(f *File) []Type {
 				c.funcBounds(d, tps)
 				c.env = envOf(tps, nil)
 			}
-			for _, p := range d.Params {
-				p.T = c.resolveType(p.Type)
-			}
-			d.ResultT = TVoid
-			if d.Result != nil {
-				d.ResultT = c.resolveType(d.Result)
-			}
+			c.resolveSignature(d, d)
 			c.env = nil
 			if len(d.TypeParams) == 0 {
 				c.prog.Funcs = append(c.prog.Funcs, d)
@@ -421,6 +428,60 @@ func (c *Checker) declare(pos Pos, name string, t Type, mutable bool) *Local {
 	l := &Local{Name: name, T: t, Mutable: mutable, Pos: pos, CName: fmt.Sprintf("v_%s_%d", name, c.localN)}
 	c.scope.names[name] = l
 	return l
+}
+
+// resolveSignature resolves the parameter and result types of fd, a
+// declaration or an instance of the generic function origin. A function*
+// must return Generator<T>, cannot take a `mutable` parameter, and takes its
+// function-type parameters as `escaping` (rules in SPEC.md section 8). A
+// private function* gets a result type whose effects the effect pass infers.
+func (c *Checker) resolveSignature(fd, origin *FuncDecl) {
+	saved := c.sigFunc
+	c.sigFunc = origin
+	defer func() { c.sigFunc = saved }()
+	report := fd == origin // an instance repeats the declaration's errors
+	for _, p := range fd.Params {
+		p.T = c.resolveType(p.Type)
+		if !fd.Generator || !report {
+			continue
+		}
+		if p.Mutable {
+			c.errorf(p.Pos, "generator %s cannot take a mutable parameter %q; a generator is a value that is resumed later", fd.Name, p.Name)
+		} else if p.Type != nil && p.Type.Func && !p.Escaping {
+			c.errorf(p.Pos, "parameter %q of generator %s has a function type, so it must be `escaping`: the generator outlives the call", p.Name, fd.Name)
+		}
+	}
+	fd.ResultT = TVoid
+	if !fd.Generator {
+		if fd.Result != nil {
+			fd.ResultT = c.resolveType(fd.Result)
+		}
+		return
+	}
+	if report && c.prog.Unemitted == nil {
+		c.prog.Unemitted = &Diagnostic{Code: codeFor("generators are not compiled yet"), Pos: fd.Pos, File: c.mod.file, Message: "generators are not compiled yet"}
+	}
+	if fd.Result == nil || fd.Result.Name != "Generator" || len(fd.Result.Args) != 1 {
+		if report {
+			pos := fd.Pos
+			if fd.Result != nil {
+				pos = fd.Result.Pos
+			}
+			c.errorf(pos, "generator %s must declare its return type as Generator<T>", fd.Name)
+		}
+		return
+	}
+	if len(fd.Effects) > 0 && report {
+		c.errorf(fd.Pos, "the effects of generator %s are written on its return type, as in `Generator<T> uses io`", fd.Name)
+	}
+	t, ok := c.resolveType(fd.Result).(*GeneratorType)
+	if !ok {
+		return
+	}
+	if !origin.Exported {
+		t = &GeneratorType{Elem: t.Elem, Origin: origin}
+	}
+	fd.ResultT = t
 }
 
 func (c *Checker) push() { c.scope = &scope{names: map[string]*Local{}, parent: c.scope} }

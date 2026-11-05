@@ -55,7 +55,7 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 - `narrac fmt --stdin` (or `-`) reads one file from stdin and writes the result to stdout.
 - A file that does not parse prints `error <path>:<line>:<col>: <message>`, stays unchanged, and the exit code is 1. A bad `[fmt]` key or value prints `error narra.toml:<line>: <message>` and the exit code is 1.
 - Options come from the `[fmt]` table of the nearest `narra.toml` above each file (`printWidth`, `tabWidth`, `useTabs`, `trailingComma`; see `SPEC.md` section 2). Without one the defaults apply.
-- Declarations and statements are printed by `fmt.nra`. Expressions, types and patterns are copied as written until `fmt-exprs` lands.
+- Declarations and statements are printed by `fmt.nra`; expressions, types and patterns by `fmtexprs.nra`.
 - `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
 
 ## Tests

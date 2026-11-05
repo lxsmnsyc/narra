@@ -1,6 +1,9 @@
 // narrac <file>: prints the tokens of a file, one per line, in the format of
 // `narra lex`.
 // narrac parse <file>: prints the syntax tree in the format of `narra parse`.
+// narrac trivia <file>: prints the comments, blank lines, parentheses and node
+// ends of parseWithTrivia (triviadump.nra). With --check <file> it compares
+// parseWithTrivia with parse and prints `ok`.
 // narrac pkg --ids <path>: checks the node id ranges of the files and the ids
 // of every node (idcheck.nra), and prints `ids ok <nextId>`.
 // narrac pkg --ids-dup <path>: the same, after copying the first node id of
@@ -34,6 +37,7 @@ import * as Builtins from "narrac/builtins"
 import * as Stdlib from "narrac/stdlib"
 import * as Emitter from "narrac/emitter"
 import * as Hash from "narrac/hash"
+import * as TriviaDump from "narrac/triviadump"
 import * as Arrays from "std/array"
 
 export function run(arguments: Array<string>): int uses io, alloc {
@@ -45,6 +49,12 @@ export function run(arguments: Array<string>): int uses io, alloc {
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "parse") {
     return parseFile(arguments[2])
+  }
+  if (Arrays.length(arguments) == 3 && arguments[1] == "trivia") {
+    return triviaFile(arguments[2], false)
+  }
+  if (Arrays.length(arguments) == 4 && arguments[1] == "trivia" && arguments[2] == "--check") {
+    return triviaFile(arguments[3], true)
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "pkg") {
     return pkgDump(arguments[2])
@@ -115,6 +125,30 @@ function parseFile(path: string): int {
     return 1
   }
   return writeStdout(AstDump.dump(parsed.value.file))
+}
+
+// triviaFile prints the side tables of parseWithTrivia (narrac trivia). With
+// check it compares parseWithTrivia with parse instead and prints `ok`.
+function triviaFile(path: string, check: bool): int uses io, alloc {
+  const read = Fs.readText(path)
+  if (read is Err(message)) {
+    printError(message)
+    return 1
+  }
+  if (check) {
+    if (TriviaDump.check(read.value) is Some(problem)) {
+      printError(`error ${problem}`)
+      return 1
+    }
+    return writeStdout("ok\n")
+  }
+  const traced = Parser.parseWithTrivia(read.value, 0)
+  if (traced is Err(diagnostic)) {
+    printError(`error ${Parser.formatDiagnostic(diagnostic)}`)
+    return 1
+  }
+  const #[_parsed, trivia] = traced.value
+  return writeStdout(TriviaDump.dump(trivia))
 }
 
 // writeStdout writes text as is (print would add a newline). A failed write

@@ -1,0 +1,188 @@
+// The text format of `narrac trivia <file>` and the checks of
+// `narrac trivia --check <file>`.
+//
+// dump prints, in this order, one line per item:
+//   comment <index> <Line|Block|Doc> <line>:<col>-<line>:<col> <own|inline> "<text>"
+//   attached <key> <leading|trailing|dangling> <comment index>
+//   blank <key>
+//   paren e<id>
+//   end <key> <line>:<col>
+// Comments are in source order. The other lines are sorted by key (kind
+// letter, then the numbers in the key), and the attached lines of one key
+// keep source order.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import { Pos } from "narrac/ast"
+import * as Lexer from "narrac/lexer"
+import * as Parser from "narrac/parser"
+import * as AstDump from "narrac/astdump"
+import { Token, escapeText } from "narrac/lexer"
+import { Trivia, CommentKind, Placement, checkAttached } from "narrac/trivia"
+
+function getKindName(kind: CommentKind): string {
+  return match (kind) {
+    CommentKind.Line => "Line"
+    CommentKind.Block => "Block"
+    CommentKind.Doc => "Doc"
+  }
+}
+
+function getPlacementName(placement: Placement): string {
+  return match (placement) {
+    Placement.Leading => "leading"
+    Placement.Trailing => "trailing"
+    Placement.Dangling => "dangling"
+  }
+}
+
+function formatPos(pos: Pos): string uses alloc {
+  return `${Int.toString(pos.line)}:${Int.toString(pos.column)}`
+}
+
+// padNumbers writes every run of digits in key with eight digits, so that
+// byte order of the result is numeric order. `file` sorts before the rest.
+function padNumbers(key: string): string uses alloc {
+  if (key == "file") {
+    return " file"
+  }
+  let builder = Str.builder()
+  let digits = ""
+  for (const character of Arrays.values(Str.chars(key))) {
+    if (character >= '0' && character <= '9') {
+      digits = `${digits}${Str.fromChar(character)}`
+    } else {
+      if (digits != "") {
+        Str.append(mutable builder, Str.repeat("0", 8 - Str.length(digits)))
+        Str.append(mutable builder, digits)
+        digits = ""
+      }
+      Str.appendChar(mutable builder, character)
+    }
+  }
+  if (digits != "") {
+    Str.append(mutable builder, Str.repeat("0", 8 - Str.length(digits)))
+    Str.append(mutable builder, digits)
+  }
+  return Str.build(builder)
+}
+
+// sortKeys returns the keys in the order of padNumbers (insertion sort).
+function sortKeys(keys: Array<string>): Array<string> uses alloc {
+  let sorted: Array<string> = []
+  let padded: Array<string> = []
+  for (const key of Arrays.values(keys)) {
+    const sortKey = padNumbers(key)
+    // find where it goes
+    let place = Arrays.length(sorted)
+    while (place > 0 && padded[place - 1] > sortKey) {
+      place = place - 1
+    }
+    let newSorted: Array<string> = []
+    let newPadded: Array<string> = []
+    for (const index of Ranges.upTo(Arrays.length(sorted) + 1)) {
+      if (index == place) {
+        Arrays.push(mutable newSorted, key)
+        Arrays.push(mutable newPadded, sortKey)
+      }
+      if (index < Arrays.length(sorted)) {
+        Arrays.push(mutable newSorted, sorted[index])
+        Arrays.push(mutable newPadded, padded[index])
+      }
+    }
+    sorted = newSorted
+    padded = newPadded
+  }
+  return sorted
+}
+
+// dump prints the side tables in the format of the header.
+export function dump(trivia: Trivia): string uses alloc {
+  let builder = Str.builder()
+  for (const index of Ranges.upTo(Arrays.length(trivia.comments))) {
+    const comment = trivia.comments[index]
+    let where = "inline"
+    if (comment.ownLine) {
+      where = "own"
+    }
+    Str.append(mutable builder, `comment ${Int.toString(index)} ${getKindName(comment.kind)} ${formatPos(comment.pos)}-${formatPos(comment.end)} ${where} "${escapeText(comment.text)}"\n`)
+  }
+  for (const key of Arrays.values(sortKeys(Maps.keys(trivia.attached)))) {
+    if (trivia.attached[key] is Some(list)) {
+      for (const item of Arrays.values(list)) {
+        Str.append(mutable builder, `attached ${key} ${getPlacementName(item.placement)} ${Int.toString(item.comment)}\n`)
+      }
+    }
+  }
+  for (const key of Arrays.values(sortKeys(Maps.keys(trivia.blankBefore)))) {
+    Str.append(mutable builder, `blank ${key}\n`)
+  }
+  let parenKeys: Array<string> = []
+  for (const id of Arrays.values(Maps.keys(trivia.parenthesized))) {
+    Arrays.push(mutable parenKeys, `e${Int.toString(id)}`)
+  }
+  for (const key of Arrays.values(sortKeys(parenKeys))) {
+    Str.append(mutable builder, `paren ${key}\n`)
+  }
+  for (const key of Arrays.values(sortKeys(Maps.keys(trivia.ends)))) {
+    if (trivia.ends[key] is Some(end)) {
+      Str.append(mutable builder, `end ${key} ${formatPos(end)}\n`)
+    }
+  }
+  return Str.build(builder)
+}
+
+// sameTokens tells whether two token lists are equal field by field.
+function sameTokens(left: Array<Token>, right: Array<Token>): bool {
+  if (Arrays.length(left) != Arrays.length(right)) {
+    return false
+  }
+  for (const index of Ranges.upTo(Arrays.length(left))) {
+    const first = left[index]
+    const second = right[index]
+    if (Lexer.getKindName(first.kind) != Lexer.getKindName(second.kind) || first.text != second.text || first.line != second.line || first.column != second.column || first.endLine != second.endLine || first.endColumn != second.endColumn) {
+      return false
+    }
+  }
+  return true
+}
+
+// check parses source both ways and compares them: the same tokens, the
+// same tree dump and next id (or the same error), and every comment attached
+// exactly once. It returns the first problem, or None.
+export function check(source: string): Option<string> uses alloc {
+  const plain = Parser.parse(source, 0)
+  const traced = Parser.parseWithTrivia(source, 0)
+  if (plain is Err(diagnostic)) {
+    if (traced is Err(tracedDiagnostic)) {
+      if (Parser.formatDiagnostic(diagnostic) != Parser.formatDiagnostic(tracedDiagnostic)) {
+        return Some("the errors differ")
+      }
+      return None
+    }
+    return Some("parseWithTrivia succeeded where parse failed")
+  }
+  if (traced is Err(tracedDiagnostic)) {
+    return Some(`parseWithTrivia failed where parse succeeded: ${Parser.formatDiagnostic(tracedDiagnostic)}`)
+  }
+  const #[parsed, trivia] = traced.value
+  if (AstDump.dump(plain.value.file) != AstDump.dump(parsed.file)) {
+    return Some("the tree dumps differ")
+  }
+  if (plain.value.nextId != parsed.nextId) {
+    return Some("nextId differs")
+  }
+  const tokens = Lexer.lex(source)
+  const kept = Lexer.lexWithComments(source)
+  if (tokens is Ok(plainTokens)) {
+    if (kept is Ok(keptResult)) {
+      const #[keptTokens, _comments] = keptResult
+      if (!sameTokens(plainTokens, keptTokens)) {
+        return Some("the tokens differ")
+      }
+    }
+  }
+  return checkAttached(trivia)
+}

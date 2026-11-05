@@ -416,6 +416,9 @@ func shapeMismatch(pat, act Type, tps []*TypeParamType) bool {
 	case *BoxType:
 		a, ok := act.(*BoxType)
 		return !ok || shapeMismatch(p.Elem, a.Elem, tps)
+	case *GeneratorType:
+		a, ok := act.(*GeneratorType)
+		return !ok || shapeMismatch(p.Elem, a.Elem, tps)
 	case *MapType:
 		a, ok := act.(*MapType)
 		return !ok || shapeMismatch(p.Key, a.Key, tps) || shapeMismatch(p.Val, a.Val, tps)

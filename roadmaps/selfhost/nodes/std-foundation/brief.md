@@ -1,7 +1,7 @@
 ---
 id: std-foundation
 title: Groundwork for std modules written in Narra
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 232000
 owns:
   - compiler/testdata/stage2/**
   - compiler/testdata/errors/generic_mismatch_*

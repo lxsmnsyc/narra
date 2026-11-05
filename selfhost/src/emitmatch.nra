@@ -36,7 +36,11 @@ import {
   refOf,
   localOf,
   retainCode,
-  localName,
+  localRef,
+  declareLocal,
+  declareVariable,
+  declareUnset,
+  variableRef,
 } from "narrac/emitstate"
 import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
@@ -161,9 +165,8 @@ function bindPattern(mutable emitter: Emitter, pattern: Pattern, path: string) u
       const localIndex = declaredLocal(emitter, nodeId)
       if (localIndex >= 0) {
         const local = localOf(emitter, localIndex)
-        const name = localName(local)
-        const typeName = cType(emitter.checker, local.localType)
-        writeLine(mutable emitter, `${typeName} ${name} = ${path};`)
+        declareLocal(mutable emitter, localIndex, path)
+        const name = localRef(emitter, localIndex)
         const retainText = retainCode(emitter, local.localType, name)
         if (retainText != "") {
           writeLine(mutable emitter, retainText)
@@ -286,8 +289,10 @@ function emitMatchArms<W: EmitWalker>(
   const subjectType = typeOf(emitter, getExpressionId(subject))
   const held = temp(mutable emitter, subjectType, code.text)
   emitter.tempCount = emitter.tempCount + 1
-  const done = `m${Int.toString(emitter.tempCount)}`
-  writeLine(mutable emitter, `bool ${done} = false;`)
+  const doneName = `m${Int.toString(emitter.tempCount)}`
+  const doneDeclaration = declareVariable(mutable emitter, "bool", doneName)
+  const done = variableRef(emitter, doneName)
+  writeLine(mutable emitter, `${doneDeclaration} = false;`)
   for (const arm of Arrays.values(arms)) {
     writeLine(mutable emitter, `if (!${done}) {`)
     emitter.indent = emitter.indent + 1
@@ -382,14 +387,14 @@ export function emitBlockBody<W: EmitWalker>(
 ): Code uses alloc {
   emitter.tempCount = emitter.tempCount + 1
   const number = Int.toString(emitter.tempCount)
+  const typeName = cType(emitter.checker, resultType)
+  const result = declareUnset(mutable emitter, typeName, `r${number}`)
   const info = BlockInfo {
-    result: `r${number}`,
+    result: result,
     label: `narra_block_${number}`,
     frames: Arrays.length(emitter.frames),
     scopes: Arrays.length(emitter.scopes),
   }
-  const declaration = `${cType(emitter.checker, resultType)} ${info.result};`
-  writeLine(mutable emitter, declaration)
   writeLine(mutable emitter, "{")
   emitter.indent = emitter.indent + 1
   Arrays.push(mutable emitter.blocks, info)
@@ -474,9 +479,9 @@ export function emitMatchValue<W: EmitWalker>(
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
     const resultType = typeOf(emitter, nodeId)
     emitter.tempCount = emitter.tempCount + 1
-    const result = `r${Int.toString(emitter.tempCount)}`
     const resultName = cType(emitter.checker, resultType)
-    writeLine(mutable emitter, `${resultName} ${result};`)
+    const variableName = `r${Int.toString(emitter.tempCount)}`
+    const result = declareUnset(mutable emitter, resultName, variableName)
     emitMatchArms(walker, mutable emitter, subject, arms, true, false, result, resultType)
     if (needsRc(emitter, resultType)) {
       const top = Arrays.length(emitter.frames) - 1

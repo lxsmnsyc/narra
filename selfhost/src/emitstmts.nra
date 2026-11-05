@@ -34,8 +34,13 @@ import {
   localOf,
   retainCode,
   releaseCode,
+  declareLocal,
+  declareLocalVariable,
+  declareVariable,
+  variableRef,
 } from "narrac/emitstate"
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
+import * as Generators from "narrac/emitgenerators"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
 import * as Tail from "narrac/emittail"
@@ -124,8 +129,12 @@ export function emitStatement<W: EmitWalker>(
     )
     Stmt.BreakStmt(_, label) => emitLoopExit(mutable emitter, label, true)
     Stmt.ContinueStmt(_, label) => emitLoopExit(mutable emitter, label, false)
-    // A program with a function* stops before the emitter (emitter.nra).
-    Stmt.YieldStmt(_, _, _) => {}
+    Stmt.YieldStmt(_, value, delegate) => Generators.emitYield(
+      walker,
+      mutable emitter,
+      value,
+      delegate,
+    )
   }
 }
 
@@ -171,9 +180,7 @@ function emitVariable<W: EmitWalker>(
   const localIndex = declaredLocal(emitter, nodeId)
   const local = emitter.checker.bodies[emitter.body].locals[localIndex]
   const consumed = consume(mutable emitter, code.text, code.owned, local.localType)
-  const typeName = cType(emitter.checker, local.localType)
-  const name = localRef(emitter, localIndex)
-  writeLine(mutable emitter, `${typeName} ${name} = ${consumed};`)
+  declareLocal(mutable emitter, localIndex, consumed)
   endStatement(mutable emitter)
   addLocal(mutable emitter, localIndex)
 }
@@ -263,6 +270,10 @@ function emitReturn<W: EmitWalker>(
 ) uses alloc {
   if (Arrays.length(emitter.blocks) > 0) {
     emitBlockReturn(walker, mutable emitter, value)
+    return
+  }
+  if (emitter.inGenerator) {
+    Generators.emitGeneratorReturn(mutable emitter)
     return
   }
   if (value is Some(tailValue)) {
@@ -403,6 +414,8 @@ function emitFor<W: EmitWalker>(
     )
   } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TArray(_)) {
     emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, false, false)
+  } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TGenerator(_, _, _, _)) {
+    Generators.emitGeneratorFor(walker, mutable emitter, nodeId, pos, label, iterable, body)
   } else {
     const _ = reportUnsupported(mutable emitter, "for loop", NODE)
   }
@@ -436,10 +449,12 @@ function emitRangeFor<W: EmitWalker>(
     const upper = EmitWalker.emitExpression(walker, mutable emitter, arguments[1])
     high = temp(mutable emitter, Type.TInt, upper.text)
   }
-  const variable = localRef(emitter, declaredLocal(emitter, nodeId))
+  const localIndex = declaredLocal(emitter, nodeId)
+  const declaration = declareLocalVariable(mutable emitter, localIndex)
+  const variable = localRef(emitter, localIndex)
   writeLine(
     mutable emitter,
-    `for (int64_t ${variable} = ${low}; ${variable} < ${high}; ${variable}++) {`,
+    `for (${declaration} = ${low}; ${variable} < ${high}; ${variable}++) {`,
   )
   emitter.indent = emitter.indent + 1
   emitLoopBody(walker, mutable emitter, label, pos, body)
@@ -461,10 +476,12 @@ function emitRangeValueFor<W: EmitWalker>(
 ) uses alloc {
   const code = EmitWalker.emitExpression(walker, mutable emitter, iterable)
   const range = temp(mutable emitter, Type.TRange, code.text)
-  const variable = localRef(emitter, declaredLocal(emitter, nodeId))
+  const localIndex = declaredLocal(emitter, nodeId)
+  const declaration = declareLocalVariable(mutable emitter, localIndex)
+  const variable = localRef(emitter, localIndex)
   writeLine(
     mutable emitter,
-    `for (int64_t ${variable} = ${range}.low; ${variable} < ${range}.high; ${variable}++) {`,
+    `for (${declaration} = ${range}.low; ${variable} < ${range}.high; ${variable}++) {`,
   )
   emitter.indent = emitter.indent + 1
   emitLoopBody(walker, mutable emitter, label, pos, body)
@@ -493,31 +510,37 @@ function emitArrayFor<W: EmitWalker>(
     }
   }
   const arrayType = typeOf(emitter, getExpressionId(source))
-  if (arrayType is Type.TArray(element)) {
+  if (arrayType is Type.TArray(_)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, source)
     const array = consume(mutable emitter, code.text, code.owned, arrayType)
     // The loop owns the array until the statement ends.
     const top = Arrays.length(emitter.frames) - 1
     Arrays.push(mutable emitter.frames[top], TempVar { name: array, tempType: arrayType })
     emitter.tempCount = emitter.tempCount + 1
-    const index = `i${Int.toString(emitter.tempCount)}`
-    writeLine(mutable emitter, `for (int64_t ${index} = 0; ${index} < ${array}->len; ${index}++) {`)
+    const indexName = `i${Int.toString(emitter.tempCount)}`
+    const indexDeclaration = declareVariable(mutable emitter, "int64_t", indexName)
+    const index = variableRef(emitter, indexName)
+    writeLine(
+      mutable emitter,
+      `for (${indexDeclaration} = 0; ${index} < ${array}->len; ${index}++) {`,
+    )
     emitter.indent = emitter.indent + 1
     enterLoop(mutable emitter, label, pos)
     pushScope(mutable emitter, true)
     const localIndex = declaredLocal(emitter, nodeId)
-    const variable = localRef(emitter, localIndex)
     if (entries) {
-      // Array.entries gives #[index, item].
-      const tupleName = cType(emitter.checker, localOf(emitter, localIndex).localType)
-      writeLine(
-        mutable emitter,
-        `${tupleName} ${variable} = {.f_0 = ${index}, .f_1 = ${array}->items[${index}]};`,
-      )
+      // Array.entries gives #[index, item]; an assignment to a frame field
+      // needs a compound literal.
+      let tupleValue = `{.f_0 = ${index}, .f_1 = ${array}->items[${index}]}`
+      if (emitter.inGenerator) {
+        const tupleName = cType(emitter.checker, localOf(emitter, localIndex).localType)
+        tupleValue = `(${tupleName})${tupleValue}`
+      }
+      declareLocal(mutable emitter, localIndex, tupleValue)
     } else {
-      const elementName = cType(emitter.checker, element)
-      writeLine(mutable emitter, `${elementName} ${variable} = ${array}->items[${index}];`)
+      declareLocal(mutable emitter, localIndex, `${array}->items[${index}]`)
     }
+    const variable = localRef(emitter, localIndex)
     const retainText = retainCode(emitter, localOf(emitter, localIndex).localType, variable)
     if (retainText != "") {
       writeLine(mutable emitter, retainText)

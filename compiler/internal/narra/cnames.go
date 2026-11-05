@@ -259,6 +259,12 @@ func closureCName(kind, owner string, n int) string {
 	return fmt.Sprintf("%s%s_%d", kind, owner[1:], n)
 }
 
+// generatorCName names the frame struct, resume, clone or drop function of a
+// generator: kind is "Y", "y", "j" or "z". The owner is the C name of the
+// generator function (f_<hash>_<name>), so the names are injective because
+// funcCName is.
+func generatorCName(kind, owner string) string { return kind + owner[1:] }
+
 // thunkCName names the thunk of a named function used as a value.
 func thunkCName(owner string) string { return "w" + owner[1:] }
 

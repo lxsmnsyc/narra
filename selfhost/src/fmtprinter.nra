@@ -27,6 +27,9 @@ export struct Printer {
   printPattern: (printer: Printer, pattern: Pattern) => Doc
   printType: (printer: Printer, type: TypeExpr) => Doc
   printBlock: (printer: Printer, block: Block) => Doc
+  lineStarts: Array<int> // byte offset of each line
+  commentStarts: Array<int> // byte offset of each comment's first character
+  commentEnds: Array<int> // byte offset after each comment's last character
 }
 
 // ---- Source text
@@ -49,6 +52,51 @@ export function getOffset(source: string, pos: Pos): int {
     column = column + 1
   }
   return offset
+}
+
+// getLineStarts is the byte offset where each line of the source starts.
+export function getLineStarts(source: string): Array<int> uses alloc {
+  let starts: Array<int> = [0]
+  for (const offset of Ranges.upTo(Str.length(source))) {
+    if (Str.byteAt(source, offset) == 10) {
+      Arrays.push(mutable starts, offset + 1)
+    }
+  }
+  return starts
+}
+
+// getPositionOffset is getOffset for a source whose line starts are known, so
+// it does not scan the lines before the position.
+function getPositionOffset(source: string, lineStarts: Array<int>, pos: Pos): int {
+  if (pos.line < 1 || pos.line > Arrays.length(lineStarts)) {
+    return getOffset(source, pos)
+  }
+  const length = Str.length(source)
+  let offset = lineStarts[pos.line - 1]
+  let column = 1
+  while (column < pos.column && offset < length) {
+    offset = Str.nextChar(source, offset)
+    column = column + 1
+  }
+  return offset
+}
+
+// getCommentOffsets lists the byte offsets of the start (or end) of each comment.
+export function getCommentOffsets(source: string, lineStarts: Array<int>, comments: Array<Comment>, atEnd: bool): Array<int> uses alloc {
+  let offsets: Array<int> = []
+  for (const comment of Arrays.values(comments)) {
+    if (atEnd) {
+      Arrays.push(mutable offsets, getPositionOffset(source, lineStarts, comment.end))
+    } else {
+      Arrays.push(mutable offsets, getPositionOffset(source, lineStarts, comment.pos))
+    }
+  }
+  return offsets
+}
+
+// getPrinterOffset is the byte offset of a position in the printer's source.
+export function getPrinterOffset(printer: Printer, pos: Pos): int {
+  return getPositionOffset(printer.source, printer.lineStarts, pos)
 }
 
 // isNewlineAfter tells whether only blanks come between the offset and the
@@ -138,13 +186,28 @@ function isBalanced(source: string, start: int, end: int): bool {
   return depth == 0
 }
 
+// findFirstAtLeast is the index of the first offset in a sorted list that is at
+// least the value, or the length of the list.
+function findFirstAtLeast(offsets: Array<int>, value: int): int {
+  let low = 0
+  let high = Arrays.length(offsets)
+  while (low < high) {
+    const middle = (low + high) / 2
+    if (offsets[middle] < value) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
 // getCommentStartBefore is the start offset of the comment that ends at an
 // offset, or -1 when none does.
-export function getCommentStartBefore(printer: Printer, end: int): int uses alloc {
-  for (const comment of Arrays.values(printer.trivia.comments)) {
-    if (getOffset(printer.source, comment.end) == end) {
-      return getOffset(printer.source, comment.pos)
-    }
+export function getCommentStartBefore(printer: Printer, end: int): int {
+  const index = findFirstAtLeast(printer.commentEnds, end)
+  if (index < Arrays.length(printer.commentEnds) && printer.commentEnds[index] == end) {
+    return printer.commentStarts[index]
   }
   return -1
 }
@@ -179,7 +242,7 @@ function includeParentheses(printer: Printer, start: int, end: int): int uses al
 
 function getEndOffset(printer: Printer, key: string): Option<int> uses alloc {
   if (printer.trivia.ends[key] is Some(end)) {
-    return Some(getOffset(printer.source, end))
+    return Some(getPrinterOffset(printer, end))
   }
   return None
 }
@@ -197,7 +260,7 @@ export function getStartOffset(printer: Printer, expression: Expr): int uses all
       break
     }
   }
-  let offset = getOffset(printer.source, getExpressionPosition(current))
+  let offset = getPrinterOffset(printer, getExpressionPosition(current))
   for (const step of Ranges.upTo(Arrays.length(spine))) {
     const node = spine[Arrays.length(spine) - 1 - step]
     const id = getExprId(node)
@@ -214,17 +277,13 @@ export function getStartOffset(printer: Printer, expression: Expr): int uses all
 // comment, anywhere between the `(` and the `)`.
 export function hasCommentInParens(printer: Printer, expression: Expr): bool uses alloc {
   const id = getExprId(expression)
-  if (printer.trivia.parenthesized[id] is None) {
+  if (Arrays.length(printer.commentStarts) == 0 || printer.trivia.parenthesized[id] is None) {
     return false
   }
   if (getEndOffset(printer, getIdKey(id)) is Some(end)) {
     const start = getStartOffset(printer, expression)
-    for (const comment of Arrays.values(printer.trivia.comments)) {
-      const offset = getOffset(printer.source, comment.pos)
-      if (offset >= start && offset < end) {
-        return true
-      }
-    }
+    const index = findFirstAtLeast(printer.commentStarts, start)
+    return index < Arrays.length(printer.commentStarts) && printer.commentStarts[index] < end
   }
   return false
 }

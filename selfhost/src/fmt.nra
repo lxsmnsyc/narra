@@ -24,7 +24,7 @@ import * as Parser from "narrac/parser"
 import { Trivia, CommentKind, getPosKey, getIdKey, getDeclPos, getStmtPos, getExprId, getPatternId } from "narrac/trivia"
 import { Pos, File, ImportDecl, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Stmt, Expr, Pattern } from "narrac/ast"
 import { FmtConfig, createDefaultConfig, getDirectory, findConfig } from "narrac/fmtconfig"
-import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, hasBlankBefore, hasDangling, hasTrailing, hasLeading, printBracketed, hasCommentInParens, getStartOffset, getCommentStartBefore, getLeadingBefore, removeComments } from "narrac/fmtprinter"
+import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, getLineStarts, getCommentOffsets, hasBlankBefore, hasDangling, hasTrailing, hasLeading, hoistTrailingComments, printBracketed, hasCommentInParens, getStartOffset, getCommentStartBefore, getLeadingBefore, removeComments } from "narrac/fmtprinter"
 
 // ---- Driver
 
@@ -240,7 +240,8 @@ function isSameComment(before: string, after: string): bool uses alloc {
 }
 
 // createPrinter builds the Printer.
-function createPrinter(source: string, trivia: Trivia, config: FmtConfig): Printer {
+function createPrinter(source: string, trivia: Trivia, config: FmtConfig): Printer uses alloc {
+  const lineStarts = getLineStarts(source)
   const options = Options { printWidth: config.printWidth, tabWidth: config.tabWidth, useTabs: config.useTabs }
   return Printer {
     source: source,
@@ -250,6 +251,9 @@ function createPrinter(source: string, trivia: Trivia, config: FmtConfig): Print
     printPattern: Exprs.printPattern,
     printType: Exprs.printType,
     printBlock: printBlock,
+    lineStarts: lineStarts,
+    commentStarts: getCommentOffsets(source, lineStarts, trivia.comments, false),
+    commentEnds: getCommentOffsets(source, lineStarts, trivia.comments, true),
   }
 }
 
@@ -286,7 +290,39 @@ function quoteString(value: string): string uses alloc {
 // statement); any other value, including a block or `if` value, which breaks
 // inside its own braces or parentheses, stays on the `=` line.
 function printAssigned(printer: Printer, value: Expr): Doc uses alloc {
-  const document = printer.printExpression(printer, value)
+  // Line comments at the end of the value (in parentheses that go away) wait
+  // for the end of the line instead of forcing the value to break.
+  let active = printer
+  let inlines: Array<Doc> = []
+  let suffixes: Array<Doc> = []
+  let current = value
+  let walking = true
+  while (walking) {
+    walking = false
+    const hoisted = hoistTrailingComments(active, getIdKey(getExprId(current)))
+    active = hoisted.printer
+    if (hoisted.count > 0) {
+      // the comments of an inner operand come first in the source
+      Arrays.push(mutable inlines, hoisted.inline)
+      Arrays.push(mutable suffixes, hoisted.suffix)
+    }
+    if (current is Expr.BinaryExpr(_, _, _, _, right)) {
+      current = right
+      walking = true
+    }
+  }
+  let ending: Array<Doc> = []
+  let index = Arrays.length(inlines)
+  while (index > 0) {
+    index = index - 1
+    Arrays.push(mutable ending, inlines[index])
+  }
+  index = Arrays.length(suffixes)
+  while (index > 0) {
+    index = index - 1
+    Arrays.push(mutable ending, suffixes[index])
+  }
+  const document = active.printExpression(active, value)
   // A comment on the lines before the value moves it to the line after `=`.
   const canBreak = match (value) {
     Expr.BinaryExpr(_, _, _, _, _) => true
@@ -294,9 +330,9 @@ function printAssigned(printer: Printer, value: Expr): Doc uses alloc {
     _ => hasLeading(printer, getIdKey(getExprId(value)))
   }
   if (canBreak) {
-    return Docs.group(Docs.concat([text(" ="), Docs.indent(Docs.concat([Doc.Line, document]))]))
+    return Docs.concat([Docs.group(Docs.concat([text(" ="), Docs.indent(Docs.concat([Doc.Line, document]))])), Docs.concat(ending)])
   }
-  return Docs.concat([text(" = "), document])
+  return Docs.concat([text(" = "), document, Docs.concat(ending)])
 }
 
 function text(value: string): Doc uses alloc {
@@ -763,17 +799,22 @@ function printYield(printer: Printer, value: Expr, delegate: bool): Doc uses all
   if (delegate) {
     keyword = "yield* "
   }
-  return Docs.concat([text(keyword), printer.printExpression(printer, value)])
+  return Docs.concat([text(keyword), printReturned(printer, value)])
+}
+
+// printReturned prints the value of a return or yield. Parentheses that hold a
+// comment stay and break, so the comment stays inside.
+function printReturned(printer: Printer, value: Expr): Doc uses alloc {
+  const document = printer.printExpression(printer, value)
+  if (hasCommentInParens(printer, value)) {
+    return printBracketed("(", document, ")")
+  }
+  return document
 }
 
 function printReturn(printer: Printer, value: Option<Expr>): Doc uses alloc {
   if (value is Some(returned)) {
-    const document = printer.printExpression(printer, returned)
-    // Parentheses that hold a comment stay and break, so the comment stays inside.
-    if (hasCommentInParens(printer, returned)) {
-      return Docs.concat([text("return "), printBracketed("(", document, ")")])
-    }
-    return Docs.concat([text("return "), document])
+    return Docs.concat([text("return "), printReturned(printer, returned)])
   }
   return text("return")
 }
@@ -920,18 +961,11 @@ function printFor(printer: Printer, pos: Pos, label: string, name: string, itera
     head = Docs.concat([text(keyword), active.printPattern(active, headPattern)])
   }
   // A comment before the `)` stays inside the header, on a line of its own.
-  let closer = empty()
-  if (hasTrailing(active, getIdKey(getExprId(iterable)))) {
-    closer = Doc.SoftLine
+  const iterableDocument = active.printExpression(active, iterable)
+  if (!hasTrailing(active, getIdKey(getExprId(iterable)))) {
+    return Docs.concat([taken.prefix, text("for ("), head, text(" of "), iterableDocument, text(") "), printBlock(active, loopBody)])
   }
-  const header = Docs.group(Docs.concat([
-    text("for ("),
-    head,
-    text(" of "),
-    Docs.indent(active.printExpression(active, iterable)),
-    closer,
-    text(") "),
-  ]))
+  const header = Docs.group(Docs.concat([text("for ("), head, text(" of "), Docs.indent(iterableDocument), Doc.SoftLine, text(") ")]))
   return Docs.concat([taken.prefix, header, printBlock(active, loopBody)])
 }
 

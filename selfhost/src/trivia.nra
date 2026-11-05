@@ -325,6 +325,38 @@ function endsLineAfterComments(lines: Array<string>, comments: Array<Comment>, i
   return false
 }
 
+// isBeforeCloser tells whether the next code after a comment, past blanks, line
+// ends and further comments, is a closing bracket. Such a comment sits at the
+// end of a list, so no node after the bracket may take it as a leading comment:
+// in `function f(a: int, // c` followed by `)` and `: int`, the result type is
+// outside the parameter list.
+function isBeforeCloser(lines: Array<string>, comments: Array<Comment>, index: int): bool uses alloc {
+  let line = comments[index].end.line
+  let column = comments[index].end.column
+  let next = index + 1
+  while (line >= 1 && line <= Arrays.length(lines)) {
+    const characters = Str.chars(lines[line - 1])
+    if (column > Arrays.length(characters)) {
+      line = line + 1
+      column = 1
+      continue
+    }
+    if (next < Arrays.length(comments) && comments[next].pos.line == line && comments[next].pos.column == column) {
+      line = comments[next].end.line
+      column = comments[next].end.column
+      next = next + 1
+      continue
+    }
+    const character = characters[column - 1]
+    if (isSpace(character)) {
+      column = column + 1
+      continue
+    }
+    return character == ')' || character == ']' || character == '}'
+  }
+  return false
+}
+
 function addAttached(mutable attached: Map<string, Array<Attached>>, key: string, commentIndex: int, placement: Placement) uses alloc {
   let list: Array<Attached> = []
   if (attached[key] is Some(existing)) {
@@ -373,6 +405,9 @@ function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: 
       } else if (following == "" && !isBefore(record.start, comment.end)) {
         following = record.key
       }
+    }
+    if (following != "" && isBeforeCloser(lines, comments, commentIndex)) {
+      following = ""
     }
     if (comment.ownLine) {
       if (following != "") {

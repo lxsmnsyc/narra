@@ -1,0 +1,1099 @@
+// `narrac fmt`: the formatter's driver, and the printing of files, imports,
+// declarations and statements. Expressions, types and patterns come from the
+// function fields of the Printer (contract fmt-printer).
+//
+//   narrac fmt [paths]      rewrite the files in place; a directory means every
+//                           .nra file under it; no path means the current directory
+//   narrac fmt --check ...  print each file that would change; exit 1 if any does
+//   narrac fmt --stdin      (or `-`) read one file from stdin, write the result
+//                           to stdout
+//
+// A file that does not parse prints `error <path>:<line>:<col>: <message>`, is
+// left unchanged, and makes the exit code 1. The [fmt] table of the nearest
+// narra.toml above each file sets the options (fmtconfig.nra).
+//
+// STUB: until fmt-exprs lands, createPrinter fills printExpression,
+// printPattern and printType with printers that copy the source text of the
+// node (printExpressionStub and the two after it). They are the only code that
+// reads the source text.
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Docs from "narrac/fmtdoc"
+import { Doc, Options } from "narrac/fmtdoc"
+import * as Lexer from "narrac/lexer"
+import * as Parser from "narrac/parser"
+import { Trivia, CommentKind, getPosKey, getIdKey, getDeclPos, getStmtPos, getExprId, getPatternId } from "narrac/trivia"
+import { Pos, File, ImportDecl, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Stmt, Expr, Pattern } from "narrac/ast"
+import { FmtConfig, createDefaultConfig, getDirectory, findConfig } from "narrac/fmtconfig"
+import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, hasBlankBefore, hasDangling, hasTrailing, hasLeading, getLeadingBefore, removeComments } from "narrac/fmtprinter"
+
+// ---- Driver
+
+function printError(text: string) {
+  const _ = Fs.writeText("/dev/stderr", `${text}\n`)
+}
+
+function writeStdout(text: string): int uses io {
+  const written = Fs.writeText("/dev/stdout", text)
+  if (written is Err(message)) {
+    printError(message)
+    return 1
+  }
+  return 0
+}
+
+const USAGE = "usage: narrac fmt [--check] [paths] | narrac fmt --stdin"
+
+export function runFmt(arguments: Array<string>): int uses io, alloc {
+  let check = false
+  let useStdin = false
+  let paths: Array<string> = []
+  for (const index of Ranges.between(2, Arrays.length(arguments))) {
+    const argument = arguments[index]
+    if (argument == "--check") {
+      check = true
+    } else if (argument == "--stdin" || argument == "-") {
+      useStdin = true
+    } else if (Str.startsWith(argument, "-")) {
+      printError(USAGE)
+      return 2
+    } else {
+      Arrays.push(mutable paths, argument)
+    }
+  }
+  if (useStdin && Arrays.length(paths) > 0) {
+    printError(USAGE)
+    return 2
+  }
+  let configs: Map<string, FmtConfig> = Map {}
+  if (useStdin) {
+    return formatStdin(check, mutable configs)
+  }
+  if (Arrays.length(paths) == 0) {
+    Arrays.push(mutable paths, ".")
+  }
+  let status = 0
+  let files: Array<string> = []
+  for (const path of Arrays.values(paths)) {
+    if (Fs.listDir(path) is Ok(_)) {
+      collectFiles(path, mutable files)
+    } else if (Fs.exists(path)) {
+      Arrays.push(mutable files, path)
+    } else {
+      printError(`error ${path}: no such file or directory`)
+      status = 1
+    }
+  }
+  for (const file of Arrays.values(files)) {
+    if (formatFile(file, check, mutable configs) != 0) {
+      status = 1
+    }
+  }
+  return status
+}
+
+// collectFiles lists the .nra files under a directory in name order, without
+// the hidden directories.
+function collectFiles(directory: string, mutable files: Array<string>) uses io, alloc {
+  const listed = Fs.listDir(directory)
+  if (listed is Err(_)) {
+    return
+  }
+  let names: Array<string> = []
+  for (const name of Arrays.values(listed.value)) {
+    Arrays.push(mutable names, name)
+    let index = Arrays.length(names) - 1
+    while (index > 0 && names[index] < names[index - 1]) {
+      const swap = names[index]
+      names[index] = names[index - 1]
+      names[index - 1] = swap
+      index = index - 1
+    }
+  }
+  for (const name of Arrays.values(names)) {
+    if (Str.startsWith(name, ".")) {
+      continue
+    }
+    let child = name
+    if (directory != "/") {
+      child = `${directory}/${name}`
+    }
+    if (directory == ".") {
+      child = name
+    }
+    if (Fs.listDir(child) is Ok(_)) {
+      collectFiles(child, mutable files)
+    } else if (Str.endsWith(name, ".nra")) {
+      Arrays.push(mutable files, child)
+    }
+  }
+}
+
+// loadConfig finds the config of a directory, once per directory.
+function loadConfig(directory: string, mutable configs: Map<string, FmtConfig>): Result<FmtConfig, string> uses io, alloc {
+  if (configs[directory] is Some(known)) {
+    return Ok(known)
+  }
+  const found = findConfig(directory)
+  if (found is Ok(config)) {
+    configs[directory] = config
+  }
+  return found
+}
+
+function formatStdin(check: bool, mutable configs: Map<string, FmtConfig>): int uses io, alloc {
+  const read = Fs.readText("/dev/stdin")
+  if (read is Err(message)) {
+    printError(message)
+    return 1
+  }
+  const config = loadConfig(getDirectory(".", true), mutable configs)
+  if (config is Err(message)) {
+    printError(`error ${message}`)
+    return 1
+  }
+  const formatted = formatSource(read.value, config.value)
+  if (formatted is Err(message)) {
+    printError(`error <stdin>:${message}`)
+    return 1
+  }
+  if (check) {
+    if (formatted.value != read.value) {
+      return writeStdout("<stdin>\n") + 1
+    }
+    return 0
+  }
+  return writeStdout(formatted.value)
+}
+
+function formatFile(path: string, check: bool, mutable configs: Map<string, FmtConfig>): int uses io, alloc {
+  const read = Fs.readText(path)
+  if (read is Err(message)) {
+    printError(`error ${message}`)
+    return 1
+  }
+  const config = loadConfig(getDirectory(path, false), mutable configs)
+  if (config is Err(message)) {
+    printError(`error ${message}`)
+    return 1
+  }
+  const formatted = formatSource(read.value, config.value)
+  if (formatted is Err(message)) {
+    printError(`error ${path}:${message}`)
+    return 1
+  }
+  if (formatted.value == read.value) {
+    return 0
+  }
+  if (check) {
+    const _ = writeStdout(`${path}\n`)
+    return 1
+  }
+  const written = Fs.writeText(path, formatted.value)
+  if (written is Err(message)) {
+    printError(`error ${message}`)
+    return 1
+  }
+  return 0
+}
+
+// formatSource formats the text of one file. The error is `line:col: message`.
+export function formatSource(text: string, config: FmtConfig): Result<string, string> uses alloc {
+  const source = Str.replace(text, "\r\n", "\n")
+  const traced = Parser.parseWithTrivia(source, 0)
+  if (traced is Err(diagnostic)) {
+    return Err(Parser.formatDiagnostic(diagnostic))
+  }
+  const #[parsed, trivia] = traced.value
+  const printer = createPrinter(source, trivia, config)
+  const document = printFile(printer, parsed.file)
+  const formatted = Docs.print(document, printer.settings.options)
+  // Every comment must come out again, as Prettier checks.
+  const problem = findLostComment(trivia, formatted)
+  if (problem is Some(message)) {
+    return Err(message)
+  }
+  return Ok(formatted)
+}
+
+// findLostComment parses the result and compares its comments with the
+// original ones: the same texts, in the same order.
+function findLostComment(trivia: Trivia, formatted: string): Option<string> uses alloc {
+  const traced = Parser.parseWithTrivia(formatted, 0)
+  if (traced is Err(diagnostic)) {
+    return Some(`1:1: the formatted text does not parse: ${Parser.formatDiagnostic(diagnostic)}`)
+  }
+  const #[_parsed, after] = traced.value
+  for (const index of Ranges.upTo(Arrays.length(trivia.comments))) {
+    const comment = trivia.comments[index]
+    if (index >= Arrays.length(after.comments) || !isSameComment(comment.text, after.comments[index].text)) {
+      return Some(`${Int.toString(comment.pos.line)}:${Int.toString(comment.pos.column)}: comment not printed: ${comment.text}`)
+    }
+  }
+  if (Arrays.length(after.comments) > Arrays.length(trivia.comments)) {
+    return Some("1:1: a comment was printed twice")
+  }
+  return None
+}
+
+function isSameComment(before: string, after: string): bool uses alloc {
+  return Str.trim(before) == Str.trim(after)
+}
+
+// createPrinter builds the Printer. fmt-exprs replaces the three stub fields.
+function createPrinter(source: string, trivia: Trivia, config: FmtConfig): Printer {
+  const options = Options { printWidth: config.printWidth, tabWidth: config.tabWidth, useTabs: config.useTabs }
+  return Printer {
+    source: source,
+    trivia: trivia,
+    settings: Settings { options: options, trailingComma: config.trailingComma },
+    printExpression: printExpressionStub,
+    printPattern: printPatternStub,
+    printType: printTypeStub,
+    printBlock: printBlock,
+  }
+}
+
+// ---- Stub printers: the source text of the node
+
+function getByteAt(source: string, offset: int): int {
+  if (offset < 0 || offset >= Str.length(source)) {
+    return -1
+  }
+  return Str.byteAt(source, offset)
+}
+
+function getExpressionPosition(expression: Expr): Pos {
+  return match (expression) {
+    Expr.IntLit(_, pos, _) => pos
+    Expr.FloatLit(_, pos, _) => pos
+    Expr.StringLit(_, pos, _, _) => pos
+    Expr.CharLit(_, pos, _) => pos
+    Expr.BoolLit(_, pos, _) => pos
+    Expr.TemplateLit(_, pos, _) => pos
+    Expr.Ident(_, pos, _) => pos
+    Expr.FieldExpr(_, pos, _, _) => pos
+    Expr.IsExpr(_, pos, _, _) => pos
+    Expr.IndexExpr(_, pos, _, _) => pos
+    Expr.MapLit(_, pos, _, _, _) => pos
+    Expr.CallExpr(_, pos, _, _) => pos
+    Expr.UnaryExpr(_, pos, _, _) => pos
+    Expr.BinaryExpr(_, pos, _, _, _) => pos
+    Expr.StructLit(_, pos, _, _, _, _) => pos
+    Expr.ArrayLit(_, pos, _, _) => pos
+    Expr.MatchExpr(_, pos, _, _) => pos
+    Expr.BlockExpr(_, pos, _) => pos
+    Expr.ArrowExpr(_, pos, _, _, _, _) => pos
+  }
+}
+
+function getPatternPosition(pattern: Pattern): Pos {
+  return match (pattern) {
+    Pattern.PatWildcard(_, pos) => pos
+    Pattern.PatName(_, pos, _) => pos
+    Pattern.PatCtor(_, pos, _, _, _, _) => pos
+    Pattern.PatStruct(_, pos, _) => pos
+    Pattern.PatTuple(_, pos, _) => pos
+    Pattern.PatLit(_, pos, _) => pos
+  }
+}
+
+// getLeftChild is the operand that comes first in the source: the node's own
+// position is an operator or a bracket for these.
+function getLeftChild(expression: Expr): Option<Expr> {
+  return match (expression) {
+    Expr.BinaryExpr(_, _, _, left, _) => Some(left)
+    Expr.IsExpr(_, _, subject, _) => Some(subject)
+    Expr.FieldExpr(_, _, target, _) => Some(target)
+    Expr.CallExpr(_, _, callee, _) => Some(callee)
+    Expr.IndexExpr(_, _, target, _) => Some(target)
+    _ => None
+  }
+}
+
+// isBalanced tells whether the parentheses between two offsets close.
+function isBalanced(source: string, start: int, end: int): bool {
+  let depth = 0
+  for (const offset of Ranges.between(start, end)) {
+    const byte = Str.byteAt(source, offset)
+    if (byte == 40) {
+      depth = depth + 1
+    } else if (byte == 41) {
+      depth = depth - 1
+      if (depth < 0) {
+        return false
+      }
+    }
+  }
+  return depth == 0
+}
+
+// includeParentheses moves the start of a parenthesized expression back to
+// its opening parenthesis.
+function includeParentheses(source: string, start: int, end: int): int uses alloc {
+  let candidates: Array<int> = []
+  let index = start
+  while (index > 0) {
+    const byte = Str.byteAt(source, index - 1)
+    if (byte == 32 || byte == 9 || byte == 10 || byte == 13) {
+      index = index - 1
+    } else if (byte == 40) {
+      index = index - 1
+      Arrays.push(mutable candidates, index)
+    } else {
+      break
+    }
+  }
+  for (const candidate of Arrays.values(candidates)) {
+    if (isBalanced(source, candidate, end)) {
+      return candidate
+    }
+  }
+  return start
+}
+
+function getEndOffset(printer: Printer, key: string): Option<int> uses alloc {
+  if (printer.trivia.ends[key] is Some(end)) {
+    return Some(getOffset(printer.source, end))
+  }
+  return None
+}
+
+// getStartOffset is where an expression starts, with its parentheses.
+function getStartOffset(printer: Printer, expression: Expr): int uses alloc {
+  let spine: Array<Expr> = [expression]
+  let current = expression
+  while (true) {
+    const next = getLeftChild(current)
+    if (next is Some(child)) {
+      Arrays.push(mutable spine, child)
+      current = child
+    } else {
+      break
+    }
+  }
+  let offset = getOffset(printer.source, getExpressionPosition(current))
+  for (const step of Ranges.upTo(Arrays.length(spine))) {
+    const node = spine[Arrays.length(spine) - 1 - step]
+    const id = getExprId(node)
+    if (printer.trivia.parenthesized[id] is Some(_)) {
+      if (getEndOffset(printer, getIdKey(id)) is Some(end)) {
+        offset = includeParentheses(printer.source, offset, end)
+      }
+    }
+  }
+  return offset
+}
+
+function printExpressionStub(printer: Printer, expression: Expr): Doc uses alloc {
+  const key = getIdKey(getExprId(expression))
+  const end = getEndOffset(printer, key)
+  if (end is None) {
+    return Docs.text("")
+  }
+  const start = getStartOffset(printer, expression)
+  return withComments(printer, key, Docs.text(Str.slice(printer.source, start, end.value)))
+}
+
+function printPatternStub(printer: Printer, pattern: Pattern): Doc uses alloc {
+  const key = getIdKey(getPatternId(pattern))
+  const end = getEndOffset(printer, key)
+  if (end is None) {
+    return Docs.text("")
+  }
+  const start = getOffset(printer.source, getPatternPosition(pattern))
+  return withComments(printer, key, Docs.text(Str.slice(printer.source, start, end.value)))
+}
+
+function printTypeStub(printer: Printer, typeExpression: TypeExpr): Doc uses alloc {
+  const key = getPosKey("t", typeExpression.pos)
+  const end = getEndOffset(printer, key)
+  if (end is None) {
+    return Docs.text("")
+  }
+  const start = getOffset(printer.source, typeExpression.pos)
+  return withComments(printer, key, Docs.text(Str.slice(printer.source, start, end.value)))
+}
+
+// ---- Helpers
+
+// quoteString writes a string literal.
+function quoteString(value: string): string uses alloc {
+  const parts = Str.split(Lexer.escapeText(value), "\"")
+  return `"${Str.join(parts, "\\\"")}"`
+}
+
+// printAssigned prints ` = value`. A binary, `is` or block value may move to the
+// next line after the `=` (an operator at the end of a line continues the
+// statement); any other value stays on the `=` line.
+function printAssigned(printer: Printer, value: Expr): Doc uses alloc {
+  const document = printer.printExpression(printer, value)
+  const canBreak = match (value) {
+    Expr.BinaryExpr(_, _, _, _, _) => true
+    Expr.IsExpr(_, _, _, _) => true
+    Expr.BlockExpr(_, _, _) => true
+    _ => false
+  }
+  if (canBreak) {
+    return Docs.group(Docs.concat([text(" ="), Docs.indent(Docs.concat([Doc.Line, document]))]))
+  }
+  return Docs.concat([text(" = "), document])
+}
+
+function text(value: string): Doc uses alloc {
+  return Docs.text(value)
+}
+
+function empty(): Doc uses alloc {
+  return Docs.concat([])
+}
+
+function commaLine(): Doc uses alloc {
+  return Docs.concat([text(","), Doc.Line])
+}
+
+// printList prints `open item, item close`: on one line if it fits, else one
+// item per line with the trailing comma of the settings.
+function printList(printer: Printer, open: string, close: string, items: Array<Doc>, hasTrailingComma: bool): Doc uses alloc {
+  if (Arrays.length(items) == 0) {
+    return text(`${open}${close}`)
+  }
+  let lastComma = empty()
+  if (hasTrailingComma) {
+    lastComma = trailingComma(printer)
+  }
+  return Docs.group(Docs.concat([
+    text(open),
+    Docs.indent(Docs.concat([Doc.SoftLine, Docs.join(commaLine(), items)])),
+    lastComma,
+    Doc.SoftLine,
+    text(close),
+  ]))
+}
+
+// joinItems puts the items of a list on separate lines; a blank line of the
+// source stays, as one blank line, but never before the first item.
+function joinItems(printer: Printer, keys: Array<string>, documents: Array<Doc>): Doc uses alloc {
+  let parts: Array<Doc> = []
+  for (const index of Ranges.upTo(Arrays.length(documents))) {
+    if (index > 0) {
+      Arrays.push(mutable parts, Doc.HardLine)
+      if (hasBlankBefore(printer, keys[index])) {
+        Arrays.push(mutable parts, Doc.HardLine)
+      }
+    }
+    Arrays.push(mutable parts, documents[index])
+  }
+  return Docs.concat(parts)
+}
+
+// printBraces prints `{` items `}`; an empty body is `{}`, or holds the
+// dangling comments of its anchor.
+function printBraces(printer: Printer, anchor: string, keys: Array<string>, documents: Array<Doc>): Doc uses alloc {
+  if (Arrays.length(documents) == 0) {
+    if (hasDangling(printer, anchor)) {
+      return Docs.concat([text("{"), Docs.indent(Docs.concat([Doc.HardLine, printDangling(printer, anchor)])), Doc.HardLine, text("}")])
+    }
+    return text("{}")
+  }
+  return Docs.concat([text("{"), Docs.indent(Docs.concat([Doc.HardLine, joinItems(printer, keys, documents)])), Doc.HardLine, text("}")])
+}
+
+// ---- Files and imports
+
+function printFile(printer: Printer, file: File): Doc uses alloc {
+  let keys: Array<string> = []
+  let documents: Array<Doc> = []
+  for (const importDecl of Arrays.values(file.imports)) {
+    const key = getPosKey("i", importDecl.pos)
+    Arrays.push(mutable keys, key)
+    Arrays.push(mutable documents, withComments(printer, key, printImport(printer, importDecl)))
+  }
+  for (const declaration of Arrays.values(file.declarations)) {
+    const key = getPosKey("d", getDeclPos(declaration))
+    Arrays.push(mutable keys, key)
+    Arrays.push(mutable documents, withComments(printer, key, printDeclaration(printer, declaration)))
+  }
+  if (Arrays.length(documents) == 0) {
+    if (hasDangling(printer, "file")) {
+      return Docs.concat([printDangling(printer, "file"), Doc.HardLine])
+    }
+    return empty()
+  }
+  return Docs.concat([joinItems(printer, keys, documents), Doc.HardLine])
+}
+
+function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
+  const path = quoteString(importDecl.path)
+  if (importDecl.alias != "") {
+    return text(`import * as ${importDecl.alias} from ${path}`)
+  }
+  // Names have no anchors: the comments inside the braces are dangling on the import.
+  const importKey = getPosKey("i", importDecl.pos)
+  if (Arrays.length(importDecl.names) == 0 && !hasDangling(printer, importKey)) {
+    return text(`import {} from ${path}`)
+  }
+  let names: Array<Doc> = []
+  for (const importName of Arrays.values(importDecl.names)) {
+    if (importName.local == importName.name) {
+      Arrays.push(mutable names, text(importName.name))
+    } else {
+      Arrays.push(mutable names, text(`${importName.name} as ${importName.local}`))
+    }
+  }
+  let inside: Array<Doc> = [Doc.Line]
+  if (hasDangling(printer, importKey)) {
+    Arrays.push(mutable inside, printDangling(printer, importKey))
+    if (Arrays.length(names) > 0) {
+      Arrays.push(mutable inside, Doc.HardLine)
+    }
+  }
+  Arrays.push(mutable inside, Docs.join(commaLine(), names))
+  let lastComma = empty()
+  if (Arrays.length(names) > 0) {
+    lastComma = trailingComma(printer)
+  }
+  return Docs.group(Docs.concat([
+    text("import {"),
+    Docs.indent(Docs.concat(inside)),
+    lastComma,
+    Doc.Line,
+    text(`} from ${path}`),
+  ]))
+}
+
+// ---- Declarations
+
+function printDeclaration(printer: Printer, declaration: Decl): Doc uses alloc {
+  return match (declaration) {
+    Decl.Func(inner) => printFunction(printer, inner)
+    Decl.Const(inner) => printConst(printer, inner)
+    Decl.Struct(inner) => printStruct(printer, inner)
+    Decl.Enum(inner) => printEnum(printer, inner)
+    Decl.Distinct(inner) => printDistinct(printer, inner)
+    Decl.Test(inner) => Docs.concat([text(`test ${quoteString(inner.name)} `), printBlock(printer, inner.body)])
+    Decl.Trait(inner) => printTrait(printer, inner)
+    Decl.Impl(inner) => printImpl(printer, inner)
+  }
+}
+
+function getExportPrefix(exported: bool): string {
+  if (exported) {
+    return "export "
+  }
+  return ""
+}
+
+function printTypeList(printer: Printer, types: Array<TypeExpr>): Doc uses alloc {
+  let documents: Array<Doc> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable documents, printer.printType(printer, type))
+  }
+  return Docs.join(text(", "), documents)
+}
+
+// printTraitLists prints ` implements A, B derives C`.
+function printTraitLists(printer: Printer, implementations: Array<TypeExpr>, derived: Array<TypeExpr>): Doc uses alloc {
+  let parts: Array<Doc> = []
+  if (Arrays.length(implementations) > 0) {
+    Arrays.push(mutable parts, text(" implements "))
+    Arrays.push(mutable parts, printTypeList(printer, implementations))
+  }
+  if (Arrays.length(derived) > 0) {
+    Arrays.push(mutable parts, text(" derives "))
+    Arrays.push(mutable parts, printTypeList(printer, derived))
+  }
+  return Docs.concat(parts)
+}
+
+function printTypeParameters(printer: Printer, names: Array<string>, bounds: Array<Array<TypeExpr>>, effects: Array<string>): Doc uses alloc {
+  let items: Array<Doc> = []
+  for (const index of Ranges.upTo(Arrays.length(names))) {
+    let item = names[index]
+    if (index < Arrays.length(bounds) && Arrays.length(bounds[index]) > 0) {
+      let boundNames: Array<string> = []
+      for (const bound of Arrays.values(bounds[index])) {
+        Arrays.push(mutable boundNames, bound.name)
+      }
+      item = `${item}: ${Str.join(boundNames, " & ")}`
+    }
+    Arrays.push(mutable items, text(item))
+  }
+  for (const effect of Arrays.values(effects)) {
+    Arrays.push(mutable items, text(`effect ${effect}`))
+  }
+  if (Arrays.length(items) == 0) {
+    return empty()
+  }
+  // A type parameter list never breaks: Narra reads a line break only inside ( and [.
+  return Docs.concat([text("<"), Docs.join(text(", "), items), text(">")])
+}
+
+function printParameter(printer: Printer, parameter: Param): Doc uses alloc {
+  let parts: Array<Doc> = []
+  if (parameter.isMutable) {
+    Arrays.push(mutable parts, text("mutable "))
+  }
+  if (parameter.escaping) {
+    Arrays.push(mutable parts, text("escaping "))
+  }
+  Arrays.push(mutable parts, text(parameter.name))
+  if (parameter.type is Some(type)) {
+    Arrays.push(mutable parts, text(": "))
+    Arrays.push(mutable parts, printer.printType(printer, type))
+  }
+  return withComments(printer, getIdKey(parameter.id), Docs.concat(parts))
+}
+
+// canEndWithComma tells whether a broken parameter list may end with a comma.
+// After a function type with `uses`, the comma would read as part of the
+// effect list.
+function canEndWithComma(declaration: FuncDecl): bool {
+  if (Arrays.length(declaration.parameters) == 0) {
+    return true
+  }
+  const last = declaration.parameters[Arrays.length(declaration.parameters) - 1]
+  if (last.type is Some(lastType)) {
+    return !(lastType.isFunc && Arrays.length(lastType.effects) > 0)
+  }
+  return true
+}
+
+// printFunction prints a function with its body, or without one in a trait.
+function printFunction(printer: Printer, declaration: FuncDecl): Doc uses alloc {
+  let parameters: Array<Doc> = []
+  for (const parameter of Arrays.values(declaration.parameters)) {
+    Arrays.push(mutable parameters, printParameter(printer, parameter))
+  }
+  let parts: Array<Doc> = [
+    text(`${getExportPrefix(declaration.exported)}function ${declaration.name}`),
+    printTypeParameters(printer, declaration.typeParameters, declaration.bounds, declaration.effectParameters),
+    printList(printer, "(", ")", parameters, canEndWithComma(declaration)),
+  ]
+  if (declaration.result is Some(result)) {
+    Arrays.push(mutable parts, text(": "))
+    Arrays.push(mutable parts, printer.printType(printer, result))
+  }
+  if (Arrays.length(declaration.effects) > 0) {
+    Arrays.push(mutable parts, text(` uses ${Str.join(declaration.effects, ", ")}`))
+  }
+  if (declaration.body is Some(body)) {
+    Arrays.push(mutable parts, text(" "))
+    Arrays.push(mutable parts, printer.printBlock(printer, body))
+  }
+  return Docs.concat(parts)
+}
+
+function printConst(printer: Printer, declaration: ConstDecl): Doc uses alloc {
+  let parts: Array<Doc> = [text(`${getExportPrefix(declaration.exported)}const ${declaration.name}`)]
+  if (declaration.type is Some(type)) {
+    Arrays.push(mutable parts, text(": "))
+    Arrays.push(mutable parts, printer.printType(printer, type))
+  }
+  Arrays.push(mutable parts, printAssigned(printer, declaration.value))
+  return Docs.concat(parts)
+}
+
+// printField prints `name: Type = default`.
+function printField(printer: Printer, field: FieldDecl): Doc uses alloc {
+  let parts: Array<Doc> = [text(`${field.name}: `), printer.printType(printer, field.type)]
+  if (field.default is Some(value)) {
+    Arrays.push(mutable parts, text(" = "))
+    Arrays.push(mutable parts, printer.printExpression(printer, value))
+  }
+  return withComments(printer, getPosKey("f", field.pos), Docs.concat(parts))
+}
+
+function printStruct(printer: Printer, declaration: StructDecl): Doc uses alloc {
+  let prefix = getExportPrefix(declaration.exported)
+  if (declaration.opaque) {
+    prefix = `${prefix}opaque `
+  }
+  let keys: Array<string> = []
+  let fields: Array<Doc> = []
+  for (const field of Arrays.values(declaration.fields)) {
+    Arrays.push(mutable keys, getPosKey("f", field.pos))
+    Arrays.push(mutable fields, printField(printer, field))
+  }
+  return Docs.concat([
+    text(`${prefix}struct ${declaration.name}`),
+    printTypeParameters(printer, declaration.typeParameters, [], []),
+    printTraitLists(printer, declaration.implementations, declaration.derived),
+    text(" "),
+    printBraces(printer, getPosKey("d", declaration.pos), keys, fields),
+  ])
+}
+
+function printVariant(printer: Printer, variant: VariantDecl): Doc uses alloc {
+  let fields: Array<Doc> = []
+  for (const field of Arrays.values(variant.fields)) {
+    Arrays.push(mutable fields, printField(printer, field))
+  }
+  let parts: Array<Doc> = [text(variant.name)]
+  if (Arrays.length(fields) > 0) {
+    Arrays.push(mutable parts, printList(printer, "(", ")", fields, true))
+  }
+  return withComments(printer, getPosKey("v", variant.pos), Docs.concat(parts))
+}
+
+function printEnum(printer: Printer, declaration: EnumDecl): Doc uses alloc {
+  let keys: Array<string> = []
+  let variants: Array<Doc> = []
+  for (const variant of Arrays.values(declaration.variants)) {
+    Arrays.push(mutable keys, getPosKey("v", variant.pos))
+    Arrays.push(mutable variants, printVariant(printer, variant))
+  }
+  return Docs.concat([
+    text(`${getExportPrefix(declaration.exported)}enum ${declaration.name}`),
+    printTypeParameters(printer, declaration.typeParameters, [], []),
+    printTraitLists(printer, declaration.implementations, declaration.derived),
+    text(" "),
+    printBraces(printer, getPosKey("d", declaration.pos), keys, variants),
+  ])
+}
+
+function printDistinct(printer: Printer, declaration: DistinctDecl): Doc uses alloc {
+  let prefix = getExportPrefix(declaration.exported)
+  if (declaration.opaque) {
+    prefix = `${prefix}opaque `
+  }
+  return Docs.concat([text(`${prefix}distinct type ${declaration.name} = `), printer.printType(printer, declaration.base)])
+}
+
+// printMembers prints the functions of a trait or an implement block.
+function printMembers(printer: Printer, anchor: string, functions: Array<FuncDecl>): Doc uses alloc {
+  let keys: Array<string> = []
+  let documents: Array<Doc> = []
+  for (const member of Arrays.values(functions)) {
+    const key = getPosKey("d", member.pos)
+    Arrays.push(mutable keys, key)
+    Arrays.push(mutable documents, withComments(printer, key, printFunction(printer, member)))
+  }
+  return printBraces(printer, anchor, keys, documents)
+}
+
+function printTrait(printer: Printer, declaration: TraitDecl): Doc uses alloc {
+  return Docs.concat([
+    text(`${getExportPrefix(declaration.exported)}trait ${declaration.name} `),
+    printMembers(printer, getPosKey("d", declaration.pos), declaration.functions),
+  ])
+}
+
+function printImpl(printer: Printer, declaration: ImplDecl): Doc uses alloc {
+  return Docs.concat([
+    text("implement "),
+    printer.printType(printer, declaration.traitType),
+    text(" for "),
+    printer.printType(printer, declaration.type),
+    text(" "),
+    printMembers(printer, getPosKey("d", declaration.pos), declaration.functions),
+  ])
+}
+
+// ---- Blocks and statements
+
+// printBlock prints `{ statements }` with the comments attached to the block
+// (the printBlock field of the Printer).
+export function printBlock(printer: Printer, block: Block): Doc uses alloc {
+  return withComments(printer, getPosKey("b", block.pos), printBlockBody(printer, block))
+}
+
+// printBlockBody prints the braces and what is inside them.
+function printBlockBody(printer: Printer, block: Block): Doc uses alloc {
+  let keys: Array<string> = []
+  let documents: Array<Doc> = []
+  for (const statement of Arrays.values(block.statements)) {
+    Arrays.push(mutable keys, getPosKey("s", getStmtPos(statement)))
+    Arrays.push(mutable documents, printStatement(printer, statement))
+  }
+  return printBraces(printer, getPosKey("b", block.pos), keys, documents)
+}
+
+// printCondition prints `(condition)` of an if or while.
+function printCondition(printer: Printer, condition: Expr): Doc uses alloc {
+  return Docs.concat([
+    text("("),
+    Docs.group(Docs.concat([Docs.indent(Docs.concat([Doc.SoftLine, printer.printExpression(printer, condition)])), Doc.SoftLine])),
+    text(")"),
+  ])
+}
+
+function printStatement(printer: Printer, statement: Stmt): Doc uses alloc {
+  const key = getPosKey("s", getStmtPos(statement))
+  return withComments(printer, key, printStatementBody(printer, statement))
+}
+
+function printStatementBody(printer: Printer, statement: Stmt): Doc uses alloc {
+  if (isTernaryReturn(printer, statement)) {
+    // One line: the parser rejects a conditional that spans lines without parentheses.
+    // Parentheses written around the whole conditional stay.
+    if (statement is Stmt.IfStmt(_, condition, _, _)) {
+      if (isAfterOpenParenthesis(printer.source, getStartOffset(printer, condition))) {
+        return Docs.concat([text("return ("), printTernaryChain(printer, statement), text(")")])
+      }
+    }
+    return Docs.concat([text("return "), printTernaryChain(printer, statement)])
+  }
+  return match (statement) {
+    Stmt.BlockStmt(block) => printBlock(printer, block)
+    Stmt.VarStmt(_, _, isMutable, name, pattern, type, value) => printVariable(printer, isMutable, name, pattern, type, value)
+    Stmt.AssignStmt(_, target, value) => Docs.concat([printer.printExpression(printer, target), printAssigned(printer, value)])
+    Stmt.ExprStmt(_, expression) => printer.printExpression(printer, expression)
+    Stmt.ReturnStmt(_, value) => printReturn(printer, value)
+    Stmt.IfStmt(_, condition, thenBlock, orElse) => printIf(printer, condition, thenBlock, orElse)
+    Stmt.WhileStmt(pos, label, condition, body) => printWhile(printer, pos, label, condition, body)
+    Stmt.ForStmt(_, pos, label, name, iterable, body) => printFor(printer, pos, label, name, iterable, body)
+    Stmt.BreakStmt(_, label) => text(getJump("break", label))
+    Stmt.ContinueStmt(_, label) => text(getJump("continue", label))
+  }
+}
+
+function getLabelPrefix(label: string): string uses alloc {
+  if (label == "") {
+    return ""
+  }
+  return `${label}: `
+}
+
+function getJump(keyword: string, label: string): string uses alloc {
+  if (label == "") {
+    return keyword
+  }
+  return `${keyword} ${label}`
+}
+
+function printVariable(printer: Printer, isMutable: bool, name: string, pattern: Option<Pattern>, type: Option<TypeExpr>, value: Expr): Doc uses alloc {
+  let keyword = "const "
+  if (isMutable) {
+    keyword = "let "
+  }
+  let parts: Array<Doc> = [text(keyword)]
+  if (pattern is Some(inner)) {
+    Arrays.push(mutable parts, printer.printPattern(printer, inner))
+  } else {
+    Arrays.push(mutable parts, text(name))
+  }
+  if (type is Some(declared)) {
+    Arrays.push(mutable parts, text(": "))
+    Arrays.push(mutable parts, printer.printType(printer, declared))
+  }
+  Arrays.push(mutable parts, printAssigned(printer, value))
+  return Docs.concat(parts)
+}
+
+function printReturn(printer: Printer, value: Option<Expr>): Doc uses alloc {
+  if (value is Some(returned)) {
+    return Docs.concat([text("return "), printer.printExpression(printer, returned)])
+  }
+  return text("return")
+}
+
+// printIf prints an if with its else branches; `else if` stays on the line of
+// the closing brace.
+function printIf(printer: Printer, condition: Expr, thenBlock: Block, orElse: Option<Stmt>): Doc uses alloc {
+  let parts: Array<Doc> = [text("if "), printCondition(printer, condition), text(" "), printBlock(printer, thenBlock)]
+  if (orElse is Some(branch)) {
+    // The comments of the else branch go before `else`, on their own lines.
+    let branchKey = ""
+    let branchBody = empty()
+    if (branch is Stmt.IfStmt(branchPos, _, _, _)) {
+      branchKey = getPosKey("s", branchPos)
+      branchBody = printStatementBody(printer, branch)
+    } else if (branch is Stmt.BlockStmt(elseBlock)) {
+      branchKey = getPosKey("b", elseBlock.pos)
+      branchBody = printBlockBody(printer, elseBlock)
+    }
+    const elseDocument = withComments(printer, branchKey, Docs.concat([text("else "), branchBody]))
+    if (hasTrailing(printer, getPosKey("b", thenBlock.pos)) || hasLeading(printer, branchKey)) {
+      // A trailing comment of the block ends the line: `else` starts the next one.
+      Arrays.push(mutable parts, Doc.HardLine)
+    } else {
+      Arrays.push(mutable parts, text(" "))
+    }
+    Arrays.push(mutable parts, elseDocument)
+  }
+  return Docs.concat(parts)
+}
+
+// findKeywordOffset is the offset of the `for` or `while` that follows a
+// label, past the comments.
+function findKeywordOffset(source: string, start: int): int {
+  const length = Str.length(source)
+  let index = start
+  while (index < length) {
+    const byte = Str.byteAt(source, index)
+    if (byte == 47 && getByteAt(source, index + 1) == 47) {
+      while (index < length && Str.byteAt(source, index) != 10) {
+        index = index + 1
+      }
+    } else if (byte == 47 && getByteAt(source, index + 1) == 42) {
+      index = index + 2
+      while (index < length && !(Str.byteAt(source, index) == 42 && getByteAt(source, index + 1) == 47)) {
+        index = index + 1
+      }
+      index = index + 2
+    } else if (isWordAt(source, index, "for") || isWordAt(source, index, "while")) {
+      return index
+    } else {
+      index = index + 1
+    }
+  }
+  return length
+}
+
+function isWordAt(source: string, index: int, word: string): bool uses alloc {
+  const end = index + Str.length(word)
+  if (end > Str.length(source) || Str.slice(source, index, end) != word) {
+    return false
+  }
+  return !isWordByte(getByteAt(source, index - 1)) && !isWordByte(getByteAt(source, end))
+}
+
+function isWordByte(byte: int): bool {
+  return (byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || (byte >= 48 && byte <= 57) || byte == 95
+}
+
+// LabelComments are the comments between a loop's label and its keyword. The
+// trivia attaches them to the first node of the loop head, so they are taken
+// from there and printed after the label.
+struct LabelComments {
+  prefix: Doc
+  printer: Printer
+}
+
+function takeLabelComments(printer: Printer, pos: Pos, label: string, anchors: Array<string>): LabelComments uses alloc {
+  let prefix = text(getLabelPrefix(label))
+  let active = printer
+  if (label == "") {
+    return LabelComments { prefix: prefix, printer: active }
+  }
+  const keywordOffset = findKeywordOffset(printer.source, getOffset(printer.source, pos) + Str.length(label))
+  let parts: Array<Doc> = [prefix]
+  for (const anchor of Arrays.values(anchors)) {
+    const indexes = getLeadingBefore(printer, anchor, keywordOffset)
+    if (Arrays.length(indexes) == 0) {
+      continue
+    }
+    active = removeComments(active, anchor, indexes)
+    for (const index of Arrays.values(indexes)) {
+      const comment = printer.trivia.comments[index]
+      Arrays.push(mutable parts, text(Str.trim(comment.text)))
+      if (comment.kind is CommentKind.Block) {
+        Arrays.push(mutable parts, text(" "))
+      } else {
+        Arrays.push(mutable parts, Doc.HardLine)
+      }
+    }
+  }
+  return LabelComments { prefix: Docs.concat(parts), printer: active }
+}
+
+function printWhile(printer: Printer, pos: Pos, label: string, condition: Expr, body: Block): Doc uses alloc {
+  const taken = takeLabelComments(printer, pos, label, [getIdKey(getExprId(condition))])
+  return Docs.concat([taken.prefix, text("while "), printCondition(taken.printer, condition), text(" "), printBlock(taken.printer, body)])
+}
+
+// printFor prints a for loop. The parser turns `for (const pattern of xs)` and
+// `for (let x of xs)` into a loop over a hidden name whose body starts with a
+// declaration; this puts it back.
+function printFor(printer: Printer, pos: Pos, label: string, name: string, iterable: Expr, body: Block): Doc uses alloc {
+  let keyword = "const "
+  let declaredName = name
+  let declaredPattern: Option<Pattern> = None
+  let loopBody = body
+  if (Str.startsWith(name, "__for_") && Arrays.length(body.statements) > 0) {
+    if (body.statements[0] is Stmt.VarStmt(_, _, isMutable, hiddenDeclaration, pattern, _, Expr.Ident(_, _, hiddenName))) {
+      if (hiddenName == name) {
+        if (isMutable) {
+          keyword = "let "
+        }
+        declaredName = hiddenDeclaration
+        declaredPattern = pattern
+        let rest: Array<Stmt> = []
+        for (const index of Ranges.between(1, Arrays.length(body.statements))) {
+          Arrays.push(mutable rest, body.statements[index])
+        }
+        loopBody = Block { pos: body.pos, statements: rest }
+      }
+    }
+  }
+  // The loop head: the pattern (if any) comes before the iterable.
+  let anchors: Array<string> = []
+  if (declaredPattern is Some(headPattern)) {
+    Arrays.push(mutable anchors, getIdKey(getPatternId(headPattern)))
+  }
+  Arrays.push(mutable anchors, getIdKey(getExprId(iterable)))
+  const taken = takeLabelComments(printer, pos, label, anchors)
+  const active = taken.printer
+  let head = text(`${keyword}${declaredName}`)
+  if (declaredPattern is Some(headPattern)) {
+    head = Docs.concat([text(keyword), active.printPattern(active, headPattern)])
+  }
+  return Docs.concat([
+    taken.prefix,
+    text("for ("),
+    head,
+    text(" of "),
+    active.printExpression(active, iterable),
+    text(") "),
+    printBlock(active, loopBody),
+  ])
+}
+
+// isTernaryReturn tells whether a statement is the if the parser makes of
+// `return c ? a : b`: its position is the `?`, where a real if has `if`.
+function isTernaryReturn(printer: Printer, statement: Stmt): bool {
+  if (statement is Stmt.IfStmt(pos, _, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
+    if (Arrays.length(thenBlock.statements) != 1 || Arrays.length(elseBlock.statements) != 1) {
+      return false
+    }
+    return getByteAt(printer.source, getOffset(printer.source, pos)) == 63
+  }
+  return false
+}
+
+// printTernaryChain prints `c ? a : b` for such an if.
+function printTernaryChain(printer: Printer, statement: Stmt): Doc uses alloc {
+  if (statement is Stmt.IfStmt(_, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
+    return Docs.concat([
+      printer.printExpression(printer, condition),
+      text(" ? "),
+      printTernaryBranch(printer, thenBlock),
+      text(" : "),
+      printTernaryBranch(printer, elseBlock),
+    ])
+  }
+  return empty()
+}
+
+// printTernaryBranch prints one branch of a converted conditional: a value,
+// or a conditional of its own, which keeps the parentheses it was written in.
+function printTernaryBranch(printer: Printer, block: Block): Doc uses alloc {
+  const statement = block.statements[0]
+  if (statement is Stmt.ReturnStmt(_, Some(value))) {
+    return printer.printExpression(printer, value)
+  }
+  const chain = printTernaryChain(printer, statement)
+  if (isAfterOpenParenthesis(printer.source, getOffset(printer.source, block.pos))) {
+    return Docs.concat([text("("), chain, text(")")])
+  }
+  return chain
+}
+
+// isAfterOpenParenthesis tells whether the last thing before the offset, past
+// blanks, is a `(`.
+function isAfterOpenParenthesis(source: string, offset: int): bool {
+  let index = offset
+  while (index > 0) {
+    const byte = Str.byteAt(source, index - 1)
+    if (byte == 32 || byte == 9 || byte == 10 || byte == 13) {
+      index = index - 1
+    } else {
+      return byte == 40
+    }
+  }
+  return false
+}

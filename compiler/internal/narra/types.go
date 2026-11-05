@@ -207,19 +207,32 @@ func (t *RangeType) CName() string  { return "narra_range" }
 // Binder is the function whose effect variables Effects names, or nil.
 // Origin is set for the result type of a private function*, whose effects
 // are inferred: the effect pass fills Origin.GenEffects, and Effects is
-// unused.
+// unused. Bound is set for the result of a call whose callee's result type
+// names the callee's effect variables: the effect pass fills it with the
+// effects the arguments bind (bindCallResult), and Effects is unused.
 type GeneratorType struct {
 	Elem    Type
 	Effects []string
 	Binder  *FuncDecl
 	Origin  *FuncDecl
+	Bound   *boundEffects
+}
+
+// boundEffects are the effects of one call's generator result, filled by the
+// effect pass. id tells calls apart in typeID.
+type boundEffects struct {
+	id      int
+	effects []string
 }
 
 // effects is the effect list of the type: the inferred one of a private
-// generator once the effect pass has run.
+// generator or of a call result once the effect pass has run.
 func (t *GeneratorType) effects() []string {
 	if t.Origin != nil {
 		return t.Origin.GenEffects
+	}
+	if t.Bound != nil {
+		return t.Bound.effects
 	}
 	return t.Effects
 }
@@ -279,7 +292,7 @@ func sameType(a, b Type) bool {
 	ga, ok1 := a.(*GeneratorType)
 	gb, ok2 := b.(*GeneratorType)
 	if ok1 && ok2 {
-		return sameType(ga.Elem, gb.Elem) && ga.Origin == gb.Origin && ga.Binder == gb.Binder && strings.Join(ga.Effects, ",") == strings.Join(gb.Effects, ",")
+		return sameType(ga.Elem, gb.Elem) && ga.Origin == gb.Origin && ga.Bound == gb.Bound && ga.Binder == gb.Binder && strings.Join(ga.Effects, ",") == strings.Join(gb.Effects, ",")
 	}
 	fa, ok1 := a.(*FuncType)
 	fb, ok2 := b.(*FuncType)

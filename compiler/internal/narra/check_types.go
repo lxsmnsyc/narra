@@ -307,7 +307,7 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		if !containsTypeParam(t.Elem) {
 			return t
 		}
-		return &GeneratorType{Elem: c.substitute(t.Elem, m), Effects: t.Effects, Binder: t.Binder, Origin: t.Origin}
+		return &GeneratorType{Elem: c.substitute(t.Elem, m), Effects: t.Effects, Binder: t.Binder, Origin: t.Origin, Bound: t.Bound}
 	case *BoxType:
 		return c.boxOf(c.substitute(t.Elem, m))
 	case *MapType:
@@ -625,6 +625,27 @@ func (c *Checker) expectType(pos Pos, want, got Type) {
 	}
 }
 
+// bindCallResult gives a call its own result type when the callee's result
+// is a generator type naming the callee's effect variables, as in
+// `map<effect E>(g: Generator<int> uses E): Generator<int> uses E`. The
+// effect pass replaces each variable by the effects of the argument that
+// binds it (userCall), so the name never leaves the callee (D78).
+func (c *Checker) bindCallResult(e *CallExpr, t Type) Type {
+	g, ok := t.(*GeneratorType)
+	if !ok || e.Func == nil || g.Binder == nil {
+		return t
+	}
+	callee := e.Func
+	if callee.Origin != nil {
+		callee = callee.Origin
+	}
+	if g.Binder != callee {
+		return t
+	}
+	c.boundCalls++
+	return &GeneratorType{Elem: g.Elem, Binder: c.sigFunc, Bound: &boundEffects{id: c.boundCalls}}
+}
+
 // generatorUse is a generator value used where a generator type is
 // expected, checked after the effect pass (D78).
 type generatorUse struct {
@@ -643,7 +664,7 @@ func (c *Checker) expectGenerator(pos Pos, want, got *GeneratorType) {
 	if want.Binder != nil && want.Binder != c.sigFunc {
 		return
 	}
-	if want.Origin != nil || got.Origin != nil {
+	if want.Origin != nil || got.Origin != nil || want.Bound != nil || got.Bound != nil {
 		c.generatorUses = append(c.generatorUses, generatorUse{pos: pos, file: c.mod.file, want: want, got: got})
 		return
 	}

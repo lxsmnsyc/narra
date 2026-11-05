@@ -95,11 +95,30 @@ function checkExpressionKind<W: Walker>(mutable checker: Checker, walker: W, exp
 // checkCallEndingNarrowing checks a call. A callee can change what it
 // receives as `mutable`, so the narrowing of those locals ends.
 function checkCallEndingNarrowing<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>, want: Option<Type>): Type uses alloc {
-  const found = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+  const checked = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+  const found = bindCallResult(mutable checker, nodeId, checked)
   for (const argument of Arrays.values(arguments)) {
     if (argument.isMutable) {
       const local = findAssignedLocal(checker, argument.value)
       endNarrowing(mutable checker, local)
+    }
+  }
+  return found
+}
+
+// bindCallResult gives a call its own result type when the callee's result
+// is a generator type naming the callee's effect variables (Go's
+// bindCallResult). The effect pass replaces each variable by the effects of
+// the argument that binds it, so the name never leaves the callee (D78).
+function bindCallResult(mutable checker: Checker, nodeId: int, found: Type): Type uses alloc {
+  if (found is Type.TGenerator(element, _, binder, _)) {
+    let calleeIndex = -1
+    if (getRef(checker, nodeId) is Ref.Function(index)) {
+      calleeIndex = index
+    }
+    if (binder >= 0 && binder == calleeIndex) {
+      Arrays.push(mutable checker.boundGenerators, [])
+      return Type.TGenerator(element, [], checker.functionIndex, -1 - Arrays.length(checker.boundGenerators))
     }
   }
   return found
@@ -126,7 +145,7 @@ export function expectType(mutable checker: Checker, pos: Pos, want: Option<Type
     if (expected is Type.TGenerator(wantElement, _, wantBinder, wantOrigin)) {
       if (got is Type.TGenerator(gotElement, _, _, gotOrigin)) {
         if (wantElement == gotElement) {
-          expectGenerator(mutable checker, pos, expected, wantBinder, wantOrigin >= 0 || gotOrigin >= 0, got)
+          expectGenerator(mutable checker, pos, expected, wantBinder, wantOrigin != -1 || gotOrigin != -1, got)
           return
         }
       }

@@ -155,7 +155,7 @@ func (c *Checker) exprInner(e Expr, want Type) Type {
 	case *IsExpr:
 		return c.isExpr(e)
 	case *CallExpr:
-		t := c.call(e, want)
+		t := c.bindCallResult(e, c.call(e, want))
 		// A callee can change what it receives as `mutable`.
 		for _, a := range e.Args {
 			if a.Mutable {

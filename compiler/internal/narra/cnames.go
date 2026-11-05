@@ -158,6 +158,9 @@ func typeID(t Type) string {
 		if t.Origin != nil {
 			id += "_O" + t.Origin.Module + "." + t.Origin.Name
 		}
+		if t.Bound != nil {
+			id += "_B" + strconv.Itoa(t.Bound.id)
+		}
 		return id
 	}
 	return "x"

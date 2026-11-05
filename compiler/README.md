@@ -118,7 +118,7 @@ go test ./...
 
 ## Differences from the spec
 
-- Effect variables in a generator's own return type (`Generator<T> uses E`) are not replaced at the call: the call's result keeps `E`. A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
+- A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
 - `==` and `!=` work on a distinct type when its base type supports them (and it can be a map key). SPEC.md says no operators carry over.
 - A distinct type cannot list traits with `implements` or `derives`; SPEC.md allows it.
 - Top-level constants that are not scalars (strings built by templates, structs, arrays, enums with fields, function values) are built on first use, behind a getter, and kept until the program ends. The spec says modules have no initialization code; this keeps that, but the first-use build is not thread safe yet (the threads node must add a once guard). Struct and array constants are heap values, not static C data.

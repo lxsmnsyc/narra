@@ -120,6 +120,7 @@ type Checker struct {
 	errs          []Diagnostic
 	scope         *scope
 	fn            *FuncDecl
+	boundCalls    int            // call results with bound generator effects, for their ids
 	generatorUses []generatorUse // checked after the effect pass (check_types.go)
 	sigFunc       *FuncDecl      // the function whose signature or body is being checked (an instance's generic function): it binds the effect variables of generator types
 	loops         int

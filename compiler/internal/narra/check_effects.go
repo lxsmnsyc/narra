@@ -121,7 +121,7 @@ func (s *effectState) generatorEffects(t *GeneratorType) effSet {
 		}
 		return set
 	}
-	for _, n := range t.Effects {
+	for _, n := range t.effects() {
 		set[n] = effCause{}
 	}
 	return set
@@ -546,22 +546,26 @@ func (w *effectWalker) userCall(e *CallExpr) {
 			w.add(n, e.P, via)
 			continue
 		}
-		for i, p := range g.Params {
-			if i >= len(e.Args) || p.Type == nil || !contains(p.Type.Uses, n) {
-				continue
-			}
-			arg := s.valueEffects(e.Args[i].Value)
-			if t, ok := e.Args[i].Value.Type().(*GeneratorType); ok && !p.Type.Func {
-				// A generator-typed parameter binds the variable to the
-				// effects of the generator passed (D78).
-				arg = s.generatorEffects(t)
-			} else if !p.Type.Func {
-				continue
-			}
-			for _, m := range sortedEffects(arg) {
-				w.add(m, e.P, via)
+		for _, m := range sortedEffects(s.boundEffects(e, g, n)) {
+			w.add(m, e.P, via)
+		}
+	}
+	// A generator result that names the callee's variables gets the effects
+	// they are bound to at this call (bindCallResult).
+	if t, ok := e.T.(*GeneratorType); ok && t.Bound != nil {
+		set := effSet{}
+		if declared, ok := g.ResultT.(*GeneratorType); ok {
+			for _, n := range declared.Effects {
+				if !vars[n] {
+					set[n] = effCause{}
+					continue
+				}
+				for m := range s.boundEffects(e, g, n) {
+					set[m] = effCause{}
+				}
 			}
 		}
+		t.Bound.effects = sortedEffects(set)
 	}
 	// A private function is inferred, so a function-type parameter without
 	// `uses` acts as an implicit effect variable: the call has the effects
@@ -603,6 +607,30 @@ func (w *effectWalker) userCall(e *CallExpr) {
 				p.Name, g.Name, strings.Join(extra, "`, `"), strings.Join(extra, ", "), g.Name)
 		}
 	}
+}
+
+// boundEffects is the set the effect variable n of callee g takes at the call
+// e: the effects of the arguments passed to the parameters whose function
+// or generator type names it (D14, D78).
+func (s *effectState) boundEffects(e *CallExpr, g *FuncDecl, n string) effSet {
+	set := effSet{}
+	for i, p := range g.Params {
+		if i >= len(e.Args) || p.Type == nil || !contains(p.Type.Uses, n) {
+			continue
+		}
+		arg := s.valueEffects(e.Args[i].Value)
+		if t, ok := e.Args[i].Value.Type().(*GeneratorType); ok && !p.Type.Func {
+			// A generator-typed parameter binds the variable to the
+			// effects of the generator passed (D78).
+			arg = s.generatorEffects(t)
+		} else if !p.Type.Func {
+			continue
+		}
+		for m, cause := range arg {
+			set[m] = cause
+		}
+	}
+	return set
 }
 
 func contains(list []string, name string) bool {

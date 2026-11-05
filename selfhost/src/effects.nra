@@ -199,8 +199,11 @@ function checkGeneratorUses(mutable checker: Checker) uses alloc {
 function generatorEffects(checker: Checker, state: EffectState, type: Type): Array<string> uses alloc {
   let names: Array<string> = []
   if (type is Type.TGenerator(_, effects, _, origin)) {
-    if (origin < 0) {
+    if (origin == -1) {
       return effects
+    }
+    if (origin < -1) {
+      return checker.boundGenerators[-2 - origin]
     }
     const declaration = checker.functions[origin].declaration
     if (state.functions[generatorKey(checker, origin)] is Some(found)) {
@@ -681,6 +684,7 @@ function walkCall(mutable checker: Checker, mutable state: EffectState, mutable 
   const ref = findRef(checker, state.body, nodeId)
   if (findCallee(checker, ref) is Some(found)) {
     walkUserCall(mutable checker, mutable state, mutable out, pos, found, arguments)
+    bindResultEffects(mutable checker, state, nodeId, found, arguments)
     return
   }
   match (ref) {
@@ -718,6 +722,64 @@ function walkCall(mutable checker: Checker, mutable state: EffectState, mutable 
 
 // walkUserCall adds the effects of a call to a declared function. A variable
 // of the callee takes the effects of the arguments bound to it.
+// findBoundEffects lists the effects the effect variable name of a callee
+// takes at a call: those of the arguments passed to the parameters whose
+// function or generator type names it (D14, D78), sorted.
+function findBoundEffects(checker: Checker, state: EffectState, declaration: FuncDecl, arguments: Array<Arg>, name: string): Array<string> uses alloc {
+  let bound: Array<Effect> = []
+  const nowhere = Pos { line: 0, column: 0 }
+  for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
+    if (index >= Arrays.length(arguments)) {
+      continue
+    }
+    if (declaration.parameters[index].type is Some(parameterType)) {
+      if (!containsName(parameterType.effects, name)) {
+        continue
+      }
+      if (parameterType.isFunc) {
+        if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
+          for (const passed of Arrays.values(set)) {
+            addEffect(mutable bound, passed.name, nowhere, "")
+          }
+        }
+      } else if (findNodeType(checker, state.body, getExpressionId(arguments[index].value)) is Some(argumentType)) {
+        // A generator-typed parameter binds the variable to the effects of
+        // the generator passed (D78).
+        for (const passed of Arrays.values(generatorEffects(checker, state, argumentType))) {
+          addEffect(mutable bound, passed, nowhere, "")
+        }
+      }
+    }
+  }
+  return sortEffectNames(bound)
+}
+
+// bindResultEffects fills the effects of a call result that names the
+// callee's effect variables (bindCallResult in exprs.nra): each variable
+// becomes the effects bound to it at this call.
+function bindResultEffects(mutable checker: Checker, state: EffectState, nodeId: int, callee: Callee, arguments: Array<Arg>) uses alloc {
+  if (findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, origin))) {
+    if (origin >= -1) {
+      return
+    }
+    const declaration = callee.declaration
+    let set: Array<Effect> = []
+    const nowhere = Pos { line: 0, column: 0 }
+    if (declaration.result is Some(resultType)) {
+      for (const name of Arrays.values(resultType.effects)) {
+        if (!containsName(declaration.effectParameters, name)) {
+          addEffect(mutable set, name, nowhere, "")
+          continue
+        }
+        for (const passed of Arrays.values(findBoundEffects(checker, state, declaration, arguments, name))) {
+          addEffect(mutable set, passed, nowhere, "")
+        }
+      }
+    }
+    checker.boundGenerators[-2 - origin] = sortEffectNames(set)
+  }
+}
+
 function walkUserCall(mutable checker: Checker, mutable state: EffectState, mutable out: Array<Effect>, pos: Pos, callee: Callee, arguments: Array<Arg>) uses alloc {
   const declaration = callee.declaration
   const variables = declaration.effectParameters
@@ -726,28 +788,8 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
       addEffect(mutable out, effect.name, pos, callee.label)
       continue
     }
-    for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
-      if (index >= Arrays.length(arguments)) {
-        continue
-      }
-      if (declaration.parameters[index].type is Some(parameterType)) {
-        if (parameterType.isFunc && containsName(parameterType.effects, effect.name)) {
-          if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
-            for (const passed of Arrays.values(sortEffectNames(set))) {
-              addEffect(mutable out, passed, pos, callee.label)
-            }
-          }
-        } else if (containsName(parameterType.effects, effect.name)) {
-          // A generator-typed parameter binds the variable to the effects
-          // of the generator passed (D78).
-          const argumentValue = arguments[index].value
-          if (findNodeType(checker, state.body, getExpressionId(argumentValue)) is Some(Type.TGenerator(element, effects, binder, origin))) {
-            for (const passed of Arrays.values(generatorEffects(checker, state, Type.TGenerator(element, effects, binder, origin)))) {
-              addEffect(mutable out, passed, pos, callee.label)
-            }
-          }
-        }
-      }
+    for (const passed of Arrays.values(findBoundEffects(checker, state, declaration, arguments, effect.name))) {
+      addEffect(mutable out, passed, pos, callee.label)
     }
   }
 

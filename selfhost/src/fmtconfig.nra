@@ -1,0 +1,184 @@
+// The [fmt] table of narra.toml for `narrac fmt`: printWidth, tabWidth,
+// useTabs and trailingComma. Every other table and key of the file is not
+// read here (the package loader skips [fmt]). An unknown key in [fmt] or a
+// value of the wrong type is an error `narra.toml:<line>: <message>`.
+import * as Fs from "std/fs"
+import * as Env from "std/env"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export struct FmtConfig {
+  printWidth: int
+  tabWidth: int
+  useTabs: bool
+  trailingComma: bool // true for "all", false for "none"
+}
+
+export function createDefaultConfig(): FmtConfig {
+  return FmtConfig { printWidth: 100, tabWidth: 2, useTabs: false, trailingComma: true }
+}
+
+// stripComment removes a `#` comment that is outside a string.
+function stripComment(line: string): string uses alloc {
+  let quote = 0
+  for (const index of Ranges.upTo(Str.length(line))) {
+    const byte = Str.byteAt(line, index)
+    if (quote != 0) {
+      if (byte == quote) {
+        quote = 0
+      }
+    } else if (byte == 34 || byte == 39) {
+      quote = byte
+    } else if (byte == 35) {
+      return Str.slice(line, 0, index)
+    }
+  }
+  return line
+}
+
+function createError(line: int, message: string): string uses alloc {
+  return `narra.toml:${Int.toString(line)}: ${message}`
+}
+
+// parsePositive reads a positive decimal integer.
+function parsePositive(raw: string, key: string, line: int): Result<int, string> uses alloc {
+  const parsed = Int.parse(raw, 10)
+  if (parsed is Err(_)) {
+    return Err(createError(line, `${key} must be a positive integer`))
+  }
+  if (parsed.value < 1) {
+    return Err(createError(line, `${key} must be a positive integer`))
+  }
+  return Ok(parsed.value)
+}
+
+// parseFmtConfig reads the [fmt] table of the text of a narra.toml.
+export function parseFmtConfig(text: string): Result<FmtConfig, string> uses alloc {
+  let config = createDefaultConfig()
+  let inFmt = false
+  const lines = Str.split(text, "\n")
+  for (const index of Ranges.upTo(Arrays.length(lines))) {
+    const lineNumber = index + 1
+    const line = Str.trim(stripComment(lines[index]))
+    if (Str.startsWith(line, "[") && Str.endsWith(line, "]")) {
+      inFmt = Str.trim(Str.slice(line, 1, Str.length(line) - 1)) == "fmt"
+      continue
+    }
+    if (!inFmt || line == "") {
+      continue
+    }
+    const equalsIndex = Str.indexOf(line, "=")
+    if (equalsIndex is None) {
+      return Err(createError(lineNumber, "expected `key = value`"))
+    }
+    const key = Str.trim(Str.slice(line, 0, equalsIndex.value))
+    const raw = Str.trim(Str.sliceFrom(line, equalsIndex.value + 1))
+    if (key == "printWidth" || key == "tabWidth") {
+      const number = parsePositive(raw, key, lineNumber)
+      if (number is Err(message)) {
+        return Err(message)
+      }
+      if (key == "printWidth") {
+        config = FmtConfig { ...config, printWidth: number.value }
+      } else {
+        config = FmtConfig { ...config, tabWidth: number.value }
+      }
+    } else if (key == "useTabs") {
+      if (raw != "true" && raw != "false") {
+        return Err(createError(lineNumber, "useTabs must be true or false"))
+      }
+      config = FmtConfig { ...config, useTabs: raw == "true" }
+    } else if (key == "trailingComma") {
+      if (raw != "\"all\"" && raw != "\"none\"") {
+        return Err(createError(lineNumber, "trailingComma must be \"all\" or \"none\""))
+      }
+      config = FmtConfig { ...config, trailingComma: raw == "\"all\"" }
+    } else {
+      return Err(createError(lineNumber, `unknown key ${key} in [fmt]`))
+    }
+  }
+  return Ok(config)
+}
+
+// normalizePath removes `.` and `..` segments of an absolute path.
+function normalizePath(path: string): string uses alloc {
+  let segments: Array<string> = []
+  for (const segment of Arrays.values(Str.split(path, "/"))) {
+    if (segment == "" || segment == ".") {
+      continue
+    }
+    if (segment == "..") {
+      if (Arrays.length(segments) > 0) {
+        let kept: Array<string> = []
+        for (const index of Ranges.upTo(Arrays.length(segments) - 1)) {
+          Arrays.push(mutable kept, segments[index])
+        }
+        segments = kept
+      }
+      continue
+    }
+    Arrays.push(mutable segments, segment)
+  }
+  return `/${Str.join(segments, "/")}`
+}
+
+// getDirectory is the absolute directory that holds a path (or the path
+// itself, for a directory). Without the PWD variable the path stays relative.
+export function getDirectory(path: string, isDirectory: bool): string uses io, alloc {
+  let absolute = path
+  if (!Str.startsWith(path, "/")) {
+    if (Env.get("PWD") is Some(working)) {
+      absolute = `${working}/${path}`
+    }
+  }
+  const normalized = normalizePath(absolute)
+  if (isDirectory) {
+    return normalized
+  }
+  const parts = Str.split(normalized, "/")
+  if (Arrays.length(parts) <= 2) {
+    return "/"
+  }
+  let kept: Array<string> = []
+  for (const index of Ranges.upTo(Arrays.length(parts) - 1)) {
+    Arrays.push(mutable kept, parts[index])
+  }
+  return Str.join(kept, "/")
+}
+
+// findConfig reads the [fmt] table of the nearest narra.toml in the
+// directory or above it. Without one it returns the defaults.
+export function findConfig(directory: string): Result<FmtConfig, string> uses io, alloc {
+  let current = directory
+  while (true) {
+    let manifest = `${current}/narra.toml`
+    if (current == "/") {
+      manifest = "/narra.toml"
+    }
+    if (Fs.exists(manifest)) {
+      const read = Fs.readText(manifest)
+      if (read is Err(message)) {
+        return Err(message)
+      }
+      return parseFmtConfig(read.value)
+    }
+    if (current == "/" || current == "" || current == ".") {
+      break
+    }
+    const parts = Str.split(current, "/")
+    if (Arrays.length(parts) <= 1) {
+      break
+    }
+    let kept: Array<string> = []
+    for (const index of Ranges.upTo(Arrays.length(parts) - 1)) {
+      Arrays.push(mutable kept, parts[index])
+    }
+    current = Str.join(kept, "/")
+    if (current == "") {
+      current = "/"
+    }
+  }
+  return Ok(createDefaultConfig())
+}

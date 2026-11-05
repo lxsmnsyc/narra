@@ -298,6 +298,31 @@ func TestSelfhostFmt(t *testing.T) {
 	}
 }
 
+// movingComments lists, by file and comment number, the comments of the
+// goldens that change the node they attach to when formatted: they sit in
+// redundant parentheses, which go away, so they lead or trail the expression,
+// the statement or the field next to it. Every other comment keeps its
+// attachment.
+var movingComments = map[string]map[int]string{
+	"comment_paren_expr.nra": {
+		3:  "// paren end",
+		5:  "/* out */",
+		12: "// t",
+		14: "// t",
+		16: "// t",
+	},
+	"comment_bracket_return.nra": {2: "// t"},
+	"comment_is_subject.nra":     {2: "/* t */"},
+	"comment_paren_binary.nra": {
+		0: "// x",
+		1: "// d",
+		2: "// d",
+		3: "// c",
+		4: "// c",
+	},
+	"comment_paren_conditional.nra": {1: "// c"},
+}
+
 var (
 	positionPattern = regexp.MustCompile(`^( *\S+) \d+:\d+`)
 	endPattern      = regexp.MustCompile(` end=\d+:\d+`)
@@ -384,7 +409,7 @@ func tokensOf(dump string) string {
 
 // commentsOf lists the comments of a trivia dump: the text without trailing
 // blanks, the kind letter of the node it is attached to and its placement.
-func commentsOf(dump string) string {
+func commentsOf(dump string, moving map[int]string) string {
 	var texts []string
 	attached := map[string]string{}
 	for _, line := range strings.Split(dump, "\n") {
@@ -407,7 +432,11 @@ func commentsOf(dump string) string {
 		}
 	}
 	for i, text := range texts {
-		texts[i] = text + "  [" + attached[strconv.Itoa(i)] + "]"
+		if moving[i] == text {
+			texts[i] = text
+		} else {
+			texts[i] = text + "  [" + attached[strconv.Itoa(i)] + "]"
+		}
 	}
 	return strings.Join(texts, "\n")
 }
@@ -440,7 +469,8 @@ func checkFormatted(t *testing.T, exe, path string) {
 	}
 	beforeComments, _ := dumpOf(t, exe, "trivia", path)
 	afterComments, _ := dumpOf(t, exe, "trivia", formatted)
-	if want, got := commentsOf(beforeComments), commentsOf(afterComments); want != got {
+	moving := movingComments[filepath.Base(path)]
+	if want, got := commentsOf(beforeComments, moving), commentsOf(afterComments, moving); want != got {
 		t.Fatalf("comments differ: %s", firstDiff(want, got))
 	}
 	beforeTree, _ := dumpOf(t, exe, "parse", path)

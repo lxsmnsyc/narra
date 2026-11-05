@@ -29,11 +29,11 @@
 - Number token text in the AST is normalised (`0x1F_F` is `0x1FF`); the printer reads it from the source.
 - `Map<K, V>` and struct literal type arguments, import names and type parameter bounds have no comment anchors (fmt-trivia gap); comments there are not attached.
 - A broken `return c ? a : b` cannot be parenthesized (the parser would read a value, not the hidden `if`), so a call in its condition breaks inside its own parentheses and the line may stay over the width.
-- A comment between an operand and its operator moves after the operator (`x /* c */ + y` becomes `x + /* c */ y`).
+- A comment between an operand and its operator moves after the operator (`x /* c */ + y` becomes `x + /* c */ y`). For `is` the comment goes after `is` and the pattern moves to the next line.
 - Layout on the right of `=` is fmt-cli's. The driver used: a binary, `is` or `if` value breaks after `=` and indents; everything else stays after `=`. An arrow body that is a binary chain is indented once, not twice (`printBody`).
 - Doc `Text` with a newline inside (a multi-line template) is printed as written; the width of that line is then counted wrongly.
 - `Trivia.ends` of a parenthesized expression includes its parentheses. Literals copied from the source cut the text after their last token that is not `)` (`cutClosingParens`); without that `(1)` printed as `(1))` (review finding on PR #81).
-- Comments in an empty struct literal (`Point { /* c */ }`) and right inside grouping parentheses (`(/* in */ x)`, `(x /* out */)`) are not printed; `narrac fmt` stops with `comment not printed` and leaves the file unchanged. `f(/* c */)` prints as `f /* c */()` and `a./* c */b` as `a /* c */.b`.
+- Comments in an empty struct literal (`Point { /* c */ }`) are not printed; `narrac fmt` stops with `comment not printed` and leaves the file unchanged. `f(/* c */)` prints as `f /* c */()` and `a./* c */b` as `a /* c */.b`. Fixed since (fix/fmt-bracket-comments): comments right inside grouping parentheses (`(/* in */ x)`, `(x /* out */)`, `(\n // c\n x\n)`) belong to the expression and its parentheses are dropped when redundant (kept, with the comment inside, when precedence or a multi-line conditional needs them); a comment before the `)` of an `if`, `for`, `while`, `match` or guard header, an index `[ ]` or a `return ( )` stays inside and breaks that pair.
 - A Block comment is always printed inline (`/* c */ node`); a Line comment gets a hard line. fmt-cli's `withComments` decides this for statements.
 
 ## Proposed learnings

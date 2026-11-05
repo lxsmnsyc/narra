@@ -58,6 +58,8 @@ go test ./...
 - `testdata/errors/` must fail to compile. The first line, `// error: text`, gives text the error must contain.
 - `testdata/packages/*/` with a `run.out` build the package's binary, run it in both modes like `testdata/*.nra`, and run its tests.
 - `testdata/packages/errors/*/` must fail to compile. The first line of `narra.toml`, `# error: text`, gives the text.
+- Standard modules written in Narra: the Go compiler loads `std/option` (and any std source module that `selfhost/src` imports), because the bootstrap needs it. Every newer std source module is selfhost-only: the Go compiler does not load it, and the Go tests skip the samples that use it. Those samples live in `testdata/stage2/*.nra` (with `.out`) and `testdata/stage2/errors/*.nra` (first line `// error: text`). `TestStage2Programs` and `TestStage2Errors` emit them with the cached stage 2 compiler of `TestSelfhostBootstrap`, compile the C with the sanitizer flags, run it with the leak check and compare the output or the error.
+- `std/internal/<name>` modules hold the primitives behind std source modules. Only `std/...` modules import them (E0426). `std/internal/probe` is a test-only primitive (the same code as `Char.code`).
 
 ## Supported
 

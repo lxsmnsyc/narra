@@ -20,6 +20,9 @@ shared: []
 reserves: []
 provides: []
 depends_on:
+  - on: std-foundation
+    kind: hard
+    why: source std modules need the generic mismatch errors, std/internal and the stage 2 tests (std-source gate, 2026-11-05)
   - on: generators
     kind: hard
     why: every operator is a generator function over a Generator<T>

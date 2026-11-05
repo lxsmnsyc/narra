@@ -30,6 +30,10 @@ type Module struct {
 	Path    string              // "std/string"
 	Funcs   map[string]*Builtin // exported names
 	Runtime string              // C helpers, emitted once when the module is imported
+	// Source is set for a std module written in Narra (std/src/*.nra, text in
+	// stdSources). Funcs is empty: the loader adds the module to the package
+	// and the checker resolves its imports like a package module.
+	Source bool
 }
 
 var (
@@ -72,6 +76,26 @@ func registerNamespaceModule(ns, path string, funcs map[string]*Builtin) {
 	registerModule(&Module{Path: path, Funcs: funcs})
 }
 
+// registerSourceModule registers a std module written in Narra. ns is the
+// prelude type its functions are named after (Option), so Option.map without
+// the import still gets the missing-import hint.
+func registerSourceModule(ns, path string) {
+	if _, ok := stdSources[path]; !ok {
+		panic("no std source for " + path)
+	}
+	if ns != "" {
+		namespaceModules[ns] = path
+	}
+	registerModule(&Module{Path: path, Funcs: map[string]*Builtin{}, Source: true})
+}
+
+// isInternalModule reports whether a std module path is under std/internal/:
+// the primitives behind source modules. Only std modules may import them, and
+// moduleList does not name them.
+func isInternalModule(path string) bool {
+	return strings.HasPrefix(path, "std/internal/")
+}
+
 func registerByName(b *Builtin) {
 	if _, dup := builtinsByName[b.Name]; dup {
 		panic("duplicate builtin " + b.Name)
@@ -92,7 +116,7 @@ func moduleList() string {
 		}
 	}
 	for _, p := range registeredModules {
-		if !seen[p] {
+		if !seen[p] && !isInternalModule(p) {
 			paths = append(paths, p)
 		}
 	}

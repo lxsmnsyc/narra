@@ -129,10 +129,11 @@ func loadFile(path string) (*Package, error) {
 		return nil, withFile(err, base)
 	}
 	f.Path = base
+	own := newSourceModule(stem, f)
 	return &Package{
 		Name:     stem,
 		Dir:      filepath.Dir(path),
-		Modules:  []*SourceModule{newSourceModule(stem, f)},
+		Modules:  append(stdSourceModules([]*SourceModule{own}), own),
 		Binaries: []Binary{{Name: stem, Entry: stem + ".run"}},
 		single:   true,
 	}, nil
@@ -196,11 +197,61 @@ func LoadPackage(dir string) (*Package, error) {
 	if len(errs) > 0 {
 		return nil, errs
 	}
-	pkg.Modules, errs = orderModules(mods, byPath)
+	std := stdSourceModules(mods)
+	for _, m := range std {
+		byPath[m.Path] = m
+	}
+	pkg.Modules, errs = orderModules(append(std, mods...), byPath)
 	if len(errs) > 0 {
 		return nil, errs
 	}
 	return pkg, nil
+}
+
+// stdSourceModules parses the std modules written in Narra that mods import,
+// directly or through another std source module, in first-import order.
+// They go before the package's modules: they import none of them. The
+// self-hosted loader (modules.nra) numbers their node ids after the
+// package's files, in the same order.
+func stdSourceModules(mods []*SourceModule) []*SourceModule {
+	var std []*SourceModule
+	seen := map[string]bool{}
+	var visit func(m *SourceModule)
+	visit = func(m *SourceModule) {
+		for _, f := range m.Files {
+			for _, imp := range f.Imports {
+				text, ok := stdSources[imp.Path]
+				if !ok || seen[imp.Path] {
+					continue
+				}
+				seen[imp.Path] = true
+				sf, err := Parse(text)
+				if err != nil {
+					panic(fmt.Sprintf("std source %s: %v", imp.Path, err))
+				}
+				sf.Path = stdSourceFile(imp.Path)
+				sm := newSourceModule(imp.Path, sf)
+				std = append(std, sm)
+				visit(sm)
+			}
+		}
+	}
+	for _, m := range mods {
+		visit(m)
+	}
+	return std
+}
+
+// stdSourceFile is the file name diagnostics show for a std source module:
+// std/option -> std/src/option.nra, its path in the repository.
+func stdSourceFile(path string) string {
+	return "std/src/" + strings.TrimPrefix(path, "std/") + ".nra"
+}
+
+// ownModule is the module of a single-file package: the last one, after
+// the std source modules it imports.
+func (p *Package) ownModule() *SourceModule {
+	return p.Modules[len(p.Modules)-1]
 }
 
 // orderModules sorts modules so imports come first, and reports import cycles.

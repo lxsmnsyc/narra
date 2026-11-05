@@ -289,6 +289,11 @@ func (p *Parser) typeExpr() *TypeExpr {
 		}
 		p.expect(">")
 	}
+	if te.Name == "Generator" {
+		// A generator type carries the effects its body has when it runs:
+		// `Generator<string> uses io` (D78).
+		te.Uses = p.usesList()
+	}
 	if p.is("[") && p.toks[p.i+1].Kind == TokPunct && p.toks[p.i+1].Text == "]" {
 		open, shut := p.tok().Pos, p.toks[p.i+1].Pos
 		fix := Fix{Title: "write Array<...>", Edits: []Edit{
@@ -383,10 +388,8 @@ func (p *Parser) funcDecl(exported bool) *FuncDecl {
 // funcHeader parses a function declaration up to its body.
 func (p *Parser) funcHeader(exported bool) *FuncDecl {
 	pos := p.expect("function").Pos
-	if p.is("*") {
-		p.fail(p.tok().Pos, "generators are not supported by this compiler yet")
-	}
-	fd := &FuncDecl{Pos: pos, Exported: exported, Name: p.ident().Text}
+	generator := p.accept("*")
+	fd := &FuncDecl{Pos: pos, Exported: exported, Generator: generator, Name: p.ident().Text}
 	fd.TypeParams, fd.Bounds, fd.EffectParams = p.typeParamsEffects()
 	p.expect("(")
 	for !p.is(")") {
@@ -499,6 +502,7 @@ func (p *Parser) traitDecl(exported bool) *TraitDecl {
 		if !p.is("function") {
 			p.fail(p.tok().Pos, "a trait has functions only, found %s", describe(p.tok()))
 		}
+		p.nestedGenerator()
 		fd := p.funcHeader(false)
 		if p.is("{") {
 			p.fail(p.tok().Pos, "trait functions have no default implementation; remove the body")
@@ -526,11 +530,20 @@ func (p *Parser) implDecl() *ImplDecl {
 		if !p.is("function") {
 			p.fail(p.tok().Pos, "an implement block has functions only, found %s", describe(p.tok()))
 		}
+		p.nestedGenerator()
 		d.Funcs = append(d.Funcs, p.funcDecl(false))
 		p.skipNewlines()
 	}
 	p.expect("}")
 	return d
+}
+
+// nestedGenerator rejects `function*` in a trait or an implement block: a
+// generator is a top-level function (D74).
+func (p *Parser) nestedGenerator() {
+	if next := p.toks[p.i+1]; next.Kind == TokPunct && next.Text == "*" {
+		p.fail(next.Pos, "a generator must be a top-level function; declare `function*` at module level")
+	}
 }
 
 // funcTypeExpr parses a function type such as `(item: T) => U`. Parameter
@@ -809,6 +822,15 @@ func (p *Parser) stmt() Stmt {
 		}
 		s := &ForStmt{Pos: t.Pos, Name: name, Iter: iter, Body: body}
 		p.skipNewlines()
+		return s
+	case p.is("yield"):
+		p.next()
+		s := &YieldStmt{Pos: t.Pos, Delegate: p.accept("*")}
+		if p.tok().Kind == TokNewline || p.tok().Kind == TokEOF || p.is("}") {
+			p.fail(p.tok().Pos, "`yield` needs a value: write `yield value`, or `yield* generator`")
+		}
+		s.Value = p.expr()
+		p.endStatement()
 		return s
 	case p.is("break"):
 		p.next()
@@ -1261,6 +1283,8 @@ func (p *Parser) primary() Expr {
 			return p.matchExpr()
 		case "if":
 			return p.ifExpr()
+		case "yield":
+			p.fail(t.Pos, "`yield` is a statement, so it cannot be part of an expression")
 		}
 	case TokPunct:
 		switch t.Text {

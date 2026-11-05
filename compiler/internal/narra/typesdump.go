@@ -300,6 +300,8 @@ func (d *typesDumper) stmt(s Stmt) {
 		d.local(s.Local)
 		d.expr(s.Iter)
 		d.block(s.Body)
+	case *YieldStmt:
+		d.expr(s.Value)
 	}
 }
 

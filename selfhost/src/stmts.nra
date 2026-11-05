@@ -40,6 +40,7 @@ export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, s
     }
     Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
     Stmt.ForStmt(_, _, _, _, iterable, _) => endExpressionNarrowing(mutable checker, iterable)
+    Stmt.YieldStmt(_, value, _) => endExpressionNarrowing(mutable checker, value)
     _ => {}
   }
   match (statement) {
@@ -53,6 +54,7 @@ export function checkStatement<W: Walker>(mutable checker: Checker, walker: W, s
     Stmt.ForStmt(nodeId, pos, label, name, iterable, body) => checkFor(mutable checker, walker, nodeId, pos, label, name, iterable, body)
     Stmt.BreakStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "break", "break must be inside a loop")
     Stmt.ContinueStmt(pos, label) => checkLoopExit(mutable checker, pos, label, "continue", "continue must be inside a loop")
+    Stmt.YieldStmt(pos, value, delegate) => checkYield(mutable checker, walker, pos, value, delegate)
   }
   checkMutableConflicts(mutable checker, statement)
 }
@@ -228,6 +230,13 @@ function checkReturn<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, v
   // Inside a block expression a return ends the block and gives its value.
   if (Arrays.length(checker.blocks) > 0) {
     checkBlockReturn(mutable checker, walker, pos, value)
+    return
+  }
+  // A return in a generator ends it and takes no value.
+  if (checker.generator) {
+    if (value is Some(_)) {
+      reportError(mutable checker, pos, "return in a generator takes no value; yield the value, then return")
+    }
     return
   }
   // An arrow function whose result is inferred takes any value; the
@@ -495,6 +504,8 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
     if (iterableType is Type.TArray(arrayElement)) {
       element = arrayElement
     }
+  } else if (iterableType is Type.TGenerator(generatorElement, _, _, _)) {
+    element = generatorElement
   } else if (iterableType is Type.TRange) {
     // A Range value: its bounds are read once, before the loop.
     element = Type.TInt
@@ -503,7 +514,7 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
     element = arrayElement
   } else {
     const text = typeString(checker, iterableType)
-    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs a Range, an Array, Str.chars, Array.entries, Map.keys or Map.entries, found ${text}`)
+    reportError(mutable checker, getExpressionPos(iterable), `for ... of needs a Range, an Array, a Generator, Str.chars, Array.entries, Map.keys or Map.entries, found ${text}`)
   }
 
   // The loop variable lives in a scope around the body.
@@ -513,6 +524,50 @@ function checkFor<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, p
   checkBlock(mutable checker, walker, body)
   leaveLoop(mutable checker, label)
   popScope(mutable checker)
+}
+
+// checkYield checks `yield value` and `yield* other` (Go's yieldStmt). Both
+// are valid only directly in a function* body or its nested statement
+// blocks: not in an arrow function and not in a block expression.
+function checkYield<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, value: Expr, delegate: bool) uses alloc {
+  let word = "yield"
+  if (delegate) {
+    word = "yield*"
+  }
+  let place = ""
+  if (checker.bodies[checker.body].arrowDepth > 0) {
+    place = "inside an arrow function"
+  } else if (!checker.generator) {
+    place = "outside a generator"
+  } else if (Arrays.length(checker.blocks) > 0) {
+    place = "inside a block expression"
+  }
+  if (place != "") {
+    reportError(mutable checker, pos, `${word} cannot be used ${place}; it is valid only directly in a function* body`)
+    checkExpression(mutable checker, walker, value, None)
+    return
+  }
+  const result = checker.resultType
+  if (result is Type.TGenerator(element, _, _, _)) {
+    if (!delegate) {
+      const found = checkExpression(mutable checker, walker, value, Some(element))
+      expectType(mutable checker, getExpressionPos(value), Some(element), found)
+      return
+    }
+    const found = checkExpression(mutable checker, walker, value, None)
+    let matches = false
+    if (found is Type.TGenerator(otherElement, _, _, _)) {
+      matches = otherElement == element
+    }
+    if (!matches && found != Type.TVoid) {
+      const wanted = typeString(checker, Type.TGenerator(element, [], -1, -1))
+      const text = typeString(checker, found)
+      reportError(mutable checker, getExpressionPos(value), `yield* needs a ${wanted}, found ${text}`)
+    }
+    return
+  }
+  // The return type was rejected already.
+  checkExpression(mutable checker, walker, value, None)
 }
 
 // isResult reports a Result value, which a statement may not drop.
@@ -635,6 +690,7 @@ function collectAssignedInStatement(statement: Stmt, mutable names: Array<string
       collectAssignedInExpr(iterable, mutable names)
       collectAssignedInBlock(body, mutable names)
     }
+    Stmt.YieldStmt(_, value, _) => collectAssignedInExpr(value, mutable names)
     _ => {}
   }
 }
@@ -916,6 +972,7 @@ function collectStatementUses(checker: Checker, mutable collector: UseCollector,
       collectUses(checker, mutable collector, iterable, chain, extendArms(arms, stepNode, 0, false, Arrays.length(chain)))
       collectBlockUses(checker, mutable collector, body, chain, extendArms(arms, stepNode, 1, false, Arrays.length(chain)))
     }
+    Stmt.YieldStmt(_, value, _) => collectUses(checker, mutable collector, value, chain, arms)
     _ => {}
   }
 }
@@ -988,6 +1045,7 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
     Stmt.IfStmt(_, condition, _, _) => collectUses(checker, mutable collector, condition, noCalls, noArms)
     Stmt.WhileStmt(_, _, condition, _) => collectUses(checker, mutable collector, condition, noCalls, noArms)
     Stmt.ForStmt(_, _, _, _, iterable, _) => collectUses(checker, mutable collector, iterable, noCalls, noArms)
+    Stmt.YieldStmt(_, value, _) => collectUses(checker, mutable collector, value, noCalls, noArms)
     _ => {}
   }
   let reported: Array<int> = []

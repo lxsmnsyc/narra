@@ -14,7 +14,7 @@ import (
 var astKinds = []string{
 	"file", "import", "func", "const", "struct", "enum", "distinct", "test",
 	"trait", "impl", "variant", "field", "param", "type", "block", "var",
-	"assign", "exprstmt", "return", "if", "while", "for", "break", "continue",
+	"assign", "exprstmt", "return", "if", "while", "for", "break", "continue", "yield",
 	"int", "float", "string", "char", "bool", "template", "ident", "field-expr",
 	"is", "index", "map", "call", "arg", "unary", "binary", "structlit", "init",
 	"array", "match", "arm", "blockexpr", "arrow", "pat-wildcard", "pat-name", "pat-ctor",

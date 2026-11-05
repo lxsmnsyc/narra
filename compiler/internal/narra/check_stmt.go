@@ -2,6 +2,12 @@ package narra
 
 func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	c.fn = fd
+	saved := c.sigFunc
+	c.sigFunc = fd
+	if fd.Origin != nil {
+		c.sigFunc = fd.Origin
+	}
+	defer func() { c.sigFunc = saved }()
 	c.env = env
 	c.loops = 0
 	c.labels = nil
@@ -166,6 +172,8 @@ func assignedInStmt(st Stmt, names map[string]bool) {
 	case *ForStmt:
 		assignedInExpr(st.Iter, names)
 		assignedInBlock(st.Body, names)
+	case *YieldStmt:
+		assignedInExpr(st.Value, names)
 	}
 }
 
@@ -282,6 +290,8 @@ func (c *Checker) stmt(s Stmt) {
 		c.endExprNarrowing(s.Cond)
 	case *ForStmt:
 		c.endExprNarrowing(s.Iter)
+	case *YieldStmt:
+		c.endExprNarrowing(s.Value)
 	}
 	// After the statement is checked, its names are resolved.
 	defer c.checkMutableConflicts(s)
@@ -348,6 +358,12 @@ func (c *Checker) stmt(s Stmt) {
 			c.blockReturn(s, c.blocks[len(c.blocks)-1])
 			return
 		}
+		if c.fn.Generator {
+			if s.Value != nil {
+				c.errorf(s.Pos, "return in a generator takes no value; yield the value, then return")
+			}
+			return
+		}
 		want := c.fn.ResultT
 		if s.Value == nil {
 			if want != TVoid {
@@ -400,6 +416,9 @@ func (c *Checker) stmt(s Stmt) {
 			if at, ok := t.(*ArrayType); ok {
 				elem = at.Elem
 			}
+		case isGenerator(t):
+			s.Kind = forGenerator
+			elem = t.(*GeneratorType).Elem
 		case t == Type(TRange):
 			// A Range value: its bounds are read once, before the loop.
 			s.Kind = forRange
@@ -411,7 +430,7 @@ func (c *Checker) stmt(s Stmt) {
 				elem = at.Elem
 				break
 			}
-			c.errorf(s.Iter.position(), "for ... of needs a Range, an Array, Str.chars, Array.entries, Map.keys or Map.entries, found %s", t)
+			c.errorf(s.Iter.position(), "for ... of needs a Range, an Array, a Generator, Str.chars, Array.entries, Map.keys or Map.entries, found %s", t)
 			elem = TVoid
 		}
 		c.endLoopNarrowing(nil, s.Body)
@@ -421,6 +440,8 @@ func (c *Checker) stmt(s Stmt) {
 		c.block(s.Body)
 		c.leaveLoop(s.Label)
 		c.pop()
+	case *YieldStmt:
+		c.yieldStmt(s)
 	case *BreakStmt:
 		c.loopExit(s.Pos, s.Label, "break")
 	case *ContinueStmt:
@@ -678,6 +699,8 @@ func eachStmtExpr(s Stmt, visit func(Expr)) {
 	case *ForStmt:
 		visitExpr(s.Iter, visit)
 		eachBlockExpr(s.Body, visit)
+	case *YieldStmt:
+		visitExpr(s.Value, visit)
 	}
 }
 
@@ -693,5 +716,48 @@ func visitExpr(x Expr, visit func(Expr)) {
 			visitExpr(arm.Body, visit)
 			eachBlockExpr(arm.Block, visit)
 		}
+	}
+}
+
+func isGenerator(t Type) bool {
+	_, ok := t.(*GeneratorType)
+	return ok
+}
+
+// yieldStmt checks `yield value` and `yield* other`. Both are valid only
+// directly in a function* body or its nested statement blocks: not in an
+// arrow function and not in a block expression (SPEC.md section 8).
+func (c *Checker) yieldStmt(s *YieldStmt) {
+	word := "yield"
+	if s.Delegate {
+		word = "yield*"
+	}
+	where := ""
+	switch {
+	case c.closure != nil && len(c.closure.arrows) > 0:
+		where = "inside an arrow function"
+	case !c.fn.Generator:
+		where = "outside a generator"
+	case len(c.blocks) > 0:
+		where = "inside a block expression"
+	}
+	if where != "" {
+		c.errorf(s.Pos, "%s cannot be used %s; it is valid only directly in a function* body", word, where)
+		c.expr(s.Value, nil)
+		return
+	}
+	gen, _ := c.fn.ResultT.(*GeneratorType)
+	if gen == nil {
+		// The return type was rejected already.
+		c.expr(s.Value, nil)
+		return
+	}
+	if !s.Delegate {
+		c.expectType(s.Value.position(), gen.Elem, c.expr(s.Value, gen.Elem))
+		return
+	}
+	t := c.expr(s.Value, nil)
+	if other, ok := t.(*GeneratorType); (!ok || !sameType(other.Elem, gen.Elem)) && t != TVoid {
+		c.errorf(s.Value.position(), "yield* needs a %s, found %s", &GeneratorType{Elem: gen.Elem}, t)
 	}
 }

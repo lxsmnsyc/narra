@@ -55,7 +55,7 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 - `narrac fmt --stdin` (or `-`) reads one file from stdin and writes the result to stdout.
 - A file that does not parse prints `error <path>:<line>:<col>: <message>`, stays unchanged, and the exit code is 1. A bad `[fmt]` key or value prints `error narra.toml:<line>: <message>` and the exit code is 1.
 - Options come from the `[fmt]` table of the nearest `narra.toml` above each file (`printWidth`, `tabWidth`, `useTabs`, `trailingComma`; see `SPEC.md` section 2). Without one the defaults apply.
-- Declarations and statements are printed by `fmt.nra`. Expressions, types and patterns are copied as written until `fmt-exprs` lands.
+- Declarations and statements are printed by `fmt.nra`; expressions, types and patterns by `fmtexprs.nra`.
 - `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
 
 ## Tests
@@ -70,6 +70,8 @@ go test ./...
 - `testdata/errors/` must fail to compile. The first line, `// error: text`, gives text the error must contain.
 - `testdata/packages/*/` with a `run.out` build the package's binary, run it in both modes like `testdata/*.nra`, and run its tests.
 - `testdata/packages/errors/*/` must fail to compile. The first line of `narra.toml`, `# error: text`, gives the text.
+- Standard modules written in Narra: the Go compiler loads `std/option` (and any std source module that `selfhost/src` imports), because the bootstrap needs it. Every newer std source module is selfhost-only: the Go compiler does not load it, and the Go tests skip the samples that use it. Those samples live in `testdata/stage2/*.nra` (with `.out`) and `testdata/stage2/errors/*.nra` (first line `// error: text`). `TestStage2Programs` and `TestStage2Errors` emit them with the cached stage 2 compiler of `TestSelfhostBootstrap`, compile the C with the sanitizer flags, run it with the leak check and compare the output or the error.
+- `std/internal/<name>` modules hold the primitives behind std source modules. Only `std/...` modules import them (E0426). `std/internal/probe` is a test-only primitive (the same code as `Char.code`).
 
 ## Supported
 
@@ -121,12 +123,14 @@ go test ./...
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Reading a tuple element by index.
-- Generators, async functions, threads and channels.
+- Generators are parsed and checked (`function*`, `yield`, `yield*`, `Generator<T> uses E`, `for ... of` over a generator) but not compiled: building a program that declares a `function*` stops with "generators are not compiled yet" (node generators). `Coroutine<In, Out>` and `Co.resume` are not there yet.
+- Async functions, threads and channels.
 - `unsafe` and `extern`.
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.
 
 ## Differences from the spec
 
+- A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
 - `==` and `!=` work on a distinct type when its base type supports them (and it can be a map key). SPEC.md says no operators carry over.
 - A distinct type cannot list traits with `implements` or `derives`; SPEC.md allows it.
 - Top-level constants that are not scalars (strings built by templates, structs, arrays, enums with fields, function values) are built on first use, behind a getter, and kept until the program ends. The spec says modules have no initialization code; this keeps that, but the first-use build is not thread safe yet (the threads node must add a once guard). Struct and array constants are heap values, not static C data.

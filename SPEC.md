@@ -228,6 +228,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
 - **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/option`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`.
+- **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 ```ts
@@ -741,6 +742,8 @@ Rules:
 - Panics are not an effect. Any function can panic.
 - The entry function (section 15) has every effect. It is not `async`. `Async.run` runs async code from it.
 - `async` and `function*` are not effects. They mark the type of function a declaration is (section 8).
+- **Generator types carry effects** (D78), as function types do: `Generator<string> uses io` is a generator whose body does I/O when it runs. `Generator<T>` alone is pure. The effects are charged where the body runs: a `for ... of` over the generator, a `yield*` of it, and `Co.resume`. Creating a generator charges only `alloc`, for its frame.
+- A generator value may be used where a generator type with more effects is expected, not fewer: passing a `Generator<T> uses io` where `Generator<T>` is expected is a compile error.
 
 ### Effect variables
 
@@ -751,8 +754,8 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
 ```
 
 - Effect variables are declared in the type parameter list with the `effect` keyword, and appear only after `uses`.
-- **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type.
-- At each call, the variable takes the effects of the function passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`.
+- **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type or generator type: `export function sum<effect E>(numbers: Generator<int> uses E): int uses E`.
+- At each call, the variable takes the effects of the function or generator passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`. A generator result type that names the variable takes them too: with `relay<effect E>(g: Generator<int> uses E): Generator<int> uses E, alloc`, `relay(lines(path))` is a `Generator<int> uses alloc, io`.
 
 ## 8. Generators and concurrency
 
@@ -795,12 +798,16 @@ for (const n of both()) {
 }
 ```
 
-- **`function*`** declares a generator. Calling it returns a `Generator<Out>` without running any of its body.
-- **`yield value`** suspends the generator and produces `value`. It is valid only directly inside a `function*` body, not in a nested function.
-- **`yield* other`** produces every value of another generator in turn.
+- **`function*`** declares a generator. Calling it returns a `Generator<Out>` without running any of its body. A generator is a top-level function (D74), and `export function*` exports it as `export function` does. There is no arrow form. The return type is required and must be `Generator<T>`. Generic generators are allowed.
+- **`yield value`** suspends the generator and produces `value`, which must have type `T`. `yield` is a statement, not an expression. It is valid only directly inside a `function*` body or its nested statement blocks (`if`, `while`, `for`, labeled loops, `match` statement arms). It is not valid in an arrow function, a block expression, a conditional expression or a `match` used as a value.
+- **`yield* other`** produces every value of another generator in turn. `other` must be a `Generator<T>` with the same `T`.
+- **`return` in a generator takes no value.** It ends the generator, as falling off the end of the body does.
+- **A generator outlives the call that creates it.** It cannot take a `mutable` parameter, and its function-type parameters must be `escaping`.
+- **Effects** (section 7, D78). An exported generator writes the effects of its body on its return type: `export function* lines(path: string): Generator<string> uses io, alloc`. A private one gets them inferred into its type. A body that uses an effect its declared type omits is a compile error.
+- **Calls of generator functions are not recursion.** A generator that calls itself, directly or through another generator, creates a new value, so D37 and tail loops do not apply.
 - **`Coroutine<In, Out>`** is a generator that also receives a value on each resume. Inside it, `const input = yield output` gets that value.
 - **`Co.resume(mutable g, input)`** from `std/coroutine` runs a generator or coroutine to its next `yield`, changing `g` in place. It returns `Yielded(value)`, `Done` or `Panicked(message)`. `Panicked` is only reported in test builds. In other builds a panic aborts the program.
-- **A generator is a value like any other.** Resuming one by hand requires a `mutable` argument. `for ... of` iterates over its own copy.
+- **A generator is a value like any other.** Resuming one by hand requires a `mutable` argument. `for ... of` iterates over its own copy. `Generator<T>` has no `==`, no hashing and no `Show`.
 - **Only generator bodies become state machines.** A `yield` cannot cross a normal function call, so other functions compile as plain C functions.
 
 ### Threads

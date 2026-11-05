@@ -43,8 +43,8 @@ import (
 //	file                         .imports  .decls
 //	import L:C                   alias="" names=a,b path=""      (alias and
 //	                             names print only when set)
-//	func L:C                     name="" export typeParams= effectParams=
-//	                             uses=  .bound param="T" (repeated, only for
+//	func L:C                     name="" export generator typeParams=
+//	                             effectParams= uses=  .bound param="T" (repeated, only for
 //	                             parameters with bounds; children are type
 //	                             nodes)  .params  .result  .body
 //	const L:C                    name="" export   .type  .value
@@ -71,6 +71,7 @@ import (
 //	while L:C                    .cond  .body
 //	for L:C                      name=""   .iter  .body
 //	break L:C, continue L:C
+//	yield L:C                    delegate (for `yield*`)   direct: the value
 //	int L:C                      text=""
 //	float L:C                    text=""
 //	string L:C                   value="" end=L:C
@@ -289,7 +290,7 @@ func (d *astDumper) params(ps []*Param) {
 }
 
 func (d *astDumper) funcDecl(f *FuncDecl) {
-	d.node("func", f.Pos, join(strAttr("name", f.Name), flag("export", f.Exported), listAttr("typeParams", f.TypeParams),
+	d.node("func", f.Pos, join(strAttr("name", f.Name), flag("export", f.Exported), flag("generator", f.Generator), listAttr("typeParams", f.TypeParams),
 		listAttr("effectParams", f.EffectParams), listAttr("uses", f.Effects)), func() {
 		for i, bs := range f.Bounds {
 			if len(bs) > 0 && i < len(f.TypeParams) {
@@ -445,6 +446,8 @@ func (d *astDumper) stmt(s Stmt) {
 		d.node("break", n.Pos, labelAttr(n.Label), nil)
 	case *ContinueStmt:
 		d.node("continue", n.Pos, labelAttr(n.Label), nil)
+	case *YieldStmt:
+		d.node("yield", n.Pos, flag("delegate", n.Delegate), func() { d.expr(n.Value) })
 	default:
 		panic(fmt.Sprintf("astdump: unknown statement %T", s))
 	}

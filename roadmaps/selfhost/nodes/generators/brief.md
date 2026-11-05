@@ -1,7 +1,7 @@
 ---
 id: generators
 title: "Generators: state machines in C"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 482252
 owns:
   - compiler/testdata/generator*
   - compiler/internal/narra/emit_generator.go
@@ -71,10 +71,10 @@ Compile every `function*` that generators-check accepts to a state machine in pl
 
 ## Acceptance
 
-- [ ] Samples `compiler/testdata/generator*.nra` and `.out`: the SPEC section 8 example (`counter`, `evens`, `both` with `yield*`); a generator holding strings and arrays across yields; `yield` inside nested `while`, for-of over an array and over a range, and a `match` statement arm; a generic generator; a generator that is dropped unfinished (loop `break`, and a variable never iterated); iterating the same generator variable twice shows two full runs (copy rule); a generator passed to a function that iterates it; a generator with an arrow function capturing a frame local. All clean under ASan and the leak check.
-- [ ] The "generators are not compiled yet" stub and its error test from generators-check are removed.
-- [ ] SPEC.md section 11 "Code generation" describes the lowering in a few lines; `compiler/README.md` "Supported" lists generators.
-- [ ] Go and `selfhost/` emit the same C for every new sample; fast check passes including `TestSelfhostBootstrap`.
+- [x] Samples `compiler/testdata/generator*.nra` and `.out`: the SPEC section 8 example (`counter`, `evens`, `both` with `yield*`); a generator holding strings and arrays across yields; `yield` inside nested `while`, for-of over an array and over a range, and a `match` statement arm; a generic generator; a generator that is dropped unfinished (loop `break`, and a variable never iterated); iterating the same generator variable twice shows two full runs (copy rule); a generator passed to a function that iterates it; a generator with an arrow function capturing a frame local. All clean under ASan and the leak check.
+- [x] The "generators are not compiled yet" stub and its error test from generators-check are removed.
+- [x] SPEC.md section 11 "Code generation" describes the lowering in a few lines; `compiler/README.md` "Supported" lists generators.
+- [x] Go and `selfhost/` emit the same C for every new sample; fast check passes including `TestSelfhostBootstrap`.
 
 ## Sizing
 
@@ -91,3 +91,5 @@ L. Uncertainty high (first state-machine lowering in this repo, and it must be b
 ## Open questions
 
 - None. The semantic choices are in generators-check (D78).
+
+Merged: PR #89 (2026-11-05).

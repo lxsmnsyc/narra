@@ -1,7 +1,7 @@
 # Change request: query-output v1 to v2
 
 - From node: query-cli
-- Status: open
+- Status: accepted
 
 ## Problem
 
@@ -68,4 +68,4 @@ None needed. `narrac query` already behaves as proposed; the goldens in `compile
 
 ## Decision
 
-<Filled in by the orchestrator.>
+Accepted 2026-11-05. The maintainer merged PR #88 with this behavior; the contract is frozen as v2 with these edits applied verbatim.

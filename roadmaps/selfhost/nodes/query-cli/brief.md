@@ -1,7 +1,7 @@
 ---
 id: query-cli
 title: narra query
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 528148
 owns:
   - selfhost/src/query*.nra
   - compiler/internal/narra/selfhost_query_test.go
@@ -61,24 +61,24 @@ depends_on:
 
 ## Steps
 
-- [ ] `selfhost/src/query.nra`: `runQuery(arguments)` loads and checks the package (path from `--package DIR`, default `.`), then dispatches. Load or check errors print as `narrac types` prints them and exit 1.
-- [ ] A position index: from a file and line:column, find the innermost expression, pattern or declaration name that starts at or covers that token. One loop per body or module, recursing only on nesting.
-- [ ] `type-of`: the type text (`Check.typeString`) and, for a function or call, its effect set.
-- [ ] `def`: the declaration position of a qualified or bare name; a bare name lists every match.
-- [ ] `refs`: every resolved use of an exported declaration, across modules, in file and position order.
-- [ ] `callers`: every function whose body calls the function directly (from the call graph); calls through function values are not counted and the text says so once.
-- [ ] `interface`: the exported signatures of a module in source order (functions with effects, structs, enums, traits, constants, type of each).
-- [ ] `recursion`: the strongly connected components of the module's call graph with a cycle, plus self calls, iteratively (no recursion per function).
-- [ ] `--json` for each command as `contracts/query-output.md` says, with a small JSON string escaper in `query.nra` (std/json does not exist yet).
-- [ ] Freeze the contract: write the final shapes into `contracts/query-output.md` through the orchestrator (report them in `outcome.md`), and add `narrac query` to `compiler/README.md`.
+- [x] `selfhost/src/query.nra`: `runQuery(arguments)` loads and checks the package (path from `--package DIR`, default `.`), then dispatches. Load or check errors print as `narrac types` prints them and exit 1.
+- [x] A position index: from a file and line:column, find the innermost expression, pattern or declaration name that starts at or covers that token. One loop per body or module, recursing only on nesting.
+- [x] `type-of`: the type text (`Check.typeString`) and, for a function or call, its effect set.
+- [x] `def`: the declaration position of a qualified or bare name; a bare name lists every match.
+- [x] `refs`: every resolved use of an exported declaration, across modules, in file and position order.
+- [x] `callers`: every function whose body calls the function directly (from the call graph); calls through function values are not counted and the text says so once.
+- [x] `interface`: the exported signatures of a module in source order (functions with effects, structs, enums, traits, constants, type of each).
+- [x] `recursion`: the strongly connected components of the module's call graph with a cycle, plus self calls, iteratively (no recursion per function).
+- [x] `--json` for each command as `contracts/query-output.md` says, with a small JSON string escaper in `query.nra` (std/json does not exist yet).
+- [x] Freeze the contract: write the final shapes into `contracts/query-output.md` through the orchestrator (report them in `outcome.md`), and add `narrac query` to `compiler/README.md`.
 
 ## Acceptance
 
-- [ ] `compiler/testdata/query/<case>/` holds small packages (`narra.toml`, `src/`) and a `queries.txt`: lines `> <command and arguments>` each followed by the expected stdout up to the next `>` line. `TestSelfhostQuery` runs each command against its package and compares byte for byte, text and `--json` forms both.
-- [ ] Cases cover: type-of on a local, a call with effects, a field read, a generic function's parameter, a position between tokens (error); def of a function, struct, enum variant and constant, qualified and bare, an unknown name (exit 1); refs across two modules; callers including a call inside an arrow function; interface of a module with every declaration kind; recursion with a self call, a two-function cycle and a non-recursive module.
-- [ ] A query on a package with check errors prints the errors and exits 1; an unknown subcommand prints usage and exits 2.
-- [ ] TestSelfhostBootstrap passes with the new modules in the package.
-- [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
+- [x] `compiler/testdata/query/<case>/` holds small packages (`narra.toml`, `src/`) and a `queries.txt`: lines `> <command and arguments>` each followed by the expected stdout up to the next `>` line. `TestSelfhostQuery` runs each command against its package and compares byte for byte, text and `--json` forms both.
+- [x] Cases cover: type-of on a local, a call with effects, a field read, a generic function's parameter, a position between tokens (error); def of a function, struct, enum variant and constant, qualified and bare, an unknown name (exit 1); refs across two modules; callers including a call inside an arrow function; interface of a module with every declaration kind; recursion with a self call, a two-function cycle and a non-recursive module.
+- [x] A query on a package with check errors prints the errors and exits 1; an unknown subcommand prints usage and exits 2.
+- [x] TestSelfhostBootstrap passes with the new modules in the package.
+- [x] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing
 
@@ -97,3 +97,5 @@ L. Uncertainty medium (index from positions to ids without end positions, generi
 1. Command name `narrac query` until the self-hosted compiler takes the name `narra`. Confirm.
 2. `def` and `refs` with a bare name that several modules declare: list all (proposed), or require a qualified name?
 3. `type-of` on a token that names no expression (a keyword, a type annotation): error (proposed), or the type the annotation denotes?
+
+Merged: PR #88 (2026-11-05).

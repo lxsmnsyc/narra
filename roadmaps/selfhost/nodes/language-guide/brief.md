@@ -1,7 +1,7 @@
 ---
 id: language-guide
 title: Narra language guide
-status: todo
+status: active
 priority: should
 type: story
 story:

@@ -1,7 +1,7 @@
 ---
 id: generators
 title: "Generators: state machines in C"
-status: todo
+status: active
 priority: should
 type: feature
 story:

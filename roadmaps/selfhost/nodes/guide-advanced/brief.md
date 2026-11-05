@@ -1,7 +1,7 @@
 ---
 id: guide-advanced
 title: "Language guide: chapters 6 to 10"
-status: todo
+status: active
 priority:
 type: docs
 story: language-guide

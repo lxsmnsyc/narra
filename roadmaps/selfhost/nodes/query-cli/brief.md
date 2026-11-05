@@ -1,7 +1,7 @@
 ---
 id: query-cli
 title: narra query
-status: todo
+status: active
 priority: should
 type: feature
 story:

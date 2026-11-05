@@ -1,7 +1,7 @@
 ---
 id: guide-basics
 title: "Language guide: sample test and chapters 1 to 5"
-status: todo
+status: active
 priority:
 type: docs
 story: language-guide

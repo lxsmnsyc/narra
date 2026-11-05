@@ -20,7 +20,7 @@ func (e *Emitter) stmt(s Stmt) {
 		e.beginStmt()
 		code, owned := e.expr(s.Value)
 		v := e.consume(code, owned, s.Local.T)
-		e.line("%s %s = %s;", s.Local.T.CName(), s.Local.CName, v)
+		e.declareLocal(s.Local, v)
 		e.endStmt()
 		e.addLocal(s.Local)
 	case *AssignStmt:
@@ -60,6 +60,10 @@ func (e *Emitter) stmt(s Stmt) {
 	case *ReturnStmt:
 		if len(e.blocks) > 0 {
 			e.blockReturn(s)
+			return
+		}
+		if e.gen != nil {
+			e.generatorReturn()
 			return
 		}
 		if call := e.tailCallOf(s.Value); call != nil {
@@ -123,6 +127,8 @@ func (e *Emitter) stmt(s Stmt) {
 		e.breakLabel(info)
 	case *ForStmt:
 		e.forStmt(s)
+	case *YieldStmt:
+		e.yieldStmt(s)
 	case *BreakStmt:
 		if s.Label != "" {
 			e.labeledExit(s.Label, true)
@@ -161,7 +167,9 @@ func (e *Emitter) forStmt(s *ForStmt) {
 			b, _ := e.expr(call.Args[1].Value)
 			hi = e.temp(TInt, b)
 		}
-		e.line("for (int64_t %s = %s; %s < %s; %s++) {", s.Local.CName, lo, s.Local.CName, hi, s.Local.CName)
+		decl := e.declareCounter(s.Local)
+		v := e.localRef(s.Local)
+		e.line("for (%s = %s; %s < %s; %s++) {", decl, lo, v, hi, v)
 		e.indent++
 		e.enterLoop(s.Label, s.Pos)
 		e.block(s.Body, true)
@@ -174,6 +182,8 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		e.mapFor(s, call, false)
 	case forMapEntries:
 		e.mapFor(s, call, true)
+	case forGenerator:
+		e.generatorFor(s)
 	case forArray, forArrayEntries:
 		source := s.Iter
 		if call != nil && (call.Builtin == "Array.values" || call.Builtin == "Array.entries") {
@@ -184,20 +194,23 @@ func (e *Emitter) forStmt(s *ForStmt) {
 		arr := e.consume(code, owned, at)
 		e.frames[len(e.frames)-1] = append(e.frames[len(e.frames)-1], tempVar{arr, at})
 		e.tempN++
-		idx := fmt.Sprintf("i%d", e.tempN)
-		e.line("for (int64_t %s = 0; %s < %s->len; %s++) {", idx, idx, arr, idx)
+		decl, idx := e.cVar("int64_t", fmt.Sprintf("i%d", e.tempN))
+		e.line("for (%s = 0; %s < %s->len; %s++) {", decl, idx, arr, idx)
 		e.indent++
 		e.enterLoop(s.Label, s.Pos)
 		e.pushScope(true)
 		if s.Kind == forArrayEntries {
 			// Array.entries gives #[index, item].
 			st := s.Local.T.(*StructType)
-			e.line("%s %s = {.%s = %s, .%s = %s->items[%s]};", st.CName(), s.Local.CName,
-				fieldName("0"), idx, fieldName("1"), arr, idx)
+			init := fmt.Sprintf("{.%s = %s, .%s = %s->items[%s]}", fieldName("0"), idx, fieldName("1"), arr, idx)
+			if e.gen != nil {
+				init = "(" + st.CName() + ")" + init // an assignment needs a compound literal
+			}
+			e.declareLocal(s.Local, init)
 		} else {
-			e.line("%s %s = %s->items[%s];", at.Elem.CName(), s.Local.CName, arr, idx)
+			e.declareLocal(s.Local, fmt.Sprintf("%s->items[%s]", arr, idx))
 		}
-		if r := retain(s.Local.T, s.Local.CName); r != "" {
+		if r := retain(s.Local.T, e.localRef(s.Local)); r != "" {
 			e.line("%s", r)
 		}
 		e.addLocal(s.Local)

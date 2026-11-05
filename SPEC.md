@@ -967,6 +967,10 @@ export enum Color {
 - **Debug builds** use a fast C compiler such as TCC with checks on.
 - **Release builds** use Clang or GCC with `-O2`.
 - **Generators and async functions** compile to a struct and a resume function. The struct holds their live variables and a state number. The resume function switches on that number.
+  - Calling a `function*` allocates the struct with a reference count of 1 and state 0, and stores its parameters. It runs nothing of the body.
+  - Every local, loop counter and temporary of the body is a field of the struct, so no C local is alive across a `yield`.
+  - `yield v` stores `v` for the caller, records the next state and returns. Ending the body or `return` releases what is still held and sets the finished state; resuming a finished generator returns nothing again.
+  - Dropping an unfinished generator releases what is live at its state and frees the struct. Resuming a shared generator first copies the struct and retains what is live in it, so `for ... of` and `yield*` work on their own copy.
 - **`mutable` parameters** compile to C pointer parameters.
 - **Self-calls in tail position** compile to loops in every function (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
 - **Closures.** A non-escaping closure's environment is a C struct on the caller's stack. An escaping closure's environment is a reference-counted heap object. `@inline` functions are emitted as `static inline` C functions, and their bodies are copied into callers.

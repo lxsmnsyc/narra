@@ -110,6 +110,7 @@ go test ./...
 - The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
 - Effects (`check_effects.go`): exported functions must declare `uses alloc, io, unsafe` for everything they do; private functions and arrows are inferred; `<effect E>` and `uses E` on function types work. On an exported function a function-type parameter without `uses` accepts only pure arguments; on a private function it acts as an implicit effect variable. `alloc` also comes from array literals, template strings, string `+` and constructors with fields.
 - Opaque structs and distinct types (`check_opaque.go`): `export opaque struct`, `distinct type A = B`, `export opaque distinct type`. Another module cannot build, read, assign, spread or match the fields of an opaque struct. `A.from(x)` and `A.toInt(x)` (`toString` for a string base, named after the base type) are generated and emit no code. Distinct types have no `Show`/`Ordered`. `opaque`, `distinct` and `type` are contextual words, not keywords.
+- Generators (`emit_generator.go`, SPEC.md section 8): `function*`, `yield`, `yield*`, `Generator<T> uses E`, generic generators and `for ... of` over a generator. Each `function*` is a state machine over a heap frame with a counted header (`narra_gen` in `runtime.h`): every C variable of the body is a frame field, and the drop and clone functions switch on the state to release or retain what is live at that yield. Every `Generator<T>` is the C type `narra_gen*`. A `for ... of` and a `yield*` resume their own copy, so iterating a generator variable twice runs it twice.
 
 - Top-level `const` (`export const` too): literals, operators on constants, constructors, structs, arrays, maps, function names and other constants, in any order; cycles are errors. Scalar constants are emitted at each use. Other constants are built on first use (see Differences).
 
@@ -124,7 +125,7 @@ go test ./...
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Reading a tuple element by index.
-- Generators are parsed and checked (`function*`, `yield`, `yield*`, `Generator<T> uses E`, `for ... of` over a generator) but not compiled: building a program that declares a `function*` stops with "generators are not compiled yet" (node generators). `Coroutine<In, Out>` and `Co.resume` are not there yet.
+- `Coroutine<In, Out>` and `Co.resume`.
 - Async functions, threads and channels.
 - `unsafe` and `extern`.
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.

@@ -24,9 +24,6 @@ func CompileBinary(path, bin string, tests bool) (string, error) {
 	if err != nil {
 		return "", FormatError(err)
 	}
-	if prog.Unemitted != nil {
-		return "", FormatError(*prog.Unemitted) // node generators removes this line
-	}
 	if tests {
 		return Emit(prog, nil, true), nil
 	}

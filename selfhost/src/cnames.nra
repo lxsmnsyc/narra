@@ -120,8 +120,36 @@ export function typeId(checker: Checker, type: Type): string uses alloc {
     ])
     Type.TFunc(parameters, result) => functionTypeName(checker, parameters, result)
     Type.TRange => "Range"
+    Type.TGenerator(element, effects, _, origin) => generatorId(checker, element, effects, origin)
     _ => "x"
   }
+}
+
+// generatorId is the id of a generator type inside a bigger type's name:
+// the element, the written effects, the private function* whose effects it
+// has (origin) or the call that binds them (an origin of -2 - k, Go's
+// boundEffects id k + 1).
+function generatorId(
+  checker: Checker,
+  element: Type,
+  effects: Array<string>,
+  origin: int,
+): string uses alloc {
+  let id = `G_${typeId(checker, element)}_${Str.join(effects, "_")}`
+  if (origin >= 0) {
+    const declared = checker.functions[origin]
+    id = `${id}_O${declared.module}.${declared.name}`
+  } else if (origin <= -2) {
+    id = `${id}_B${Int.toString(-1 - origin)}`
+  }
+  return id
+}
+
+// generatorPart names the frame struct, resume, clone or drop function of a
+// generator: kind is "Y", "y", "j" or "z", and owner is the C name of the
+// generator function (Go's generatorCName).
+export function generatorPart(kind: string, owner: string): string uses alloc {
+  return `${kind}${Str.sliceFrom(owner, 1)}`
 }
 
 // cType is Go's CName(): the C type, with "*" for arrays, boxes and maps and
@@ -144,6 +172,7 @@ export function cType(checker: Checker, type: Type): string uses alloc {
     Type.TStruct(_) => typeId(checker, type)
     Type.TEnum(_) => typeId(checker, type)
     Type.TFunc(_, _) => typeId(checker, type)
+    Type.TGenerator(_, _, _, _) => "narra_gen*"
     _ => "void"
   }
 }

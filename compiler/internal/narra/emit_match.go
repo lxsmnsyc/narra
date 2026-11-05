@@ -62,8 +62,8 @@ func (e *Emitter) bindPattern(p *Pattern, path string) {
 	switch p.Kind {
 	case PatName:
 		if l := p.Local; l != nil {
-			e.line("%s %s = %s;", l.T.CName(), l.CName, path)
-			if r := retain(l.T, l.CName); r != "" {
+			e.declareLocal(l, path)
+			if r := retain(l.T, e.localRef(l)); r != "" {
 				e.line("%s", r)
 			}
 			e.addLocal(l)
@@ -135,8 +135,8 @@ func (e *Emitter) matchArms(m *MatchExpr, body func(arm *MatchArm)) {
 	code, _ := e.expr(m.Subject)
 	subj := e.temp(m.Subject.Type(), code)
 	e.tempN++
-	done := fmt.Sprintf("m%d", e.tempN)
-	e.line("bool %s = false;", done)
+	decl, done := e.cVar("bool", fmt.Sprintf("m%d", e.tempN))
+	e.line("%s = false;", decl)
 	for _, arm := range m.Arms {
 		p := arm.Pattern
 		e.line("if (!%s) {", done)

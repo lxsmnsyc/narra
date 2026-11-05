@@ -21,7 +21,7 @@ func (e *Emitter) lvaluePtr(x Expr) string {
 		if x.Local.ByRef {
 			return x.Local.CName
 		}
-		return "&" + x.Local.CName
+		return "&" + e.localRef(x.Local)
 	case *FieldExpr:
 		if bt, ok := x.Target.Type().(*BoxType); ok {
 			// Writing through a box copies a shared cell first.

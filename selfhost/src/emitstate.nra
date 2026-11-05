@@ -81,6 +81,15 @@ export struct Emitter {
   loopInfos: Array<LoopInfo> = []
   // The block expressions being emitted, innermost last (Go: blocks).
   blocks: Array<BlockInfo> = []
+  // Set while a function* body is emitted (Go: gen, emitgenerators.nra):
+  // its C variables are fields of the frame f, listed in frameFields as
+  // "type name" in first-use order. liveValues holds, for state 0 and each
+  // yield, what the frame holds while it waits there.
+  inGenerator: bool = false
+  frameFields: Array<string> = []
+  frameSeen: Map<string, bool>
+  liveValues: Array<Array<TempVar>> = []
+  generatorElement: Type
 }
 
 // BlockInfo is a block expression being emitted: where a return stores its
@@ -145,6 +154,8 @@ export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter u
     closurePrototypes: Str.builder(),
     closureDefinitions: Str.builder(),
     unsupported: [],
+    frameSeen: Map {},
+    generatorElement: Type.TVoid,
   }
 }
 
@@ -255,7 +266,47 @@ export function localRef(emitter: Emitter, index: int): string uses alloc {
   if (local.param && local.isMutable) {
     return `(*${name})`
   }
+  return variableRef(emitter, name)
+}
+
+// declareVariable declares a C variable and returns the text before
+// ` = value`: the C declaration, or in a generator body the frame field,
+// which it adds to the frame (Go's cVar).
+export function declareVariable(
+  mutable emitter: Emitter,
+  typeName: string,
+  name: string,
+): string uses alloc {
+  if (!emitter.inGenerator) {
+    return `${typeName} ${name}`
+  }
+  if (emitter.frameSeen[name] is None) {
+    emitter.frameSeen[name] = true
+    Arrays.push(mutable emitter.frameFields, `${typeName} ${name}`)
+  }
+  return `f->${name}`
+}
+
+// variableRef is how the body names a C variable it declared.
+export function variableRef(emitter: Emitter, name: string): string uses alloc {
+  if (emitter.inGenerator) {
+    return `f->${name}`
+  }
   return name
+}
+
+// declareLocalVariable declares a local without a value and returns the
+// text that starts its declaration (Go's declareCounter).
+export function declareLocalVariable(mutable emitter: Emitter, localIndex: int): string uses alloc {
+  const local = localOf(emitter, localIndex)
+  const typeName = cType(emitter.checker, local.localType)
+  return declareVariable(mutable emitter, typeName, localName(local))
+}
+
+// declareLocal writes the declaration of a local holding value (Go's declareLocal).
+export function declareLocal(mutable emitter: Emitter, localIndex: int, value: string) uses alloc {
+  const declaration = declareLocalVariable(mutable emitter, localIndex)
+  writeLine(mutable emitter, `${declaration} = ${value};`)
 }
 
 // switchBody makes another body the one being emitted and returns the saved index.
@@ -284,6 +335,7 @@ export function needsRc(emitter: Emitter, type: Type): bool {
     Type.TFunc(_, _) => true
     Type.TBox(_) => true
     Type.TMap(_, _) => true
+    Type.TGenerator(_, _, _, _) => true
     Type.TStruct(index) => structNeedsRc(emitter, index)
     Type.TEnum(index) => isBoxed(emitter, index)
     Type.TDistinct(_) => needsRc(emitter, underlyingType(emitter, type))
@@ -339,6 +391,7 @@ function refCountCode(
     Type.TBox(_) => `${containerName(emitter, base)}_${operation}(${value});`
     Type.TMap(_, _) => `${containerName(emitter, base)}_${operation}(${value});`
     Type.TFunc(_, _) => `narra_env_${operation}((${value}).env);`
+    Type.TGenerator(_, _, _, _) => `narra_gen_${operation}(${value});`
     Type.TStruct(_) => structOrEnumCode(emitter, operation, base, value)
     Type.TEnum(_) => structOrEnumCode(emitter, operation, base, value)
     _ => ""
@@ -362,9 +415,10 @@ function structOrEnumCode(
 export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   emitter.tempCount = emitter.tempCount + 1
   const name = `t${Int.toString(emitter.tempCount)}`
-  const declaration = `${cType(emitter.checker, type)} ${name} = ${code};`
-  writeLine(mutable emitter, declaration)
-  return name
+  const typeName = cType(emitter.checker, type)
+  const declaration = declareVariable(mutable emitter, typeName, name)
+  writeLine(mutable emitter, `${declaration} = ${code};`)
+  return variableRef(emitter, name)
 }
 
 // ownedTemp is a temporary the current statement releases at its end.
@@ -459,7 +513,7 @@ function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
   let index = Arrays.length(frame.locals) - 1
   while (index >= 0) {
     const local = localOf(emitter, frame.locals[index])
-    const text = releaseCode(emitter, local.localType, localName(local))
+    const text = releaseCode(emitter, local.localType, variableRef(emitter, localName(local)))
     if (text != "") {
       writeLine(mutable emitter, text)
     }

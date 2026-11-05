@@ -1,0 +1,301 @@
+// Generators in C, ported from emit_generator.go (SPEC section 8, D19, D78).
+// A function* compiles to five C definitions, named from its function name
+// (generatorPart):
+//
+// - The frame struct Y...: the header narra_gen (runtime.h), then one field
+//   per C variable of the body: the parameters, every Narra local and every
+//   temporary and loop counter. Nothing of the body lives in a C local
+//   across a yield (declareVariable in emitstate.nra).
+// - The resume function y...(narra_gen* h, void* out): a switch on the
+//   state jumps to the label after the yield it stopped at. A yield writes
+//   its value through out, sets the state and returns true. Ending the body
+//   or a return releases what is live, sets the state to -1 and returns false.
+// - The clone function j...: copies the frame and retains what is live at
+//   its state. narra_gen_next calls it to resume a shared generator.
+// - The drop function z...: releases what is live at its state and frees
+//   the frame.
+// - The function itself: it allocates the frame, stores and retains the
+//   parameters, and runs nothing of the body.
+//
+// What is live at a state is what a return at that yield would release (the
+// statement temporaries and scope locals of unwindAll), recorded per yield.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Expr, Block, Pos, FuncDecl } from "narrac/ast"
+import { Type } from "narrac/types"
+import { getExpressionId } from "narrac/check"
+import { cType, generatorPart } from "narrac/cnames"
+import {
+  Emitter,
+  EmitWalker,
+  TempVar,
+  writeLine,
+  consume,
+  beginStatement,
+  endStatement,
+  pushScope,
+  popScope,
+  addLocal,
+  unwindAll,
+  enterLoop,
+  leaveLoop,
+  emitContinueLabel,
+  emitBreakLabel,
+  typeOf,
+  localOf,
+  localRef,
+  localName,
+  retainCode,
+  releaseCode,
+  declareLocalVariable,
+} from "narrac/emitstate"
+import { declaredLocal } from "narrac/emitexprs"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// emitGenerator writes the C of a function*. The caller has started the
+// function (startFunction); signature is its C signature and owner its C name.
+export function emitGenerator<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  declaration: FuncDecl,
+  block: Block,
+  result: Type,
+  signature: string,
+  owner: string,
+): string uses alloc {
+  const frame = generatorPart("Y", owner)
+  const resume = generatorPart("y", owner)
+  const clone = generatorPart("j", owner)
+  const drop = generatorPart("z", owner)
+  if (result is Type.TGenerator(element, _, _, _)) {
+    emitter.generatorElement = element
+  }
+  emitter.inGenerator = true
+  emitter.frameFields = []
+  emitter.frameSeen = Map {}
+  emitter.liveValues = []
+
+  // The resume body, written first: it decides the frame fields. The frame
+  // owns the parameters, so they are locals of the outer scope.
+  emitter.indent = 1
+  const parameterCount = Arrays.length(declaration.parameters)
+  for (const index of Ranges.upTo(parameterCount)) {
+    const _ = declareLocalVariable(mutable emitter, index)
+    addLocal(mutable emitter, index)
+  }
+  recordLive(mutable emitter)
+  EmitWalker.emitBlockInScope(walker, mutable emitter, block)
+  emitGeneratorReturn(mutable emitter)
+  const body = Str.build(emitter.out)
+  emitter.out = Str.builder()
+  emitter.inGenerator = false
+  emitter.indent = 0
+
+  // The frame and the resume function.
+  let fields = Str.builder()
+  for (const field of Arrays.values(emitter.frameFields)) {
+    Str.append(mutable fields, ` ${field};`)
+  }
+  writeLine(
+    mutable emitter,
+    `typedef struct ${frame} { narra_gen h;${Str.build(fields)} } ${frame};`,
+  )
+  writeLine(mutable emitter, `static bool ${resume}(narra_gen* h, void* out) {`)
+  writeLine(mutable emitter, `  ${frame}* f = (${frame}*)h;`)
+  writeLine(mutable emitter, "  (void)out;")
+  writeLine(mutable emitter, "  switch (f->h.state) {")
+  writeLine(mutable emitter, "  case 0: break;")
+  for (const state of Ranges.between(1, Arrays.length(emitter.liveValues))) {
+    const number = Int.toString(state)
+    writeLine(mutable emitter, `  case ${number}: goto narra_resume_${number};`)
+  }
+  writeLine(mutable emitter, "  default: return false;")
+  writeLine(mutable emitter, "  }")
+  Str.append(mutable emitter.out, body)
+  writeLine(mutable emitter, "}")
+
+  // Clone and drop.
+  writeLine(mutable emitter, `static narra_gen* ${clone}(narra_gen* h) {`)
+  writeLine(mutable emitter, `  ${frame}* f = narra_alloc(sizeof(${frame}));`)
+  writeLine(mutable emitter, `  memcpy(f, h, sizeof(${frame}));`)
+  writeLine(mutable emitter, "  f->h.rc = 1;")
+  emitStateSwitch(mutable emitter, true)
+  writeLine(mutable emitter, "  return &f->h;")
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `static void ${drop}(void* p) {`)
+  writeLine(mutable emitter, `  ${frame}* f = p;`)
+  emitStateSwitch(mutable emitter, false)
+  writeLine(mutable emitter, "  narra_free(f);")
+  writeLine(mutable emitter, "}")
+
+  // The function: a new frame that owns the parameters.
+  writeLine(mutable emitter, `${signature} {`)
+  writeLine(mutable emitter, `  ${frame}* f = narra_alloc(sizeof(${frame}));`)
+  writeLine(mutable emitter, `  memset(f, 0, sizeof(${frame}));`)
+  writeLine(mutable emitter, `  f->h = (narra_gen){1, 0, ${resume}, ${clone}, ${drop}};`)
+  for (const index of Ranges.upTo(parameterCount)) {
+    const local = localOf(emitter, index)
+    const name = localName(local)
+    writeLine(mutable emitter, `  f->${name} = ${name};`)
+    const retainText = retainCode(emitter, local.localType, `f->${name}`)
+    if (retainText != "") {
+      writeLine(mutable emitter, `  ${retainText}`)
+    }
+  }
+  writeLine(mutable emitter, "  return &f->h;")
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, "")
+  const text = Str.build(emitter.out)
+  emitter.out = Str.builder()
+  return text
+}
+
+// emitStateSwitch writes a switch on the state that retains (clone) or
+// releases (drop) each value live at that state. States with nothing live
+// have no case.
+function emitStateSwitch(mutable emitter: Emitter, retaining: bool) uses alloc {
+  writeLine(mutable emitter, "  switch (f->h.state) {")
+  for (const state of Ranges.upTo(Arrays.length(emitter.liveValues))) {
+    let statements: Array<string> = []
+    for (const value of Arrays.values(emitter.liveValues[state])) {
+      let text = releaseCode(emitter, value.tempType, value.name)
+      if (retaining) {
+        text = retainCode(emitter, value.tempType, value.name)
+      }
+      if (text != "") {
+        Arrays.push(mutable statements, text)
+      }
+    }
+    if (Arrays.length(statements) > 0) {
+      writeLine(
+        mutable emitter,
+        `  case ${Int.toString(state)}: ${Str.join(statements, " ")} break;`,
+      )
+    }
+  }
+  writeLine(mutable emitter, "  default: break;")
+  writeLine(mutable emitter, "  }")
+}
+
+// recordLive adds the list of what the body holds now, in the order
+// unwindAll releases it, as the live values of the next state.
+function recordLive(mutable emitter: Emitter) uses alloc {
+  let live: Array<TempVar> = []
+  let frame = Arrays.length(emitter.frames) - 1
+  while (frame >= 0) {
+    const temporaries = emitter.frames[frame]
+    let index = Arrays.length(temporaries) - 1
+    while (index >= 0) {
+      Arrays.push(mutable live, temporaries[index])
+      index = index - 1
+    }
+    frame = frame - 1
+  }
+  let scope = Arrays.length(emitter.scopes) - 1
+  while (scope >= 0) {
+    const locals = emitter.scopes[scope].locals
+    let index = Arrays.length(locals) - 1
+    while (index >= 0) {
+      const local = localOf(emitter, locals[index])
+      Arrays.push(mutable live, TempVar {
+        name: localRef(emitter, locals[index]),
+        tempType: local.localType,
+      })
+      index = index - 1
+    }
+    const held = emitter.scopes[scope].held
+    let heldIndex = Arrays.length(held) - 1
+    while (heldIndex >= 0) {
+      Arrays.push(mutable live, held[heldIndex])
+      heldIndex = heldIndex - 1
+    }
+    scope = scope - 1
+  }
+  Arrays.push(mutable emitter.liveValues, live)
+}
+
+// emitGeneratorReturn ends the generator: a return, or the end of the body.
+export function emitGeneratorReturn(mutable emitter: Emitter) uses alloc {
+  unwindAll(mutable emitter)
+  writeLine(mutable emitter, "f->h.state = -1;")
+  writeLine(mutable emitter, "return false;")
+}
+
+// suspend records what is live, and returns from resume with a value. The
+// next resume continues at the label after it.
+function suspend(mutable emitter: Emitter) uses alloc {
+  const number = Int.toString(Arrays.length(emitter.liveValues))
+  recordLive(mutable emitter)
+  writeLine(mutable emitter, `f->h.state = ${number};`)
+  writeLine(mutable emitter, "return true;")
+  writeLine(mutable emitter, `narra_resume_${number}:;`)
+}
+
+// emitYield emits `yield value` and `yield* other`.
+export function emitYield<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  value: Expr,
+  delegate: bool,
+) uses alloc {
+  beginStatement(mutable emitter)
+  const valueType = typeOf(emitter, getExpressionId(value))
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  const consumed = consume(mutable emitter, code.text, code.owned, valueType)
+  if (!delegate) {
+    // The caller of resume owns the value.
+    const elementName = cType(emitter.checker, emitter.generatorElement)
+    writeLine(mutable emitter, `*(${elementName}*)out = ${consumed};`)
+    endStatement(mutable emitter)
+    suspend(mutable emitter)
+    return
+  }
+  // yield* resumes its own copy of other and passes each value on.
+  const top = Arrays.length(emitter.frames) - 1
+  Arrays.push(mutable emitter.frames[top], TempVar { name: consumed, tempType: valueType })
+  writeLine(mutable emitter, `while (narra_gen_next(&${consumed}, out)) {`)
+  emitter.indent = emitter.indent + 1
+  suspend(mutable emitter)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  endStatement(mutable emitter)
+}
+
+// emitGeneratorFor emits `for (const x of g)` over a Generator<T>: the loop
+// resumes its own copy of g until it finishes, and each value it gets is
+// owned by x. nodeId is the for statement's, which declares x.
+export function emitGeneratorFor<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  iterable: Expr,
+  body: Block,
+) uses alloc {
+  const generatorType = typeOf(emitter, getExpressionId(iterable))
+  const code = EmitWalker.emitExpression(walker, mutable emitter, iterable)
+  const generator = consume(mutable emitter, code.text, code.owned, generatorType)
+  const top = Arrays.length(emitter.frames) - 1
+  Arrays.push(mutable emitter.frames[top], TempVar { name: generator, tempType: generatorType })
+  writeLine(mutable emitter, "while (1) {")
+  emitter.indent = emitter.indent + 1
+  const localIndex = declaredLocal(emitter, nodeId)
+  const declaration = declareLocalVariable(mutable emitter, localIndex)
+  if (!emitter.inGenerator) {
+    writeLine(mutable emitter, `${declaration};`)
+  }
+  const variable = localRef(emitter, localIndex)
+  writeLine(mutable emitter, `if (!narra_gen_next(&${generator}, &${variable})) break;`)
+  enterLoop(mutable emitter, label, pos)
+  pushScope(mutable emitter, true)
+  addLocal(mutable emitter, localIndex)
+  EmitWalker.emitBlockInScope(walker, mutable emitter, body)
+  popScope(mutable emitter)
+  emitContinueLabel(mutable emitter)
+  const info = leaveLoop(mutable emitter)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  emitBreakLabel(mutable emitter, info)
+}

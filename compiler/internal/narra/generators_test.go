@@ -42,16 +42,3 @@ func TestTypesDumpGenerators(t *testing.T) {
 		})
 	}
 }
-
-// TestGeneratorEmitStub checks that building a program with a function*
-// stops before the emitter. Node generators removes the stub and this test.
-// An error test in testdata/errors cannot hold it: TestErrorCodes wants a
-// checker diagnostic there, and the program checks clean.
-func TestGeneratorEmitStub(t *testing.T) {
-	path := filepath.Join(generatorsDir, "basics.nra")
-	_, err := CompileToC(path, false)
-	want := "basics.nra:6:1: generators are not compiled yet"
-	if err == nil || err.Error() != want {
-		t.Fatalf("got %v, want %q", err, want)
-	}
-}

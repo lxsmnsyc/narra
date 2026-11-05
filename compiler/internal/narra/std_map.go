@@ -389,14 +389,14 @@ func (e *Emitter) mapFor(s *ForStmt, call *CallExpr, entries bool) {
 	m := e.consume(code, owned, mt)
 	e.frames[len(e.frames)-1] = append(e.frames[len(e.frames)-1], tempVar{m, mt})
 	e.tempN++
-	idx := fmt.Sprintf("i%d", e.tempN)
-	e.line("for (int64_t %s = 0; %s < %s->used; %s++) {", idx, idx, m, idx)
+	decl, idx := e.cVar("int64_t", fmt.Sprintf("i%d", e.tempN))
+	e.line("for (%s = 0; %s < %s->used; %s++) {", decl, idx, m, idx)
 	e.indent++
 	e.line("if (!%s->alive[%s]) continue;", m, idx)
 	e.enterLoop(s.Label, s.Pos)
 	e.pushScope(true)
-	e.line("%s %s = %s;", s.Local.T.CName(), s.Local.CName, e.mapEntryValue(m, idx, s.Local.T, entries))
-	if r := retain(s.Local.T, s.Local.CName); r != "" {
+	e.declareLocal(s.Local, e.mapEntryValue(m, idx, s.Local.T, entries))
+	if r := retain(s.Local.T, e.localRef(s.Local)); r != "" {
 		e.line("%s", r)
 	}
 	e.addLocal(s.Local)

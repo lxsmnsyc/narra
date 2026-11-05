@@ -80,3 +80,4 @@ M. Uncertainty low (the spike mapped all three), coupling low (one dependency), 
 
 - Under option (b), the Go compiler loads a std source module only when `selfhost/src` imports it. Every other new std module is selfhost-only and is tested under `testdata/stage2/`.
 - Keep the generic mismatch fix general: no Option-specific cases. It helps every user generic too.
+- From the std-source review: remove `std/option` from the `emitOptionCall` condition in `selfhost/src/emitexprs.nra` (about line 443), which can no longer be reached; sort std source modules with `orderModules` in single-file packages (`compiler/internal/narra/modules.go` about line 136, `selfhost/src/modules.nra` about line 88) before a second source module imports another; and `Options.isSome(3)` should report only the mismatch, not also "expected bool, found void".

@@ -1,7 +1,7 @@
 ---
 id: std-source
 title: Std modules as Narra source
-status: active
+status: done
 priority: should
 type: spike
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-01
-spent:
+spent: 283000
 owns:
   - std/**
   - compiler/testdata/std_source*

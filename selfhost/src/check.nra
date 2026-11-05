@@ -330,6 +330,26 @@ export struct Checker {
   // The block expressions being checked, innermost last.
   blocks: Array<BlockContext> = []
   inTest: bool = false
+  // The Checker.functions index of the function whose signature or body is
+  // being checked (an instance's generic function), or -1 (Go's sigFunc):
+  // it binds the effect variables of generator types; generator is set in
+  // a function* body.
+  functionIndex: int = -1
+  generator: bool = false
+  // Generator uses checked after the effect pass (Go's generatorUses), and
+  // the inferred effects of each private function* by generatorKey, filled
+  // by the effect pass.
+  generatorUses: Array<GeneratorUse> = []
+  // The error for a program the emitter cannot compile yet: the first
+  // function* declared (Go's Program.Unemitted; node generators removes it).
+  unemitted: Option<CheckError> = None
+  generatorEffects: Map<string, Array<string>>
+  // The effects of each call result with bound generator effects (a
+  // TGenerator origin of -2 - index), filled by the effect pass.
+  boundGenerators: Array<Array<string>> = []
+  // The call node id that made each of them: only that call fills it (a
+  // generic `id(x)` returns the same type).
+  boundCallIds: Array<int> = []
   // The id of the target of the assignment being checked, or -1 (Go's
   // c.assigning): a Map index there is a write.
   assigningId: int = -1
@@ -363,7 +383,7 @@ export function newChecker(ids: int): Checker uses alloc {
     traits: [], typeTraits: [], typeTraitIndex: Map {}, bounds: Map {}, busy: Map {}, implementations: [], implFunctions: Map {}, mapKeys: [],
     errors: [], errorKeys: Map {}, order: [],
     registry: newRegistry(), scopeIndex: Map {}, packageName: "", single: false, used: [], entries: [],
-    resultType: Type.TVoid, funcInstances: Map {}, composites: Map {}, bodyKeys: Map {},
+    resultType: Type.TVoid, funcInstances: Map {}, composites: Map {}, bodyKeys: Map {}, generatorEffects: Map {},
   }
 }
 
@@ -500,8 +520,43 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TMap(key, value) => `Map<${typeString(checker, key)}, ${typeString(checker, value)}>`
     Type.TFunc(parameters, result) => `(${typeList(checker, parameters)}) => ${typeString(checker, result)}`
     Type.TRange => "Range"
+    Type.TGenerator(element, _, _, _) => `Generator<${typeString(checker, element)}>${usesSuffix(generatorEffectList(checker, type))}`
     Type.TModule(path) => `module ${path}`
   }
+}
+
+// generatorEffectList is the effect list of a generator type: the inferred
+// one of a private generator once the effect pass has run (Go's
+// GeneratorType.effects).
+export function generatorEffectList(checker: Checker, type: Type): Array<string> uses alloc {
+  if (type is Type.TGenerator(_, effects, _, origin)) {
+    if (origin == -1) {
+      return effects
+    }
+    if (origin < -1) {
+      return checker.boundGenerators[-2 - origin]
+    }
+    if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
+      return inferred
+    }
+  }
+  return []
+}
+
+// generatorKey names the private function* Checker.functions[index] in
+// Checker.generatorEffects: "<module>|<line>:<column>", the key the effect
+// pass gives its functions.
+export function generatorKey(checker: Checker, index: int): string uses alloc {
+  const info = checker.functions[index]
+  return `${info.module}|${Int.toString(info.declaration.pos.line)}:${Int.toString(info.declaration.pos.column)}`
+}
+
+// usesSuffix writes an effect list as it follows a type, ` uses a, b`.
+export function usesSuffix(effects: Array<string>): string uses alloc {
+  if (Arrays.length(effects) == 0) {
+    return ""
+  }
+  return ` uses ${Str.join(effects, ", ")}`
 }
 
 function structString(checker: Checker, index: int): string uses alloc {
@@ -544,6 +599,7 @@ export function containsTypeParameter(checker: Checker, type: Type): bool {
     Type.TFunc(parameters, result) => anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
     Type.TArray(element) => containsTypeParameter(checker, element)
     Type.TBox(element) => containsTypeParameter(checker, element)
+    Type.TGenerator(element, _, _, _) => containsTypeParameter(checker, element)
     Type.TMap(key, value) => containsTypeParameter(checker, key) || containsTypeParameter(checker, value)
     Type.TStruct(index) => anyTypeParameter(checker, checker.structs[index].arguments)
     Type.TEnum(index) => anyTypeParameter(checker, checker.enums[index].arguments)
@@ -648,6 +704,15 @@ function visitOrder(mutable checker: Checker, mutable state: Map<string, int>, t
   Arrays.push(mutable checker.order, type)
 }
 
+// A generator value used where a generator type with the same element type
+// is expected (Go's generatorUse).
+export struct GeneratorUse {
+  pos: Pos
+  file: string
+  want: Type
+  got: Type
+}
+
 // The state of the body being checked, saved while another body (a
 // constant checked at its first use) is checked in the middle of it.
 export struct BodyState {
@@ -659,6 +724,8 @@ export struct BodyState {
   labels: Array<string>
   blocks: Array<BlockContext>
   environment: Map<string, Type>
+  functionIndex: int
+  generator: bool
 }
 
 // startBody adds a body to Checker.bodies, makes it current with one empty
@@ -688,7 +755,7 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   }
 
   // Save the outer body's state and start the new one.
-  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, labels: checker.labels, blocks: checker.blocks, environment: checker.environment }
+  const saved = BodyState { body: checker.body, localScopes: checker.localScopes, scopeDepth: checker.scopeDepth, resultType: checker.resultType, loops: checker.loops, labels: checker.labels, blocks: checker.blocks, environment: checker.environment, functionIndex: checker.functionIndex, generator: checker.generator }
   const module = checker.scopes[checker.current].path
   const info = BodyInfo { module: module, kind: kind, name: name, typeArguments: typeArguments, root: root, first: first, types: Arrays.filled(None, size), refs: Arrays.filled(Ref.Unresolved, size), declared: Arrays.filled(-1, size), locals: [], closures: [], closureIndex: Map {}, arrows: [], arrowDepth: 0, allowedId: -1, instanceRefs: Map {}, traitSelf: Map {} }
   Arrays.push(mutable checker.bodies, info)
@@ -700,6 +767,8 @@ export function startBody(mutable checker: Checker, kind: string, name: string, 
   checker.labels = []
   checker.blocks = []
   checker.environment = environment
+  checker.functionIndex = -1
+  checker.generator = false
   return saved
 }
 
@@ -713,6 +782,8 @@ export function finishBody(mutable checker: Checker, saved: BodyState) {
   checker.labels = saved.labels
   checker.blocks = saved.blocks
   checker.environment = saved.environment
+  checker.functionIndex = saved.functionIndex
+  checker.generator = saved.generator
 }
 
 // findBodySlot is the table index of a node id in a body, or -1.

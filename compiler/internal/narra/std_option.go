@@ -5,22 +5,13 @@ import (
 	"strings"
 )
 
-// std/option: Option.map, andThen, withDefault, orElse, isSome, isNone and
-// okOr. The callbacks are non-escaping function parameters with an effect
-// variable: a call has the effects of its callback (Builtin.Callbacks).
-// None of these returns early from the caller; `is` and `match` stay the
-// main style for error paths.
+// std/option is Narra source (std/src/option.nra): map, andThen,
+// withDefault, orElse, isSome, isNone and okOr are generic functions with
+// effect variables. The helpers below serve std/result, which is still a
+// builtin module.
 
 func init() {
-	registerNamespaceModule("Option", "std/option", map[string]*Builtin{
-		"map":         {Check: checkOptionMap, Effects: []string{"alloc"}, Callbacks: []int{1}, Emit: emitOptionMap},
-		"andThen":     {Check: checkOptionAndThen, Effects: []string{}, Callbacks: []int{1}, Emit: emitOptionAndThen},
-		"withDefault": {Check: checkOptionWithDefault, Effects: []string{}, Emit: emitOptionWithDefault},
-		"orElse":      {Check: checkOptionOrElse, Effects: []string{}, Callbacks: []int{1}, Emit: emitOptionOrElse},
-		"isSome":      {Check: checkOptionIs, Effects: []string{}, Emit: emitOptionIs},
-		"isNone":      {Check: checkOptionIs, Effects: []string{}, Emit: emitOptionIs},
-		"okOr":        {Check: checkOptionOkOr, Effects: []string{"alloc"}, Emit: emitOptionOkOr},
-	})
+	registerSourceModule("Option", "std/option")
 }
 
 // preludeEnumArg returns t as an instance of the prelude enum name (Option
@@ -114,92 +105,6 @@ func callbackReturns(c *Checker, e *CallExpr, r Type, name string) *EnumType {
 	return nil
 }
 
-func checkOptionMap(c *Checker, e *CallExpr, want Type) Type {
-	if !c.argCount(e, 2) {
-		return TVoid
-	}
-	o := preludeArg(c, e, 0, "Option")
-	if o == nil {
-		c.expr(e.Args[1].Value, nil)
-		return TVoid
-	}
-	u := checkCallback(c, e, 1, []Type{o.Args[0]}, nil)
-	if u == nil {
-		return TVoid
-	}
-	return preludeEnum(c, "Option", u)
-}
-
-func checkOptionAndThen(c *Checker, e *CallExpr, want Type) Type {
-	if !c.argCount(e, 2) {
-		return TVoid
-	}
-	o := preludeArg(c, e, 0, "Option")
-	if o == nil {
-		c.expr(e.Args[1].Value, nil)
-		return TVoid
-	}
-	// The expected Option type of the call gives the callback its result, so
-	// `None` needs no annotation there.
-	var wantRes Type
-	if w := c.preludeEnumArg(want, "Option"); w != nil {
-		wantRes = w
-	}
-	if r := callbackReturns(c, e, checkCallback(c, e, 1, []Type{o.Args[0]}, wantRes), "Option"); r != nil {
-		return r
-	}
-	return TVoid
-}
-
-func checkOptionWithDefault(c *Checker, e *CallExpr, want Type) Type {
-	if !c.argCount(e, 2) {
-		return TVoid
-	}
-	o := preludeArg(c, e, 0, "Option")
-	if o == nil {
-		c.expr(e.Args[1].Value, nil)
-		return TVoid
-	}
-	c.expectType(e.Args[1].Value.position(), o.Args[0], c.expr(e.Args[1].Value, o.Args[0]))
-	return o.Args[0]
-}
-
-func checkOptionOrElse(c *Checker, e *CallExpr, want Type) Type {
-	if !c.argCount(e, 2) {
-		return TVoid
-	}
-	o := preludeArg(c, e, 0, "Option")
-	if o == nil {
-		c.expr(e.Args[1].Value, nil)
-		return TVoid
-	}
-	checkCallback(c, e, 1, nil, o)
-	return o
-}
-
-func checkOptionIs(c *Checker, e *CallExpr, want Type) Type {
-	if c.argCount(e, 1) {
-		preludeArg(c, e, 0, "Option")
-	}
-	return TBool
-}
-
-func checkOptionOkOr(c *Checker, e *CallExpr, want Type) Type {
-	if !c.argCount(e, 2) {
-		return TVoid
-	}
-	o := preludeArg(c, e, 0, "Option")
-	var hint Type
-	if w, ok := want.(*EnumType); ok && w.Name == "Result" && len(w.Args) == 2 {
-		hint = w.Args[1]
-	}
-	et := c.expr(e.Args[1].Value, hint)
-	if o == nil {
-		return TVoid
-	}
-	return preludeEnum(c, "Result", o.Args[0], et)
-}
-
 // enumArg emits argument i into a temporary and returns its name. The value
 // is borrowed: the argument's own owner keeps it alive for the statement.
 func enumArg(e *Emitter, x *CallExpr, i int) (string, *EnumType) {
@@ -254,87 +159,4 @@ func assignCopy(e *Emitter, r, v string, t Type) {
 	if s := retain(t, r); s != "" {
 		e.line("%s", s)
 	}
-}
-
-func emitOptionMap(e *Emitter, x *CallExpr, w string) (string, bool) {
-	o, ot := enumArg(e, x, 0)
-	f, ft := funcArg(e, x, 1)
-	rt := x.Type().(*EnumType)
-	r := zeroResult(e, rt)
-	some := variantOf(ot, "Some")
-	branch(e, o, some, func() {
-		v := callFn(e, f, ft, payloadOf(o, some))
-		e.line("%s = %s;", r, e.enumAlloc(variantOf(rt, "Some"), []string{v}))
-	}, func() {
-		e.line("%s = %s;", r, e.enumAlloc(variantOf(rt, "None"), nil))
-	})
-	return r, true
-}
-
-func emitOptionAndThen(e *Emitter, x *CallExpr, w string) (string, bool) {
-	o, ot := enumArg(e, x, 0)
-	f, ft := funcArg(e, x, 1)
-	rt := x.Type().(*EnumType)
-	r := zeroResult(e, rt)
-	some := variantOf(ot, "Some")
-	branch(e, o, some, func() {
-		e.line("%s = %s;", r, callFn(e, f, ft, payloadOf(o, some)))
-	}, func() {
-		e.line("%s = %s;", r, e.enumAlloc(variantOf(rt, "None"), nil))
-	})
-	return r, true
-}
-
-func emitOptionWithDefault(e *Emitter, x *CallExpr, w string) (string, bool) {
-	o, ot := enumArg(e, x, 0)
-	t := x.Type()
-	code, _ := e.expr(x.Args[1].Value)
-	d := e.temp(t, code)
-	r := zeroResult(e, t)
-	some := variantOf(ot, "Some")
-	branch(e, o, some, func() {
-		assignCopy(e, r, payloadOf(o, some), t)
-	}, func() {
-		assignCopy(e, r, d, t)
-	})
-	return r, true
-}
-
-func emitOptionOrElse(e *Emitter, x *CallExpr, w string) (string, bool) {
-	o, ot := enumArg(e, x, 0)
-	f, ft := funcArg(e, x, 1)
-	r := zeroResult(e, ot)
-	branch(e, o, variantOf(ot, "Some"), func() {
-		assignCopy(e, r, o, ot)
-	}, func() {
-		e.line("%s = %s;", r, callFn(e, f, ft))
-	})
-	return r, true
-}
-
-func emitOptionIs(e *Emitter, x *CallExpr, w string) (string, bool) {
-	o, ot := enumArg(e, x, 0)
-	name := "Some"
-	if x.Builtin == "Option.isNone" {
-		name = "None"
-	}
-	return fmt.Sprintf("(%s.tag == %d)", o, variantOf(ot, name).Index), false
-}
-
-func emitOptionOkOr(e *Emitter, x *CallExpr, w string) (string, bool) {
-	o, ot := enumArg(e, x, 0)
-	et := x.Args[1].Value.Type()
-	code, _ := e.expr(x.Args[1].Value)
-	errv := e.temp(et, code)
-	rt := x.Type().(*EnumType)
-	r := zeroResult(e, rt)
-	some := variantOf(ot, "Some")
-	branch(e, o, some, func() {
-		v := retained(e, payloadOf(o, some), some.Fields[0].T)
-		e.line("%s = %s;", r, e.enumAlloc(variantOf(rt, "Ok"), []string{v}))
-	}, func() {
-		v := retained(e, errv, et)
-		e.line("%s = %s;", r, e.enumAlloc(variantOf(rt, "Err"), []string{v}))
-	})
-	return r, true
 }

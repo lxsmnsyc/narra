@@ -73,9 +73,12 @@ type FuncDecl struct {
 	TypeParams []string
 	Bounds     [][]*TypeExpr // trait constraints, one list per type parameter
 	Exported   bool
-	Params     []*Param
-	Result     *TypeExpr
-	Effects    []string
+	// Generator marks `function* name(...)`: the result type is
+	// Generator<T> and the body may yield (SPEC.md section 8).
+	Generator bool
+	Params    []*Param
+	Result    *TypeExpr
+	Effects   []string
 	// EffectParams are the effect variables of `<T, effect E>`.
 	EffectParams []string
 	// Origin is the generic function an instance was made from.
@@ -83,6 +86,9 @@ type FuncDecl struct {
 	Body    *Block
 	ResultT Type
 	Module  string // declaring module path, set by the checker
+	// GenEffects are the inferred effects of a private function* body,
+	// sorted, set by the effect pass (check_effects.go).
+	GenEffects []string
 }
 
 // ConstDecl is a top-level `const NAME: T = value` (check_const.go).
@@ -233,6 +239,14 @@ type ForStmt struct {
 	Kind  forKind
 }
 
+// YieldStmt is `yield value`, or `yield* other` when Delegate is set. It is
+// valid only directly in a function* body (check_stmt.go).
+type YieldStmt struct {
+	Pos      Pos
+	Value    Expr
+	Delegate bool
+}
+
 type BreakStmt struct {
 	Pos   Pos
 	Label string
@@ -253,6 +267,7 @@ func (*WhileStmt) stmtNode()    {}
 func (*ForStmt) stmtNode()      {}
 func (*BreakStmt) stmtNode()    {}
 func (*ContinueStmt) stmtNode() {}
+func (*YieldStmt) stmtNode()    {}
 
 type Expr interface {
 	exprNode()

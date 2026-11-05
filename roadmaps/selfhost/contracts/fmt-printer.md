@@ -1,6 +1,6 @@
 ---
 name: fmt-printer
-version: 1
+version: 2
 status: frozen
 defined_by: fmt-cli
 ---
@@ -17,7 +17,7 @@ How the statement printer of fmt-cli and the expression printer of fmt-exprs cal
 
 ```ts
 import * as Doc from "narrac/fmtdoc"
-import { Trivia } from "narrac/parser"
+import { Trivia } from "narrac/trivia"
 import { Expr, Pattern, TypeExpr, Block } from "narrac/ast"
 
 export struct Settings {
@@ -62,3 +62,7 @@ The golden files of fmt-cli and fmt-exprs under `compiler/testdata/fmt/`.
 ## Changes
 
 - v1: initial, frozen at planning (2026-11-05).
+
+## Changes
+
+- v2 (2026-11-05): `Trivia` is imported from `narrac/trivia`, following fmt-trivia v2.

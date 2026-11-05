@@ -66,7 +66,7 @@ func TestTypesDumpStdCallsCoverage(t *testing.T) {
 	}
 	for _, want := range []string{
 		"can only be called inside a `test` block", "needs a function that returns a value",
-		"needs a function that returns Option", "needs an Option<T>", "needs a Result<T, E>",
+		"needs a function that returns Result", "needs a Result<T, E>",
 		"changes the array", "changes the map", "is passed as mutable in this call",
 	} {
 		if !strings.Contains(text, want) {

@@ -24,7 +24,7 @@ import { stdRegistry } from "narrac/stdlib"
 import { collectExports, checkTypeName, declareType, importModules, typeNamed, checkImportedConsts, checkEntries, checkImportNames } from "narrac/scopes"
 import { makeParameters, makeEnv } from "narrac/generics"
 import { declareTraits, resolveTraits, funcBounds, flushMapKeys } from "narrac/traits"
-import { resolveType, resolveOpt, resolveFields, resolveVariants, buildGeneric } from "narrac/resolve"
+import { resolveType, resolveOpt, resolveFields, resolveVariants, buildGeneric, resolveSignature } from "narrac/resolve"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -233,15 +233,17 @@ function declareFunc(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
     funcBounds(mutable checker, funcDecl, typeParameters)
     checker.environment = makeEnv(checker, typeParameters)
   }
-  for (const param of Arrays.values(funcDecl.parameters)) {
-    const type = resolveOpt(mutable checker, param.type)
-    setParameterType(mutable checker, param.id, type)
-  }
-  const result = resolveOpt(mutable checker, funcDecl.result)
-  checker.environment = Map {}
+  // The entry exists while the signature is resolved: it binds the effect
+  // variables of generator types.
   const index = Arrays.length(checker.functions)
-  const info = FuncInfo { name: funcDecl.name, module: modPath(checker), scope: scope, declaration: funcDecl, typeParameters: typeParameters, result: result }
+  const info = FuncInfo { name: funcDecl.name, module: modPath(checker), scope: scope, declaration: funcDecl, typeParameters: typeParameters, result: Type.TVoid }
   Arrays.push(mutable checker.functions, info)
+  const signature = resolveSignature(mutable checker, funcDecl, index, true)
+  for (const i of Ranges.between(0, Arrays.length(funcDecl.parameters))) {
+    setParameterType(mutable checker, funcDecl.parameters[i].id, signature.parameters[i])
+  }
+  checker.functions[index].result = signature.result
+  checker.environment = Map {}
   checker.scopes[scope].functions[funcDecl.name] = index
   // A non-generic function is part of the program (Go's Program.Funcs).
   if (Arrays.length(typeParameters) == 0) {

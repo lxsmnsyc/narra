@@ -1,7 +1,7 @@
 ---
 name: fmt-doc
-version: 1
-status: draft
+version: 2
+status: frozen
 defined_by: fmt-doc
 ---
 
@@ -33,11 +33,12 @@ export struct Options {
   useTabs: bool
 }
 
-export function text(value: string): Doc
-export function concat(parts: Array<Doc>): Doc
-export function join(separator: Doc, parts: Array<Doc>): Doc
-export function indent(contents: Doc): Doc
-export function group(contents: Doc): Doc
+export function text(value: string): Doc uses alloc
+export function concat(parts: Array<Doc>): Doc uses alloc
+export function join(separator: Doc, parts: Array<Doc>): Doc uses alloc
+export function indent(contents: Doc): Doc uses alloc
+export function group(contents: Doc): Doc uses alloc
+export function groupWithId(contents: Doc, id: int): Doc uses alloc
 export function print(document: Doc, options: Options): string uses alloc
 ```
 
@@ -62,3 +63,7 @@ Unit tests for each rule above, added by fmt-doc (see its brief for how they run
 ## Changes
 
 - v1: initial draft.
+
+## Changes
+
+- v2 (2026-11-05, frozen by fmt-doc, PR #75): the helpers declare `uses alloc`, because building an enum value allocates. Added `groupWithId`. Inside `fmtdoc.nra` the exported `print` wraps `printDocument`, because there the name `print` would mean the prelude function. The output ends with a newline only when the document ends with a `HardLine`, so fmt-cli ends every file document with one.

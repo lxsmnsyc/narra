@@ -35,7 +35,7 @@ func entryDiagnostics(pkg *Package, prog *Program) Diagnostics {
 		}
 		if pkg.single {
 			f := "no entry function; declare `export function run(args: Array<string>): int`"
-			ds = append(ds, Diagnostic{Code: codeFor(f), File: pkg.Modules[0].Files[0].Path, Message: f})
+			ds = append(ds, Diagnostic{Code: codeFor(f), File: pkg.ownModule().Files[0].Path, Message: f})
 			continue
 		}
 		mod, fn := pkg.entryModule(b.Entry)

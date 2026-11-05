@@ -12,6 +12,7 @@ import { moduleHash } from "narrac/hash"
 import { Binary, LoadError, parseManifest } from "narrac/manifest"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import { stdSourceFor } from "narrac/stdtext"
 
 // One module of a package: one file under src/.
 export struct SourceModule {
@@ -84,14 +85,17 @@ function loadFile(path: string): Result<Package, Array<LoadError>> uses io, allo
     return Err([LoadError { file: base, line: diagnostic.pos.line, column: diagnostic.pos.column, message: diagnostic.message }])
   }
   const module = newModule(stem, base, parsed.value.file, 0, parsed.value.nextId)
+  const std = loadStdModules([module], parsed.value.nextId)
+  let modules = std.modules
+  Arrays.push(mutable modules, module)
   return Ok(Package {
     name: stem,
     directory: dirName(path),
-    modules: [module],
+    modules: modules,
     binaries: [Binary { name: stem, entry: `${stem}.run` }],
     libraries: [],
     search: [],
-    nextId: parsed.value.nextId,
+    nextId: std.nextId,
     single: true,
   })
 }
@@ -148,7 +152,13 @@ function loadPackage(directory: string): Result<Package, Array<LoadError>> uses 
   if (Arrays.length(errors) > 0) {
     return Err(errors)
   }
-  const ordered = orderModules(modules)
+  const std = loadStdModules(modules, nextId)
+  let withStd = std.modules
+  for (const module of Arrays.values(modules)) {
+    Arrays.push(mutable withStd, module)
+  }
+  nextId = std.nextId
+  const ordered = orderModules(withStd)
   if (Arrays.length(ordered.errors) > 0) {
     return Err(ordered.errors)
   }
@@ -262,6 +272,48 @@ function exportedName(declaration: Decl): string {
     _ => {}
   }
   return ""
+}
+
+// The std modules written in Narra that a package imports (Go's
+// stdSourceModules), in first-import order, with node ids after the
+// package's files.
+struct StdLoad {
+  modules: Array<SourceModule>
+  seen: Map<string, bool>
+  nextId: int
+}
+
+// loadStdModules parses the std source modules that modules import,
+// directly or through another std source module. Their ids start at firstId.
+function loadStdModules(modules: Array<SourceModule>, firstId: int): StdLoad uses alloc {
+  let load = StdLoad { modules: [], seen: Map {}, nextId: firstId }
+  for (const module of Arrays.values(modules)) {
+    addStdImports(mutable load, module.ast)
+  }
+  return load
+}
+
+// addStdImports adds each std source module the file imports and not yet
+// loaded, then the ones that module imports.
+function addStdImports(mutable load: StdLoad, ast: File) uses alloc {
+  for (const importDecl of Arrays.values(ast.imports)) {
+    const text = stdSourceFor(importDecl.path)
+    if (text == "" || load.seen[importDecl.path] is Some(_)) {
+      continue
+    }
+    load.seen[importDecl.path] = true
+    const parsed = parse(text, load.nextId)
+    match (parsed) {
+      Ok(result) => {
+        const file = `std/src/${Str.sliceFrom(importDecl.path, 4)}.nra`
+        const module = newModule(importDecl.path, file, result.file, load.nextId, result.nextId)
+        load.nextId = result.nextId
+        Arrays.push(mutable load.modules, module)
+        addStdImports(mutable load, result.file)
+      }
+      Err(diagnostic) => panic(`std source ${importDecl.path}: ${diagnostic.message}`)
+    }
+  }
 }
 
 struct Ordered {

@@ -1,7 +1,7 @@
 ---
 id: fmt-trivia
 title: "fmt: comments, blank lines and parentheses in side tables"
-status: active
+status: done
 priority:
 type: feature
 story: fmt
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 315000
 owns:
   - selfhost/src/trivia*.nra
   - compiler/internal/narra/selfhost_trivia_test.go

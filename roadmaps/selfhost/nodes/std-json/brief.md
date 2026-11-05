@@ -20,6 +20,9 @@ shared: []
 reserves: []
 provides: []
 depends_on:
+  - on: std-foundation
+    kind: hard
+    why: source std modules need the generic mismatch errors, std/internal and the stage 2 tests (std-source gate, 2026-11-05)
   - on: std-source
     kind: hard
     why: the spike decides whether this module is Narra source or compiler builtins
@@ -34,3 +37,4 @@ depends_on:
 ## Notes
 
 Outline. Probably splits into a Shape node and a json node when refined.
+- Deferred from std-foundation (2026-11-05): when a std source module first imports another one, sort std source modules with `orderModules` in single-file packages (`compiler/internal/narra/modules.go` and `selfhost/src/modules.nra`); today they skip it.

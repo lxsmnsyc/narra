@@ -24,6 +24,9 @@ func CompileBinary(path, bin string, tests bool) (string, error) {
 	if err != nil {
 		return "", FormatError(err)
 	}
+	if prog.Unemitted != nil {
+		return "", FormatError(*prog.Unemitted) // node generators removes this line
+	}
 	if tests {
 		return Emit(prog, nil, true), nil
 	}
@@ -34,7 +37,7 @@ func CompileBinary(path, bin string, tests bool) (string, error) {
 	entry := prog.Entries[b.Name]
 	if entry == nil {
 		if pkg.single {
-			return "", fmt.Errorf("%s: no entry function; declare `export function run(args: Array<string>): int`", pkg.Modules[0].Files[0].Path)
+			return "", fmt.Errorf("%s: no entry function; declare `export function run(args: Array<string>): int`", pkg.ownModule().Files[0].Path)
 		}
 		mod, fn := pkg.entryModule(b.Entry)
 		return "", fmt.Errorf("narra.toml: binary %q: no entry function %q; declare `export function %s(args: Array<string>): int` in module %q", b.Name, b.Entry, fn, mod)

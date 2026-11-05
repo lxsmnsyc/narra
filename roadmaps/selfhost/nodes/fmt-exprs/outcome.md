@@ -15,7 +15,7 @@
   - `selfhost/src/trivia.nra` (`endsLineAfterComments`, new `isOnlySpaceBetween`): a block comment counted as ending its line when a later comment ended the line, even with code in between. `x + /* m */ y /* a */` made `/* m */` trailing of `x` and the printer moved it before the operator. It now looks at the next comment only when blanks alone separate the two.
   - `compiler/internal/narra/selfhost_fmt_test.go`: golden prefixes, and `tokensOf` ignores grouping parentheses (a `(` after an operator, `,`, `(`, `?`, `:` or `return`, with its `)`). The printer drops a redundant pair (`((a))` becomes `(a)`, `Trivia.parenthesized` is a flag) and wraps a conditional that spans lines in parentheses. Call, parameter and condition parentheses stay in the compared sequence, and the tree comparison covers the rest.
 - Goldens of fmt-cli that changed because expressions are now formatted: `stmt_basic` (`print( "hi" )` is `print("hi")`), `stmt_ternary` (an over-long `return c(a) ? x : y` breaks the call arguments, the only break the parser accepts there), `decl_long_w40_none` (long chains and calls past 40 columns are broken).
-- The generators note does not apply (not on this branch).
+- Generators (`function*`, `yield`, `yield*`, `Generator<T> uses E`) are printed since the story branch took in main (PR #82).
 
 ## Stubs left
 

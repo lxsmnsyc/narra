@@ -1194,7 +1194,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       const returned = parseExpr(mutable parser)
       if (isTernary(parser, returned)) {
         endStatement(mutable parser)
-        return convertReturnedTernary(parser, returned)
+        return convertReturnedTernary(mutable parser, returned)
       }
       value = Some(returned)
     }
@@ -1398,14 +1398,17 @@ function getReturnedValue(block: Block): Expr {
 // convertReturnedTernary turns `return c ? a : b` into `if (c) { return a }
 // else { return b }`, so a self call in a branch is a tail call. A branch that
 // is itself a ternary is turned the same way.
-function convertReturnedTernary(parser: Parser, value: Expr): Stmt {
+function convertReturnedTernary(mutable parser: Parser, value: Expr): Stmt {
   if (!isTernary(parser, value)) {
     return Stmt.ReturnStmt(getExpressionPos(value), Some(value))
   }
-  if (value is Expr.BlockExpr(_, _, block)) {
+  if (value is Expr.BlockExpr(ternaryId, _, block)) {
+    if (parser.collector.enabled) {
+      parser.collector.convertedKeys[getIdKey(ternaryId)] = true
+    }
     if (block.statements[0] is Stmt.IfStmt(pos, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
-      const thenStatement = convertReturnedTernary(parser, getReturnedValue(thenBlock))
-      const elseStatement = convertReturnedTernary(parser, getReturnedValue(elseBlock))
+      const thenStatement = convertReturnedTernary(mutable parser, getReturnedValue(thenBlock))
+      const elseStatement = convertReturnedTernary(mutable parser, getReturnedValue(elseBlock))
       const newThen = Block { pos: thenBlock.pos, statements: [thenStatement] }
       const newElse = Block { pos: elseBlock.pos, statements: [elseStatement] }
       return Stmt.IfStmt(pos, condition, newThen, Some(Stmt.BlockStmt(newElse)))

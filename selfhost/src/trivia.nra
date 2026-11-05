@@ -70,10 +70,15 @@ export struct Collector {
   records: Array<NodeRecord> // in the order the nodes finish: children first
   recordIndex: Map<string, int> // key to index in records
   parenthesized: Map<int, bool>
+  // the range a node had before its parentheses were added, by key
+  insideParens: Map<string, NodeRecord>
+  // keys of the conditionals that `return c ? a : b` turns into an if: they
+  // have no printer of their own, so their parentheses stay in their range
+  convertedKeys: Map<string, bool>
 }
 
 export function createCollector(enabled: bool): Collector uses alloc {
-  return Collector { enabled: enabled, records: [], recordIndex: Map {}, parenthesized: Map {} }
+  return Collector { enabled: enabled, records: [], recordIndex: Map {}, parenthesized: Map {}, insideParens: Map {}, convertedKeys: Map {} }
 }
 
 // ---- Keys
@@ -171,6 +176,9 @@ export function noteNode(mutable collector: Collector, key: string, start: Pos, 
     const grows = !isBefore(old.start, start) && !isBefore(end, old.end)
     const changes = !isSamePos(old.start, start) || !isSamePos(old.end, end)
     if (grows && changes) {
+      if (collector.insideParens[key] is None) {
+        collector.insideParens[key] = old
+      }
       collector.records[index] = NodeRecord { key: key, start: start, end: end }
     }
     return
@@ -328,9 +336,10 @@ function endsLineAfterComments(lines: Array<string>, comments: Array<Comment>, i
 
 // isBeforeCloser tells whether the next code after a comment, past blanks, line
 // ends and further comments, is a closing bracket. Such a comment sits at the
-// end of a list, so no node after the bracket may take it as a leading comment:
-// in `function f(a: int, // c` followed by `)` and `: int`, the result type is
-// outside the parameter list.
+// end of its brackets, so no node after the bracket may take it as a leading
+// comment: in `function f(a: int, // c` followed by `)` and `: int`, the result
+// type is outside the parameter list, and in `if (x // c` followed by `)` and
+// `{`, the block is outside the condition.
 function isBeforeCloser(lines: Array<string>, comments: Array<Comment>, index: int): bool uses alloc {
   let line = comments[index].end.line
   let column = comments[index].end.column
@@ -358,20 +367,40 @@ function isBeforeCloser(lines: Array<string>, comments: Array<Comment>, index: i
   return false
 }
 
-// isParameterScope tells whether a node is a function declaration or an arrow
-// function, whose parameter list is followed by more of the node (result type,
-// body). Other nodes with parentheses (`match`, `for`, `if`, calls, function
-// types) keep the plain rule.
-function isParameterScope(lines: Array<string>, key: string, start: Pos): bool uses alloc {
-  const letter = Str.slice(key, 0, 1)
-  if (letter == "d") {
-    return true
+// getInnerRanges gives, for each record, the range it covers without the
+// parentheses written around it or around the operand at its start or end.
+// Prettier's tree has no node for parentheses, so a comment between them and
+// the expression belongs to the parent: it leads or trails the expression
+// instead of sitting inside it.
+function getInnerRanges(records: Array<NodeRecord>, tree: RecordTree, insideParens: Map<string, NodeRecord>, convertedKeys: Map<string, bool>): Array<NodeRecord> uses alloc {
+  let inner: Array<NodeRecord> = []
+  for (const index of Ranges.upTo(Arrays.length(records))) {
+    const record = records[index]
+    // only expressions lose their parentheses; a statement's text ends at its last token, even a `)`
+    if (convertedKeys[record.key] is Some(_) || Str.slice(record.key, 0, 1) != "e") {
+      Arrays.push(mutable inner, record)
+      continue
+    }
+    let start = record.start
+    let end = record.end
+    if (insideParens[record.key] is Some(old)) {
+      start = old.start
+      end = old.end
+    }
+    // an operand that starts or ends the node brings its own inner range
+    const children = tree.childLists[index]
+    const count = Arrays.length(children)
+    if (count > 0) {
+      if (isSamePos(records[children[0]].start, start)) {
+        start = inner[children[0]].start
+      }
+      if (isSamePos(records[children[count - 1]].end, end)) {
+        end = inner[children[count - 1]].end
+      }
+    }
+    Arrays.push(mutable inner, NodeRecord { key: record.key, start: start, end: end })
   }
-  if (letter != "e" || start.line < 1 || start.line > Arrays.length(lines)) {
-    return false
-  }
-  const characters = Str.chars(lines[start.line - 1])
-  return start.column >= 1 && start.column <= Arrays.length(characters) && characters[start.column - 1] == '('
+  return inner
 }
 
 function addAttached(mutable attached: Map<string, Array<Attached>>, key: string, commentIndex: int, placement: Placement) uses alloc {
@@ -392,22 +421,20 @@ function addAttached(mutable attached: Map<string, Array<Attached>>, key: string
 //                        following one, else dangling
 //   code follows on the line: leading of the following node, else trailing of
 //                        the preceding one, else dangling
-function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: Array<Comment>, lines: Array<string>): Map<string, Array<Attached>> uses alloc {
+function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: Array<Comment>, lines: Array<string>, inner: Array<NodeRecord>): Map<string, Array<Attached>> uses alloc {
   let attached: Map<string, Array<Attached>> = Map {}
   for (const commentIndex of Ranges.upTo(Arrays.length(comments))) {
     const comment = comments[commentIndex]
     // descend to the deepest node that contains the comment
     let scopeKey = "file"
-    let scopeStart = Pos { line: 0, column: 0 }
     let children = tree.rootChildren
     let descending = true
     while (descending) {
       descending = false
       for (const child of Arrays.values(children)) {
-        const record = records[child]
+        const record = inner[child]
         if (!isBefore(comment.pos, record.start) && !isBefore(record.end, comment.end)) {
           scopeKey = record.key
-          scopeStart = record.start
           children = tree.childLists[child]
           descending = true
           break
@@ -417,15 +444,18 @@ function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: 
     // the last child before the comment and the first one after it
     let preceding = ""
     let following = ""
+    let isInPrecedingParens = false
     for (const child of Arrays.values(children)) {
-      const record = records[child]
+      const record = inner[child]
       if (!isBefore(comment.pos, record.end)) {
         preceding = record.key
+        // the closer is the one of parentheses written around the preceding node
+        isInPrecedingParens = !isBefore(records[child].end, comment.end) && !isSamePos(records[child].end, record.end)
       } else if (following == "" && !isBefore(record.start, comment.end)) {
         following = record.key
       }
     }
-    if (following != "" && isParameterScope(lines, scopeKey, scopeStart) && isBeforeCloser(lines, comments, commentIndex)) {
+    if (following != "" && !isInPrecedingParens && isBeforeCloser(lines, comments, commentIndex)) {
       following = ""
     }
     if (comment.ownLine) {
@@ -524,7 +554,8 @@ function markBlankLines(mutable blank: Map<string, bool>, records: Array<NodeRec
 export function buildTrivia(collector: Collector, comments: Array<Comment>, source: string): Trivia uses alloc {
   const lines = Str.split(source, "\n")
   const tree = buildTree(collector.records)
-  const attached = attachComments(collector.records, tree, comments, lines)
+  const inner = getInnerRanges(collector.records, tree, collector.insideParens, collector.convertedKeys)
+  const attached = attachComments(collector.records, tree, comments, lines, inner)
   const blank = findBlankLines(collector.records, tree, attached, comments, lines)
   let ends: Map<string, Pos> = Map {}
   for (const record of Arrays.values(collector.records)) {

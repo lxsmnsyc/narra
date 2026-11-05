@@ -22,7 +22,7 @@ import { Doc as Document } from "narrac/fmtdoc"
 import { Token, TokenKind, lex } from "narrac/lexer"
 import { Pos, TypeExpr, Param, Block, Arg, FieldInit, FieldPattern, MatchArm, Stmt, Expr, Pattern } from "narrac/ast"
 import { getPosKey, getIdKey, getExprId, getPatternId } from "narrac/trivia"
-import { Printer, withComments, printDangling, trailingComma } from "narrac/fmtprinter"
+import { Printer, withComments, printDangling, printBracketed, hoistTrailingComments, hasLeading, hasCommentInParens, trailingComma } from "narrac/fmtprinter"
 
 // Operator precedence, lowest first, as in the parser. The numbers below are
 // the level plus one; a ternary and an arrow function are 0.
@@ -68,6 +68,14 @@ function createIndent(contents: Document): Document {
 
 function isParenthesized(printer: Printer, id: int): bool {
   return printer.trivia.parenthesized[id] is Some(_)
+}
+
+// dropsParentheses tells written parentheses that the printer leaves out when
+// they hold a comment, so the comment sits with the expression as in oxfmt: a
+// pair is redundant until printWithMinimum finds that precedence needs it. A
+// conditional keeps its pair, which printConditional prints.
+function dropsParentheses(printer: Printer, expression: Expr): bool uses alloc {
+  return !isConditional(expression) && hasCommentInParens(printer, expression)
 }
 
 function hasAttached(printer: Printer, anchor: string): bool {
@@ -145,11 +153,15 @@ function getPrecedence(expression: Expr): int {
 // lower than the position needs and the author did not write them.
 function printWithMinimum(printer: Printer, expression: Expr, minimum: int): Document uses alloc {
   const document = printExpression(printer, expression)
-  if (getPrecedence(expression) < minimum && !isParenthesized(printer, getExprId(expression))) {
+  const dropped = dropsParentheses(printer, expression)
+  if (getPrecedence(expression) < minimum && (!isParenthesized(printer, getExprId(expression)) || dropped)) {
     if (expression is Expr.BlockExpr(conditionalId, _, conditionalBlock)) {
       if (isConditional(expression)) {
         return withComments(printer, getIdKey(conditionalId), printConditional(printer, conditionalBlock, true, false))
       }
+    }
+    if (dropped) {
+      return printBracketed("(", document, ")")
     }
     return createConcat([createText("("), document, createText(")")])
   }
@@ -265,7 +277,7 @@ function printEmptyBraces(printer: Printer, anchor: string, open: string, close:
 export function printExpression(printer: Printer, expression: Expr): Document uses alloc {
   const id = getExprId(expression)
   let document = printExpressionBody(printer, expression, isParenthesized(printer, id))
-  if (isParenthesized(printer, id) && !isConditional(expression)) {
+  if (isParenthesized(printer, id) && !isConditional(expression) && !dropsParentheses(printer, expression)) {
     document = createConcat([createText("("), document, createText(")")])
   }
   return withComments(printer, getIdKey(id), document)
@@ -281,8 +293,8 @@ function printExpressionBody(printer: Printer, expression: Expr, written: bool):
     Expr.TemplateLit(id, pos, _) => createText(getEndedText(printer, id, pos, "``"))
     Expr.Ident(_, _, name) => createText(name)
     Expr.FieldExpr(_, _, target, name) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText(`.${name}`)])
-    Expr.IsExpr(_, _, subject, pattern) => createConcat([printWithMinimum(printer, subject, IS_PRECEDENCE), createText(" is "), printPattern(printer, pattern)])
-    Expr.IndexExpr(_, _, target, index) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText("["), printElement(printer, index), createText("]")])
+    Expr.IsExpr(_, _, subject, pattern) => printIs(printer, subject, pattern)
+    Expr.IndexExpr(_, _, target, index) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), printBracketed("[", printElement(printer, index), "]")])
     Expr.MapLit(id, _, typeArguments, keys, values) => printMapLiteral(printer, id, typeArguments, keys, values)
     Expr.CallExpr(_, _, callee, arguments) => createConcat([printWithMinimum(printer, callee, PRIMARY_PRECEDENCE), printArguments(printer, arguments)])
     Expr.UnaryExpr(_, _, operator, operand) => printUnary(printer, operator, operand)
@@ -337,6 +349,26 @@ function cutClosingParens(text: string, fallback: string): string uses alloc {
     return Str.slice(text, 0, getOffset(text, Pos { line: token.endLine, column: token.endColumn }))
   }
   return fallback
+}
+
+// printIs prints `subject is pattern`. A line comment after the subject cannot
+// stay there, as a line break before `is` would end the statement, and a block
+// comment there would move behind `is` when formatted again. They go
+// after `is` and the pattern moves to the next line, which Narra reads (`is`
+// ends a line like an operator) and which formats to the same text again. A
+// comment on the lines before the pattern gets the same layout.
+function printIs(printer: Printer, subject: Expr, pattern: Pattern): Document uses alloc {
+  const hoisted = hoistTrailingComments(printer, getIdKey(getExprId(subject)))
+  const left = printWithMinimum(hoisted.printer, subject, IS_PRECEDENCE)
+  if (hoisted.count == 0 && !hasLeading(printer, getIdKey(getPatternId(pattern)))) {
+    return createConcat([left, createText(" is "), printPattern(printer, pattern)])
+  }
+  let parts: Array<Document> = [left, createText(" is"), hoisted.inline, hoisted.suffix]
+  if (hoisted.hasLine) {
+    Arrays.push(mutable parts, Document.BreakParent)
+  }
+  Arrays.push(mutable parts, createIndent(createConcat([Document.Line, printPattern(hoisted.printer, pattern)])))
+  return createGroup(createConcat(parts))
 }
 
 // printUnary prints `-x`. Two minus signs get a space, so `- -x` stays two tokens.
@@ -567,9 +599,9 @@ function printIfValue(printer: Printer, block: Block): Document uses alloc {
   while (walking) {
     walking = false
     if (current.statements[0] is Stmt.IfStmt(_, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
-      Arrays.push(mutable parts, createText("if ("))
-      Arrays.push(mutable parts, printExpression(printer, condition))
-      Arrays.push(mutable parts, createText(") "))
+      Arrays.push(mutable parts, createText("if "))
+      Arrays.push(mutable parts, printBracketed("(", printExpression(printer, condition), ")"))
+      Arrays.push(mutable parts, createText(" "))
       Arrays.push(mutable parts, printBranch(printer, getReturnedValue(thenBlock)))
       Arrays.push(mutable parts, createText(" else "))
       const elseValue = getReturnedValue(elseBlock)
@@ -631,7 +663,12 @@ function printStructLiteral(printer: Printer, id: int, pos: Pos, typeName: strin
   }
   for (const field of Arrays.values(fields)) {
     const key = getPosKey("f", field.pos)
-    Arrays.push(mutable items, withComments(printer, key, createConcat([createText(`${field.name}: `), printExpression(printer, field.value)])))
+    // A comment on the lines before the value moves it below the name.
+    let fieldDocument = createConcat([createText(`${field.name}: `), printExpression(printer, field.value)])
+    if (hasLeading(printer, getIdKey(getExprId(field.value)))) {
+      fieldDocument = createGroup(createConcat([createText(`${field.name}:`), createIndent(createConcat([Document.Line, printExpression(printer, field.value)]))]))
+    }
+    Arrays.push(mutable items, withComments(printer, key, fieldDocument))
     Arrays.push(mutable blanks, printer.trivia.blankBefore[key] is Some(_))
   }
   // As in Prettier, an object that starts on a new line after the brace stays broken.
@@ -729,11 +766,21 @@ function printBody(printer: Printer, body: Expr): Document uses alloc {
       return createGroup(createIndent(createConcat([Document.Line, printBinaryChain(printer, body, false)])))
     }
   }
-  return createGroup(createIndent(createConcat([Document.Line, printExpression(printer, body)])))
+  // Comments after the body end the line it is on, as they do when the body is
+  // not in parentheses: they must not make the body move to the next line.
+  const hoisted = hoistTrailingComments(printer, getIdKey(getExprId(body)))
+  if (hoisted.count == 0) {
+    return createGroup(createIndent(createConcat([Document.Line, printExpression(printer, body)])))
+  }
+  let parts: Array<Document> = [createGroup(createIndent(createConcat([Document.Line, printExpression(hoisted.printer, body)]))), hoisted.inline, hoisted.suffix]
+  if (hoisted.hasLine) {
+    Arrays.push(mutable parts, Document.BreakParent)
+  }
+  return createConcat(parts)
 }
 
 function printMatch(printer: Printer, subject: Expr, arms: Array<MatchArm>): Document uses alloc {
-  const head = createConcat([createText("match ("), printExpression(printer, subject), createText(") {")])
+  const head = createConcat([createText("match "), printBracketed("(", printExpression(printer, subject), ")"), createText(" {")])
   if (Arrays.length(arms) == 0) {
     return createConcat([head, createText("}")])
   }
@@ -753,9 +800,8 @@ function printMatch(printer: Printer, subject: Expr, arms: Array<MatchArm>): Doc
     }
     let parts: Array<Document> = [printPattern(printer, arm.pattern)]
     if (arm.guard is Some(guard)) {
-      Arrays.push(mutable parts, createText(" if ("))
-      Arrays.push(mutable parts, printExpression(printer, guard))
-      Arrays.push(mutable parts, createText(")"))
+      Arrays.push(mutable parts, createText(" if "))
+      Arrays.push(mutable parts, printBracketed("(", printExpression(printer, guard), ")"))
     }
     Arrays.push(mutable parts, createText(" =>"))
     if (arm.block is Some(armBlock)) {

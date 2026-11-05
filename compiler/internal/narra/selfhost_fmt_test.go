@@ -298,6 +298,14 @@ func TestSelfhostFmt(t *testing.T) {
 	}
 }
 
+// movesComments lists the goldens whose comments change the node they attach
+// to when formatted (the parentheses around them go away).
+var movesComments = map[string]bool{
+	"comment_paren_expr.nra":     true,
+	"comment_bracket_return.nra": true,
+	"comment_is_subject.nra":     true,
+}
+
 var (
 	positionPattern = regexp.MustCompile(`^( *\S+) \d+:\d+`)
 	endPattern      = regexp.MustCompile(` end=\d+:\d+`)
@@ -384,7 +392,7 @@ func tokensOf(dump string) string {
 
 // commentsOf lists the comments of a trivia dump: the text without trailing
 // blanks, the kind letter of the node it is attached to and its placement.
-func commentsOf(dump string) string {
+func commentsOf(dump string, withAttachment bool) string {
 	var texts []string
 	attached := map[string]string{}
 	for _, line := range strings.Split(dump, "\n") {
@@ -407,7 +415,11 @@ func commentsOf(dump string) string {
 		}
 	}
 	for i, text := range texts {
-		texts[i] = text + "  [" + attached[strconv.Itoa(i)] + "]"
+		if withAttachment {
+			texts[i] = text + "  [" + attached[strconv.Itoa(i)] + "]"
+		} else {
+			texts[i] = text
+		}
 	}
 	return strings.Join(texts, "\n")
 }
@@ -440,7 +452,11 @@ func checkFormatted(t *testing.T, exe, path string) {
 	}
 	beforeComments, _ := dumpOf(t, exe, "trivia", path)
 	afterComments, _ := dumpOf(t, exe, "trivia", formatted)
-	if want, got := commentsOf(beforeComments), commentsOf(afterComments); want != got {
+	// Redundant parentheses are dropped with a comment in them, so that comment
+	// moves to the expression, a statement or the pattern next to it: only the
+	// text and order of the comments of these files are compared.
+	withAttachment := !movesComments[filepath.Base(path)]
+	if want, got := commentsOf(beforeComments, withAttachment), commentsOf(afterComments, withAttachment); want != got {
 		t.Fatalf("comments differ: %s", firstDiff(want, got))
 	}
 	beforeTree, _ := dumpOf(t, exe, "parse", path)

@@ -6,7 +6,7 @@
 // comments that fmt-trivia attached to its anchor key.
 import * as Docs from "narrac/fmtdoc"
 import { Doc, Options } from "narrac/fmtdoc"
-import { Trivia, Comment, CommentKind, Placement, Attached } from "narrac/trivia"
+import { Trivia, Comment, CommentKind, Placement, Attached, getIdKey, getExprId } from "narrac/trivia"
 import { Pos, Expr, Pattern, TypeExpr, Block } from "narrac/ast"
 import * as Str from "std/string"
 import * as Int from "std/int"
@@ -80,6 +80,153 @@ function trimEnd(value: string): string uses alloc {
     end = end - 1
   }
   return Str.slice(value, 0, end)
+}
+
+// ---- Expression positions
+
+function getExpressionPosition(expression: Expr): Pos {
+  return match (expression) {
+    Expr.IntLit(_, pos, _) => pos
+    Expr.FloatLit(_, pos, _) => pos
+    Expr.StringLit(_, pos, _, _) => pos
+    Expr.CharLit(_, pos, _) => pos
+    Expr.BoolLit(_, pos, _) => pos
+    Expr.TemplateLit(_, pos, _) => pos
+    Expr.Ident(_, pos, _) => pos
+    Expr.FieldExpr(_, pos, _, _) => pos
+    Expr.IsExpr(_, pos, _, _) => pos
+    Expr.IndexExpr(_, pos, _, _) => pos
+    Expr.MapLit(_, pos, _, _, _) => pos
+    Expr.CallExpr(_, pos, _, _) => pos
+    Expr.UnaryExpr(_, pos, _, _) => pos
+    Expr.BinaryExpr(_, pos, _, _, _) => pos
+    Expr.StructLit(_, pos, _, _, _, _) => pos
+    Expr.ArrayLit(_, pos, _, _) => pos
+    Expr.MatchExpr(_, pos, _, _) => pos
+    Expr.BlockExpr(_, pos, _) => pos
+    Expr.ArrowExpr(_, pos, _, _, _, _) => pos
+  }
+}
+
+// getLeftChild is the operand that comes first in the source: the node's own
+// position is an operator or a bracket for these.
+function getLeftChild(expression: Expr): Option<Expr> {
+  return match (expression) {
+    Expr.BinaryExpr(_, _, _, left, _) => Some(left)
+    Expr.IsExpr(_, _, subject, _) => Some(subject)
+    Expr.FieldExpr(_, _, target, _) => Some(target)
+    Expr.CallExpr(_, _, callee, _) => Some(callee)
+    Expr.IndexExpr(_, _, target, _) => Some(target)
+    _ => None
+  }
+}
+
+// isBalanced tells whether the parentheses between two offsets close.
+function isBalanced(source: string, start: int, end: int): bool {
+  let depth = 0
+  for (const offset of Ranges.between(start, end)) {
+    const byte = Str.byteAt(source, offset)
+    if (byte == 40) {
+      depth = depth + 1
+    } else if (byte == 41) {
+      depth = depth - 1
+      if (depth < 0) {
+        return false
+      }
+    }
+  }
+  return depth == 0
+}
+
+// getCommentStartBefore is the start offset of the comment that ends at an
+// offset, or -1 when none does.
+export function getCommentStartBefore(printer: Printer, end: int): int uses alloc {
+  for (const comment of Arrays.values(printer.trivia.comments)) {
+    if (getOffset(printer.source, comment.end) == end) {
+      return getOffset(printer.source, comment.pos)
+    }
+  }
+  return -1
+}
+
+// includeParentheses moves the start of a parenthesized expression back to
+// its opening parenthesis, past blanks and comments.
+function includeParentheses(printer: Printer, start: int, end: int): int uses alloc {
+  const source = printer.source
+  let candidates: Array<int> = []
+  let index = start
+  while (index > 0) {
+    const byte = Str.byteAt(source, index - 1)
+    const commentStart = getCommentStartBefore(printer, index)
+    if (commentStart >= 0) {
+      index = commentStart
+    } else if (byte == 32 || byte == 9 || byte == 10 || byte == 13) {
+      index = index - 1
+    } else if (byte == 40) {
+      index = index - 1
+      Arrays.push(mutable candidates, index)
+    } else {
+      break
+    }
+  }
+  for (const candidate of Arrays.values(candidates)) {
+    if (isBalanced(source, candidate, end)) {
+      return candidate
+    }
+  }
+  return start
+}
+
+function getEndOffset(printer: Printer, key: string): Option<int> uses alloc {
+  if (printer.trivia.ends[key] is Some(end)) {
+    return Some(getOffset(printer.source, end))
+  }
+  return None
+}
+
+// getStartOffset is where an expression starts, with its parentheses.
+export function getStartOffset(printer: Printer, expression: Expr): int uses alloc {
+  let spine: Array<Expr> = [expression]
+  let current = expression
+  while (true) {
+    const next = getLeftChild(current)
+    if (next is Some(child)) {
+      Arrays.push(mutable spine, child)
+      current = child
+    } else {
+      break
+    }
+  }
+  let offset = getOffset(printer.source, getExpressionPosition(current))
+  for (const step of Ranges.upTo(Arrays.length(spine))) {
+    const node = spine[Arrays.length(spine) - 1 - step]
+    const id = getExprId(node)
+    if (printer.trivia.parenthesized[id] is Some(_)) {
+      if (getEndOffset(printer, getIdKey(id)) is Some(end)) {
+        offset = includeParentheses(printer, offset, end)
+      }
+    }
+  }
+  return offset
+}
+
+// hasCommentInParens tells an expression written in parentheses that hold a
+// comment, anywhere between the `(` and the `)`.
+export function hasCommentInParens(printer: Printer, expression: Expr): bool uses alloc {
+  const id = getExprId(expression)
+  if (printer.trivia.parenthesized[id] is None) {
+    return false
+  }
+  if (getEndOffset(printer, getIdKey(id)) is Some(end)) {
+    const start = getStartOffset(printer, expression)
+    for (const comment of Arrays.values(printer.trivia.comments)) {
+      const offset = getOffset(printer.source, comment.pos)
+      if (offset >= start && offset < end) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 // ---- Comments
@@ -249,6 +396,47 @@ export function withComments(printer: Printer, anchor: string, document: Doc): D
   return Docs.concat(parts)
 }
 
+// Hoisted is a printer without the trailing comments of one anchor, and
+// those comments as a suffix to put at the end of the line.
+export struct Hoisted {
+  printer: Printer
+  inline: Doc // block comments, to print where the comment would end the line
+  suffix: Doc // line comments, which wait for the end of the line
+  count: int // comments taken
+  hasLine: bool
+}
+
+// hoistTrailingComments takes the trailing comments off an anchor, for
+// a node that cannot break before its next part (the subject of `is`). The
+// comments wait for the end of the line.
+export function hoistTrailingComments(printer: Printer, anchor: string): Hoisted uses alloc {
+  let taken: Array<int> = []
+  let suffixes: Array<Doc> = []
+  let inlines: Array<Doc> = []
+  let hasLine = false
+  for (const attached of Arrays.values(getAttached(printer, anchor))) {
+    if (!(attached.placement is Placement.Trailing)) {
+      continue
+    }
+    const comment = printer.trivia.comments[attached.comment]
+    Arrays.push(mutable taken, attached.comment)
+    if (comment.kind is CommentKind.Block) {
+      Arrays.push(mutable inlines, Docs.concat([Docs.text(" "), printComment(comment)]))
+      continue
+    }
+    hasLine = true
+    if (comment.ownLine) {
+      Arrays.push(mutable suffixes, Doc.LineSuffix(Docs.concat([Doc.HardLine, printComment(comment)])))
+    } else {
+      Arrays.push(mutable suffixes, Doc.LineSuffix(Docs.concat([Docs.text(" "), printComment(comment)])))
+    }
+  }
+  if (Arrays.length(taken) == 0) {
+    return Hoisted { printer: printer, inline: Docs.concat([]), suffix: Docs.concat([]), count: 0, hasLine: false }
+  }
+  return Hoisted { printer: removeComments(printer, anchor, taken), inline: Docs.concat(inlines), suffix: Docs.concat(suffixes), count: Arrays.length(taken), hasLine: hasLine }
+}
+
 // printDangling prints the dangling comments of an anchor, one per line, or
 // an empty document.
 export function printDangling(printer: Printer, anchor: string): Doc uses alloc {
@@ -272,6 +460,13 @@ export function printDangling(printer: Printer, anchor: string): Doc uses alloc 
     }
   }
   return Docs.concat(parts)
+}
+
+// printBracketed prints `open document close`. The contents sit on lines of
+// their own when they do not fit or hold a comment that ends its line, so a
+// comment stays inside its brackets instead of moving behind the closer.
+export function printBracketed(open: string, document: Doc, close: string): Doc uses alloc {
+  return Docs.group(Docs.concat([Docs.text(open), Docs.indent(Docs.concat([Doc.SoftLine, document])), Doc.SoftLine, Docs.text(close)]))
 }
 
 // trailingComma is a comma that shows only in a broken list, when the

@@ -45,6 +45,8 @@ saw 1
 dog 1
 ```
 
+`addWord` declares its parameter as `mutable tallies`, so it can change the caller's array, as `Arrays.push` does. The call writes `mutable` too, as in chapter 2. Chapter 9 explains `mutable` parameters.
+
 `import * as Str from "std/string"` makes every exported name of `std/string` reachable through the alias `Str`, as in `Str.split`. You pick the alias. This form is the usual one, because the alias shows at each call which module a function comes from.
 
 When you only need one or two functions, you can import them by name. `as` gives an imported name a different one in your file:
@@ -100,28 +102,9 @@ The other standard modules are `std/char`, `std/env`, `std/float`, `std/fs`, `st
 
 ## Splitting a program into files
 
-When the counter grows, you want the counting in one file and the command-line code in another. Several files that build together are a package. A package is a folder with a `narra.toml` file and a `src/` folder:
+When the counter grows, you want the counting in one file and the command-line code in another. Chapter 1 split a program into a package: a folder with a `narra.toml` and a `src/` folder. Do the same here, with the package `words`, the files `src/cli.nra` and `src/count.nra`, and `entry = "cli.run"` in `narra.toml`.
 
-```text
-words/
-  narra.toml
-  src/
-    cli.nra
-    count.nra
-```
-
-`narra.toml` gives the package a name and says where its program starts:
-
-```toml
-[package]
-name = "words"
-
-[[binary]]
-name = "words"
-entry = "cli.run"
-```
-
-`entry = "cli.run"` means the function `run` in `src/cli.nra`. Each file's name inside the package comes from its path: `src/count.nra` is the module `"words/count"`, and a file `src/text/split.nra` would be `"words/text/split"`. An import always writes this full path, starting with the package name. A path relative to the current file, such as `"./count"`, is not accepted.
+A file's module name comes from its path in `src/`: `src/count.nra` is the module `"words/count"`, and a file `src/text/split.nra` would be `"words/text/split"`. An import always writes this full path, starting with the package name. A path relative to the current file, such as `"./count"`, is not accepted.
 
 Move the counting into `src/count.nra`:
 
@@ -134,7 +117,7 @@ export struct Tally {
   count: int
 }
 
-export function countWords(text: string): Array<Tally> {
+export function countWords(text: string): Array<Tally> uses alloc {
   let tallies: Array<Tally> = []
   for (const word of Str.split(text, " ")) {
     addWord(mutable tallies, word)
@@ -153,7 +136,7 @@ function addWord(mutable tallies: Array<Tally>, word: string) {
 }
 ```
 
-A name in a module is private to that file unless its declaration starts with `export`. Here `Tally` and `countWords` are exported, and `addWord` stays private, so `count.nra` can change it later without breaking any other file.
+A name in a module is private to that file unless its declaration starts with `export`. Here `Tally` and `countWords` are exported, and `addWord` stays private, so `count.nra` can change it later without breaking any other file. `countWords` builds an array, so, as in chapter 4, the exported function writes `uses alloc` after its result type. Leave it out and the compiler names the array that allocates. Chapter 10 explains `uses`.
 
 `src/cli.nra` imports what it needs from `"words/count"`:
 
@@ -169,26 +152,12 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Run the package from its folder. `.` names the package in the current folder:
+Run the package from its folder:
 
 ```sh
 cd words
 narra run .
 ```
-
-The compiler stops before it runs anything:
-
-```text
-src/count.nra:10:31: Function `countWords` uses `alloc` (through `array literal`) but its signature does not declare it; write `uses alloc`
-```
-
-An exported function must say in its signature what it does besides computing a value. `countWords` builds an array, which allocates memory, so its signature needs `uses alloc` after the result type:
-
-```narra fragment
-export function countWords(text: string): Array<Tally> uses alloc {
-```
-
-Chapter 10 explains these effects. With the change, the program runs:
 
 ```text
 the 2

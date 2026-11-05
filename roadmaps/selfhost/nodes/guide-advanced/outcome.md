@@ -3,10 +3,10 @@
 ## Built
 
 - `docs/guide/06-option-and-result.md` to `10-effects-and-testing.md`, rewritten on 2026-11-05 as a guided tutorial after the maintainer's review. Each chapter follows one thread, and each section builds a program toward a goal, shows its output, then explains it. Restrictions appear as `narra error` samples with the real message and the fix.
-  - 6: a reader for `key = value` settings. It covers `Option` (find a key), the `std/option` fallbacks, `Result` from `Int.parse`, an error enum with early returns, the unchecked-Result error, a `std/result` version of the same function, and when to panic instead.
-  - 7: a shop catalog with books and songs. It covers a `Label` trait, a generic `printCatalog<T: Label>`, `derives Show`, a hand-written `Ordered` for "cheapest", `==` and map keys, and a wrapper struct for a type you did not declare.
-  - 8: a word counter. It starts with std imports (namespace, named, `as`, plural aliases, prelude), then splits into a package (`narra.toml`, `count.nra`, `cli.nra`). The reader meets the `uses alloc` error on export, the private-import error, top-level constants and the top-level `let` error, a third module used through aliases, and the import-cycle error.
-  - 9: a game player. It covers copies on assignment, why reference counting makes them cheap, a function that changes a player (constant-parameter error, then spread or `mutable`), the `mutable` call errors with fixes, closures and `let` (why, error, fix, and a parameter-based alternative), the `mutable` capture error, and freeing memory.
+  - 6: a reader for `key = value` settings, starting from the `Option` and `Result` that chapters 2 and 5 met. It covers returning an `Option` (find a key; later samples read a `Map` so the lookup is shown once), the `std/option` fallbacks, keeping the reason from `Int.parse`, an error enum with early returns, the unchecked-Result error, a `std/result` version of the same function, and when to panic instead.
+  - 7: a shop catalog with books and songs. It covers a `Label` trait, a generic `printCatalog<T: Label>`, `derives Show`, a hand-written `Ordered` for "cheapest", map keys and a generic `countOf<T: Equatable>` (building on chapter 4's `==`), and a wrapper struct for a type you did not declare.
+  - 8: a word counter. It starts with std imports (namespace, named, `as`, plural aliases, prelude), then splits into a package, building on chapter 1's package. It covers `export` and `uses alloc` (pointing back to chapter 4), the private-import error, top-level constants and the top-level `let` error, a third module used through aliases, and the import-cycle error.
+  - 9: a game player. It recaps copies from chapters 2 and 4, defines the heap and reference counting, then changes a player in a function (constant-parameter error, then spread or `mutable`). Game tasks hit each `mutable` check: heal (missing `mutable`), add to the starting kit (constant), swap two players in an array (two parts of one variable), log hp before and after (read in the same expression), keep a snapshot (return). Closures build on chapter 3: why only constants are captured, a parameter-based alternative, and the `mutable` capture error. It ends with freeing memory.
   - 10: a temperature module. It covers the missing-`uses` errors for `alloc` and `io`, inference for private functions, the callback error and the effect-variable fix, a `std/test` file and its `narra test` output as fragments, `-filter`, the missing-`Show` error, and the `Test.*` outside a test block error.
 - Multi-file code (chapter 8) and the test file (chapter 10) are `narra fragment` blocks. The commands and output are `sh` and `text` blocks. I built each package and test file in a scratch folder, and the error text and output shown are what the compiler printed.
 
@@ -48,7 +48,7 @@ Added in the rewrite:
 
 ## Stubs left
 
-- None. `guide_test.go` was copied from `origin/docs/guide-basics` to run TestGuide, then removed before the commit.
+- None. `guide_test.go` is part of the story branch since guide-basics merged (3143d2e).
 
 ## Gotchas
 
@@ -69,7 +69,9 @@ Added in the rewrite:
 - A local script ran every `narra` and `narra error` block with the built `narra` (`NARRA_CHECK_LEAKS=1`; `check` for errors): 0 failures.
 - The chapter 8 package (three modules) was built and run from the fragments, and each error was produced by editing it: export without `uses alloc`, importing `addWord`, an import cycle. The chapter 10 test file is byte-identical to the file `narra test` ran, including `-filter`.
 - `check_prose.py` from the plain-writing skill: `prose: ok` on all five chapters.
-- Fast check `cd compiler && go vet ./... && go test -count=1 -timeout 20m ./...` with the harness copied in: vet clean, `ok narra/internal/narra 801.2s` (TestGuide included, run on the final text).
+- Fast check `cd compiler && go vet ./... && go test -count=1 -timeout 20m ./...` with the harness copied in, on 994f6b5: vet clean, `ok narra/internal/narra 801.2s`.
+- After the review fixes: TestGuide `ok narra/internal/narra 24.9s` with the harness from `origin/docs/guide-basics` at b73a6e7. The chapter 8 package was rebuilt from the new fragments (two modules, private import, missing `uses alloc`, three modules, cycle): every quoted output matches. The chapter 10 test file is unchanged.
+- Rebased on `origin/feat/language-guide` at 3143d2e (chapters 1 to 5, README and `guide_test.go`): TestGuide over chapters 1 to 10 gives `ok narra/internal/narra 61.4s`. Every link between chapters resolves except README's link to `11-narra-for-typescript-programmers.md`, which guide-typescript writes. Chapter 10 has no "Next:" line until chapter 11 exists.
 
 ## Size
 

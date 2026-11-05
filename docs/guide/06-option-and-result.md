@@ -1,12 +1,12 @@
 # 6. Option and Result
 
-Some values are not always there, and some operations do not always work. A setting may be missing from a file, and the text `"80x"` is not a number. In Narra both cases show up in the type. A value that may be missing is an `Option`, and a result that may be an error is a `Result`. The compiler then makes sure you handle the missing value or the error before you use it.
+You have met `Option` twice already. Reading a map in chapter 2 gives `Some(count)` or `None`, and the parser in chapter 5 returned an `Option<Command>`. Chapter 5 also met `Result`, the type `Int.parse` returns, and threw away its error message. This chapter writes functions that return both types, keeps the error messages, and shows the standard functions that make them shorter to use.
 
-This chapter builds a small reader for settings written as `key = value` lines, such as `port = 8080`.
+The program is a small reader for settings written as `key = value` lines, such as `port = 8080`.
 
-## A value that may be missing
+## Return a value that may be missing
 
-Start with a function that looks up a key. When it finds the key it has a string to give back. When it does not, it has nothing. Its result type, `Option<string>`, says that:
+Start with a function that looks up a key in the lines. When it finds the key it has a string to give back, and when it does not it has nothing. Its result type, `Option<string>`, says that:
 
 ```narra
 import * as Str from "std/string"
@@ -25,9 +25,8 @@ function findSetting(lines: Array<string>, key: string): Option<string> {
 
 export function run(args: Array<string>): int {
   const lines = ["host = example.org", "port = 8080"]
-  const host = findSetting(lines, "host")
-  if (host is Some(text)) {
-    print(`host is ${text}`)
+  if (findSetting(lines, "host") is Some(host)) {
+    print(`host is ${host}`)
   }
   if (findSetting(lines, "user") is None) {
     print("no user set")
@@ -41,63 +40,24 @@ host is example.org
 no user set
 ```
 
-An `Option<string>` is one of two things. `Some(text)` holds a string, and `None` holds nothing. The function returns `Some(...)` when it finds the key and `None` after the loop. `Option`, `Some` and `None` need no import.
+The function returns `Some(...)` with the value when the key matches, and `None` after the loop has looked at every line. `Str.indexOf` works the same way: it gives `Some(position)` when the line contains `"="`, and `None` when it does not.
 
-`Str.indexOf` works the same way: it returns `Some(position)` when the text contains `"="` and `None` when it does not. That is why the loop opens it with `is`, as chapter 5 showed.
+The rest of the chapter keeps the settings in a `Map<string, string>` instead of lines. `settings["port"]` gives the same `Option<string>` as `findSetting(lines, "port")`, and the samples stay short.
 
-The caller cannot use an `Option<string>` as a string. If you forget to check, the program does not compile:
+## Fall back to a default
 
-```narra error
-// error: 17:20: expected string, found Option<string>
-import * as Str from "std/string"
-
-function findSetting(lines: Array<string>, key: string): Option<string> {
-  for (const line of lines) {
-    const equals = Str.indexOf(line, "=")
-    if (equals is Some(position)) {
-      if (Str.trim(Str.slice(line, 0, position)) == key) {
-        return Some(Str.trim(Str.sliceFrom(line, position + 1)))
-      }
-    }
-  }
-  return None
-}
-
-export function run(args: Array<string>): int {
-  print(findSetting(["host = example.org"], "host"))
-  return 0
-}
-```
-
-To get the string out, test the `Option` with `is` or `match`. Every place that reads a setting then decides what happens when it is missing.
-
-## Falling back to a default
-
-Often a missing setting has an obvious default. Writing an `if` for each one gets long, so `std/option` has functions for the common cases. Import it as `Options`:
+Often a missing setting has an obvious default. An `if` for each one gets long, so `std/option` has functions for the common cases. Import it as `Options`:
 
 ```narra
 import * as Options from "std/option"
-import * as Str from "std/string"
-
-function findSetting(lines: Array<string>, key: string): Option<string> {
-  for (const line of lines) {
-    const equals = Str.indexOf(line, "=")
-    if (equals is Some(position)) {
-      if (Str.trim(Str.slice(line, 0, position)) == key) {
-        return Some(Str.trim(Str.sliceFrom(line, position + 1)))
-      }
-    }
-  }
-  return None
-}
 
 export function run(args: Array<string>): int {
-  const lines = ["hostname = example.org"]
+  const settings: Map<string, string> = Map { "hostname": "example.org" }
 
-  const user = Options.withDefault(findSetting(lines, "user"), "guest")
+  const user = Options.withDefault(settings["user"], "guest")
   print(user)
 
-  const host = Options.orElse(findSetting(lines, "host"), () => findSetting(lines, "hostname"))
+  const host = Options.orElse(settings["host"], () => settings["hostname"])
   print(Options.withDefault(host, "localhost"))
 
   const address = Options.map(host, (name) => `https://${name}`)
@@ -115,8 +75,8 @@ https://example.org
 What each call did:
 
 - `Options.withDefault(option, fallback)` gives the content of a `Some`, or `fallback` for a `None`. There is no `user` key, so `user` is `"guest"`.
-- `Options.orElse(option, f)` gives `option` when it is a `Some`, and otherwise calls `f` for another `Option`. Here it tries the key `host`, and then `hostname`. The second lookup runs only when the first one finds nothing.
-- `Options.map(option, f)` applies `f` to the content of a `Some` and leaves a `None` as it is. The result is still an `Option`, because there may have been nothing to apply `f` to.
+- `Options.orElse(option, f)` gives `option` when it is a `Some`, and otherwise calls `f` for another `Option`. Here it tries the key `host`, then `hostname`. The result is still an `Option`, since both keys may be missing, so the next line uses `withDefault` to get a string.
+- `Options.map(option, f)` applies `f` to the content of a `Some` and leaves a `None` as it is. Its result is an `Option` too.
 
 `withDefault` always computes its fallback, even when the option is a `Some`. When the fallback costs work, such as another lookup, use `orElse`, which calls its function only when it needs to.
 
@@ -128,9 +88,9 @@ The other functions in `std/option`:
 | `Options.isSome(option)`, `Options.isNone(option)` | a `bool`, without opening the option |
 | `Options.okOr(option, error)` | a `Result`: `Ok` with the content, or `Err(error)` for a `None` |
 
-## A result that may be an error
+## Keep the reason for a failure
 
-The port is a number, but in the file it is text. `Int.parse(text, 10)` turns text into an `int` in base 10, and it can fail. Its result type is `Result<int, string>`:
+The port is a number, but in the file it is text. In chapter 5, `parseNumber` turned the `Result` of `Int.parse` into an `Option` and dropped the reason. This time, keep it:
 
 ```narra
 import * as Int from "std/int"
@@ -154,7 +114,7 @@ port 8080
 "80x" is not a port: invalid digit for the base
 ```
 
-A `Result<int, string>` is `Ok(value)` with an `int`, or `Err(error)` with a `string` that says what went wrong. Like an `Option`, you open it with `match` or `is`. The difference is that a failure carries a reason, and the second type parameter says what type that reason has. `Result`, `Ok` and `Err` need no import either.
+`Int.parse` returns a `Result<int, string>`. That is `Ok(value)` with an `int`, or `Err(error)` with a `string` that says what went wrong. The second type parameter is the type of the error, so a `Result` can carry a reason of any type, not only text. `Result`, `Ok` and `Err` need no import.
 
 ## Errors of your own
 
@@ -162,27 +122,14 @@ A string is fine for a message, but the code that calls your function may need t
 
 ```narra
 import * as Int from "std/int"
-import * as Str from "std/string"
 
 enum SettingError {
   Missing(key: string)
   NotANumber(key: string, text: string)
 }
 
-function findSetting(lines: Array<string>, key: string): Option<string> {
-  for (const line of lines) {
-    const equals = Str.indexOf(line, "=")
-    if (equals is Some(position)) {
-      if (Str.trim(Str.slice(line, 0, position)) == key) {
-        return Some(Str.trim(Str.sliceFrom(line, position + 1)))
-      }
-    }
-  }
-  return None
-}
-
-function readNumber(lines: Array<string>, key: string): Result<int, SettingError> {
-  const found = findSetting(lines, key)
+function readNumber(settings: Map<string, string>, key: string): Result<int, SettingError> {
+  const found = settings[key]
   if (found is None) {
     return Err(SettingError.Missing(key))
   }
@@ -193,8 +140,8 @@ function readNumber(lines: Array<string>, key: string): Result<int, SettingError
   return Ok(parsed.value)
 }
 
-function report(lines: Array<string>, key: string): string {
-  return match (readNumber(lines, key)) {
+function report(settings: Map<string, string>, key: string): string {
+  return match (readNumber(settings, key)) {
     Ok(number) => `${key} = ${Int.toString(number)}`
     Err(SettingError.Missing(name)) => `${name} is not set`
     Err(SettingError.NotANumber(name, text)) => `${name} should be a number, not "${text}"`
@@ -202,10 +149,10 @@ function report(lines: Array<string>, key: string): string {
 }
 
 export function run(args: Array<string>): int {
-  const lines = ["port = 8080", "timeout = soon"]
-  print(report(lines, "port"))
-  print(report(lines, "timeout"))
-  print(report(lines, "retries"))
+  const settings: Map<string, string> = Map { "port": "8080", "timeout": "soon" }
+  print(report(settings, "port"))
+  print(report(settings, "timeout"))
+  print(report(settings, "retries"))
   return 0
 }
 ```
@@ -216,9 +163,9 @@ timeout should be a number, not "soon"
 retries is not set
 ```
 
-`readNumber` handles each failure at the line where it happens. When the key is missing it returns `Err(SettingError.Missing(key))` and stops. After that `if`, the compiler knows that `found` is a `Some`, so `found.value` reads the string (chapter 5 calls this narrowing). The same goes for `parsed`: after the `Err` test returns, `parsed.value` is the number.
+`readNumber` handles each failure at the line where it happens. When the key is missing it returns `Err(SettingError.Missing(key))` and stops. After that `if`, `found` is known to be a `Some`, so `found.value` reads the string, as chapter 5 showed. The same goes for `parsed`: after the `Err` test returns, `parsed.value` is the number.
 
-This is how an error moves up through your functions: test, return the error, and read the value on the next line. `report` then uses `match` to give each case its own message. Because `match` must cover every case, adding a third variant to `SettingError` makes `report` fail to compile until it handles the new case.
+This is how an error moves up through your functions: test, return the error, and read the value on the next line. `report` then gives each case its own message. Because `match` must cover every case, adding a third variant to `SettingError` makes `report` fail to compile until it handles the new case.
 
 ## A Result must be used
 
@@ -262,39 +209,26 @@ saved, or not
 import * as Int from "std/int"
 import * as Options from "std/option"
 import * as Results from "std/result"
-import * as Str from "std/string"
 
 enum SettingError {
   Missing(key: string)
   NotANumber(key: string, text: string)
 }
 
-function findSetting(lines: Array<string>, key: string): Option<string> {
-  for (const line of lines) {
-    const equals = Str.indexOf(line, "=")
-    if (equals is Some(position)) {
-      if (Str.trim(Str.slice(line, 0, position)) == key) {
-        return Some(Str.trim(Str.sliceFrom(line, position + 1)))
-      }
-    }
-  }
-  return None
-}
-
-function readNumber(lines: Array<string>, key: string): Result<int, SettingError> {
-  const text = Options.okOr(findSetting(lines, key), SettingError.Missing(key))
+function readNumber(settings: Map<string, string>, key: string): Result<int, SettingError> {
+  const text = Options.okOr(settings[key], SettingError.Missing(key))
   return Results.andThen(text, (found) => {
     return Results.mapErr(Int.parse(found, 10), (_) => SettingError.NotANumber(key, found))
   })
 }
 
 export function run(args: Array<string>): int {
-  const lines = ["port = 8080", "timeout = soon"]
-  print(Int.toString(Results.withDefault(readNumber(lines, "port"), 80)))
-  print(Int.toString(Results.withDefault(readNumber(lines, "timeout"), 30)))
-  const doubled = Results.map(readNumber(lines, "port"), (port) => port * 2)
+  const settings: Map<string, string> = Map { "port": "8080", "timeout": "soon" }
+  print(Int.toString(Results.withDefault(readNumber(settings, "port"), 80)))
+  print(Int.toString(Results.withDefault(readNumber(settings, "timeout"), 30)))
+  const doubled = Results.map(readNumber(settings, "port"), (port) => port * 2)
   print(Int.toString(Results.withDefault(doubled, 0)))
-  if (Results.err(readNumber(lines, "retries")) is Some(SettingError.Missing(name))) {
+  if (Results.err(readNumber(settings, "retries")) is Some(SettingError.Missing(name))) {
     print(`${name} is missing`)
   }
   return 0
@@ -310,7 +244,7 @@ retries is missing
 
 Step by step:
 
-1. `Options.okOr` turns the `Option` from `findSetting` into a `Result`, with `SettingError.Missing(key)` as the error for `None`.
+1. `Options.okOr` turns the `Option` from the map into a `Result`, with `SettingError.Missing(key)` as the error for `None`.
 2. `Results.andThen(result, f)` calls `f` with the `Ok` value, and `f` returns the next `Result`. An `Err` skips `f` and passes through.
 3. `Results.mapErr(result, f)` changes the error and leaves an `Ok` alone. It turns the parser's string into a `SettingError`.
 
@@ -335,6 +269,8 @@ Annotating the arrow function's result, as in `(number): Option<int> => None`, f
 
 ## When failure is a bug
 
-`Option` and `Result` are for failures that a caller can handle: a missing setting, a bad number, a file that does not exist. Some failures mean the program itself is wrong, such as an index past the end of an array. For those, call `panic("message")`, or `assert(condition)`. A panic stops the program with the message and exit code 101, and no code can catch it. Chapter 10 shows how a test checks that a function panics.
+`Option` and `Result` are for failures that a caller can handle: a missing setting, a bad number, a file that does not exist. Other failures mean the program itself is wrong. Say the reader checks every port when it loads the settings, and a later function still finds a port below 1. That cannot happen unless the code has a bug, and there is nothing sensible to return. Stop the program with `panic("message")`, or state the condition with `assert(port >= 1)`. A panic prints the message and ends the program with exit code 101, and no code can catch it.
+
+Some operations panic on their own. An index past the end of an array panics, and so do a division by zero and an integer overflow in a debug build. Chapter 10 shows how a test checks that a function panics.
 
 Next: [7. Traits](07-traits.md).

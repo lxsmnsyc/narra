@@ -1,78 +1,21 @@
 # 9. Memory and `mutable`
 
-You never free memory in Narra, and you never decide whether two names share one object. What you do decide is where a value may change. This chapter follows a player in a small game. It shows what happens when the player is copied, changed by a function, and captured by a closure.
-
-## Assigning makes a copy
-
-Make a player, assign it to a second name, and change the second one:
-
-```narra
-import * as Arrays from "std/array"
-import * as Int from "std/int"
-
-struct Player {
-  name: string
-  hp: int
-}
-
-export function run(args: Array<string>): int {
-  const hero = Player { name: "Ana", hp: 100 }
-  let clone = hero
-  clone.hp = 40
-  print(`${hero.name} ${Int.toString(hero.hp)}`)
-  print(`${clone.name} ${Int.toString(clone.hp)}`)
-
-  let scores = [10, 20]
-  const before = scores
-  Arrays.push(mutable scores, 30)
-  print(Int.toString(Arrays.length(before)))
-  print(Int.toString(Arrays.length(scores)))
-  return 0
-}
-```
-
-```text
-Ana 100
-Ana 40
-2
-3
-```
-
-`clone` is a player of its own. Changing its `hp` leaves `hero` alone. The same holds for the array: `before` keeps two scores after `scores` grows to three. Every value works this way, whether it is a number, a struct, an array or a map. Assigning it or passing it to a function gives the receiver its own value.
-
-So when you read a function, you know that a value you pass in comes back unchanged. The one exception is a `mutable` argument, which the call marks (see below).
+You never free memory in Narra, and you never decide whether two names share one object. What you do decide is where a value may change. This chapter follows a player in a small game. It shows how the game's values are stored, how a function changes the player, and what a closure may capture.
 
 ## Why copies are cheap
 
-Copying a large array at every assignment would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values live on the heap, and each one counts how many names hold it. This is reference counting. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are counted one by one.
+Chapters 2 and 4 showed that assigning an array or a struct gives the new name its own copy. After `const before = scores`, pushing to `scores` leaves `before` as it was, and after `let moreTea = tea`, changing `moreTea` leaves `tea` alone. So when you pass a value to a function, it comes back unchanged, unless the call marks it `mutable`.
 
-- `const before = scores` copies nothing. Both names point at the same array, and its count goes up to 2.
-- `Arrays.push(mutable scores, 30)` sees the count of 2. Writing in place would change `before` too, so it copies the array first and writes to the copy.
-- When a value's count is 1, a write changes it in place with no copy.
-- When the count drops to 0, the value is freed.
+Copying a large array at every assignment would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values are kept on the heap. The heap is memory set aside apart from the variable, which lives until nothing uses it. The variable holds a reference to it. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are referenced one by one.
 
-That is why a loop that builds an array touches the same memory each time:
+Each heap value counts the references to it, which is called reference counting. In the example above:
 
-```narra
-import * as Arrays from "std/array"
-import * as Int from "std/int"
-import * as Ranges from "std/range"
+1. `const before = scores` copies nothing. Both names refer to the same array, and its count goes up to 2.
+2. `Arrays.push(mutable scores, 30)` sees the count of 2. Writing in place would change `before` too, so it copies the array first and writes to the copy.
+3. When a value's count is 1, a write changes it in place with no copy.
+4. When the count drops to 0, the value is freed.
 
-export function run(args: Array<string>): int {
-  let squares = Arrays.filled(0, 1000)
-  for (const i of Ranges.upTo(1000)) {
-    squares[i] = i * i
-  }
-  print(Int.toString(squares[999]))
-  return 0
-}
-```
-
-```text
-998001
-```
-
-`squares` has one owner the whole time, so each of the 1000 writes is in place. Had another name held the array during the loop, the first write would have copied it once. The other writes would then go to that copy. The result is the same either way. To keep large updates fast, avoid holding a second name for a value while you change it.
+So a loop that changes an array held by one name writes in place every time. Had a second name held the array, the first write would copy it once. To keep large updates fast, avoid holding a second name for a value while you change it.
 
 ## Changing a player in a function
 
@@ -168,120 +111,199 @@ export function run(args: Array<string>): int {
 
 Return a new value when the caller may want to keep the old one. Use `mutable` when the caller is done with the old one and the value is large or changes often. `Arrays.push(mutable items, value)`, which you have used since chapter 2, is a function with a `mutable` parameter.
 
-## What a `mutable` call allows
+## More of the game with `mutable`
 
-The rest of this section covers the mistakes the compiler stops at a `mutable` call, and how to fix each one.
+Each task below runs into something the compiler checks at a `mutable` call, and shows the fix.
 
-### The call must say `mutable`
+### Heal the hero
 
-Leave the word out at the call, and the compiler asks for it:
+A potion sets the hero's hp back to 100. Forget `mutable` at the call, and the compiler asks for it:
 
 ```narra error
-// error: 12:8: parameter "hero" is mutable; write `mutable` before the argument
+// error: 12:8: parameter "player" is mutable; write `mutable` before the argument
 struct Player {
   hp: int
 }
 
-function heal(mutable hero: Player) {
-  hero.hp = 100
+function heal(mutable player: Player) {
+  player.hp = 100
 }
 
 export function run(args: Array<string>): int {
-  let ana = Player { hp: 5 }
-  heal(ana)
+  let hero = Player { hp: 5 }
+  heal(hero)
   return 0
 }
 ```
 
-Repeating the word at the call means you can tell, without opening `heal`, that `ana` may change.
+Repeating the word at the call means you can tell, without opening `heal`, that `hero` may change.
 
-### The argument must be a variable you can change
+### Add to the starting kit
 
-A `mutable` parameter writes to what it is given. So the argument must be a `let` variable, a `mutable` parameter, or a field or element of one. A `const` cannot change:
+Every player starts with the items in a constant, and the hero gets a shield on top. Pushing the shield onto the constant fails, because a `const` never changes:
 
 ```narra error
-// error: 7:23: constant "STARTING_ITEMS" cannot be changed; copy it into a `let` variable first
+// error: 7:23: constant "STARTING_KIT" cannot be changed; copy it into a `let` variable first
 import * as Arrays from "std/array"
 
-const STARTING_ITEMS = ["sword"]
+const STARTING_KIT = ["sword"]
 
 export function run(args: Array<string>): int {
-  Arrays.push(mutable STARTING_ITEMS, "shield")
+  Arrays.push(mutable STARTING_KIT, "shield")
   return 0
 }
 ```
 
-Following the message, copy the constant into a `let` and change that: `let items = STARTING_ITEMS`, then `Arrays.push(mutable items, "shield")`.
-
-### One use of the variable per expression
-
-While a call changes a variable, nothing else in the same expression may use it. Passing it twice is an error:
-
-```narra error
-// error: 10:16: "score" is passed as mutable in this call, so no other argument can use it
-function swap(mutable first: int, mutable second: int) {
-  const saved = first
-  first = second
-  second = saved
-}
-
-export function run(args: Array<string>): int {
-  let score = 1
-  swap(mutable score, mutable score)
-  return 0
-}
-```
-
-Reading it elsewhere in the expression is also an error. In `score + bump(mutable score)`, the result would depend on whether `score` is read before or after `bump` changes it:
-
-```narra error
-// error: 9:17: "score" is passed as mutable in one call, so the rest of the expression cannot use it
-function bump(mutable number: int): int {
-  number = number * 10
-  return 1
-}
-
-export function run(args: Array<string>): int {
-  let score = 2
-  const total = score + bump(mutable score)
-  return total
-}
-```
-
-Split it into two statements, so the order is written down:
+A `mutable` argument must be a `let` variable, a `mutable` parameter, or a field or element of one. Following the message, copy the kit into a `let` and change that:
 
 ```narra
+import * as Arrays from "std/array"
 import * as Int from "std/int"
 
-function bump(mutable number: int): int {
-  number = number * 10
-  return 1
-}
+const STARTING_KIT = ["sword"]
 
 export function run(args: Array<string>): int {
-  let score = 2
-  const bonus = bump(mutable score)
-  const total = score + bonus
-  print(Int.toString(total))
+  let heroKit = STARTING_KIT
+  Arrays.push(mutable heroKit, "shield")
+  print(Int.toString(Arrays.length(heroKit)))
+  print(Int.toString(Arrays.length(STARTING_KIT)))
   return 0
 }
 ```
 
 ```text
-21
+2
+1
 ```
 
-### A `mutable` parameter stays inside the call
+### Swap two players' places
 
-A `mutable` parameter reaches the caller's variable only while the call runs. It cannot be returned, or stored in a struct, array or other value that outlives the call:
+A spell swaps the positions of two players. With two `let` variables, `swapPositions(mutable hero, mutable rival)` works. The game keeps its players in an array, though, and passing two elements of it fails:
 
 ```narra error
-// error: 7:10: mutable parameter "player" cannot be returned or stored
+// error: 20:32: "players" is passed as mutable in this call, so no other argument can use it
+struct Position {
+  x: int
+  y: int
+}
+
+struct Player {
+  name: string
+  position: Position
+}
+
+function swapPositions(mutable first: Player, mutable second: Player) {
+  const saved = first.position
+  first.position = second.position
+  second.position = saved
+}
+
+export function run(args: Array<string>): int {
+  let players = [Player { name: "Ana", position: Position { x: 0, y: 0 } }, Player { name: "Bo", position: Position { x: 5, y: 5 } }]
+  swapPositions(mutable players[0], mutable players[1])
+  return 0
+}
+```
+
+While a call changes a variable, no other argument may touch it. Both arguments are parts of `players`. The compiler does not compare the indexes, which could be equal at run time, so it refuses the call. Pass the array once, with the two indexes:
+
+```narra
+import * as Int from "std/int"
+
+struct Position {
+  x: int
+  y: int
+}
+
+struct Player {
+  name: string
+  position: Position
+}
+
+function swapPositions(mutable players: Array<Player>, first: int, second: int) {
+  const saved = players[first].position
+  players[first].position = players[second].position
+  players[second].position = saved
+}
+
+export function run(args: Array<string>): int {
+  let players = [Player { name: "Ana", position: Position { x: 0, y: 0 } }, Player { name: "Bo", position: Position { x: 5, y: 5 } }]
+  swapPositions(mutable players, 0, 1)
+  for (const player of players) {
+    print(`${player.name} at ${Int.toString(player.position.x)},${Int.toString(player.position.y)}`)
+  }
+  return 0
+}
+```
+
+```text
+Ana at 5,5
+Bo at 0,0
+```
+
+### Log the hp before and after healing
+
+Now `heal` adds an amount and returns the new hp, and the game logs the change in one line:
+
+```narra error
+// error: 15:9: "hero" is passed as mutable in one call, so the rest of the expression cannot use it
+import * as Int from "std/int"
+
 struct Player {
   hp: int
 }
 
-function keep(mutable player: Player): Player {
+function heal(mutable player: Player, amount: int): int {
+  player.hp = player.hp + amount
+  return player.hp
+}
+
+export function run(args: Array<string>): int {
+  let hero = Player { hp: 5 }
+  print(`${Int.toString(hero.hp)} -> ${Int.toString(heal(mutable hero, 10))}`)
+  return 0
+}
+```
+
+The template reads `hero.hp` and also passes `hero` as `mutable`. Whether it prints `5` or `15` first would depend on which part runs first. Split it into statements, so the order is written down:
+
+```narra
+import * as Int from "std/int"
+
+struct Player {
+  hp: int
+}
+
+function heal(mutable player: Player, amount: int): int {
+  player.hp = player.hp + amount
+  return player.hp
+}
+
+export function run(args: Array<string>): int {
+  let hero = Player { hp: 5 }
+  const before = hero.hp
+  const after = heal(mutable hero, 10)
+  print(`${Int.toString(before)} -> ${Int.toString(after)}`)
+  return 0
+}
+```
+
+```text
+5 -> 15
+```
+
+### Keep a snapshot
+
+A knockout sets the hp to 0, and the game wants the player as it was before, to show on the results screen. Returning the `mutable` parameter fails:
+
+```narra error
+// error: 8:10: mutable parameter "player" cannot be returned or stored; copy it first with `const copy = player`
+struct Player {
+  hp: int
+}
+
+function knockOut(mutable player: Player): Player {
+  player.hp = 0
   return player
 }
 
@@ -290,7 +312,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-To give back what the player looked like, copy it into a `const` first. The copy is an ordinary value, and you can return it:
+A `mutable` parameter reaches the caller's variable only while the call runs, so it cannot be returned or stored in anything that outlives the call. Copy it into a `const` first. The copy is an ordinary value, and you can return it:
 
 ```narra
 import * as Int from "std/int"
@@ -319,21 +341,9 @@ export function run(args: Array<string>): int {
 
 ## Closures and `let`
 
-The game wants a function that reports the current score. A closure that captures `score` looks like the natural way to write it, but the compiler refuses it:
+Chapter 3 showed that a closure cannot capture a `let`, and that the fix is to copy the value into a `const` first. Here is what is behind it.
 
-```narra error
-// error: 8:21: a closure cannot capture "score" because it is declared with let; closures capture only constants
-function show(report: () => int): int {
-  return report()
-}
-
-export function run(args: Array<string>): int {
-  let score = 1
-  return show(() => score)
-}
-```
-
-A closure keeps a copy of each value it captures, made when the closure is created, the same way an assignment copies. For a `const` that copy always equals the original, because neither can change. For a `let` the two could drift apart. After `score = score + 1`, the closure would still return the old score, while the code reads as if it returns the current one. So the compiler accepts only constants, and you make the copy yourself, which shows which value the closure sees:
+A closure keeps a copy of each value it captures, made when the closure is created, the same way an assignment copies. For a `const` the copy always equals the original, because neither can change. For a `let` the two would drift apart. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. Capturing only constants keeps the two the same:
 
 ```narra
 import * as Int from "std/int"

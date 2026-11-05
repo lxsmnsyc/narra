@@ -278,39 +278,49 @@ A struct can list traits with `implements` and with `derives` at once, as `Book`
 
 ## Equality comes free
 
-`==` and `!=` compare two values of the same type, field by field. You do not write anything for this: every struct, enum, array, `Option` and `Result` has it as long as everything inside can be compared.
+Chapter 4 compared two structs with `==`, field by field, without any code for it. That works for every struct, enum, array, `Option` and `Result` whose contents can be compared. Two values are equal when their contents are equal, and the same goes for map keys:
 
 ```narra
+import * as Int from "std/int"
+
 struct Book {
   title: string
   tags: Array<string>
 }
 
+function countOf<T: Equatable>(items: Array<T>, wanted: T): int {
+  let count = 0
+  for (const item of items) {
+    if (item == wanted) {
+      count = count + 1
+    }
+  }
+  return count
+}
+
 export function run(args: Array<string>): int {
   const first = Book { title: "Dune", tags: ["sf"] }
   const second = Book { title: "Dune", tags: ["sf"] }
-  if (first == second) {
-    print("same book")
-  }
-  if (Some(first) != None) {
-    print("an option of a book compares too")
-  }
   let stock: Map<Book, int> = Map {}
   stock[first] = 3
   if (stock[second] is Some(count)) {
-    print("the second copy finds the same entry")
+    print(`the second copy finds ${Int.toString(count)} in stock`)
   }
+  print(Int.toString(countOf([first, second], second)))
+  print(Int.toString(countOf(["tea", "cake", "tea"], "tea")))
   return 0
 }
 ```
 
 ```text
-same book
-an option of a book compares too
-the second copy finds the same entry
+the second copy finds 3 in stock
+2
+2
 ```
 
-Two values are equal when their contents are equal. There is no separate test for "the same object", because a Narra value has no identity apart from its contents (chapter 9 explains why). The same holds for map keys: `second` finds the entry stored under `first`. Behind this are two traits, `Equatable` for `==` and `Hashable` for map keys, which the compiler provides for you.
+`second` finds the entry stored under `first`, because the two books have the same contents. There is no separate test for "the same object": a Narra value has no identity apart from its contents (chapter 9 explains why).
+
+The trait behind `==` is `Equatable`. A generic function that compares two `T` values needs it as a constraint, as `countOf` does. Without `<T: Equatable>`, the compiler says `== on T needs Equatable; declare the type parameter as <T: Equatable>`.
 
 A function cannot be compared, so a type that holds one has no `==`:
 

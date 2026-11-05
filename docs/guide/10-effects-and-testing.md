@@ -1,6 +1,6 @@
 # 10. Effects and testing
 
-This chapter writes a small module that converts temperatures, then tests it. On the way it explains the `uses alloc` that chapter 8 needed. An exported function says in its signature whether it allocates memory or does input and output, and the compiler checks it.
+This chapter writes a small module that converts temperatures, then tests it. On the way it explains the `uses alloc` that chapters 4 and 8 wrote on exported functions. An exported function says in its signature whether it allocates memory or does input and output, and the compiler checks it.
 
 ## What a function does, in its signature
 
@@ -24,7 +24,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-`toFahrenheit` compiles: it only computes a number. `describe` builds new strings, and a new string needs memory from the heap. Allocating memory is an effect: something a function does besides computing its result. An exported function must list its effects after the result type, with `uses`. The message says which call brought the effect and what to write.
+`toFahrenheit` compiles: it only computes a number. `describe` builds new strings, and a new string needs memory on the heap (chapter 9). Allocating memory is an effect: something a function does besides computing its result. An exported function must list its effects after the result type, with `uses`. The message says which call brought the effect and what to write.
 
 There are two effects you will meet:
 
@@ -95,7 +95,7 @@ The split follows how code changes. A private function is used only inside its f
 An exported function that calls a function it receives has a problem: its effects depend on what it is given. Here is a first try:
 
 ```narra error
-// error: 14:25: the argument for `visit` of `eachReading` uses `io`, but its function type does not declare it; write `uses io` in the type, or `uses E` with `<effect E>` on `eachReading`
+// error: 13:25: the argument for `visit` of `eachReading` uses `io`, but its function type does not declare it; write `uses io` in the type, or `uses E` with `<effect E>` on `eachReading`
 export function eachReading(readings: Array<int>, visit: (reading: int) => void) {
   for (const reading of readings) {
     visit(reading)
@@ -106,14 +106,13 @@ export function run(args: Array<string>): int {
   const readings = [21, 23]
   const noisy = (reading: int) => {
     print("visiting")
-    return
   }
   eachReading(readings, noisy)
   return 0
 }
 ```
 
-In an exported function, the function type `(reading: int) => void` with no `uses` means a function with no effects. `eachReading` itself then has no effects either, and passing it a function that prints breaks that.
+`void` in a function type is the result of a function that returns nothing. A function type always names its result, so it cannot be left out the way it is in a declaration. In an exported function, the function type `(reading: int) => void` with no `uses` means a function with no effects. `eachReading` itself then has no effects either, and passing it a function that prints breaks that.
 
 The message offers two fixes. Writing `uses io` in the parameter's type would allow a printing `visit`. But then `eachReading` would have `io` even when `visit` only computes. The better fix says "`eachReading` has the effects of whatever `visit` does", with an effect variable. It is declared with the type parameters as `effect E`, attached to the parameter's function type, and repeated in the function's own `uses` list:
 
@@ -218,7 +217,7 @@ FAIL - water boils at 211 F: expected 211, got 212 (temperature.nra:42:10)
 
 `narra test` runs the tests in the order they appear and prints a line for each. A failure shows both values and the line and column of the check that failed. Here the test is wrong, since water boils at 212 F. The runner goes on after a failure. It exits with code 1 when any test failed and 0 otherwise, so a script can stop on a failure.
 
-Each test runs in a process of its own. A test that crashes, leaks memory or runs longer than 10 seconds fails on its own, and the tests after it still run. To allow a slower test, set the limit in seconds with the `NARRA_TEST_TIMEOUT` environment variable.
+Each test runs in a process of its own. A test that crashes or runs longer than 10 seconds fails on its own, and the tests after it still run. With `NARRA_CHECK_LEAKS=1` set, a test that leaks memory fails the same way. To allow a slower test, set the limit in seconds with the `NARRA_TEST_TIMEOUT` environment variable.
 
 To run some of the tests, give part of their names with `-filter`. `-time` adds how long each test took:
 

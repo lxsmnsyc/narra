@@ -16,3 +16,13 @@
 - Dropped from the old draft: `export type` re-exports (not implemented), "planned" and "not yet" notes, the tools for showing copies, arenas.
 - TestGuide (harness copied from origin/docs/guide-basics, removed before commit): ok. check_prose.py: ok.
 - Fast check (vet + go test -timeout 20m, harness copied in): ok, 801 s.
+
+## 2026-11-05: review fixes
+
+- Fresh review of 994f6b5: nothing blocking, 8 should-fix and 7 nits, mostly reteaching chapters 1 to 5 (guide-basics now b73a6e7). Read those chapters first.
+- Chapter 9: copy section cut to a recap, heap defined once, `mutable` section rebuilt as game tasks (heal, starting kit, swap in an array, log hp, snapshot), closure section builds on chapter 3, `squares` sample dropped.
+- Chapter 8: one sentence on the `mutable` parameter of `addWord`, package layout points to chapter 1, `uses alloc` written in the fragment with a pointer to chapter 4 (error block dropped). Package rebuilt from fragments.
+- Chapter 6: opens from chapters 2 and 5, `findSetting` shown once and later samples use a `Map`, `orElse` needs `withDefault` after, panic example is an impossible state.
+- Chapter 7: equality opens from chapter 4, adds `countOf<T: Equatable>`.
+- Chapter 10: leak failure needs `NARRA_CHECK_LEAKS=1`, `void` explained, bare `return` removed, refers to chapter 4.
+- TestGuide ok, prose check ok.

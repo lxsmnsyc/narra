@@ -2,10 +2,11 @@
 
 Narra is a statically typed language with enums that carry data, pattern matching, no `null` and no exceptions. It compiles to C, and a C compiler builds the program. This chapter builds and runs a first program, then a package with a `narra.toml`.
 
-You need Go (to build the bootstrap compiler `narra`) and a C compiler (`cc`, `clang` or `gcc`).
+You need Go and a C compiler (`cc`, `clang` or `gcc`). Clone the repository, then build `narra`, the compiler. It reads your `.nra` files, turns them into C code, and calls the C compiler to make the executable.
 
 ```sh
-cd compiler
+git clone https://github.com/lxsmnsyc/narra
+cd narra/compiler
 go build -o narra ./cmd/narra
 ```
 

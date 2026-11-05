@@ -33,7 +33,7 @@ gcd: 21
 The rules:
 
 - A call passes every argument. There are no optional parameters, no varargs, no overloads and no currying. To fix some arguments, write an arrow function. To pass options, pass a struct with default field values (chapter 4).
-- There are no method calls. `items.push(1)` is a compile error, and the message tells you to write `Arrays.push(mutable items, 1)`. `value.field(args) is valid only when `field` is a struct field that holds a function.
+- There are no method calls. `items.push(1)` is a compile error, and the message tells you to write `Arrays.push(mutable items, 1)`. `value.field(args)` is valid only when `field` is a struct field that holds a function.
 - You cannot declare a function inside a function. Declare it at module level and pass what it needs as arguments, or bind an arrow function to a `const`.
 - Parameters are constant. A parameter changes only if it is declared `mutable` (chapter 9).
 - Recursion needs no keyword.

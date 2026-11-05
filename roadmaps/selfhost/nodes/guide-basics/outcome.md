@@ -44,10 +44,13 @@ References removed: 38 SPEC.md/DECISIONS.md links, section references and D-numb
 
 ## Gotchas
 
+The first item is for the roadmap only (it names SPEC and D-numbers); do not repeat it in the chapters.
+
 - The compiler lacks things the spec and DECISIONS describe: compound assignment and C-style `for` (D76), `Arrays.map` and other array helpers (std/array has only `length`, `values`, `entries`, `push`, `filled`), `Float.PI`, and explicit type arguments in calls. The chapters avoid them. Where SPEC and compiler disagree, the guide follows the compiler.
 - `print` and `${...}` take only strings, so every number goes through `Int.toString` or `Float.toString`.
 - An `is` pattern that binds names must be the whole `if` condition (`x is Some(v) && v > 0` fails). Samples use `while (true)` with `if ... else { return }` to walk a linked list.
 - Error samples count the `// error:` comment as line 1, so reported lines are one more than in the visible code.
+- `TestGuide` also fails on an info string that starts with `narra` (any case) but is not `narra`, `narra error` or `narra fragment`, on a fence that is never closed, and when no guide file matches. `TestGuideExtract` covers the first two.
 - Chapters 6 to 10 samples should use `Options`/`Results` aliases (plural) as chapter samples 2 to 5 do.
 - `.nra` samples in the guide are not formatted by `narrac fmt` and `TestSourcesFormatted` does not cover `docs/`.
 
@@ -59,7 +62,8 @@ References removed: 38 SPEC.md/DECISIONS.md links, section references and D-numb
 
 - `cd compiler && go test -count=1 ./internal/narra -run TestGuide`: pass (34 subtests).
 - Broke a sample by hand (output text in chapter 1): TestGuide failed at `TestGuide/01-getting-started.md:16/debug` with want and got. Reverted.
-- `cd compiler && go vet ./... && go test -timeout 20m ./...`: see the pull request.
+- `cd compiler && go vet ./... && go test -timeout 20m ./...` passed on 5278a62, about 13 min (machine loaded by other agents).
+- After review fixes: `cd compiler && go vet ./... && go test -timeout 30m ./...` passed on the review-fix commit, about 24 min (loaded machine). A temporary guide file with ```` ```narra errror ```` failed at `99-tmp.md:3`, and one with an unclosed fence failed with `line 3: the fence is never closed`; both removed.
 
 ## Size
 

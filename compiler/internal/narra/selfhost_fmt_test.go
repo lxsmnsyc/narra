@@ -219,9 +219,9 @@ func TestSelfhostFmt(t *testing.T) {
 	// A comment the printer cannot place is an error, not a silent loss.
 	t.Run("lost_comment", func(t *testing.T) {
 		scratch := t.TempDir()
-		source := "import { a, /* inside */ b } from \"m\"\n"
+		source := "enum E {\n  A(/* inside */)\n}\n"
 		writeFile(t, filepath.Join(scratch, "lost.nra"), source)
-		want := "error lost.nra:1:13: comment not printed: /* inside */\n"
+		want := "error lost.nra:2:5: comment not printed: /* inside */\n"
 		out, errText, code := runFmtCommand(t, exe, scratch, "", "lost.nra")
 		if code != 1 || out != "" || errText != want {
 			t.Fatalf("code %d stdout %q stderr %q, want code 1 stderr %q", code, out, errText, want)
@@ -230,7 +230,7 @@ func TestSelfhostFmt(t *testing.T) {
 			t.Fatalf("lost.nra changed: %q", got)
 		}
 		out, errText, code = runFmtCommand(t, exe, scratch, source, "--stdin")
-		if code != 1 || out != "" || errText != "error <stdin>:1:13: comment not printed: /* inside */\n" {
+		if code != 1 || out != "" || errText != "error <stdin>:2:5: comment not printed: /* inside */\n" {
 			t.Fatalf("stdin: code %d stdout %q stderr %q", code, out, errText)
 		}
 	})

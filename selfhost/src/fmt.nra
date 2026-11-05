@@ -25,10 +25,10 @@ import * as Docs from "narrac/fmtdoc"
 import { Doc, Options } from "narrac/fmtdoc"
 import * as Lexer from "narrac/lexer"
 import * as Parser from "narrac/parser"
-import { Trivia, getPosKey, getIdKey, getDeclPos, getStmtPos, getExprId, getPatternId } from "narrac/trivia"
+import { Trivia, CommentKind, getPosKey, getIdKey, getDeclPos, getStmtPos, getExprId, getPatternId } from "narrac/trivia"
 import { Pos, File, ImportDecl, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Stmt, Expr, Pattern } from "narrac/ast"
 import { FmtConfig, createDefaultConfig, getDirectory, findConfig } from "narrac/fmtconfig"
-import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, hasBlankBefore, hasDangling, hasTrailing } from "narrac/fmtprinter"
+import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, hasBlankBefore, hasDangling, hasTrailing, hasLeading, getLeadingBefore, removeComments } from "narrac/fmtprinter"
 
 // ---- Driver
 
@@ -531,7 +531,9 @@ function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
   if (importDecl.alias != "") {
     return text(`import * as ${importDecl.alias} from ${path}`)
   }
-  if (Arrays.length(importDecl.names) == 0) {
+  // Names have no anchors: the comments inside the braces are dangling on the import.
+  const importKey = getPosKey("i", importDecl.pos)
+  if (Arrays.length(importDecl.names) == 0 && !hasDangling(printer, importKey)) {
     return text(`import {} from ${path}`)
   }
   let names: Array<Doc> = []
@@ -542,10 +544,22 @@ function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
       Arrays.push(mutable names, text(`${importName.name} as ${importName.local}`))
     }
   }
+  let inside: Array<Doc> = [Doc.Line]
+  if (hasDangling(printer, importKey)) {
+    Arrays.push(mutable inside, printDangling(printer, importKey))
+    if (Arrays.length(names) > 0) {
+      Arrays.push(mutable inside, Doc.HardLine)
+    }
+  }
+  Arrays.push(mutable inside, Docs.join(commaLine(), names))
+  let lastComma = empty()
+  if (Arrays.length(names) > 0) {
+    lastComma = trailingComma(printer)
+  }
   return Docs.group(Docs.concat([
     text("import {"),
-    Docs.indent(Docs.concat([Doc.Line, Docs.join(commaLine(), names)])),
-    trailingComma(printer),
+    Docs.indent(Docs.concat(inside)),
+    lastComma,
     Doc.Line,
     text(`} from ${path}`),
   ]))
@@ -784,14 +798,18 @@ function printImpl(printer: Printer, declaration: ImplDecl): Doc uses alloc {
 // printBlock prints `{ statements }` with the comments attached to the block
 // (the printBlock field of the Printer).
 export function printBlock(printer: Printer, block: Block): Doc uses alloc {
+  return withComments(printer, getPosKey("b", block.pos), printBlockBody(printer, block))
+}
+
+// printBlockBody prints the braces and what is inside them.
+function printBlockBody(printer: Printer, block: Block): Doc uses alloc {
   let keys: Array<string> = []
   let documents: Array<Doc> = []
   for (const statement of Arrays.values(block.statements)) {
     Arrays.push(mutable keys, getPosKey("s", getStmtPos(statement)))
     Arrays.push(mutable documents, printStatement(printer, statement))
   }
-  const blockKey = getPosKey("b", block.pos)
-  return withComments(printer, blockKey, printBraces(printer, blockKey, keys, documents))
+  return printBraces(printer, getPosKey("b", block.pos), keys, documents)
 }
 
 // printCondition prints `(condition)` of an if or while.
@@ -826,8 +844,8 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc uses alloc {
     Stmt.ExprStmt(_, expression) => printer.printExpression(printer, expression)
     Stmt.ReturnStmt(_, value) => printReturn(printer, value)
     Stmt.IfStmt(_, condition, thenBlock, orElse) => printIf(printer, condition, thenBlock, orElse)
-    Stmt.WhileStmt(_, label, condition, body) => Docs.concat([text(`${getLabelPrefix(label)}while `), printCondition(printer, condition), text(" "), printBlock(printer, body)])
-    Stmt.ForStmt(_, _, label, name, iterable, body) => printFor(printer, label, name, iterable, body)
+    Stmt.WhileStmt(pos, label, condition, body) => printWhile(printer, pos, label, condition, body)
+    Stmt.ForStmt(_, pos, label, name, iterable, body) => printFor(printer, pos, label, name, iterable, body)
     Stmt.BreakStmt(_, label) => text(getJump("break", label))
     Stmt.ContinueStmt(_, label) => text(getJump("continue", label))
   }
@@ -878,40 +896,122 @@ function printReturn(printer: Printer, value: Option<Expr>): Doc uses alloc {
 function printIf(printer: Printer, condition: Expr, thenBlock: Block, orElse: Option<Stmt>): Doc uses alloc {
   let parts: Array<Doc> = [text("if "), printCondition(printer, condition), text(" "), printBlock(printer, thenBlock)]
   if (orElse is Some(branch)) {
-    if (hasTrailing(printer, getPosKey("b", thenBlock.pos))) {
+    // The comments of the else branch go before `else`, on their own lines.
+    let branchKey = ""
+    let branchBody = empty()
+    if (branch is Stmt.IfStmt(branchPos, _, _, _)) {
+      branchKey = getPosKey("s", branchPos)
+      branchBody = printStatementBody(printer, branch)
+    } else if (branch is Stmt.BlockStmt(elseBlock)) {
+      branchKey = getPosKey("b", elseBlock.pos)
+      branchBody = printBlockBody(printer, elseBlock)
+    }
+    const elseDocument = withComments(printer, branchKey, Docs.concat([text("else "), branchBody]))
+    if (hasTrailing(printer, getPosKey("b", thenBlock.pos)) || hasLeading(printer, branchKey)) {
       // A trailing comment of the block ends the line: `else` starts the next one.
       Arrays.push(mutable parts, Doc.HardLine)
-      Arrays.push(mutable parts, text("else "))
     } else {
-      Arrays.push(mutable parts, text(" else "))
+      Arrays.push(mutable parts, text(" "))
     }
-    if (branch is Stmt.IfStmt(_, _, _, _)) {
-      Arrays.push(mutable parts, printStatement(printer, branch))
-    } else if (branch is Stmt.BlockStmt(elseBlock)) {
-      Arrays.push(mutable parts, printBlock(printer, elseBlock))
-    }
+    Arrays.push(mutable parts, elseDocument)
   }
   return Docs.concat(parts)
+}
+
+// findKeywordOffset is the offset of the `for` or `while` that follows a
+// label, past the comments.
+function findKeywordOffset(source: string, start: int): int {
+  const length = Str.length(source)
+  let index = start
+  while (index < length) {
+    const byte = Str.byteAt(source, index)
+    if (byte == 47 && getByteAt(source, index + 1) == 47) {
+      while (index < length && Str.byteAt(source, index) != 10) {
+        index = index + 1
+      }
+    } else if (byte == 47 && getByteAt(source, index + 1) == 42) {
+      index = index + 2
+      while (index < length && !(Str.byteAt(source, index) == 42 && getByteAt(source, index + 1) == 47)) {
+        index = index + 1
+      }
+      index = index + 2
+    } else if (isWordAt(source, index, "for") || isWordAt(source, index, "while")) {
+      return index
+    } else {
+      index = index + 1
+    }
+  }
+  return length
+}
+
+function isWordAt(source: string, index: int, word: string): bool uses alloc {
+  const end = index + Str.length(word)
+  if (end > Str.length(source) || Str.slice(source, index, end) != word) {
+    return false
+  }
+  return !isWordByte(getByteAt(source, index - 1)) && !isWordByte(getByteAt(source, end))
+}
+
+function isWordByte(byte: int): bool {
+  return (byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || (byte >= 48 && byte <= 57) || byte == 95
+}
+
+// LabelComments are the comments between a loop's label and its keyword. The
+// trivia attaches them to the first node of the loop head, so they are taken
+// from there and printed after the label.
+struct LabelComments {
+  prefix: Doc
+  printer: Printer
+}
+
+function takeLabelComments(printer: Printer, pos: Pos, label: string, anchors: Array<string>): LabelComments uses alloc {
+  let prefix = text(getLabelPrefix(label))
+  let active = printer
+  if (label == "") {
+    return LabelComments { prefix: prefix, printer: active }
+  }
+  const keywordOffset = findKeywordOffset(printer.source, getOffset(printer.source, pos) + Str.length(label))
+  let parts: Array<Doc> = [prefix]
+  for (const anchor of Arrays.values(anchors)) {
+    const indexes = getLeadingBefore(printer, anchor, keywordOffset)
+    if (Arrays.length(indexes) == 0) {
+      continue
+    }
+    active = removeComments(active, anchor, indexes)
+    for (const index of Arrays.values(indexes)) {
+      const comment = printer.trivia.comments[index]
+      Arrays.push(mutable parts, text(Str.trim(comment.text)))
+      if (comment.kind is CommentKind.Block) {
+        Arrays.push(mutable parts, text(" "))
+      } else {
+        Arrays.push(mutable parts, Doc.HardLine)
+      }
+    }
+  }
+  return LabelComments { prefix: Docs.concat(parts), printer: active }
+}
+
+function printWhile(printer: Printer, pos: Pos, label: string, condition: Expr, body: Block): Doc uses alloc {
+  const taken = takeLabelComments(printer, pos, label, [getIdKey(getExprId(condition))])
+  return Docs.concat([taken.prefix, text("while "), printCondition(taken.printer, condition), text(" "), printBlock(taken.printer, body)])
 }
 
 // printFor prints a for loop. The parser turns `for (const pattern of xs)` and
 // `for (let x of xs)` into a loop over a hidden name whose body starts with a
 // declaration; this puts it back.
-function printFor(printer: Printer, label: string, name: string, iterable: Expr, body: Block): Doc uses alloc {
-  let head = text(`const ${name}`)
+function printFor(printer: Printer, pos: Pos, label: string, name: string, iterable: Expr, body: Block): Doc uses alloc {
+  let keyword = "const "
+  let declaredName = name
+  let declaredPattern: Option<Pattern> = None
   let loopBody = body
   if (Str.startsWith(name, "__for_") && Arrays.length(body.statements) > 0) {
-    if (body.statements[0] is Stmt.VarStmt(_, _, isMutable, declaredName, pattern, _, Expr.Ident(_, _, hiddenName))) {
+    if (body.statements[0] is Stmt.VarStmt(_, _, isMutable, hiddenDeclaration, pattern, _, Expr.Ident(_, _, hiddenName))) {
       if (hiddenName == name) {
-        let keyword = "const "
         if (isMutable) {
           keyword = "let "
         }
-        if (pattern is Some(inner)) {
-          head = Docs.concat([text(keyword), printer.printPattern(printer, inner)])
-        } else {
-          head = text(`${keyword}${declaredName}`)
-        }
+        declaredName = hiddenDeclaration
+        declaredPattern = pattern
         let rest: Array<Stmt> = []
         for (const index of Ranges.between(1, Arrays.length(body.statements))) {
           Arrays.push(mutable rest, body.statements[index])
@@ -920,13 +1020,26 @@ function printFor(printer: Printer, label: string, name: string, iterable: Expr,
       }
     }
   }
+  // The loop head: the pattern (if any) comes before the iterable.
+  let anchors: Array<string> = []
+  if (declaredPattern is Some(headPattern)) {
+    Arrays.push(mutable anchors, getIdKey(getPatternId(headPattern)))
+  }
+  Arrays.push(mutable anchors, getIdKey(getExprId(iterable)))
+  const taken = takeLabelComments(printer, pos, label, anchors)
+  const active = taken.printer
+  let head = text(`${keyword}${declaredName}`)
+  if (declaredPattern is Some(headPattern)) {
+    head = Docs.concat([text(keyword), active.printPattern(active, headPattern)])
+  }
   return Docs.concat([
-    text(`${getLabelPrefix(label)}for (`),
+    taken.prefix,
+    text("for ("),
     head,
     text(" of "),
-    printer.printExpression(printer, iterable),
+    active.printExpression(active, iterable),
     text(") "),
-    printBlock(printer, loopBody),
+    printBlock(active, loopBody),
   ])
 }
 

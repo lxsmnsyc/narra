@@ -1,0 +1,172 @@
+// Declaration signatures for `narrac query interface`, written from the
+// syntax as one line each: the types as written (with type parameter
+// names), the declared effects, no bodies and no field defaults.
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import {
+  TypeExpr,
+  FuncDecl,
+  Param,
+  FieldDecl,
+  StructDecl,
+  EnumDecl,
+  TraitDecl,
+  DistinctDecl,
+} from "narrac/ast"
+
+// writeType writes a type expression: `Name<A, B>`, `#[A, B]` or
+// `(A, B) => R uses e`.
+export function writeType(type: TypeExpr): string uses alloc {
+  let text = ""
+  if (type.isTuple) {
+    text = `#[${writeTypeList(type.arguments)}]`
+  } else if (type.isFunc) {
+    let result = "void"
+    if (type.result is Some(boxed)) {
+      result = writeType(boxed.value)
+    }
+    text = `(${writeTypeList(type.arguments)}) => ${result}`
+  } else if (Arrays.length(type.arguments) > 0) {
+    text = `${type.name}<${writeTypeList(type.arguments)}>`
+  } else {
+    text = type.name
+  }
+  if (Arrays.length(type.effects) > 0) {
+    text = `${text} uses ${Str.join(type.effects, ", ")}`
+  }
+  return text
+}
+
+function writeTypeList(types: Array<TypeExpr>): string uses alloc {
+  let parts: Array<string> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable parts, writeType(type))
+  }
+  return Str.join(parts, ", ")
+}
+
+function writeTraitList(keyword: string, traits: Array<TypeExpr>): string uses alloc {
+  if (Arrays.length(traits) == 0) {
+    return ""
+  }
+  return ` ${keyword} ${writeTypeList(traits)}`
+}
+
+function writeTypeParameterNames(names: Array<string>): string uses alloc {
+  if (Arrays.length(names) == 0) {
+    return ""
+  }
+  return `<${Str.join(names, ", ")}>`
+}
+
+function writeParameter(parameter: Param): string uses alloc {
+  let text = ""
+  if (parameter.isMutable) {
+    text = "mutable "
+  }
+  if (parameter.escaping) {
+    text = `${text}escaping `
+  }
+  text = `${text}${parameter.name}`
+  if (parameter.type is Some(type)) {
+    text = `${text}: ${writeType(type)}`
+  }
+  return text
+}
+
+// writeFunction writes `function name<T: A & B, effect E>(a: A): R uses e`.
+export function writeFunction(funcDecl: FuncDecl): string uses alloc {
+  // Type parameters with their bounds, then effect parameters.
+  let typeParameters: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(funcDecl.typeParameters))) {
+    let text = funcDecl.typeParameters[index]
+    if (index < Arrays.length(funcDecl.bounds) && Arrays.length(funcDecl.bounds[index]) > 0) {
+      let bounds: Array<string> = []
+      for (const bound of Arrays.values(funcDecl.bounds[index])) {
+        Arrays.push(mutable bounds, writeType(bound))
+      }
+      text = `${text}: ${Str.join(bounds, " & ")}`
+    }
+    Arrays.push(mutable typeParameters, text)
+  }
+  for (const name of Arrays.values(funcDecl.effectParameters)) {
+    Arrays.push(mutable typeParameters, `effect ${name}`)
+  }
+  let parameters: Array<string> = []
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    Arrays.push(mutable parameters, writeParameter(parameter))
+  }
+  let text = "function"
+  if (funcDecl.generator) {
+    text = "function*"
+  }
+  text = `${text} ${funcDecl.name}${writeTypeParameterNames(typeParameters)}(${Str.join(parameters, ", ")})`
+  if (funcDecl.result is Some(result)) {
+    text = `${text}: ${writeType(result)}`
+  }
+  if (Arrays.length(funcDecl.effects) > 0) {
+    text = `${text} uses ${Str.join(funcDecl.effects, ", ")}`
+  }
+  return text
+}
+
+function writeFields(fields: Array<FieldDecl>): string uses alloc {
+  let parts: Array<string> = []
+  for (const field of Arrays.values(fields)) {
+    Arrays.push(mutable parts, `${field.name}: ${writeType(field.type)}`)
+  }
+  return Str.join(parts, ", ")
+}
+
+// writeStruct writes `struct Name<T> implements A derives B { a: A }`. An
+// opaque struct shows no fields.
+export function writeStruct(structDecl: StructDecl): string uses alloc {
+  let text = `struct ${structDecl.name}${writeTypeParameterNames(structDecl.typeParameters)}`
+  text = `${text}${writeTraitList("implements", structDecl.implementations)}${writeTraitList("derives", structDecl.derived)}`
+  if (structDecl.opaque) {
+    return `opaque ${text}`
+  }
+  if (Arrays.length(structDecl.fields) == 0) {
+    return `${text} {}`
+  }
+  return `${text} { ${writeFields(structDecl.fields)} }`
+}
+
+// writeEnum writes `enum Name<T> derives B { A(x: int), B }`.
+export function writeEnum(enumDecl: EnumDecl): string uses alloc {
+  let variants: Array<string> = []
+  for (const variant of Arrays.values(enumDecl.variants)) {
+    if (Arrays.length(variant.fields) == 0) {
+      Arrays.push(mutable variants, variant.name)
+    } else {
+      Arrays.push(mutable variants, `${variant.name}(${writeFields(variant.fields)})`)
+    }
+  }
+  let text = `enum ${enumDecl.name}${writeTypeParameterNames(enumDecl.typeParameters)}`
+  text = `${text}${writeTraitList("implements", enumDecl.implementations)}${writeTraitList("derives", enumDecl.derived)}`
+  if (Arrays.length(variants) == 0) {
+    return `${text} {}`
+  }
+  return `${text} { ${Str.join(variants, ", ")} }`
+}
+
+// writeTrait writes `trait Name { function f(value: Self): R; ... }`.
+export function writeTrait(traitDecl: TraitDecl): string uses alloc {
+  let functions: Array<string> = []
+  for (const funcDecl of Arrays.values(traitDecl.functions)) {
+    Arrays.push(mutable functions, writeFunction(funcDecl))
+  }
+  if (Arrays.length(functions) == 0) {
+    return `trait ${traitDecl.name} {}`
+  }
+  return `trait ${traitDecl.name} { ${Str.join(functions, "; ")} }`
+}
+
+// writeDistinct writes `distinct type Name = Base`; an opaque one hides its base.
+export function writeDistinct(distinctDecl: DistinctDecl): string uses alloc {
+  if (distinctDecl.opaque) {
+    return `opaque distinct type ${distinctDecl.name}`
+  }
+  return `distinct type ${distinctDecl.name} = ${writeType(distinctDecl.base)}`
+}

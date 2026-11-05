@@ -59,6 +59,20 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 - `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
 - `TestSourcesFormatted` runs `narrac fmt --check` over `selfhost/src` and every sample under `testdata/` except `testdata/fmt/`, whose inputs are unformatted on purpose, and the samples in `layoutSamples`, which test a layout the formatter would change. A sample that does not parse is skipped only if its path contains `error` or `/diagnostics/`. `bench/` and `std/` are not checked. After editing Narra source, run `narrac fmt` on it. A sample whose `// error:` line or dump golden holds positions must be updated after formatting.
 
+## Queries
+
+`narrac query` (the self-hosted compiler, `selfhost/src/query.nra`) answers the questions of `SPEC.md` section 14 about a package. The Go compiler has no `query` command. The command line and the `--json` shapes are the frozen contract `roadmaps/selfhost/contracts/query-output.md`.
+
+- `narrac query [--package DIR] [--json] <command> <operand>`, where the command is `type-of FILE:LINE:COL`, `def NAME`, `refs NAME`, `callers FUNCTION`, `interface MODULE` or `recursion MODULE`. `DIR` defaults to `.`.
+- The package is loaded and checked as `narrac types` does it. Load or check errors print as there (with `--json`: `{"errors": [...]}`, code `E0000` until the self-hosted checker has codes) and the exit code is 1. Any other query error prints `error <message>` (with `--json`: `{"error": ...}` on stdout) and exits 1. A usage error exits 2.
+- `type-of` reports the innermost expression, local name or function or constant name at the position. A generic function shows its type parameter names. A call or function name also gets its effects.
+- `def` lists every declaration a qualified (`app/text.helper`, `app/text.Shape.Circle`) or bare (`helper`, `Shape.Circle`, `Circle`) name finds. `refs` and `callers` need a name that finds one declaration.
+- `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked.
+- `callers` and `recursion` read the call graph of the effect pass (`EffectState.calls`). Calls through function values are not edges. A call inside an arrow function belongs to the enclosing function.
+- Only the package's own modules are searched, not std source modules.
+- `selfhost/src/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
+- `TestSelfhostQuery` runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by the expected stdout then stderr, with `# exit N` first when the exit code is not 0) against the package in that folder. `NARRA_UPDATE=1` rewrites the expected output.
+
 ## Tests
 
 ```sh

@@ -1,0 +1,141 @@
+// Strongly connected components for `narrac query recursion`: Tarjan's
+// algorithm with an explicit stack of frames, so a long call chain does not
+// grow the C stack.
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// sortStrings sorts names in byte order (insertion sort; the lists are short).
+export function sortStrings(mutable items: Array<string>) {
+  for (const start of Ranges.between(1, Arrays.length(items))) {
+    let index = start
+    while (index > 0 && items[index] < items[index - 1]) {
+      const swap = items[index]
+      items[index] = items[index - 1]
+      items[index - 1] = swap
+      index = index - 1
+    }
+  }
+}
+
+// The working state of findCycles. Stacks never shrink: a depth or size
+// counter says how much of each is in use, since std/array has no pop.
+struct Search {
+  order: Array<int> // visit number of each node, or -1
+  low: Array<int>
+  onStack: Array<bool>
+  stack: Array<int>
+  stackSize: int
+  frameNodes: Array<int>
+  frameEdges: Array<int>
+  depth: int
+  counter: int
+  components: Array<Array<int>>
+}
+
+function setAt(mutable items: Array<int>, index: int, value: int) uses alloc {
+  if (index < Arrays.length(items)) {
+    items[index] = value
+  } else {
+    Arrays.push(mutable items, value)
+  }
+}
+
+function startNode(mutable search: Search, node: int) uses alloc {
+  search.order[node] = search.counter
+  search.low[node] = search.counter
+  search.counter = search.counter + 1
+  const stackSize = search.stackSize
+  setAt(mutable search.stack, stackSize, node)
+  search.stackSize = stackSize + 1
+  search.onStack[node] = true
+  const depth = search.depth
+  setAt(mutable search.frameNodes, depth, node)
+  setAt(mutable search.frameEdges, depth, 0)
+  search.depth = search.depth + 1
+}
+
+// finishNode pops the component of node off the stack when node is its root.
+function finishNode(mutable search: Search, node: int) uses alloc {
+  if (search.low[node] != search.order[node]) {
+    return
+  }
+  let component: Array<int> = []
+  while (search.stackSize > 0) {
+    search.stackSize = search.stackSize - 1
+    const member = search.stack[search.stackSize]
+    search.onStack[member] = false
+    Arrays.push(mutable component, member)
+    if (member == node) {
+      break
+    }
+  }
+  Arrays.push(mutable search.components, component)
+}
+
+// findCycles returns the components of the graph (edges[node] lists the
+// nodes it calls) that hold a cycle: more than one node, or one node that
+// calls itself.
+export function findCycles(edges: Array<Array<int>>): Array<Array<int>> uses alloc {
+  const count = Arrays.length(edges)
+  let search = Search {
+    order: Arrays.filled(-1, count),
+    low: Arrays.filled(0, count),
+    onStack: Arrays.filled(false, count),
+    stack: [],
+    stackSize: 0,
+    frameNodes: [],
+    frameEdges: [],
+    depth: 0,
+    counter: 0,
+    components: [],
+  }
+  for (const root of Ranges.between(0, count)) {
+    if (search.order[root] >= 0) {
+      continue
+    }
+    startNode(mutable search, root)
+    while (search.depth > 0) {
+      const frame = search.depth - 1
+      const node = search.frameNodes[frame]
+      const edge = search.frameEdges[frame]
+      if (edge < Arrays.length(edges[node])) {
+        // Follow the next edge of the node on top.
+        search.frameEdges[frame] = edge + 1
+        const next = edges[node][edge]
+        if (search.order[next] < 0) {
+          startNode(mutable search, next)
+        } else if (search.onStack[next] && search.order[next] < search.low[node]) {
+          search.low[node] = search.order[next]
+        }
+        continue
+      }
+
+      // Every edge is done: return to the caller's frame.
+      search.depth = frame
+      if (frame > 0) {
+        const parent = search.frameNodes[frame - 1]
+        if (search.low[node] < search.low[parent]) {
+          search.low[parent] = search.low[node]
+        }
+      }
+      finishNode(mutable search, node)
+    }
+  }
+
+  // Keep the components with a cycle.
+  let cycles: Array<Array<int>> = []
+  for (const component of Arrays.values(search.components)) {
+    if (Arrays.length(component) > 1) {
+      Arrays.push(mutable cycles, component)
+      continue
+    }
+    const node = component[0]
+    for (const next of Arrays.values(edges[node])) {
+      if (next == node) {
+        Arrays.push(mutable cycles, component)
+        break
+      }
+    }
+  }
+  return cycles
+}

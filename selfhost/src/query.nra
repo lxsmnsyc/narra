@@ -1,0 +1,1075 @@
+// narrac query (SPEC.md section 14, contracts/query-output.md): answers
+// questions about a package from the checked program.
+//
+//     narrac query [--package DIR] [--json] type-of FILE:LINE:COL
+//     narrac query [--package DIR] [--json] def NAME
+//     narrac query [--package DIR] [--json] refs NAME
+//     narrac query [--package DIR] [--json] callers FUNCTION
+//     narrac query [--package DIR] [--json] interface MODULE
+//     narrac query [--package DIR] [--json] recursion MODULE
+//
+// The package is loaded and checked as `narrac types` does (every check
+// pass and the effect pass). Results come from the checker's side tables:
+// a node's type and ref from the open body that checked it (the body
+// without type arguments, so a generic function shows its type parameter
+// names), and calls from the call graph the effect pass records
+// (EffectState.calls). Positions come from the site index (querysites.nra).
+// Only the package's own modules are searched, not std source modules.
+//
+// Text output is for people. With --json each command prints one JSON
+// object and a newline. An error prints `error <message>` to stderr (with
+// --json: `{"error": ...}` to stdout) and exits 1; a usage error exits 2.
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import { Pos, Decl, FuncDecl } from "narrac/ast"
+import { lex } from "narrac/lexer"
+import * as Modules from "narrac/modules"
+import { Package, SourceModule } from "narrac/modules"
+import { LoadError } from "narrac/manifest"
+import {
+  Checker,
+  BodyRoot,
+  Ref,
+  CheckError,
+  typeString,
+  findBodySlot,
+  errorText,
+} from "narrac/check"
+import { Type } from "narrac/types"
+import * as Body from "narrac/body"
+import * as Effects from "narrac/effects"
+import { EffectState } from "narrac/effects"
+import { Site, SiteKind, collectSites, isBefore } from "narrac/querysites"
+import {
+  Location,
+  quoteJson,
+  writeStringList,
+  writeLocation,
+  writeLocationText,
+  writeDiagnostic,
+} from "narrac/queryjson"
+import * as Signature from "narrac/querysignature"
+import { findCycles, sortStrings } from "narrac/querygraph"
+
+const USAGE = "usage: narrac query [--package DIR] [--json] type-of FILE:LINE:COL | def NAME | refs NAME | callers FUNCTION | interface MODULE | recursion MODULE"
+
+const COMMANDS = ["type-of", "def", "refs", "callers", "interface", "recursion"]
+
+// One module of the package with its position index and the open bodies
+// checked in it.
+struct ModuleView {
+  path: string
+  file: string
+  module: SourceModule
+  sites: Array<Site>
+  bodies: Array<int> // Checker.bodies without type arguments, in checking order
+}
+
+struct Query {
+  json: bool
+  views: Array<ModuleView> // sorted by file
+}
+
+// A top-level declaration (or enum variant) that def and refs can name.
+struct Declared {
+  qualified: string // "app/text.helper", "app/shape.Shape.Circle"
+  kind: string
+  names: Array<string> // the spellings that find it
+  location: Location
+  view: int
+  declaration: int // File.declarations
+  member: int // the variant index, or -1
+}
+
+// What refs looks for in the refs of the bodies.
+enum Target {
+  FunctionTarget(index: int) // Checker.functions
+  ConstTarget(index: int) // Checker.consts
+  VariantTarget(module: string, enumName: string, variant: int)
+}
+
+// A reported place: a use for refs, a call for callers.
+struct Use {
+  view: int
+  location: Location
+  name: string // the function or other body the place is in
+}
+
+// runQuery runs `narrac query`; arguments are the whole command line.
+export function runQuery(arguments: Array<string>): int uses io, alloc {
+  // Options, then the command and its operand.
+  let directory = "."
+  let json = false
+  let index = 2
+  while (index < Arrays.length(arguments)) {
+    if (arguments[index] == "--package" && index + 1 < Arrays.length(arguments)) {
+      directory = arguments[index + 1]
+      index = index + 2
+    } else if (arguments[index] == "--json") {
+      json = true
+      index = index + 1
+    } else {
+      break
+    }
+  }
+  if (Arrays.length(arguments) - index != 2 || !isCommand(arguments[index])) {
+    printError(USAGE)
+    return 2
+  }
+  const command = arguments[index]
+  const operand = arguments[index + 1]
+
+  // Load and check the package as `narrac types` does.
+  const loaded = Modules.load(directory)
+  if (loaded is Err(loadErrors)) {
+    return reportLoadErrors(json, loadErrors)
+  }
+  const package = loaded.value
+  let checker = Body.checkPackage(package)
+  if (Arrays.length(checker.errors) > 0) {
+    return reportCheckErrors(json, checker.errors)
+  }
+  let effects = Effects.checkEffects(mutable checker)
+  if (Arrays.length(checker.errors) > 0) {
+    return reportCheckErrors(json, checker.errors)
+  }
+  const views = buildViews(checker, package)
+  if (views is Err(message)) {
+    return reportAnswer(json, Err(message))
+  }
+  const query = Query { json: json, views: views.value }
+
+  // Answer.
+  let answer: Result<string, string> = Err("")
+  if (command == "type-of") {
+    answer = queryTypeOf(mutable checker, mutable effects, query, operand)
+  } else if (command == "def") {
+    answer = queryDef(query, operand)
+  } else if (command == "refs") {
+    answer = queryRefs(checker, query, operand)
+  } else if (command == "callers") {
+    answer = queryCallers(checker, effects, query, operand)
+  } else if (command == "interface") {
+    answer = queryInterface(checker, query, operand)
+  } else {
+    answer = queryRecursion(checker, effects, query, operand)
+  }
+  return reportAnswer(json, answer)
+}
+
+function isCommand(name: string): bool {
+  for (const command of Arrays.values(COMMANDS)) {
+    if (command == name) {
+      return true
+    }
+  }
+  return false
+}
+
+// printError writes a line to stderr.
+function printError(text: string) uses io, alloc {
+  const _ = Fs.writeText("/dev/stderr", `${text}\n`)
+}
+
+function writeStdout(text: string): int uses io, alloc {
+  const written = Fs.writeText("/dev/stdout", text)
+  if (written is Err(message)) {
+    printError(message)
+    return 1
+  }
+  return 0
+}
+
+// reportAnswer prints an answer, or its error, and returns the exit code.
+function reportAnswer(json: bool, answer: Result<string, string>): int uses io, alloc {
+  if (answer is Err(message)) {
+    if (json) {
+      const _ = writeStdout(`{"error": ${quoteJson(message)}}\n`)
+    } else {
+      printError(`error ${message}`)
+    }
+    return 1
+  }
+  return writeStdout(answer.value)
+}
+
+function reportLoadErrors(json: bool, errors: Array<LoadError>): int uses io, alloc {
+  if (!json) {
+    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errors))
+    return 1
+  }
+  let parts: Array<string> = []
+  for (const error of Arrays.values(errors)) {
+    const pos = Pos { line: error.line, column: error.column }
+    Arrays.push(mutable parts, writeDiagnostic(error.file, pos, error.message))
+  }
+  const _ = writeStdout(`{"errors": [${Str.join(parts, ", ")}]}\n`)
+  return 1
+}
+
+function reportCheckErrors(json: bool, errors: Array<CheckError>): int uses io, alloc {
+  if (!json) {
+    const _ = Fs.writeText("/dev/stderr", errorText(errors))
+    return 1
+  }
+  let parts: Array<string> = []
+  for (const error of Arrays.values(errors)) {
+    Arrays.push(mutable parts, writeDiagnostic(error.file, error.pos, error.message))
+  }
+  const _ = writeStdout(`{"errors": [${Str.join(parts, ", ")}]}\n`)
+  return 1
+}
+
+// buildViews indexes the package's own modules, sorted by file, so that
+// no output depends on the order of the files on disk.
+function buildViews(
+  checker: Checker,
+  package: Package,
+): Result<Array<ModuleView>, string> uses io, alloc {
+  let views: Array<ModuleView> = []
+  for (const module of Arrays.values(package.modules)) {
+    if (Str.startsWith(module.path, "std/")) {
+      continue
+    }
+    const read = Fs.readText(`${package.directory}/${module.file}`)
+    if (read is Err(message)) {
+      return Err(message)
+    }
+    const tokens = lex(read.value)
+    if (tokens is Err(message)) {
+      return Err(`${module.file}:${message}`)
+    }
+    let bodies: Array<int> = []
+    for (const bodyIndex of Ranges.between(0, Arrays.length(checker.bodies))) {
+      const body = checker.bodies[bodyIndex]
+      if (body.module == module.path && Arrays.length(body.typeArguments) == 0) {
+        Arrays.push(mutable bodies, bodyIndex)
+      }
+    }
+    const view = ModuleView {
+      path: module.path,
+      file: module.file,
+      module: module,
+      sites: collectSites(module.ast, tokens.value),
+      bodies: bodies,
+    }
+    // Insert in file order.
+    Arrays.push(mutable views, view)
+    let index = Arrays.length(views) - 1
+    while (index > 0 && views[index].file < views[index - 1].file) {
+      const swap = views[index]
+      views[index] = views[index - 1]
+      views[index - 1] = swap
+      index = index - 1
+    }
+  }
+  return Ok(views)
+}
+
+function findView(query: Query, path: string): int {
+  let index = 0
+  for (const view of Arrays.values(query.views)) {
+    if (view.path == path) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+// findNodeBody is the open body of a module whose tables cover a node id, or -1.
+function findNodeBody(checker: Checker, view: ModuleView, nodeId: int): int {
+  for (const bodyIndex of Arrays.values(view.bodies)) {
+    if (findBodySlot(checker.bodies[bodyIndex], nodeId) >= 0) {
+      return bodyIndex
+    }
+  }
+  return -1
+}
+
+// findSiteRef is the ref an open body recorded for a site's node.
+function findSiteRef(checker: Checker, view: ModuleView, site: Site): Ref {
+  const bodyIndex = findNodeBody(checker, view, site.nodeId)
+  if (bodyIndex < 0) {
+    return Ref.Unresolved
+  }
+  const body = checker.bodies[bodyIndex]
+  return body.refs[findBodySlot(body, site.nodeId)]
+}
+
+function siteLocation(view: ModuleView, site: Site): Location {
+  return Location { file: view.file, start: site.start, end: site.end }
+}
+
+function findFunctionIndex(checker: Checker, module: string, pos: Pos): int {
+  let index = 0
+  for (const info of Arrays.values(checker.functions)) {
+    if (info.module == module && info.declaration.pos == pos) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+function findConstIndex(checker: Checker, module: string, pos: Pos): int {
+  let index = 0
+  for (const info of Arrays.values(checker.consts)) {
+    if (info.module == module && info.declaration.pos == pos) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+// findConstType is the type text of a top-level constant: the checked
+// value's type, else the declared one.
+function findConstType(checker: Checker, index: int): string uses alloc {
+  if (checker.consts[index].valueType is Some(valueType)) {
+    return typeString(checker, valueType)
+  }
+  if (checker.consts[index].declaredType is Some(declaredType)) {
+    return typeString(checker, declaredType)
+  }
+  return "void"
+}
+
+// writeFunctionType prints a function's type, `(A, B) => R`.
+function writeFunctionType(
+  checker: Checker,
+  declaration: FuncDecl,
+  result: Type,
+): string uses alloc {
+  let parameters: Array<Type> = []
+  for (const parameter of Arrays.values(declaration.parameters)) {
+    Arrays.push(mutable parameters, checker.paramTypes[parameter.id])
+  }
+  return typeString(checker, Type.TFunc(parameters, result))
+}
+
+// describeCallable is the type and effects of the function a ref names, or
+// None for any other ref.
+function describeCallable(checker: Checker, effects: EffectState, ref: Ref): Option<#[
+  string,
+  Array<string>,
+]> uses alloc {
+  let names: Array<string> = []
+  if (Effects.findRefEffects(checker, effects, ref) is Some(found)) {
+    names = found
+  }
+  return match (ref) {
+    Ref.Function(index) => Some(#[
+      writeFunctionType(
+        checker,
+        checker.functions[index].declaration,
+        checker.functions[index].result,
+      ),
+      names,
+    ])
+    Ref.Implementation(block, index) => Some(#[
+      writeFunctionType(
+        checker,
+        checker.implementations[block].functions[index].declaration,
+        checker.implementations[block].functions[index].result,
+      ),
+      names,
+    ])
+    _ => None
+  }
+}
+
+// describeSite is the type text and effects at a site, or None when the
+// checker recorded nothing there.
+function describeSite(
+  mutable checker: Checker,
+  mutable effects: EffectState,
+  view: ModuleView,
+  site: Site,
+): Option<#[string, Array<string>]> uses alloc {
+  if (site.kind == SiteKind.DeclarationSite) {
+    return describeDeclaration(checker, effects, view, site)
+  }
+  const bodyIndex = findNodeBody(checker, view, site.nodeId)
+  if (bodyIndex < 0) {
+    return None
+  }
+  const body = checker.bodies[bodyIndex]
+  const slot = findBodySlot(body, site.nodeId)
+  const ref = body.refs[slot]
+  const nodeType = body.types[slot]
+  match (site.kind) {
+    SiteKind.ExpressionSite => {
+      if (nodeType is Some(found)) {
+        // A function used as a value has the effects of a call of it.
+        if (Effects.findRefEffects(checker, effects, ref) is Some(callEffects)) {
+          return Some(#[typeString(checker, found), callEffects])
+        }
+        let names: Array<string> = []
+        if (site.expression is Some(expression)) {
+          names = Effects.findExpressionEffects(
+            mutable checker,
+            mutable effects,
+            bodyIndex,
+            expression,
+          )
+        }
+        return Some(#[typeString(checker, found), names])
+      }
+    }
+    SiteKind.CalleeSite => {
+      if (describeCallable(checker, effects, ref) is Some(callable)) {
+        return Some(callable)
+      }
+      // A builtin or a constructor: the call's own type and effects.
+      if (nodeType is Some(found)) {
+        let names: Array<string> = []
+        if (site.expression is Some(expression)) {
+          names = Effects.findExpressionEffects(
+            mutable checker,
+            mutable effects,
+            bodyIndex,
+            expression,
+          )
+        }
+        return Some(#[typeString(checker, found), names])
+      }
+    }
+    SiteKind.LocalSite => {
+      const local = body.declared[slot]
+      if (local >= 0) {
+        return Some(#[typeString(checker, body.locals[local].localType), []])
+      }
+    }
+    SiteKind.VariantPatternSite => {
+      if (ref is Ref.Constructor(_, _)) {
+        if (nodeType is Some(found)) {
+          return Some(#[typeString(checker, found), []])
+        }
+      }
+    }
+    SiteKind.DeclarationSite => {}
+  }
+  return None
+}
+
+// describeDeclaration is the type of a function or constant at its name.
+function describeDeclaration(
+  checker: Checker,
+  effects: EffectState,
+  view: ModuleView,
+  site: Site,
+): Option<#[string, Array<string>]> uses alloc {
+  const declaration = view.module.ast.declarations[site.declaration]
+  if (declaration is Decl.Func(funcDecl)) {
+    const index = findFunctionIndex(checker, view.path, funcDecl.pos)
+    if (index >= 0) {
+      return describeCallable(checker, effects, Ref.Function(index))
+    }
+  }
+  if (declaration is Decl.Const(constDecl)) {
+    const index = findConstIndex(checker, view.path, constDecl.pos)
+    if (index >= 0) {
+      return Some(#[findConstType(checker, index), []])
+    }
+  }
+  return None
+}
+
+// queryTypeOf answers `type-of FILE:LINE:COL`: the innermost site that
+// covers the position and has a recorded type.
+function queryTypeOf(
+  mutable checker: Checker,
+  mutable effects: EffectState,
+  query: Query,
+  operand: string,
+): Result<string, string> uses alloc {
+  // FILE:LINE:COL, the file possibly holding colons.
+  const parts = Str.split(operand, ":")
+  const count = Arrays.length(parts)
+  if (count < 3) {
+    return Err(`expected FILE:LINE:COL, found "${operand}"`)
+  }
+  const line = Int.parse(parts[count - 2], 10)
+  const column = Int.parse(parts[count - 1], 10)
+  let lineNumber = 0
+  let columnNumber = 0
+  if (line is Ok(parsedLine)) {
+    lineNumber = parsedLine
+  } else {
+    return Err(`expected FILE:LINE:COL, found "${operand}"`)
+  }
+  if (column is Ok(parsedColumn)) {
+    columnNumber = parsedColumn
+  } else {
+    return Err(`expected FILE:LINE:COL, found "${operand}"`)
+  }
+  let fileParts: Array<string> = []
+  for (const index of Ranges.between(0, count - 2)) {
+    Arrays.push(mutable fileParts, parts[index])
+  }
+  const file = Str.join(fileParts, ":")
+  let viewIndex = -1
+  for (const index of Ranges.between(0, Arrays.length(query.views))) {
+    if (query.views[index].file == file) {
+      viewIndex = index
+    }
+  }
+  if (viewIndex < 0) {
+    return Err(`no module has the file "${file}"`)
+  }
+  const view = query.views[viewIndex]
+  const cursor = Pos { line: lineNumber, column: columnNumber }
+
+  // Sites are listed outer first: try the last one that covers the cursor.
+  let index = Arrays.length(view.sites) - 1
+  while (index >= 0) {
+    const site = view.sites[index]
+    if (!isBefore(cursor, site.start) && isBefore(cursor, site.end)) {
+      if (describeSite(mutable checker, mutable effects, view, site) is Some(found)) {
+        const #[typeText, names] = found
+        const location = siteLocation(view, site)
+        if (query.json) {
+          return Ok(
+            `{"query": "type-of", "location": ${writeLocation(location)}, "type": ${quoteJson(typeText)}, "effects": ${writeStringList(names)}}\n`,
+          )
+        }
+        if (Arrays.length(names) == 0) {
+          return Ok(`${typeText}\n`)
+        }
+        return Ok(`${typeText} uses ${Str.join(names, ", ")}\n`)
+      }
+    }
+    index = index - 1
+  }
+  return Err(`no expression at ${operand}`)
+}
+
+// listDeclarations lists every top-level declaration and enum variant of
+// the package, in file and position order.
+function listDeclarations(query: Query): Array<Declared> uses alloc {
+  let declared: Array<Declared> = []
+  for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
+    const view = query.views[viewIndex]
+    for (const site of Arrays.values(view.sites)) {
+      if (site.kind != SiteKind.DeclarationSite) {
+        continue
+      }
+      let kind = ""
+      let names = [site.name]
+      match (view.module.ast.declarations[site.declaration]) {
+        Decl.Func(_) => {
+          kind = "function"
+        }
+        Decl.Const(_) => {
+          kind = "const"
+        }
+        Decl.Struct(_) => {
+          kind = "struct"
+        }
+        Decl.Enum(enumDecl) => {
+          kind = "enum"
+          if (site.member >= 0) {
+            kind = "variant"
+            names = [`${enumDecl.name}.${site.name}`, site.name]
+          }
+        }
+        Decl.Distinct(_) => {
+          kind = "distinct"
+        }
+        Decl.Trait(_) => {
+          kind = "trait"
+        }
+        _ => {}
+      }
+      const qualified = `${view.path}.${names[0]}`
+      Arrays.push(mutable names, qualified)
+      Arrays.push(mutable declared, Declared {
+        qualified: qualified,
+        kind: kind,
+        names: names,
+        location: siteLocation(view, site),
+        view: viewIndex,
+        declaration: site.declaration,
+        member: site.member,
+      })
+    }
+  }
+  return declared
+}
+
+// findDeclared lists the declarations a name finds: a qualified name
+// (`app/text.helper`, `app/shape.Shape.Circle`) or a bare one (`helper`,
+// `Shape.Circle`, `Circle`).
+function findDeclared(query: Query, name: string): Array<Declared> uses alloc {
+  let matches: Array<Declared> = []
+  for (const candidate of Arrays.values(listDeclarations(query))) {
+    for (const spelling of Arrays.values(candidate.names)) {
+      if (spelling == name) {
+        Arrays.push(mutable matches, candidate)
+        break
+      }
+    }
+  }
+  return matches
+}
+
+// findOneDeclared is the one declaration a name finds, for refs and callers.
+function findOneDeclared(query: Query, name: string): Result<Declared, string> uses alloc {
+  const matches = findDeclared(query, name)
+  if (Arrays.length(matches) == 0) {
+    return Err(`unknown name "${name}"`)
+  }
+  if (Arrays.length(matches) > 1) {
+    let names: Array<string> = []
+    for (const candidate of Arrays.values(matches)) {
+      Arrays.push(mutable names, candidate.qualified)
+    }
+    return Err(`"${name}" names ${Str.join(names, ", ")}; write a qualified name`)
+  }
+  return Ok(matches[0])
+}
+
+// queryDef answers `def NAME`: where each declaration it finds is.
+function queryDef(query: Query, name: string): Result<string, string> uses alloc {
+  const matches = findDeclared(query, name)
+  if (Arrays.length(matches) == 0) {
+    return Err(`unknown name "${name}"`)
+  }
+  let lines: Array<string> = []
+  for (const found of Arrays.values(matches)) {
+    if (query.json) {
+      Arrays.push(
+        mutable lines,
+        `{"name": ${quoteJson(found.qualified)}, "kind": ${quoteJson(found.kind)}, "location": ${writeLocation(found.location)}}`,
+      )
+    } else {
+      Arrays.push(
+        mutable lines,
+        `${found.qualified} ${found.kind} ${writeLocationText(found.location)}\n`,
+      )
+    }
+  }
+  if (query.json) {
+    return Ok(`{"query": "def", "matches": [${Str.join(lines, ", ")}]}\n`)
+  }
+  return Ok(Str.join(lines, ""))
+}
+
+// describeImplementation names an implement block function
+// `<Type>.<Trait>.<function>`, or "" when declaration is in no checked block.
+function describeImplementation(
+  checker: Checker,
+  module: string,
+  declaration: FuncDecl,
+): string uses alloc {
+  for (const impl of Arrays.values(checker.implementations)) {
+    if (checker.scopes[impl.scope].path != module) {
+      continue
+    }
+    for (const implFunc of Arrays.values(impl.functions)) {
+      if (implFunc.declaration.pos == declaration.pos) {
+        return `${typeString(checker, impl.forType)}.${checker.traits[impl.traitIndex].name}.${implFunc.name}`
+      }
+    }
+  }
+  return declaration.name
+}
+
+// describeBody names a checked body: `app/text.helper` for a function,
+// `app/text.Point.Show.show` for an implement block function,
+// `app/text.test "name"` for a test, the qualified name for a constant
+// or field default.
+function describeBody(checker: Checker, bodyIndex: int): string uses alloc {
+  const body = checker.bodies[bodyIndex]
+  if (body.kind == "impl") {
+    if (body.root is BodyRoot.RootFunc(declaration)) {
+      return `${body.module}.${describeImplementation(checker, body.module, declaration)}`
+    }
+  }
+  if (body.kind == "test") {
+    return `${body.module}.test ${body.name}`
+  }
+  if (body.kind == "default") {
+    return body.name
+  }
+  return `${body.module}.${body.name}`
+}
+
+function findTarget(
+  checker: Checker,
+  query: Query,
+  declared: Declared,
+): Result<Target, string> uses alloc {
+  const view = query.views[declared.view]
+  match (view.module.ast.declarations[declared.declaration]) {
+    Decl.Func(funcDecl) => {
+      const index = findFunctionIndex(checker, view.path, funcDecl.pos)
+      if (index >= 0) {
+        return Ok(Target.FunctionTarget(index))
+      }
+    }
+    Decl.Const(constDecl) => {
+      const index = findConstIndex(checker, view.path, constDecl.pos)
+      if (index >= 0) {
+        return Ok(Target.ConstTarget(index))
+      }
+    }
+    Decl.Enum(enumDecl) => {
+      if (declared.member >= 0) {
+        return Ok(Target.VariantTarget(view.path, enumDecl.name, declared.member))
+      }
+    }
+    _ => {}
+  }
+  return Err(
+    `refs finds uses of functions, constants and enum variants; ${declared.qualified} is a ${declared.kind}`,
+  )
+}
+
+function isFunctionRef(ref: Ref, wanted: int): bool {
+  if (ref is Ref.Function(index)) {
+    return index == wanted
+  }
+  return false
+}
+
+function isTargetRef(checker: Checker, ref: Ref, target: Target): bool {
+  return match (target) {
+    Target.FunctionTarget(wanted) => isFunctionRef(ref, wanted)
+    Target.ConstTarget(wanted) => {
+      if (ref is Ref.Const(index)) {
+        return index == wanted
+      }
+      return false
+    }
+    Target.VariantTarget(module, enumName, variant) => {
+      if (ref is Ref.Constructor(enumIndex, found)) {
+        const info = checker.enums[enumIndex]
+        return info.module == module && info.name == enumName && found == variant
+      }
+      return false
+    }
+  }
+}
+
+// insertUse adds a use in file, then position order, dropping a second use
+// at the same place (a call's callee and its name).
+function insertUse(mutable places: Array<Use>, use: Use) uses alloc {
+  for (const other of Arrays.values(places)) {
+    if (other.view == use.view && other.location.start == use.location.start) {
+      return
+    }
+  }
+  Arrays.push(mutable places, use)
+  let index = Arrays.length(places) - 1
+  while (index > 0 && isUseBefore(places[index], places[index - 1])) {
+    const swap = places[index]
+    places[index] = places[index - 1]
+    places[index - 1] = swap
+    index = index - 1
+  }
+}
+
+function isUseBefore(left: Use, right: Use): bool {
+  return left.view < right.view ||
+    (left.view == right.view && isBefore(left.location.start, right.location.start))
+}
+
+// writeUses prints refs and callers: `<location> <name>` lines, or a JSON
+// list of `{"location", "in"}` objects (refs) or `{"name", "location"}`
+// objects (callers, nameFirst).
+function writeUses(query: Query, places: Array<Use>, nameFirst: bool): string uses alloc {
+  let parts: Array<string> = []
+  for (const use of Arrays.values(places)) {
+    if (query.json && nameFirst) {
+      Arrays.push(
+        mutable parts,
+        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}}`,
+      )
+    } else if (query.json) {
+      Arrays.push(
+        mutable parts,
+        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}}`,
+      )
+    } else {
+      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}\n`)
+    }
+  }
+  if (query.json) {
+    return `[${Str.join(parts, ", ")}]`
+  }
+  if (Arrays.length(parts) == 0) {
+    return "(none)\n"
+  }
+  return Str.join(parts, "")
+}
+
+// queryRefs answers `refs NAME`: every place a body of the package names the
+// declaration, as a call, a value or a pattern.
+function queryRefs(
+  checker: Checker,
+  query: Query,
+  name: string,
+): Result<string, string> uses alloc {
+  const declared = findOneDeclared(query, name)
+  if (declared is Err(message)) {
+    return Err(message)
+  }
+  const target = findTarget(checker, query, declared.value)
+  if (target is Err(message)) {
+    return Err(message)
+  }
+  let places: Array<Use> = []
+  for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
+    const view = query.views[viewIndex]
+    for (const site of Arrays.values(view.sites)) {
+      const isName = site.kind == SiteKind.ExpressionSite && site.name != ""
+      if (!isName && site.kind != SiteKind.CalleeSite && site.kind != SiteKind.VariantPatternSite) {
+        continue
+      }
+      if (!isTargetRef(checker, findSiteRef(checker, view, site), target.value)) {
+        continue
+      }
+      const bodyIndex = findNodeBody(checker, view, site.nodeId)
+      insertUse(mutable places, Use {
+        view: viewIndex,
+        location: siteLocation(view, site),
+        name: describeBody(checker, bodyIndex),
+      })
+    }
+  }
+  if (query.json) {
+    return Ok(
+      `{"query": "refs", "name": ${quoteJson(declared.value.qualified)}, "uses": ${writeUses(query, places, false)}}\n`,
+    )
+  }
+  return Ok(writeUses(query, places, false))
+}
+
+// queryCallers answers `callers FUNCTION` from the effect pass's call graph.
+function queryCallers(
+  checker: Checker,
+  effects: EffectState,
+  query: Query,
+  name: string,
+): Result<string, string> uses alloc {
+  const declared = findOneDeclared(query, name)
+  if (declared is Err(message)) {
+    return Err(message)
+  }
+  const target = findTarget(checker, query, declared.value)
+  let wanted = -1
+  if (target is Ok(found)) {
+    if (found is Target.FunctionTarget(index)) {
+      wanted = index
+    }
+  }
+  if (wanted < 0) {
+    return Err(`${declared.value.qualified} is a ${declared.value.kind}, not a function`)
+  }
+  const functionName = checker.functions[wanted].declaration.name
+  let places: Array<Use> = []
+  for (const call of Arrays.values(effects.calls)) {
+    if (!isFunctionRef(call.callee, wanted)) {
+      continue
+    }
+    const viewIndex = findView(query, checker.bodies[call.body].module)
+    if (viewIndex < 0) {
+      continue
+    }
+    const location = Location {
+      file: query.views[viewIndex].file,
+      start: call.pos,
+      end: Pos { line: call.pos.line, column: call.pos.column + Str.charCount(functionName) },
+    }
+    insertUse(mutable places, Use {
+      view: viewIndex,
+      location: location,
+      name: describeBody(checker, call.body),
+    })
+  }
+  if (query.json) {
+    return Ok(
+      `{"query": "callers", "name": ${quoteJson(declared.value.qualified)}, "callers": ${writeUses(query, places, true)}}\n`,
+    )
+  }
+  return Ok(
+    `${writeUses(query, places, true)}note: calls through function values are not counted\n`,
+  )
+}
+
+// findSignature is the `export ...` line of an exported declaration, or "".
+function findSignature(checker: Checker, view: ModuleView, declaration: Decl): string uses alloc {
+  return match (declaration) {
+    Decl.Func(funcDecl) => funcDecl.exported ? `export ${Signature.writeFunction(funcDecl)}` : ""
+    Decl.Const(constDecl) => {
+      if (!constDecl.exported) {
+        return ""
+      }
+      const index = findConstIndex(checker, view.path, constDecl.pos)
+      let typeText = "void"
+      if (index >= 0) {
+        typeText = findConstType(checker, index)
+      } else if (constDecl.type is Some(type)) {
+        typeText = Signature.writeType(type)
+      }
+      return `export const ${constDecl.name}: ${typeText}`
+    }
+    Decl.Struct(structDecl) => (
+      structDecl.exported
+        ? `export ${Signature.writeStruct(structDecl)}`
+        : ""
+    )
+    Decl.Enum(enumDecl) => enumDecl.exported ? `export ${Signature.writeEnum(enumDecl)}` : ""
+    Decl.Trait(traitDecl) => traitDecl.exported ? `export ${Signature.writeTrait(traitDecl)}` : ""
+    Decl.Distinct(distinctDecl) => (
+      distinctDecl.exported
+        ? `export ${Signature.writeDistinct(distinctDecl)}`
+        : ""
+    )
+    _ => ""
+  }
+}
+
+// queryInterface answers `interface MODULE`: the exported declarations of a
+// module in source order.
+function queryInterface(
+  checker: Checker,
+  query: Query,
+  path: string,
+): Result<string, string> uses alloc {
+  const viewIndex = findView(query, path)
+  if (viewIndex < 0) {
+    return Err(`unknown module "${path}"`)
+  }
+  const view = query.views[viewIndex]
+  const declared = listDeclarations(query)
+  let parts: Array<string> = []
+  for (const entry of Arrays.values(declared)) {
+    if (entry.view != viewIndex || entry.member >= 0) {
+      continue
+    }
+    const signature = findSignature(checker, view, view.module.ast.declarations[entry.declaration])
+    if (signature == "") {
+      continue
+    }
+    if (query.json) {
+      Arrays.push(
+        mutable parts,
+        `{"name": ${quoteJson(entry.names[0])}, "kind": ${quoteJson(entry.kind)}, "signature": ${quoteJson(signature)}, "location": ${writeLocation(entry.location)}}`,
+      )
+    } else {
+      Arrays.push(mutable parts, `${signature}\n`)
+    }
+  }
+  if (query.json) {
+    return Ok(
+      `{"query": "interface", "module": ${quoteJson(path)}, "declarations": [${Str.join(parts, ", ")}]}\n`,
+    )
+  }
+  if (Arrays.length(parts) == 0) {
+    return Ok("(none)\n")
+  }
+  return Ok(Str.join(parts, ""))
+}
+
+function writePosKey(pos: Pos): string uses alloc {
+  return `${Int.toString(pos.line)}:${Int.toString(pos.column)}`
+}
+
+// findCalleeDeclaration is the module and declaration position of the
+// function a call edge names.
+function findCalleeDeclaration(checker: Checker, ref: Ref): #[string, Pos] {
+  return match (ref) {
+    Ref.Function(index) => #[
+      checker.functions[index].module,
+      checker.functions[index].declaration.pos,
+    ]
+    Ref.Implementation(block, index) => #[
+      checker.scopes[checker.implementations[block].scope].path,
+      checker.implementations[block].functions[index].declaration.pos,
+    ]
+    _ => #["", Pos { line: 0, column: 0 }]
+  }
+}
+
+// queryRecursion answers `recursion MODULE`: the groups of the module's
+// functions that call each other in a cycle, and the functions that call
+// themselves, through direct calls inside the module.
+function queryRecursion(
+  checker: Checker,
+  effects: EffectState,
+  query: Query,
+  path: string,
+): Result<string, string> uses alloc {
+  const viewIndex = findView(query, path)
+  if (viewIndex < 0) {
+    return Err(`unknown module "${path}"`)
+  }
+
+  // One node per function and implement block function of the module.
+  let nodeNames: Array<string> = []
+  let nodeIndex: Map<string, int> = Map {}
+  let bodyNodes: Map<int, int> = Map {}
+  for (const bodyIndex of Arrays.values(query.views[viewIndex].bodies)) {
+    const body = checker.bodies[bodyIndex]
+    if (body.kind != "func" && body.kind != "impl") {
+      continue
+    }
+    if (body.root is BodyRoot.RootFunc(declaration)) {
+      bodyNodes[bodyIndex] = Arrays.length(nodeNames)
+      nodeIndex[writePosKey(declaration.pos)] = Arrays.length(nodeNames)
+      Arrays.push(mutable nodeNames, describeBody(checker, bodyIndex))
+    }
+  }
+  let edges: Array<Array<int>> = Arrays.filled([], Arrays.length(nodeNames))
+  for (const call of Arrays.values(effects.calls)) {
+    if (bodyNodes[call.body] is Some(caller)) {
+      const #[module, pos] = findCalleeDeclaration(checker, call.callee)
+      if (module == path) {
+        if (nodeIndex[writePosKey(pos)] is Some(to)) {
+          Arrays.push(mutable edges[caller], to)
+        }
+      }
+    }
+  }
+
+  // Name each cycle, sorted inside and by first name.
+  let groups: Array<Array<string>> = []
+  for (const cycle of Arrays.values(findCycles(edges))) {
+    let names: Array<string> = []
+    for (const node of Arrays.values(cycle)) {
+      Arrays.push(mutable names, nodeNames[node])
+    }
+    sortStrings(mutable names)
+    Arrays.push(mutable groups, names)
+    let index = Arrays.length(groups) - 1
+    while (index > 0 && groups[index][0] < groups[index - 1][0]) {
+      const swap = groups[index]
+      groups[index] = groups[index - 1]
+      groups[index - 1] = swap
+      index = index - 1
+    }
+  }
+  let parts: Array<string> = []
+  for (const group of Arrays.values(groups)) {
+    if (query.json) {
+      Arrays.push(mutable parts, writeStringList(group))
+    } else {
+      Arrays.push(mutable parts, `${Str.join(group, ", ")}\n`)
+    }
+  }
+  if (query.json) {
+    return Ok(
+      `{"query": "recursion", "module": ${quoteJson(path)}, "groups": [${Str.join(parts, ", ")}]}\n`,
+    )
+  }
+  if (Arrays.length(parts) == 0) {
+    return Ok("(none)\n")
+  }
+  return Ok(Str.join(parts, ""))
+}

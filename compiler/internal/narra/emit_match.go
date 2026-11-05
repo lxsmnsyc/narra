@@ -192,8 +192,7 @@ func (e *Emitter) matchStmt(m *MatchExpr) {
 func (e *Emitter) matchValue(m *MatchExpr) (string, bool) {
 	t := m.Type()
 	e.tempN++
-	result := fmt.Sprintf("r%d", e.tempN)
-	e.line("%s %s;", t.CName(), result)
+	result := e.declareUnset(t.CName(), fmt.Sprintf("r%d", e.tempN))
 	e.matchArms(m, func(arm *MatchArm) {
 		e.beginStmt()
 		var code string

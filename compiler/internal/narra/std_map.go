@@ -320,8 +320,7 @@ func (e *Emitter) mapGet(x *IndexExpr) (string, bool) {
 	kc, _ := e.expr(x.Index)
 	i := e.temp(TInt, fmt.Sprintf("%s_lookup(%s, %s)", mapName(mt), m, kc))
 	e.tempN++
-	out := fmt.Sprintf("t%d", e.tempN)
-	e.line("%s %s;", opt.CName(), out)
+	out := e.declareUnset(opt.CName(), fmt.Sprintf("t%d", e.tempN))
 	e.line("if (%s >= 0) {", i)
 	e.indent++
 	v := e.temp(mt.Val, fmt.Sprintf("%s->vals[%s]", m, i))

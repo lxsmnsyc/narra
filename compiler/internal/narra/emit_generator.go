@@ -57,6 +57,16 @@ func (e *Emitter) cVar(ctype, name string) (string, string) {
 	return "f->" + name, "f->" + name
 }
 
+// declareUnset declares a C variable without a value and returns its name.
+// A frame field needs no line.
+func (e *Emitter) declareUnset(ctype, name string) string {
+	decl, ref := e.cVar(ctype, name)
+	if e.gen == nil {
+		e.line("%s;", decl)
+	}
+	return ref
+}
+
 // declareLocal writes the C declaration of a local holding value.
 func (e *Emitter) declareLocal(l *Local, value string) {
 	decl := e.declareCounter(l)
@@ -85,6 +95,13 @@ func (e *Emitter) liveValues() []tempVar {
 		locals := e.scopes[i].locals
 		for j := len(locals) - 1; j >= 0; j-- {
 			live = append(live, tempVar{e.localRef(locals[j]), locals[j].T})
+		}
+	}
+	// A value held at a yield must be a frame field: a C local does not
+	// survive the return, and clone and drop cannot name it.
+	for _, v := range live {
+		if !strings.HasPrefix(v.name, "f->") {
+			panic("internal error: " + v.name + " is held at a yield but is not a frame field")
 		}
 	}
 	return live

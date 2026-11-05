@@ -44,14 +44,14 @@ Write chapters 6 to 10 of `docs/guide/`: Option and Result, traits, modules and 
 
 ## Context
 
-- `SPEC.md` sections 3 (modules), 5 (traits), 6 (memory and `mutable`), 7 (effects) and the `std/test` part of `compiler/README.md`; `DECISIONS.md` for the reasons. `compiler/testdata/` has working programs for each feature (`std_test*.nra` and `tests.nra` for testing).
+- `SPEC.md` sections 3 (modules), 5 (traits), 6 (memory and `mutable`), 7 (effects) and the `std/test` part of `compiler/README.md`; `DECISIONS.md` for the reasons (read them, do not cite them). `compiler/testdata/` has working programs for each feature (`std_test*.nra` and `tests.nra` for testing).
 - Chapter 8 needs a multi-module example. A guide sample is one file, so show the package layout as a `narra fragment` and keep the tested programs single-file, or note in `outcome.md` that the harness needs a multi-file sample form (then guide-basics or a follow-up adds it).
 - Source: GOAL.md decision 2026-11-01 (m9-adoption).
 
 ## Acceptance
 
-- [ ] Chapters `06-` to `10-`, each with several tested programs, written for a TypeScript or Rust programmer, linking to the `SPEC.md` section and D-number for each rule.
-- [ ] Chapter 9 explains why `let` cannot be captured by a closure and how `mutable` differs from a TypeScript reference, with error samples for both.
+- [ ] Chapters `06-` to `10-`, each with several tested programs. Write for a reader who is new to Narra and may not know TypeScript or Rust: every chapter must make sense on its own. Do not cite `SPEC.md` sections, D-numbers or `DECISIONS.md`, and do not frame rules as the author's decisions; state the rule and, where it helps, the practical reason. Comparisons with TypeScript or Rust ("unlike TypeScript...") go in chapter 11, not in chapters 1 to 10. List each comparison you leave out in `outcome.md` under "For chapter 11". (Changed 2026-11-05 by the maintainer.)
+- [ ] Chapter 9 explains why `let` cannot be captured by a closure and what a `mutable` parameter allows, with error samples for both. The comparison with TypeScript references goes to chapter 11.
 - [ ] Chapter 10 shows a `std/test` test and how `narra test` runs it (as a fragment, since `TestGuide` runs `run`).
 - [ ] `TestGuide` passes on the story branch once guide-basics has landed.
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`

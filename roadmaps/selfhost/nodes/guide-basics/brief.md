@@ -44,7 +44,7 @@ Write `TestGuide`, which checks every code sample in `docs/guide/*.md` by the fo
 ## Context
 
 - `compiler/internal/narra/run_test.go`: `TestPrograms` (`runProgram`, `modes`, the `.out` comparison) and `TestCompileErrors` are the two checks the harness repeats for extracted samples. Reuse their helpers; do not copy them.
-- `SPEC.md` sections 1 to 5 and 9 are the reference for these chapters; `compiler/README.md` "Supported" and "Differences from the spec" say what the compiler implements. Programs under `compiler/testdata/` show working code for every feature.
+- `SPEC.md` sections 1 to 5 and 9 are the reference for these chapters (read them, do not cite them); `compiler/README.md` "Supported" and "Differences from the spec" say what the compiler implements. Programs under `compiler/testdata/` show working code for every feature.
 - Source: GOAL.md decision 2026-11-01 (m9-adoption).
 
 ## Acceptance
@@ -52,7 +52,7 @@ Write `TestGuide`, which checks every code sample in `docs/guide/*.md` by the fo
 - [ ] `TestGuide` reads `../../../docs/guide/*.md`, extracts samples, runs programs in every mode and compares stdout with the `text` block, checks error samples against their message, and fails on a `narra` block with no `text` block. Each sample is a subtest named `<file>:<line>`.
 - [ ] A broken sample makes `TestGuide` fail with the file and line (checked once by hand, noted in `outcome.md`).
 - [ ] `docs/guide/README.md` with the chapter list for all ten chapters (links to 6 to 10 may be dead until guide-advanced lands) and the "Planned" list of parked features.
-- [ ] Chapters `01-` to `05-`, each with several tested programs, written for a TypeScript or Rust programmer: say where Narra differs from TypeScript and why, linking to the `SPEC.md` section and the D-number in `DECISIONS.md`.
+- [ ] Chapters `01-` to `05-`, each with several tested programs. Write for a reader who is new to Narra and may not know TypeScript or Rust: every chapter must make sense on its own. Do not cite `SPEC.md` sections, D-numbers or `DECISIONS.md`, and do not frame rules as the author's decisions; state the rule and, where it helps, the practical reason. Comparisons with TypeScript or Rust ("unlike TypeScript...") go in chapter 11, not in chapters 1 to 10. List each comparison you leave out in `outcome.md` under "For chapter 11". (Changed 2026-11-05 by the maintainer.)
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing

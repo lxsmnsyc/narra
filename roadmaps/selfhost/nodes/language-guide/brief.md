@@ -34,12 +34,13 @@ depends_on:
 
 ## Goal
 
-A guide in `docs/guide/` that teaches Narra to a programmer who knows TypeScript or Rust, in chapters that build on each other. `SPEC.md` stays the reference; the guide links to it. Every code sample is a program that a test compiles and runs, so the guide cannot drift from the compiler. The maintainer reviews the guide as a whole in the story pull request.
+A guide in `docs/guide/` that teaches Narra in chapters that build on each other, to a reader who has programmed before but needs no TypeScript or Rust. `SPEC.md` stays the reference for language designers; the guide does not cite it, its sections or the decision records. A separate chapter compares Narra with TypeScript for readers who know it. (Changed 2026-11-05 by the maintainer: the first drafts leaned on SPEC and D-number references and on TypeScript knowledge, so they did not read standalone.) Every code sample is a program that a test compiles and runs, so the guide cannot drift from the compiler. The maintainer reviews the guide as a whole in the story pull request.
 
 ## Children
 
 - `guide-basics`: the sample test harness, the index, and chapters 1 to 5.
 - `guide-advanced`: chapters 6 to 10.
+- `guide-typescript`: chapter 11, Narra for TypeScript programmers, built from the comparisons chapters 1 to 10 leave out.
 
 Both follow `contracts/guide-samples.md` (draft, frozen by guide-basics) on the story branch `feat/language-guide`. guide-advanced starts when guide-basics freezes the contract.
 
@@ -55,12 +56,14 @@ Both follow `contracts/guide-samples.md` (draft, frozen by guide-basics) on the 
 8. Modules and packages: imports, aliases, exports, std imports.
 9. Memory and `mutable`: reference counting, copies, `mutable` parameters and their rules.
 10. Effects and testing: `uses`, effect checking, `std/test` and `narra test`.
+11. Narra for TypeScript programmers: what carries over, what differs and why, each habit with its Narra form and a link to the chapter that teaches it.
 
 ## Acceptance
 
 - [ ] `docs/guide/README.md` lists the chapters in order with links.
 - [ ] Every chapter is written, and every code sample in it is checked by `TestGuide`.
-- [ ] Only implemented features are taught. Parked spec features (m4 to m7: generators, async, threads, regions, C interop) appear only in a short "Planned" list in the index, linked to `SPEC.md`.
+- [ ] Chapters 1 to 10 read standalone: no `SPEC.md`, section or D-number references, no "the author decided" framing, no TypeScript or Rust knowledge assumed. TypeScript comparisons live only in chapter 11.
+- [ ] Only implemented features are taught. Parked spec features (m4 to m7: generators, async, threads, regions, C interop) appear only in a short "Planned" list in the index.
 - [ ] Fast check passes: `cd compiler && go vet ./... && go test ./...`
 
 ## Sizing

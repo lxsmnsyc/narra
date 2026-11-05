@@ -57,7 +57,7 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 - Options come from the `[fmt]` table of the nearest `narra.toml` above each file (`printWidth`, `tabWidth`, `useTabs`, `trailingComma`; see `SPEC.md` section 2). Without one the defaults apply.
 - Declarations and statements are printed by `fmt.nra`; expressions, types and patterns by `fmtexprs.nra`.
 - `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
-- `TestSourcesFormatted` runs `narrac fmt --check` over `selfhost/src` and every sample under `testdata/` except `testdata/fmt/`, whose inputs are unformatted on purpose. Samples that do not parse are skipped. After editing Narra source, run `narrac fmt` on it. A sample whose `// error:` line or dump golden holds positions must be updated after formatting.
+- `TestSourcesFormatted` runs `narrac fmt --check` over `selfhost/src` and every sample under `testdata/` except `testdata/fmt/`, whose inputs are unformatted on purpose, and the samples in `layoutSamples`, which test a layout the formatter would change. A sample that does not parse is skipped only if its path contains `error` or `/diagnostics/`. `bench/` and `std/` are not checked. After editing Narra source, run `narrac fmt` on it. A sample whose `// error:` line or dump golden holds positions must be updated after formatting.
 
 ## Tests
 

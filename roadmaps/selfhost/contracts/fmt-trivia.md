@@ -1,7 +1,7 @@
 ---
 name: fmt-trivia
-version: 1
-status: draft
+version: 2
+status: frozen
 defined_by: fmt-trivia
 ---
 
@@ -62,3 +62,17 @@ None; fmt-trivia lands before its consumers start.
 ## Changes
 
 - v1: initial draft.
+
+## Changes
+
+- v2 (2026-11-05, frozen by fmt-trivia, PR #76): the change request from fmt-trivia is accepted. Where the text above differs, these rules win. `narrac trivia [--check] <file>` prints the side tables (format in `selfhost/src/triviadump.nra`).
+
+- The types `CommentKind`, `Placement`, `Comment`, `Attached` and `Trivia` are exported from `narrac/trivia` (`selfhost/src/trivia.nra`), not from `narrac/parser`. The lexer must build `Comment`, and importing it from the parser would be an import cycle. `parseWithTrivia` stays in `parser.nra`, and `lexWithComments` is in `lexer.nra`.
+- Extra anchor key `b<line>:<col>` for a block (the `{` position). A comment in an empty block is dangling on the block.
+- Extra `blankBefore` key `c<index>`: set when a blank line comes before comment `index`.
+- `blankBefore` for a node means a blank line between the node and what comes before it: its last leading comment, else the previous sibling (with that sibling's trailing comments). So a first list item can have it, when a blank line follows its leading comment. Only statements, declarations, fields, variants, arms and imports get it, not expressions.
+- Keys use the node's `pos` field, not its first token. A declaration's key is its keyword (after `export`); a labeled loop's key is the label; `return c ? a : b` uses the position of the converted `if`.
+- `ends` and the ranges used for attachment of a parenthesized expression include its parentheses.
+- Parentheses and comments inside `${...}` of a template string are not recorded (the part is lexed and parsed on its own). Type-parameter bounds, import names and map entries have no anchors.
+- `parenthesized` holds expression ids only; Narra has no parenthesized patterns.
+- A comment in an empty call `f(/* c */)` is trailing on the callee, not dangling on the call.

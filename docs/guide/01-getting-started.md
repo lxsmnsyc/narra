@@ -136,6 +136,6 @@ From inside the `shop` folder, `narra run .` builds and runs the package and pri
 | `narra check file.nra` | report errors without building |
 | `narra test file.nra` | run the tests in the file (chapter 10) |
 
-Each command also takes a package folder in place of a file.
+For a package, run each command from inside the package folder and write `.` in place of the file: `narra run .`, `narra build -o app .`, `narra check .`, `narra test .`. Without `-o`, `narra build .` names the executable after the `[[binary]]`.
 
 Next: [2. Values and types](02-values-and-types.md).

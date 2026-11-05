@@ -1,7 +1,7 @@
 ---
 id: std-source
 title: Std modules as Narra source
-status: todo
+status: active
 priority: should
 type: spike
 story:

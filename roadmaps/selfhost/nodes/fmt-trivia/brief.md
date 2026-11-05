@@ -1,7 +1,7 @@
 ---
 id: fmt-trivia
 title: "fmt: comments, blank lines and parentheses in side tables"
-status: todo
+status: active
 priority:
 type: feature
 story: fmt

@@ -1,7 +1,7 @@
 ---
 id: fmt-doc
 title: "fmt: document IR and printer"
-status: todo
+status: active
 priority:
 type: feature
 story: fmt

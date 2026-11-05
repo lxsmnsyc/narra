@@ -1,7 +1,7 @@
 ---
 id: generators-check
 title: "Generators: syntax, types and checking"
-status: todo
+status: active
 priority: should
 type: feature
 story:

@@ -1,7 +1,7 @@
 ---
 id: fmt
 title: narra fmt
-status: active
+status: done
 priority: should
 type: story
 story:

@@ -479,3 +479,59 @@ func checkFormatted(t *testing.T, exe, path string) {
 		t.Fatalf("tree differs: %s", firstDiff(want, got))
 	}
 }
+
+var parseErrorLine = regexp.MustCompile(`^error (\S+\.nra):\d+:\d+: `)
+
+// layoutSamples keep a layout that `narrac fmt` would change, because the
+// layout is what they test.
+var layoutSamples = map[string]string{
+	"ternary_parens.nra": "multi-line parenthesized ternaries and nested parentheses",
+}
+
+// TestSourcesFormatted runs `narrac fmt --check` over selfhost/src and every
+// sample under testdata/ except testdata/fmt, whose inputs are unformatted on
+// purpose, and layoutSamples. A sample that does not parse is reported on
+// stderr and skipped, but only if its path names an error or diagnostics case;
+// any other report fails the test.
+func TestSourcesFormatted(t *testing.T) {
+	exe := buildSelfhost(t)
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{"selfhost/src"}
+	entries, err := os.ReadDir(filepath.Join(root, "compiler/testdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "fmt" || layoutSamples[name] != "" || (!entry.IsDir() && !strings.HasSuffix(name, ".nra")) {
+			continue
+		}
+		paths = append(paths, "compiler/testdata/"+name)
+	}
+	out, errText, code := runFmtCommand(t, exe, root, "", append([]string{"--check"}, paths...)...)
+	if out != "" {
+		t.Errorf("files not formatted; run `narrac fmt` on them:\n%s", out)
+	}
+	// --check exits 1 for a file to change or a file that does not parse.
+	wantCode := 0
+	if out != "" || errText != "" {
+		wantCode = 1
+	}
+	if code != wantCode {
+		t.Errorf("exit code %d, want %d; stderr:\n%s", code, wantCode, errText)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(errText, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		match := parseErrorLine.FindStringSubmatch(line)
+		if match == nil {
+			t.Errorf("unexpected fmt error: %s", line)
+		} else if !strings.Contains(match[1], "error") && !strings.Contains(match[1], "/diagnostics/") {
+			t.Errorf("a sample that is not an error case does not parse: %s", line)
+		}
+	}
+}

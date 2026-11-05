@@ -15,7 +15,33 @@ import { Expr, Stmt, Block, Arg, Pos, FieldInit } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, Ref, ProgramFunc, getExpressionId, findBody, findBodySlot } from "narrac/check"
 import { cType, functionName, constGetterName } from "narrac/cnames"
-import { Emitter, Code, EmitWalker, TempVar, BlockInfo, reportUnsupported, writeLine, literal, where, temp, ownedTemp, consume, beginStatement, endStatement, pushScope, popScope, needsRc, withoutLastBlock, typeOf, refOf, localOf, localRef, switchBody, underlyingType, localName } from "narrac/emitstate"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  TempVar,
+  BlockInfo,
+  reportUnsupported,
+  writeLine,
+  literal,
+  where,
+  temp,
+  ownedTemp,
+  consume,
+  beginStatement,
+  endStatement,
+  pushScope,
+  popScope,
+  needsRc,
+  withoutLastBlock,
+  typeOf,
+  refOf,
+  localOf,
+  localRef,
+  switchBody,
+  underlyingType,
+  localName,
+} from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
 import * as Closures from "narrac/emitclosures"
@@ -39,7 +65,11 @@ function unsupportedCode(mutable emitter: Emitter, construct: string): Code uses
 }
 
 // emitExpression emits an expression and returns its C code.
-export function emitExpression<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+export function emitExpression<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+): Code uses alloc {
   return match (expression) {
     Expr.IntLit(_, _, text) => plain(integerCode(text))
     Expr.FloatLit(_, _, text) => plain(text)
@@ -48,14 +78,64 @@ export function emitExpression<W: EmitWalker>(walker: W, mutable emitter: Emitte
     Expr.BoolLit(_, _, value) => plain(boolText(value))
     Expr.TemplateLit(_, _, parts) => emitTemplate(walker, mutable emitter, parts)
     Expr.Ident(nodeId, _, _) => emitIdent(walker, mutable emitter, expression, nodeId)
-    Expr.FieldExpr(nodeId, _, target, name) => emitFieldRead(walker, mutable emitter, expression, nodeId, target, name)
-    Expr.IndexExpr(_, pos, target, index) => emitIndexRead(walker, mutable emitter, expression, pos, target, index)
-    Expr.UnaryExpr(nodeId, pos, operator, operand) => emitUnary(walker, mutable emitter, nodeId, pos, operator, operand)
-    Expr.BinaryExpr(_, pos, operator, left, right) => emitBinary(walker, mutable emitter, expression, pos, operator, left, right)
+    Expr.FieldExpr(nodeId, _, target, name) => emitFieldRead(
+      walker,
+      mutable emitter,
+      expression,
+      nodeId,
+      target,
+      name,
+    )
+    Expr.IndexExpr(_, pos, target, index) => emitIndexRead(
+      walker,
+      mutable emitter,
+      expression,
+      pos,
+      target,
+      index,
+    )
+    Expr.UnaryExpr(nodeId, pos, operator, operand) => emitUnary(
+      walker,
+      mutable emitter,
+      nodeId,
+      pos,
+      operator,
+      operand,
+    )
+    Expr.BinaryExpr(_, pos, operator, left, right) => emitBinary(
+      walker,
+      mutable emitter,
+      expression,
+      pos,
+      operator,
+      left,
+      right,
+    )
     Expr.IsExpr(_, _, _, _) => Match.emitIsCondition(walker, mutable emitter, expression)
-    Expr.CallExpr(nodeId, pos, _, arguments) => emitCall(walker, mutable emitter, expression, nodeId, pos, arguments)
-    Expr.StructLit(nodeId, _, _, _, fields, spread) => emitStructLiteral(walker, mutable emitter, expression, nodeId, fields, spread)
-    Expr.ArrayLit(nodeId, _, elements, isTuple) => emitArrayLiteral(walker, mutable emitter, expression, nodeId, elements, isTuple)
+    Expr.CallExpr(nodeId, pos, _, arguments) => emitCall(
+      walker,
+      mutable emitter,
+      expression,
+      nodeId,
+      pos,
+      arguments,
+    )
+    Expr.StructLit(nodeId, _, _, _, fields, spread) => emitStructLiteral(
+      walker,
+      mutable emitter,
+      expression,
+      nodeId,
+      fields,
+      spread,
+    )
+    Expr.ArrayLit(nodeId, _, elements, isTuple) => emitArrayLiteral(
+      walker,
+      mutable emitter,
+      expression,
+      nodeId,
+      elements,
+      isTuple,
+    )
     Expr.MapLit(_, _, _, _, _) => Maps.emitMapLiteral(walker, mutable emitter, expression)
     Expr.MatchExpr(_, _, _, _) => Match.emitMatchValue(walker, mutable emitter, expression)
     Expr.BlockExpr(nodeId, _, block) => emitBlockExpression(walker, mutable emitter, nodeId, block)
@@ -66,7 +146,12 @@ export function emitExpression<W: EmitWalker>(walker: W, mutable emitter: Emitte
 // emitBlockExpression emits a block in value position as a C block with a
 // result variable. Each return stores its value, releases what the block
 // holds and jumps to the label after the block (Go's blockExpr).
-function emitBlockExpression<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, block: Block): Code uses alloc {
+function emitBlockExpression<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  block: Block,
+): Code uses alloc {
   const resultType = typeOf(emitter, nodeId)
   return Match.emitBlockBody(walker, mutable emitter, block, resultType)
 }
@@ -88,10 +173,14 @@ function parseIntegerText(text: string): int uses alloc {
     if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
       base = 16
       numerals = Str.sliceFrom(text, 2)
-    } else if (Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))) {
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
+    ) {
       base = 2
       numerals = Str.sliceFrom(text, 2)
-    } else if (Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))) {
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
+    ) {
       base = 8
       numerals = Str.sliceFrom(text, 2)
     } else {
@@ -120,7 +209,11 @@ function integerCode(text: string): string uses alloc {
 }
 
 // emitTemplate joins the parts of a template literal with lstr_concat.
-function emitTemplate<W: EmitWalker>(walker: W, mutable emitter: Emitter, parts: Array<Expr>): Code uses alloc {
+function emitTemplate<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  parts: Array<Expr>,
+): Code uses alloc {
   if (Arrays.length(parts) == 0) {
     return plain(literal(mutable emitter, ""))
   }
@@ -148,7 +241,12 @@ function constructorValue(emitter: Emitter, enumIndex: int, variant: int): strin
   return `((${enumName}){.tag = ${Int.toString(variant)}})`
 }
 
-function emitIdent<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, nodeId: int): Code uses alloc {
+function emitIdent<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  nodeId: int,
+): Code uses alloc {
   const ref = refOf(emitter, nodeId)
   return match (ref) {
     Ref.Local(index) => plain(localRef(emitter, index))
@@ -159,7 +257,14 @@ function emitIdent<W: EmitWalker>(walker: W, mutable emitter: Emitter, expressio
   }
 }
 
-function emitFieldRead<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, nodeId: int, target: Expr, name: string): Code uses alloc {
+function emitFieldRead<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  nodeId: int,
+  target: Expr,
+  name: string,
+): Code uses alloc {
   const ref = refOf(emitter, nodeId)
   if (ref is Ref.Const(index)) {
     return plain(constRef(mutable emitter, index))
@@ -181,7 +286,14 @@ function emitFieldRead<W: EmitWalker>(walker: W, mutable emitter: Emitter, expre
   return plain(`(${targetCode.text}).f_${name}`)
 }
 
-function emitIndexRead<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, pos: Pos, target: Expr, index: Expr): Code uses alloc {
+function emitIndexRead<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  pos: Pos,
+  target: Expr,
+  index: Expr,
+): Code uses alloc {
   const targetType = typeOf(emitter, getExpressionId(target))
   if (targetType is Type.TMap(_, _)) {
     return Maps.emitMapGet(walker, mutable emitter, expression)
@@ -191,13 +303,24 @@ function emitIndexRead<W: EmitWalker>(walker: W, mutable emitter: Emitter, expre
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
     const arrayStruct = containerStruct(emitter, targetType)
     const position = where(emitter, pos)
-    const read = temp(mutable emitter, element, `${arrayStruct}_get(${targetCode.text}, ${indexCode.text}, ${position})`)
+    const read = temp(
+      mutable emitter,
+      element,
+      `${arrayStruct}_get(${targetCode.text}, ${indexCode.text}, ${position})`,
+    )
     return plain(read)
   }
   return unsupportedCode(mutable emitter, "index")
 }
 
-function emitUnary<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, pos: Pos, operator: string, operand: Expr): Code uses alloc {
+function emitUnary<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  operator: string,
+  operand: Expr,
+): Code uses alloc {
   const value = EmitWalker.emitExpression(walker, mutable emitter, operand).text
   if (operator == "-") {
     if (typeOf(emitter, nodeId) == Type.TInt) {
@@ -268,7 +391,15 @@ function isPrimitive(type: Type): bool {
   }
 }
 
-function emitBinary<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, pos: Pos, operator: string, left: Expr, right: Expr): Code uses alloc {
+function emitBinary<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  pos: Pos,
+  operator: string,
+  left: Expr,
+  right: Expr,
+): Code uses alloc {
   // && and || evaluate the right side only when needed.
   if (operator == "&&" || operator == "||") {
     const leftCode = EmitWalker.emitExpression(walker, mutable emitter, left)
@@ -310,7 +441,9 @@ function emitBinary<W: EmitWalker>(walker: W, mutable emitter: Emitter, expressi
     const position = where(emitter, pos)
     const checked = checkedFunction(operator)
     if (checked != "") {
-      return plain(temp(mutable emitter, Type.TInt, `${checked}(${leftText}, ${rightText}, ${position})`))
+      return plain(
+        temp(mutable emitter, Type.TInt, `${checked}(${leftText}, ${rightText}, ${position})`),
+      )
     }
     const wrapping = wrappingFunction(operator)
     if (wrapping != "") {
@@ -323,22 +456,59 @@ function emitBinary<W: EmitWalker>(walker: W, mutable emitter: Emitter, expressi
   return plain(`(${leftText} ${operator} ${rightText})`)
 }
 
-function emitCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, nodeId: int, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+function emitCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
   const ref = refOf(emitter, nodeId)
   return match (ref) {
     Ref.Distinct(_) => EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
-    Ref.Constructor(enumIndex, variant) => emitConstructorCall(walker, mutable emitter, enumIndex, variant, arguments)
+    Ref.Constructor(enumIndex, variant) => emitConstructorCall(
+      walker,
+      mutable emitter,
+      enumIndex,
+      variant,
+      arguments,
+    )
     Ref.TraitFunction(_, _) => Traits.emitTraitCall(walker, mutable emitter, expression)
     Ref.Value => Closures.emitValueCall(walker, mutable emitter, expression)
-    Ref.Builtin(index) => emitBuiltinCall(walker, mutable emitter, expression, pos, arguments, index)
-    Ref.Implementation(block, index) => emitFunctionCall(walker, mutable emitter, ProgramFunc.ImplFunc(block, index), arguments)
-    Ref.Function(funcIndex) => emitPlainOrInstanceCall(walker, mutable emitter, nodeId, funcIndex, arguments)
+    Ref.Builtin(index) => emitBuiltinCall(
+      walker,
+      mutable emitter,
+      expression,
+      pos,
+      arguments,
+      index,
+    )
+    Ref.Implementation(block, index) => emitFunctionCall(
+      walker,
+      mutable emitter,
+      ProgramFunc.ImplFunc(block, index),
+      arguments,
+    )
+    Ref.Function(funcIndex) => emitPlainOrInstanceCall(
+      walker,
+      mutable emitter,
+      nodeId,
+      funcIndex,
+      arguments,
+    )
     _ => unsupportedCode(mutable emitter, "call")
   }
 }
 
 // emitConstructorCall builds a boxed enum value from its fields.
-function emitConstructorCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, enumIndex: int, variant: int, arguments: Array<Arg>): Code uses alloc {
+function emitConstructorCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  enumIndex: int,
+  variant: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
   const enumType = Type.TEnum(enumIndex)
   const fields = emitter.checker.enums[enumIndex].variants[variant].fields
   let parts: Array<string> = []
@@ -355,7 +525,13 @@ function emitConstructorCall<W: EmitWalker>(walker: W, mutable emitter: Emitter,
 
 // emitPlainOrInstanceCall calls a top-level function: a generic one goes
 // through its instance.
-function emitPlainOrInstanceCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, nodeId: int, funcIndex: int, arguments: Array<Arg>): Code uses alloc {
+function emitPlainOrInstanceCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  funcIndex: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
   const info = emitter.checker.bodies[emitter.body]
   if (info.instanceRefs[nodeId] is Some(instance)) {
     return emitFunctionCall(walker, mutable emitter, ProgramFunc.InstanceFunc(instance), arguments)
@@ -368,7 +544,12 @@ function emitPlainOrInstanceCall<W: EmitWalker>(walker: W, mutable emitter: Emit
 
 // emitFunctionCall writes `name(args)`. A void call is the call text itself;
 // any other result goes into an owned temporary.
-function emitFunctionCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, program: ProgramFunc, arguments: Array<Arg>): Code uses alloc {
+function emitFunctionCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  program: ProgramFunc,
+  arguments: Array<Arg>,
+): Code uses alloc {
   const checker = emitter.checker
   let parameterMutable: Array<bool> = []
   let result = Type.TVoid
@@ -387,7 +568,9 @@ function emitFunctionCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, pr
       result = checker.instanceList[instance].result
     }
     ProgramFunc.ImplFunc(block, index) => {
-      for (const parameter of Arrays.values(checker.implementations[block].functions[index].declaration.parameters)) {
+      for (const parameter of Arrays.values(
+        checker.implementations[block].functions[index].declaration.parameters,
+      )) {
         Arrays.push(mutable parameterMutable, parameter.isMutable)
       }
       result = checker.implementations[block].functions[index].result
@@ -412,7 +595,14 @@ function emitFunctionCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, pr
 }
 
 // emitBuiltinCall dispatches a std function by its module.
-function emitBuiltinCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, pos: Pos, arguments: Array<Arg>, builtinIndex: int): Code uses alloc {
+function emitBuiltinCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  pos: Pos,
+  arguments: Array<Arg>,
+  builtinIndex: int,
+): Code uses alloc {
   const builtin = emitter.checker.registry.functions[builtinIndex]
   const module = builtin.module
   if (module == "") {
@@ -455,14 +645,25 @@ function callArguments(expression: Expr): Array<Arg> {
 }
 
 // argumentCode is the C text of the n-th argument of a call.
-export function argumentCode<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, number: int): string uses alloc {
+export function argumentCode<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  number: int,
+): string uses alloc {
   const arguments = callArguments(expression)
   const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[number].value)
   return code.text
 }
 
 // emitPreludeCall is print, assert and panic.
-function emitPreludeCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+function emitPreludeCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
   const position = where(emitter, pos)
   const value = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value).text
   if (name == "print") {
@@ -478,7 +679,14 @@ function emitPreludeCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, nam
 }
 
 // emitArrayCall is Array.length, Array.push and Array.filled.
-function emitArrayCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, name: string, pos: Pos, arguments: Array<Arg>): Code uses alloc {
+function emitArrayCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  name: string,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
   if (name == "Array.length") {
     const value = argumentCode(walker, mutable emitter, expression, 0)
     return plain(`(${value})->len`)
@@ -498,14 +706,23 @@ function emitArrayCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expre
     const count = argumentCode(walker, mutable emitter, expression, 1)
     const position = where(emitter, pos)
     const arrayStruct = containerStruct(emitter, arrayType)
-    const filled = ownedTemp(mutable emitter, arrayType, `${arrayStruct}_filled(${value}, ${count}, ${position})`)
+    const filled = ownedTemp(
+      mutable emitter,
+      arrayType,
+      `${arrayStruct}_filled(${value}, ${count}, ${position})`,
+    )
     return Code { text: filled, owned: true }
   }
   return unsupportedCode(mutable emitter, "array function")
 }
 
 // emitBoxCall is Box.new.
-function emitBoxCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, arguments: Array<Arg>): Code uses alloc {
+function emitBoxCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  arguments: Array<Arg>,
+): Code uses alloc {
   const boxType = typeOf(emitter, getExpressionId(expression))
   if (boxType is Type.TBox(element)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
@@ -533,7 +750,14 @@ function defaultBodyKey(checker: Checker, structIndex: int, field: string): stri
   return `default|${qualifiedName(info.module, info.name)}|${field}`
 }
 
-function emitStructLiteral<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, nodeId: int, fields: Array<FieldInit>, spread: Option<Expr>): Code uses alloc {
+function emitStructLiteral<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  nodeId: int,
+  fields: Array<FieldInit>,
+  spread: Option<Expr>,
+): Code uses alloc {
   if (spread is Some(_)) {
     return Match.emitSpreadLiteral(walker, mutable emitter, expression)
   }
@@ -568,20 +792,35 @@ function emitStructLiteral<W: EmitWalker>(walker: W, mutable emitter: Emitter, e
       }
     }
     const structName = cType(emitter.checker, structType)
-    const built = ownedTemp(mutable emitter, structType, `((${structName}){${Str.join(parts, ", ")}})`)
+    const built = ownedTemp(
+      mutable emitter,
+      structType,
+      `((${structName}){${Str.join(parts, ", ")}})`,
+    )
     return Code { text: built, owned: true }
   }
   return unsupportedCode(mutable emitter, "struct literal")
 }
 
-function emitArrayLiteral<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr, nodeId: int, elements: Array<Expr>, isTuple: bool): Code uses alloc {
+function emitArrayLiteral<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  nodeId: int,
+  elements: Array<Expr>,
+  isTuple: bool,
+): Code uses alloc {
   if (isTuple) {
     return Match.emitTupleLiteral(walker, mutable emitter, expression)
   }
   const arrayType = typeOf(emitter, nodeId)
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)
-    const array = ownedTemp(mutable emitter, arrayType, `${arrayStruct}_new(${Int.toString(Arrays.length(elements))})`)
+    const array = ownedTemp(
+      mutable emitter,
+      arrayType,
+      `${arrayStruct}_new(${Int.toString(Arrays.length(elements))})`,
+    )
     for (const item of Arrays.values(elements)) {
       const code = EmitWalker.emitExpression(walker, mutable emitter, item)
       const consumed = consume(mutable emitter, code.text, code.owned, element)
@@ -603,11 +842,21 @@ export function pointerTemp(mutable emitter: Emitter, type: Type, code: string):
 
 // emitLvaluePointer is the C pointer to the storage an assignable expression
 // names. Arrays on the path are made unique first by `_at`.
-export function emitLvaluePointer<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): string uses alloc {
+export function emitLvaluePointer<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+): string uses alloc {
   return match (expression) {
     Expr.Ident(nodeId, _, _) => identPointer(mutable emitter, nodeId)
     Expr.FieldExpr(_, _, target, name) => fieldPointer(walker, mutable emitter, target, name)
-    Expr.IndexExpr(_, pos, target, index) => indexPointer(walker, mutable emitter, pos, target, index)
+    Expr.IndexExpr(_, pos, target, index) => indexPointer(
+      walker,
+      mutable emitter,
+      pos,
+      target,
+      index,
+    )
     _ => reportUnsupported(mutable emitter, "lvalue", NODE)
   }
 }
@@ -625,7 +874,12 @@ function identPointer(mutable emitter: Emitter, nodeId: int): string uses alloc 
   return reportUnsupported(mutable emitter, "lvalue", NODE)
 }
 
-function fieldPointer<W: EmitWalker>(walker: W, mutable emitter: Emitter, target: Expr, name: string): string uses alloc {
+function fieldPointer<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  target: Expr,
+  name: string,
+): string uses alloc {
   const base = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
   const targetType = typeOf(emitter, getExpressionId(target))
   // Writing through a box copies a shared cell first.
@@ -636,7 +890,13 @@ function fieldPointer<W: EmitWalker>(walker: W, mutable emitter: Emitter, target
   return `&(${base})->f_${name}`
 }
 
-function indexPointer<W: EmitWalker>(walker: W, mutable emitter: Emitter, pos: Pos, target: Expr, index: Expr): string uses alloc {
+function indexPointer<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  pos: Pos,
+  target: Expr,
+  index: Expr,
+): string uses alloc {
   const arrayType = typeOf(emitter, getExpressionId(target))
   if (arrayType is Type.TArray(element)) {
     const base = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
@@ -644,7 +904,11 @@ function indexPointer<W: EmitWalker>(walker: W, mutable emitter: Emitter, pos: P
     const indexTemp = temp(mutable emitter, Type.TInt, indexCode.text)
     const arrayStruct = containerStruct(emitter, arrayType)
     const position = where(emitter, pos)
-    return pointerTemp(mutable emitter, element, `${arrayStruct}_at(${base}, ${indexTemp}, ${position})`)
+    return pointerTemp(
+      mutable emitter,
+      element,
+      `${arrayStruct}_at(${base}, ${indexTemp}, ${position})`,
+    )
   }
   return reportUnsupported(mutable emitter, "lvalue", NODE)
 }
@@ -678,13 +942,19 @@ function isStaticValue(emitter: Emitter, body: int, value: Expr): bool uses allo
     Expr.Ident(nodeId, _, _) => isStaticName(emitter, info.refs, info.first, nodeId)
     Expr.FieldExpr(nodeId, _, _, _) => isStaticName(emitter, info.refs, info.first, nodeId)
     Expr.UnaryExpr(_, _, _, operand) => isStaticValue(emitter, body, operand)
-    Expr.BinaryExpr(_, _, _, left, right) => isStaticValue(emitter, body, left) && isStaticValue(emitter, body, right)
+    Expr.BinaryExpr(_, _, _, left, right) =>
+      isStaticValue(emitter, body, left) && isStaticValue(emitter, body, right)
     _ => false
   }
 }
 
 // isStaticName is true for a constructor and for a constant with a static value.
-function isStaticName(emitter: Emitter, refs: Array<Ref>, first: int, nodeId: int): bool uses alloc {
+function isStaticName(
+  emitter: Emitter,
+  refs: Array<Ref>,
+  first: int,
+  nodeId: int,
+): bool uses alloc {
   const slot = nodeId - first
   if (slot < 0 || slot >= Arrays.length(refs)) {
     return false
@@ -710,23 +980,44 @@ export function isStaticConstant(emitter: Emitter, constIndex: int): bool uses a
 struct ConstWalker implements EmitWalker {}
 
 implement EmitWalker for ConstWalker {
-  function emitExpression(walker: ConstWalker, mutable emitter: Emitter, expression: Expr): Code uses alloc {
+  function emitExpression(
+    walker: ConstWalker,
+    mutable emitter: Emitter,
+    expression: Expr,
+  ): Code uses alloc {
     return emitExpression(walker, mutable emitter, expression)
   }
 
-  function emitStatement(walker: ConstWalker, mutable emitter: Emitter, statement: Stmt) uses alloc {
+  function emitStatement(
+    walker: ConstWalker,
+    mutable emitter: Emitter,
+    statement: Stmt,
+  ) uses alloc {
     const _ = reportUnsupported(mutable emitter, "statement in a constant", NODE)
   }
 
-  function emitBlock(walker: ConstWalker, mutable emitter: Emitter, block: Block, loop: bool) uses alloc {
+  function emitBlock(
+    walker: ConstWalker,
+    mutable emitter: Emitter,
+    block: Block,
+    loop: bool,
+  ) uses alloc {
     const _ = reportUnsupported(mutable emitter, "block in a constant", NODE)
   }
 
-  function emitBlockInScope(walker: ConstWalker, mutable emitter: Emitter, block: Block) uses alloc {
+  function emitBlockInScope(
+    walker: ConstWalker,
+    mutable emitter: Emitter,
+    block: Block,
+  ) uses alloc {
     const _ = reportUnsupported(mutable emitter, "block in a constant", NODE)
   }
 
-  function emitLvaluePointer(walker: ConstWalker, mutable emitter: Emitter, expression: Expr): string uses alloc {
+  function emitLvaluePointer(
+    walker: ConstWalker,
+    mutable emitter: Emitter,
+    expression: Expr,
+  ): string uses alloc {
     return emitLvaluePointer(walker, mutable emitter, expression)
   }
 }

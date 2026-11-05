@@ -479,3 +479,38 @@ func checkFormatted(t *testing.T, exe, path string) {
 		t.Fatalf("tree differs: %s", firstDiff(want, got))
 	}
 }
+
+var parseErrorLine = regexp.MustCompile(`^error \S+\.nra:\d+:\d+: `)
+
+// TestSourcesFormatted runs `narrac fmt --check` over selfhost/src and every
+// sample under testdata/ except testdata/fmt, whose inputs are unformatted on
+// purpose. A sample that does not parse is reported on stderr and skipped; any
+// other report fails the test.
+func TestSourcesFormatted(t *testing.T) {
+	exe := buildSelfhost(t)
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{"selfhost/src"}
+	entries, err := os.ReadDir(filepath.Join(root, "compiler/testdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "fmt" || (!entry.IsDir() && !strings.HasSuffix(name, ".nra")) {
+			continue
+		}
+		paths = append(paths, "compiler/testdata/"+name)
+	}
+	out, errText, _ := runFmtCommand(t, exe, root, "", append([]string{"--check"}, paths...)...)
+	if out != "" {
+		t.Errorf("files not formatted; run `narrac fmt` on them:\n%s", out)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(errText, "\n"), "\n") {
+		if line != "" && !parseErrorLine.MatchString(line) {
+			t.Errorf("unexpected fmt error: %s", line)
+		}
+	}
+}

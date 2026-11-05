@@ -8,7 +8,16 @@
 import { Pos, Expr, TypeExpr, FieldInit } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, internComposite, Walker, reportError, typeString, checkMapKey, lookupGeneric, getExpressionPos } from "narrac/check"
+import {
+  Checker,
+  internComposite,
+  Walker,
+  reportError,
+  typeString,
+  checkMapKey,
+  lookupGeneric,
+  getExpressionPos,
+} from "narrac/check"
 import { resolveType, instantiate, findTupleType } from "narrac/resolve"
 import { checkExpression, expectType, describeType, findField, isHiddenStruct } from "narrac/exprs"
 import * as Int from "std/int"
@@ -16,14 +25,27 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
 // checkMapLiteral checks `Map { k: v }` and `Map<K, V> { k: v }`.
-export function checkMapLiteral<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
+export function checkMapLiteral<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  expression: Expr,
+  want: Option<Type>,
+): Type uses alloc {
   if (expression is Expr.MapLit(_, pos, typeArguments, keys, values)) {
     return checkMapEntries(mutable checker, walker, pos, typeArguments, keys, values, want)
   }
   return Type.TVoid
 }
 
-function checkMapEntries<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, typeArguments: Array<TypeExpr>, keys: Array<Expr>, values: Array<Expr>, want: Option<Type>): Type uses alloc {
+function checkMapEntries<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  typeArguments: Array<TypeExpr>,
+  keys: Array<Expr>,
+  values: Array<Expr>,
+  want: Option<Type>,
+): Type uses alloc {
   let keyType: Option<Type> = None
   let valueType: Option<Type> = None
   if (want is Some(Type.TMap(wantedKey, wantedValue))) {
@@ -33,7 +55,15 @@ function checkMapEntries<W: Walker>(mutable checker: Checker, walker: W, pos: Po
   if (Arrays.length(typeArguments) > 0) {
     // The written types decide the type of the literal, and resolveType
     // checks arity and the key.
-    const written = TypeExpr { pos: pos, name: "Map", arguments: typeArguments, isFunc: false, result: None, effects: [], isTuple: false }
+    const written = TypeExpr {
+      pos: pos,
+      name: "Map",
+      arguments: typeArguments,
+      isFunc: false,
+      result: None,
+      effects: [],
+      isTuple: false,
+    }
     const literalType = resolveType(mutable checker, written)
     if (literalType is Type.TMap(literalKey, literalValue)) {
       if (want is Some(Type.TMap(wantedKey, wantedValue))) {
@@ -82,7 +112,14 @@ function checkMapEntries<W: Walker>(mutable checker: Checker, walker: W, pos: Po
 
 // checkMapIndex checks m[k]: Option<V>, or V when it is the target of an
 // assignment.
-export function checkMapIndex<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, index: Expr, mapKey: Type, mapValue: Type): Type uses alloc {
+export function checkMapIndex<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  index: Expr,
+  mapKey: Type,
+  mapValue: Type,
+): Type uses alloc {
   const found = checkExpression(mutable checker, walker, index, Some(mapKey))
   expectType(mutable checker, getExpressionPos(index), Some(mapKey), found)
   if (nodeId == checker.assigningId) {
@@ -96,9 +133,19 @@ export function checkMapIndex<W: Walker>(mutable checker: Checker, walker: W, no
 
 // checkTuple checks `#[a, b]`. An expected tuple type of the same length
 // guides the elements; otherwise each element's type is inferred.
-export function checkTuple<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, elements: Array<Expr>, want: Option<Type>): Type uses alloc {
+export function checkTuple<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  elements: Array<Expr>,
+  want: Option<Type>,
+): Type uses alloc {
   if (Arrays.length(elements) < 2) {
-    reportError(mutable checker, pos, `a tuple needs at least two elements, found ${Int.toString(Arrays.length(elements))}`)
+    reportError(
+      mutable checker,
+      pos,
+      `a tuple needs at least two elements, found ${Int.toString(Arrays.length(elements))}`,
+    )
     for (const element of Arrays.values(elements)) {
       checkExpression(mutable checker, walker, element, None)
     }
@@ -108,7 +155,10 @@ export function checkTuple<W: Walker>(mutable checker: Checker, walker: W, pos: 
   // The expected type guides the elements when it is a tuple of this length.
   let wantedIndex = -1
   if (want is Some(Type.TStruct(index))) {
-    if (checker.structs[index].tuple && Arrays.length(checker.structs[index].fields) == Arrays.length(elements)) {
+    if (
+      checker.structs[index].tuple &&
+        Arrays.length(checker.structs[index].fields) == Arrays.length(elements)
+    ) {
       wantedIndex = index
     }
   }
@@ -130,7 +180,15 @@ export function checkTuple<W: Walker>(mutable checker: Checker, walker: W, pos: 
 
 // checkSpread checks `{ ...s, field: v }` and `Name { ...s, field: v }`.
 // The result has the type of s.
-export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, typeName: string, fields: Array<FieldInit>, spread: Expr, want: Option<Type>): Type uses alloc {
+export function checkSpread<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  typeName: string,
+  fields: Array<FieldInit>,
+  spread: Expr,
+  want: Option<Type>,
+): Type uses alloc {
   // A written name is a struct, or a generic struct compared by name below.
   let named: Option<Type> = None
   let genericIndex = -1
@@ -175,7 +233,10 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
   // The spread must have the type of the literal.
   let target = hint
   if (genericIndex >= 0) {
-    if (checker.structs[spreadIndex].name != checker.generics[genericIndex].name || checker.structs[spreadIndex].module != checker.generics[genericIndex].module) {
+    if (
+      checker.structs[spreadIndex].name != checker.generics[genericIndex].name ||
+        checker.structs[spreadIndex].module != checker.generics[genericIndex].module
+    ) {
       const message = `cannot spread ${typeString(checker, spreadType)} into a ${typeName} literal; the spread must have the literal's type`
       reportError(mutable checker, spreadPos, message)
       return Type.TVoid
@@ -198,7 +259,11 @@ export function checkSpread<W: Walker>(mutable checker: Checker, walker: W, pos:
   for (const field of Arrays.values(fields)) {
     const fieldIndex = findField(structFields, field.name)
     if (fieldIndex < 0) {
-      reportError(mutable checker, field.pos, `struct ${structText} has no field ${quoteGo(field.name)}`)
+      reportError(
+        mutable checker,
+        field.pos,
+        `struct ${structText} has no field ${quoteGo(field.name)}`,
+      )
       checkExpression(mutable checker, walker, field.value, None)
       continue
     }

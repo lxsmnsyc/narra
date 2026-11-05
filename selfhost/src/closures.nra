@@ -18,10 +18,37 @@
 import { Pos, Expr, Arg, Param, TypeExpr, Block, Stmt, MatchArm } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
-import { Checker, internComposite, Ref, Walker, reportError, typeString, setRef, setParameterType, getNodeType, getRef, declareLocal, pushScope, popScope, getExpressionId, getExpressionPos, ArrowContext } from "narrac/check"
+import {
+  Checker,
+  internComposite,
+  Ref,
+  Walker,
+  reportError,
+  typeString,
+  setRef,
+  setParameterType,
+  getNodeType,
+  getRef,
+  declareLocal,
+  pushScope,
+  popScope,
+  getExpressionId,
+  getExpressionPos,
+  ArrowContext,
+} from "narrac/check"
 import { resolveType, substitute } from "narrac/resolve"
 import { unify } from "narrac/generics"
-import { checkExpression, expectType, checkArgument, checkExclusive, checkArgumentsLoosely, containsOpen, findAssignedLocal, usesLocal, listBlockExpressions } from "narrac/exprs"
+import {
+  checkExpression,
+  expectType,
+  checkArgument,
+  checkExclusive,
+  checkArgumentsLoosely,
+  containsOpen,
+  findAssignedLocal,
+  usesLocal,
+  listBlockExpressions,
+} from "narrac/exprs"
 import { findClosure } from "narrac/funcvalues"
 import * as Int from "std/int"
 import * as Arrays from "std/array"
@@ -31,14 +58,39 @@ import * as Ranges from "std/range"
 // checkArrow checks an arrow function (Go's arrow). Its body is checked as
 // a function of its own whose scope sees the enclosing locals; the ones it
 // uses become captures (funcvalues.nra, useLocal).
-export function checkArrow<W: Walker>(mutable checker: Checker, walker: W, expression: Expr, want: Option<Type>): Type uses alloc {
+export function checkArrow<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  expression: Expr,
+  want: Option<Type>,
+): Type uses alloc {
   if (expression is Expr.ArrowExpr(nodeId, pos, parameters, resultExpr, bodyExpr, block)) {
-    return checkArrowParts(mutable checker, walker, nodeId, pos, parameters, resultExpr, bodyExpr, block, want)
+    return checkArrowParts(
+      mutable checker,
+      walker,
+      nodeId,
+      pos,
+      parameters,
+      resultExpr,
+      bodyExpr,
+      block,
+      want,
+    )
   }
   return Type.TVoid
 }
 
-function checkArrowParts<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, parameters: Array<Param>, resultExpr: Option<TypeExpr>, bodyExpr: Option<Expr>, block: Option<Block>, want: Option<Type>): Type uses alloc {
+function checkArrowParts<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  parameters: Array<Param>,
+  resultExpr: Option<TypeExpr>,
+  bodyExpr: Option<Expr>,
+  block: Option<Block>,
+  want: Option<Type>,
+): Type uses alloc {
   // The expected parameter and result types: the expected function type
   // wins over the hint of a generic call.
   const closure = findClosure(mutable checker, nodeId)
@@ -75,7 +127,11 @@ function checkArrowParts<W: Walker>(mutable checker: Checker, walker: W, nodeId:
       if (hinted is Some(fromHint)) {
         paramType = fromHint
       } else {
-        reportError(mutable checker, param.pos, `cannot tell the type of parameter ${quoteGo(param.name)}; write it as \`${param.name}: Type\``)
+        reportError(
+          mutable checker,
+          param.pos,
+          `cannot tell the type of parameter ${quoteGo(param.name)}; write it as \`${param.name}: Type\``,
+        )
       }
     }
     setParameterType(mutable checker, param.id, paramType)
@@ -154,8 +210,15 @@ function checkArrowParts<W: Walker>(mutable checker: Checker, walker: W, nodeId:
 
 // resolveFunctionResult resolves a written result type, where `void` means
 // the function returns nothing (Go's funcResult).
-function resolveFunctionResult(mutable checker: Checker, typeExpression: TypeExpr): Type uses alloc {
-  if (typeExpression.name == "void" && Arrays.length(typeExpression.arguments) == 0 && !typeExpression.isFunc) {
+function resolveFunctionResult(
+  mutable checker: Checker,
+  typeExpression: TypeExpr,
+): Type uses alloc {
+  if (
+    typeExpression.name == "void" &&
+      Arrays.length(typeExpression.arguments) == 0 &&
+      !typeExpression.isFunc
+  ) {
     return Type.TVoid
   }
   return resolveType(mutable checker, typeExpression)
@@ -264,7 +327,14 @@ function inferReturns(mutable checker: Checker, block: Block): Type uses alloc {
 // its parameter type that the earlier arguments already decide, so
 // `map(items, (x) => x * 2)` knows the type of x (Go's hintArrow). It runs
 // just before argument `index` is checked.
-function hintArrow(mutable checker: Checker, arguments: Array<Arg>, index: int, parameters: Array<Param>, typeParameters: Array<int>, bindings: Map<int, Type>) uses alloc {
+function hintArrow(
+  mutable checker: Checker,
+  arguments: Array<Arg>,
+  index: int,
+  parameters: Array<Param>,
+  typeParameters: Array<int>,
+  bindings: Map<int, Type>,
+) uses alloc {
   let isArrow = false
   if (arguments[index].value is Expr.ArrowExpr(_, _, _, _, _, _)) {
     isArrow = true
@@ -315,11 +385,23 @@ function hintArrow(mutable checker: Checker, arguments: Array<Arg>, index: int, 
 // (Go's arguments with the paramType callback of genericCall). A parameter that
 // still holds an open type parameter has no expected type, and an arrow
 // function argument gets a hint instead.
-export function checkGenericArguments<W: Walker>(mutable checker: Checker, walker: W, pos: Pos, arguments: Array<Arg>, parameters: Array<Param>, typeParameters: Array<int>, bindings: Map<int, Type>) uses alloc {
+export function checkGenericArguments<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  parameters: Array<Param>,
+  typeParameters: Array<int>,
+  bindings: Map<int, Type>,
+) uses alloc {
   const argCount = Arrays.length(arguments)
   const paramCount = Arrays.length(parameters)
   if (argCount != paramCount) {
-    reportError(mutable checker, pos, `this call passes ${Int.toString(argCount)} arguments, the function takes ${Int.toString(paramCount)}`)
+    reportError(
+      mutable checker,
+      pos,
+      `this call passes ${Int.toString(argCount)} arguments, the function takes ${Int.toString(paramCount)}`,
+    )
   }
   let mutables: Array<int> = []
   for (const index of Ranges.between(0, argCount)) {
@@ -342,7 +424,14 @@ export function checkGenericArguments<W: Walker>(mutable checker: Checker, walke
 // checkValueCall checks a call whose callee is an expression: a local, a
 // parameter, a constant, a field or a call that returns a function (Go's
 // valueCall).
-export function checkValueCall<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>): Type uses alloc {
+export function checkValueCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  callee: Expr,
+  arguments: Array<Arg>,
+): Type uses alloc {
   // A non-escaping parameter may be called.
   if (callee is Expr.Ident(calleeId, _, _)) {
     const body = checker.body
@@ -350,7 +439,16 @@ export function checkValueCall<W: Walker>(mutable checker: Checker, walker: W, n
   }
   const calleeType = checkExpression(mutable checker, walker, callee, None)
   if (calleeType is Type.TFunc(funcParams, funcResult)) {
-    return checkValueCallOf(mutable checker, walker, nodeId, pos, callee, arguments, funcParams, funcResult)
+    return checkValueCallOf(
+      mutable checker,
+      walker,
+      nodeId,
+      pos,
+      callee,
+      arguments,
+      funcParams,
+      funcResult,
+    )
   }
 
   // Not a function.
@@ -375,15 +473,32 @@ export function checkValueCall<W: Walker>(mutable checker: Checker, walker: W, n
 // checkValueCallOf checks the arguments of a call through a value of a
 // function type. Parameters of a function type are escaping (Go's
 // valueCallOf).
-export function checkValueCallOf<W: Walker>(mutable checker: Checker, walker: W, nodeId: int, pos: Pos, callee: Expr, arguments: Array<Arg>, funcParams: Array<Type>, funcResult: Type): Type uses alloc {
+export function checkValueCallOf<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  callee: Expr,
+  arguments: Array<Arg>,
+  funcParams: Array<Type>,
+  funcResult: Type,
+): Type uses alloc {
   setRef(mutable checker, nodeId, Ref.Value)
   if (Arrays.length(arguments) != Arrays.length(funcParams)) {
-    reportError(mutable checker, pos, `this call passes ${Int.toString(Arrays.length(arguments))} arguments, the function takes ${Int.toString(Arrays.length(funcParams))}`)
+    reportError(
+      mutable checker,
+      pos,
+      `this call passes ${Int.toString(Arrays.length(arguments))} arguments, the function takes ${Int.toString(Arrays.length(funcParams))}`,
+    )
   }
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     const arg = arguments[index]
     if (arg.isMutable) {
-      reportError(mutable checker, getExpressionPos(arg.value), "a function value takes no mutable arguments; remove `mutable`")
+      reportError(
+        mutable checker,
+        getExpressionPos(arg.value),
+        "a function value takes no mutable arguments; remove `mutable`",
+      )
     }
     let want: Option<Type> = None
     if (index < Arrays.length(funcParams)) {
@@ -400,14 +515,22 @@ export function checkValueCallOf<W: Walker>(mutable checker: Checker, walker: W,
 // at any depth, a variable as mutable that the callee expression reads, as
 // in `f(swap(mutable f))`. The call could otherwise change or free the
 // function value it is calling (SPEC section 6, exclusive access).
-function checkCalleeExclusive(mutable checker: Checker, callee: Expr, arguments: Array<Arg>) uses alloc {
+function checkCalleeExclusive(
+  mutable checker: Checker,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
   for (const arg of Arrays.values(arguments)) {
     let roots: Array<int> = []
     collectMutableRoots(checker, arg.value, mutable roots)
     for (const root of Arrays.values(roots)) {
       if (usesLocal(checker, callee, root)) {
         const rootName = quoteGo(checker.bodies[checker.body].locals[root].name)
-        reportError(mutable checker, getExpressionPos(arg.value), `${rootName} is passed as mutable inside this call, so it cannot also hold the function being called`)
+        reportError(
+          mutable checker,
+          getExpressionPos(arg.value),
+          `${rootName} is passed as mutable inside this call, so it cannot also hold the function being called`,
+        )
       }
     }
   }
@@ -416,7 +539,11 @@ function checkCalleeExclusive(mutable checker: Checker, callee: Expr, arguments:
 // collectMutableRoots lists the variables passed as mutable arguments by
 // the calls inside an expression, outside arrow functions (Go's
 // mutableRoots).
-function collectMutableRoots(checker: Checker, expression: Expr, mutable roots: Array<int>) uses alloc {
+function collectMutableRoots(
+  checker: Checker,
+  expression: Expr,
+  mutable roots: Array<int>,
+) uses alloc {
   match (expression) {
     Expr.CallExpr(_, _, callee, arguments) => {
       collectMutableRoots(checker, callee, mutable roots)
@@ -448,7 +575,11 @@ function collectMutableRoots(checker: Checker, expression: Expr, mutable roots: 
       }
     }
     Expr.ArrayLit(_, _, elements, _) => collectAllRoots(checker, elements, mutable roots)
-    Expr.BlockExpr(_, _, block) => collectAllRoots(checker, listBlockExpressions(block), mutable roots)
+    Expr.BlockExpr(_, _, block) => collectAllRoots(
+      checker,
+      listBlockExpressions(block),
+      mutable roots,
+    )
     Expr.MapLit(_, _, _, keys, values) => {
       for (const index of Ranges.between(0, Arrays.length(keys))) {
         collectMutableRoots(checker, keys[index], mutable roots)
@@ -465,7 +596,11 @@ function collectMutableRoots(checker: Checker, expression: Expr, mutable roots: 
   }
 }
 
-function collectAllRoots(checker: Checker, expressions: Array<Expr>, mutable roots: Array<int>) uses alloc {
+function collectAllRoots(
+  checker: Checker,
+  expressions: Array<Expr>,
+  mutable roots: Array<int>,
+) uses alloc {
   for (const expression of Arrays.values(expressions)) {
     collectMutableRoots(checker, expression, mutable roots)
   }
@@ -489,7 +624,13 @@ function collectArmRoots(checker: Checker, arm: MatchArm, mutable roots: Array<i
 // types the helper decides; a name may be a non-escaping function
 // parameter. hintResult is None when the callback decides the result. It
 // returns the type of the argument.
-export function checkArrowArgument<W: Walker>(mutable checker: Checker, walker: W, argument: Expr, hintParameters: Array<Type>, hintResult: Option<Type>): Type uses alloc {
+export function checkArrowArgument<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  argument: Expr,
+  hintParameters: Array<Type>,
+  hintResult: Option<Type>,
+): Type uses alloc {
   const body = checker.body
   match (argument) {
     Expr.ArrowExpr(arrowId, _, _, _, _, _) => {

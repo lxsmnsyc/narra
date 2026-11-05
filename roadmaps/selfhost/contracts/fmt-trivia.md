@@ -76,3 +76,5 @@ None; fmt-trivia lands before its consumers start.
 - Parentheses and comments inside `${...}` of a template string are not recorded (the part is lexed and parsed on its own). Type-parameter bounds, import names and map entries have no anchors.
 - `parenthesized` holds expression ids only; Narra has no parenthesized patterns.
 - A comment in an empty call `f(/* c */)` is trailing on the callee, not dangling on the call.
+
+- v2 note (2026-11-05, maintainer approved; implemented in PR #80 and PR #81): the Behavior rules for `Leading` and `Trailing` overlap when a comment sits between two nodes on one line (`x /* c */ y`). The tie-break: a block comment is `Trailing` of the node on its left when the rest of its line holds only whitespace, a closer (`,` `)` `]` `}` `;`), or a run of further comments separated from it by blanks alone, where the last comment of the run ends the line or comes before a closer (`endsLineAfterComments` in `selfhost/src/trivia.nra`). Otherwise it is `Leading` of the node that follows. A line comment always ends the line, so it is `Trailing` of the node on its left. The interface is unchanged.

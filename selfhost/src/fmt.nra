@@ -11,17 +11,13 @@
 // A file that does not parse prints `error <path>:<line>:<col>: <message>`, is
 // left unchanged, and makes the exit code 1. The [fmt] table of the nearest
 // narra.toml above each file sets the options (fmtconfig.nra).
-//
-// STUB: until fmt-exprs lands, createPrinter fills printExpression,
-// printPattern and printType with printers that copy the source text of the
-// node (printExpressionStub and the two after it). They are the only code that
-// reads the source text.
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Docs from "narrac/fmtdoc"
+import * as Exprs from "narrac/fmtexprs"
 import { Doc, Options } from "narrac/fmtdoc"
 import * as Lexer from "narrac/lexer"
 import * as Parser from "narrac/parser"
@@ -243,21 +239,21 @@ function isSameComment(before: string, after: string): bool uses alloc {
   return Str.trim(before) == Str.trim(after)
 }
 
-// createPrinter builds the Printer. fmt-exprs replaces the three stub fields.
+// createPrinter builds the Printer.
 function createPrinter(source: string, trivia: Trivia, config: FmtConfig): Printer {
   const options = Options { printWidth: config.printWidth, tabWidth: config.tabWidth, useTabs: config.useTabs }
   return Printer {
     source: source,
     trivia: trivia,
     settings: Settings { options: options, trailingComma: config.trailingComma },
-    printExpression: printExpressionStub,
-    printPattern: printPatternStub,
-    printType: printTypeStub,
+    printExpression: Exprs.printExpression,
+    printPattern: Exprs.printPattern,
+    printType: Exprs.printType,
     printBlock: printBlock,
   }
 }
 
-// ---- Stub printers: the source text of the node
+// ---- Source offsets
 
 function getByteAt(source: string, offset: int): int {
   if (offset < 0 || offset >= Str.length(source)) {
@@ -388,36 +384,6 @@ function getStartOffset(printer: Printer, expression: Expr): int uses alloc {
   return offset
 }
 
-function printExpressionStub(printer: Printer, expression: Expr): Doc uses alloc {
-  const key = getIdKey(getExprId(expression))
-  const end = getEndOffset(printer, key)
-  if (end is None) {
-    return Docs.text("")
-  }
-  const start = getStartOffset(printer, expression)
-  return withComments(printer, key, Docs.text(Str.slice(printer.source, start, end.value)))
-}
-
-function printPatternStub(printer: Printer, pattern: Pattern): Doc uses alloc {
-  const key = getIdKey(getPatternId(pattern))
-  const end = getEndOffset(printer, key)
-  if (end is None) {
-    return Docs.text("")
-  }
-  const start = getOffset(printer.source, getPatternPosition(pattern))
-  return withComments(printer, key, Docs.text(Str.slice(printer.source, start, end.value)))
-}
-
-function printTypeStub(printer: Printer, typeExpression: TypeExpr): Doc uses alloc {
-  const key = getPosKey("t", typeExpression.pos)
-  const end = getEndOffset(printer, key)
-  if (end is None) {
-    return Docs.text("")
-  }
-  const start = getOffset(printer.source, typeExpression.pos)
-  return withComments(printer, key, Docs.text(Str.slice(printer.source, start, end.value)))
-}
-
 // ---- Helpers
 
 // quoteString writes a string literal.
@@ -426,15 +392,15 @@ function quoteString(value: string): string uses alloc {
   return `"${Str.join(parts, "\\\"")}"`
 }
 
-// printAssigned prints ` = value`. A binary, `is` or block value may move to the
-// next line after the `=` (an operator at the end of a line continues the
-// statement); any other value stays on the `=` line.
+// printAssigned prints ` = value`. A binary or `is` value may move to the next
+// line after the `=` (an operator at the end of a line continues the
+// statement); any other value, including a block or `if` value, which breaks
+// inside its own braces or parentheses, stays on the `=` line.
 function printAssigned(printer: Printer, value: Expr): Doc uses alloc {
   const document = printer.printExpression(printer, value)
   const canBreak = match (value) {
     Expr.BinaryExpr(_, _, _, _, _) => true
     Expr.IsExpr(_, _, _, _) => true
-    Expr.BlockExpr(_, _, _) => true
     _ => false
   }
   if (canBreak) {

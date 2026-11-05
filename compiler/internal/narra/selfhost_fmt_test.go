@@ -99,7 +99,7 @@ func TestSelfhostFmt(t *testing.T) {
 	fmtDir := filepath.Join(testdata, "fmt")
 
 	var goldens []string
-	for _, prefix := range []string{"decl_", "stmt_", "comment_"} {
+	for _, prefix := range []string{"decl_", "stmt_", "comment_", "expr_", "type_", "pattern_"} {
 		found, _ := filepath.Glob(filepath.Join(fmtDir, prefix+"*.nra"))
 		goldens = append(goldens, found...)
 	}
@@ -333,17 +333,49 @@ func stripPositions(dump string) string {
 	return strings.Join(lines, "\n")
 }
 
-// tokensOf is the token dump without positions, line ends and commas. The
-// formatter sets those: it joins or splits statements, writes a field list with
-// commas or lines, and adds or drops trailing commas.
+// tokensOf is the token dump without positions, line ends, commas and
+// grouping parentheses. The formatter sets line ends and commas, and it drops
+// a redundant pair `((a))`, keeps a written pair, and adds one around a
+// conditional that spans lines. A pair is a grouping pair when the token
+// before the `(` cannot end an expression (an operator, `,`, `(`, `?`, `:`,
+// `return` or nothing); call, parameter and condition parentheses stay in the
+// sequence. The tree comparison covers what the grouping pairs mean.
 func tokensOf(dump string) string {
-	var kept []string
+	var tokens []string
 	for _, line := range strings.Split(dump, "\n") {
 		line = tokenPattern.ReplaceAllString(line, "")
-		if strings.HasPrefix(line, "newline ") || line == "punct ," {
+		if strings.HasPrefix(line, "newline ") {
 			continue
 		}
-		kept = append(kept, line)
+		tokens = append(tokens, line)
+	}
+	drop := make([]bool, len(tokens))
+	var open []int
+	for index, token := range tokens {
+		switch token {
+		case "punct (":
+			grouping := index == 0
+			if index > 0 {
+				before := tokens[index-1]
+				grouping = before == "keyword return" ||
+					(strings.HasPrefix(before, "punct ") && before != "punct )" && before != "punct ]" && before != "punct >" && before != "punct }")
+			}
+			drop[index] = grouping
+			open = append(open, index)
+		case "punct )":
+			if len(open) > 0 {
+				last := open[len(open)-1]
+				open = open[:len(open)-1]
+				drop[index] = drop[last]
+			}
+		}
+	}
+	var kept []string
+	for index, token := range tokens {
+		if drop[index] || token == "punct ," {
+			continue
+		}
+		kept = append(kept, token)
 	}
 	return strings.Join(kept, "\n")
 }

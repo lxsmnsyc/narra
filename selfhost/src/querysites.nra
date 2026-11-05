@@ -1,0 +1,552 @@
+// The position index of narrac query: every place in a module that a query
+// can point at or report, with its source range.
+//
+// Expressions carry only a start position, the token the parser recorded
+// (the name of a field read, the `(` of a call, the operator of a binary
+// expression). A site's range is that token's range from the module's
+// tokens; a name site (an identifier, a declaration name) is the name's
+// token. Declarations record the position of their keyword, so their name
+// is the first identifier token after it with that text.
+//
+// The parser gives every node inside a template string the template's
+// position (parser.nra, parseTemplate), so a site inside one is marked
+// inTemplate and spans the whole template token.
+//
+// collectSites walks the declarations of a module in source order and
+// lists a node before its children, so of the sites that cover a position
+// the last one listed is the innermost.
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import {
+  Pos,
+  File,
+  Decl,
+  FuncDecl,
+  Param,
+  FieldDecl,
+  Block,
+  Stmt,
+  Expr,
+  Pattern,
+  MatchArm,
+  TypeExpr,
+} from "narrac/ast"
+import { Token, TokenKind } from "narrac/lexer"
+
+export enum SiteKind derives Equatable {
+  // An expression; nodeId is the expression.
+  ExpressionSite
+  // The function name of a call written `f(...)` or `M.f(...)`; nodeId is
+  // the call, whose ref says what it calls.
+  CalleeSite
+  // The name of a parameter, `const`, `let` or loop variable, or a binding
+  // in a pattern; nodeId is the declaring node.
+  LocalSite
+  // A pattern that names an enum variant; nodeId is the pattern.
+  VariantPatternSite
+  // The name of a top-level declaration; declaration is its index in
+  // File.declarations and member the variant index (or -1).
+  DeclarationSite
+}
+
+export struct Site {
+  kind: SiteKind
+  nodeId: int
+  start: Pos
+  end: Pos
+  name: string // the identifier at the site, or ""
+  declaration: int
+  member: int
+  // The expression of an expression site, the call of a callee site.
+  expression: Option<Expr>
+  // The type written for a parameter or `const`/`let` name, if any.
+  annotation: Option<TypeExpr> = None
+  // Inside a template string: the range is the template's, not the node's.
+  inTemplate: bool = false
+  // The callee name of a call: the call's CalleeSite stands for it.
+  isCallee: bool = false
+}
+
+struct Collector {
+  tokens: Array<Token>
+  sites: Array<Site>
+  // The nesting of template strings being walked, and the range of the
+  // outermost one.
+  templateDepth: int
+  templateStart: Pos
+  templateEnd: Pos
+}
+
+// isBefore orders positions by line, then column.
+export function isBefore(left: Pos, right: Pos): bool {
+  return left.line < right.line || (left.line == right.line && left.column < right.column)
+}
+
+// findFirstToken is the index of the first token that starts at or after
+// pos (binary search), or the token count.
+function findFirstToken(tokens: Array<Token>, pos: Pos): int {
+  let low = 0
+  let high = Arrays.length(tokens)
+  while (low < high) {
+    const middle = (low + high) / 2
+    const token = tokens[middle]
+    if (isBefore(Pos { line: token.line, column: token.column }, pos)) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
+// findTokenEnd is the end of the token that starts at pos, or the position
+// one character after pos when no token starts there (inside a template).
+function findTokenEnd(tokens: Array<Token>, pos: Pos): Pos {
+  const index = findFirstToken(tokens, pos)
+  if (index < Arrays.length(tokens)) {
+    const token = tokens[index]
+    if (token.line == pos.line && token.column == pos.column) {
+      return Pos { line: token.endLine, column: token.endColumn }
+    }
+  }
+  return Pos { line: pos.line, column: pos.column + 1 }
+}
+
+// findNameStart is the start of the first identifier token at or after pos
+// whose text is name, looking a few tokens ahead (past `export function*`,
+// `mutable`, `Enum.`). It is pos when there is none.
+function findNameStart(tokens: Array<Token>, pos: Pos, name: string): Pos {
+  const first = findFirstToken(tokens, pos)
+  for (const index of Ranges.between(first, first + 8)) {
+    if (index >= Arrays.length(tokens)) {
+      break
+    }
+    const token = tokens[index]
+    if (token.kind == TokenKind.TokIdent && token.text == name) {
+      return Pos { line: token.line, column: token.column }
+    }
+  }
+  return pos
+}
+
+function endOfName(start: Pos, name: string): Pos {
+  return Pos { line: start.line, column: start.column + Str.charCount(name) }
+}
+
+function addSite(
+  mutable collector: Collector,
+  kind: SiteKind,
+  nodeId: int,
+  start: Pos,
+  end: Pos,
+  name: string,
+  expression: Option<Expr>,
+) uses alloc {
+  const inTemplate = collector.templateDepth > 0
+  const site = Site {
+    kind: kind,
+    nodeId: nodeId,
+    start: inTemplate ? collector.templateStart : start,
+    end: inTemplate ? collector.templateEnd : end,
+    name: name,
+    declaration: -1,
+    member: -1,
+    expression: expression,
+    inTemplate: inTemplate,
+  }
+  Arrays.push(mutable collector.sites, site)
+}
+
+// addLocalSite adds the site of a parameter or `const`/`let` name with the
+// type written for it.
+function addLocalSite(
+  mutable collector: Collector,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+  annotation: Option<TypeExpr>,
+) uses alloc {
+  addNameSite(mutable collector, SiteKind.LocalSite, nodeId, pos, name)
+  const last = Arrays.length(collector.sites) - 1
+  collector.sites[last].annotation = annotation
+}
+
+// addNameSite adds a site for a name written at or after pos.
+function addNameSite(
+  mutable collector: Collector,
+  kind: SiteKind,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+) uses alloc {
+  const start = findNameStart(collector.tokens, pos, name)
+  addSite(mutable collector, kind, nodeId, start, endOfName(start, name), name, None)
+}
+
+function addDeclarationSite(
+  mutable collector: Collector,
+  pos: Pos,
+  name: string,
+  declaration: int,
+  member: int,
+) uses alloc {
+  const start = findNameStart(collector.tokens, pos, name)
+  Arrays.push(mutable collector.sites, Site {
+    kind: SiteKind.DeclarationSite,
+    nodeId: -1,
+    start: start,
+    end: endOfName(start, name),
+    name: name,
+    declaration: declaration,
+    member: member,
+    expression: None,
+  })
+}
+
+// collectSites lists the sites of a module's file. tokens are the file's
+// tokens (Lexer.lex).
+export function collectSites(file: File, tokens: Array<Token>): Array<Site> uses alloc {
+  let collector = Collector {
+    tokens: tokens,
+    sites: [],
+    templateDepth: 0,
+    templateStart: Pos { line: 0, column: 0 },
+    templateEnd: Pos { line: 0, column: 0 },
+  }
+  let index = 0
+  for (const declaration of Arrays.values(file.declarations)) {
+    match (declaration) {
+      Decl.Func(funcDecl) => {
+        addDeclarationSite(mutable collector, funcDecl.pos, funcDecl.name, index, -1)
+        collectFunction(mutable collector, funcDecl)
+      }
+      Decl.Const(constDecl) => {
+        addDeclarationSite(mutable collector, constDecl.pos, constDecl.name, index, -1)
+        collectExpression(mutable collector, constDecl.value)
+      }
+      Decl.Struct(structDecl) => {
+        addDeclarationSite(mutable collector, structDecl.pos, structDecl.name, index, -1)
+        collectFields(mutable collector, structDecl.fields)
+      }
+      Decl.Enum(enumDecl) => {
+        addDeclarationSite(mutable collector, enumDecl.pos, enumDecl.name, index, -1)
+        let member = 0
+        for (const variant of Arrays.values(enumDecl.variants)) {
+          addDeclarationSite(mutable collector, variant.pos, variant.name, index, member)
+          member = member + 1
+        }
+      }
+      Decl.Distinct(distinctDecl) => addDeclarationSite(
+        mutable collector,
+        distinctDecl.pos,
+        distinctDecl.name,
+        index,
+        -1,
+      )
+      Decl.Trait(traitDecl) => {
+        addDeclarationSite(mutable collector, traitDecl.pos, traitDecl.name, index, -1)
+      }
+      Decl.Impl(implDecl) => {
+        for (const funcDecl of Arrays.values(implDecl.functions)) {
+          collectFunction(mutable collector, funcDecl)
+        }
+      }
+      Decl.Test(testDecl) => collectBlock(mutable collector, testDecl.body)
+    }
+    index = index + 1
+  }
+  return collector.sites
+}
+
+function collectFunction(mutable collector: Collector, funcDecl: FuncDecl) uses alloc {
+  collectParameters(mutable collector, funcDecl.parameters)
+  if (funcDecl.body is Some(body)) {
+    collectBlock(mutable collector, body)
+  }
+}
+
+function collectParameters(mutable collector: Collector, parameters: Array<Param>) uses alloc {
+  for (const parameter of Arrays.values(parameters)) {
+    addLocalSite(mutable collector, parameter.id, parameter.pos, parameter.name, parameter.type)
+  }
+}
+
+function collectFields(mutable collector: Collector, fields: Array<FieldDecl>) uses alloc {
+  for (const field of Arrays.values(fields)) {
+    if (field.default is Some(value)) {
+      collectExpression(mutable collector, value)
+    }
+  }
+}
+
+function collectBlock(mutable collector: Collector, block: Block) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    collectStatement(mutable collector, statement)
+  }
+}
+
+// isHiddenName tells the loop variable a destructuring for loop gets from
+// the parser (`__for_<line>_<column>`), which the source does not show.
+function isHiddenName(name: string): bool {
+  return Str.startsWith(name, "__for_")
+}
+
+function collectStatement(mutable collector: Collector, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectBlock(mutable collector, block)
+    Stmt.VarStmt(nodeId, pos, _, name, pattern, annotation, value) => {
+      if (name != "") {
+        addLocalSite(mutable collector, nodeId, pos, name, annotation)
+      }
+      if (pattern is Some(destructured)) {
+        collectPattern(mutable collector, destructured)
+      }
+      collectExpression(mutable collector, value)
+    }
+    Stmt.AssignStmt(_, target, value) => {
+      collectExpression(mutable collector, target)
+      collectExpression(mutable collector, value)
+    }
+    Stmt.ExprStmt(_, expression) => collectExpression(mutable collector, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectExpression(mutable collector, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, thenBlock, orElse) => {
+      collectExpression(mutable collector, condition)
+      collectBlock(mutable collector, thenBlock)
+      if (orElse is Some(elseStatement)) {
+        collectStatement(mutable collector, elseStatement)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collectExpression(mutable collector, condition)
+      collectBlock(mutable collector, body)
+    }
+    Stmt.ForStmt(nodeId, pos, _, name, iterable, body) => {
+      if (!isHiddenName(name)) {
+        addNameSite(mutable collector, SiteKind.LocalSite, nodeId, pos, name)
+      }
+      collectExpression(mutable collector, iterable)
+      collectBlock(mutable collector, body)
+    }
+    Stmt.YieldStmt(_, value, _) => collectExpression(mutable collector, value)
+    Stmt.BreakStmt(_, _) => {}
+    Stmt.ContinueStmt(_, _) => {}
+  }
+}
+
+// addExpressionSite adds the site of an expression that is not a name: the
+// range of the token at its position.
+function addExpressionSite(
+  mutable collector: Collector,
+  nodeId: int,
+  pos: Pos,
+  expression: Expr,
+) uses alloc {
+  const end = findTokenEnd(collector.tokens, pos)
+  addSite(mutable collector, SiteKind.ExpressionSite, nodeId, pos, end, "", Some(expression))
+}
+
+function collectExpression(mutable collector: Collector, expression: Expr) uses alloc {
+  match (expression) {
+    Expr.IntLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
+    Expr.FloatLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
+    Expr.StringLit(nodeId, pos, _, end) => addSite(
+      mutable collector,
+      SiteKind.ExpressionSite,
+      nodeId,
+      pos,
+      end,
+      "",
+      Some(expression),
+    )
+    Expr.CharLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
+    Expr.BoolLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
+    Expr.TemplateLit(nodeId, pos, parts) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      if (collector.templateDepth == 0) {
+        collector.templateStart = pos
+        collector.templateEnd = findTokenEnd(collector.tokens, pos)
+      }
+      collector.templateDepth = collector.templateDepth + 1
+      collectExpressions(mutable collector, parts)
+      collector.templateDepth = collector.templateDepth - 1
+    }
+    Expr.Ident(nodeId, pos, name) => {
+      if (!isHiddenName(name)) {
+        addSite(
+          mutable collector,
+          SiteKind.ExpressionSite,
+          nodeId,
+          pos,
+          endOfName(pos, name),
+          name,
+          Some(expression),
+        )
+      }
+    }
+    Expr.FieldExpr(nodeId, pos, target, name) => {
+      addSite(
+        mutable collector,
+        SiteKind.ExpressionSite,
+        nodeId,
+        pos,
+        endOfName(pos, name),
+        name,
+        Some(expression),
+      )
+      collectExpression(mutable collector, target)
+    }
+    Expr.IsExpr(nodeId, pos, subject, pattern) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpression(mutable collector, subject)
+      collectPattern(mutable collector, pattern)
+    }
+    Expr.IndexExpr(nodeId, pos, target, index) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpression(mutable collector, target)
+      collectExpression(mutable collector, index)
+    }
+    Expr.MapLit(nodeId, pos, _, keys, values) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpressions(mutable collector, keys)
+      collectExpressions(mutable collector, values)
+    }
+    Expr.CallExpr(nodeId, pos, callee, arguments) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      const calleeSite = Arrays.length(collector.sites)
+      collectExpression(mutable collector, callee)
+      // The callee's name stands for the function the call resolves to.
+      const isNamed = callee is Expr.Ident(_, _, _) || callee is Expr.FieldExpr(_, _, _, _)
+      if (isNamed && calleeSite < Arrays.length(collector.sites)) {
+        collector.sites[calleeSite].isCallee = true
+      }
+      if (callee is Expr.Ident(_, calleePos, calleeName)) {
+        addSite(
+          mutable collector,
+          SiteKind.CalleeSite,
+          nodeId,
+          calleePos,
+          endOfName(calleePos, calleeName),
+          calleeName,
+          Some(expression),
+        )
+      }
+      if (callee is Expr.FieldExpr(_, fieldPos, _, fieldName)) {
+        addSite(
+          mutable collector,
+          SiteKind.CalleeSite,
+          nodeId,
+          fieldPos,
+          endOfName(fieldPos, fieldName),
+          fieldName,
+          Some(expression),
+        )
+      }
+      for (const argument of Arrays.values(arguments)) {
+        collectExpression(mutable collector, argument.value)
+      }
+    }
+    Expr.UnaryExpr(nodeId, pos, _, operand) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpression(mutable collector, operand)
+    }
+    Expr.BinaryExpr(nodeId, pos, _, left, right) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpression(mutable collector, left)
+      collectExpression(mutable collector, right)
+    }
+    Expr.StructLit(nodeId, pos, _, _, fields, spread) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      for (const field of Arrays.values(fields)) {
+        collectExpression(mutable collector, field.value)
+      }
+      if (spread is Some(spreadValue)) {
+        collectExpression(mutable collector, spreadValue)
+      }
+    }
+    Expr.ArrayLit(nodeId, pos, elements, _) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpressions(mutable collector, elements)
+    }
+    Expr.MatchExpr(nodeId, pos, subject, arms) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectExpression(mutable collector, subject)
+      for (const arm of Arrays.values(arms)) {
+        collectArm(mutable collector, arm)
+      }
+    }
+    Expr.BlockExpr(nodeId, pos, block) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectBlock(mutable collector, block)
+    }
+    Expr.ArrowExpr(nodeId, pos, parameters, _, body, block) => {
+      addExpressionSite(mutable collector, nodeId, pos, expression)
+      collectParameters(mutable collector, parameters)
+      if (body is Some(bodyExpression)) {
+        collectExpression(mutable collector, bodyExpression)
+      }
+      if (block is Some(bodyBlock)) {
+        collectBlock(mutable collector, bodyBlock)
+      }
+    }
+  }
+}
+
+function collectExpressions(mutable collector: Collector, expressions: Array<Expr>) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    collectExpression(mutable collector, expression)
+  }
+}
+
+function collectArm(mutable collector: Collector, arm: MatchArm) uses alloc {
+  collectPattern(mutable collector, arm.pattern)
+  if (arm.guard is Some(guard)) {
+    collectExpression(mutable collector, guard)
+  }
+  if (arm.body is Some(body)) {
+    collectExpression(mutable collector, body)
+  }
+  if (arm.block is Some(block)) {
+    collectBlock(mutable collector, block)
+  }
+}
+
+function collectPattern(mutable collector: Collector, pattern: Pattern) uses alloc {
+  match (pattern) {
+    Pattern.PatWildcard(_, _) => {}
+    // A bare name is a binding, or a variant without fields (`None`).
+    Pattern.PatName(nodeId, pos, name) => {
+      addSite(mutable collector, SiteKind.LocalSite, nodeId, pos, endOfName(pos, name), name, None)
+      addSite(
+        mutable collector,
+        SiteKind.VariantPatternSite,
+        nodeId,
+        pos,
+        endOfName(pos, name),
+        name,
+        None,
+      )
+    }
+    Pattern.PatCtor(nodeId, pos, _, name, arguments, _) => {
+      addNameSite(mutable collector, SiteKind.VariantPatternSite, nodeId, pos, name)
+      for (const argument of Arrays.values(arguments)) {
+        collectPattern(mutable collector, argument)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        collectPattern(mutable collector, field.pattern)
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectPattern(mutable collector, argument)
+      }
+    }
+    Pattern.PatLit(_, _, literal) => collectExpression(mutable collector, literal)
+  }
+}

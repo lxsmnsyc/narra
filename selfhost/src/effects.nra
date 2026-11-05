@@ -65,6 +65,19 @@ export struct EffectState {
   report: bool
   changed: bool
   body: int // the body being walked
+  // The direct calls of declared functions found by the reporting walk, in
+  // walk order (the call graph that narrac query reads).
+  calls: Array<CallEdge> = []
+}
+
+// A call of a declared function or implement block function: the body that
+// makes it (a func, impl or test body), what the call resolves to and where
+// the callee expression starts. Calls through function values are not edges.
+export struct CallEdge {
+  body: int // Checker.bodies
+  callId: int // the CallExpr
+  callee: Ref // Ref.Function or Ref.Implementation
+  pos: Pos
 }
 
 const KNOWN_EFFECTS = ["alloc", "io", "unsafe"]
@@ -843,6 +856,15 @@ function walkCall(
   }
   const ref = findRef(checker, state.body, nodeId)
   if (findCallee(checker, ref) is Some(found)) {
+    if (state.report) {
+      const edge = CallEdge {
+        body: state.body,
+        callId: nodeId,
+        callee: ref,
+        pos: getExpressionPos(callee),
+      }
+      Arrays.push(mutable state.calls, edge)
+    }
     walkUserCall(mutable checker, mutable state, mutable out, pos, found, arguments)
     bindResultEffects(mutable checker, state, nodeId, found, arguments)
     return
@@ -1048,6 +1070,52 @@ function walkUserCall(
       )
     }
   }
+}
+
+// findRefEffects lists the effects callers of the function a ref names see
+// (funcEffects), sorted, or None when the ref names no declared function.
+// Effect variables stay as names.
+export function findRefEffects(
+  checker: Checker,
+  state: EffectState,
+  ref: Ref,
+): Option<Array<string>> uses alloc {
+  if (findCallee(checker, ref) is Some(callee)) {
+    return Some(sortEffectNames(funcEffects(state, callee)))
+  }
+  return None
+}
+
+// findArrowEffects lists the effects of an arrow function's body, sorted,
+// or None when the pass did not walk it.
+export function findArrowEffects(
+  state: EffectState,
+  nodeId: int,
+): Option<Array<string>> uses alloc {
+  if (state.arrows[nodeId] is Some(found)) {
+    return Some(sortEffectNames(found))
+  }
+  return None
+}
+
+// findExpressionEffects lists the effects of evaluating an expression of a
+// checked body, sorted, after the pass has run. It walks the expression
+// again without reporting; an arrow function there adds nothing.
+export function findExpressionEffects(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  bodyIndex: int,
+  expression: Expr,
+): Array<string> uses alloc {
+  const savedReport = state.report
+  const savedBody = state.body
+  state.report = false
+  state.body = bodyIndex
+  let out: Array<Effect> = []
+  walkExpression(mutable checker, mutable state, mutable out, expression)
+  state.report = savedReport
+  state.body = savedBody
+  return sortEffectNames(out)
 }
 
 // dump prints the effects of every function: one line per open func or impl

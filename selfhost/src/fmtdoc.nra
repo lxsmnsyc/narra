@@ -1,0 +1,803 @@
+// The document IR and printer of `narrac fmt` (contracts/fmt-doc.md): Wadler's
+// "prettier printer" as Prettier's printDocToString runs it. A pure library: no
+// parser or AST dependency.
+//
+// print first copies the document into flat arrays (an arena, one node per
+// document) and marks every group that holds a HardLine or BreakParent, so the
+// printer needs no recursion and no per-group rescan. The printer keeps an
+// explicit stack of (indent level, mode, node) and `fits` keeps its own, so a
+// document 50000 levels deep prints without growing the C stack.
+//
+// `narrac fmt-doc <file>` prints a document written as text, for the tests.
+// Options come from `@` lines at the start of a line, before the document:
+//   @width 20      printWidth (default 80)
+//   @tabWidth 4    tabWidth (default 2)
+//   @useTabs       indent with tabs
+// The document is one form. A form is one of:
+//   "text"                    Text; escapes \" \\ \t, no line breaks
+//   line  softline  hardline  breakparent
+//   (concat form...)          Concat
+//   (join separator form...)  join(separator, parts)
+//   (indent form)             Indent
+//   (group form)              Group without an id
+//   (group-id N form)         Group with id N
+//   (ifbreak broken flat)     IfBreak by the enclosing group
+//   (ifbreak-id N broken flat)  IfBreak by group id N
+//   (suffix form)             LineSuffix
+// `;` starts a comment that runs to the end of the line.
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export enum Doc {
+  Text(text: string) // no line breaks inside
+  Concat(parts: Array<Doc>)
+  Indent(contents: Doc) // one level deeper for lines inside
+  Group(contents: Doc, id: int) // flat if it fits in the remaining width, else broken; id -1 for none
+  Line // a space when flat, a newline when broken
+  SoftLine // nothing when flat, a newline when broken
+  HardLine // always a newline, and breaks every enclosing group
+  IfBreak(broken: Doc, flat: Doc, groupId: int) // by the enclosing group, or by groupId when not -1
+  LineSuffix(contents: Doc) // printed before the next newline (trailing comments)
+  BreakParent // breaks the enclosing groups
+}
+
+export struct Options {
+  printWidth: int
+  tabWidth: int
+  useTabs: bool
+}
+
+export function text(value: string): Doc uses alloc {
+  return Doc.Text(value)
+}
+
+export function concat(parts: Array<Doc>): Doc uses alloc {
+  return Doc.Concat(parts)
+}
+
+// join puts separator between the parts.
+export function join(separator: Doc, parts: Array<Doc>): Doc uses alloc {
+  let joined: Array<Doc> = []
+  for (const index of Ranges.between(0, Arrays.length(parts))) {
+    if (index > 0) {
+      Arrays.push(mutable joined, separator)
+    }
+    Arrays.push(mutable joined, parts[index])
+  }
+  return Doc.Concat(joined)
+}
+
+export function indent(contents: Doc): Doc uses alloc {
+  return Doc.Indent(contents)
+}
+
+export function group(contents: Doc): Doc uses alloc {
+  return Doc.Group(contents, -1)
+}
+
+// groupWithId is a group that an IfBreak elsewhere can ask about.
+export function groupWithId(contents: Doc, id: int): Doc uses alloc {
+  return Doc.Group(contents, id)
+}
+
+const FLAT = 0
+const BREAK = 1
+
+const KIND_TEXT = 0
+const KIND_CONCAT = 1
+const KIND_INDENT = 2
+const KIND_GROUP = 3
+const KIND_LINE = 4
+const KIND_SOFT_LINE = 5
+const KIND_HARD_LINE = 6
+const KIND_IF_BREAK = 7
+const KIND_LINE_SUFFIX = 8
+const KIND_BREAK_PARENT = 9
+
+// The document as arrays indexed by node. A node's children have higher
+// indexes than the node. Concat has all its parts as children, Indent, Group
+// and LineSuffix one, IfBreak two (broken, flat). forced says that the node
+// holds a HardLine or BreakParent, so a group node with forced is broken.
+struct Arena {
+  kinds: Array<int>
+  texts: Array<string>
+  ids: Array<int>
+  children: Array<Array<int>>
+  forced: Array<bool>
+}
+
+// The documents still to copy, each with the node that is to describe it.
+struct Work {
+  documents: Array<Doc>
+  nodes: Array<int>
+  count: int
+}
+
+function addNode(mutable arena: Arena): int uses alloc {
+  const node = Arrays.length(arena.kinds)
+  Arrays.push(mutable arena.kinds, KIND_TEXT)
+  Arrays.push(mutable arena.texts, "")
+  Arrays.push(mutable arena.ids, -1)
+  Arrays.push(mutable arena.children, [])
+  Arrays.push(mutable arena.forced, false)
+  return node
+}
+
+function pushWork(mutable work: Work, document: Doc, node: int) uses alloc {
+  if (work.count < Arrays.length(work.nodes)) {
+    work.documents[work.count] = document
+    work.nodes[work.count] = node
+  } else {
+    Arrays.push(mutable work.documents, document)
+    Arrays.push(mutable work.nodes, node)
+  }
+  work.count = work.count + 1
+}
+
+// addChild gives a document a node and queues it.
+function addChild(mutable arena: Arena, mutable work: Work, document: Doc): int uses alloc {
+  const node = addNode(mutable arena)
+  pushWork(mutable work, document, node)
+  return node
+}
+
+function flatten(document: Doc): Arena uses alloc {
+  let arena = Arena { kinds: [], texts: [], ids: [], children: [], forced: [] }
+  let work = Work { documents: [], nodes: [], count: 0 }
+  const root = addChild(mutable arena, mutable work, document)
+  while (work.count > 0) {
+    work.count = work.count - 1
+    const current = work.documents[work.count]
+    const node = work.nodes[work.count]
+    match (current) {
+      Doc.Text(value) => {
+        arena.kinds[node] = KIND_TEXT
+        arena.texts[node] = value
+      }
+      Doc.Concat(parts) => {
+        arena.kinds[node] = KIND_CONCAT
+        let partNodes: Array<int> = []
+        for (const part of Arrays.values(parts)) {
+          Arrays.push(mutable partNodes, addChild(mutable arena, mutable work, part))
+        }
+        arena.children[node] = partNodes
+      }
+      Doc.Indent(contents) => {
+        arena.kinds[node] = KIND_INDENT
+        const contentsNode = addChild(mutable arena, mutable work, contents)
+        arena.children[node] = [contentsNode]
+      }
+      Doc.Group(contents, id) => {
+        arena.kinds[node] = KIND_GROUP
+        arena.ids[node] = id
+        const contentsNode = addChild(mutable arena, mutable work, contents)
+        arena.children[node] = [contentsNode]
+      }
+      Doc.Line => {
+        arena.kinds[node] = KIND_LINE
+      }
+      Doc.SoftLine => {
+        arena.kinds[node] = KIND_SOFT_LINE
+      }
+      Doc.HardLine => {
+        arena.kinds[node] = KIND_HARD_LINE
+      }
+      Doc.IfBreak(broken, flat, groupId) => {
+        arena.kinds[node] = KIND_IF_BREAK
+        arena.ids[node] = groupId
+        const brokenNode = addChild(mutable arena, mutable work, broken)
+        const flatNode = addChild(mutable arena, mutable work, flat)
+        arena.children[node] = [brokenNode, flatNode]
+      }
+      Doc.LineSuffix(contents) => {
+        arena.kinds[node] = KIND_LINE_SUFFIX
+        const contentsNode = addChild(mutable arena, mutable work, contents)
+        arena.children[node] = [contentsNode]
+      }
+      Doc.BreakParent => {
+        arena.kinds[node] = KIND_BREAK_PARENT
+      }
+    }
+  }
+  markForced(mutable arena)
+  return arena
+}
+
+// markForced is Prettier's propagateBreaks: children come after their parent,
+// so one pass from the last node to the first sees every child first.
+function markForced(mutable arena: Arena) {
+  const count = Arrays.length(arena.kinds)
+  for (const step of Ranges.between(0, count)) {
+    const node = count - 1 - step
+    const kind = arena.kinds[node]
+    let forced = kind == KIND_HARD_LINE || kind == KIND_BREAK_PARENT
+    for (const child of Arrays.values(arena.children[node])) {
+      if (arena.forced[child]) {
+        forced = true
+      }
+    }
+    arena.forced[node] = forced
+  }
+}
+
+// The printer state: the stack of commands (indent level, mode, node), the
+// line suffixes waiting for the next newline, the mode of every group with an
+// id, and the stack that `fits` uses.
+struct Printer {
+  commandIndents: Array<int>
+  commandModes: Array<int>
+  commandNodes: Array<int>
+  commandCount: int
+  suffixIndents: Array<int>
+  suffixModes: Array<int>
+  suffixNodes: Array<int>
+  suffixCount: int
+  groupModes: Map<int, int>
+  scratchModes: Array<int>
+  scratchNodes: Array<int>
+  scratchCount: int
+}
+
+function pushCommand(mutable printer: Printer, indent: int, mode: int, node: int) uses alloc {
+  if (printer.commandCount < Arrays.length(printer.commandNodes)) {
+    printer.commandIndents[printer.commandCount] = indent
+    printer.commandModes[printer.commandCount] = mode
+    printer.commandNodes[printer.commandCount] = node
+  } else {
+    Arrays.push(mutable printer.commandIndents, indent)
+    Arrays.push(mutable printer.commandModes, mode)
+    Arrays.push(mutable printer.commandNodes, node)
+  }
+  printer.commandCount = printer.commandCount + 1
+}
+
+function pushScratch(mutable printer: Printer, mode: int, node: int) uses alloc {
+  if (printer.scratchCount < Arrays.length(printer.scratchNodes)) {
+    printer.scratchModes[printer.scratchCount] = mode
+    printer.scratchNodes[printer.scratchCount] = node
+  } else {
+    Arrays.push(mutable printer.scratchModes, mode)
+    Arrays.push(mutable printer.scratchNodes, node)
+  }
+  printer.scratchCount = printer.scratchCount + 1
+}
+
+function addSuffix(mutable printer: Printer, indent: int, mode: int, node: int) uses alloc {
+  if (printer.suffixCount < Arrays.length(printer.suffixNodes)) {
+    printer.suffixIndents[printer.suffixCount] = indent
+    printer.suffixModes[printer.suffixCount] = mode
+    printer.suffixNodes[printer.suffixCount] = node
+  } else {
+    Arrays.push(mutable printer.suffixIndents, indent)
+    Arrays.push(mutable printer.suffixModes, mode)
+    Arrays.push(mutable printer.suffixNodes, node)
+  }
+  printer.suffixCount = printer.suffixCount + 1
+}
+
+// flushSuffixes pushes the waiting line suffixes so that the first one added
+// is printed first.
+function flushSuffixes(mutable printer: Printer) uses alloc {
+  for (const step of Ranges.between(0, printer.suffixCount)) {
+    const index = printer.suffixCount - 1 - step
+    const indent = printer.suffixIndents[index]
+    const mode = printer.suffixModes[index]
+    const node = printer.suffixNodes[index]
+    pushCommand(mutable printer, indent, mode, node)
+  }
+  printer.suffixCount = 0
+}
+
+// findGroupMode is the mode a group with this id was printed in. A group that
+// has not been printed yet counts as flat.
+function findGroupMode(printer: Printer, id: int): int {
+  const found = printer.groupModes[id]
+  if (found is Some(groupMode)) {
+    return groupMode
+  }
+  return FLAT
+}
+
+// fits says whether the node, printed in the mode, and the commands that
+// follow it on the stack take at most `remaining` characters up to the next
+// line that can break.
+function fits(mutable printer: Printer, arena: Arena, startNode: int, startMode: int, remaining: int): bool uses alloc {
+  let width = remaining
+  let restIndex = printer.commandCount
+  printer.scratchCount = 0
+  pushScratch(mutable printer, startMode, startNode)
+  while (width >= 0) {
+    let mode = FLAT
+    let node = 0
+    if (printer.scratchCount > 0) {
+      printer.scratchCount = printer.scratchCount - 1
+      mode = printer.scratchModes[printer.scratchCount]
+      node = printer.scratchNodes[printer.scratchCount]
+    } else if (restIndex > 0) {
+      // The rest of the document keeps the modes it was queued with.
+      restIndex = restIndex - 1
+      mode = printer.commandModes[restIndex]
+      node = printer.commandNodes[restIndex]
+    } else {
+      return true
+    }
+    const kind = arena.kinds[node]
+    if (kind == KIND_TEXT) {
+      width = width - Str.charCount(arena.texts[node])
+    } else if (kind == KIND_CONCAT) {
+      const parts = arena.children[node]
+      for (const step of Ranges.between(0, Arrays.length(parts))) {
+        pushScratch(mutable printer, mode, parts[Arrays.length(parts) - 1 - step])
+      }
+    } else if (kind == KIND_INDENT) {
+      pushScratch(mutable printer, mode, arena.children[node][0])
+    } else if (kind == KIND_GROUP) {
+      let groupMode = mode
+      if (arena.forced[node]) {
+        groupMode = BREAK
+      }
+      pushScratch(mutable printer, groupMode, arena.children[node][0])
+    } else if (kind == KIND_IF_BREAK) {
+      let groupMode = mode
+      if (arena.ids[node] != -1) {
+        groupMode = findGroupMode(printer, arena.ids[node])
+      }
+      if (groupMode == BREAK) {
+        pushScratch(mutable printer, mode, arena.children[node][0])
+      } else {
+        pushScratch(mutable printer, mode, arena.children[node][1])
+      }
+    } else if (kind == KIND_LINE) {
+      if (mode == BREAK) {
+        return true
+      }
+      width = width - 1
+    } else if (kind == KIND_SOFT_LINE) {
+      if (mode == BREAK) {
+        return true
+      }
+    } else if (kind == KIND_HARD_LINE) {
+      return true
+    }
+    // LineSuffix and BreakParent take no width.
+  }
+  return false
+}
+
+// The output: text is written when it comes, indentation only before the
+// first text of a line, and blanks at the end of a line are held back, so a
+// line never ends in whitespace.
+struct Writer {
+  builder: StringBuilder
+  pending: string // spaces and tabs not written yet
+  atLineStart: bool
+  lineIndent: int // levels of the current line
+  column: int
+}
+
+function isBlank(byte: int): bool {
+  return byte == 32 || byte == 9
+}
+
+function writeText(mutable writer: Writer, value: string, options: Options) uses alloc {
+  const length = Str.length(value)
+  let end = length
+  while (end > 0 && isBlank(Str.byteAt(value, end - 1))) {
+    end = end - 1
+  }
+  writer.column = writer.column + Str.charCount(value)
+  if (end == 0) {
+    writer.pending = `${writer.pending}${value}`
+    return
+  }
+  if (writer.atLineStart) {
+    let indentation = Str.repeat(" ", writer.lineIndent * options.tabWidth)
+    if (options.useTabs) {
+      indentation = Str.repeat("\t", writer.lineIndent)
+    }
+    Str.append(mutable writer.builder, indentation)
+    writer.atLineStart = false
+  }
+  const held = writer.pending
+  Str.append(mutable writer.builder, held)
+  Str.append(mutable writer.builder, Str.slice(value, 0, end))
+  writer.pending = Str.sliceFrom(value, end)
+}
+
+function writeNewline(mutable writer: Writer, indent: int, options: Options) uses alloc {
+  writer.pending = ""
+  Str.append(mutable writer.builder, "\n")
+  writer.atLineStart = true
+  writer.lineIndent = indent
+  writer.column = indent * options.tabWidth
+}
+
+export function print(document: Doc, options: Options): string uses alloc {
+  return printDocument(document, options)
+}
+
+function printDocument(document: Doc, options: Options): string uses alloc {
+  const arena = flatten(document)
+  let printer = Printer {
+    commandIndents: [], commandModes: [], commandNodes: [], commandCount: 0,
+    suffixIndents: [], suffixModes: [], suffixNodes: [], suffixCount: 0,
+    groupModes: Map {},
+    scratchModes: [], scratchNodes: [], scratchCount: 0
+  }
+  let writer = Writer { builder: Str.builder(), pending: "", atLineStart: true, lineIndent: 0, column: 0 }
+  // Set when a HardLine was printed in a flat group: the next group measures again.
+  let needsRemeasure = false
+  pushCommand(mutable printer, 0, BREAK, 0)
+  while (true) {
+    if (printer.commandCount == 0) {
+      if (printer.suffixCount == 0) {
+        break
+      }
+      flushSuffixes(mutable printer)
+      continue
+    }
+    printer.commandCount = printer.commandCount - 1
+    const indent = printer.commandIndents[printer.commandCount]
+    const mode = printer.commandModes[printer.commandCount]
+    const node = printer.commandNodes[printer.commandCount]
+    const kind = arena.kinds[node]
+    if (kind == KIND_TEXT) {
+      writeText(mutable writer, arena.texts[node], options)
+    } else if (kind == KIND_CONCAT) {
+      const parts = arena.children[node]
+      for (const step of Ranges.between(0, Arrays.length(parts))) {
+        pushCommand(mutable printer, indent, mode, parts[Arrays.length(parts) - 1 - step])
+      }
+    } else if (kind == KIND_INDENT) {
+      pushCommand(mutable printer, indent + 1, mode, arena.children[node][0])
+    } else if (kind == KIND_GROUP) {
+      let groupMode = BREAK
+      if (mode == FLAT && !needsRemeasure) {
+        if (!arena.forced[node]) {
+          groupMode = FLAT
+        }
+      } else {
+        needsRemeasure = false
+        const remaining = options.printWidth - writer.column
+        if (!arena.forced[node] && fits(mutable printer, arena, arena.children[node][0], FLAT, remaining)) {
+          groupMode = FLAT
+        }
+      }
+      pushCommand(mutable printer, indent, groupMode, arena.children[node][0])
+      if (arena.ids[node] != -1) {
+        printer.groupModes[arena.ids[node]] = groupMode
+      }
+    } else if (kind == KIND_IF_BREAK) {
+      let groupMode = mode
+      if (arena.ids[node] != -1) {
+        groupMode = findGroupMode(printer, arena.ids[node])
+      }
+      if (groupMode == BREAK) {
+        pushCommand(mutable printer, indent, mode, arena.children[node][0])
+      } else {
+        pushCommand(mutable printer, indent, mode, arena.children[node][1])
+      }
+    } else if (kind == KIND_LINE_SUFFIX) {
+      addSuffix(mutable printer, indent, mode, arena.children[node][0])
+    } else if (kind == KIND_LINE || kind == KIND_SOFT_LINE || kind == KIND_HARD_LINE) {
+      if (mode == FLAT && kind != KIND_HARD_LINE) {
+        if (kind == KIND_LINE) {
+          writeText(mutable writer, " ", options)
+        }
+      } else {
+        if (mode == FLAT) {
+          needsRemeasure = true
+        }
+        if (printer.suffixCount > 0) {
+          // Print the suffixes first, then this line again.
+          pushCommand(mutable printer, indent, mode, node)
+          flushSuffixes(mutable printer)
+        } else {
+          writeNewline(mutable writer, indent, options)
+        }
+      }
+    }
+    // BreakParent prints nothing.
+  }
+  return Str.build(writer.builder)
+}
+
+// The reader of the text form. A form being read is a frame: the word after
+// its `(`, the number after `group-id` or `ifbreak-id`, and the documents read
+// so far. Frames are kept in arrays indexed by depth, so deep documents need
+// no recursion.
+struct Reader {
+  heads: Array<string>
+  ids: Array<int>
+  hasIds: Array<bool>
+  children: Array<Array<Doc>>
+  lines: Array<int> // where the form starts, for its errors
+  columns: Array<int>
+  depth: int
+  result: Array<Doc> // the forms read at the top level
+}
+
+function openFrame(mutable reader: Reader, line: int, column: int) uses alloc {
+  if (reader.depth < Arrays.length(reader.heads)) {
+    reader.heads[reader.depth] = ""
+    reader.ids[reader.depth] = -1
+    reader.hasIds[reader.depth] = false
+    reader.children[reader.depth] = []
+    reader.lines[reader.depth] = line
+    reader.columns[reader.depth] = column
+  } else {
+    Arrays.push(mutable reader.heads, "")
+    Arrays.push(mutable reader.ids, -1)
+    Arrays.push(mutable reader.hasIds, false)
+    Arrays.push(mutable reader.children, [])
+    Arrays.push(mutable reader.lines, line)
+    Arrays.push(mutable reader.columns, column)
+  }
+  reader.depth = reader.depth + 1
+}
+
+function addDocument(mutable reader: Reader, document: Doc) uses alloc {
+  if (reader.depth == 0) {
+    Arrays.push(mutable reader.result, document)
+  } else {
+    Arrays.push(mutable reader.children[reader.depth - 1], document)
+  }
+}
+
+function failAt(line: int, column: int, message: string): Result<Doc, string> {
+  return Err(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
+}
+
+function isWordByte(byte: int): bool {
+  return (byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || (byte >= 48 && byte <= 57) || byte == 45
+}
+
+// readString reads a quoted text that starts at start (the quote) and returns
+// the text and the offset after the closing quote.
+struct StringRead {
+  end: int
+  text: string
+}
+
+function readString(source: string, start: int, line: int, column: int): Result<StringRead, string> uses alloc {
+  let builder = Str.builder()
+  let offset = start + 1
+  const length = Str.length(source)
+  while (offset < length) {
+    const byte = Str.byteAt(source, offset)
+    if (byte == 34) {
+      return Ok(StringRead { end: offset + 1, text: Str.build(builder) })
+    }
+    if (byte == 10) {
+      break
+    }
+    if (byte == 92 && offset + 1 < length) {
+      const escaped = Str.byteAt(source, offset + 1)
+      if (escaped == 110) {
+        return Err(`${Int.toString(line)}:${Int.toString(column)}: a text cannot hold a line break`)
+      }
+      if (escaped == 116) {
+        Str.append(mutable builder, "\t")
+      } else {
+        Str.append(mutable builder, Str.slice(source, offset + 1, offset + 2))
+      }
+      offset = offset + 2
+    } else {
+      Str.append(mutable builder, Str.slice(source, offset, offset + 1))
+      offset = offset + 1
+    }
+  }
+  return Err(`${Int.toString(line)}:${Int.toString(column)}: unterminated text`)
+}
+
+// closeFrame builds the document of the form that ends here.
+function closeFrame(mutable reader: Reader, line: int, column: int): Result<Doc, string> uses alloc {
+  reader.depth = reader.depth - 1
+  const head = reader.heads[reader.depth]
+  const parts = reader.children[reader.depth]
+  const id = reader.ids[reader.depth]
+  const startLine = reader.lines[reader.depth]
+  const startColumn = reader.columns[reader.depth]
+  const count = Arrays.length(parts)
+  if (head == "concat") {
+    return Ok(Doc.Concat(parts))
+  }
+  if (head == "join") {
+    if (count == 0) {
+      return failAt(startLine, startColumn, "join needs a separator")
+    }
+    let rest: Array<Doc> = []
+    for (const index of Ranges.between(1, count)) {
+      Arrays.push(mutable rest, parts[index])
+    }
+    return Ok(join(parts[0], rest))
+  }
+  if (head == "indent" || head == "group" || head == "suffix" || head == "group-id") {
+    if (count != 1) {
+      return failAt(startLine, startColumn, `${head} needs one form`)
+    }
+    if (head == "indent") {
+      return Ok(Doc.Indent(parts[0]))
+    }
+    if (head == "group") {
+      return Ok(Doc.Group(parts[0], -1))
+    }
+    if (head == "suffix") {
+      return Ok(Doc.LineSuffix(parts[0]))
+    }
+    if (!reader.hasIds[reader.depth]) {
+      return failAt(startLine, startColumn, "group-id needs a number")
+    }
+    return Ok(Doc.Group(parts[0], id))
+  }
+  if (head == "ifbreak" || head == "ifbreak-id") {
+    if (count != 2) {
+      return failAt(startLine, startColumn, `${head} needs two forms`)
+    }
+    if (head == "ifbreak-id" && !reader.hasIds[reader.depth]) {
+      return failAt(startLine, startColumn, "ifbreak-id needs a number")
+    }
+    return Ok(Doc.IfBreak(parts[0], parts[1], id))
+  }
+  if (head == "") {
+    return failAt(line, column, "empty form")
+  }
+  return failAt(startLine, startColumn, `unknown form ${head}`)
+}
+
+// readWord handles a word (the head of a form, the number of a group-id, or a
+// document) and returns the error message, if any.
+function readWord(mutable reader: Reader, word: string, line: int, column: int): Option<string> uses alloc {
+  if (reader.depth > 0 && reader.heads[reader.depth - 1] == "") {
+    reader.heads[reader.depth - 1] = word
+    return None
+  }
+  if (reader.depth > 0 && !reader.hasIds[reader.depth - 1] && (reader.heads[reader.depth - 1] == "group-id" || reader.heads[reader.depth - 1] == "ifbreak-id")) {
+    const number = Int.parse(word, 10)
+    if (number is Err(message)) {
+      return Some(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
+    }
+    reader.ids[reader.depth - 1] = number.value
+    reader.hasIds[reader.depth - 1] = true
+    return None
+  }
+  if (word == "line") {
+    addDocument(mutable reader, Doc.Line)
+  } else if (word == "softline") {
+    addDocument(mutable reader, Doc.SoftLine)
+  } else if (word == "hardline") {
+    addDocument(mutable reader, Doc.HardLine)
+  } else if (word == "breakparent") {
+    addDocument(mutable reader, Doc.BreakParent)
+  } else {
+    return Some(`${Int.toString(line)}:${Int.toString(column)}: unknown word ${word}`)
+  }
+  return None
+}
+
+// readDocument reads the text form (without the option lines) into a document.
+function readDocument(source: string): Result<Doc, string> uses alloc {
+  let reader = Reader { heads: [], ids: [], hasIds: [], children: [], lines: [], columns: [], depth: 0, result: [] }
+  const length = Str.length(source)
+  let offset = 0
+  let line = 1
+  let lineStart = 0
+  while (offset < length) {
+    const byte = Str.byteAt(source, offset)
+    const column = offset - lineStart + 1
+    if (byte == 10) {
+      line = line + 1
+      offset = offset + 1
+      lineStart = offset
+    } else if (byte == 32 || byte == 9 || byte == 13) {
+      offset = offset + 1
+    } else if (byte == 59) {
+      // A comment runs to the end of the line.
+      while (offset < length && Str.byteAt(source, offset) != 10) {
+        offset = offset + 1
+      }
+    } else if (byte == 40) {
+      openFrame(mutable reader, line, column)
+      offset = offset + 1
+    } else if (byte == 41) {
+      if (reader.depth == 0) {
+        return failAt(line, column, "unexpected )")
+      }
+      const closed = closeFrame(mutable reader, line, column)
+      if (closed is Err(message)) {
+        return Err(message)
+      }
+      addDocument(mutable reader, closed.value)
+      offset = offset + 1
+    } else if (byte == 34) {
+      const read = readString(source, offset, line, column)
+      if (read is Err(message)) {
+        return Err(message)
+      }
+      offset = read.value.end
+      addDocument(mutable reader, Doc.Text(read.value.text))
+    } else if (isWordByte(byte)) {
+      const start = offset
+      while (offset < length && isWordByte(Str.byteAt(source, offset))) {
+        offset = offset + 1
+      }
+      const handled = readWord(mutable reader, Str.slice(source, start, offset), line, column)
+      if (handled is Some(message)) {
+        return Err(message)
+      }
+    } else {
+      return failAt(line, column, `unexpected character ${Str.slice(source, offset, offset + 1)}`)
+    }
+  }
+  if (reader.depth > 0) {
+    return failAt(reader.lines[reader.depth - 1], reader.columns[reader.depth - 1], "unclosed (")
+  }
+  if (Arrays.length(reader.result) != 1) {
+    return failAt(1, 1, "expected one document")
+  }
+  return Ok(reader.result[0])
+}
+
+// runFmtDoc is `narrac fmt-doc <file>`.
+export function runFmtDoc(arguments: Array<string>): int uses io, alloc {
+  if (Arrays.length(arguments) != 3) {
+    printError("usage: narrac fmt-doc file")
+    return 2
+  }
+  const read = Fs.readText(arguments[2])
+  if (read is Err(message)) {
+    printError(message)
+    return 1
+  }
+  // Option lines start with @; they become empty lines, so line numbers stay.
+  let options = Options { printWidth: 80, tabWidth: 2, useTabs: false }
+  let body = Str.builder()
+  for (const sourceLine of Arrays.values(Str.split(read.value, "\n"))) {
+    if (Str.startsWith(sourceLine, "@")) {
+      const words = Str.split(Str.trim(sourceLine), " ")
+      const name = words[0]
+      if (name == "@useTabs") {
+        options.useTabs = true
+      } else if (name == "@width" || name == "@tabWidth") {
+        if (Arrays.length(words) != 2) {
+          printError(`${name} needs a number`)
+          return 1
+        }
+        const number = Int.parse(words[1], 10)
+        if (number is Err(message)) {
+          printError(message)
+          return 1
+        }
+        if (name == "@width") {
+          options.printWidth = number.value
+        } else {
+          options.tabWidth = number.value
+        }
+      } else {
+        printError(`unknown option ${name}`)
+        return 1
+      }
+    } else {
+      Str.append(mutable body, sourceLine)
+    }
+    Str.append(mutable body, "\n")
+  }
+  const document = readDocument(Str.build(body))
+  if (document is Err(message)) {
+    printError(`error ${message}`)
+    return 1
+  }
+  const written = Fs.writeText("/dev/stdout", printDocument(document.value, options))
+  if (written is Err(message)) {
+    printError(message)
+    return 1
+  }
+  return 0
+}
+
+function printError(text: string) {
+  const _ = Fs.writeText("/dev/stderr", `${text}\n`)
+}

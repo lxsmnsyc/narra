@@ -19,7 +19,8 @@
 import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Token, TokenKind, lex, hex } from "narrac/lexer"
+import { Token, TokenKind, lex, lexWithComments, hex } from "narrac/lexer"
+import { Trivia, Collector, createCollector, noteNode, buildTrivia, getPosKey, getIdKey, getDeclPos, getStmtPos, getExprId, getPatternId } from "narrac/trivia"
 import { Pos, File, ImportDecl, ImportName, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Arg, FieldInit, FieldPattern, MatchArm, Stmt, Expr, Pattern } from "narrac/ast"
 import * as Arrays from "std/array"
 import * as Boxes from "std/box"
@@ -43,6 +44,9 @@ struct Parser {
   failed: Option<Diagnostic>
   // ternaryIds holds the ids of the block expressions that `c ? a : b` produced.
   ternaryIds: Array<int>
+  // collector keeps the node ranges for parseWithTrivia; it does nothing
+  // unless it is enabled.
+  collector: Collector
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -81,12 +85,68 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
   if (lexed is Err(error)) {
     return Err(splitLexError(error))
   }
-  let parser = Parser { tokens: lexed.value, index: 0, nextId: firstId, failed: None, ternaryIds: [] }
+  let parser = Parser { tokens: lexed.value, index: 0, nextId: firstId, failed: None, ternaryIds: [], collector: createCollector(false) }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
     return Err(diagnostic)
   }
   return Ok(Parsed { file: file, nextId: parser.nextId })
+}
+
+// parseWithTrivia parses like parse and also returns the side tables of
+// narrac/trivia: comments and where they attach, blank lines, written
+// parentheses and node ends. The tree and the ids are the same as parse's.
+export function parseWithTrivia(source: string, firstId: int): Result<#[Parsed, Trivia], Diagnostic> uses alloc {
+  const lexed = lexWithComments(source)
+  if (lexed is Err(error)) {
+    return Err(splitLexError(error))
+  }
+  const #[tokens, comments] = lexed.value
+  let parser = Parser { tokens: tokens, index: 0, nextId: firstId, failed: None, ternaryIds: [], collector: createCollector(true) }
+  const file = parseFile(mutable parser)
+  if (parser.failed is Some(diagnostic)) {
+    return Err(diagnostic)
+  }
+  const trivia = buildTrivia(parser.collector, comments, source)
+  return Ok(#[Parsed { file: file, nextId: parser.nextId }, trivia])
+}
+
+// ---- Trivia notes. Each does nothing unless the collector is enabled.
+
+// getEndPos is the position after the last token consumed, not counting
+// line breaks.
+function getEndPos(parser: Parser): Pos {
+  let index = parser.index - 1
+  while (index >= 0 && parser.tokens[index].kind == TokenKind.TokNewline) {
+    index = index - 1
+  }
+  if (index < 0) {
+    return createEmptyPos()
+  }
+  const token = parser.tokens[index]
+  return Pos { line: token.endLine, column: token.endColumn }
+}
+
+// noteKey records the node that started at token startIndex and ends at the
+// last consumed token.
+function noteKey(mutable parser: Parser, key: string, startIndex: int) {
+  if (parser.collector.enabled && isOk(parser)) {
+    const start = getPos(parser.tokens[startIndex])
+    const end = getEndPos(parser)
+    noteNode(mutable parser.collector, key, start, end)
+  }
+}
+
+function noteExpr(mutable parser: Parser, startIndex: int, expression: Expr) {
+  if (parser.collector.enabled && isOk(parser)) {
+    noteKey(mutable parser, getIdKey(getExprId(expression)), startIndex)
+  }
+}
+
+function noteType(mutable parser: Parser, startIndex: int, type: TypeExpr) {
+  if (parser.collector.enabled && isOk(parser)) {
+    noteKey(mutable parser, getPosKey("t", type.pos), startIndex)
+  }
 }
 
 // formatDiagnostic formats an error as Go's Diagnostic.Error does.
@@ -363,6 +423,7 @@ function parseFile(mutable parser: Parser): File {
 }
 
 function parseImport(mutable parser: Parser): ImportDecl {
+  const startIndex = parser.index
   const pos = getPos(expect(mutable parser, "import"))
   let alias = ""
   let names: Array<ImportName> = []
@@ -398,10 +459,22 @@ function parseImport(mutable parser: Parser): ImportDecl {
     path = advance(mutable parser).text
   }
   endStatement(mutable parser)
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("i", pos), startIndex)
+  }
   return ImportDecl { pos: pos, alias: alias, names: names, path: path }
 }
 
 function parseDecl(mutable parser: Parser): Decl {
+  const startIndex = parser.index
+  const declaration = parseDeclBody(mutable parser)
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
+  }
+  return declaration
+}
+
+function parseDeclBody(mutable parser: Parser): Decl {
   const exported = accept(mutable parser, "export")
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
@@ -487,6 +560,13 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
 }
 
 function parseType(mutable parser: Parser): TypeExpr {
+  const startIndex = parser.index
+  const type = parseTypeBody(mutable parser)
+  noteType(mutable parser, startIndex, type)
+  return type
+}
+
+function parseTypeBody(mutable parser: Parser): TypeExpr {
   if (isAt(parser, "(")) {
     return parseFuncType(mutable parser)
   }
@@ -629,6 +709,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   let parameters: Array<Param> = []
   while (isOk(parser) && !isAt(parser, ")")) {
     const paramPos = getPos(currentToken(parser))
+    const paramStart = parser.index
     const isMutable = accept(mutable parser, "mutable")
     let escaping = false
     if (!isMutable) {
@@ -637,7 +718,11 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     const paramName = expectIdent(mutable parser).text
     expect(mutable parser, ":")
     const paramType = parseType(mutable parser)
-    Arrays.push(mutable parameters, Param { id: newId(mutable parser), pos: paramPos, name: paramName, isMutable: isMutable, type: Some(paramType), escaping: escaping })
+    const paramId = newId(mutable parser)
+    Arrays.push(mutable parameters, Param { id: paramId, pos: paramPos, name: paramName, isMutable: isMutable, type: Some(paramType), escaping: escaping })
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getIdKey(paramId), paramStart)
+    }
     if (!accept(mutable parser, ",")) {
       break
     }
@@ -668,6 +753,7 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
   skipNewlines(mutable parser)
   while (isOk(parser) && !isAt(parser, "}")) {
     const pos = getPos(currentToken(parser))
+    const fieldStart = parser.index
     const name = expectIdent(mutable parser).text
     expect(mutable parser, ":")
     const fieldType = parseType(mutable parser)
@@ -676,6 +762,9 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
       defaultValue = Some(parseExpr(mutable parser))
     }
     Arrays.push(mutable fields, FieldDecl { pos: pos, name: name, type: fieldType, default: defaultValue })
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getPosKey("f", pos), fieldStart)
+    }
     accept(mutable parser, ",")
     skipNewlines(mutable parser)
   }
@@ -703,15 +792,20 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   let variants: Array<VariantDecl> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     const variantPos = getPos(currentToken(parser))
+    const variantStart = parser.index
     const variantName = expectIdent(mutable parser).text
     let fields: Array<FieldDecl> = []
     if (accept(mutable parser, "(")) {
       while (isOk(parser) && !isAt(parser, ")")) {
         const fieldPos = getPos(currentToken(parser))
+        const fieldStart = parser.index
         const fieldName = expectIdent(mutable parser).text
         expect(mutable parser, ":")
         const fieldType = parseType(mutable parser)
         Arrays.push(mutable fields, FieldDecl { pos: fieldPos, name: fieldName, type: fieldType, default: None })
+        if (parser.collector.enabled) {
+          noteKey(mutable parser, getPosKey("f", fieldPos), fieldStart)
+        }
         if (!accept(mutable parser, ",")) {
           break
         }
@@ -719,6 +813,9 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
       expect(mutable parser, ")")
     }
     Arrays.push(mutable variants, VariantDecl { pos: variantPos, name: variantName, fields: fields })
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getPosKey("v", variantPos), variantStart)
+    }
     accept(mutable parser, ",")
     skipNewlines(mutable parser)
   }
@@ -742,8 +839,11 @@ function parseTraitLists(mutable parser: Parser): TraitLists {
 function parseTraitNames(mutable parser: Parser): Array<TypeExpr> {
   let traits: Array<TypeExpr> = []
   while (isOk(parser)) {
+    const traitStart = parser.index
     const token = expectIdent(mutable parser)
-    Arrays.push(mutable traits, createNamedType(token))
+    const traitType = createNamedType(token)
+    Arrays.push(mutable traits, traitType)
+    noteType(mutable parser, traitStart, traitType)
     if (!accept(mutable parser, ",")) {
       break
     }
@@ -765,6 +865,7 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
       failFound(mutable parser, `a trait has functions only`)
       break
     }
+    const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
     const header = parseFuncHeader(mutable parser, false)
     if (isAt(parser, "{")) {
@@ -772,6 +873,9 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
     }
     Arrays.push(mutable functions, header)
     endTypeDecl(mutable parser)
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getPosKey("d", header.pos), functionStart)
+    }
   }
   expect(mutable parser, "}")
   return TraitDecl { pos: pos, name: name, exported: exported, functions: functions }
@@ -788,8 +892,10 @@ function rejectNestedGenerator(mutable parser: Parser) {
 
 function parseImplDecl(mutable parser: Parser): ImplDecl {
   const pos = getPos(expect(mutable parser, "implement"))
+  const traitStart = parser.index
   const token = expectIdent(mutable parser)
   const traitType = createNamedType(token)
+  noteType(mutable parser, traitStart, traitType)
   expect(mutable parser, "for")
   const declaredType = parseType(mutable parser)
   expect(mutable parser, "{")
@@ -804,8 +910,13 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
       failFound(mutable parser, `an implement block has functions only`)
       break
     }
+    const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
-    Arrays.push(mutable functions, parseFuncDecl(mutable parser, false))
+    const implFunction = parseFuncDecl(mutable parser, false)
+    Arrays.push(mutable functions, implFunction)
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getPosKey("d", implFunction.pos), functionStart)
+    }
     skipNewlines(mutable parser)
   }
   expect(mutable parser, "}")
@@ -958,12 +1069,17 @@ function parseArrow(mutable parser: Parser): Expr {
       return createDummyExpr()
     }
     const paramPos = getPos(currentToken(parser))
+    const paramStart = parser.index
     const paramName = expectIdent(mutable parser).text
     let paramType: Option<TypeExpr> = None
     if (accept(mutable parser, ":")) {
       paramType = Some(parseType(mutable parser))
     }
-    Arrays.push(mutable parameters, Param { id: newId(mutable parser), pos: paramPos, name: paramName, isMutable: false, type: paramType, escaping: false })
+    const paramId = newId(mutable parser)
+    Arrays.push(mutable parameters, Param { id: paramId, pos: paramPos, name: paramName, isMutable: false, type: paramType, escaping: false })
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getIdKey(paramId), paramStart)
+    }
     if (!accept(mutable parser, ",")) {
       break
     }
@@ -983,6 +1099,7 @@ function parseArrow(mutable parser: Parser): Expr {
 }
 
 function parseBlock(mutable parser: Parser): Block {
+  const startIndex = parser.index
   const pos = getPos(expect(mutable parser, "{"))
   skipNewlines(mutable parser)
   let statements: Array<Stmt> = []
@@ -994,6 +1111,9 @@ function parseBlock(mutable parser: Parser): Block {
     Arrays.push(mutable statements, parseStmt(mutable parser))
   }
   expect(mutable parser, "}")
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("b", pos), startIndex)
+  }
   return Block { pos: pos, statements: statements }
 }
 
@@ -1014,7 +1134,7 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
     failAt(mutable parser, labelPos, `label "${labelToken.text}" must be on a for or while loop`)
     return Stmt.BreakStmt(labelPos, "")
   }
-  const loop = parseStmt(mutable parser)
+  const loop = parseStmtBody(mutable parser)
   if (loop is Stmt.WhileStmt(_, _, condition, body)) {
     return Stmt.WhileStmt(labelPos, labelToken.text, condition, body)
   }
@@ -1025,6 +1145,15 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
 }
 
 function parseStmt(mutable parser: Parser): Stmt {
+  const startIndex = parser.index
+  const statement = parseStmtBody(mutable parser)
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("s", getStmtPos(statement)), startIndex)
+  }
+  return statement
+}
+
+function parseStmtBody(mutable parser: Parser): Stmt {
   const token = currentToken(parser)
   const pos = getPos(token)
   const following = peekToken(parser, 1)
@@ -1065,7 +1194,7 @@ function parseStmt(mutable parser: Parser): Stmt {
       const returned = parseExpr(mutable parser)
       if (isTernary(parser, returned)) {
         endStatement(mutable parser)
-        return convertReturnedTernary(parser, returned)
+        return convertReturnedTernary(mutable parser, returned)
       }
       value = Some(returned)
     }
@@ -1172,6 +1301,15 @@ function parseStmt(mutable parser: Parser): Stmt {
 }
 
 function parseIf(mutable parser: Parser): Stmt {
+  const startIndex = parser.index
+  const statement = parseIfBody(mutable parser)
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("s", getStmtPos(statement)), startIndex)
+  }
+  return statement
+}
+
+function parseIfBody(mutable parser: Parser): Stmt {
   const pos = getPos(expect(mutable parser, "if"))
   expect(mutable parser, "(")
   const condition = parseExpr(mutable parser)
@@ -1200,6 +1338,13 @@ function parseIf(mutable parser: Parser): Stmt {
 // expression holding one if statement whose branches each return one value,
 // like an `if` in value position. Only the chosen branch runs.
 function parseExpr(mutable parser: Parser): Expr {
+  const startIndex = parser.index
+  const expression = parseExprBody(mutable parser)
+  noteExpr(mutable parser, startIndex, expression)
+  return expression
+}
+
+function parseExprBody(mutable parser: Parser): Expr {
   const start = getPos(currentToken(parser))
   const condition = parseBinary(mutable parser, 0)
   if (!isAt(parser, "?")) {
@@ -1253,14 +1398,17 @@ function getReturnedValue(block: Block): Expr {
 // convertReturnedTernary turns `return c ? a : b` into `if (c) { return a }
 // else { return b }`, so a self call in a branch is a tail call. A branch that
 // is itself a ternary is turned the same way.
-function convertReturnedTernary(parser: Parser, value: Expr): Stmt {
+function convertReturnedTernary(mutable parser: Parser, value: Expr): Stmt {
   if (!isTernary(parser, value)) {
     return Stmt.ReturnStmt(getExpressionPos(value), Some(value))
   }
-  if (value is Expr.BlockExpr(_, _, block)) {
+  if (value is Expr.BlockExpr(ternaryId, _, block)) {
+    if (parser.collector.enabled) {
+      parser.collector.convertedKeys[getIdKey(ternaryId)] = true
+    }
     if (block.statements[0] is Stmt.IfStmt(pos, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))) {
-      const thenStatement = convertReturnedTernary(parser, getReturnedValue(thenBlock))
-      const elseStatement = convertReturnedTernary(parser, getReturnedValue(elseBlock))
+      const thenStatement = convertReturnedTernary(mutable parser, getReturnedValue(thenBlock))
+      const elseStatement = convertReturnedTernary(mutable parser, getReturnedValue(elseBlock))
       const newThen = Block { pos: thenBlock.pos, statements: [thenStatement] }
       const newElse = Block { pos: elseBlock.pos, statements: [elseStatement] }
       return Stmt.IfStmt(pos, condition, newThen, Some(Stmt.BlockStmt(newElse)))
@@ -1273,6 +1421,7 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
   if (level == Arrays.length(BINARY_LEVELS)) {
     return parseUnary(mutable parser)
   }
+  const startIndex = parser.index
   let left = parseBinary(mutable parser, level + 1)
   while (isOk(parser)) {
     const token = currentToken(parser)
@@ -1280,6 +1429,7 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       advance(mutable parser)
       const pattern = parsePattern(mutable parser)
       left = Expr.IsExpr(newId(mutable parser), getPos(token), left, pattern)
+      noteExpr(mutable parser, startIndex, left)
       continue
     }
     if (token.kind != TokenKind.TokPunct) {
@@ -1305,22 +1455,26 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
     }
     const right = parseBinary(mutable parser, level + 1)
     left = Expr.BinaryExpr(newId(mutable parser), getPos(token), token.text, left, right)
+    noteExpr(mutable parser, startIndex, left)
   }
   return left
 }
 
 function parseUnary(mutable parser: Parser): Expr {
+  const startIndex = parser.index
   const token = currentToken(parser)
   if (isAt(parser, "-") || isAt(parser, "!") || isAt(parser, "~")) {
     advance(mutable parser)
     const operand = parseUnary(mutable parser)
-    return Expr.UnaryExpr(newId(mutable parser), getPos(token), token.text, operand)
+    const unary = Expr.UnaryExpr(newId(mutable parser), getPos(token), token.text, operand)
+    noteExpr(mutable parser, startIndex, unary)
+    return unary
   }
   const expression = parsePrimary(mutable parser)
-  return parsePostfix(mutable parser, expression)
+  return parsePostfix(mutable parser, expression, startIndex)
 }
 
-function parsePostfix(mutable parser: Parser, first: Expr): Expr {
+function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Expr {
   let expression = first
   while (isOk(parser)) {
     const token = currentToken(parser)
@@ -1328,6 +1482,7 @@ function parsePostfix(mutable parser: Parser, first: Expr): Expr {
       advance(mutable parser)
       const name = parseMemberName(mutable parser)
       expression = Expr.FieldExpr(newId(mutable parser), getPos(name), expression, name.text)
+      noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "(")) {
       advance(mutable parser)
       let arguments: Array<Arg> = []
@@ -1341,11 +1496,13 @@ function parsePostfix(mutable parser: Parser, first: Expr): Expr {
       }
       expect(mutable parser, ")")
       expression = Expr.CallExpr(newId(mutable parser), getPos(token), expression, arguments)
+      noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "[")) {
       advance(mutable parser)
       const index = parseExpr(mutable parser)
       expect(mutable parser, "]")
       expression = Expr.IndexExpr(newId(mutable parser), getPos(token), expression, index)
+      noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "<") || isAt(parser, "{")) {
       // `Name { field: value }` is a struct literal, and
       // `Name<A, B> { ... }` is one with type arguments.
@@ -1365,6 +1522,7 @@ function parsePostfix(mutable parser: Parser, first: Expr): Expr {
         } else {
           expression = parseStructLit(mutable parser, identName, typeArguments, identPos)
         }
+        noteExpr(mutable parser, startIndex, expression)
       } else {
         return expression
       }
@@ -1605,6 +1763,7 @@ function parseStructLit(mutable parser: Parser, typeName: string, typeArguments:
       skipNewlines(mutable parser)
       continue
     }
+    const fieldStart = parser.index
     const name = expectIdent(mutable parser)
     if (isOk(parser) && !isAt(parser, ":")) {
       failAt(mutable parser, getPos(name), `write \`${name.text}: ${name.text}\`; field shorthand is not allowed`)
@@ -1613,6 +1772,9 @@ function parseStructLit(mutable parser: Parser, typeName: string, typeArguments:
     expect(mutable parser, ":")
     const value = parseExpr(mutable parser)
     Arrays.push(mutable fields, FieldInit { pos: getPos(name), name: name.text, value: value })
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, getPosKey("f", getPos(name)), fieldStart)
+    }
     skipNewlines(mutable parser)
     if (!accept(mutable parser, ",")) {
       break
@@ -1625,6 +1787,13 @@ function parseStructLit(mutable parser: Parser, typeName: string, typeArguments:
 }
 
 function parsePrimary(mutable parser: Parser): Expr {
+  const startIndex = parser.index
+  const expression = parsePrimaryBody(mutable parser)
+  noteExpr(mutable parser, startIndex, expression)
+  return expression
+}
+
+function parsePrimaryBody(mutable parser: Parser): Expr {
   const token = currentToken(parser)
   const pos = getPos(token)
   if (token.kind == TokenKind.TokInt) {
@@ -1680,6 +1849,9 @@ function parsePrimary(mutable parser: Parser): Expr {
       advance(mutable parser)
       const inner = parseExpr(mutable parser)
       expect(mutable parser, ")")
+      if (parser.collector.enabled && isOk(parser)) {
+        parser.collector.parenthesized[getExprId(inner)] = true
+      }
       return inner
     }
     if (token.text == "[" || token.text == "#[") {
@@ -1770,7 +1942,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       for (const innerToken of Arrays.values(lexed.value)) {
         Arrays.push(mutable inner, Token { ...innerToken, line: token.line, column: token.column })
       }
-      let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None, ternaryIds: [] }
+      let innerParser = Parser { tokens: inner, index: 0, nextId: parser.nextId, failed: None, ternaryIds: [], collector: createCollector(false) }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
       if (innerParser.failed is Some(diagnostic)) {
@@ -1801,6 +1973,7 @@ function parseMatch(mutable parser: Parser): Expr {
   let arms: Array<MatchArm> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     const armPos = getPos(currentToken(parser))
+    const armStart = parser.index
     const pattern = parsePattern(mutable parser)
     let guard: Option<Expr> = None
     if (accept(mutable parser, "if")) {
@@ -1812,9 +1985,15 @@ function parseMatch(mutable parser: Parser): Expr {
     if (isAt(parser, "{")) {
       const block = parseBlock(mutable parser)
       Arrays.push(mutable arms, MatchArm { pos: armPos, pattern: pattern, guard: guard, body: None, block: Some(block) })
+      if (parser.collector.enabled) {
+        noteKey(mutable parser, getPosKey("a", armPos), armStart)
+      }
     } else {
       const body = parseExpr(mutable parser)
       Arrays.push(mutable arms, MatchArm { pos: armPos, pattern: pattern, guard: guard, body: Some(body), block: None })
+      if (parser.collector.enabled) {
+        noteKey(mutable parser, getPosKey("a", armPos), armStart)
+      }
     }
     accept(mutable parser, ",")
     skipNewlines(mutable parser)
@@ -1826,6 +2005,15 @@ function parseMatch(mutable parser: Parser): Expr {
 // ---- Patterns
 
 function parsePattern(mutable parser: Parser): Pattern {
+  const startIndex = parser.index
+  const pattern = parsePatternBody(mutable parser)
+  if (parser.collector.enabled && isOk(parser)) {
+    noteKey(mutable parser, getIdKey(getPatternId(pattern)), startIndex)
+  }
+  return pattern
+}
+
+function parsePatternBody(mutable parser: Parser): Pattern {
   const token = currentToken(parser)
   const pos = getPos(token)
   if (isAt(parser, "{")) {
@@ -1833,6 +2021,7 @@ function parsePattern(mutable parser: Parser): Pattern {
     skipNewlines(mutable parser)
     let fields: Array<FieldPattern> = []
     while (isOk(parser) && !isAt(parser, "}")) {
+      const fieldStart = parser.index
       const name = expectIdent(mutable parser)
       if (accept(mutable parser, ":")) {
         const subpattern = parsePattern(mutable parser)
@@ -1840,6 +2029,9 @@ function parsePattern(mutable parser: Parser): Pattern {
       } else {
         const shorthand = Pattern.PatName(newId(mutable parser), getPos(name), name.text)
         Arrays.push(mutable fields, FieldPattern { pos: getPos(name), name: name.text, pattern: shorthand })
+      }
+      if (parser.collector.enabled) {
+        noteKey(mutable parser, getPosKey("f", getPos(name)), fieldStart)
       }
       skipNewlines(mutable parser)
       if (!accept(mutable parser, ",")) {

@@ -21,8 +21,7 @@ import { TEST_RUNNER_C } from "narrac/runtimetext"
 
 const NODE = "selfhost-emit-options"
 
-// emitOptionCall emits a call of a std/option, std/result or std/test
-// function.
+// emitOptionCall emits a call of a std/result or std/test function.
 export function emitOptionCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, expression: Expr): Code uses alloc {
   if (expression is Expr.CallExpr(nodeId, pos, _, arguments)) {
     if (refOf(emitter, nodeId) is Ref.Builtin(index)) {
@@ -35,23 +34,8 @@ export function emitOptionCall<W: EmitWalker>(walker: W, mutable emitter: Emitte
 }
 
 function emitNamedCall<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, pos: Pos, arguments: Array<Arg>, resultType: Type): Code uses alloc {
-  if (name == "Option.map") {
-    return emitOptionMap(walker, mutable emitter, arguments, resultType)
-  }
-  if (name == "Option.andThen") {
-    return emitOptionAndThen(walker, mutable emitter, arguments, resultType)
-  }
-  if (name == "Option.withDefault" || name == "Result.withDefault") {
+  if (name == "Result.withDefault") {
     return emitWithDefault(walker, mutable emitter, name, arguments, resultType)
-  }
-  if (name == "Option.orElse") {
-    return emitOptionOrElse(walker, mutable emitter, arguments)
-  }
-  if (name == "Option.isSome" || name == "Option.isNone") {
-    return emitOptionIs(walker, mutable emitter, name, arguments)
-  }
-  if (name == "Option.okOr") {
-    return emitOptionOkOr(walker, mutable emitter, arguments, resultType)
   }
   if (name == "Result.map" || name == "Result.mapErr") {
     return emitResultMap(walker, mutable emitter, name, arguments, resultType)
@@ -192,52 +176,10 @@ function passOn(mutable emitter: Emitter, result: string, source: string, source
   writeLine(mutable emitter, `${result} = ${allocated};`)
 }
 
-// emitOptionMap is Option.map(option, function).
-function emitOptionMap<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
-  const option = borrowArgument(walker, mutable emitter, arguments, 0)
-  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
-  const optionType = argumentType(emitter, arguments, 0)
-  const callbackType = argumentType(emitter, arguments, 1)
-  const result = zeroResult(mutable emitter, resultType)
-  const someTag = variantTag(emitter, optionType, "Some")
-  openBranch(mutable emitter, option, someTag)
-  const payload = payloadRead(emitter, option, optionType, "Some")
-  const mapped = callCallback(mutable emitter, callbackType, callback, [payload])
-  const some = allocateVariant(mutable emitter, resultType, "Some", [mapped])
-  writeLine(mutable emitter, `${result} = ${some};`)
-  elseBranch(mutable emitter)
-  const none = allocateVariant(mutable emitter, resultType, "None", [])
-  writeLine(mutable emitter, `${result} = ${none};`)
-  closeBranch(mutable emitter)
-  return Code { text: result, owned: true }
-}
-
-// emitOptionAndThen is Option.andThen(option, function).
-function emitOptionAndThen<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
-  const option = borrowArgument(walker, mutable emitter, arguments, 0)
-  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
-  const optionType = argumentType(emitter, arguments, 0)
-  const callbackType = argumentType(emitter, arguments, 1)
-  const result = zeroResult(mutable emitter, resultType)
-  const someTag = variantTag(emitter, optionType, "Some")
-  openBranch(mutable emitter, option, someTag)
-  const payload = payloadRead(emitter, option, optionType, "Some")
-  const chained = callCallback(mutable emitter, callbackType, callback, [payload])
-  writeLine(mutable emitter, `${result} = ${chained};`)
-  elseBranch(mutable emitter)
-  const none = allocateVariant(mutable emitter, resultType, "None", [])
-  writeLine(mutable emitter, `${result} = ${none};`)
-  closeBranch(mutable emitter)
-  return Code { text: result, owned: true }
-}
-
-// emitWithDefault is Option.withDefault and Result.withDefault: the payload
-// of Some or Ok, else the default.
+// emitWithDefault is Result.withDefault: the payload of Ok, else the
+// default. std/option is Narra source (std/src/option.nra).
 function emitWithDefault<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, arguments: Array<Arg>, resultType: Type): Code uses alloc {
-  let hit = "Ok"
-  if (name == "Option.withDefault") {
-    hit = "Some"
-  }
+  const hit = "Ok"
   const subject = borrowArgument(walker, mutable emitter, arguments, 0)
   const subjectType = argumentType(emitter, arguments, 0)
   const defaultCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
@@ -249,58 +191,6 @@ function emitWithDefault<W: EmitWalker>(walker: W, mutable emitter: Emitter, nam
   assignCopy(mutable emitter, result, payload, resultType)
   elseBranch(mutable emitter)
   assignCopy(mutable emitter, result, defaultValue, resultType)
-  closeBranch(mutable emitter)
-  return Code { text: result, owned: true }
-}
-
-// emitOptionOrElse is Option.orElse(option, function).
-function emitOptionOrElse<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>): Code uses alloc {
-  const option = borrowArgument(walker, mutable emitter, arguments, 0)
-  const callback = borrowArgument(walker, mutable emitter, arguments, 1)
-  const optionType = argumentType(emitter, arguments, 0)
-  const callbackType = argumentType(emitter, arguments, 1)
-  const result = zeroResult(mutable emitter, optionType)
-  const someTag = variantTag(emitter, optionType, "Some")
-  openBranch(mutable emitter, option, someTag)
-  assignCopy(mutable emitter, result, option, optionType)
-  elseBranch(mutable emitter)
-  const fallback = callCallback(mutable emitter, callbackType, callback, [])
-  writeLine(mutable emitter, `${result} = ${fallback};`)
-  closeBranch(mutable emitter)
-  return Code { text: result, owned: true }
-}
-
-// emitOptionIs is Option.isSome and Option.isNone.
-function emitOptionIs<W: EmitWalker>(walker: W, mutable emitter: Emitter, name: string, arguments: Array<Arg>): Code uses alloc {
-  const option = borrowArgument(walker, mutable emitter, arguments, 0)
-  const optionType = argumentType(emitter, arguments, 0)
-  let variantName = "Some"
-  if (name == "Option.isNone") {
-    variantName = "None"
-  }
-  const tag = variantTag(emitter, optionType, variantName)
-  return Code { text: `(${option}.tag == ${Int.toString(tag)})`, owned: false }
-}
-
-// emitOptionOkOr is Option.okOr(option, error).
-function emitOptionOkOr<W: EmitWalker>(walker: W, mutable emitter: Emitter, arguments: Array<Arg>, resultType: Type): Code uses alloc {
-  const option = borrowArgument(walker, mutable emitter, arguments, 0)
-  const optionType = argumentType(emitter, arguments, 0)
-  const errorType = argumentType(emitter, arguments, 1)
-  const errorCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
-  const errorValue = temp(mutable emitter, errorType, errorCode.text)
-  const result = zeroResult(mutable emitter, resultType)
-  const someTag = variantTag(emitter, optionType, "Some")
-  openBranch(mutable emitter, option, someTag)
-  const payload = payloadRead(emitter, option, optionType, "Some")
-  const someType = payloadType(emitter, optionType, "Some")
-  const okValue = retained(mutable emitter, payload, someType)
-  const ok = allocateVariant(mutable emitter, resultType, "Ok", [okValue])
-  writeLine(mutable emitter, `${result} = ${ok};`)
-  elseBranch(mutable emitter)
-  const errorCopy = retained(mutable emitter, errorValue, errorType)
-  const failure = allocateVariant(mutable emitter, resultType, "Err", [errorCopy])
-  writeLine(mutable emitter, `${result} = ${failure};`)
   closeBranch(mutable emitter)
   return Code { text: result, owned: true }
 }

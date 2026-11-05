@@ -30,6 +30,10 @@ type Module struct {
 	Path    string              // "std/string"
 	Funcs   map[string]*Builtin // exported names
 	Runtime string              // C helpers, emitted once when the module is imported
+	// Source is set for a std module written in Narra (std/src/*.nra, text in
+	// stdSources). Funcs is empty: the loader adds the module to the package
+	// and the checker resolves its imports like a package module.
+	Source bool
 }
 
 var (
@@ -70,6 +74,19 @@ func registerNamespaceModule(ns, path string, funcs map[string]*Builtin) {
 	}
 	namespaceModules[ns] = path
 	registerModule(&Module{Path: path, Funcs: funcs})
+}
+
+// registerSourceModule registers a std module written in Narra. ns is the
+// prelude type its functions are named after (Option), so Option.map without
+// the import still gets the missing-import hint.
+func registerSourceModule(ns, path string) {
+	if _, ok := stdSources[path]; !ok {
+		panic("no std source for " + path)
+	}
+	if ns != "" {
+		namespaceModules[ns] = path
+	}
+	registerModule(&Module{Path: path, Funcs: map[string]*Builtin{}, Source: true})
 }
 
 func registerByName(b *Builtin) {

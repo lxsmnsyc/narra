@@ -358,6 +358,22 @@ function isBeforeCloser(lines: Array<string>, comments: Array<Comment>, index: i
   return false
 }
 
+// isParameterScope tells whether a node is a function declaration or an arrow
+// function, whose parameter list is followed by more of the node (result type,
+// body). Other nodes with parentheses (`match`, `for`, `if`, calls, function
+// types) keep the plain rule.
+function isParameterScope(lines: Array<string>, key: string, start: Pos): bool uses alloc {
+  const letter = Str.slice(key, 0, 1)
+  if (letter == "d") {
+    return true
+  }
+  if (letter != "e" || start.line < 1 || start.line > Arrays.length(lines)) {
+    return false
+  }
+  const characters = Str.chars(lines[start.line - 1])
+  return start.column >= 1 && start.column <= Arrays.length(characters) && characters[start.column - 1] == '('
+}
+
 function addAttached(mutable attached: Map<string, Array<Attached>>, key: string, commentIndex: int, placement: Placement) uses alloc {
   let list: Array<Attached> = []
   if (attached[key] is Some(existing)) {
@@ -382,6 +398,7 @@ function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: 
     const comment = comments[commentIndex]
     // descend to the deepest node that contains the comment
     let scopeKey = "file"
+    let scopeStart = Pos { line: 0, column: 0 }
     let children = tree.rootChildren
     let descending = true
     while (descending) {
@@ -390,6 +407,7 @@ function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: 
         const record = records[child]
         if (!isBefore(comment.pos, record.start) && !isBefore(record.end, comment.end)) {
           scopeKey = record.key
+          scopeStart = record.start
           children = tree.childLists[child]
           descending = true
           break
@@ -407,7 +425,7 @@ function attachComments(records: Array<NodeRecord>, tree: RecordTree, comments: 
         following = record.key
       }
     }
-    if (following != "" && isBeforeCloser(lines, comments, commentIndex)) {
+    if (following != "" && isParameterScope(lines, scopeKey, scopeStart) && isBeforeCloser(lines, comments, commentIndex)) {
       following = ""
     }
     if (comment.ownLine) {

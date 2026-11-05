@@ -1,69 +1,127 @@
 # 3. Functions and closures
 
-This chapter covers named functions, arrow functions, function types, the `escaping` rule for function parameters, generics and tail calls.
+The receipt code of chapter 2 lived in `run`. This chapter moves it into functions of its own. Then it passes functions around as values, to apply a pricing rule to every item and to build new rules out of old ones.
 
-## Named functions
+## Give a calculation a name
 
-A function declaration writes every parameter type and the result type. It is private to its module unless it starts with `export`. A function with no result type returns nothing.
+Every item line multiplies a price by a quantity and prints the result. Write that once as a function, and call it for each item:
 
 ```narra
 import * as Int from "std/int"
 
-function gcd(a: int, b: int): int {
-  if (b == 0) {
-    return a
-  }
-  return gcd(b, a % b)
+function lineTotal(priceCents: int, quantity: int): int {
+  return priceCents * quantity
 }
 
-function announce(label: string, value: int) {
-  print(`${label}: ${Int.toString(value)}`)
+function printLine(name: string, cents: int) {
+  print(`${name}: ${Int.toString(cents)}`)
 }
 
 export function run(args: Array<string>): int {
-  announce("gcd", gcd(1071, 462))
+  const teaCents = lineTotal(250, 2)
+  const coffeeCents = lineTotal(320, 1)
+  printLine("tea", teaCents)
+  printLine("coffee", coffeeCents)
+  printLine("total", teaCents + coffeeCents)
   return 0
 }
 ```
 
 ```text
-gcd: 21
+tea: 500
+coffee: 320
+total: 820
 ```
 
-The rules:
+A function declaration names each parameter with its type, then gives the type of the result after the parentheses. `return` ends the function and hands back the value. `printLine` has no result type, so it returns nothing and is called as a statement.
 
-- A call passes every argument. There are no optional parameters, no varargs, no overloads and no currying. To fix some arguments, write an arrow function. To pass options, pass a struct with default field values (chapter 4).
-- There are no method calls. `items.push(1)` is a compile error, and the message tells you to write `Arrays.push(mutable items, 1)`. `value.field(args)` is valid only when `field` is a struct field that holds a function.
-- You cannot declare a function inside a function. Declare it at module level and pass what it needs as arguments, or bind an arrow function to a `const`.
-- Parameters are constant. A parameter changes only if it is declared `mutable` (chapter 9).
-- Recursion needs no keyword.
+The parameter and result types are always written, even where the compiler could work them out. They are what a caller reads to learn how to use the function. Without `export`, a function is visible only in its own file.
+
+A call passes exactly the arguments the function declares:
+
+```narra error
+// error: 7:19: this call passes 1 arguments, the function takes 2
+function lineTotal(priceCents: int, quantity: int): int {
+  return priceCents * quantity
+}
+
+export function run(args: Array<string>): int {
+  return lineTotal(250)
+}
+```
+
+A function is declared at the top level of a file, next to `run`, not inside another function. When a helper needs values from the function that calls it, pass them as arguments:
 
 ```narra error
 // error: 3:3: a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments
 export function run(args: Array<string>): int {
-  function add(a: int): int {
-    return a + 1
+  function lineTotal(priceCents: int, quantity: int): int {
+    return priceCents * quantity
   }
-  return add(1)
+  return lineTotal(250, 2)
 }
 ```
 
-## Tail calls are loops
+## A function that calls itself
 
-A call to the same function in tail position compiles to a jump, so it does not grow the stack. Other recursion uses the stack, and an overflow aborts the program.
+The shop gives change in coins of 50, 25, 10 and 5 cents. In how many different ways can it pay out 100 cents?
+
+Counting them with loops is awkward, but the question splits into two smaller ones. Take the largest coin. Either the change uses at least one of it, or it uses none of it:
+
+- With at least one 50, what is left to pay is 50 cents, still with all four coins.
+- With no 50s, the full 100 cents must come from the other three coins.
+
+The answer is the sum of the two, and each smaller question splits the same way. A function that answers it can call itself for the two parts:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function countWays(amount: int, coins: Array<int>, first: int): int {
+  if (amount == 0) {
+    return 1
+  }
+  if (amount < 0 || first == Arrays.length(coins)) {
+    return 0
+  }
+  const usingIt = countWays(amount - coins[first], coins, first)
+  const skippingIt = countWays(amount, coins, first + 1)
+  return usingIt + skippingIt
+}
+
+export function run(args: Array<string>): int {
+  const coins = [50, 25, 10, 5]
+  print(Int.toString(countWays(100, coins, 0)))
+  print(Int.toString(countWays(10, coins, 0)))
+  return 0
+}
+```
+
+```text
+40
+2
+```
+
+This is recursion: `countWays` calls `countWays`. `first` is the position of the largest coin still allowed, so "skip this coin" is `first + 1`. Each call works on a smaller problem: a smaller amount or fewer coins. The first two `if` statements stop at the cases with a known answer. Exactly 0 cents left is one way to pay. Less than 0, or no coins left, is no way. Every recursive function needs such stopping cases, or it calls itself forever.
+
+`countWays(10, coins, 0)` is small enough to check by hand. The two ways are one 10-cent coin, or two 5-cent coins.
+
+Each call that has not returned yet takes some memory, called stack space, until it returns. Here the calls go about 20 levels deep (100 cents in 5-cent steps), which is nothing. A recursion millions of levels deep runs out of stack, and the program stops.
+
+There is one case where depth costs nothing: a call to itself that is the last thing a function does, as in `return addUpTo(n - 1, total + n)` below. The function has no work left after that call, so the compiler turns it into a jump back to the start of the function. The function then runs in the space of a single call, like a `while` loop:
 
 ```narra
 import * as Int from "std/int"
 
-function sumTo(n: int, total: int): int {
+function addUpTo(n: int, total: int): int {
   if (n == 0) {
     return total
   }
-  return sumTo(n - 1, total + n)
+  return addUpTo(n - 1, total + n)
 }
 
 export function run(args: Array<string>): int {
-  print(Int.toString(sumTo(10_000_000, 0)))
+  print(Int.toString(addUpTo(10_000_000, 0)))
   return 0
 }
 ```
@@ -72,61 +130,142 @@ export function run(args: Array<string>): int {
 50000005000000
 ```
 
-The call must be the whole `return` expression. `return n + sumTo(n - 1)` has work left after the call, so it uses the stack.
+The running result travels in the parameter `total`, so nothing waits for the call to come back. `countWays` is different: it adds `usingIt` and `skippingIt` after its calls return, so each call keeps its stack space.
 
-## Arrow functions and function types
+## Pass a function as a value
 
-An arrow function is an anonymous function: `(x: int): int => x + 1`, or with a block body `(x: int): int => { ... }`. A function type is written the same way: `(x: int) => int`. The `function` keyword is only for named declarations.
-
-An arrow function passed as an argument takes its parameter types from the parameter it is passed to, so you can leave them out. A `const` arrow function needs its types written.
+Back to pricing. You want to apply a rule to every price in a list: add tax, take off a discount. The loop is the same for every rule, and only the rule changes, so make the rule a parameter:
 
 ```narra
 import * as Int from "std/int"
 import * as Arrays from "std/array"
 
-function map<T, U>(items: Array<T>, f: (item: T) => U): Array<U> {
-  let out: Array<U> = []
-  for (const item of Arrays.values(items)) {
-    Arrays.push(mutable out, f(item))
+function applyToAll(prices: Array<int>, rule: (cents: int) => int): Array<int> {
+  let result: Array<int> = []
+  for (const price of prices) {
+    Arrays.push(mutable result, rule(price))
   }
-  return out
+  return result
 }
 
-function double(x: int): int {
-  return x * 2
+function withTax(cents: int): int {
+  return cents + cents / 10
 }
 
 export function run(args: Array<string>): int {
-  const rate = 10
-  const scaled = map([1, 2, 3], (price) => price * rate)
-  print(Int.toString(scaled[2]))
-  const labels = map(scaled, (price) => `#${Int.toString(price)}`)
-  print(labels[0])
-  const doubled = map([1, 2, 3], double)
-  print(Int.toString(doubled[1]))
-  const triple = (x: int): int => x * 3
-  print(Int.toString(triple(4)))
+  const prices = [250, 320, 180]
+  const taxed = applyToAll(prices, withTax)
+  print(Int.toString(taxed[0]))
+  const discounted = applyToAll(prices, (cents) => cents - 50)
+  print(Int.toString(discounted[0]))
   return 0
 }
 ```
 
 ```text
-30
-#10
-4
-12
+275
+200
 ```
 
-`map<T, U>` is a generic function. Its type arguments are inferred from the call, and you cannot write them explicitly yet. A named function is a value too, as `double` is above. The standard library does not provide `Arrays.map` in this version, so the sample defines `map` itself.
+`rule: (cents: int) => int` declares a parameter whose type is a function type: a function that takes an `int` and returns an `int`. Inside `applyToAll`, `rule(price)` calls it.
 
-## Closures capture constants
+`withTax` is a named function, and passing its name passes the function itself. `(cents) => cents - 50` is an arrow function: a function without a name, written right where it is needed. Before `=>` come its parameters, after it the value it returns. Because it is passed to a parameter of a known function type, the compiler knows that `cents` is an `int`.
 
-A closure can read the `const` bindings and parameters around it. It cannot capture a `let` binding, because the environment of a closure never changes after it is made, so a closure can never see a later assignment.
+When an arrow function has more to do than one expression, give it a block body, which uses `return` like a named function:
+
+```narra fragment
+applyToAll(prices, (cents) => {
+  if (cents > 300) {
+    return cents - 50
+  }
+  return cents
+})
+```
+
+An arrow function stored under a name has nothing to take its types from, so you write them. Leave them out, and the compiler asks for them:
+
+```narra error
+// error: 3:21: cannot tell the type of parameter "cents"; write it as `cents: Type`
+export function run(args: Array<string>): int {
+  const discount = (cents) => cents - 50
+  return discount(100)
+}
+```
+
+The fixed version, `const discount = (cents: int): int => cents - 50`, compiles: the parameter type is in the parentheses and the result type after them.
+
+## One function for many types
+
+`applyToAll` only works on lists of `int`. To turn the prices into labels you would need a second copy that returns `Array<string>`. A generic function avoids that. It names placeholder types in angle brackets, and every call fills them in:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+function mapAll<T, U>(items: Array<T>, change: (item: T) => U): Array<U> {
+  let result: Array<U> = []
+  for (const item of items) {
+    Arrays.push(mutable result, change(item))
+  }
+  return result
+}
+
+export function run(args: Array<string>): int {
+  const prices = [250, 320]
+  const labels = mapAll(prices, (cents) => `${Int.toString(cents)} cents`)
+  for (const label of labels) {
+    print(label)
+  }
+  const names = ["tea", "coffee"]
+  const nameLengths = mapAll(names, (name) => Str.length(name))
+  print(Int.toString(nameLengths[1]))
+  return 0
+}
+```
+
+```text
+250 cents
+320 cents
+6
+```
+
+`T` is the type of the items going in and `U` the type coming out. In the first call the compiler sees an `Array<int>` and an arrow function that returns a `string`, so `T` is `int` and `U` is `string`. In the second call it is the other way round. You never write the types at the call. The compiler works them out from the arguments.
+
+## Use values from around a function
+
+A discount amount is often decided at run time, outside the arrow function that applies it. An arrow function can use the names around it:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function applyToAll(prices: Array<int>, rule: (cents: int) => int): Array<int> {
+  let result: Array<int> = []
+  for (const price of prices) {
+    Arrays.push(mutable result, rule(price))
+  }
+  return result
+}
+
+export function run(args: Array<string>): int {
+  const discountCents = 30
+  const discounted = applyToAll([250, 320], (cents) => cents - discountCents)
+  print(Int.toString(discounted[1]))
+  return 0
+}
+```
+
+```text
+290
+```
+
+An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters, whose values cannot change. It cannot capture a `let` name:
 
 ```narra error
 // error: 8:22: a closure cannot capture "count" because it is declared with let; closures capture only constants
-function apply(f: () => int): int {
-  return f()
+function apply(rule: () => int): int {
+  return rule()
 }
 
 export function run(args: Array<string>): int {
@@ -135,56 +274,67 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Copy the value into a `const` first, and capture that.
+If the closure captured a `let`, a later assignment would change the value the closure sees, long after the closure was made. Copy the current value into a `const` (`const current = count`) and capture that.
 
-## Function parameters do not escape
+## Make new functions from old ones
 
-A parameter of function type can only be called inside the function. It cannot be stored, returned, or captured by another closure. In return, the compiler puts the closure's environment on the caller's stack, so passing a closure costs no allocation.
-
-To keep a function beyond the call, mark the parameter `escaping`. Its environment is then allocated on the heap and reference counted.
-
-```narra error
-// error: 3:10: parameter "f" cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as `escaping f` to store, return or capture it
-function same(f: (x: int) => int): (x: int) => int {
-  return f
-}
-
-export function run(args: Array<string>): int {
-  return same((x) => x)(1)
-}
-```
+A function can also return a function. `makeDiscount` returns a rule that takes a fixed amount off:
 
 ```narra
 import * as Int from "std/int"
 
-function adder(n: int): (x: int) => int {
-  return (x: int): int => x + n
-}
-
-function compose(escaping f: (x: int) => int, escaping g: (x: int) => int): (x: int) => int {
-  return (x) => g(f(x))
-}
-
-struct Button {
-  label: string
-  onClick: (times: int) => string
+function makeDiscount(amountCents: int): (cents: int) => int {
+  return (cents: int): int => cents - amountCents
 }
 
 export function run(args: Array<string>): int {
-  const addFive = adder(5)
-  const both = compose(addFive, (x) => x * 2)
-  print(Int.toString(both(1)))
-  const button = Button { label: "ok", onClick: (times) => `clicked ${Int.toString(times)}` }
-  print(button.onClick(3))
+  const tenOff = makeDiscount(10)
+  print(Int.toString(tenOff(250)))
   return 0
 }
 ```
 
 ```text
-12
-clicked 3
+240
 ```
 
-The function in a struct field or array element always counts as escaping, so it needs no keyword there. A parameter whose type is a type parameter (`T`) is escaping as well.
+The returned closure keeps `amountCents`, so it still works after `makeDiscount` has returned.
+
+Now try to build a rule that applies another rule twice:
+
+```narra error
+// error: 3:21: a closure cannot capture parameter "rule" because it is not escaping; declare it as `escaping rule`
+function twice(rule: (cents: int) => int): (cents: int) => int {
+  return (cents) => rule(rule(cents))
+}
+
+export function run(args: Array<string>): int {
+  return twice((cents) => cents - 10)(100)
+}
+```
+
+A function passed as a parameter may only be called during the call it was passed to, or passed on to another such parameter. That is why passing a closure costs nothing extra: the values it captured stay in the caller's memory, which lives until the call returns. Returning a closure that uses `rule` would keep `rule` past that point, so the compiler asks you to say so with `escaping`:
+
+```narra
+import * as Int from "std/int"
+
+function twice(escaping rule: (cents: int) => int): (cents: int) => int {
+  return (cents) => rule(rule(cents))
+}
+
+export function run(args: Array<string>): int {
+  const twentyOff = twice((cents) => cents - 10)
+  print(Int.toString(twentyOff(100)))
+  return 0
+}
+```
+
+```text
+80
+```
+
+An `escaping` parameter may be returned, stored or captured. Its captured values are moved to memory that is freed when the last user of the function is done with it, which costs an allocation. Mark a parameter `escaping` only when the function keeps it.
+
+The next chapter gives the shop's data a shape of its own: items with named fields, and values that can be one of several kinds.
 
 Next: [4. Structs and enums](04-structs-and-enums.md).

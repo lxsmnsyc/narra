@@ -1,101 +1,146 @@
 # 2. Values and types
 
-This chapter covers `const` and `let`, numbers, strings and templates, `bool`, arrays, maps and tuples.
+This chapter builds a small shop receipt, one piece at a time. On the way you meet the two ways to name a value, and the values a program works with: numbers, text, true and false, lists, lookup tables and pairs.
 
-## Bindings: `const` and `let`
+## Name a value
 
-`const` binds a name that cannot be reassigned, and the value never changes either. `let` binds a name you may reassign.
+A receipt starts with a price and a quantity. Give each a name with `const` and compute the total:
 
 ```narra
 import * as Int from "std/int"
 
 export function run(args: Array<string>): int {
-  const limit = 4
-  let total = 0
-  let step = 0
-  while (step < limit) {
-    total = total + step
-    step = step + 1
-  }
-  print(`total ${Int.toString(total)}`)
+  const priceCents = 250
+  const quantity = 3
+  const totalCents = priceCents * quantity
+  print(`total: ${Int.toString(totalCents)} cents`)
   return 0
 }
 ```
 
 ```text
-total 6
+total: 750 cents
 ```
 
-The rules:
+`const priceCents = 250` names the value `250`. You did not write a type: the compiler sees that `250` is a whole number and gives `priceCents` the type `int`. You can write it out as `const priceCents: int = 250`, and the meaning is the same.
 
-- `const` is deep. The value behind a `const` never changes, so a `const` array cannot be added to or edited.
-- There is no compound assignment yet. Write `total = total + step`, not `total += step` or `step++`.
-- Shadowing is an error. You cannot declare a name while an earlier binding with that name is in scope.
-- An unused local, parameter or import is an error. Start the name with `_` to say it is unused on purpose.
-- A closure cannot capture a `let` binding (chapter 3).
+The text in backticks is a template string. Each `${...}` inside it is replaced by the value of the expression it holds. That expression must be a `string`, so the number goes through `Int.toString` first.
+
+A `const` keeps its value. If you try to change one, the compiler stops you and says what to write instead:
 
 ```narra error
-// error: 5:5: "value" is already declared in this function; shadowing is not allowed
+// error: 4:3: "totalCents" is constant; declare it with `let` to change it
 export function run(args: Array<string>): int {
-  const value = 1
-  if (value > 0) {
-    const value = 2
+  const totalCents = 750
+  totalCents = 700
+  return 0
+}
+```
+
+## Change a value over time
+
+Some values do change. Say a customer saves 150 cents a week toward a 1000 cent purchase, and you want the number of weeks. Two values change as the weeks pass, so declare them with `let`:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const goalCents = 1000
+  let savedCents = 0
+  let weeks = 0
+  while (savedCents < goalCents) {
+    savedCents = savedCents + 150
+    weeks = weeks + 1
+  }
+  print(`${Int.toString(weeks)} weeks, ${Int.toString(savedCents)} cents saved`)
+  return 0
+}
+```
+
+```text
+7 weeks, 1050 cents saved
+```
+
+`while` runs its block again and again while the condition in parentheses is true. Each pass assigns new values to the two `let` names with `=`.
+
+You add to a value by writing the sum out in full. The short form is an error:
+
+```narra error
+// error: 4:9: compound assignment is not supported; write `x = x + y`
+export function run(args: Array<string>): int {
+  let weeks = 0
+  weeks += 1
+  return weeks
+}
+```
+
+Use `const` for every name that does not need to change, and `let` only where it does. A reader then knows which values to watch.
+
+A name can be declared once in a function. Declaring it again, even inside an inner block, is an error, so a name always means the same value:
+
+```narra error
+// error: 5:5: "weeks" is already declared in this function; shadowing is not allowed
+export function run(args: Array<string>): int {
+  const weeks = 7
+  if (weeks > 4) {
+    const weeks = 4
   }
   return 0
 }
 ```
 
-Types are inferred for locals: `const n = 1` is an `int`. Function parameters and results are always written.
+## Whole numbers and decimals
 
-## Numbers
-
-| Type | Meaning |
-| --- | --- |
-| `int` | 64-bit signed integer (alias of `i64`) |
-| `i8` `i16` `i32` `i64`, `u8` `u16` `u32` `u64` | sized integers |
-| `f64`, `f32` | floats |
-
-There are no implicit conversions between these types, so `1 + 2.0` is a compile error. Convert with `Float.fromInt` and `Float.truncate`.
+Now split a bill. Seven items cost 1000 cents in all. What does one cost on average?
 
 ```narra
 import * as Int from "std/int"
 import * as Float from "std/float"
 
 export function run(args: Array<string>): int {
-  print(Int.toString(7 / 2))
-  print(Int.toString(-7 / 2))
-  print(Int.toString(7 % 3))
-  print(Int.toString(0xFF + 0b101 + 1_000))
-  print(Float.toString(1.5 * 4.0))
-  print(Float.toString(Float.sqrt(2.0)))
-  const half = Float.fromInt(7) / 2.0
-  print(Float.toString(half))
-  print(Int.toString(Float.truncate(half)))
+  const totalCents = 1000
+  const items = 7
+  print(Int.toString(totalCents / items))
+  print(Int.toString(totalCents % items))
+  const average = Float.fromInt(totalCents) / Float.fromInt(items)
+  print(Float.toString(average))
+  print(Int.toString(Float.truncate(average * 10.0)))
   return 0
 }
 ```
 
 ```text
-3
--3
-1
-1260
-6.0
-1.4142135623730951
-3.5
-3
+142
+6
+142.85714285714286
+1428
 ```
 
-- `/` on integers truncates toward zero.
-- A number written without a decimal point is an `int`, and with one an `f64`.
-- Integer overflow panics in a debug build and wraps in a release build. The operators `+%`, `-%` and `*%` always wrap.
+Narra has two kinds of numbers. An `int` is a whole number, and `/` on two `int` values drops the fraction, so `1000 / 7` is `142`. `%` gives the remainder, `6`. An `f64` is a decimal number, written with a decimal point, such as `2.5` or `10.0`. `Float.fromInt` turns an `int` into an `f64`, and `Float.truncate` turns an `f64` back into an `int` by dropping the fraction.
+
+The two kinds never mix on their own. Multiplying an `f64` by `3` is an error, because `3` is an `int`:
+
+```narra error
+// error: 4:23: * needs two numbers of the same type, found f64 and int
+export function run(args: Array<string>): int {
+  const price = 2.5
+  const total = price * 3
+  return 0
+}
+```
+
+Write `3.0` instead, or convert with `Float.fromInt`. Every conversion is visible in the code, so you always know where a value may lose its fraction.
+
+You can write long numbers with `_` between the digits, as in `1_000_000`. Hexadecimal and binary numbers start with `0x` and `0b`, as in `0xFF` and `0b101`.
+
+An `int` holds values up to about nine quintillion (9223372036854775807). In a debug build, going past that stops the program with an overflow message. When you want the wrapped result on purpose, as in a hash function, use `+%`, `-%` or `*%`:
 
 ```narra
 import * as Int from "std/int"
 
 export function run(args: Array<string>): int {
-  const big = 9223372036854775807
-  print(Int.toString(big +% 1))
+  const largest = 9223372036854775807
+  print(Int.toString(largest +% 1))
   return 0
 }
 ```
@@ -104,85 +149,174 @@ export function run(args: Array<string>): int {
 -9223372036854775808
 ```
 
-## Strings, characters and templates
+## Text
 
-A `string` is immutable UTF-8 text in double quotes. A `char` is one Unicode scalar value in single quotes. `"a"` is a string of one character and `'a'` is a `char`; they are different types.
-
-A template string uses backticks. Each `${...}` holds an expression of type `string`, so a number goes through `Int.toString` first. There is no implicit conversion, and there is no `+` for strings. Join with a template or with `Str.concat`.
+The receipt needs lines of text. Build one item line, padded with dots:
 
 ```narra
 import * as Int from "std/int"
 import * as Str from "std/string"
 
 export function run(args: Array<string>): int {
-  const name = "Narra"
-  const greeting = `Hello, ${name}!`
-  print(greeting)
-  print(Int.toString(Str.length(greeting)))
-  print(Str.concat("ab", "cd"))
-  print(Str.repeat("-", 5))
-  print(Str.fromChar('λ'))
-  if ("apple" < "banana") {
-    print("strings compare in order")
-  }
+  const name = "tea"
+  const priceText = Int.toString(250)
+  const width = 16
+  const dots = Str.repeat(".", width - Str.length(name) - Str.length(priceText))
+  print(`${name}${dots}${priceText}`)
+  print(Str.repeat("=", width))
   return 0
 }
 ```
 
 ```text
-Hello, Narra!
-13
-abcd
------
-λ
-strings compare in order
+tea..........250
+================
 ```
 
-`Str.length` is a length in bytes. Positions in a string are byte offsets, and slicing checks that they fall on a character boundary.
+A `string` is text in double quotes. A template string, in backticks, joins strings together. The functions for strings come from `std/string`, imported here as `Str`: `Str.length` counts the bytes of a string, and `Str.repeat` repeats it.
 
-```narra
-import * as Int from "std/int"
-import * as Str from "std/string"
-
-export function run(args: Array<string>): int {
-  const line = "key = value"
-  const found = Str.indexOf(line, "=")
-  if (found is Some(position)) {
-    const key = Str.trim(Str.slice(line, 0, position))
-    const value = Str.trim(Str.sliceFrom(line, position + 1))
-    print(`${key}|${value}`)
-  }
-  print(Int.toString(Str.charCount("héllo")))
-  print(Int.toString(Str.length("héllo")))
-  return 0
-}
-```
-
-```text
-key|value
-5
-6
-```
-
-## Booleans and conditions
-
-`bool` is `true` or `false`, and a condition must be a `bool`. There is no truthiness: `0`, `""` and `None` are not conditions. `==` compares by structure with no conversion, and `===` is a compile error.
+There is no `+` for strings. If you reach for it, the compiler points you to templates:
 
 ```narra error
-// error: 3:7: expected bool, found int
+// error: 3:15: strings are joined with a template string, not +
 export function run(args: Array<string>): int {
-  if (1) {
-    return 1
+  print("tea" + "...")
+  return 0
+}
+```
+
+Text often arrives as one line you need to take apart. `Str.split` cuts a string at each separator and gives the pieces as an array. Arrays come later in this chapter. For now, `parts[0]` is the first piece and `parts[1]` the second:
+
+```narra
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int {
+  const line = "  coffee = 320 "
+  const parts = Str.split(line, "=")
+  const name = Str.trim(parts[0])
+  const price = Str.trim(parts[1])
+  print(`[${name}] costs [${price}]`)
+  print(Str.slice(name, 0, 3))
+  return 0
+}
+```
+
+```text
+[coffee] costs [320]
+cof
+```
+
+`Str.trim` removes spaces at both ends, and `Str.slice(name, 0, 3)` takes the bytes from position 0 up to, but not including, position 3.
+
+A string holds UTF-8 text, where a letter such as `é` takes two bytes. So `Str.length` counts bytes, and `Str.charCount` counts characters:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int {
+  print(Int.toString(Str.length("café")))
+  print(Int.toString(Str.charCount("café")))
+  print(Str.fromChar('é'))
+  return 0
+}
+```
+
+```text
+5
+4
+é
+```
+
+A single character in single quotes, such as `'é'`, is a `char`, not a `string`. `Str.fromChar` turns a `char` into a one-character string.
+
+## Make a decision
+
+Shops give a discount on large orders. `if` runs a block only when its condition is true, and `else` gives the other case:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const totalCents = 1250
+  const isLarge = totalCents >= 1000
+  if (isLarge) {
+    print(`discount applied: ${Int.toString(totalCents - 100)}`)
+  } else {
+    print(`no discount: ${Int.toString(totalCents)}`)
+  }
+  if (isLarge && totalCents % 2 == 0) {
+    print("even total")
   }
   return 0
 }
 ```
 
-## Arrays
+```text
+discount applied: 1150
+even total
+```
 
-`Array<T>` is a growable array. The type is always written `Array<T>`. Indexes start at 0, and an index out of range panics. The functions on arrays come from `std/array`, imported as `Arrays` by convention, and there are no methods: write `Arrays.push(mutable items, 4)`, not `items.push(4)`.
+`totalCents >= 1000` is a `bool`, a value that is either `true` or `false`. The comparisons are `==`, `!=`, `<`, `<=`, `>` and `>=`, and you combine conditions with `&&` (and), `||` (or) and `!` (not).
 
-The word `mutable` at the call says that the function may change your variable. Chapter 9 explains the rules.
+A condition must be a `bool`. A number is not one, so `if (count)` does not compile. Write the comparison you mean, such as `count > 0`:
+
+```narra error
+// error: 4:7: expected bool, found int
+export function run(args: Array<string>): int {
+  const count = 3
+  if (count) {
+    print("not empty")
+  }
+  return 0
+}
+```
+
+## Lists of values
+
+A receipt has many prices. An array holds a list of values of one type, written in square brackets. The type of a list of `int` values is `Array<int>`.
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+export function run(args: Array<string>): int {
+  let prices: Array<int> = [250, 320, 180]
+  Arrays.push(mutable prices, 400)
+  prices[0] = 200
+  let totalCents = 0
+  for (const price of prices) {
+    totalCents = totalCents + price
+  }
+  print(`${Int.toString(Arrays.length(prices))} items, ${Int.toString(totalCents)} cents`)
+  print(`first: ${Int.toString(prices[0])}`)
+  return 0
+}
+```
+
+```text
+4 items, 1100 cents
+first: 200
+```
+
+`prices[0]` is the first element, because positions start at 0. Reading a position past the end stops the program with a message. `for (const price of prices)` runs its block once per element, with `price` bound to each element in turn.
+
+The functions for arrays come from `std/array`, imported as `Arrays`. `Arrays.push(mutable prices, 400)` adds an element at the end. The word `mutable` in the call marks the argument that the function changes. You can see at the call which of your values may change. Only a `let` name can be passed that way. Chapter 9 explains `mutable` in full.
+
+Arrays have no methods, so writing `prices.push(400)` gives an error that points you to the module function:
+
+```narra error
+// error: 6:10: there are no method calls; call a module function such as Module.push(value, ...)
+import * as Arrays from "std/array"
+
+export function run(args: Array<string>): int {
+  let prices: Array<int> = [250]
+  prices.push(400)
+  return Arrays.length(prices)
+}
+```
+
+To count through positions, loop over a range. `Ranges.upTo(3)` counts 0, 1, 2, and `Arrays.entries` gives each position together with its element:
 
 ```narra
 import * as Int from "std/int"
@@ -190,124 +324,159 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
 export function run(args: Array<string>): int {
-  let items: Array<int> = [1, 2, 3]
-  Arrays.push(mutable items, 4)
-  items[0] = 10
-  let total = 0
-  for (const item of Arrays.values(items)) {
-    total = total + item
-  }
-  print(`${Int.toString(Arrays.length(items))} items, total ${Int.toString(total)}`)
-  let squares = Arrays.filled(0, 3)
-  for (const i of Ranges.upTo(3)) {
+  let squares = Arrays.filled(0, 4)
+  for (const i of Ranges.upTo(4)) {
     squares[i] = i * i
   }
-  for (const #[index, value] of Arrays.entries(squares)) {
-    print(`${Int.toString(index)}: ${Int.toString(value)}`)
+  for (const #[position, square] of Arrays.entries(squares)) {
+    print(`${Int.toString(position)}: ${Int.toString(square)}`)
   }
   return 0
 }
 ```
 
 ```text
-4 items, total 19
 0: 0
 1: 1
 2: 4
+3: 9
 ```
 
-`Arrays.values` and `Arrays.entries` are the ways to loop over an array, and `Ranges.upTo(n)` and `Ranges.between(start, end)` are the way to count. There is no C-style `for (init; cond; step)` loop yet, so use `while` when the step is not a range.
+`Arrays.filled(0, 4)` makes an array of four zeros, and `Ranges.between(2, 5)` counts 2, 3, 4. The `#[position, square]` in the loop takes apart a pair of values. Pairs come at the end of this chapter.
 
-An array behaves as a value. Assigning it copies it, and the copy happens only when one of the two is changed, which is called copy on write.
+### Arrays are values
+
+What happens to a copy when you change the original? Keep a snapshot of the prices, then add one:
 
 ```narra
 import * as Int from "std/int"
 import * as Arrays from "std/array"
 
 export function run(args: Array<string>): int {
-  let original: Array<int> = [1, 2, 3]
-  const snapshot = original
-  Arrays.push(mutable original, 4)
-  print(Int.toString(Arrays.length(original)))
+  let prices: Array<int> = [250, 320]
+  const snapshot = prices
+  Arrays.push(mutable prices, 400)
+  print(Int.toString(Arrays.length(prices)))
   print(Int.toString(Arrays.length(snapshot)))
   return 0
 }
 ```
 
 ```text
-4
 3
+2
 ```
 
-`snapshot` keeps its three items. Two names never share one changing array.
+The snapshot keeps two prices. Assigning an array to another name gives that name its own copy, so a change through one name never shows up through another. The copy is cheap: the two names share the elements until one of them changes, and only then are the elements copied.
 
-## Maps
+A `const` array cannot change at all, not even its elements:
 
-`Map<K, V>` is a hash map that keeps insertion order. Write one with `Map { key: value }`, and an empty one with a type from context. A key that is not a literal goes in brackets. Reading `m[key]` gives an `Option<V>`, because the key may be missing. There is no `null` (chapter 5 shows how to read an `Option`). Float keys are an error.
+```narra error
+// error: 4:3: "prices" is constant; declare it with `let` to change it
+export function run(args: Array<string>): int {
+  const prices = [250, 320]
+  prices[0] = 200
+  return 0
+}
+```
+
+## Look up a value by name
+
+The shop keeps a count of each item in stock. A `Map` looks up a value by a key. `Map<string, int>` maps item names to counts:
 
 ```narra
 import * as Int from "std/int"
 import * as Maps from "std/map"
 
 export function run(args: Array<string>): int {
-  let ages: Map<string, int> = Map { "ada": 36, "grace": 45 }
-  const newcomer = "linus"
-  ages[newcomer] = 28
-  ages["ada"] = 37
-  for (const name of Maps.keys(ages)) {
-    if (ages[name] is Some(age)) {
-      print(`${name} ${Int.toString(age)}`)
+  let stock: Map<string, int> = Map { "tea": 12, "coffee": 5 }
+  stock["coffee"] = 4
+  const newItem = "cocoa"
+  stock[newItem] = 9
+  for (const name of Maps.keys(stock)) {
+    if (stock[name] is Some(count)) {
+      print(`${name}: ${Int.toString(count)}`)
     }
   }
-  print(Int.toString(Maps.size(ages)))
-  if (ages["nobody"] is None) {
-    print("no such key")
-  }
-  const removed = Maps.remove(mutable ages, "grace")
-  assert(removed)
-  const empty = Map<string, int> {}
-  print(Int.toString(Maps.size(empty)))
+  print(`${Int.toString(Maps.size(stock))} items`)
   return 0
 }
 ```
 
 ```text
-ada 37
-grace 45
-linus 28
-3
-no such key
+tea: 12
+coffee: 4
+cocoa: 9
+3 items
+```
+
+`Map { "tea": 12, "coffee": 5 }` writes a map with two entries. Assigning `stock["coffee"]` changes an entry, or adds it when the key is new. `Maps.keys` lists the keys in the order they were added.
+
+Reading `stock[name]` is different from reading an array. The key may not be in the map, so the result is not an `int` but an `Option<int>`: either `Some(count)`, holding the count, or `None`. Use it as an `int` and the compiler says so:
+
+```narra error
+// error: 4:27: expected int, found Option<int>
+export function run(args: Array<string>): int {
+  const stock: Map<string, int> = Map { "tea": 12 }
+  const count: int = stock["tea"]
+  return count
+}
+```
+
+`if (stock[name] is Some(count))` checks which case you have. When it is `Some`, the block runs with `count` bound to the value inside. Narra has no `null`: a value that may be missing has a type that says so, and you check it before you use it. Chapter 5 shows every way to do that.
+
+Removing an entry and starting from an empty map look like this:
+
+```narra
+import * as Int from "std/int"
+import * as Maps from "std/map"
+
+export function run(args: Array<string>): int {
+  let stock = Map<string, int> {}
+  stock["tea"] = 12
+  const removed = Maps.remove(mutable stock, "tea")
+  if (removed && stock["tea"] is None) {
+    print("tea is gone")
+  }
+  print(Int.toString(Maps.size(stock)))
+  return 0
+}
+```
+
+```text
+tea is gone
 0
 ```
 
-Writing the type arguments, as in `Map<string, int> {}`, gives the literal its type without an annotation.
+An empty map has no entries to tell the compiler its types, so you write them: `Map<string, int> {}`.
 
-## Tuples
+## Group a few values
 
-A tuple groups two or more values of different types. The type and the literal both use `#[...]`, because `[a, b]` is always an array. A function that returns several values returns a tuple.
+Sometimes two values belong together, such as an item name and its price. A tuple groups a fixed number of values, which can have different types. It is written `#[...]`, both as a value and as a type:
 
 ```narra
 import * as Int from "std/int"
 
-function divmod(a: int, b: int): #[int, int] {
-  return #[a / b, a % b]
-}
-
 export function run(args: Array<string>): int {
-  const #[quotient, remainder] = divmod(17, 5)
-  print(`${Int.toString(quotient)} remainder ${Int.toString(remainder)}`)
-  const pair: #[string, bool] = #["ready", true]
-  const #[label, flag] = pair
-  print(`${label} ${flag ? "yes" : "no"}`)
+  const cheapest: #[string, int] = #["tea", 250]
+  const #[name, priceCents] = cheapest
+  print(`${name} at ${Int.toString(priceCents)}`)
+  const items: Array<#[string, int]> = [#["tea", 250], #["coffee", 320]]
+  for (const #[itemName, itemPrice] of items) {
+    print(`${itemName}=${Int.toString(itemPrice)}`)
+  }
   return 0
 }
 ```
 
 ```text
-3 remainder 2
-ready yes
+tea at 250
+tea=250
+coffee=320
 ```
 
-A tuple has no element access by index. Take it apart with a pattern, as above. The conditional expression `c ? a : b` picks one of two values by a `bool` condition.
+`const #[name, priceCents] = cheapest` takes the tuple apart into two names. That is the only way to read a tuple: it has no positions to index. Square brackets alone, `[a, b]`, always make an array, so a tuple needs the `#`.
+
+The next chapter moves the receipt code into functions, so that each piece has a name and can be used again.
 
 Next: [3. Functions and closures](03-functions-and-closures.md).

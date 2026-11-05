@@ -1,8 +1,10 @@
 # 1. Getting started
 
-Narra is a statically typed language with enums that carry data, pattern matching, no `null` and no exceptions. It compiles to C, and a C compiler builds the program. This chapter builds and runs a first program, then a package with a `narra.toml`.
+In this chapter you build the compiler, run a first program and fix your first compile error. Then you turn the program into a project with two files.
 
-You need Go and a C compiler (`cc`, `clang` or `gcc`). Clone the repository, then build `narra`, the compiler. It reads your `.nra` files, turns them into C code, and calls the C compiler to make the executable.
+## Build the compiler
+
+Narra programs compile to C, and a C compiler turns that C into an executable. The compiler, `narra`, is written in Go. You need Go and a C compiler (`cc`, `clang` or `gcc`) installed.
 
 ```sh
 git clone https://github.com/lxsmnsyc/narra
@@ -10,9 +12,11 @@ cd narra/compiler
 go build -o narra ./cmd/narra
 ```
 
-## A first program
+This leaves a `narra` executable in `narra/compiler`. Put that folder on your `PATH` so you can type `narra` from anywhere, as the rest of the guide does.
 
-A single file is a program when it exports a function named `run`. The function takes the command-line arguments and returns the exit code.
+## Say hello
+
+Create a file named `hello.nra` and run it with `narra run hello.nra`. Each program in this guide is followed by what it prints:
 
 ```narra
 export function run(args: Array<string>): int {
@@ -25,82 +29,113 @@ export function run(args: Array<string>): int {
 hello, narra
 ```
 
-Save it as `hello.nra` and run it:
+`narra run` compiled the file, built an executable, and started it. The executable called the function named `run`, so every program has one. Here is what each part of it does:
 
-```sh
-./narra run hello.nra
-```
+- `export` makes `run` visible outside the file, which is how the compiler finds it.
+- `args: Array<string>` is the command-line arguments, as a list of strings. The first one is the path of the program.
+- `: int` after the parentheses is the type of value the function returns. `run` returns the exit code, and `0` means success.
+- `print` writes a line of text to standard output.
 
-`print`, `assert` and `panic` are the only functions you can call without an import. Everything else comes from a module you import (chapter 8).
+A statement ends at the end of its line, so you write no `;` after it.
 
-What to notice:
+## Print a number
 
-- There are no semicolons. A line break ends a statement, and a `;` is a compile error.
-- Every named function writes its parameter and return types. A function with no return type returns nothing.
-- `narra fmt` defines the one layout, so there is nothing to configure or argue about.
-
-## Commands
-
-| Command | What it does |
-| --- | --- |
-| `narra run file.nra` | build and run |
-| `narra build -o app file.nra` | build a debug executable |
-| `narra build -release -o app file.nra` | build an optimized executable |
-| `narra check file.nra` | report errors without building |
-| `narra test file.nra` | run the `test` blocks of the file |
-| `narra emit file.nra` | print the generated C |
-
-A debug build checks integer overflow, and a program run with `NARRA_CHECK_LEAKS=1` reports memory that was never freed. A release build wraps on integer overflow. Division by zero and out-of-range indexes panic in both.
-
-## Errors say what to write instead
-
-A compile error names the line and column, and says what to write instead when it can.
+Next, make the program print the result of a sum. The obvious version does not compile:
 
 ```narra error
-// error: 3:11: semicolons are not used
+// error: 3:11: expected string, found int
 export function run(args: Array<string>): int {
-  return 0;
+  print(1 + 2)
+  return 0
 }
 ```
 
-Run `narra explain E0003` to read about a diagnostic code, or `narra check --json file.nra` to get one JSON object per diagnostic, with the fix as an edit.
+The comment on the first line shows the message the compiler prints for this file. `3:11` is the line and column of the problem, with the comment counted as line 1: `print` wants a `string`, and `1 + 2` is an `int`. Narra never turns a number into text for you, so you convert it yourself with `Int.toString`:
 
-## A package
+```narra
+import * as Int from "std/int"
 
-A program with several files is a package: a directory with a `narra.toml` and a `src/` folder.
+export function run(args: Array<string>): int {
+  print(Int.toString(1 + 2))
+  return 0
+}
+```
 
 ```text
-app/
+3
+```
+
+`Int.toString` lives in the standard module `std/int`. The `import` line makes the functions of that module available under the name `Int`. Only `print`, `assert` and `panic` are there without an import. Everything else, including the functions for strings, arrays and maps, comes from a module you import.
+
+When you are only looking for mistakes, `narra check hello.nra` reports the errors without building anything.
+
+## Build an executable
+
+`narra run` builds into a temporary place. To keep the executable, use `narra build`:
+
+```sh
+narra build -o hello hello.nra
+./hello
+```
+
+This is a debug build. It stops the program with a message when an integer calculation overflows, and running it with `NARRA_CHECK_LEAKS=1` set reports memory that was never freed. Add `-release` for an optimized build, in which integer overflow wraps around instead. In both builds, dividing by zero or reading past the end of an array stops the program with a message.
+
+## Split the program into files
+
+Once a program grows, you want it in several files. A project of several files is a package: a folder with a `narra.toml` file and a `src` folder for the code.
+
+```text
+shop/
   narra.toml
   src/
-    cli.nra
-    text.nra
+    main.nra
+    prices.nra
 ```
+
+`narra.toml` names the package and says which function starts the program:
 
 ```toml
 [package]
-name = "app"
+name = "shop"
 
 [[binary]]
-name = "app"
-entry = "cli.run"
+name = "shop"
+entry = "main.run"
 ```
 
-The file `src/text.nra` of package `app` is the module `"app/text"`. The `entry` names a module inside the package, then its function. Build every binary of a package, or run one, by naming the directory:
+`entry = "main.run"` means the function `run` in `src/main.nra`. Each file in `src` is a module, named after the package and the file: `src/prices.nra` is the module `"shop/prices"`. Put a function in it and export it:
 
-```sh
-./narra build app
-./narra run -bin app app
+```narra fragment
+export function withTax(cents: int): int {
+  return cents + cents / 10
+}
 ```
 
-Chapter 8 covers imports and exports. `narra.toml` also has a `[fmt]` table for the formatter.
+Then `src/main.nra` imports that function by name:
 
-## Tests
+```narra fragment
+import * as Int from "std/int"
+import { withTax } from "shop/prices"
 
-A `test` block lives next to the code, and `narra test` runs each block in its own process. Chapter 10 covers `std/test` in full.
-
-```sh
-./narra test file.nra
+export function run(args: Array<string>): int {
+  print(Int.toString(withTax(200)))
+  return 0
+}
 ```
+
+From inside the `shop` folder, `narra run .` builds and runs the package and prints `220`. `narra build .` writes the executable `shop`, named after the `[[binary]]`. Chapter 8 covers modules and imports in full.
+
+## The commands
+
+| Command | What it does |
+| --- | --- |
+| `narra run file.nra` | build and run a program |
+| `narra build -o app file.nra` | build a debug executable |
+| `narra build -release -o app file.nra` | build an optimized executable |
+| `narra check file.nra` | report errors without building |
+| `narra test file.nra` | run the tests in the file (chapter 10) |
+| `narra explain E0003` | explain an error code |
+
+Each command also takes a package folder in place of a file.
 
 Next: [2. Values and types](02-values-and-types.md).

@@ -1,196 +1,275 @@
 # 4. Structs and enums
 
-Data is a `struct` (a fixed set of named fields) or an `enum` (a choice between variants that carry their own fields). Behavior is a function that takes the data, or a trait (chapter 7).
+So far an item of the shop was a loose name and price, passed around side by side. This chapter gives the shop's data its own types. A struct groups named fields into one value. An enum says that a value is one of several kinds, each with its own data.
 
-## Structs
+## Group fields into a struct
+
+An item has a name, a price and a quantity. Declare a struct with those three fields, and write functions that take an item:
 
 ```narra
 import * as Int from "std/int"
-import * as Arrays from "std/array"
 
-struct ServerConfig {
-  host: string
-  port: int = 8080
-  tags: Array<string> = []
+struct Item {
+  name: string
+  priceCents: int
+  quantity: int = 1
 }
 
-function describe(config: ServerConfig): string {
-  return `${config.host}:${Int.toString(config.port)} (${Int.toString(Arrays.length(config.tags))} tags)`
+function lineTotal(item: Item): int {
+  return item.priceCents * item.quantity
+}
+
+function describe(item: Item): string {
+  return `${Int.toString(item.quantity)} x ${item.name} = ${Int.toString(lineTotal(item))}`
 }
 
 export function run(args: Array<string>): int {
-  const config = ServerConfig { host: "localhost" }
-  print(describe(config))
-
-  const loopback: ServerConfig = { host: "127.0.0.1", port: 3000 }
-  print(describe(loopback))
-
-  const moved = { ...config, port: 9000 }
-  print(describe(moved))
-  print(describe(config))
-
-  let current = config
-  current.port = 9001
-  Arrays.push(mutable current.tags, "primary")
-  print(describe(current))
-  print(describe(config))
-
-  const { host, port: serverPort } = current
-  print(`${host} ${Int.toString(serverPort)}`)
+  const tea = Item { name: "tea", priceCents: 250, quantity: 2 }
+  const coffee = Item { name: "coffee", priceCents: 320 }
+  print(describe(tea))
+  print(describe(coffee))
   return 0
 }
 ```
 
 ```text
-localhost:8080 (0 tags)
-127.0.0.1:3000 (0 tags)
-localhost:9000 (0 tags)
-localhost:8080 (0 tags)
-localhost:9001 (1 tags)
-localhost:8080 (0 tags)
-localhost 9001
+2 x tea = 500
+1 x coffee = 320
 ```
 
-What to notice:
+`struct Item { ... }` declares a new type with one field per line. `Item { name: "tea", ... }` builds a value of it, and `item.priceCents` reads a field.
 
-- A field may have a constant default. A field without one must be given when you build the struct.
-- Write `TypeName { field: value }`. When the expected type is known, from an annotation, a parameter or a result type, you can leave the name out.
-- Every field is written `name: value`. The shorthand `{ name }` does not build a struct: in value position a `{ ... }` is a block expression (chapter 5).
-- `{ ...s, field: v }` copies `s` and changes some fields. The spread comes first, and the original does not change.
-- A struct is a value. `let current = config` makes a copy, and `current.port = 9001` changes only `current`. You can assign to a field only through a `let` variable or a `mutable` parameter.
-- `==` compares structs field by field.
-- A struct cannot contain itself. Use an `Array`, an `enum` or a `Box<T>` for recursive data.
-
-## Enums
-
-An enum is a set of variants, and each variant can carry named fields. Use an enum for any value that is one of several kinds, each with its own data. Constructors are always written with the enum name: `Shape.Circle(1.0)`, `Shape.Dot`. The only bare constructors are `Some`, `None`, `Ok` and `Err`.
-
-```narra
-import * as Float from "std/float"
-
-enum Shape {
-  Circle(radius: f64)
-  Rect(width: f64, height: f64)
-  Dot
-}
-
-function area(shape: Shape): f64 {
-  return match (shape) {
-    Shape.Circle(radius) => 3.0 * radius * radius
-    Shape.Rect(width, height) => width * height
-    Shape.Dot => 0.0
-  }
-}
-
-export function run(args: Array<string>): int {
-  const shapes = [Shape.Circle(2.0), Shape.Rect(2.0, 3.5), Shape.Dot]
-  for (const shape of shapes) {
-    print(Float.toString(area(shape)))
-  }
-  assert(Shape.Dot == Shape.Dot)
-  assert(Shape.Rect(1.0, 2.0) == Shape.Rect(1.0, 2.0))
-  assert(Shape.Rect(1.0, 2.0) != Shape.Dot)
-  return 0
-}
-```
-
-```text
-12.0
-7.0
-0.0
-```
-
-`match` must cover every variant, so adding a variant to the enum makes every `match` on it fail to compile until you handle it (chapter 5). Leaving one out is an error.
+`quantity: int = 1` gives the field a default, so `coffee` leaves it out and gets 1. A field without a default must be given:
 
 ```narra error
-// error: 8:3: match does not cover Blue; add the cases or a `_` arm
-enum Color {
-  Red
-  Blue
+// error: 9:16: missing field "priceCents" of Item
+struct Item {
+  name: string
+  priceCents: int
+  quantity: int = 1
 }
+
 export function run(args: Array<string>): int {
-  const color = Color.Red
-  match (color) { Color.Red => print("red") }
-  return 0
+  const item = Item { name: "tea" }
+  return item.quantity
 }
 ```
 
-A fielded variant lives on the heap, and the compiler counts its references. An enum value is a small handle that you copy freely.
-
-## Recursive types and `Box`
-
-A struct cannot hold itself, and an enum cannot hold a value of its own type inline. A fielded enum variant can: the payload is on the heap, so a tree or a list is a recursive enum.
+You can leave out the struct name when the compiler already knows which struct you mean. That is the case when the value goes to a parameter, a result or a name with a written type:
 
 ```narra
 import * as Int from "std/int"
 
-enum Expression {
-  Number(value: int)
-  Add(left: Expression, right: Expression)
-  Multiply(left: Expression, right: Expression)
-  Negate(inner: Expression)
+struct Item {
+  name: string
+  priceCents: int
+  quantity: int = 1
 }
 
-function evaluate(expression: Expression): int {
-  return match (expression) {
-    Expression.Number(value) => value
-    Expression.Add(left, right) => evaluate(left) + evaluate(right)
-    Expression.Multiply(left, right) => evaluate(left) * evaluate(right)
-    Expression.Negate(inner) => -evaluate(inner)
-  }
-}
-
-function render(expression: Expression): string {
-  return match (expression) {
-    Expression.Number(value) => Int.toString(value)
-    Expression.Add(left, right) => `(${render(left)} + ${render(right)})`
-    Expression.Multiply(left, right) => `(${render(left)} * ${render(right)})`
-    Expression.Negate(inner) => `-${render(inner)}`
-  }
+function lineTotal(item: Item): int {
+  return item.priceCents * item.quantity
 }
 
 export function run(args: Array<string>): int {
-  const expression = Expression.Add(
-    Expression.Multiply(Expression.Number(2), Expression.Number(3)),
-    Expression.Negate(Expression.Number(4)),
-  )
-  print(`${render(expression)} = ${Int.toString(evaluate(expression))}`)
+  const cocoa: Item = { name: "cocoa", priceCents: 280 }
+  print(Int.toString(lineTotal(cocoa)))
+  print(Int.toString(lineTotal({ name: "juice", priceCents: 190, quantity: 3 })))
   return 0
 }
 ```
 
 ```text
-((2 * 3) + -4) = 2
+280
+570
 ```
 
-`Box<T>` is for a struct that must refer to itself. It holds one value on the heap with a reference count: `Boxes.new(value)` makes one and `box.value` reads it.
+## Change an item
+
+A customer takes one more tea. Copy the item into a `let` name and change the field there:
+
+```narra
+import * as Int from "std/int"
+
+struct Item {
+  name: string
+  priceCents: int
+  quantity: int = 1
+}
+
+export function run(args: Array<string>): int {
+  const tea = Item { name: "tea", priceCents: 250 }
+  let moreTea = tea
+  moreTea.quantity = moreTea.quantity + 1
+  print(`${Int.toString(tea.quantity)} then ${Int.toString(moreTea.quantity)}`)
+
+  const onSale = { ...tea, priceCents: 200 }
+  print(`${Int.toString(tea.priceCents)} then ${Int.toString(onSale.priceCents)}`)
+
+  if (tea != onSale && tea == Item { name: "tea", priceCents: 250 }) {
+    print("compared field by field")
+  }
+  return 0
+}
+```
+
+```text
+1 then 2
+250 then 200
+compared field by field
+```
+
+A struct behaves like the arrays of chapter 2: `let moreTea = tea` makes a copy, and changing `moreTea` leaves `tea` as it was. You can assign a field only through a `let` name.
+
+Often you want a new value that differs in one or two fields. `{ ...tea, priceCents: 200 }` copies every field of `tea`, then sets the fields listed after it. It is a new value, and `tea` does not change.
+
+`==` and `!=` compare two structs field by field.
+
+## A value of one of several kinds
+
+Customers pay in different ways. Cash needs only an amount. A card payment also has the last four digits of the card. A voucher has a code. The kinds carry different data, so a struct with every possible field would be wrong for all of them. An enum lists the kinds, called variants, each with its own fields:
+
+```narra
+import * as Int from "std/int"
+
+enum Payment {
+  Cash(cents: int)
+  Card(cents: int, lastDigits: string)
+  Voucher(code: string)
+}
+
+function describe(payment: Payment): string {
+  return match (payment) {
+    Payment.Cash(cents) => `cash ${Int.toString(cents)}`
+    Payment.Card(cents, lastDigits) => `card ...${lastDigits} ${Int.toString(cents)}`
+    Payment.Voucher(code) => `voucher ${code}`
+  }
+}
+
+export function run(args: Array<string>): int {
+  const payments = [Payment.Cash(500), Payment.Card(820, "4242"), Payment.Voucher("SPRING")]
+  for (const payment of payments) {
+    print(describe(payment))
+  }
+  return 0
+}
+```
+
+```text
+cash 500
+card ...4242 820
+voucher SPRING
+```
+
+`Payment.Card(820, "4242")` builds the `Card` variant, with the enum name in front. All three values have the type `Payment`, so they fit in one array.
+
+`match` looks at which variant a payment is. Each line, called an arm, has a pattern on the left of `=>` and a result on the right. The pattern `Payment.Card(cents, lastDigits)` matches a card payment and binds its two fields to names for that arm. Write `_` in place of a field you do not need, as in `Payment.Cash(_)`. Chapter 5 shows everything a pattern can do.
+
+Say the shop starts to accept gift cards, and you add a variant. Every `match` on `Payment` that does not handle it now fails to compile:
+
+```narra error
+// error: 9:10: match does not cover GiftCard(_); add the cases or a `_` arm
+enum Payment {
+  Cash(cents: int)
+  Voucher(code: string)
+  GiftCard(cents: int)
+}
+
+function isVoucher(payment: Payment): bool {
+  return match (payment) {
+    Payment.Cash(_) => false
+    Payment.Voucher(_) => true
+  }
+}
+
+export function run(args: Array<string>): int {
+  return isVoucher(Payment.Cash(1)) ? 1 : 0
+}
+```
+
+So a new variant cannot be forgotten. You either handle it, or add an arm with the pattern `_`, which matches anything that is left.
+
+A variant can also have no fields at all, as in `enum Size { Small, Medium, Large }`. You write such a value without parentheses: `Size.Small`.
+
+## Data that contains itself
+
+The shop sells gift baskets. A basket holds products, and some of them are smaller baskets. The type of a product therefore refers to itself:
+
+```narra
+import * as Int from "std/int"
+
+enum Product {
+  Single(name: string, priceCents: int)
+  Basket(name: string, contents: Array<Product>)
+}
+
+function price(product: Product): int {
+  return match (product) {
+    Product.Single(_, priceCents) => priceCents
+    Product.Basket(_, contents) => {
+      let total = 0
+      for (const inner of contents) {
+        total = total + price(inner)
+      }
+      return total
+    }
+  }
+}
+
+export function run(args: Array<string>): int {
+  const tea = Product.Single("tea", 250)
+  const mug = Product.Single("mug", 600)
+  const small = Product.Basket("small", [tea, mug])
+  const large = Product.Basket("large", [small, tea, Product.Single("cake", 900)])
+  print(Int.toString(price(small)))
+  print(Int.toString(price(large)))
+  return 0
+}
+```
+
+```text
+850
+2000
+```
+
+Recursion, from chapter 3, is the natural way to walk such data. `price` of a basket is the sum of the prices of its contents, and an inner basket is handled by the same function. A single product is the stopping case. An arm whose result needs several statements gets a block, which ends with `return`.
+
+A struct cannot hold a field of its own type directly. An order that points to the previous order is an error:
+
+```narra error
+// error: 2:1: type Order contains itself; put the recursive field in an enum, Box or array
+struct Order {
+  id: int
+  previous: Option<Order>
+}
+
+export function run(args: Array<string>): int {
+  return 0
+}
+```
+
+A struct value holds its fields in place, so an `Order` that holds an `Order` would need infinite room. The message lists the ways out. An array or an enum variant with fields keeps its contents in separate memory, as `Basket` above does. For a single value, use a `Box`: it holds one value in separate memory, and the struct holds only a small reference to it. `Boxes.new(value)` makes a box, and `box.value` reads what is inside:
 
 ```narra
 import * as Int from "std/int"
 import * as Boxes from "std/box"
 
-struct Node {
-  value: int
-  next: Option<Box<Node>> = None
+struct Order {
+  id: int
+  previous: Option<Box<Order>> = None
 }
 
-function sum(head: Option<Box<Node>>): int {
-  let total = 0
-  let current = head
-  while (true) {
-    if (current is Some(box)) {
-      total = total + box.value.value
-      current = box.value.next
-    } else {
-      return total
-    }
+function countOrders(order: Order): int {
+  return match (order.previous) {
+    Some(box) => 1 + countOrders(box.value)
+    None => 1
   }
-  return total
 }
 
 export function run(args: Array<string>): int {
-  const list = Some(Boxes.new(Node { value: 1, next: Some(Boxes.new(Node { value: 2 })) }))
-  print(Int.toString(sum(list)))
+  const first = Order { id: 1 }
+  const second = Order { id: 2, previous: Some(Boxes.new(first)) }
+  const third = Order { id: 3, previous: Some(Boxes.new(second)) }
+  print(Int.toString(countOrders(third)))
   return 0
 }
 ```
@@ -199,38 +278,59 @@ export function run(args: Array<string>): int {
 3
 ```
 
-## Opaque and distinct types
+`Option<Box<Order>>` is either `Some(box)` or `None`, the same `Option` that reading a map gives. `Option` is an enum too. Its variants and the `Ok` and `Err` of `Result` are written without the enum name in front. Every other variant needs it. The first order has no previous one, so its field defaults to `None`.
 
-A `distinct type` makes a new type from an existing one, so the compiler keeps `UserId` and `OrderId` apart even though both are `int`. You convert by name: `UserId.from(42)` and `UserId.toInt(id)`. Arithmetic and `Show` do not carry over, but `==` does when the base type supports it.
+The memory behind a box, an array or an enum variant is freed as soon as nothing uses it any more. You never free it yourself. Chapter 9 explains how that works.
+
+## Keep similar numbers apart
+
+Customer ids and order ids are both numbers, and nothing stops you from passing one where the other belongs. A distinct type is a new type with the same values as an existing one, which the compiler keeps apart from it:
 
 ```narra
 import * as Int from "std/int"
 
-distinct type UserId = int
+distinct type CustomerId = int
 distinct type OrderId = int
 
-function lookup(id: UserId): int {
-  return UserId.toInt(id) + 1
+function describeCustomer(id: CustomerId): string {
+  return `customer ${Int.toString(CustomerId.toInt(id))}`
 }
 
 export function run(args: Array<string>): int {
-  const user = UserId.from(42)
-  const order = OrderId.from(42)
-  print(Int.toString(lookup(user)))
-  assert(user == UserId.from(42))
-  print(Int.toString(OrderId.toInt(order)))
+  const customer = CustomerId.from(7)
+  print(describeCustomer(customer))
+  if (customer == CustomerId.from(7)) {
+    print("same customer")
+  }
   return 0
 }
 ```
 
 ```text
-43
-42
+customer 7
+same customer
 ```
 
-Passing an `OrderId` where a `UserId` is wanted is a compile error.
+`CustomerId.from(7)` makes a `CustomerId` from an `int`, and `CustomerId.toInt` turns it back. The conversions cost nothing when the program runs. A `CustomerId` can be compared with `==`, but it has no arithmetic, since adding two ids means nothing. Pass an `OrderId` by mistake, and the program does not compile:
 
-An `opaque struct` is exported without its fields, so only its own module can build it or read its fields. That is how a module keeps an invariant. This needs two modules, so it is a fragment. In `src/range.nra`:
+```narra error
+// error: 11:27: expected CustomerId, found OrderId
+distinct type CustomerId = int
+distinct type OrderId = int
+
+function describeCustomer(id: CustomerId): int {
+  return CustomerId.toInt(id)
+}
+
+export function run(args: Array<string>): int {
+  const order = OrderId.from(42)
+  return describeCustomer(order)
+}
+```
+
+## Hide the fields of a struct
+
+Some structs have a rule their fields must follow. A time span, for example, must not end before it starts. If any code could build one with `Span { start: 5, end: 1 }`, nothing would enforce the rule. Mark the struct `opaque` when you export it, and code outside its module can no longer build it or read its fields. It must go through the functions the module exports. A program cannot show this in a single file, so here is the module, `src/span.nra`:
 
 ```narra fragment
 export opaque struct Span {
@@ -240,7 +340,7 @@ export opaque struct Span {
 
 export function makeSpan(start: int, end: int): Result<Span, string> {
   if (end < start) {
-    return Err("end before start")
+    return Err("the span ends before it starts")
   }
   return Ok(Span { start: start, end: end })
 }
@@ -250,6 +350,8 @@ export function spanLength(span: Span): int {
 }
 ```
 
-Another module imports `Span`, `makeSpan` and `spanLength`, and it cannot write `Span { ... }` or read `span.start`. A distinct type can be exported opaque too (`export opaque distinct type`).
+Another module can import `Span`, `makeSpan` and `spanLength`, but `Span { start: 5, end: 1 }` and `span.start` are errors there. Every `Span` comes from `makeSpan`, so every `Span` follows the rule. `makeSpan` returns a `Result`, which is either `Ok` with the span or `Err` with a message. Chapter 6 covers it.
+
+The next chapter looks closer at `match` and the patterns it uses, and at the other places patterns appear.
 
 Next: [5. Pattern matching](05-pattern-matching.md).

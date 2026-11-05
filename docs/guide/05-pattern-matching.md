@@ -1,192 +1,326 @@
 # 5. Pattern matching
 
-A pattern describes the shape of a value, tests it, and binds names to the parts. Narra uses patterns in `match`, in `is`, and in `const` and `let` declarations. They replace `switch`, `null` checks and manual field access.
+In this chapter the shop gets a till that reads typed commands such as `add tea 2` or `pay 500`. Turning a line of text into a command, and acting on it, means asking "what shape is this value?" over and over. Patterns are how Narra asks that question. You met them in `match` in chapter 4. Here you see what else they can test, and the other places they appear.
 
-## `match`
+## Decide by kind, and by condition
 
-`match` checks a value against patterns in order and must cover every case, or end with a `_` arm. Each arm is `pattern => expression`, or `pattern => { statements }`. An arm can add a guard with `if (...)`.
+The till knows three commands:
 
 ```narra
 import * as Int from "std/int"
 
-enum Token {
-  Word(text: string)
-  Number(value: int)
-  Space
+enum Command {
+  Add(name: string, quantity: int)
+  Remove(name: string)
+  Pay(cents: int)
 }
 
-function describe(token: Token): string {
-  return match (token) {
-    Token.Word(text) => `word ${text}`
-    Token.Number(value) if (value < 0) => "negative number"
-    Token.Number(value) => `number ${Int.toString(value)}`
-    Token.Space => "space"
+function describe(command: Command): string {
+  return match (command) {
+    Command.Add(name, quantity) if (quantity >= 10) => `bulk order of ${name}`
+    Command.Add(name, quantity) => `add ${Int.toString(quantity)} ${name}`
+    Command.Remove(name) => `remove ${name}`
+    Command.Pay(cents) => `pay ${Int.toString(cents)}`
   }
 }
 
 export function run(args: Array<string>): int {
-  const tokens = [Token.Word("hi"), Token.Number(-3), Token.Number(42), Token.Space]
-  for (const token of tokens) {
-    print(describe(token))
+  const commands = [Command.Add("tea", 2), Command.Add("cups", 12), Command.Remove("tea"), Command.Pay(500)]
+  for (const command of commands) {
+    print(describe(command))
   }
-  match (tokens[0]) {
-    Token.Word(text) => {
-      print(`first is ${text}`)
+  return 0
+}
+```
+
+```text
+add 2 tea
+bulk order of cups
+remove tea
+pay 500
+```
+
+An arm can add a condition after its pattern, `if (quantity >= 10)`, called a guard. The arm is taken only when the pattern matches and the guard is true. `match` tries the arms from top to bottom and takes the first that fits. `Add("cups", 12)` goes to the bulk arm, and `Add("tea", 2)` falls past it to the next one. Once an arm is taken, the others are skipped.
+
+Here `match` is a value: the function returns whatever the chosen arm gives, so every arm gives a `string`. A `match` can also stand alone as a statement. Then each arm can run a block of statements, and a `return` in it returns from the function:
+
+```narra
+enum Command {
+  Add(name: string, quantity: int)
+  Remove(name: string)
+  Pay(cents: int)
+}
+
+function isAccepted(command: Command): bool {
+  match (command) {
+    Command.Pay(cents) => {
+      if (cents <= 0) {
+        print("a payment must be positive")
+        return false
+      }
     }
-    _ => print("first is something else")
+    _ => print("checked")
   }
+  return true
+}
+
+export function run(args: Array<string>): int {
+  assert(isAccepted(Command.Remove("tea")))
+  assert(!isAccepted(Command.Pay(0)))
   return 0
 }
 ```
 
 ```text
-word hi
-negative number
-number 42
-space
-first is hi
+checked
+a payment must be positive
 ```
 
-Used as a value (after `=`, as an argument or after `return`), `match` gives the value of the arm, and every arm has the same type. As a statement, an arm with a block can `return` from the function. A missing case is a compile error that names it (see the example in chapter 4). `match` works on any value: integers, strings, bools, structs and tuples, not just enums. Arms do not fall through.
+`_` matches anything, so the last arm covers `Add` and `Remove` together. `assert` stops the program with a message when its condition is false. Here both conditions hold.
 
-## Literals, structs and tuples
+## Match on numbers, text and tuples
 
-Patterns nest, and a literal inside one tests the value instead of binding it.
+`match` works on any value, not only enums. A literal in a pattern, such as `0` or `"tea"`, matches only that value. A tuple pattern matches several values at once:
 
 ```narra
 import * as Int from "std/int"
 
-struct Point {
-  x: int
-  y: int
-}
-
-function locate(point: Point): string {
-  return match (point) {
-    { x: 0, y: 0 } => "origin"
-    { x: 0, y } => `on the y axis at ${Int.toString(y)}`
-    { x, y: 0 } => `on the x axis at ${Int.toString(x)}`
-    { x, y } => `at ${Int.toString(x)}, ${Int.toString(y)}`
+function quantityWord(quantity: int): string {
+  return match (quantity) {
+    0 => "no"
+    1 => "one"
+    2 => "two"
+    _ => "many"
   }
 }
 
-function classify(pair: #[int, bool]): string {
-  return match (pair) {
-    #[0, _] => "zero"
-    #[n, true] if (n > 100) => "big and marked"
-    #[_, true] => "marked"
-    #[_, false] => "plain"
+function discountPercent(isMember: bool, totalCents: int): int {
+  return match (#[isMember, totalCents >= 1000]) {
+    #[true, true] => 15
+    #[true, false] => 5
+    #[false, true] => 10
+    #[false, false] => 0
   }
 }
 
 export function run(args: Array<string>): int {
-  print(locate(Point { x: 0, y: 0 }))
-  print(locate(Point { x: 0, y: 5 }))
-  print(locate(Point { x: 7, y: 0 }))
-  print(locate(Point { x: 1, y: 2 }))
-  print(classify(#[0, true]))
-  print(classify(#[200, true]))
-  print(classify(#[5, true]))
-  print(classify(#[5, false]))
+  print(`${quantityWord(0)} cups, ${quantityWord(2)} cups, ${quantityWord(40)} cups`)
+  print(Int.toString(discountPercent(true, 1200)))
+  print(Int.toString(discountPercent(false, 400)))
   return 0
 }
 ```
 
 ```text
-origin
-on the y axis at 5
-on the x axis at 7
-at 1, 2
-zero
-big and marked
-marked
-plain
+no cups, two cups, many cups
+15
+0
 ```
 
-The compiler checks exhaustiveness through nested enums, bools, structs and tuples, so a missing combination is an error. Integers and strings have too many values to list, so a `match` on them needs a `_` arm.
+`discountPercent` puts two conditions into a tuple and lists every combination as a table. The compiler checks that the arms cover every case, through tuples, `bool` values, enums and structs. Remove the `#[false, false]` arm and the program no longer compiles.
 
-## Destructuring
+An `int` has too many values to list, so a `match` on one needs a `_` arm or a name that catches the rest:
 
-A `const` or `let` takes a pattern too, when the pattern always matches. Use it to take a struct or a tuple apart.
+```narra error
+// error: 3:10: match does not cover every int value; add a `_` arm
+function quantityWord(quantity: int): string {
+  return match (quantity) {
+    0 => "no"
+    1 => "one"
+  }
+}
+
+export function run(args: Array<string>): int {
+  print(quantityWord(1))
+  return 0
+}
+```
+
+A struct pattern names the fields to test. A literal tests a field, and a name binds it:
 
 ```narra
 import * as Int from "std/int"
 
-struct Config {
-  host: string
-  port: int
+struct Item {
+  name: string
+  priceCents: int
+  quantity: int = 1
 }
 
-function divmod(a: int, b: int): #[int, int] {
-  return #[a / b, a % b]
+function describe(item: Item): string {
+  return match (item) {
+    { quantity: 0 } => "out of stock"
+    { name, priceCents: 0 } => `${name} is free`
+    { name, quantity } => `${Int.toString(quantity)} ${name}`
+  }
 }
 
 export function run(args: Array<string>): int {
-  const config = Config { host: "localhost", port: 8080 }
-  const { host, port: serverPort } = config
-  print(`${host} ${Int.toString(serverPort)}`)
-  const #[quotient, remainder] = divmod(17, 5)
-  print(`${Int.toString(quotient)} ${Int.toString(remainder)}`)
-  const pairs: Array<#[string, int]> = [#["a", 1], #["b", 2]]
-  for (const #[name, count] of pairs) {
-    print(`${name}=${Int.toString(count)}`)
+  print(describe(Item { name: "tea", priceCents: 250, quantity: 0 }))
+  print(describe(Item { name: "napkin", priceCents: 0 }))
+  print(describe(Item { name: "cake", priceCents: 900, quantity: 3 }))
+  return 0
+}
+```
+
+```text
+out of stock
+napkin is free
+3 cake
+```
+
+Fields you do not name are not tested. `{ name }` is short for `{ name: name }`: it binds the field `name` to a name `name`. Patterns nest as deep as the value does, so `Some(Command.Add(name, 1))` matches an `Option` that holds an `Add` of exactly one item.
+
+## Take a value apart
+
+When a pattern always matches, you can use it in a `const` or `let` to take a struct or a tuple apart, without a `match`:
+
+```narra
+import * as Int from "std/int"
+
+struct Item {
+  name: string
+  priceCents: int
+  quantity: int = 1
+}
+
+function splitTotal(totalCents: int, people: int): #[int, int] {
+  return #[totalCents / people, totalCents % people]
+}
+
+export function run(args: Array<string>): int {
+  const item = Item { name: "cake", priceCents: 900, quantity: 3 }
+  const { name, priceCents: price } = item
+  print(`${name} costs ${Int.toString(price)}`)
+
+  const #[share, leftOver] = splitTotal(1000, 3)
+  print(`${Int.toString(share)} each, ${Int.toString(leftOver)} left over`)
+  return 0
+}
+```
+
+```text
+cake costs 900
+333 each, 1 left over
+```
+
+`{ name, priceCents: price }` binds the field `name` to `name`, and the field `priceCents` to the name `price`. A function that has more than one result returns a tuple, and the caller takes it apart, as with `splitTotal`.
+
+A pattern that could fail to match does not work here, because there would be nothing to bind when it fails:
+
+```narra error
+// error: 9:9: this pattern does not match every Item; use match or `is` to test a value
+struct Item {
+  name: string
+  quantity: int
+}
+
+export function run(args: Array<string>): int {
+  const item = Item { name: "tea", quantity: 1 }
+  const { name, quantity: 1 } = item
+  print(name)
+  return 0
+}
+```
+
+## Read a value that may be missing
+
+Now the till turns a typed line into a command. Not every line is a valid command, so the function returns an `Option<Command>`: `Some(command)` when the line makes sense, `None` when it does not.
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+enum Command {
+  Add(name: string, quantity: int)
+  Remove(name: string)
+  Pay(cents: int)
+}
+
+function parseNumber(text: string): Option<int> {
+  return match (Int.parse(text, 10)) {
+    Ok(value) => Some(value)
+    Err(_) => None
+  }
+}
+
+function parseCommand(line: string): Option<Command> {
+  const words = Str.split(line, " ")
+  match (#[words[0], Arrays.length(words)]) {
+    #["add", 3] => {
+      if (parseNumber(words[2]) is Some(quantity)) {
+        return Some(Command.Add(words[1], quantity))
+      }
+    }
+    #["remove", 2] => {
+      return Some(Command.Remove(words[1]))
+    }
+    #["pay", 2] => {
+      if (parseNumber(words[1]) is Some(cents)) {
+        return Some(Command.Pay(cents))
+      }
+    }
+    _ => print(`unknown command: ${line}`)
+  }
+  return None
+}
+
+export function run(args: Array<string>): int {
+  const lines = ["add tea 2", "add tea lots", "dance", "pay 500"]
+  for (const line of lines) {
+    if (parseCommand(line) is Some(command)) {
+      print(`ok: ${line}`)
+    } else {
+      print(`skipped: ${line}`)
+    }
   }
   return 0
 }
 ```
 
 ```text
-localhost 8080
-3 2
-a=1
-b=2
+ok: add tea 2
+skipped: add tea lots
+unknown command: dance
+skipped: dance
+ok: pay 500
 ```
 
-A pattern that can fail does not work in a declaration. `const { x: 0, y } = point` is an error, because `x` might not be `0`. Use `match` or `is` for that.
+`Int.parse` reads a number from text. It can fail, so it returns a `Result`: `Ok(value)` with the number, or `Err(message)` with the reason. `parseNumber` turns that into an `Option`, keeping only whether a number was there.
 
-## `is` and narrowing
+`value is Pattern` is a `bool` condition that is true when the value matches. When the pattern binds names, as `Some(quantity)` does, those names exist inside the `if` block, where the match is known to hold. That is how you get at the value inside an `Option`: you cannot use it without first checking that it is there.
 
-`value is Pattern` is a `bool` expression. It binds the names of the pattern in the branch where it is true. This is how you read an `Option`, since there is no `null` and no way to get the value without checking it.
+The other way round also works. Check for `None` and leave early, and the value is known to be there for the rest of the function. Read it with `.value`:
 
 ```narra
 import * as Int from "std/int"
 import * as Maps from "std/map"
 
-function describeAge(ages: Map<string, int>, name: string): string {
-  if (ages[name] is Some(age)) {
-    return `${name} is ${Int.toString(age)}`
-  }
-  return `${name} is unknown`
-}
-
-function firstOrZero(items: Array<int>): int {
-  const found: Option<int> = items[0] > 0 ? Some(items[0]) : None
+function priceWithTax(prices: Map<string, int>, name: string): int {
+  const found = prices[name]
   if (found is None) {
     return 0
   }
-  return found.value
+  return found.value + found.value / 10
 }
 
 export function run(args: Array<string>): int {
-  const ages: Map<string, int> = Map { "ada": 36 }
-  print(describeAge(ages, "ada"))
-  print(describeAge(ages, "alan"))
-  print(Int.toString(Maps.size(ages)))
-  print(Int.toString(firstOrZero([5])))
-  print(Int.toString(firstOrZero([-5])))
+  const prices: Map<string, int> = Map { "tea": 250 }
+  print(Int.toString(priceWithTax(prices, "tea")))
+  print(Int.toString(priceWithTax(prices, "cake")))
+  print(Int.toString(Maps.size(prices)))
   return 0
 }
 ```
 
 ```text
-ada is 36
-alan is unknown
-1
-5
+275
 0
+1
 ```
 
-After `if (found is None) { return 0 }`, the compiler knows `found` is `Some` for the rest of the block, and `found.value` reads the value. Without such a test, `found.value` is an error: "check it with `is` or `match` before reading". Narrowing works on `const` bindings and parameters, and on `let` bindings that are not assigned in between. The same works for `Result` with `Err` (chapter 6). An `is` that binds names must be the whole condition of an `if` or a conditional expression, so `x is Some(v) && v > 0` is an error; nest two `if` statements instead.
+After the early `return`, the compiler knows `found` is a `Some`, so `found.value` is allowed. This works on `const` names and parameters, and on a `let` name as long as nothing assigns to it in between. Without the check, `.value` is an error:
 
 ```narra error
 // error: 4:16: this Option<int> may hold any of its variants; check it with `is` or `match` before reading "value"
@@ -196,69 +330,188 @@ export function run(args: Array<string>): int {
 }
 ```
 
-## Block expressions and the ternary
+An `is` that binds names must be the whole condition of its `if`. On the other side of an `&&`, the names would not exist:
 
-A `{ ... }` in value position is a block expression: a block whose value comes from `return`. A `return` inside it ends the block, not the function. Every path must end in `return value`. To build a struct you write its name, `Point { x: 1 }`, so `const o = { a }` is an error.
+```narra error
+// error: 4:13: an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression
+export function run(args: Array<string>): int {
+  const found: Option<int> = Some(12)
+  if (found is Some(quantity) && quantity >= 10) {
+    print("bulk")
+  }
+  return 0
+}
+```
+
+Nest the second test inside instead, or put it in a pattern guard with `match`:
 
 ```narra
-import * as Arrays from "std/array"
-import * as Int from "std/int"
-
-function lookup(code: int): string {
-  if (code == 1) {
-    return "one"
-  }
-  return ""
-}
-
-function label(code: int): string {
-  const result = {
-    const name = lookup(code)
-    if (name == "") {
-      return "unknown"
-    }
-    return `<${name}>`
-  }
-  return result
-}
-
-function firstOver(items: Array<int>, limit: int): int {
-  const found = {
-    for (const item of Arrays.values(items)) {
-      if (item > limit) {
-        return item
-      }
-    }
-    return -1
-  }
-  return found
-}
-
-function sign(n: int): string {
-  return n < 0 ? "negative" : n == 0 ? "zero" : "positive"
-}
-
 export function run(args: Array<string>): int {
-  print(label(1))
-  print(label(2))
-  print(Int.toString(firstOver([3, 8, 12], 5)))
-  print(sign(-4))
-  print(sign(0))
-  const category = if (firstOver([1], 5) < 0) { return "none" } else { return "some" }
-  print(category)
+  const found: Option<int> = Some(12)
+  if (found is Some(quantity)) {
+    if (quantity >= 10) {
+      print("bulk")
+    }
+  }
+  match (found) {
+    Some(quantity) if (quantity >= 10) => print("bulk again")
+    _ => print("small")
+  }
   return 0
 }
 ```
 
 ```text
-<one>
-unknown
-8
-negative
-zero
-none
+bulk
+bulk again
 ```
 
-`c ? a : b` is the conditional expression: a `bool` condition and the same type in both branches. It chains to the right. An `if` in value position needs an `else` and each branch returns its value. `break` and `continue` cannot leave a block expression.
+## Compute a value in several steps
+
+Sometimes a value needs a few statements to work out: a lookup, a check, a fallback. A block in a place where a value is expected computes one. Its `return` gives the value of the block, not of the function:
+
+```narra
+import * as Int from "std/int"
+
+function receiptLine(name: string, priceCents: int, quantity: int): string {
+  const amount = {
+    const total = priceCents * quantity
+    if (total >= 1000) {
+      return `${Int.toString(total - 100)} (100 off)`
+    }
+    return Int.toString(total)
+  }
+  return `${name}: ${amount}`
+}
+
+export function run(args: Array<string>): int {
+  print(receiptLine("tea", 250, 2))
+  print(receiptLine("cake", 900, 3))
+  return 0
+}
+```
+
+```text
+tea: 500
+cake: 2600 (100 off)
+```
+
+`total` exists only inside the block, so it cannot be confused with anything later in the function. Every path through the block must end in `return` with a value.
+
+For a choice between two values, there are two shorter forms. An `if` with an `else` can be a value, with a `return` in each branch. And `condition ? first : second` picks `first` when the condition is true and `second` otherwise:
+
+```narra
+import * as Int from "std/int"
+
+function plural(word: string, count: int): string {
+  return count == 1 ? word : `${word}s`
+}
+
+export function run(args: Array<string>): int {
+  const totalCents = 1250
+  const label = if (totalCents >= 1000) { return "large order" } else { return "order" }
+  print(label)
+  print(`${Int.toString(1)} ${plural("cup", 1)}, ${Int.toString(3)} ${plural("cup", 3)}`)
+  return 0
+}
+```
+
+```text
+large order
+1 cup, 3 cups
+```
+
+Both branches give a value of the same type. A value `if` needs its `else`, since without one there would be no value when the condition is false.
+
+## The till
+
+Here is the whole till, putting the chapter together. It reads the lines, keeps a map of what is in the basket, and handles payment:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+
+enum Command {
+  Add(name: string, quantity: int)
+  Remove(name: string)
+  Pay(cents: int)
+}
+
+function parseNumber(text: string): Option<int> {
+  return match (Int.parse(text, 10)) {
+    Ok(value) => Some(value)
+    Err(_) => None
+  }
+}
+
+function parseCommand(line: string): Option<Command> {
+  const words = Str.split(line, " ")
+  match (#[words[0], Arrays.length(words)]) {
+    #["add", 3] => {
+      if (parseNumber(words[2]) is Some(quantity)) {
+        return Some(Command.Add(words[1], quantity))
+      }
+    }
+    #["remove", 2] => {
+      return Some(Command.Remove(words[1]))
+    }
+    #["pay", 2] => {
+      if (parseNumber(words[1]) is Some(cents)) {
+        return Some(Command.Pay(cents))
+      }
+    }
+    _ => {}
+  }
+  return None
+}
+
+function totalCents(prices: Map<string, int>, basket: Map<string, int>): int {
+  let total = 0
+  for (const name of Maps.keys(basket)) {
+    if (basket[name] is Some(quantity)) {
+      const price = prices[name] is Some(cents) ? cents : 0
+      total = total + price * quantity
+    }
+  }
+  return total
+}
+
+export function run(args: Array<string>): int {
+  const prices: Map<string, int> = Map { "tea": 250, "cake": 900 }
+  let basket = Map<string, int> {}
+  const lines = ["add tea 2", "add cake 1", "add cake 1", "remove tea", "pay 1000", "pay 2000"]
+  for (const line of lines) {
+    if (parseCommand(line) is Some(command)) {
+      match (command) {
+        Command.Add(name, quantity) => {
+          const already = basket[name] is Some(count) ? count : 0
+          basket[name] = already + quantity
+        }
+        Command.Remove(name) => {
+          Maps.remove(mutable basket, name)
+        }
+        Command.Pay(cents) => {
+          const due = totalCents(prices, basket)
+          if (cents < due) {
+            print(`${Int.toString(cents)} is not enough, ${Int.toString(due)} due`)
+          } else {
+            print(`paid, change ${Int.toString(cents - due)}`)
+          }
+        }
+      }
+    }
+  }
+  return 0
+}
+```
+
+```text
+1000 is not enough, 1800 due
+paid, change 200
+```
+
+Each piece is one you have seen. An enum holds the commands, and `match` with tuple and literal patterns reads them. `Option` and `is` handle lines that do not parse. `basket[name] is Some(count) ? count : 0` reads a map entry with a fallback, using `is` as the condition of `? :`.
 
 Next: [6. Option and Result](06-option-and-result.md).

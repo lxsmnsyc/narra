@@ -1,16 +1,16 @@
 # The Narra guide
 
-A guide to Narra for a programmer who has written code before. Each chapter builds on the ones before it. You do not need to know any other particular language.
+This guide teaches Narra to someone who has programmed before, in any language. Read the chapters in order: each one builds a small program step by step and uses what the earlier chapters taught.
 
-Every program in the guide is compiled and run by a test (`TestGuide`), so what you read is what the compiler does today.
+A test compiles and runs every program in the guide. Each one works with the compiler as it is today and prints exactly the output shown under it.
 
 ## Chapters
 
-1. [Getting started](01-getting-started.md): a package, `narra.toml`, `narra run`, `narra build`.
-2. [Values and types](02-values-and-types.md): numbers, strings and templates, `bool`, `const` and `let`, arrays, maps, tuples.
-3. [Functions and closures](03-functions-and-closures.md): declarations, arrow functions, function types, non-escaping parameters, tail calls.
-4. [Structs and enums](04-structs-and-enums.md): declarations, literals, spread updates, `Box` and recursive enums, opaque and distinct types.
-5. [Pattern matching](05-pattern-matching.md): `match`, `is`, destructuring, narrowing, block expressions and the ternary.
+1. [Getting started](01-getting-started.md): build the compiler, run a first program, read an error, split a program into a package.
+2. [Values and types](02-values-and-types.md): `const` and `let`, numbers, strings and templates, `bool` and `if`, arrays, maps, tuples.
+3. [Functions and closures](03-functions-and-closures.md): functions, recursion, functions as values, arrow functions, generics, closures and `escaping`.
+4. [Structs and enums](04-structs-and-enums.md): structs, copies and spread updates, enums and `match`, recursive data and `Box`, distinct and opaque types.
+5. [Pattern matching](05-pattern-matching.md): `match` with guards and literals, destructuring, `is` and `Option`, block expressions, `if` values and `? :`.
 6. [Option and Result](06-option-and-result.md): `std/option`, `std/result`, errors without exceptions.
 7. [Traits](07-traits.md): declarations, `implement`, constraints, `derives`, equality and ordering.
 8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
@@ -20,7 +20,7 @@ Every program in the guide is compiled and run by a test (`TestGuide`), so what 
 
 ## Reading the samples
 
-A program in the guide is a whole file that exports `run`, followed by its output:
+A program in the guide is a whole file that exports `run`, followed by what it prints:
 
 ```narra
 export function run(args: Array<string>): int {
@@ -33,7 +33,16 @@ export function run(args: Array<string>): int {
 hello
 ```
 
-A sample marked as an error shows the message the compiler gives. Save a sample to a file and run it with `narra run file.nra` to try changes.
+A program that does not compile starts with a comment that holds the message the compiler prints. The line and column in it count the comment as line 1:
+
+```narra error
+// error: 3:10: expected int, found string
+export function run(args: Array<string>): int {
+  return "hello"
+}
+```
+
+Save a sample to a file and run it with `narra run file.nra` to try your own changes.
 
 ## Planned
 
@@ -46,4 +55,5 @@ The language is meant to have these features, and the compiler does not have the
 - Build conditions.
 - `@inline`, `@const` functions and `lazy` values.
 - C-style `for` loops and compound assignment (`+=`, `++`).
+- Sized number types (`i8` to `i64`, `u8` to `u64`, `f32`). Today the number types are `int` and `f64`.
 - Dependencies on other packages.

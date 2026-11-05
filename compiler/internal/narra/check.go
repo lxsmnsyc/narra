@@ -146,7 +146,8 @@ type Checker struct {
 // Check checks one parsed file as the only module of package "main".
 func Check(f *File) (*Program, error) {
 	pkg := &Package{Name: "main", Binaries: []Binary{{Name: "main", Entry: "main.run"}}}
-	pkg.Modules = []*SourceModule{newSourceModule("main", f)}
+	own := newSourceModule("main", f)
+	pkg.Modules = append(stdSourceModules([]*SourceModule{own}), own)
 	return CheckPackage(pkg)
 }
 

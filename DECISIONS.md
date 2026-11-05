@@ -127,6 +127,7 @@ Decision: signatures declare effect variables with `effect E` in the type parame
 - **Reason.** `map` with a pure function has only `alloc`, and `map` with an I/O function has `alloc, io`. A fixed effect list cannot state both.
 - **Reason.** Inference writes the variable for private code. Only exported higher-order functions show it.
 - **Rejected: higher-order functions accept only pure functions.** Too strict. Mapping over files to read them is common.
+- **Extended by D78.** A parameter of generator type binds an effect variable too.
 
 ## D15. Strings indexed by checked byte offsets
 
@@ -663,3 +664,14 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 - **Reason.** TypeScript code and models write these forms constantly. Accepting them with TypeScript's meaning is allowed by D2, and spares a rewrite.
 - **Kept from D45.** `for (const i of Ranges.upTo(n))` stays the usual way to count over indexes.
 - **Cost.** Two loop forms where D45 had one. The details (whether `init` must be `let`, whether `++` has a value, `continue` jumping to the step, labels, the semicolon rule inside the parentheses) are settled by nodes c-style-for and compound-assign.
+
+## D78. Generator types carry effects, charged where the body runs
+
+Decision: a generator type carries the effects of its body, written as on a function type: `Generator<T> uses io`. `Generator<T>` alone is pure. Creating a generator charges only `alloc`, for its frame. The body's effects are charged where it runs: a `for ... of` over the generator, a `yield*` of it, and `Co.resume`. An exported `function*` writes them on its return type; a private one gets them inferred into its type. A value with more effects than the expected generator type is a compile error; one with fewer is allowed. A parameter of generator type binds an effect variable, as a function-type parameter does (D14): `export function sum<effect E>(numbers: Generator<int> uses E): int uses E`. `Generator<T>` is a value type with no `==`, hashing or `Show`. `yield` and `yield*` are statements, valid only directly in a `function*` body (section 8). Decided by the maintainer on 2026-11-05.
+
+- **Reason.** Calling a generator function runs none of its body, so the call does no I/O. The I/O happens at each resume, which may be in another function than the one that made the generator.
+- **Reason.** The effect is visible in the type that reaches the code that runs it, so a function that iterates a generator states what the iteration does.
+- **Reason.** A statement-only `yield` keeps the state machine simple: no expression is ever suspended halfway.
+- **Rejected: charging the body's effects at creation.** A pure function could then run I/O through a generator value it was given, with no effect in its signature.
+- **Cost.** A function that returns a generator it did not declare with `function*` cannot write `uses` for itself after the result type, since the list belongs to the type; it writes a second list (`(): Generator<T> uses io uses alloc`). A private function's parameter of type `Generator<T>` accepts only pure generators; it does not act as an implicit effect variable, as a private function-type parameter does.
+

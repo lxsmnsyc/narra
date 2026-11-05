@@ -267,6 +267,8 @@ func containsOpen(t Type, params []*TypeParamType) bool {
 		}
 	case *ArrayType:
 		return containsOpen(t.Elem, params)
+	case *GeneratorType:
+		return containsOpen(t.Elem, params)
 	case *BoxType:
 		return containsOpen(t.Elem, params)
 	case *MapType:
@@ -546,13 +548,7 @@ func (c *Checker) funcInstance(fd *FuncDecl, tps []*TypeParamType, targs []Type)
 	env := envOf(tps, targs)
 	saved := c.env
 	c.env = env
-	for _, p := range inst.Params {
-		p.T = c.resolveType(p.Type)
-	}
-	inst.ResultT = TVoid
-	if inst.Result != nil {
-		inst.ResultT = c.resolveType(inst.Result)
-	}
+	c.resolveSignature(inst, fd)
 	c.env = saved
 	c.funcInsts[key] = inst
 	if len(c.funcInsts) > 10000 {
@@ -973,6 +969,8 @@ func (u *useCollector) stmt(st Stmt, chain []*CallExpr) {
 		u.arms[len(u.arms)-1].arm = 1
 		u.block(st.Body, chain)
 		u.arms = u.arms[:len(u.arms)-1]
+	case *YieldStmt:
+		u.walk(st.Value, chain, false)
 	}
 }
 
@@ -1006,6 +1004,9 @@ func (c *Checker) checkMutableConflicts(s Stmt) {
 		fixable = false
 	case *ForStmt:
 		u.walk(s.Iter, nil, true)
+		fixable = false
+	case *YieldStmt:
+		u.walk(s.Value, nil, true)
 		fixable = false
 	default:
 		return

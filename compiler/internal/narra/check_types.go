@@ -1,6 +1,9 @@
 package narra
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 var typeParamID int
 
@@ -131,6 +134,8 @@ type genericEdge struct {
 func (c *Checker) templateEdges(t Type, out []genericEdge) []genericEdge {
 	switch t := t.(type) {
 	case *ArrayType:
+		return c.templateEdges(t.Elem, out)
+	case *GeneratorType:
 		return c.templateEdges(t.Elem, out)
 	case *BoxType:
 		return c.templateEdges(t.Elem, out)
@@ -298,6 +303,11 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 		return t
 	case *ArrayType:
 		return c.arrayOf(c.substitute(t.Elem, m))
+	case *GeneratorType:
+		if !containsTypeParam(t.Elem) {
+			return t
+		}
+		return &GeneratorType{Elem: c.substitute(t.Elem, m), Effects: t.Effects, Binder: t.Binder, Origin: t.Origin}
 	case *BoxType:
 		return c.boxOf(c.substitute(t.Elem, m))
 	case *MapType:
@@ -347,6 +357,10 @@ func unify(pat, act Type, m map[*TypeParamType]Type) {
 		}
 	case *ArrayType:
 		if a, ok := act.(*ArrayType); ok {
+			unify(p.Elem, a.Elem, m)
+		}
+	case *GeneratorType:
+		if a, ok := act.(*GeneratorType); ok {
 			unify(p.Elem, a.Elem, m)
 		}
 	case *BoxType:
@@ -495,6 +509,13 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 		c.checkMapKey(te.Pos, k)
 		return c.mapOf(k, v)
 	}
+	if te.Name == "Generator" && c.generics["Generator"] == nil && c.types["Generator"] == nil {
+		if len(te.Args) != 1 {
+			c.errorf(te.Pos, "Generator takes one type argument")
+			return TVoid
+		}
+		return c.generatorOf(c.resolveType(te.Args[0]), te.Uses)
+	}
 	if te.Name == "Array" {
 		if len(te.Args) != 1 {
 			c.errorf(te.Pos, "Array takes one type argument")
@@ -544,6 +565,27 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 	return t
 }
 
+// generatorOf makes the type Generator<elem> uses effects. Effect variables
+// in the list belong to the function whose signature or body is being
+// checked (D78).
+func (c *Checker) generatorOf(elem Type, effects []string) *GeneratorType {
+	t := &GeneratorType{Elem: elem}
+	owner := c.sigFunc
+	seen := map[string]bool{}
+	for _, n := range effects {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		t.Effects = append(t.Effects, n)
+		if owner != nil && contains(owner.EffectParams, n) {
+			t.Binder = owner
+		}
+	}
+	sort.Strings(t.Effects)
+	return t
+}
+
 func (c *Checker) arrayOf(elem Type) *ArrayType {
 	key := typeID(elem)
 	if a, ok := c.arrays[key]; ok {
@@ -572,7 +614,48 @@ func (c *Checker) expectType(pos Pos, want, got Type) {
 	if want == nil || got == nil {
 		return
 	}
+	if wg, ok := want.(*GeneratorType); ok {
+		if gg, ok := got.(*GeneratorType); ok && sameType(wg.Elem, gg.Elem) {
+			c.expectGenerator(pos, wg, gg)
+			return
+		}
+	}
 	if !sameType(want, got) {
 		c.errorf(pos, "expected %s, found %s", typeName(want, got), typeName(got, want))
+	}
+}
+
+// generatorUse is a generator value used where a generator type is
+// expected, checked after the effect pass (D78).
+type generatorUse struct {
+	pos       Pos
+	file      string
+	want, got *GeneratorType
+}
+
+// expectGenerator checks a generator value against an expected generator
+// type with the same element type. The value may have fewer effects than
+// the type, not more. An expected type naming effect variables of a function
+// other than the one being checked is a parameter of a call, whose
+// variables take the value's effects. A private generator's effects are
+// known only after the effect pass, so the check waits for it.
+func (c *Checker) expectGenerator(pos Pos, want, got *GeneratorType) {
+	if want.Binder != nil && want.Binder != c.sigFunc {
+		return
+	}
+	if want.Origin != nil || got.Origin != nil {
+		c.generatorUses = append(c.generatorUses, generatorUse{pos: pos, file: c.mod.file, want: want, got: got})
+		return
+	}
+	c.checkGeneratorUse(pos, want, got)
+}
+
+// checkGeneratorUse reports a value whose effects the expected type omits.
+func (c *Checker) checkGeneratorUse(pos Pos, want, got *GeneratorType) {
+	for _, n := range got.effects() {
+		if !contains(want.effects(), n) {
+			c.errorf(pos, "expected %s, found %s", typeName(want, got), typeName(got, want))
+			return
+		}
 	}
 }

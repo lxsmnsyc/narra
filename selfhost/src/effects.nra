@@ -22,7 +22,8 @@
 import { Pos, Decl, FuncDecl, Param, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Type } from "narrac/types"
-import { Checker, BodyRoot, Ref, typeString, reportError, enter, findBodySlot, getExpressionId, getExpressionPos } from "narrac/check"
+import { Checker, BodyRoot, Ref, typeString, reportError, reportErrorIn, enter, findBodySlot, getExpressionId, getExpressionPos, generatorKey, generatorEffectList } from "narrac/check"
+import { describeType, generatorUseFails } from "narrac/exprs"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -177,7 +178,54 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     }
   }
   walkAll(mutable checker, mutable state, true)
+  checkGeneratorUses(mutable checker)
   return state
+}
+
+// checkGeneratorUses runs the generator checks of the body checker that
+// waited for the inferred effects of private generators (expectGenerator).
+function checkGeneratorUses(mutable checker: Checker) uses alloc {
+  for (const use of Arrays.values(checker.generatorUses)) {
+    if (generatorUseFails(checker, use.want, use.got)) {
+      const message = `expected ${describeType(checker, use.want, use.got)}, found ${describeType(checker, use.got, use.want)}`
+      reportErrorIn(mutable checker, use.file, use.pos, message)
+    }
+  }
+}
+
+// generatorEffects is the set a generator value has when it runs: the
+// effects of its type, or the body effects found so far for the result type
+// of a private function* (Go's effectState.generatorEffects).
+function generatorEffects(checker: Checker, state: EffectState, type: Type): Array<string> uses alloc {
+  let names: Array<string> = []
+  if (type is Type.TGenerator(_, effects, _, origin)) {
+    if (origin < 0) {
+      return effects
+    }
+    const declaration = checker.functions[origin].declaration
+    if (state.functions[generatorKey(checker, origin)] is Some(found)) {
+      for (const name of Arrays.values(sortEffectNames(found))) {
+        if (!containsName(declaration.effectParameters, name)) {
+          Arrays.push(mutable names, name)
+        }
+      }
+    }
+  }
+  return names
+}
+
+// walkGeneratorRun adds the effects of running the generator value of an
+// expression: a for ... of over it or a yield* of it.
+function walkGeneratorRun(checker: Checker, state: EffectState, mutable out: Array<Effect>, expression: Expr) uses alloc {
+  if (findNodeType(checker, state.body, getExpressionId(expression)) is Some(found)) {
+    if (found is Type.TGenerator(_, _, _, _)) {
+      const via = typeString(checker, found)
+      const pos = getExpressionPos(expression)
+      for (const name of Arrays.values(generatorEffects(checker, state, found))) {
+        addEffect(mutable out, name, pos, via)
+      }
+    }
+  }
 }
 
 function walkAll(mutable checker: Checker, mutable state: EffectState, report: bool) uses alloc {
@@ -253,13 +301,31 @@ function analyseFunction(mutable checker: Checker, mutable state: EffectState, s
     state.changed = true
   }
   state.functions[key] = out
+  if (declaration.generator && !declaration.exported) {
+    // A private function*: its result type gets the body's effects.
+    let inferred: Array<string> = []
+    for (const name of Arrays.values(sortEffectNames(out))) {
+      if (!containsName(declaration.effectParameters, name)) {
+        Arrays.push(mutable inferred, name)
+      }
+    }
+    checker.generatorEffects[key] = inferred
+  }
   if (!state.report || !declaration.exported || state.entries[key] is Some(_)) {
     return
   }
 
-  // The body may use only the declared effects.
+  // The body may use only the declared effects. An exported function* runs
+  // its body where the generator runs, so they are in its return type.
+  let declared = declaration.effects
+  if (declaration.generator) {
+    declared = []
+    if (declaration.result is Some(resultType)) {
+      declared = resultType.effects
+    }
+  }
   for (const name of Arrays.values(sortEffectNames(out))) {
-    if (containsName(declaration.effects, name)) {
+    if (containsName(declared, name)) {
       continue
     }
     const cause = findEffect(out, name)
@@ -309,9 +375,12 @@ function checkSignature(mutable checker: Checker, declaration: FuncDecl) uses al
       scanEffects(mutable checker, declaration.effectParameters, mutable bound, typeExpression, true)
     }
   }
+  if (declaration.result is Some(resultType)) {
+    scanEffects(mutable checker, declaration.effectParameters, mutable bound, resultType, false)
+  }
   for (const name of Arrays.values(declaration.effects)) {
     if (isKnownEffect(mutable checker, declaration.pos, declaration.effectParameters, name) && containsName(declaration.effectParameters, name) && !containsName(bound, name)) {
-      reportError(mutable checker, declaration.pos, `effect variable \`${name}\` in the \`uses\` list of \`${declaration.name}\` must appear in the function type of a parameter`)
+      reportError(mutable checker, declaration.pos, `effect variable \`${name}\` in the \`uses\` list of \`${declaration.name}\` must appear in the function or generator type of a parameter`)
     }
   }
 }
@@ -364,6 +433,11 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses all
     for (const name of Arrays.values(KNOWN_EFFECTS)) {
       addEffect(mutable set, name, nowhere, "")
     }
+    return set
+  }
+  if (callee.declaration.generator) {
+    // A call creates the generator and runs none of its body (D78).
+    addEffect(mutable set, "alloc", nowhere, "")
     return set
   }
   if (callee.declaration.exported) {
@@ -460,7 +534,14 @@ function walkStatement(mutable checker: Checker, mutable state: EffectState, mut
     }
     Stmt.ForStmt(_, _, _, _, iterable, body) => {
       walkExpression(mutable checker, mutable state, mutable out, iterable)
+      walkGeneratorRun(checker, state, mutable out, iterable)
       walkBlock(mutable checker, mutable state, mutable out, body)
+    }
+    Stmt.YieldStmt(_, value, delegate) => {
+      walkExpression(mutable checker, mutable state, mutable out, value)
+      if (delegate) {
+        walkGeneratorRun(checker, state, mutable out, value)
+      }
     }
     Stmt.BreakStmt(_, _) => {}
     Stmt.ContinueStmt(_, _) => {}
@@ -652,8 +733,17 @@ function walkUserCall(mutable checker: Checker, mutable state: EffectState, muta
       if (declaration.parameters[index].type is Some(parameterType)) {
         if (parameterType.isFunc && containsName(parameterType.effects, effect.name)) {
           if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
-            for (const passed of Arrays.values(set)) {
-              addEffect(mutable out, passed.name, pos, callee.label)
+            for (const passed of Arrays.values(sortEffectNames(set))) {
+              addEffect(mutable out, passed, pos, callee.label)
+            }
+          }
+        } else if (containsName(parameterType.effects, effect.name)) {
+          // A generator-typed parameter binds the variable to the effects
+          // of the generator passed (D78).
+          const argumentValue = arguments[index].value
+          if (findNodeType(checker, state.body, getExpressionId(argumentValue)) is Some(Type.TGenerator(element, effects, binder, origin))) {
+            for (const passed of Arrays.values(generatorEffects(checker, state, Type.TGenerator(element, effects, binder, origin)))) {
+              addEffect(mutable out, passed, pos, callee.label)
             }
           }
         }

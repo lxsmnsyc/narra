@@ -111,12 +111,14 @@ go test ./...
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Reading a tuple element by index.
-- Generators, async functions, threads and channels.
+- Generators are parsed and checked (`function*`, `yield`, `yield*`, `Generator<T> uses E`, `for ... of` over a generator) but not compiled: building a program that declares a `function*` stops with "generators are not compiled yet" (node generators). `Coroutine<In, Out>` and `Co.resume` are not there yet.
+- Async functions, threads and channels.
 - `unsafe` and `extern`.
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.
 
 ## Differences from the spec
 
+- Effect variables in a generator's own return type (`Generator<T> uses E`) are not replaced at the call: the call's result keeps `E`. A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
 - `==` and `!=` work on a distinct type when its base type supports them (and it can be a map key). SPEC.md says no operators carry over.
 - A distinct type cannot list traits with `implements` or `derives`; SPEC.md allows it.
 - Top-level constants that are not scalars (strings built by templates, structs, arrays, enums with fields, function values) are built on first use, behind a getter, and kept until the program ends. The spec says modules have no initialization code; this keeps that, but the first-use build is not thread safe yet (the threads node must add a once guard). Struct and array constants are heap values, not static C data.

@@ -89,7 +89,54 @@ func (c *Checker) checkEffects() *effectState {
 		}
 	}
 	s.walkAll(true)
+	s.checkGeneratorUses()
 	return s
+}
+
+// checkGeneratorUses runs the generator checks of the type checker that
+// waited for the inferred effects of private generators (expectGenerator).
+func (s *effectState) checkGeneratorUses() {
+	c := s.c
+	for _, u := range c.generatorUses {
+		for _, n := range u.got.effects() {
+			if !contains(u.want.effects(), n) {
+				c.report(Diagnostic{Code: codeFor("expected %s, found %s"), Pos: u.pos, File: u.file,
+					Message: fmt.Sprintf("expected %s, found %s", typeName(u.want, u.got), typeName(u.got, u.want))})
+				break
+			}
+		}
+	}
+}
+
+// generatorEffects is the set a generator value has when it runs: the
+// effects of its type, or the body effects found so far for the result type
+// of a private function*.
+func (s *effectState) generatorEffects(t *GeneratorType) effSet {
+	set := effSet{}
+	if t.Origin != nil {
+		for n := range s.fx[t.Origin] {
+			if !contains(t.Origin.EffectParams, n) {
+				set[n] = effCause{}
+			}
+		}
+		return set
+	}
+	for _, n := range t.Effects {
+		set[n] = effCause{}
+	}
+	return set
+}
+
+// runGenerator adds the effects of running the generator value x: a for ...
+// of over it or a yield* of it.
+func (w *effectWalker) runGenerator(x Expr) {
+	t, ok := x.Type().(*GeneratorType)
+	if !ok {
+		return
+	}
+	for _, n := range sortedEffects(w.s.generatorEffects(t)) {
+		w.add(n, x.position(), t.String())
+	}
 }
 
 // eachBody calls f for every function with a body in a module, and every test.
@@ -149,12 +196,30 @@ func (s *effectState) analyse(fd *FuncDecl) {
 		s.changed = true
 	}
 	s.fx[fd] = w.out
+	gen, _ := fd.ResultT.(*GeneratorType)
+	if fd.Generator && gen != nil && gen.Origin != nil {
+		// A private function*: its result type gets the body's effects.
+		fd.GenEffects = nil
+		for _, n := range sortedEffects(s.generatorEffects(gen)) {
+			fd.GenEffects = append(fd.GenEffects, n)
+		}
+	}
 	if !s.report || !fd.Exported || s.entry[fd] {
 		return
 	}
 	declared := map[string]bool{}
 	for _, n := range fd.Effects {
 		declared[n] = true
+	}
+	if fd.Generator {
+		// An exported function*: the body runs where the generator runs,
+		// so its effects must be in the return type.
+		declared = map[string]bool{}
+		if gen != nil {
+			for _, n := range gen.Effects {
+				declared[n] = true
+			}
+		}
 	}
 	for _, name := range sortedEffects(w.out) {
 		if declared[name] {
@@ -206,9 +271,10 @@ func (s *effectState) checkSignature(fd *FuncDecl) {
 	for _, p := range fd.Params {
 		scan(p.Type, true)
 	}
+	scan(fd.Result, false)
 	for _, n := range fd.Effects {
 		if known(fd.Pos, n) && vars[n] && !bound[n] {
-			s.c.errorf(fd.Pos, "effect variable `%s` in the `uses` list of `%s` must appear in the function type of a parameter", n, fd.Name)
+			s.c.errorf(fd.Pos, "effect variable `%s` in the `uses` list of `%s` must appear in the function or generator type of a parameter", n, fd.Name)
 		}
 	}
 }
@@ -230,6 +296,10 @@ func (s *effectState) funcEffects(fd *FuncDecl) effSet {
 	}
 	if s.entry[fd] {
 		return effSet{"alloc": {}, "io": {}, "unsafe": {}}
+	}
+	if fd.Generator {
+		// A call creates the generator and runs none of its body (D78).
+		return effSet{"alloc": {}}
 	}
 	if fd.Exported {
 		set := effSet{}
@@ -337,7 +407,13 @@ func (w *effectWalker) stmt(st Stmt) {
 		w.block(st.Body)
 	case *ForStmt:
 		w.expr(st.Iter)
+		w.runGenerator(st.Iter)
 		w.block(st.Body)
+	case *YieldStmt:
+		w.expr(st.Value)
+		if st.Delegate {
+			w.runGenerator(st.Value)
+		}
 	}
 }
 
@@ -471,10 +547,18 @@ func (w *effectWalker) userCall(e *CallExpr) {
 			continue
 		}
 		for i, p := range g.Params {
-			if i >= len(e.Args) || p.Type == nil || !p.Type.Func || !contains(p.Type.Uses, n) {
+			if i >= len(e.Args) || p.Type == nil || !contains(p.Type.Uses, n) {
 				continue
 			}
-			for m := range s.valueEffects(e.Args[i].Value) {
+			arg := s.valueEffects(e.Args[i].Value)
+			if t, ok := e.Args[i].Value.Type().(*GeneratorType); ok && !p.Type.Func {
+				// A generator-typed parameter binds the variable to the
+				// effects of the generator passed (D78).
+				arg = s.generatorEffects(t)
+			} else if !p.Type.Func {
+				continue
+			}
+			for _, m := range sortedEffects(arg) {
 				w.add(m, e.P, via)
 			}
 		}

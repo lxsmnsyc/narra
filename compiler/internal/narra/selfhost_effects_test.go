@@ -55,7 +55,7 @@ func TestTypesDumpEffectsCoverage(t *testing.T) {
 	for _, want := range []string{
 		"\neffects module=", " func noisy io\n", " func quiet -\n", " func map E,alloc\n", " func shout alloc,io\n",
 		" impl Named basics.Cat.name io\n", " func ping -\n",
-		"unknown effect `network`", "must appear in the function type of a parameter",
+		"unknown effect `network`", "must appear in the function or generator type of a parameter",
 		"(through `noisy`) but its signature does not declare it", "(through `map literal`)",
 		"the argument for `f` of `strict` uses `io`",
 	} {

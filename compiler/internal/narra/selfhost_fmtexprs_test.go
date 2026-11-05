@@ -25,7 +25,9 @@ var fmtExprsBuild struct {
 func buildFmtExprs(t *testing.T) string {
 	t.Helper()
 	fmtExprsBuild.once.Do(func() {
-		dir, err := os.MkdirTemp("", "narrac-fmtexprs")
+		// Inside the directory of the shared selfhost build, which TestMain removes.
+		buildSelfhost(t)
+		dir, err := os.MkdirTemp(selfhostBuild.dir, "fmtexprs")
 		if err != nil {
 			fmtExprsBuild.err = err
 			return

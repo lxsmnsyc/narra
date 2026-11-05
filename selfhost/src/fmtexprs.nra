@@ -4,9 +4,8 @@
 // Prettier does for TypeScript.
 //
 // What the printers rely on:
-// - Literal text (strings, characters, templates) is copied from the source
-//   by position, so escapes and spellings stay as written. Numbers use the
-//   token text the AST keeps.
+// - Literal text (strings, characters, templates and numbers) is copied from
+//   the source by position, so escapes and spellings stay as written.
 // - Parentheses: the ones the author wrote (Trivia.parenthesized) are kept,
 //   and the printer adds a pair where precedence needs one.
 // - `c ? a : b` is a BlockExpr whose block starts at the `?` (the parser's
@@ -176,6 +175,21 @@ function printElement(printer: Printer, expression: Expr): Document uses alloc {
   return printExpression(printer, expression)
 }
 
+// endsWithUses tells a type whose text ends in a `uses` list. A comma after it
+// would read as one more effect name, so a broken list leaves it out.
+function endsWithUses(type: TypeExpr): bool {
+  if (!type.isFunc) {
+    return false
+  }
+  if (Arrays.length(type.effects) > 0) {
+    return true
+  }
+  if (type.result is Some(resultType)) {
+    return endsWithUses(resultType.value)
+  }
+  return false
+}
+
 // printList prints items between open and close: on one line when they fit,
 // else one per line with a trailing comma. blanks says which items have a
 // blank line before them (empty for none); that keeps the list broken.
@@ -267,9 +281,9 @@ function printExpressionBody(printer: Printer, expression: Expr, written: bool):
     Expr.Ident(_, _, name) => createText(name)
     Expr.FieldExpr(_, _, target, name) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText(`.${name}`)])
     Expr.IsExpr(_, _, subject, pattern) => createConcat([printWithMinimum(printer, subject, IS_PRECEDENCE), createText(" is "), printPattern(printer, pattern)])
-    Expr.IndexExpr(_, _, target, index) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText("["), printExpression(printer, index), createText("]")])
+    Expr.IndexExpr(_, _, target, index) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText("["), printElement(printer, index), createText("]")])
     Expr.MapLit(id, _, typeArguments, keys, values) => printMapLiteral(printer, id, typeArguments, keys, values)
-    Expr.CallExpr(_, _, callee, arguments) => createConcat([printWithMinimum(printer, callee, PRIMARY_PRECEDENCE), printArguments(printer, arguments)])
+    Expr.CallExpr(id, _, callee, arguments) => createConcat([printWithMinimum(printer, callee, PRIMARY_PRECEDENCE), printArguments(printer, id, arguments)])
     Expr.UnaryExpr(_, _, operator, operand) => printUnary(printer, operator, operand)
     Expr.BinaryExpr(_, _, _, _, _) => printBinary(printer, expression)
     Expr.StructLit(id, pos, typeName, typeArguments, fields, spread) => printStructLiteral(printer, id, pos, typeName, typeArguments, fields, spread)
@@ -383,7 +397,7 @@ function isCompactArrowBody(body: Option<Expr>): bool {
 // printArguments prints a call's `(a, b)`. When the last argument is huggable
 // and the one before it is not, the arguments stay on the line of the call and
 // only the last one breaks, as in `f(a, (x) => { ... })`.
-function printArguments(printer: Printer, arguments: Array<Arg>): Document uses alloc {
+function printArguments(printer: Printer, callId: int, arguments: Array<Arg>): Document uses alloc {
   const count = Arrays.length(arguments)
   if (count == 0) {
     return createText("()")
@@ -402,16 +416,32 @@ function printArguments(printer: Printer, arguments: Array<Arg>): Document uses 
   if (hug && count > 1 && isHuggable(arguments[count - 2].value)) {
     hug = false
   }
+  if (hug && count == 1) {
+    return createConcat([createText("("), items[0], createText(")")])
+  }
   if (hug) {
-    let parts: Array<Document> = [createText("(")]
-    for (const index of Ranges.between(0, count)) {
-      if (index > 0) {
-        Arrays.push(mutable parts, createText(", "))
-      }
-      Arrays.push(mutable parts, items[index])
+    // The arguments before the last one are a group of their own. When they and
+    // the start of the last argument fit on the line, the last argument is
+    // hugged; otherwise every argument goes on its own line. The last argument
+    // is in the document twice, once for each layout; only one is printed.
+    const groupId = -2 - callId
+    let head: Array<Document> = [Document.SoftLine]
+    for (const index of Ranges.between(0, count - 1)) {
+      Arrays.push(mutable head, items[index])
+      Arrays.push(mutable head, createText(","))
+      Arrays.push(mutable head, Document.Line)
     }
-    Arrays.push(mutable parts, createText(")"))
-    return createConcat(parts)
+    let brokenEnd: Array<Document> = []
+    if (printer.settings.trailingComma) {
+      Arrays.push(mutable brokenEnd, createText(","))
+    }
+    Arrays.push(mutable brokenEnd, Document.Line)
+    Arrays.push(mutable brokenEnd, createText(")"))
+    return createConcat([
+      Document.Group(createConcat([createText("("), createIndent(createConcat(head))]), groupId),
+      Document.IfBreak(createIndent(items[count - 1]), items[count - 1], groupId),
+      Document.IfBreak(createConcat(brokenEnd), createText(")"), groupId),
+    ])
   }
   return printList(printer, "(", ")", items, [], false, true)
 }
@@ -561,6 +591,33 @@ function printStructLiteral(printer: Printer, id: int, pos: Pos, typeName: strin
   return createConcat(head)
 }
 
+// getLiteralPos is the position of a literal map key.
+function getLiteralPos(expression: Expr): Pos {
+  return match (expression) {
+    Expr.IntLit(_, pos, _) => pos
+    Expr.FloatLit(_, pos, _) => pos
+    Expr.StringLit(_, pos, _, _) => pos
+    Expr.CharLit(_, pos, _) => pos
+    Expr.BoolLit(_, pos, _) => pos
+    Expr.UnaryExpr(_, pos, _, _) => pos
+    _ => Pos { line: 0, column: 0 }
+  }
+}
+
+// isBracketed tells a literal map key that was written as `[key]`: the first
+// character before it, past spaces, is a `[`.
+function isBracketed(printer: Printer, expression: Expr): bool {
+  const pos = getLiteralPos(expression)
+  if (pos.line == 0) {
+    return false
+  }
+  let offset = getOffset(printer.source, pos) - 1
+  while (offset >= 0 && (Str.byteAt(printer.source, offset) == 32 || Str.byteAt(printer.source, offset) == 9 || Str.byteAt(printer.source, offset) == 10)) {
+    offset = offset - 1
+  }
+  return offset >= 0 && Str.byteAt(printer.source, offset) == 91
+}
+
 function isLiteralKey(expression: Expr): bool {
   return match (expression) {
     Expr.IntLit(_, _, _) => true
@@ -581,9 +638,10 @@ function printMapLiteral(printer: Printer, id: int, typeArguments: Array<TypeExp
   }
   let items: Array<Document> = []
   for (const index of Ranges.between(0, Arrays.length(keys))) {
+    // A literal key may be written in brackets too; keep them as written.
     let key = printExpression(printer, keys[index])
-    if (!isLiteralKey(keys[index])) {
-      key = createConcat([createText("["), key, createText("]")])
+    if (!isLiteralKey(keys[index]) || isBracketed(printer, keys[index])) {
+      key = createConcat([createText("["), printElement(printer, keys[index]), createText("]")])
     }
     Arrays.push(mutable items, createConcat([key, createText(": "), printExpression(printer, values[index])]))
   }
@@ -602,7 +660,7 @@ function isCompactBody(expression: Expr): bool {
     Expr.ArrowExpr(_, _, _, _, _, _) => true
     Expr.TemplateLit(_, _, _) => true
     Expr.CallExpr(_, _, _, _) => true
-    Expr.BlockExpr(_, _, _) => !isConditional(expression)
+    Expr.BlockExpr(_, _, _) => true
     _ => false
   }
 }
@@ -673,7 +731,13 @@ function printArrow(printer: Printer, parameters: Array<Param>, result: Option<T
     }
     Arrays.push(mutable items, withComments(printer, getIdKey(parameter.id), createConcat(parts)))
   }
-  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, true)]
+  let hasComma = true
+  if (Arrays.length(parameters) > 0) {
+    if (parameters[Arrays.length(parameters) - 1].type is Some(lastType)) {
+      hasComma = !endsWithUses(lastType)
+    }
+  }
+  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, hasComma)]
   if (result is Some(resultType)) {
     Arrays.push(mutable parts, createText(": "))
     Arrays.push(mutable parts, printType(printer, resultType))
@@ -761,7 +825,11 @@ function printTypeBody(printer: Printer, type: TypeExpr): Document uses alloc {
     for (const element of Arrays.values(type.arguments)) {
       Arrays.push(mutable items, printType(printer, element))
     }
-    return printList(printer, "#[", "]", items, [], false, true)
+    let hasComma = true
+    if (Arrays.length(type.arguments) > 0) {
+      hasComma = !endsWithUses(type.arguments[Arrays.length(type.arguments) - 1])
+    }
+    return printList(printer, "#[", "]", items, [], false, hasComma)
   }
   if (type.isFunc) {
     return printFunctionType(printer, type)
@@ -781,7 +849,11 @@ function printFunctionType(printer: Printer, type: TypeExpr): Document uses allo
       Arrays.push(mutable items, argument)
     }
   }
-  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, true), createText(" => ")]
+  let hasComma = true
+  if (Arrays.length(type.arguments) > 0) {
+    hasComma = !endsWithUses(type.arguments[Arrays.length(type.arguments) - 1])
+  }
+  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, hasComma), createText(" => ")]
   if (type.result is Some(resultType)) {
     Arrays.push(mutable parts, printType(printer, resultType.value))
   }

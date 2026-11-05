@@ -41,6 +41,7 @@ var keywords = map[string]bool{
 	"struct": true, "enum": true, "match": true, "true": true, "false": true,
 	"mutable": true, "uses": true, "test": true, "is": true,
 	"trait": true, "implement": true, "implements": true, "derives": true,
+	"yield": true,
 }
 
 // Longest punctuation first, so "==" is matched before "=".

@@ -447,6 +447,8 @@ func dumpTypeString(t Type) string {
 		return "Map<" + dumpTypeString(t.Key) + ", " + dumpTypeString(t.Val) + ">"
 	case *FuncType:
 		return "(" + dumpTypeList(t.Params) + ") => " + dumpTypeString(t.Result)
+	case *GeneratorType:
+		return "Generator<" + dumpTypeString(t.Elem) + ">" + usesSuffix(t.effects())
 	}
 	return t.String()
 }

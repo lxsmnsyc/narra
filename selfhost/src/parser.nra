@@ -528,6 +528,14 @@ function parseType(mutable parser: Parser): TypeExpr {
     }
     expect(mutable parser, ">")
   }
+  if (name == "Generator") {
+    // A generator type carries the effects its body has when it runs:
+    // `Generator<string> uses io` (D78).
+    const effects = parseUsesList(mutable parser)
+    if (Arrays.length(effects) > 0) {
+      return TypeExpr { ...named, arguments: arguments, effects: effects }
+    }
+  }
   const after = peekToken(parser, 1)
   if (isAt(parser, "[") && after.kind == TokenKind.TokPunct && after.text == "]") {
     failHere(mutable parser, "there is no `T[]` array type; write `Array<T>`")
@@ -614,9 +622,7 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
 // parseFuncHeader parses a function declaration up to its body.
 function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   const pos = getPos(expect(mutable parser, "function"))
-  if (isAt(parser, "*")) {
-    failHere(mutable parser, "generators are not supported by this compiler yet")
-  }
+  const generator = accept(mutable parser, "*")
   const name = expectIdent(mutable parser).text
   const typeParameters = parseTypeParams(mutable parser)
   expect(mutable parser, "(")
@@ -648,6 +654,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     typeParameters: typeParameters.names,
     bounds: typeParameters.bounds,
     exported: exported,
+    generator: generator,
     parameters: parameters,
     result: result,
     effects: effects,
@@ -758,6 +765,7 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
       failFound(mutable parser, `a trait has functions only`)
       break
     }
+    rejectNestedGenerator(mutable parser)
     const header = parseFuncHeader(mutable parser, false)
     if (isAt(parser, "{")) {
       failHere(mutable parser, "trait functions have no default implementation; remove the body")
@@ -767,6 +775,15 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
   }
   expect(mutable parser, "}")
   return TraitDecl { pos: pos, name: name, exported: exported, functions: functions }
+}
+
+// rejectNestedGenerator rejects `function*` in a trait or an implement
+// block: a generator is a top-level function (D74).
+function rejectNestedGenerator(mutable parser: Parser) {
+  const next = peekToken(parser, 1)
+  if (next.kind == TokenKind.TokPunct && next.text == "*") {
+    failAt(mutable parser, getPos(next), "a generator must be a top-level function; declare `function*` at module level")
+  }
 }
 
 function parseImplDecl(mutable parser: Parser): ImplDecl {
@@ -787,6 +804,7 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
       failFound(mutable parser, `an implement block has functions only`)
       break
     }
+    rejectNestedGenerator(mutable parser)
     Arrays.push(mutable functions, parseFuncDecl(mutable parser, false))
     skipNewlines(mutable parser)
   }
@@ -1110,6 +1128,18 @@ function parseStmt(mutable parser: Parser): Stmt {
       name = hidden
     }
     return Stmt.ForStmt(newId(mutable parser), pos, "", name, iterable, body)
+  }
+  if (isAt(parser, "yield")) {
+    advance(mutable parser)
+    const delegate = accept(mutable parser, "*")
+    const next = currentToken(parser)
+    if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof || isAt(parser, "}")) {
+      failHere(mutable parser, "`yield` needs a value: write `yield value`, or `yield* generator`")
+      return Stmt.BreakStmt(pos, "")
+    }
+    const value = parseExpr(mutable parser)
+    endStatement(mutable parser)
+    return Stmt.YieldStmt(pos, value, delegate)
   }
   if (isAt(parser, "break")) {
     advance(mutable parser)
@@ -1636,6 +1666,10 @@ function parsePrimary(mutable parser: Parser): Expr {
     }
     if (token.text == "if") {
       return parseIfExpr(mutable parser)
+    }
+    if (token.text == "yield") {
+      failAt(mutable parser, pos, "`yield` is a statement, so it cannot be part of an expression")
+      return createDummyExpr()
     }
   }
   if (token.kind == TokenKind.TokPunct) {

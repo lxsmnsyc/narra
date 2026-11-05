@@ -8,10 +8,10 @@
 // (selfhost-check-imports, scopes.nra).
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl } from "narrac/ast"
+import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
-import { Checker, internComposite, checkMapKey, reportError, enter, lookupType, lookupGeneric, containsTypeParameter } from "narrac/check"
+import { Checker, CheckError, internComposite, checkMapKey, reportError, enter, lookupType, lookupGeneric, containsTypeParameter } from "narrac/check"
 import { makeEnv, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
 import * as Arrays from "std/array"
@@ -21,6 +21,75 @@ import * as Ranges from "std/range"
 export function resolveOpt(mutable checker: Checker, typeExpr: Option<TypeExpr>): Type uses alloc {
   if (typeExpr is Some(present)) {
     return resolveType(mutable checker, present)
+  }
+  return Type.TVoid
+}
+
+// The resolved parameter and result types of a function.
+export struct Signature {
+  parameters: Array<Type>
+  result: Type
+}
+
+// resolveSignature resolves the parameter and result types of the function
+// Checker.functions[funcIndex], for its declaration (report set) or for an
+// instance (Go's resolveSignature). A function* must return Generator<T>,
+// cannot take a `mutable` parameter, and takes its function-type parameters
+// as `escaping`. A private function* gets a result type whose effects the
+// effect pass infers.
+export function resolveSignature(mutable checker: Checker, funcDecl: FuncDecl, funcIndex: int, report: bool): Signature uses alloc {
+  const savedIndex = checker.functionIndex
+  checker.functionIndex = funcIndex
+  let parameters: Array<Type> = []
+  for (const param of Arrays.values(funcDecl.parameters)) {
+    Arrays.push(mutable parameters, resolveOpt(mutable checker, param.type))
+    if (!funcDecl.generator || !report) {
+      continue
+    }
+    let isFunc = false
+    if (param.type is Some(paramType)) {
+      isFunc = paramType.isFunc
+    }
+    if (param.isMutable) {
+      reportError(mutable checker, param.pos, `generator ${funcDecl.name} cannot take a mutable parameter ${quoteGo(param.name)}; a generator is a value that is resumed later`)
+    } else if (isFunc && !param.escaping) {
+      reportError(mutable checker, param.pos, `parameter ${quoteGo(param.name)} of generator ${funcDecl.name} has a function type, so it must be \`escaping\`: the generator outlives the call`)
+    }
+  }
+  const result = resolveGeneratorResult(mutable checker, funcDecl, funcIndex, report)
+  checker.functionIndex = savedIndex
+  return Signature { parameters: parameters, result: result }
+}
+
+function resolveGeneratorResult(mutable checker: Checker, funcDecl: FuncDecl, funcIndex: int, report: bool): Type uses alloc {
+  if (!funcDecl.generator) {
+    return resolveOpt(mutable checker, funcDecl.result)
+  }
+  if (report && checker.unemitted is None) {
+    const file = checker.scopes[checker.current].file
+    checker.unemitted = Some(CheckError { file: file, pos: funcDecl.pos, message: "generators are not compiled yet" })
+  }
+  let pos = funcDecl.pos
+  let valid = false
+  if (funcDecl.result is Some(resultType)) {
+    pos = resultType.pos
+    valid = resultType.name == "Generator" && Arrays.length(resultType.arguments) == 1
+  }
+  if (!valid) {
+    if (report) {
+      reportError(mutable checker, pos, `generator ${funcDecl.name} must declare its return type as Generator<T>`)
+    }
+    return Type.TVoid
+  }
+  if (Arrays.length(funcDecl.effects) > 0 && report) {
+    reportError(mutable checker, funcDecl.pos, `the effects of generator ${funcDecl.name} are written on its return type, as in \`Generator<T> uses io\``)
+  }
+  const resolved = resolveOpt(mutable checker, funcDecl.result)
+  if (resolved is Type.TGenerator(element, effects, binder, _)) {
+    if (!funcDecl.exported) {
+      return Type.TGenerator(element, [], -1, funcIndex)
+    }
+    return resolved
   }
   return Type.TVoid
 }
@@ -36,6 +105,40 @@ export function funcResult(mutable checker: Checker, typeExpr: Option<Box<TypeEx
     return resolveType(mutable checker, resultExpr)
   }
   return Type.TVoid
+}
+
+// makeGenerator makes the type Generator<element> uses effects (Go's
+// generatorOf). Effect variables in the list belong to the function whose
+// signature or body is being checked (D78).
+function makeGenerator(checker: Checker, element: Type, effects: Array<string>): Type uses alloc {
+  let sorted: Array<string> = []
+  let binder = -1
+  for (const name of Arrays.values(effects)) {
+    let seen = false
+    for (const other of Arrays.values(sorted)) {
+      seen = seen || other == name
+    }
+    if (seen) {
+      continue
+    }
+    // Insert in byte order.
+    Arrays.push(mutable sorted, name)
+    let index = Arrays.length(sorted) - 1
+    while (index > 0 && sorted[index] < sorted[index - 1]) {
+      const swap = sorted[index]
+      sorted[index] = sorted[index - 1]
+      sorted[index - 1] = swap
+      index = index - 1
+    }
+    if (checker.functionIndex >= 0) {
+      for (const variable of Arrays.values(checker.functions[checker.functionIndex].declaration.effectParameters)) {
+        if (variable == name) {
+          binder = checker.functionIndex
+        }
+      }
+    }
+  }
+  return Type.TGenerator(element, sorted, binder, -1)
 }
 
 export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
@@ -76,6 +179,14 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
     const valueType = resolveType(mutable checker, typeExpr.arguments[1])
     checkMapKey(mutable checker, typeExpr.pos, keyType)
     return internComposite(mutable checker, Type.TMap(keyType, valueType))
+  }
+  if (typeExpr.name == "Generator" && !userType(checker, "Generator")) {
+    if (argCount != 1) {
+      reportError(mutable checker, typeExpr.pos, "Generator takes one type argument")
+      return Type.TVoid
+    }
+    const element = resolveType(mutable checker, typeExpr.arguments[0])
+    return makeGenerator(checker, element, typeExpr.effects)
   }
   if (typeExpr.name == "Array") {
     if (argCount != 1) {
@@ -375,6 +486,12 @@ export function substitute(mutable checker: Checker, type: Type, bindings: Map<i
     Type.TBox(element) => {
       const newElement = substitute(mutable checker, element, bindings)
       return internComposite(mutable checker, Type.TBox(newElement))
+    }
+    Type.TGenerator(element, effects, binder, origin) => {
+      if (!containsTypeParameter(checker, element)) {
+        return type
+      }
+      return Type.TGenerator(substitute(mutable checker, element, bindings), effects, binder, origin)
     }
     Type.TMap(key, value) => {
       const newKey = substitute(mutable checker, key, bindings)

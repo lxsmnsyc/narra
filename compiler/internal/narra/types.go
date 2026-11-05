@@ -130,6 +130,8 @@ func containsTypeParam(t Type) bool {
 		return containsTypeParam(t.Result)
 	case *ArrayType:
 		return containsTypeParam(t.Elem)
+	case *GeneratorType:
+		return containsTypeParam(t.Elem)
 	case *BoxType:
 		return containsTypeParam(t.Elem)
 	case *MapType:
@@ -198,6 +200,60 @@ var TRange = &RangeType{}
 func (t *RangeType) String() string { return "Range" }
 func (t *RangeType) CName() string  { return "narra_range" }
 
+// GeneratorType is Generator<T>: the frame of a function* call, a value
+// (SPEC.md section 8, D78). Effects are the effects its body has when it
+// runs, sorted, in the form of a `uses` list (effect variables included).
+// They are charged where it runs: a for ... of over it and a yield* of it.
+// Binder is the function whose effect variables Effects names, or nil.
+// Origin is set for the result type of a private function*, whose effects
+// are inferred: the effect pass fills Origin.GenEffects, and Effects is
+// unused. Bound is set for the result of a call whose callee's result type
+// names the callee's effect variables: the effect pass fills it with the
+// effects the arguments bind (bindCallResult), and Effects is unused.
+type GeneratorType struct {
+	Elem    Type
+	Effects []string
+	Binder  *FuncDecl
+	Origin  *FuncDecl
+	Bound   *boundEffects
+}
+
+// boundEffects are the effects of one call's generator result, filled by the
+// effect pass at call, the call that made the type, and at no other call
+// (a generic `id(x)` returns the same type). id tells calls apart in typeID.
+type boundEffects struct {
+	id      int
+	call    *CallExpr
+	effects []string
+}
+
+// effects is the effect list of the type: the inferred one of a private
+// generator or of a call result once the effect pass has run.
+func (t *GeneratorType) effects() []string {
+	if t.Origin != nil {
+		return t.Origin.GenEffects
+	}
+	if t.Bound != nil {
+		return t.Bound.effects
+	}
+	return t.Effects
+}
+
+func (t *GeneratorType) String() string {
+	return "Generator<" + t.Elem.String() + ">" + usesSuffix(t.effects())
+}
+
+// CName is a placeholder: generators are not emitted yet (node generators).
+func (t *GeneratorType) CName() string { return "narra_generator" }
+
+// usesSuffix writes an effect list as it follows a type, ` uses a, b`.
+func usesSuffix(effects []string) string {
+	if len(effects) == 0 {
+		return ""
+	}
+	return " uses " + strings.Join(effects, ", ")
+}
+
 // ModuleType is the type of a namespace import such as `Int`.
 type ModuleType struct{ Path string }
 
@@ -234,6 +290,11 @@ func sameType(a, b Type) bool {
 	mb, ok2 := b.(*MapType)
 	if ok1 && ok2 {
 		return sameType(ma.Key, mb.Key) && sameType(ma.Val, mb.Val)
+	}
+	ga, ok1 := a.(*GeneratorType)
+	gb, ok2 := b.(*GeneratorType)
+	if ok1 && ok2 {
+		return sameType(ga.Elem, gb.Elem) && ga.Origin == gb.Origin && ga.Bound == gb.Bound && ga.Binder == gb.Binder && strings.Join(ga.Effects, ",") == strings.Join(gb.Effects, ",")
 	}
 	fa, ok1 := a.(*FuncType)
 	fb, ok2 := b.(*FuncType)

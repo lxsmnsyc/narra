@@ -37,3 +37,4 @@ depends_on:
 ## Notes
 
 Outline. Probably splits into a Shape node and a json node when refined.
+- Deferred from std-foundation (2026-11-05): when a std source module first imports another one, sort std source modules with `orderModules` in single-file packages (`compiler/internal/narra/modules.go` and `selfhost/src/modules.nra`); today they skip it.

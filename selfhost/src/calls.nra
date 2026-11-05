@@ -18,7 +18,7 @@ import { findTraitFunc, typeImplements, implFunc, checkBounds } from "narrac/tra
 import { sourceScope, exported } from "narrac/scopes"
 import { checkValueCall, checkValueCallOf, checkGenericArguments } from "narrac/closures"
 import { findModuleFunction } from "narrac/funcvalues"
-import { checkExpression, expectType, checkArguments, checkArgumentsLoosely, checkBuiltinCall, findField, isEnumName, findModuleEnum, reportMissingImport, startsUpper, containsOpen } from "narrac/exprs"
+import { checkExpression, expectType, describeType, checkArguments, checkArgumentsLoosely, checkBuiltinCall, findField, isEnumName, findModuleEnum, reportMissingImport, startsUpper, containsOpen } from "narrac/exprs"
 import { checkConstructor } from "narrac/ctors"
 import { addFuncInstance } from "narrac/instances"
 import * as Char from "std/char"
@@ -181,6 +181,79 @@ function getArgumentType(checker: Checker, arg: Arg): Type {
   return Type.TVoid
 }
 
+// shapeMismatch reports whether a concrete type cannot match a pattern that
+// still holds open type parameters. Only the positions that hold an open
+// parameter count; the rest is left to expectType (Go's shapeMismatch).
+function shapeMismatch(checker: Checker, pattern: Type, actual: Type, parameters: Array<int>): bool {
+  if (!containsOpen(checker, pattern, parameters)) {
+    return false
+  }
+  match (pattern) {
+    Type.TArray(patternElement) => {
+      if (actual is Type.TArray(actualElement)) {
+        return shapeMismatch(checker, patternElement, actualElement, parameters)
+      }
+      return true
+    }
+    Type.TBox(patternElement) => {
+      if (actual is Type.TBox(actualElement)) {
+        return shapeMismatch(checker, patternElement, actualElement, parameters)
+      }
+      return true
+    }
+    Type.TMap(patternKey, patternValue) => {
+      if (actual is Type.TMap(actualKey, actualValue)) {
+        return shapeMismatch(checker, patternKey, actualKey, parameters) || shapeMismatch(checker, patternValue, actualValue, parameters)
+      }
+      return true
+    }
+    Type.TFunc(patternParams, patternResult) => {
+      if (actual is Type.TFunc(actualParams, actualResult)) {
+        if (Arrays.length(actualParams) != Arrays.length(patternParams)) {
+          // An arrow function with the wrong arity already has its own error.
+          return false
+        }
+        if (anyShapeMismatch(checker, patternParams, actualParams, parameters)) {
+          return true
+        }
+        return shapeMismatch(checker, patternResult, actualResult, parameters)
+      }
+      return true
+    }
+    Type.TStruct(patternIndex) => {
+      if (actual is Type.TStruct(actualIndex)) {
+        const patternInfo = checker.structs[patternIndex]
+        const actualInfo = checker.structs[actualIndex]
+        if (actualInfo.name == patternInfo.name && actualInfo.module == patternInfo.module && Arrays.length(actualInfo.arguments) == Arrays.length(patternInfo.arguments)) {
+          return anyShapeMismatch(checker, patternInfo.arguments, actualInfo.arguments, parameters)
+        }
+      }
+      return true
+    }
+    Type.TEnum(patternIndex) => {
+      if (actual is Type.TEnum(actualIndex)) {
+        const patternInfo = checker.enums[patternIndex]
+        const actualInfo = checker.enums[actualIndex]
+        if (actualInfo.name == patternInfo.name && actualInfo.module == patternInfo.module && Arrays.length(actualInfo.arguments) == Arrays.length(patternInfo.arguments)) {
+          return anyShapeMismatch(checker, patternInfo.arguments, actualInfo.arguments, parameters)
+        }
+      }
+      return true
+    }
+    _ => {}
+  }
+  return false
+}
+
+function anyShapeMismatch(checker: Checker, patterns: Array<Type>, actuals: Array<Type>, parameters: Array<int>): bool {
+  for (const index of Ranges.between(0, Arrays.length(patterns))) {
+    if (shapeMismatch(checker, patterns[index], actuals[index], parameters)) {
+      return true
+    }
+  }
+  return false
+}
+
 // checkGenericCall infers the type arguments of a generic function from the
 // expected type and the arguments, and finds or queues the instance (Go's
 // genericCall). Inside a generic body the call can stay open; each instance
@@ -204,11 +277,34 @@ function checkGenericCall<W: Walker>(mutable checker: Checker, walker: W, nodeId
     }
   }
 
+  // An argument whose shape cannot fit its parameter is a mismatch, not a
+  // missing type parameter.
+  let mismatch = false
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    if (index < Arrays.length(parameters)) {
+      const argType = getArgumentType(checker, arguments[index])
+      const declared = checker.paramTypes[parameters[index].id]
+      const paramType = substitute(mutable checker, declared, bindings)
+      if (argType != Type.TVoid && containsOpen(checker, paramType, typeParameters) && shapeMismatch(checker, paramType, argType, typeParameters)) {
+        const message = `expected ${describeType(checker, paramType, argType)}, found ${describeType(checker, argType, paramType)}; the argument does not fit the generic parameter`
+        reportError(mutable checker, getExpressionPos(arguments[index].value), message)
+        mismatch = true
+      }
+    }
+  }
+
   // Every type parameter must be known and meet its bounds.
   let typeArguments: Array<Type> = []
   for (const param of Arrays.values(typeParameters)) {
     if (bindings[param] is Some(bound)) {
       Arrays.push(mutable typeArguments, bound)
+    } else if (mismatch) {
+      // Report the mismatch only; give back the result when it is known.
+      const partial = substitute(mutable checker, info.result, bindings)
+      if (containsOpen(checker, partial, typeParameters)) {
+        return Type.TVoid
+      }
+      return partial
     } else {
       const message = `cannot tell type parameter ${checker.parameters[param].name} of ${info.name} here; add a type annotation`
       reportError(mutable checker, pos, message)

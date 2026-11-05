@@ -3,6 +3,7 @@ package narra
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 const (
@@ -187,6 +188,10 @@ func (c *Checker) declareModule(f *File) []Type {
 		mod, ok := stdModules[imp.Path]
 		if !ok {
 			c.errorf(imp.Pos, "unknown module %q (this compiler supports %s)", imp.Path, moduleList())
+			continue
+		}
+		if isInternalModule(imp.Path) && !strings.HasPrefix(c.mod.path, "std/") {
+			c.errorf(imp.Pos, "%s is internal to the standard library", imp.Path)
 			continue
 		}
 		c.useModule(mod)

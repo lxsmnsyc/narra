@@ -244,7 +244,12 @@ func TestSelfhostBuiltinsProbeFails(t *testing.T) {
 
 // stdModuleOrder (decldump.go) must list the modules as moduleList does.
 func TestStdModuleOrder(t *testing.T) {
-	paths := stdModuleOrder()
+	var paths []string
+	for _, p := range stdModuleOrder() {
+		if !isInternalModule(p) {
+			paths = append(paths, p)
+		}
+	}
 	got := strings.Join(paths, "")
 	if len(paths) >= 2 {
 		got = strings.Join(paths[:len(paths)-1], ", ") + " and " + paths[len(paths)-1]

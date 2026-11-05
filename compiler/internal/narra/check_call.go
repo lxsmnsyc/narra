@@ -400,6 +400,62 @@ func (c *Checker) call(e *CallExpr, want Type) Type {
 	return c.valueCall(e)
 }
 
+// shapeMismatch reports whether a concrete type cannot match a pattern that
+// still holds open type parameters. Only the positions that hold an open
+// parameter count; the rest is left to expectType.
+func shapeMismatch(pat, act Type, tps []*TypeParamType) bool {
+	if !containsOpen(pat, tps) {
+		return false
+	}
+	switch p := pat.(type) {
+	case *ArrayType:
+		a, ok := act.(*ArrayType)
+		return !ok || shapeMismatch(p.Elem, a.Elem, tps)
+	case *BoxType:
+		a, ok := act.(*BoxType)
+		return !ok || shapeMismatch(p.Elem, a.Elem, tps)
+	case *MapType:
+		a, ok := act.(*MapType)
+		return !ok || shapeMismatch(p.Key, a.Key, tps) || shapeMismatch(p.Val, a.Val, tps)
+	case *FuncType:
+		a, ok := act.(*FuncType)
+		if !ok {
+			return true
+		}
+		if len(a.Params) != len(p.Params) {
+			// An arrow function with the wrong arity already has its own error.
+			return false
+		}
+		for i := range p.Params {
+			if shapeMismatch(p.Params[i], a.Params[i], tps) {
+				return true
+			}
+		}
+		return shapeMismatch(p.Result, a.Result, tps)
+	case *StructType:
+		a, ok := act.(*StructType)
+		if !ok || a.Name != p.Name || a.Module != p.Module || len(a.Args) != len(p.Args) {
+			return true
+		}
+		for i := range p.Args {
+			if shapeMismatch(p.Args[i], a.Args[i], tps) {
+				return true
+			}
+		}
+	case *EnumType:
+		a, ok := act.(*EnumType)
+		if !ok || a.Name != p.Name || a.Module != p.Module || len(a.Args) != len(p.Args) {
+			return true
+		}
+		for i := range p.Args {
+			if shapeMismatch(p.Args[i], a.Args[i], tps) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 	tps := c.funcTP[fd]
 	m := map[*TypeParamType]Type{}
@@ -419,9 +475,31 @@ func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 			unify(fd.Params[i].T, a.Value.Type(), m)
 		}
 	}
+	// An argument whose shape cannot fit its parameter is a mismatch, not a
+	// missing type parameter.
+	mismatch := false
+	for i, a := range e.Args {
+		if i >= len(fd.Params) {
+			break
+		}
+		got := a.Value.Type()
+		pw := c.substitute(fd.Params[i].T, m)
+		if got != nil && got != TVoid && containsOpen(pw, tps) && shapeMismatch(pw, got, tps) {
+			c.errorf(a.Value.position(), "expected %s, found %s; the argument does not fit the generic parameter", typeName(pw, got), typeName(got, pw))
+			mismatch = true
+		}
+	}
 	targs := make([]Type, len(tps))
 	for i, p := range tps {
 		t, ok := m[p]
+		if mismatch && !ok {
+			// Report the mismatch only; give back the result when it is known.
+			result := c.substitute(fd.ResultT, m)
+			if containsOpen(result, tps) {
+				return TVoid
+			}
+			return result
+		}
 		if !ok {
 			c.errorf(e.P, "cannot tell type parameter %s of %s here; add a type annotation", p.Name, fd.Name)
 			return TVoid

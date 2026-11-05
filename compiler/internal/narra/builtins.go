@@ -89,6 +89,13 @@ func registerSourceModule(ns, path string) {
 	registerModule(&Module{Path: path, Funcs: map[string]*Builtin{}, Source: true})
 }
 
+// isInternalModule reports whether a std module path is under std/internal/:
+// the primitives behind source modules. Only std modules may import them, and
+// moduleList does not name them.
+func isInternalModule(path string) bool {
+	return strings.HasPrefix(path, "std/internal/")
+}
+
 func registerByName(b *Builtin) {
 	if _, dup := builtinsByName[b.Name]; dup {
 		panic("duplicate builtin " + b.Name)
@@ -109,7 +116,7 @@ func moduleList() string {
 		}
 	}
 	for _, p := range registeredModules {
-		if !seen[p] {
+		if !seen[p] && !isInternalModule(p) {
 			paths = append(paths, p)
 		}
 	}

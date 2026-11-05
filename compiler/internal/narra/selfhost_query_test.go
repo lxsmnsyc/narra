@@ -18,8 +18,9 @@ type queryCase struct {
 
 // parseQueries reads a queries.txt file: lines before the first `>` are
 // comments, then each `> <arguments>` line is followed by the expected
-// output up to the next `>` line. The output is stdout, then stderr; a
-// first line `# exit N` gives a non-zero exit code.
+// output up to the next `>` line: a first line `# exit N` when the exit
+// code is not 0, the stdout, then a line `# stderr` and the stderr when
+// stderr is not empty.
 func parseQueries(text string) []queryCase {
 	var cases []queryCase
 	for _, line := range strings.SplitAfter(text, "\n") {
@@ -50,9 +51,15 @@ func runQuery(t *testing.T, exe, dir, command string) string {
 	} else if err != nil {
 		t.Fatal(err)
 	}
-	out := stdout.String() + stderr.String()
+	out := stdout.String()
 	if code != 0 {
 		out = "# exit " + strconv.Itoa(code) + "\n" + out
+	}
+	if stderr.Len() > 0 {
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			t.Fatalf("stdout of %q does not end with a newline", command)
+		}
+		out += "# stderr\n" + stderr.String()
 	}
 	return out
 }

@@ -6,9 +6,11 @@
 // expression). A site's range is that token's range from the module's
 // tokens; a name site (an identifier, a declaration name) is the name's
 // token. Declarations record the position of their keyword, so their name
-// is the first identifier token after it with that text. Pieces of a
-// template string have no token of their own: an identifier there spans
-// its name, a string piece its `end`, anything else one character.
+// is the first identifier token after it with that text.
+//
+// The parser gives every node inside a template string the template's
+// position (parser.nra, parseTemplate), so a site inside one is marked
+// inTemplate and spans the whole template token.
 //
 // collectSites walks the declarations of a module in source order and
 // lists a node before its children, so of the sites that cover a position
@@ -28,6 +30,7 @@ import {
   Expr,
   Pattern,
   MatchArm,
+  TypeExpr,
 } from "narrac/ast"
 import { Token, TokenKind } from "narrac/lexer"
 
@@ -57,11 +60,22 @@ export struct Site {
   member: int
   // The expression of an expression site, the call of a callee site.
   expression: Option<Expr>
+  // The type written for a parameter or `const`/`let` name, if any.
+  annotation: Option<TypeExpr> = None
+  // Inside a template string: the range is the template's, not the node's.
+  inTemplate: bool = false
+  // The callee name of a call: the call's CalleeSite stands for it.
+  isCallee: bool = false
 }
 
 struct Collector {
   tokens: Array<Token>
   sites: Array<Site>
+  // The nesting of template strings being walked, and the range of the
+  // outermost one.
+  templateDepth: int
+  templateStart: Pos
+  templateEnd: Pos
 }
 
 // isBefore orders positions by line, then column.
@@ -129,16 +143,33 @@ function addSite(
   name: string,
   expression: Option<Expr>,
 ) uses alloc {
-  Arrays.push(mutable collector.sites, Site {
+  const inTemplate = collector.templateDepth > 0
+  const site = Site {
     kind: kind,
     nodeId: nodeId,
-    start: start,
-    end: end,
+    start: inTemplate ? collector.templateStart : start,
+    end: inTemplate ? collector.templateEnd : end,
     name: name,
     declaration: -1,
     member: -1,
     expression: expression,
-  })
+    inTemplate: inTemplate,
+  }
+  Arrays.push(mutable collector.sites, site)
+}
+
+// addLocalSite adds the site of a parameter or `const`/`let` name with the
+// type written for it.
+function addLocalSite(
+  mutable collector: Collector,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+  annotation: Option<TypeExpr>,
+) uses alloc {
+  addNameSite(mutable collector, SiteKind.LocalSite, nodeId, pos, name)
+  const last = Arrays.length(collector.sites) - 1
+  collector.sites[last].annotation = annotation
 }
 
 // addNameSite adds a site for a name written at or after pos.
@@ -176,7 +207,13 @@ function addDeclarationSite(
 // collectSites lists the sites of a module's file. tokens are the file's
 // tokens (Lexer.lex).
 export function collectSites(file: File, tokens: Array<Token>): Array<Site> uses alloc {
-  let collector = Collector { tokens: tokens, sites: [] }
+  let collector = Collector {
+    tokens: tokens,
+    sites: [],
+    templateDepth: 0,
+    templateStart: Pos { line: 0, column: 0 },
+    templateEnd: Pos { line: 0, column: 0 },
+  }
   let index = 0
   for (const declaration of Arrays.values(file.declarations)) {
     match (declaration) {
@@ -231,7 +268,7 @@ function collectFunction(mutable collector: Collector, funcDecl: FuncDecl) uses 
 
 function collectParameters(mutable collector: Collector, parameters: Array<Param>) uses alloc {
   for (const parameter of Arrays.values(parameters)) {
-    addNameSite(mutable collector, SiteKind.LocalSite, parameter.id, parameter.pos, parameter.name)
+    addLocalSite(mutable collector, parameter.id, parameter.pos, parameter.name, parameter.type)
   }
 }
 
@@ -258,9 +295,9 @@ function isHiddenName(name: string): bool {
 function collectStatement(mutable collector: Collector, statement: Stmt) uses alloc {
   match (statement) {
     Stmt.BlockStmt(block) => collectBlock(mutable collector, block)
-    Stmt.VarStmt(nodeId, pos, _, name, pattern, _, value) => {
+    Stmt.VarStmt(nodeId, pos, _, name, pattern, annotation, value) => {
       if (name != "") {
-        addNameSite(mutable collector, SiteKind.LocalSite, nodeId, pos, name)
+        addLocalSite(mutable collector, nodeId, pos, name, annotation)
       }
       if (pattern is Some(destructured)) {
         collectPattern(mutable collector, destructured)
@@ -330,7 +367,13 @@ function collectExpression(mutable collector: Collector, expression: Expr) uses 
     Expr.BoolLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
     Expr.TemplateLit(nodeId, pos, parts) => {
       addExpressionSite(mutable collector, nodeId, pos, expression)
+      if (collector.templateDepth == 0) {
+        collector.templateStart = pos
+        collector.templateEnd = findTokenEnd(collector.tokens, pos)
+      }
+      collector.templateDepth = collector.templateDepth + 1
       collectExpressions(mutable collector, parts)
+      collector.templateDepth = collector.templateDepth - 1
     }
     Expr.Ident(nodeId, pos, name) => {
       if (!isHiddenName(name)) {
@@ -374,8 +417,13 @@ function collectExpression(mutable collector: Collector, expression: Expr) uses 
     }
     Expr.CallExpr(nodeId, pos, callee, arguments) => {
       addExpressionSite(mutable collector, nodeId, pos, expression)
+      const calleeSite = Arrays.length(collector.sites)
       collectExpression(mutable collector, callee)
       // The callee's name stands for the function the call resolves to.
+      const isNamed = callee is Expr.Ident(_, _, _) || callee is Expr.FieldExpr(_, _, _, _)
+      if (isNamed && calleeSite < Arrays.length(collector.sites)) {
+        collector.sites[calleeSite].isCallee = true
+      }
       if (callee is Expr.Ident(_, calleePos, calleeName)) {
         addSite(
           mutable collector,

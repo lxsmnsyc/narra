@@ -24,7 +24,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
-import { Pos, Decl, FuncDecl } from "narrac/ast"
+import { Pos, Decl, FuncDecl, Expr, TypeExpr } from "narrac/ast"
 import { lex } from "narrac/lexer"
 import * as Modules from "narrac/modules"
 import { Package, SourceModule } from "narrac/modules"
@@ -35,6 +35,7 @@ import {
   Ref,
   CheckError,
   typeString,
+  usesSuffix,
   findBodySlot,
   errorText,
 } from "narrac/check"
@@ -96,6 +97,8 @@ struct Use {
   view: int
   location: Location
   name: string // the function or other body the place is in
+  // Inside a template string: location is the whole template (see querysites.nra).
+  inTemplate: bool
 }
 
 // runQuery runs `narrac query`; arguments are the whole command line.
@@ -344,42 +347,124 @@ function writeFunctionType(
   declaration: FuncDecl,
   result: Type,
 ): string uses alloc {
-  let parameters: Array<Type> = []
+  // Each part from the checker, or as written when it lists effects.
+  let parts: Array<string> = []
   for (const parameter of Arrays.values(declaration.parameters)) {
-    Arrays.push(mutable parameters, checker.paramTypes[parameter.id])
+    Arrays.push(
+      mutable parts,
+      writeLocalType(checker, checker.paramTypes[parameter.id], parameter.type),
+    )
   }
-  return typeString(checker, Type.TFunc(parameters, result))
+  return `(${Str.join(parts, ", ")}) => ${writeLocalType(checker, result, declaration.result)}`
 }
 
-// describeCallable is the type and effects of the function a ref names, or
-// None for any other ref.
+// describeCallable is the type of the function a ref names, with the
+// effects its callers see after `uses` (the declared ones of an exported
+// function, the inferred ones of a private function), or None for any other
+// ref. Naming a function has no effects of its own.
 function describeCallable(checker: Checker, effects: EffectState, ref: Ref): Option<#[
   string,
   Array<string>,
 ]> uses alloc {
+  let declaration = FuncDecl {
+    pos: Pos { line: 0, column: 0 },
+    name: "",
+    typeParameters: [],
+    bounds: [],
+    exported: false,
+    parameters: [],
+    result: None,
+    effects: [],
+    effectParameters: [],
+    body: None,
+  }
+  let result = Type.TVoid
+  match (ref) {
+    Ref.Function(index) => {
+      declaration = checker.functions[index].declaration
+      result = checker.functions[index].result
+    }
+    Ref.Implementation(block, index) => {
+      declaration = checker.implementations[block].functions[index].declaration
+      result = checker.implementations[block].functions[index].result
+    }
+    _ => {
+      return None
+    }
+  }
   let names: Array<string> = []
-  if (Effects.findRefEffects(checker, effects, ref) is Some(found)) {
+  if (declaration.exported && !declaration.generator) {
+    names = declaration.effects
+    sortStrings(mutable names)
+  } else if (Effects.findRefEffects(checker, effects, ref) is Some(found)) {
     names = found
   }
-  return match (ref) {
-    Ref.Function(index) => Some(#[
-      writeFunctionType(
-        checker,
-        checker.functions[index].declaration,
-        checker.functions[index].result,
-      ),
-      names,
-    ])
-    Ref.Implementation(block, index) => Some(#[
-      writeFunctionType(
-        checker,
-        checker.implementations[block].functions[index].declaration,
-        checker.implementations[block].functions[index].result,
-      ),
-      names,
-    ])
-    _ => None
+  return Some(#[`${writeFunctionType(checker, declaration, result)}${usesSuffix(names)}`, []])
+}
+
+// hasEffects tells whether a written type lists effects anywhere, which the
+// checker's function types do not keep.
+function hasEffects(type: TypeExpr): bool {
+  if (Arrays.length(type.effects) > 0) {
+    return true
   }
+  for (const argument of Arrays.values(type.arguments)) {
+    if (hasEffects(argument)) {
+      return true
+    }
+  }
+  if (type.result is Some(boxed)) {
+    return hasEffects(boxed.value)
+  }
+  return false
+}
+
+// writeLocalType prints a local's type: as written when the annotation
+// lists effects, so function types keep their `uses`, else from the checker.
+function writeLocalType(
+  checker: Checker,
+  type: Type,
+  annotation: Option<TypeExpr>,
+): string uses alloc {
+  if (annotation is Some(written)) {
+    if (hasEffects(written)) {
+      return Signature.writeType(written)
+    }
+  }
+  return typeString(checker, type)
+}
+
+// findLocalAnnotation is the type written for a local of a body, found
+// through the site that declares it.
+function findLocalAnnotation(
+  checker: Checker,
+  view: ModuleView,
+  bodyIndex: int,
+  localIndex: int,
+): Option<TypeExpr> {
+  const body = checker.bodies[bodyIndex]
+  for (const site of Arrays.values(view.sites)) {
+    if (site.kind != SiteKind.LocalSite || site.annotation is None) {
+      continue
+    }
+    const slot = findBodySlot(body, site.nodeId)
+    if (slot >= 0 && body.declared[slot] == localIndex) {
+      return site.annotation
+    }
+  }
+  return None
+}
+
+// isInterpolated tells a template string with `${...}` parts.
+function isInterpolated(site: Site): bool {
+  if (site.expression is Some(Expr.TemplateLit(_, _, parts))) {
+    for (const part of Arrays.values(parts)) {
+      if (!(part is Expr.StringLit(_, _, _, _))) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 // describeSite is the type text and effects at a site, or None when the
@@ -404,9 +489,23 @@ function describeSite(
   match (site.kind) {
     SiteKind.ExpressionSite => {
       if (nodeType is Some(found)) {
-        // A function used as a value has the effects of a call of it.
-        if (Effects.findRefEffects(checker, effects, ref) is Some(callEffects)) {
-          return Some(#[typeString(checker, found), callEffects])
+        // A function or local named here: the type of the name. A call
+        // records the callee's ref too, but answers with its result.
+        if (site.name != "") {
+          if (describeCallable(checker, effects, ref) is Some(callable)) {
+            return Some(callable)
+          }
+        }
+        let typeText = typeString(checker, found)
+        if (ref is Ref.Local(localIndex)) {
+          const annotation = findLocalAnnotation(checker, view, bodyIndex, localIndex)
+          typeText = writeLocalType(checker, found, annotation)
+        }
+        // An arrow function's type carries the effects of its body.
+        if (site.expression is Some(Expr.ArrowExpr(arrowId, _, _, _, _, _))) {
+          if (Effects.findArrowEffects(effects, arrowId) is Some(arrowEffects)) {
+            typeText = `${typeText}${usesSuffix(arrowEffects)}`
+          }
         }
         let names: Array<string> = []
         if (site.expression is Some(expression)) {
@@ -417,14 +516,19 @@ function describeSite(
             expression,
           )
         }
-        return Some(#[typeString(checker, found), names])
+        return Some(#[typeText, names])
       }
     }
     SiteKind.CalleeSite => {
       if (describeCallable(checker, effects, ref) is Some(callable)) {
         return Some(callable)
       }
-      // A builtin or a constructor: the call's own type and effects.
+      // A call through a local: the callee's own expression site answers.
+      if (ref is Ref.Value) {
+        return None
+      }
+      // A builtin or a constructor: the checker records nothing for the
+      // name, so the name answers for the call (its type and effects).
       if (nodeType is Some(found)) {
         let names: Array<string> = []
         if (site.expression is Some(expression)) {
@@ -441,7 +545,8 @@ function describeSite(
     SiteKind.LocalSite => {
       const local = body.declared[slot]
       if (local >= 0) {
-        return Some(#[typeString(checker, body.locals[local].localType), []])
+        const localType = body.locals[local].localType
+        return Some(#[writeLocalType(checker, localType, site.annotation), []])
       }
     }
     SiteKind.VariantPatternSite => {
@@ -528,7 +633,12 @@ function queryTypeOf(
   let index = Arrays.length(view.sites) - 1
   while (index >= 0) {
     const site = view.sites[index]
-    if (!isBefore(cursor, site.start) && isBefore(cursor, site.end)) {
+    const covers = !isBefore(cursor, site.start) && isBefore(cursor, site.end)
+    // Nodes inside a template string have no positions of their own.
+    if (covers && !site.inTemplate && isInterpolated(site) && cursor != site.start) {
+      return Err("positions inside template strings are not supported yet")
+    }
+    if (covers && !site.inTemplate) {
       if (describeSite(mutable checker, mutable effects, view, site) is Some(found)) {
         const #[typeText, names] = found
         const location = siteLocation(view, site)
@@ -540,7 +650,7 @@ function queryTypeOf(
         if (Arrays.length(names) == 0) {
           return Ok(`${typeText}\n`)
         }
-        return Ok(`${typeText} uses ${Str.join(names, ", ")}\n`)
+        return Ok(`${typeText}\neffects: ${Str.join(names, ", ")}\n`)
       }
     }
     index = index - 1
@@ -760,7 +870,8 @@ function isTargetRef(checker: Checker, ref: Ref, target: Target): bool {
 // at the same place (a call's callee and its name).
 function insertUse(mutable places: Array<Use>, use: Use) uses alloc {
   for (const other of Arrays.values(places)) {
-    if (other.view == use.view && other.location.start == use.location.start) {
+    const samePlace = other.view == use.view && other.location.start == use.location.start
+    if (samePlace && !use.inTemplate && !other.inTemplate) {
       return
     }
   }
@@ -785,18 +896,24 @@ function isUseBefore(left: Use, right: Use): bool {
 function writeUses(query: Query, places: Array<Use>, nameFirst: bool): string uses alloc {
   let parts: Array<string> = []
   for (const use of Arrays.values(places)) {
+    let templateField = ""
+    let templateNote = ""
+    if (use.inTemplate) {
+      templateField = ", \"inTemplate\": true"
+      templateNote = " (in a template string)"
+    }
     if (query.json && nameFirst) {
       Arrays.push(
         mutable parts,
-        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}}`,
+        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}${templateField}}`,
       )
     } else if (query.json) {
       Arrays.push(
         mutable parts,
-        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}}`,
+        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}${templateField}}`,
       )
     } else {
-      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}\n`)
+      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}${templateNote}\n`)
     }
   }
   if (query.json) {
@@ -827,7 +944,8 @@ function queryRefs(
   for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
     const view = query.views[viewIndex]
     for (const site of Arrays.values(view.sites)) {
-      const isName = site.kind == SiteKind.ExpressionSite && site.name != ""
+      // A callee's name is reported through the call's CalleeSite.
+      const isName = site.kind == SiteKind.ExpressionSite && site.name != "" && !site.isCallee
       if (!isName && site.kind != SiteKind.CalleeSite && site.kind != SiteKind.VariantPatternSite) {
         continue
       }
@@ -839,6 +957,7 @@ function queryRefs(
         view: viewIndex,
         location: siteLocation(view, site),
         name: describeBody(checker, bodyIndex),
+        inTemplate: site.inTemplate,
       })
     }
   }
@@ -881,15 +1000,25 @@ function queryCallers(
     if (viewIndex < 0) {
       continue
     }
-    const location = Location {
+    // The callee's name, from the call's site.
+    let location = Location {
       file: query.views[viewIndex].file,
       start: call.pos,
       end: Pos { line: call.pos.line, column: call.pos.column + Str.charCount(functionName) },
+    }
+    let inTemplate = false
+    for (const site of Arrays.values(query.views[viewIndex].sites)) {
+      if (site.kind == SiteKind.CalleeSite && site.nodeId == call.callId) {
+        location = siteLocation(query.views[viewIndex], site)
+        inTemplate = site.inTemplate
+        break
+      }
     }
     insertUse(mutable places, Use {
       view: viewIndex,
       location: location,
       name: describeBody(checker, call.body),
+      inTemplate: inTemplate,
     })
   }
   if (query.json) {

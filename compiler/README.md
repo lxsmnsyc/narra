@@ -65,13 +65,13 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 
 - `narrac query [--package DIR] [--json] <command> <operand>`, where the command is `type-of FILE:LINE:COL`, `def NAME`, `refs NAME`, `callers FUNCTION`, `interface MODULE` or `recursion MODULE`. `DIR` defaults to `.`.
 - The package is loaded and checked as `narrac types` does it. Load or check errors print as there (with `--json`: `{"errors": [...]}`, code `E0000` until the self-hosted checker has codes) and the exit code is 1. Any other query error prints `error <message>` (with `--json`: `{"error": ...}` on stdout) and exits 1. A usage error exits 2.
-- `type-of` reports the innermost expression, local name or function or constant name at the position. A generic function shows its type parameter names. A call or function name also gets its effects.
+- `type-of` reports the innermost expression, local name or function or constant name at the position. `type` is the type of the value there, function types with their `uses` list (from the declaration or the annotation; an unannotated local holding a function shows none). `effects` is what evaluating the expression there does: a name has none, a call has the call's. A builtin or constructor name in a call answers for the call, because the checker records nothing for the name. A generic function shows its type parameter names. A position inside a template string with `${...}` parts is an error for now: the parser gives the nodes there the template's position.
 - `def` lists every declaration a qualified (`app/text.helper`, `app/text.Shape.Circle`) or bare (`helper`, `Shape.Circle`, `Circle`) name finds. `refs` and `callers` need a name that finds one declaration.
-- `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked.
+- `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked. A use inside a template string is reported at the whole template, with `"inTemplate": true`; `callers` does the same.
 - `callers` and `recursion` read the call graph of the effect pass (`EffectState.calls`). Calls through function values are not edges. A call inside an arrow function belongs to the enclosing function.
 - Only the package's own modules are searched, not std source modules.
 - `selfhost/src/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
-- `TestSelfhostQuery` runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by the expected stdout then stderr, with `# exit N` first when the exit code is not 0) against the package in that folder. `NARRA_UPDATE=1` rewrites the expected output.
+- `TestSelfhostQuery` runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by `# exit N` when the exit code is not 0, the expected stdout, and `# stderr` with the expected stderr when there is any) against the package in that folder. `NARRA_UPDATE=1` rewrites the expected output.
 
 ## Tests
 

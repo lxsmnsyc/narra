@@ -11,3 +11,7 @@
 - Diagnostic JSON uses code E0000: the self-hosted checker has no codes.
 - `narrac fmt` collapsed a match in a test package onto one line; reran NARRA_UPDATE=1 after formatting.
 - On selfhost itself: `refs narrac/check.typeString` and `callers findBodySlot` take about 0.5 s each (release build).
+- Review round 1: the parser puts every node inside `${...}` at the template's position, so sites inside templates are marked `inTemplate` and span the template; type-of there errors, refs/callers flag them. `CallEdge` gained `callId` so callers can find the call's site.
+- type-of rule changed: names evaluate with no effects, function types carry `uses` (from the declaration, the annotation via `Signature.writeType`, or the arrow body via `findArrowEffects`). The text form now puts effects on a second line (`effects: ...`), because `<type> uses ...` became ambiguous.
+- The call node holds the callee's ref too, so the `(` of `helper("ab")` answered with the function type until describeCallable was limited to name sites.
+- `queries.txt` now separates stderr with a `# stderr` line.

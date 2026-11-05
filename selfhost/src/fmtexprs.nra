@@ -283,7 +283,7 @@ function printExpressionBody(printer: Printer, expression: Expr, written: bool):
     Expr.IsExpr(_, _, subject, pattern) => createConcat([printWithMinimum(printer, subject, IS_PRECEDENCE), createText(" is "), printPattern(printer, pattern)])
     Expr.IndexExpr(_, _, target, index) => createConcat([printWithMinimum(printer, target, PRIMARY_PRECEDENCE), createText("["), printElement(printer, index), createText("]")])
     Expr.MapLit(id, _, typeArguments, keys, values) => printMapLiteral(printer, id, typeArguments, keys, values)
-    Expr.CallExpr(id, _, callee, arguments) => createConcat([printWithMinimum(printer, callee, PRIMARY_PRECEDENCE), printArguments(printer, id, arguments)])
+    Expr.CallExpr(_, _, callee, arguments) => createConcat([printWithMinimum(printer, callee, PRIMARY_PRECEDENCE), printArguments(printer, arguments)])
     Expr.UnaryExpr(_, _, operator, operand) => printUnary(printer, operator, operand)
     Expr.BinaryExpr(_, _, _, _, _) => printBinary(printer, expression)
     Expr.StructLit(id, pos, typeName, typeArguments, fields, spread) => printStructLiteral(printer, id, pos, typeName, typeArguments, fields, spread)
@@ -394,10 +394,39 @@ function isCompactArrowBody(body: Option<Expr>): bool {
   return true
 }
 
+// getFlatWidth is the width of a document printed on one line, or more than
+// limit when it is wider or holds a hard line. It stops as soon as limit is
+// passed, so it does not walk a large document.
+function getFlatWidth(document: Document, limit: int): int {
+  return match (document) {
+    Document.Text(value) => Str.charCount(value)
+    Document.Concat(parts) => getPartsWidth(parts, limit)
+    Document.Indent(contents) => getFlatWidth(contents, limit)
+    Document.Group(contents, _) => getFlatWidth(contents, limit)
+    Document.Line => 1
+    Document.SoftLine => 0
+    Document.HardLine => limit + 1
+    Document.IfBreak(_, flat, _) => getFlatWidth(flat, limit)
+    Document.LineSuffix(_) => 0
+    Document.BreakParent => 0
+  }
+}
+
+function getPartsWidth(parts: Array<Document>, limit: int): int {
+  let width = 0
+  for (const part of Arrays.values(parts)) {
+    if (width > limit) {
+      return width
+    }
+    width = width + getFlatWidth(part, limit - width)
+  }
+  return width
+}
+
 // printArguments prints a call's `(a, b)`. When the last argument is huggable
 // and the one before it is not, the arguments stay on the line of the call and
 // only the last one breaks, as in `f(a, (x) => { ... })`.
-function printArguments(printer: Printer, callId: int, arguments: Array<Arg>): Document uses alloc {
+function printArguments(printer: Printer, arguments: Array<Arg>): Document uses alloc {
   const count = Arrays.length(arguments)
   if (count == 0) {
     return createText("()")
@@ -416,32 +445,28 @@ function printArguments(printer: Printer, callId: int, arguments: Array<Arg>): D
   if (hug && count > 1 && isHuggable(arguments[count - 2].value)) {
     hug = false
   }
-  if (hug && count == 1) {
-    return createConcat([createText("("), items[0], createText(")")])
+  // The arguments before the last one never break, so hug only when they are
+  // short; else every argument goes on its own line.
+  if (hug && count > 1) {
+    let headWidth = 0
+    const limit = printer.settings.options.printWidth / 3
+    for (const index of Ranges.between(0, count - 1)) {
+      headWidth = headWidth + getFlatWidth(items[index], limit) + 2
+    }
+    if (headWidth > limit) {
+      hug = false
+    }
   }
   if (hug) {
-    // The arguments before the last one are a group of their own. When they and
-    // the start of the last argument fit on the line, the last argument is
-    // hugged; otherwise every argument goes on its own line. The last argument
-    // is in the document twice, once for each layout; only one is printed.
-    const groupId = -2 - callId
-    let head: Array<Document> = [Document.SoftLine]
-    for (const index of Ranges.between(0, count - 1)) {
-      Arrays.push(mutable head, items[index])
-      Arrays.push(mutable head, createText(","))
-      Arrays.push(mutable head, Document.Line)
+    let parts: Array<Document> = [createText("(")]
+    for (const index of Ranges.between(0, count)) {
+      if (index > 0) {
+        Arrays.push(mutable parts, createText(", "))
+      }
+      Arrays.push(mutable parts, items[index])
     }
-    let brokenEnd: Array<Document> = []
-    if (printer.settings.trailingComma) {
-      Arrays.push(mutable brokenEnd, createText(","))
-    }
-    Arrays.push(mutable brokenEnd, Document.Line)
-    Arrays.push(mutable brokenEnd, createText(")"))
-    return createConcat([
-      Document.Group(createConcat([createText("("), createIndent(createConcat(head))]), groupId),
-      Document.IfBreak(createIndent(items[count - 1]), items[count - 1], groupId),
-      Document.IfBreak(createConcat(brokenEnd), createText(")"), groupId),
-    ])
+    Arrays.push(mutable parts, createText(")"))
+    return createConcat(parts)
   }
   return printList(printer, "(", ")", items, [], false, true)
 }

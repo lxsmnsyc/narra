@@ -78,6 +78,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - self-hosting -> selfhost-spike, selfhost-ast, selfhost-front, selfhost-modules, selfhost-check-decls, selfhost-check-bodies, selfhost-emit, selfhost-bootstrap
 - renaming the language -> rename (done early: Narra)
 - language guide -> language-guide; installation guide -> install-guide; agent skills -> narra-skills; language service -> language-service; linter -> lint (user request 2026-11-01)
+- website (user request 2026-11-05, later) -> website
 - std library growth -> std-source, std-json, std-io-more, std-basics, std-unicode, std-arena, std-iterator (2026-11-01)
 - closure capture of `let` and `mutable` -> closure-borrow, cell-capture; identity type cycles -> identity-cycles (2026-11-01); `Range.stepped` -> std-basics; std modules of parked features stay with those nodes
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std

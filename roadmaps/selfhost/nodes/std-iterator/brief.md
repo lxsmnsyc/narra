@@ -23,6 +23,9 @@ depends_on:
   - on: generators
     kind: hard
     why: every operator is a generator function over a Generator<T>
+  - on: coroutines
+    kind: hard
+    why: zip and other operators that step two generators at once need Co.resume
   - on: std-source
     kind: hard
     why: the operators should be Narra source, which the spike decides

@@ -57,6 +57,16 @@ func TestSelfhostFmtDocErrors(t *testing.T) {
 	}
 }
 
+// TestSelfhostFmtDocErrorText pins the error line: one position prefix.
+func TestSelfhostFmtDocErrorText(t *testing.T) {
+	exe := buildSelfhost(t)
+	path := filepath.Join(t.TempDir(), "word.txt")
+	if err := os.WriteFile(path, []byte("bogus\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runNarrac(t, exe, []string{"fmt-doc", path}, "", "error 1:1: unknown word bogus\n", 1)
+}
+
 // TestSelfhostFmtDocDeep prints documents nested 50000 levels deep; the
 // printer, the reader and the release of the document must not use the C stack
 // per level.

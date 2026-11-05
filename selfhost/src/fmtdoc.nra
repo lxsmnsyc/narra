@@ -304,7 +304,7 @@ function findGroupMode(printer: Printer, id: int): int {
 // fits says whether the node, printed in the mode, and the commands that
 // follow it on the stack take at most `remaining` characters up to the next
 // line that can break.
-function fits(mutable printer: Printer, arena: Arena, startNode: int, startMode: int, remaining: int, tabWidth: int): bool uses alloc {
+function fits(mutable printer: Printer, arena: Arena, startNode: int, startMode: int, remaining: int): bool uses alloc {
   let width = remaining
   let restIndex = printer.commandCount
   printer.scratchCount = 0
@@ -462,7 +462,7 @@ function printDocument(document: Doc, options: Options): string uses alloc {
       } else {
         needsRemeasure = false
         const remaining = options.printWidth - writer.column
-        if (!arena.forced[node] && fits(mutable printer, arena, arena.children[node][0], FLAT, remaining, options.tabWidth)) {
+        if (!arena.forced[node] && fits(mutable printer, arena, arena.children[node][0], FLAT, remaining)) {
           groupMode = FLAT
         }
       }
@@ -648,21 +648,21 @@ function closeFrame(mutable reader: Reader, line: int, column: int): Result<Doc,
   return failAt(startLine, startColumn, `unknown form ${head}`)
 }
 
-// readWord handles a word: the head of a form, the number of a group-id, or a
-// document.
-function readWord(mutable reader: Reader, word: string, line: int, column: int): Result<string, string> uses alloc {
+// readWord handles a word (the head of a form, the number of a group-id, or a
+// document) and returns the error message, if any.
+function readWord(mutable reader: Reader, word: string, line: int, column: int): Option<string> uses alloc {
   if (reader.depth > 0 && reader.heads[reader.depth - 1] == "") {
     reader.heads[reader.depth - 1] = word
-    return Ok("")
+    return None
   }
   if (reader.depth > 0 && !reader.hasIds[reader.depth - 1] && (reader.heads[reader.depth - 1] == "group-id" || reader.heads[reader.depth - 1] == "ifbreak-id")) {
     const number = Int.parse(word, 10)
     if (number is Err(message)) {
-      return Err(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
+      return Some(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
     }
     reader.ids[reader.depth - 1] = number.value
     reader.hasIds[reader.depth - 1] = true
-    return Ok("")
+    return None
   }
   if (word == "line") {
     addDocument(mutable reader, Doc.Line)
@@ -673,9 +673,9 @@ function readWord(mutable reader: Reader, word: string, line: int, column: int):
   } else if (word == "breakparent") {
     addDocument(mutable reader, Doc.BreakParent)
   } else {
-    return Err(`${Int.toString(line)}:${Int.toString(column)}: unknown word ${word}`)
+    return Some(`${Int.toString(line)}:${Int.toString(column)}: unknown word ${word}`)
   }
-  return Ok("")
+  return None
 }
 
 // readDocument reads the text form (without the option lines) into a document.
@@ -725,8 +725,8 @@ function readDocument(source: string): Result<Doc, string> uses alloc {
         offset = offset + 1
       }
       const handled = readWord(mutable reader, Str.slice(source, start, offset), line, column)
-      if (handled is Err(message)) {
-        return failAt(line, column, message)
+      if (handled is Some(message)) {
+        return Err(message)
       }
     } else {
       return failAt(line, column, `unexpected character ${Str.slice(source, offset, offset + 1)}`)

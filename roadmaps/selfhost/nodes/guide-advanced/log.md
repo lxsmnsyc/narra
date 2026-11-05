@@ -26,3 +26,7 @@
 - Chapter 7: equality opens from chapter 4, adds `countOf<T: Equatable>`.
 - Chapter 10: leak failure needs `NARRA_CHECK_LEAKS=1`, `void` explained, bare `return` removed, refers to chapter 4.
 - TestGuide ok, prose check ok.
+
+## 2026-11-05: round 2 fixes
+
+- Chapter 9 recap now uses chapter 2 names (`prices`, `snapshot`, 400) and says "In chapter 2's example". Chapter 8 names the `[[binary]]` and says the executable takes its name. No fragment changed. TestGuide ok (74.1s).

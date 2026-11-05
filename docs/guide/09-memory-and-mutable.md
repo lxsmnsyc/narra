@@ -4,14 +4,14 @@ You never free memory in Narra, and you never decide whether two names share one
 
 ## Why copies are cheap
 
-Chapters 2 and 4 showed that assigning an array or a struct gives the new name its own copy. After `const before = scores`, pushing to `scores` leaves `before` as it was, and after `let moreTea = tea`, changing `moreTea` leaves `tea` alone. So when you pass a value to a function, it comes back unchanged, unless the call marks it `mutable`.
+Chapters 2 and 4 showed that assigning an array or a struct gives the new name its own copy. After `const snapshot = prices`, pushing to `prices` leaves `snapshot` as it was, and after `let moreTea = tea`, changing `moreTea` leaves `tea` alone. So when you pass a value to a function, it comes back unchanged, unless the call marks it `mutable`.
 
 Copying a large array at every assignment would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values are kept on the heap. The heap is memory set aside apart from the variable, which lives until nothing uses it. The variable holds a reference to it. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are referenced one by one.
 
-Each heap value counts the references to it, which is called reference counting. In the example above:
+Each heap value counts the references to it, which is called reference counting. In chapter 2's example:
 
-1. `const before = scores` copies nothing. Both names refer to the same array, and its count goes up to 2.
-2. `Arrays.push(mutable scores, 30)` sees the count of 2. Writing in place would change `before` too, so it copies the array first and writes to the copy.
+1. `const snapshot = prices` copies nothing. Both names refer to the same array, and its count goes up to 2.
+2. `Arrays.push(mutable prices, 400)` sees the count of 2. Writing in place would change `snapshot` too, so it copies the array first and writes to the copy.
 3. When a value's count is 1, a write changes it in place with no copy.
 4. When the count drops to 0, the value is freed.
 

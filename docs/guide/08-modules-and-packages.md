@@ -102,7 +102,7 @@ The other standard modules are `std/char`, `std/env`, `std/float`, `std/fs`, `st
 
 ## Splitting a program into files
 
-When the counter grows, you want the counting in one file and the command-line code in another. Chapter 1 split a program into a package: a folder with a `narra.toml` and a `src/` folder. Do the same here, with the package `words`, the files `src/cli.nra` and `src/count.nra`, and `entry = "cli.run"` in `narra.toml`.
+When the counter grows, you want the counting in one file and the command-line code in another. Chapter 1 split a program into a package: a folder with a `narra.toml` and a `src/` folder. Do the same here, with the files `src/cli.nra` and `src/count.nra`. In `narra.toml`, name the package `words`, and give it a `[[binary]]` with `name = "words"` and `entry = "cli.run"`.
 
 A file's module name comes from its path in `src/`: `src/count.nra` is the module `"words/count"`, and a file `src/text/split.nra` would be `"words/text/split"`. An import always writes this full path, starting with the package name. A path relative to the current file, such as `"./count"`, is not accepted.
 
@@ -166,7 +166,7 @@ saw 1
 dog 1
 ```
 
-`narra build .` builds the program as the file `words` instead of running it.
+`narra build .` builds the program instead of running it. The executable is named `words`, after the `name` of the `[[binary]]`.
 
 ### Importing a private name
 

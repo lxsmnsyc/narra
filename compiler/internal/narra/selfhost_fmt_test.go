@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -13,9 +14,16 @@ import (
 // runFmtCommand runs `narrac fmt` in dir with the given stdin.
 func runFmtCommand(t *testing.T, exe, dir, stdin string, args ...string) (string, string, int) {
 	t.Helper()
+	return runFmtWithPWD(t, exe, dir, dir, stdin, args...)
+}
+
+// runFmtWithPWD runs `narrac fmt` in dir with the PWD variable set to pwd; an
+// empty pwd leaves it empty, as a shell without the variable would.
+func runFmtWithPWD(t *testing.T, exe, dir, pwd, stdin string, args ...string) (string, string, int) {
+	t.Helper()
 	cmd := exec.Command(exe, append([]string{"fmt"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0", "PWD="+dir)
+	cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0", "PWD="+pwd)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -208,6 +216,51 @@ func TestSelfhostFmt(t *testing.T) {
 		}
 	})
 
+	// A comment the printer cannot place is an error, not a silent loss.
+	t.Run("lost_comment", func(t *testing.T) {
+		scratch := t.TempDir()
+		source := "import { a, /* inside */ b } from \"m\"\n"
+		writeFile(t, filepath.Join(scratch, "lost.nra"), source)
+		want := "error lost.nra:1:13: comment not printed: /* inside */\n"
+		out, errText, code := runFmtCommand(t, exe, scratch, "", "lost.nra")
+		if code != 1 || out != "" || errText != want {
+			t.Fatalf("code %d stdout %q stderr %q, want code 1 stderr %q", code, out, errText, want)
+		}
+		if got := readFile(t, filepath.Join(scratch, "lost.nra")); got != source {
+			t.Fatalf("lost.nra changed: %q", got)
+		}
+		out, errText, code = runFmtCommand(t, exe, scratch, source, "--stdin")
+		if code != 1 || out != "" || errText != "error <stdin>:1:13: comment not printed: /* inside */\n" {
+			t.Fatalf("stdin: code %d stdout %q stderr %q", code, out, errText)
+		}
+	})
+
+	// Without the PWD variable the config is still found, above a relative path.
+	t.Run("no_pwd", func(t *testing.T) {
+		scratch := t.TempDir()
+		writeFile(t, filepath.Join(scratch, "narra.toml"), "[fmt]\nprintWidth = 40\n")
+		if err := os.MkdirAll(filepath.Join(scratch, "sub", "deeper"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Fits in 100 columns, not in 40.
+		source := "function f(firstParameter: int, secondParameter: int): int {\n  return 1\n}\n"
+		writeFile(t, filepath.Join(scratch, "sub", "b.nra"), source)
+		writeFile(t, filepath.Join(scratch, "sub", "deeper", "c.nra"), source)
+		for _, path := range []string{"sub/b.nra", "./sub/deeper/../b.nra", "sub/deeper/c.nra"} {
+			for _, pwd := range []string{scratch, ""} {
+				out, errText, code := runFmtWithPWD(t, exe, scratch, pwd, "", "--check", path)
+				if code != 1 || out != path+"\n" || errText != "" {
+					t.Fatalf("%s with PWD %q: code %d stdout %q stderr %q", path, pwd, code, out, errText)
+				}
+			}
+		}
+		// From a subdirectory the file is one level below the config.
+		out, _, code := runFmtWithPWD(t, exe, filepath.Join(scratch, "sub"), "", "", "--check", "b.nra")
+		if code != 1 || out != "b.nra\n" {
+			t.Fatalf("from sub: code %d stdout %q", code, out)
+		}
+	})
+
 	// A directory means every .nra file under it; no path means the current directory.
 	t.Run("directory", func(t *testing.T) {
 		scratch := t.TempDir()
@@ -295,9 +348,11 @@ func tokensOf(dump string) string {
 	return strings.Join(kept, "\n")
 }
 
-// commentsOf lists the comment texts of a trivia dump, without trailing blanks.
+// commentsOf lists the comments of a trivia dump: the text without trailing
+// blanks, the kind letter of the node it is attached to and its placement.
 func commentsOf(dump string) string {
 	var texts []string
+	attached := map[string]string{}
 	for _, line := range strings.Split(dump, "\n") {
 		if match := commentPattern.FindStringSubmatch(line); match != nil {
 			text := match[1]
@@ -309,7 +364,16 @@ func commentsOf(dump string) string {
 				text = trimmed
 			}
 			texts = append(texts, text)
+		} else if fields := strings.Fields(line); len(fields) == 4 && fields[0] == "attached" {
+			kind := fields[1][:1]
+			if strings.HasPrefix(fields[1], "file") {
+				kind = "file"
+			}
+			attached[fields[3]] = kind + " " + fields[2]
 		}
+	}
+	for i, text := range texts {
+		texts[i] = text + "  [" + attached[strconv.Itoa(i)] + "]"
 	}
 	return strings.Join(texts, "\n")
 }

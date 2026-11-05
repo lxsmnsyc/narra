@@ -28,7 +28,7 @@ import * as Parser from "narrac/parser"
 import { Trivia, getPosKey, getIdKey, getDeclPos, getStmtPos, getExprId, getPatternId } from "narrac/trivia"
 import { Pos, File, ImportDecl, TypeExpr, Param, FuncDecl, ConstDecl, FieldDecl, StructDecl, DistinctDecl, VariantDecl, EnumDecl, TestDecl, TraitDecl, ImplDecl, Decl, Block, Stmt, Expr, Pattern } from "narrac/ast"
 import { FmtConfig, createDefaultConfig, getDirectory, findConfig } from "narrac/fmtconfig"
-import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, hasBlankBefore, hasDangling } from "narrac/fmtprinter"
+import { Settings, Printer, withComments, printDangling, trailingComma, getOffset, hasBlankBefore, hasDangling, hasTrailing } from "narrac/fmtprinter"
 
 // ---- Driver
 
@@ -210,7 +210,37 @@ export function formatSource(text: string, config: FmtConfig): Result<string, st
   const #[parsed, trivia] = traced.value
   const printer = createPrinter(source, trivia, config)
   const document = printFile(printer, parsed.file)
-  return Ok(Docs.print(document, printer.settings.options))
+  const formatted = Docs.print(document, printer.settings.options)
+  // Every comment must come out again, as Prettier checks.
+  const problem = findLostComment(trivia, formatted)
+  if (problem is Some(message)) {
+    return Err(message)
+  }
+  return Ok(formatted)
+}
+
+// findLostComment parses the result and compares its comments with the
+// original ones: the same texts, in the same order.
+function findLostComment(trivia: Trivia, formatted: string): Option<string> uses alloc {
+  const traced = Parser.parseWithTrivia(formatted, 0)
+  if (traced is Err(diagnostic)) {
+    return Some(`1:1: the formatted text does not parse: ${Parser.formatDiagnostic(diagnostic)}`)
+  }
+  const #[_parsed, after] = traced.value
+  for (const index of Ranges.upTo(Arrays.length(trivia.comments))) {
+    const comment = trivia.comments[index]
+    if (index >= Arrays.length(after.comments) || !isSameComment(comment.text, after.comments[index].text)) {
+      return Some(`${Int.toString(comment.pos.line)}:${Int.toString(comment.pos.column)}: comment not printed: ${comment.text}`)
+    }
+  }
+  if (Arrays.length(after.comments) > Arrays.length(trivia.comments)) {
+    return Some("1:1: a comment was printed twice")
+  }
+  return None
+}
+
+function isSameComment(before: string, after: string): bool uses alloc {
+  return Str.trim(before) == Str.trim(after)
 }
 
 // createPrinter builds the Printer. fmt-exprs replaces the three stub fields.
@@ -751,15 +781,17 @@ function printImpl(printer: Printer, declaration: ImplDecl): Doc uses alloc {
 
 // ---- Blocks and statements
 
-// printBlock prints `{ statements }` (the printBlock field of the Printer).
-function printBlock(printer: Printer, block: Block): Doc uses alloc {
+// printBlock prints `{ statements }` with the comments attached to the block
+// (the printBlock field of the Printer).
+export function printBlock(printer: Printer, block: Block): Doc uses alloc {
   let keys: Array<string> = []
   let documents: Array<Doc> = []
   for (const statement of Arrays.values(block.statements)) {
     Arrays.push(mutable keys, getPosKey("s", getStmtPos(statement)))
     Arrays.push(mutable documents, printStatement(printer, statement))
   }
-  return printBraces(printer, getPosKey("b", block.pos), keys, documents)
+  const blockKey = getPosKey("b", block.pos)
+  return withComments(printer, blockKey, printBraces(printer, blockKey, keys, documents))
 }
 
 // printCondition prints `(condition)` of an if or while.
@@ -846,7 +878,13 @@ function printReturn(printer: Printer, value: Option<Expr>): Doc uses alloc {
 function printIf(printer: Printer, condition: Expr, thenBlock: Block, orElse: Option<Stmt>): Doc uses alloc {
   let parts: Array<Doc> = [text("if "), printCondition(printer, condition), text(" "), printBlock(printer, thenBlock)]
   if (orElse is Some(branch)) {
-    Arrays.push(mutable parts, text(" else "))
+    if (hasTrailing(printer, getPosKey("b", thenBlock.pos))) {
+      // A trailing comment of the block ends the line: `else` starts the next one.
+      Arrays.push(mutable parts, Doc.HardLine)
+      Arrays.push(mutable parts, text("else "))
+    } else {
+      Arrays.push(mutable parts, text(" else "))
+    }
     if (branch is Stmt.IfStmt(_, _, _, _)) {
       Arrays.push(mutable parts, printStatement(printer, branch))
     } else if (branch is Stmt.BlockStmt(elseBlock)) {

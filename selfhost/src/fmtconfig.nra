@@ -23,10 +23,16 @@ export function createDefaultConfig(): FmtConfig {
 // stripComment removes a `#` comment that is outside a string.
 function stripComment(line: string): string uses alloc {
   let quote = 0
+  let escaped = false
   for (const index of Ranges.upTo(Str.length(line))) {
     const byte = Str.byteAt(line, index)
     if (quote != 0) {
-      if (byte == quote) {
+      // A backslash escapes the next byte of a basic string.
+      if (escaped) {
+        escaped = false
+      } else if (byte == 92 && quote == 34) {
+        escaped = true
+      } else if (byte == quote) {
         quote = 0
       }
     } else if (byte == 34 || byte == 39) {
@@ -124,14 +130,68 @@ function normalizePath(path: string): string uses alloc {
   return `/${Str.join(segments, "/")}`
 }
 
-// getDirectory is the absolute directory that holds a path (or the path
-// itself, for a directory). Without the PWD variable the path stays relative.
+// normalizeRelative removes `.` segments and resolves `..` against the
+// segments before it. A path that climbs above its start keeps the `..`.
+function normalizeRelative(path: string): string uses alloc {
+  let segments: Array<string> = []
+  for (const segment of Arrays.values(Str.split(path, "/"))) {
+    if (segment == "" || segment == ".") {
+      continue
+    }
+    if (segment == ".." && Arrays.length(segments) > 0 && segments[Arrays.length(segments) - 1] != "..") {
+      let kept: Array<string> = []
+      for (const index of Ranges.upTo(Arrays.length(segments) - 1)) {
+        Arrays.push(mutable kept, segments[index])
+      }
+      segments = kept
+      continue
+    }
+    Arrays.push(mutable segments, segment)
+  }
+  if (Arrays.length(segments) == 0) {
+    return "."
+  }
+  return Str.join(segments, "/")
+}
+
+// dropLastSegment is the parent of a normalized path: `a/b` gives `a`, `a`
+// gives `.`, `.` gives `..` and `..` gives `../..`.
+function getParent(path: string): string uses alloc {
+  if (path == ".") {
+    return ".."
+  }
+  const parts = Str.split(path, "/")
+  if (parts[Arrays.length(parts) - 1] == "..") {
+    return `${path}/..`
+  }
+  if (Arrays.length(parts) == 1) {
+    return "."
+  }
+  let kept: Array<string> = []
+  for (const index of Ranges.upTo(Arrays.length(parts) - 1)) {
+    Arrays.push(mutable kept, parts[index])
+  }
+  return Str.join(kept, "/")
+}
+
+// getDirectory is the directory that holds a path (or the path itself, for a
+// directory). It is absolute when the path is, or when PWD is set; otherwise it
+// stays relative to the current directory.
 export function getDirectory(path: string, isDirectory: bool): string uses io, alloc {
   let absolute = path
   if (!Str.startsWith(path, "/")) {
     if (Env.get("PWD") is Some(working)) {
-      absolute = `${working}/${path}`
+      if (working != "") {
+        absolute = `${working}/${path}`
+      }
     }
+  }
+  if (!Str.startsWith(absolute, "/")) {
+    const relative = normalizeRelative(absolute)
+    if (isDirectory) {
+      return relative
+    }
+    return getParent(relative)
   }
   const normalized = normalizePath(absolute)
   if (isDirectory) {
@@ -149,10 +209,11 @@ export function getDirectory(path: string, isDirectory: bool): string uses io, a
 }
 
 // findConfig reads the [fmt] table of the nearest narra.toml in the
-// directory or above it. Without one it returns the defaults.
+// directory or above it. Without one it returns the defaults. A relative
+// directory climbs with `..`, up to 64 levels.
 export function findConfig(directory: string): Result<FmtConfig, string> uses io, alloc {
   let current = directory
-  while (true) {
+  for (const _level of Ranges.upTo(64)) {
     let manifest = `${current}/narra.toml`
     if (current == "/") {
       manifest = "/narra.toml"
@@ -164,20 +225,21 @@ export function findConfig(directory: string): Result<FmtConfig, string> uses io
       }
       return parseFmtConfig(read.value)
     }
-    if (current == "/" || current == "" || current == ".") {
+    if (current == "/") {
       break
     }
-    const parts = Str.split(current, "/")
-    if (Arrays.length(parts) <= 1) {
-      break
-    }
-    let kept: Array<string> = []
-    for (const index of Ranges.upTo(Arrays.length(parts) - 1)) {
-      Arrays.push(mutable kept, parts[index])
-    }
-    current = Str.join(kept, "/")
-    if (current == "") {
-      current = "/"
+    if (Str.startsWith(current, "/")) {
+      const parts = Str.split(current, "/")
+      let kept: Array<string> = []
+      for (const index of Ranges.upTo(Arrays.length(parts) - 1)) {
+        Arrays.push(mutable kept, parts[index])
+      }
+      current = Str.join(kept, "/")
+      if (current == "") {
+        current = "/"
+      }
+    } else {
+      current = getParent(current)
     }
   }
   return Ok(createDefaultConfig())

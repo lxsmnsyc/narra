@@ -30,6 +30,8 @@ Layout choices (Prettier's TypeScript output where Narra has the same construct)
 - `--stdin` finds the config from the current directory (no `--stdin-filepath`).
 - Files outside the owned paths: `SPEC.md` and `compiler/README.md` (shared), `selfhost/src/main.nra` (shared).
 
+- After printing, `formatSource` parses the result and compares its comments with the original ones; a comment that is missing exits 1 with `error <path>:<line>:<col>: comment not printed: <text>` (for example a comment between import names). `printBlock` is exported and wraps the block in `withComments`; a trailing comment of a `then` block puts `else` on the next line. Without PWD the config search stays relative and climbs with `..`. The stability test also compares the node kind and placement of each comment.
+
 ## Stubs left
 
 - `printExpressionStub`, `printPatternStub` and `printTypeStub` in `selfhost/src/fmt.nra` copy the source text of the node (with its parentheses; comments attached to the node are kept). fmt-exprs replaces the three fields in `createPrinter` and deletes the stubs. Until then a multi-line expression keeps its source indentation, and a function type keeps its parameter names.

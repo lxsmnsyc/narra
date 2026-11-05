@@ -552,7 +552,7 @@ func (w *effectWalker) userCall(e *CallExpr) {
 	}
 	// A generator result that names the callee's variables gets the effects
 	// they are bound to at this call (bindCallResult).
-	if t, ok := e.T.(*GeneratorType); ok && t.Bound != nil {
+	if t, ok := e.T.(*GeneratorType); ok && t.Bound != nil && t.Bound.call == e {
 		set := effSet{}
 		if declared, ok := g.ResultT.(*GeneratorType); ok {
 			for _, n := range declared.Effects {

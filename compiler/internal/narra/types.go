@@ -219,9 +219,11 @@ type GeneratorType struct {
 }
 
 // boundEffects are the effects of one call's generator result, filled by the
-// effect pass. id tells calls apart in typeID.
+// effect pass at call, the call that made the type, and at no other call
+// (a generic `id(x)` returns the same type). id tells calls apart in typeID.
 type boundEffects struct {
 	id      int
+	call    *CallExpr
 	effects []string
 }
 

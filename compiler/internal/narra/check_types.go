@@ -643,7 +643,7 @@ func (c *Checker) bindCallResult(e *CallExpr, t Type) Type {
 		return t
 	}
 	c.boundCalls++
-	return &GeneratorType{Elem: g.Elem, Binder: c.sigFunc, Bound: &boundEffects{id: c.boundCalls}}
+	return &GeneratorType{Elem: g.Elem, Binder: c.sigFunc, Bound: &boundEffects{id: c.boundCalls, call: e}}
 }
 
 // generatorUse is a generator value used where a generator type is

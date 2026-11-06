@@ -1,7 +1,7 @@
 ---
 id: closure-borrow
 title: Non-escaping closures capture let and mutable by reference
-status: todo
+status: active
 priority: should
 type: feature
 story:

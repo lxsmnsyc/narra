@@ -1,7 +1,7 @@
 ---
 id: std-io-more
 title: stdin, directories and paths
-status: todo
+status: active
 priority: should
 type: feature
 story:

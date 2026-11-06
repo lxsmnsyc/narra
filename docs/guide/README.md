@@ -48,7 +48,6 @@ Save a sample to a file and run it with `narra run file.nra` to try your own cha
 
 The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
-- Generators and iterators written by users: `function*`, `yield`. They parse and type-check, but a program that declares one does not build.
 - `async` and `await`, threads, channels and shared state.
 - Regions, fixed-size arrays and SIMD vectors.
 - `unsafe`, `extern` and C interop.

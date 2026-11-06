@@ -124,7 +124,7 @@ export function run(args: Array<string>): int {
   return f(n) - 2 + xs[0] - 2
 }
 `
-	edited := strings.Replace(base, "export function run", `function unrelated(x: Box<int>, y: Array<string>): Box<int> {
+	edited := strings.Replace(base, "export function run", `function unrelated(x: Box<int>, _y: Array<string>): Box<int> {
   return x
 }
 

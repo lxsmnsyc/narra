@@ -130,6 +130,7 @@ type Checker struct {
 	assigning     Expr // the target of the assignment being checked (check_map.go)
 	instTypes     []Type
 	localN        int
+	declared      []*Local               // locals declared in the body being checked, for the unused check (check_unused.go)
 	isBinds       bool                   // an `is` pattern may bind names here
 	tuples        map[string]*StructType // tuple types by element mangle (check_patterns.go)
 	// The name tables above (types, generics, funcs, modules, imported)
@@ -332,7 +333,9 @@ func (c *Checker) checkBodies(f *File) {
 			c.env = nil
 			c.scope = &scope{names: map[string]*Local{}}
 			c.inTest = true
+			start, errs := len(c.declared), len(c.errs)
 			c.block(d.Body)
+			c.reportUnused(start, errs)
 			c.inTest = false
 		}
 	}
@@ -429,6 +432,8 @@ func (c *Checker) declare(pos Pos, name string, t Type, mutable bool) *Local {
 	c.localN++
 	l := &Local{Name: name, T: t, Mutable: mutable, Pos: pos, CName: fmt.Sprintf("v_%s_%d", name, c.localN)}
 	c.scope.names[name] = l
+	l.NamePos = pos
+	c.declared = append(c.declared, l)
 	return l
 }
 

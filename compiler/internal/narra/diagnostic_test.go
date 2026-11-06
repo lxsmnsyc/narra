@@ -103,6 +103,8 @@ func TestHabitFixes(t *testing.T) {
 	}
 	more, _ := filepath.Glob(filepath.Join(testdata, "diagnostics", "*.nra"))
 	files = append(files, more...)
+	unused, _ := filepath.Glob(filepath.Join(testdata, "errors", "unused_*.nra"))
+	files = append(files, unused...)
 	for _, src := range files {
 		t.Run(filepath.Base(src), func(t *testing.T) {
 			ds, err := CheckDiagnostics(src)

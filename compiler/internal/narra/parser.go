@@ -396,6 +396,7 @@ func (p *Parser) funcHeader(exported bool) *FuncDecl {
 		param := &Param{Pos: p.tok().Pos}
 		param.Mutable = p.accept("mutable")
 		param.Escaping = !param.Mutable && p.acceptEscaping()
+		param.NamePos = p.tok().Pos
 		param.Name = p.ident().Text
 		p.expect(":")
 		param.Type = p.typeExpr()
@@ -671,7 +672,7 @@ func (p *Parser) arrow() Expr {
 		if p.is("mutable") {
 			p.fail(p.tok().Pos, "arrow function parameters cannot be mutable")
 		}
-		param := &Param{Pos: p.tok().Pos, Name: p.ident().Text}
+		param := &Param{Pos: p.tok().Pos, NamePos: p.tok().Pos, Name: p.ident().Text}
 		if p.accept(":") {
 			param.Type = p.typeExpr()
 		}
@@ -748,7 +749,7 @@ func (p *Parser) stmt() Stmt {
 		p.fail(t.Pos, "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments")
 	case p.is("const") || p.is("let"):
 		mutable := p.next().Text == "let"
-		s := &VarStmt{Pos: t.Pos, Mutable: mutable}
+		s := &VarStmt{Pos: t.Pos, NamePos: p.tok().Pos, Mutable: mutable}
 		next := p.toks[p.i+1] // the token stream always ends with EOF
 		ctor := p.tok().Kind == TokIdent && next.Kind == TokPunct && (next.Text == "(" || next.Text == ".")
 		if p.is("{") || p.is("#[") || ctor {
@@ -815,12 +816,12 @@ func (p *Parser) stmt() Stmt {
 			// where L and C are the line and column of the pattern. A user
 			// name cannot clash with it because each loop has its own position.
 			hidden := fmt.Sprintf("__for_%d_%d", headPos.Line, headPos.Col)
-			decl := &VarStmt{Pos: headPos, Mutable: mutable, Name: name, Pattern: pattern,
+			decl := &VarStmt{Pos: headPos, Mutable: mutable, Name: name, Pattern: pattern, NamePos: headPos,
 				Value: &Ident{exprBase: exprBase{P: headPos}, Name: hidden}}
 			body.Stmts = append([]Stmt{decl}, body.Stmts...)
 			name = hidden
 		}
-		s := &ForStmt{Pos: t.Pos, Name: name, Iter: iter, Body: body}
+		s := &ForStmt{Pos: t.Pos, NamePos: headPos, Name: name, Iter: iter, Body: body}
 		p.skipNewlines()
 		return s
 	case p.is("yield"):
@@ -1425,7 +1426,7 @@ func (p *Parser) pattern() *Pattern {
 			if p.accept(":") {
 				fp.Pattern = p.pattern()
 			} else {
-				fp.Pattern = &Pattern{Pos: name.Pos, Kind: PatName, Name: name.Text}
+				fp.Pattern = &Pattern{Pos: name.Pos, Kind: PatName, Name: name.Text, Shorthand: true}
 			}
 			pat.Fields = append(pat.Fields, fp)
 			p.skipNewlines()

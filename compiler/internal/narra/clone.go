@@ -6,7 +6,7 @@ package narra
 func cloneFunc(fd *FuncDecl) *FuncDecl {
 	c := &FuncDecl{Pos: fd.Pos, Name: fd.Name, Exported: fd.Exported, Generator: fd.Generator, Result: fd.Result, Effects: fd.Effects, EffectParams: fd.EffectParams, Origin: fd}
 	for _, p := range fd.Params {
-		c.Params = append(c.Params, &Param{Pos: p.Pos, Name: p.Name, Mutable: p.Mutable, Escaping: p.Escaping, Type: p.Type})
+		c.Params = append(c.Params, &Param{Pos: p.Pos, NamePos: p.NamePos, Name: p.Name, Mutable: p.Mutable, Escaping: p.Escaping, Type: p.Type})
 	}
 	c.Body = cloneBlock(fd.Body)
 	return c
@@ -28,7 +28,7 @@ func cloneStmt(s Stmt) Stmt {
 	case *Block:
 		return cloneBlock(s)
 	case *VarStmt:
-		return &VarStmt{Pos: s.Pos, Mutable: s.Mutable, Name: s.Name, Pattern: clonePattern(s.Pattern), Type: s.Type, Value: cloneExpr(s.Value)}
+		return &VarStmt{Pos: s.Pos, NamePos: s.NamePos, Mutable: s.Mutable, Name: s.Name, Pattern: clonePattern(s.Pattern), Type: s.Type, Value: cloneExpr(s.Value)}
 	case *AssignStmt:
 		return &AssignStmt{Pos: s.Pos, Target: cloneExpr(s.Target), Value: cloneExpr(s.Value)}
 	case *ExprStmt:
@@ -40,7 +40,7 @@ func cloneStmt(s Stmt) Stmt {
 	case *WhileStmt:
 		return &WhileStmt{Pos: s.Pos, Label: s.Label, Cond: cloneExpr(s.Cond), Body: cloneBlock(s.Body)}
 	case *ForStmt:
-		return &ForStmt{Pos: s.Pos, Label: s.Label, Name: s.Name, Iter: cloneExpr(s.Iter), Body: cloneBlock(s.Body)}
+		return &ForStmt{Pos: s.Pos, NamePos: s.NamePos, Label: s.Label, Name: s.Name, Iter: cloneExpr(s.Iter), Body: cloneBlock(s.Body)}
 	case *BreakStmt:
 		return &BreakStmt{Pos: s.Pos, Label: s.Label}
 	case *ContinueStmt:
@@ -55,7 +55,7 @@ func clonePattern(p *Pattern) *Pattern {
 	if p == nil {
 		return nil
 	}
-	c := &Pattern{Pos: p.Pos, Kind: p.Kind, Name: p.Name, Enum: p.Enum, Lit: cloneExpr(p.Lit)}
+	c := &Pattern{Pos: p.Pos, Kind: p.Kind, Name: p.Name, Shorthand: p.Shorthand, Enum: p.Enum, Lit: cloneExpr(p.Lit)}
 	if p.Args != nil {
 		c.Args = []*Pattern{}
 		for _, a := range p.Args {

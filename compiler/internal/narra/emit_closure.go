@@ -132,7 +132,7 @@ func (e *Emitter) arrow(x *ArrowExpr) (string, bool) {
 	if clo.Stack {
 		parts := []string{".h = {-1, NULL}"}
 		for _, l := range clo.Captures {
-			parts = append(parts, fmt.Sprintf(".c_%s = %s", l.CName, e.localRef(l)))
+			parts = append(parts, fmt.Sprintf(".c_%s = %s", l.CName, e.captureValue(l)))
 		}
 		e.line("%s %s = {%s};", envT, env, strings.Join(parts, ", "))
 		return fmt.Sprintf("((%s){.fn = %s, .env = &%s.h})", ft.CName(), name, env), false
@@ -150,15 +150,35 @@ func (e *Emitter) arrow(x *ArrowExpr) (string, bool) {
 	return e.ownedTemp(ft, fmt.Sprintf("((%s){.fn = %s, .env = &%s->h})", ft.CName(), name, env)), true
 }
 
+// captureValue is what a stack environment stores for a capture: a pointer
+// to a `let` or mutable parameter, or the value of anything else. A variable
+// that is already a pointer is passed on as it is.
+func (e *Emitter) captureValue(l *Local) string {
+	switch {
+	case !l.Mutable:
+		return e.localRef(l)
+	case e.isRef(l):
+		return l.CName
+	}
+	return "&" + e.localRef(l)
+}
+
 func (e *Emitter) envStruct(envT, drop string, clo *Closure) {
 	st := e.cl()
 	fmt.Fprintf(&st.envs, "typedef struct %s { narra_env h;", envT)
 	for _, l := range clo.Captures {
+		if l.Mutable {
+			fmt.Fprintf(&st.envs, " %s* c_%s;", l.T.CName(), l.CName)
+			continue
+		}
 		fmt.Fprintf(&st.envs, " %s c_%s;", l.T.CName(), l.CName)
 	}
 	fmt.Fprintf(&st.envs, " } %s;\n", envT)
 	fmt.Fprintf(&st.envs, "static void %s(narra_env* h) {\n  %s* k = (%s*)h;\n  (void)k;\n", drop, envT, envT)
 	for _, l := range clo.Captures {
+		if l.Mutable {
+			continue // borrowed through a pointer
+		}
 		if r := release(l.T, "k->c_"+l.CName); r != "" {
 			fmt.Fprintf(&st.envs, "  %s\n", r)
 		}
@@ -181,7 +201,13 @@ func (e *Emitter) closureFunc(name, envT string, clo *Closure) {
 	savedOut := e.out.String()
 	e.out.Reset()
 	savedIndent, savedFrames, savedScopes, savedLoop, savedLoops, savedBlocks := e.indent, e.frames, e.scopes, e.loopTemp, e.loops, e.blocks
-	savedGen := e.gen
+	savedGen, savedRefs := e.gen, e.refCaptures
+	e.refCaptures = map[*Local]bool{}
+	for _, l := range clo.Captures {
+		if l.Mutable {
+			e.refCaptures[l] = true
+		}
+	}
 	e.gen = nil // the closure's variables are its own C locals
 	e.indent = 0
 	e.line("%s {", sig)
@@ -191,6 +217,10 @@ func (e *Emitter) closureFunc(name, envT string, clo *Closure) {
 	} else {
 		e.line("%s* k_env = (%s*)env;", envT, envT)
 		for _, l := range clo.Captures {
+			if l.Mutable {
+				e.line("%s* %s = k_env->c_%s;", l.T.CName(), l.CName, l.CName)
+				continue
+			}
 			e.line("%s %s = k_env->c_%s;", l.T.CName(), l.CName, l.CName)
 		}
 	}
@@ -208,7 +238,7 @@ func (e *Emitter) closureFunc(name, envT string, clo *Closure) {
 	e.out.Reset()
 	e.out.WriteString(savedOut)
 	e.indent, e.frames, e.scopes, e.loopTemp, e.loops, e.blocks = savedIndent, savedFrames, savedScopes, savedLoop, savedLoops, savedBlocks
-	e.gen = savedGen
+	e.gen, e.refCaptures = savedGen, savedRefs
 }
 
 // valueCall emits a call through a function value.

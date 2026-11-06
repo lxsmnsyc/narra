@@ -278,11 +278,37 @@ export function run(args: Array<string>): int {
 290
 ```
 
-An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters, whose values cannot change. It cannot capture a `let` name:
+An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters by value, since they cannot change. It can also use a `let` name, as long as it is passed straight to a parameter that is not `escaping`, such as `action` below. The closure then works on the variable itself, so a write inside it is visible after the call:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function each(items: Array<int>, action: (item: int) => void) {
+  for (const item of Arrays.values(items)) {
+    action(item)
+  }
+}
+
+export function run(args: Array<string>): int {
+  let total = 0
+  each([1, 2, 3], (item) => {
+    total = total + item
+  })
+  print(Int.toString(total))
+  return 0
+}
+```
+
+```text
+6
+```
+
+A closure that is stored, returned or passed to an `escaping` parameter cannot capture a `let` name:
 
 ```narra error
-// error: 8:22: a closure cannot capture "count" because it is declared with let; closures capture only constants
-function apply(rule: () => int): int {
+// error: 8:22: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping
+function apply(escaping rule: () => int): int {
   return rule()
 }
 
@@ -292,7 +318,26 @@ export function run(args: Array<string>): int {
 }
 ```
 
-If the closure captured a `let`, a later assignment would change the value the closure sees, long after the closure was made. Copy the current value into a `const` (`const current = count`) and capture that.
+A stored or returned closure can be called long after the function that made it has returned, when `count` no longer exists. A closure passed to a parameter that is not `escaping` can only run during the call, so the variable is still there. For a closure that outlives the call, copy the current value into a `const` (`const current = count`) and capture that.
+
+While the closure runs, the variable it assigns belongs to it. The same call cannot also pass that variable as another argument, because the function could be reading it while the closure replaces it:
+
+```narra error
+// error: 8:8: "items" is assigned by a closure passed to this call, so no other argument can use it
+function each(items: Array<int>, action: () => void) {
+  action()
+}
+
+export function run(args: Array<string>): int {
+  let items = [1, 2]
+  each(items, () => {
+    items = []
+  })
+  return 0
+}
+```
+
+Two closures in one call may both read the same variable. Only a closure that assigns it makes the call exclusive.
 
 ## Make new functions from old ones
 

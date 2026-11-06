@@ -645,6 +645,33 @@ func (c *Checker) args(e *CallExpr, params []*Param, paramType func(int) Type) {
 		}
 	}
 	c.checkExclusive(e, mutables)
+	c.checkBorrowed(e)
+}
+
+// checkBorrowed rejects a call with a stack closure that assigns a captured
+// variable when another argument uses that variable, or another closure
+// argument captures it. The closure borrows the variable for the call, and
+// constant parameters are passed by pointer (D50), so the callee could read
+// what the closure frees (D77).
+func (c *Checker) checkBorrowed(e *CallExpr) {
+	for i, a := range e.Args {
+		arrow, ok := a.Value.(*ArrowExpr)
+		if !ok || arrow.Closure == nil || !arrow.Closure.Stack {
+			continue
+		}
+		names := map[string]bool{}
+		assignedInExpr(arrow, names)
+		for _, l := range arrow.Closure.Captures {
+			if !l.Mutable || !names[l.Name] {
+				continue
+			}
+			for j, other := range e.Args {
+				if j != i && usesLocal(other.Value, l) {
+					c.errorf(other.Value.position(), "%q is assigned by a closure passed to this call, so no other argument can use it", l.Name)
+				}
+			}
+		}
+	}
 }
 
 // checkExclusive rejects a call that passes a variable as mutable and also
@@ -677,6 +704,15 @@ func usesLocal(e Expr, l *Local) bool {
 		case *Ident:
 			if e.Local == l {
 				found = true
+			}
+		case *ArrowExpr:
+			// A closure uses what it captures.
+			if e.Closure != nil {
+				for _, x := range e.Closure.Captures {
+					if x == l {
+						found = true
+					}
+				}
 			}
 		case *FieldExpr:
 			walk(e.Target)

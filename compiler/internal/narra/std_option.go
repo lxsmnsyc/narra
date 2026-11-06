@@ -69,6 +69,8 @@ func checkCallback(c *Checker, e *CallExpr, i int, params []Type, result Type) T
 	}
 	before := len(c.errs)
 	t := c.expr(arg, want)
+	// The callback may assign a variable another argument reads (D77).
+	c.checkBorrowed(e)
 	ft, ok := t.(*FuncType)
 	if !ok {
 		if t != nil && t != TVoid {

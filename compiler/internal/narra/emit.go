@@ -46,6 +46,9 @@ type Emitter struct {
 	tailCalls map[*CallExpr]bool
 	traits    *traitEmit   // trait functions used so far
 	closures  *closureEmit // emit_closure.go
+	// refCaptures holds the `let` variables the closure being emitted
+	// captures by reference; its C variables are pointers.
+	refCaptures map[*Local]bool
 	// gen is the generator body being emitted, nil in any other body
 	// (emit_generator.go). Its C variables are frame fields.
 	gen *genState
@@ -423,8 +426,15 @@ func (e *Emitter) block(b *Block, loop bool) {
 	e.popScope()
 }
 
+// isRef reports whether the C variable of l holds a pointer: a mutable
+// parameter, or a `let` captured by reference inside the closure being
+// emitted.
+func (e *Emitter) isRef(l *Local) bool {
+	return l.ByRef || e.refCaptures[l]
+}
+
 func (e *Emitter) localRef(l *Local) string {
-	if l.ByRef {
+	if e.isRef(l) {
 		return "(*" + l.CName + ")"
 	}
 	if e.gen != nil && e.gen.locals[l] {

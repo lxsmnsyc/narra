@@ -76,6 +76,7 @@ import {
   isNonEscaping,
   checkFunctionValue,
   findModuleFunction,
+  isCapturedByArrow,
 } from "narrac/funcvalues"
 import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
@@ -771,7 +772,7 @@ function checkField<W: Walker>(
       // Reading a variant field needs a value narrowed by `is`.
       let variantIndex = -1
       const local = findNarrowable(checker, target)
-      if (local >= 0) {
+      if (local >= 0 && !isCapturedByArrow(checker, local)) {
         variantIndex = findNarrowed(checker, local)
       }
       if (variantIndex < 0) {
@@ -1304,6 +1305,7 @@ export function checkArguments<W: Walker>(
     )
   }
   checkExclusive(mutable checker, arguments, mutables)
+  checkBorrowed(mutable checker, arguments)
 }
 
 // checkArgument checks argument index of a call against its parameter: the
@@ -1391,8 +1393,79 @@ export function usesLocal(checker: Checker, expression: Expr, local: int): bool 
     Expr.MatchExpr(_, _, subject, arms) =>
       usesLocal(checker, subject, local) || armsUseLocal(checker, arms, local)
     Expr.BlockExpr(_, _, block) => anyUsesLocal(checker, listBlockExpressions(block), local)
+    Expr.ArrowExpr(nodeId, _, _, _, _, _) => capturesLocal(checker, nodeId, local)
     _ => false
   }
+}
+
+// capturesLocal reports whether the closure of an arrow function captures a
+// local. A closure uses what it captures.
+function capturesLocal(checker: Checker, arrowId: int, local: int): bool {
+  const body = checker.body
+  if (checker.bodies[body].closureIndex[arrowId] is Some(index)) {
+    for (const captured of Arrays.values(checker.bodies[body].closures[index].captures)) {
+      if (captured == local) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+// checkBorrowed rejects a call with a stack closure that assigns a captured
+// variable when another argument uses that variable, or another closure
+// argument captures it (Go's checkBorrowed, D77). The closure borrows the
+// variable for the call, and constant parameters are passed by pointer
+// (D50), so the callee could read what the closure frees.
+export function checkBorrowed(mutable checker: Checker, arguments: Array<Arg>) uses alloc {
+  const body = checker.body
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    const closure = findStackClosure(checker, arguments[index].value)
+    if (closure < 0) {
+      continue
+    }
+    let names: Array<string> = []
+    collectAssignedInExpr(arguments[index].value, mutable names)
+    for (const captured of Arrays.values(checker.bodies[body].closures[closure].captures)) {
+      const local = getLocal(checker, captured)
+      if (!local.isMutable || !containsName(names, local.name)) {
+        continue
+      }
+      for (const other of Ranges.between(0, Arrays.length(arguments))) {
+        if (other != index && usesLocal(checker, arguments[other].value, captured)) {
+          reportError(
+            mutable checker,
+            getExpressionPos(arguments[other].value),
+            `${quoteGo(local.name)} is assigned by a closure passed to this call, so no other argument can use it`,
+          )
+        }
+      }
+    }
+  }
+}
+
+// findStackClosure is the BodyInfo.closures index of an arrow function
+// passed straight to a non-escaping parameter, or -1 for any other
+// expression.
+function findStackClosure(checker: Checker, expression: Expr): int {
+  const body = checker.body
+  if (expression is Expr.ArrowExpr(arrowId, _, _, _, _, _)) {
+    if (checker.bodies[body].closureIndex[arrowId] is Some(closure)) {
+      if (checker.bodies[body].closures[closure].stack) {
+        return closure
+      }
+    }
+  }
+  return -1
+}
+
+function containsName(names: Array<string>, name: string): bool {
+  for (const candidate of Arrays.values(names)) {
+    if (candidate == name) {
+      return true
+    }
+  }
+  return false
 }
 
 // listBlockExpressions lists the expressions that the statements of a block
@@ -1999,4 +2072,126 @@ function allConstant(checker: Checker, elements: Array<Expr>): bool {
     }
   }
   return true
+}
+
+// findRootName is the variable name at the root of an assignable expression,
+// or an empty string.
+export function findRootName(expression: Expr): string {
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, _) => findRootName(target)
+    Expr.IndexExpr(_, _, target, _) => findRootName(target)
+    _ => ""
+  }
+}
+
+export function collectAssignedInBlock(block: Block, mutable names: Array<string>) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    collectAssignedInStatement(statement, mutable names)
+  }
+}
+
+function collectAssignedInStatement(statement: Stmt, mutable names: Array<string>) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectAssignedInBlock(block, mutable names)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectAssignedInExpr(value, mutable names)
+    Stmt.AssignStmt(_, target, value) => {
+      Arrays.push(mutable names, findRootName(target))
+      collectAssignedInExpr(target, mutable names)
+      collectAssignedInExpr(value, mutable names)
+    }
+    Stmt.ExprStmt(_, expression) => collectAssignedInExpr(expression, mutable names)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectAssignedInExpr(returned, mutable names)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      collectAssignedInExpr(condition, mutable names)
+      collectAssignedInBlock(then, mutable names)
+      if (orElse is Some(other)) {
+        collectAssignedInStatement(other, mutable names)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collectAssignedInExpr(condition, mutable names)
+      collectAssignedInBlock(body, mutable names)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+      collectAssignedInExpr(iterable, mutable names)
+      collectAssignedInBlock(body, mutable names)
+    }
+    Stmt.YieldStmt(_, value, _) => collectAssignedInExpr(value, mutable names)
+    _ => {}
+  }
+}
+
+function collectAssignedInExprs(expressions: Array<Expr>, mutable names: Array<string>) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    collectAssignedInExpr(expression, mutable names)
+  }
+}
+
+export function collectAssignedInExpr(expression: Expr, mutable names: Array<string>) uses alloc {
+  match (expression) {
+    Expr.TemplateLit(_, _, parts) => collectAssignedInExprs(parts, mutable names)
+    Expr.FieldExpr(_, _, target, _) => collectAssignedInExpr(target, mutable names)
+    Expr.IsExpr(_, _, subject, _) => collectAssignedInExpr(subject, mutable names)
+    Expr.IndexExpr(_, _, target, index) => {
+      collectAssignedInExpr(target, mutable names)
+      collectAssignedInExpr(index, mutable names)
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      collectAssignedInExprs(keys, mutable names)
+      collectAssignedInExprs(values, mutable names)
+    }
+    Expr.UnaryExpr(_, _, _, operand) => collectAssignedInExpr(operand, mutable names)
+    Expr.BinaryExpr(_, _, _, left, right) => {
+      collectAssignedInExpr(left, mutable names)
+      collectAssignedInExpr(right, mutable names)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        collectAssignedInExpr(field.value, mutable names)
+      }
+      if (spread is Some(source)) {
+        collectAssignedInExpr(source, mutable names)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => collectAssignedInExprs(elements, mutable names)
+    Expr.BlockExpr(_, _, block) => collectAssignedInBlock(block, mutable names)
+    Expr.ArrowExpr(_, _, _, _, bodyExpr, block) => {
+      // A closure passed to a call may assign what it captures.
+      if (bodyExpr is Some(arrowBody)) {
+        collectAssignedInExpr(arrowBody, mutable names)
+      }
+      if (block is Some(arrowBlock)) {
+        collectAssignedInBlock(arrowBlock, mutable names)
+      }
+    }
+    Expr.MatchExpr(_, _, subject, arms) => {
+      collectAssignedInExpr(subject, mutable names)
+      for (const arm of Arrays.values(arms)) {
+        if (arm.guard is Some(guard)) {
+          collectAssignedInExpr(guard, mutable names)
+        }
+        if (arm.body is Some(armBody)) {
+          collectAssignedInExpr(armBody, mutable names)
+        }
+        if (arm.block is Some(armBlock)) {
+          collectAssignedInBlock(armBlock, mutable names)
+        }
+      }
+    }
+    Expr.CallExpr(_, _, callee, arguments) => {
+      collectAssignedInExpr(callee, mutable names)
+      for (const argument of Arrays.values(arguments)) {
+        if (argument.isMutable) {
+          Arrays.push(mutable names, findRootName(argument.value))
+        }
+        collectAssignedInExpr(argument.value, mutable names)
+      }
+    }
+    _ => {}
+  }
 }

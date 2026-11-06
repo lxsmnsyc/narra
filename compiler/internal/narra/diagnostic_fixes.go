@@ -140,7 +140,7 @@ var stdAliasPaths = map[string]string{
 	"Ranges": "std/range", "Options": "std/option", "Results": "std/result",
 	"Str": "std/string", "Int": "std/int", "Float": "std/float",
 	"Char": "std/char", "Env": "std/env", "Fs": "std/fs",
-	"Process": "std/process", "Test": "std/test",
+	"Process": "std/process", "Test": "std/test", "Io": "std/io", "Path": "std/path",
 }
 
 // lengthFix rewrites `x.length` as `Arrays.length(x)`, `Str.length(x)` or

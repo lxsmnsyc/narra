@@ -1,0 +1,67 @@
+import * as Fs from "std/fs"
+import * as Env from "std/env"
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+
+function tempDir(): string {
+  const t = Env.get("TMPDIR")
+  if (t is Some(dir)) {
+    return dir
+  }
+  return "/tmp"
+}
+
+function yesNo(value: bool): string {
+  if (value) {
+    return "true"
+  }
+  return "false"
+}
+
+function report(label: string, result: Result<bool, string>, base: string) {
+  if (result is Ok(changed)) {
+    print(`${label}: Ok(${yesNo(changed)})`)
+  } else if (result is Err(message)) {
+    // Show the message without the temporary directory.
+    print(`${label}: Err ${Str.replace(message, base, "<base>")}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const base = `${tempDir()}/narra_io_dirs_test`
+  const _ = Fs.removeDir(base)
+  report("create base", Fs.createDir(base), base)
+  report("create base again", Fs.createDir(base), base)
+  print(`isDir base: ${yesNo(Fs.isDir(base))}`)
+  report("create missing parent", Fs.createDir(`${base}/a/b`), base)
+  report("createDirAll", Fs.createDirAll(`${base}/a/b/c`), base)
+  report("createDirAll again", Fs.createDirAll(`${base}/a/b/c`), base)
+  const file = `${base}/a/file.txt`
+  const _w = Fs.writeText(file, "x")
+  print(`isDir file: ${yesNo(Fs.isDir(file))}`)
+  const nope = `${base}/nope`
+  print(`isDir missing: ${yesNo(Fs.isDir(nope))}`)
+  report("createDirAll through file", Fs.createDirAll(`${file}/z`), base)
+  report("createDirAll on file", Fs.createDirAll(file), base)
+  const listed = Fs.listDir(`${base}/a`)
+  if (listed is Ok(names)) {
+    for (const name of Arrays.values(names)) {
+      print(`entry ${name}`)
+    }
+  }
+  report("removeDir non-empty", Fs.removeDir(`${base}/a`), base)
+  report("removeDir file", Fs.removeDir(file), base)
+  // The reason differs between systems (EPERM or EISDIR), so print only the kind.
+  const dirRemoved = Fs.removeFile(`${base}/a`)
+  if (dirRemoved is Err(_)) {
+    print("removeFile dir: Err")
+  }
+  report("removeFile", Fs.removeFile(file), base)
+  report("removeFile missing", Fs.removeFile(file), base)
+  report("removeDir c", Fs.removeDir(`${base}/a/b/c`), base)
+  report("removeDir b", Fs.removeDir(`${base}/a/b`), base)
+  report("removeDir a", Fs.removeDir(`${base}/a`), base)
+  report("removeDir base", Fs.removeDir(base), base)
+  print(`exists base: ${yesNo(Fs.exists(base))}`)
+  return 0
+}

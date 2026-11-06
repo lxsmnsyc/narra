@@ -1,7 +1,7 @@
 ---
 id: language-guide
 title: Narra language guide
-status: active
+status: done
 priority: should
 type: story
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 50000
 owns: []
 shared: []
 reserves: []

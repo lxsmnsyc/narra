@@ -17,7 +17,7 @@ func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	for _, p := range fd.Params {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
 		l.NamePos = p.NamePos
-		l.Exempt = fd.Exported && fd.Name == "run" && len(fd.Params) == 1
+		l.Exempt = c.isEntryFunc(fd)
 		l.Param = true
 		l.ByRef = p.Mutable
 		c.funcParam(p, l)
@@ -328,9 +328,22 @@ func (c *Checker) stmt(s Stmt) {
 			c.expr(s.Value, nil)
 			return
 		}
+		// Writing a local does not read it. A mutable parameter is an output
+		// the caller sees, so a write to it counts as a use.
+		var written *Local
+		wasUsed := false
+		if id, ok := s.Target.(*Ident); ok {
+			if l := c.lookup(id.Name); l != nil && !(l.Param && l.Mutable) {
+				written, wasUsed = l, l.Used
+				l.Writes = append(l.Writes, id.P)
+			}
+		}
 		c.assigning = s.Target
 		t := c.expr(s.Target, nil)
 		c.assigning = nil
+		if written != nil {
+			written.Used = wasUsed
+		}
 		root := c.lvalueRoot(s.Target)
 		if root == nil {
 			c.errorf(s.Pos, "only variables, fields and array elements can be assigned")

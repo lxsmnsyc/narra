@@ -74,6 +74,14 @@ export struct EntryInfo {
   funcIndex: int
 }
 
+// The module and function name a binary's entry names, known before any body
+// is checked, so the entry function's parameter can be exempt from the unused
+// check (Go's isEntryFunc).
+export struct EntryTarget {
+  module: string
+  name: string
+}
+
 // A top-level function. typeParameters is empty for a non-generic function.
 // Parameter types are in the side table Checker.paramTypes by Param.id.
 export struct FuncInfo {
@@ -403,6 +411,7 @@ export struct Checker {
   single: bool
   used: Array<string>
   entries: Array<EntryInfo>
+  entryTargets: Array<EntryTarget>
   // The body checker (body.nra, exprs.nra, statements.nra). checkingBodies is
   // set by `narrac types`; without it the declaration passes skip field
   // defaults, as `narrac declarations` did before bodies existed. bodies lists
@@ -510,6 +519,7 @@ export function newChecker(ids: int): Checker uses alloc {
     single: false,
     used: [],
     entries: [],
+    entryTargets: [],
     resultType: Type.TVoid,
     funcInstances: Map {},
     composites: Map {},
@@ -1025,14 +1035,21 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
     return
   }
 
-  // The parameter of `export function run(args)` has a fixed signature.
+  // The parameter of `export function run(args)` of the entry module has a
+  // fixed signature.
   let entryParameter = false
   if (body.root is BodyRoot.RootFunc(declaration)) {
-    entryParameter =
-      declaration.exported &&
-        declaration.name == "run" &&
-        Arrays.length(declaration.parameters) == 1
+    if (body.kind == "func" && declaration.exported && Arrays.length(declaration.parameters) == 1) {
+      for (const target of Arrays.values(checker.entryTargets)) {
+        if (target.module == body.module && target.name == declaration.name) {
+          entryParameter = true
+        }
+      }
+    }
   }
+
+  // Collect the unused locals, then put them in source order.
+  let unused: Array<int> = []
   for (const index of Ranges.between(0, Arrays.length(body.locals))) {
     const local = body.locals[index]
     if (local.used || local.name == "" || Str.startsWith(local.name, "_")) {
@@ -1041,6 +1058,22 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
     if (entryParameter && index == 0) {
       continue
     }
+    Arrays.push(mutable unused, index)
+  }
+  for (const position of Ranges.between(1, Arrays.length(unused))) {
+    let current = position
+    while (
+      current > 0 &&
+        isPositionBefore(body.locals[unused[current]].pos, body.locals[unused[current - 1]].pos)
+    ) {
+      const swapped = unused[current]
+      unused[current] = unused[current - 1]
+      unused[current - 1] = swapped
+      current = current - 1
+    }
+  }
+  for (const index of Arrays.values(unused)) {
+    const local = body.locals[index]
     if (local.param) {
       reportError(
         mutable checker,
@@ -1055,6 +1088,14 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
       )
     }
   }
+}
+
+// isPositionBefore compares two source positions.
+function isPositionBefore(left: Pos, right: Pos): bool {
+  if (left.line != right.line) {
+    return left.line < right.line
+  }
+  return left.column < right.column
 }
 
 // findBodySlot is the table index of a node id in a body, or -1.

@@ -315,9 +315,25 @@ function checkAssignment<W: Walker>(
     checkExpression(mutable checker, walker, value, None)
     return
   }
+
+  // Writing a local does not read it. A mutable parameter is an output the
+  // caller sees, so a write to it counts as a use.
+  let writtenLocal = -1
+  let wasUsed = false
+  if (target is Expr.Ident(_, _, targetName)) {
+    const found = findLocal(checker, targetName)
+    if (found >= 0 && !(getLocal(checker, found).param && getLocal(checker, found).isMutable)) {
+      writtenLocal = found
+      wasUsed = getLocal(checker, found).used
+    }
+  }
   checker.assigningId = getExpressionId(target)
   const targetType = checkExpression(mutable checker, walker, target, None)
   checker.assigningId = -1
+  if (writtenLocal >= 0) {
+    const body = checker.body
+    checker.bodies[body].locals[writtenLocal].used = wasUsed
+  }
 
   // The root of the target must be a `let` variable.
   const root = findAssignedLocal(checker, target)

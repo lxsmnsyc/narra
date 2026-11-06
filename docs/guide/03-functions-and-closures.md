@@ -50,6 +50,29 @@ export function run(args: Array<string>): int {
 }
 ```
 
+### A name you do not use
+
+A name that nothing reads is usually a leftover from an earlier version of the code, or a typo for another name. The compiler reports it, whether it is a `const`, a `let`, a loop variable or a parameter:
+
+```narra error
+// error: 3:3: "discount" is never read; remove it, or name it "_discount" to mark it as unused on purpose
+export function run(args: Array<string>): int {
+  const discount = 10
+  return 0
+}
+```
+
+Delete the line, or, when the name has to be there, start it with `_` to say that you chose not to use it:
+
+```narra
+export function run(args: Array<string>): int {
+  const _discount = 10
+  return 0
+}
+```
+
+The same goes for a parameter. A function that is passed to something else often has to accept a value it does not need, and it writes that parameter as `_event`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed.
+
 ## A function that calls itself
 
 The shop gives change in coins of 50, 25, 10 and 5 cents. In how many different ways can it pay out 100 cents?

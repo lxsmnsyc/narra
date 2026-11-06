@@ -59,6 +59,8 @@ Three pieces work together:
 2. `struct Book implements Label` says, where `Book` is declared, that it has this trait. Someone reading the struct sees all of its traits in one place.
 3. `implement Label for Book { ... }` writes the functions for `Book`, with `Self` replaced by `Book`.
 
+A function in an `implement` block has the signature the trait gives it. If your version does not need one of the parameters, write it with a leading `_`, as in `_book`, so the compiler knows you left it unused on purpose.
+
 You call the function through the trait, as `Label.label(book)`. The compiler looks at the type of the argument and picks `Book`'s version.
 
 If a struct lists a trait but you forget the `implement` block, the compiler tells you which one is missing:

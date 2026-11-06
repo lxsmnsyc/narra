@@ -343,9 +343,10 @@ type Local struct {
 	CName     string
 	Used      bool
 	Pos       Pos
-	NamePos   Pos  // where the name is written; Pos is the statement for a const, let or for
-	Shorthand bool // a struct pattern field written without `:`
-	Exempt    bool // a parameter whose signature is fixed (the entry function)
+	NamePos   Pos   // where the name is written; Pos is the statement for a const, let or for
+	Shorthand bool  // a struct pattern field written without `:`
+	Writes    []Pos // assignments `x = v` to the local, which do not read it
+	Exempt    bool  // a parameter whose signature is fixed (the entry function)
 	// NoEscape marks a function-type parameter without `escaping`: it can
 	// only be called or passed to another non-escaping parameter.
 	NoEscape bool

@@ -116,6 +116,7 @@ Decision: generic code handles values of a type parameter through a table with s
 
 - **Reason.** `Array<int>` holds raw integers in all code. A boxed design would allocate one heap object per element in generic containers.
 - **Reason.** `i64` stays a full 64-bit integer that matches C's `int64_t`.
+- **What non-escaping means.** The callback runs on the calling thread during the call. A future std function that runs a callback on another thread (for example `Parallel.map`) must take an `escaping` parameter.
 - **Prior art.** Swift's value witness tables work the same way.
 - **Rejected: a uniform one-word form with boxing for large values.** It made generic containers of numbers and structs allocate per element.
 - **Rejected: 63-bit `int` (OCaml).** Fast generic code, but `int` no longer matches a C type.

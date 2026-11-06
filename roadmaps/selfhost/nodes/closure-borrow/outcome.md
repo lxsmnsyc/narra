@@ -14,7 +14,7 @@
 ## Deviations
 
 - `compiler/testdata/typesdump/closures/err_closures.dump` regenerated (outside owned paths, but it holds the old E0603/E0604 texts).
-- `docs/guide/03-functions-and-closures.md`, `09-memory-and-mutable.md` and `11-narra-for-typescript-programmers.md` (outside owned paths): the three `narra error` samples carry the new E0612/E0613 text, and the chapter 3 sample uses an `escaping` parameter so it still errors. `TestGuide` checks them. The prose around them ("a closure cannot capture a `let`", chapter 9 "Closures and `let`") is now stale for stack closures; language-guide should revise it.
+- Guide chapters 3, 9 and 11 were rewritten for the two capture modes, with a counter sample and an E0614 error sample in chapter 3. `docs/guide/03-functions-and-closures.md`, `09-memory-and-mutable.md` and `11-narra-for-typescript-programmers.md` (outside owned paths): the three `narra error` samples carry the new E0612/E0613 text, and the chapter 3 sample uses an `escaping` parameter so it still errors. `TestGuide` checks them. The prose around them ("a closure cannot capture a `let`", chapter 9 "Closures and `let`") is now stale for stack closures; language-guide should revise it.
 - Rule 4 is conservative: `assignedInExpr` now enters arrow bodies, so the narrowing of a variable a closure assigns ends before the whole statement that holds the call, and a loop with such a call ends it before the loop.
 - `usesLocal` (E0319, E0609) now treats a closure's captures as uses of those variables.
 
@@ -25,7 +25,8 @@
 ## Gotchas
 
 - The E0929 whole-statement scan still does not look into arrow bodies.
-- Rule 3 is checked only for calls to Narra functions (`args`). Std builtins with callbacks (Option.map and similar) do not run `checkBorrowed`.
+- Fixed after review: `checkBorrowed` also runs in `checkCallback` (Go `std_option.go`, selfhost `stdcalls.nra`). Callback sites audited: Results.map, Results.mapErr and Results.andThen are the only users of `checkCallback`; Option has no callback builtin; `Test.panics` and `Test.panicsWith` take a function type through `checkFixed`, so their arrow is a heap closure and cannot capture a `let` (E0612). Tests: `errors/closure_borrow_result_{map,map_err,and_then}.nra`.
+- A std function that runs a callback on another thread must take an `escaping` parameter (D77).
 - A `let` captured by reference is `T*` in the closure body; a new emitter path that reads `l.CName` directly for a local must use `localRef`.
 
 ## Proposed learnings

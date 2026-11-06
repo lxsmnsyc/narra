@@ -836,7 +836,7 @@ const total = Thread.scope((scope) => {
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
 - **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
 - **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
-- **Thread functions capture only constant values,** like every closure. They cannot be `async`.
+- **Thread functions capture only constant values,** like every closure that can outlive its call. They cannot be `async`.
 - **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
 
 ### Channels

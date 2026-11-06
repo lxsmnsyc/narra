@@ -573,7 +573,7 @@ There is no automatic partial application. A function that takes one argument an
 
 ## Closures
 
-A TypeScript closure sees the variable itself, so it sees every later assignment. A Narra closure captures a copy, and it may capture only constants. Capturing a `let` is an error ([chapter 3](03-functions-and-closures.md#use-values-from-around-a-function), [chapter 9](09-memory-and-mutable.md#closures-and-let)).
+A TypeScript closure sees the variable itself, so it sees every later assignment. A Narra closure passed straight to a parameter that is not `escaping` does the same: it sees and assigns the variable itself. Any other closure captures a copy, and it may capture only constants. Capturing a `let` there is an error ([chapter 3](03-functions-and-closures.md#use-values-from-around-a-function), [chapter 9](09-memory-and-mutable.md#closures-and-let)).
 
 So the classic TypeScript counter does not compile:
 
@@ -629,7 +629,7 @@ export function run(args: Array<string>): int {
 3
 ```
 
-A `mutable` parameter cannot be returned or captured, so `addOne` returns nothing. The caller reads its own `count`.
+A `mutable` parameter cannot be returned, or captured by a closure that outlives the call, so `addOne` returns nothing. The caller reads its own `count`.
 
 A function parameter can be called while the function runs, and nothing more. To return it, store it or capture it in a closure that outlives the call, mark it `escaping`. TypeScript has no such marker, since every function value there may be kept ([chapter 3](03-functions-and-closures.md#make-new-functions-from-old-ones)):
 

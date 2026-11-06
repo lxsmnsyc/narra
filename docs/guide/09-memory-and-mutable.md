@@ -341,9 +341,11 @@ export function run(args: Array<string>): int {
 
 ## Closures and `let`
 
-Chapter 3 showed that a closure cannot capture a `let`, and that the fix is to copy the value into a `const` first. Here is what is behind it.
+A closure captures what it uses in one of two ways, and the way depends on where the closure goes.
 
-A closure keeps a copy of each value it captures, made when the closure is created, the same way an assignment copies. For a `const` the copy always equals the original, because neither can change. For a `let` the two would drift apart. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. Capturing only constants keeps the two the same:
+A closure passed straight to a parameter that is not `escaping` can only run during that call. It works on the `let` variables and `mutable` parameters around it directly, with no copy, so it sees every assignment and its own assignments are visible afterwards ([chapter 3](03-functions-and-closures.md#use-values-from-around-a-function)). Nothing is copied or counted, because the variable outlives the closure.
+
+Every other closure, one that is stored, returned or passed to an `escaping` parameter, can run after the function has returned. It keeps a copy of each value it captures, made when the closure is created, the same way an assignment copies. For a `const` the copy always equals the original, because neither can change. For a `let` the two would drift apart. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. So such a closure may capture only constants, and a `let` is an error. Copy it into a `const` first:
 
 ```narra
 import * as Int from "std/int"
@@ -390,7 +392,7 @@ export function run(args: Array<string>): int {
 
 `report` captures nothing, and each call reads `score` at that moment.
 
-A `mutable` parameter cannot be captured either, for a stronger reason. It is the caller's variable, reached only while the call runs, and a closure can still be called after the function has returned:
+A `mutable` parameter cannot be captured by a closure that outlives the call, for a stronger reason. It is the caller's variable, reached only while the call runs, and such a closure can still be called after the function has returned:
 
 ```narra error
 // error: 3:16: a closure cannot capture mutable parameter "score" unless it is passed straight to a function parameter that is not escaping; copy it first with `const copy = score`
@@ -410,6 +412,6 @@ The fix is the same: copy it into a `const` (`const current = score`) and captur
 
 A value is freed when the last name that holds it goes away. That happens when a function returns, or when a variable gets a new value. There is no `free` call and no collector that runs later.
 
-A count can only reach zero if no value points back at itself, and the rules in this chapter make sure of that. Values cannot change once shared, and a `let` or `mutable` parameter cannot be captured or stored, so a value can never come to contain itself. Run a program with `NARRA_CHECK_LEAKS=1` to check: it reports any memory still held when the program exits.
+A count can only reach zero if no value points back at itself, and the rules in this chapter make sure of that. Values cannot change once shared. A `let` or `mutable` parameter cannot be stored, and only a closure that cannot outlive the call captures it, so a value can never come to contain itself. Run a program with `NARRA_CHECK_LEAKS=1` to check: it reports any memory still held when the program exits.
 
 Next: [10. Effects and testing](10-effects-and-testing.md).

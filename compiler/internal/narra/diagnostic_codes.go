@@ -226,6 +226,7 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0600", "only a parameter with a function type can be escaping"},
 	{"E0601", "parameter %q cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as `escaping %s` to store, return or capture it"},
 	{"E0602", "a closure cannot capture parameter %q because it is not escaping; declare it as `escaping %s`"},
+	// E0603 and E0604 are retired (D77): E0612 and E0613 replace them. Never reuse them.
 	{"E0603", "a closure cannot capture mutable parameter %q; copy it first with `const copy = %s`"},
 	{"E0604", "a closure cannot capture %q because it is declared with let; closures capture only constants"},
 	{"E0605", "function %s has a mutable parameter, so it cannot be used as a value"},

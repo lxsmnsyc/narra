@@ -399,7 +399,7 @@ static lstr* narra_path_normalize(const char* p, int64_t n) {
   bool absolute = n > 0 && p[0] == '/';
   bool trailing = n > 0 && p[n - 1] == '/';
   char* out = malloc((size_t)n + 4);
-  if (!out) return lstr_from_cstr(".");
+  if (!out) narra_panic("runtime", "out of memory");
   int64_t o = 0;
   int64_t i = 0;
   while (i < n) {

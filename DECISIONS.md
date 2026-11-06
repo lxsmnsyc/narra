@@ -116,7 +116,6 @@ Decision: generic code handles values of a type parameter through a table with s
 
 - **Reason.** `Array<int>` holds raw integers in all code. A boxed design would allocate one heap object per element in generic containers.
 - **Reason.** `i64` stays a full 64-bit integer that matches C's `int64_t`.
-- **What non-escaping means.** The callback runs on the calling thread during the call. A future std function that runs a callback on another thread (for example `Parallel.map`) must take an `escaping` parameter.
 - **Prior art.** Swift's value witness tables work the same way.
 - **Rejected: a uniform one-word form with boxing for large values.** It made generic containers of numbers and structs allocate per element.
 - **Rejected: 63-bit `int` (OCaml).** Fast generic code, but `int` no longer matches a C type.
@@ -675,6 +674,7 @@ Decision: an arrow function passed straight to a non-escaping function-type para
 - **Reason.** Cheaper than copying: the environment is on the caller's stack (D46), and a by-reference capture needs no retain or release of heap values.
 - **Reason for the borrow rule.** Constant parameters are passed by pointer (D50), so `each(items, (x) => { items = [] })` would free the array the callee is reading.
 - **Why it is sound.** A non-escaping closure can only be called during the call it is passed to, so a pointer to the caller's variable cannot dangle. A `let` still cannot be stored, so no cycles form.
+- **What non-escaping means.** The callback runs on the calling thread during the call. A future std function that runs a callback on another thread (for example `Parallel.map`) must take an `escaping` parameter.
 - **Prior art.** Swift's non-escaping closures capture `inout` parameters.
 - **Rejected: by-value capture of a `let` that a closure only reads.** It would look the same only because of the borrow rule, so it buys nothing.
 - **Codes.** E0612 and E0613 replace E0603 and E0604, whose rows stay unused. E0614 is the borrow rule.

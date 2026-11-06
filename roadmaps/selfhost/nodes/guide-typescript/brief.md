@@ -1,7 +1,7 @@
 ---
 id: guide-typescript
 title: "Language guide: Narra for TypeScript programmers"
-status: active
+status: done
 priority:
 type: docs
 story: language-guide
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 212000
 owns:
   - docs/guide/11-*.md
   - roadmaps/selfhost/nodes/guide-typescript/**

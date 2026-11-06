@@ -1,7 +1,7 @@
 ---
 id: call-type-args
 title: "Explicit type arguments in calls: f<T>(x) and Trait.f<T>(x)"
-status: todo
+status: active
 priority: should
 type: feature
 story:

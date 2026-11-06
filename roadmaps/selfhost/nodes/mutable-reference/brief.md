@@ -1,7 +1,7 @@
 ---
 id: mutable-reference
 title: "mutable changes the contents of a struct, array or map, never the binding"
-status: todo
+status: active
 priority: should
 type: spike
 story:
@@ -82,5 +82,8 @@ So `const` fixes the name, as in TypeScript, and `let` exists only to reassign t
 S. Documents and counts.
 
 ## Decision to confirm
+
+The maintainer approved rules 1 and 4 on 2026-11-07 (arrays and maps count; direct field writes on a `const`). The gate stays for the counts in the outcome.
+
 
 The plan above, in particular rule 4 (direct field writes on a `const`, which follows from "`const` fixes the name") and rule 1's list of allowed types (arrays and maps count, because 68 `mutable` parameters in `selfhost/src` and `std/src` are arrays or maps).

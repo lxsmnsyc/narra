@@ -1,7 +1,7 @@
 ---
 id: linux-check
 title: "Full check on Linux in Docker"
-status: todo
+status: active
 priority: should
 type: chore
 story:

@@ -67,8 +67,13 @@ Delete the line, or, when the name has to be there, start it with `_` to say tha
 ```narra
 export function run(args: Array<string>): int {
   const _discount = 10
+  print("no discount yet")
   return 0
 }
+```
+
+```text
+no discount yet
 ```
 
 The same goes for a parameter. A function that is passed to something else often has to accept a value it does not need, and it writes that parameter as `_event`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed.

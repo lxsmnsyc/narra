@@ -1,5 +1,5 @@
 ---
-milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures, m12-spec-gaps]
+milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures, m12-spec-gaps, m13-distribution]
 merge:
   mode: auto
   method: squash
@@ -83,6 +83,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - std-source gate follow-ups (2026-11-05) -> std-foundation; option (c), retiring the Go compiler -> c-seed
 - std library growth -> std-source, std-json, std-io-more, std-basics, std-unicode, std-arena, std-iterator (2026-11-01)
 - closure capture of `let` and `mutable` -> closure-borrow, cell-capture; identity type cycles -> identity-cycles (2026-11-01); `Range.stepped` -> std-basics; std modules of parked features stay with those nodes
+- shipping Narra binaries and libraries to other platforms and npm (user request 2026-11-06) -> cross-targets, c-abi-export, node-addon
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 
 ## Decisions

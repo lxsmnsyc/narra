@@ -31,6 +31,11 @@ func runProgram(t *testing.T, src string, opts BuildOptions) (string, string, in
 	}
 	cmd := exec.Command(exe)
 	cmd.Env = append(os.Environ(), "NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0")
+	// <name>.in is the program's stdin; other programs read /dev/null.
+	if in, err := os.Open(strings.TrimSuffix(src, ".nra") + ".in"); err == nil {
+		defer in.Close()
+		cmd.Stdin = in
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

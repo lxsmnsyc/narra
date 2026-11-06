@@ -1,5 +1,5 @@
-// Runtime C for std/fs, std/process and std/env. std_fs.go, std_process.go
-// and std_env.go split this file at the "// @section" lines. A module's
+// Runtime C for std/fs, std/io, std/path, std/process and std/env. std_fs.go,
+// std_io.go, std_path.go, std_process.go and std_env.go split this file at the "// @section" lines. A module's
 // Runtime is the common section plus its own, and the common section guards
 // itself, so it is emitted once however many of the modules a program imports.
 
@@ -156,6 +156,75 @@ static bool narra_fs_exists(lstr* path) {
   return stat(path->data, &st) == 0;
 }
 
+static bool narra_fs_is_dir(lstr* path) {
+  if (memchr(path->data, 0, (size_t)path->len)) return false;
+  struct stat st;
+  return stat(path->data, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Creates one directory (mode 0777 before the umask).
+static bool narra_fs_mkdir(lstr* path, lstr** err) {
+  if (!narra_io_no_nul(path, err)) return false;
+  if (mkdir(path->data, 0777) != 0) {
+    *err = narra_io_fail(path->data, path->len, strerror(errno));
+    return false;
+  }
+  return true;
+}
+
+// Creates the directory and its missing parents. *created is false when the
+// directory was already there.
+static bool narra_fs_mkdir_all(lstr* path, bool* created, lstr** err) {
+  *created = false;
+  if (!narra_io_no_nul(path, err)) return false;
+  char* buf = malloc((size_t)path->len + 1);
+  if (!buf) {
+    *err = narra_io_fail(path->data, path->len, "out of memory");
+    return false;
+  }
+  memcpy(buf, path->data, (size_t)path->len + 1);
+  int failed = 0;
+  for (int64_t i = 1; i < path->len && !failed; i++) {
+    if (buf[i] != '/') continue;
+    buf[i] = 0;
+    if (mkdir(buf, 0777) == 0) *created = true;
+    else if (errno != EEXIST) failed = errno;
+    buf[i] = '/';
+  }
+  if (!failed) {
+    if (mkdir(buf, 0777) == 0) *created = true;
+    else if (errno != EEXIST) failed = errno;
+    else {
+      struct stat st;
+      if (stat(buf, &st) != 0 || !S_ISDIR(st.st_mode)) failed = EEXIST;
+    }
+  }
+  free(buf);
+  if (failed) {
+    *err = narra_io_fail(path->data, path->len, strerror(failed));
+    return false;
+  }
+  return true;
+}
+
+static bool narra_fs_unlink(lstr* path, lstr** err) {
+  if (!narra_io_no_nul(path, err)) return false;
+  if (unlink(path->data) != 0) {
+    *err = narra_io_fail(path->data, path->len, strerror(errno));
+    return false;
+  }
+  return true;
+}
+
+static bool narra_fs_rmdir(lstr* path, lstr** err) {
+  if (!narra_io_no_nul(path, err)) return false;
+  if (rmdir(path->data) != 0) {
+    *err = narra_io_fail(path->data, path->len, strerror(errno));
+    return false;
+  }
+  return true;
+}
+
 static int narra_fs_name_cmp(const void* a, const void* b) {
   return lstr_cmp(*(lstr* const*)a, *(lstr* const*)b);
 }
@@ -196,6 +265,234 @@ static bool narra_fs_list(lstr* path, narra_fs_names* out, lstr** err) {
   }
   if (out->len > 1) qsort(out->items, (size_t)out->len, sizeof(lstr*), narra_fs_name_cmp);
   return true;
+}
+
+// @section io
+
+// Reads up to limit bytes of stdin (all of it when limit is negative) into a
+// malloc'ed buffer. *fail is set on a read error.
+static char* narra_io_slurp(int64_t limit, size_t* len, const char** fail) {
+  size_t cap = 4096;
+  char* buf = malloc(cap);
+  *len = 0;
+  *fail = buf ? NULL : "out of memory";
+  while (!*fail && (limit < 0 || (int64_t)*len < limit)) {
+    if (*len == cap) {
+      char* bigger = realloc(buf, cap * 2);
+      if (!bigger) { *fail = "out of memory"; break; }
+      buf = bigger;
+      cap *= 2;
+    }
+    size_t want = cap - *len;
+    if (limit >= 0 && (int64_t)want > limit - (int64_t)*len) want = (size_t)(limit - (int64_t)*len);
+    size_t got = fread(buf + *len, 1, want, stdin);
+    *len += got;
+    if (got == 0) {
+      if (ferror(stdin)) *fail = strerror(errno);
+      break;
+    }
+  }
+  return buf;
+}
+
+// The next line without its "\n" (a "\r" stays). *out is NULL at the end of
+// the input.
+static bool narra_io_read_line(lstr** out, lstr** err) {
+  *out = NULL;
+  char* line = NULL;
+  size_t cap = 0;
+  errno = 0;
+  ssize_t n = getline(&line, &cap, stdin);
+  if (n < 0) {
+    bool bad = ferror(stdin) != 0;
+    free(line);
+    if (bad) {
+      *err = narra_io_fail("stdin", 5, strerror(errno ? errno : EIO));
+      return false;
+    }
+    return true;
+  }
+  if (n > 0 && line[n - 1] == '\n') n--;
+  if (!narra_io_utf8((const unsigned char*)line, (int64_t)n)) {
+    free(line);
+    *err = narra_io_fail("stdin", 5, "line is not valid UTF-8");
+    return false;
+  }
+  *out = lstr_new((int64_t)n);
+  memcpy((*out)->data, line, (size_t)n);
+  free(line);
+  return true;
+}
+
+// Exactly count bytes.
+static bool narra_io_read_exact(int64_t count, lstr** out, lstr** err) {
+  if (count < 0) {
+    *err = narra_io_fail("stdin", 5, "negative byte count");
+    return false;
+  }
+  size_t len;
+  const char* fail;
+  char* buf = narra_io_slurp(count, &len, &fail);
+  if (!fail && (int64_t)len < count) fail = "unexpected end of input";
+  if (!fail && !narra_io_utf8((const unsigned char*)buf, (int64_t)len)) fail = "input is not valid UTF-8";
+  if (fail) {
+    free(buf);
+    *err = narra_io_fail("stdin", 5, fail);
+    return false;
+  }
+  *out = lstr_new((int64_t)len);
+  memcpy((*out)->data, buf, len);
+  free(buf);
+  return true;
+}
+
+// The rest of the input.
+static bool narra_io_read_all(lstr** out, lstr** err) {
+  size_t len;
+  const char* fail;
+  char* buf = narra_io_slurp(-1, &len, &fail);
+  if (!fail && !narra_io_utf8((const unsigned char*)buf, (int64_t)len)) fail = "input is not valid UTF-8";
+  if (fail) {
+    free(buf);
+    *err = narra_io_fail("stdin", 5, fail);
+    return false;
+  }
+  *out = lstr_new((int64_t)len);
+  memcpy((*out)->data, buf, len);
+  free(buf);
+  return true;
+}
+
+static void narra_io_write(lstr* text) { fwrite(text->data, 1, (size_t)text->len, stdout); }
+
+static void narra_io_write_error(lstr* text) { fwrite(text->data, 1, (size_t)text->len, stderr); }
+
+static void narra_io_flush(void) { fflush(stdout); }
+
+// @section path
+
+static lstr* narra_path_slice(const char* p, int64_t start, int64_t end) {
+  lstr* s = lstr_new(end - start);
+  memcpy(s->data, p + start, (size_t)(end - start));
+  return s;
+}
+
+// Node's path.posix.normalize: drops "." and empty segments, resolves "..".
+static lstr* narra_path_normalize(const char* p, int64_t n) {
+  bool absolute = n > 0 && p[0] == '/';
+  bool trailing = n > 0 && p[n - 1] == '/';
+  char* out = malloc((size_t)n + 4);
+  int64_t o = 0;
+  int64_t i = 0;
+  while (i < n) {
+    while (i < n && p[i] == '/') i++;
+    int64_t start = i;
+    while (i < n && p[i] != '/') i++;
+    int64_t len = i - start;
+    if (len == 0 || (len == 1 && p[start] == '.')) continue;
+    if (len == 2 && p[start] == '.' && p[start + 1] == '.') {
+      bool last_up = o >= 2 && out[o - 1] == '.' && out[o - 2] == '.' && (o == 2 || out[o - 3] == '/');
+      if (o > 0 && !last_up) {
+        while (o > 0 && out[o - 1] != '/') o--;
+        if (o > 0) o--;
+      } else if (!absolute) {
+        if (o > 0) out[o++] = '/';
+        out[o++] = '.';
+        out[o++] = '.';
+      }
+      continue;
+    }
+    if (o > 0) out[o++] = '/';
+    memcpy(out + o, p + start, (size_t)len);
+    o += len;
+  }
+  lstr* s;
+  if (o == 0) {
+    s = lstr_from_cstr(absolute ? "/" : (trailing ? "./" : "."));
+  } else {
+    int64_t total = (absolute ? 1 : 0) + o + (trailing ? 1 : 0);
+    s = lstr_new(total);
+    int64_t at = 0;
+    if (absolute) s->data[at++] = '/';
+    memcpy(s->data + at, out, (size_t)o);
+    at += o;
+    if (trailing) s->data[at] = '/';
+  }
+  free(out);
+  return s;
+}
+
+static lstr* narra_path_join(lstr* left, lstr* right) {
+  if (left->len == 0 && right->len == 0) return lstr_from_cstr(".");
+  if (left->len == 0) return narra_path_normalize(right->data, right->len);
+  if (right->len == 0) return narra_path_normalize(left->data, left->len);
+  lstr* both = lstr_new(left->len + 1 + right->len);
+  memcpy(both->data, left->data, (size_t)left->len);
+  both->data[left->len] = '/';
+  memcpy(both->data + left->len + 1, right->data, (size_t)right->len);
+  lstr* s = narra_path_normalize(both->data, both->len);
+  lstr_release(both);
+  return s;
+}
+
+static lstr* narra_path_dirname(lstr* path) {
+  const char* p = path->data;
+  int64_t n = path->len;
+  if (n == 0) return lstr_from_cstr(".");
+  bool root = p[0] == '/';
+  int64_t end = -1;
+  bool matched = true;
+  for (int64_t i = n - 1; i >= 1; i--) {
+    if (p[i] == '/') {
+      if (!matched) { end = i; break; }
+    } else {
+      matched = false;
+    }
+  }
+  if (end == -1) return lstr_from_cstr(root ? "/" : ".");
+  if (root && end == 1) return lstr_from_cstr("//");
+  return narra_path_slice(p, 0, end);
+}
+
+static lstr* narra_path_basename(lstr* path) {
+  const char* p = path->data;
+  int64_t start = 0, end = -1;
+  bool matched = true;
+  for (int64_t i = path->len - 1; i >= 0; i--) {
+    if (p[i] == '/') {
+      if (!matched) { start = i + 1; break; }
+    } else if (end == -1) {
+      matched = false;
+      end = i + 1;
+    }
+  }
+  if (end == -1) return lstr_from_cstr("");
+  return narra_path_slice(p, start, end);
+}
+
+static lstr* narra_path_extname(lstr* path) {
+  const char* p = path->data;
+  int64_t start_dot = -1, start_part = 0, end = -1;
+  int pre_dot = 0;
+  bool matched = true;
+  for (int64_t i = path->len - 1; i >= 0; i--) {
+    char c = p[i];
+    if (c == '/') {
+      if (!matched) { start_part = i + 1; break; }
+      continue;
+    }
+    if (end == -1) { matched = false; end = i + 1; }
+    if (c == '.') {
+      if (start_dot == -1) start_dot = i;
+      else if (pre_dot != 1) pre_dot = 1;
+    } else if (start_dot != -1) {
+      pre_dot = -1;
+    }
+  }
+  if (start_dot == -1 || end == -1 || pre_dot == 0 || (pre_dot == 1 && start_dot == end - 1 && start_dot == start_part + 1)) {
+    return lstr_from_cstr("");
+  }
+  return narra_path_slice(p, start_dot, end);
 }
 
 // @section process

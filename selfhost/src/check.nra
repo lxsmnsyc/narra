@@ -45,6 +45,7 @@ import { Registry, newRegistry } from "narrac/builtins"
 import { collectFuncIds, collectBlockIds, collectExpressionIds } from "narrac/idcheck"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
+import * as Ranges from "std/range"
 
 // The names one module sees (Go's modScope): its own declarations, the
 // names it imports and the prelude's types and generics. An imported name
@@ -190,6 +191,7 @@ export struct BodyInfo {
   refs: Array<Ref>
   declared: Array<int>
   locals: Array<LocalInfo>
+  errorCount: int // Checker.errors when the body started, for the unused-name check
   // Closure state (selfhost-check-closures): closures in discovery order,
   // found by arrow node id in closureIndex; arrows is the stack of arrows
   // being checked (arrowDepth deep, popped slots are reused); allowedId is
@@ -972,6 +974,7 @@ export function startBody(
     refs: Arrays.filled(Ref.Unresolved, size),
     declared: Arrays.filled(-1, size),
     locals: [],
+    errorCount: Arrays.length(checker.errors),
     closures: [],
     closureIndex: Map {},
     arrows: [],
@@ -995,7 +998,8 @@ export function startBody(
 }
 
 // finishBody makes the saved body current again.
-export function finishBody(mutable checker: Checker, saved: BodyState) {
+export function finishBody(mutable checker: Checker, saved: BodyState) uses alloc {
+  reportUnusedLocals(mutable checker)
   checker.body = saved.body
   checker.localScopes = saved.localScopes
   checker.scopeDepth = saved.scopeDepth
@@ -1006,6 +1010,51 @@ export function finishBody(mutable checker: Checker, saved: BodyState) {
   checker.environment = saved.environment
   checker.functionIndex = saved.functionIndex
   checker.generator = saved.generator
+}
+
+// reportUnusedLocals reports the locals of the current body that nothing read
+// (Go's reportUnused). A name that starts with `_` is unused on purpose, the
+// parameter of the entry function `run` is exempt, and a body that already
+// has an error reports nothing.
+function reportUnusedLocals(mutable checker: Checker) uses alloc {
+  if (checker.body < 0) {
+    return
+  }
+  const body = checker.bodies[checker.body]
+  if (Arrays.length(checker.errors) > body.errorCount) {
+    return
+  }
+
+  // The parameter of `export function run(args)` has a fixed signature.
+  let entryParameter = false
+  if (body.root is BodyRoot.RootFunc(declaration)) {
+    entryParameter =
+      declaration.exported &&
+        declaration.name == "run" &&
+        Arrays.length(declaration.parameters) == 1
+  }
+  for (const index of Ranges.between(0, Arrays.length(body.locals))) {
+    const local = body.locals[index]
+    if (local.used || local.name == "" || Str.startsWith(local.name, "_")) {
+      continue
+    }
+    if (entryParameter && index == 0) {
+      continue
+    }
+    if (local.param) {
+      reportError(
+        mutable checker,
+        local.pos,
+        `parameter "${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        local.pos,
+        `"${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
+      )
+    }
+  }
 }
 
 // findBodySlot is the table index of a node id in a body, or -1.

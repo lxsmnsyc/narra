@@ -9,18 +9,22 @@ func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	}
 	defer func() { c.sigFunc = saved }()
 	c.env = env
+	start, errs := len(c.declared), len(c.errs)
 	c.loops = 0
 	c.labels = nil
 	c.blocks = nil
 	c.scope = &scope{names: map[string]*Local{}}
 	for _, p := range fd.Params {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
+		l.NamePos = p.NamePos
+		l.Exempt = fd.Exported && fd.Name == "run" && len(fd.Params) == 1
 		l.Param = true
 		l.ByRef = p.Mutable
 		c.funcParam(p, l)
 		p.Local = l
 	}
 	c.block(fd.Body)
+	c.reportUnused(start, errs)
 	c.env = nil
 }
 
@@ -318,6 +322,7 @@ func (c *Checker) stmt(s Stmt) {
 			c.errorf(s.Pos, "this expression has no value")
 		}
 		s.Local = c.declare(s.Pos, s.Name, t, s.Mutable)
+		s.Local.NamePos = s.NamePos
 	case *AssignStmt:
 		if c.constWrite(s.Pos, s.Target) {
 			c.expr(s.Value, nil)
@@ -436,6 +441,7 @@ func (c *Checker) stmt(s Stmt) {
 		c.endLoopNarrowing(nil, s.Body)
 		c.push()
 		s.Local = c.declare(s.Pos, s.Name, elem, false)
+		s.Local.NamePos = s.NamePos
 		c.enterLoop(s.Pos, s.Label)
 		c.block(s.Body)
 		c.leaveLoop(s.Label)

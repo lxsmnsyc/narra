@@ -443,6 +443,7 @@ func (c *Checker) arrow(e *ArrowExpr, want Type) Type {
 	fn := &FuncDecl{Pos: e.P, Name: "arrow", Params: e.Params, Module: c.mod.path}
 	for _, p := range e.Params {
 		l := c.declare(p.Pos, p.Name, p.T, false)
+		l.NamePos = p.NamePos
 		l.Param = true
 		p.Local = l
 	}
@@ -557,7 +558,7 @@ func (c *Checker) inferReturns(b *Block) Type {
 func cloneArrow(e *ArrowExpr) *ArrowExpr {
 	a := &ArrowExpr{exprBase: exprBase{P: e.P}, Result: e.Result, Body: cloneExpr(e.Body), Block: cloneBlock(e.Block)}
 	for _, p := range e.Params {
-		a.Params = append(a.Params, &Param{Pos: p.Pos, Name: p.Name, Type: p.Type})
+		a.Params = append(a.Params, &Param{Pos: p.Pos, NamePos: p.NamePos, Name: p.Name, Type: p.Type})
 	}
 	return a
 }

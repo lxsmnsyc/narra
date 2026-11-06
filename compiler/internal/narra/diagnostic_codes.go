@@ -287,6 +287,8 @@ var diagnosticCodes = []struct{ Code, Format string }{
 	{"E0916", "no enclosing loop is labeled %q"},
 	{"E0917", "label %q is already used by an enclosing loop"},
 	{"E0918", "label %q must be on a for or while loop"},
+	{"E0921", "%q is never read; remove it, or name it %q to mark it as unused on purpose"},
+	{"E0922", "parameter %q is never read; remove it, or name it %q to mark it as unused on purpose"},
 	{"E0920", "%s can only be the source of a for ... of loop; use the array itself"},
 	{"E0929", "%q is passed as mutable in one call, so the rest of the expression cannot use it"},
 	{"E0931", "a block expression must end every path with `return value`"},

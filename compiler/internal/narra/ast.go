@@ -57,6 +57,7 @@ type TypeExpr struct {
 
 type Param struct {
 	Pos     Pos
+	NamePos Pos // the name, after `mutable` or `escaping` (the fix of an unused parameter)
 	Name    string
 	Mutable bool
 	Type    *TypeExpr
@@ -191,6 +192,7 @@ type Block struct {
 
 type VarStmt struct {
 	Pos     Pos
+	NamePos Pos  // the bound name, or the pattern
 	Mutable bool // let
 	Name    string
 	Pattern *Pattern // const { a, b } = s and const #[a, b] = t; Name is empty
@@ -230,13 +232,14 @@ type WhileStmt struct {
 }
 
 type ForStmt struct {
-	Pos   Pos // the label when there is one, else the keyword
-	Label string
-	Name  string
-	Iter  Expr
-	Body  *Block
-	Local *Local
-	Kind  forKind
+	Pos     Pos // the label when there is one, else the keyword
+	NamePos Pos // the loop variable
+	Label   string
+	Name    string
+	Iter    Expr
+	Body    *Block
+	Local   *Local
+	Kind    forKind
 }
 
 // YieldStmt is `yield value`, or `yield* other` when Delegate is set. It is
@@ -437,13 +440,14 @@ type FieldPattern struct {
 }
 
 type Pattern struct {
-	Pos    Pos
-	Kind   PatternKind
-	Name   string          // constructor name, or the bound name of a PatName
-	Enum   string          // the qualifier of Shape.Circle
-	Args   []*Pattern      // constructor fields or tuple elements; nil for a bare constructor
-	Fields []*FieldPattern // PatStruct
-	Lit    Expr            // PatLit
+	Pos       Pos
+	Kind      PatternKind
+	Name      string          // constructor name, or the bound name of a PatName
+	Shorthand bool            // a PatName written as a struct field name alone: `{ host }`
+	Enum      string          // the qualifier of Shape.Circle
+	Args      []*Pattern      // constructor fields or tuple elements; nil for a bare constructor
+	Fields    []*FieldPattern // PatStruct
+	Lit       Expr            // PatLit
 	// Set by the checker:
 	T       Type
 	Variant *Variant // PatName or PatCtor naming a constructor

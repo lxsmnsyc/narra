@@ -42,7 +42,8 @@ func (c *Checker) resolvePat(p *Pattern, t Type, root *Pattern, seen map[string]
 			c.errorf(p.Pos, "%q is already declared in this function; shadowing is not allowed", p.Name)
 		}
 		c.localN++
-		p.Local = &Local{Name: p.Name, T: t, Pos: p.Pos, CName: fmt.Sprintf("v_%s_%d", p.Name, c.localN)}
+		p.Local = &Local{Name: p.Name, T: t, Pos: p.Pos, NamePos: p.Pos, Shorthand: p.Shorthand, CName: fmt.Sprintf("v_%s_%d", p.Name, c.localN)}
+		c.declared = append(c.declared, p.Local)
 		root.Locals = append(root.Locals, p.Local)
 	case PatCtor:
 		et, ok := t.(*EnumType)
@@ -138,7 +139,8 @@ func (c *Checker) bindRest(p *Pattern, root *Pattern, seen map[string]bool) {
 	if p.Kind == PatName && p.Variant == nil && p.Local == nil && !startsUpper(p.Name) && !seen[p.Name] {
 		seen[p.Name] = true
 		c.localN++
-		p.Local = &Local{Name: p.Name, T: TVoid, Pos: p.Pos, CName: fmt.Sprintf("v_%s_%d", p.Name, c.localN)}
+		p.Local = &Local{Name: p.Name, T: TVoid, Pos: p.Pos, NamePos: p.Pos, Shorthand: p.Shorthand, CName: fmt.Sprintf("v_%s_%d", p.Name, c.localN)}
+		c.declared = append(c.declared, p.Local)
 		root.Locals = append(root.Locals, p.Local)
 	}
 	for _, a := range p.Args {

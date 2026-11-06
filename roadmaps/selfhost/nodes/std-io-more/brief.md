@@ -1,7 +1,7 @@
 ---
 id: std-io-more
 title: stdin, directories and paths
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 229000
 owns:
   - compiler/internal/narra/std_io.go
   - compiler/internal/narra/std_path.go

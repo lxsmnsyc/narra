@@ -1,7 +1,7 @@
 ---
 id: unused-names
 title: "Unused locals and parameters are errors"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 386000
 owns:
   - compiler/testdata/errors/unused_*
   - roadmaps/selfhost/nodes/unused-names/**

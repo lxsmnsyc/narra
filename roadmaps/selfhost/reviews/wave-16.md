@@ -3,17 +3,19 @@
 ## Merged
 
 - #90 language-guide story: chapters 1 to 11 and `TestGuide`. Chapter 11 (guide-typescript) landed on the story branch as 56003e0 after a fresh review (two minors fixed: an error sample for `const this`, and a wrong `a && g(a)` row). The whole-guide review found one stale "Planned" line about generators, fixed in c574d57. The maintainer merged #90.
+- #91 std-io-more, #92 closure-borrow, #94 unused-names: merged by the maintainer. #94 landed after #92 without the five renames listed below, so main failed `TestSourcesFormatted` (`emitexprs.nra:871: "local" is never read`); fixed in a follow-up pull request.
 
 ## Waiting for the maintainer
 
-Each pull request below has a clean fresh review (or one whose findings are fixed and re-checked) and a passing full check. `plan.py can-merge` sent all four to the maintainer, because each changes files outside its node's paths.
+- #93 coroutines (D79): `Coroutine<In, Out>` and `Co.resume`. Known limit, in D79: passing an input to a plain generator reports the internal coroutine type. Rebased on main after #91, #92 and #94: the std module list, `resolve.nra`, and the borrow helpers that #92 moved from `stmts.nra` to `exprs.nra` (their `YieldStmt` pattern now has four fields).
 
-- #91 std-io-more: stdin, directories, `std/path`. Review fixes: `Io` and `Path` in the add-import fix table, a plain C11 `fgetc` loop instead of POSIX `getline` (not verified on Linux; no Docker here), out-of-memory aborts in `Path.normalize`.
+## Notes on the merged pull requests
+
+Each had a clean fresh review (or one whose findings were fixed and re-checked) and a passing full check. `plan.py can-merge` sent all four to the maintainer, because each changes files outside its node's paths.
+
+- #91 std-io-more: stdin, directories, `std/path`. Review fixes: `Io` and `Path` in the add-import fix table, a plain C11 `fgetc` loop instead of POSIX `getline` (not yet run on Linux), out-of-memory aborts in `Path.normalize`.
 - #92 closure-borrow (D77): non-escaping closures capture `let` and `mutable` by reference. The first review found a blocking use-after-free: builtin callbacks (`Results.map`, `mapErr`, `andThen`) skipped the borrow rule. Fixed and re-reviewed; the reviewer found no other path around the rule. Guide chapters 3, 9 and 11 rewritten for the two capture modes.
-- #93 coroutines (D79): `Coroutine<In, Out>` and `Co.resume`. Known limit, in D79: passing an input to a plain generator reports the internal coroutine type.
 - #94 unused-names: unused locals and parameters are errors. A second review round found that the fix for a write-only shorthand pattern did not rename its assignments; fixed in 8661719, and the full check passes there.
-
-Merge order: #91 and #93 both edit `compiler/testdata/declsdump/imports/err_unknown_module.dump` (the second needs the merged std module list). #93 and #94 conflict in `selfhost/src/resolve.nra`. Whichever of #92 and #94 lands second renames five unused names in #92's files (`selfhost/src/emitexprs.nra:871` and four `closure_borrow_*` error tests). Rebase each later pull request on main and rerun the fast check before merging.
 
 ## Decisions made for the maintainer (please confirm)
 
@@ -35,3 +37,4 @@ Taken while the maintainer was away, at their request to pick the best option. E
 - Workers often fixed a last failing golden or guide sample after the full run and reran only the targeted tests. The repo has no CI, so the orchestrator ran the full check itself on #93 before the hand-off. Worker prompts should say: after any fix, rerun the full check, or say which tests were skipped.
 - `can-merge` sends any change outside a node's paths to the maintainer. Goldens that list std modules and guide samples are touched by most language nodes, so nothing in this wave could auto-merge. Briefs for language changes should list `docs/guide/**` and the std-module golden as shared.
 - The plain-writing hook limits commit subjects to 72 characters; titles from `pr_title` can exceed it.
+- A merge-order note in this report did not stop a broken main: #92 and #94 had no text conflict, so GitHub merged both, and the five names #94's rule rejects in #92's files broke `TestSourcesFormatted`. When two ready pull requests interact without a text conflict, the orchestrator should rebase the second onto the first and fix it before the hand-off, or state the order in both pull request bodies.

@@ -16,6 +16,7 @@
 
 - Brief said `io_stdin.nra` covers `readAll` of the rest; after the last-line-without-newline case stdin is at the end, so `readAll` of non-empty input is in a second sample, `io_stdin_all.nra`.
 - Samples print through a local `yesNo` helper because bools cannot go into template strings.
+- `compiler/internal/narra/diagnostic_fixes.go` (outside the node's paths): `Io` and `Path` added to `stdAliasPaths`, one line, so the add-import fix knows them. Selfhost has no such table.
 - `Fs.removeFile` on a directory prints only `Err` in `io_dirs` (the reason is EPERM on macOS and EISDIR on Linux).
 
 ## Stubs left
@@ -27,7 +28,7 @@
 - `Io.readLine` keeps the `\r` of a `\r\n` line.
 - `Result<Option<string>, string>` is built by hand in both compilers (`std_io.go`, `emitReadLine` in `emitstd.nra`): the Option is a plain temporary moved into Ok. Using `ioEither` for it would double-release.
 - `Path.dirname("//a")` is `"//"`, copied from Node.
-- `stdAliasPaths` in `diagnostic_fixes.go` (add-import fix) does not know `Io` and `Path`; not touched (outside the node's paths).
+- `Io.readLine` reads with `fgetc` (plain C11), not `getline`, which needs a POSIX feature macro under `-std=c11` on glibc.
 - No new diagnostic codes.
 
 ## Proposed learnings

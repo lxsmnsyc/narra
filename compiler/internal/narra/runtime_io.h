@@ -1,7 +1,8 @@
-// Runtime C for std/fs, std/io, std/path, std/process and std/env. std_fs.go,
-// std_io.go, std_path.go, std_process.go and std_env.go split this file at the "// @section" lines. A module's
-// Runtime is the common section plus its own, and the common section guards
-// itself, so it is emitted once however many of the modules a program imports.
+// Runtime C for std/fs, std/io, std/path, std/process and std/env.
+// std_fs.go, std_io.go, std_path.go, std_process.go and std_env.go split this
+// file at the "// @section" lines. A module's Runtime is the common section
+// plus its own, and the common section guards itself, so it is emitted once
+// however many of the modules a program imports.
 
 // @section common
 #ifndef NARRA_IO_COMMON
@@ -299,11 +300,28 @@ static char* narra_io_slurp(int64_t limit, size_t* len, const char** fail) {
 // the input.
 static bool narra_io_read_line(lstr** out, lstr** err) {
   *out = NULL;
-  char* line = NULL;
-  size_t cap = 0;
+  size_t cap = 128, n = 0;
+  char* line = malloc(cap);
+  if (!line) {
+    *err = narra_io_fail("stdin", 5, "out of memory");
+    return false;
+  }
+  int c;
   errno = 0;
-  ssize_t n = getline(&line, &cap, stdin);
-  if (n < 0) {
+  while ((c = fgetc(stdin)) != EOF && c != '\n') {
+    if (n == cap) {
+      char* bigger = realloc(line, cap * 2);
+      if (!bigger) {
+        free(line);
+        *err = narra_io_fail("stdin", 5, "out of memory");
+        return false;
+      }
+      line = bigger;
+      cap *= 2;
+    }
+    line[n++] = (char)c;
+  }
+  if (c == EOF && (ferror(stdin) || n == 0)) {
     bool bad = ferror(stdin) != 0;
     free(line);
     if (bad) {
@@ -312,7 +330,6 @@ static bool narra_io_read_line(lstr** out, lstr** err) {
     }
     return true;
   }
-  if (n > 0 && line[n - 1] == '\n') n--;
   if (!narra_io_utf8((const unsigned char*)line, (int64_t)n)) {
     free(line);
     *err = narra_io_fail("stdin", 5, "line is not valid UTF-8");
@@ -382,6 +399,7 @@ static lstr* narra_path_normalize(const char* p, int64_t n) {
   bool absolute = n > 0 && p[0] == '/';
   bool trailing = n > 0 && p[n - 1] == '/';
   char* out = malloc((size_t)n + 4);
+  if (!out) return lstr_from_cstr(".");
   int64_t o = 0;
   int64_t i = 0;
   while (i < n) {

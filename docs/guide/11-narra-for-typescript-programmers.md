@@ -585,7 +585,7 @@ function makeCounter() {
 ```
 
 ```narra error
-// error: 5:5: a closure cannot capture "count" because it is declared with let; closures capture only constants
+// error: 5:5: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping
 function makeCounter(): () => int {
   let count = 0
   return () => {

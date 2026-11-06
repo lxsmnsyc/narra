@@ -18,7 +18,7 @@ func (p *ptrType) CName() string { return p.t.CName() + "*" }
 func (e *Emitter) lvaluePtr(x Expr) string {
 	switch x := x.(type) {
 	case *Ident:
-		if x.Local.ByRef {
+		if e.isRef(x.Local) {
 			return x.Local.CName
 		}
 		return "&" + e.localRef(x.Local)

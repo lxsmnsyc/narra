@@ -86,6 +86,10 @@ export struct Emitter {
   // "type name" in first-use order. liveValues holds, for state 0 and each
   // yield, what the frame holds while it waits there.
   inGenerator: bool = false
+  // The `let` variables (BodyInfo.locals indexes) that the closure being
+  // emitted captures by reference; its C variables are pointers (Go:
+  // refCaptures).
+  refCaptures: Array<int> = []
   frameFields: Array<string> = []
   frameSeen: Map<string, bool>
   liveValues: Array<Array<TempVar>> = []
@@ -260,10 +264,26 @@ export function localOf(emitter: Emitter, index: int): LocalInfo {
 }
 
 // localRef is the C expression for a local: a mutable parameter is passed as a pointer.
+// isReference reports whether the C variable of a local holds a pointer: a
+// mutable parameter, or a `let` captured by reference inside the closure
+// being emitted (Go's isRef).
+export function isReference(emitter: Emitter, index: int): bool {
+  const local = localOf(emitter, index)
+  if (local.param && local.isMutable) {
+    return true
+  }
+  for (const captured of Arrays.values(emitter.refCaptures)) {
+    if (captured == index) {
+      return true
+    }
+  }
+  return false
+}
+
 export function localRef(emitter: Emitter, index: int): string uses alloc {
   const local = localOf(emitter, index)
   const name = localName(local)
-  if (local.param && local.isMutable) {
+  if (isReference(emitter, index)) {
     return `(*${name})`
   }
   return variableRef(emitter, name)

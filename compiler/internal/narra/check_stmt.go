@@ -211,6 +211,10 @@ func assignedInExpr(x Expr, names map[string]bool) {
 		}
 	case *BlockExpr:
 		assignedInBlock(x.Block, names)
+	case *ArrowExpr:
+		// A closure passed to a call may assign what it captures.
+		assignedInExpr(x.Body, names)
+		assignedInBlock(x.Block, names)
 	case *MatchExpr:
 		assignedInExpr(x.Subject, names)
 		for _, arm := range x.Arms {

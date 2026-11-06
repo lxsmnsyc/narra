@@ -278,11 +278,11 @@ export function run(args: Array<string>): int {
 290
 ```
 
-An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters, whose values cannot change. It cannot capture a `let` name:
+An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters, whose values cannot change. A closure that is stored, returned or passed to an `escaping` parameter cannot capture a `let` name:
 
 ```narra error
-// error: 8:22: a closure cannot capture "count" because it is declared with let; closures capture only constants
-function apply(rule: () => int): int {
+// error: 8:22: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping
+function apply(escaping rule: () => int): int {
   return rule()
 }
 

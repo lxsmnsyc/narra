@@ -665,6 +665,19 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 - **Kept from D45.** `for (const i of Ranges.upTo(n))` stays the usual way to count over indexes.
 - **Cost.** Two loop forms where D45 had one. The details (whether `init` must be `let`, whether `++` has a value, `continue` jumping to the step, labels, the semicolon rule inside the parentheses) are settled by nodes c-style-for and compound-assign.
 
+## D77. Non-escaping closures capture `let` and `mutable` by reference
+
+Decision: an arrow function passed straight to a non-escaping function-type parameter may read and assign the `let` variables and `mutable` parameters of the enclosing function, by reference. Every `let` and `mutable` it uses is captured by reference, also when it only reads it. `const` bindings and non-mutable parameters keep the by-value capture. Every arrow function between the use and the declaration must be of this kind; any other closure (stored, returned, passed to an `escaping` parameter or through a function value) still cannot capture them. A variable that such a closure assigns is borrowed for the call: it cannot be passed as `mutable`, used in another argument, or captured by another closure argument. Decided by the maintainer on 2026-11-05.
+
+- **Reason.** Same semantics as TypeScript for the common callback shapes.
+- **Reason.** One simple rule for which captures are by reference: `let` and `mutable`.
+- **Reason.** Cheaper than copying: the environment is on the caller's stack (D46), and a by-reference capture needs no retain or release of heap values.
+- **Reason for the borrow rule.** Constant parameters are passed by pointer (D50), so `each(items, (x) => { items = [] })` would free the array the callee is reading.
+- **Why it is sound.** A non-escaping closure can only be called during the call it is passed to, so a pointer to the caller's variable cannot dangle. A `let` still cannot be stored, so no cycles form.
+- **Prior art.** Swift's non-escaping closures capture `inout` parameters.
+- **Rejected: by-value capture of a `let` that a closure only reads.** It would look the same only because of the borrow rule, so it buys nothing.
+- **Codes.** E0612 and E0613 replace E0603 and E0604, whose rows stay unused. E0614 is the borrow rule.
+
 ## D78. Generator types carry effects, charged where the body runs
 
 Decision: a generator type carries the effects of its body, written as on a function type: `Generator<T> uses io`. `Generator<T>` alone is pure. Creating a generator charges only `alloc`, for its frame. The body's effects are charged where it runs: a `for ... of` over the generator, a `yield*` of it, and `Co.resume`. An exported `function*` writes them on its return type; a private one gets them inferred into its type. A value with more effects than the expected generator type is a compile error; one with fewer is allowed. A parameter of generator type binds an effect variable, as a function-type parameter does (D14): `export function sum<effect E>(numbers: Generator<int> uses E): int uses E`. When a result type names the callee's effect variables (`relay<effect E>(g: Generator<int> uses E): Generator<int> uses E, alloc`), each call's result has the effects its arguments bind, so the variable's name never leaves the callee. `Generator<T>` is a value type with no `==`, hashing or `Show`. `yield` and `yield*` are statements, valid only directly in a `function*` body (section 8). Decided by the maintainer on 2026-11-05.

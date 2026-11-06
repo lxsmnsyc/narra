@@ -393,7 +393,7 @@ export function run(args: Array<string>): int {
 A `mutable` parameter cannot be captured either, for a stronger reason. It is the caller's variable, reached only while the call runs, and a closure can still be called after the function has returned:
 
 ```narra error
-// error: 3:16: a closure cannot capture mutable parameter "score"; copy it first with `const copy = score`
+// error: 3:16: a closure cannot capture mutable parameter "score" unless it is passed straight to a function parameter that is not escaping; copy it first with `const copy = score`
 function reporter(mutable score: int): () => int {
   return () => score
 }

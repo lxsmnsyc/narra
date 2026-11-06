@@ -402,6 +402,11 @@ func (c *Checker) lookup(name string) *Local {
 }
 
 func (c *Checker) narrowed(l *Local) *Variant {
+	// A closure holds a `let` by reference, so what an `is` test said
+	// outside it may be false by the time it runs.
+	if n := len(c.cl().arrows); l.Mutable && n > 0 && !declaredBelow(c.scope, c.cl().arrows[n-1].outer, l) {
+		return nil
+	}
 	for s := c.scope; s != nil; s = s.parent {
 		if v, ok := s.narrow[l]; ok {
 			return v

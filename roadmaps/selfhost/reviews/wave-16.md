@@ -3,7 +3,7 @@
 ## Merged
 
 - #90 language-guide story: chapters 1 to 11 and `TestGuide`. Chapter 11 (guide-typescript) landed on the story branch as 56003e0 after a fresh review (two minors fixed: an error sample for `const this`, and a wrong `a && g(a)` row). The whole-guide review found one stale "Planned" line about generators, fixed in c574d57. The maintainer merged #90.
-- #91 std-io-more, #92 closure-borrow, #94 unused-names: merged by the maintainer. #94 landed after #92 without the five renames listed below, so main failed `TestSourcesFormatted` (`emitexprs.nra:871: "local" is never read`); fixed in a follow-up pull request.
+- #91 std-io-more, #92 closure-borrow, #94 unused-names: merged by the maintainer. #94 landed after #92 without the five renames listed below, so main failed `TestSourcesFormatted` (`emitexprs.nra:871: "local" is never read`); fixed in #95, which must merge before #93.
 
 ## Waiting for the maintainer
 

@@ -282,3 +282,5 @@ export function run(args: Array<string>): int {
 `checkFreezing` is an ordinary function, so it is part of every build of the file, and only `narra test` builds include the code behind `std/test`. Have the helper return the value, and check it in the test: `Test.eq(toFahrenheit(0), 32)`.
 
 A test block may print or do any other effect without a `uses` list.
+
+Next: [11. Narra for TypeScript programmers](11-narra-for-typescript-programmers.md), optional reading for TypeScript programmers.

@@ -1,7 +1,7 @@
 ---
 id: closure-borrow
 title: Non-escaping closures capture let and mutable by reference
-status: done
+status: active
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent: 385000
+spent:
 owns:
   - compiler/testdata/closure_borrow*
   - compiler/testdata/errors/closure_borrow_*

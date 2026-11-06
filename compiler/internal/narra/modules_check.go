@@ -212,6 +212,10 @@ func (c *Checker) exported(pos Pos, s *modScope, n string) Decl {
 	if d, ok := s.src.Exports[n]; ok {
 		return d
 	}
+	if s.path == "std/coroutine" && n == "resume" {
+		c.errorf(pos, "%s is not an export you can import by name; write `import * as Co from \"std/coroutine\"` and call Co.resume", "resume")
+		return nil
+	}
 	if s.src.declares(n) {
 		c.errorf(pos, "%q is not exported by module %q; add `export` to its declaration", n, s.path)
 	} else {
@@ -222,7 +226,21 @@ func (c *Checker) exported(pos Pos, s *modScope, n string) Decl {
 
 // moduleCall checks `Alias.name(args)` where Alias names a package module.
 func (c *Checker) moduleCall(e *CallExpr, s *modScope, callee *FieldExpr, want Type) Type {
-	d := c.exported(callee.P, s, callee.Name)
+	name := callee.Name
+	if s.path == "std/coroutine" && name == "resume" {
+		// Co.resume(mutable g) resumes a generator, and
+		// Co.resume(mutable g, input) a coroutine (D79).
+		name = "resumeGenerator"
+		if len(e.Args) != 1 {
+			name = "resumeCoroutine"
+		}
+		if len(e.Args) > 0 && !e.Args[0].Mutable {
+			c.errorf(e.P, "Co.resume changes the generator; write Co.resume(mutable g) or Co.resume(mutable g, input)")
+			c.argsLoose(e)
+			return TVoid
+		}
+	}
+	d := c.exported(callee.P, s, name)
 	if _, isConst := d.(*ConstDecl); isConst {
 		return c.valueCall(e) // a constant holding a function
 	}

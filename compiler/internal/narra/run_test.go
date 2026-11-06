@@ -60,7 +60,7 @@ func TestPrograms(t *testing.T) {
 				opts := m.opts
 				// tests.nra and std_test*.nra run their test blocks.
 				base := filepath.Base(src)
-				opts.Tests = base == "tests.nra" || strings.HasPrefix(base, "std_test")
+				opts.Tests = base == "tests.nra" || strings.HasPrefix(base, "std_test") || strings.HasPrefix(base, "coroutine_tests")
 				out, stderr, code := runProgram(t, src, opts)
 				if code != 0 {
 					t.Fatalf("exit code %d\nstderr:\n%s", code, stderr)

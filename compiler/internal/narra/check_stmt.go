@@ -441,6 +441,9 @@ func (c *Checker) stmt(s Stmt) {
 		case isGenerator(t):
 			s.Kind = forGenerator
 			elem = t.(*GeneratorType).Elem
+			if t.(*GeneratorType).In != nil {
+				c.errorf(s.Iter.position(), "for ... of cannot iterate a coroutine, which needs an input on each resume; call Co.resume(mutable g, input)")
+			}
 		case t == Type(TRange):
 			// A Range value: its bounds are read once, before the loop.
 			s.Kind = forRange
@@ -747,6 +750,13 @@ func isGenerator(t Type) bool {
 	return ok
 }
 
+// declareYieldInput declares the local of `const input = yield value`.
+func (c *Checker) declareYieldInput(s *YieldStmt, t Type) {
+	if s.Bind {
+		s.Local = c.declare(s.NamePos, s.Name, t, s.Mutable)
+	}
+}
+
 // yieldStmt checks `yield value` and `yield* other`. Both are valid only
 // directly in a function* body or its nested statement blocks: not in an
 // arrow function and not in a block expression (SPEC.md section 8).
@@ -767,16 +777,31 @@ func (c *Checker) yieldStmt(s *YieldStmt) {
 	if where != "" {
 		c.errorf(s.Pos, "%s cannot be used %s; it is valid only directly in a function* body", word, where)
 		c.expr(s.Value, nil)
+		c.declareYieldInput(s, TVoid)
 		return
 	}
 	gen, _ := c.fn.ResultT.(*GeneratorType)
 	if gen == nil {
 		// The return type was rejected already.
 		c.expr(s.Value, nil)
+		c.declareYieldInput(s, TVoid)
+		return
+	}
+	if s.Bind && gen.In == nil {
+		c.errorf(s.Pos, "the value of yield is available only in a coroutine; declare %s as Coroutine<In, Out>, or write `yield value` without a name", c.fn.Name)
+	}
+	if s.Delegate && gen.In != nil {
+		c.errorf(s.Pos, "yield* is not valid in a coroutine; a delegated generator has no input to receive")
+		c.expr(s.Value, nil)
 		return
 	}
 	if !s.Delegate {
 		c.expectType(s.Value.position(), gen.Elem, c.expr(s.Value, gen.Elem))
+		if gen.In != nil {
+			c.declareYieldInput(s, gen.In)
+		} else {
+			c.declareYieldInput(s, TVoid)
+		}
 		return
 	}
 	t := c.expr(s.Value, nil)

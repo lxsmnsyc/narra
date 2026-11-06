@@ -96,14 +96,16 @@ function resolveGeneratorResult(
   let valid = false
   if (funcDecl.result is Some(resultType)) {
     pos = resultType.pos
-    valid = resultType.name == "Generator" && Arrays.length(resultType.arguments) == 1
+    valid =
+      resultType.name == "Generator" && Arrays.length(resultType.arguments) == 1 ||
+        resultType.name == "Coroutine" && Arrays.length(resultType.arguments) == 2
   }
   if (!valid) {
     if (report) {
       reportError(
         mutable checker,
         pos,
-        `generator ${funcDecl.name} must declare its return type as Generator<T>`,
+        `generator ${funcDecl.name} must declare its return type as Generator<T> or Coroutine<In, Out>`,
       )
     }
     return Type.TVoid
@@ -116,9 +118,9 @@ function resolveGeneratorResult(
     )
   }
   const resolved = resolveOpt(mutable checker, funcDecl.result)
-  if (resolved is Type.TGenerator(element, _effects, _binder, _)) {
+  if (resolved is Type.TGenerator(element, _effects, _binder, _, input)) {
     if (!funcDecl.exported) {
-      return Type.TGenerator(element, [], -1, funcIndex)
+      return Type.TGenerator(element, [], -1, funcIndex, input)
     }
     return resolved
   }
@@ -146,7 +148,12 @@ export function funcResult(
 // makeGenerator makes the type Generator<element> uses effects (Go's
 // generatorOf). Effect variables in the list belong to the function whose
 // signature or body is being checked (D78).
-function makeGenerator(checker: Checker, element: Type, effects: Array<string>): Type uses alloc {
+function makeGenerator(
+  checker: Checker,
+  element: Type,
+  input: Type,
+  effects: Array<string>,
+): Type uses alloc {
   let sorted: Array<string> = []
   let binder = -1
   for (const name of Arrays.values(effects)) {
@@ -176,7 +183,7 @@ function makeGenerator(checker: Checker, element: Type, effects: Array<string>):
       }
     }
   }
-  return Type.TGenerator(element, sorted, binder, -1)
+  return Type.TGenerator(element, sorted, binder, -1, input)
 }
 
 export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
@@ -224,7 +231,16 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
       return Type.TVoid
     }
     const element = resolveType(mutable checker, typeExpr.arguments[0])
-    return makeGenerator(checker, element, typeExpr.effects)
+    return makeGenerator(checker, element, Type.TVoid, typeExpr.effects)
+  }
+  if (typeExpr.name == "Coroutine" && !userType(checker, "Coroutine")) {
+    if (argCount != 2) {
+      reportError(mutable checker, typeExpr.pos, "Coroutine takes two type arguments")
+      return Type.TVoid
+    }
+    const input = resolveType(mutable checker, typeExpr.arguments[0])
+    const element = resolveType(mutable checker, typeExpr.arguments[1])
+    return makeGenerator(checker, element, input, typeExpr.effects)
   }
   if (typeExpr.name == "Array") {
     if (argCount != 1) {
@@ -625,16 +641,13 @@ export function substitute(
       const newElement = substitute(mutable checker, element, bindings)
       return internComposite(mutable checker, Type.TBox(newElement))
     }
-    Type.TGenerator(element, effects, binder, origin) => {
-      if (!containsTypeParameter(checker, element)) {
+    Type.TGenerator(element, effects, binder, origin, input) => {
+      if (!containsTypeParameter(checker, element) && !containsTypeParameter(checker, input)) {
         return type
       }
-      return Type.TGenerator(
-        substitute(mutable checker, element, bindings),
-        effects,
-        binder,
-        origin,
-      )
+      const newElement = substitute(mutable checker, element, bindings)
+      const newInput = substitute(mutable checker, input, bindings)
+      return Type.TGenerator(newElement, effects, binder, origin, newInput)
     }
     Type.TMap(key, value) => {
       const newKey = substitute(mutable checker, key, bindings)

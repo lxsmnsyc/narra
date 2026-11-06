@@ -268,7 +268,7 @@ func containsOpen(t Type, params []*TypeParamType) bool {
 	case *ArrayType:
 		return containsOpen(t.Elem, params)
 	case *GeneratorType:
-		return containsOpen(t.Elem, params)
+		return containsOpen(t.Elem, params) || (t.In != nil && containsOpen(t.In, params))
 	case *BoxType:
 		return containsOpen(t.Elem, params)
 	case *MapType:

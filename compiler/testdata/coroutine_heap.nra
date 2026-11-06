@@ -1,0 +1,106 @@
+// Coroutines with heap inputs and outputs: strings and arrays go in and out
+// of a coroutine, a coroutine is dropped unfinished, a copy resumes on its
+// own, and an io coroutine is resumed from a function that declares io.
+import * as Co from "std/coroutine"
+import { Step } from "std/coroutine"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+// greeter answers each name with a greeting, and collects the names.
+function* greeter(): Coroutine<string, string> {
+  let names: Array<string> = []
+  while (true) {
+    const name = yield `hello ${Int.toString(Arrays.length(names))}`
+    Arrays.push(mutable names, name)
+    if (Arrays.length(names) == 3) {
+      return
+    }
+  }
+}
+
+// batches turns each input array into a longer array, so arrays go both ways.
+function* batches(): Coroutine<Array<int>, Array<int>> {
+  let seen: Array<int> = []
+  const first = yield seen
+  for (const n of first) {
+    Arrays.push(mutable seen, n)
+  }
+  while (true) {
+    const more = yield seen
+    for (const n of more) {
+      Arrays.push(mutable seen, n)
+    }
+  }
+}
+
+// logger prints what it is sent, so resuming it needs io.
+function* logger(prefix: string): Coroutine<string, int> uses io, alloc {
+  let count = 0
+  while (true) {
+    const line = yield count
+    print(`${prefix}${line}`)
+    count = count + 1
+  }
+}
+
+function show(step: Step<string>): string {
+  return match (step) {
+    Step.Yielded(value) => value
+    Step.Done => "done"
+    Step.Panicked(message) => message
+  }
+}
+
+function lengthOf(step: Step<Array<int>>): int {
+  return match (step) {
+    Step.Yielded(value) => Arrays.length(value)
+    Step.Done => -1
+    Step.Panicked(_) => -2
+  }
+}
+
+function count(step: Step<int>): int {
+  return match (step) { Step.Yielded(value) => value, Step.Done => -1, Step.Panicked(_) => -2 }
+}
+
+export function run(args: Array<string>): int uses io {
+  // Strings in and out, until the coroutine returns.
+  let hello = greeter()
+  print(show(Co.resume(mutable hello, "ignored")))
+  print(show(Co.resume(mutable hello, "ada")))
+  print(show(Co.resume(mutable hello, "grace")))
+  print(show(Co.resume(mutable hello, "alan")))
+  print(show(Co.resume(mutable hello, "again")))
+
+  // Arrays in and out.
+  let grow = batches()
+  print(Int.toString(lengthOf(Co.resume(mutable grow, [1, 2]))))
+  print(Int.toString(lengthOf(Co.resume(mutable grow, [3, 4, 5]))))
+  print(Int.toString(lengthOf(Co.resume(mutable grow, [6]))))
+
+  // A coroutine dropped half way, holding a string and an array.
+  let unfinished = greeter()
+  print(show(Co.resume(mutable unfinished, "x")))
+  print(show(Co.resume(mutable unfinished, "held")))
+  let abandoned = batches()
+  print(Int.toString(lengthOf(Co.resume(mutable abandoned, [9, 9]))))
+
+  // A coroutine that was never resumed.
+  const _idle = greeter()
+
+  // A copy resumes on its own.
+  let original = greeter()
+  print(show(Co.resume(mutable original, "a")))
+  print(show(Co.resume(mutable original, "first")))
+  let copy = original
+  print(show(Co.resume(mutable copy, "second")))
+  print(show(Co.resume(mutable original, "other")))
+
+  // An io coroutine.
+  let log = logger("log: ")
+  print(Int.toString(count(Co.resume(mutable log, "ignored"))))
+  print(Int.toString(count(Co.resume(mutable log, "one"))))
+  print(Int.toString(count(Co.resume(mutable log, "two"))))
+  print("end")
+  return 0
+}

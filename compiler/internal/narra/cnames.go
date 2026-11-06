@@ -155,6 +155,9 @@ func typeID(t Type) string {
 		return "Range"
 	case *GeneratorType:
 		id := "G_" + typeID(t.Elem) + "_" + strings.Join(t.Effects, "_")
+		if t.In != nil {
+			id = "C_" + typeID(t.In) + "_" + typeID(t.Elem) + "_" + strings.Join(t.Effects, "_")
+		}
 		if t.Origin != nil {
 			id += "_O" + t.Origin.Module + "." + t.Origin.Name
 		}

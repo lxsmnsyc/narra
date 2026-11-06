@@ -2,6 +2,7 @@
 // generated C file.
 #include <inttypes.h>
 #include <math.h>
+#include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,8 +18,18 @@ static int narra_panic_pos = 0;
 // Where Test.golden reads and writes files; narra test sets it with --golden-dir.
 static const char* narra_golden_dir = "testdata";
 
+// Test builds: while Co.resume runs a coroutine it sets this, so a panic in
+// the coroutine returns to Co.resume as Panicked (std/coroutine).
+static jmp_buf* narra_panic_jmp = NULL;
+static char narra_panic_text[256];
+
 static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);
+  if (narra_panic_jmp) {
+    strncpy(narra_panic_text, msg, sizeof narra_panic_text - 1);
+    narra_panic_text[sizeof narra_panic_text - 1] = 0;
+    longjmp(*narra_panic_jmp, 1);
+  }
   if (narra_panic_fd >= 0) {
     if (narra_panic_pos) {
       if (write(narra_panic_fd, where, strlen(where)) < 0 || write(narra_panic_fd, "\n", 1) < 0) _exit(101);
@@ -110,6 +121,7 @@ typedef struct narra_gen {
   bool (*resume)(struct narra_gen* g, void* out);
   struct narra_gen* (*clone)(struct narra_gen* g);
   void (*drop)(void* g);
+  const void* in; // the input of the resume in progress (coroutines only)
 } narra_gen;
 static void narra_gen_retain(narra_gen* g) { g->rc++; }
 static void narra_gen_release(narra_gen* g) {
@@ -124,6 +136,40 @@ static bool narra_gen_next(narra_gen** p, void* out) {
     *p = copy;
   }
   return (*p)->resume(*p, out);
+}
+
+// narra_co_next is Co.resume's step: it resumes *p with the input at in (NULL
+// for a generator) and returns 1 with a value at out, 0 when the generator is
+// done, or -1 when it panicked. Only a guarded call (test builds) catches a
+// panic: the frame is then finished, and what it held is not freed.
+static bool narra_co_panicked = false;
+static int narra_co_next(narra_gen** p, void* out, const void* in, bool guard) {
+  if ((*p)->rc > 1) {
+    narra_gen* copy = (*p)->clone(*p);
+    (*p)->rc--;
+    *p = copy;
+  }
+  (*p)->in = in;
+  narra_co_panicked = false;
+  if (!guard) return (*p)->resume(*p, out) ? 1 : 0;
+  jmp_buf here;
+  jmp_buf* outer = narra_panic_jmp;
+  int64_t live = narra_live;
+  narra_gen* g = *p;
+  narra_panic_jmp = &here;
+  if (setjmp(here)) {
+    narra_panic_jmp = outer;
+    g->state = -1;
+    // The count goes back to its value before the resume. This assumes the
+    // coroutine only allocated since then: a free of memory from before the
+    // resume would be miscounted (the leak check would then see one extra).
+    narra_live = live;
+    narra_co_panicked = true;
+    return -1;
+  }
+  bool more = g->resume(g, out);
+  narra_panic_jmp = outer;
+  return more ? 1 : 0;
 }
 
 // Strings. A negative count marks a literal that is never freed.

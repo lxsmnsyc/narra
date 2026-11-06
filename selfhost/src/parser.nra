@@ -59,6 +59,7 @@ import {
   Stmt,
   Expr,
   Pattern,
+  YieldBinding,
 } from "narrac/ast"
 import * as Arrays from "std/array"
 import * as Boxes from "std/box"
@@ -741,7 +742,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     }
     expect(mutable parser, ">")
   }
-  if (name == "Generator") {
+  if (name == "Generator" || name == "Coroutine") {
     // A generator type carries the effects its body has when it runs:
     // `Generator<string> uses io` (D78).
     const effects = parseUsesList(mutable parser)
@@ -1429,6 +1430,33 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       declaredType = Some(parseType(mutable parser))
     }
     expect(mutable parser, "=")
+    if (
+      isAt(parser, "yield") &&
+        name != "" &&
+        declaredType is None &&
+        !(peekToken(parser, 1).kind == TokenKind.TokPunct && peekToken(parser, 1).text == "*")
+    ) {
+      // `const input = yield value` in a coroutine.
+      const yieldPos = getPos(currentToken(parser))
+      advance(mutable parser)
+      const next = currentToken(parser)
+      if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof || isAt(parser, "}")) {
+        failHere(
+          mutable parser,
+          "`yield` needs a value: write `yield value`, or `yield* generator`",
+        )
+        return Stmt.BreakStmt(pos, "")
+      }
+      const yielded = parseExpr(mutable parser)
+      endStatement(mutable parser)
+      const binding = YieldBinding {
+        id: newId(mutable parser),
+        isMutable: isMutable,
+        name: name,
+        pos: pos,
+      }
+      return Stmt.YieldStmt(yieldPos, yielded, false, Some(binding))
+    }
     const value = parseExpr(mutable parser)
     endStatement(mutable parser)
     return Stmt.VarStmt(newId(mutable parser), pos, isMutable, name, pattern, declaredType, value)
@@ -1525,7 +1553,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     }
     const value = parseExpr(mutable parser)
     endStatement(mutable parser)
-    return Stmt.YieldStmt(pos, value, delegate)
+    return Stmt.YieldStmt(pos, value, delegate, None)
   }
   if (isAt(parser, "break")) {
     advance(mutable parser)

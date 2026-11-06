@@ -237,7 +237,7 @@ function generatorEffects(
   type: Type,
 ): Array<string> uses alloc {
   let names: Array<string> = []
-  if (type is Type.TGenerator(_, effects, _, origin)) {
+  if (type is Type.TGenerator(_, effects, _, origin, _)) {
     if (origin == -1) {
       return effects
     }
@@ -265,7 +265,7 @@ function walkGeneratorRun(
   expression: Expr,
 ) uses alloc {
   if (findNodeType(checker, state.body, getExpressionId(expression)) is Some(found)) {
-    if (found is Type.TGenerator(_, _, _, _)) {
+    if (found is Type.TGenerator(_, _, _, _, _)) {
       const via = typeString(checker, found)
       const pos = getExpressionPos(expression)
       for (const name of Arrays.values(generatorEffects(checker, state, found))) {
@@ -504,6 +504,18 @@ function describeImplementation(checker: Checker, block: int, index: int): strin
   return `${typeString(checker, impl.forType)}.${checker.traits[impl.traitIndex].name}.${impl.functions[index].name}`
 }
 
+// describeFunctionLabel is the name an effect error shows after "through". The
+// resume functions of std/coroutine show as Co.resume, as the call was written.
+function describeFunctionLabel(checker: Checker, index: int): string uses alloc {
+  const name = checker.functions[index].declaration.name
+  if (checker.functions[index].module == "std/coroutine") {
+    if (name == "resumeGenerator" || name == "resumeCoroutine") {
+      return "Co.resume"
+    }
+  }
+  return name
+}
+
 // findCallee is the function a ref names: a declared function or an implement
 // block function.
 function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
@@ -511,7 +523,7 @@ function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
     Ref.Function(index) => Some(Callee {
       declaration: checker.functions[index].declaration,
       key: functionKey(checker.functions[index].module, checker.functions[index].declaration.pos),
-      label: checker.functions[index].declaration.name,
+      label: describeFunctionLabel(checker, index),
     })
     Ref.Implementation(block, index) => Some(Callee {
       declaration: checker.implementations[block].functions[index].declaration,
@@ -667,7 +679,7 @@ function walkStatement(
       walkGeneratorRun(checker, state, mutable out, iterable)
       walkBlock(mutable checker, mutable state, mutable out, body)
     }
-    Stmt.YieldStmt(_, value, delegate) => {
+    Stmt.YieldStmt(_, value, delegate, _) => {
       walkExpression(mutable checker, mutable state, mutable out, value)
       if (delegate) {
         walkGeneratorRun(checker, state, mutable out, value)
@@ -956,7 +968,7 @@ function bindResultEffects(
   callee: Callee,
   arguments: Array<Arg>,
 ) uses alloc {
-  if (findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, origin))) {
+  if (findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, origin, _))) {
     // Only the call that made the type fills it.
     if (origin >= -1 || checker.boundCallIds[-2 - origin] != nodeId) {
       return

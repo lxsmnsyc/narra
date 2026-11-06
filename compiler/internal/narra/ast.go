@@ -244,10 +244,18 @@ type ForStmt struct {
 
 // YieldStmt is `yield value`, or `yield* other` when Delegate is set. It is
 // valid only directly in a function* body (check_stmt.go).
+//
+// `const input = yield value` (Bind) also names the value a coroutine is
+// resumed with: Name, Mutable (`let`), NamePos and the Local the checker makes.
 type YieldStmt struct {
 	Pos      Pos
 	Value    Expr
 	Delegate bool
+	Bind     bool
+	Mutable  bool
+	Name     string
+	NamePos  Pos
+	Local    *Local
 }
 
 type BreakStmt struct {

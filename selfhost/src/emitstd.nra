@@ -25,6 +25,7 @@ import {
   underlyingType,
   declareVariable,
   variableRef,
+  declareUnset,
 } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Arrays from "std/array"
@@ -310,6 +311,15 @@ function emitNamedCall<W: EmitWalker>(
   if (name == "Str.length") {
     const text = argumentText(walker, mutable emitter, arguments, 0)
     return plain(`(${text})->len`)
+  }
+  if (name == "Co.next" || name == "Co.resume") {
+    return emitCoResume(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Co.panicked") {
+    return plain("narra_co_panicked")
+  }
+  if (name == "Co.panicMessage") {
+    return owned(ownedTemp(mutable emitter, Type.TStr, "lstr_from_cstr(narra_panic_text)"))
   }
   if (name == "Char.code" || name == "Probe.code") {
     const character = argumentText(walker, mutable emitter, arguments, 0)
@@ -643,6 +653,47 @@ function emitEnvGet<W: EmitWalker>(
   const name = argumentText(walker, mutable emitter, arguments, 0)
   const value = temp(mutable emitter, Type.TStr, `narra_env_get(${name})`)
   return ioEither(mutable emitter, optionType, value, some, [value], none, [])
+}
+
+// Co.next(mutable g) and Co.resume(mutable g, input) of std/internal/coroutine
+// (Go's emitCoResume): one narra_co_next step, as Some(value) or None. Only a
+// test build catches a panic of the coroutine.
+function emitCoResume<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const generatorType = typeOf(emitter, getExpressionId(arguments[0].value))
+  let inputPointer = "NULL"
+  let elementType = Type.TVoid
+  if (generatorType is Type.TGenerator(element, _, _, _, input)) {
+    elementType = element
+    if (input != Type.TVoid) {
+      const inputCode = argumentText(walker, mutable emitter, arguments, 1)
+      inputPointer = `&${temp(mutable emitter, input, inputCode)}`
+    }
+  }
+  const generator = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  const elementName = cType(emitter.checker, elementType)
+  emitter.tempCount = emitter.tempCount + 1
+  const outputName = `t${Int.toString(emitter.tempCount)}`
+  const output = declareUnset(mutable emitter, elementName, outputName)
+  emitter.tempCount = emitter.tempCount + 1
+  const statusName = `t${Int.toString(emitter.tempCount)}`
+  const status = declareUnset(mutable emitter, "int", statusName)
+  let guard = "false"
+  if (emitter.tests) {
+    guard = "true"
+  }
+  writeLine(
+    mutable emitter,
+    `${status} = narra_co_next(${generator}, &${output}, ${inputPointer}, ${guard});`,
+  )
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  return ioEither(mutable emitter, optionType, `${status} > 0`, some, [output], none, [])
 }
 
 // Env.args()

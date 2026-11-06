@@ -301,6 +301,9 @@ func (d *typesDumper) stmt(s Stmt) {
 		d.expr(s.Iter)
 		d.block(s.Body)
 	case *YieldStmt:
+		if s.Bind {
+			d.local(s.Local)
+		}
 		d.expr(s.Value)
 	}
 }

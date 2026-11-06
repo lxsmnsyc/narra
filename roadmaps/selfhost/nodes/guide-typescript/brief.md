@@ -1,7 +1,7 @@
 ---
 id: guide-typescript
 title: "Language guide: Narra for TypeScript programmers"
-status: todo
+status: active
 priority:
 type: docs
 story: language-guide

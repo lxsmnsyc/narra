@@ -46,7 +46,7 @@ func cloneStmt(s Stmt) Stmt {
 	case *ContinueStmt:
 		return &ContinueStmt{Pos: s.Pos, Label: s.Label}
 	case *YieldStmt:
-		return &YieldStmt{Pos: s.Pos, Value: cloneExpr(s.Value), Delegate: s.Delegate}
+		return &YieldStmt{Pos: s.Pos, Value: cloneExpr(s.Value), Delegate: s.Delegate, Bind: s.Bind, Mutable: s.Mutable, Name: s.Name, NamePos: s.NamePos}
 	}
 	return nil
 }

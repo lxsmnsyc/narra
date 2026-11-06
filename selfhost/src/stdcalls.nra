@@ -90,6 +90,9 @@ export function checkStdCall<W: Walker>(
   if (kind == "checkResultToOption") {
     return checkResultToOption(mutable checker, walker, pos, arguments, name)
   }
+  if (kind == "checkCoResume") {
+    return checkCoResume(mutable checker, walker, pos, arguments, name)
+  }
   if (kind == "checkTestCompare") {
     return checkTestCompare(mutable checker, walker, pos, arguments, name)
   }
@@ -659,6 +662,38 @@ function checkResultToOption<W: Walker>(
     }
     return makePreludeEnum(mutable checker, "Option", [resultArgs[0]])
   }
+  return Type.TVoid
+}
+
+// ---- std/internal/coroutine ----
+
+// checkCoResume checks Co.next(mutable g) and Co.resume(mutable g, input) (Go's
+// checkCoResume): the result is Option<Out>.
+function checkCoResume<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  let count = 1
+  if (name == "Co.resume") {
+    count = 2
+  }
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, count)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TGenerator(element, _, _, _, input)) {
+    checkMutableArgument(mutable checker, arguments[0].value)
+    if (count == 2) {
+      checkArgumentAgainst(mutable checker, walker, arguments[1].value, input)
+    }
+    checkExclusive(mutable checker, arguments, [0])
+    return makePreludeEnum(mutable checker, "Option", [element])
+  }
+  // Only std/coroutine calls these, with the right arguments.
+  panic(`internal error: ${name} needs a generator`)
   return Type.TVoid
 }
 

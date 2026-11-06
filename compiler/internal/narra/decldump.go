@@ -448,6 +448,9 @@ func dumpTypeString(t Type) string {
 	case *FuncType:
 		return "(" + dumpTypeList(t.Params) + ") => " + dumpTypeString(t.Result)
 	case *GeneratorType:
+		if t.In != nil {
+			return "Coroutine<" + dumpTypeString(t.In) + ", " + dumpTypeString(t.Elem) + ">" + usesSuffix(t.effects())
+		}
 		return "Generator<" + dumpTypeString(t.Elem) + ">" + usesSuffix(t.effects())
 	}
 	return t.String()

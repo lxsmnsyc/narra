@@ -229,6 +229,15 @@ func (e *Emitter) yieldStmt(s *YieldStmt) {
 		e.line("*(%s*)out = %s;", e.gen.elem.CName(), v)
 		e.endStmt()
 		e.suspend()
+		if s.Bind {
+			// The input of the resume that continued the coroutine: the
+			// caller of resume owns it, so the local gets its own reference.
+			e.beginStmt()
+			v := e.consume(fmt.Sprintf("(*(%s*)f->h.in)", s.Local.T.CName()), false, s.Local.T)
+			e.declareLocal(s.Local, v)
+			e.endStmt()
+			e.addLocal(s.Local)
+		}
 		return
 	}
 	// yield* resumes its own copy of other and passes each value on.

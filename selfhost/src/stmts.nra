@@ -3,7 +3,7 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables (D70) through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
-import { Pos, Expr, Stmt, Block, TypeExpr, Pattern } from "narrac/ast"
+import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
 import {
@@ -82,7 +82,7 @@ export function checkStatement<W: Walker>(
     }
     Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
     Stmt.ForStmt(_, _, _, _, iterable, _) => endExpressionNarrowing(mutable checker, iterable)
-    Stmt.YieldStmt(_, value, _) => endExpressionNarrowing(mutable checker, value)
+    Stmt.YieldStmt(_, value, _, _) => endExpressionNarrowing(mutable checker, value)
     _ => {}
   }
   match (statement) {
@@ -151,12 +151,13 @@ export function checkStatement<W: Walker>(
       "continue",
       "continue must be inside a loop",
     )
-    Stmt.YieldStmt(pos, value, delegate) => checkYield(
+    Stmt.YieldStmt(pos, value, delegate, binding) => checkYield(
       mutable checker,
       walker,
       pos,
       value,
       delegate,
+      binding,
     )
   }
   checkMutableConflicts(mutable checker, statement)
@@ -720,8 +721,15 @@ function checkFor<W: Walker>(
     if (iterableType is Type.TArray(arrayElement)) {
       element = arrayElement
     }
-  } else if (iterableType is Type.TGenerator(generatorElement, _, _, _)) {
+  } else if (iterableType is Type.TGenerator(generatorElement, _, _, _, generatorInput)) {
     element = generatorElement
+    if (generatorInput != Type.TVoid) {
+      reportError(
+        mutable checker,
+        getExpressionPos(iterable),
+        "for ... of cannot iterate a coroutine, which needs an input on each resume; call Co.resume(mutable g, input)",
+      )
+    }
   } else if (iterableType is Type.TRange) {
     // A Range value: its bounds are read once, before the loop.
     element = Type.TInt
@@ -755,6 +763,7 @@ function checkYield<W: Walker>(
   pos: Pos,
   value: Expr,
   delegate: bool,
+  binding: Option<YieldBinding>,
 ) uses alloc {
   let word = "yield"
   if (delegate) {
@@ -775,22 +784,41 @@ function checkYield<W: Walker>(
       `${word} cannot be used ${place}; it is valid only directly in a function* body`,
     )
     checkExpression(mutable checker, walker, value, None)
+    declareYieldInput(mutable checker, binding, Type.TVoid)
     return
   }
   const result = checker.resultType
-  if (result is Type.TGenerator(element, _, _, _)) {
+  if (result is Type.TGenerator(element, _, _, _, input)) {
+    if (binding is Some(_) && input == Type.TVoid) {
+      const functionName = checker.functions[checker.functionIndex].name
+      reportError(
+        mutable checker,
+        pos,
+        `the value of yield is available only in a coroutine; declare ${functionName} as Coroutine<In, Out>, or write \`yield value\` without a name`,
+      )
+    }
+    if (delegate && input != Type.TVoid) {
+      reportError(
+        mutable checker,
+        pos,
+        "yield* is not valid in a coroutine; a delegated generator has no input to receive",
+      )
+      checkExpression(mutable checker, walker, value, None)
+      return
+    }
     if (!delegate) {
       const found = checkExpression(mutable checker, walker, value, Some(element))
       expectType(mutable checker, getExpressionPos(value), Some(element), found)
+      declareYieldInput(mutable checker, binding, input)
       return
     }
     const found = checkExpression(mutable checker, walker, value, None)
     let matches = false
-    if (found is Type.TGenerator(otherElement, _, _, _)) {
+    if (found is Type.TGenerator(otherElement, _, _, _, _)) {
       matches = otherElement == element
     }
     if (!matches && found != Type.TVoid) {
-      const wanted = typeString(checker, Type.TGenerator(element, [], -1, -1))
+      const wanted = typeString(checker, Type.TGenerator(element, [], -1, -1, Type.TVoid))
       const text = typeString(checker, found)
       reportError(
         mutable checker,
@@ -802,6 +830,18 @@ function checkYield<W: Walker>(
   }
   // The return type was rejected already.
   checkExpression(mutable checker, walker, value, None)
+  declareYieldInput(mutable checker, binding, Type.TVoid)
+}
+
+// declareYieldInput declares the local of `const input = yield value`.
+function declareYieldInput(
+  mutable checker: Checker,
+  binding: Option<YieldBinding>,
+  type: Type,
+) uses alloc {
+  if (binding is Some(bound)) {
+    declareLocal(mutable checker, bound.id, bound.pos, bound.name, type, bound.isMutable, false)
+  }
 }
 
 // isResult reports a Result value, which a statement may not drop.
@@ -929,7 +969,7 @@ function collectAssignedInStatement(statement: Stmt, mutable names: Array<string
       collectAssignedInExpr(iterable, mutable names)
       collectAssignedInBlock(body, mutable names)
     }
-    Stmt.YieldStmt(_, value, _) => collectAssignedInExpr(value, mutable names)
+    Stmt.YieldStmt(_, value, _, _) => collectAssignedInExpr(value, mutable names)
     _ => {}
   }
 }
@@ -1358,7 +1398,7 @@ function collectStatementUses(
         extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
       )
     }
-    Stmt.YieldStmt(_, value, _) => collectUses(checker, mutable collector, value, chain, arms)
+    Stmt.YieldStmt(_, value, _, _) => collectUses(checker, mutable collector, value, chain, arms)
     _ => {}
   }
 }
@@ -1461,7 +1501,13 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
       noCalls,
       noArms,
     )
-    Stmt.YieldStmt(_, value, _) => collectUses(checker, mutable collector, value, noCalls, noArms)
+    Stmt.YieldStmt(_, value, _, _) => collectUses(
+      checker,
+      mutable collector,
+      value,
+      noCalls,
+      noArms,
+    )
     _ => {}
   }
   let reported: Array<int> = []

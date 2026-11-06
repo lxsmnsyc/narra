@@ -71,7 +71,8 @@ import (
 //	while L:C                    .cond  .body
 //	for L:C                      name=""   .iter  .body
 //	break L:C, continue L:C
-//	yield L:C                    delegate (for `yield*`)   direct: the value
+//	yield L:C                    delegate (for `yield*`) let name="" (for
+//	                             `const name = yield value`)   direct: the value
 //	int L:C                      text=""
 //	float L:C                    text=""
 //	string L:C                   value="" end=L:C
@@ -447,7 +448,11 @@ func (d *astDumper) stmt(s Stmt) {
 	case *ContinueStmt:
 		d.node("continue", n.Pos, labelAttr(n.Label), nil)
 	case *YieldStmt:
-		d.node("yield", n.Pos, flag("delegate", n.Delegate), func() { d.expr(n.Value) })
+		var name []string
+		if n.Bind {
+			name = strAttr("name", n.Name)
+		}
+		d.node("yield", n.Pos, join(flag("delegate", n.Delegate), flag("let", n.Mutable), name), func() { d.expr(n.Value) })
 	default:
 		panic(fmt.Sprintf("astdump: unknown statement %T", s))
 	}

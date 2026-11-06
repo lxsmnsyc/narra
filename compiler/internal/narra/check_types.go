@@ -136,6 +136,9 @@ func (c *Checker) templateEdges(t Type, out []genericEdge) []genericEdge {
 	case *ArrayType:
 		return c.templateEdges(t.Elem, out)
 	case *GeneratorType:
+		if t.In != nil {
+			out = c.templateEdges(t.In, out)
+		}
 		return c.templateEdges(t.Elem, out)
 	case *BoxType:
 		return c.templateEdges(t.Elem, out)
@@ -304,10 +307,10 @@ func (c *Checker) substitute(t Type, m map[*TypeParamType]Type) Type {
 	case *ArrayType:
 		return c.arrayOf(c.substitute(t.Elem, m))
 	case *GeneratorType:
-		if !containsTypeParam(t.Elem) {
+		if !containsTypeParam(t.Elem) && (t.In == nil || !containsTypeParam(t.In)) {
 			return t
 		}
-		return &GeneratorType{Elem: c.substitute(t.Elem, m), Effects: t.Effects, Binder: t.Binder, Origin: t.Origin, Bound: t.Bound}
+		return &GeneratorType{Elem: c.substitute(t.Elem, m), In: c.substituteInput(t.In, m), Effects: t.Effects, Binder: t.Binder, Origin: t.Origin, Bound: t.Bound}
 	case *BoxType:
 		return c.boxOf(c.substitute(t.Elem, m))
 	case *MapType:
@@ -362,6 +365,9 @@ func unify(pat, act Type, m map[*TypeParamType]Type) {
 	case *GeneratorType:
 		if a, ok := act.(*GeneratorType); ok {
 			unify(p.Elem, a.Elem, m)
+			if p.In != nil && a.In != nil {
+				unify(p.In, a.In, m)
+			}
 		}
 	case *BoxType:
 		if a, ok := act.(*BoxType); ok {
@@ -514,7 +520,14 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 			c.errorf(te.Pos, "Generator takes one type argument")
 			return TVoid
 		}
-		return c.generatorOf(c.resolveType(te.Args[0]), te.Uses)
+		return c.generatorOf(c.resolveType(te.Args[0]), nil, te.Uses)
+	}
+	if te.Name == "Coroutine" && c.generics["Coroutine"] == nil && c.types["Coroutine"] == nil {
+		if len(te.Args) != 2 {
+			c.errorf(te.Pos, "Coroutine takes two type arguments")
+			return TVoid
+		}
+		return c.generatorOf(c.resolveType(te.Args[1]), c.resolveType(te.Args[0]), te.Uses)
 	}
 	if te.Name == "Array" {
 		if len(te.Args) != 1 {
@@ -568,8 +581,16 @@ func (c *Checker) resolveType(te *TypeExpr) Type {
 // generatorOf makes the type Generator<elem> uses effects. Effect variables
 // in the list belong to the function whose signature or body is being
 // checked (D78).
-func (c *Checker) generatorOf(elem Type, effects []string) *GeneratorType {
-	t := &GeneratorType{Elem: elem}
+// substituteInput substitutes the input type of a coroutine type; nil stays nil.
+func (c *Checker) substituteInput(t Type, m map[*TypeParamType]Type) Type {
+	if t == nil {
+		return nil
+	}
+	return c.substitute(t, m)
+}
+
+func (c *Checker) generatorOf(elem, input Type, effects []string) *GeneratorType {
+	t := &GeneratorType{Elem: elem, In: input}
 	owner := c.sigFunc
 	seen := map[string]bool{}
 	for _, n := range effects {
@@ -615,7 +636,7 @@ func (c *Checker) expectType(pos Pos, want, got Type) {
 		return
 	}
 	if wg, ok := want.(*GeneratorType); ok {
-		if gg, ok := got.(*GeneratorType); ok && sameType(wg.Elem, gg.Elem) {
+		if gg, ok := got.(*GeneratorType); ok && sameType(wg.Elem, gg.Elem) && sameInput(wg.In, gg.In) {
 			c.expectGenerator(pos, wg, gg)
 			return
 		}
@@ -643,7 +664,7 @@ func (c *Checker) bindCallResult(e *CallExpr, t Type) Type {
 		return t
 	}
 	c.boundCalls++
-	return &GeneratorType{Elem: g.Elem, Binder: c.sigFunc, Bound: &boundEffects{id: c.boundCalls, call: e}}
+	return &GeneratorType{Elem: g.Elem, In: g.In, Binder: c.sigFunc, Bound: &boundEffects{id: c.boundCalls, call: e}}
 }
 
 // generatorUse is a generator value used where a generator type is

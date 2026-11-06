@@ -289,7 +289,7 @@ func (p *Parser) typeExpr() *TypeExpr {
 		}
 		p.expect(">")
 	}
-	if te.Name == "Generator" {
+	if te.Name == "Generator" || te.Name == "Coroutine" {
 		// A generator type carries the effects its body has when it runs:
 		// `Generator<string> uses io` (D78).
 		te.Uses = p.usesList()
@@ -760,6 +760,16 @@ func (p *Parser) stmt() Stmt {
 			s.Type = p.typeExpr()
 		}
 		p.expect("=")
+		if p.is("yield") && s.Name != "" && s.Type == nil && !(p.toks[p.i+1].Kind == TokPunct && p.toks[p.i+1].Text == "*") {
+			// `const input = yield value` in a coroutine.
+			y := &YieldStmt{Pos: p.next().Pos, Bind: true, Mutable: s.Mutable, Name: s.Name, NamePos: s.Pos}
+			if p.tok().Kind == TokNewline || p.tok().Kind == TokEOF || p.is("}") {
+				p.fail(p.tok().Pos, "`yield` needs a value: write `yield value`, or `yield* generator`")
+			}
+			y.Value = p.expr()
+			p.endStatement()
+			return y
+		}
 		s.Value = p.expr()
 		p.endStatement()
 		return s

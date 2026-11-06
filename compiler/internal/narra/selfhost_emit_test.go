@@ -34,7 +34,7 @@ func emitInputs(t *testing.T) []emitInput {
 			inputs = append(inputs, emitInput{path: path, name: filepath.ToSlash(name), tests: tests(filepath.Base(path))})
 		}
 	}
-	add("*.nra", func(base string) bool { return base == "tests.nra" || strings.HasPrefix(base, "std_test") })
+	add("*.nra", func(base string) bool { return base == "tests.nra" || strings.HasPrefix(base, "std_test") || strings.HasPrefix(base, "coroutine_tests") })
 	add("panics/*.nra", func(string) bool { return false })
 	add("packages/*", func(base string) bool { return base == "runner" })
 	add("runner/mixed.nra", func(string) bool { return true })

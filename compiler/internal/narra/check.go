@@ -455,13 +455,13 @@ func (c *Checker) resolveSignature(fd, origin *FuncDecl) {
 		}
 		return
 	}
-	if fd.Result == nil || fd.Result.Name != "Generator" || len(fd.Result.Args) != 1 {
+	if fd.Result == nil || !(fd.Result.Name == "Generator" && len(fd.Result.Args) == 1 || fd.Result.Name == "Coroutine" && len(fd.Result.Args) == 2) {
 		if report {
 			pos := fd.Pos
 			if fd.Result != nil {
 				pos = fd.Result.Pos
 			}
-			c.errorf(pos, "generator %s must declare its return type as Generator<T>", fd.Name)
+			c.errorf(pos, "generator %s must declare its return type as Generator<T> or Coroutine<In, Out>", fd.Name)
 		}
 		return
 	}
@@ -473,7 +473,7 @@ func (c *Checker) resolveSignature(fd, origin *FuncDecl) {
 		return
 	}
 	if !origin.Exported {
-		t = &GeneratorType{Elem: t.Elem, Origin: origin}
+		t = &GeneratorType{Elem: t.Elem, In: t.In, Origin: origin}
 	}
 	fd.ResultT = t
 }

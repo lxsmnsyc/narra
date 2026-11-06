@@ -131,7 +131,7 @@ func containsTypeParam(t Type) bool {
 	case *ArrayType:
 		return containsTypeParam(t.Elem)
 	case *GeneratorType:
-		return containsTypeParam(t.Elem)
+		return containsTypeParam(t.Elem) || (t.In != nil && containsTypeParam(t.In))
 	case *BoxType:
 		return containsTypeParam(t.Elem)
 	case *MapType:
@@ -212,6 +212,7 @@ func (t *RangeType) CName() string  { return "narra_range" }
 // effects the arguments bind (bindCallResult), and Effects is unused.
 type GeneratorType struct {
 	Elem    Type
+	In      Type // the input type of a Coroutine<In, Out>; nil for a Generator<T>
 	Effects []string
 	Binder  *FuncDecl
 	Origin  *FuncDecl
@@ -239,7 +240,19 @@ func (t *GeneratorType) effects() []string {
 	return t.Effects
 }
 
+// sameInput compares the input types of two generator types: nil (a plain
+// generator) equals only nil.
+func sameInput(a, b Type) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return sameType(a, b)
+}
+
 func (t *GeneratorType) String() string {
+	if t.In != nil {
+		return "Coroutine<" + t.In.String() + ", " + t.Elem.String() + ">" + usesSuffix(t.effects())
+	}
 	return "Generator<" + t.Elem.String() + ">" + usesSuffix(t.effects())
 }
 
@@ -295,7 +308,7 @@ func sameType(a, b Type) bool {
 	ga, ok1 := a.(*GeneratorType)
 	gb, ok2 := b.(*GeneratorType)
 	if ok1 && ok2 {
-		return sameType(ga.Elem, gb.Elem) && ga.Origin == gb.Origin && ga.Bound == gb.Bound && ga.Binder == gb.Binder && strings.Join(ga.Effects, ",") == strings.Join(gb.Effects, ",")
+		return sameType(ga.Elem, gb.Elem) && sameInput(ga.In, gb.In) && ga.Origin == gb.Origin && ga.Bound == gb.Bound && ga.Binder == gb.Binder && strings.Join(ga.Effects, ",") == strings.Join(gb.Effects, ",")
 	}
 	fa, ok1 := a.(*FuncType)
 	fb, ok2 := b.(*FuncType)

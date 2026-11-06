@@ -222,7 +222,16 @@ func (c *Checker) exported(pos Pos, s *modScope, n string) Decl {
 
 // moduleCall checks `Alias.name(args)` where Alias names a package module.
 func (c *Checker) moduleCall(e *CallExpr, s *modScope, callee *FieldExpr, want Type) Type {
-	d := c.exported(callee.P, s, callee.Name)
+	name := callee.Name
+	if s.path == "std/coroutine" && name == "resume" {
+		// Co.resume(mutable g) resumes a generator, and
+		// Co.resume(mutable g, input) a coroutine (D79).
+		name = "resumeGenerator"
+		if len(e.Args) != 1 {
+			name = "resumeCoroutine"
+		}
+	}
+	d := c.exported(callee.P, s, name)
 	if _, isConst := d.(*ConstDecl); isConst {
 		return c.valueCall(e) // a constant holding a function
 	}

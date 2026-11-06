@@ -28,6 +28,7 @@ type scopeFrame struct {
 }
 
 type Emitter struct {
+	tests    bool // a test build (narra test)
 	prog     *Program
 	file     string
 	lits     strings.Builder
@@ -52,7 +53,7 @@ type Emitter struct {
 }
 
 func Emit(prog *Program, entry *FuncDecl, tests bool) string {
-	e := &Emitter{prog: prog}
+	e := &Emitter{prog: prog, tests: tests}
 	var b strings.Builder
 	b.WriteString(runtimeH)
 	for _, m := range prog.Modules {

@@ -21,7 +21,7 @@
 // statement temporaries and scope locals of unwindAll), recorded per yield.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Expr, Block, Pos, FuncDecl } from "narrac/ast"
+import { Expr, Block, Pos, FuncDecl, YieldBinding } from "narrac/ast"
 import { Type } from "narrac/types"
 import { getExpressionId } from "narrac/check"
 import { cType, generatorPart } from "narrac/cnames"
@@ -48,6 +48,7 @@ import {
   retainCode,
   releaseCode,
   declareLocalVariable,
+  declareLocal,
 } from "narrac/emitstate"
 import { declaredLocal } from "narrac/emitexprs"
 import * as Arrays from "std/array"
@@ -68,7 +69,7 @@ export function emitGenerator<W: EmitWalker>(
   const resume = generatorPart("y", owner)
   const clone = generatorPart("j", owner)
   const drop = generatorPart("z", owner)
-  if (result is Type.TGenerator(element, _, _, _)) {
+  if (result is Type.TGenerator(element, _, _, _, _)) {
     emitter.generatorElement = element
   }
   emitter.inGenerator = true
@@ -245,6 +246,7 @@ export function emitYield<W: EmitWalker>(
   mutable emitter: Emitter,
   value: Expr,
   delegate: bool,
+  binding: Option<YieldBinding>,
 ) uses alloc {
   beginStatement(mutable emitter)
   const valueType = typeOf(emitter, getExpressionId(value))
@@ -256,6 +258,18 @@ export function emitYield<W: EmitWalker>(
     writeLine(mutable emitter, `*(${elementName}*)out = ${consumed};`)
     endStatement(mutable emitter)
     suspend(mutable emitter)
+    if (binding is Some(bound)) {
+      // The input of the resume that continued the coroutine: the caller of
+      // resume owns it, so the local gets its own reference.
+      beginStatement(mutable emitter)
+      const localIndex = declaredLocal(emitter, bound.id)
+      const local = emitter.checker.bodies[emitter.body].locals[localIndex]
+      const inputName = cType(emitter.checker, local.localType)
+      const input = consume(mutable emitter, `(*(${inputName}*)f->h.in)`, false, local.localType)
+      declareLocal(mutable emitter, localIndex, input)
+      endStatement(mutable emitter)
+      addLocal(mutable emitter, localIndex)
+    }
     return
   }
   // yield* resumes its own copy of other and passes each value on.

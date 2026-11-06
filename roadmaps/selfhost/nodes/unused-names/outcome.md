@@ -8,6 +8,7 @@
 - The error is reported at the end of each body (function, test, constant, field default), in source order, at `Local.Pos` (the `const`, `let` or `for` keyword, or the name of a parameter or pattern binding), and only when the body has no other error.
 - Entry exemption: only the `args` parameter of the entry function of a binary (`Checker.isEntryFunc` in Go; `Checker.entryTargets` in selfhost). A `run` in a library module or an `implement` block reports.
 - Guide: chapter 3 ("A name you do not use") explains the `_` rule with an error sample and its fix; chapter 7 says an unused parameter in an `implement` function starts with `_`.
+- The fix of a write-only struct-pattern shorthand (`{ host }` assigned later) rewrites the declaration to `host: _host` and renames the assignments (`errors/unused_written_pattern.nra`). Selfhost has no fixes. `x = x + 1`, `p.x = 1` and `e[0] = 3` count as reads of `x`, `p` and `e` (README).
 - New tests: `errors/unused_written.nra`, `testdata/unused_mutable_output.nra`, `testdata/packages/errors/unused_library_run/`.
 - Go: `compiler/internal/narra/check_unused.go` (`reportUnused`), `Checker.declared`, `Local.NamePos/Shorthand/Exempt`, `Param.NamePos`, `VarStmt.NamePos`, `ForStmt.NamePos`, `Pattern.Shorthand` (AST fields not shown in the AST dump; copied in `clone.go`), codes in `diagnostic_codes.go`.
 - selfhost: `reportUnusedLocals` in `selfhost/src/check.nra`, called from `finishBody`; `BodyInfo.errorCount`. It matches Go's messages and positions. It has no fixes (selfhost has no fix output).

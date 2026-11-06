@@ -30,15 +30,17 @@ func (c *Checker) reportUnused(start, errs int) {
 			continue
 		}
 		unused := "_" + l.Name
-		fix := Fix{Title: "Rename to " + unused, Edits: []Edit{{Start: l.NamePos, End: l.NamePos, Text: "_"}}}
+		// The declaration: `{ host }` becomes `{ host: _host }`, because renaming
+		// alone would change the field; any other name gets a leading `_`.
+		edit := Edit{Start: l.NamePos, End: l.NamePos, Text: "_"}
+		if l.Shorthand {
+			end := Pos{Line: l.NamePos.Line, Col: l.NamePos.Col + len(l.Name)}
+			edit = Edit{Start: end, End: end, Text: ": " + unused}
+		}
+		fix := Fix{Title: "Rename to " + unused, Edits: []Edit{edit}}
 		for _, w := range l.Writes {
 			// The fix renames the assignments too, or the file would not compile.
 			fix.Edits = append(fix.Edits, Edit{Start: w, End: w, Text: "_"})
-		}
-		if l.Shorthand {
-			// `{ host }` becomes `{ host: _host }`; renaming alone would change the field.
-			end := Pos{Line: l.NamePos.Line, Col: l.NamePos.Col + len(l.Name)}
-			fix = Fix{Title: "Rename to " + unused, Edits: []Edit{{Start: end, End: end, Text: ": " + unused}}}
 		}
 		if l.Param {
 			c.errorfFix(l.Pos, []Fix{fix}, "parameter %q is never read; remove it, or name it %q to mark it as unused on purpose", l.Name, unused)

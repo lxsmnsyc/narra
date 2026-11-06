@@ -76,7 +76,7 @@ export function run(args: Array<string>): int {
 no discount yet
 ```
 
-The same goes for a parameter. A function that is passed to something else often has to accept a value it does not need, and it writes that parameter as `_event`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed.
+The same goes for a parameter: if a function has to take a value it does not need, write the parameter as `_scale` instead of `scale`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed.
 
 ## A function that calls itself
 

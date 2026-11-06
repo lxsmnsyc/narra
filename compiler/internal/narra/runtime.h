@@ -160,6 +160,9 @@ static int narra_co_next(narra_gen** p, void* out, const void* in, bool guard) {
   if (setjmp(here)) {
     narra_panic_jmp = outer;
     g->state = -1;
+    // The count goes back to its value before the resume. This assumes the
+    // coroutine only allocated since then: a free of memory from before the
+    // resume would be miscounted (the leak check would then see one extra).
     narra_live = live;
     narra_co_panicked = true;
     return -1;

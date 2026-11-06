@@ -526,6 +526,10 @@ func (w *effectWalker) userCall(e *CallExpr) {
 	// An implement block function shows as <Type>.<Trait>.<function>, not
 	// as the C name resolveImpl gave it.
 	via := g.Name
+	if g.Module == "std/coroutine" && (via == "resumeGenerator" || via == "resumeCoroutine") {
+		// The call was written Co.resume (modules_check.go).
+		via = "Co.resume"
+	}
 	if s.implNames == nil {
 		s.implNames = map[*FuncDecl]string{}
 		for t, funcs := range s.c.traits.implFuncs {

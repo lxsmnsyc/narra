@@ -146,7 +146,7 @@ go test ./...
 
 ## Differences from the spec
 
-- `Co.resume` is not an importable name: `import { resume } from "std/coroutine"` reports no such export, and `Co.resume` works only through a module alias. A resume charges `alloc` for the `Step` payload besides the effects of the generator type. A panicked coroutine does not free what it held.
+- `Co.resume` is not an importable name: `import { resume } from "std/coroutine"` is an error with a hint, and `Co.resume` works only through a module alias. A resume charges `alloc` for the `Step` payload besides the effects of the generator type. A panicked coroutine does not free what it held.
 - A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
 - `==` and `!=` work on a distinct type when its base type supports them (and it can be a map key). SPEC.md says no operators carry over.
 - A distinct type cannot list traits with `implements` or `derives`; SPEC.md allows it.

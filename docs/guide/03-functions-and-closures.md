@@ -50,6 +50,34 @@ export function run(args: Array<string>): int {
 }
 ```
 
+### A name you do not use
+
+A name that nothing reads is usually a leftover from an earlier version of the code, or a typo for another name. The compiler reports it, whether it is a `const`, a `let`, a loop variable or a parameter:
+
+```narra error
+// error: 3:3: "discount" is never read; remove it, or name it "_discount" to mark it as unused on purpose
+export function run(args: Array<string>): int {
+  const discount = 10
+  return 0
+}
+```
+
+Delete the line, or, when the name has to be there, start it with `_` to say that you chose not to use it:
+
+```narra
+export function run(args: Array<string>): int {
+  const _discount = 10
+  print("no discount yet")
+  return 0
+}
+```
+
+```text
+no discount yet
+```
+
+The same goes for a parameter: if a function has to take a value it does not need, write the parameter as `_scale` instead of `scale`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed.
+
 ## A function that calls itself
 
 The shop gives change in coins of 50, 25, 10 and 5 cents. In how many different ways can it pay out 100 cents?
@@ -278,11 +306,37 @@ export function run(args: Array<string>): int {
 290
 ```
 
-An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters, whose values cannot change. It cannot capture a `let` name:
+An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters by value, since they cannot change. It can also use a `let` name, as long as it is passed straight to a parameter that is not `escaping`, such as `action` below. The closure then works on the variable itself, so a write inside it is visible after the call:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function each(items: Array<int>, action: (item: int) => void) {
+  for (const item of Arrays.values(items)) {
+    action(item)
+  }
+}
+
+export function run(args: Array<string>): int {
+  let total = 0
+  each([1, 2, 3], (item) => {
+    total = total + item
+  })
+  print(Int.toString(total))
+  return 0
+}
+```
+
+```text
+6
+```
+
+A closure that is stored, returned or passed to an `escaping` parameter cannot capture a `let` name:
 
 ```narra error
-// error: 8:22: a closure cannot capture "count" because it is declared with let; closures capture only constants
-function apply(rule: () => int): int {
+// error: 8:22: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping
+function apply(escaping rule: () => int): int {
   return rule()
 }
 
@@ -292,7 +346,26 @@ export function run(args: Array<string>): int {
 }
 ```
 
-If the closure captured a `let`, a later assignment would change the value the closure sees, long after the closure was made. Copy the current value into a `const` (`const current = count`) and capture that.
+A stored or returned closure can be called long after the function that made it has returned, when `count` no longer exists. A closure passed to a parameter that is not `escaping` can only run during the call, so the variable is still there. For a closure that outlives the call, copy the current value into a `const` (`const current = count`) and capture that.
+
+While the closure runs, the variable it assigns belongs to it. The same call cannot also pass that variable as another argument, because the function could be reading it while the closure replaces it:
+
+```narra error
+// error: 8:8: "items" is assigned by a closure passed to this call, so no other argument can use it
+function each(items: Array<int>, action: () => void) {
+  action()
+}
+
+export function run(args: Array<string>): int {
+  let items = [1, 2]
+  each(items, () => {
+    items = []
+  })
+  return 0
+}
+```
+
+Two closures in one call may both read the same variable. Only a closure that assigns it makes the call exclusive.
 
 ## Make new functions from old ones
 

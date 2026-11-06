@@ -92,45 +92,82 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
     return
   }
 
-  // Walk the arrow functions from the innermost out.
+  // The arrow functions from the innermost outwards, up to the one inside
+  // the scope that declares the local, all capture it.
   const innermost = checker.bodies[body].arrowDepth - 1
-  let level = innermost
-  while (level >= 0) {
-    const context = checker.bodies[body].arrows[level]
-    if (isDeclaredBelow(checker, context.outerDepth, index, local.name)) {
-      return
-    }
-
-    // Only the innermost arrow reports what cannot be captured.
-    if (level == innermost) {
-      if (local.noEscape) {
-        reportError(
-          mutable checker,
-          pos,
-          `a closure cannot capture parameter ${name} because it is not escaping; declare it as \`escaping ${local.name}\``,
-        )
-        return
-      }
-      if (local.isMutable && local.param) {
-        reportError(
-          mutable checker,
-          pos,
-          `a closure cannot capture mutable parameter ${name}; copy it first with \`const copy = ${local.name}\``,
-        )
-        return
-      }
-      if (local.isMutable) {
-        reportError(
-          mutable checker,
-          pos,
-          `a closure cannot capture ${name} because it is declared with let; closures capture only constants`,
-        )
-        return
-      }
-    }
-    addCapture(mutable checker, context.closure, index)
-    level = level - 1
+  let first = innermost + 1
+  while (
+    first > 0 &&
+      !isDeclaredBelow(
+        checker,
+        checker.bodies[body].arrows[first - 1].outerDepth,
+        index,
+        local.name,
+      )
+  ) {
+    first = first - 1
   }
+  if (first == innermost + 1) {
+    return
+  }
+  if (local.noEscape) {
+    reportError(
+      mutable checker,
+      pos,
+      `a closure cannot capture parameter ${name} because it is not escaping; declare it as \`escaping ${local.name}\``,
+    )
+    return
+  }
+
+  // A let or a mutable parameter is captured by reference, so every closure
+  // between the use and the declaration must be a stack closure (D77).
+  if (local.isMutable) {
+    let check = first
+    while (check <= innermost) {
+      const closure = checker.bodies[body].arrows[check].closure
+      if (!checker.bodies[body].closures[closure].stack) {
+        if (local.param) {
+          reportError(
+            mutable checker,
+            pos,
+            `a closure cannot capture mutable parameter ${name} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+          )
+        } else {
+          reportError(
+            mutable checker,
+            pos,
+            `a closure cannot capture ${name} because it is declared with let, unless it is passed straight to a function parameter that is not escaping`,
+          )
+        }
+        return
+      }
+      check = check + 1
+    }
+  }
+  let level = first
+  while (level <= innermost) {
+    const closure = checker.bodies[body].arrows[level].closure
+    addCapture(mutable checker, closure, index)
+    level = level + 1
+  }
+}
+
+// isCapturedByArrow reports whether a `let` or mutable parameter is used
+// inside an arrow function it is declared outside of. The closure holds it
+// by reference, so no `is` test outside the closure narrows it there.
+export function isCapturedByArrow(checker: Checker, index: int): bool {
+  const body = checker.body
+  const depth = checker.bodies[body].arrowDepth
+  const local = checker.bodies[body].locals[index]
+  if (!local.isMutable || depth == 0) {
+    return false
+  }
+  return !isDeclaredBelow(
+    checker,
+    checker.bodies[body].arrows[depth - 1].outerDepth,
+    index,
+    local.name,
+  )
 }
 
 function addCapture(mutable checker: Checker, closure: int, local: int) uses alloc {

@@ -71,6 +71,7 @@ func (c *Checker) constType(d *ConstDecl, pos Pos) Type {
 		want = c.resolveType(d.Type)
 	}
 	nerrs := len(c.errs)
+	start := len(c.declared)
 	t := c.expr(d.Value, want)
 	if want != nil {
 		c.expectType(d.Value.position(), want, t)
@@ -83,6 +84,7 @@ func (c *Checker) constType(d *ConstDecl, pos Pos) Type {
 			c.checkConstValue(d, d.Value)
 		}
 	}
+	c.reportUnused(start, nerrs)
 	d.T = t
 	d.state = constDone
 	c.prog.Consts = append(c.prog.Consts, d)

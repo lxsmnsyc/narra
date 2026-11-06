@@ -9,18 +9,22 @@ func (c *Checker) funcBody(fd *FuncDecl, env map[string]Type) {
 	}
 	defer func() { c.sigFunc = saved }()
 	c.env = env
+	start, errs := len(c.declared), len(c.errs)
 	c.loops = 0
 	c.labels = nil
 	c.blocks = nil
 	c.scope = &scope{names: map[string]*Local{}}
 	for _, p := range fd.Params {
 		l := c.declare(p.Pos, p.Name, p.T, p.Mutable)
+		l.NamePos = p.NamePos
+		l.Exempt = c.isEntryFunc(fd)
 		l.Param = true
 		l.ByRef = p.Mutable
 		c.funcParam(p, l)
 		p.Local = l
 	}
 	c.block(fd.Body)
+	c.reportUnused(start, errs)
 	c.env = nil
 }
 
@@ -211,6 +215,10 @@ func assignedInExpr(x Expr, names map[string]bool) {
 		}
 	case *BlockExpr:
 		assignedInBlock(x.Block, names)
+	case *ArrowExpr:
+		// A closure passed to a call may assign what it captures.
+		assignedInExpr(x.Body, names)
+		assignedInBlock(x.Block, names)
 	case *MatchExpr:
 		assignedInExpr(x.Subject, names)
 		for _, arm := range x.Arms {
@@ -318,14 +326,28 @@ func (c *Checker) stmt(s Stmt) {
 			c.errorf(s.Pos, "this expression has no value")
 		}
 		s.Local = c.declare(s.Pos, s.Name, t, s.Mutable)
+		s.Local.NamePos = s.NamePos
 	case *AssignStmt:
 		if c.constWrite(s.Pos, s.Target) {
 			c.expr(s.Value, nil)
 			return
 		}
+		// Writing a local does not read it. A mutable parameter is an output
+		// the caller sees, so a write to it counts as a use.
+		var written *Local
+		wasUsed := false
+		if id, ok := s.Target.(*Ident); ok {
+			if l := c.lookup(id.Name); l != nil && !(l.Param && l.Mutable) {
+				written, wasUsed = l, l.Used
+				l.Writes = append(l.Writes, id.P)
+			}
+		}
 		c.assigning = s.Target
 		t := c.expr(s.Target, nil)
 		c.assigning = nil
+		if written != nil {
+			written.Used = wasUsed
+		}
 		root := c.lvalueRoot(s.Target)
 		if root == nil {
 			c.errorf(s.Pos, "only variables, fields and array elements can be assigned")
@@ -439,6 +461,7 @@ func (c *Checker) stmt(s Stmt) {
 		c.endLoopNarrowing(nil, s.Body)
 		c.push()
 		s.Local = c.declare(s.Pos, s.Name, elem, false)
+		s.Local.NamePos = s.NamePos
 		c.enterLoop(s.Pos, s.Label)
 		c.block(s.Body)
 		c.leaveLoop(s.Label)

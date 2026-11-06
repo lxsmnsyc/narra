@@ -194,6 +194,62 @@ const FIXED_CALLS: Array<FixedCall> = [
     owned: false,
     temporary: false,
   },
+  FixedCall {
+    name: "Fs.isDir",
+    call: "narra_fs_is_dir",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Io.write",
+    call: "narra_io_write",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Io.writeError",
+    call: "narra_io_write_error",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Io.flush",
+    call: "narra_io_flush",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Path.join",
+    call: "narra_path_join",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Path.dirname",
+    call: "narra_path_dirname",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Path.basename",
+    call: "narra_path_basename",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Path.extname",
+    call: "narra_path_extname",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
 ]
 
 function plain(text: string): Code {
@@ -293,6 +349,27 @@ function emitNamedCall<W: EmitWalker>(
   }
   if (name == "Fs.listDir") {
     return emitListDir(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.createDir") {
+    return emitFsChange(walker, mutable emitter, "narra_fs_mkdir", nodeId, arguments)
+  }
+  if (name == "Fs.removeFile") {
+    return emitFsChange(walker, mutable emitter, "narra_fs_unlink", nodeId, arguments)
+  }
+  if (name == "Fs.removeDir") {
+    return emitFsChange(walker, mutable emitter, "narra_fs_rmdir", nodeId, arguments)
+  }
+  if (name == "Fs.createDirAll") {
+    return emitCreateDirAll(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Io.readLine") {
+    return emitReadLine(mutable emitter, nodeId)
+  }
+  if (name == "Io.readBytes") {
+    return emitReadBytes(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Io.readAll") {
+    return emitReadAll(mutable emitter, nodeId)
   }
   if (name == "Process.run") {
     return emitProcessRun(walker, mutable emitter, nodeId, arguments)
@@ -693,6 +770,109 @@ function emitListDir<W: EmitWalker>(
   writeLine(mutable emitter, `  free(${names}.items);`)
   writeLine(mutable emitter, "}")
   return ioResult(mutable emitter, resultType, success, array, bad)
+}
+
+// Fs.createDir, Fs.removeFile and Fs.removeDir: Ok(true) or Err(message).
+function emitFsChange<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  call: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `${call}(${path}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, "true", bad)
+}
+
+// Fs.createDirAll(path): Ok holds whether a directory was created.
+function emitCreateDirAll<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const created = temp(mutable emitter, Type.TBool, "false")
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_mkdir_all(${path}, &${created}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, created, bad)
+}
+
+// Io.readLine(): Ok(Some(line)), Ok(None) at the end of the input, or Err.
+function emitReadLine(mutable emitter: Emitter, nodeId: int): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const okVariant = findVariant(emitter, resultType, "Ok")
+  const errorVariant = findVariant(emitter, resultType, "Err")
+  const optionType = variantFieldType(emitter, resultType, okVariant)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const line = stringOut(mutable emitter)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_io_read_line(&${line}, &${bad})`)
+  const resultName = cType(emitter.checker, resultType)
+  const result = ownedTemp(mutable emitter, resultType, `((${resultName}){0})`)
+  writeLine(mutable emitter, `if (${success}) {`)
+  emitter.indent = emitter.indent + 1
+  // The Option moves into Ok, so it is a plain temporary.
+  const optionName = cType(emitter.checker, optionType)
+  const option = temp(mutable emitter, optionType, `((${optionName}){0})`)
+  writeLine(mutable emitter, `if (${line}) {`)
+  emitter.indent = emitter.indent + 1
+  const someCode = Decls.enumAllocation(mutable emitter, optionType, some, [line])
+  writeLine(mutable emitter, `${option} = ${someCode.text};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "} else {")
+  emitter.indent = emitter.indent + 1
+  const noneCode = Decls.enumAllocation(mutable emitter, optionType, none, [])
+  writeLine(mutable emitter, `${option} = ${noneCode.text};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  const okCode = Decls.enumAllocation(mutable emitter, resultType, okVariant, [option])
+  writeLine(mutable emitter, `${result} = ${okCode.text};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "} else {")
+  emitter.indent = emitter.indent + 1
+  const errorCode = Decls.enumAllocation(mutable emitter, resultType, errorVariant, [bad])
+  writeLine(mutable emitter, `${result} = ${errorCode.text};`)
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  return owned(result)
+}
+
+// Io.readBytes(count)
+function emitReadBytes<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const count = argumentText(walker, mutable emitter, arguments, 0)
+  const output = stringOut(mutable emitter)
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_io_read_exact(${count}, &${output}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, output, bad)
+}
+
+// Io.readAll()
+function emitReadAll(mutable emitter: Emitter, nodeId: int): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const output = stringOut(mutable emitter)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_io_read_all(&${output}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, output, bad)
 }
 
 // Process.run(command, args): Ok(#[exit code, stdout, stderr]) or Err(message).

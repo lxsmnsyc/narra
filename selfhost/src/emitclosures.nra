@@ -30,6 +30,7 @@ import {
   localOf,
   localName,
   localRef,
+  isReference,
   ownedTemp,
   temp,
   consume,
@@ -150,7 +151,7 @@ export function emitClosureFunctions(mutable emitter: Emitter): string uses allo
 
 // emitFuncValue returns a named function as a value, through its thunk.
 export function emitFuncValue<W: EmitWalker>(
-  walker: W,
+  _walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
@@ -299,7 +300,7 @@ function emitArrowParts<W: EmitWalker>(
     let parts = [".h = {-1, NULL}"]
     for (const capture of Arrays.values(closure.captures)) {
       const local = localOf(emitter, capture)
-      Arrays.push(mutable parts, `.c_${localName(local)} = ${localRef(emitter, capture)}`)
+      Arrays.push(mutable parts, `.c_${localName(local)} = ${captureValue(emitter, capture)}`)
     }
     writeLine(mutable emitter, `${environmentType} ${environment} = {${Str.join(parts, ", ")}};`)
     return Code {
@@ -332,6 +333,20 @@ function emitArrowParts<W: EmitWalker>(
   return Code { text: value, owned: true }
 }
 
+// captureValue is what a stack environment stores for a capture (Go's
+// captureValue): a pointer to a `let` or mutable parameter, or the value of
+// anything else. A variable that is already a pointer is passed on as it is.
+function captureValue(emitter: Emitter, capture: int): string uses alloc {
+  const local = localOf(emitter, capture)
+  if (!local.isMutable) {
+    return localRef(emitter, capture)
+  }
+  if (isReference(emitter, capture)) {
+    return localName(local)
+  }
+  return `&${localRef(emitter, capture)}`
+}
+
 // emitEnvironmentStruct writes the environment struct of an arrow function
 // and the function that releases its captures.
 function emitEnvironmentStruct(
@@ -344,6 +359,13 @@ function emitEnvironmentStruct(
   Str.append(mutable builder, `typedef struct ${environmentType} { narra_env h;`)
   for (const capture of Arrays.values(closure.captures)) {
     const local = localOf(emitter, capture)
+    if (local.isMutable) {
+      Str.append(
+        mutable builder,
+        ` ${cType(emitter.checker, local.localType)}* c_${localName(local)};`,
+      )
+      continue
+    }
     Str.append(
       mutable builder,
       ` ${cType(emitter.checker, local.localType)} c_${localName(local)};`,
@@ -356,6 +378,9 @@ function emitEnvironmentStruct(
   )
   for (const capture of Arrays.values(closure.captures)) {
     const local = localOf(emitter, capture)
+    if (local.isMutable) {
+      continue // borrowed through a pointer
+    }
     const releaseText = releaseCode(emitter, local.localType, `k->c_${localName(local)}`)
     if (releaseText != "") {
       Str.append(mutable builder, `  ${releaseText}\n`)
@@ -402,6 +427,14 @@ function emitClosureFunction<W: EmitWalker>(
   const savedBlocks = emitter.blocks
   const savedResultType = emitter.resultType
   const savedInGenerator = emitter.inGenerator
+  const savedRefCaptures = emitter.refCaptures
+  // The closure holds each `let` it captures through a pointer.
+  emitter.refCaptures = []
+  for (const capture of Arrays.values(closure.captures)) {
+    if (localOf(emitter, capture).isMutable) {
+      Arrays.push(mutable emitter.refCaptures, capture)
+    }
+  }
   // The closure's variables are its own C locals, even in a generator body.
   emitter.inGenerator = false
   emitter.out = Str.builder()
@@ -416,9 +449,13 @@ function emitClosureFunction<W: EmitWalker>(
     writeLine(mutable emitter, `${environmentType}* k_env = (${environmentType}*)env;`)
     for (const capture of Arrays.values(closure.captures)) {
       const local = localOf(emitter, capture)
+      let pointer = ""
+      if (local.isMutable) {
+        pointer = "*"
+      }
       writeLine(
         mutable emitter,
-        `${cType(checker, local.localType)} ${localName(local)} = k_env->c_${localName(local)};`,
+        `${cType(checker, local.localType)}${pointer} ${localName(local)} = k_env->c_${localName(local)};`,
       )
     }
   }
@@ -453,6 +490,7 @@ function emitClosureFunction<W: EmitWalker>(
   emitter.blocks = savedBlocks
   emitter.resultType = savedResultType
   emitter.inGenerator = savedInGenerator
+  emitter.refCaptures = savedRefCaptures
 }
 
 // emitValueCall emits a call through a function value.

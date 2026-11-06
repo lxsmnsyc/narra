@@ -91,6 +91,23 @@ func ioEither(e *Emitter, rt *EnumType, cond string, a *Variant, aVal []string, 
 // stringOut declares a string out-parameter for a runtime call.
 func stringOut(e *Emitter) string { return e.temp(TStr, "NULL") }
 
+// fsChange builds a std/fs builtin that changes the filesystem and returns
+// Result<bool, string>; Ok holds true.
+func fsChange(name, call string) *Builtin {
+	return &Builtin{
+		Name: name, Effects: []string{"io", "alloc"},
+		Check: func(c *Checker, x *CallExpr, want Type) Type {
+			return checkFixed(c, x, []Type{TStr}, resultOf(c, TBool))
+		},
+		Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
+			path := e.argCode(x, 0)
+			bad := stringOut(e)
+			ok := e.temp(TBool, fmt.Sprintf("%s(%s, &%s)", call, path, bad))
+			return ioResult(e, x.Type().(*EnumType), ok, "true", bad), true
+		},
+	}
+}
+
 func init() {
 	registerModule(&Module{
 		Path:    "std/fs",
@@ -132,6 +149,35 @@ func init() {
 					return fmt.Sprintf("narra_fs_exists(%s)", e.argCode(x, 0)), false
 				},
 			},
+			// isDir(path): true for an existing directory.
+			"isDir": {
+				Name: "Fs.isDir", Params: []Type{TStr}, Result: TBool, Effects: []string{"io"},
+				Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
+					return fmt.Sprintf("narra_fs_is_dir(%s)", e.argCode(x, 0)), false
+				},
+			},
+			// createDir(path): one directory; Err when it exists or the
+			// parent is missing.
+			"createDir": fsChange("Fs.createDir", "narra_fs_mkdir"),
+			// createDirAll(path): the directory and its missing parents; Ok
+			// holds false when the directory was already there.
+			"createDirAll": {
+				Name: "Fs.createDirAll", Effects: []string{"io", "alloc"},
+				Check: func(c *Checker, x *CallExpr, want Type) Type {
+					return checkFixed(c, x, []Type{TStr}, resultOf(c, TBool))
+				},
+				Emit: func(e *Emitter, x *CallExpr, w string) (string, bool) {
+					path := e.argCode(x, 0)
+					created := e.temp(TBool, "false")
+					bad := stringOut(e)
+					ok := e.temp(TBool, fmt.Sprintf("narra_fs_mkdir_all(%s, &%s, &%s)", path, created, bad))
+					return ioResult(e, x.Type().(*EnumType), ok, created, bad), true
+				},
+			},
+			// removeFile(path): deletes a file.
+			"removeFile": fsChange("Fs.removeFile", "narra_fs_unlink"),
+			// removeDir(path): deletes an empty directory.
+			"removeDir": fsChange("Fs.removeDir", "narra_fs_rmdir"),
 			// listDir(path): the entry names, sorted, without "." and "..".
 			"listDir": {
 				Name: "Fs.listDir", Effects: []string{"io", "alloc"},

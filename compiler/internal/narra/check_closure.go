@@ -11,9 +11,11 @@ import "sort"
 // - An arrow function passed straight to a non-escaping parameter gets its
 //   environment on the caller's stack (Closure.Stack). Every other arrow
 //   function with captures gets a reference-counted heap environment.
-// - Closures capture only constants: `const` bindings, non-mutable
-//   parameters, loop and pattern bindings. Capturing a `let` variable, a
-//   mutable parameter or a non-escaping parameter is an error.
+// - A closure captures constants (`const` bindings, non-mutable parameters,
+//   loop and pattern bindings) by value. It captures a `let` variable or a
+//   mutable parameter by reference, and only when every arrow function
+//   between the use and the declaration is a stack closure (D77). Capturing
+//   a non-escaping parameter is an error.
 // - Parameters of a function type, and struct fields and array elements,
 //   always hold escaping values, so a value passed through them must be
 //   escaping too.
@@ -124,24 +126,35 @@ func (c *Checker) useLocal(e *Ident, l *Local) {
 		c.errorf(e.P, "parameter %q cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as `escaping %s` to store, return or capture it", l.Name, l.Name)
 		return
 	}
-	for i := len(st.arrows) - 1; i >= 0; i-- {
-		ctx := st.arrows[i]
-		if declaredBelow(c.scope, ctx.outer, l) {
+	// The arrows from the innermost outwards, up to the one inside the
+	// scope that declares l, all capture it.
+	first := len(st.arrows)
+	for first > 0 && !declaredBelow(c.scope, st.arrows[first-1].outer, l) {
+		first--
+	}
+	if first == len(st.arrows) {
+		return
+	}
+	if l.NoEscape {
+		c.errorf(e.P, "a closure cannot capture parameter %q because it is not escaping; declare it as `escaping %s`", l.Name, l.Name)
+		return
+	}
+	if l.Mutable {
+		// A `let` or a mutable parameter is captured by reference, so every
+		// closure between the use and the declaration must be a stack one.
+		for _, ctx := range st.arrows[first:] {
+			if ctx.clo.Stack {
+				continue
+			}
+			if l.Param {
+				c.errorf(e.P, "a closure cannot capture mutable parameter %q unless it is passed straight to a function parameter that is not escaping; copy it first with `const copy = %s`", l.Name, l.Name)
+			} else {
+				c.errorf(e.P, "a closure cannot capture %q because it is declared with let, unless it is passed straight to a function parameter that is not escaping", l.Name)
+			}
 			return
 		}
-		if i == len(st.arrows)-1 {
-			switch {
-			case l.NoEscape:
-				c.errorf(e.P, "a closure cannot capture parameter %q because it is not escaping; declare it as `escaping %s`", l.Name, l.Name)
-				return
-			case l.Mutable && l.Param:
-				c.errorf(e.P, "a closure cannot capture mutable parameter %q; copy it first with `const copy = %s`", l.Name, l.Name)
-				return
-			case l.Mutable:
-				c.errorf(e.P, "a closure cannot capture %q because it is declared with let; closures capture only constants", l.Name)
-				return
-			}
-		}
+	}
+	for _, ctx := range st.arrows[first:] {
 		have := false
 		for _, x := range ctx.clo.Captures {
 			if x == l {
@@ -443,6 +456,7 @@ func (c *Checker) arrow(e *ArrowExpr, want Type) Type {
 	fn := &FuncDecl{Pos: e.P, Name: "arrow", Params: e.Params, Module: c.mod.path}
 	for _, p := range e.Params {
 		l := c.declare(p.Pos, p.Name, p.T, false)
+		l.NamePos = p.NamePos
 		l.Param = true
 		p.Local = l
 	}
@@ -557,7 +571,7 @@ func (c *Checker) inferReturns(b *Block) Type {
 func cloneArrow(e *ArrowExpr) *ArrowExpr {
 	a := &ArrowExpr{exprBase: exprBase{P: e.P}, Result: e.Result, Body: cloneExpr(e.Body), Block: cloneBlock(e.Block)}
 	for _, p := range e.Params {
-		a.Params = append(a.Params, &Param{Pos: p.Pos, Name: p.Name, Type: p.Type})
+		a.Params = append(a.Params, &Param{Pos: p.Pos, NamePos: p.NamePos, Name: p.Name, Type: p.Type})
 	}
 	return a
 }

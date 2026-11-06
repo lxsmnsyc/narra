@@ -40,7 +40,7 @@ test "a" {
 }`, `panic at prog.nra:4:18: expected a panic containing "bang", got "boom"`},
 		{"failure_inside_closure", `test "a" {
   const xs = [1]
-  Test.panics(() => { const y = xs[0] })
+  Test.panics(() => { const _y = xs[0] })
 }`, "expected a panic, but the function returned"},
 		{"timeout", `test "a" {
   Test.panics(() => { while (true) {} })

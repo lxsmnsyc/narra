@@ -78,11 +78,13 @@ func (c *Checker) checkDefaults(owner string, fields []*Field) {
 		}
 		c.logBody(checkedBody{kind: "default", name: owner + "." + f.Name, expr: f.Default})
 		c.scope = &scope{names: map[string]*Local{}}
+		start, errs := len(c.declared), len(c.errs)
 		t := c.expr(f.Default, f.T)
 		c.expectType(f.Default.position(), f.T, t)
 		if !isConstant(f.Default) {
 			c.errorf(f.Default.position(), "a field default must be a constant")
 		}
+		c.reportUnused(start, errs)
 	}
 }
 

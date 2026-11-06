@@ -57,7 +57,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 ### Bindings
 
 - `const x = expr` binds a name that cannot be reassigned.
-- `let x = expr` binds a name that can be reassigned with `x = expr`. A `let` binding cannot be captured by a closure.
+- `let x = expr` binds a name that can be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
 - There are no globals. Assigning to an undeclared name is a compile error.
 - There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
@@ -93,7 +93,16 @@ function gcd(a: int, b: int): int {
 
 - An arrow function that captures nothing compiles to a plain C function pointer.
 - An arrow function that captures values stores them in an environment. Captured heap values have their reference count incremented, and captured structs are copied.
-- Closures capture only constant values (`const` bindings and parameters), so an environment never changes after it is created.
+- A closure captures constants (`const` bindings and non-mutable parameters) by value.
+- **A non-escaping closure captures `let` variables and `mutable` parameters by reference** (D77). An arrow function written directly as the argument of a non-escaping function-type parameter may read and assign them, as in TypeScript:
+
+```ts
+let total = 0
+each(numbers, (item) => { total = total + item })
+```
+
+  Every `let` and `mutable` it uses is captured by reference, also when it only reads it. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
+- **A variable that such a closure assigns is borrowed for the call.** In that call it cannot be passed as `mutable`, read or assigned in another argument (including `items.length` or `xs[0]`), or captured by another closure argument (E0614). Two closures that only read the same variable are fine. A narrowing by `is` is not seen inside a closure that captures the variable, and a narrowing of a variable that a closure assigns ends at the statement of the call.
 - **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
 - **`escaping`** marks a function-type parameter that may be stored or outlive the call: `function onClick(escaping handler: () => void)`. An escaping closure's environment is allocated on the heap.
@@ -201,7 +210,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | --- | --- |
 | `const` fixes the binding, but the object can still change | `const` values never change |
 | `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
-| `let` can be captured by closures | `let` cannot be captured |
+| `let` can be captured by any closure | `let` can be captured only by a closure passed to a non-escaping parameter |
 | `null`, `undefined` | Not present. Use `Option<T>` with `None` |
 | `T[]` is an array type | Not present. Write `Array<T>` (D23) |
 | `number` | Not present. Use `int`, `i32`, `f64` and the other sized types |
@@ -227,7 +236,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/map`, `std/option`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`.
+- **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/io`, `std/map`, `std/option`, `std/path`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`.
 - **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
@@ -703,7 +712,7 @@ damage(mutable hero, 10)      // hero.hp is now 90
 - **The argument must be changeable.** It must be a `let` variable, a `mutable` parameter, or a field or element of one. A `const`, a literal or a function result is a compile error.
 - **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
 - **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `x + bump(mutable x)` and `pair(y, bump(mutable y))` are compile errors. Bind the call first: `const bumped = bump(mutable x)`, then `x + bumped`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`.
-- **A `mutable` parameter cannot escape.** It cannot be stored, captured by a closure, or returned. Copying its value with `const copy = player` is allowed.
+- **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `const copy = player` is allowed.
 - **No copies.** The compiler passes a pointer to the caller's variable. Changes are written in place, with no copy and no reference count change for the variable itself.
 - **Other parameters are values.** A parameter without `mutable` is a constant copy. To build new data instead of changing the caller's data, return a new value.
 
@@ -715,7 +724,7 @@ damage(mutable hero, 10)      // hero.hp is now 90
 ### Cycles
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
-- A `let` variable or `mutable` parameter cannot be captured or stored, so it cannot create a cycle.
+- A `let` variable or `mutable` parameter cannot be stored, and only a closure that cannot outlive the call captures it, so it cannot create a cycle.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Values across threads
@@ -827,7 +836,7 @@ const total = Thread.scope((scope) => {
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
 - **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
 - **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
-- **Thread functions capture only constant values,** like every closure. They cannot be `async`.
+- **Thread functions capture only constant values,** like every closure that can outlive its call. They cannot be `async`.
 - **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
 
 ### Channels

@@ -1,7 +1,7 @@
 ---
 id: coroutines
 title: "Coroutine<In, Out> and Co.resume"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 360000
 owns:
   - compiler/testdata/coroutine*
   - compiler/testdata/errors/coroutine_*

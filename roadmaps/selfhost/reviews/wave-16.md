@@ -38,3 +38,9 @@ Taken while the maintainer was away, at their request to pick the best option. E
 - `can-merge` sends any change outside a node's paths to the maintainer. Goldens that list std modules and guide samples are touched by most language nodes, so nothing in this wave could auto-merge. Briefs for language changes should list `docs/guide/**` and the std-module golden as shared.
 - The plain-writing hook limits commit subjects to 72 characters; titles from `pr_title` can exceed it.
 - A merge-order note in this report did not stop a broken main: #92 and #94 had no text conflict, so GitHub merged both, and the five names #94's rule rejects in #92's files broke `TestSourcesFormatted`. When two ready pull requests interact without a text conflict, the orchestrator should rebase the second onto the first and fix it before the hand-off, or state the order in both pull request bodies.
+
+## Maintainer answers (2026-11-07)
+
+- The unused-names and coroutines decisions above: confirmed.
+- D80, D82, D83, D84: not changed. D81: the first draft misread the request. The maintainer chose "`mutable` changes the contents of a struct, array or map, never the binding; any binding may be passed, `const` fixes the name only". mutable-reference is rewritten for that model, mutable-bindings is an outline until it passes the gate, and the first draft's reference bindings are parked in the inbox.
+- Follow-up node unused-imports (unused imports and private functions) approved and written. New node linux-check runs the full check in Docker (colima), first for #91's stdin loop.

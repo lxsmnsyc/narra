@@ -1,6 +1,6 @@
 ---
 id: mutable-reference
-title: "mutable as a second-class mutable reference"
+title: "mutable changes the contents of a struct, array or map, never the binding"
 status: todo
 priority: should
 type: spike
@@ -34,46 +34,53 @@ depends_on:
     why: the soundness fix ships first; the redesign builds on what it learned (done)
 ---
 
-# mutable as a second-class mutable reference
+# mutable changes the contents of a struct, array or map, never the binding
 
 ## Goal
 
-The maintainer (2026-11-04): "mutable variable shouldn't be a thing anyways, it should be a mutable reference." Write the design below as D81 and SPEC text, measure what it would change in `selfhost/src`, and stop at the gate. Node mutable-bindings builds it.
+Write the maintainer's model of `mutable` as D81 and SPEC text, measure what it changes in `selfhost/src`, `std/src`, the test programs and the guide, and stop at the gate. Node mutable-bindings builds it.
+
+The maintainer (2026-11-07), correcting the first draft of this brief: `mutable` only affects structs, so a `let` cannot be passed as a `mutable` parameter for its own sake. Chosen form, from three offered:
+
+```narra
+function damage(mutable p: Player, n: int) {
+  p.hp = p.hp - n     // ok
+  p = other           // error: cannot replace
+}
+const hero = Player { hp: 100 }
+damage(mutable hero, 10)   // ok, hero.hp is 90
+
+let count = 0
+bump(mutable count)        // error: int is not a struct
+```
+
+So `const` fixes the name, as in TypeScript, and `let` exists only to reassign the name. `mutable` is a reference to a value's contents, never to the variable.
 
 ## Context
 
-- Today: `mutable` marks a parameter and is repeated at the call (`damage(mutable hero, 10)`). The compiler passes a pointer (D50), access is exclusive during the call (E0319), the variable is not used elsewhere in the statement (E0929, `nodes/mutable-read-conflict/outcome.md`), and the parameter cannot escape (E0915, `nodes/mutable-escape/outcome.md`). closure-borrow lets stack closures capture `let` and `mutable` by reference (D77).
-- In `selfhost/src`, 126 `mutable` arguments are paths such as `mutable checker.bodies[index]` or `mutable emitter.frames[index]`, repeated at every call. There is no way to name such a place once, as TypeScript code does with `const frame = emitter.frames[index]` and then writes `frame.x = 1`.
+- Today (SPEC section 6 "Mutable parameters"): the argument must be a `let`, a `mutable` parameter, or a field or element of one; the callee may replace the whole value; any type is allowed. D50 (pointer passing), E0319, E0929 (`nodes/mutable-read-conflict/outcome.md`), E0915 (`nodes/mutable-escape/outcome.md`) and D77 (closure-borrow) stay.
+- In `selfhost/src` and `std/src`, three `mutable` parameters have type `int` (`patterns.nra:358 limit`, `declsdump.nra:118` and `:267 nextImpl`) and 68 have type `Array` or `Map`, mostly for `Arrays.push`.
 
 ## Plan (D81)
 
-`mutable` is a mutable reference: a name for a place owned by someone else. It stays second class, as in Swift `inout` and Hylo, never a type.
-
-1. Words: SPEC section 6 "Mutable parameters" becomes "Mutable references". A `mutable` parameter is a mutable reference; `mutable x` at a call passes one. Behavior of today's programs does not change.
-2. New: a local reference binding, `mutable frame = emitter.frames[index]`. The right side is a place: a `let` variable, a `mutable` parameter or binding, or a field or element path of one, the same as a `mutable` argument. Reads and writes of `frame`, its fields and elements, and `mutable frame` arguments go to that place. An element index is evaluated once, at the binding, and the array is made unique there (copied when shared), as for a `mutable` argument.
-3. Borrow: from the binding to the end of its block, the place's root cannot be used through any path that overlaps the place: a prefix of it (`emitter`, `emitter.frames`) or an extension (`emitter.frames[j].x`; element indexes always count as overlapping). Disjoint paths stay usable (`emitter.count`). A nested block `{ ... }` ends the borrow sooner.
-4. No escape: a reference binding cannot be stored, returned, captured by an escaping closure or passed to an escaping parameter (E0915 rules). A stack closure may capture it by reference (D77). `const copy = frame` copies the value.
-5. `x = f(mutable x)` and `x.count = f(mutable x)` become valid: the call returns before the assignment writes, so the emitter evaluates the right side into a temporary first. The rest of E0929 stays.
-6. No reference types (`&mut T`), no references in fields or arrays, no functions that return references.
+1. A `mutable` parameter's type must be a struct, an `Array` or a `Map` (types whose contents can change in place). Any other type (numbers, `bool`, `char`, `string`, enums, tuples, function types, `Option`, `Result`) is a compile error at the parameter. A generic `T` parameter is allowed only with a bound that guarantees one of these, otherwise an error (the spike says which bound, or rejects generic `mutable` parameters if none fits).
+2. Through a `mutable` parameter the callee may assign fields and elements, at any depth, and pass the value or a part of it on as `mutable`. It may not assign the parameter itself (`p = other`). `Arrays.push`, `Maps.set` and the like keep working, since they change contents.
+3. The argument may be any binding that holds such a value: `const`, `let`, a `mutable` parameter, or a field or element path of one. A literal or a call result is still an error.
+4. `const` fixes the name only. Fields and elements of a `const` struct, array or map can also be assigned directly (`hero.hp = 1`), so passing it as `mutable` adds no power that direct code lacks. `let` adds reassignment of the name.
+5. Value semantics stay: `const copy = hero` is a copy (copy on write, as today); changing `hero` afterwards does not change `copy`. A plain (not `mutable`) parameter is still a read-only copy.
+6. Out of this node: the local reference binding `mutable name = place` and `x = f(mutable x)` from the first draft. They go to the inbox, to be weighed again once this model ships.
 
 ## Acceptance
 
-- [ ] DECISIONS.md D81 with the plan, reasons, prior art (Swift `inout` and exclusivity, SE-0176; Hylo `inout` bindings and projections; C# `ref` locals; Rust `&mut`) and the alternatives below.
-- [ ] SPEC section 6 rewritten as "Mutable references", with the binding form and its rules, and section 2 "Bindings" naming `mutable` next to `const` and `let`. `compiler/README.md` "Differences from the spec" lists rules 2, 3 and 5 as not built yet; mutable-bindings removes the line.
-- [ ] The outcome counts the `selfhost/src` functions where a binding would remove a repeated path (`mutable checker.x`, `mutable emitter.frames[...]`), with two before and after examples.
+- [ ] DECISIONS.md D81: the model above, the maintainer's choice and the two rejected forms (keep `const` deeply immutable and require `let`; a third binding kind `mutable name = value`), reasons, prior art (TypeScript `const`, Swift `inout`, Hylo), and the cost: `const` no longer means deeply immutable.
+- [ ] SPEC section 2 "Bindings" and section 6 rewritten to match; the guide chapters that teach `mutable` and `const` (chapter 9 at least) listed for mutable-bindings to rewrite. `compiler/README.md` "Differences from the spec" says the new rules are not built yet.
+- [ ] The outcome counts, in `selfhost/src`, `std/src`, `compiler/testdata` and `docs/guide`: `mutable` parameters of other types (and how each is rewritten, for example returning the new value), assignments to a whole `mutable` parameter, and generic `mutable` parameters. Two before and after examples.
+- [ ] The outcome answers rule 1's generic bound question.
 
 ## Sizing
 
-S. Documents and a count; the research is in this brief.
+S. Documents and counts.
 
 ## Decision to confirm
 
-Plan: keep `mutable` second class and add local reference bindings (`mutable name = place`, lexical borrow) and `x = f(mutable x)`.
-
-- Reason: second-class references need no lifetimes in signatures, so the checker stays a local scan in both compilers. The rules extend the existing ones (E0319, E0929, E0915) instead of adding a borrow checker.
-- Reason: it gives TypeScript's habit of naming a nested object and changing it through the name, without changing value semantics: a `const` copy is still a copy.
-- Reason: a lexical borrow is predictable and easy to explain; ending at the last use (Rust's non-lexical lifetimes) needs a liveness pass in both compilers and can come later without breaking programs.
-- Rejected: first-class `&mut T` with a borrow checker (Rust). Lifetimes in signatures and in structs, the largest cost in both compilers, and far from TypeScript.
-- Rejected: C# `ref` locals and `ref` returns. Returns need escape rules ("safe to escape") in every signature.
-- Rejected: Hylo-style projections (functions that yield a reference). Useful for accessors such as "the current frame", but they need a new function kind; possible later on top of this plan.
-- Rejected: keeping today's design. Every write to a nested place repeats the full path, and `x = f(mutable x)` stays an error with no reason a user can see.
+The plan above, in particular rule 4 (direct field writes on a `const`, which follows from "`const` fixes the name") and rule 1's list of allowed types (arrays and maps count, because 68 `mutable` parameters in `selfhost/src` and `std/src` are arrays or maps).

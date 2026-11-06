@@ -1,6 +1,6 @@
 ---
 id: typed-calls-and-effects
-title: "Explicit type arguments in calls, and effects of function values"
+title: "Effects of function values"
 status: todo
 priority: could
 type: feature
@@ -30,11 +30,11 @@ depends_on:
     why: language changes land in the Go compiler and selfhost/ together, after the bootstrap fixed point
 ---
 
-# Explicit type arguments in calls, and effects of function values
+# Effects of function values
 
 ## Goal
 
-SPEC lines 702, 791 and 805 (F20, F21, both in the README's "Not supported yet"). Calls through function values count as pure (an exported function calling `h.f()` does `io` without `uses io`), and `id<int>(1)` parses as comparisons. Parser (the balanced `<...>` rule of literal type arguments) and checker (effects on function types). May split in two.
+SPEC line 702 (F20, in the README's "Not supported yet"). Calls through function values count as pure (an exported function calling `h.f()` does `io` without `uses io`). Checker work: effects on function types. Explicit type arguments in calls (F21) moved to node call-type-args (2026-11-07).
 
 ## Notes
 

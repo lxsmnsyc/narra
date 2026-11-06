@@ -37,7 +37,8 @@ shared:
   - selfhost/src/**
   - SPEC.md
   - compiler/README.md
-reserves: [diag E0197, diag E0293]
+  - DECISIONS.md
+reserves: [diag E0197, diag E0293, decision D79]
 provides: []
 depends_on:
   - on: generators
@@ -65,6 +66,7 @@ The rest of SPEC.md section 8 "Generators", in both compilers: `Coroutine<In, Ou
 - [ ] `for ... of` over a coroutine is a compile error (it needs inputs).
 - [ ] Samples `compiler/testdata/coroutine*.nra` and `.out`: a running-total coroutine; manual resume of a generator until `Done`; zipping two generators by hand; heap inputs and outputs released correctly; a coroutine dropped unfinished. Clean under ASan and the leak check. A test in a `test` block shows `Panicked`.
 - [ ] Error tests: `const x = yield v` in a generator, `Co.resume` without `mutable`, a wrong input type, for-of over a coroutine, a pure exported function resuming an io coroutine.
+- [ ] `DECISIONS.md` gets D79, "Coroutines are a separate type from generators" (maintainer request 2026-11-07), with the reasons for keeping `Coroutine<In, Out>` apart from `Generator<T>` where TypeScript has one `Generator<T, TReturn, TNext>`: `for ... of` has no input to send, since Narra has no `undefined` (D21); only coroutines need `yield` in a `const` initializer, so plain generators keep the statement-only `yield` of D78; the common lazy-sequence case keeps one type parameter. Name the rejected alternative (one generator type with an input parameter, as in TypeScript) and the cost (two types, and `Co.resume` takes both).
 - [ ] SPEC.md section 8 matches; Go and `selfhost/` emit the same C; fast check passes including `TestSelfhostBootstrap`.
 
 ## Sizing
@@ -73,5 +75,5 @@ M. Uncertainty medium (panic capture in test builds), coupling low, blast radius
 
 ## Notes for the worker
 
-- Codes reserved: E0197 (declarations), E0293 (statements, `yield` value used outside a coroutine). Std errors reuse existing call formats where they fit; ask the orchestrator for an E09xx code otherwise.
+- Codes reserved: E0197 (declarations), E0293 (statements, `yield` value used outside a coroutine). Decision number D79. Std errors reuse existing call formats where they fit; ask the orchestrator for an E09xx code otherwise.
 - The input is passed to `resume` as an extra parameter; the generator's `resume` signature from node generators may need an input slot. Keep the C of plain generators unchanged if possible, so their samples' C does not churn.

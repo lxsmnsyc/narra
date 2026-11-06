@@ -173,7 +173,7 @@ A function that returns a `Result` can fail, so calling it and ignoring the resu
 
 ```narra error
 // error: 7:3: this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`
-function save(text: string): Result<int, string> {
+function save(_text: string): Result<int, string> {
   return Ok(1)
 }
 
@@ -186,7 +186,7 @@ export function run(args: Array<string>): int {
 The message gives both ways out. Usually you handle the result with `is` or `match`. If the failure does not matter at this call, bind the result to `_`, and the code shows that you chose to drop it:
 
 ```narra
-function save(text: string): Result<int, string> {
+function save(_text: string): Result<int, string> {
   return Ok(1)
 }
 

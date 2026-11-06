@@ -104,7 +104,7 @@ export function eachReading(readings: Array<int>, visit: (reading: int) => void)
 
 export function run(args: Array<string>): int {
   const readings = [21, 23]
-  const noisy = (reading: int) => {
+  const noisy = (_reading: int) => {
     print("visiting")
   }
   eachReading(readings, noisy)

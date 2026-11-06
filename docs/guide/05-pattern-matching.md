@@ -269,7 +269,7 @@ function parseCommand(line: string): Option<Command> {
 export function run(args: Array<string>): int {
   const lines = ["add tea 2", "add tea lots", "dance", "pay 500"]
   for (const line of lines) {
-    if (parseCommand(line) is Some(command)) {
+    if (parseCommand(line) is Some(_)) {
       print(`ok: ${line}`)
     } else {
       print(`skipped: ${line}`)

@@ -11,7 +11,7 @@ Each pull request below has a clean fresh review (or one whose findings are fixe
 - #91 std-io-more: stdin, directories, `std/path`. Review fixes: `Io` and `Path` in the add-import fix table, a plain C11 `fgetc` loop instead of POSIX `getline` (not verified on Linux; no Docker here), out-of-memory aborts in `Path.normalize`.
 - #92 closure-borrow (D77): non-escaping closures capture `let` and `mutable` by reference. The first review found a blocking use-after-free: builtin callbacks (`Results.map`, `mapErr`, `andThen`) skipped the borrow rule. Fixed and re-reviewed; the reviewer found no other path around the rule. Guide chapters 3, 9 and 11 rewritten for the two capture modes.
 - #93 coroutines (D79): `Coroutine<In, Out>` and `Co.resume`. Known limit, in D79: passing an input to a plain generator reports the internal coroutine type.
-- #94 unused-names: unused locals and parameters are errors. Second fix round in progress when this report was written (a shorthand-pattern fix that did not rename assignments, two doc nits).
+- #94 unused-names: unused locals and parameters are errors. A second review round found that the fix for a write-only shorthand pattern did not rename its assignments; fixed in 8661719, and the full check passes there.
 
 Merge order: #91 and #93 both edit `compiler/testdata/declsdump/imports/err_unknown_module.dump` (the second needs the merged std module list). #93 and #94 conflict in `selfhost/src/resolve.nra`. Whichever of #92 and #94 lands second renames five unused names in #92's files (`selfhost/src/emitexprs.nra:871` and four `closure_borrow_*` error tests). Rebase each later pull request on main and rerun the fast check before merging.
 

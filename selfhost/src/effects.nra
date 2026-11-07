@@ -40,6 +40,7 @@ import { describeType, generatorUseFails } from "narrac/exprs"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
+import * as Boxes from "std/box"
 import * as Ranges from "std/range"
 
 export struct Effect {
@@ -180,6 +181,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
   }
 
   // Signatures first, module by module.
+  let unusedBound: Array<string> = []
   for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
     const saved = enter(mutable checker, scope)
     for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
@@ -197,6 +199,14 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
           }
         }
         _ => {}
+      }
+    }
+    // A struct declares no effect variables, so `uses E` is unknown in a field type.
+    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+      if (declaration is Decl.Struct(structDecl)) {
+        for (const field of Arrays.values(structDecl.fields)) {
+          scanEffects(mutable checker, [], mutable unusedBound, field.type, false)
+        }
       }
     }
     enter(mutable checker, saved)
@@ -336,12 +346,11 @@ function analyseFunction(
   // A parameter with a function type holds a function with the declared effects.
   for (const param of Arrays.values(declaration.parameters)) {
     if (param.type is Some(typeExpression)) {
-      const parameterLocal = findDeclaredLocal(checker, bodyIndex, param.id)
-      if (parameterLocal >= 0) {
-        state.localTypes[localKey(bodyIndex, parameterLocal)] = typeExpression
+      const localIndex = findDeclaredLocal(checker, bodyIndex, param.id)
+      if (localIndex >= 0) {
+        state.localTypes[localKey(bodyIndex, localIndex)] = typeExpression
       }
       if (typeExpression.isFunc) {
-        const localIndex = findDeclaredLocal(checker, bodyIndex, param.id)
         if (localIndex >= 0) {
           let declaredSet: Array<Effect> = []
           for (const name of Arrays.values(typeExpression.effects)) {
@@ -596,13 +605,7 @@ function valueEffects(
     Expr.Ident(nodeId, _, _) => findNamedValue(checker, state, bodyIndex, nodeId)
     Expr.FieldExpr(nodeId, _, _, _) => findFieldValue(checker, state, bodyIndex, nodeId, expression)
     Expr.IndexExpr(_, _, _, _) => findWrittenEffects(checker, state, expression)
-    Expr.CallExpr(nodeId, _, callee, arguments) => findResultEffects(
-      checker,
-      state,
-      nodeId,
-      callee,
-      arguments,
-    )
+    Expr.CallExpr(_, _, _, _) => findWrittenEffects(checker, state, expression)
     _ => None
   }
 }
@@ -641,65 +644,6 @@ function findWrittenEffects(
   return None
 }
 
-// findResultEffects is the set of a function value returned by a call: the
-// effects written on the result type of the callee, where a variable of the
-// callee takes the effects bound at the call.
-function findResultEffects(
-  checker: Checker,
-  state: EffectState,
-  nodeId: int,
-  callee: Expr,
-  arguments: Array<Arg>,
-): Option<Array<Effect>> uses alloc {
-  const nowhere = Pos { line: 0, column: 0 }
-  const ref = findRef(checker, state.body, nodeId)
-  if (findCallee(checker, ref) is Some(found)) {
-    if (found.declaration.result is Some(resultType)) {
-      if (resultType.isFunc) {
-        let set: Array<Effect> = []
-        for (const name of Arrays.values(resultType.effects)) {
-          if (containsName(found.declaration.effectParameters, name)) {
-            for (const passed of Arrays.values(
-              findBoundEffects(checker, state, found.declaration, arguments, name),
-            )) {
-              addEffect(mutable set, passed, nowhere, "")
-            }
-          } else {
-            addEffect(mutable set, name, nowhere, "")
-          }
-        }
-        return Some(set)
-      }
-    }
-    return None
-  }
-  if (ref is Ref.Value) {
-    return findWrittenResultEffects(checker, state, callee)
-  }
-  return None
-}
-
-function findWrittenResultEffects(
-  checker: Checker,
-  state: EffectState,
-  callee: Expr,
-): Option<Array<Effect>> uses alloc {
-  if (findWrittenType(checker, state, callee) is Some(written)) {
-    if (written.isFunc) {
-      if (written.result is Some(boxed)) {
-        if (boxed.value.isFunc) {
-          let set: Array<Effect> = []
-          for (const name of Arrays.values(boxed.value.effects)) {
-            addEffect(mutable set, name, Pos { line: 0, column: 0 }, "")
-          }
-          return Some(set)
-        }
-      }
-    }
-  }
-  return None
-}
-
 // findWrittenType is the written type of an expression, when it can be
 // followed: a parameter or an annotated local, a field of a struct, an
 // element of an array or map, the result of a call. It is None when the type
@@ -713,7 +657,13 @@ function findWrittenType(
     Expr.Ident(nodeId, _, _) => findLocalType(checker, state, nodeId)
     Expr.FieldExpr(_, _, target, name) => findFieldType(checker, state, target, name)
     Expr.IndexExpr(_, _, target, _) => findElementType(checker, state, target)
-    Expr.CallExpr(nodeId, _, callee, _) => findCallResultType(checker, state, nodeId, callee)
+    Expr.CallExpr(nodeId, _, callee, arguments) => findCallResultType(
+      checker,
+      state,
+      nodeId,
+      callee,
+      arguments,
+    )
     _ => None
   }
 }
@@ -767,11 +717,52 @@ function findElementType(
     if (written.name == "Array" && Arrays.length(written.arguments) == 1) {
       return Some(written.arguments[0])
     }
-    if (written.name == "Map" && Arrays.length(written.arguments) == 2) {
-      return Some(written.arguments[1])
-    }
   }
   return None
+}
+
+// bindUses copies the written result type of a callee, replacing each effect
+// variable of the callee in a `uses` list by the effects bound to it at the
+// call, so a caller never sees the callee's variables.
+function bindUses(
+  checker: Checker,
+  state: EffectState,
+  declaration: FuncDecl,
+  arguments: Array<Arg>,
+  typeExpression: TypeExpr,
+): TypeExpr uses alloc {
+  if (Arrays.length(declaration.effectParameters) == 0) {
+    return typeExpression
+  }
+  let effects: Array<string> = []
+  for (const name of Arrays.values(typeExpression.effects)) {
+    if (!containsName(declaration.effectParameters, name)) {
+      Arrays.push(mutable effects, name)
+      continue
+    }
+    for (const passed of Arrays.values(
+      findBoundEffects(checker, state, declaration, arguments, name),
+    )) {
+      Arrays.push(mutable effects, passed)
+    }
+  }
+  let boundArguments: Array<TypeExpr> = []
+  for (const argument of Arrays.values(typeExpression.arguments)) {
+    Arrays.push(mutable boundArguments, bindUses(checker, state, declaration, arguments, argument))
+  }
+  let boundResult = typeExpression.result
+  if (typeExpression.result is Some(boxed)) {
+    boundResult = Some(Boxes.new(bindUses(checker, state, declaration, arguments, boxed.value)))
+  }
+  return TypeExpr {
+    pos: typeExpression.pos,
+    name: typeExpression.name,
+    arguments: boundArguments,
+    isFunc: typeExpression.isFunc,
+    result: boundResult,
+    effects: effects,
+    isTuple: typeExpression.isTuple,
+  }
 }
 
 function findCallResultType(
@@ -779,10 +770,14 @@ function findCallResultType(
   state: EffectState,
   nodeId: int,
   callee: Expr,
+  arguments: Array<Arg>,
 ): Option<TypeExpr> uses alloc {
   const ref = findRef(checker, state.body, nodeId)
   if (findCallee(checker, ref) is Some(found)) {
-    return found.declaration.result
+    if (found.declaration.result is Some(resultType)) {
+      return Some(bindUses(checker, state, found.declaration, arguments, resultType))
+    }
+    return None
   }
   if (ref is Ref.Value) {
     if (findWrittenType(checker, state, callee) is Some(written)) {

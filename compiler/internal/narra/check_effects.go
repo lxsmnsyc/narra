@@ -81,6 +81,7 @@ func (c *Checker) checkEffects() *effectState {
 				s.checkSignature(fd)
 			}
 		})
+		s.checkFieldEffects(m)
 		c.enter(saved)
 	}
 	if len(c.errs) > 0 {
@@ -289,6 +290,36 @@ func (s *effectState) checkSignature(fd *FuncDecl) {
 	}
 }
 
+// checkFieldEffects reports unknown effect names in the function types of
+// struct fields. A struct declares no effect variables, so `uses E` is
+// unknown there.
+func (s *effectState) checkFieldEffects(m *SourceModule) {
+	var scan func(te *TypeExpr)
+	scan = func(te *TypeExpr) {
+		if te == nil {
+			return
+		}
+		for _, n := range te.Uses {
+			if !knownEffects[n] {
+				s.c.errorf(te.Pos, "unknown effect `%s`; the effects are alloc, io and unsafe, or an effect variable declared as `<effect %s>`", n, n)
+			}
+		}
+		for _, a := range te.Args {
+			scan(a)
+		}
+		scan(te.Result)
+	}
+	for _, file := range m.Files {
+		for _, d := range file.Decls {
+			if sd, ok := d.(*StructDecl); ok {
+				for _, f := range sd.Fields {
+					scan(f.Type)
+				}
+			}
+		}
+	}
+}
+
 func sortedEffects(set effSet) []string {
 	names := make([]string, 0, len(set))
 	for n := range set {
@@ -347,7 +378,7 @@ func (s *effectState) valueEffects(x Expr) effSet {
 	case *IndexExpr:
 		return s.writtenEffects(x)
 	case *CallExpr:
-		return s.resultEffects(x)
+		return s.writtenEffects(x)
 	}
 	return nil
 }
@@ -366,43 +397,9 @@ func (s *effectState) writtenEffects(x Expr) effSet {
 	return set
 }
 
-// resultEffects is the set of a function value returned by a call: the
-// effects written on the result type of the callee, where a variable of the
-// callee takes the effects bound at the call.
-func (s *effectState) resultEffects(e *CallExpr) effSet {
-	var te *TypeExpr
-	var g *FuncDecl
-	switch {
-	case e.Func != nil:
-		g = e.Func
-		if g.Origin != nil {
-			g = g.Origin
-		}
-		te = g.Result
-	case e.FuncValue != nil:
-		if callee := s.typeExprOf(e.Callee); callee != nil && callee.Func {
-			te = callee.Result
-		}
-	}
-	if te == nil || !te.Func {
-		return nil
-	}
-	set := effSet{}
-	for _, n := range te.Uses {
-		if g != nil && contains(g.EffectParams, n) {
-			for m := range s.boundEffects(e, g, n) {
-				set[m] = effCause{}
-			}
-			continue
-		}
-		set[n] = effCause{}
-	}
-	return set
-}
-
 // typeExprOf is the written type of an expression, when it can be followed:
 // a parameter or an annotated local, a field of a struct, an element of an
-// array or map, the result of a call. It is nil when the type was inferred
+// array, the result of a call. It is nil when the type was inferred
 // from something that has no written type.
 func (s *effectState) typeExprOf(x Expr) *TypeExpr {
 	switch x := x.(type) {
@@ -442,16 +439,13 @@ func (s *effectState) typeExprOf(x Expr) *TypeExpr {
 		if te.Name == "Array" && len(te.Args) == 1 {
 			return te.Args[0]
 		}
-		if te.Name == "Map" && len(te.Args) == 2 {
-			return te.Args[1]
-		}
 	case *CallExpr:
 		if x.Func != nil {
 			g := x.Func
 			if g.Origin != nil {
 				g = g.Origin
 			}
-			return g.Result
+			return s.bindUses(x, g, g.Result)
 		}
 		if x.FuncValue != nil {
 			if te := s.typeExprOf(x.Callee); te != nil && te.Func {
@@ -460,6 +454,30 @@ func (s *effectState) typeExprOf(x Expr) *TypeExpr {
 		}
 	}
 	return nil
+}
+
+// bindUses copies the written type te of a result of the callee g, replacing
+// each effect variable of g in a `uses` list by the effects bound to it at
+// the call e, so a caller never sees the callee's variables.
+func (s *effectState) bindUses(e *CallExpr, g *FuncDecl, te *TypeExpr) *TypeExpr {
+	if te == nil || len(g.EffectParams) == 0 {
+		return te
+	}
+	bound := *te
+	bound.Uses = nil
+	for _, n := range te.Uses {
+		if !contains(g.EffectParams, n) {
+			bound.Uses = append(bound.Uses, n)
+			continue
+		}
+		bound.Uses = append(bound.Uses, sortedEffects(s.boundEffects(e, g, n))...)
+	}
+	bound.Args = make([]*TypeExpr, len(te.Args))
+	for i, a := range te.Args {
+		bound.Args[i] = s.bindUses(e, g, a)
+	}
+	bound.Result = s.bindUses(e, g, te.Result)
+	return &bound
 }
 
 // concrete is funcEffects without the effect variables, for a named function

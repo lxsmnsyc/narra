@@ -33,6 +33,19 @@
 - E0326 is reported after the callee's own errors, in both compilers.
 - Error text for E0327 names the function (`pair`) or `Trait.f`, not the module qualifier.
 
+- Review round: a SCREAMING_CASE name (two or more characters, no lowercase letter) is a constant, not a type, in the lookahead; single capitals stay types. The type parameters of the declaration being parsed count as types, so lowercase `t` works (`Parser.typeNames`, reset per top-level declaration; template-string sub-parsers do not see them, in both parsers).
+- The remaining ambiguity (a capitalized, non-SCREAMING value such as `Cap`) is documented in SPEC with the workaround `(Cap > y)`.
+- E0326 is not reported when the call already failed with another error. Its format gained a suffix argument: a constructor callee (`Some<int>(1)`) adds a hint to annotate the variable.
+- E0512 text now reads "%s.%s must use Self in a parameter or its result, ...".
+
+## Follow-ups (skipped on purpose)
+
+- Cascading `void` errors after E0327 (for example `const #[a, b] = pair<int>(1, 2)` reports more errors).
+- Function types inside call type arguments are not accepted (the call parses as comparisons).
+- Type argument lists that span lines.
+- Grammar: "takes 1 type arguments".
+- The builtin that builds channels needs an exception to E0326 when channels land (noted in SPEC).
+
 ## Proposed learnings
 
 - None.

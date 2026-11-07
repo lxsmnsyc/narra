@@ -340,7 +340,7 @@ func (c *Checker) resolveTraitDecl(td *TraitDecl) {
 			mentionsSelf = true
 		}
 		if !mentionsSelf {
-			c.errorf(fd.Pos, "a parameter of %s.%s must use Self, so a call can tell which implementation to run", tr.Name, fd.Name)
+			c.errorf(fd.Pos, "%s.%s must use Self in a parameter or its result, so a call can tell which implementation to run", tr.Name, fd.Name)
 		}
 		tr.Funcs = append(tr.Funcs, tf)
 	}

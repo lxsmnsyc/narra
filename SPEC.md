@@ -489,6 +489,7 @@ const label = match (status) {
 - **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
+- **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 ```ts
@@ -542,6 +543,7 @@ const label = Show.show(price)
 
 - Trait functions are called through the trait name: `Show.show(price)`. There is no `price.show()` form.
 - In generic code, `<T: Show>` allows `Show.show(value)` for a `value: T`.
+- A trait function may mention `Self` only in its result, for example `function fromValue(value: Value): Result<Self, string>`. A call names the type that `Self` stands for: `Shape.fromValue<User>(value)`. Exactly one type argument is allowed. Without it, the call is an error unless the expected type fixes `Self`. In a generic body `<T: Shape>`, `Shape.fromValue<T>(value)` is resolved when the body is instantiated.
 
 **Trait values**
 
@@ -855,6 +857,8 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
   print(Int.toString(value))
 }
 ```
+
+The builtin that builds channels must accept the type argument in `Channel.create<int>(16)`. Builtin functions reject type arguments today (E0326), so channels need an exception when they are built.
 
 - **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`.
 - **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.

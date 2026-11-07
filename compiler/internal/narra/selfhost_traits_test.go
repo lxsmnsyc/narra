@@ -24,7 +24,7 @@ var portedTraitErrors = []string{
 	"cannot derive %s for %s: field %q has type %s, which does not implement %s",
 	"trait functions cannot have type parameters in this compiler yet",
 	"%s declares function %q twice",
-	"a parameter of %s.%s must use Self, so a call can tell which implementation to run",
+	"%s.%s must use Self in a parameter or its result, so a call can tell which implementation to run",
 	"cannot implement %s for %s: the type is declared in another module; wrap it in a struct",
 	"implement blocks for generic types are not supported by this compiler yet; use derives",
 	"%s does not list %s in `implements`; add `implements %s` to its declaration",

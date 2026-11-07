@@ -86,6 +86,9 @@ struct Parser {
   // collector keeps the node ranges for parseWithTrivia; it does nothing
   // unless it is enabled.
   collector: Collector
+  // typeNames are the type parameters of the declaration being parsed. A
+  // lowercase one still counts as a type in `id<t>(x)`.
+  typeNames: Array<string>
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -131,6 +134,7 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
     failed: None,
     ternaryIds: [],
     collector: createCollector(false),
+    typeNames: [],
   }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
@@ -158,6 +162,7 @@ export function parseWithTrivia(source: string, firstId: int): Result<#[
     failed: None,
     ternaryIds: [],
     collector: createCollector(true),
+    typeNames: [],
   }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
@@ -514,6 +519,7 @@ function parseFile(mutable parser: Parser): File {
     skipNewlines(mutable parser)
   }
   while (isOk(parser) && currentToken(parser).kind != TokenKind.TokEof) {
+    parser.typeNames = []
     Arrays.push(mutable declarations, parseDecl(mutable parser))
     skipNewlines(mutable parser)
   }
@@ -780,7 +786,9 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
       }
       continue
     }
-    Arrays.push(mutable names, expectIdent(mutable parser).text)
+    const parameterName = expectIdent(mutable parser).text
+    Arrays.push(mutable names, parameterName)
+    Arrays.push(mutable parser.typeNames, parameterName)
     let traitBounds: Array<TypeExpr> = []
     if (accept(mutable parser, ":")) {
       while (isOk(parser)) {
@@ -1789,19 +1797,23 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
       const name = parseMemberName(mutable parser)
       expression = Expr.FieldExpr(newId(mutable parser), getPos(name), expression, name.text)
       noteExpr(mutable parser, startIndex, expression)
+    } else if (isAt(parser, "<") && isCallTypeArgsAhead(parser, expression)) {
+      // `f<int>(x)`: type arguments of a call.
+      const typeArguments = parseLiteralTypeArgs(mutable parser)
+      const openParen = expect(mutable parser, "(")
+      const arguments = parseCallArguments(mutable parser)
+      expression = Expr.CallExpr(
+        newId(mutable parser),
+        getPos(openParen),
+        expression,
+        typeArguments,
+        arguments,
+      )
+      noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "(")) {
       advance(mutable parser)
-      let arguments: Array<Arg> = []
-      while (isOk(parser) && !isAt(parser, ")")) {
-        const isMutable = accept(mutable parser, "mutable")
-        const value = parseExpr(mutable parser)
-        Arrays.push(mutable arguments, Arg { isMutable: isMutable, value: value })
-        if (!accept(mutable parser, ",")) {
-          break
-        }
-      }
-      expect(mutable parser, ")")
-      expression = Expr.CallExpr(newId(mutable parser), getPos(token), expression, arguments)
+      const arguments = parseCallArguments(mutable parser)
+      expression = Expr.CallExpr(newId(mutable parser), getPos(token), expression, [], arguments)
       noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "[")) {
       advance(mutable parser)
@@ -1837,6 +1849,116 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
     }
   }
   return expression
+}
+
+// parseCallArguments parses the arguments of a call after its `(`, and the
+// closing `)`.
+function parseCallArguments(mutable parser: Parser): Array<Arg> {
+  let arguments: Array<Arg> = []
+  while (isOk(parser) && !isAt(parser, ")")) {
+    const isMutable = accept(mutable parser, "mutable")
+    const value = parseExpr(mutable parser)
+    Arrays.push(mutable arguments, Arg { isMutable: isMutable, value: value })
+    if (!accept(mutable parser, ",")) {
+      break
+    }
+  }
+  expect(mutable parser, ")")
+  return arguments
+}
+
+// isCallTypeArgsAhead reports whether the `<` at the current token starts the
+// type arguments of a call on callee: a name or `Module.name`, then a
+// balanced `<` ... `>` of type names followed directly by `(`. A name not
+// followed by `.` must be a type: a type parameter in scope, a primitive
+// type name, or a capitalized name that is not SCREAMING_CASE. So
+// `a < b > (c)` and `x < MAX, MIN > (y)` stay comparisons.
+function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
+  if (callee is Expr.FieldExpr(_, _, target, _)) {
+    if (!(target is Expr.Ident(_, _, _))) {
+      return false
+    }
+  } else if (!(callee is Expr.Ident(_, _, _))) {
+    return false
+  }
+  let depth = 0
+  let offset = 0
+  const count = Arrays.length(parser.tokens)
+  while (parser.index + offset < count) {
+    const token = peekToken(parser, offset)
+    if (token.kind == TokenKind.TokIdent) {
+      if (depth == 0) {
+        return false
+      }
+      const next = peekToken(parser, offset + 1)
+      const isQualifier = next.kind == TokenKind.TokPunct && next.text == "."
+      if (!isTypeNameAhead(parser, token.text) && !isQualifier) {
+        return false
+      }
+    } else if (token.kind != TokenKind.TokPunct) {
+      return false
+    } else if (token.text == "<") {
+      depth = depth + 1
+    } else if (token.text == ">" || token.text == ">>") {
+      if (token.text == ">") {
+        depth = depth - 1
+      } else {
+        depth = depth - 2
+      }
+      if (depth < 0) {
+        return false
+      }
+      if (depth == 0) {
+        const after = peekToken(parser, offset + 1)
+        return after.kind == TokenKind.TokPunct && after.text == "("
+      }
+    } else if (token.text != "," && token.text != "." && token.text != "#[" && token.text != "]") {
+      return false
+    }
+    offset = offset + 1
+  }
+  return false
+}
+
+// isTypeNameAhead reports whether a name in call type arguments can be a
+// type: a type parameter in scope, a primitive type, or a capitalized name
+// that is not a constant (two or more characters with no lowercase letter,
+// such as MAX or LIMIT_2).
+function isTypeNameAhead(parser: Parser, name: string): bool {
+  for (const typeName of Arrays.values(parser.typeNames)) {
+    if (typeName == name) {
+      return true
+    }
+  }
+  if (isPrimitiveTypeName(name)) {
+    return true
+  }
+  return startsUpper(name) && !isConstantName(name)
+}
+
+// isConstantName reports whether name looks like a constant: it has two or
+// more characters and no lowercase letter.
+function isConstantName(name: string): bool {
+  if (Str.length(name) < 2) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(name))) {
+    const byte = Str.byteAt(name, index)
+    if (byte >= 97 && byte <= 122) {
+      return false
+    }
+  }
+  return true
+}
+
+// isPrimitiveTypeName reports whether text is a type written in lowercase.
+function isPrimitiveTypeName(text: string): bool {
+  return text == "int" ||
+    text == "f64" ||
+    text == "bool" ||
+    text == "char" ||
+    text == "string" ||
+    text == "void"
 }
 
 // parseMemberName reads the name after `.`. `from` is a keyword, but
@@ -1973,7 +2095,7 @@ function getExpressionPos(expression: Expr): Pos {
     Expr.IsExpr(_, pos, _, _) => pos
     Expr.IndexExpr(_, pos, _, _) => pos
     Expr.MapLit(_, pos, _, _, _) => pos
-    Expr.CallExpr(_, pos, _, _) => pos
+    Expr.CallExpr(_, pos, _, _, _) => pos
     Expr.UnaryExpr(_, pos, _, _) => pos
     Expr.BinaryExpr(_, pos, _, _, _) => pos
     Expr.StructLit(_, pos, _, _, _, _) => pos
@@ -2289,6 +2411,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
         failed: None,
         ternaryIds: [],
         collector: createCollector(false),
+        typeNames: [],
       }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId

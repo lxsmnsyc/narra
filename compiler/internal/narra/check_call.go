@@ -312,7 +312,39 @@ func (c *Checker) ctorArgs(pos Pos, v *Variant, args []*Arg) {
 	}
 }
 
+// call checks a call. Explicit type arguments are taken by a generic
+// function or a trait function; anywhere else they are an error.
 func (c *Checker) call(e *CallExpr, want Type) Type {
+	before := len(c.errs)
+	t := c.callTarget(e, want)
+	// A callee that failed to resolve has its own error already.
+	if len(e.TypeArgs) > 0 && !e.typeArgsTaken && len(c.errs) == before {
+		hint := ""
+		if e.Ctor != nil {
+			hint = "; a constructor gets its type from the expected type, as in `const x: Option<int> = None()`"
+		}
+		c.errorf(e.P, "%s is not a generic function, so it takes no type arguments%s", calleeName(e.Callee), hint)
+	}
+	return t
+}
+
+// takeTypeArgs resolves the explicit type arguments of a call to a function
+// with the given number of type parameters. It reports false after an error.
+func (c *Checker) takeTypeArgs(e *CallExpr, name string, count int) ([]Type, bool) {
+	e.typeArgsTaken = true
+	if len(e.TypeArgs) != count {
+		c.errorf(e.P, "%s takes %d type arguments, found %d", name, count, len(e.TypeArgs))
+		c.argsLoose(e)
+		return nil, false
+	}
+	types := make([]Type, count)
+	for i, te := range e.TypeArgs {
+		types[i] = c.resolveType(te)
+	}
+	return types, true
+}
+
+func (c *Checker) callTarget(e *CallExpr, want Type) Type {
 	switch callee := e.Callee.(type) {
 	case *Ident:
 		if c.lookup(callee.Name) != nil || c.mod.consts[callee.Name] != nil {
@@ -464,6 +496,16 @@ func shapeMismatch(pat, act Type, tps []*TypeParamType) bool {
 func (c *Checker) genericCall(e *CallExpr, fd *FuncDecl, want Type) Type {
 	tps := c.funcTP[fd]
 	m := map[*TypeParamType]Type{}
+	if len(e.TypeArgs) > 0 {
+		// Given type arguments fix the parameters before unification.
+		given, ok := c.takeTypeArgs(e, fd.Name, len(tps))
+		if !ok {
+			return TVoid
+		}
+		for i, t := range given {
+			m[tps[i]] = t
+		}
+	}
 	if want != nil {
 		unify(fd.ResultT, want, m)
 	}

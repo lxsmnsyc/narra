@@ -379,13 +379,18 @@ type Arg struct {
 
 type CallExpr struct {
 	exprBase
-	Callee  Expr
-	Args    []*Arg
-	End     Pos    // just after the closing parenthesis
-	Builtin string // set for standard functions
-	Func    *FuncDecl
-	Ctor    *Variant
-	Trait   *TraitCall // set for a trait function the compiler implements
+	Callee Expr
+	// TypeArgs are the explicit type arguments of `f<int>(x)` or
+	// `Trait.f<T>(x)`; empty when none are written.
+	TypeArgs []*TypeExpr
+	Args     []*Arg
+	End      Pos // just after the closing parenthesis
+	// typeArgsTaken is set by the checker when the callee used TypeArgs.
+	typeArgsTaken bool
+	Builtin       string // set for standard functions
+	Func          *FuncDecl
+	Ctor          *Variant
+	Trait         *TraitCall // set for a trait function the compiler implements
 	// FuncValue is set when the callee is a function value, such as a
 	// parameter, a local or a struct field of function type.
 	FuncValue *FuncType

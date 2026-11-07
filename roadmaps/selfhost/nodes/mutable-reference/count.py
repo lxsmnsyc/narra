@@ -258,7 +258,7 @@ def main():
             kinds.update(declarations(text))
         scan(path, path, text, kinds, results)
 
-    allowed = ("struct", "builtin:", "distinct(struct", "distinct(builtin:")
+    allowed = ("struct", "builtin:")
     group = lambda p: p.split("/")[0] + "/" + p.split("/")[1] if not p.startswith("docs") else "docs/guide"
 
     print("# mutable parameters by kind and tree")
@@ -279,6 +279,20 @@ def main():
         print(f"{where} {func}: {param} [{type_text}]")
 
 
+
+    # `let` locals in selfhost/src never reassigned by name after their
+    # declaration in the same file (a per-file name scan, so a lower bound:
+    # a later assignment to another local with the same name counts against).
+    total = never = 0
+    for path, text in sources:
+        if not path.startswith("selfhost/src"):
+            continue
+        for m in re.finditer(r"\blet\s+([a-zA-Z_]\w*)", text):
+            total += 1
+            pattern = r"(?<![\w.])" + re.escape(m.group(1)) + r"\s*(=(?![=>])|\+=|-=|\*=|/=|%=|\+\+|--)"
+            if not re.search(pattern, text[m.end():]):
+                never += 1
+    print(f"\n# let locals in selfhost/src never reassigned by name: {never} of {total} (lower bound)")
 
 if __name__ == "__main__":
     os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))

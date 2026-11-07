@@ -2,21 +2,22 @@
 
 ## Built
 
-- `DECISIONS.md` D81: `mutable` changes the contents of a value, never the binding. Twelve rules, the two rejected forms, reasons, prior art and cost. Rules 1 to 5 are the brief's plan; rules 6 to 12 are added here (listed below).
-- `SPEC.md` section 2 "Bindings" rewritten (`const` fixes the name; copies; read-only pattern bindings and parameters; top-level constants; `@unique` on `const`), and section 6 "Mutable parameters" rewritten (contents types, generics, no whole assignment, arguments, exclusivity for every binding, enums and tuples). Lines that repeated the old rule were brought in line: section 1 overview, section 2 "Functions", "Closures" (D77 amendment) and the TypeScript table row on `const`, section 4 struct field writes and `Box`, section 6 "In-place updates", `@unique` and "Cycles", section 8 `Shared.update`, section 10 top-level `const`.
+- `DECISIONS.md` D81: `mutable` changes the contents of a value, never the binding. Rules 1 to 5 are decided by the maintainer (2026-11-07). Rules 6 to 10 are proposed by the spike, pending the gate. One open question for the maintainer (bindings that copy part of another value), the `Shared.update` item left to the node that builds `Shared`, the two rejected forms, reasons, prior art and cost.
+- `SPEC.md` section 2 "Bindings" rewritten (`const` fixes the name; copies; read-only plain parameters; the open question; top-level constants; `@unique` on `const`), and section 6 "Mutable parameters" rewritten (contents types, generics, no whole assignment, arguments, exclusivity for every binding, enums and tuples). Proposed rules are marked "proposed, D81" and the open items "Open (D81)". Lines that repeated the old rule were brought in line: section 1 overview, section 2 "Functions", "Closures" (D77 amendment) and the TypeScript table row on `const`, section 4 struct field writes and `Box`, section 6 "In-place updates", `@unique` and "Cycles", section 10 top-level `const`. Sections 2 and 14 name value copies as the one TypeScript difference with no diagnostic. Section 8 `Shared.update` is unchanged, with an open note.
 - `compiler/README.md` "Differences from the spec": the D81 rules are not built yet; the compiler still follows D27.
 - `roadmaps/selfhost/nodes/mutable-reference/count.py`: the script behind every count below. Run from the repo root: `python3 roadmaps/selfhost/nodes/mutable-reference/count.py`.
 
-### Rules added beyond the brief
+### Status of the rules
 
-- **Contents types (rule 1, widened).** Besides structs, `Array` and `Map`: `FixedArray`, `Box<T>`, `StringBuilder`, `Generator<T>`, `Coroutine<In, Out>`, an `opaque struct`, and a distinct type over any of them. Needed: `selfhost/src` has 53 `mutable` parameters of type `StringBuilder`, `std/src/coroutine.nra` takes `mutable` generators and coroutines, and SPEC uses `b.value = v` and `Net.read(mutable conn)`.
-- **Rule 6.** Bindings without a keyword are read-only views: a plain parameter and a `match` or `is` pattern binding cannot have fields assigned or be passed as `mutable`. Bindings with `const` or `let` (declarations, `for ... of`, destructuring) own a copy and follow rule 4.
-- **Rule 7.** A top-level `const` stays fixed at every depth (E0290 unchanged). Tests `errors/const_mutable_arg.nra`, `const_assign_field.nra` and `const_top_assign.nra` keep their meaning.
-- **Rule 8.** A struct inside an enum payload or a tuple is not a place. The field holding the enum or tuple is replaced whole.
-- **Rule 9, the generic bound (answers the brief's question).** No bound fits: no Narra trait guarantees a contents type, and none of the four trees has a bare generic `mutable` parameter. `mutable value: T` is a compile error for any bare type parameter. Generic instances (`mutable items: Array<T>`) are fine. In a trait, `mutable value: Self` is allowed and every `implement` of the trait must be for a contents type, checked at the `implement` block (the two testdata traits that do this implement them for structs).
-- **Rule 10 (amends D77).** A non-escaping closure that changes a captured local `const` captures it by reference and borrows it for the call (E0614); a `const` it only reads stays a copy. Any other closure cannot change a captured value.
-- **Rule 11.** E0319, E0929, E0609 and E0915 apply to every binding passed as `mutable`, `const` included.
-- **Rule 12.** `Shared.update(hits, (count) => count + 1)`: the callback returns the new value. The old SPEC form used a `mutable int` arrow parameter, which breaks rules 1 and 2 and E0028 already rejects.
+- **Decided by the maintainer (2026-11-07):** rules 1 to 5. That includes the widened type list (`FixedArray`, `Box<T>`, `StringBuilder`, `Generator<T>`, `Coroutine<In, Out>`, `opaque struct`; `selfhost/src` has 53 `mutable` `StringBuilder` parameters and `std/coroutine` takes generators and coroutines) and read-only plain parameters. Distinct types are not in the list (no operators carry over to them, 0 uses).
+- **Proposed, pending the gate:**
+  - Rule 6. A top-level `const` stays fixed at every depth (E0290 unchanged). Tests `errors/const_mutable_arg.nra`, `const_assign_field.nra` and `const_top_assign.nra` keep their meaning.
+  - Rule 7. A struct inside an enum payload or a tuple is not a place. The field holding the enum or tuple is replaced whole.
+  - Rule 8, the generic bound (answers the brief's question). No bound fits: no Narra trait guarantees a contents type, and none of the four trees has a bare generic `mutable` parameter. `mutable value: T` is a compile error for any bare type parameter. Generic instances (`mutable items: Array<T>`) are fine. In a trait, `mutable value: Self` is allowed and every `implement` must be for a contents type (the two testdata traits that do this implement them for structs). A generic function bounded by that trait may pass a local of type `T` as `mutable` to the trait's `mutable Self` functions only. A `Dynamic<Trait>` cannot be passed to them.
+  - Rule 9, amends D77. A non-escaping closure that changes a captured local `const`, directly or through a nested closure, captures it by reference, and so does every closure between the change and the declaration. The `const` is borrowed for the call (E0614). Without the chain rule, an outer closure would hold an unretained bitwise copy (`emit_closure.go:20-25`, `:155-163`) that an inner closure's `Arrays.push` could reallocate, leaving the caller's variable on freed memory.
+  - Rule 10. E0319, E0929 and E0609 apply to every binding passed as `mutable`, `const` included. E0915 is about the callee's parameter and is unchanged.
+- **Open question for the maintainer (D81):** can a binding that copies part of another value be changed: `match`/`is` pattern bindings, `for ... of` bindings, destructured bindings? (a) only plain parameters are read-only, the rest behave like `const`; `for (const p of players) { p.hp = 0 }` then compiles and changes only the copy, where TypeScript changes the array, against SPEC section 2, the TypeScript table and section 14. (b) all three kinds are read-only, which keeps that promise and narrows "any binding" to plain-name `const` and `let`. The orchestrator recommends (b). On main, pattern bindings are retained copies (`emit_match.go:11`), not D50 pointers, so the first draft's reason for making only them read-only was wrong.
+- **Left to the node that builds `Shared`:** SPEC section 8's `Shared.update(hits, (mutable count) => ...)` breaks rules 1 and 2 and E0028. A callback that returns the new value fits D81 but copies: for a struct or array held in a `Shared`, the callback gets one reference while the `Shared` keeps another, so the first change copies the whole value unless the lock hands over its reference for the call and takes the result back.
 
 ## Counts
 
@@ -139,12 +140,12 @@ function sortStrings(mutable items: Array<string>) {
 }
 ```
 
-The caller side gains too: `let paths: Array<string> = []` at `selfhost/src/modules.nra` (and the other `let` locals that are only pushed to) can become `const`. At least 399 of the 1016 `let` locals in `selfhost/src` are never reassigned by name (per-file name scan, a lower bound). Changing them is optional; nothing forces it.
+The caller side gains too: `let paths: Array<string> = []` at `selfhost/src/modules.nra` (and the other `let` locals that are only pushed to) can become `const`. At least 399 of the 1016 `let` locals in `selfhost/src` are never reassigned by name (`count.py`, last line: a per-file name scan from each `let` to the end of the file, so a lower bound). Changing them is optional; nothing forces it.
 
 ## Deviations
 
-- Rule 1's type list is wider than the brief's (struct, Array, Map): the std and selfhost pass `StringBuilder`, generators and coroutines as `mutable`, and SPEC has `Box`, `FixedArray` and opaque std handles. Without them `Str.append` and `Co.resume` would break.
-- SPEC sections beyond 2 and 6 were edited where they restated the old rule (sections 1, 4, 8, 10), including `Shared.update` in section 8.
+- Rule 1's type list is wider than the brief's (struct, Array, Map): the std and selfhost pass `StringBuilder`, generators and coroutines as `mutable`, and SPEC has `Box`, `FixedArray` and opaque std handles. The maintainer approved it.
+- SPEC sections beyond 2 and 6 were edited where they restated the old rule (sections 1, 4, 10, 14). In section 8, `Shared.update` keeps its sample with an open note, and `let conn = connection` became `const`.
 - SPEC.md code blocks are not compiled by any test (`TestGuide` reads only `docs/guide`), so no sample needed an "unbuilt" marker. The guide was not edited: its samples are compiled against today's compiler, and mutable-bindings rewrites them with the build.
 
 ## Stubs left
@@ -153,11 +154,11 @@ The caller side gains too: `let paths: Array<string> = []` at `selfhost/src/modu
 
 ## Gotchas
 
-- `Local.Mutable` in the Go checker means two things that D81 splits: "can be reassigned" (`let`) and "contents can change" (`const`, `let`, `mutable` parameter, `for ... of` binding). Sites: `compiler/internal/narra/check_stmt.go:331-356` (AssignStmt, E0227 on `!root.Mutable`), `check_call.go:604-616` (`checkMutableArg`, E0315), `check_closure.go:142`, and `emit_closure.go:155-185` (`captureValue` and `envStruct` capture by pointer exactly when `Mutable`; rule 10 needs a by-reference flag per capture). E0290 in `check_const.go:138-142` stays for top-level constants. Selfhost: `selfhost/src/exprs.nra:1714` (E0315 text), `:1769`, `:1779` (E0290), `selfhost/src/stmts.nra:351` (E0227).
-- Narrowing: a field path of a `const` can now change (`hero.weapon is Some(w)` then `hero.weapon = None`), so narrowing of `const` field paths must end at writes and `mutable` passes, as it does for `let` (#68 logic).
+- `Local.Mutable` in the Go checker means two things that D81 splits: "can be reassigned" (`let`) and "contents can change" (`const`, `let`, `mutable` parameter, and the open bindings if the gate picks (a)). Sites: `compiler/internal/narra/check_stmt.go:331-356` (AssignStmt, E0227 on `!root.Mutable`), `check_call.go:604-616` (`checkMutableArg`, E0315), `check_closure.go:142`, and `emit_closure.go:155-185` (`captureValue` and `envStruct` capture by pointer exactly when `Mutable`; rule 9 needs a by-reference flag per capture, set on every closure of the chain). E0290 in `check_const.go:138-142` stays for top-level constants. Selfhost: `selfhost/src/exprs.nra:1714` (E0315 text), `:1769`, `:1779` (E0290), `selfhost/src/stmts.nra:351` (E0227).
 - The unused check treats a `mutable` parameter that is only assigned as used (README). With no whole assignment that case disappears; keep the rule for field writes.
-- Pattern bindings are passed by pointer today (D50); rule 6 keeps them read-only so no write can reach the subject.
-- New diagnostics need codes (none reserved here): parameter of a non-contents type, whole assignment to a `mutable` parameter, bare generic `mutable` parameter, `implement` of a trait with `mutable Self` for a non-contents type, an escaping closure changing a captured value. E0227 and E0315 messages need new hints (they say "declare it with `let`"), and E0315 now fires only for plain parameters, pattern bindings and top-level constants.
+- `checkBorrowed` skips captures that are not `let` (`if !l.Mutable`, `compiler/internal/narra/check_call.go:665`), so E0614 will not fire for a `const` that a closure changes until that test changes.
+- The E0290 text "copy it into a `let` variable first" (`check_const.go:138`, `:142`; `selfhost/src/exprs.nra:1769`, `:1779`) should say `const` or `let`, since a local `const` copy can now be changed.
+- New diagnostics need codes (none reserved here): parameter of a non-contents type, whole assignment to a `mutable` parameter, bare generic `mutable` parameter, `implement` of a trait with `mutable Self` for a non-contents type, an escaping closure changing a captured value. E0227 and E0315 messages need new hints (they say "declare it with `let`"), and E0315 now fires only for plain parameters (and the open bindings under option (b)). Top-level constants get E0290, since `checkMutableArg` calls `constWrite` first.
 - DECISIONS.md jumps from D79 to D81; D80 is reserved for another node.
 
 ## Proposed learnings
@@ -167,7 +168,7 @@ The caller side gains too: `let paths: Array<string> = []` at `selfhost/src/modu
 ## Verification
 
 - `python3 roadmaps/selfhost/nodes/mutable-reference/count.py`: the counts above.
-- `cd compiler && go vet ./... && go test -count=1 ./internal/narra -run 'TestGuide|TestSpec|TestErrorCodes'`: pass (98 s). No `TestSpec` exists and no test compiles SPEC.md blocks. The full suite was not run: no Go, `.nra` or testdata file changed.
+- `cd compiler && go vet ./... && go test -count=1 ./internal/narra -run 'TestGuide|TestSpec|TestErrorCodes'`: pass (98 s, and 125 s after the review round). No `TestSpec` exists and no test compiles SPEC.md blocks. The full suite was not run: no Go, `.nra` or testdata file changed.
 - `check_prose.py` (plain-writing) on the new text: no errors, warnings for long sentences and semicolons only.
 
 ## Size

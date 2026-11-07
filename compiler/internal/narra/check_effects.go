@@ -27,8 +27,10 @@ import (
 //
 // Function types in the type checker carry no effects, so a function value
 // has a known set only when it is a parameter (its declared `uses`), a local
-// bound to an arrow or a named function, or an argument written at the call.
-// Calls through other values (struct fields, results of calls) count as pure.
+// bound to an arrow or a named function, an argument written at the call, or
+// a value whose written type is a function type with `uses`: a struct field,
+// an element of an array or map, a call result (typeExprOf). A local without
+// a written type is followed through the value it was bound to.
 
 type effCause struct {
 	pos Pos
@@ -45,6 +47,9 @@ type effectState struct {
 	local map[*Local]effSet    // effects of the function a local holds
 	arrow map[*ArrowExpr]effSet
 	entry map[*FuncDecl]bool
+	// written types of locals, for calls through their fields and elements
+	localType map[*Local]*TypeExpr
+	structs   map[string]*StructDecl // by module path and name; built on first use
 	// implNames names implement block functions in messages; built on first use.
 	implNames map[*FuncDecl]string
 	report    bool
@@ -63,6 +68,8 @@ func (c *Checker) checkEffects() *effectState {
 		local: map[*Local]effSet{},
 		arrow: map[*ArrowExpr]effSet{},
 		entry: map[*FuncDecl]bool{},
+
+		localType: map[*Local]*TypeExpr{},
 	}
 	for _, fd := range c.prog.Entries {
 		s.entry[fd] = true
@@ -188,6 +195,9 @@ func (s *effectState) analyse(fd *FuncDecl) {
 				set[n] = effCause{pos: p.Pos}
 			}
 			s.local[p.Local] = set
+		}
+		if p.Local != nil && p.Type != nil {
+			s.localType[p.Local] = p.Type
 		}
 	}
 	w := &effectWalker{s: s, out: effSet{}}
@@ -333,6 +343,121 @@ func (s *effectState) valueEffects(x Expr) effSet {
 		if x.Func != nil {
 			return s.concrete(x.Func)
 		}
+		return s.writtenEffects(x)
+	case *IndexExpr:
+		return s.writtenEffects(x)
+	case *CallExpr:
+		return s.resultEffects(x)
+	}
+	return nil
+}
+
+// writtenEffects is the set of a field or an element whose written type is a
+// function type, or nil when the written type is not known.
+func (s *effectState) writtenEffects(x Expr) effSet {
+	te := s.typeExprOf(x)
+	if te == nil || !te.Func {
+		return nil
+	}
+	set := effSet{}
+	for _, n := range te.Uses {
+		set[n] = effCause{}
+	}
+	return set
+}
+
+// resultEffects is the set of a function value returned by a call: the
+// effects written on the result type of the callee, where a variable of the
+// callee takes the effects bound at the call.
+func (s *effectState) resultEffects(e *CallExpr) effSet {
+	var te *TypeExpr
+	var g *FuncDecl
+	switch {
+	case e.Func != nil:
+		g = e.Func
+		if g.Origin != nil {
+			g = g.Origin
+		}
+		te = g.Result
+	case e.FuncValue != nil:
+		if callee := s.typeExprOf(e.Callee); callee != nil && callee.Func {
+			te = callee.Result
+		}
+	}
+	if te == nil || !te.Func {
+		return nil
+	}
+	set := effSet{}
+	for _, n := range te.Uses {
+		if g != nil && contains(g.EffectParams, n) {
+			for m := range s.boundEffects(e, g, n) {
+				set[m] = effCause{}
+			}
+			continue
+		}
+		set[n] = effCause{}
+	}
+	return set
+}
+
+// typeExprOf is the written type of an expression, when it can be followed:
+// a parameter or an annotated local, a field of a struct, an element of an
+// array or map, the result of a call. It is nil when the type was inferred
+// from something that has no written type.
+func (s *effectState) typeExprOf(x Expr) *TypeExpr {
+	switch x := x.(type) {
+	case *Ident:
+		if x.Local != nil {
+			return s.localType[x.Local]
+		}
+	case *FieldExpr:
+		st, ok := x.Target.Type().(*StructType)
+		if !ok {
+			return nil
+		}
+		if s.structs == nil {
+			s.structs = map[string]*StructDecl{}
+			for _, m := range s.c.pkg.Modules {
+				for _, file := range m.Files {
+					for _, d := range file.Decls {
+						if sd, ok := d.(*StructDecl); ok {
+							s.structs[m.Path+"."+sd.Name] = sd
+						}
+					}
+				}
+			}
+		}
+		if sd := s.structs[st.Module+"."+st.Name]; sd != nil {
+			for _, f := range sd.Fields {
+				if f.Name == x.Name {
+					return f.Type
+				}
+			}
+		}
+	case *IndexExpr:
+		te := s.typeExprOf(x.Target)
+		if te == nil || te.Func {
+			return nil
+		}
+		if te.Name == "Array" && len(te.Args) == 1 {
+			return te.Args[0]
+		}
+		if te.Name == "Map" && len(te.Args) == 2 {
+			return te.Args[1]
+		}
+	case *CallExpr:
+		if x.Func != nil {
+			g := x.Func
+			if g.Origin != nil {
+				g = g.Origin
+			}
+			return g.Result
+		}
+		if x.FuncValue != nil {
+			if te := s.typeExprOf(x.Callee); te != nil && te.Func {
+				return te.Result
+			}
+		}
 	}
 	return nil
 }
@@ -373,6 +498,13 @@ func (w *effectWalker) stmt(st Stmt) {
 	case *VarStmt:
 		w.expr(st.Value)
 		if st.Local != nil {
+			te := st.Type
+			if te == nil {
+				te = w.s.typeExprOf(st.Value)
+			}
+			if te != nil {
+				w.s.localType[st.Local] = te
+			}
 			if set := w.s.valueEffects(st.Value); set != nil {
 				w.s.local[st.Local] = set
 			}

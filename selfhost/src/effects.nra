@@ -60,6 +60,7 @@ export struct EffectState {
   bodyIndex: Map<string, int> // functionKey of a func, impl or test body -> Checker.bodies
   functions: Map<string, Array<Effect>> // body effects of every analysed function
   locals: Map<string, Array<Effect>> // effects of the function a local holds
+  localTypes: Map<string, TypeExpr> // the written type of a local, when it can be followed
   arrows: Map<int, Array<Effect>>
   entries: Map<string, bool> // the entry functions
   report: bool
@@ -148,6 +149,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     bodyIndex: Map {},
     functions: Map {},
     locals: Map {},
+    localTypes: Map {},
     arrows: Map {},
     entries: Map {},
     report: false,
@@ -334,6 +336,10 @@ function analyseFunction(
   // A parameter with a function type holds a function with the declared effects.
   for (const param of Arrays.values(declaration.parameters)) {
     if (param.type is Some(typeExpression)) {
+      const parameterLocal = findDeclaredLocal(checker, bodyIndex, param.id)
+      if (parameterLocal >= 0) {
+        state.localTypes[localKey(bodyIndex, parameterLocal)] = typeExpression
+      }
       if (typeExpression.isFunc) {
         const localIndex = findDeclaredLocal(checker, bodyIndex, param.id)
         if (localIndex >= 0) {
@@ -588,9 +594,206 @@ function valueEffects(
   return match (expression) {
     Expr.ArrowExpr(nodeId, _, _, _, _, _) => state.arrows[nodeId]
     Expr.Ident(nodeId, _, _) => findNamedValue(checker, state, bodyIndex, nodeId)
-    Expr.FieldExpr(nodeId, _, _, _) => findFunctionValue(checker, state, bodyIndex, nodeId)
+    Expr.FieldExpr(nodeId, _, _, _) => findFieldValue(checker, state, bodyIndex, nodeId, expression)
+    Expr.IndexExpr(_, _, _, _) => findWrittenEffects(checker, state, expression)
+    Expr.CallExpr(nodeId, _, callee, arguments) => findResultEffects(
+      checker,
+      state,
+      nodeId,
+      callee,
+      arguments,
+    )
     _ => None
   }
+}
+
+// findFieldValue is the set of a named function used as a value, or of a
+// struct field whose written type is a function type.
+function findFieldValue(
+  checker: Checker,
+  state: EffectState,
+  bodyIndex: int,
+  nodeId: int,
+  expression: Expr,
+): Option<Array<Effect>> uses alloc {
+  if (findFunctionValue(checker, state, bodyIndex, nodeId) is Some(set)) {
+    return Some(set)
+  }
+  return findWrittenEffects(checker, state, expression)
+}
+
+// findWrittenEffects is the set of a field or an element whose written type
+// is a function type, or None when the written type is not known.
+function findWrittenEffects(
+  checker: Checker,
+  state: EffectState,
+  expression: Expr,
+): Option<Array<Effect>> uses alloc {
+  if (findWrittenType(checker, state, expression) is Some(written)) {
+    if (written.isFunc) {
+      let set: Array<Effect> = []
+      for (const name of Arrays.values(written.effects)) {
+        addEffect(mutable set, name, Pos { line: 0, column: 0 }, "")
+      }
+      return Some(set)
+    }
+  }
+  return None
+}
+
+// findResultEffects is the set of a function value returned by a call: the
+// effects written on the result type of the callee, where a variable of the
+// callee takes the effects bound at the call.
+function findResultEffects(
+  checker: Checker,
+  state: EffectState,
+  nodeId: int,
+  callee: Expr,
+  arguments: Array<Arg>,
+): Option<Array<Effect>> uses alloc {
+  const nowhere = Pos { line: 0, column: 0 }
+  const ref = findRef(checker, state.body, nodeId)
+  if (findCallee(checker, ref) is Some(found)) {
+    if (found.declaration.result is Some(resultType)) {
+      if (resultType.isFunc) {
+        let set: Array<Effect> = []
+        for (const name of Arrays.values(resultType.effects)) {
+          if (containsName(found.declaration.effectParameters, name)) {
+            for (const passed of Arrays.values(
+              findBoundEffects(checker, state, found.declaration, arguments, name),
+            )) {
+              addEffect(mutable set, passed, nowhere, "")
+            }
+          } else {
+            addEffect(mutable set, name, nowhere, "")
+          }
+        }
+        return Some(set)
+      }
+    }
+    return None
+  }
+  if (ref is Ref.Value) {
+    return findWrittenResultEffects(checker, state, callee)
+  }
+  return None
+}
+
+function findWrittenResultEffects(
+  checker: Checker,
+  state: EffectState,
+  callee: Expr,
+): Option<Array<Effect>> uses alloc {
+  if (findWrittenType(checker, state, callee) is Some(written)) {
+    if (written.isFunc) {
+      if (written.result is Some(boxed)) {
+        if (boxed.value.isFunc) {
+          let set: Array<Effect> = []
+          for (const name of Arrays.values(boxed.value.effects)) {
+            addEffect(mutable set, name, Pos { line: 0, column: 0 }, "")
+          }
+          return Some(set)
+        }
+      }
+    }
+  }
+  return None
+}
+
+// findWrittenType is the written type of an expression, when it can be
+// followed: a parameter or an annotated local, a field of a struct, an
+// element of an array or map, the result of a call. It is None when the type
+// was inferred from something that has no written type.
+function findWrittenType(
+  checker: Checker,
+  state: EffectState,
+  expression: Expr,
+): Option<TypeExpr> uses alloc {
+  return match (expression) {
+    Expr.Ident(nodeId, _, _) => findLocalType(checker, state, nodeId)
+    Expr.FieldExpr(_, _, target, name) => findFieldType(checker, state, target, name)
+    Expr.IndexExpr(_, _, target, _) => findElementType(checker, state, target)
+    Expr.CallExpr(nodeId, _, callee, _) => findCallResultType(checker, state, nodeId, callee)
+    _ => None
+  }
+}
+
+function findLocalType(
+  checker: Checker,
+  state: EffectState,
+  nodeId: int,
+): Option<TypeExpr> uses alloc {
+  if (findRef(checker, state.body, nodeId) is Ref.Local(localIndex)) {
+    return state.localTypes[localKey(state.body, localIndex)]
+  }
+  return None
+}
+
+function findFieldType(
+  checker: Checker,
+  state: EffectState,
+  target: Expr,
+  name: string,
+): Option<TypeExpr> uses alloc {
+  if (findNodeType(checker, state.body, getExpressionId(target)) is Some(Type.TStruct(index))) {
+    const info = checker.structs[index]
+    if (info.tuple) {
+      return None
+    }
+    for (const declaration of Arrays.values(checker.scopes[info.scope].declarations)) {
+      if (declaration is Decl.Struct(structDecl)) {
+        if (structDecl.name == info.name) {
+          for (const field of Arrays.values(structDecl.fields)) {
+            if (field.name == name) {
+              return Some(field.type)
+            }
+          }
+        }
+      }
+    }
+  }
+  return None
+}
+
+function findElementType(
+  checker: Checker,
+  state: EffectState,
+  target: Expr,
+): Option<TypeExpr> uses alloc {
+  if (findWrittenType(checker, state, target) is Some(written)) {
+    if (written.isFunc) {
+      return None
+    }
+    if (written.name == "Array" && Arrays.length(written.arguments) == 1) {
+      return Some(written.arguments[0])
+    }
+    if (written.name == "Map" && Arrays.length(written.arguments) == 2) {
+      return Some(written.arguments[1])
+    }
+  }
+  return None
+}
+
+function findCallResultType(
+  checker: Checker,
+  state: EffectState,
+  nodeId: int,
+  callee: Expr,
+): Option<TypeExpr> uses alloc {
+  const ref = findRef(checker, state.body, nodeId)
+  if (findCallee(checker, ref) is Some(found)) {
+    return found.declaration.result
+  }
+  if (ref is Ref.Value) {
+    if (findWrittenType(checker, state, callee) is Some(written)) {
+      if (written.isFunc) {
+        if (written.result is Some(boxed)) {
+          return Some(boxed.value)
+        }
+      }
+    }
+  }
+  return None
 }
 
 function findNamedValue(
@@ -637,11 +840,19 @@ function walkStatement(
 ) uses alloc {
   match (statement) {
     Stmt.BlockStmt(block) => walkBlock(mutable checker, mutable state, mutable out, block)
-    Stmt.VarStmt(nodeId, _, _, _, _, _, value) => {
+    Stmt.VarStmt(nodeId, _, _, _, _, declaredType, value) => {
       walkExpression(mutable checker, mutable state, mutable out, value)
       // A local bound to a function value holds its effects.
       const localIndex = findDeclaredLocal(checker, state.body, nodeId)
       if (localIndex >= 0) {
+        // The written type of the local, or the one of its value.
+        let written = declaredType
+        if (written is None) {
+          written = findWrittenType(checker, state, value)
+        }
+        if (written is Some(writtenType)) {
+          state.localTypes[localKey(state.body, localIndex)] = writtenType
+        }
         if (valueEffects(checker, state, value) is Some(set)) {
           state.locals[localKey(state.body, localIndex)] = set
         }

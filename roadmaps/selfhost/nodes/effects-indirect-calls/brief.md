@@ -1,7 +1,7 @@
 ---
 id: effects-indirect-calls
 title: "Calls through struct fields and call results charge their effects"
-status: active
+status: done
 priority: must
 type: fix
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 255000
 owns:
   - compiler/testdata/errors/effects_indirect_*
   - compiler/testdata/effects_indirect*

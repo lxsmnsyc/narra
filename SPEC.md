@@ -60,7 +60,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - `let x = expr` binds a name that can also be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
 - **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other.
 - **A plain parameter is read-only.** Its fields and elements cannot be assigned, and it cannot be passed as `mutable` (section 6).
-- **Open (D81).** Whether a binding that copies part of another value can be changed is not decided: `match` and `is` pattern bindings (`x is Some(v)`), `for (const p of players)` bindings, and destructured bindings (`const { a, b } = s`). Either they behave like `const` and a write changes only the copy, or they are read-only. Until the gate decides, code should not change them.
+- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81).
 - **Top-level constants never change** (proposed, D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.

@@ -61,7 +61,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other.
 - **A plain parameter is read-only.** Its fields and elements cannot be assigned, and it cannot be passed as `mutable` (section 6).
 - **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81).
-- **Top-level constants never change** (proposed, D81). A top-level `const` cannot be changed at any depth (section 10).
+- **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
 - There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
@@ -728,7 +728,7 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 - **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `const copy = player` is allowed.
 - **No copies.** The compiler passes a pointer to the caller's value. Changes are written in place, with no copy and no reference count change for the value itself. A value shared with other owners is copied on its first change, as in any in-place update.
 - **Other parameters are values.** A parameter without `mutable` is a read-only copy: its fields cannot be assigned, and it cannot be passed as `mutable`. To build new data instead of changing the caller's data, return a new value.
-- **Enums and tuples are replaced, not changed** (proposed, D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back.
+- **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back.
 
 | Goal | Form |
 | --- | --- |
@@ -977,7 +977,7 @@ export enum Color {
 
 ## 10. Top-level declarations
 
-- **`const`** at the top level declares a compile-time constant. It cannot be changed at any depth or passed as `mutable` (proposed, D81); a local `const` fixes only its name (section 2). Inside a function, `const` accepts any expression. A top-level value must be one of these:
+- **`const`** at the top level declares a compile-time constant. It cannot be changed at any depth or passed as `mutable` (D81); a local `const` fixes only its name (section 2). Inside a function, `const` accepts any expression. A top-level value must be one of these:
   - a literal or a constructor
   - a struct or array of constants
   - a named function or another constant

@@ -713,7 +713,7 @@ Decision: `mutable` reaches the contents of a value, its fields and elements, an
 4. **`const`.** A local `const` fixes the name. Its fields and elements can be assigned directly (`hero.hp = 1`, `items[0] = 2`, `b.value = v`), and it can be passed as `mutable`, so `mutable` adds no power that direct code lacks. A local `let` adds reassignment of the name. `@unique` may be written on either.
 5. **Copies stay copies.** `const copy = hero` is a copy (copy on write, as before); changing `hero` afterwards does not change `copy`. A plain parameter is still a read-only copy: its fields cannot be assigned and it cannot be passed as `mutable`.
 
-**Proposed by the spike, pending the gate:** rules 6 to 10.
+**Proposed by the spike and decided by the maintainer on 2026-11-07:** rules 6 to 10.
 
 6. **Top-level constants are fixed in depth.** A top-level `const` cannot be changed at any depth or passed as `mutable` (E0290, as before). There are no globals, and a changeable top-level value would be one.
 7. **Enums and tuples.** A struct inside an enum payload or a tuple is not reachable as a place: enum fields are fixed (E0303) and tuples have no element assignment. A struct field that holds an enum or a tuple can be replaced whole (`state.current = Some(next)`). To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back.

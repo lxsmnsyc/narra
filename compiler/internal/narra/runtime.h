@@ -1,5 +1,9 @@
 // Runtime for programs compiled by narra. Included at the top of every
 // generated C file.
+// -std=c11 hides POSIX names (clock_gettime, kill, ...) on glibc.
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <inttypes.h>
 #include <math.h>
 #include <setjmp.h>

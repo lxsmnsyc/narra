@@ -79,6 +79,8 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 go test ./...
 ```
 
+`scripts/linux-check.sh` runs `go vet ./... && go test ./...` in a Linux container (gcc with sanitizers, repo mounted read-only). Docker runs through colima on macOS: `colima start --cpu 4 --memory 8` first.
+
 - `testdata/*.nra` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.
 - `tests.nra` and `testdata/std_test*.nra` run their `test` blocks (`narra test`) instead of an entry function. `std_test.go` checks failing `std/test` assertions.
 - `testdata/panics/` must panic with a given message and exit code 101.

@@ -86,7 +86,7 @@ func init() {
 					at := x.Type().(*ArrayType)
 					a := e.argCode(x, 0)
 					n := e.temp(TInt, "0")
-					parts := e.temp(&ptrType{&ptrType{TStr}}, fmt.Sprintf("narra_str_split(%s, %s, &%s, %s)", a, e.argCode(x, 1), n, w))
+					parts := e.temp(&ptrType{TStr}, fmt.Sprintf("narra_str_split(%s, %s, &%s, %s)", a, e.argCode(x, 1), n, w))
 					arr := e.ownedTemp(at, fmt.Sprintf("%s_new(%s)", arrName(at), n))
 					e.line("for (int64_t i = 0; i < %s; i++) %s->items[%s->len++] = %s[i];", n, arr, arr, parts)
 					e.line("narra_free(%s);", parts)

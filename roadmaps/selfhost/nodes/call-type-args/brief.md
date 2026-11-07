@@ -1,7 +1,7 @@
 ---
 id: call-type-args
 title: "Explicit type arguments in calls: f<T>(x) and Trait.f<T>(x)"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 299000
 owns:
   - compiler/testdata/call_type_args*
   - compiler/testdata/errors/call_type_args_*

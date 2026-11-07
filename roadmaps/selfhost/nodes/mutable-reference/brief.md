@@ -1,7 +1,7 @@
 ---
 id: mutable-reference
 title: "mutable changes the contents of a struct, array or map, never the binding"
-status: active
+status: done
 priority: should
 type: spike
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-04
-spent:
+spent: 341000
 owns:
   - roadmaps/selfhost/nodes/mutable-reference/**
 shared:

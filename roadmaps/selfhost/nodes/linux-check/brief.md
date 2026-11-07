@@ -1,7 +1,7 @@
 ---
 id: linux-check
 title: "Full check on Linux in Docker"
-status: active
+status: done
 priority: should
 type: chore
 story:
@@ -19,7 +19,7 @@ exclusive: [docker]
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 123000
 owns:
   - scripts/linux-check.sh
   - scripts/linux/**

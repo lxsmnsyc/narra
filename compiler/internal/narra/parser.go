@@ -1084,23 +1084,20 @@ func (p *Parser) postfix(e Expr) Expr {
 		case p.is("("):
 			p.next()
 			call := &CallExpr{exprBase: exprBase{P: t.Pos}, Callee: e}
-			for !p.is(")") {
-				arg := &Arg{Mutable: p.accept("mutable")}
-				arg.Value = p.expr()
-				call.Args = append(call.Args, arg)
-				if !p.accept(",") {
-					break
-				}
-			}
-			closing := p.tok()
-			p.expect(")")
-			call.End = Pos{closing.Pos.Line, closing.Pos.Col + 1}
+			p.callArgs(call)
 			e = call
 		case p.is("["):
 			p.next()
 			idx := p.expr()
 			p.expect("]")
 			e = &IndexExpr{exprBase: exprBase{P: t.Pos}, Target: e, Index: idx}
+		case p.is("<") && p.callTypeArgsAhead(e):
+			// `f<int>(x)`: type arguments of a call.
+			targs := p.litTypeArgs()
+			open := p.expect("(")
+			call := &CallExpr{exprBase: exprBase{P: open.Pos}, Callee: e, TypeArgs: targs}
+			p.callArgs(call)
+			e = call
 		case p.is("<") || p.is("{"):
 			// `Name { field: value }` is a struct literal, and
 			// `Name<A, B> { ... }` is one with type arguments.
@@ -1130,6 +1127,78 @@ func (p *Parser) postfix(e Expr) Expr {
 			return e
 		}
 	}
+}
+
+// callArgs parses the arguments of a call after its `(`, and the closing `)`.
+func (p *Parser) callArgs(call *CallExpr) {
+	for !p.is(")") {
+		arg := &Arg{Mutable: p.accept("mutable")}
+		arg.Value = p.expr()
+		call.Args = append(call.Args, arg)
+		if !p.accept(",") {
+			break
+		}
+	}
+	closing := p.tok()
+	p.expect(")")
+	call.End = Pos{closing.Pos.Line, closing.Pos.Col + 1}
+}
+
+// callTypeArgsAhead reports whether the `<` at the current token starts the
+// type arguments of a call on callee: a name or `Module.name`, then a
+// balanced `<` ... `>` of type names followed directly by `(`. A name not
+// followed by `.` must be a type: it starts with a capital letter or is a
+// primitive type name. So `a < b > (c)` stays a comparison.
+func (p *Parser) callTypeArgsAhead(callee Expr) bool {
+	switch callee := callee.(type) {
+	case *Ident:
+	case *FieldExpr:
+		if _, ok := callee.Target.(*Ident); !ok {
+			return false
+		}
+	default:
+		return false
+	}
+	depth := 0
+	for i := p.i; i < len(p.toks); i++ {
+		t := p.toks[i]
+		switch {
+		case t.Kind == TokIdent:
+			if depth == 0 {
+				return false
+			}
+			next := p.toks[min(i+1, len(p.toks)-1)]
+			if !startsUpper(t.Text) && !isPrimitiveTypeName(t.Text) && !(next.Kind == TokPunct && next.Text == ".") {
+				return false
+			}
+		case t.Kind != TokPunct:
+			return false
+		case t.Text == "<":
+			depth++
+		case t.Text == ">" || t.Text == ">>":
+			depth -= len(t.Text)
+			if depth < 0 {
+				return false
+			}
+			if depth == 0 {
+				n := p.toks[min(i+1, len(p.toks)-1)]
+				return n.Kind == TokPunct && n.Text == "("
+			}
+		case t.Text == "," || t.Text == "." || t.Text == "#[" || t.Text == "]":
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// isPrimitiveTypeName reports whether name is a type written in lowercase.
+func isPrimitiveTypeName(name string) bool {
+	switch name {
+	case "int", "f64", "bool", "char", "string", "void":
+		return true
+	}
+	return false
 }
 
 // typeArgsLitAhead reports whether the `<` at the current token starts the

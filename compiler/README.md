@@ -136,7 +136,6 @@ go test ./...
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - `export type` aliases (so constructors through an alias are not available either).
 - `Dynamic<Trait>`, `derives Shape` and `Hash.of`.
-- Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.

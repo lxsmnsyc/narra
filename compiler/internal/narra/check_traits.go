@@ -334,6 +334,11 @@ func (c *Checker) resolveTraitDecl(td *TraitDecl) {
 			fd.ResultT = c.resolveType(fd.Result)
 		}
 		tf.Result = fd.ResultT
+		// Self only in the result is allowed; a call names the type with
+		// Trait.f<T>(...).
+		if containsOpen(fd.ResultT, []*TypeParamType{tr.Self}) {
+			mentionsSelf = true
+		}
 		if !mentionsSelf {
 			c.errorf(fd.Pos, "a parameter of %s.%s must use Self, so a call can tell which implementation to run", tr.Name, fd.Name)
 		}
@@ -604,6 +609,14 @@ func (c *Checker) traitCall(e *CallExpr, tr *Trait, name string, want Type) Type
 	fd := tf.Decl
 	self := []*TypeParamType{tr.Self}
 	m := map[*TypeParamType]Type{}
+	if len(e.TypeArgs) > 0 {
+		// `Trait.f<T>(...)` names the type that Self stands for.
+		given, ok := c.takeTypeArgs(e, tr.Name+"."+name, 1)
+		if !ok {
+			return TVoid
+		}
+		m[tr.Self] = given[0]
+	}
 	if want != nil {
 		unify(fd.ResultT, want, m)
 	}
@@ -621,6 +634,10 @@ func (c *Checker) traitCall(e *CallExpr, tr *Trait, name string, want Type) Type
 	}
 	st, ok := m[tr.Self]
 	if !ok {
+		if !selfInParams(fd, self) {
+			c.errorf(e.P, "%s.%s has Self only in its result; name the type, as in %s.%s<Type>(...)", tr.Name, name, tr.Name, name)
+			return TVoid
+		}
 		c.errorf(e.P, "cannot tell which type's %s.%s to call here; add a type annotation", tr.Name, name)
 		return TVoid
 	}
@@ -649,6 +666,17 @@ func (c *Checker) traitCall(e *CallExpr, tr *Trait, name string, want Type) Type
 		e.Trait = &TraitCall{Trait: tr, Func: name, Self: st}
 	}
 	return result
+}
+
+// selfInParams reports whether Self appears in a parameter of fd, which is
+// how a trait call finds the implementing type.
+func selfInParams(fd *FuncDecl, self []*TypeParamType) bool {
+	for _, p := range fd.Params {
+		if containsOpen(p.T, self) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkBounds checks a generic call's type arguments against the

@@ -8,7 +8,7 @@
 // resolves to is recorded on the CallExpr: Ref.Function (a plain or generic
 // function; an instance names its generic function), Ref.Builtin,
 // Ref.Constructor, Ref.Implementation, Ref.TraitFunction or Ref.Distinct.
-import { Pos, Expr, Arg, Decl, Param, FuncDecl } from "narrac/ast"
+import { Pos, Expr, Arg, Decl, Param, FuncDecl, TypeExpr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type } from "narrac/types"
 import {
@@ -28,7 +28,7 @@ import {
   containsTypeParameter,
   anyTypeParameter,
 } from "narrac/check"
-import { substitute } from "narrac/resolve"
+import { substitute, resolveType } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { findTraitFunc, typeImplements, implFunc, checkBounds } from "narrac/traits"
 import { sourceScope, exported } from "narrac/scopes"
@@ -497,6 +497,28 @@ function checkGenericCall<W: Walker>(
   const typeParameters = info.typeParameters
   const parameters = info.declaration.parameters
   let bindings: Map<int, Type> = Map {}
+  if (checker.callTypeArguments[nodeId] is Some(written)) {
+    if (Arrays.length(written) > 0) {
+      // Given type arguments fix the parameters before unification.
+      if (
+        takeTypeArguments(
+          mutable checker,
+          walker,
+          nodeId,
+          pos,
+          info.name,
+          Arrays.length(typeParameters),
+          arguments,
+        ) is Some(given)
+      ) {
+        for (const index of Ranges.between(0, Arrays.length(typeParameters))) {
+          bindings[typeParameters[index]] = given[index]
+        }
+      } else {
+        return Type.TVoid
+      }
+    }
+  }
   if (want is Some(wanted)) {
     unify(checker, info.result, wanted, mutable bindings)
   }
@@ -604,6 +626,26 @@ function checkTraitCall<W: Walker>(
   const selfParameter = checker.traits[traitIndex].selfParameter
   const self = [selfParameter]
   let bindings: Map<int, Type> = Map {}
+  if (checker.callTypeArguments[nodeId] is Some(written)) {
+    if (Arrays.length(written) > 0) {
+      // `Trait.f<T>(...)` names the type that Self stands for.
+      if (
+        takeTypeArguments(
+          mutable checker,
+          walker,
+          nodeId,
+          pos,
+          `${traitName}.${name}`,
+          1,
+          arguments,
+        ) is Some(given)
+      ) {
+        bindings[selfParameter] = given[0]
+      } else {
+        return Type.TVoid
+      }
+    }
+  }
   if (want is Some(wanted)) {
     unify(checker, traitFunc.result, wanted, mutable bindings)
   }
@@ -630,6 +672,10 @@ function checkTraitCall<W: Walker>(
   let selfType = Type.TVoid
   if (bindings[selfParameter] is Some(bound)) {
     selfType = bound
+  } else if (!isSelfInParameters(checker, traitFunc.parameters, self)) {
+    const message = `${traitName}.${name} has Self only in its result; name the type, as in ${traitName}.${name}<Type>(...)`
+    reportError(mutable checker, pos, message)
+    return Type.TVoid
   } else {
     reportError(
       mutable checker,
@@ -678,6 +724,51 @@ function checkTraitCall<W: Walker>(
     checker.bodies[checker.body].traitSelf[nodeId] = selfType
   }
   return result
+}
+
+// isSelfInParameters reports whether Self appears in a parameter of a trait
+// function, which is how a trait call finds the implementing type.
+function isSelfInParameters(checker: Checker, parameters: Array<Type>, self: Array<int>): bool {
+  for (const parameter of Arrays.values(parameters)) {
+    if (containsOpen(checker, parameter, self)) {
+      return true
+    }
+  }
+  return false
+}
+
+// takeTypeArguments resolves the type arguments written on a call to a
+// function with count type parameters (Go's takeTypeArgs). It marks them
+// used, and is None after reporting a wrong count.
+function takeTypeArguments<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+  count: int,
+  arguments: Array<Arg>,
+): Option<Array<Type>> uses alloc {
+  let written: Array<TypeExpr> = []
+  if (checker.callTypeArguments[nodeId] is Some(pending)) {
+    written = pending
+  }
+  checker.callTypeArguments[nodeId] = []
+  if (Arrays.length(written) != count) {
+    const found = Int.toString(Arrays.length(written))
+    reportError(
+      mutable checker,
+      pos,
+      `${name} takes ${Int.toString(count)} type arguments, found ${found}`,
+    )
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return None
+  }
+  let types: Array<Type> = []
+  for (const typeExpression of Arrays.values(written)) {
+    Arrays.push(mutable types, resolveType(mutable checker, typeExpression))
+  }
+  return Some(types)
 }
 
 // checkDistinctCall checks `T.from(x)` and `T.toInt(x)` on a distinct type

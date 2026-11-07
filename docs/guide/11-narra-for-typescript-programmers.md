@@ -543,7 +543,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A call never writes type arguments, as in `firstOr<int>(prices, 0)`. The compiler works them out from the arguments. When an argument such as `[]` does not say its type, annotate the variable that holds it ([chapter 3](03-functions-and-closures.md#one-function-for-many-types)):
+A call may write type arguments, as in `firstOr<int>([], 0)`, the same as in TypeScript. You rarely need them, because the compiler works them out from the arguments. Write them when no argument says the type, as with `[]`. Write all of them or none. The other way is to annotate the variable that holds the value ([chapter 3](03-functions-and-closures.md#one-function-for-many-types)):
 
 ```narra
 import * as Arrays from "std/array"
@@ -557,8 +557,9 @@ function firstOr<T>(items: Array<T>, fallback: T): T {
 }
 
 export function run(args: Array<string>): int {
+  print(Int.toString(firstOr<int>([], 0)))
   const none: Array<int> = []
-  print(Int.toString(firstOr(none, 0)))
+  print(Int.toString(firstOr(none, 1)))
   print(firstOr(["tea", "cake"], "nothing"))
   return 0
 }
@@ -566,6 +567,7 @@ export function run(args: Array<string>): int {
 
 ```text
 0
+1
 tea
 ```
 

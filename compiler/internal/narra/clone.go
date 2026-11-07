@@ -96,7 +96,8 @@ func cloneExpr(e Expr) Expr {
 	case *IndexExpr:
 		return &IndexExpr{exprBase: exprBase{P: e.P}, Target: cloneExpr(e.Target), Index: cloneExpr(e.Index)}
 	case *CallExpr:
-		c := &CallExpr{exprBase: exprBase{P: e.P}, Callee: cloneExpr(e.Callee), End: e.End}
+		// TypeArgs is shared with the original, as for literals.
+		c := &CallExpr{exprBase: exprBase{P: e.P}, Callee: cloneExpr(e.Callee), TypeArgs: e.TypeArgs, End: e.End}
 		for _, a := range e.Args {
 			c.Args = append(c.Args, &Arg{Mutable: a.Mutable, Value: cloneExpr(a.Value)})
 		}

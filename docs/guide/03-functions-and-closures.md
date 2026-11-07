@@ -276,7 +276,7 @@ export function run(args: Array<string>): int {
 6
 ```
 
-`T` is the type of the items going in and `U` the type coming out. In the first call the compiler sees an `Array<int>` and an arrow function that returns a `string`, so `T` is `int` and `U` is `string`. In the second call it is the other way round. You never write the types at the call. The compiler works them out from the arguments.
+`T` is the type of the items going in and `U` the type coming out. In the first call the compiler sees an `Array<int>` and an arrow function that returns a `string`, so `T` is `int` and `U` is `string`. In the second call it is the other way round. Usually you do not write the types at the call, because the compiler works them out from the arguments. When no argument says the type, write it after the name, as in `mapAll<int, string>([], describe)`.
 
 ## Use values from around a function
 

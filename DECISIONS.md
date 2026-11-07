@@ -740,3 +740,27 @@ Decision: `mutable` reaches the contents of a value, its fields and elements, an
 - **Cost.** `const` no longer means deeply immutable: a reader must look for field writes and `mutable` arguments to know a `const` struct does not change.
 - **Cost.** `const b = a` followed by `a.hp = 1` now compiles and leaves `b` unchanged, where TypeScript would change both. It has no diagnostic: finding it needs a check of every copy across the function. SPEC sections 2 and 14 now name it as the one exception to "valid TypeScript with another meaning is a compile error". The case was already open for `let`.
 - **Cost.** Output parameters of scalar types are gone; a function returns the value, or wraps the counter in a struct. The checker splits "the name can be reassigned" from "the contents can change".
+
+## D87. Named arguments, in any order, with every argument passed
+
+Decision: a call can name its arguments, `move(x: 1, y: 2)`, spelled like struct literal fields. Positional arguments come first, then named ones in any order. A positional argument after a named one is an error, and each parameter is passed exactly once, by position or by name. `mutable` follows the colon: `buf: mutable xs`. Names work only when the callee is a declaration with parameter names; a call through a function value or a std builtin registered without names takes positions only, with an error that says so. Arguments are evaluated in the order they are written. Amends D12, which ruled out labeled arguments; the rest of D12 stays, and parameter defaults are a separate decision. Not built yet. Debate: `roadmaps/selfhost/debate/named-arguments/debate.md`.
+
+- **Reason.** Calls with many parameters or bare `true`/`false` arguments do not show what each argument means: 363 of 1477 functions in selfhost/src and std take 4 or more parameters, and about 30 callees take a trailing bool literal.
+- **Reason.** The checker puts named arguments back in declaration order, so each function still compiles to one C function with a fixed parameter list (D12).
+- **Reason.** `name: value` is the struct literal form. In TypeScript `f(a: 1)` is a syntax error, so the text has no second meaning (D2). `f(a = 1)` would read as an assignment to TypeScript readers.
+- **Reason.** Kotlin, the model for this feature, evaluates arguments in written order. A reordered argument with side effects is evaluated into a temporary first.
+- **Rejected: `name = value`** (Kotlin's spelling). It is an assignment in TypeScript.
+- **Rejected: labels only, in declaration order.** It documents a call but does not allow reordering.
+- **Rejected: editor hints, required labels on bool literals, or enum parameters instead.** None gives named arguments in any order. Replacing flag parameters with enums is still fine on its own.
+- **Prior art.** Kotlin `foo(a = 1)`, C# `foo(a: 1)`, Swift argument labels, Python keyword arguments. TypeScript, Rust and Go have none.
+- **Cost.** Parameter names become part of a function's interface for callers that use them: renaming a parameter breaks those calls.
+- **Cost.** About 650k tokens over three nodes, after the fix for argument evaluation order.
+
+## D88. No async blocks or generator blocks for now
+
+Decision: Narra does not add `async { ... }` blocks or inline generator expressions (`function* (): Generator<T> { ... }`) until a program needs one. An inline async body is an async arrow, and an inline generator is a top-level `function*` that takes the values it needs as arguments (D74). Debate: `roadmaps/selfhost/debate/suspending-blocks/debate.md`, which records both designs for a rerun.
+
+- **Reason.** No code in selfhost/src or std declares a generator or an async arrow.
+- **Reason.** `async { ... }` would mean exactly `async () => { ... }`, a second spelling, and it cannot ship before async functions are built.
+- **Reason.** A generator expression needs capture and lifting work in both compilers, estimated at 450k tokens or more.
+- **Prior art.** Rust has async blocks and unstable `gen` blocks; Kotlin builds generators with `sequence { }`; TypeScript has neither block and uses anonymous `function*` expressions and async IIFEs.

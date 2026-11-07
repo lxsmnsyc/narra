@@ -153,12 +153,13 @@ function checkExpressionKind<W: Walker>(
       index,
     )
     Expr.MapLit(_, _, _, _, _) => Walker.checkMapLiteral(walker, mutable checker, expression, want)
-    Expr.CallExpr(nodeId, pos, callee, arguments) => checkCallEndingNarrowing(
+    Expr.CallExpr(nodeId, pos, callee, typeArguments, arguments) => checkCallEndingNarrowing(
       mutable checker,
       walker,
       nodeId,
       pos,
       callee,
+      typeArguments,
       arguments,
       want,
     )
@@ -215,10 +216,33 @@ function checkCallEndingNarrowing<W: Walker>(
   nodeId: int,
   pos: Pos,
   callee: Expr,
+  typeArguments: Array<TypeExpr>,
   arguments: Array<Arg>,
   want: Option<Type>,
 ): Type uses alloc {
+  if (Arrays.length(typeArguments) > 0) {
+    checker.callTypeArguments[nodeId] = typeArguments
+  }
+  const errorsBefore = Arrays.length(checker.errors)
   const checked = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+  if (Arrays.length(typeArguments) > 0) {
+    // Only a generic function or a trait function takes the type arguments.
+    // A callee that failed to resolve has its own error already.
+    if (checker.callTypeArguments[nodeId] is Some(untaken)) {
+      if (Arrays.length(untaken) > 0 && Arrays.length(checker.errors) == errorsBefore) {
+        let hint = ""
+        if (getRef(checker, nodeId) is Ref.Constructor(_, _)) {
+          hint = "; a constructor gets its type from the expected type, as in `const x: Option<int> = None()`"
+        }
+        reportError(
+          mutable checker,
+          pos,
+          `${describeCallee(callee)} is not a generic function, so it takes no type arguments${hint}`,
+        )
+      }
+    }
+    checker.callTypeArguments[nodeId] = []
+  }
   const found = bindCallResult(mutable checker, nodeId, checked)
   for (const argument of Arrays.values(arguments)) {
     if (argument.isMutable) {
@@ -1386,7 +1410,7 @@ export function usesLocal(checker: Checker, expression: Expr, local: int): bool 
     Expr.BinaryExpr(_, _, _, left, right) =>
       usesLocal(checker, left, local) || usesLocal(checker, right, local)
     Expr.IsExpr(_, _, subject, _) => usesLocal(checker, subject, local)
-    Expr.CallExpr(_, _, _, arguments) => argumentsUseLocal(checker, arguments, local)
+    Expr.CallExpr(_, _, _, _, arguments) => argumentsUseLocal(checker, arguments, local)
     Expr.TemplateLit(_, _, parts) => anyUsesLocal(checker, parts, local)
     Expr.StructLit(_, _, _, _, fields, _) => fieldsUseLocal(checker, fields, local)
     Expr.ArrayLit(_, _, elements, _) => anyUsesLocal(checker, elements, local)
@@ -1892,7 +1916,7 @@ function checkConstValue(mutable checker: Checker, name: string, value: Expr): b
     Expr.UnaryExpr(_, _, _, operand) => checkConstValue(mutable checker, name, operand)
     Expr.BinaryExpr(_, _, _, left, right) =>
       checkConstValue(mutable checker, name, left) && checkConstValue(mutable checker, name, right)
-    Expr.CallExpr(nodeId, pos, callee, arguments) => checkConstCall(
+    Expr.CallExpr(nodeId, pos, callee, _, arguments) => checkConstCall(
       mutable checker,
       name,
       nodeId,
@@ -2052,7 +2076,7 @@ export function isConstantValue(checker: Checker, expression: Expr): bool {
     Expr.UnaryExpr(_, _, _, operand) => isConstantValue(checker, operand)
     Expr.ArrayLit(_, _, elements, _) => allConstant(checker, elements)
     Expr.Ident(nodeId, _, _) => getRef(checker, nodeId) is Ref.Constructor(_, _)
-    Expr.CallExpr(nodeId, _, _, arguments) =>
+    Expr.CallExpr(nodeId, _, _, _, arguments) =>
       getRef(checker, nodeId) is Ref.Constructor(_, _) && allArgumentsConstant(checker, arguments)
     _ => false
   }
@@ -2185,7 +2209,7 @@ export function collectAssignedInExpr(expression: Expr, mutable names: Array<str
         }
       }
     }
-    Expr.CallExpr(_, _, callee, arguments) => {
+    Expr.CallExpr(_, _, callee, _, arguments) => {
       collectAssignedInExpr(callee, mutable names)
       for (const argument of Arrays.values(arguments)) {
         if (argument.isMutable) {

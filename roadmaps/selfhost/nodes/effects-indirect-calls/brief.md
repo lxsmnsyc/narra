@@ -2,7 +2,7 @@
 id: effects-indirect-calls
 title: "Calls through struct fields and call results charge their effects"
 status: active
-priority: should
+priority: must
 type: fix
 story:
 early: false

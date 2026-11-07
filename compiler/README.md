@@ -79,6 +79,8 @@ The fixed point shows that the Narra compiler, compiled by itself, translates th
 go test ./...
 ```
 
+`scripts/linux-check.sh` runs `go vet ./... && go test ./...` in a Linux container (gcc with sanitizers, repo mounted read-only). Docker runs through colima on macOS: `colima start --cpu 4 --memory 8` first.
+
 - `testdata/*.nra` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.
 - `tests.nra` and `testdata/std_test*.nra` run their `test` blocks (`narra test`) instead of an entry function. `std_test.go` checks failing `std/test` assertions.
 - `testdata/panics/` must panic with a given message and exit code 101.
@@ -136,7 +138,6 @@ go test ./...
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - `export type` aliases (so constructors through an alias are not available either).
 - `Dynamic<Trait>`, `derives Shape` and `Hash.of`.
-- Explicit type arguments in calls, such as `f<int>(x)`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: function types carry no effects in the type checker, so calls through struct fields or call results count as pure; trait function calls to user implementations are not followed; `unsafe` has no source yet.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
@@ -147,6 +148,7 @@ go test ./...
 
 ## Differences from the spec
 
+- The `mutable` and `const` rules of D81 are not built yet (node mutable-bindings). The compiler still follows D27: a local `const` cannot be changed at any depth, a `mutable` argument must be a `let`, a `mutable` parameter or a part of one, a `mutable` parameter may have any type and may be assigned whole, and a non-escaping closure captures a `const` by value.
 - `Co.resume` is not an importable name: `import { resume } from "std/coroutine"` is an error with a hint, and `Co.resume` works only through a module alias. A resume charges `alloc` for the `Step` payload besides the effects of the generator type. A panicked coroutine does not free what it held.
 - A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
 - `==` and `!=` work on a distinct type when its base type supports them (and it can be a map key). SPEC.md says no operators carry over.

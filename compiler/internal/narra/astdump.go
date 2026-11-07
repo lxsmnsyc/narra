@@ -502,6 +502,7 @@ func (d *astDumper) expr(e Expr) {
 	case *CallExpr:
 		d.node("call", pos, nil, func() {
 			d.exprSlot("callee", n.Callee)
+			d.typeExprSlot("typeargs", nil, n.TypeArgs)
 			if len(n.Args) > 0 {
 				d.slot("args", nil, func() {
 					for _, a := range n.Args {

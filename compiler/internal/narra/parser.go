@@ -15,6 +15,9 @@ type Parser struct {
 	resultFunc bool
 	// ternaries holds the block expressions that `c ? a : b` produced.
 	ternaries map[*BlockExpr]bool
+	// typeNames are the type parameters of the declaration being parsed. A
+	// lowercase one still counts as a type in `id<t>(x)`.
+	typeNames []string
 }
 
 // templateDot finds `Name.` inside a template string. The parser does not keep
@@ -165,6 +168,7 @@ func (p *Parser) file() (f *File, err error) {
 		p.skipNewlines()
 	}
 	for p.tok().Kind != TokEOF {
+		p.typeNames = nil
 		f.Decls = append(f.Decls, p.decl())
 		p.skipNewlines()
 	}
@@ -331,6 +335,7 @@ func (p *Parser) typeParamsEffects() ([]string, [][]*TypeExpr, []string) {
 			continue
 		}
 		names = append(names, p.ident().Text)
+		p.typeNames = append(p.typeNames, names[len(names)-1])
 		var bs []*TypeExpr
 		if p.accept(":") {
 			for {
@@ -1084,23 +1089,20 @@ func (p *Parser) postfix(e Expr) Expr {
 		case p.is("("):
 			p.next()
 			call := &CallExpr{exprBase: exprBase{P: t.Pos}, Callee: e}
-			for !p.is(")") {
-				arg := &Arg{Mutable: p.accept("mutable")}
-				arg.Value = p.expr()
-				call.Args = append(call.Args, arg)
-				if !p.accept(",") {
-					break
-				}
-			}
-			closing := p.tok()
-			p.expect(")")
-			call.End = Pos{closing.Pos.Line, closing.Pos.Col + 1}
+			p.callArgs(call)
 			e = call
 		case p.is("["):
 			p.next()
 			idx := p.expr()
 			p.expect("]")
 			e = &IndexExpr{exprBase: exprBase{P: t.Pos}, Target: e, Index: idx}
+		case p.is("<") && p.callTypeArgsAhead(e):
+			// `f<int>(x)`: type arguments of a call.
+			targs := p.litTypeArgs()
+			open := p.expect("(")
+			call := &CallExpr{exprBase: exprBase{P: open.Pos}, Callee: e, TypeArgs: targs}
+			p.callArgs(call)
+			e = call
 		case p.is("<") || p.is("{"):
 			// `Name { field: value }` is a struct literal, and
 			// `Name<A, B> { ... }` is one with type arguments.
@@ -1130,6 +1132,109 @@ func (p *Parser) postfix(e Expr) Expr {
 			return e
 		}
 	}
+}
+
+// callArgs parses the arguments of a call after its `(`, and the closing `)`.
+func (p *Parser) callArgs(call *CallExpr) {
+	for !p.is(")") {
+		arg := &Arg{Mutable: p.accept("mutable")}
+		arg.Value = p.expr()
+		call.Args = append(call.Args, arg)
+		if !p.accept(",") {
+			break
+		}
+	}
+	closing := p.tok()
+	p.expect(")")
+	call.End = Pos{closing.Pos.Line, closing.Pos.Col + 1}
+}
+
+// callTypeArgsAhead reports whether the `<` at the current token starts the
+// type arguments of a call on callee: a name or `Module.name`, then a
+// balanced `<` ... `>` of type names followed directly by `(`. A name not
+// followed by `.` must be a type: a type parameter in scope, a primitive
+// type name, or a capitalized name that is not SCREAMING_CASE. So
+// `a < b > (c)` and `x < MAX, MIN > (y)` stay comparisons.
+func (p *Parser) callTypeArgsAhead(callee Expr) bool {
+	switch callee := callee.(type) {
+	case *Ident:
+	case *FieldExpr:
+		if _, ok := callee.Target.(*Ident); !ok {
+			return false
+		}
+	default:
+		return false
+	}
+	depth := 0
+	for i := p.i; i < len(p.toks); i++ {
+		t := p.toks[i]
+		switch {
+		case t.Kind == TokIdent:
+			if depth == 0 {
+				return false
+			}
+			next := p.toks[min(i+1, len(p.toks)-1)]
+			if !p.isTypeNameAhead(t.Text) && !(next.Kind == TokPunct && next.Text == ".") {
+				return false
+			}
+		case t.Kind != TokPunct:
+			return false
+		case t.Text == "<":
+			depth++
+		case t.Text == ">" || t.Text == ">>":
+			depth -= len(t.Text)
+			if depth < 0 {
+				return false
+			}
+			if depth == 0 {
+				n := p.toks[min(i+1, len(p.toks)-1)]
+				return n.Kind == TokPunct && n.Text == "("
+			}
+		case t.Text == "," || t.Text == "." || t.Text == "#[" || t.Text == "]":
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// isTypeNameAhead reports whether a name in call type arguments can be a
+// type: a type parameter in scope, a primitive type, or a capitalized name
+// that is not a constant (two or more characters with no lowercase letter,
+// such as MAX or LIMIT_2).
+func (p *Parser) isTypeNameAhead(name string) bool {
+	for _, n := range p.typeNames {
+		if n == name {
+			return true
+		}
+	}
+	if isPrimitiveTypeName(name) {
+		return true
+	}
+	return startsUpper(name) && !isConstantName(name)
+}
+
+// isConstantName reports whether name looks like a constant: it has two or
+// more characters and no lowercase letter.
+func isConstantName(name string) bool {
+	if len(name) < 2 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 'a' && name[i] <= 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+// isPrimitiveTypeName reports whether name is a type written in lowercase.
+func isPrimitiveTypeName(name string) bool {
+	switch name {
+	case "int", "f64", "bool", "char", "string", "void":
+		return true
+	}
+	return false
 }
 
 // typeArgsLitAhead reports whether the `<` at the current token starts the

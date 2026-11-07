@@ -11,8 +11,8 @@ Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` function
 - Narra uses TypeScript-style syntax with Rust-style semantics: static types, enums with fields, pattern matching, and no `null`.
 - Narra compiles to native code, the same target as C, Rust and Go. The compiler emits C, and a C compiler builds the final binary.
 - Narra code is a set of modules. One file is one module. There are no globals.
-- Values are immutable. Safe code has no pointers or references, only values.
-- A function changes a caller's variable only through a `mutable` parameter, marked at the call: `damage(mutable hero, 10)`.
+- Every name holds its own value: a change through one name never shows through another. Safe code has no pointers or references, only values.
+- A function changes a caller's data only through a `mutable` parameter, marked at the call: `damage(mutable hero, 10)`. It changes the contents (fields and elements), never the caller's variable itself.
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
@@ -38,7 +38,7 @@ test "rect area" {
 
 ## 2. Syntax
 
-The syntax follows TypeScript where the meaning is the same. Where Narra means something different, it uses different syntax or reports a compile error. The table under "Differences from TypeScript" lists those cases.
+The syntax follows TypeScript where the meaning is the same. Where Narra means something different, it uses different syntax or reports a compile error. The table under "Differences from TypeScript" lists those cases. One difference has no diagnostic: assignment copies a value, so after `const b = a`, a change to `a` does not show in `b` (D81).
 
 ### Statements and layout
 
@@ -56,8 +56,13 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 ### Bindings
 
-- `const x = expr` binds a name that cannot be reassigned.
-- `let x = expr` binds a name that can be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
+- `const x = expr` binds a name that cannot be reassigned. **`const` fixes the name, not the contents** (D81): the fields and elements of a local `const` struct, array, map or other contents type (section 6, Mutable parameters) can be assigned, and the `const` can be passed as `mutable`.
+- `let x = expr` binds a name that can also be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
+- **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other.
+- **A plain parameter is read-only.** Its fields and elements cannot be assigned, and it cannot be passed as `mutable` (section 6).
+- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81).
+- **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
+- `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
 - There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
@@ -72,7 +77,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
 - An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Arrays.map(prices, (p) => p * 2)`.
 - **Function types** are written like arrow functions: `(item: T) => U`.
-- **Parameters are constant.** A parameter cannot be reassigned or changed, unless it is declared `mutable` (section 6).
+- **Parameters are constant.** A parameter cannot be reassigned, and its contents cannot be changed unless it is declared `mutable` (section 6). A `mutable` parameter still cannot be reassigned.
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
 - **No currying and no partial application.** To fix some arguments, write an arrow function.
 - **No method calls.** `xs.push(v)` is not valid. Write `Arrays.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
@@ -93,7 +98,7 @@ function gcd(a: int, b: int): int {
 
 - An arrow function that captures nothing compiles to a plain C function pointer.
 - An arrow function that captures values stores them in an environment. Captured heap values have their reference count incremented, and captured structs are copied.
-- A closure captures constants (`const` bindings and non-mutable parameters) by value.
+- A closure captures constants (`const` bindings and non-mutable parameters) by value, except a local `const` whose contents it changes (next item).
 - **A non-escaping closure captures `let` variables and `mutable` parameters by reference** (D77). An arrow function written directly as the argument of a non-escaping function-type parameter may read and assign them, as in TypeScript:
 
 ```ts
@@ -101,7 +106,7 @@ let total = 0
 each(numbers, (item) => { total = total + item })
 ```
 
-  Every `let` and `mutable` it uses is captured by reference, also when it only reads it. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
+  Every `let` and `mutable` it uses is captured by reference, also when it only reads it. A local `const` whose fields or elements it assigns, or which it passes as `mutable`, directly or through a nested closure, is captured by reference too, by every closure between the change and the declaration, and is borrowed like a `let` it assigns (D81, proposed). A `const` that no closure in the chain changes stays a copy. A closure that is not of this kind cannot change a captured value. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
 - **A variable that such a closure assigns is borrowed for the call.** In that call it cannot be passed as `mutable`, read or assigned in another argument (including `items.length` or `xs[0]`), or captured by another closure argument (E0614). Two closures that only read the same variable are fine. A narrowing by `is` is not seen inside a closure that captures the variable, and a narrowing of a variable that a closure assigns ends at the statement of the call.
 - **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
@@ -204,11 +209,11 @@ There are no macros, no operator overloading and no function overloading.
 
 ### Differences from TypeScript
 
-Code that is valid TypeScript but means something different in Narra is a compile error with a fix, never a silently different meaning.
+Code that is valid TypeScript but means something different in Narra is a compile error with a fix, never a silently different meaning. The exception is value copies (the `const b = a` row): a copy followed by a change to one of the names compiles, because finding the change would need a whole-function check of every copy (D81).
 
 | TypeScript | Narra |
 | --- | --- |
-| `const` fixes the binding, but the object can still change | `const` values never change |
+| `const b = a` gives two names for one object, and a change through one shows through the other | `const` fixes the name, and its contents can change, as in TypeScript (D81). `const b = a` makes a copy: a change to `a` does not show in `b` |
 | `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
 | `let` can be captured by any closure | `let` can be captured only by a closure passed to a non-escaping parameter |
 | `null`, `undefined` | Not present. Use `Option<T>` with `None` |
@@ -350,7 +355,7 @@ function makeEntry(key: string, value: int): Entry<string, int> {
 
 - `s.field` reads a field.
 - `{ ...s, field: value }` returns a copy of `s` with some fields changed. The spread must come first, there is only one, and the result has the same type as `s`. The original is unchanged.
-- `s.field = value` changes a field in place. `s` must be a `let` variable, a `mutable` parameter, or a field of one.
+- `s.field = value` changes a field in place. `s` must be a local `const` or `let`, a `mutable` parameter, or a field or element of one (section 2, Bindings).
 - To change a caller's struct inside a function, declare the parameter `mutable` (section 6).
 
 ```ts
@@ -388,7 +393,7 @@ match (point) {
 **Boxes**
 
 - `Box<T>` holds one value on the heap with a reference count.
-- `Boxes.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a `let` variable, in place when the count is 1.
+- `Boxes.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a local `const` or `let` or a `mutable` parameter, in place when the count is 1.
 - Use a box for recursive structs and for large structs that are copied often.
 
 ```ts
@@ -489,6 +494,7 @@ const label = match (status) {
 - **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
+- **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 ```ts
@@ -542,6 +548,7 @@ const label = Show.show(price)
 
 - Trait functions are called through the trait name: `Show.show(price)`. There is no `price.show()` form.
 - In generic code, `<T: Show>` allows `Show.show(value)` for a `value: T`.
+- A trait function may mention `Self` only in its result, for example `function fromValue(value: Value): Result<Self, string>`. A call names the type that `Self` stands for: `Shape.fromValue<User>(value)`. Exactly one type argument is allowed. Without it, the call is an error unless the expected type fixes `Self`. In a generic body `<T: Shape>`, `Shape.fromValue<T>(value)` is resolved when the body is instantiated.
 
 **Trait values**
 
@@ -649,7 +656,7 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 
 ### In-place updates
 
-- `items[i] = v`, `m[k] = v`, `Arrays.push(mutable items, v)` and `u.age = v` change a `let` variable. `{ ...u, age: v }` returns a changed copy.
+- `items[i] = v`, `m[k] = v`, `Arrays.push(mutable items, v)` and `u.age = v` change a local variable, `const` or `let`. `{ ...u, age: v }` returns a changed copy.
 - When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
 - Code that keeps one owner gets in-place mutation with no copies.
 
@@ -660,7 +667,7 @@ for (const i of Ranges.upTo(1000)) {
 }
 ```
 
-- `items[i] = v` and `u.age = v` require the target to be a `let` variable, a `mutable` parameter, or a field of one.
+- `items[i] = v` and `u.age = v` require the target to be a local `const` or `let`, a `mutable` parameter, or a field or element of one. A plain parameter and a top-level constant cannot be changed. Pattern, `for ... of` and destructured bindings are open (section 2, Bindings).
 
 ### Copies on shared values
 
@@ -668,7 +675,7 @@ When an update targets a value whose reference count is greater than 1, the valu
 
 - **`narra check --report-copies`** lists every update where the compiler cannot prove the count is 1.
 - **`NARRA_TRACE_COPIES=1`** makes a program log every copy at runtime, with its source location and size.
-- **`@unique`** on a `let` declares that the variable is never shared. In debug builds, an update that would copy it panics. In release builds the check is removed.
+- **`@unique`** on a `const` or `let` declares that the variable is never shared. In debug builds, an update that would copy it panics. In release builds the check is removed.
 
 ```ts
 @unique let buffer: Array<u8> = Arrays.withCapacity(65536)
@@ -698,33 +705,43 @@ const summary = Region.run((region) => {
 
 ### Mutable parameters
 
-A function changes a caller's variable only through a `mutable` parameter. The keyword appears in the declaration and again at the call.
+A function changes a caller's data only through a `mutable` parameter. The keyword appears in the declaration and again at the call. A `mutable` parameter reaches the contents of the caller's value, its fields and elements, and never the caller's variable (D81).
 
 ```ts
 function damage(mutable player: Player, amount: int) {
-  player.hp = player.hp - amount
+  player.hp = player.hp - amount     // ok: changes a field
+  player = { ...player, hp: 0 }      // compile error: a mutable parameter cannot be replaced
 }
 
-let hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
+const hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
 damage(mutable hero, 10)      // hero.hp is now 90
+
+function bump(mutable n: int) {  // compile error: int has no contents to change
+  n = n + 1
+}
 ```
 
-- **The argument must be changeable.** It must be a `let` variable, a `mutable` parameter, or a field or element of one. A `const`, a literal or a function result is a compile error.
+- **The parameter's type has contents.** A `mutable` parameter must have a contents type: a struct (an `opaque struct` too), `Array<T>`, `FixedArray<T, N>`, `Map<K, V>`, `Box<T>`, `StringBuilder`, `Generator<T>`, or `Coroutine<In, Out>`. Any other type is a compile error at the parameter: numbers, `bool`, `char`, `string`, `bytes`, distinct types, enums (`Option` and `Result` included), tuples, function types, the prelude `Range`, `Sender`, `Receiver`, `Shared` and `Atomic`. To give a new scalar or enum back to the caller, return it, or keep it in a field of a struct passed as `mutable`.
+- **Generic parameters.** `mutable value: T` with a bare type parameter `T` is a compile error, whatever its constraint: no trait guarantees a contents type. A generic instance of a contents type is fine: `mutable items: Array<T>`. Proposed (D81): in a trait, `mutable value: Self` is allowed, every `implement` of the trait must be for a contents type, and a `Dynamic<Trait>` cannot be passed to such a function.
+- **The callee changes contents, never the parameter.** Through a `mutable` parameter the callee may assign fields and elements at any depth, call std functions that change contents (`Arrays.push`, `Maps.set`, `Str.append`, `Co.resume`), and pass the value or a part of it on as `mutable`. Assigning the parameter itself (`player = other`, `count += 1`) is a compile error.
+- **The argument is a local place.** It must be a local binding that holds a contents type, or a field or element path of one: a `const`, a `let`, or a `mutable` parameter. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for ... of` and destructured bindings are open (section 2, Bindings). Passing a `const` as `mutable` adds nothing that direct code lacks, since its fields can be assigned directly (section 2, Bindings).
 - **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
-- **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `x + bump(mutable x)` and `pair(y, bump(mutable y))` are compile errors. Bind the call first: `const bumped = bump(mutable x)`, then `x + bumped`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`.
+- **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `p.hp + heal(mutable p)` and `pair(p, heal(mutable p))` are compile errors. Bind the call first: `const healed = heal(mutable p)`, then `p.hp + healed`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`. These rules hold for every binding passed as `mutable`, `const` included.
 - **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `const copy = player` is allowed.
-- **No copies.** The compiler passes a pointer to the caller's variable. Changes are written in place, with no copy and no reference count change for the variable itself.
-- **Other parameters are values.** A parameter without `mutable` is a constant copy. To build new data instead of changing the caller's data, return a new value.
+- **No copies.** The compiler passes a pointer to the caller's value. Changes are written in place, with no copy and no reference count change for the value itself. A value shared with other owners is copied on its first change, as in any in-place update.
+- **Other parameters are values.** A parameter without `mutable` is a read-only copy: its fields cannot be assigned, and it cannot be passed as `mutable`. To build new data instead of changing the caller's data, return a new value.
+- **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back.
 
 | Goal | Form |
 | --- | --- |
 | Change the caller's data | `damage(mutable hero, 10)` |
 | Build new data | `const stronger = withBonus(hero, 5)` |
+| Give back a new number | `count = bumped(count)` |
 
 ### Cycles
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
-- A `let` variable or `mutable` parameter cannot be stored, and only a closure that cannot outlive the call captures it, so it cannot create a cycle.
+- A variable is never stored by reference: storing it stores a copy, and only a closure that cannot outlive the call captures a variable by reference, so no cycle forms.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Values across threads
@@ -856,6 +873,8 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 }
 ```
 
+The builtin that builds channels must accept the type argument in `Channel.create<int>(16)`. Builtin functions reject type arguments today (E0326), so channels need an exception when they are built.
+
 - **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`.
 - **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
@@ -881,6 +900,7 @@ Shared.update(hits, (mutable count) => {
 const now = Shared.read(hits, (count) => count)
 ```
 
+- **Open (D81).** The sample above passes an `int` as a `mutable` arrow parameter, which D81 and E0028 do not allow. The node that builds `Shared` decides its form, for example a callback that returns the new value.
 - **The lock is held only during the callback.** `Shared.update` and `Shared.read` take the lock, run the callback and release it. There is no way to take the lock and forget to release it.
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
@@ -896,7 +916,7 @@ import * as Async from "std/async"
 import * as Net from "std/async/net"
 
 async function handle(connection: Connection) uses io, alloc {
-  let conn = connection
+  const conn = connection
   while (true) {
     const data = await Net.read(mutable conn, 4096)
     if (data is Err(_)) {
@@ -961,7 +981,7 @@ export enum Color {
 
 ## 10. Top-level declarations
 
-- **`const`** at the top level declares a compile-time constant. Inside a function, `const` accepts any expression. A top-level value must be one of these:
+- **`const`** at the top level declares a compile-time constant. It cannot be changed at any depth or passed as `mutable` (D81); a local `const` fixes only its name (section 2). Inside a function, `const` accepts any expression. A top-level value must be one of these:
   - a literal or a constructor
   - a struct or array of constants
   - a named function or another constant
@@ -1094,7 +1114,7 @@ export function sqrt(x: f64): f64
 
 - Error codes are stable. `narra explain E0412` prints the rule and an example fix.
 - Fixes are exact edits that an agent can apply without rewriting them.
-- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic. Its fix rewrites the TypeScript form into the Narra form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Arrays.push(mutable xs, v)`.
+- **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic, except the row on value copies (`const b = a`), which compiles. Its fix rewrites the TypeScript form into the Narra form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Arrays.push(mutable xs, v)`.
 
 ### Queries
 

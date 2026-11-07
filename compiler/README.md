@@ -147,6 +147,7 @@ go test ./...
 
 ## Differences from the spec
 
+- The `mutable` and `const` rules of D81 are not built yet (node mutable-bindings). The compiler still follows D27: a local `const` cannot be changed at any depth, a `mutable` argument must be a `let`, a `mutable` parameter or a part of one, a `mutable` parameter may have any type and may be assigned whole, and a non-escaping closure captures a `const` by value.
 - `Co.resume` is not an importable name: `import { resume } from "std/coroutine"` is an error with a hint, and `Co.resume` works only through a module alias. A resume charges `alloc` for the `Step` payload besides the effects of the generator type. A panicked coroutine does not free what it held.
 - A function that is not a `function*` and returns a generator type writes its own `uses` list after the type's (`(): Generator<T> uses io uses alloc`). A private function's `Generator<T>` parameter accepts only pure generators (D78).
 - `==` and `!=` work on a distinct type when its base type supports them (and it can be a map key). SPEC.md says no operators carry over.

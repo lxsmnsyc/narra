@@ -76,3 +76,5 @@ Output equals Go's for all 277 distinct codes, a lowercase code, an unknown code
 ## Size
 
 - Estimated M, actual M. A codemod placed most codes; the format table matched about 230 of 256 checker sites uniquely.
+
+Note: `check-codes.py` was deleted. The `codes` runner suite (`selfhost/tests/src/codes.nra`) replaced it.

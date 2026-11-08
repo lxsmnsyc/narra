@@ -72,3 +72,5 @@ Lexer: E0002 (quotes), E0003 (semicolon). Parser: E0014 (default import), E0020 
 ## Size
 
 - Estimated M, actual M. The parser and AST side tables (name positions, call ends, dot uses) were more than the 44 builders.
+
+Note: `check-codes.py` was deleted. The `codes` runner suite (`selfhost/tests/src/codes.nra`) replaced it.

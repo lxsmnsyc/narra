@@ -1,7 +1,7 @@
 ---
 id: checker-fixes
 title: Fix suggestions in narrac diagnostics
-status: todo
+status: active
 priority:
 type: feature
 story: c-seed

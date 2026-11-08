@@ -1,7 +1,7 @@
 ---
 id: test-runner-core
 title: Test runner in Narra for programs, panics and errors
-status: active
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 175598
 owns:
   - selfhost/tests/**
   - scripts/test.sh
@@ -64,3 +64,5 @@ M: a new package; the suites are simple compare loops.
 ## Notes for the worker
 
 - Do not edit `selfhost/src`. If the runner needs a compiler or std change, write it down as a change request in the node folder and work around it.
+
+Landed on feat/c-seed. Runner: 512 cases plus the sanitized self-build in 30 s (Go: 214 s for the same suites).

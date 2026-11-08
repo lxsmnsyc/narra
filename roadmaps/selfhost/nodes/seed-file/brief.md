@@ -1,7 +1,7 @@
 ---
 id: seed-file
 title: Checked-in C seed and cc-only bootstrap
-status: active
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 71916
 owns:
   - seed/**
   - selfhost/bootstrap.sh
@@ -63,3 +63,5 @@ M: two scripts and a generated file; the fixed point already holds today.
 ## Notes for the worker
 
 - The emitted C must not depend on the host platform beyond the existing `#ifdef __APPLE__` in the runtime. Check that the seed built on macOS also builds and passes the fixed point on Linux.
+
+Landed on feat/c-seed as 36e02ee. Linux aarch64 passed; x86_64 not confirmed (retire-go acceptance covers the Linux container).

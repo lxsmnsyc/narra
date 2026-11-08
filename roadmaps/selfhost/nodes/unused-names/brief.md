@@ -1,7 +1,7 @@
 ---
 id: unused-names
 title: "Unused locals and parameters are errors"
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -70,3 +70,5 @@ Checker: track reads per local; at the end of its scope, a local never read is a
 - From the spec-gap audit (`roadmaps/selfhost/nodes/spec-gap-audit/outcome.md`): its findings table has the minimal program and the exact error.
 - Error tests put the position in the `// error:` header (as `testdata/errors/contains_itself.nra` does), so the test checks it.
 - Earlier spec-gap nodes (block-arrow-args, box-assign, mutable-escape, tail-loops, for-destructure) changed the same parser, checker and emitter files. Several nodes of this wave edit them too: rebase on origin/main before pushing.
+
+Merged as PR #94 (follow-up renames in PR #95).

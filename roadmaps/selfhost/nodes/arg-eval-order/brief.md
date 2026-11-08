@@ -1,7 +1,7 @@
 ---
 id: arg-eval-order
 title: Evaluate call arguments in written order
-status: todo
+status: active
 priority: must
 type: fix
 story:

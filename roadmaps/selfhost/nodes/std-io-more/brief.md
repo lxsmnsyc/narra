@@ -1,7 +1,7 @@
 ---
 id: std-io-more
 title: stdin, directories and paths
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -127,3 +127,5 @@ Uncertainty low (same pattern as `std/fs`), coupling low (one dependency, done),
 - `std/path` is pure, so it is a candidate for Narra source if std-source answers yes. If std-source has landed with an approved answer when this node starts, write `std/path` as source in the form it chose and say so in the outcome; otherwise build it as builtins like the rest.
 - `selfhost/src/modules.nra` has private `baseName` and `dirName`; leave them alone (moving the compiler to `std/path` is a separate change).
 
+
+Merged as PR #91.

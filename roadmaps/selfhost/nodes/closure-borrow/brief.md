@@ -1,7 +1,7 @@
 ---
 id: closure-borrow
 title: Non-escaping closures capture let and mutable by reference
-status: active
+status: done
 priority: should
 type: feature
 story:
@@ -97,3 +97,5 @@ M. Uncertainty medium (new capture mode, known pattern from Swift), coupling low
 - No reference count changes for by-reference captures: the environment borrows, as stack environments do now.
 - selfhost/src has no higher-order functions today (no `Arrays.forEach` or `Arrays.map` exists in std, and no selfhost function takes a function-type parameter), so there are no loop workarounds to convert. Say so in the outcome; do not add higher-order code to the compiler for this node.
 - The rule 3 scan can reuse the E0929 use collector: treat each variable a stack closure argument assigns as passed `mutable` for that call.
+
+Merged as PR #92.

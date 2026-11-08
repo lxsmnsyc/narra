@@ -2,11 +2,11 @@
 id: c-seed
 title: Bootstrap from a checked-in C seed and retire the Go compiler
 status: todo
-priority: later
-type: refactor
+priority: must
+type: story
 story:
 early: false
-outline: true
+outline: false
 milestone: m9-adoption
 target:
 ship: auto
@@ -17,7 +17,7 @@ hypothesis:
 verify:
 exclusive: []
 fulfilled_by:
-gate: true
+gate: false
 added: 2026-11-05
 spent:
 owns: []
@@ -34,8 +34,29 @@ depends_on:
 
 ## Goal
 
-Option (c) from the std-source gate: check in the C that stage 1 emits for the selfhost compiler as a seed, build the compiler from it with `cc` alone, and retire the Go compiler. Every language feature is then built once, in `selfhost/src`, instead of twice. The spike estimates the seed at about 102k lines and 4.6 MB of C.
+After this story the repository has no Go compiler. A checked-in C file, `seed/narrac.c`, builds the self-hosted compiler with `cc` alone. The self-hosted compiler has the user commands (`build`, `run`, `check`, `test`), and the whole test suite runs on it through a test runner written in Narra. Every language feature is then built once, in Narra.
 
-## Notes
+## Context
 
-Outline, parked. Decide when refined: how the seed is regenerated and reviewed (it is generated, never edited), how the Go tests move to stage 2, where the compiler lives afterwards (this decides selfhost-layout's final directory), and whether to raise it to `should`, since every node built in both compilers costs about twice as much.
+- Decided with the user on 2026-11-08:
+  - The seed lives in the repository. GitHub Releases come later for distribution (node release-binaries, after this story).
+  - Go goes away fully, including the Go test harness (`compiler/internal/narra/*_test.go`, 97 tests).
+  - Platforms: macOS arm64 and Linux x86_64.
+  - The backend stays C, not LLVM. C keeps the seed the same on every platform, and clang already optimizes through LLVM.
+  - The rest of the roadmap waits until this story merges, so later nodes are built once.
+- Strategy: one story branch, `feat/c-seed`. Each child lands on it as a direct commit after its targeted tests. There are no per-child pull requests and no CI. The full suite runs once at the end, then one fresh review and one pull request for the maintainer.
+- The seed rule: the compiler's own source may only use features the current seed compiles. A new feature lands in the compiler first, written without itself; then the seed is regenerated; only then may the compiler source use it.
+
+## Children
+
+seed-parity-spike, selfhost-driver, checker-parity, test-runner-core, test-runner-goldens, seed-file, retire-go.
+
+## Acceptance
+
+- [ ] `sh selfhost/bootstrap.sh` builds the compiler from `seed/narrac.c` with only `cc`, and checks the fixed point.
+- [ ] The Narra test runner passes every suite that the Go tests covered, under AddressSanitizer and the leak check, on macOS and in the Linux container (`scripts/linux-check.sh`).
+- [ ] No `.go` file builds or tests the compiler. `go` is not needed to build or test Narra. Go stays only as a benchmark language in `bench/`.
+
+## After the story merges (orchestrator)
+
+Update `GOAL.md` (verification commands, constraints that name Go), the roadmap `CLAUDE.md` project rules, and the open briefs that own Go paths (`compiler/internal/narra/...`): drop the Go half of each.

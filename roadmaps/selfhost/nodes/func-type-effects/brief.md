@@ -41,6 +41,9 @@ depends_on:
   - on: effects-indirect-calls
     kind: hard
     why: replaces its written-type machinery in check_effects.go and effects.nra
+  - on: c-seed
+    kind: hard
+    why: user decision 2026-11-08, wait for the Go compiler to be retired so the fix is built once, in Narra only
 ---
 
 # Function types carry their effects

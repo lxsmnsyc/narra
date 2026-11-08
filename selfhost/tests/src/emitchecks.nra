@@ -1,0 +1,239 @@
+// The emit suite: checks of `narrac emit` that the program suites do not make.
+//   emit-errors/NAME   a file without an entry function (testdata/emit-errors/
+//                      noentry.nra) and an unknown binary of a package
+//                      (--bin nope) exit with code 1 and print NAME.err on
+//                      stderr. The messages were made by the Go compiler.
+//   xxh32              `narrac hash SEED TEXT` gives the xxHash32 test vectors
+//   cnames/ignore-directory   the same package in two different folders
+//                      gives the same C
+//   cnames/stable-under-edits   adding an unrelated function does not change
+//                      the C names of the types the program already had
+import * as Arrays from "std/array"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Scratch from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  const emitErrors = Path.join(context.testdata, "emit-errors")
+  const cnames = Path.join(context.testdata, "cnames")
+  return [
+    makeCase("emit-errors/noentry", Path.join(emitErrors, "noentry.nra"), "noentry"),
+    makeCase(
+      "emit-errors/unknown_binary",
+      Path.join(emitErrors, "unknown_binary.err"),
+      "unknown_binary",
+    ),
+    makeCase(
+      "cnames/ignore-directory",
+      Path.join(Path.join(context.testdata, "packages"), "cnames_modules"),
+      "ignore-directory",
+    ),
+    makeCase("cnames/stable-under-edits", cnames, "stable-under-edits"),
+    makeCase("xxh32", cnames, "xxh32"),
+  ]
+}
+
+function makeCase(name: string, path: string, variant: string): TestCase {
+  return TestCase { suite: "emit", name: name, path: path, variant: variant }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "noentry") {
+    return expectEmitError(context, ["emit", testCase.path], testCase.path, "noentry.err")
+  }
+  if (testCase.variant == "unknown_binary") {
+    const packagePath = Path.join(Path.join(context.testdata, "packages"), "app")
+    return expectEmitError(
+      context,
+      ["emit", "--bin", "nope", packagePath],
+      testCase.path,
+      "unknown_binary.err",
+    )
+  }
+  if (testCase.variant == "xxh32") {
+    return checkHashVectors(context)
+  }
+  if (testCase.variant == "ignore-directory") {
+    return checkIgnoreDirectory(context, testCase.path)
+  }
+  return checkStableUnderEdits(context, testCase.path)
+}
+
+// expectEmitError wants exit code 1, no stdout and the golden on stderr. The
+// golden sits in the same folder as goldenPath, under goldenName.
+function expectEmitError(
+  context: Context,
+  arguments: Array<string>,
+  goldenPath: string,
+  goldenName: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, arguments)
+  if (result.code != 1 || result.output != "") {
+    return Err(`want exit code 1 and no stdout, got ${Common.describeRun(result)}`)
+  }
+  const want = Common.readExpected(Path.join(Path.dirname(goldenPath), goldenName))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("stderr", want.value, result.errorOutput)
+}
+
+// emitIn emits the package in a folder, with that folder as the working
+// directory, and returns the C.
+function emitIn(context: Context, folder: string): Result<string, string> uses io, alloc {
+  const result = Common.runNarracWith(context, folder, [], ["emit", "."])
+  if (result.code != 0) {
+    return Err(`emit failed in ${folder}: ${Common.describeRun(result)}`)
+  }
+  return Ok(result.output)
+}
+
+function checkIgnoreDirectory(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let outcome: Result<bool, string> = Ok(true)
+  const first = Path.join(scratch.work, "one")
+  const second = Path.join(Path.join(Path.join(scratch.work, "two"), "deeper"), "still")
+  const prepared = Shell.runScript(
+    "mkdir -p \"$2\" \"$3\" && cp -R \"$1\"/. \"$2\" && cp -R \"$1\"/. \"$3\"",
+    [source, first, second],
+  )
+  if (prepared.code != 0) {
+    outcome = Err(`cannot copy the package: ${Common.describeRun(prepared)}`)
+  } else {
+    outcome = compareEmits(context, first, second)
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function compareEmits(
+  context: Context,
+  first: string,
+  second: string,
+): Result<bool, string> uses io, alloc {
+  const firstC = emitIn(context, first)
+  if (firstC is Err(message)) {
+    return Err(message)
+  }
+  const secondC = emitIn(context, second)
+  if (secondC is Err(message)) {
+    return Err(message)
+  }
+  if (firstC.value != secondC.value) {
+    return Err("the C differs between directories")
+  }
+  if (!Str.contains(firstC.value, "/* S_Tuple2_")) {
+    return Err("no comment table for the tuple types")
+  }
+  return Ok(true)
+}
+
+// tableLines are the lines `/* NAME = TYPE */` of the type name table in C.
+function tableLines(c: string): Array<string> uses alloc {
+  let lines: Array<string> = []
+  for (const line of Arrays.values(Str.split(c, "\n"))) {
+    if (Str.startsWith(line, "/* ") && Str.endsWith(line, " */") && Str.contains(line, " = ")) {
+      Arrays.push(mutable lines, line)
+    }
+  }
+  return lines
+}
+
+// emitAsProgram emits a file copied to prog.nra in a folder of its own: the
+// C names of a module come from its file name, so both versions need the
+// same one.
+function emitAsProgram(
+  context: Context,
+  scratch: Scratch.Scratch,
+  source: string,
+  folderName: string,
+): Result<string, string> uses io, alloc {
+  const text = Scratch.readFile(source)
+  if (text is Err(message)) {
+    return Err(message)
+  }
+  const target = Path.join(Path.join(scratch.work, folderName), "prog.nra")
+  const written = Scratch.writeFile(target, text.value)
+  if (written is Err(message)) {
+    return Err(message)
+  }
+  const result = Common.runNarrac(context, ["emit", target])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  return Ok(result.output)
+}
+
+function checkStableUnderEdits(
+  context: Context,
+  folder: string,
+): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const base = emitAsProgram(context, scratch, Path.join(folder, "base.nra"), "base")
+  const edited = emitAsProgram(context, scratch, Path.join(folder, "edited.nra"), "edited")
+  Scratch.removeScratch(scratch)
+  if (base is Err(message)) {
+    return Err(message)
+  }
+  if (edited is Err(message)) {
+    return Err(message)
+  }
+  const baseTable = tableLines(base.value)
+  const editedTable = tableLines(edited.value)
+  if (Arrays.length(baseTable) < 4) {
+    return Err(`too few interned types: ${Str.join(baseTable, "; ")}`)
+  }
+  for (const line of Arrays.values(baseTable)) {
+    let found = false
+    for (const other of Arrays.values(editedTable)) {
+      if (other == line) {
+        found = true
+      }
+    }
+    if (!found) {
+      return Err(`a type name changed or is gone after the edit: ${line}`)
+    }
+  }
+  return Ok(true)
+}
+
+// The test vectors of xxHash32: the seed (decimal), the text and the hash.
+const HASH_SEED = "2654435761"
+
+const HASH_VECTORS = [
+  ["0", "", "02cc5d05"],
+  ["0", "abc", "32d153ff"],
+  ["0", "Nobody inspects the spammish repetition", "e2293b2f"],
+  ["0", "abcdefghijklmno", "b918a375"],
+  ["0", "abcdefghijklmnop", "9d2d8b62"],
+  ["0", "abcdefghijklmnopq", "b3b873e1"],
+  [HASH_SEED, "abc", "a1ae7709"],
+  [HASH_SEED, "abcdefghijklmnop", "3fab7bd8"],
+]
+
+function checkHashVectors(context: Context): Result<bool, string> uses io, alloc {
+  for (const vector of Arrays.values(HASH_VECTORS)) {
+    const result = Common.runNarrac(context, ["hash", vector[0], vector[1]])
+    const want = `${vector[2]}\n`
+    if (result.code != 0 || result.output != want) {
+      return Err(
+        `hash ${vector[0]} "${vector[1]}": want ${vector[2]}, got ${Common.describeRun(result)}`,
+      )
+    }
+  }
+  return Ok(true)
+}

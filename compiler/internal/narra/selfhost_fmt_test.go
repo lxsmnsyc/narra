@@ -489,8 +489,8 @@ var layoutSamples = map[string]string{
 }
 
 // TestSourcesFormatted runs `narrac fmt --check` over selfhost/src and every
-// sample under testdata/ except testdata/fmt, whose inputs are unformatted on
-// purpose, and layoutSamples. A sample that does not parse is reported on
+// sample under testdata/ except testdata/fmt, lex, parse and habits, whose inputs are
+// unformatted or invalid on purpose, and layoutSamples. A sample that does not parse is reported on
 // stderr and skipped, but only if its path names an error or diagnostics case;
 // any other report fails the test.
 func TestSourcesFormatted(t *testing.T) {
@@ -506,7 +506,7 @@ func TestSourcesFormatted(t *testing.T) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == "fmt" || layoutSamples[name] != "" || (!entry.IsDir() && !strings.HasSuffix(name, ".nra")) {
+		if name == "fmt" || name == "lex" || name == "parse" || name == "habits" || layoutSamples[name] != "" || (!entry.IsDir() && !strings.HasSuffix(name, ".nra")) {
 			continue
 		}
 		paths = append(paths, "compiler/testdata/"+name)

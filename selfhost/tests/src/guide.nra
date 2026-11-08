@@ -1,0 +1,346 @@
+// The guide suite: the fenced code of docs/guide/*.md. The format is in
+// roadmaps/selfhost/contracts/guide-samples.md. A block with the info string
+//   narra           is a program; the `text` block right after it holds its
+//                   stdout. It runs in debug (sanitizers, leak check) and
+//                   release mode.
+//   narra error     must not compile; its first line is `// error: TEXT` and
+//                   `narrac check` must report TEXT.
+//   narra fragment  is not run.
+// Any other info string that starts with `narra` in any case is a typo and
+// fails. The `extractor` case checks the fence parser on a text with typos and
+// on an unclosed fence.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Scratch from "testrunner/scratch"
+
+// A fenced block of a chapter. line is the line of the opening fence and end
+// the line of the closing one, both 1-based.
+struct Fence {
+  info: string
+  line: int
+  end: int
+  body: string
+}
+
+// A narra block of a chapter. want is the stdout from the `text` block that
+// directly follows a narra block; hasWant is false when there is none.
+struct Sample {
+  line: int
+  kind: string
+  info: string
+  code: string
+  want: string
+  hasWant: bool
+}
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  Arrays.push(mutable cases, TestCase {
+    suite: "guide",
+    name: "extractor",
+    path: "",
+    variant: "extractor",
+  })
+  const folder = Path.join(Path.join(context.repository, "docs"), "guide")
+  for (const path of Arrays.values(Files.listPaths(folder, ".md"))) {
+    const read = Fs.readText(path)
+    const file = Path.basename(path)
+    if (read is Err(message)) {
+      Arrays.push(mutable cases, brokenCase(file, path, message))
+      continue
+    }
+    const extracted = extractSamples(read.value)
+    if (extracted is Err(message)) {
+      Arrays.push(mutable cases, brokenCase(file, path, message))
+      continue
+    }
+    for (const sample of Arrays.values(extracted.value)) {
+      addSampleCases(mutable cases, file, path, sample)
+    }
+  }
+  return cases
+}
+
+// brokenCase is a case that fails with the reason a chapter cannot be read.
+function brokenCase(file: string, path: string, reason: string): TestCase uses alloc {
+  return TestCase { suite: "guide", name: file, path: path, variant: `broken ${reason}` }
+}
+
+function addSampleCases(
+  mutable cases: Array<TestCase>,
+  file: string,
+  path: string,
+  sample: Sample,
+) uses alloc {
+  const label = `${file}:${Int.toString(sample.line)}`
+  if (sample.kind == "narra") {
+    for (const mode of Arrays.values(["debug", "release"])) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "guide",
+        name: `${label}/${mode}`,
+        path: path,
+        variant: mode,
+      })
+    }
+    return
+  }
+  Arrays.push(mutable cases, TestCase {
+    suite: "guide",
+    name: label,
+    path: path,
+    variant: sample.kind,
+  })
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "extractor") {
+    return checkExtractor()
+  }
+  if (Str.startsWith(testCase.variant, "broken ")) {
+    return Err(Str.sliceFrom(testCase.variant, 7))
+  }
+  // The name is FILE:LINE or FILE:LINE/MODE.
+  const colon = lastIndexOf(testCase.name, ":")
+  let lineText = Str.sliceFrom(testCase.name, colon + 1)
+  const slash = Str.indexOf(lineText, "/")
+  if (slash is Some(position)) {
+    lineText = Str.slice(lineText, 0, position)
+  }
+  const line = Int.parse(lineText, 10)
+  if (line is Err(_)) {
+    return Err(`bad case name ${testCase.name}`)
+  }
+  const read = Fs.readText(testCase.path)
+  if (read is Err(message)) {
+    return Err(message)
+  }
+  const extracted = extractSamples(read.value)
+  if (extracted is Err(message)) {
+    return Err(message)
+  }
+  for (const sample of Arrays.values(extracted.value)) {
+    if (sample.line == line.value) {
+      return runSample(context, sample, testCase.variant)
+    }
+  }
+  return Err(`no sample at line ${lineText}`)
+}
+
+// lastIndexOf is the position of the last occurrence of piece in text, or -1.
+function lastIndexOf(text: string, piece: string): int uses alloc {
+  let found = -1
+  let position = 0
+  while (position + Str.length(piece) <= Str.length(text)) {
+    if (Str.slice(text, position, position + Str.length(piece)) == piece) {
+      found = position
+    }
+    position = position + 1
+  }
+  return found
+}
+
+function runSample(
+  context: Context,
+  sample: Sample,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  if (sample.kind == "invalid") {
+    return Err(`the info string "${sample.info}" is not narra, narra error or narra fragment`)
+  }
+  if (sample.kind == "narra fragment") {
+    return Ok(true)
+  }
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const path = Path.join(scratch.work, "sample.nra")
+  let outcome: Result<bool, string> = Ok(true)
+  const written = Scratch.writeFile(path, sample.code)
+  if (written is Err(message)) {
+    outcome = Err(message)
+  } else if (sample.kind == "narra error") {
+    outcome = runErrorSample(context, sample, path)
+  } else {
+    outcome = runProgramSample(context, sample, path, variant)
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function runErrorSample(
+  context: Context,
+  sample: Sample,
+  path: string,
+): Result<bool, string> uses io, alloc {
+  const first = Str.split(sample.code, "\n")[0]
+  if (!Str.startsWith(first, "// error:")) {
+    return Err("an error sample starts with a `// error:` comment")
+  }
+  const want = Str.trim(Str.sliceFrom(first, 9))
+  const result = Common.runNarrac(context, ["check", path])
+  if (result.code == 0) {
+    return Err(`expected an error containing "${want}"`)
+  }
+  const message = Str.replace(result.errorOutput, "sample.nra:", "")
+  if (!Str.contains(message, want)) {
+    return Err(`want error containing "${want}", got:\n${result.errorOutput}`)
+  }
+  return Ok(true)
+}
+
+function runProgramSample(
+  context: Context,
+  sample: Sample,
+  path: string,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  if (!sample.hasWant) {
+    return Err("a `narra` block needs a `text` block with its output right after it")
+  }
+  let flag = "-sanitize"
+  if (variant == "release") {
+    flag = "-release"
+  }
+  const result = Common.runNarrac(context, ["run", flag, path])
+  return Common.expectRun(result, 0, sample.want)
+}
+
+// readFences lists the fenced blocks of a text. A fence that is never closed
+// is an error that names the line it opens.
+function readFences(text: string): Result<Array<Fence>, string> uses alloc {
+  let fences: Array<Fence> = []
+  const lines = Str.split(text, "\n")
+  let index = 0
+  while (index < Arrays.length(lines)) {
+    if (!Str.startsWith(lines[index], "```")) {
+      index = index + 1
+      continue
+    }
+    const start = index
+    const info = Str.trim(trimBackticks(lines[index]))
+    let body: Array<string> = []
+    index = index + 1
+    while (index < Arrays.length(lines) && !Str.startsWith(lines[index], "```")) {
+      Arrays.push(mutable body, lines[index])
+      index = index + 1
+    }
+    if (index >= Arrays.length(lines)) {
+      return Err(`line ${Int.toString(start + 1)}: the fence is never closed`)
+    }
+    Arrays.push(mutable fences, Fence {
+      info: info,
+      line: start + 1,
+      end: index + 1,
+      body: `${Str.join(body, "\n")}\n`,
+    })
+    index = index + 1
+  }
+  return Ok(fences)
+}
+
+function trimBackticks(line: string): string uses alloc {
+  let start = 0
+  while (start < Str.length(line) && Str.byteAt(line, start) == 96) {
+    start = start + 1
+  }
+  return Str.sliceFrom(line, start)
+}
+
+// startsWithNarra is true when the text starts with `narra` in any case.
+function startsWithNarra(text: string): bool uses alloc {
+  const word = "narra"
+  if (Str.length(text) < Str.length(word)) {
+    return false
+  }
+  for (const position of Ranges.between(0, Str.length(word))) {
+    // Setting bit 5 turns an ASCII capital into its small letter.
+    const lowered = Str.byteAt(text, position) | 32
+    if (lowered != Str.byteAt(word, position)) {
+      return false
+    }
+  }
+  return true
+}
+
+// extractSamples returns the narra blocks of a chapter. An info string that
+// starts with `narra` but is not one of the three kinds gets the kind
+// "invalid", so a typo fails instead of going untested.
+function extractSamples(text: string): Result<Array<Sample>, string> uses alloc {
+  const read = readFences(text)
+  if (read is Err(message)) {
+    return Err(message)
+  }
+  const fences = read.value
+  const lines = Str.split(text, "\n")
+  let samples: Array<Sample> = []
+  for (const index of Ranges.between(0, Arrays.length(fences))) {
+    const fence = fences[index]
+    let kind = fence.info
+    if (kind != "narra" && kind != "narra error" && kind != "narra fragment") {
+      if (!startsWithNarra(kind)) {
+        continue
+      }
+      kind = "invalid"
+    }
+    let want = ""
+    let hasWant = false
+    if (
+      fence.info == "narra" && index + 1 < Arrays.length(fences) && fences[index + 1].info == "text"
+    ) {
+      // Only blank lines may sit between the two blocks.
+      const next = fences[index + 1]
+      let between = ""
+      for (const position of Ranges.between(fence.end, next.line - 1)) {
+        between = `${between}${lines[position]}`
+      }
+      if (Str.trim(between) == "") {
+        want = next.body
+        hasWant = true
+      }
+    }
+    Arrays.push(mutable samples, Sample {
+      line: fence.line,
+      kind: kind,
+      info: fence.info,
+      code: fence.body,
+      want: want,
+      hasWant: hasWant,
+    })
+  }
+  return Ok(samples)
+}
+
+// checkExtractor runs the extractor on a text with three typos and on a text
+// with an unclosed fence.
+function checkExtractor(): Result<bool, string> uses alloc {
+  const bad = "```narra errror\nx\n```\n\n```Narra\nx\n```\n\n```narra,\nx\n```\n\n```sh\nx\n```\n"
+  const extracted = extractSamples(bad)
+  if (extracted is Err(message)) {
+    return Err(message)
+  }
+  if (Arrays.length(extracted.value) != 3) {
+    return Err(`want 3 samples, got ${Int.toString(Arrays.length(extracted.value))}`)
+  }
+  for (const sample of Arrays.values(extracted.value)) {
+    if (sample.kind != "invalid") {
+      return Err(`line ${Int.toString(sample.line)}: want kind invalid, got ${sample.kind}`)
+    }
+  }
+  const open = extractSamples("text\n\n```narra\nx\n")
+  if (open is Ok(_)) {
+    return Err("want an unclosed fence error")
+  }
+  if (!Str.contains(open.error, "line 3")) {
+    return Err(`want an unclosed fence error for line 3, got ${open.error}`)
+  }
+  return Ok(true)
+}

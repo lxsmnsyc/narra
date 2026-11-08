@@ -1,0 +1,55 @@
+// The manifest suite: each folder in testdata/manifest holds a narra.toml.
+// `narrac pkg .` run inside the folder must fail with exit code 1 and print
+// expected.err on stderr, or, when the folder has expected.dump instead,
+// succeed and print that on stdout. The goldens were made by the Go compiler
+// before it was removed. With --update they are rewritten from narrac.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "manifest")
+  for (const path of Arrays.values(Files.listPaths(folder, ""))) {
+    if (Fs.isDir(path)) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "manifest",
+        name: Path.basename(path),
+        path: path,
+        variant: "",
+      })
+    }
+  }
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const result = Common.runNarracWith(context, testCase.path, [], ["pkg", "."])
+  let goldenName = "expected.dump"
+  let got = result.output
+  let wantCode = 0
+  if (result.code == 1) {
+    goldenName = "expected.err"
+    got = result.errorOutput
+    wantCode = 1
+  }
+  if (result.code != wantCode || (wantCode == 1 && result.output != "")) {
+    return Err(`want exit code 0 or 1, got ${Common.describeRun(result)}`)
+  }
+  const golden = Path.join(testCase.path, goldenName)
+  if (context.update) {
+    const written = Fs.writeText(golden, got)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(golden)
+  if (want is Err(message)) {
+    return Err(`${goldenName}: ${message}`)
+  }
+  return Common.compareText("pkg", want.value, got)
+}

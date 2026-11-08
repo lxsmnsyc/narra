@@ -1,7 +1,7 @@
 ---
 id: goldens-programs
 title: Guide, std and frozen edge cases in the Narra runner
-status: todo
+status: active
 priority:
 type: feature
 story: c-seed

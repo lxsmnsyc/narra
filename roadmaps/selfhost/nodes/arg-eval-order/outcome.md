@@ -2,10 +2,10 @@
 
 ## Built
 
-- Both emitters evaluate call arguments in written order. When a later argument may assign a variable (a block expression, a `match`, a block-bodied arrow, a call of a closure value, a local closure passed on), each earlier non-`mutable` argument that is not a literal is evaluated first into a temporary. A name read of a reference-counted value is retained in that temporary and released at the end of the statement.
+- Both emitters evaluate call arguments in written order. When a later argument may assign a variable (a block expression, a `match`, a block-bodied arrow, or a call of a closure value; reading a closure held in a local is not a write, in both emitters), each earlier non-`mutable` argument that is not a literal is evaluated first into a temporary. A name read of a reference-counted value is retained in that temporary and released at the end of the statement.
 - Go: `holdEarlierArgs` and `mayWrite` in `compiler/internal/narra/emit_call.go`, called at the start of `call`; `Emitter.held` in `emit.go`; `expr` in `emit_expr.go` returns a held value once. One hook covers user calls, closure calls, trait calls, constructors and every builtin path.
 - Selfhost: `holdEarlierArguments` and `mayWrite` in `selfhost/src/emitexprs.nra`, called from `emitCall`; `heldArguments` and `heldPending` in `emitstate.nra`.
-- Sample `compiler/testdata/arg_eval_order.nra` (+ `.out`): block argument, a call with a side effect after a read of the same `let`, calls with printed side effects, a self tail call, and a std builtin call (`Str.slice`).
+- Sample `compiler/testdata/arg_eval_order.nra` (+ `.out`): block argument, a call with a side effect after a read of the same `let`, calls with printed side effects, a self tail call, and a std builtin call (`Str.slice`), a closure held in a local passed after a `let` read, and a `mutable` argument next to a block argument. No trait-call case.
 - `SPEC.md` section 2 (Functions) states the rule. Inbox item (2) of the PR #96 entry is removed.
 - Self tail calls already hoisted arguments in index order (`consume` into a temporary); no change was needed, and the sample covers them.
 - `mutable` arguments: a later argument that uses the borrowed value is already rejected ("passed as mutable in this call, so no other argument can use it"); no temporary.

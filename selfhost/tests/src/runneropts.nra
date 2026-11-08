@@ -1,7 +1,7 @@
 // The runner-options suite: how `narrac test` behaves around the test blocks
 // (the programs in testdata/runner-cases and testdata/runner). Each case runs
-// in debug (sanitizers, leak check) and release mode, except `arguments`,
-// which runs in release mode only.
+// in debug (sanitizers, leak check) and release mode, except `arguments` and
+// `redirect`, which run in release mode only.
 //   filter-time     --filter selects by substring, --time adds timing only when
 //                   asked
 //   golden          Test.golden: a missing file, update mode, a match, a
@@ -13,12 +13,15 @@
 //   arguments       unknown options and a missing value exit with code 2, a file
 //                   without tests passes, golden names are checked
 //   outside-test    Test.golden outside a test block does not compile
+//   redirect        `narrac run` with stdout and stderr sent to one file keeps
+//                   both streams, stdout first
 import * as Arrays from "std/array"
 import * as Path from "std/path"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Scratch from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
 
 const CASES = [
   "filter-time",
@@ -28,6 +31,7 @@ const CASES = [
   "leak",
   "arguments",
   "outside-test",
+  "redirect",
 ]
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
@@ -35,7 +39,7 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   const folder = Path.join(context.testdata, "runner-cases")
   for (const name of Arrays.values(CASES)) {
     let variants = ["debug", "release"]
-    if (name == "arguments") {
+    if (name == "arguments" || name == "redirect") {
       variants = ["release"]
     }
     if (name == "outside-test") {
@@ -108,7 +112,25 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   if (name == "arguments") {
     return runArguments(context, folder)
   }
+  if (name == "redirect") {
+    return runRedirect(context, Path.join(folder, "both_streams.nra"))
+  }
   return runOutsideTest(context, Path.join(folder, "golden_outside_test.nra"))
+}
+
+// runRedirect runs `narrac run path > file 2>&1`. Reopening /dev/stdout and
+// /dev/stderr by name would truncate the file and lose stdout on Linux.
+function runRedirect(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const logPath = Path.join(scratch.work, "both.log")
+  const script = "log=$1; shift; \"$@\" > \"$log\" 2>&1; code=$?; cat \"$log\"; exit $code"
+  const ran = Shell.runScript(script, [logPath, context.narrac, "run", "-release", path])
+  Scratch.removeScratch(scratch)
+  return Common.expectRun(ran, 0, "out line\nerr line\n")
 }
 
 function runFilterAndTime(

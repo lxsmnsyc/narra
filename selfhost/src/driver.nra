@@ -1,6 +1,5 @@
-// The user commands of narrac: `build`, `run`, `test` and `check`. They are
-// the commands of the Go `narra` (compiler/cmd/narra), with the same flags,
-// exit codes and `cc` invocations. main.nra only dispatches here.
+// The user commands of narrac: `build`, `run`, `test` and `check`. main.nra
+// only dispatches here.
 //
 //   narrac build [flags] file.nra|dir
 //   narrac run [flags] file.nra|dir [args...]
@@ -8,23 +7,31 @@
 //   narrac check [--json] file.nra|dir
 //   narrac explain CODE
 //
-// Flags of build, run and test (Go flag syntax: -name, --name, -name=value,
-// -name value; the first argument that is not a flag ends the flags):
+// Flags of build, run and test (-name, --name, -name=value, -name value; the
+// first argument that is not a flag ends the flags):
 //   -release        optimize (-O2 -DNARRA_RELEASE) and wrap integer overflow
 //   -o path         the executable (build: for a package, one binary only)
 //   -emit-c path    also keep the generated C in this file
 //   -bin name       the package binary to build or run
 //   -filter text    test only: run the tests whose name contains text
 //   -time           test only: print the time of each test
-//   -sanitize       compile with -fsanitize=address,undefined (not in Go)
-//   -stdin path     run and test: the program reads this file as its stdin
-//                   (not in Go; Process.run would close stdin)
+//   -sanitize       compile with -fsanitize=address,undefined
+//   -stdin path     run and test: the program reads this file as its stdin;
+//                   without it stdin is closed
+//
+// The C compiler is the program named by $CC, else cc. $CC must name a single
+// program: it is not split into words, so `CC="ccache cc"` does not work.
+//
+// run and test capture the program's output and write it when the program
+// ends: all of stdout, then all of stderr. Nothing is shown while it runs, and
+// the two streams are not interleaved.
 //
 // Exit codes: 0 success, 1 a load, check or C compiler error (or the exit code
 // of the program for run and test), 2 usage.
 import * as Env from "std/env"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
+import * as Io from "std/io"
 import * as Path from "std/path"
 import * as Process from "std/process"
 import * as Str from "std/string"
@@ -124,20 +131,29 @@ function usageText(): string {
     "A dir is a package: a directory with narra.toml and src/. Without -bin,",
     "build makes every [[binary]] of the package; run needs the package to have",
     "one binary.",
+    "",
+    "run and test show the program's output when it ends: all of stdout, then",
+    "all of stderr. Without -stdin, the program's stdin is closed.",
+    "The C compiler is $CC, else cc. CC must name a single program.",
   ]
   return Str.join(lines, "\n")
 }
 
 // printError writes a line to stderr.
 function printError(text: string) uses io {
-  const _ = Fs.writeText("/dev/stderr", `${text}\n`)
+  Io.writeError(`${text}\n`)
 }
 
-// writeStream writes text as is to /dev/stdout or /dev/stderr.
-function writeStream(stream: string, text: string) uses io {
-  if (text != "") {
-    const _ = Fs.writeText(stream, text)
-  }
+// writeStandardOutput and writeStandardError write text as is to the real
+// stdout and stderr. They do not reopen either file, so a shell redirect such
+// as `> out 2>&1` keeps both streams.
+function writeStandardOutput(text: string) uses io {
+  Io.write(text)
+  Io.flush()
+}
+
+function writeStandardError(text: string) uses io {
+  Io.writeError(text)
 }
 
 // --- flags -----------------------------------------------------------------
@@ -227,7 +243,7 @@ function isValueFlag(name: string): bool {
   return name == "o" || name == "emit-c" || name == "bin" || name == "filter" || name == "stdin"
 }
 
-// parseBool reads the value of a bool flag as Go's flag package does: a flag
+// parseBool reads the value of a bool flag like the standard flag syntax: a flag
 // without a value is true.
 function parseBool(name: string, hasValue: bool, value: string): Result<bool, string> uses alloc {
   if (!hasValue) {
@@ -282,7 +298,7 @@ function setValueFlag(mutable options: DriverOptions, name: string, value: strin
 
 // --- load, check, emit -------------------------------------------------------
 
-// formatDiagnostic prints `file:line:col: message` (the Go FormatError form).
+// formatDiagnostic prints `file:line:col: message`.
 function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
   if (diagnostic.file == "" && diagnostic.line == 0) {
     return diagnostic.message
@@ -398,7 +414,8 @@ function makeTempDirectory(): Result<string, string> uses io, alloc {
   return Ok(Str.trim(output))
 }
 
-// cCompilerName is $CC when it is set and not empty, else cc.
+// cCompilerName is $CC when it is set and not empty, else cc. The value is one
+// program name or path; it is never split into words.
 function cCompilerName(): string uses io, alloc {
   const configured = Env.get("CC")
   if (configured is Some(name)) {
@@ -409,9 +426,9 @@ function cCompilerName(): string uses io, alloc {
   return "cc"
 }
 
-// cCompilerArguments is the Go driver's argument list: debug is `-O0 -g`,
+// cCompilerArguments is the argument list of the C compiler: debug is `-O0 -g`,
 // release is `-O2 -DNARRA_RELEASE`; sanitize adds the AddressSanitizer and
-// UBSan flags of the Go tests.
+// UBSan flags.
 function cCompilerArguments(
   options: DriverOptions,
   cPath: string,
@@ -470,8 +487,8 @@ function buildExecutable(
     return Err(message)
   }
   const #[code, standardOutput, standardError] = ran.value
-  writeStream("/dev/stderr", standardOutput)
-  writeStream("/dev/stderr", standardError)
+  writeStandardError(standardOutput)
+  writeStandardError(standardError)
   if (code != 0) {
     return Err(`C compiler failed: exit status ${Int.toString(code)}`)
   }
@@ -491,24 +508,21 @@ function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
 // runBuild makes one executable for a file, or one per selected binary for a
 // package, named after the file or the binary.
 function runBuild(options: DriverOptions): int uses io, alloc {
-  const loaded = Modules.load(options.path)
-  if (loaded is Err(errors)) {
-    printError(formatDiagnostics(convertLoadErrors(errors)))
-    return 1
-  }
-  const package = loaded.value
-  if (!Fs.exists(options.path)) {
-    printError(`stat ${options.path}: no such file or directory`)
-    return 1
-  }
   if (!Fs.isDir(options.path)) {
-    // A file: the executable is named after it.
+    // A file: the executable is named after it. A missing or broken file is
+    // reported by buildExecutable.
     let output = options.output
     if (output == "") {
       output = Str.replace(Path.basename(options.path), ".nra", "")
     }
     return finishBuild(buildExecutable(options, options.binaryName, false, output))
   }
+  const loaded = Modules.load(options.path)
+  if (loaded is Err(errors)) {
+    printError(formatDiagnostics(convertLoadErrors(errors)))
+    return 1
+  }
+  const package = loaded.value
   // A package: the selected binary, or every binary.
   let names: Array<string> = []
   if (options.binaryName != "") {
@@ -588,8 +602,8 @@ function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
     return 1
   }
   const #[code, standardOutput, standardError] = ran.value
-  writeStream("/dev/stdout", standardOutput)
-  writeStream("/dev/stderr", standardError)
+  writeStandardOutput(standardOutput)
+  writeStandardError(standardError)
   return code
 }
 
@@ -632,7 +646,7 @@ function absoluteIfBare(executable: string): string {
   return `./${executable}`
 }
 
-// testArguments is the argument list the Go driver gives the test program.
+// testArguments is the argument list of the test program.
 function testArguments(options: DriverOptions): Array<string> uses io, alloc {
   let arguments: Array<string> = []
   if (options.filter != "") {
@@ -683,7 +697,7 @@ function trimTrailingSlashes(path: string): string {
 // runCheck is `narrac check [--json] file.nra|dir`. Exit 0: no diagnostics.
 // Exit 1: diagnostics or an unreadable path. Exit 2: usage. The text form is
 // one `file:line:col: message` line each on stderr. With --json, stdout has
-// one JSON object per diagnostic (writeDiagnosticJson), as Go's `check --json`.
+// one JSON object per diagnostic (writeDiagnosticJson).
 // A problem that is not a diagnostic (an unreadable file) is text on stderr.
 function runCheck(arguments: Array<string>): int uses io, alloc {
   let asJson = false
@@ -720,7 +734,7 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
         `${writeDiagnosticJson(diagnostic.file, pos, diagnostic.code, diagnostic.message, diagnostic.fixes)}\n`,
       )
     }
-    writeStream("/dev/stdout", Str.build(lines))
+    writeStandardOutput(Str.build(lines))
   } else {
     printError(formatDiagnostics(diagnostics))
   }
@@ -728,10 +742,9 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
 }
 
 // runApplyFix is `narrac apply-fix [--diagnostic N] [--fix M] file.nra|dir`: it
-// prints the source of the file a fix edits, with the fix applied, the way Go's
-// ApplyFix does for the habit tests. N is the index of a diagnostic in report
-// order (the first one with a fix when omitted) and M the index of its fix
-// (0 when omitted). Exit 1: no diagnostics, or no such fix. Exit 2: usage.
+// prints the source of the file a fix edits, with the fix applied. N is the
+// index of a diagnostic in report order (the first one with a fix when
+// omitted) and M the index of its fix (0 when omitted). Exit 1: no diagnostics, or no such fix. Exit 2: usage.
 function runApplyFix(arguments: Array<string>): int uses io, alloc {
   let diagnosticIndex = -1
   let fixIndex = 0
@@ -800,7 +813,7 @@ function runApplyFix(arguments: Array<string>): int uses io, alloc {
     printError(message)
     return 1
   }
-  writeStream("/dev/stdout", applyFix(read.value, diagnostic.fixes[fixIndex]))
+  writeStandardOutput(applyFix(read.value, diagnostic.fixes[fixIndex]))
   return 0
 }
 
@@ -819,7 +832,7 @@ function runExplain(arguments: Array<string>): int uses io, alloc {
     printError(message)
     return 1
   }
-  writeStream("/dev/stdout", explained.value)
+  writeStandardOutput(explained.value)
   return 0
 }
 

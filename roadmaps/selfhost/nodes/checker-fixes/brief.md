@@ -1,7 +1,7 @@
 ---
 id: checker-fixes
 title: Fix suggestions in narrac diagnostics
-status: active
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 291874
 owns:
   - selfhost/src/fixes.nra
   - selfhost/src/check.nra
@@ -57,3 +57,5 @@ Port the fix builders of `compiler/internal/narra/diagnostic_fixes.go` (importFi
 ## Sizing
 
 M: 44 fix sites with small builders.
+
+Landed on feat/c-seed. Full runner passed after rebase onto goldens-tools.

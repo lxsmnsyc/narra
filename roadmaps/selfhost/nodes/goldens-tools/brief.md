@@ -1,7 +1,7 @@
 ---
 id: goldens-tools
 title: Tool golden suites in the Narra test runner
-status: active
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 187620
 owns:
   - selfhost/tests/**
   - scripts/test.sh
@@ -53,3 +53,5 @@ Port the tool suites to the Narra runner: dumps (astdump, declsdump, typesdump, 
 ## Sizing
 
 M: mechanical, one module per suite.
+
+Landed on feat/c-seed as 9216e48. Runner total: 3185 cases plus bootstrap, 47 s on 8 shards.

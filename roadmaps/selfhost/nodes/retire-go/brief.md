@@ -1,7 +1,7 @@
 ---
 id: retire-go
 title: Delete the Go compiler and Go test harness
-status: todo
+status: active
 priority:
 type: refactor
 story: c-seed
@@ -66,6 +66,7 @@ After this node, no `.go` file builds or tests the compiler. Go stays only as a 
 ## Steps
 
 - [ ] Runtime source: move the C runtime (`compiler/internal/narra/runtime*.h` and the per-module `Module.Runtime` strings) to `selfhost/runtime/*.h`. Add a generator (`narrac gen-text` or a shell script) that writes `runtimetext.nra` and `stdtext.nra` from them, and a runner check that the generated files are current.
+- [ ] Read the Go test table in `roadmaps/selfhost/nodes/goldens-programs/outcome.md`. Cover its 3 uncovered tests before deleting: the two generators (the runtime step above) and `TestEveryFormatHasCode`, by porting `roadmaps/selfhost/nodes/checker-fixes/check-codes.py` to a Narra runner suite. The test suite needs only `cc` and `sh`, no Python.
 - [ ] Delete `compiler/cmd`, `compiler/internal` and `compiler/go.mod`.
 - [ ] Switch `bench/run.sh`, `scripts/linux-check.sh`, `scripts/linux/Dockerfile`, `README.md`, `selfhost/CLAUDE.md` and `docs/guide/01-getting-started.md` to the seed and `scripts/test.sh`.
 - [ ] Last: `git mv compiler/testdata testdata`, and update the runner's default root and the few non-roadmap files that name the old path.

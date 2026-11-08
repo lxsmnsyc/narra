@@ -1,7 +1,7 @@
 ---
 id: goldens-programs
 title: Guide, std and frozen edge cases in the Narra runner
-status: todo
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 209018
 owns:
   - selfhost/tests/**
   - compiler/testdata/lex/**
@@ -59,3 +59,5 @@ Port the remaining language suites: guide samples (177 plus the extractor), runn
 ## Sizing
 
 M: mostly moving cases into files and generating goldens once.
+
+Landed on feat/c-seed as b6da8f3. Runner: 4386 cases plus bootstrap, 70 s. Go tests: 63 replaced, 30 dropped, 3 uncovered (handed to retire-go).

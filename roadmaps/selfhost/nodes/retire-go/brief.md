@@ -6,7 +6,7 @@ priority:
 type: refactor
 story: c-seed
 early: false
-outline: true
+outline: false
 milestone:
 target:
 ship: auto
@@ -14,23 +14,40 @@ from:
 size: M
 spike: false
 hypothesis:
-verify:
+verify: 
 exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-08
 spent:
-owns: []
+owns:
+  - compiler/**
+  - testdata/**
+  - bench/run.sh
+  - bench/README.md
+  - scripts/**
+  - selfhost/CLAUDE.md
+  - selfhost/runtime/**
+  - selfhost/src/runtimetext.nra
+  - selfhost/src/stdtext.nra
+  - selfhost/tests/**
+  - README.md
+  - docs/guide/01-getting-started.md
+  - DECISIONS.md
+  - roadmaps/selfhost/nodes/retire-go/**
 shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: checker-parity
+  - on: checker-fixes
     kind: hard
-    why: no diagnostic may be lost when the Go checker goes
-  - on: test-runner-goldens
+    why: no diagnostic or fix may be lost when the Go checker goes
+  - on: goldens-tools
     kind: hard
-    why: every ported suite must pass on the Narra runner first
+    why: every tool suite must pass on the Narra runner first
+  - on: goldens-programs
+    kind: hard
+    why: the frozen goldens need Go to generate
   - on: seed-file
     kind: hard
     why: the seed replaces Go as the bootstrap
@@ -40,4 +57,30 @@ depends_on:
 
 ## Goal
 
-Remove `compiler/cmd/narra`, `compiler/internal/narra` and `compiler/go.mod`. Keep `compiler/testdata` (or move it, as the spike proposes). Switch `bench/run.sh`, `scripts/linux-check.sh`, the READMEs and every `CLAUDE.md` outside the roadmap to the seed and the Narra runner. Go remains only as a benchmark language in `bench/`. Gated: the user checks the full suite result before this lands. Outline until the spike reports.
+After this node, no `.go` file builds or tests the compiler. Go stays only as a benchmark language in `bench/`.
+
+## Context
+
+- Read `roadmaps/selfhost/nodes/seed-parity-spike/outcome.md` first: it has the measurements and the proposal this brief comes from.
+
+## Steps
+
+- [ ] Runtime source: move the C runtime (`compiler/internal/narra/runtime*.h` and the per-module `Module.Runtime` strings) to `selfhost/runtime/*.h`. Add a generator (`narrac gen-text` or a shell script) that writes `runtimetext.nra` and `stdtext.nra` from them, and a runner check that the generated files are current.
+- [ ] Delete `compiler/cmd`, `compiler/internal` and `compiler/go.mod`.
+- [ ] Switch `bench/run.sh`, `scripts/linux-check.sh`, `scripts/linux/Dockerfile`, `README.md`, `selfhost/CLAUDE.md` and `docs/guide/01-getting-started.md` to the seed and `scripts/test.sh`.
+- [ ] Last: `git mv compiler/testdata testdata`, and update the runner's default root and the few non-roadmap files that name the old path.
+- [ ] Very last: regenerate the seed with `sh scripts/seed-update.sh`, so `seed/narrac.c` matches the final source.
+
+## Acceptance
+
+- [ ] `sh selfhost/bootstrap.sh && sh scripts/test.sh` passes on macOS and in the Linux container, with `go` removed from the `PATH`.
+- [ ] `git ls-files '*.go'` lists only files under `bench/`.
+- [ ] Gate: the user sees the full suite result before the story pull request opens.
+
+## Sizing
+
+M: mostly deletion and path updates; the runtime move is the only new code.
+
+## Notes for the worker
+
+- Do not reword the roughly 282 comments in `selfhost/src` that mention Go. That is an optional later cleanup.

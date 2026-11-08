@@ -49,7 +49,7 @@ After this story the repository has no Go compiler. A checked-in C file, `seed/n
 
 ## Children
 
-seed-parity-spike, selfhost-driver, checker-parity, test-runner-core, test-runner-goldens, seed-file, retire-go.
+seed-parity-spike, selfhost-driver, checker-codes, checker-fixes, test-runner-core, goldens-tools, goldens-programs, seed-file, retire-go. (checker-parity and test-runner-goldens were split into these after the spike.)
 
 ## Acceptance
 

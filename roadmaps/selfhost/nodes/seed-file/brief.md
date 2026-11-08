@@ -1,7 +1,7 @@
 ---
 id: seed-file
 title: Checked-in C seed and cc-only bootstrap
-status: todo
+status: active
 priority:
 type: feature
 story: c-seed

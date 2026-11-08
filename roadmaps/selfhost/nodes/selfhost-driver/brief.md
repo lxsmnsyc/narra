@@ -1,7 +1,7 @@
 ---
 id: selfhost-driver
 title: build, run, check and test commands in narrac
-status: active
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 133269
 owns:
   - selfhost/src/main.nra
   - selfhost/src/driver*.nra
@@ -57,3 +57,5 @@ M: one new module with argument parsing and process calls; the compiling itself 
 
 - Put the driver in its own module (`selfhost/src/driver.nra`) so `main.nra` only dispatches.
 - Keep the Go compiler working; it is deleted by retire-go.
+
+Landed on feat/c-seed as de4096e.

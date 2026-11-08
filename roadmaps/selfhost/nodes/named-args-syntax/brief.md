@@ -1,7 +1,7 @@
 ---
 id: named-args-syntax
 title: Parse named arguments
-status: active
+status: done
 priority:
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 92558
 owns:
   - testdata/parse/named_args*
   - testdata/fmt/named_args*
@@ -52,3 +52,5 @@ depends_on: []
 - [ ] Parse and astdump goldens for named, mixed and `mutable` named arguments, equal in Go and selfhost.
 - [ ] A fmt golden: named arguments keep their order and spacing, and a long call breaks one argument per line as positional calls do.
 - [ ] Fast check passes.
+
+Landed on feat/batch-1 as efc73d2.

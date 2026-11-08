@@ -1,7 +1,7 @@
 ---
 id: named-args-check
 title: Check and lower named arguments
-status: todo
+status: active
 priority:
 type: feature
 story: batch-1

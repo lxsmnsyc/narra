@@ -46,6 +46,10 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 
 The fixed point shows that the Narra compiler, compiled by itself, translates the source of the compiler into the same C as the Go compiler does. Go is no longer needed to produce a working compiler from that C. `TestSelfhostBootstrap` does the same under AddressSanitizer, UBSan and the leak check, and also compares stage 2 with Go on every emit input.
 
+## Commands of narrac
+
+`narrac build`, `run`, `test` and `check` (`selfhost/src/driver.nra`) take the same arguments as the Go `narra` and call `$CC` (else `cc`) the same way. They add `-sanitize` (AddressSanitizer and UBSan) and, for `run` and `test`, `-stdin file`. `run` and `test` capture the program's output and write it after the program ends. There is no `check --json` yet (the self-hosted checker has no diagnostic codes).
+
 ## Formatting
 
 `narrac fmt` (the self-hosted compiler, `selfhost/src/fmt.nra`) formats Narra source. The Go compiler has no formatter.

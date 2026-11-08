@@ -1,0 +1,718 @@
+// The user commands of narrac: `build`, `run`, `test` and `check`. They are
+// the commands of the Go `narra` (compiler/cmd/narra), with the same flags,
+// exit codes and `cc` invocations. main.nra only dispatches here.
+//
+//   narrac build [flags] file.nra|dir
+//   narrac run [flags] file.nra|dir [args...]
+//   narrac test [flags] file.nra|dir [args...]
+//   narrac check file.nra|dir
+//
+// Flags of build, run and test (Go flag syntax: -name, --name, -name=value,
+// -name value; the first argument that is not a flag ends the flags):
+//   -release        optimize (-O2 -DNARRA_RELEASE) and wrap integer overflow
+//   -o path         the executable (build: for a package, one binary only)
+//   -emit-c path    also keep the generated C in this file
+//   -bin name       the package binary to build or run
+//   -filter text    test only: run the tests whose name contains text
+//   -time           test only: print the time of each test
+//   -sanitize       compile with -fsanitize=address,undefined (not in Go)
+//   -stdin path     run and test: the program reads this file as its stdin
+//                   (not in Go; Process.run would close stdin)
+//
+// Exit codes: 0 success, 1 a load, check or C compiler error (or the exit code
+// of the program for run and test), 2 usage.
+import * as Env from "std/env"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Process from "std/process"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import { quoteGo } from "narrac/parser"
+import * as Modules from "narrac/modules"
+import { Package } from "narrac/modules"
+import { LoadError } from "narrac/manifest"
+import * as Body from "narrac/body"
+import * as Effects from "narrac/effects"
+import { Checker } from "narrac/check"
+import { emitProgram } from "narrac/emit"
+import { findEntry } from "narrac/emitter"
+
+// A problem found while loading or checking: file is empty and line is 0 for
+// a problem that is not a diagnostic (an unreadable file).
+struct Diagnostic {
+  file: string
+  line: int
+  column: int
+  message: string
+}
+
+struct DriverOptions {
+  release: bool
+  sanitize: bool
+  showTime: bool
+  output: string
+  emitC: string
+  binaryName: string
+  filter: string
+  stdinPath: string
+  path: string
+  programArguments: Array<string>
+}
+
+// isDriverCommand tells main whether the first argument is a command of this module.
+export function isDriverCommand(name: string): bool {
+  return name == "build" || name == "run" || name == "test" || name == "check"
+}
+
+// runDriver runs the command in arguments[1]. arguments[0] is the program name.
+export function runDriver(arguments: Array<string>): int uses io, alloc {
+  const command = arguments[1]
+  if (command == "check") {
+    return runCheck(arguments)
+  }
+  const parsed = parseOptions(arguments)
+  if (parsed is Err(message)) {
+    if (message != "") {
+      printError(message)
+    }
+    printError(usageText())
+    return 2
+  }
+  const options = parsed.value
+  if (options.path == "") {
+    printError(usageText())
+    return 2
+  }
+  if (command != "test" && (options.filter != "" || options.showTime)) {
+    printError("-filter and -time are for `narrac test`")
+    return 2
+  }
+  if (command == "build") {
+    return runBuild(options)
+  }
+  return runProgram(options, command == "test")
+}
+
+function usageText(): string {
+  const lines = [
+    "usage:",
+    "  narrac build [-release] [-sanitize] [-bin name] [-o output] [-emit-c file.c] file.nra|dir",
+    "  narrac run [-release] [-sanitize] [-bin name] [-stdin file] file.nra|dir [args...]",
+    "  narrac test [-filter text] [-time] [-release] [-sanitize] [-stdin file] file.nra|dir",
+    "  narrac check file.nra|dir                 report errors",
+    "",
+    "A dir is a package: a directory with narra.toml and src/. Without -bin,",
+    "build makes every [[binary]] of the package; run needs the package to have",
+    "one binary.",
+  ]
+  return Str.join(lines, "\n")
+}
+
+// printError writes a line to stderr.
+function printError(text: string) uses io {
+  const _ = Fs.writeText("/dev/stderr", `${text}\n`)
+}
+
+// writeStream writes text as is to /dev/stdout or /dev/stderr.
+function writeStream(stream: string, text: string) uses io {
+  if (text != "") {
+    const _ = Fs.writeText(stream, text)
+  }
+}
+
+// --- flags -----------------------------------------------------------------
+
+// parseOptions reads the flags of build, run and test, then the path and the
+// arguments of the program. An Err holds the message to print before the
+// usage (empty for -h).
+function parseOptions(arguments: Array<string>): Result<DriverOptions, string> uses alloc {
+  let options = DriverOptions {
+    release: false,
+    sanitize: false,
+    showTime: false,
+    output: "",
+    emitC: "",
+    binaryName: "",
+    filter: "",
+    stdinPath: "",
+    path: "",
+    programArguments: [],
+  }
+  let index = 2
+  let parsingFlags = true
+  while (parsingFlags && index < Arrays.length(arguments)) {
+    const argument = arguments[index]
+    if (argument == "--") {
+      // The marker ends the flags and is not an argument.
+      index = index + 1
+      parsingFlags = false
+    } else if (Str.length(argument) < 2 || !Str.startsWith(argument, "-")) {
+      parsingFlags = false
+    } else {
+      index = index + 1
+      let name = Str.sliceFrom(argument, 1)
+      if (Str.startsWith(name, "-")) {
+        name = Str.sliceFrom(name, 1)
+      }
+      if (name == "" || Str.startsWith(name, "-") || Str.startsWith(name, "=")) {
+        return Err(`bad flag syntax: ${argument}`)
+      }
+      // -name=value carries its value; otherwise a flag with a value takes the next argument.
+      let hasValue = false
+      let value = ""
+      if (Str.indexOf(name, "=") is Some(at)) {
+        value = Str.sliceFrom(name, at + 1)
+        name = Str.slice(name, 0, at)
+        hasValue = true
+      }
+      if (name == "h" || name == "help") {
+        return Err("")
+      }
+      if (isBoolFlag(name)) {
+        const flagValue = parseBool(name, hasValue, value)
+        if (flagValue is Err(message)) {
+          return Err(message)
+        }
+        setBoolFlag(mutable options, name, flagValue.value)
+      } else if (isValueFlag(name)) {
+        if (!hasValue) {
+          if (index >= Arrays.length(arguments)) {
+            return Err(`flag needs an argument: -${name}`)
+          }
+          value = arguments[index]
+          index = index + 1
+        }
+        setValueFlag(mutable options, name, value)
+      } else {
+        return Err(`flag provided but not defined: -${name}`)
+      }
+    }
+  }
+  if (index < Arrays.length(arguments)) {
+    options.path = arguments[index]
+    index = index + 1
+    while (index < Arrays.length(arguments)) {
+      Arrays.push(mutable options.programArguments, arguments[index])
+      index = index + 1
+    }
+  }
+  return Ok(options)
+}
+
+function isBoolFlag(name: string): bool {
+  return name == "release" || name == "time" || name == "sanitize"
+}
+
+function isValueFlag(name: string): bool {
+  return name == "o" || name == "emit-c" || name == "bin" || name == "filter" || name == "stdin"
+}
+
+// parseBool reads the value of a bool flag as Go's flag package does: a flag
+// without a value is true.
+function parseBool(name: string, hasValue: bool, value: string): Result<bool, string> uses alloc {
+  if (!hasValue) {
+    return Ok(true)
+  }
+  if (
+    value == "1" ||
+      value == "t" ||
+      value == "T" ||
+      value == "true" ||
+      value == "TRUE" ||
+      value == "True"
+  ) {
+    return Ok(true)
+  }
+  if (
+    value == "0" ||
+      value == "f" ||
+      value == "F" ||
+      value == "false" ||
+      value == "FALSE" ||
+      value == "False"
+  ) {
+    return Ok(false)
+  }
+  return Err(`invalid boolean value ${quoteGo(value)} for -${name}: parse error`)
+}
+
+function setBoolFlag(mutable options: DriverOptions, name: string, value: bool) {
+  if (name == "release") {
+    options.release = value
+  } else if (name == "time") {
+    options.showTime = value
+  } else {
+    options.sanitize = value
+  }
+}
+
+function setValueFlag(mutable options: DriverOptions, name: string, value: string) {
+  if (name == "o") {
+    options.output = value
+  } else if (name == "emit-c") {
+    options.emitC = value
+  } else if (name == "bin") {
+    options.binaryName = value
+  } else if (name == "filter") {
+    options.filter = value
+  } else {
+    options.stdinPath = value
+  }
+}
+
+// --- load, check, emit -------------------------------------------------------
+
+// formatDiagnostic prints `file:line:col: message` (the Go FormatError form).
+function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
+  if (diagnostic.file == "" && diagnostic.line == 0) {
+    return diagnostic.message
+  }
+  const position = `${Int.toString(diagnostic.line)}:${Int.toString(diagnostic.column)}`
+  if (diagnostic.file == "") {
+    return `${position}: ${diagnostic.message}`
+  }
+  return `${diagnostic.file}:${position}: ${diagnostic.message}`
+}
+
+function formatDiagnostics(diagnostics: Array<Diagnostic>): string uses alloc {
+  let lines: Array<string> = []
+  for (const diagnostic of Arrays.values(diagnostics)) {
+    Arrays.push(mutable lines, formatDiagnostic(diagnostic))
+  }
+  return Str.join(lines, "\n")
+}
+
+// convertLoadErrors turns the errors of Modules.load into diagnostics.
+function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> uses alloc {
+  let diagnostics: Array<Diagnostic> = []
+  for (const error of Arrays.values(errors)) {
+    // A syntax error arrives as one message that starts with `error `.
+    let message = error.message
+    if (error.file == "" && Str.startsWith(message, "error ")) {
+      message = Str.sliceFrom(message, 6)
+    }
+    Arrays.push(mutable diagnostics, Diagnostic {
+      file: error.file,
+      line: error.line,
+      column: error.column,
+      message: message,
+    })
+  }
+  return diagnostics
+}
+
+// loadAndCheck loads a file or package and runs every pass of `narrac check`
+// (the bodies, then the effects when the bodies have no errors).
+function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnostic>> uses io, alloc {
+  const loaded = Modules.load(path)
+  if (loaded is Err(errors)) {
+    return Err(convertLoadErrors(errors))
+  }
+  let checker = Body.checkPackage(loaded.value)
+  if (Arrays.length(checker.errors) == 0) {
+    const _ = Effects.checkEffects(mutable checker)
+  }
+  if (Arrays.length(checker.errors) > 0) {
+    let diagnostics: Array<Diagnostic> = []
+    for (const error of Arrays.values(checker.errors)) {
+      Arrays.push(mutable diagnostics, Diagnostic {
+        file: error.file,
+        line: error.pos.line,
+        column: error.pos.column,
+        message: error.message,
+      })
+    }
+    return Err(diagnostics)
+  }
+  return Ok(#[loaded.value, checker])
+}
+
+// compileToC returns the C of one binary of the package at path, or of the
+// test program when tests is true. An Err holds the text to print.
+function compileToC(
+  path: string,
+  binaryName: string,
+  tests: bool,
+): Result<string, string> uses io, alloc {
+  const checked = loadAndCheck(path)
+  if (checked is Err(diagnostics)) {
+    return Err(formatDiagnostics(diagnostics))
+  }
+  const #[package, checker] = checked.value
+  // A test build has no entry function.
+  let entry = -1
+  if (!tests) {
+    const found = findEntry(checker, package, binaryName)
+    if (found is Err(message)) {
+      return Err(message)
+    }
+    entry = found.value
+  }
+  const result = emitProgram(checker, entry, tests)
+  if (Arrays.length(result.unsupported) > 0) {
+    let lines: Array<string> = []
+    for (const construct of Arrays.values(result.unsupported)) {
+      Arrays.push(mutable lines, `unsupported: ${construct}`)
+    }
+    return Err(Str.join(lines, "\n"))
+  }
+  return Ok(result.text)
+}
+
+// --- the C compiler ---------------------------------------------------------
+
+// makeTempDirectory runs `mktemp -d` and returns the new directory.
+function makeTempDirectory(): Result<string, string> uses io, alloc {
+  const made = Process.run("mktemp", ["-d"])
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const #[code, output, errorOutput] = made.value
+  if (code != 0) {
+    return Err(`mktemp: ${Str.trim(errorOutput)}`)
+  }
+  return Ok(Str.trim(output))
+}
+
+// cCompilerName is $CC when it is set and not empty, else cc.
+function cCompilerName(): string uses io, alloc {
+  const configured = Env.get("CC")
+  if (configured is Some(name)) {
+    if (name != "") {
+      return name
+    }
+  }
+  return "cc"
+}
+
+// cCompilerArguments is the Go driver's argument list: debug is `-O0 -g`,
+// release is `-O2 -DNARRA_RELEASE`; sanitize adds the AddressSanitizer and
+// UBSan flags of the Go tests.
+function cCompilerArguments(
+  options: DriverOptions,
+  cPath: string,
+  output: string,
+): Array<string> uses alloc {
+  let arguments: Array<string> = []
+  if (options.release) {
+    Arrays.push(mutable arguments, "-O2")
+    Arrays.push(mutable arguments, "-DNARRA_RELEASE")
+  } else {
+    Arrays.push(mutable arguments, "-O0")
+    Arrays.push(mutable arguments, "-g")
+  }
+  Arrays.push(mutable arguments, "-std=c11")
+  Arrays.push(mutable arguments, "-w")
+  if (options.sanitize) {
+    Arrays.push(mutable arguments, "-fsanitize=address,undefined")
+    Arrays.push(mutable arguments, "-fno-omit-frame-pointer")
+  }
+  Arrays.push(mutable arguments, "-o")
+  Arrays.push(mutable arguments, output)
+  Arrays.push(mutable arguments, cPath)
+  Arrays.push(mutable arguments, "-lm")
+  return arguments
+}
+
+// buildExecutable compiles one binary (or the test program) to an executable.
+// The compiler's output goes to stderr. An Err holds the text to print.
+function buildExecutable(
+  options: DriverOptions,
+  binaryName: string,
+  tests: bool,
+  output: string,
+): Result<bool, string> uses io, alloc {
+  const compiled = compileToC(options.path, binaryName, tests)
+  if (compiled is Err(message)) {
+    return Err(message)
+  }
+  // The C goes to -emit-c, else to a file in a temporary directory.
+  const directory = makeTempDirectory()
+  if (directory is Err(message)) {
+    return Err(message)
+  }
+  let cPath = Path.join(directory.value, "out.c")
+  if (options.emitC != "") {
+    cPath = options.emitC
+  }
+  const written = Fs.writeText(cPath, compiled.value)
+  if (written is Err(message)) {
+    removeTempDirectory(directory.value, options.emitC == "")
+    return Err(message)
+  }
+  const ran = Process.run(cCompilerName(), cCompilerArguments(options, cPath, output))
+  removeTempDirectory(directory.value, options.emitC == "")
+  if (ran is Err(message)) {
+    return Err(message)
+  }
+  const #[code, standardOutput, standardError] = ran.value
+  writeStream("/dev/stderr", standardOutput)
+  writeStream("/dev/stderr", standardError)
+  if (code != 0) {
+    return Err(`C compiler failed: exit status ${Int.toString(code)}`)
+  }
+  return Ok(true)
+}
+
+// removeTempDirectory deletes the C file (when it is ours) and the directory.
+function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
+  if (removeC) {
+    const _ = Fs.removeFile(Path.join(directory, "out.c"))
+  }
+  const _ = Fs.removeDir(directory)
+}
+
+// --- build ------------------------------------------------------------------
+
+// runBuild makes one executable for a file, or one per selected binary for a
+// package, named after the file or the binary.
+function runBuild(options: DriverOptions): int uses io, alloc {
+  const loaded = Modules.load(options.path)
+  if (loaded is Err(errors)) {
+    printError(formatDiagnostics(convertLoadErrors(errors)))
+    return 1
+  }
+  const package = loaded.value
+  if (!Fs.exists(options.path)) {
+    printError(`stat ${options.path}: no such file or directory`)
+    return 1
+  }
+  if (!Fs.isDir(options.path)) {
+    // A file: the executable is named after it.
+    let output = options.output
+    if (output == "") {
+      output = Str.replace(Path.basename(options.path), ".nra", "")
+    }
+    return finishBuild(buildExecutable(options, options.binaryName, false, output))
+  }
+  // A package: the selected binary, or every binary.
+  let names: Array<string> = []
+  if (options.binaryName != "") {
+    Arrays.push(mutable names, options.binaryName)
+  } else {
+    for (const binary of Arrays.values(package.binaries)) {
+      Arrays.push(mutable names, binary.name)
+    }
+  }
+  if (Arrays.length(names) == 0) {
+    printError(`narra.toml: package ${package.name} has no [[binary]]; it is a library`)
+    return 1
+  }
+  if (options.output != "" && Arrays.length(names) > 1) {
+    printError(
+      `-o needs one binary; the package has ${Str.join(names, ", ")}, choose one with -bin`,
+    )
+    return 1
+  }
+  for (const name of Arrays.values(names)) {
+    let output = options.output
+    if (output == "") {
+      output = name
+    }
+    if (finishBuild(buildExecutable(options, name, false, output)) != 0) {
+      return 1
+    }
+  }
+  return 0
+}
+
+// finishBuild prints the error of a failed build and returns the exit code.
+function finishBuild(built: Result<bool, string>): int uses io {
+  if (built is Err(message)) {
+    printError(message)
+    return 1
+  }
+  return 0
+}
+
+// --- run and test -----------------------------------------------------------
+
+// runProgram builds the program in a temporary directory (or at -o), runs it
+// with the arguments and returns its exit code. In test mode it is the test
+// program, with the arguments of testArguments in front. The program's stdout
+// and stderr are captured and written once it ends, stdout first.
+function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
+  let programArguments = options.programArguments
+  if (tests) {
+    programArguments = testArguments(options)
+    for (const argument of Arrays.values(options.programArguments)) {
+      Arrays.push(mutable programArguments, argument)
+    }
+  }
+  // The executable: -o, else a temporary one.
+  let output = options.output
+  let directory = ""
+  if (output == "") {
+    const made = makeTempDirectory()
+    if (made is Err(message)) {
+      printError(message)
+      return 1
+    }
+    directory = made.value
+    output = Path.join(directory, "program")
+  }
+  const built = buildExecutable(options, options.binaryName, tests, output)
+  if (built is Err(message)) {
+    printError(message)
+    removeProgramDirectory(directory, output)
+    return 1
+  }
+  const ran = startProgram(output, programArguments, options.stdinPath)
+  removeProgramDirectory(directory, output)
+  if (ran is Err(message)) {
+    printError(message)
+    return 1
+  }
+  const #[code, standardOutput, standardError] = ran.value
+  writeStream("/dev/stdout", standardOutput)
+  writeStream("/dev/stderr", standardError)
+  return code
+}
+
+function removeProgramDirectory(directory: string, output: string) uses io, alloc {
+  if (directory != "") {
+    const _ = Fs.removeFile(output)
+    const _ = Fs.removeDir(directory)
+  }
+}
+
+// startProgram runs the executable. Without a stdin file it runs directly
+// (stdin is closed); with one it goes through `sh -c 'exec "$@" < file'`.
+function startProgram(
+  executable: string,
+  programArguments: Array<string>,
+  stdinPath: string,
+): Result<#[int, string, string], string> uses io, alloc {
+  if (stdinPath == "") {
+    return Process.run(absoluteIfBare(executable), programArguments)
+  }
+  let shellArguments = [
+    "-c",
+    "input=$1; shift; exec \"$@\" < \"$input\"",
+    "narrac",
+    stdinPath,
+    absoluteIfBare(executable),
+  ]
+  for (const argument of Arrays.values(programArguments)) {
+    Arrays.push(mutable shellArguments, argument)
+  }
+  return Process.run("sh", shellArguments)
+}
+
+// absoluteIfBare makes `program` into `./program`: Process.run searches PATH
+// for a name without a slash.
+function absoluteIfBare(executable: string): string {
+  if (Str.contains(executable, "/")) {
+    return executable
+  }
+  return `./${executable}`
+}
+
+// testArguments is the argument list the Go driver gives the test program.
+function testArguments(options: DriverOptions): Array<string> uses io, alloc {
+  let arguments: Array<string> = []
+  if (options.filter != "") {
+    Arrays.push(mutable arguments, "--filter")
+    Arrays.push(mutable arguments, options.filter)
+  }
+  if (options.showTime) {
+    Arrays.push(mutable arguments, "--time")
+  }
+  Arrays.push(mutable arguments, "--golden-dir")
+  Arrays.push(mutable arguments, findGoldenDirectory(options.path))
+  return arguments
+}
+
+// findGoldenDirectory is where Test.golden looks for `<name>.golden`: the
+// directory of the file, or testdata/ of a package, as an absolute path.
+function findGoldenDirectory(path: string): string uses io, alloc {
+  let directory = Path.dirname(path)
+  if (Fs.isDir(path)) {
+    directory = Path.join(trimTrailingSlashes(path), "testdata")
+  }
+  if (Str.startsWith(directory, "/")) {
+    return directory
+  }
+  let currentDirectory = "."
+  if (Env.get("PWD") is Some(working)) {
+    currentDirectory = working
+  }
+  if (directory == "." || directory == "") {
+    return currentDirectory
+  }
+  if (Str.startsWith(directory, "./")) {
+    directory = Str.sliceFrom(directory, 2)
+  }
+  return Path.join(currentDirectory, directory)
+}
+
+function trimTrailingSlashes(path: string): string {
+  let result = path
+  while (Str.length(result) > 1 && Str.endsWith(result, "/")) {
+    result = Str.slice(result, 0, Str.length(result) - 1)
+  }
+  return result
+}
+
+// --- check ------------------------------------------------------------------
+
+// runCheck is `narrac check file.nra|dir`. Exit 0: no diagnostics. Exit 1:
+// diagnostics (one `file:line:col: message` line each on stderr) or an
+// unreadable path. Exit 2: usage. There is no --json yet: the self-hosted
+// checker has no diagnostic codes.
+function runCheck(arguments: Array<string>): int uses io, alloc {
+  if (Arrays.length(arguments) != 3 || Str.startsWith(arguments[2], "-")) {
+    printError("usage: narrac check file.nra|dir")
+    return 2
+  }
+  let diagnostics: Array<Diagnostic> = []
+  const checked = loadAndCheck(arguments[2])
+  if (checked is Err(found)) {
+    diagnostics = found
+  } else {
+    const #[package, checker] = checked.value
+    diagnostics = findMissingEntries(package, checker)
+  }
+  if (Arrays.length(diagnostics) > 0) {
+    printError(formatDiagnostics(diagnostics))
+  }
+  if (Arrays.length(diagnostics) > 0) {
+    return 1
+  }
+  return 0
+}
+
+// findMissingEntries reports each binary whose entry function is missing.
+function findMissingEntries(package: Package, checker: Checker): Array<Diagnostic> uses alloc {
+  let diagnostics: Array<Diagnostic> = []
+  for (const binary of Arrays.values(package.binaries)) {
+    let found = false
+    for (const entry of Arrays.values(checker.entries)) {
+      if (entry.binary == binary.name && entry.funcIndex >= 0) {
+        found = true
+      }
+    }
+    if (found) {
+      continue
+    }
+    if (package.single) {
+      Arrays.push(mutable diagnostics, Diagnostic {
+        file: package.modules[Arrays.length(package.modules) - 1].file,
+        line: 0,
+        column: 0,
+        message: "no entry function; declare `export function run(args: Array<string>): int`",
+      })
+    } else {
+      const #[modulePath, functionName] = Modules.entryModule(package, binary.entry)
+      Arrays.push(mutable diagnostics, Diagnostic {
+        file: "narra.toml",
+        line: 0,
+        column: 0,
+        message: `binary ${quoteGo(binary.name)}: no entry function ${quoteGo(binary.entry)}; declare \`export function ${functionName}(args: Array<string>): int\` in module ${quoteGo(modulePath)}`,
+      })
+    }
+  }
+  return diagnostics
+}

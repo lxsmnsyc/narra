@@ -4,7 +4,7 @@ title: std/json parse and stringify over a dynamic Value
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m10-std

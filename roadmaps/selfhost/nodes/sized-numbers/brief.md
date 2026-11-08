@@ -1,10 +1,10 @@
 ---
 id: sized-numbers
 title: "Sized integer types i8 to u64"
-status: todo
+status: active
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

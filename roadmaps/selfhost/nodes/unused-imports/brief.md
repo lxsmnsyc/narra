@@ -4,7 +4,7 @@ title: "Unused imports and private functions are errors"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

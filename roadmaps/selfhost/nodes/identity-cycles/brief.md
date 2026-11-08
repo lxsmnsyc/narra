@@ -4,7 +4,7 @@ title: Reference cycles through identity types
 status: todo
 priority: should
 type: spike
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m11-closures

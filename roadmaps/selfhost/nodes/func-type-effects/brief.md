@@ -4,7 +4,7 @@ title: "Function types carry their effects"
 status: active
 priority: must
 type: fix
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

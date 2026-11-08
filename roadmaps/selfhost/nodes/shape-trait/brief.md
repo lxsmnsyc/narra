@@ -4,7 +4,7 @@ title: "The Shape trait, Json.encode and Json.decode"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m10-std

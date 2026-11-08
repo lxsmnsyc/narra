@@ -4,7 +4,7 @@ title: "Where a mutable marker can bind a reference to a part of a value"
 status: todo
 priority: should
 type: spike
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

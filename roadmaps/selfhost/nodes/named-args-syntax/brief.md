@@ -1,10 +1,10 @@
 ---
 id: named-args-syntax
 title: Parse named arguments
-status: todo
+status: active
 priority:
 type: feature
-story: named-arguments
+story: batch-1
 early: false
 outline: false
 milestone:

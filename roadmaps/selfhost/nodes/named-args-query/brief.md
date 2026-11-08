@@ -4,7 +4,7 @@ title: narra query reads named arguments
 status: todo
 priority:
 type: feature
-story: named-arguments
+story: batch-1
 early: false
 outline: false
 milestone:

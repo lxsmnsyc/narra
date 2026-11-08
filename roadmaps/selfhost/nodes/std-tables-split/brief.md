@@ -1,10 +1,10 @@
 ---
 id: std-tables-split
 title: Split the self-hosted std tables by module
-status: todo
+status: active
 priority: should
 type: refactor
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m10-std

@@ -4,7 +4,7 @@ title: "Build D81: mutable changes contents, const fixes only the name"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

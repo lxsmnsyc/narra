@@ -4,7 +4,7 @@ title: "The f32 type and float conversions"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

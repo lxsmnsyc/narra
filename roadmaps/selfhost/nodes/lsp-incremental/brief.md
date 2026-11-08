@@ -4,7 +4,7 @@ title: "narrac lsp: recheck only changed modules"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m9-adoption

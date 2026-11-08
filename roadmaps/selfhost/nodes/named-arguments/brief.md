@@ -1,7 +1,7 @@
 ---
 id: named-arguments
 title: Named arguments, in any order (D87)
-status: todo
+status: dropped
 priority: should
 type: story
 story:
@@ -16,7 +16,7 @@ spike: false
 hypothesis:
 verify:
 exclusive: []
-fulfilled_by:
+fulfilled_by: batch-1
 gate: false
 added: 2026-11-07
 spent:
@@ -44,3 +44,7 @@ Children: named-args-syntax, named-args-check, named-args-query. They land on `f
 - [ ] Every child is done.
 - [ ] SPEC.md section 2 (Functions) describes named arguments; the D12 line "no labeled arguments" is amended; D87 loses "Not built yet".
 - [ ] Fast check passes on the story branch.
+
+## Dropped
+
+2026-11-09: folded into story batch-1 (one-shot strategy). Its children are batch-1 children, and its acceptance is in the batch-1 brief.

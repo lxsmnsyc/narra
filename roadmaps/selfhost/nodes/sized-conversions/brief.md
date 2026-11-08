@@ -4,7 +4,7 @@ title: "Integer conversions: I32.from, tryFrom and wrap"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m12-spec-gaps

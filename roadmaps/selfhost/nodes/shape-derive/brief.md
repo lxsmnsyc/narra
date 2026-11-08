@@ -4,7 +4,7 @@ title: derives Shape for structs and enums
 status: todo
 priority: should
 type: feature
-story:
+story: batch-1
 early: false
 outline: false
 milestone: m10-std

@@ -60,16 +60,22 @@ import {
   Expr,
   Pattern,
   YieldBinding,
+  SourceFacts,
+  DotUse,
+  createEmptyFacts,
 } from "narrac/ast"
+import { Fix, createFix, createEdit, insertAt, moveColumn } from "narrac/fixes"
 import * as Arrays from "std/array"
 import * as Boxes from "std/box"
 import * as Ranges from "std/range"
+import * as Maps from "std/map"
 
 // A syntax error: `error <line>:<col>: <message>` in the dump.
 export struct Diagnostic {
   code: string
   pos: Pos
   message: string
+  fixes: Array<Fix> = []
 }
 
 export struct Parsed {
@@ -90,6 +96,11 @@ struct Parser {
   // typeNames are the type parameters of the declaration being parsed. A
   // lowercase one still counts as a type in `id<t>(x)`.
   typeNames: Array<string>
+  // facts are the side tables for fixes; parse completes them with the source
+  // facts (finishFacts). resultFunction is set inside a function declared to
+  // return Result, where `throw x` can become `return Err(x)`.
+  facts: SourceFacts
+  resultFunction: bool
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -136,12 +147,15 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
     ternaryIds: [],
     collector: createCollector(false),
     typeNames: [],
+    facts: createEmptyFacts(),
+    resultFunction: false,
   }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
     return Err(diagnostic)
   }
-  return Ok(Parsed { file: file, nextId: parser.nextId })
+  const facts = finishFacts(parser, source)
+  return Ok(Parsed { file: File { ...file, facts: facts }, nextId: parser.nextId })
 }
 
 // parseWithTrivia parses like parse and also returns the side tables of
@@ -164,13 +178,132 @@ export function parseWithTrivia(source: string, firstId: int): Result<#[
     ternaryIds: [],
     collector: createCollector(true),
     typeNames: [],
+    facts: createEmptyFacts(),
+    resultFunction: false,
   }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
     return Err(diagnostic)
   }
   const trivia = buildTrivia(parser.collector, comments, source)
-  return Ok(#[Parsed { file: file, nextId: parser.nextId }, trivia])
+  const facts = finishFacts(parser, source)
+  return Ok(#[Parsed { file: File { ...file, facts: facts }, nextId: parser.nextId }, trivia])
+}
+
+// ---- Source facts for fixes
+
+// isAsciiLetter is true for A-Z, a-z and `_`, the start of a name in
+// Go's templateDot pattern.
+function isNameStart(character: char): bool {
+  return (character >= 'a' && character <= 'z') ||
+    (character >= 'A' && character <= 'Z') ||
+    character == '_'
+}
+
+function isNameCharacter(character: char): bool {
+  return isNameStart(character) || (character >= '0' && character <= '9')
+}
+
+// markTemplateDots notes each `Name.` inside the raw text of a template
+// string. The parser keeps no positions inside ${...}, so a fix cannot rename a
+// name used there.
+function markTemplateDots(mutable names: Map<string, bool>, text: string) uses alloc {
+  const characters = Str.chars(text)
+  const count = Arrays.length(characters)
+  let index = 0
+  while (index < count) {
+    if (!isNameStart(characters[index])) {
+      index = index + 1
+      continue
+    }
+    let end = index
+    while (end < count && isNameCharacter(characters[end])) {
+      end = end + 1
+    }
+    if (end < count && characters[end] == '.') {
+      names[sliceText(characters, index, end)] = true
+      index = end + 1
+    } else {
+      index = end
+    }
+  }
+}
+
+function sliceText(characters: Array<char>, first: int, last: int): string uses alloc {
+  let builder = Str.builder()
+  for (const index of Ranges.between(first, last)) {
+    Str.appendChar(mutable builder, characters[index])
+  }
+  return Str.build(builder)
+}
+
+// findHeaderLine is the line after the leading comment block that a blank
+// line follows; a comment right above a declaration is its doc comment.
+function findHeaderLine(source: string): int uses alloc {
+  let header = 1
+  const lines = Str.split(source, "\n")
+  let index = 0
+  while (index < Arrays.length(lines) && Str.startsWith(lines[index], "//")) {
+    if (index + 1 < Arrays.length(lines) && Str.trim(lines[index + 1]) == "") {
+      header = index + 2
+    }
+    index = index + 1
+  }
+  return header
+}
+
+// finishFacts completes the side tables of a parse with what Go's Parse reads
+// from the source and the tokens: the text, the header line, the names used in
+// templates and the names written before a `.`.
+function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
+  let inTemplate: Map<string, bool> = Map {}
+  let dotUses: Map<string, Array<DotUse>> = Map {}
+  const count = Arrays.length(parser.tokens)
+  for (const index of Ranges.upTo(count)) {
+    const token = parser.tokens[index]
+    if (token.kind == TokenKind.TokTemplate) {
+      markTemplateDots(mutable inTemplate, token.text)
+    }
+    if (token.kind != TokenKind.TokIdent || index + 1 >= count) {
+      continue
+    }
+    const next = parser.tokens[index + 1]
+    if (next.kind != TokenKind.TokPunct || next.text != ".") {
+      continue
+    }
+    if (index > 0) {
+      const before = parser.tokens[index - 1]
+      if (before.kind == TokenKind.TokPunct && before.text == ".") {
+        continue
+      }
+    }
+    let member = ""
+    if (index + 2 < count && parser.tokens[index + 2].kind == TokenKind.TokIdent) {
+      member = parser.tokens[index + 2].text
+    }
+    let known: Array<DotUse> = []
+    if (dotUses[token.text] is Some(found)) {
+      known = found
+    }
+    Arrays.push(mutable known, DotUse { pos: getPos(token), member: member })
+    dotUses[token.text] = known
+  }
+  return SourceFacts {
+    source: source,
+    header: findHeaderLine(source),
+    inTemplate: inTemplate,
+    dotUses: dotUses,
+    namePositions: parser.facts.namePositions,
+    shorthandIds: parser.facts.shorthandIds,
+    callEnds: parser.facts.callEnds,
+  }
+}
+
+// getCallEnd is the position just after the `)` that closed a call. Inside a
+// template string the tokens carry the template's position, so it is the
+// template's position plus one, as in Go.
+function getCallEnd(parser: Parser): Pos {
+  return moveColumn(getPos(parser.tokens[parser.index - 1]), 1)
 }
 
 // ---- Trivia notes. Each does nothing unless the collector is enabled.
@@ -222,6 +355,7 @@ function splitLexError(error: LexError): Diagnostic {
     code: error.code,
     pos: Pos { line: error.line, column: error.column },
     message: error.message,
+    fixes: error.fixes,
   }
 }
 
@@ -234,8 +368,19 @@ function isOk(parser: Parser): bool {
 // failAt records the first error. Later errors are ignored, like the code
 // after a Go panic that never runs.
 function failAt(mutable parser: Parser, pos: Pos, code: string, message: string) {
+  failAtFix(mutable parser, pos, code, [], message)
+}
+
+// failAtFix is failAt with the fixes of the error (Go's failFix).
+function failAtFix(
+  mutable parser: Parser,
+  pos: Pos,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+) {
   if (parser.failed is None) {
-    parser.failed = Some(Diagnostic { code: code, pos: pos, message: message })
+    parser.failed = Some(Diagnostic { code: code, pos: pos, message: message, fixes: fixes })
   }
 }
 
@@ -291,13 +436,61 @@ function reportHabitWord(mutable parser: Parser, token: Token) {
     )
   }
   if (token.text == "throw" && isThrowOperand(next)) {
-    failAt(
+    // Inside a function that returns a Result, a `throw` that starts its
+    // statement becomes `return Err(value)`.
+    let fixes: Array<Fix> = []
+    if (parser.resultFunction && isStatementStart(parser)) {
+      if (speculateExpression(mutable parser) is Some(end)) {
+        fixes = [
+          createFix("return an Err", [
+            createEdit(pos, getPos(next), "return Err("),
+            insertAt(end, ")"),
+          ]),
+        ]
+      }
+    }
+    failAtFix(
       mutable parser,
       pos,
       "E0927",
+      fixes,
       "there is no `throw`; return `Err(value)`, or call `panic` for a bug",
     )
   }
+}
+
+// isStatementStart tells whether the token just consumed, the one before
+// the current token, begins a statement.
+function isStatementStart(parser: Parser): bool {
+  if (parser.index < 2) {
+    return false
+  }
+  const before = parser.tokens[parser.index - 2]
+  return before.kind == TokenKind.TokNewline ||
+    (before.kind == TokenKind.TokPunct && (before.text == "{" || before.text == "}"))
+}
+
+// speculateExpression parses an expression at the current token and gives
+// where it ends, which must be the end of the line or a `}`. The parser
+// position is restored; a syntax error gives None.
+function speculateExpression(mutable parser: Parser): Option<Pos> uses alloc {
+  const savedIndex = parser.index
+  const savedId = parser.nextId
+  parseExpr(mutable parser)
+  let end: Option<Pos> = None
+  if (isOk(parser)) {
+    const last = parser.tokens[parser.index - 1]
+    const after = currentToken(parser)
+    if (
+      after.kind == TokenKind.TokNewline || (after.kind == TokenKind.TokPunct && after.text == "}")
+    ) {
+      end = Some(Pos { line: last.endLine, column: last.endColumn })
+    }
+  }
+  parser.index = savedIndex
+  parser.nextId = savedId
+  parser.failed = None
+  return end
 }
 
 // isThrowOperand tells whether a token can start the value after `throw`.
@@ -522,27 +715,38 @@ function parseFile(mutable parser: Parser): File {
     Arrays.push(mutable declarations, parseDecl(mutable parser))
     skipNewlines(mutable parser)
   }
-  return File { imports: imports, declarations: declarations }
+  return File { imports: imports, declarations: declarations, facts: createEmptyFacts() }
 }
 
 function parseImport(mutable parser: Parser): ImportDecl {
   const startIndex = parser.index
   const pos = getPos(expect(mutable parser, "import"))
   let alias = ""
+  let aliasPos = createEmptyPos()
   let names: Array<ImportName> = []
   if (accept(mutable parser, "*")) {
     expect(mutable parser, "as")
-    alias = expectIdent(mutable parser).text
+    const aliasToken = expectIdent(mutable parser)
+    alias = aliasToken.text
+    aliasPos = getPos(aliasToken)
   } else if (accept(mutable parser, "{")) {
     skipNewlines(mutable parser)
     while (isOk(parser) && !isAt(parser, "}")) {
       const nameToken = expectIdent(mutable parser)
       const name = nameToken.text
       let local = name
+      let end = moveColumn(getPos(nameToken), Str.charCount(name))
       if (accept(mutable parser, "as")) {
-        local = expectIdent(mutable parser).text
+        const localToken = expectIdent(mutable parser)
+        local = localToken.text
+        end = moveColumn(getPos(localToken), Str.charCount(local))
       }
-      Arrays.push(mutable names, ImportName { pos: getPos(nameToken), name: name, local: local })
+      Arrays.push(mutable names, ImportName {
+        pos: getPos(nameToken),
+        name: name,
+        local: local,
+        end: end,
+      })
       skipNewlines(mutable parser)
       if (!accept(mutable parser, ",")) {
         break
@@ -552,9 +756,16 @@ function parseImport(mutable parser: Parser): ImportDecl {
     skipNewlines(mutable parser)
     expect(mutable parser, "}")
   } else {
-    failHere(
+    const at = getPos(currentToken(parser))
+    let fixes: Array<Fix> = []
+    if (currentToken(parser).kind == TokenKind.TokIdent) {
+      fixes = [createFix("import the module as a namespace", [insertAt(at, "* as ")])]
+    }
+    failAtFix(
       mutable parser,
+      at,
       "E0014",
+      fixes,
       "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports",
     )
   }
@@ -569,7 +780,56 @@ function parseImport(mutable parser: Parser): ImportDecl {
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("i", pos), startIndex)
   }
-  return ImportDecl { pos: pos, alias: alias, names: names, path: path }
+  return ImportDecl { pos: pos, alias: alias, aliasPos: aliasPos, names: names, path: path }
+}
+
+// isFieldsOnlyBody reports whether the tokens after the current `class` or
+// `interface` are `Name {` and then lines of `field: type`, with no method,
+// modifier, separator or generic parameter.
+function isFieldsOnlyBody(parser: Parser): bool {
+  const name = peekToken(parser, 1)
+  const open = peekToken(parser, 2)
+  if (name.kind != TokenKind.TokIdent || open.kind != TokenKind.TokPunct || open.text != "{") {
+    return false
+  }
+  let offset = 3
+  while (true) {
+    while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+      offset = offset + 1
+    }
+    const field = peekToken(parser, offset)
+    if (field.kind == TokenKind.TokPunct && field.text == "}") {
+      return true
+    }
+    const colon = peekToken(parser, offset + 1)
+    if (field.kind != TokenKind.TokIdent || colon.kind != TokenKind.TokPunct || colon.text != ":") {
+      return false
+    }
+    offset = offset + 2
+    // The type runs to the end of the line.
+    while (peekToken(parser, offset).kind != TokenKind.TokNewline) {
+      const part = peekToken(parser, offset)
+      if (part.kind == TokenKind.TokEof) {
+        return false
+      }
+      if (part.kind == TokenKind.TokPunct && isTypeBreaker(part.text)) {
+        return false
+      }
+      offset = offset + 1
+    }
+  }
+  return false
+}
+
+// isTypeBreaker is true for punctuation that cannot be part of a plain field type.
+function isTypeBreaker(text: string): bool {
+  return text == ";" ||
+    text == "," ||
+    text == "{" ||
+    text == "}" ||
+    text == "?" ||
+    text == "(" ||
+    text == "="
 }
 
 function parseDecl(mutable parser: Parser): Decl {
@@ -626,21 +886,31 @@ function parseDeclBody(mutable parser: Parser): Decl {
     return Decl.Test(TestDecl { pos: pos, name: name, body: parseBlock(mutable parser) })
   }
   const token = currentToken(parser)
-  if (token.kind == TokenKind.TokIdent && token.text == "class") {
-    failAt(
-      mutable parser,
-      getPos(token),
-      "E0923",
-      "there is no `class`; use a `struct` and functions in a module",
-    )
-  }
-  if (token.kind == TokenKind.TokIdent && token.text == "interface") {
-    failAt(
-      mutable parser,
-      getPos(token),
-      "E0924",
-      "there is no `interface`; use a `struct` for data or a `trait` for behavior",
-    )
+  if (token.kind == TokenKind.TokIdent && (token.text == "class" || token.text == "interface")) {
+    // The fix renames the keyword to `struct` only when the body holds fields
+    // and nothing else, because only then the result is a valid struct.
+    let fixes: Array<Fix> = []
+    if (isFieldsOnlyBody(parser)) {
+      const end = Pos { line: token.endLine, column: token.endColumn }
+      fixes = [createFix("use struct", [createEdit(getPos(token), end, "struct")])]
+    }
+    if (token.text == "class") {
+      failAtFix(
+        mutable parser,
+        getPos(token),
+        "E0923",
+        fixes,
+        "there is no `class`; use a `struct` and functions in a module",
+      )
+    } else {
+      failAtFix(
+        mutable parser,
+        getPos(token),
+        "E0924",
+        fixes,
+        "there is no `interface`; use a `struct` for data or a `trait` for behavior",
+      )
+    }
   }
   failAt(
     mutable parser,
@@ -773,7 +1043,15 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   }
   const after = peekToken(parser, 1)
   if (isAt(parser, "[") && after.kind == TokenKind.TokPunct && after.text == "]") {
-    failHere(mutable parser, "E0020", "there is no `T[]` array type; write `Array<T>`")
+    const open = getPos(currentToken(parser))
+    const shut = moveColumn(getPos(after), 1)
+    failAtFix(
+      mutable parser,
+      open,
+      "E0020",
+      [createFix("write Array<...>", [insertAt(named.pos, "Array<"), createEdit(open, shut, ">")])],
+      "there is no `T[]` array type; write `Array<T>`",
+    )
   }
   return TypeExpr { ...named, arguments: arguments }
 }
@@ -870,7 +1148,14 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
 
 function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   const header = parseFuncHeader(mutable parser, exported)
-  return FuncDecl { ...header, body: Some(parseBlock(mutable parser)) }
+  const savedResult = parser.resultFunction
+  parser.resultFunction = false
+  if (header.result is Some(resultType)) {
+    parser.resultFunction = resultType.name == "Result"
+  }
+  const body = parseBlock(mutable parser)
+  parser.resultFunction = savedResult
+  return FuncDecl { ...header, body: Some(body) }
 }
 
 // parseFuncHeader parses a function declaration up to its body.
@@ -889,10 +1174,12 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     if (!isMutable) {
       escaping = acceptEscaping(mutable parser)
     }
-    const paramName = expectIdent(mutable parser).text
+    const paramNameToken = expectIdent(mutable parser)
+    const paramName = paramNameToken.text
     expect(mutable parser, ":")
     const paramType = parseType(mutable parser)
     const paramId = newId(mutable parser)
+    parser.facts.namePositions[paramId] = getPos(paramNameToken)
     Arrays.push(mutable parameters, Param {
       id: paramId,
       pos: paramPos,
@@ -1350,11 +1637,15 @@ function parseArrow(mutable parser: Parser): Expr {
     result = Some(parseType(mutable parser))
   }
   expect(mutable parser, "=>")
+  const savedResult = parser.resultFunction
+  parser.resultFunction = false
   if (isAt(parser, "{")) {
     const block = parseBlock(mutable parser)
+    parser.resultFunction = savedResult
     return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, None, Some(block))
   }
   const body = parseExpr(mutable parser)
+  parser.resultFunction = savedResult
   return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, Some(body), None)
 }
 
@@ -1458,6 +1749,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       currentToken(parser).kind == TokenKind.TokIdent &&
         after.kind == TokenKind.TokPunct &&
         (after.text == "(" || after.text == ".")
+    const namePos = getPos(currentToken(parser))
     let name = ""
     let pattern: Option<Pattern> = None
     if (isAt(parser, "{") || isAt(parser, "#[") || isConstructor) {
@@ -1500,7 +1792,9 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     }
     const value = parseExpr(mutable parser)
     endStatement(mutable parser)
-    return Stmt.VarStmt(newId(mutable parser), pos, isMutable, name, pattern, declaredType, value)
+    const varId = newId(mutable parser)
+    parser.facts.namePositions[varId] = namePos
+    return Stmt.VarStmt(varId, pos, isMutable, name, pattern, declaredType, value)
   }
   if (isAt(parser, "return")) {
     advance(mutable parser)
@@ -1582,7 +1876,9 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       body = Block { pos: body.pos, statements: statements }
       name = hidden
     }
-    return Stmt.ForStmt(newId(mutable parser), pos, "", name, iterable, body)
+    const forId = newId(mutable parser)
+    parser.facts.namePositions[forId] = headPos
+    return Stmt.ForStmt(forId, pos, "", name, iterable, body)
   }
   if (isAt(parser, "yield")) {
     advance(mutable parser)
@@ -1787,10 +2083,16 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       }
     }
     if (token.text == "===" || token.text == "!==") {
-      failAt(
+      const replacement = Str.slice(token.text, 0, 2)
+      failAtFix(
         mutable parser,
         getPos(token),
         "E0033",
+        [
+          createFix(`use ${replacement}`, [
+            createEdit(getPos(token), moveColumn(getPos(token), 3), replacement),
+          ]),
+        ],
         `use \`${Str.slice(token.text, 0, 2)}\`; there is no strict equality operator`,
       )
       return left
@@ -1843,18 +2145,16 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
       const typeArguments = parseLiteralTypeArgs(mutable parser)
       const openParen = expect(mutable parser, "(")
       const arguments = parseCallArguments(mutable parser)
-      expression = Expr.CallExpr(
-        newId(mutable parser),
-        getPos(openParen),
-        expression,
-        typeArguments,
-        arguments,
-      )
+      const callId = newId(mutable parser)
+      parser.facts.callEnds[callId] = getCallEnd(parser)
+      expression = Expr.CallExpr(callId, getPos(openParen), expression, typeArguments, arguments)
       noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "(")) {
       advance(mutable parser)
       const arguments = parseCallArguments(mutable parser)
-      expression = Expr.CallExpr(newId(mutable parser), getPos(token), expression, [], arguments)
+      const callId = newId(mutable parser)
+      parser.facts.callEnds[callId] = getCallEnd(parser)
+      expression = Expr.CallExpr(callId, getPos(token), expression, [], arguments)
       noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, "[")) {
       advance(mutable parser)
@@ -2325,10 +2625,15 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     advance(mutable parser)
     reportHabitWord(mutable parser, token)
     if (token.text == "null" || token.text == "undefined") {
-      failAt(
+      failAtFix(
         mutable parser,
         pos,
         "E0038",
+        [
+          createFix("use None", [
+            createEdit(pos, moveColumn(pos, Str.charCount(token.text)), "None"),
+          ]),
+        ],
         `there is no ${token.text}; use \`None\` with an \`Option\` type`,
       )
       return createDummyExpr()
@@ -2469,10 +2774,16 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
         failed: None,
         ternaryIds: [],
         collector: createCollector(false),
+        facts: createEmptyFacts(),
+        resultFunction: false,
         typeNames: [],
       }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
+      for (const entry of Maps.entries(innerParser.facts.callEnds)) {
+        const #[callId, callEnd] = entry
+        parser.facts.callEnds[callId] = callEnd
+      }
       if (innerParser.failed is Some(diagnostic)) {
         failAt(mutable parser, diagnostic.pos, diagnostic.code, diagnostic.message)
         return createDummyExpr()
@@ -2571,7 +2882,9 @@ function parsePatternBody(mutable parser: Parser): Pattern {
           pattern: subpattern,
         })
       } else {
-        const shorthand = Pattern.PatName(newId(mutable parser), getPos(name), name.text)
+        const shorthandId = newId(mutable parser)
+        parser.facts.shorthandIds[shorthandId] = true
+        const shorthand = Pattern.PatName(shorthandId, getPos(name), name.text)
         Arrays.push(mutable fields, FieldPattern {
           pos: getPos(name),
           name: name.text,

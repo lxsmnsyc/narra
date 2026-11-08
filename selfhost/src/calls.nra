@@ -10,12 +10,15 @@
 // Ref.Constructor, Ref.Implementation, Ref.TraitFunction or Ref.Distinct.
 import { Pos, Expr, Arg, Decl, Param, FuncDecl, TypeExpr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
+import { Fix, STD_ALIAS_PATHS, createFix, createEdit, insertAt, moveColumn } from "narrac/fixes"
 import { Type } from "narrac/types"
 import {
   Checker,
   Ref,
   Walker,
   reportError,
+  reportErrorFix,
+  buildImportFix,
   typeString,
   setRef,
   setNodeType,
@@ -45,6 +48,7 @@ import {
   isEnumName,
   findModuleEnum,
   reportMissingImport,
+  findAlias,
   startsUpper,
   containsOpen,
 } from "narrac/exprs"
@@ -249,10 +253,15 @@ function checkDottedCall<W: Walker>(
         )
       }
       if (checker.scopes[scope].types[alias] is None && startsUpper(alias)) {
-        reportError(
+        let importFixes: Array<Fix> = []
+        if (STD_ALIAS_PATHS[alias] is Some(aliasPath)) {
+          importFixes = [buildImportFix(checker, alias, aliasPath)]
+        }
+        reportErrorFix(
           mutable checker,
           targetPos,
           "E0308",
+          importFixes,
           `unknown module ${quoteGo(alias)}; import it first, for example \`import * as ${alias} from "std/..."\``,
         )
         checkArgumentsLoosely(mutable checker, walker, arguments)
@@ -297,14 +306,72 @@ function checkDottedCall<W: Walker>(
     }
   }
   const text = typeString(checker, targetType)
-  reportError(
+  const pushFixes = buildArrayPushFix(
+    checker,
+    pos,
+    calleePos,
+    target,
+    name,
+    targetType,
+    Arrays.length(arguments),
+  )
+  reportErrorFix(
     mutable checker,
     calleePos,
     "E0309",
+    pushFixes,
     `there are no method calls; call a module function such as Module.${name}(value, ...) (value has type ${text})`,
   )
   checkArgumentsLoosely(mutable checker, walker, arguments)
   return Type.TVoid
+}
+
+// buildArrayPushFix rewrites `xs.push(v)` as `Arrays.push(mutable xs, v)`, with
+// the alias the module uses (Go's pushFix). It checks that the text between
+// the parts has no spaces, since the AST keeps no spacing.
+function buildArrayPushFix(
+  checker: Checker,
+  callPos: Pos,
+  calleePos: Pos,
+  target: Expr,
+  name: string,
+  targetType: Type,
+  argumentCount: int,
+): Array<Fix> uses alloc {
+  if (!(targetType is Type.TArray(_)) || name != "push" || argumentCount == 0) {
+    return []
+  }
+  let targetPos = Pos { line: 0, column: 0 }
+  let targetName = ""
+  if (target is Expr.Ident(_, identPos, identName)) {
+    targetPos = identPos
+    targetName = identName
+  } else {
+    return []
+  }
+  const dot = Pos { line: calleePos.line, column: calleePos.column - 1 }
+  const nameEnd = targetPos.column + Str.charCount(targetName)
+  if (
+    targetPos.line != dot.line ||
+      nameEnd != dot.column ||
+      callPos.line != dot.line ||
+      callPos.column != calleePos.column + Str.charCount(name)
+  ) {
+    return []
+  }
+  let alias = findAlias(checker, "std/array")
+  const isImported = alias != ""
+  if (!isImported) {
+    alias = "Arrays"
+  }
+  let edits = [
+    insertAt(targetPos, `${alias}.push(mutable `),
+    createEdit(dot, moveColumn(callPos, 1), ", "),
+  ]
+  if (!isImported) {
+    Arrays.push(mutable edits, buildImportFix(checker, "Arrays", "std/array").edits[0])
+  }
+  return [createFix(`call ${alias}.push`, edits)]
 }
 
 // checkConstructorCall checks `Enum.Variant(...)` and `Alias.Enum.Variant(...)`.

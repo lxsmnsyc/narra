@@ -35,6 +35,7 @@ import {
   MatchArm,
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
+import { Fix, createFix, createEdit, moveColumn, buildTemplateEscape } from "narrac/fixes"
 import { Type, Field } from "narrac/types"
 import {
   isConditional,
@@ -48,6 +49,8 @@ import {
   CONST_BUSY,
   CONST_DONE,
   reportError,
+  reportErrorFix,
+  buildImportFix,
   enter,
   typeString,
   startBody,
@@ -605,19 +608,24 @@ export function reportMissingImport(
     plural = found.plural
   }
   const alias = findAlias(checker, path)
+  const namespaceEnd = moveColumn(pos, Str.charCount(namespace))
   if (alias != "") {
-    reportError(
+    reportErrorFix(
       mutable checker,
       pos,
       "E0914",
+      [createFix(`call ${alias}.${name}`, [createEdit(pos, namespaceEnd, alias)])],
       `${namespace}.${name} names a type; this module imports ${quoteGo(path)} as ${alias}`,
     )
     return true
   }
-  reportError(
+  let importFix = buildImportFix(checker, plural, path)
+  Arrays.push(mutable importFix.edits, createEdit(pos, namespaceEnd, plural))
+  reportErrorFix(
     mutable checker,
     pos,
     "E0908",
+    [importFix],
     `${namespace}.${name} needs an import; add \`import * as ${plural} from ${quoteGo(path)}\``,
   )
   return true
@@ -625,7 +633,7 @@ export function reportMissingImport(
 
 // findAlias is the first alias, by name, under which the current module
 // imports a module path, or "" (Go's aliasFor).
-function findAlias(checker: Checker, path: string): string uses alloc {
+export function findAlias(checker: Checker, path: string): string uses alloc {
   let best = ""
   for (const entry of Maps.entries(checker.scopes[checker.current].modules)) {
     const #[alias, aliasPath] = entry
@@ -837,16 +845,77 @@ function checkField<W: Walker>(
   }
   const text = typeString(checker, targetType)
   if (name == "length" && hasNoFields(targetType)) {
-    reportError(
+    const lengthFixes = buildLengthFix(checker, pos, target, targetType)
+    reportErrorFix(
       mutable checker,
       pos,
       "E0208",
+      lengthFixes,
       "there is no .length; use Array.length(x) or Str.length(x)",
     )
   } else {
     reportError(mutable checker, pos, "E0209", `${text} has no fields`)
   }
   return Type.TVoid
+}
+
+// buildLengthFix rewrites `x.length` as `Arrays.length(x)`, `Str.length(x)` or
+// `Maps.size(x)`, and adds the import when the module lacks it (Go's
+// lengthFix). The target must be a name that touches the dot on one line.
+function buildLengthFix(
+  checker: Checker,
+  pos: Pos,
+  target: Expr,
+  targetType: Type,
+): Array<Fix> uses alloc {
+  let targetPos = Pos { line: 0, column: 0 }
+  let targetName = ""
+  if (target is Expr.Ident(_, identPos, identName)) {
+    targetPos = identPos
+    targetName = identName
+  } else {
+    return []
+  }
+  const dot = Pos { line: pos.line, column: pos.column - 1 }
+  if (targetPos.line != dot.line || targetPos.column + Str.charCount(targetName) != dot.column) {
+    return []
+  }
+  let namespace = ""
+  let path = ""
+  let functionName = ""
+  match (targetType) {
+    Type.TArray(_) => {
+      namespace = "Arrays"
+      path = "std/array"
+      functionName = "length"
+    }
+    Type.TMap(_, _) => {
+      namespace = "Maps"
+      path = "std/map"
+      functionName = "size"
+    }
+    Type.TStr => {
+      namespace = "Str"
+      path = "std/string"
+      functionName = "length"
+    }
+    _ => {
+      return []
+    }
+  }
+  const end = moveColumn(pos, Str.charCount("length"))
+  const have = findAlias(checker, path)
+  if (have != "") {
+    const edit = createEdit(targetPos, end, `${have}.${functionName}(${targetName})`)
+    return [createFix(`call ${have}.${functionName}`, [edit])]
+  }
+  const edit = createEdit(targetPos, end, `${namespace}.${functionName}(${targetName})`)
+  return [
+    createFix(
+      `call ${namespace}.${functionName}`,
+      [buildImportFix(checker, namespace, path).edits[0], edit],
+    ),
+  ]
 }
 
 // checkConstructorField checks `Enum.Variant` or `Alias.Enum.Variant` used
@@ -946,6 +1015,83 @@ function checkUnary<W: Walker>(
   return operandType
 }
 
+// collectConcatLeaves lists the operands of `a + "x" + b` left to right. It is
+// false unless every operand is a string name or a string literal.
+function collectConcatLeaves(
+  checker: Checker,
+  expression: Expr,
+  mutable leaves: Array<Expr>,
+): bool uses alloc {
+  match (expression) {
+    Expr.BinaryExpr(_, _, operator, left, right) => {
+      return operator == "+" &&
+        collectConcatLeaves(checker, left, mutable leaves) &&
+        collectConcatLeaves(checker, right, mutable leaves)
+    }
+    Expr.Ident(nodeId, _, _) => {
+      Arrays.push(mutable leaves, expression)
+      return getNodeType(checker, nodeId) is Some(Type.TStr)
+    }
+    Expr.StringLit(_, _, _, _) => {
+      Arrays.push(mutable leaves, expression)
+      return true
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+// buildConcatFix rewrites `a + "x" + b` as the template string `${a}x${b}`
+// (Go's concatFix). It offers the fix only when every operand is a string name
+// or string literal, because only then are the start and the end of the text
+// known exactly.
+function buildConcatFix(
+  checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+): Array<Fix> uses alloc {
+  if (operator != "+") {
+    return []
+  }
+  let leaves: Array<Expr> = []
+  if (!collectConcatLeaves(checker, left, mutable leaves)) {
+    return []
+  }
+  if (!collectConcatLeaves(checker, right, mutable leaves)) {
+    return []
+  }
+  let builder = Str.builder()
+  Str.append(mutable builder, "`")
+  for (const leaf of Arrays.values(leaves)) {
+    if (leaf is Expr.Ident(_, _, name)) {
+      Str.append(mutable builder, `\${${name}}`)
+    } else if (leaf is Expr.StringLit(_, _, value, _)) {
+      if (buildTemplateEscape(value) is Some(escaped)) {
+        Str.append(mutable builder, escaped)
+      } else {
+        return []
+      }
+    }
+  }
+  Str.append(mutable builder, "`")
+  const start = getExpressionPos(leaves[0])
+  let end = start
+  const last = leaves[Arrays.length(leaves) - 1]
+  if (last is Expr.Ident(_, lastPos, lastName)) {
+    end = moveColumn(lastPos, Str.charCount(lastName))
+  } else if (last is Expr.StringLit(_, _, _, lastEnd)) {
+    end = lastEnd
+  }
+  return [
+    createFix(
+      "join the strings with a template string",
+      [createEdit(start, end, Str.build(builder))],
+    ),
+  ]
+}
+
 function checkBinary<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -984,10 +1130,12 @@ function checkBinary<W: Walker>(
   if (operator == "+" || operator == "-" || operator == "*" || operator == "/" || operator == "%") {
     if (leftType != rightType || !isNumeric(leftType)) {
       if (leftType == Type.TStr || rightType == Type.TStr) {
-        reportError(
+        const concatFixes = buildConcatFix(checker, operator, left, right)
+        reportErrorFix(
           mutable checker,
           pos,
           "E0216",
+          concatFixes,
           "strings are joined with a template string, not +",
         )
       } else {

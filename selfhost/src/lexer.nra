@@ -7,6 +7,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Pos } from "narrac/ast"
+import { Fix, buildQuoteFix, buildRemoveSemicolonFix } from "narrac/fixes"
 import { Comment, CommentKind } from "narrac/trivia"
 
 // The kinds carry a Tok prefix, as in Go, so they do not clash with the
@@ -151,6 +152,7 @@ export struct LexError {
   line: int
   column: int
   message: string
+  fixes: Array<Fix> = []
 }
 
 // formatLexError prints an error as "line:col: message".
@@ -214,6 +216,16 @@ function recordComment(mutable lexer: Lexer, first: int, line: int, column: int)
 
 function errorAt(line: int, column: int, code: string, message: string): Option<LexError> {
   return Some(LexError { code: code, line: line, column: column, message: message })
+}
+
+function errorWithFixesAt(
+  line: int,
+  column: int,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+): Option<LexError> {
+  return Some(LexError { code: code, line: line, column: column, message: message, fixes: fixes })
 }
 
 function getSize(lexer: Lexer): int {
@@ -345,15 +357,22 @@ function runLexer(mutable lexer: Lexer): Option<LexError> {
       }
       emit(mutable lexer, TokenKind.TokString, literal.value, line, column)
     } else if (character == '\'') {
+      const quoteStart = lexer.index
       const literal = lexQuoted(mutable lexer, '\'', line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
       if (Str.charCount(literal.value) != 1) {
-        return errorAt(
+        const closeQuote = Pos { line: lexer.line, column: lexer.column - 1 }
+        return errorWithFixesAt(
           line,
           column,
           "E0002",
+          buildQuoteFix(
+            Pos { line: line, column: column },
+            closeQuote,
+            readText(lexer, quoteStart, lexer.index),
+          ),
           "a character literal holds exactly one character; use double quotes for strings",
         )
       }
@@ -393,10 +412,11 @@ function lexPunctuation(
         advance(mutable lexer)
       }
       if (punctuation == ";") {
-        return errorAt(
+        return errorWithFixesAt(
           line,
           column,
           "E0003",
+          buildRemoveSemicolonFix(Pos { line: line, column: column }),
           "semicolons are not used; end the statement with a line break",
         )
       }

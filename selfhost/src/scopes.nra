@@ -13,12 +13,14 @@ import { Pos, Decl, File, ImportDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Package, entryModule } from "narrac/modules"
 import { Type } from "narrac/types"
-import { moduleList } from "narrac/builtins"
+import { Fix, createFix, createEdit, moveColumn } from "narrac/fixes"
+import { moduleList, StdModule } from "narrac/builtins"
 import {
   Checker,
   EntryInfo,
   EntryTarget,
   reportError,
+  reportErrorFix,
   enter,
   lookupType,
   lookupGeneric,
@@ -223,10 +225,15 @@ function importPackageModule(
     if (checker.checkingBodies) {
       const owner = findConstructorOwner(checker, scope, name.name)
       if (owner != "") {
-        reportError(
+        let fixes: Array<Fix> = []
+        if (name.pos.line > 0 && !importsName(importDecl, owner)) {
+          fixes = [createFix(`import the enum ${owner}`, [createEdit(name.pos, name.end, owner)])]
+        }
+        reportErrorFix(
           mutable checker,
           name.pos,
           "E0425",
+          fixes,
           `${quoteGo(name.name)} is a constructor of ${owner}; import the enum and write ${owner}.${name.name}`,
         )
         continue
@@ -488,6 +495,16 @@ function checkEntry(mutable checker: Checker, index: int) uses alloc {
 // findConstructorOwner finds the enum for `import { Teacher }` where Teacher
 // is not an export of the module but a constructor of an exported enum (Go's
 // ctorImport): the first such enum by name. It returns "" for anything else.
+// importsName reports whether an import lists a name, as written or renamed.
+function importsName(importDecl: ImportDecl, name: string): bool {
+  for (const imported of Arrays.values(importDecl.names)) {
+    if (imported.name == name || imported.local == name) {
+      return true
+    }
+  }
+  return false
+}
+
 function findConstructorOwner(checker: Checker, moduleScope: int, name: string): string {
   if (checker.scopes[moduleScope].exports[name] is Some(_)) {
     return ""
@@ -573,6 +590,64 @@ function suggestAlias(alias: string, path: string): string uses alloc {
   return suggestion
 }
 
+// buildRenameAliasFix renames an import alias that is also a type name, and
+// its uses before a `.` (Go's fix in checkImportNames). When the alias is also
+// an enum, `Alias.Ctor(...)` is a constructor and stays: only the uses of an
+// export of a std module are renamed, and a package module gets no fix.
+function buildRenameAliasFix(
+  checker: Checker,
+  file: File,
+  importDecl: ImportDecl,
+  suggestion: string,
+): Array<Fix> uses alloc {
+  const scope = checker.current
+  const alias = importDecl.alias
+  const isEnum = isDeclaredEnum(checker, alias)
+  let stdModule: Option<StdModule> = None
+  if (checker.registry.modules[importDecl.path] is Some(found)) {
+    stdModule = Some(found)
+  }
+  if (
+    aliasTaken(checker, suggestion) ||
+      checker.scopes[scope].modules[suggestion] is Some(_) ||
+      file.facts.inTemplate[alias] is Some(_) ||
+      (isEnum && stdModule is None)
+  ) {
+    return []
+  }
+  const length = Str.charCount(alias)
+  let edits = [createEdit(importDecl.aliasPos, moveColumn(importDecl.aliasPos, length), suggestion)]
+  if (file.facts.dotUses[alias] is Some(dotUses)) {
+    for (const dotUse of Arrays.values(dotUses)) {
+      // Only the std functions of an enum's module are renamed.
+      let isConstructor = false
+      if (isEnum) {
+        isConstructor = true
+        if (stdModule is Some(module)) {
+          isConstructor = module.functions[dotUse.member] is None
+        }
+      }
+      if (isConstructor) {
+        continue
+      }
+      Arrays.push(mutable edits, createEdit(dotUse.pos, moveColumn(dotUse.pos, length), suggestion))
+    }
+  }
+  return [createFix(`rename the alias to ${suggestion}`, edits)]
+}
+
+// isDeclaredEnum reports whether name is an enum or a generic enum here.
+function isDeclaredEnum(checker: Checker, name: string): bool {
+  const scope = checker.current
+  if (checker.scopes[scope].types[name] is Some(Type.TEnum(_))) {
+    return true
+  }
+  if (checker.scopes[scope].generics[name] is Some(generic)) {
+    return !checker.generics[generic].isStruct
+  }
+  return false
+}
+
 // checkImportNames runs after the module's type names are declared. It
 // reports an alias that equals a type name (E0421) and an imported name
 // that clashes with a declaration, an alias or a type (E0423). Go's fixes
@@ -584,10 +659,12 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
       continue
     }
     const suggestion = suggestAlias(importDecl.alias, importDecl.path)
-    reportError(
+    const renameFixes = buildRenameAliasFix(checker, file, importDecl, suggestion)
+    reportErrorFix(
       mutable checker,
       importDecl.pos,
       "E0421",
+      renameFixes,
       `the import alias ${importDecl.alias} is also a type name; rename it, for example \`import * as ${suggestion} from ${quoteGo(importDecl.path)}\``,
     )
   }

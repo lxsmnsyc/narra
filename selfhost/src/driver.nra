@@ -39,6 +39,7 @@ import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { Checker } from "narrac/check"
 import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
+import { Fix, applyFix } from "narrac/fixes"
 import { emitProgram } from "narrac/emit"
 import { findEntry } from "narrac/emitter"
 
@@ -50,6 +51,7 @@ struct Diagnostic {
   line: int
   column: int
   message: string
+  fixes: Array<Fix> = []
 }
 
 struct DriverOptions {
@@ -67,7 +69,12 @@ struct DriverOptions {
 
 // isDriverCommand tells main whether the first argument is a command of this module.
 export function isDriverCommand(name: string): bool {
-  return name == "build" || name == "run" || name == "test" || name == "check" || name == "explain"
+  return name == "build" ||
+    name == "run" ||
+    name == "test" ||
+    name == "check" ||
+    name == "explain" ||
+    name == "apply-fix"
 }
 
 // runDriver runs the command in arguments[1]. arguments[0] is the program name.
@@ -78,6 +85,9 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
   }
   if (command == "explain") {
     return runExplain(arguments)
+  }
+  if (command == "apply-fix") {
+    return runApplyFix(arguments)
   }
   const parsed = parseOptions(arguments)
   if (parsed is Err(message)) {
@@ -307,6 +317,7 @@ function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> uses all
       line: error.line,
       column: error.column,
       message: message,
+      fixes: error.fixes,
     })
   }
   return diagnostics
@@ -332,6 +343,7 @@ function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnosti
         line: error.pos.line,
         column: error.pos.column,
         message: error.message,
+        fixes: error.fixes,
       })
     }
     return Err(diagnostics)
@@ -705,7 +717,7 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
       const pos = Pos { line: diagnostic.line, column: diagnostic.column }
       Str.append(
         mutable lines,
-        `${writeDiagnosticJson(diagnostic.file, pos, diagnostic.code, diagnostic.message)}\n`,
+        `${writeDiagnosticJson(diagnostic.file, pos, diagnostic.code, diagnostic.message, diagnostic.fixes)}\n`,
       )
     }
     writeStream("/dev/stdout", Str.build(lines))
@@ -713,6 +725,87 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
     printError(formatDiagnostics(diagnostics))
   }
   return 1
+}
+
+// runApplyFix is `narrac apply-fix [--diagnostic N] [--fix M] file.nra|dir`: it
+// prints the source of the file a fix edits, with the fix applied, the way Go's
+// ApplyFix does for the habit tests. N is the index of a diagnostic in report
+// order (the first one with a fix when omitted) and M the index of its fix
+// (0 when omitted). Exit 1: no diagnostics, or no such fix. Exit 2: usage.
+function runApplyFix(arguments: Array<string>): int uses io, alloc {
+  let diagnosticIndex = -1
+  let fixIndex = 0
+  let paths: Array<string> = []
+  let index = 2
+  while (index < Arrays.length(arguments)) {
+    const argument = arguments[index]
+    if (argument == "--diagnostic" || argument == "--fix") {
+      if (index + 1 >= Arrays.length(arguments)) {
+        printError(usageApplyFix())
+        return 2
+      }
+      const number = Int.parse(arguments[index + 1], 10)
+      if (number is Err(_)) {
+        printError(usageApplyFix())
+        return 2
+      }
+      if (argument == "--fix") {
+        fixIndex = number.value
+      } else {
+        diagnosticIndex = number.value
+      }
+      index = index + 2
+    } else {
+      Arrays.push(mutable paths, argument)
+      index = index + 1
+    }
+  }
+  if (Arrays.length(paths) != 1 || Str.startsWith(paths[0], "-")) {
+    printError(usageApplyFix())
+    return 2
+  }
+  let diagnostics: Array<Diagnostic> = []
+  const checked = loadAndCheck(paths[0])
+  if (checked is Err(found)) {
+    diagnostics = found
+  } else {
+    printError("no diagnostics")
+    return 1
+  }
+  // Pick the diagnostic: the one asked for, else the first that has a fix.
+  if (diagnosticIndex < 0) {
+    for (const position of Ranges.upTo(Arrays.length(diagnostics))) {
+      if (diagnosticIndex < 0 && Arrays.length(diagnostics[position].fixes) > 0) {
+        diagnosticIndex = position
+      }
+    }
+  }
+  if (diagnosticIndex < 0 || diagnosticIndex >= Arrays.length(diagnostics)) {
+    printError("no such diagnostic")
+    return 1
+  }
+  const diagnostic = diagnostics[diagnosticIndex]
+  if (fixIndex < 0 || fixIndex >= Arrays.length(diagnostic.fixes)) {
+    printError("no such fix")
+    return 1
+  }
+  // The edits belong to the file of the diagnostic: the file itself, or a file
+  // of the package directory.
+  let sourcePath = paths[0]
+  if (Fs.isDir(paths[0])) {
+    sourcePath = Path.join(trimTrailingSlashes(paths[0]), diagnostic.file)
+  }
+  const read = Fs.readText(sourcePath)
+  if (read is Err(message)) {
+    printError(message)
+    return 1
+  }
+  writeStream("/dev/stdout", applyFix(read.value, diagnostic.fixes[fixIndex]))
+  return 0
+}
+
+function usageApplyFix(): string {
+  return "usage: narrac apply-fix [--diagnostic N] [--fix M] file.nra|dir"
 }
 
 // runExplain is `narrac explain CODE`. Exit 2: usage. Exit 1: an unknown code.

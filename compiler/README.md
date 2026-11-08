@@ -48,7 +48,7 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 
 ## Commands of narrac
 
-`narrac build`, `run`, `test` and `check` (`selfhost/src/driver.nra`) take the same arguments as the Go `narra` and call `$CC` (else `cc`) the same way. They add `-sanitize` (AddressSanitizer and UBSan) and, for `run` and `test`, `-stdin file`. `run` and `test` capture the program's output and write it after the program ends. `narrac check --json` prints one JSON line per diagnostic and `narrac explain CODE` prints the explanation, both as `narra` does, except that `fixes` is always `[]` until the fix builders are ported. Every report site passes its diagnostic code; the table is `selfhost/src/diagnostics.nra`.
+`narrac build`, `run`, `test` and `check` (`selfhost/src/driver.nra`) take the same arguments as the Go `narra` and call `$CC` (else `cc`) the same way. They add `-sanitize` (AddressSanitizer and UBSan) and, for `run` and `test`, `-stdin file`. `run` and `test` capture the program's output and write it after the program ends. `narrac check --json` prints one JSON line per diagnostic and `narrac explain CODE` prints the explanation, both as `narra` does, fixes included (`selfhost/src/fixes.nra` and the report sites). `narrac apply-fix [--diagnostic N] [--fix M] path` prints the file a fix edits with the fix applied, as Go's `ApplyFix` does: N defaults to the first diagnostic that has a fix, M to 0; exit 1 when there is no such fix. Every report site passes its diagnostic code; the table is `selfhost/src/diagnostics.nra`.
 
 ## Formatting
 

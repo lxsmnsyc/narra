@@ -24,6 +24,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import { Pos } from "narrac/ast"
+import { Fix } from "narrac/fixes"
 import { quoteGo } from "narrac/parser"
 import { quoteJson } from "narrac/queryjson"
 
@@ -802,13 +803,29 @@ function writePair(pos: Pos): string uses alloc {
 // writeDiagnosticJson writes one diagnostic as one line of `narrac check --json`,
 // the bytes of Go's json encoder: keys code, severity, message, file, range,
 // fixes. The range is empty (start equals end) because a diagnostic records a
-// position, not an extent. fixes is empty until the fix builders are ported.
+// position, not an extent. Each fix is {"title", "edits": [{"file", "range",
+// "text"}]}; every edit names the file of the diagnostic.
 export function writeDiagnosticJson(
   file: string,
   pos: Pos,
   code: string,
   message: string,
+  fixes: Array<Fix>,
 ): string uses alloc {
   const pair = writePair(pos)
-  return `{"code":${quoteJson(code)},"severity":"error","message":${quoteJson(message)},"file":${quoteJson(file)},"range":{"start":${pair},"end":${pair}},"fixes":[]}`
+  let fixTexts: Array<string> = []
+  for (const fix of Arrays.values(fixes)) {
+    let editTexts: Array<string> = []
+    for (const edit of Arrays.values(fix.edits)) {
+      Arrays.push(
+        mutable editTexts,
+        `{"file":${quoteJson(file)},"range":{"start":${writePair(edit.start)},"end":${writePair(edit.end)}},"text":${quoteJson(edit.text)}}`,
+      )
+    }
+    Arrays.push(
+      mutable fixTexts,
+      `{"title":${quoteJson(fix.title)},"edits":[${Str.join(editTexts, ",")}]}`,
+    )
+  }
+  return `{"code":${quoteJson(code)},"severity":"error","message":${quoteJson(message)},"file":${quoteJson(file)},"range":{"start":${pair},"end":${pair}},"fixes":[${Str.join(fixTexts, ",")}]}`
 }

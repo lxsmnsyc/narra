@@ -20,6 +20,8 @@ import {
   Ref,
   Walker,
   reportError,
+  reportErrorFix,
+  findImportAt,
   typeString,
   setNodeType,
   setRef,
@@ -31,6 +33,7 @@ import {
   getExpressionPos,
 } from "narrac/check"
 import { LocalInfo } from "narrac/check"
+import { buildQualifyFix, insertAt } from "narrac/fixes"
 import { resolveType } from "narrac/resolve"
 import { sourceScope } from "narrac/scopes"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
@@ -88,6 +91,8 @@ function createPatternLocal(
     noEscape: false,
     used: false,
     number: checker.localCount,
+    namePos: pos,
+    shorthand: checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_),
   }
   Arrays.push(mutable checker.bodies[body].locals, local)
   const index = Arrays.length(checker.bodies[body].locals) - 1
@@ -468,11 +473,24 @@ function requireQualified(
       return
     }
   }
-  const enumName = findEnumName(mutable checker, enumIndex)
-  reportError(
+  let enumName = findEnumName(mutable checker, enumIndex)
+  const isVisible = enumName != ""
+  if (!isVisible) {
+    enumName = info.name
+  }
+  let fix = buildQualifyFix(pos, enumName)
+  if (!isVisible && info.module != "") {
+    // The module does not name the enum yet, so the fix imports it too.
+    Arrays.push(
+      mutable fix.edits,
+      insertAt(findImportAt(checker), `import { ${enumName} } from "${info.module}"\n`),
+    )
+  }
+  reportErrorFix(
     mutable checker,
     pos,
     "E0323",
+    [fix],
     `constructor ${name} needs its enum; write ${enumName}.${name}`,
   )
 }

@@ -1,7 +1,7 @@
 ---
 id: goldens-tools
 title: Tool golden suites in the Narra test runner
-status: todo
+status: active
 priority:
 type: feature
 story: c-seed
@@ -22,6 +22,7 @@ added: 2026-11-08
 spent:
 owns:
   - selfhost/tests/**
+  - scripts/test.sh
   - roadmaps/selfhost/nodes/goldens-tools/**
 shared: []
 reserves: []
@@ -42,6 +43,8 @@ Port the tool suites to the Narra runner: dumps (astdump, declsdump, typesdump, 
 
 - Read `roadmaps/selfhost/nodes/seed-parity-spike/outcome.md` first: it has the measurements and the proposal this brief comes from.
 - The runner's outcome (`roadmaps/selfhost/nodes/test-runner-core/outcome.md`) describes the suite registry.
+
+- `scripts/test.sh` needs a narrac through `NARRAC` today. When `NARRAC` is unset, make it build one with `sh selfhost/bootstrap.sh <dir>` (cc only), so one command tests a fresh checkout.
 
 ## Acceptance
 

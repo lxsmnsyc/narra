@@ -1014,7 +1014,7 @@ With `uses alloc` after `: string`, the program compiles. Private functions work
 
 ## Tests
 
-Tests live in the same file as the code, in `test` blocks, where TypeScript projects use separate `*.test.ts` files and Jest or Vitest. `narra test file.nra` runs them ([chapter 10](10-effects-and-testing.md#writing-tests)):
+Tests live in the same file as the code, in `test` blocks, where TypeScript projects use separate `*.test.ts` files and Jest or Vitest. `narrac test file.nra` runs them ([chapter 10](10-effects-and-testing.md#writing-tests)):
 
 ```narra fragment
 import * as Test from "std/test"

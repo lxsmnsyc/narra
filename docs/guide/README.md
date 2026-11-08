@@ -15,7 +15,7 @@ A test compiles and runs every program in the guide. Each one works with the com
 7. [Traits](07-traits.md): declarations, `implement`, constraints, `derives`, equality and ordering.
 8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
 9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, `mutable` parameters and their rules.
-10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narra test`.
+10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narrac test`.
 11. [Narra for TypeScript programmers](11-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 
 ## Reading the samples
@@ -42,7 +42,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Save a sample to a file and run it with `narra run file.nra` to try your own changes.
+Save a sample to a file and run it with `narrac run file.nra` to try your own changes.
 
 ## Planned
 

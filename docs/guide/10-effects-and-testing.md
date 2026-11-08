@@ -200,10 +200,10 @@ A `test "name" { ... }` block holds statements, like a function body with no par
 
 Because errors are values (chapter 6), a test of a failure compares with an `Err` like any other value, as `"parse rejects a missing unit"` does. `Test.panicsWith` is for failures that stop the program, such as the division by zero in `average([])`.
 
-Run the tests with `narra test`:
+Run the tests with `narrac test`:
 
 ```sh
-narra test temperature.nra
+narrac test temperature.nra
 ```
 
 ```text
@@ -215,14 +215,14 @@ FAIL - water boils at 211 F: expected 211, got 212 (temperature.nra:42:10)
 4 passed, 1 failed
 ```
 
-`narra test` runs the tests in the order they appear and prints a line for each. A failure shows both values and the line and column of the check that failed. Here the test is wrong, since water boils at 212 F. The runner goes on after a failure. It exits with code 1 when any test failed and 0 otherwise, so a script can stop on a failure.
+`narrac test` runs the tests in the order they appear and prints a line for each. A failure shows both values and the line and column of the check that failed. Here the test is wrong, since water boils at 212 F. The runner goes on after a failure. It exits with code 1 when any test failed and 0 otherwise, so a script can stop on a failure.
 
 Each test runs in a process of its own. A test that crashes or runs longer than 10 seconds fails on its own, and the tests after it still run. With `NARRA_CHECK_LEAKS=1` set, a test that leaks memory fails the same way. To allow a slower test, set the limit in seconds with the `NARRA_TEST_TIMEOUT` environment variable.
 
 To run some of the tests, give part of their names with `-filter`. `-time` adds how long each test took:
 
 ```sh
-narra test -filter parse temperature.nra
+narrac test -filter parse temperature.nra
 ```
 
 ```text
@@ -233,7 +233,7 @@ ok - parse rejects a missing unit
 
 A filter that matches no test prints `no tests match "..."` and exits with code 1, so a typo in the filter does not pass silently.
 
-`narra build` and `narra run` leave the test blocks out, so tests add nothing to the program you ship. The file can import `std/test` and still build as a program.
+`narrac build` and `narrac run` leave the test blocks out, so tests add nothing to the program you ship. The file can import `std/test` and still build as a program.
 
 ### Values a test can compare
 
@@ -279,7 +279,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-`checkFreezing` is an ordinary function, so it is part of every build of the file, and only `narra test` builds include the code behind `std/test`. Have the helper return the value, and check it in the test: `Test.eq(toFahrenheit(0), 32)`.
+`checkFreezing` is an ordinary function, so it is part of every build of the file, and only `narrac test` builds include the code behind `std/test`. Have the helper return the value, and check it in the test: `Test.eq(toFahrenheit(0), 32)`.
 
 A test block may print or do any other effect without a `uses` list.
 

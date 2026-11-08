@@ -1,22 +1,21 @@
 # narra
 
-`narra` is the bootstrap compiler for Narra, written in Go. It compiles a `.nra` file or a package to C and builds it with the system C compiler. Once the language is stable, the compiler will be rewritten in Narra. The rewrite is in `selfhost/`: its checker and C emitter are done, and `narrac emit` prints the same C as `narra emit` for every test program and for the selfhost package itself. `TestSelfhostEmit` checks this byte for byte.
+`narrac` is the Narra compiler, written in Narra (`selfhost/`). It compiles a `.nra` file or a package to C and builds it with the system C compiler. A checked-in C file, `seed/narrac.c`, builds it with `cc` alone, so no other compiler is needed. The Go bootstrap compiler that came first is gone.
 
 ## Usage
 
 ```sh
-cd compiler
-go build -o narra ./cmd/narra
+sh selfhost/bootstrap.sh out    # writes out/narrac
 
-./narra run testdata/numbers.nra          # build and run
-./narra build -o app file.nra             # build a debug executable
-./narra build -release -o app file.nra    # optimized, integer overflow wraps
-./narra test testdata/tests.nra           # run `test` blocks
-./narra emit file.nra                     # print the generated C
-./narra check [--json] file.nra          # report errors; --json prints one object per line
-./narra explain E0003                    # explain a diagnostic code
-./narra build testdata/packages/app       # build every [[binary]] of a package
-./narra run -bin app testdata/packages/app
+narrac run testdata/numbers.nra          # build and run
+narrac build -o app file.nra             # build a debug executable
+narrac build -release -o app file.nra    # optimized, integer overflow wraps
+narrac test testdata/tests.nra           # run `test` blocks
+narrac emit file.nra                     # print the generated C
+narrac check [--json] file.nra          # report errors; --json prints one object per line
+narrac explain E0003                    # explain a diagnostic code
+narrac build testdata/packages/app       # build every [[binary]] of a package
+narrac run -bin app testdata/packages/app
 ```
 
 A single file's entry function is `export function run(args: Array<string>): int`.
@@ -44,15 +43,15 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 2. Stage 1: `narrac0 emit selfhost > stage1.c`, then `cc` builds it into `narrac1`.
 3. Stage 2: `narrac1 emit selfhost > stage2.c`. The script exits 1 when `stage1.c` and `stage2.c` differ.
 
-`sh scripts/seed-update.sh` regenerates the seed from the stage 2 C. `seed/README.md` explains the seed rule and when to regenerate. The Go compiler is not used by these scripts. `TestSelfhostBootstrap` still builds stage 1 with Go, under AddressSanitizer, UBSan and the leak check, and compares stage 2 with Go on every emit input.
+`sh scripts/seed-update.sh` regenerates the seed from the stage 2 C. `seed/README.md` explains the seed rule and when to regenerate. The sanitized self-build is the `bootstrap` suite of the test runner.
 
 ## Commands of narrac
 
-`narrac build`, `run`, `test` and `check` (`selfhost/src/driver.nra`) take the same arguments as the Go `narra` and call `$CC` (else `cc`) the same way. They add `-sanitize` (AddressSanitizer and UBSan) and, for `run` and `test`, `-stdin file`. `run` and `test` capture the program's output and write it after the program ends. `narrac check --json` prints one JSON line per diagnostic and `narrac explain CODE` prints the explanation, both as `narra` does, fixes included (`selfhost/src/fixes.nra` and the report sites). `narrac apply-fix [--diagnostic N] [--fix M] path` prints the file a fix edits with the fix applied, as Go's `ApplyFix` does: N defaults to the first diagnostic that has a fix, M to 0; exit 1 when there is no such fix. Every report site passes its diagnostic code; the table is `selfhost/src/diagnostics.nra`.
+`narrac build`, `run`, `test` and `check` (`selfhost/src/driver.nra`) call `$CC` (else `cc`) to build the C. They add `-sanitize` (AddressSanitizer and UBSan) and, for `run` and `test`, `-stdin file`. `run` and `test` capture the program's output and write it after the program ends. `narrac check --json` prints one JSON line per diagnostic and `narrac explain CODE` prints the explanation, fixes included (`selfhost/src/fixes.nra` and the report sites). `narrac apply-fix [--diagnostic N] [--fix M] path` prints the file a fix edits with the fix applied: N defaults to the first diagnostic that has a fix, M to 0; exit 1 when there is no such fix. Every report site passes its diagnostic code; the table is `selfhost/src/diagnostics.nra`, and the `codes` suite of the test runner checks the sites.
 
 ## Formatting
 
-`narrac fmt` (the self-hosted compiler, `selfhost/src/fmt.nra`) formats Narra source. The Go compiler has no formatter.
+`narrac fmt` (the self-hosted compiler, `selfhost/src/fmt.nra`) formats Narra source.
 
 - `narrac fmt [paths]` rewrites the files in place. A directory means every `.nra` file under it (hidden directories are skipped); no path means the current directory.
 - `narrac fmt --check [paths]` prints each file that would change and exits 1, or exits 0.
@@ -60,12 +59,12 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 - A file that does not parse prints `error <path>:<line>:<col>: <message>`, stays unchanged, and the exit code is 1. A bad `[fmt]` key or value prints `error narra.toml:<line>: <message>` and the exit code is 1.
 - Options come from the `[fmt]` table of the nearest `narra.toml` above each file (`printWidth`, `tabWidth`, `useTabs`, `trailingComma`; see `SPEC.md` section 2). Without one the defaults apply.
 - Declarations and statements are printed by `fmt.nra`; expressions, types and patterns by `fmtexprs.nra`.
-- `TestSelfhostFmt` runs the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, checks that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
-- `TestSourcesFormatted` runs `narrac fmt --check` over `selfhost/src` and every sample under `testdata/` except `testdata/fmt/`, whose inputs are unformatted on purpose, and the samples in `layoutSamples`, which test a layout the formatter would change. A sample that does not parse is skipped only if its path contains `error` or `/diagnostics/`. `bench/` and `std/` are not checked. After editing Narra source, run `narrac fmt` on it. A sample whose `// error:` line or dump golden holds positions must be updated after formatting.
+- The `fmt` and `fmt-stable` suites of the test runner run the goldens in `testdata/fmt/` and, for every `.nra` file under `testdata/` and `selfhost/src`, check that formatting twice gives the same text and that the tokens, the comment texts and the syntax tree are unchanged.
+- The `sources` suite runs `narrac fmt --check` over `selfhost/src`, `selfhost/tests` and every sample under `testdata/` except `testdata/fmt/`, `lex`, `parse` and `habits`, whose inputs are unformatted or invalid on purpose, and the layout samples, which test a layout the formatter would change. A sample that does not parse is skipped only if its path contains `error` or `/diagnostics/`. `bench/` and `std/` are not checked. After editing Narra source, run `narrac fmt` on it. A sample whose `// error:` line or dump golden holds positions must be updated after formatting.
 
 ## Queries
 
-`narrac query` (the self-hosted compiler, `selfhost/src/query.nra`) answers the questions of `SPEC.md` section 14 about a package. The Go compiler has no `query` command. The command line and the `--json` shapes are the frozen contract `roadmaps/selfhost/contracts/query-output.md`.
+`narrac query` (the self-hosted compiler, `selfhost/src/query.nra`) answers the questions of `SPEC.md` section 14 about a package. The command line and the `--json` shapes are the frozen contract `roadmaps/selfhost/contracts/query-output.md`.
 
 - `narrac query [--package DIR] [--json] <command> <operand>`, where the command is `type-of FILE:LINE:COL`, `def NAME`, `refs NAME`, `callers FUNCTION`, `interface MODULE` or `recursion MODULE`. `DIR` defaults to `.`.
 - The package is loaded and checked as `narrac types` does it. Load or check errors print as there (with `--json`: `{"errors": [...]}`, the diagnostic's code; `E0000` for a problem that is not a diagnostic) and the exit code is 1. Any other query error prints `error <message>` (with `--json`: `{"error": ...}` on stdout) and exits 1. A usage error exits 2.
@@ -75,25 +74,27 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 - `callers` and `recursion` read the call graph of the effect pass (`EffectState.calls`). Calls through function values are not edges. A call inside an arrow function belongs to the enclosing function.
 - Only the package's own modules are searched, not std source modules.
 - `selfhost/src/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
-- `TestSelfhostQuery` runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by `# exit N` when the exit code is not 0, the expected stdout, and `# stderr` with the expected stderr when there is any) against the package in that folder. `NARRA_UPDATE=1` rewrites the expected output.
+- The `query` suite runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by `# exit N` when the exit code is not 0, the expected stdout, and `# stderr` with the expected stderr when there is any) against the package in that folder.
 
 ## Tests
 
 ```sh
-go test ./...
+sh scripts/test.sh                      # build narrac from the seed, run every suite
+NARRAC=/path/to/narrac sh scripts/test.sh --suite errors
+sh scripts/linux-check.sh               # the same in a Linux container
 ```
 
-The test runner written in Narra (`selfhost/tests`) runs programs, panics, compile errors, packages and `runner/` with narrac and no Go: `NARRAC=/path/to/narrac sh scripts/test.sh`. Each sample in `testdata/errors`, `testdata/stage2/errors` and `testdata/packages/errors` also has a golden with narrac's full `check` output: `<name>.err`, or `expected.err` inside a package folder (`--update` rewrites them). The `// error:` lines stay as documentation.
+The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds it with narrac and runs it in shards. Every sample runs under AddressSanitizer, UndefinedBehaviorSanitizer and the leak check. `--suite NAME`, `--filter TEXT` and `--update` (rewrite goldens) go to the runner. Each sample in `testdata/errors`, `testdata/stage2/errors` and `testdata/packages/errors` has a golden with narrac's full `check` output: `<name>.err`, or `expected.err` inside a package folder. The `// error:` lines stay as documentation.
 
-`scripts/linux-check.sh` runs `go vet ./... && go test ./...` in a Linux container (gcc with sanitizers, repo mounted read-only). Docker runs through colima on macOS: `colima start --cpu 4 --memory 8` first.
+`scripts/linux-check.sh` runs `sh selfhost/bootstrap.sh` and `scripts/test.sh` in a Linux container (gcc with sanitizers, repo mounted read-only). Docker runs through colima on macOS: `colima start --cpu 4 --memory 8` first, and work from a path under your home folder.
 
 - `testdata/*.nra` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.
-- `tests.nra` and `testdata/std_test*.nra` run their `test` blocks (`narra test`) instead of an entry function. `std_test.go` checks failing `std/test` assertions.
+- `tests.nra` and `testdata/std_test*.nra` run their `test` blocks (`narrac test`) instead of an entry function. The `std-tests` suite checks failing `std/test` assertions.
 - `testdata/panics/` must panic with a given message and exit code 101.
 - `testdata/errors/` must fail to compile. The first line, `// error: text`, gives text the error must contain.
 - `testdata/packages/*/` with a `run.out` build the package's binary, run it in both modes like `testdata/*.nra`, and run its tests.
 - `testdata/packages/errors/*/` must fail to compile. The first line of `narra.toml`, `# error: text`, gives the text.
-- Standard modules written in Narra: the Go compiler loads `std/option` (and any std source module that `selfhost/src` imports), because the bootstrap needs it. Every newer std source module is selfhost-only: the Go compiler does not load it, and the Go tests skip the samples that use it. Those samples live in `testdata/stage2/*.nra` (with `.out`) and `testdata/stage2/errors/*.nra` (first line `// error: text`). `TestStage2Programs` and `TestStage2Errors` emit them with the cached stage 2 compiler of `TestSelfhostBootstrap`, compile the C with the sanitizer flags, run it with the leak check and compare the output or the error.
+- Standard modules written in Narra live in `std/src/`. `selfhost/src/stdtext.nra` embeds their text and is generated from them; the `generated` suite fails when it is stale (`sh scripts/test.sh --suite generated --update` rewrites it, then `sh scripts/seed-update.sh`). The C runtime of the compiler lives in `selfhost/runtime/` and `selfhost/src/runtimetext.nra` is generated from it the same way. Samples that use the newest std modules are in `testdata/stage2/*.nra` (with `.out`) and `testdata/stage2/errors/*.nra`.
 - `std/internal/<name>` modules hold the primitives behind std source modules. Only `std/...` modules import them (E0426). `std/internal/probe` is a test-only primitive (the same code as `Char.code`).
 
 ## Supported
@@ -131,9 +132,9 @@ The test runner written in Narra (`selfhost/tests`) runs programs, panics, compi
 - `escaping` function parameters. A non-escaping closure keeps its environment on the caller's stack; an escaping one has a reference-counted heap environment.
 - Traits: `trait`, `implements`, `implement Trait for Type`, `derives`, constraints such as `<T: Show & Ordered>`, and calls through the trait name such as `Show.show(x)`.
 - The standard traits `Equatable`, `Hashable`, `Ordered` and `Show`, and the `Ordering` enum. `==` and `!=` work on structs, enums and arrays.
-- Effects (`check_effects.go`): exported functions must declare `uses alloc, io, unsafe` for everything they do; private functions and arrows are inferred; `<effect E>` and `uses E` on function types work. On an exported function a function-type parameter without `uses` accepts only pure arguments; on a private function it acts as an implicit effect variable. `alloc` also comes from array literals, template strings, string `+` and constructors with fields.
-- Opaque structs and distinct types (`check_opaque.go`): `export opaque struct`, `distinct type A = B`, `export opaque distinct type`. Another module cannot build, read, assign, spread or match the fields of an opaque struct. `A.from(x)` and `A.toInt(x)` (`toString` for a string base, named after the base type) are generated and emit no code. Distinct types have no `Show`/`Ordered`. `opaque`, `distinct` and `type` are contextual words, not keywords.
-- Generators (`emit_generator.go`, SPEC.md section 8): `function*`, `yield`, `yield*`, `Generator<T> uses E`, generic generators and `for ... of` over a generator. Each `function*` is a state machine over a heap frame with a counted header (`narra_gen` in `runtime.h`): every C variable of the body is a frame field, and the drop and clone functions switch on the state to release or retain what is live at that yield. Every `Generator<T>` is the C type `narra_gen*`. A `for ... of` and a `yield*` resume their own copy, so iterating a generator variable twice runs it twice.
+- Effects: exported functions must declare `uses alloc, io, unsafe` for everything they do; private functions and arrows are inferred; `<effect E>` and `uses E` on function types work. On an exported function a function-type parameter without `uses` accepts only pure arguments; on a private function it acts as an implicit effect variable. `alloc` also comes from array literals, template strings, string `+` and constructors with fields.
+- Opaque structs and distinct types: `export opaque struct`, `distinct type A = B`, `export opaque distinct type`. Another module cannot build, read, assign, spread or match the fields of an opaque struct. `A.from(x)` and `A.toInt(x)` (`toString` for a string base, named after the base type) are generated and emit no code. Distinct types have no `Show`/`Ordered`. `opaque`, `distinct` and `type` are contextual words, not keywords.
+- Generators (SPEC.md section 8): `function*`, `yield`, `yield*`, `Generator<T> uses E`, generic generators and `for ... of` over a generator. Each `function*` is a state machine over a heap frame with a counted header (`narra_gen` in `runtime.h`): every C variable of the body is a frame field, and the drop and clone functions switch on the state to release or retain what is live at that yield. Every `Generator<T>` is the C type `narra_gen*`. A `for ... of` and a `yield*` resume their own copy, so iterating a generator variable twice runs it twice.
 - Coroutines (D79): `Coroutine<In, Out>`, `const input = yield value` and `Co.resume` from `std/coroutine`. A coroutine is the same state machine as a generator; the resume input reaches the body through `narra_gen.in`, set by `narra_co_next` (`runtime.h`). `std/coroutine` is Narra source (`std/src/coroutine.nra`: the `Step` enum and `resumeGenerator`/`resumeCoroutine`) over the primitives of `std/internal/coroutine` (`std_coroutine.go`). The compiler maps `Co.resume` to one of the two by argument count (`moduleCall`, `modules_check.go`). In a test build `narra_co_next` catches a panic with `setjmp`.
 
 - Top-level `const` (`export const` too): literals, operators on constants, constructors, structs, arrays, maps, function names and other constants, in any order; cycles are errors. Scalar constants are emitted at each use. Other constants are built on first use (see Differences).
@@ -162,7 +163,7 @@ The test runner written in Narra (`selfhost/tests`) runs programs, panics, compi
 - Top-level constants that are not scalars (strings built by templates, structs, arrays, enums with fields, function values) are built on first use, behind a getter, and kept until the program ends. The spec says modules have no initialization code; this keeps that, but the first-use build is not thread safe yet (the threads node must add a once guard). Struct and array constants are heap values, not static C data.
 
 - An unused local or parameter is an error (E0921, E0922), and `_` or a `_` prefix marks it as unused on purpose. The `args` parameter of the entry function of a binary (the exported function that `narra.toml`, or the single-file build, names as entry) is exempt, because its signature is fixed; a `run` in another module is not. An assignment `x = v` does not read `x`, so a `let` that is only assigned is unused (`x = x + 1` reads `x`, and so do `p.x = 1` and `e[0] = 3` for `p` and `e`); a `mutable` parameter that is only assigned counts as used, because the caller sees the write (an output parameter). Unused imports and private functions are not errors yet. The error is reported once per body, at the declaration (the `const`, `let` or `for` keyword, or the name of a parameter or pattern binding), and only when the body has no other error.
-- `narra check --json` ranges are positions only: `range.end` equals `range.start` for a diagnostic (fix edits have real ranges), and `file` is the base name for a single file.
+- `narrac check --json` ranges are positions only: `range.end` equals `range.start` for a diagnostic (fix edits have real ranges), and `file` is the base name for a single file.
 - Enums are stored inline as tagged unions, so an enum cannot contain itself.
 - `Str.length` returns `int` instead of `ByteIndex`, and so do all string positions (`Str.indexOf`, `Str.slice`, `Str.nextChar` and the rest). Slices are copies, not views of the original buffer.
 - Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.

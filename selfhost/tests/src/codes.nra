@@ -1,0 +1,587 @@
+// The codes suite: every place in selfhost/src that reports a diagnostic
+// passes a code that exists and fits the message. It replaces the Go test
+// TestEveryFormatHasCode.
+//
+// A report site is a call of one of the reporters below. The compiler already
+// rejects a call with a missing code argument, because every reporter takes
+// the code before the message. This suite adds what types cannot see:
+//   - the code argument is a string literal, a variable named `code`, or a
+//     `.code` field (a code passed on from a helper or another error)
+//   - a literal code is in the table of diagnostics.nra and is not E0000
+//   - when the message is a string or template literal that matches a format
+//     of the table, the code is one of the codes with a matching format
+// The sites are found by reading the source text, not by parsing it.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+// The fewest rows the table is expected to have; fewer means the table was
+// not read.
+const MINIMUM_ROWS = 280
+
+// Placeholders in the text of a message: a `${quoteGo(...)}` part and any
+// other `${...}` part.
+const QUOTED_MARK = "@Q@"
+const OTHER_MARK = "@S@"
+
+// A reporter, the position of its code argument (counted from 0), the
+// number of arguments between the code and the message, and the only file
+// location a function of that name is a local helper of another kind (empty
+// when the name is a reporter everywhere).
+struct Reporter {
+  name: string
+  codeIndex: int
+  gap: int
+  localFile: string
+}
+
+const REPORTERS = [
+  Reporter { name: "reportError", codeIndex: 2, gap: 1, localFile: "" },
+  Reporter { name: "reportErrorIn", codeIndex: 3, gap: 1, localFile: "" },
+  Reporter { name: "reportTypeError", codeIndex: 2, gap: 1, localFile: "" },
+  Reporter { name: "failAt", codeIndex: 2, gap: 1, localFile: "parser.nra" },
+  Reporter { name: "failHere", codeIndex: 1, gap: 1, localFile: "parser.nra" },
+  Reporter { name: "failFound", codeIndex: 1, gap: 1, localFile: "parser.nra" },
+  Reporter { name: "errorAt", codeIndex: 2, gap: 1, localFile: "lexer.nra" },
+  Reporter { name: "fail", codeIndex: 2, gap: 1, localFile: "lexer.nra" },
+  Reporter { name: "createError", codeIndex: 1, gap: 1, localFile: "manifest.nra" },
+  Reporter { name: "checkLoopExit", codeIndex: 4, gap: 1, localFile: "" },
+  Reporter { name: "reportErrorFix", codeIndex: 2, gap: 2, localFile: "" },
+  Reporter { name: "failAtFix", codeIndex: 2, gap: 2, localFile: "parser.nra" },
+  Reporter { name: "errorWithFixesAt", codeIndex: 2, gap: 2, localFile: "lexer.nra" },
+]
+
+// One piece of a message format: kind 0 is literal text, 1 is a quoted
+// value (%q), 2 is any text (%s, %d, %v, %c).
+struct FormatPiece {
+  kind: int
+  text: string
+}
+
+struct CodeFormat {
+  code: string
+  pieces: Array<FormatPiece>
+}
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  return [
+    TestCase {
+      suite: "codes",
+      name: "report-sites",
+      path: Path.join(context.repository, "selfhost/src"),
+      variant: "",
+    },
+  ]
+}
+
+export function runCase(
+  _context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  const table = Fs.readText(Path.join(testCase.path, "diagnostics.nra"))
+  if (table is Err(message)) {
+    return Err(`cannot read diagnostics.nra: ${message}`)
+  }
+  const formats = readFormats(table.value)
+  if (Arrays.length(formats) < MINIMUM_ROWS) {
+    return Err(
+      `the table was not found in diagnostics.nra: ${Int.toString(Arrays.length(formats))} rows`,
+    )
+  }
+  let problems: Array<string> = []
+  let sites = 0
+  for (const name of Arrays.values(Files.listNames(testCase.path))) {
+    if (Str.endsWith(name, ".nra")) {
+      const source = Fs.readText(Path.join(testCase.path, name))
+      if (source is Err(message)) {
+        return Err(`cannot read ${name}: ${message}`)
+      }
+      sites = sites + checkFile(mutable problems, formats, name, source.value)
+    }
+  }
+  if (Arrays.length(problems) > 0) {
+    return Err(
+      `${Str.join(problems, "\n")}\n${Int.toString(sites)} report sites, ${Int.toString(Arrays.length(problems))} problems`,
+    )
+  }
+  if (sites == 0) {
+    return Err("no report site found")
+  }
+  return Ok(true)
+}
+
+// charAt is the one-byte string at an index, or "" past the end.
+function charAt(text: string, index: int): string uses alloc {
+  if (index < 0 || index >= Str.length(text)) {
+    return ""
+  }
+  return Str.slice(text, index, index + 1)
+}
+
+function isWordCharacter(character: string): bool {
+  if (character == "_") {
+    return true
+  }
+  return (character >= "a" && character <= "z") ||
+    (character >= "A" && character <= "Z") ||
+    (character >= "0" && character <= "9")
+}
+
+// unescape turns `\n` into a newline and any other `\x` into x.
+function unescape(text: string): string uses alloc {
+  let builder = Str.builder()
+  let index = 0
+  while (index < Str.length(text)) {
+    const character = charAt(text, index)
+    if (character == "\\" && index + 1 < Str.length(text)) {
+      const escaped = charAt(text, index + 1)
+      if (escaped == "n") {
+        Str.append(mutable builder, "\n")
+      } else {
+        Str.append(mutable builder, escaped)
+      }
+      index = index + 2
+    } else {
+      Str.append(mutable builder, character)
+      index = index + 1
+    }
+  }
+  return Str.build(builder)
+}
+
+// readFormats reads the rows `CodeRow { code: "E0001", format: "...", }` of
+// the table.
+function readFormats(table: string): Array<CodeFormat> uses alloc {
+  let formats: Array<CodeFormat> = []
+  const marker = "CodeRow {"
+  let searchStart = 0
+  while (true) {
+    const found = Str.indexOf(Str.sliceFrom(table, searchStart), marker)
+    if (found is None) {
+      break
+    }
+    const rowStart = searchStart + found.value + Str.length(marker)
+    searchStart = rowStart
+    const row = Str.sliceFrom(table, rowStart)
+    const codeMark = Str.indexOf(row, "code: \"")
+    const formatMark = Str.indexOf(row, "format: \"")
+    if (codeMark is None) {
+      continue
+    }
+    if (formatMark is None) {
+      continue
+    }
+    const codeStart = codeMark.value + 7
+    const code = Str.slice(row, codeStart, codeStart + 5)
+    // The format ends at the first quote that no backslash escapes.
+    const formatStart = formatMark.value + 9
+    let end = formatStart
+    while (end < Str.length(row) && charAt(row, end) != "\"") {
+      if (charAt(row, end) == "\\") {
+        end = end + 1
+      }
+      end = end + 1
+    }
+    if (isCode(code)) {
+      Arrays.push(mutable formats, CodeFormat {
+        code: code,
+        pieces: splitFormat(unescape(Str.slice(row, formatStart, end))),
+      })
+    }
+  }
+  return formats
+}
+
+// isCode is true for text like E0101.
+function isCode(text: string): bool uses alloc {
+  if (Str.length(text) != 5 || charAt(text, 0) != "E") {
+    return false
+  }
+  for (const index of Ranges.between(1, 5)) {
+    const digit = charAt(text, index)
+    if (digit < "0" || digit > "9") {
+      return false
+    }
+  }
+  return true
+}
+
+// splitFormat cuts a format at its verbs: %q is quoted, %s %d %v %c are any.
+function splitFormat(format: string): Array<FormatPiece> uses alloc {
+  let pieces: Array<FormatPiece> = []
+  let literal = Str.builder()
+  let index = 0
+  while (index < Str.length(format)) {
+    const character = charAt(format, index)
+    const verb = charAt(format, index + 1)
+    const isVerb =
+      character == "%" && (verb == "q" || verb == "s" || verb == "d" || verb == "v" || verb == "c")
+    if (isVerb) {
+      const text = Str.build(literal)
+      if (text != "") {
+        Arrays.push(mutable pieces, FormatPiece { kind: 0, text: text })
+      }
+      literal = Str.builder()
+      if (verb == "q") {
+        Arrays.push(mutable pieces, FormatPiece { kind: 1, text: "" })
+      } else {
+        Arrays.push(mutable pieces, FormatPiece { kind: 2, text: "" })
+      }
+      index = index + 2
+    } else {
+      Str.append(mutable literal, character)
+      index = index + 1
+    }
+  }
+  const rest = Str.build(literal)
+  if (rest != "") {
+    Arrays.push(mutable pieces, FormatPiece { kind: 0, text: rest })
+  }
+  return pieces
+}
+
+// matchPieces is true when the pieces from `index` on match the text from
+// `position` to its end.
+function matchPieces(
+  pieces: Array<FormatPiece>,
+  index: int,
+  text: string,
+  position: int,
+): bool uses alloc {
+  if (index == Arrays.length(pieces)) {
+    return position == Str.length(text)
+  }
+  const piece = pieces[index]
+  const rest = Str.sliceFrom(text, position)
+  if (piece.kind == 0) {
+    if (!Str.startsWith(rest, piece.text)) {
+      return false
+    }
+    return matchPieces(pieces, index + 1, text, position + Str.length(piece.text))
+  }
+  if (piece.kind == 1) {
+    // A quoted value is the placeholder or a "..." without quotes inside.
+    if (Str.startsWith(rest, QUOTED_MARK)) {
+      return matchPieces(pieces, index + 1, text, position + Str.length(QUOTED_MARK))
+    }
+    if (charAt(text, position) != "\"") {
+      return false
+    }
+    const close = Str.indexOf(Str.sliceFrom(rest, 1), "\"")
+    if (close is None) {
+      return false
+    }
+    return matchPieces(pieces, index + 1, text, position + close.value + 2)
+  }
+  // Any text, as short as possible first, never across a quoted placeholder.
+  let end = position
+  while (true) {
+    if (matchPieces(pieces, index + 1, text, end)) {
+      return true
+    }
+    if (end >= Str.length(text)) {
+      return false
+    }
+    if (Str.startsWith(Str.sliceFrom(text, end), QUOTED_MARK)) {
+      return false
+    }
+    end = end + 1
+  }
+  return false
+}
+
+// fittingCodes is the codes whose format matches the message text, without
+// duplicates.
+function fittingCodes(formats: Array<CodeFormat>, text: string): Array<string> uses alloc {
+  let fits: Array<string> = []
+  for (const format of Arrays.values(formats)) {
+    if (format.code != "E0409" && matchPieces(format.pieces, 0, text, 0)) {
+      if (!hasText(fits, format.code)) {
+        Arrays.push(mutable fits, format.code)
+      }
+    }
+  }
+  return fits
+}
+
+function hasText(list: Array<string>, text: string): bool {
+  for (const item of Arrays.values(list)) {
+    if (item == text) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasCode(formats: Array<CodeFormat>, code: string): bool {
+  for (const format of Arrays.values(formats)) {
+    if (format.code == code) {
+      return true
+    }
+  }
+  return false
+}
+
+// skipQuoted is the index after a string or template literal that starts at
+// `start`; the literal's last character is the closing quote. Backslash
+// escapes and, in a template, `${...}` parts are stepped over.
+function skipQuoted(text: string, start: int): int uses alloc {
+  const quote = charAt(text, start)
+  let index = start + 1
+  while (index < Str.length(text)) {
+    const character = charAt(text, index)
+    if (character == "\\") {
+      index = index + 2
+    } else if (character == quote) {
+      return index + 1
+    } else {
+      index = index + 1
+    }
+  }
+  return Str.length(text)
+}
+
+// splitArguments cuts the text between the parentheses of a call at the
+// commas that sit outside strings and brackets.
+function splitArguments(text: string): Array<string> uses alloc {
+  let parts: Array<string> = []
+  let depth = 0
+  let start = 0
+  let index = 0
+  while (index < Str.length(text)) {
+    const character = charAt(text, index)
+    if (character == "\"" || character == "`") {
+      index = skipQuoted(text, index)
+    } else {
+      if (character == "(" || character == "[" || character == "{") {
+        depth = depth + 1
+      } else if (character == ")" || character == "]" || character == "}") {
+        depth = depth - 1
+      } else if (character == "," && depth == 0) {
+        Arrays.push(mutable parts, Str.trim(Str.slice(text, start, index)))
+        start = index + 1
+      }
+      index = index + 1
+    }
+  }
+  const last = Str.trim(Str.sliceFrom(text, start))
+  if (last != "") {
+    Arrays.push(mutable parts, last)
+  }
+  return parts
+}
+
+// literalText is the text of a string or template literal that fills the
+// whole expression, with its `${...}` parts replaced by placeholders, or
+// None when the expression is anything else.
+function literalText(expression: string): Option<string> uses alloc {
+  const quote = charAt(expression, 0)
+  if (quote != "\"" && quote != "`") {
+    return None
+  }
+  let builder = Str.builder()
+  let index = 1
+  while (index < Str.length(expression)) {
+    const character = charAt(expression, index)
+    if (character == "\\") {
+      Str.append(mutable builder, Str.slice(expression, index, index + 2))
+      index = index + 2
+    } else if (character == quote) {
+      // The closing quote must end the expression.
+      if (index + 1 != Str.length(expression)) {
+        return None
+      }
+      return Some(unescape(Str.build(builder)))
+    } else if (quote == "`" && character == "$" && charAt(expression, index + 1) == "{") {
+      // Step over the part, counting braces.
+      let depth = 1
+      let end = index + 2
+      while (end < Str.length(expression) && depth > 0) {
+        if (charAt(expression, end) == "{") {
+          depth = depth + 1
+        } else if (charAt(expression, end) == "}") {
+          depth = depth - 1
+        }
+        end = end + 1
+      }
+      const part = Str.slice(expression, index + 2, end - 1)
+      if (Str.startsWith(part, "quoteGo(")) {
+        Str.append(mutable builder, QUOTED_MARK)
+      } else {
+        Str.append(mutable builder, OTHER_MARK)
+      }
+      index = end
+    } else {
+      Str.append(mutable builder, character)
+      index = index + 1
+    }
+  }
+  return None
+}
+
+// isCodeVariable is true for `code` and for a field read such as `error.code`.
+function isCodeVariable(expression: string): bool uses alloc {
+  if (expression == "code") {
+    return true
+  }
+  if (!Str.endsWith(expression, ".code") || Str.length(expression) == 5) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(expression) - 5)) {
+    const character = charAt(expression, index)
+    if (!isWordCharacter(character) && character != ".") {
+      return false
+    }
+  }
+  return true
+}
+
+// isCodeLiteral is true for a string literal like "E0101".
+function isCodeLiteral(expression: string): bool uses alloc {
+  return Str.length(expression) == 7 &&
+    charAt(expression, 0) == "\"" &&
+    charAt(expression, 6) == "\"" &&
+    isCode(Str.slice(expression, 1, 6))
+}
+
+function findReporter(name: string): Option<Reporter> {
+  for (const reporter of Arrays.values(REPORTERS)) {
+    if (reporter.name == name) {
+      return Some(reporter)
+    }
+  }
+  return None
+}
+
+// countLines is the number of newlines before an index, plus one.
+function lineNumber(source: string, index: int): int uses alloc {
+  return Arrays.length(Str.split(Str.slice(source, 0, index), "\n"))
+}
+
+// checkFile checks every report site of one file, adds the problems it finds
+// and returns the number of sites.
+function checkFile(
+  mutable problems: Array<string>,
+  formats: Array<CodeFormat>,
+  fileName: string,
+  source: string,
+): int uses alloc {
+  let sites = 0
+  let index = 0
+  while (index < Str.length(source)) {
+    if (!isWordCharacter(charAt(source, index))) {
+      index = index + 1
+      continue
+    }
+    // A word: a reporter when a parenthesis follows at once.
+    let end = index
+    while (isWordCharacter(charAt(source, end))) {
+      end = end + 1
+    }
+    const word = Str.slice(source, index, end)
+    const start = index
+    index = end
+    if (charAt(source, end) != "(") {
+      continue
+    }
+    const found = findReporter(word)
+    if (found is None) {
+      continue
+    }
+    const reporter = found.value
+    // A declaration of the reporter is not a call.
+    const lineStart = lineStartOf(source, start)
+    const before = Str.trim(Str.slice(source, lineStart, start))
+    if (Str.startsWith(before, "export function") || Str.startsWith(before, "function")) {
+      continue
+    }
+    if (reporter.localFile != "" && reporter.localFile != fileName) {
+      continue
+    }
+    const arguments = splitArguments(readCallText(source, end + 1))
+    sites = sites + 1
+    const location = `${fileName}:${Int.toString(lineNumber(source, start))}`
+    checkSite(mutable problems, formats, location, reporter, arguments)
+  }
+  return sites
+}
+
+// lineStartOf is the index of the first character of the line that holds an
+// index.
+function lineStartOf(source: string, index: int): int uses alloc {
+  let position = index
+  while (position > 0 && charAt(source, position - 1) != "\n") {
+    position = position - 1
+  }
+  return position
+}
+
+// readCallText is the text from after the opening parenthesis of a call to
+// the matching closing one, not included.
+function readCallText(source: string, start: int): string uses alloc {
+  let depth = 1
+  let index = start
+  while (depth > 0 && index < Str.length(source)) {
+    const character = charAt(source, index)
+    if (character == "\"" || character == "`") {
+      index = skipQuoted(source, index)
+    } else {
+      if (character == "(") {
+        depth = depth + 1
+      } else if (character == ")") {
+        depth = depth - 1
+      }
+      index = index + 1
+    }
+  }
+  return Str.slice(source, start, index - 1)
+}
+
+// checkSite judges the arguments of one call.
+function checkSite(
+  mutable problems: Array<string>,
+  formats: Array<CodeFormat>,
+  location: string,
+  reporter: Reporter,
+  arguments: Array<string>,
+) uses alloc {
+  if (Arrays.length(arguments) <= reporter.codeIndex + reporter.gap) {
+    Arrays.push(mutable problems, `${location}: ${reporter.name} has no code argument`)
+    return
+  }
+  const code = arguments[reporter.codeIndex]
+  if (!isCodeLiteral(code)) {
+    if (!isCodeVariable(code)) {
+      Arrays.push(
+        mutable problems,
+        `${location}: ${reporter.name} passes \`${code}\`, not a code literal or a code variable`,
+      )
+    }
+    return
+  }
+  const name = Str.slice(code, 1, 6)
+  if (name == "E0000" || !hasCode(formats, name)) {
+    Arrays.push(
+      mutable problems,
+      `${location}: ${reporter.name} passes ${name}, which is not in the table`,
+    )
+    return
+  }
+  const text = literalText(arguments[reporter.codeIndex + reporter.gap])
+  if (text is None) {
+    return
+  }
+  // E0409 is the catch-all code and fits any message.
+  const fits = fittingCodes(formats, text.value)
+  if (Arrays.length(fits) > 0 && name != "E0409" && !hasText(fits, name)) {
+    Arrays.push(
+      mutable problems,
+      `${location}: ${name} does not fit the message; formats fit ${Str.join(fits, ", ")}`,
+    )
+  }
+}

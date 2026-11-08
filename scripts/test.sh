@@ -4,8 +4,10 @@
 #
 #   NARRAC=/path/to/narrac sh scripts/test.sh [runner flags]
 #
-# NARRAC is the compiler under test (default: narrac on PATH). It builds the
-# runner, and the runner runs every sample with it. JOBS is the number of
+# NARRAC is the compiler under test. When it is unset, the script builds one
+# from seed/narrac.c with `sh selfhost/bootstrap.sh` (a C compiler only, no Go),
+# so one command tests a fresh checkout. The compiler builds the runner, and
+# the runner runs every sample with it. JOBS is the number of
 # shards (default: the number of CPUs); each shard is a runner process that
 # takes every JOBS-th case (--shard i/N). In a full run (no flags) the
 # sanitized self-build (suite bootstrap), the longest case, is a job of its own
@@ -16,18 +18,28 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-narrac=${NARRAC:-narrac}
-case "$narrac" in
-  */*) narrac=$(cd "$(dirname "$narrac")" && pwd)/$(basename "$narrac") ;;
-esac
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+if [ -z "${NARRAC:-}" ]; then
+  echo "test.sh: NARRAC is unset; building narrac from the seed"
+  sh "$root/selfhost/bootstrap.sh" "$work/compiler" || {
+    echo "test.sh: the bootstrap failed" >&2
+    exit 2
+  }
+  narrac=$work/compiler/narrac
+else
+  narrac=$NARRAC
+  case "$narrac" in
+    */*) narrac=$(cd "$(dirname "$narrac")" && pwd)/$(basename "$narrac") ;;
+  esac
+fi
 if ! command -v "$narrac" >/dev/null 2>&1; then
   echo "test.sh: compiler not found: $narrac (set NARRAC)" >&2
   exit 2
 fi
 
 jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
 
 echo "test.sh: building the runner with $narrac"
 "$narrac" build -release -o "$work/testrunner" "$root/selfhost/tests"

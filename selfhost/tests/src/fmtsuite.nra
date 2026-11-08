@@ -1,0 +1,543 @@
+// The fmt suite: `narrac fmt` on the samples in testdata/fmt.
+//   golden    {decl,stmt,comment,expr,type,pattern}_*.nra format to the .fmt
+//             golden through --stdin; the golden is stable; --check lists the
+//             input and not the golden; in place, the input becomes the golden.
+//             `_w<N>` in the name sets printWidth, `_none` sets trailingComma
+//   config    config_*/ hold a narra.toml, input.nra and expected.fmt (or
+//             expected.err for a bad config), run through --stdin and in
+//             place on a copy
+//   syntax_error, lost_comment, no_pwd, directory   behaviors of the command
+// The corpus check (every .nra file formats to a stable text) is the fmt-stable
+// suite. With --update the .fmt goldens are rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as FmtRun from "testrunner/fmtrun"
+import * as Scratch from "testrunner/scratch"
+
+const GOLDEN_PREFIXES = ["decl_", "stmt_", "comment_", "expr_", "type_", "pattern_"]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "fmt")
+  for (const prefix of Arrays.values(GOLDEN_PREFIXES)) {
+    for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+      if (Str.startsWith(Path.basename(path), prefix)) {
+        Arrays.push(mutable cases, makeCase(`golden/${Path.basename(path)}`, path, "golden"))
+      }
+    }
+  }
+  for (const path of Arrays.values(Files.listPaths(folder, ""))) {
+    if (Str.startsWith(Path.basename(path), "config_")) {
+      Arrays.push(mutable cases, makeCase(`config/${Path.basename(path)}`, path, "config"))
+    }
+  }
+  for (const name of Arrays.values(["syntax_error", "lost_comment", "no_pwd", "directory"])) {
+    Arrays.push(mutable cases, makeCase(name, "", name))
+  }
+  return cases
+}
+
+function makeCase(name: string, path: string, variant: string): TestCase {
+  return TestCase { suite: "fmt", name: name, path: path, variant: variant }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let outcome: Result<bool, string> = Ok(true)
+  if (testCase.variant == "golden") {
+    outcome = checkGolden(context, testCase, scratch)
+  } else if (testCase.variant == "config") {
+    outcome = checkConfig(context, testCase, scratch)
+  } else if (testCase.variant == "syntax_error") {
+    outcome = checkSyntaxError(context, scratch)
+  } else if (testCase.variant == "lost_comment") {
+    outcome = checkLostComment(context, scratch)
+  } else if (testCase.variant == "no_pwd") {
+    outcome = checkWithoutPwd(context, scratch)
+  } else {
+    outcome = checkDirectory(context, scratch)
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+// widthFromName reads the number after `_w` in a golden name ("" when there
+// is none): `decl_long_w40_none.nra` gives "40". The number ends with `_` or
+// `.`.
+function widthFromName(name: string): string uses alloc {
+  const length = Str.length(name)
+  for (const start of Ranges.between(0, length)) {
+    if (Str.byteAt(name, start) == 95 && start + 1 < length && Str.byteAt(name, start + 1) == 119) {
+      let end = start + 2
+      while (end < length && Str.byteAt(name, end) >= 48 && Str.byteAt(name, end) <= 57) {
+        end = end + 1
+      }
+      const digitsFound = end > start + 2
+      if (
+        digitsFound && end < length && (Str.byteAt(name, end) == 95 || Str.byteAt(name, end) == 46)
+      ) {
+        return Str.slice(name, start + 2, end)
+      }
+    }
+  }
+  return ""
+}
+
+// optionsFromName is the narra.toml text a golden's name asks for, or "".
+function optionsFromName(name: string): string uses alloc {
+  let lines: Array<string> = []
+  const width = widthFromName(name)
+  if (width != "") {
+    Arrays.push(mutable lines, `printWidth = ${width}`)
+  }
+  if (Str.contains(Files.replaceSuffix(name, ".nra", ""), "_none")) {
+    Arrays.push(mutable lines, "trailingComma = \"none\"")
+  }
+  if (Arrays.length(lines) == 0) {
+    return ""
+  }
+  return `[fmt]\n${Str.join(lines, "\n")}\n`
+}
+
+function checkGolden(
+  context: Context,
+  testCase: TestCase,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const golden = Files.replaceSuffix(testCase.path, ".nra", ".fmt")
+  const input = Scratch.readFile(testCase.path)
+  if (input is Err(message)) {
+    return Err(message)
+  }
+  const options = optionsFromName(Path.basename(testCase.path))
+  if (options != "") {
+    const written = Scratch.writeFile(Path.join(scratch.work, "narra.toml"), options)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+  }
+  const formatted = FmtRun.formatText(context, scratch, scratch.work, input.value)
+  if (formatted is Err(message)) {
+    return Err(message)
+  }
+  if (context.update) {
+    const written = Fs.writeText(golden, formatted.value)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+  }
+  const want = Scratch.readFile(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const sameOutput = Common.compareText("stdout", want.value, formatted.value)
+  if (sameOutput is Err(message)) {
+    return Err(message)
+  }
+  // The golden is already formatted.
+  const again = FmtRun.formatText(context, scratch, scratch.work, want.value)
+  if (again is Err(message)) {
+    return Err(message)
+  }
+  const stable = Common.compareText("the golden is not stable: stdout", want.value, again.value)
+  if (stable is Err(message)) {
+    return Err(message)
+  }
+  // --check lists the input and not the golden.
+  const inputPath = Path.join(scratch.work, "input.nra")
+  const goldenPath = Path.join(scratch.work, "golden.nra")
+  const wroteInput = Scratch.writeFile(inputPath, input.value)
+  if (wroteInput is Err(message)) {
+    return Err(message)
+  }
+  const wroteGolden = Scratch.writeFile(goldenPath, want.value)
+  if (wroteGolden is Err(message)) {
+    return Err(message)
+  }
+  const checked = FmtRun.runFormat(
+    context,
+    scratch,
+    scratch.work,
+    false,
+    false,
+    "",
+    ["--check", "input.nra", "golden.nra"],
+  )
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  let wantCode = 0
+  let wantOutput = ""
+  if (input.value != want.value) {
+    wantCode = 1
+    wantOutput = "input.nra\n"
+  }
+  const checkOutcome = FmtRun.expectFormat("--check", checked.value, wantCode, wantOutput, "")
+  if (checkOutcome is Err(message)) {
+    return Err(message)
+  }
+  // In place, the input becomes the golden.
+  return formatInPlace(context, scratch, "input.nra", inputPath, want.value)
+}
+
+// formatInPlace formats a file of the work directory in place and checks the
+// result.
+function formatInPlace(
+  context: Context,
+  scratch: Scratch.Scratch,
+  relative: string,
+  absolute: string,
+  want: string,
+): Result<bool, string> uses io, alloc {
+  const ran = FmtRun.runFormat(context, scratch, scratch.work, false, false, "", [relative])
+  if (ran is Err(message)) {
+    return Err(message)
+  }
+  const outcome = FmtRun.expectFormat("in place", ran.value, 0, "", "")
+  if (outcome is Err(message)) {
+    return Err(message)
+  }
+  const got = Scratch.readFile(absolute)
+  if (got is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("in place result", want, got.value)
+}
+
+function checkConfig(
+  context: Context,
+  testCase: TestCase,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const input = Scratch.readFile(Path.join(testCase.path, "input.nra"))
+  if (input is Err(message)) {
+    return Err(message)
+  }
+  const config = Scratch.readFile(Path.join(testCase.path, "narra.toml"))
+  if (config is Err(message)) {
+    return Err(message)
+  }
+  // The case runs on a copy, so its narra.toml is the nearest one and the
+  // input can sit in a subdirectory.
+  const inputPath = Path.join(Path.join(scratch.work, "sub"), "input.nra")
+  const wroteConfig = Scratch.writeFile(Path.join(scratch.work, "narra.toml"), config.value)
+  if (wroteConfig is Err(message)) {
+    return Err(message)
+  }
+  const wroteInput = Scratch.writeFile(inputPath, input.value)
+  if (wroteInput is Err(message)) {
+    return Err(message)
+  }
+  const errorPath = Path.join(testCase.path, "expected.err")
+  if (Fs.exists(errorPath)) {
+    return checkConfigError(context, scratch, errorPath, input.value, inputPath)
+  }
+  const golden = Path.join(testCase.path, "expected.fmt")
+  const formatted = FmtRun.formatText(context, scratch, scratch.work, input.value)
+  if (formatted is Err(message)) {
+    return Err(message)
+  }
+  if (context.update) {
+    const written = Fs.writeText(golden, formatted.value)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+  }
+  const want = Scratch.readFile(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const sameOutput = Common.compareText("stdin result", want.value, formatted.value)
+  if (sameOutput is Err(message)) {
+    return Err(message)
+  }
+  return formatInPlace(context, scratch, "sub/input.nra", inputPath, want.value)
+}
+
+// checkConfigError checks a bad narra.toml: both ways to run the formatter
+// report the golden error and leave the input alone.
+function checkConfigError(
+  context: Context,
+  scratch: Scratch.Scratch,
+  errorPath: string,
+  input: string,
+  inputPath: string,
+): Result<bool, string> uses io, alloc {
+  const wantError = Scratch.readFile(errorPath)
+  if (wantError is Err(message)) {
+    return Err(message)
+  }
+  const viaStdin = FmtRun.runFormat(context, scratch, scratch.work, false, true, input, ["--stdin"])
+  if (viaStdin is Err(message)) {
+    return Err(message)
+  }
+  const stdinOutcome = FmtRun.expectFormat("stdin", viaStdin.value, 1, "", wantError.value)
+  if (stdinOutcome is Err(message)) {
+    return Err(message)
+  }
+  const viaPath = FmtRun.runFormat(
+    context,
+    scratch,
+    scratch.work,
+    false,
+    false,
+    "",
+    ["sub/input.nra"],
+  )
+  if (viaPath is Err(message)) {
+    return Err(message)
+  }
+  const pathOutcome = FmtRun.expectFormat("path", viaPath.value, 1, "", wantError.value)
+  if (pathOutcome is Err(message)) {
+    return Err(message)
+  }
+  const after = Scratch.readFile(inputPath)
+  if (after is Err(message)) {
+    return Err(message)
+  }
+  if (after.value != input) {
+    return Err("the input changed after a config error")
+  }
+  return Ok(true)
+}
+
+// checkSyntaxError: a file that does not parse is reported and left alone,
+// and the files after it are still formatted.
+function checkSyntaxError(
+  context: Context,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const badPath = Path.join(scratch.work, "bad.nra")
+  const goodPath = Path.join(scratch.work, "good.nra")
+  const wroteBad = Scratch.writeFile(badPath, "function f( {\n")
+  if (wroteBad is Err(message)) {
+    return Err(message)
+  }
+  const wroteGood = Scratch.writeFile(goodPath, "function g() {\n}\n")
+  if (wroteGood is Err(message)) {
+    return Err(message)
+  }
+  const ran = FmtRun.runFormat(
+    context,
+    scratch,
+    scratch.work,
+    false,
+    false,
+    "",
+    ["bad.nra", "good.nra"],
+  )
+  if (ran is Err(message)) {
+    return Err(message)
+  }
+  if (
+    ran.value.code != 1 ||
+      ran.value.output != "" ||
+      !Str.startsWith(ran.value.errorOutput, "error bad.nra:1:")
+  ) {
+    return Err(`want code 1 and an error at bad.nra:1:, got ${Common.describeRun(ran.value)}`)
+  }
+  const bad = Scratch.readFile(badPath)
+  if (bad is Err(message)) {
+    return Err(message)
+  }
+  if (bad.value != "function f( {\n") {
+    return Err(`bad.nra changed: ${bad.value}`)
+  }
+  const good = Scratch.readFile(goodPath)
+  if (good is Err(message)) {
+    return Err(message)
+  }
+  if (good.value != "function g() {}\n") {
+    return Err(`good.nra not formatted: ${good.value}`)
+  }
+  const viaStdin = FmtRun.runFormat(
+    context,
+    scratch,
+    scratch.work,
+    false,
+    true,
+    "function f( {\n",
+    ["--stdin"],
+  )
+  if (viaStdin is Err(message)) {
+    return Err(message)
+  }
+  if (viaStdin.value.code != 1 || !Str.startsWith(viaStdin.value.errorOutput, "error <stdin>:1:")) {
+    return Err(
+      `stdin: want code 1 and an error at <stdin>:1:, got ${Common.describeRun(viaStdin.value)}`,
+    )
+  }
+  return Ok(true)
+}
+
+// checkLostComment: a comment the printer cannot place is an error, not a
+// silent loss.
+function checkLostComment(
+  context: Context,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const path = Path.join(scratch.work, "lost.nra")
+  const source = "enum E {\n  A(/* inside */)\n}\n"
+  const wrote = Scratch.writeFile(path, source)
+  if (wrote is Err(message)) {
+    return Err(message)
+  }
+  const ran = FmtRun.runFormat(context, scratch, scratch.work, false, false, "", ["lost.nra"])
+  if (ran is Err(message)) {
+    return Err(message)
+  }
+  const fileOutcome = FmtRun.expectFormat(
+    "file",
+    ran.value,
+    1,
+    "",
+    "error lost.nra:2:5: comment not printed: /* inside */\n",
+  )
+  if (fileOutcome is Err(message)) {
+    return Err(message)
+  }
+  const after = Scratch.readFile(path)
+  if (after is Err(message)) {
+    return Err(message)
+  }
+  if (after.value != source) {
+    return Err(`lost.nra changed: ${after.value}`)
+  }
+  const viaStdin = FmtRun.runFormat(
+    context,
+    scratch,
+    scratch.work,
+    false,
+    true,
+    source,
+    ["--stdin"],
+  )
+  if (viaStdin is Err(message)) {
+    return Err(message)
+  }
+  return FmtRun.expectFormat(
+    "stdin",
+    viaStdin.value,
+    1,
+    "",
+    "error <stdin>:2:5: comment not printed: /* inside */\n",
+  )
+}
+
+// checkWithoutPwd: without the PWD variable the config is still found, above
+// a relative path.
+function checkWithoutPwd(
+  context: Context,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const wroteConfig = Scratch.writeFile(
+    Path.join(scratch.work, "narra.toml"),
+    "[fmt]\nprintWidth = 40\n",
+  )
+  if (wroteConfig is Err(message)) {
+    return Err(message)
+  }
+  // Fits in 100 columns, not in 40.
+  const source = "function f(firstParameter: int, secondParameter: int): int {\n  return 1\n}\n"
+  const sub = Path.join(scratch.work, "sub")
+  const wroteB = Scratch.writeFile(Path.join(sub, "b.nra"), source)
+  if (wroteB is Err(message)) {
+    return Err(message)
+  }
+  const wroteC = Scratch.writeFile(Path.join(Path.join(sub, "deeper"), "c.nra"), source)
+  if (wroteC is Err(message)) {
+    return Err(message)
+  }
+  for (const path of Arrays.values(["sub/b.nra", "./sub/deeper/../b.nra", "sub/deeper/c.nra"])) {
+    for (const clearPwd of Arrays.values([false, true])) {
+      const ran = FmtRun.runFormat(
+        context,
+        scratch,
+        scratch.work,
+        clearPwd,
+        false,
+        "",
+        ["--check", path],
+      )
+      if (ran is Err(message)) {
+        return Err(message)
+      }
+      const outcome = FmtRun.expectFormat(path, ran.value, 1, `${path}\n`, "")
+      if (outcome is Err(message)) {
+        return Err(message)
+      }
+    }
+  }
+  // From a subdirectory the file is one level below the config.
+  const fromSub = FmtRun.runFormat(context, scratch, sub, true, false, "", ["--check", "b.nra"])
+  if (fromSub is Err(message)) {
+    return Err(message)
+  }
+  return FmtRun.expectFormat("from sub", fromSub.value, 1, "b.nra\n", "")
+}
+
+// checkDirectory: a directory means every .nra file under it; no path means
+// the current directory.
+function checkDirectory(
+  context: Context,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const deepPath = Path.join(Path.join(Path.join(scratch.work, "a"), "b"), "x.nra")
+  const notePath = Path.join(Path.join(scratch.work, "a"), "note.txt")
+  const wroteDeep = Scratch.writeFile(deepPath, "function  x() {\n}\n")
+  if (wroteDeep is Err(message)) {
+    return Err(message)
+  }
+  const wroteY = Scratch.writeFile(
+    Path.join(Path.join(scratch.work, "a"), "y.nra"),
+    "function y() {}\n",
+  )
+  if (wroteY is Err(message)) {
+    return Err(message)
+  }
+  const wroteNote = Scratch.writeFile(notePath, "function  z() {\n}\n")
+  if (wroteNote is Err(message)) {
+    return Err(message)
+  }
+  const checked = FmtRun.runFormat(context, scratch, scratch.work, false, false, "", ["--check"])
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  const checkOutcome = FmtRun.expectFormat("--check", checked.value, 1, "a/b/x.nra\n", "")
+  if (checkOutcome is Err(message)) {
+    return Err(message)
+  }
+  const formatted = FmtRun.runFormat(context, scratch, scratch.work, false, false, "", ["a"])
+  if (formatted is Err(message)) {
+    return Err(message)
+  }
+  const formatOutcome = FmtRun.expectFormat("fmt a", formatted.value, 0, "", "")
+  if (formatOutcome is Err(message)) {
+    return Err(message)
+  }
+  const deep = Scratch.readFile(deepPath)
+  if (deep is Err(message)) {
+    return Err(message)
+  }
+  if (deep.value != "function x() {}\n") {
+    return Err(`x.nra: ${deep.value}`)
+  }
+  const note = Scratch.readFile(notePath)
+  if (note is Err(message)) {
+    return Err(message)
+  }
+  if (note.value != "function  z() {\n}\n") {
+    return Err(`note.txt changed: ${note.value}`)
+  }
+  return Ok(true)
+}

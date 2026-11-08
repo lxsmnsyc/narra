@@ -1,0 +1,146 @@
+// The query suite: each folder in testdata/query holds a package and a
+// queries.txt (contracts/query-output.md). Lines before the first `> ` are
+// comments. Each `> <arguments>` line is a `narrac query --package DIR
+// <arguments>` call, followed by the output it must give, up to the next `> `
+// line: a first line `# exit N` when the exit code is not 0, the stdout, then
+// a line `# stderr` and the stderr when it is not empty. One case per folder.
+// With --update the expected output is rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Diff from "testrunner/diff"
+import * as Files from "testrunner/files"
+
+// A command of queries.txt and the output expected from it.
+struct Query {
+  command: string
+  want: string
+}
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "query")
+  for (const path of Arrays.values(Files.listPaths(folder, ""))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "query",
+      name: Path.basename(path),
+      path: path,
+      variant: "",
+    })
+  }
+  return cases
+}
+
+// splitLines splits text into lines that keep their newline.
+function splitLines(text: string): Array<string> uses alloc {
+  let lines: Array<string> = []
+  const pieces = Str.split(text, "\n")
+  const last = Arrays.length(pieces) - 1
+  for (const entry of Arrays.entries(pieces)) {
+    const #[index, piece] = entry
+    if (index < last) {
+      Arrays.push(mutable lines, `${piece}\n`)
+    } else if (piece != "") {
+      Arrays.push(mutable lines, piece)
+    }
+  }
+  return lines
+}
+
+// parseQueries reads the commands of queries.txt, and returns the comment
+// lines before the first command as the header.
+function parseQueries(text: string): #[string, Array<Query>] uses alloc {
+  let header = Str.builder()
+  let queries: Array<Query> = []
+  for (const line of Arrays.values(splitLines(text))) {
+    if (Str.startsWith(line, "> ")) {
+      Arrays.push(mutable queries, Query { command: Str.trim(Str.sliceFrom(line, 2)), want: "" })
+    } else if (Arrays.length(queries) == 0) {
+      Str.append(mutable header, line)
+    } else {
+      const last = Arrays.length(queries) - 1
+      queries[last] = Query { command: queries[last].command, want: `${queries[last].want}${line}` }
+    }
+  }
+  return #[Str.build(header), queries]
+}
+
+// splitWords splits a command on blanks, as strings.Fields does.
+function splitWords(command: string): Array<string> uses alloc {
+  let words: Array<string> = []
+  for (const word of Arrays.values(Str.split(command, " "))) {
+    if (word != "") {
+      Arrays.push(mutable words, word)
+    }
+  }
+  return words
+}
+
+// runQuery runs one command and returns the output in the queries.txt form.
+function runQuery(
+  context: Context,
+  folder: string,
+  command: string,
+): Result<string, string> uses io, alloc {
+  let arguments = ["query", "--package", folder]
+  for (const word of Arrays.values(splitWords(command))) {
+    Arrays.push(mutable arguments, word)
+  }
+  const result = Common.runNarrac(context, arguments)
+  let output = result.output
+  if (result.code != 0) {
+    output = `# exit ${Int.toString(result.code)}\n${output}`
+  }
+  if (result.errorOutput != "") {
+    if (output != "" && !Str.endsWith(output, "\n")) {
+      return Err(`stdout of "${command}" does not end with a newline`)
+    }
+    output = `${output}# stderr\n${result.errorOutput}`
+  }
+  return Ok(output)
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const path = Path.join(testCase.path, "queries.txt")
+  const read = Fs.readText(path)
+  if (read is Err(message)) {
+    return Err(`cannot read ${path}: ${message}`)
+  }
+  const #[header, queries] = parseQueries(read.value)
+  if (Arrays.length(queries) == 0) {
+    return Err(`${path} has no queries`)
+  }
+  let updated = Str.builder()
+  Str.append(mutable updated, header)
+  let failures = Str.builder()
+  let failed = 0
+  for (const query of Arrays.values(queries)) {
+    const ran = runQuery(context, testCase.path, query.command)
+    if (ran is Err(message)) {
+      return Err(message)
+    }
+    Str.append(mutable updated, `> ${query.command}\n${ran.value}`)
+    if (ran.value != query.want) {
+      failed = failed + 1
+      Str.append(
+        mutable failures,
+        `> ${query.command}\n${Diff.describeDifference(query.want, ran.value)}\n`,
+      )
+    }
+  }
+  if (context.update) {
+    const written = Fs.writeText(path, Str.build(updated))
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  if (failed > 0) {
+    return Err(Str.trim(Str.build(failures)))
+  }
+  return Ok(true)
+}

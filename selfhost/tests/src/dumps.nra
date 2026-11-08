@@ -1,0 +1,284 @@
+// The dumps suite: the text dumps of the front end, each compared with a
+// golden next to the sample.
+//   astdump/    narrac parse FILE      <name>.ast
+//   declsdump/  narrac decls PATH      <name>.dump (also imports/ and traits/)
+//   typesdump/  narrac types PATH      <name>.dump (bodies/, calls/, ...)
+//   pkgdump/    narrac pkg DIR         <name>.dump
+// A sample is a .nra file or a folder with a narra.toml (every folder in
+// pkgdump). A dump that succeeds is the golden on stdout; a dump that fails
+// exits with code 1 and has the golden on stderr. In typesdump, a sample named
+// err_* must fail and no other may. Two coverage cases check that the goldens
+// together hold every AST node kind and every line kind of the types dump.
+// With --update the goldens are rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+// Every node kind the AST dump can print.
+const AST_KINDS = [
+  "file",
+  "import",
+  "func",
+  "const",
+  "struct",
+  "enum",
+  "distinct",
+  "test",
+  "trait",
+  "impl",
+  "variant",
+  "field",
+  "param",
+  "type",
+  "block",
+  "var",
+  "assign",
+  "exprstmt",
+  "return",
+  "if",
+  "while",
+  "for",
+  "break",
+  "continue",
+  "yield",
+  "int",
+  "float",
+  "string",
+  "char",
+  "bool",
+  "template",
+  "ident",
+  "field-expr",
+  "is",
+  "index",
+  "map",
+  "call",
+  "arg",
+  "unary",
+  "binary",
+  "structlit",
+  "init",
+  "array",
+  "match",
+  "arm",
+  "blockexpr",
+  "arrow",
+  "pat-wildcard",
+  "pat-name",
+  "pat-ctor",
+  "pat-struct",
+  "fieldpat",
+  "pat-tuple",
+  "pat-lit",
+]
+
+// The pieces of text that the types dump goldens in typesdump/bodies must
+// contain.
+const TYPES_PIECES = [
+  " func ",
+  " test \"",
+  " const ",
+  " default ",
+  " impl ",
+  " targs=",
+  " local ",
+  " local=",
+  " const=",
+  " func=",
+  " builtin=",
+  " module ",
+  " int ",
+  " float ",
+  " string ",
+  " char ",
+  " bool ",
+  " template ",
+  " ident ",
+  " field-expr ",
+  " index ",
+  " unary ",
+  " binary ",
+  " call ",
+  " structlit ",
+  " array ",
+  "\nerror ",
+]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const astdump = Path.join(context.testdata, "astdump")
+  addSamples(mutable cases, "astdump", astdump, "parse")
+  const declsdump = Path.join(context.testdata, "declsdump")
+  addSamples(mutable cases, "declsdump", declsdump, "decls")
+  addSamples(mutable cases, "declsdump/imports", Path.join(declsdump, "imports"), "decls")
+  addSamples(mutable cases, "declsdump/traits", Path.join(declsdump, "traits"), "decls")
+  const typesdump = Path.join(context.testdata, "typesdump")
+  for (const name of Arrays.values(Files.listNames(typesdump))) {
+    addSamples(mutable cases, `typesdump/${name}`, Path.join(typesdump, name), "types")
+  }
+  const pkgdump = Path.join(context.testdata, "pkgdump")
+  for (const path of Arrays.values(Files.listPaths(pkgdump, ""))) {
+    if (Fs.isDir(path)) {
+      Arrays.push(mutable cases, makeCase(`pkgdump/${Path.basename(path)}`, path, "pkg"))
+    }
+  }
+  Arrays.push(mutable cases, makeCase("coverage/astdump", astdump, "coverage-ast"))
+  Arrays.push(
+    mutable cases,
+    makeCase("coverage/typesdump", Path.join(typesdump, "bodies"), "coverage-types"),
+  )
+  return cases
+}
+
+function makeCase(name: string, path: string, variant: string): TestCase {
+  return TestCase { suite: "dumps", name: name, path: path, variant: variant }
+}
+
+// addSamples adds a case for each .nra file and each package folder (with a
+// narra.toml) in a folder. The variant is the narrac command.
+function addSamples(
+  mutable cases: Array<TestCase>,
+  prefix: string,
+  folder: string,
+  command: string,
+) uses io, alloc {
+  for (const path of Arrays.values(Files.listPaths(folder, ""))) {
+    const isFile = Str.endsWith(path, ".nra")
+    const isPackage = Fs.isDir(path) && Fs.exists(Path.join(path, "narra.toml"))
+    if (isFile || isPackage) {
+      Arrays.push(mutable cases, makeCase(`${prefix}/${Path.basename(path)}`, path, command))
+    }
+  }
+}
+
+// goldenPath is the file next to a sample that holds its dump.
+function goldenPath(testCase: TestCase): string uses alloc {
+  const extension = ".nra"
+  if (testCase.variant == "parse") {
+    return Files.replaceSuffix(testCase.path, extension, ".ast")
+  }
+  if (Str.endsWith(testCase.path, extension)) {
+    return Files.replaceSuffix(testCase.path, extension, ".dump")
+  }
+  return `${testCase.path}.dump`
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "coverage-ast") {
+    return checkAstCoverage(testCase.path)
+  }
+  if (testCase.variant == "coverage-types") {
+    return checkTypesCoverage(testCase.path)
+  }
+  return checkDump(context, testCase)
+}
+
+// checkDump runs the dump command and compares it with the golden.
+function checkDump(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, [testCase.variant, testCase.path])
+  if (result.code != 0 && result.code != 1) {
+    return Err(`want exit code 0 or 1, got ${Common.describeRun(result)}`)
+  }
+  const failed = result.code == 1
+  if (failed && result.output != "") {
+    return Err(`a failed dump must print nothing on stdout, got ${Common.describeRun(result)}`)
+  }
+  if (failed && !Str.startsWith(result.errorOutput, "error ")) {
+    return Err(`a failed dump must start with "error ", got ${Common.describeRun(result)}`)
+  }
+  if (testCase.variant == "types") {
+    const mustFail = Str.startsWith(Path.basename(testCase.path), "err_")
+    if (mustFail != failed) {
+      return Err(`a sample named err_ must fail and no other may: ${Common.describeRun(result)}`)
+    }
+  }
+  let got = result.output
+  if (failed) {
+    got = result.errorOutput
+  }
+  const golden = goldenPath(testCase)
+  if (context.update) {
+    const written = Fs.writeText(golden, got)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("dump", want.value, got)
+}
+
+// checkAstCoverage checks that the astdump goldens print every node kind.
+function checkAstCoverage(folder: string): Result<bool, string> uses io, alloc {
+  let seen: Array<string> = []
+  for (const path of Arrays.values(Files.listPaths(folder, ".ast"))) {
+    const read = Fs.readText(path)
+    if (read is Err(message)) {
+      return Err(message)
+    }
+    for (const line of Arrays.values(Str.split(read.value, "\n"))) {
+      const trimmed = trimLeadingSpaces(line)
+      if (trimmed != "" && !Str.startsWith(trimmed, ".")) {
+        Arrays.push(mutable seen, firstWord(trimmed))
+      }
+    }
+  }
+  for (const kind of Arrays.values(AST_KINDS)) {
+    if (!containsText(seen, kind)) {
+      return Err(`no golden contains a "${kind}" node`)
+    }
+  }
+  return Ok(true)
+}
+
+// checkTypesCoverage checks that the typesdump/bodies goldens together print
+// every line kind and attribute of the format.
+function checkTypesCoverage(folder: string): Result<bool, string> uses io, alloc {
+  let builder = Str.builder()
+  for (const path of Arrays.values(Files.listPaths(folder, ".dump"))) {
+    const read = Fs.readText(path)
+    if (read is Err(message)) {
+      return Err(message)
+    }
+    Str.append(mutable builder, read.value)
+  }
+  const text = Str.build(builder)
+  for (const piece of Arrays.values(TYPES_PIECES)) {
+    if (!Str.contains(text, piece)) {
+      return Err(`no golden prints "${piece}"`)
+    }
+  }
+  return Ok(true)
+}
+
+function containsText(texts: Array<string>, wanted: string): bool {
+  for (const text of Arrays.values(texts)) {
+    if (text == wanted) {
+      return true
+    }
+  }
+  return false
+}
+
+function trimLeadingSpaces(line: string): string uses alloc {
+  let start = 0
+  while (start < Str.length(line) && Str.byteAt(line, start) == 32) {
+    start = start + 1
+  }
+  return Str.sliceFrom(line, start)
+}
+
+function firstWord(line: string): string uses alloc {
+  const space = Str.indexOf(line, " ")
+  if (space is Some(position)) {
+    return Str.slice(line, 0, position)
+  }
+  return line
+}

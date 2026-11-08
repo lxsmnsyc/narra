@@ -1,0 +1,107 @@
+// The trivia suite: `narrac trivia` prints the comments, blank lines,
+// parentheses and node ends that the parser keeps for the formatter.
+//   golden  testdata/fmt/trivia_*.nra prints the side tables in its .out file
+//   check   `narrac trivia --check` prints `ok` on every .nra file under
+//           testdata and selfhost/src, and on three edge cases: parseWithTrivia
+//           gives the same tokens, tree and next id as parse, and each
+//           comment is attached once
+// With --update the goldens are rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Scratch from "testrunner/scratch"
+
+struct EdgeCase {
+  name: string
+  source: string
+}
+
+const EDGE_CASES = [
+  EdgeCase { name: "only_comments.nra", source: "// a\n/* b */\n" },
+  EdgeCase { name: "crlf.nra", source: "// a\r\nfunction f() {\r\n  // b\r\n}\r\n" },
+  EdgeCase { name: "template.nra", source: "const a = `x ${1 + (2)} y` // c\n" },
+]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "fmt")
+  for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+    if (Str.startsWith(Path.basename(path), "trivia_")) {
+      Arrays.push(mutable cases, makeCase(`golden/${Path.basename(path)}`, path, "golden"))
+    }
+  }
+  const corpus = Files.listCorpus(context.testdata, context.repository)
+  for (const path of Arrays.values(corpus)) {
+    Arrays.push(
+      mutable cases,
+      makeCase(`check/${Files.relativePath(context.repository, path)}`, path, "check"),
+    )
+  }
+  for (const edge of Arrays.values(EDGE_CASES)) {
+    Arrays.push(mutable cases, makeCase(`check/edge/${edge.name}`, "", "edge"))
+  }
+  return cases
+}
+
+function makeCase(name: string, path: string, variant: string): TestCase {
+  return TestCase { suite: "trivia", name: name, path: path, variant: variant }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "golden") {
+    return checkGolden(context, testCase.path)
+  }
+  if (testCase.variant == "check") {
+    return checkFile(context, testCase.path)
+  }
+  return checkEdge(context, testCase)
+}
+
+function checkGolden(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const golden = Files.replaceSuffix(path, ".nra", ".out")
+  const result = Common.runNarrac(context, ["trivia", path])
+  if (context.update && result.code == 0) {
+    const written = Fs.writeText(golden, result.output)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.expectRun(result, 0, want.value)
+}
+
+function checkFile(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["trivia", "--check", path])
+  return Common.expectRun(result, 0, "ok\n")
+}
+
+// checkEdge writes an edge case to a scratch folder and checks it.
+function checkEdge(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let outcome: Result<bool, string> = Ok(true)
+  for (const edge of Arrays.values(EDGE_CASES)) {
+    if (testCase.name == `check/edge/${edge.name}`) {
+      const path = Path.join(scratch.work, edge.name)
+      const written = Scratch.writeFile(path, edge.source)
+      if (written is Err(message)) {
+        outcome = Err(message)
+      } else {
+        outcome = checkFile(context, path)
+      }
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}

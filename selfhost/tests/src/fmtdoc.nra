@@ -1,0 +1,169 @@
+// The fmt-doc suite: `narrac fmt-doc` prints documents written in the text form
+// of the pretty printer (contracts/fmt-doc.md).
+//   golden   testdata/fmt/doc_*.txt prints the text in the .out file next to it
+//   error    a malformed document exits with code 1 and an error line
+//   text     the error line of an unknown word is pinned
+//   deep     documents nested 50000 levels deep print without using the C stack
+import * as Arrays from "std/array"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Scratch from "testrunner/scratch"
+
+const DEPTH = 50000
+
+// The malformed documents: file name and text. Only the exit code and the
+// word "error" (or the usage words) are pinned; the message may change.
+struct BadDocument {
+  name: string
+  source: string
+}
+
+const BAD_DOCUMENTS = [
+  BadDocument { name: "newline.txt", source: "\"a\\nb\"\n" },
+  BadDocument { name: "unclosed.txt", source: "(concat \"a\"\n" },
+  BadDocument { name: "unknown.txt", source: "(frob \"a\")\n" },
+  BadDocument { name: "two.txt", source: "\"a\" \"b\"\n" },
+  BadDocument { name: "option.txt", source: "@bogus\n\"a\"\n" },
+  BadDocument { name: "ifbreak.txt", source: "(ifbreak \"a\")\n" },
+  BadDocument { name: "extra.txt", source: "\"a\")\n" },
+  BadDocument { name: "unterm.txt", source: "\"abc\n" },
+  BadDocument { name: "groupid.txt", source: "(group-id \"a\")\n" },
+  BadDocument { name: "badnumber.txt", source: "(group-id x \"a\")\n" },
+]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "fmt")
+  for (const path of Arrays.values(Files.listPaths(folder, ".txt"))) {
+    if (Str.startsWith(Path.basename(path), "doc_")) {
+      Arrays.push(mutable cases, makeCase(`golden/${Path.basename(path)}`, path, "golden"))
+    }
+  }
+  for (const bad of Arrays.values(BAD_DOCUMENTS)) {
+    Arrays.push(mutable cases, makeCase(`error/${bad.name}`, "", bad.name))
+  }
+  Arrays.push(mutable cases, makeCase("text/unknown_word", "", "text"))
+  for (const name of Arrays.values(["indent", "concat", "group", "group_line"])) {
+    Arrays.push(mutable cases, makeCase(`deep/${name}`, "", name))
+  }
+  return cases
+}
+
+function makeCase(name: string, path: string, variant: string): TestCase {
+  return TestCase { suite: "fmt-doc", name: name, path: path, variant: variant }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "golden") {
+    const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".txt", ".out"))
+    if (want is Err(message)) {
+      return Err(message)
+    }
+    const result = Common.runNarrac(context, ["fmt-doc", testCase.path])
+    if (result.errorOutput != "") {
+      return Err(`want no stderr, got ${Common.describeRun(result)}`)
+    }
+    return Common.expectRun(result, 0, want.value)
+  }
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const outcome = runInScratch(context, testCase, made.value)
+  Scratch.removeScratch(made.value)
+  return outcome
+}
+
+// runInScratch writes the document of a case into the scratch folder and
+// checks what `fmt-doc` does with it.
+function runInScratch(
+  context: Context,
+  testCase: TestCase,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const path = Path.join(scratch.work, "document.txt")
+  if (Str.startsWith(testCase.name, "error/")) {
+    return checkBadDocument(context, testCase, path)
+  }
+  if (testCase.variant == "text") {
+    const written = Scratch.writeFile(path, "bogus\n")
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    const result = Common.runNarrac(context, ["fmt-doc", path])
+    if (result.code != 1 || result.output != "") {
+      return Err(`want exit code 1, got ${Common.describeRun(result)}`)
+    }
+    return Common.compareText("stderr", "error 1:1: unknown word bogus\n", result.errorOutput)
+  }
+  const deep = buildDeepDocument(testCase.variant)
+  const written = Scratch.writeFile(path, deep.source)
+  if (written is Err(message)) {
+    return Err(message)
+  }
+  const result = Common.runNarrac(context, ["fmt-doc", path])
+  return Common.expectRun(result, 0, deep.want)
+}
+
+function checkBadDocument(
+  context: Context,
+  testCase: TestCase,
+  path: string,
+): Result<bool, string> uses io, alloc {
+  for (const bad of Arrays.values(BAD_DOCUMENTS)) {
+    if (bad.name == testCase.variant) {
+      const written = Scratch.writeFile(path, bad.source)
+      if (written is Err(message)) {
+        return Err(message)
+      }
+    }
+  }
+  const result = Common.runNarrac(context, ["fmt-doc", path])
+  if (result.code != 1) {
+    return Err(`want exit code 1, got ${Common.describeRun(result)}`)
+  }
+  const combined = `${result.output}${result.errorOutput}`
+  if (
+    !Str.contains(combined, "error ") &&
+      !Str.contains(combined, "needs") &&
+      !Str.contains(combined, "unknown option")
+  ) {
+    return Err(`no error message: ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+// A document and the text it must print.
+struct DeepDocument {
+  source: string
+  want: string
+}
+
+// buildDeepDocument makes the document of a deep case.
+function buildDeepDocument(name: string): DeepDocument uses alloc {
+  if (name == "indent") {
+    return DeepDocument {
+      source: `${Str.repeat("(indent ", DEPTH)}(concat hardline "x")${Str.repeat(")", DEPTH)}\n`,
+      want: `\n${Str.repeat("  ", DEPTH)}x`,
+    }
+  }
+  if (name == "concat") {
+    return DeepDocument {
+      source: `${Str.repeat("(concat \"a\" ", DEPTH)}"b"${Str.repeat(")", DEPTH)}\n`,
+      want: `${Str.repeat("a", DEPTH)}b`,
+    }
+  }
+  if (name == "group") {
+    return DeepDocument {
+      source: `${Str.repeat("(group (concat \"a\" ", DEPTH)}"b"${Str.repeat("))", DEPTH)}\n`,
+      want: `${Str.repeat("a", DEPTH)}b`,
+    }
+  }
+  return DeepDocument {
+    source: `@width 10\n${Str.repeat("(group (concat \"a\" line ", 5)}"b"${Str.repeat("))", 5)}\n`,
+    want: "a\na a a a b",
+  }
+}

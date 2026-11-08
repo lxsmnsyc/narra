@@ -1,0 +1,103 @@
+// The sources suite: `narrac fmt --check` over the Narra code of the
+// repository must list no file. It covers selfhost/src, selfhost/tests and
+// every sample below testdata except testdata/fmt (its inputs are unformatted
+// on purpose) and the layout samples, which keep a layout the formatter would
+// change. A sample that does not parse is reported on stderr and skipped, but
+// only if its path names an error or diagnostics case; any other report
+// fails the case.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
+
+// Samples whose layout is what they test.
+const LAYOUT_SAMPLES = ["ternary_parens.nra"]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  return [
+    TestCase {
+      suite: "sources",
+      name: "formatted",
+      path: context.repository,
+      variant: "",
+    },
+  ]
+}
+
+// listPaths is the paths given to `fmt --check`, relative to the repository
+// when they are inside it.
+function listPaths(context: Context): Array<string> uses io, alloc {
+  let paths = ["selfhost/src", "selfhost/tests"]
+  for (const name of Arrays.values(Files.listNames(context.testdata))) {
+    const path = Path.join(context.testdata, name)
+    const isSample = Fs.isDir(path) || Str.endsWith(name, ".nra")
+    if (name != "fmt" && !isLayoutSample(name) && isSample) {
+      Arrays.push(mutable paths, Files.relativePath(context.repository, path))
+    }
+  }
+  return paths
+}
+
+function isLayoutSample(name: string): bool {
+  for (const sample of Arrays.values(LAYOUT_SAMPLES)) {
+    if (sample == name) {
+      return true
+    }
+  }
+  return false
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  let arguments = ["fmt", "--check"]
+  for (const path of Arrays.values(listPaths(context))) {
+    Arrays.push(mutable arguments, path)
+  }
+  let command = Shell.newCommand(context.narrac, arguments)
+  command.directory = testCase.path
+  command.environment = Shell.leakCheckEnvironment()
+  const result = Shell.runCommand(command)
+  if (result.output != "") {
+    return Err(`files not formatted; run narrac fmt on them:\n${result.output}`)
+  }
+  // --check exits 1 for a file to change or a file that does not parse.
+  let wantCode = 0
+  if (result.errorOutput != "") {
+    wantCode = 1
+  }
+  if (result.code != wantCode) {
+    return Err(
+      `exit code ${Int.toString(result.code)}, want ${Int.toString(wantCode)}; stderr:\n${result.errorOutput}`,
+    )
+  }
+  for (const line of Arrays.values(Str.split(result.errorOutput, "\n"))) {
+    if (line != "") {
+      const complaint = judgeReport(line)
+      if (complaint != "") {
+        return Err(complaint)
+      }
+    }
+  }
+  return Ok(true)
+}
+
+// judgeReport is "" for the report of a sample that may not parse, else the
+// complaint.
+function judgeReport(line: string): string uses alloc {
+  // The line is `error PATH:LINE:COL: message`.
+  const marker = Str.indexOf(line, ".nra:")
+  if (marker is None) {
+    return `unexpected fmt error: ${line}`
+  }
+  if (!Str.startsWith(line, "error ")) {
+    return `unexpected fmt error: ${line}`
+  }
+  const path = Str.slice(line, 6, marker.value + 4)
+  if (Str.contains(path, "error") || Str.contains(path, "/diagnostics/")) {
+    return ""
+  }
+  return `a sample that is not an error case does not parse: ${line}`
+}

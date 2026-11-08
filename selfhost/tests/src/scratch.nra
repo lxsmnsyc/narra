@@ -1,0 +1,61 @@
+// Scratch space for the suites that write files: a temporary folder with a
+// work directory for the files under test and a stdin file beside it, so a
+// command that formats "the current directory" never sees the stdin text.
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Shell from "testrunner/shell"
+
+// root holds everything and is what removeScratch deletes; work is the
+// directory where a case writes its sample files; stdinPath is the file that
+// a command reads as stdin.
+export struct Scratch {
+  root: string
+  work: string
+  stdinPath: string
+}
+
+// makeScratch makes a temporary folder with an empty work directory.
+export function makeScratch(): Result<Scratch, string> uses io, alloc {
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const work = Path.join(made.value, "work")
+  const created = Fs.createDirAll(work)
+  if (created is Err(message)) {
+    Shell.removeTree(made.value)
+    return Err(message)
+  }
+  return Ok(Scratch {
+    root: made.value,
+    work: work,
+    stdinPath: Path.join(made.value, "stdin.txt"),
+  })
+}
+
+// removeScratch deletes the folder and what is in it.
+export function removeScratch(scratch: Scratch) uses io, alloc {
+  Shell.removeTree(scratch.root)
+}
+
+// writeFile writes a file, making the folders above it first.
+export function writeFile(path: string, text: string): Result<bool, string> uses io, alloc {
+  const created = Fs.createDirAll(Path.dirname(path))
+  if (created is Err(message)) {
+    return Err(message)
+  }
+  const written = Fs.writeText(path, text)
+  if (written is Err(message)) {
+    return Err(message)
+  }
+  return Ok(true)
+}
+
+// readFile reads a file that a case expects to exist.
+export function readFile(path: string): Result<string, string> uses io, alloc {
+  const read = Fs.readText(path)
+  if (read is Err(message)) {
+    return Err(`cannot read ${path}: ${message}`)
+  }
+  return Ok(read.value)
+}

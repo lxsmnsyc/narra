@@ -1,7 +1,7 @@
 ---
 id: retire-go
 title: Delete the Go compiler and Go test harness
-status: active
+status: done
 priority:
 type: refactor
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-08
-spent:
+spent: 192759
 owns:
   - compiler/**
   - testdata/**
@@ -85,3 +85,5 @@ M: mostly deletion and path updates; the runtime move is the only new code.
 ## Notes for the worker
 
 - Do not reword the roughly 282 comments in `selfhost/src` that mention Go. That is an optional later cleanup.
+
+Landed on feat/c-seed as 9ca8464. Linux x86_64 was not run on real hardware: the maintainer has no x86_64 Linux host, and AddressSanitizer is killed under emulation. Accepted on 2026-11-09.

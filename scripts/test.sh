@@ -21,6 +21,18 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+case "$jobs" in
+  '' | *[!0-9]*)
+    echo "test.sh: JOBS must be an integer of at least 1, got: $jobs" >&2
+    exit 2
+    ;;
+esac
+if [ "$jobs" -lt 1 ]; then
+  echo "test.sh: JOBS must be an integer of at least 1, got: $jobs" >&2
+  exit 2
+fi
+
 if [ -z "${NARRAC:-}" ]; then
   echo "test.sh: NARRAC is unset; building narrac from the seed"
   sh "$root/selfhost/bootstrap.sh" "$work/compiler" || {
@@ -31,15 +43,19 @@ if [ -z "${NARRAC:-}" ]; then
 else
   narrac=$NARRAC
   case "$narrac" in
-    */*) narrac=$(cd "$(dirname "$narrac")" && pwd)/$(basename "$narrac") ;;
+    */*)
+      if [ ! -f "$narrac" ]; then
+        echo "test.sh: NARRAC is set but is not a file: $narrac" >&2
+        exit 2
+      fi
+      narrac=$(cd "$(dirname "$narrac")" && pwd)/$(basename "$narrac")
+      ;;
   esac
 fi
 if ! command -v "$narrac" >/dev/null 2>&1; then
   echo "test.sh: compiler not found: $narrac (set NARRAC)" >&2
   exit 2
 fi
-
-jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 
 echo "test.sh: building the runner with $narrac"
 "$narrac" build -release -o "$work/testrunner" "$root/selfhost/tests"
@@ -73,8 +89,13 @@ for pid in $pids; do
   wait "$pid" || status=1
 done
 
-for log in "$work"/shard-*.log; do
-  cat "$log"
+# Print the logs in shard order: shard-0 (bootstrap, if any), then 1, 2, ... N.
+shard=0
+while [ "$shard" -le "$jobs" ]; do
+  if [ -f "$work/shard-$shard.log" ]; then
+    cat "$work/shard-$shard.log"
+  fi
+  shard=$((shard + 1))
 done
 elapsed=$(($(date +%s) - start))
 if [ "$status" -eq 0 ]; then

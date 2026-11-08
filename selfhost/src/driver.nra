@@ -5,7 +5,8 @@
 //   narrac build [flags] file.nra|dir
 //   narrac run [flags] file.nra|dir [args...]
 //   narrac test [flags] file.nra|dir [args...]
-//   narrac check file.nra|dir
+//   narrac check [--json] file.nra|dir
+//   narrac explain CODE
 //
 // Flags of build, run and test (Go flag syntax: -name, --name, -name=value,
 // -name value; the first argument that is not a flag ends the flags):
@@ -29,6 +30,7 @@ import * as Process from "std/process"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import { Pos } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import * as Modules from "narrac/modules"
 import { Package } from "narrac/modules"
@@ -36,12 +38,14 @@ import { LoadError } from "narrac/manifest"
 import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { Checker } from "narrac/check"
+import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
 import { emitProgram } from "narrac/emit"
 import { findEntry } from "narrac/emitter"
 
 // A problem found while loading or checking: file is empty and line is 0 for
 // a problem that is not a diagnostic (an unreadable file).
 struct Diagnostic {
+  code: string // "" for a problem that is not a diagnostic
   file: string
   line: int
   column: int
@@ -63,7 +67,7 @@ struct DriverOptions {
 
 // isDriverCommand tells main whether the first argument is a command of this module.
 export function isDriverCommand(name: string): bool {
-  return name == "build" || name == "run" || name == "test" || name == "check"
+  return name == "build" || name == "run" || name == "test" || name == "check" || name == "explain"
 }
 
 // runDriver runs the command in arguments[1]. arguments[0] is the program name.
@@ -71,6 +75,9 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
   const command = arguments[1]
   if (command == "check") {
     return runCheck(arguments)
+  }
+  if (command == "explain") {
+    return runExplain(arguments)
   }
   const parsed = parseOptions(arguments)
   if (parsed is Err(message)) {
@@ -101,7 +108,8 @@ function usageText(): string {
     "  narrac build [-release] [-sanitize] [-bin name] [-o output] [-emit-c file.c] file.nra|dir",
     "  narrac run [-release] [-sanitize] [-bin name] [-stdin file] file.nra|dir [args...]",
     "  narrac test [-filter text] [-time] [-release] [-sanitize] [-stdin file] file.nra|dir",
-    "  narrac check file.nra|dir                 report errors",
+    "  narrac check [--json] file.nra|dir        report errors",
+    "  narrac explain CODE                       explain a diagnostic code",
     "",
     "A dir is a package: a directory with narra.toml and src/. Without -bin,",
     "build makes every [[binary]] of the package; run needs the package to have",
@@ -294,6 +302,7 @@ function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> uses all
       message = Str.sliceFrom(message, 6)
     }
     Arrays.push(mutable diagnostics, Diagnostic {
+      code: error.code,
       file: error.file,
       line: error.line,
       column: error.column,
@@ -318,6 +327,7 @@ function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnosti
     let diagnostics: Array<Diagnostic> = []
     for (const error of Arrays.values(checker.errors)) {
       Arrays.push(mutable diagnostics, Diagnostic {
+        code: error.code,
         file: error.file,
         line: error.pos.line,
         column: error.pos.column,
@@ -658,29 +668,65 @@ function trimTrailingSlashes(path: string): string {
 
 // --- check ------------------------------------------------------------------
 
-// runCheck is `narrac check file.nra|dir`. Exit 0: no diagnostics. Exit 1:
-// diagnostics (one `file:line:col: message` line each on stderr) or an
-// unreadable path. Exit 2: usage. There is no --json yet: the self-hosted
-// checker has no diagnostic codes.
+// runCheck is `narrac check [--json] file.nra|dir`. Exit 0: no diagnostics.
+// Exit 1: diagnostics or an unreadable path. Exit 2: usage. The text form is
+// one `file:line:col: message` line each on stderr. With --json, stdout has
+// one JSON object per diagnostic (writeDiagnosticJson), as Go's `check --json`.
+// A problem that is not a diagnostic (an unreadable file) is text on stderr.
 function runCheck(arguments: Array<string>): int uses io, alloc {
-  if (Arrays.length(arguments) != 3 || Str.startsWith(arguments[2], "-")) {
-    printError("usage: narrac check file.nra|dir")
+  let asJson = false
+  let paths: Array<string> = []
+  for (const index of Ranges.between(2, Arrays.length(arguments))) {
+    const argument = arguments[index]
+    if (argument == "--json" || argument == "-json") {
+      asJson = true
+    } else {
+      Arrays.push(mutable paths, argument)
+    }
+  }
+  if (Arrays.length(paths) != 1 || Str.startsWith(paths[0], "-")) {
+    printError("usage: narrac check [--json] file.nra|dir")
     return 2
   }
   let diagnostics: Array<Diagnostic> = []
-  const checked = loadAndCheck(arguments[2])
+  const checked = loadAndCheck(paths[0])
   if (checked is Err(found)) {
     diagnostics = found
   } else {
     const #[package, checker] = checked.value
     diagnostics = findMissingEntries(package, checker)
   }
-  if (Arrays.length(diagnostics) > 0) {
+  if (Arrays.length(diagnostics) == 0) {
+    return 0
+  }
+  if (asJson && diagnostics[0].code != "") {
+    let lines = Str.builder()
+    for (const diagnostic of Arrays.values(diagnostics)) {
+      const pos = Pos { line: diagnostic.line, column: diagnostic.column }
+      Str.append(
+        mutable lines,
+        `${writeDiagnosticJson(diagnostic.file, pos, diagnostic.code, diagnostic.message)}\n`,
+      )
+    }
+    writeStream("/dev/stdout", Str.build(lines))
+  } else {
     printError(formatDiagnostics(diagnostics))
   }
-  if (Arrays.length(diagnostics) > 0) {
+  return 1
+}
+
+// runExplain is `narrac explain CODE`. Exit 2: usage. Exit 1: an unknown code.
+function runExplain(arguments: Array<string>): int uses io, alloc {
+  if (Arrays.length(arguments) != 3) {
+    printError("usage: narrac explain E0000")
+    return 2
+  }
+  const explained = explainCode(arguments[2])
+  if (explained is Err(message)) {
+    printError(message)
     return 1
   }
+  writeStream("/dev/stdout", explained.value)
   return 0
 }
 
@@ -699,6 +745,7 @@ function findMissingEntries(package: Package, checker: Checker): Array<Diagnosti
     }
     if (package.single) {
       Arrays.push(mutable diagnostics, Diagnostic {
+        code: "E0419",
         file: package.modules[Arrays.length(package.modules) - 1].file,
         line: 0,
         column: 0,
@@ -707,6 +754,7 @@ function findMissingEntries(package: Package, checker: Checker): Array<Diagnosti
     } else {
       const #[modulePath, functionName] = Modules.entryModule(package, binary.entry)
       Arrays.push(mutable diagnostics, Diagnostic {
+        code: "E0420",
         file: "narra.toml",
         line: 0,
         column: 0,

@@ -339,9 +339,10 @@ export struct FuncInstance {
   result: Type
 }
 
-// A compile error. There are no codes or fixes yet: they go with the driver
-// in selfhost-bootstrap.
+// A compile error. code is the diagnostic code (see diagnostics.nra). There
+// are no fixes yet.
 export struct CheckError {
+  code: string
   file: string
   pos: Pos
   message: string
@@ -537,26 +538,37 @@ export function newChecker(ids: int): Checker uses alloc {
 
 // reportError records an error in the current module's file. An error equal to
 // one already recorded is dropped, as Go's report does.
-export function reportError(mutable checker: Checker, pos: Pos, message: string) uses alloc {
+export function reportError(
+  mutable checker: Checker,
+  pos: Pos,
+  code: string,
+  message: string,
+) uses alloc {
   let file = ""
   if (Arrays.length(checker.scopes) > 0) {
     file = checker.scopes[checker.current].file
   }
-  reportErrorIn(mutable checker, file, pos, message)
+  reportErrorIn(mutable checker, file, pos, code, message)
 }
 
 export function reportErrorIn(
   mutable checker: Checker,
   file: string,
   pos: Pos,
+  code: string,
   message: string,
 ) uses alloc {
-  const key = `${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
+  const key = `${code}|${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
   if (checker.errorKeys[key] is Some(_)) {
     return
   }
   checker.errorKeys[key] = true
-  Arrays.push(mutable checker.errors, CheckError { file: file, pos: pos, message: message })
+  Arrays.push(mutable checker.errors, CheckError {
+    code: code,
+    file: file,
+    pos: pos,
+    message: message,
+  })
 }
 
 // errorText prints the errors as the Go dumps do, one line each.
@@ -824,7 +836,12 @@ export function anyTypeParameter(checker: Checker, types: Array<Type>): bool {
 
 // reportTypeError reports an error at the declaration of a struct or enum, in the
 // file of the module that declares it.
-export function reportTypeError(mutable checker: Checker, type: Type, message: string) uses alloc {
+export function reportTypeError(
+  mutable checker: Checker,
+  type: Type,
+  code: string,
+  message: string,
+) uses alloc {
   let scope = 0
   let pos = Pos { line: 0, column: 0 }
   match (type) {
@@ -839,7 +856,7 @@ export function reportTypeError(mutable checker: Checker, type: Type, message: s
     _ => {}
   }
   const saved = enter(mutable checker, scope)
-  reportError(mutable checker, pos, message)
+  reportError(mutable checker, pos, code, message)
   enter(mutable checker, saved)
 }
 
@@ -898,6 +915,7 @@ function visitOrder(
     reportTypeError(
       mutable checker,
       type,
+      "E0109",
       `type ${text} contains itself; put the recursive field in an enum, Box or array`,
     )
     return
@@ -1095,12 +1113,14 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
       reportError(
         mutable checker,
         local.pos,
+        "E0922",
         `parameter "${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
       )
     } else {
       reportError(
         mutable checker,
         local.pos,
+        "E0921",
         `"${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
       )
     }
@@ -1197,6 +1217,7 @@ export function declareLocal(
     reportError(
       mutable checker,
       pos,
+      "E0103",
       `"${name}" is already declared in this function; shadowing is not allowed`,
     )
   }
@@ -1246,7 +1267,7 @@ export function popScope(mutable checker: Checker) {
 // `unsupported:`. what names the construct and the node, as in
 // "`is` (selfhost-check-patterns)".
 export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
-  reportError(mutable checker, pos, `unsupported: ${what}`)
+  reportError(mutable checker, pos, "E0213", `unsupported: ${what}`)
   return Type.TVoid
 }
 

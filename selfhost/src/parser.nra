@@ -19,7 +19,7 @@
 import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Token, TokenKind, lex, lexWithComments, hex } from "narrac/lexer"
+import { LexError, Token, TokenKind, formatLexError, lex, lexWithComments, hex } from "narrac/lexer"
 import {
   Trivia,
   Collector,
@@ -67,6 +67,7 @@ import * as Ranges from "std/range"
 
 // A syntax error: `error <line>:<col>: <message>` in the dump.
 export struct Diagnostic {
+  code: string
   pos: Pos
   message: string
 }
@@ -215,29 +216,13 @@ export function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
   return `${Int.toString(diagnostic.pos.line)}:${Int.toString(diagnostic.pos.column)}: ${diagnostic.message}`
 }
 
-// splitLexError splits a lex error "line:col: message" (Go: syntaxDiagnostic).
-function splitLexError(text: string): Diagnostic {
-  const parts = Str.split(text, ": ")
-  if (Arrays.length(parts) >= 2) {
-    const lineAndColumn = Str.split(parts[0], ":")
-    if (Arrays.length(lineAndColumn) == 2) {
-      const line = Int.parse(lineAndColumn[0], 10)
-      const column = Int.parse(lineAndColumn[1], 10)
-      if (line is Ok(lineNumber)) {
-        if (column is Ok(columnNumber)) {
-          let rest: Array<string> = []
-          for (const index of Ranges.between(1, Arrays.length(parts))) {
-            Arrays.push(mutable rest, parts[index])
-          }
-          return Diagnostic {
-            pos: Pos { line: lineNumber, column: columnNumber },
-            message: Str.join(rest, ": "),
-          }
-        }
-      }
-    }
+// splitLexError turns a lex error into a diagnostic (Go: syntaxDiagnostic).
+function splitLexError(error: LexError): Diagnostic {
+  return Diagnostic {
+    code: error.code,
+    pos: Pos { line: error.line, column: error.column },
+    message: error.message,
   }
-  return Diagnostic { pos: Pos { line: 0, column: 0 }, message: text }
 }
 
 // ---- Tokens and errors
@@ -248,22 +233,22 @@ function isOk(parser: Parser): bool {
 
 // failAt records the first error. Later errors are ignored, like the code
 // after a Go panic that never runs.
-function failAt(mutable parser: Parser, pos: Pos, message: string) {
+function failAt(mutable parser: Parser, pos: Pos, code: string, message: string) {
   if (parser.failed is None) {
-    parser.failed = Some(Diagnostic { pos: pos, message: message })
+    parser.failed = Some(Diagnostic { code: code, pos: pos, message: message })
   }
 }
 
 // failHere fails at the current token.
-function failHere(mutable parser: Parser, message: string) {
+function failHere(mutable parser: Parser, code: string, message: string) {
   const token = currentToken(parser)
-  failAt(mutable parser, getPos(token), message)
+  failAt(mutable parser, getPos(token), code, message)
 }
 
 // failFound fails at the current token with "<message>, found <token>".
-function failFound(mutable parser: Parser, message: string) {
+function failFound(mutable parser: Parser, code: string, message: string) {
   const token = currentToken(parser)
-  failAt(mutable parser, getPos(token), `${message}, found ${describeToken(token)}`)
+  failAt(mutable parser, getPos(token), code, `${message}, found ${describeToken(token)}`)
 }
 
 function newId(mutable parser: Parser): int {
@@ -287,12 +272,13 @@ function reportHabitWord(mutable parser: Parser, token: Token) {
   const pos = getPos(token)
   const next = currentToken(parser)
   if (token.text == "this") {
-    failAt(mutable parser, pos, "there is no `this`; pass the value as a parameter")
+    failAt(mutable parser, pos, "E0928", "there is no `this`; pass the value as a parameter")
   }
   if (token.text == "new" && next.kind == TokenKind.TokIdent) {
     failAt(
       mutable parser,
       pos,
+      "E0925",
       "there is no `new`; write a struct literal such as `Name { field: value }`, or call a function",
     )
   }
@@ -300,6 +286,7 @@ function reportHabitWord(mutable parser: Parser, token: Token) {
     failAt(
       mutable parser,
       pos,
+      "E0926",
       "there is no `try` or `catch`; return a `Result` and check it with `is Err` or `match`",
     )
   }
@@ -307,6 +294,7 @@ function reportHabitWord(mutable parser: Parser, token: Token) {
     failAt(
       mutable parser,
       pos,
+      "E0927",
       "there is no `throw`; return `Err(value)`, or call `panic` for a bug",
     )
   }
@@ -358,7 +346,12 @@ function accept(mutable parser: Parser, text: string): bool {
 function expect(mutable parser: Parser, text: string): Token {
   if (!isAt(parser, text)) {
     const token = currentToken(parser)
-    failAt(mutable parser, getPos(token), `expected "${text}", found ${describeToken(token)}`)
+    failAt(
+      mutable parser,
+      getPos(token),
+      "E0011",
+      `expected "${text}", found ${describeToken(token)}`,
+    )
     return token
   }
   return advance(mutable parser)
@@ -367,11 +360,16 @@ function expect(mutable parser: Parser, text: string): Token {
 function expectIdent(mutable parser: Parser): Token {
   const token = currentToken(parser)
   if (token.kind != TokenKind.TokIdent) {
-    failAt(mutable parser, getPos(token), `expected a name, found ${describeToken(token)}`)
+    failAt(mutable parser, getPos(token), "E0012", `expected a name, found ${describeToken(token)}`)
     return token
   }
   if (token.text == "this") {
-    failAt(mutable parser, getPos(token), "there is no `this`; pass the value as a parameter")
+    failAt(
+      mutable parser,
+      getPos(token),
+      "E0928",
+      "there is no `this`; pass the value as a parameter",
+    )
   }
   return advance(mutable parser)
 }
@@ -399,6 +397,7 @@ function endStatement(mutable parser: Parser) {
     failAt(
       mutable parser,
       getPos(token),
+      "E0013",
       `expected the end of the statement, found ${describeToken(token)}`,
     )
   }
@@ -555,13 +554,14 @@ function parseImport(mutable parser: Parser): ImportDecl {
   } else {
     failHere(
       mutable parser,
+      "E0014",
       "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports",
     )
   }
   expect(mutable parser, "from")
   let path = ""
   if (currentToken(parser).kind != TokenKind.TokString) {
-    failHere(mutable parser, "expected a module path string")
+    failHere(mutable parser, "E0015", "expected a module path string")
   } else {
     path = advance(mutable parser).text
   }
@@ -604,18 +604,22 @@ function parseDeclBody(mutable parser: Parser): Decl {
   }
   if (isAt(parser, "implement")) {
     if (exported) {
-      failHere(mutable parser, "implement blocks cannot be exported; export the trait and the type")
+      failHere(
+        mutable parser,
+        "E0016",
+        "implement blocks cannot be exported; export the trait and the type",
+      )
     }
     return Decl.Impl(parseImplDecl(mutable parser))
   }
   if (isAt(parser, "test")) {
     if (exported) {
-      failHere(mutable parser, "tests cannot be exported")
+      failHere(mutable parser, "E0017", "tests cannot be exported")
     }
     const pos = getPos(advance(mutable parser))
     let name = ""
     if (currentToken(parser).kind != TokenKind.TokString) {
-      failHere(mutable parser, "expected the test name as a string")
+      failHere(mutable parser, "E0018", "expected the test name as a string")
     } else {
       name = advance(mutable parser).text
     }
@@ -626,6 +630,7 @@ function parseDeclBody(mutable parser: Parser): Decl {
     failAt(
       mutable parser,
       getPos(token),
+      "E0923",
       "there is no `class`; use a `struct` and functions in a module",
     )
   }
@@ -633,10 +638,16 @@ function parseDeclBody(mutable parser: Parser): Decl {
     failAt(
       mutable parser,
       getPos(token),
+      "E0924",
       "there is no `interface`; use a `struct` for data or a `trait` for behavior",
     )
   }
-  failAt(mutable parser, getPos(token), `expected a declaration, found ${describeToken(token)}`)
+  failAt(
+    mutable parser,
+    getPos(token),
+    "E0019",
+    `expected a declaration, found ${describeToken(token)}`,
+  )
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
 }
 
@@ -647,7 +658,11 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
   let opaque = false
   if (isWord(parser, "opaque")) {
     if (!exported) {
-      failHere(mutable parser, "only an exported type can be opaque; write `export opaque`")
+      failHere(
+        mutable parser,
+        "E0043",
+        "only an exported type can be opaque; write `export opaque`",
+      )
     }
     advance(mutable parser)
     opaque = true
@@ -659,7 +674,7 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
   if (isWord(parser, "distinct")) {
     const pos = getPos(advance(mutable parser))
     if (!isWord(parser, "type")) {
-      failFound(mutable parser, `expected \`type\` after \`distinct\``)
+      failFound(mutable parser, "E0044", `expected \`type\` after \`distinct\``)
     }
     advance(mutable parser)
     const name = expectIdent(mutable parser).text
@@ -677,7 +692,7 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
     )
   }
   if (opaque) {
-    failFound(mutable parser, `expected \`struct\` or \`distinct type\` after \`opaque\``)
+    failFound(mutable parser, "E0045", `expected \`struct\` or \`distinct type\` after \`opaque\``)
   }
   return None
 }
@@ -758,7 +773,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   }
   const after = peekToken(parser, 1)
   if (isAt(parser, "[") && after.kind == TokenKind.TokPunct && after.text == "]") {
-    failHere(mutable parser, "there is no `T[]` array type; write `Array<T>`")
+    failHere(mutable parser, "E0020", "there is no `T[]` array type; write `Array<T>`")
   }
   return TypeExpr { ...named, arguments: arguments }
 }
@@ -831,6 +846,7 @@ function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
       failAt(
         mutable parser,
         pos,
+        "E0021",
         "trait constraints on struct and enum type parameters are not supported by this compiler yet",
       )
     }
@@ -1051,21 +1067,29 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
   const pos = getPos(expect(mutable parser, "trait"))
   const name = expectIdent(mutable parser).text
   if (isAt(parser, "<")) {
-    failHere(mutable parser, "a trait has no type parameters; use Self for the implementing type")
+    failHere(
+      mutable parser,
+      "E0023",
+      "a trait has no type parameters; use Self for the implementing type",
+    )
   }
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
   let functions: Array<FuncDecl> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     if (!isAt(parser, "function")) {
-      failFound(mutable parser, `a trait has functions only`)
+      failFound(mutable parser, "E0024", `a trait has functions only`)
       break
     }
     const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
     const header = parseFuncHeader(mutable parser, false)
     if (isAt(parser, "{")) {
-      failHere(mutable parser, "trait functions have no default implementation; remove the body")
+      failHere(
+        mutable parser,
+        "E0025",
+        "trait functions have no default implementation; remove the body",
+      )
     }
     Arrays.push(mutable functions, header)
     endTypeDecl(mutable parser)
@@ -1085,6 +1109,7 @@ function rejectNestedGenerator(mutable parser: Parser) {
     failAt(
       mutable parser,
       getPos(next),
+      "E0046",
       "a generator must be a top-level function; declare `function*` at module level",
     )
   }
@@ -1103,11 +1128,11 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
   let functions: Array<FuncDecl> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     if (isAt(parser, "export")) {
-      failHere(mutable parser, "functions in an implement block cannot be exported")
+      failHere(mutable parser, "E0026", "functions in an implement block cannot be exported")
       break
     }
     if (!isAt(parser, "function")) {
-      failFound(mutable parser, `an implement block has functions only`)
+      failFound(mutable parser, "E0027", `an implement block has functions only`)
       break
     }
     const functionStart = parser.index
@@ -1293,7 +1318,7 @@ function parseArrow(mutable parser: Parser): Expr {
   let parameters: Array<Param> = []
   while (isOk(parser) && !isAt(parser, ")")) {
     if (isAt(parser, "mutable")) {
-      failHere(mutable parser, "arrow function parameters cannot be mutable")
+      failHere(mutable parser, "E0028", "arrow function parameters cannot be mutable")
       return createDummyExpr()
     }
     const paramPos = getPos(currentToken(parser))
@@ -1340,7 +1365,7 @@ function parseBlock(mutable parser: Parser): Block {
   let statements: Array<Stmt> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     if (currentToken(parser).kind == TokenKind.TokEof) {
-      failHere(mutable parser, "unexpected end of file inside a block")
+      failHere(mutable parser, "E0029", "unexpected end of file inside a block")
       break
     }
     Arrays.push(mutable statements, parseStmt(mutable parser))
@@ -1366,7 +1391,12 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   const labelPos = getPos(labelToken)
   advance(mutable parser)
   if (!isAt(parser, "for") && !isAt(parser, "while")) {
-    failAt(mutable parser, labelPos, `label "${labelToken.text}" must be on a for or while loop`)
+    failAt(
+      mutable parser,
+      labelPos,
+      "E0918",
+      `label "${labelToken.text}" must be on a for or while loop`,
+    )
     return Stmt.BreakStmt(labelPos, "")
   }
   const loop = parseStmtBody(mutable parser)
@@ -1409,6 +1439,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     failAt(
       mutable parser,
       getPos(following),
+      "E0930",
       "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
     )
   }
@@ -1416,6 +1447,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     failAt(
       mutable parser,
       pos,
+      "E0930",
       "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
     )
   }
@@ -1451,6 +1483,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof || isAt(parser, "}")) {
         failHere(
           mutable parser,
+          "E0046",
           "`yield` needs a value: write `yield value`, or `yield* generator`",
         )
         return Stmt.BreakStmt(pos, "")
@@ -1499,7 +1532,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     advance(mutable parser)
     expect(mutable parser, "(")
     if (!isAt(parser, "const") && !isAt(parser, "let")) {
-      failHere(mutable parser, "write `for (const item of items)`")
+      failHere(mutable parser, "E0030", "write `for (const item of items)`")
       return Stmt.BreakStmt(pos, "")
     }
     const isMutable = advance(mutable parser).text == "let"
@@ -1517,7 +1550,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       name = expectIdent(mutable parser).text
     }
     if (isAt(parser, "in") || isWord(parser, "in")) {
-      failHere(mutable parser, "use `of`; `for ... in` is not part of the language")
+      failHere(mutable parser, "E0031", "use `of`; `for ... in` is not part of the language")
       return Stmt.BreakStmt(pos, "")
     }
     expect(mutable parser, "of")
@@ -1556,7 +1589,11 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     const delegate = accept(mutable parser, "*")
     const next = currentToken(parser)
     if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof || isAt(parser, "}")) {
-      failHere(mutable parser, "`yield` needs a value: write `yield value`, or `yield* generator`")
+      failHere(
+        mutable parser,
+        "E0046",
+        "`yield` needs a value: write `yield value`, or `yield* generator`",
+      )
       return Stmt.BreakStmt(pos, "")
     }
     const value = parseExpr(mutable parser)
@@ -1576,7 +1613,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     return Stmt.ContinueStmt(pos, label)
   }
   if (isAt(parser, "{")) {
-    failAt(mutable parser, pos, "a block must belong to a statement such as if or while")
+    failAt(mutable parser, pos, "E0032", "a block must belong to a statement such as if or while")
     return Stmt.BreakStmt(pos, "")
   }
   const expression = parseExpr(mutable parser)
@@ -1654,11 +1691,13 @@ function parseExprBody(mutable parser: Parser): Expr {
     if (spans) {
       failHere(
         mutable parser,
+        "E0934",
         "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`",
       )
     } else {
       failHere(
         mutable parser,
+        "E0934",
         "a conditional expression needs `:` and a second value, as in `cond ? a : b`",
       )
     }
@@ -1751,6 +1790,7 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       failAt(
         mutable parser,
         getPos(token),
+        "E0033",
         `use \`${Str.slice(token.text, 0, 2)}\`; there is no strict equality operator`,
       )
       return left
@@ -1763,6 +1803,7 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       failAt(
         mutable parser,
         getPos(token),
+        "E0034",
         `compound assignment is not supported; write \`x = x ${token.text} y\``,
       )
       return left
@@ -2050,6 +2091,7 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<Type
         failAt(
           mutable parser,
           getExpressionPos(key),
+          "E0035",
           "a map key that is not a literal is written [key]: value",
         )
         break
@@ -2200,7 +2242,11 @@ function parseStructLit(
   while (isOk(parser) && !isAt(parser, "}")) {
     if (isAt(parser, "...")) {
       if (spread is Some(_) || Arrays.length(fields) > 0) {
-        failHere(mutable parser, "a struct literal has at most one spread, and it comes first")
+        failHere(
+          mutable parser,
+          "E0036",
+          "a struct literal has at most one spread, and it comes first",
+        )
         break
       }
       advance(mutable parser)
@@ -2218,6 +2264,7 @@ function parseStructLit(
       failAt(
         mutable parser,
         getPos(name),
+        "E0037",
         `write \`${name.text}: ${name.text}\`; field shorthand is not allowed`,
       )
       break
@@ -2278,7 +2325,12 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     advance(mutable parser)
     reportHabitWord(mutable parser, token)
     if (token.text == "null" || token.text == "undefined") {
-      failAt(mutable parser, pos, `there is no ${token.text}; use \`None\` with an \`Option\` type`)
+      failAt(
+        mutable parser,
+        pos,
+        "E0038",
+        `there is no ${token.text}; use \`None\` with an \`Option\` type`,
+      )
       return createDummyExpr()
     }
     return Expr.Ident(newId(mutable parser), pos, token.text)
@@ -2295,7 +2347,12 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
       return parseIfExpr(mutable parser)
     }
     if (token.text == "yield") {
-      failAt(mutable parser, pos, "`yield` is a statement, so it cannot be part of an expression")
+      failAt(
+        mutable parser,
+        pos,
+        "E0046",
+        "`yield` is a statement, so it cannot be part of an expression",
+      )
       return createDummyExpr()
     }
   }
@@ -2335,11 +2392,12 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     failAt(
       mutable parser,
       pos,
+      "E0934",
       "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`",
     )
     return createDummyExpr()
   }
-  failAt(mutable parser, pos, `expected an expression, found ${describeToken(token)}`)
+  failAt(mutable parser, pos, "E0039", `expected an expression, found ${describeToken(token)}`)
   return createDummyExpr()
 }
 
@@ -2382,7 +2440,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
         closeIndex = closeIndex + 1
       }
       if (depth != 0) {
-        failAt(mutable parser, pos, "unterminated ${ in template string")
+        failAt(mutable parser, pos, "E0040", "unterminated ${ in template string")
         return createDummyExpr()
       }
       if (pending > 0) {
@@ -2396,7 +2454,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       }
       const lexed = lex(Str.build(source))
       if (lexed is Err(error)) {
-        failAt(mutable parser, pos, `in template string: ${error}`)
+        failAt(mutable parser, pos, "E0041", `in template string: ${formatLexError(error)}`)
         return createDummyExpr()
       }
       // Report errors inside ${...} at the template's position.
@@ -2416,7 +2474,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
       if (innerParser.failed is Some(diagnostic)) {
-        failAt(mutable parser, diagnostic.pos, diagnostic.message)
+        failAt(mutable parser, diagnostic.pos, diagnostic.code, diagnostic.message)
         return createDummyExpr()
       }
       Arrays.push(mutable parts, expression)
@@ -2545,6 +2603,7 @@ function parsePatternBody(mutable parser: Parser): Pattern {
       failAt(
         mutable parser,
         getPos(number),
+        "E0042",
         `expected a number after - in a pattern, found ${describeToken(number)}`,
       )
       return createDummyPattern()

@@ -22,6 +22,7 @@ export struct Manifest {
 // An error of the loader. An empty file and line 0 print as a bare message
 // (the Go error was not a diagnostic).
 export struct LoadError {
+  code: string // "" for an error that is not a diagnostic
   file: string
   line: int
   column: int
@@ -41,8 +42,8 @@ const OPEN = 91
 const CLOSE = 93
 const COMMA = 44
 
-function createError(line: int, message: string): LoadError {
-  return LoadError { file: "narra.toml", line: line, column: 1, message: message }
+function createError(line: int, code: string, message: string): LoadError {
+  return LoadError { code: code, file: "narra.toml", line: line, column: 1, message: message }
 }
 
 // parseManifest reads the narra.toml keys the compiler uses: [package] name,
@@ -67,7 +68,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     if (Str.startsWith(line, "[[")) {
       if (!Str.endsWith(line, "]]")) {
-        return Err(createError(lineNumber, "expected `]]`"))
+        return Err(createError(lineNumber, "E0405", "expected `]]`"))
       }
       if (inBinary) {
         Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
@@ -80,7 +81,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     if (Str.startsWith(line, "[")) {
       if (!Str.endsWith(line, "]")) {
-        return Err(createError(lineNumber, "expected `]`"))
+        return Err(createError(lineNumber, "E0406", "expected `]`"))
       }
       if (inBinary) {
         Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
@@ -88,7 +89,9 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       }
       table = Str.trim(Str.slice(line, 1, Str.length(line) - 1))
       if (table == "dependencies") {
-        return Err(createError(lineNumber, "[dependencies] is not supported by this compiler yet"))
+        return Err(
+          createError(lineNumber, "E0407", "[dependencies] is not supported by this compiler yet"),
+        )
       }
       continue
     }
@@ -98,7 +101,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       if (!known) {
         continue
       }
-      return Err(createError(lineNumber, "expected `key = value`"))
+      return Err(createError(lineNumber, "E0408", "expected `key = value`"))
     }
     const equalsAt = equalsIndex.value
     const key = Str.trim(Str.slice(line, 0, equalsAt))
@@ -113,7 +116,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     const parsed = parseValue(raw)
     if (parsed is Err(error)) {
-      return Err(createError(lineNumber, `${key}: ${error}`))
+      return Err(createError(lineNumber, "E0409", `${key}: ${error}`))
     }
     const value = parsed.value
     const qualifiedKey = `${table}.${key}`
@@ -122,7 +125,11 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         if (isValidPackageName(packageName)) {
           if (packageName == "std") {
             return Err(
-              createError(lineNumber, "package name \"std\" is reserved for the standard library"),
+              createError(
+                lineNumber,
+                "E0411",
+                "package name \"std\" is reserved for the standard library",
+              ),
             )
           }
           name = packageName
@@ -132,6 +139,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       return Err(
         createError(
           lineNumber,
+          "E0410",
           "package name must be a string of letters, digits and `_`, starting with a letter",
         ),
       )
@@ -145,7 +153,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         }
         continue
       }
-      return Err(createError(lineNumber, `${key} must be a string`))
+      return Err(createError(lineNumber, "E0412", `${key} must be a string`))
     }
     if (qualifiedKey == "link.libraries" || qualifiedKey == "link.search") {
       if (value is Value.VList(items)) {
@@ -156,22 +164,26 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         }
         continue
       }
-      return Err(createError(lineNumber, `${key} must be an array of strings`))
+      return Err(createError(lineNumber, "E0413", `${key} must be an array of strings`))
     }
   }
   if (inBinary) {
     Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
   }
   if (name == "") {
-    return Err(createError(0, "[package] needs a name"))
+    return Err(createError(0, "E0414", "[package] needs a name"))
   }
   let seen: Map<string, bool> = Map {}
   for (const binary of Arrays.values(binaries)) {
     if (binary.name == "" || binary.entry == "") {
-      return Err(createError(0, "each [[binary]] needs a name and an entry such as \"cli.run\""))
+      return Err(
+        createError(0, "E0415", "each [[binary]] needs a name and an entry such as \"cli.run\""),
+      )
     }
     if (seen[binary.name] is Some(_)) {
-      return Err(createError(0, `two [[binary]] entries are named ${quoteGo(binary.name)}`))
+      return Err(
+        createError(0, "E0416", `two [[binary]] entries are named ${quoteGo(binary.name)}`),
+      )
     }
     seen[binary.name] = true
   }

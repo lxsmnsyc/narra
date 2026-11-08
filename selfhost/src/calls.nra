@@ -51,6 +51,7 @@ import {
   findAlias,
   startsUpper,
   containsOpen,
+  isImplicitEffectParameter,
 } from "narrac/exprs"
 import { checkConstructor } from "narrac/ctors"
 import { addFuncInstance } from "narrac/instances"
@@ -159,7 +160,10 @@ function checkFunctionCall<W: Walker>(
   for (const param of Arrays.values(parameters)) {
     Arrays.push(mutable wants, Some(checker.paramTypes[param.id]))
   }
+  const savedCallee = checker.calleeIndex
+  checker.calleeIndex = funcIndex
   checkArguments(mutable checker, walker, pos, arguments, parameters, wants)
+  checker.calleeIndex = savedCallee
   return checker.functions[funcIndex].result
 }
 
@@ -290,7 +294,7 @@ function checkDottedCall<W: Walker>(
     const fieldIndex = findField(checker.structs[index].fields, name)
     if (fieldIndex >= 0) {
       const fieldType = checker.structs[index].fields[fieldIndex].fieldType
-      if (fieldType is Type.TFunc(funcParams, funcResult)) {
+      if (fieldType is Type.TFunc(funcParams, funcResult, _, _)) {
         setNodeType(mutable checker, calleeId, fieldType)
         return checkValueCallOf(
           mutable checker,
@@ -491,8 +495,8 @@ function shapeMismatch(
       }
       return true
     }
-    Type.TFunc(patternParams, patternResult) => {
-      if (actual is Type.TFunc(actualParams, actualResult)) {
+    Type.TFunc(patternParams, patternResult, _, _) => {
+      if (actual is Type.TFunc(actualParams, actualResult, _, _)) {
         if (Arrays.length(actualParams) != Arrays.length(patternParams)) {
           // An arrow function with the wrong arity already has its own error.
           return false
@@ -596,6 +600,8 @@ function checkGenericCall<W: Walker>(
 
   // An argument whose parameter type is still open is checked without an
   // expected type; an arrow function argument gets a hint.
+  const savedCallee = checker.calleeIndex
+  checker.calleeIndex = funcIndex
   checkGenericArguments(
     mutable checker,
     walker,
@@ -605,6 +611,7 @@ function checkGenericCall<W: Walker>(
     typeParameters,
     bindings,
   )
+  checker.calleeIndex = savedCallee
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < Arrays.length(parameters)) {
       const argType = getArgumentType(checker, arguments[index])
@@ -656,12 +663,14 @@ function checkGenericCall<W: Walker>(
       const declared = checker.paramTypes[parameters[index].id]
       const paramType = substitute(mutable checker, declared, bindings)
       const argType = getArgumentType(checker, arguments[index])
+      checker.looseFunctions = isImplicitEffectParameter(checker, funcIndex, parameters[index])
       expectType(
         mutable checker,
         getExpressionPos(arguments[index].value),
         Some(paramType),
         argType,
       )
+      checker.looseFunctions = false
     }
   }
   const result = substitute(mutable checker, info.result, bindings)

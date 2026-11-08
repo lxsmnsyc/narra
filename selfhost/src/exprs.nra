@@ -66,6 +66,7 @@ import {
   getExpressionPos,
   isNumeric,
   GeneratorUse,
+  FunctionStore,
   generatorEffectList,
 } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
@@ -337,11 +338,48 @@ export function expectType(
         }
       }
     }
+    if (expected is Type.TFunc(wantParameters, wantResult, _, wantBinder)) {
+      if (got is Type.TFunc(gotParameters, gotResult, _, _)) {
+        if (wantParameters == gotParameters && wantResult == gotResult) {
+          recordFunctionStore(mutable checker, pos, expected, wantBinder, got)
+          return
+        }
+      }
+    }
     if (expected != got) {
       const message = `expected ${describeType(checker, expected, got)}, found ${describeType(checker, got, expected)}`
       reportError(mutable checker, pos, "E0119", message)
     }
   }
+}
+
+// recordFunctionStore notes a function value stored where a function type with
+// the same signature is expected. The effect pass checks the effects of the
+// value against the type (D86). An expected type naming the effect variables of
+// another function is a parameter of a call: the variables take the value's
+// effects.
+function recordFunctionStore(
+  mutable checker: Checker,
+  pos: Pos,
+  want: Type,
+  wantBinder: int,
+  got: Type,
+) uses alloc {
+  if (checker.looseFunctions || (wantBinder >= 0 && wantBinder != checker.functionIndex)) {
+    return
+  }
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  const body = checker.body
+  Arrays.push(mutable checker.functionStores, FunctionStore {
+    pos: pos,
+    file: file,
+    body: body,
+    want: want,
+    got: got,
+  })
 }
 
 // expectGenerator checks a generator value against an expected generator
@@ -1411,7 +1449,7 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
       containsOpen(checker, element, parameters) || containsOpen(checker, input, parameters)
     Type.TMap(key, value) =>
       containsOpen(checker, key, parameters) || containsOpen(checker, value, parameters)
-    Type.TFunc(functionParameters, result) =>
+    Type.TFunc(functionParameters, result, _, _) =>
       anyOpen(checker, functionParameters, parameters) || containsOpen(checker, result, parameters)
     Type.TStruct(index) => anyOpen(checker, checker.structs[index].arguments, parameters)
     Type.TEnum(index) => anyOpen(checker, checker.enums[index].arguments, parameters)
@@ -1747,6 +1785,20 @@ export function checkArguments<W: Walker>(
   checkBorrowed(mutable checker, arguments)
 }
 
+// isImplicitEffectParameter reports a function-type parameter without `uses`
+// of a private function. The effect pass infers private functions, so the
+// parameter acts as an effect variable: a call has the effects of the
+// argument.
+export function isImplicitEffectParameter(checker: Checker, funcIndex: int, param: Param): bool {
+  if (funcIndex < 0 || checker.functions[funcIndex].declaration.exported) {
+    return false
+  }
+  if (param.type is Some(typeExpression)) {
+    return typeExpression.isFunc && Arrays.length(typeExpression.effects) == 0
+  }
+  return false
+}
+
 // checkArgument checks argument index of a call against its parameter: the
 // non-escaping rule, the expected type and the mutable marking. The index
 // of a mutable argument is added to mutables (Go's arguments loop body).
@@ -1762,8 +1814,11 @@ export function checkArgument<W: Walker>(
   const arg = arguments[index]
   const param = parameters[index]
   markArgument(mutable checker, param, arg.value)
+  const callee = checker.calleeIndex
   const argType = checkExpression(mutable checker, walker, arg.value, want)
+  checker.looseFunctions = isImplicitEffectParameter(checker, callee, param)
   expectType(mutable checker, getExpressionPos(arg.value), want, argType)
+  checker.looseFunctions = false
 
   // The argument is mutable exactly when the parameter is.
   const argPos = getExpressionPos(arg.value)
@@ -2096,7 +2151,9 @@ export function checkBuiltinCall<W: Walker>(
       checkMutableArgument(mutable checker, arg.value)
       Arrays.push(mutable mutables, index)
     }
+    checker.looseFunctions = true
     expectType(mutable checker, getExpressionPos(arg.value), paramWant, got)
+    checker.looseFunctions = false
   }
   checkExclusive(mutable checker, arguments, mutables)
   return result
@@ -2135,7 +2192,9 @@ export function checkFixedCall<W: Walker>(
       )
     }
     const got = checkExpression(mutable checker, walker, arg.value, Some(parameters[index]))
+    checker.looseFunctions = true
     expectType(mutable checker, getExpressionPos(arg.value), Some(parameters[index]), got)
+    checker.looseFunctions = false
   }
   return result
 }

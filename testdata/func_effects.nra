@@ -1,0 +1,61 @@
+// Function types carry their effects (D86). Everything here is accepted:
+// values with fewer effects fit slots with more, and an effect variable
+// takes the effects of the argument at each call.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+function loud(value: int): int {
+  print("loud")
+  return value + 1
+}
+
+function quiet(value: int): int {
+  return value * 2
+}
+
+export function twice<effect E>(f: (value: int) => int uses E, value: int): int uses E {
+  return f(f(value))
+}
+
+export function wrap<effect E>(escaping f: (value: int) => int uses E): (value: int) => int uses E {
+  return f
+}
+
+export function wrapAll<effect E>(escaping f: (value: int) => int uses E): Array<(
+  value: int,
+) => int uses E> uses alloc {
+  return [f]
+}
+
+export struct Plain {
+  f: (value: int) => int
+}
+
+export struct Loud {
+  f: (value: int) => int uses io
+}
+
+export struct Holder<T> {
+  value: T
+}
+
+// A pure function in a slot that allows io.
+function makeLoud(): Loud {
+  return Loud { f: quiet }
+}
+
+// An effect variable bound to a pure function leaves the caller pure.
+export function pureCalls(plain: Plain): int uses alloc {
+  const fs = wrapAll(quiet)
+  return wrap(quiet)(1) + twice(plain.f, 1) + wrap(plain.f)(2) + fs[0](3) + wrapAll(quiet)[0](4)
+}
+
+export function loudCalls(): int uses io, alloc {
+  const holder: Holder<(value: int) => int uses io> = Holder { value: loud }
+  return wrap(loud)(1) + twice(quiet, 2) + holder.value(3) + makeLoud().f(4)
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  print(Int.toString(pureCalls(Plain { f: quiet }) + loudCalls() + Arrays.length(args) * 0))
+  return 0
+}

@@ -43,6 +43,7 @@ import {
   ImplRef,
   MapKeyCheck,
   typeKey,
+  plainTypeKey,
   isBoxedEnum,
   isInteger,
 } from "narrac/types"
@@ -466,6 +467,17 @@ export struct Checker {
   // the inferred effects of each private function* by generatorKey, filled
   // by the effect pass.
   generatorUses: Array<GeneratorUse> = []
+  // Function values stored where a function type with the same signature is
+  // expected, checked by the effect pass against what the value does (D86).
+  // looseFunctions is set while the argument for a function-type parameter of
+  // a private function is checked: such a parameter takes the effects of the
+  // argument at each call.
+  functionStores: Array<FunctionStore> = []
+  looseFunctions: bool = false
+  // False while the emitter writes the C name table: C types carry no effects.
+  printEffects: bool = true
+  // The Checker.functions index of the function whose call is being checked, or -1.
+  calleeIndex: int = -1
   generatorEffects: Map<string, Array<string>>
   // The type arguments written on the call being checked, by call node id
   // (`f<int>(x)`). checkCallEndingNarrowing sets them; the generic and trait
@@ -810,7 +822,9 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TFunc(
       parameters,
       result,
-    ) => `(${typeList(checker, parameters)}) => ${typeString(checker, result)}`
+      effects,
+      binder,
+    ) => `(${typeList(checker, parameters)}) => ${typeString(checker, result)}${functionUsesSuffix(checker, effects, binder)}`
     Type.TRange => "Range"
     Type.TGenerator(
       element,
@@ -855,6 +869,19 @@ export function generatorEffectList(checker: Checker, type: Type): Array<string>
 export function generatorKey(checker: Checker, index: int): string uses alloc {
   const info = checker.functions[index]
   return `${info.module}|${Int.toString(info.declaration.pos.line)}:${Int.toString(info.declaration.pos.column)}`
+}
+
+// functionUsesSuffix writes the effects of a function type, except the
+// variables of another function: those are bound at each call.
+export function functionUsesSuffix(
+  checker: Checker,
+  effects: Array<string>,
+  binder: int,
+): string uses alloc {
+  if (!checker.printEffects || (binder >= 0 && binder != checker.functionIndex)) {
+    return ""
+  }
+  return usesSuffix(effects)
 }
 
 // usesSuffix writes an effect list as it follows a type, ` uses a, b`.
@@ -902,7 +929,7 @@ export function typeModule(checker: Checker, type: Type): string {
 export function containsTypeParameter(checker: Checker, type: Type): bool {
   return match (type) {
     Type.TParam(_) => true
-    Type.TFunc(parameters, result) =>
+    Type.TFunc(parameters, result, _, _) =>
       anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
     Type.TArray(element) => containsTypeParameter(checker, element)
     Type.TBox(element) => containsTypeParameter(checker, element)
@@ -1032,6 +1059,16 @@ function visitOrder(
 export struct GeneratorUse {
   pos: Pos
   file: string
+  want: Type
+  got: Type
+}
+
+// A function value used where a function type with the same signature is
+// expected (D86). The value may have fewer effects than the type.
+export struct FunctionStore {
+  pos: Pos
+  file: string
+  body: int
   want: Type
   got: Type
 }
@@ -1465,7 +1502,7 @@ export function findBody(checker: Checker, key: string): int {
 // (Go's arrayOf, boxOf, mapOf and funcOf, which intern by type id) and returns it.
 // Types that hold a type parameter are not recorded, as Go drops them in finish.
 export function internComposite(mutable checker: Checker, type: Type): Type uses alloc {
-  const key = typeKey(type)
+  const key = plainTypeKey(type)
   if (checker.composites[key] is None && !containsTypeParameter(checker, type)) {
     checker.composites[key] = type
   }

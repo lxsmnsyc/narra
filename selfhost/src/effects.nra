@@ -24,6 +24,7 @@ import { quoteDump } from "narrac/modules"
 import { Type } from "narrac/types"
 import {
   Checker,
+  FunctionStore,
   BodyRoot,
   Ref,
   typeString,
@@ -40,7 +41,6 @@ import { describeType, generatorUseFails } from "narrac/exprs"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
-import * as Boxes from "std/box"
 import * as Ranges from "std/range"
 
 export struct Effect {
@@ -61,7 +61,10 @@ export struct EffectState {
   bodyIndex: Map<string, int> // functionKey of a func, impl or test body -> Checker.bodies
   functions: Map<string, Array<Effect>> // body effects of every analysed function
   locals: Map<string, Array<Effect>> // effects of the function a local holds
-  localTypes: Map<string, TypeExpr> // the written type of a local, when it can be followed
+  // The expressions of the reporting walk by body and position, for the
+  // function stores that name a position (checkFunctionStores).
+  valuesAt: Map<string, Array<Expr>>
+  sources: Map<string, Expr> // the call a local's value comes from
   arrows: Map<int, Array<Effect>>
   entries: Map<string, bool> // the entry functions
   report: bool
@@ -150,7 +153,8 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     bodyIndex: Map {},
     functions: Map {},
     locals: Map {},
-    localTypes: Map {},
+    valuesAt: Map {},
+    sources: Map {},
     arrows: Map {},
     entries: Map {},
     report: false,
@@ -226,6 +230,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
   }
   walkAll(mutable checker, mutable state, true)
   checkGeneratorUses(mutable checker)
+  checkFunctionStores(mutable checker, mutable state)
   return state
 }
 
@@ -238,6 +243,73 @@ function checkGeneratorUses(mutable checker: Checker) uses alloc {
       reportErrorIn(mutable checker, use.file, use.pos, "E0119", message)
     }
   }
+}
+
+// checkFunctionStores checks each function value stored where a function type
+// with the same signature is expected (D86): the value may do only what the
+// type lists. The value is the expression at the recorded position when it is
+// a function written there (an arrow, a named function, a local), so what it
+// does counts; otherwise the effects of its type count.
+function checkFunctionStores(mutable checker: Checker, mutable state: EffectState) uses alloc {
+  const saved = state.body
+  for (const store of Arrays.values(checker.functionStores)) {
+    if (Arrays.length(checker.bodies[store.body].typeArguments) > 0) {
+      continue
+    }
+    if (store.want is Type.TFunc(wantParameters, wantResult, wantEffects, _)) {
+      if (store.got is Type.TFunc(_, _, gotEffects, _)) {
+        state.body = store.body
+        let found = gotEffects
+        if (findStoredValue(checker, state, store) is Some(effects)) {
+          found = effects
+        }
+        let extra = false
+        for (const name of Arrays.values(found)) {
+          extra = extra || !containsName(wantEffects, name)
+        }
+        if (extra && !hasErrorAt(checker, store.file, store.pos)) {
+          const gotType = Type.TFunc(wantParameters, wantResult, found, -1)
+          const message = `expected ${describeType(checker, store.want, gotType)}, found ${describeType(checker, gotType, store.want)}`
+          reportErrorIn(mutable checker, store.file, store.pos, "E0119", message)
+        }
+      }
+    }
+  }
+  state.body = saved
+}
+
+function hasErrorAt(checker: Checker, file: string, pos: Pos): bool {
+  for (const error of Arrays.values(checker.errors)) {
+    if (error.file == file && error.pos.line == pos.line && error.pos.column == pos.column) {
+      return true
+    }
+  }
+  return false
+}
+
+// findStoredValue is the sorted effects of the function value a store names,
+// or None when no expression of the walk starts there with the stored type.
+function findStoredValue(
+  checker: Checker,
+  state: EffectState,
+  store: FunctionStore,
+): Option<Array<string>> uses alloc {
+  if (state.valuesAt[positionKey(store.body, store.pos)] is Some(candidates)) {
+    for (const candidate of Arrays.values(candidates)) {
+      if (findNodeType(checker, store.body, getExpressionId(candidate)) is Some(candidateType)) {
+        if (candidateType == store.got) {
+          if (valueEffects(checker, state, candidate) is Some(set)) {
+            return Some(sortEffectNames(set))
+          }
+        }
+      }
+    }
+  }
+  return None
+}
+
+function positionKey(bodyIndex: int, pos: Pos): string uses alloc {
+  return `${Int.toString(bodyIndex)}|${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
 // generatorEffects is the set a generator value has when it runs: the
@@ -343,24 +415,6 @@ function analyseFunction(
   }
   state.body = bodyIndex
 
-  // A parameter with a function type holds a function with the declared effects.
-  for (const param of Arrays.values(declaration.parameters)) {
-    if (param.type is Some(typeExpression)) {
-      const localIndex = findDeclaredLocal(checker, bodyIndex, param.id)
-      if (localIndex >= 0) {
-        state.localTypes[localKey(bodyIndex, localIndex)] = typeExpression
-      }
-      if (typeExpression.isFunc) {
-        if (localIndex >= 0) {
-          let declaredSet: Array<Effect> = []
-          for (const name of Arrays.values(typeExpression.effects)) {
-            addEffect(mutable declaredSet, name, param.pos, "")
-          }
-          state.locals[localKey(bodyIndex, localIndex)] = declaredSet
-        }
-      }
-    }
-  }
   let out: Array<Effect> = []
   if (declaration.body is Some(block)) {
     walkBlock(mutable checker, mutable state, mutable out, block)
@@ -595,201 +649,98 @@ function concreteEffects(state: EffectState, callee: Callee): Array<Effect> uses
   return set
 }
 
-// valueEffects is the set of a function value written as an expression, or
-// None when it is not known.
+// valueEffects is the set of a function value written as an expression: what
+// an arrow, a named function or a tracked local does, or the effects of the
+// expression's function type (D86). It is None when the expression is not a
+// function.
 function valueEffects(
   checker: Checker,
   state: EffectState,
   expression: Expr,
 ): Option<Array<Effect>> uses alloc {
   const bodyIndex = state.body
-  return match (expression) {
+  const tracked = match (expression) {
     Expr.ArrowExpr(nodeId, _, _, _, _, _) => state.arrows[nodeId]
     Expr.Ident(nodeId, _, _) => findNamedValue(checker, state, bodyIndex, nodeId)
-    Expr.FieldExpr(nodeId, _, _, _) => findFieldValue(checker, state, bodyIndex, nodeId, expression)
-    Expr.IndexExpr(_, _, _, _) => findWrittenEffects(checker, state, expression)
-    Expr.CallExpr(_, _, _, _, _) => findWrittenEffects(checker, state, expression)
+    Expr.FieldExpr(nodeId, _, _, _) => findFunctionValue(checker, state, bodyIndex, nodeId)
     _ => None
   }
+  if (tracked is Some(_)) {
+    return tracked
+  }
+  return findTypeEffects(checker, state, expression)
 }
 
-// findFieldValue is the set of a named function used as a value, or of a
-// struct field whose written type is a function type.
-function findFieldValue(
+// findTypeEffects is the set a function type gives the value of an
+// expression. An effect variable of the function that produced the value
+// takes the effects bound at that call.
+function findTypeEffects(
   checker: Checker,
   state: EffectState,
-  bodyIndex: int,
-  nodeId: int,
   expression: Expr,
 ): Option<Array<Effect>> uses alloc {
-  if (findFunctionValue(checker, state, bodyIndex, nodeId) is Some(set)) {
+  if (
+    findNodeType(checker, state.body, getExpressionId(expression)) is Some(
+      Type.TFunc(_, _, effects, binder),
+    )
+  ) {
+    let source: Option<Expr> = None
+    if (binder >= 0) {
+      source = findSourceCall(checker, state, expression)
+    }
+    let set: Array<Effect> = []
+    for (const name of Arrays.values(effects)) {
+      for (const passed of Arrays.values(bindTypeEffect(checker, state, source, name))) {
+        addEffect(mutable set, passed, Pos { line: 0, column: 0 }, "")
+      }
+    }
     return Some(set)
   }
-  return findWrittenEffects(checker, state, expression)
-}
-
-// findWrittenEffects is the set of a field or an element whose written type
-// is a function type, or None when the written type is not known.
-function findWrittenEffects(
-  checker: Checker,
-  state: EffectState,
-  expression: Expr,
-): Option<Array<Effect>> uses alloc {
-  if (findWrittenType(checker, state, expression) is Some(written)) {
-    if (written.isFunc) {
-      let set: Array<Effect> = []
-      for (const name of Arrays.values(written.effects)) {
-        addEffect(mutable set, name, Pos { line: 0, column: 0 }, "")
-      }
-      return Some(set)
-    }
-  }
   return None
 }
 
-// findWrittenType is the written type of an expression, when it can be
-// followed: a parameter or an annotated local, a field of a struct, an
-// element of an array or map, the result of a call. It is None when the type
-// was inferred from something that has no written type.
-function findWrittenType(
+// bindTypeEffect is the effects an effect name of a function type stands for:
+// the name itself, or when it is a variable of the function that made the
+// value, the effects bound to it at that call.
+function bindTypeEffect(
+  checker: Checker,
+  state: EffectState,
+  source: Option<Expr>,
+  name: string,
+): Array<string> uses alloc {
+  if (source is Some(Expr.CallExpr(callId, _, _, _, arguments))) {
+    if (findCallee(checker, findRef(checker, state.body, callId)) is Some(callee)) {
+      if (containsName(callee.declaration.effectParameters, name)) {
+        return findBoundEffects(checker, state, callee.declaration, arguments, name)
+      }
+    }
+  }
+  return [name]
+}
+
+// findSourceCall is the call an expression comes from, through an element or
+// a field of its result: `wrap(f)`, `wrap(f)[0]`.
+function findSourceCall(
   checker: Checker,
   state: EffectState,
   expression: Expr,
-): Option<TypeExpr> uses alloc {
+): Option<Expr> uses alloc {
   return match (expression) {
-    Expr.Ident(nodeId, _, _) => findLocalType(checker, state, nodeId)
-    Expr.FieldExpr(_, _, target, name) => findFieldType(checker, state, target, name)
-    Expr.IndexExpr(_, _, target, _) => findElementType(checker, state, target)
-    Expr.CallExpr(nodeId, _, callee, _, arguments) => findCallResultType(
-      checker,
-      state,
-      nodeId,
-      callee,
-      arguments,
-    )
+    Expr.CallExpr(_, _, _, _, _) => Some(expression)
+    Expr.IndexExpr(_, _, target, _) => findSourceCall(checker, state, target)
+    Expr.FieldExpr(_, _, target, _) => findSourceCall(checker, state, target)
+    Expr.Ident(nodeId, _, _) => findLocalSource(checker, state, nodeId)
     _ => None
   }
 }
 
-function findLocalType(
+function findLocalSource(
   checker: Checker,
   state: EffectState,
   nodeId: int,
-): Option<TypeExpr> uses alloc {
+): Option<Expr> uses alloc {
   if (findRef(checker, state.body, nodeId) is Ref.Local(localIndex)) {
-    return state.localTypes[localKey(state.body, localIndex)]
-  }
-  return None
-}
-
-function findFieldType(
-  checker: Checker,
-  state: EffectState,
-  target: Expr,
-  name: string,
-): Option<TypeExpr> uses alloc {
-  if (findNodeType(checker, state.body, getExpressionId(target)) is Some(Type.TStruct(index))) {
-    const info = checker.structs[index]
-    if (info.tuple) {
-      return None
-    }
-    for (const declaration of Arrays.values(checker.scopes[info.scope].declarations)) {
-      if (declaration is Decl.Struct(structDecl)) {
-        if (structDecl.name == info.name) {
-          for (const field of Arrays.values(structDecl.fields)) {
-            if (field.name == name) {
-              return Some(field.type)
-            }
-          }
-        }
-      }
-    }
-  }
-  return None
-}
-
-function findElementType(
-  checker: Checker,
-  state: EffectState,
-  target: Expr,
-): Option<TypeExpr> uses alloc {
-  if (findWrittenType(checker, state, target) is Some(written)) {
-    if (written.isFunc) {
-      return None
-    }
-    if (written.name == "Array" && Arrays.length(written.arguments) == 1) {
-      return Some(written.arguments[0])
-    }
-  }
-  return None
-}
-
-// bindUses copies the written result type of a callee, replacing each effect
-// variable of the callee in a `uses` list by the effects bound to it at the
-// call, so a caller never sees the callee's variables.
-function bindUses(
-  checker: Checker,
-  state: EffectState,
-  declaration: FuncDecl,
-  arguments: Array<Arg>,
-  typeExpression: TypeExpr,
-): TypeExpr uses alloc {
-  if (Arrays.length(declaration.effectParameters) == 0) {
-    return typeExpression
-  }
-  let effects: Array<string> = []
-  for (const name of Arrays.values(typeExpression.effects)) {
-    if (!containsName(declaration.effectParameters, name)) {
-      Arrays.push(mutable effects, name)
-      continue
-    }
-    for (const passed of Arrays.values(
-      findBoundEffects(checker, state, declaration, arguments, name),
-    )) {
-      Arrays.push(mutable effects, passed)
-    }
-  }
-  let boundArguments: Array<TypeExpr> = []
-  for (const argument of Arrays.values(typeExpression.arguments)) {
-    Arrays.push(mutable boundArguments, bindUses(checker, state, declaration, arguments, argument))
-  }
-  let boundResult = typeExpression.result
-  if (typeExpression.result is Some(boxed)) {
-    boundResult = Some(Boxes.new(bindUses(checker, state, declaration, arguments, boxed.value)))
-  }
-  return TypeExpr {
-    pos: typeExpression.pos,
-    name: typeExpression.name,
-    arguments: boundArguments,
-    isFunc: typeExpression.isFunc,
-    result: boundResult,
-    effects: effects,
-    isTuple: typeExpression.isTuple,
-  }
-}
-
-function findCallResultType(
-  checker: Checker,
-  state: EffectState,
-  nodeId: int,
-  callee: Expr,
-  arguments: Array<Arg>,
-): Option<TypeExpr> uses alloc {
-  const ref = findRef(checker, state.body, nodeId)
-  if (findCallee(checker, ref) is Some(found)) {
-    if (found.declaration.result is Some(resultType)) {
-      return Some(bindUses(checker, state, found.declaration, arguments, resultType))
-    }
-    return None
-  }
-  if (ref is Ref.Value) {
-    if (findWrittenType(checker, state, callee) is Some(written)) {
-      if (written.isFunc) {
-        if (written.result is Some(boxed)) {
-          return Some(boxed.value)
-        }
-      }
-    }
+    return state.sources[localKey(state.body, localIndex)]
   }
   return None
 }
@@ -838,18 +789,13 @@ function walkStatement(
 ) uses alloc {
   match (statement) {
     Stmt.BlockStmt(block) => walkBlock(mutable checker, mutable state, mutable out, block)
-    Stmt.VarStmt(nodeId, _, _, _, _, declaredType, value) => {
+    Stmt.VarStmt(nodeId, _, _, _, _, _, value) => {
       walkExpression(mutable checker, mutable state, mutable out, value)
       // A local bound to a function value holds its effects.
       const localIndex = findDeclaredLocal(checker, state.body, nodeId)
       if (localIndex >= 0) {
-        // The written type of the local, or the one of its value.
-        let written = declaredType
-        if (written is None) {
-          written = findWrittenType(checker, state, value)
-        }
-        if (written is Some(writtenType)) {
-          state.localTypes[localKey(state.body, localIndex)] = writtenType
+        if (findSourceCall(checker, state, value) is Some(call)) {
+          state.sources[localKey(state.body, localIndex)] = call
         }
         if (valueEffects(checker, state, value) is Some(set)) {
           state.locals[localKey(state.body, localIndex)] = set
@@ -914,6 +860,8 @@ function walkLocalAssignment(
         let merged: Array<Effect> = []
         if (state.locals[key] is Some(existing)) {
           merged = existing
+        } else if (findTypeEffects(checker, state, target) is Some(declared)) {
+          merged = declared
         }
         for (const effect of Arrays.values(set)) {
           if (hasEffect(merged, effect.name)) {
@@ -962,6 +910,15 @@ function walkExpression(
   mutable out: Array<Effect>,
   expression: Expr,
 ) uses alloc {
+  if (state.report) {
+    const key = positionKey(state.body, getExpressionPos(expression))
+    let known: Array<Expr> = []
+    if (state.valuesAt[key] is Some(existing)) {
+      known = existing
+    }
+    Arrays.push(mutable known, expression)
+    state.valuesAt[key] = known
+  }
   match (expression) {
     Expr.TemplateLit(_, pos, parts) => {
       for (const part of Arrays.values(parts)) {

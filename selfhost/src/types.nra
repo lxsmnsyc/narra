@@ -50,7 +50,7 @@ export enum Type derives Equatable {
   TArray(element: Type)
   TBox(element: Type)
   TMap(key: Type, valueType: Type)
-  TFunc(parameters: Array<Type>, result: Type)
+  TFunc(parameters: Array<Type>, result: Type, effects: Array<string>, binder: int)
   // The subject of a for loop over a range (body checker only).
   TRange
   // Generator<element> uses effects (D78, Go's GeneratorType): effects are
@@ -177,6 +177,17 @@ export function isUnsignedInteger(type: Type): bool {
 // maps keyed by type. Go keys by C name (typeID); this key has no hash and
 // is unique because struct, enum, distinct and parameter types are indexes.
 export function typeKey(type: Type): string uses alloc {
+  return keyOf(type, false)
+}
+
+// plainTypeKey is typeKey without the effects of function types. Two types
+// with the same plain key have one C name, so the emitter makes one of them
+// (D86).
+export function plainTypeKey(type: Type): string uses alloc {
+  return keyOf(type, true)
+}
+
+function keyOf(type: Type, plain: bool): string uses alloc {
   return match (type) {
     Type.TInt => "int"
     Type.TI8 => "i8"
@@ -196,10 +207,16 @@ export function typeKey(type: Type): string uses alloc {
     Type.TEnum(index) => `E${Int.toString(index)}`
     Type.TDistinct(index) => `D${Int.toString(index)}`
     Type.TParam(index) => `P${Int.toString(index)}`
-    Type.TArray(element) => `A(${typeKey(element)})`
-    Type.TBox(element) => `B(${typeKey(element)})`
-    Type.TMap(key, value) => `M(${typeKey(key)},${typeKey(value)})`
-    Type.TFunc(parameters, result) => `F(${typeKeys(parameters)};${typeKey(result)})`
+    Type.TArray(element) => `A(${keyOf(element, plain)})`
+    Type.TBox(element) => `B(${keyOf(element, plain)})`
+    Type.TMap(key, value) => `M(${keyOf(key, plain)},${keyOf(value, plain)})`
+    Type.TFunc(parameters, result, effects, binder) => keyOfFunction(
+      parameters,
+      result,
+      effects,
+      binder,
+      plain,
+    )
     Type.TRange => "Range"
     Type.TGenerator(
       element,
@@ -207,20 +224,38 @@ export function typeKey(type: Type): string uses alloc {
       binder,
       origin,
       input,
-    ) => `G(${typeKey(element)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${typeKey(input)})`
+    ) => `G(${keyOf(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${keyOf(input, plain)})`
     Type.TModule(path) => `module ${path}`
   }
 }
 
-export function typeKeys(types: Array<Type>): string uses alloc {
+function keyOfFunction(
+  parameters: Array<Type>,
+  result: Type,
+  effects: Array<string>,
+  binder: int,
+  plain: bool,
+): string uses alloc {
+  let names = ""
+  if (!plain) {
+    names = `;${Str.join(effects, ",")};${Int.toString(binder)}`
+  }
+  return `F(${keysOf(parameters, plain)};${keyOf(result, plain)}${names})`
+}
+
+function keysOf(types: Array<Type>, plain: bool): string uses alloc {
   let out = ""
   for (const index of Ranges.between(0, Arrays.length(types))) {
     if (index > 0) {
       out = `${out},`
     }
-    out = `${out}${typeKey(types[index])}`
+    out = `${out}${keyOf(types[index], plain)}`
   }
   return out
+}
+
+export function typeKeys(types: Array<Type>): string uses alloc {
+  return keysOf(types, false)
 }
 
 // isBoxedEnum reports whether an enum keeps its variant fields on the heap.

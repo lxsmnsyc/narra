@@ -151,17 +151,9 @@ export function funcResult(
   return Type.TVoid
 }
 
-// makeGenerator makes the type Generator<element> uses effects (Go's
-// generatorOf). Effect variables in the list belong to the function whose
-// signature or body is being checked (D78).
-function makeGenerator(
-  checker: Checker,
-  element: Type,
-  input: Type,
-  effects: Array<string>,
-): Type uses alloc {
+// sortEffects lists effect names once each, in byte order.
+function sortEffects(effects: Array<string>): Array<string> uses alloc {
   let sorted: Array<string> = []
-  let binder = -1
   for (const name of Arrays.values(effects)) {
     let seen = false
     for (const other of Arrays.values(sorted)) {
@@ -179,17 +171,39 @@ function makeGenerator(
       sorted[index - 1] = swap
       index = index - 1
     }
-    if (checker.functionIndex >= 0) {
-      for (const variable of Arrays.values(
-        checker.functions[checker.functionIndex].declaration.effectParameters,
-      )) {
-        if (variable == name) {
-          binder = checker.functionIndex
-        }
+  }
+  return sorted
+}
+
+// findEffectBinder is the Checker.functions index of the function being
+// checked when the effects name one of its effect variables, or -1.
+function findEffectBinder(checker: Checker, effects: Array<string>): int {
+  if (checker.functionIndex < 0) {
+    return -1
+  }
+  for (const name of Arrays.values(effects)) {
+    for (const variable of Arrays.values(
+      checker.functions[checker.functionIndex].declaration.effectParameters,
+    )) {
+      if (variable == name) {
+        return checker.functionIndex
       }
     }
   }
-  return Type.TGenerator(element, sorted, binder, -1, input)
+  return -1
+}
+
+// makeGenerator makes the type Generator<element> uses effects (Go's
+// generatorOf). Effect variables in the list belong to the function whose
+// signature or body is being checked (D78).
+function makeGenerator(
+  checker: Checker,
+  element: Type,
+  input: Type,
+  effects: Array<string>,
+): Type uses alloc {
+  const sorted = sortEffects(effects)
+  return Type.TGenerator(element, sorted, findEffectBinder(checker, sorted), -1, input)
 }
 
 export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
@@ -199,7 +213,9 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
       Arrays.push(mutable parameters, resolveType(mutable checker, argument))
     }
     const resultType = funcResult(mutable checker, typeExpr.result)
-    return internComposite(mutable checker, Type.TFunc(parameters, resultType))
+    const sorted = sortEffects(typeExpr.effects)
+    const binder = findEffectBinder(checker, sorted)
+    return internComposite(mutable checker, Type.TFunc(parameters, resultType, sorted, binder))
   }
   if (typeExpr.isTuple) {
     return tupleType(mutable checker, typeExpr)
@@ -684,13 +700,13 @@ export function substitute(
       const newValue = substitute(mutable checker, value, bindings)
       return internComposite(mutable checker, Type.TMap(newKey, newValue))
     }
-    Type.TFunc(parameters, result) => {
+    Type.TFunc(parameters, result, effects, binder) => {
       if (!containsTypeParameter(checker, type)) {
         return type
       }
       const newParams = substituteAll(mutable checker, parameters, bindings)
       const newResult = substitute(mutable checker, result, bindings)
-      return internComposite(mutable checker, Type.TFunc(newParams, newResult))
+      return internComposite(mutable checker, Type.TFunc(newParams, newResult, effects, binder))
     }
     Type.TStruct(index) => {
       const info = checker.structs[index]

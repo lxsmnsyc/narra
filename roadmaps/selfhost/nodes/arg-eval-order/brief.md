@@ -1,7 +1,7 @@
 ---
 id: arg-eval-order
 title: Evaluate call arguments in written order
-status: active
+status: done
 priority: must
 type: fix
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 188000
 owns:
   - compiler/testdata/arg_eval_order*
   - roadmaps/selfhost/nodes/arg-eval-order/**
@@ -53,11 +53,13 @@ Fix a bug on main, found in the PR #96 review (inbox, 2026-11-07): call argument
 
 ## Acceptance
 
-- [ ] The PR #96 example prints 3 in both compilers. Samples `compiler/testdata/arg_eval_order*.nra` cover a block argument, a call with a side effect after a read of the same `let`, a self tail call, and a std builtin call.
-- [ ] Generated C is unchanged for calls with side-effect-free arguments; list the samples whose C changed in the outcome.
-- [ ] SPEC.md section 2 states that arguments are evaluated left to right; remove the inbox item (2) of the PR #96 entry.
-- [ ] Fast check passes, including `TestSelfhostBootstrap`, clean under AddressSanitizer and the leak check.
+- [x] The PR #96 example prints 3 in both compilers. Samples `compiler/testdata/arg_eval_order*.nra` cover a block argument, a call with a side effect after a read of the same `let`, a self tail call, and a std builtin call.
+- [x] Generated C is unchanged for calls with side-effect-free arguments; list the samples whose C changed in the outcome.
+- [x] SPEC.md section 2 states that arguments are evaluated left to right; remove the inbox item (2) of the PR #96 entry.
+- [x] Fast check passes, including `TestSelfhostBootstrap`, clean under AddressSanitizer and the leak check.
 
 ## Sizing
 
 M. One rule in each emitter, but several call paths (user calls, closures, builtins, tail calls) and a C-output comparison over all samples.
+
+Merged as PR #100.

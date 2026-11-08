@@ -1,0 +1,54 @@
+// The bootstrap suite keeps one sanitizer self-build. narrac builds selfhost/
+// with the sanitizers (a debug compiler under AddressSanitizer and UBSan),
+// that compiler emits selfhost/ with the leak check on, and the C must equal
+// what narrac itself emits for selfhost/ (the fixed point). A memory bug in
+// the compiler shows up here as a sanitizer report.
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Shell from "testrunner/shell"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  const path = Path.join(context.repository, "selfhost")
+  return [TestCase { suite: "bootstrap", name: "sanitized-fixed-point", path: path, variant: "" }]
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const outcome = checkFixedPoint(context, testCase.path, made.value)
+  Shell.removeTree(made.value)
+  return outcome
+}
+
+// checkFixedPoint does the work of runCase inside the directory work.
+function checkFixedPoint(
+  context: Context,
+  selfhost: string,
+  work: string,
+): Result<bool, string> uses io, alloc {
+  const compiler = Path.join(work, "narrac-sanitized")
+  const built = Common.runNarrac(context, ["build", "-sanitize", "-o", compiler, selfhost])
+  if (built.code != 0) {
+    return Err(`building the sanitized compiler failed: ${Common.describeRun(built)}`)
+  }
+  // Both compilers write the C to a file; the sanitized one runs with the
+  // leak check on.
+  const expectedC = Path.join(work, "expected.c")
+  const actualC = Path.join(work, "actual.c")
+  const script = "NARRA_CHECK_LEAKS=1 ASAN_OPTIONS=detect_leaks=0 \"$2\" emit \"$3\" > \"$5\" && \"$1\" emit \"$3\" > \"$4\""
+  const emitted = Shell.runScript(script, [context.narrac, compiler, selfhost, expectedC, actualC])
+  if (emitted.code != 0) {
+    return Err(`emitting selfhost failed: ${Common.describeRun(emitted)}`)
+  }
+  const compared = Shell.runScript("cmp \"$1\" \"$2\"", [expectedC, actualC])
+  if (compared.code != 0) {
+    return Err(
+      `the sanitized compiler emits other C than narrac: ${Str.trim(compared.output)}${Str.trim(compared.errorOutput)}`,
+    )
+  }
+  return Ok(true)
+}

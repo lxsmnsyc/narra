@@ -1,0 +1,107 @@
+// What every suite shares: the settings of one run, the shape of a test case
+// and the helpers that run narrac and compare its output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Diff from "testrunner/diff"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+// The settings of one run. narrac is the compiler under test; testdata is the
+// folder with the samples (testdata at the repo root); repository is the repo
+// root, where selfhost/ lives. With update, a golden that differs is
+// rewritten and the case passes.
+export struct Context {
+  narrac: string
+  testdata: string
+  repository: string
+  update: bool
+}
+
+// One test. suite names the suite that made and runs it; name is unique
+// inside the suite and shown in failures; path is the sample; variant tells
+// the suite how to run it (debug, release, tests, ...).
+export struct TestCase {
+  suite: string
+  name: string
+  path: string
+  variant: string
+}
+
+// caseLabel is the text shown for a case and matched by --filter.
+export function caseLabel(testCase: TestCase): string uses alloc {
+  return `${testCase.suite}/${testCase.name}`
+}
+
+// runNarrac runs the compiler under test with the leak check on.
+export function runNarrac(
+  context: Context,
+  arguments: Array<string>,
+): CommandResult uses io, alloc {
+  let command = Shell.newCommand(context.narrac, arguments)
+  command.environment = Shell.leakCheckEnvironment()
+  return Shell.runCommand(command)
+}
+
+// runNarracWith runs the compiler under test in a directory (empty keeps the
+// current one) with more environment entries (`NAME=value`) after the leak
+// check ones.
+export function runNarracWith(
+  context: Context,
+  directory: string,
+  extraEnvironment: Array<string>,
+  arguments: Array<string>,
+): CommandResult uses io, alloc {
+  let command = Shell.newCommand(context.narrac, arguments)
+  command.directory = directory
+  command.environment = Shell.leakCheckEnvironment()
+  for (const assignment of Arrays.values(extraEnvironment)) {
+    Arrays.push(mutable command.environment, assignment)
+  }
+  return Shell.runCommand(command)
+}
+
+// readExpected reads a file that holds expected text (.out, .err).
+export function readExpected(path: string): Result<string, string> uses io, alloc {
+  const read = Fs.readText(path)
+  if (read is Err(message)) {
+    return Err(`missing expected file ${path}: ${message}`)
+  }
+  return Ok(read.value)
+}
+
+// compareText is Ok when the texts are equal, else an Err that says what
+// differed.
+export function compareText(
+  what: string,
+  want: string,
+  got: string,
+): Result<bool, string> uses alloc {
+  if (want == got) {
+    return Ok(true)
+  }
+  return Err(`${what} differs\n${Diff.describeDifference(want, got)}`)
+}
+
+// describeRun is the exit code, the stdout (when there is some) and the
+// stderr of a child, for a failure.
+export function describeRun(result: CommandResult): string uses alloc {
+  let text = `exit code ${Int.toString(result.code)}`
+  if (result.output != "") {
+    text = `${text}\nstdout:\n${Str.trim(result.output)}`
+  }
+  return `${text}\nstderr:\n${Str.trim(result.errorOutput)}`
+}
+
+// expectRun is Ok when a child exited with wantCode and printed wantOutput.
+export function expectRun(
+  result: CommandResult,
+  wantCode: int,
+  wantOutput: string,
+): Result<bool, string> uses alloc {
+  if (result.code != wantCode) {
+    return Err(`want exit code ${Int.toString(wantCode)}, got ${describeRun(result)}`)
+  }
+  return compareText("stdout", wantOutput, result.output)
+}

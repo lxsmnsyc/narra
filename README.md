@@ -4,7 +4,7 @@ Narra is a draft design for a compiled language with TypeScript-style syntax and
 
 The name comes from the narra, the national tree of the Philippines, a hardwood known for lasting a long time.
 
-Status: specification draft. `compiler/` holds `narra`, a bootstrap compiler in Go for a subset of the language.
+Status: specification draft. The compiler, `narrac`, is written in Narra (`selfhost/`). The checked-in C file `seed/narrac.c` builds it with `cc` alone: `sh selfhost/bootstrap.sh`. `sh scripts/test.sh` runs the test suites. There is no Go compiler.
 
 ## Goals
 
@@ -19,7 +19,8 @@ Status: specification draft. `compiler/` holds `narra`, a bootstrap compiler in 
 
 - `SPEC.md` is the language specification.
 - `DECISIONS.md` lists the design decisions, with the alternatives that were rejected and why.
-- `compiler/` holds the bootstrap compiler. Its README lists what it supports.
+- `selfhost/` holds the compiler, `seed/` the C seed that builds it, `testdata/` the test samples and `std/src/` the standard modules written in Narra.
+- `compiler/README.md` lists what the compiler supports.
 
 ## Prior art
 

@@ -1,0 +1,68 @@
+// The errors suite: each sample that must not compile (testdata/errors/*.nra,
+// testdata/stage2/errors/*.nra and the packages in testdata/packages/errors)
+// runs through `narrac check`. It must exit with code 1 and print exactly the
+// golden: <name>.err next to a file, expected.err inside a package folder. The
+// first line of a sample (`// error:` or `# error:`) only documents the
+// error. With --update the goldens are rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const errorFolders = [
+    Path.join(context.testdata, "errors"),
+    Path.join(Path.join(context.testdata, "stage2"), "errors"),
+  ]
+  for (const folder of Arrays.values(errorFolders)) {
+    for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "errors",
+        name: Files.relativePath(context.testdata, path),
+        path: path,
+        variant: "file",
+      })
+    }
+  }
+  const packageFolder = Path.join(Path.join(context.testdata, "packages"), "errors")
+  for (const path of Arrays.values(Files.listPaths(packageFolder, ""))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "errors",
+      name: Files.relativePath(context.testdata, path),
+      path: path,
+      variant: "package",
+    })
+  }
+  return cases
+}
+
+// goldenPath is where the expected stderr of a sample is kept.
+function goldenPath(testCase: TestCase): string uses alloc {
+  if (testCase.variant == "package") {
+    return Path.join(testCase.path, "expected.err")
+  }
+  return Files.replaceSuffix(testCase.path, ".nra", ".err")
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const golden = goldenPath(testCase)
+  const result = Common.runNarrac(context, ["check", testCase.path])
+  if (result.code != 1 || result.output != "") {
+    return Err(`want exit code 1 and no stdout, got ${Common.describeRun(result)}`)
+  }
+  if (context.update) {
+    const written = Fs.writeText(golden, result.errorOutput)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("stderr", want.value, result.errorOutput)
+}

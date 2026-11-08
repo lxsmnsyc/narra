@@ -30,11 +30,12 @@ have_go=1
 have_rust=1
 
 command -v cc >/dev/null 2>&1 || { echo "note: no C compiler found, skipping Narra" >&2; have_narra=0; }
-command -v go >/dev/null 2>&1 || { echo "note: go not found, skipping Go (and the Narra compiler build)" >&2; have_go=0; have_narra=0; }
+command -v go >/dev/null 2>&1 || { echo "note: go not found, skipping Go" >&2; have_go=0; }
 command -v rustc >/dev/null 2>&1 || { echo "note: rustc not found, skipping Rust" >&2; have_rust=0; }
 
 if [ "$have_narra" = 1 ]; then
-  if ! (cd "$root/compiler" && go build -o "$build/narra" ./cmd/narra); then
+  # The Narra compiler comes from the seed; only cc is needed.
+  if ! sh "$root/selfhost/bootstrap.sh" "$build/narrac-out" >"$build/narrac-build.log" 2>&1; then
     echo "note: the Narra compiler failed to build, skipping Narra" >&2
     have_narra=0
   fi
@@ -56,7 +57,7 @@ for p in "${programs[@]}"; do
     case "$lang" in
       narra)
         [ "$have_narra" = 1 ] || ok=0
-        [ "$ok" = 1 ] && { "$build/narra" build -release -o "$exe" "$dir/$p.nra" >"$build/$p-$lang.log" 2>&1 || ok=0; }
+        [ "$ok" = 1 ] && { "$build/narrac-out/narrac" build -release -o "$exe" "$dir/$p.nra" >"$build/$p-$lang.log" 2>&1 || ok=0; }
         ;;
       go)
         [ "$have_go" = 1 ] || ok=0

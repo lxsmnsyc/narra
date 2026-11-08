@@ -7,6 +7,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Pos } from "narrac/ast"
+import { Fix, buildQuoteFix, buildRemoveSemicolonFix } from "narrac/fixes"
 import { Comment, CommentKind } from "narrac/trivia"
 
 // The kinds carry a Tok prefix, as in Go, so they do not clash with the
@@ -145,8 +146,22 @@ function createLexer(source: string, keepComments: bool): Lexer {
   }
 }
 
-// lex returns the tokens of source, or the first error as "line:col: message".
-export function lex(source: string): Result<Array<Token>, string> uses alloc {
+// A lexical error. code is the diagnostic code (see diagnostics.nra).
+export struct LexError {
+  code: string
+  line: int
+  column: int
+  message: string
+  fixes: Array<Fix> = []
+}
+
+// formatLexError prints an error as "line:col: message".
+export function formatLexError(error: LexError): string uses alloc {
+  return `${Int.toString(error.line)}:${Int.toString(error.column)}: ${error.message}`
+}
+
+// lex returns the tokens of source, or the first error.
+export function lex(source: string): Result<Array<Token>, LexError> uses alloc {
   let lexer = createLexer(source, false)
   const failed = runLexer(mutable lexer)
   if (failed is Some(message)) {
@@ -160,7 +175,7 @@ export function lex(source: string): Result<Array<Token>, string> uses alloc {
 export function lexWithComments(source: string): Result<#[
   Array<Token>,
   Array<Comment>,
-], string> uses alloc {
+], LexError> uses alloc {
   let lexer = createLexer(source, true)
   const failed = runLexer(mutable lexer)
   if (failed is Some(message)) {
@@ -199,8 +214,18 @@ function recordComment(mutable lexer: Lexer, first: int, line: int, column: int)
   Arrays.push(mutable lexer.comments, comment)
 }
 
-function errorAt(line: int, column: int, message: string): Option<string> {
-  return Some(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
+function errorAt(line: int, column: int, code: string, message: string): Option<LexError> {
+  return Some(LexError { code: code, line: line, column: column, message: message })
+}
+
+function errorWithFixesAt(
+  line: int,
+  column: int,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+): Option<LexError> {
+  return Some(LexError { code: code, line: line, column: column, message: message, fixes: fixes })
 }
 
 function getSize(lexer: Lexer): int {
@@ -275,7 +300,7 @@ function readText(lexer: Lexer, first: int, end: int): string {
   return Str.build(builder)
 }
 
-function runLexer(mutable lexer: Lexer): Option<string> {
+function runLexer(mutable lexer: Lexer): Option<LexError> {
   while (lexer.index < getSize(lexer)) {
     const character = peek(lexer, 0)
     const line = lexer.line
@@ -303,7 +328,7 @@ function runLexer(mutable lexer: Lexer): Option<string> {
         advance(mutable lexer)
       }
       if (lexer.index >= getSize(lexer)) {
-        return errorAt(line, column, "unterminated block comment")
+        return errorAt(line, column, "E0001", "unterminated block comment")
       }
       advance(mutable lexer)
       advance(mutable lexer)
@@ -332,14 +357,22 @@ function runLexer(mutable lexer: Lexer): Option<string> {
       }
       emit(mutable lexer, TokenKind.TokString, literal.value, line, column)
     } else if (character == '\'') {
+      const quoteStart = lexer.index
       const literal = lexQuoted(mutable lexer, '\'', line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
       if (Str.charCount(literal.value) != 1) {
-        return errorAt(
+        const closeQuote = Pos { line: lexer.line, column: lexer.column - 1 }
+        return errorWithFixesAt(
           line,
           column,
+          "E0002",
+          buildQuoteFix(
+            Pos { line: line, column: column },
+            closeQuote,
+            readText(lexer, quoteStart, lexer.index),
+          ),
           "a character literal holds exactly one character; use double quotes for strings",
         )
       }
@@ -371,7 +404,7 @@ function lexPunctuation(
   character: char,
   line: int,
   column: int,
-): Option<string> {
+): Option<LexError> {
   for (const index of Ranges.upTo(Arrays.length(PUNCTS))) {
     if (hasPrefix(lexer, lexer.punctuationChars[index])) {
       const punctuation = PUNCTS[index]
@@ -379,7 +412,13 @@ function lexPunctuation(
         advance(mutable lexer)
       }
       if (punctuation == ";") {
-        return errorAt(line, column, "semicolons are not used; end the statement with a line break")
+        return errorWithFixesAt(
+          line,
+          column,
+          "E0003",
+          buildRemoveSemicolonFix(Pos { line: line, column: column }),
+          "semicolons are not used; end the statement with a line break",
+        )
       }
       if (punctuation == "(" || punctuation == "[" || punctuation == "#[") {
         lexer.depth = lexer.depth + 1
@@ -406,7 +445,7 @@ function lexPunctuation(
       return None
     }
   }
-  return errorAt(line, column, `unexpected character ${quoteChar(character)}`)
+  return errorAt(line, column, "E0004", `unexpected character ${quoteChar(character)}`)
 }
 
 function hasPrefix(lexer: Lexer, prefix: Array<char>): bool {
@@ -469,14 +508,14 @@ function lexNumber(mutable lexer: Lexer, line: int, column: int) {
   }
 }
 
-function fail(line: int, column: int, message: string): Result<string, string> {
-  return Err(`${Int.toString(line)}:${Int.toString(column)}: ${message}`)
+function fail(line: int, column: int, code: string, message: string): Result<string, LexError> {
+  return Err(LexError { code: code, line: line, column: column, message: message })
 }
 
-function lexEscape(mutable lexer: Lexer, line: int, column: int): Result<string, string> {
+function lexEscape(mutable lexer: Lexer, line: int, column: int): Result<string, LexError> {
   advance(mutable lexer) // the backslash
   if (lexer.index >= getSize(lexer)) {
-    return fail(line, column, "unterminated escape")
+    return fail(line, column, "E0005", "unterminated escape")
   }
   const character = advance(mutable lexer)
   return match (character) {
@@ -490,19 +529,19 @@ function lexEscape(mutable lexer: Lexer, line: int, column: int): Result<string,
     '`' => Ok("`")
     '$' => Ok("$")
     'u' => lexUnicodeEscape(mutable lexer, line, column)
-    _ => fail(line, column, `unknown escape \\${Str.fromChar(character)}`)
+    _ => fail(line, column, "E0008", `unknown escape \\${Str.fromChar(character)}`)
   }
 }
 
-function lexUnicodeEscape(mutable lexer: Lexer, line: int, column: int): Result<string, string> {
+function lexUnicodeEscape(mutable lexer: Lexer, line: int, column: int): Result<string, LexError> {
   if (peek(lexer, 0) != '{') {
-    return fail(line, column, "expected { after \\u")
+    return fail(line, column, "E0006", "expected { after \\u")
   }
   advance(mutable lexer)
   let value = 0
   while (peek(lexer, 0) != '}') {
     if (lexer.index >= getSize(lexer) || !isHexDigit(peek(lexer, 0))) {
-      return fail(line, column, "invalid \\u escape")
+      return fail(line, column, "E0007", "invalid \\u escape")
     }
     value = (value *% 16) +% hexValue(advance(mutable lexer))
   }
@@ -527,12 +566,12 @@ function lexQuoted(
   quote: char,
   line: int,
   column: int,
-): Result<string, string> {
+): Result<string, LexError> {
   advance(mutable lexer)
   let builder = Str.builder()
   while (true) {
     if (lexer.index >= getSize(lexer) || peek(lexer, 0) == '\n') {
-      return fail(line, column, "unterminated literal")
+      return fail(line, column, "E0009", "unterminated literal")
     }
     const character = peek(lexer, 0)
     if (character == quote) {
@@ -549,17 +588,17 @@ function lexQuoted(
       Str.appendChar(mutable builder, advance(mutable lexer))
     }
   }
-  return fail(line, column, "unreachable")
+  return fail(line, column, "E0009", "unreachable")
 }
 
 // Templates keep their raw source. The parser splits out each ${...} part
 // and parses it on its own.
-function lexTemplate(mutable lexer: Lexer, line: int, column: int): Result<string, string> {
+function lexTemplate(mutable lexer: Lexer, line: int, column: int): Result<string, LexError> {
   advance(mutable lexer)
   const start = lexer.index
   while (true) {
     if (lexer.index >= getSize(lexer)) {
-      return fail(line, column, "unterminated template string")
+      return fail(line, column, "E0010", "unterminated template string")
     }
     const character = peek(lexer, 0)
     if (character == '\\') {
@@ -575,7 +614,7 @@ function lexTemplate(mutable lexer: Lexer, line: int, column: int): Result<strin
       advance(mutable lexer)
     }
   }
-  return fail(line, column, "unreachable")
+  return fail(line, column, "E0010", "unreachable")
 }
 
 // hex writes value (not negative) in lowercase hexadecimal with at least

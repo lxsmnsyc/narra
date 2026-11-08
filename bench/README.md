@@ -19,7 +19,7 @@ The Go and Rust programs are plain idiomatic code that mirror the Narra algorith
 
 `run.sh` times the programs, not their builds. Add build times once the compiler is complete. Until then the comparison would mislead, for these reasons:
 
-- `narra build` writes the whole program to one `out.c` (`compiler/internal/narra/driver.go`). There are no per-module translation units, so no parallel C compiles and no incremental rebuilds. Every build is a clean build.
+- `narrac build` writes the whole program to one `out.c` (`selfhost/src/driver.nra`). There are no per-module translation units, so no parallel C compiles and no incremental rebuilds. Every build is a clean build.
 - Narra has no optimization passes of its own. `-release` runs `cc -O2` and debug runs `cc -O0 -g`, so the C compiler does all the work. This affects run time (reference counts clang cannot remove), not build time.
 - Debug builds through TCC (`SPEC.md`) are not wired or tested. `CC=tcc` may fail on `runtime.h`.
 - The programs here are small, so a build is mostly process start and C compiler overhead.

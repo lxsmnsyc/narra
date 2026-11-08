@@ -1,0 +1,322 @@
+// The runner-options suite: how `narrac test` behaves around the test blocks
+// (the programs in testdata/runner-cases and testdata/runner). Each case runs
+// in debug (sanitizers, leak check) and release mode, except `arguments` and
+// `redirect`, which run in release mode only.
+//   filter-time     --filter selects by substring, --time adds timing only when
+//                   asked
+//   golden          Test.golden: a missing file, update mode, a match, a
+//                   mismatch and a text longer than the file
+//   golden-package  a package reads golden files from its testdata folder
+//   timeout         a test that never returns fails after NARRA_TEST_TIMEOUT
+//                   and the run goes on
+//   leak            a leak fails that test and names it (NARRA_TEST_FORCE_LEAK)
+//   arguments       unknown options and a missing value exit with code 2, a file
+//                   without tests passes, golden names are checked
+//   outside-test    Test.golden outside a test block does not compile
+//   redirect        `narrac run` with stdout and stderr sent to one file keeps
+//                   both streams, stdout first
+import * as Arrays from "std/array"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Scratch from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+
+const CASES = [
+  "filter-time",
+  "golden",
+  "golden-package",
+  "timeout",
+  "leak",
+  "arguments",
+  "outside-test",
+  "redirect",
+]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "runner-cases")
+  for (const name of Arrays.values(CASES)) {
+    let variants = ["debug", "release"]
+    if (name == "arguments" || name == "redirect") {
+      variants = ["release"]
+    }
+    if (name == "outside-test") {
+      variants = ["check"]
+    }
+    for (const variant of Arrays.values(variants)) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "runner-options",
+        name: `${name}/${variant}`,
+        path: folder,
+        variant: variant,
+      })
+    }
+  }
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  let name = testCase.name
+  const separator = Str.indexOf(name, "/")
+  if (separator is Some(position)) {
+    name = Str.slice(name, 0, position)
+  }
+  let flag = "-sanitize"
+  if (testCase.variant == "release") {
+    flag = "-release"
+  }
+  const folder = testCase.path
+  if (name == "filter-time") {
+    return runFilterAndTime(
+      context,
+      flag,
+      Path.join(Path.join(context.testdata, "runner"), "mixed.nra"),
+    )
+  }
+  if (name == "golden") {
+    return runGolden(context, flag, Path.join(folder, "golden.nra"))
+  }
+  if (name == "golden-package") {
+    const packagePath = Path.join(Path.join(context.testdata, "packages"), "runner")
+    const result = Common.runNarrac(context, ["test", flag, packagePath])
+    return Common.expectRun(result, 0, "ok - golden in a package\n1 passed, 0 failed\n")
+  }
+  if (name == "timeout") {
+    const result = Common.runNarracWith(
+      context,
+      "",
+      ["NARRA_TEST_TIMEOUT=1"],
+      ["test", flag, Path.join(folder, "spins.nra")],
+    )
+    return Common.expectRun(
+      result,
+      1,
+      "FAIL - spins: timed out after 1 s\nok - after\n1 passed, 1 failed\n",
+    )
+  }
+  if (name == "leak") {
+    const result = Common.runNarracWith(
+      context,
+      "",
+      ["NARRA_TEST_FORCE_LEAK=1"],
+      ["test", flag, Path.join(folder, "one_test.nra")],
+    )
+    return Common.expectRun(
+      result,
+      1,
+      "FAIL - a: leaked 1 allocations (leak check)\n0 passed, 1 failed\n",
+    )
+  }
+  if (name == "arguments") {
+    return runArguments(context, folder)
+  }
+  if (name == "redirect") {
+    return runRedirect(context, Path.join(folder, "both_streams.nra"))
+  }
+  return runOutsideTest(context, Path.join(folder, "golden_outside_test.nra"))
+}
+
+// runRedirect runs `narrac run path > file 2>&1`. Reopening /dev/stdout and
+// /dev/stderr by name would truncate the file and lose stdout on Linux.
+function runRedirect(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const logPath = Path.join(scratch.work, "both.log")
+  const script = "log=$1; shift; \"$@\" > \"$log\" 2>&1; code=$?; cat \"$log\"; exit $code"
+  const ran = Shell.runScript(script, [logPath, context.narrac, "run", "-release", path])
+  Scratch.removeScratch(scratch)
+  return Common.expectRun(ran, 0, "out line\nerr line\n")
+}
+
+function runFilterAndTime(
+  context: Context,
+  flag: string,
+  path: string,
+): Result<bool, string> uses io, alloc {
+  const selected = Common.runNarrac(context, ["test", flag, "-filter", "passes", path])
+  const first = Common.expectRun(
+    selected,
+    0,
+    "ok - passes first\nok - passes after failures\n2 passed, 0 failed\n",
+  )
+  if (first is Err(_)) {
+    return first
+  }
+  const empty = Common.runNarrac(context, ["test", flag, "-filter", "nothing matches", path])
+  const second = Common.expectRun(empty, 1, "no tests match \"nothing matches\"\n")
+  if (second is Err(_)) {
+    return second
+  }
+  const timed = Common.runNarrac(context, ["test", flag, "-filter", "passes first", "-time", path])
+  // `ok - passes first (N ms)` then the total line.
+  const head = "ok - passes first ("
+  const tail = " ms)\n1 passed, 0 failed\n"
+  if (!Str.startsWith(timed.output, head) || !Str.endsWith(timed.output, tail)) {
+    return Err(`want a timed line, got ${Common.describeRun(timed)}`)
+  }
+  const digits = Str.slice(
+    timed.output,
+    Str.length(head),
+    Str.length(timed.output) - Str.length(tail),
+  )
+  if (digits == "") {
+    return Err(`the timing has no digits: ${Common.describeRun(timed)}`)
+  }
+  for (const character of Arrays.values(Str.chars(digits))) {
+    if (!Str.contains("0123456789", Str.fromChar(character))) {
+      return Err(`the timing is not a number: ${Common.describeRun(timed)}`)
+    }
+  }
+  return Ok(true)
+}
+
+// runGolden copies golden.nra to a scratch folder, because the run writes and
+// changes out.golden beside the file.
+function runGolden(
+  context: Context,
+  flag: string,
+  path: string,
+): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const outcome = goldenSteps(context, flag, path, scratch)
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function goldenSteps(
+  context: Context,
+  flag: string,
+  path: string,
+  scratch: Scratch.Scratch,
+): Result<bool, string> uses io, alloc {
+  const source = Scratch.readFile(path)
+  if (source is Err(message)) {
+    return Err(message)
+  }
+  const copy = Path.join(scratch.work, "g.nra")
+  const golden = Path.join(scratch.work, "out.golden")
+  const written = Scratch.writeFile(copy, source.value)
+  if (written is Err(message)) {
+    return Err(message)
+  }
+  const arguments = ["test", flag, copy]
+  // A missing golden file fails.
+  const missing = Common.runNarrac(context, arguments)
+  if (missing.code != 1 || !Str.contains(missing.output, "golden file out.golden does not exist")) {
+    return Err(`missing: ${Common.describeRun(missing)}`)
+  }
+  // Update mode writes it.
+  const updated = Common.runNarracWith(context, "", ["NARRA_UPDATE_GOLDEN=1"], arguments)
+  if (updated.code != 0) {
+    return Err(`update: ${Common.describeRun(updated)}`)
+  }
+  const stored = Scratch.readFile(golden)
+  if (stored is Err(message)) {
+    return Err(message)
+  }
+  if (stored.value != "one\ntwo\nthree\n") {
+    return Err(`the golden file holds ${stored.value}`)
+  }
+  const matched = Common.runNarrac(context, arguments)
+  if (matched.code != 0) {
+    return Err(`match: ${Common.describeRun(matched)}`)
+  }
+  // A different line fails and names the line.
+  const changed = Scratch.writeFile(golden, "one\n2\nthree\n")
+  if (changed is Err(message)) {
+    return Err(message)
+  }
+  const differs = Common.runNarrac(context, arguments)
+  if (
+    differs.code != 1 ||
+      !Str.contains(differs.output, "golden out differs at line 2: expected \"2\", got \"two\"")
+  ) {
+    return Err(`mismatch: ${Common.describeRun(differs)}`)
+  }
+  // The actual text is longer than the file: the line after the last.
+  const shorter = Scratch.writeFile(golden, "one\ntwo\n")
+  if (shorter is Err(message)) {
+    return Err(message)
+  }
+  const longer = Common.runNarrac(context, arguments)
+  if (
+    longer.code != 1 ||
+      !Str.contains(longer.output, "differs at line 3: expected \"\", got \"three\"")
+  ) {
+    return Err(`longer: ${Common.describeRun(longer)}`)
+  }
+  return Ok(true)
+}
+
+function runArguments(context: Context, folder: string): Result<bool, string> uses io, alloc {
+  const one = Path.join(folder, "one_test.nra")
+  const unknown = Common.runNarrac(context, ["test", "-release", one, "--bogus"])
+  if (unknown.code != 2 || !Str.contains(unknown.errorOutput, "unknown argument --bogus")) {
+    return Err(`unknown: ${Common.describeRun(unknown)}`)
+  }
+  const noValue = Common.runNarrac(context, ["test", "-release", one, "--filter"])
+  if (noValue.code != 2 || !Str.contains(noValue.errorOutput, "needs a value")) {
+    return Err(`no value: ${Common.describeRun(noValue)}`)
+  }
+  const none = Common.runNarrac(context, ["test", "-release", Path.join(folder, "no_tests.nra")])
+  const noTests = Common.expectRun(none, 0, "0 passed, 0 failed\n")
+  if (noTests is Err(_)) {
+    return noTests
+  }
+  // Update mode writes the golden `a..b` beside the file, so run a copy.
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const source = Scratch.readFile(Path.join(folder, "golden_names.nra"))
+  if (source is Err(message)) {
+    Scratch.removeScratch(scratch)
+    return Err(message)
+  }
+  const copy = Path.join(scratch.work, "names.nra")
+  const written = Scratch.writeFile(copy, source.value)
+  if (written is Err(message)) {
+    Scratch.removeScratch(scratch)
+    return Err(message)
+  }
+  const names = Common.runNarracWith(
+    context,
+    "",
+    ["NARRA_UPDATE_GOLDEN=1"],
+    ["test", "-release", copy],
+  )
+  Scratch.removeScratch(scratch)
+  const wanted = [
+    "ok - dots",
+    "FAIL - up: Test.golden: the name must be a relative path without a `..` segment",
+    "FAIL - empty: Test.golden: the name is empty",
+  ]
+  for (const piece of Arrays.values(wanted)) {
+    if (!Str.contains(names.output, piece)) {
+      return Err(`missing "${piece}": ${Common.describeRun(names)}`)
+    }
+  }
+  return Ok(true)
+}
+
+// runOutsideTest: Test.golden is test-only like the other std/test functions.
+function runOutsideTest(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["check", path])
+  if (
+    result.code != 1 ||
+      !Str.contains(result.errorOutput, "can only be called inside a `test` block")
+  ) {
+    return Err(`outside a test: ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}

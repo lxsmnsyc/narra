@@ -1,0 +1,389 @@
+// The habits suite: diagnostics that carry a code and a fix.
+//   case/NAME     testdata/habits/NAME.nra is a TypeScript habit. `check --json`
+//                 must print NAME.json (made by the Go compiler); NAME.meta
+//                 holds the first code and `fix` or `nofix`; the first
+//                 diagnostic has a fix exactly when the meta says so, and every
+//                 fix it offers (`apply-fix --fix N`) leaves a file that checks
+//                 clean.
+//   fix/PATH      the first fix of the sample (errors/semicolon, strict_eq,
+//                 method_call, string_plus, unused_*, diagnostics/*) leaves a
+//                 file that checks clean; a `// code: E0NNN` first line names the
+//                 code of the first diagnostic. The package
+//                 packages/errors/ctor_import is fixed the same way.
+//   codes/PATH    every diagnostic of an error sample has a code other than E0000.
+//   generic-once  a generic function's error is reported once with a valid range.
+//   explain       `explain` knows the habit codes and rejects an unknown one.
+// With --update the .json goldens are rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Ranges from "std/range"
+import * as Scratch from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+const HABIT_CODES = ["E0923", "E0924", "E0925", "E0926", "E0927", "E0928", "E0930"]
+
+const FIXED_ERRORS = ["semicolon", "strict_eq", "method_call", "string_plus"]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const habits = Path.join(context.testdata, "habits")
+  for (const path of Arrays.values(Files.listPaths(habits, ".nra"))) {
+    addCase(mutable cases, `case/${Path.basename(path)}`, path, "case")
+  }
+  const errors = Path.join(context.testdata, "errors")
+  for (const name of Arrays.values(FIXED_ERRORS)) {
+    const path = Path.join(errors, `${name}.nra`)
+    addCase(mutable cases, `fix/${Files.relativePath(context.testdata, path)}`, path, "fix")
+  }
+  const diagnostics = Path.join(context.testdata, "diagnostics")
+  for (const path of Arrays.values(Files.listPaths(diagnostics, ".nra"))) {
+    addCase(mutable cases, `fix/${Files.relativePath(context.testdata, path)}`, path, "fix")
+  }
+  for (const path of Arrays.values(Files.listPaths(errors, ".nra"))) {
+    if (Str.startsWith(Path.basename(path), "unused_")) {
+      addCase(mutable cases, `fix/${Files.relativePath(context.testdata, path)}`, path, "fix")
+    }
+  }
+  const packageErrors = Path.join(Path.join(context.testdata, "packages"), "errors")
+  const constructorImport = Path.join(packageErrors, "ctor_import")
+  addCase(
+    mutable cases,
+    `fix/${Files.relativePath(context.testdata, constructorImport)}`,
+    constructorImport,
+    "fix-package",
+  )
+  for (const path of Arrays.values(Files.listPaths(errors, ".nra"))) {
+    addCase(mutable cases, `codes/${Files.relativePath(context.testdata, path)}`, path, "codes")
+  }
+  for (const path of Arrays.values(Files.listPaths(packageErrors, ""))) {
+    addCase(mutable cases, `codes/${Files.relativePath(context.testdata, path)}`, path, "codes")
+  }
+  addCase(
+    mutable cases,
+    "generic-once",
+    Path.join(diagnostics, "ts_generic_concat.nra"),
+    "generic-once",
+  )
+  addCase(mutable cases, "explain", habits, "explain")
+  return cases
+}
+
+function addCase(
+  mutable cases: Array<TestCase>,
+  name: string,
+  path: string,
+  variant: string,
+) uses alloc {
+  Arrays.push(mutable cases, TestCase { suite: "habits", name: name, path: path, variant: variant })
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "case") {
+    return runHabitCase(context, testCase.path)
+  }
+  if (testCase.variant == "fix") {
+    return runFix(context, testCase.path)
+  }
+  if (testCase.variant == "fix-package") {
+    return runFixPackage(context, testCase.path)
+  }
+  if (testCase.variant == "codes") {
+    return runCodes(context, testCase.path)
+  }
+  if (testCase.variant == "generic-once") {
+    return runGenericOnce(context, testCase.path)
+  }
+  return runExplain(context)
+}
+
+// firstLine is the text before the first line break.
+function firstLine(text: string): string uses alloc {
+  const lines = Str.split(text, "\n")
+  return lines[0]
+}
+
+// countText counts the non-overlapping occurrences of piece in text.
+function countText(text: string, piece: string): int uses alloc {
+  return Arrays.length(Str.split(text, piece)) - 1
+}
+
+// checkJson runs `check --json` in the folder of the sample, with the base
+// name, so the file name in the output has no directory.
+function checkJson(context: Context, path: string): CommandResult uses io, alloc {
+  return Common.runNarracWith(context, Path.dirname(path), [], [
+    "check",
+    "--json",
+    Path.basename(path),
+  ])
+}
+
+function checkClean(
+  context: Context,
+  path: string,
+  what: string,
+): Result<bool, string> uses io, alloc {
+  const checked = Common.runNarrac(context, ["check", path])
+  if (checked.code != 0) {
+    return Err(`${what} does not check clean: ${Common.describeRun(checked)}`)
+  }
+  return Ok(true)
+}
+
+// applyFix runs `apply-fix` and writes the fixed source to a file named
+// fileName in the work directory.
+function applyFix(
+  context: Context,
+  scratch: Scratch.Scratch,
+  path: string,
+  fix: int,
+  fileName: string,
+): Result<string, string> uses io, alloc {
+  // A negative fix takes the first fix of the first diagnostic that has one.
+  let arguments = ["apply-fix", path]
+  if (fix >= 0) {
+    arguments = ["apply-fix", "--diagnostic", "0", "--fix", Int.toString(fix), path]
+  }
+  const applied = Common.runNarrac(context, arguments)
+  if (applied.code != 0) {
+    return Err(`apply-fix --fix ${Int.toString(fix)} failed: ${Common.describeRun(applied)}`)
+  }
+  const target = Path.join(scratch.work, fileName)
+  const written = Scratch.writeFile(target, applied.output)
+  if (written is Err(message)) {
+    return Err(message)
+  }
+  return Ok(target)
+}
+
+function runHabitCase(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const golden = Files.replaceSuffix(path, ".nra", ".json")
+  const result = checkJson(context, path)
+  if (result.code != 1) {
+    return Err(`want exit code 1, got ${Common.describeRun(result)}`)
+  }
+  if (context.update) {
+    const written = Fs.writeText(golden, result.output)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const compared = Common.compareText("check --json", want.value, result.output)
+  if (compared is Err(_)) {
+    return compared
+  }
+  // The meta file: the code of the first diagnostic, then fix or nofix.
+  const meta = Common.readExpected(Files.replaceSuffix(path, ".nra", ".meta"))
+  if (meta is Err(message)) {
+    return Err(message)
+  }
+  const fields = Str.split(Str.trim(meta.value), " ")
+  const first = firstLine(result.output)
+  if (!Str.startsWith(first, `{"code":"${fields[0]}"`)) {
+    return Err(`want code ${fields[0]} first, got ${first}`)
+  }
+  const fixCount = countText(first, "{\"title\":")
+  if ((fixCount > 0) != (fields[1] == "fix")) {
+    return Err(`want ${fields[1]}, the first diagnostic has ${Int.toString(fixCount)} fixes`)
+  }
+  return checkEveryFix(context, path, fixCount)
+}
+
+// checkEveryFix applies each of the first diagnostic's fixes and checks that
+// the file is clean afterwards.
+function checkEveryFix(
+  context: Context,
+  path: string,
+  fixCount: int,
+): Result<bool, string> uses io, alloc {
+  if (fixCount == 0) {
+    return Ok(true)
+  }
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let outcome: Result<bool, string> = Ok(true)
+  for (const fix of Ranges.between(0, fixCount)) {
+    const fixed = applyFix(context, scratch, path, fix, "fixed.nra")
+    if (fixed is Err(message)) {
+      outcome = Err(message)
+      break
+    }
+    const clean = checkClean(context, fixed.value, `fix ${Int.toString(fix)}`)
+    if (clean is Err(message)) {
+      outcome = Err(message)
+      break
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function runFix(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const source = Fs.readText(path)
+  if (source is Err(message)) {
+    return Err(message)
+  }
+  if (Str.startsWith(source.value, "// code: ")) {
+    const result = checkJson(context, path)
+    const want = Str.trim(Str.sliceFrom(firstLine(source.value), 9))
+    if (!Str.startsWith(result.output, `{"code":"${want}"`)) {
+      return Err(`want code ${want} first, got ${firstLine(result.output)}`)
+    }
+  }
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let outcome: Result<bool, string> = Ok(true)
+  const fixed = applyFix(context, scratch, path, -1, Path.basename(path))
+  if (fixed is Err(message)) {
+    outcome = Err(message)
+  } else {
+    outcome = checkClean(context, fixed.value, "the fixed file")
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+// runFixPackage fixes the first diagnostic of a package and checks a copy of
+// the package that holds the fixed src/main.nra.
+function runFixPackage(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const copy = Path.join(scratch.work, "package")
+  const copied = Shell.runScript("cp -R \"$1\" \"$2\"", [path, copy])
+  let outcome: Result<bool, string> = Ok(true)
+  if (copied.code != 0) {
+    outcome = Err(`cannot copy the package: ${Common.describeRun(copied)}`)
+  } else {
+    const applied = Common.runNarrac(context, ["apply-fix", path])
+    if (applied.code != 0) {
+      outcome = Err(`apply-fix failed: ${Common.describeRun(applied)}`)
+    } else {
+      const written = Scratch.writeFile(
+        Path.join(Path.join(copy, "src"), "main.nra"),
+        applied.output,
+      )
+      if (written is Err(message)) {
+        outcome = Err(message)
+      } else {
+        outcome = checkClean(context, copy, "the fixed package")
+      }
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+// runCodes checks that every diagnostic line has a real code.
+function runCodes(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const result = checkJson(context, path)
+  if (result.code != 1 || result.errorOutput != "") {
+    return Err(`want exit code 1 and the diagnostics on stdout, got ${Common.describeRun(result)}`)
+  }
+  let count = 0
+  for (const line of Arrays.values(Str.split(result.output, "\n"))) {
+    if (line != "") {
+      count = count + 1
+      if (!Str.startsWith(line, "{\"code\":\"E") || Str.startsWith(line, "{\"code\":\"E0000\"")) {
+        return Err(`a diagnostic without a code: ${line}`)
+      }
+    }
+  }
+  if (count == 0) {
+    return Err("no diagnostics")
+  }
+  return Ok(true)
+}
+
+// runGenericOnce wants one diagnostic, and every edit range in it must not end
+// before it starts.
+function runGenericOnce(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const result = checkJson(context, path)
+  let count = 0
+  for (const line of Arrays.values(Str.split(result.output, "\n"))) {
+    if (line != "") {
+      count = count + 1
+    }
+  }
+  if (count != 1) {
+    return Err(`want one diagnostic, got ${Int.toString(count)}:\n${result.output}`)
+  }
+  const marker = "\"range\":{\"start\":["
+  const pieces = Str.split(result.output, marker)
+  // The first piece is the text before the diagnostic's own range.
+  for (const position of Ranges.between(0, Arrays.length(pieces))) {
+    if (position > 1) {
+      const wrong = findReversedRange(pieces[position])
+      if (wrong != "") {
+        return Err(`invalid range in ${firstLine(result.output)}: ${wrong}`)
+      }
+    }
+  }
+  return Ok(true)
+}
+
+// findReversedRange reads `L,C],"end":[L,C]}` and is "" for a range that does
+// not end before it starts.
+function findReversedRange(piece: string): string uses alloc {
+  const close = Str.indexOf(piece, "]}")
+  if (close is None) {
+    return "unterminated range"
+  }
+  const numbers = Str.split(Str.replace(Str.slice(piece, 0, close.value), "],\"end\":[", ","), ",")
+  if (Arrays.length(numbers) != 4) {
+    return "cannot read the range"
+  }
+  let values: Array<int> = []
+  for (const number of Arrays.values(numbers)) {
+    const parsed = Int.parse(number, 10)
+    if (parsed is Err(_)) {
+      return "cannot read the range"
+    }
+    Arrays.push(mutable values, parsed.value)
+  }
+  if (values[2] < values[0] || (values[2] == values[0] && values[3] < values[1])) {
+    return Str.slice(piece, 0, close.value)
+  }
+  return ""
+}
+
+function runExplain(context: Context): Result<bool, string> uses io, alloc {
+  for (const code of Arrays.values(HABIT_CODES)) {
+    const explained = Common.runNarrac(context, ["explain", code])
+    if (explained.code != 0 || !Str.contains(explained.output, "Narra has no")) {
+      return Err(`explain ${code}: ${Common.describeRun(explained)}`)
+    }
+  }
+  const lower = Common.runNarrac(context, ["explain", "e0003"])
+  if (lower.code != 0) {
+    return Err(`explain e0003 (lower case): ${Common.describeRun(lower)}`)
+  }
+  const upper = Common.runNarrac(context, ["explain", "E0003"])
+  if (upper.code != 0 || !Str.contains(upper.output, "semicolons")) {
+    return Err(`explain E0003: ${Common.describeRun(upper)}`)
+  }
+  const unknown = Common.runNarrac(context, ["explain", "E9999"])
+  if (unknown.code == 0) {
+    return Err("explain E9999 must fail")
+  }
+  return Ok(true)
+}

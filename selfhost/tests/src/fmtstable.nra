@@ -1,0 +1,496 @@
+// The fmt-stable suite: every .nra file under testdata and selfhost/src, and
+// three edge cases, must format to a text that
+//   - formats to itself,
+//   - keeps the token sequence (without positions, line ends, commas and
+//     grouping parentheses, which the formatter may add or drop),
+//   - keeps the comment texts and the node kind each is attached to (except
+//     the comments listed in movingComments), and
+//   - parses to the same tree once positions are removed.
+// A file that does not parse must be rejected by `fmt --stdin` with exit
+// code 1 and an `error <stdin>:` line.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as FmtRun from "testrunner/fmtrun"
+import * as Scratch from "testrunner/scratch"
+
+struct EdgeCase {
+  name: string
+  source: string
+}
+
+const EDGE_CASES = [
+  EdgeCase { name: "only_comments.nra", source: "// a\n\n\n/* b */\n" },
+  EdgeCase { name: "crlf.nra", source: "// a\r\nfunction f() {\r\n  // b\r\n}\r\n" },
+  EdgeCase { name: "empty.nra", source: "" },
+]
+
+// A comment of a golden that changes the node it attaches to when formatted:
+// it sits in redundant parentheses, which go away, so it leads or trails the
+// expression, statement or field next to it. file is the sample, number the
+// position of the comment in the trivia dump.
+struct MovingComment {
+  file: string
+  number: int
+  text: string
+}
+
+const MOVING_COMMENTS = [
+  MovingComment { file: "comment_paren_expr.nra", number: 3, text: "// paren end" },
+  MovingComment { file: "comment_paren_expr.nra", number: 5, text: "/* out */" },
+  MovingComment { file: "comment_paren_expr.nra", number: 12, text: "// t" },
+  MovingComment { file: "comment_paren_expr.nra", number: 14, text: "// t" },
+  MovingComment { file: "comment_paren_expr.nra", number: 16, text: "// t" },
+  MovingComment { file: "comment_bracket_return.nra", number: 2, text: "// t" },
+  MovingComment { file: "comment_is_subject.nra", number: 2, text: "/* t */" },
+  MovingComment { file: "comment_paren_binary.nra", number: 0, text: "// x" },
+  MovingComment { file: "comment_paren_binary.nra", number: 1, text: "// d" },
+  MovingComment { file: "comment_paren_binary.nra", number: 2, text: "// d" },
+  MovingComment { file: "comment_paren_binary.nra", number: 3, text: "// c" },
+  MovingComment { file: "comment_paren_binary.nra", number: 4, text: "// c" },
+  MovingComment { file: "comment_paren_conditional.nra", number: 1, text: "// c" },
+]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  for (const path of Arrays.values(Files.listCorpus(context.testdata, context.repository))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "fmt-stable",
+      name: Files.relativePath(context.repository, path),
+      path: path,
+      variant: "file",
+    })
+  }
+  for (const edge of Arrays.values(EDGE_CASES)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "fmt-stable",
+      name: `edge/${edge.name}`,
+      path: edge.name,
+      variant: "edge",
+    })
+  }
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let path = testCase.path
+  let outcome: Result<bool, string> = Ok(true)
+  if (testCase.variant == "edge") {
+    path = Path.join(scratch.work, testCase.path)
+    for (const edge of Arrays.values(EDGE_CASES)) {
+      if (edge.name == testCase.path) {
+        outcome = Scratch.writeFile(path, edge.source)
+      }
+    }
+  }
+  if (outcome is Ok(_)) {
+    outcome = checkFormatted(context, scratch, path)
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+// runDump runs a narrac dump command and keeps its exit code and stdout.
+function runDump(context: Context, arguments: Array<string>): CommandOutcome uses io, alloc {
+  const result = Common.runNarrac(context, arguments)
+  return CommandOutcome { code: result.code, output: result.output }
+}
+
+struct CommandOutcome {
+  code: int
+  output: string
+}
+
+// checkFormatted formats one file and checks the four properties.
+function checkFormatted(
+  context: Context,
+  scratch: Scratch.Scratch,
+  path: string,
+): Result<bool, string> uses io, alloc {
+  const read = Scratch.readFile(path)
+  if (read is Err(message)) {
+    return Err(message)
+  }
+  const source = read.value
+  const beforeTree = runDump(context, ["parse", path])
+  if (beforeTree.code != 0) {
+    // A file that does not parse must be rejected.
+    const rejected = FmtRun.runFormat(
+      context,
+      scratch,
+      scratch.work,
+      false,
+      true,
+      source,
+      ["--stdin"],
+    )
+    if (rejected is Err(message)) {
+      return Err(message)
+    }
+    if (rejected.value.code != 1 || !Str.startsWith(rejected.value.errorOutput, "error <stdin>:")) {
+      return Err(`a file that does not parse: ${Common.describeRun(rejected.value)}`)
+    }
+    return Ok(true)
+  }
+  const once = FmtRun.formatText(context, scratch, scratch.work, source)
+  if (once is Err(message)) {
+    return Err(message)
+  }
+  const twice = FmtRun.formatText(context, scratch, scratch.work, once.value)
+  if (twice is Err(message)) {
+    return Err(message)
+  }
+  const stable = Common.compareText("formatting twice", once.value, twice.value)
+  if (stable is Err(message)) {
+    return Err(message)
+  }
+  const formattedPath = Path.join(scratch.root, "formatted.nra")
+  const wrote = Scratch.writeFile(formattedPath, once.value)
+  if (wrote is Err(message)) {
+    return Err(message)
+  }
+
+  // The tokens.
+  const beforeTokens = runDump(context, [path])
+  const afterTokens = runDump(context, [formattedPath])
+  const tokens = Common.compareText(
+    "tokens",
+    keepTokens(beforeTokens.output),
+    keepTokens(afterTokens.output),
+  )
+  if (tokens is Err(message)) {
+    return Err(message)
+  }
+  // The comments.
+  const beforeTrivia = runDump(context, ["trivia", path])
+  const afterTrivia = runDump(context, ["trivia", formattedPath])
+  const baseName = Path.basename(path)
+  const comments = Common.compareText(
+    "comments",
+    listComments(beforeTrivia.output, baseName),
+    listComments(afterTrivia.output, baseName),
+  )
+  if (comments is Err(message)) {
+    return Err(message)
+  }
+  // The tree.
+  const afterTree = runDump(context, ["parse", formattedPath])
+  return Common.compareText(
+    "tree",
+    stripPositions(beforeTree.output),
+    stripPositions(afterTree.output),
+  )
+}
+
+function isDigit(byte: int): bool {
+  return byte >= 48 && byte <= 57
+}
+
+// skipDigits is the position after the digits that start at position.
+function skipDigits(text: string, position: int): int {
+  let end = position
+  while (end < Str.length(text) && isDigit(Str.byteAt(text, end))) {
+    end = end + 1
+  }
+  return end
+}
+
+// positionEnd is the position after a `LINE:COL` that starts at position, or
+// -1 when there is none.
+function positionEnd(text: string, position: int): int {
+  const lineEnd = skipDigits(text, position)
+  if (lineEnd == position || lineEnd >= Str.length(text) || Str.byteAt(text, lineEnd) != 58) {
+    return -1
+  }
+  const columnEnd = skipDigits(text, lineEnd + 1)
+  if (columnEnd == lineEnd + 1) {
+    return -1
+  }
+  return columnEnd
+}
+
+// dropTokenPosition removes the `LINE:COL ` that starts a token line.
+function dropTokenPosition(line: string): string uses alloc {
+  const end = positionEnd(line, 0)
+  if (end >= 0 && end < Str.length(line) && Str.byteAt(line, end) == 32) {
+    return Str.sliceFrom(line, end + 1)
+  }
+  return line
+}
+
+// keepTokens is the token dump without positions, line ends, commas and
+// grouping parentheses. The formatter sets line ends and commas, and it drops
+// a redundant pair `((a))`, keeps a written pair, and adds one around a
+// conditional that spans lines. A pair is a grouping pair when the token
+// before the `(` cannot end an expression (an operator, `,`, `(`, `?`, `:`,
+// `return` or nothing); call, parameter and condition parentheses stay in the
+// sequence. The tree comparison covers what the grouping pairs mean.
+function keepTokens(dump: string): string uses alloc {
+  let tokens: Array<string> = []
+  for (const line of Arrays.values(Str.split(dump, "\n"))) {
+    const token = dropTokenPosition(line)
+    if (!Str.startsWith(token, "newline ")) {
+      Arrays.push(mutable tokens, token)
+    }
+  }
+  const count = Arrays.length(tokens)
+  let dropped: Array<bool> = Arrays.filled(false, count)
+  // The open parentheses, as a stack of token indexes.
+  let open: Array<int> = Arrays.filled(0, count)
+  let depth = 0
+  for (const index of Ranges.between(0, count)) {
+    const token = tokens[index]
+    if (token == "punct (") {
+      let grouping = index == 0
+      if (index > 0) {
+        const before = tokens[index - 1]
+        grouping =
+          before == "keyword return" ||
+            (Str.startsWith(before, "punct ") &&
+              before != "punct )" &&
+              before != "punct ]" &&
+              before != "punct >" &&
+              before != "punct }")
+      }
+      dropped[index] = grouping
+      open[depth] = index
+      depth = depth + 1
+    } else if (token == "punct )" && depth > 0) {
+      depth = depth - 1
+      dropped[index] = dropped[open[depth]]
+    }
+  }
+  let kept = Str.builder()
+  for (const index of Ranges.between(0, count)) {
+    if (!dropped[index] && tokens[index] != "punct ,") {
+      Str.append(mutable kept, tokens[index])
+      Str.append(mutable kept, "\n")
+    }
+  }
+  return Str.build(kept)
+}
+
+// stripPositions removes the positions of an AST dump: the `L:C` after the
+// first word of a line, every ` end=L:C`, and the numbers of the hidden
+// `__for_N_M` names.
+function stripPositions(dump: string): string uses alloc {
+  let result = Str.builder()
+  for (const line of Arrays.values(Str.split(dump, "\n"))) {
+    Str.append(mutable result, stripLine(line))
+    Str.append(mutable result, "\n")
+  }
+  return Str.build(result)
+}
+
+function stripLine(line: string): string uses alloc {
+  // `^( *\S+) \d+:\d+`: indentation, a word, a space, then the position.
+  let start = 0
+  while (start < Str.length(line) && Str.byteAt(line, start) == 32) {
+    start = start + 1
+  }
+  let wordEnd = start
+  while (wordEnd < Str.length(line) && Str.byteAt(line, wordEnd) != 32) {
+    wordEnd = wordEnd + 1
+  }
+  let text = line
+  if (wordEnd > start && wordEnd < Str.length(line)) {
+    const end = positionEnd(line, wordEnd + 1)
+    if (end >= 0) {
+      text = `${Str.slice(line, 0, wordEnd)}${Str.sliceFrom(line, end)}`
+    }
+  }
+  text = removeEnds(text)
+  return shortenHiddenNames(text)
+}
+
+// hasAt says whether marker is in text at position.
+function hasAt(text: string, position: int, marker: string): bool {
+  if (position + Str.length(marker) > Str.length(text)) {
+    return false
+  }
+  // Compare bytes: position may be inside a character.
+  for (const offset of Ranges.between(0, Str.length(marker))) {
+    if (Str.byteAt(text, position + offset) != Str.byteAt(marker, offset)) {
+      return false
+    }
+  }
+  return true
+}
+
+// removeEnds deletes every ` end=L:C`.
+function removeEnds(text: string): string uses alloc {
+  const marker = " end="
+  let result = Str.builder()
+  let position = 0
+  while (position < Str.length(text)) {
+    if (hasAt(text, position, marker)) {
+      const end = positionEnd(text, position + Str.length(marker))
+      if (end >= 0) {
+        position = end
+      } else {
+        const next = Str.nextChar(text, position)
+        Str.append(mutable result, Str.slice(text, position, next))
+        position = next
+      }
+    } else {
+      const next = Str.nextChar(text, position)
+      Str.append(mutable result, Str.slice(text, position, next))
+      position = next
+    }
+  }
+  return Str.build(result)
+}
+
+// shortenHiddenNames turns `__for_3_7` into `__for_`.
+function shortenHiddenNames(text: string): string uses alloc {
+  const marker = "__for_"
+  if (!Str.contains(text, marker)) {
+    return text
+  }
+  let result = Str.builder()
+  let position = 0
+  while (position < Str.length(text)) {
+    if (hasAt(text, position, marker)) {
+      const firstEnd = skipDigits(text, position + Str.length(marker))
+      const hasFirst = firstEnd > position + Str.length(marker)
+      if (hasFirst && firstEnd < Str.length(text) && Str.byteAt(text, firstEnd) == 95) {
+        const secondEnd = skipDigits(text, firstEnd + 1)
+        if (secondEnd > firstEnd + 1) {
+          Str.append(mutable result, marker)
+          position = secondEnd
+          continue
+        }
+      }
+    }
+    const next = Str.nextChar(text, position)
+    Str.append(mutable result, Str.slice(text, position, next))
+    position = next
+  }
+  return Str.build(result)
+}
+
+// commentText is the quoted text of a `comment N KIND RANGE PLACEMENT "text"`
+// line, or None.
+function commentText(line: string): Option<string> uses alloc {
+  if (!Str.startsWith(line, "comment ")) {
+    return None
+  }
+  // Skip the five leading fields: comment, number, kind, range, placement.
+  let position = 0
+  for (const _ of Arrays.values(["a", "b", "c", "d", "e"])) {
+    const space = Str.indexOf(Str.sliceFrom(line, position), " ")
+    if (space is Some(offset)) {
+      position = position + offset + 1
+    } else {
+      return None
+    }
+  }
+  const quoted = Str.sliceFrom(line, position)
+  if (Str.length(quoted) < 2 || !Str.startsWith(quoted, "\"") || !Str.endsWith(quoted, "\"")) {
+    return None
+  }
+  return Some(Str.slice(quoted, 1, Str.length(quoted) - 1))
+}
+
+// trimCommentEnd removes trailing blanks and the escapes `\t`, `\r` and `\n`
+// from the end of a comment text, until nothing changes.
+function trimCommentEnd(text: string): string uses alloc {
+  let current = text
+  while (true) {
+    let trimmed = trimSpaces(current)
+    for (const escape of Arrays.values(["\\t", "\\r", "\\n"])) {
+      if (Str.endsWith(trimmed, escape)) {
+        trimmed = Str.slice(trimmed, 0, Str.length(trimmed) - 2)
+      }
+    }
+    if (trimmed == current) {
+      return current
+    }
+    current = trimmed
+  }
+}
+
+// trimSpaces removes the spaces at the end of a text.
+function trimSpaces(text: string): string uses alloc {
+  let end = Str.length(text)
+  while (end > 0 && Str.byteAt(text, end - 1) == 32) {
+    end = end - 1
+  }
+  return Str.slice(text, 0, end)
+}
+
+// isMoving says whether comment number of a sample is one of the moving ones
+// with this text.
+function isMoving(file: string, number: int, text: string): bool {
+  for (const moving of Arrays.values(MOVING_COMMENTS)) {
+    if (moving.file == file && moving.number == number && moving.text == text) {
+      return true
+    }
+  }
+  return false
+}
+
+// listComments lists the comments of a trivia dump: the text and, except for
+// the moving comments, the kind letter of the node it is attached to and its
+// placement.
+function listComments(dump: string, file: string): string uses alloc {
+  let texts: Array<string> = []
+  // attached[number] is "kind placement".
+  let attached: Array<string> = []
+  for (const line of Arrays.values(Str.split(dump, "\n"))) {
+    const text = commentText(line)
+    if (text is Some(quoted)) {
+      Arrays.push(mutable texts, trimCommentEnd(quoted))
+    } else {
+      const fields = splitFields(line)
+      if (Arrays.length(fields) == 4 && fields[0] == "attached") {
+        let kind = Str.slice(fields[1], 0, 1)
+        if (Str.startsWith(fields[1], "file")) {
+          kind = "file"
+        }
+        const number = Int.parse(fields[3], 10)
+        if (number is Ok(index)) {
+          while (Arrays.length(attached) <= index) {
+            Arrays.push(mutable attached, "")
+          }
+          attached[index] = `${kind} ${fields[2]}`
+        }
+      }
+    }
+  }
+  let result = Str.builder()
+  for (const entry of Arrays.entries(texts)) {
+    const #[index, text] = entry
+    Str.append(mutable result, text)
+    if (!isMoving(file, index, text)) {
+      let place = ""
+      if (index < Arrays.length(attached)) {
+        place = attached[index]
+      }
+      Str.append(mutable result, `  [${place}]`)
+    }
+    Str.append(mutable result, "\n")
+  }
+  return Str.build(result)
+}
+
+// splitFields splits a line on blanks.
+function splitFields(line: string): Array<string> uses alloc {
+  let fields: Array<string> = []
+  for (const piece of Arrays.values(Str.split(line, " "))) {
+    if (piece != "") {
+      Arrays.push(mutable fields, piece)
+    }
+  }
+  return fields
+}

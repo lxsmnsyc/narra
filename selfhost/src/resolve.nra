@@ -10,12 +10,14 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
+import { createFix, createEdit, moveColumn } from "narrac/fixes"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
 import {
   Checker,
   internComposite,
   checkMapKey,
   reportError,
+  reportErrorFix,
   enter,
   lookupType,
   lookupGeneric,
@@ -68,12 +70,14 @@ export function resolveSignature(
       reportError(
         mutable checker,
         param.pos,
+        "E0196",
         `generator ${funcDecl.name} cannot take a mutable parameter ${quoteGo(param.name)}; a generator is a value that is resumed later`,
       )
     } else if (isFunc && !param.escaping) {
       reportError(
         mutable checker,
         param.pos,
+        "E0615",
         `parameter ${quoteGo(param.name)} of generator ${funcDecl.name} has a function type, so it must be \`escaping\`: the generator outlives the call`,
       )
     }
@@ -105,6 +109,7 @@ function resolveGeneratorResult(
       reportError(
         mutable checker,
         pos,
+        "E0195",
         `generator ${funcDecl.name} must declare its return type as Generator<T> or Coroutine<In, Out>`,
       )
     }
@@ -114,6 +119,7 @@ function resolveGeneratorResult(
     reportError(
       mutable checker,
       funcDecl.pos,
+      "E0195",
       `the effects of generator ${funcDecl.name} are written on its return type, as in \`Generator<T> uses io\``,
     )
   }
@@ -209,7 +215,7 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (typeExpr.name == "Box" && !userType(checker, "Box")) {
     if (argCount != 1) {
-      reportError(mutable checker, typeExpr.pos, "Box takes one type argument")
+      reportError(mutable checker, typeExpr.pos, "E0110", "Box takes one type argument")
       return Type.TVoid
     }
     const boxed = resolveType(mutable checker, typeExpr.arguments[0])
@@ -217,7 +223,7 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (typeExpr.name == "Map" && !userType(checker, "Map")) {
     if (argCount != 2) {
-      reportError(mutable checker, typeExpr.pos, "Map takes two type arguments")
+      reportError(mutable checker, typeExpr.pos, "E0111", "Map takes two type arguments")
       return Type.TVoid
     }
     const keyType = resolveType(mutable checker, typeExpr.arguments[0])
@@ -227,7 +233,7 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (typeExpr.name == "Generator" && !userType(checker, "Generator")) {
     if (argCount != 1) {
-      reportError(mutable checker, typeExpr.pos, "Generator takes one type argument")
+      reportError(mutable checker, typeExpr.pos, "E0195", "Generator takes one type argument")
       return Type.TVoid
     }
     const element = resolveType(mutable checker, typeExpr.arguments[0])
@@ -235,7 +241,7 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (typeExpr.name == "Coroutine" && !userType(checker, "Coroutine")) {
     if (argCount != 2) {
-      reportError(mutable checker, typeExpr.pos, "Coroutine takes two type arguments")
+      reportError(mutable checker, typeExpr.pos, "E0197", "Coroutine takes two type arguments")
       return Type.TVoid
     }
     const input = resolveType(mutable checker, typeExpr.arguments[0])
@@ -244,18 +250,35 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (typeExpr.name == "Array") {
     if (argCount != 1) {
-      reportError(mutable checker, typeExpr.pos, "Array takes one type argument")
+      reportError(mutable checker, typeExpr.pos, "E0112", "Array takes one type argument")
       return Type.TVoid
     }
     const element = resolveType(mutable checker, typeExpr.arguments[0])
     return internComposite(mutable checker, Type.TArray(element))
   }
   if (typeExpr.name == "number") {
-    reportError(mutable checker, typeExpr.pos, "there is no `number`; use `int` or `f64`")
+    const end = moveColumn(typeExpr.pos, Str.charCount("number"))
+    reportErrorFix(
+      mutable checker,
+      typeExpr.pos,
+      "E0113",
+      [
+        createFix("use int", [createEdit(typeExpr.pos, end, "int")]),
+        createFix("use f64", [createEdit(typeExpr.pos, end, "f64")]),
+      ],
+      "there is no `number`; use `int` or `f64`",
+    )
     return Type.TInt
   }
   if (typeExpr.name == "boolean") {
-    reportError(mutable checker, typeExpr.pos, "use `bool`")
+    const end = moveColumn(typeExpr.pos, Str.charCount("boolean"))
+    reportErrorFix(
+      mutable checker,
+      typeExpr.pos,
+      "E0114",
+      [createFix("use bool", [createEdit(typeExpr.pos, end, "bool")])],
+      "use `bool`",
+    )
     return Type.TBool
   }
   if (lookupGeneric(checker, typeExpr.name) is Some(generic)) {
@@ -264,6 +287,7 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
       reportError(
         mutable checker,
         typeExpr.pos,
+        "E0115",
         `${typeExpr.name} takes ${Int.toString(want)} type arguments`,
       )
       return Type.TVoid
@@ -282,18 +306,19 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
     reportError(
       mutable checker,
       typeExpr.pos,
+      "E0116",
       "there is no Tuple type; write a tuple type as #[A, B]",
     )
     return Type.TVoid
   }
   if (argCount > 0) {
-    reportError(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
+    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
     return Type.TVoid
   }
   if (named is Some(namedType)) {
     return namedType
   }
-  reportError(mutable checker, typeExpr.pos, `unknown type ${quoteGo(typeExpr.name)}`)
+  reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
   return Type.TVoid
 }
 
@@ -310,6 +335,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
     reportError(
       mutable checker,
       typeExpr.pos,
+      "E0403",
       `unknown module ${quoteGo(alias)} in type ${typeExpr.name}; import it with \`import * as ${alias} from "..."\``,
     )
     return Type.TVoid
@@ -331,7 +357,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
     None => {}
   }
   if (!isType) {
-    reportError(mutable checker, typeExpr.pos, `${typeExpr.name} is not a type`)
+    reportError(mutable checker, typeExpr.pos, "E0404", `${typeExpr.name} is not a type`)
     return Type.TVoid
   }
   const argCount = Arrays.length(typeExpr.arguments)
@@ -342,6 +368,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
         reportError(
           mutable checker,
           typeExpr.pos,
+          "E0115",
           `${typeExpr.name} takes ${Int.toString(want)} type arguments`,
         )
         return Type.TVoid
@@ -354,7 +381,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
     }
   }
   if (argCount > 0) {
-    reportError(mutable checker, typeExpr.pos, `type ${typeExpr.name} is not generic`)
+    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
     return Type.TVoid
   }
   if (checker.scopes[scope].types[name] is Some(namedType)) {
@@ -376,6 +403,7 @@ function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses allo
     reportError(
       mutable checker,
       typeExpr.pos,
+      "E0718",
       `a tuple type needs at least two element types, found ${Int.toString(count)}`,
     )
     return Type.TVoid
@@ -437,6 +465,7 @@ export function resolveFields(
       reportError(
         mutable checker,
         fieldDecl.pos,
+        "E0105",
         `field ${quoteGo(fieldDecl.name)} is declared twice`,
       )
     }
@@ -491,6 +520,7 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
         reportError(
           mutable checker,
           info.fieldDeclarations[index].pos,
+          "E0107",
           "a default for a field whose type uses a type parameter is not supported by this compiler yet",
         )
         fields[index].default = None

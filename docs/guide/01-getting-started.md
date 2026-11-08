@@ -4,19 +4,19 @@ In this chapter you build the compiler, run a first program and fix your first c
 
 ## Build the compiler
 
-Narra programs compile to C, and a C compiler turns that C into an executable. The compiler, `narra`, is written in Go. You need Go and a C compiler (`cc`, `clang` or `gcc`) installed.
+Narra programs compile to C, and a C compiler turns that C into an executable. The compiler, `narrac`, is written in Narra. The repository holds its C form, so you only need a C compiler (`cc`, `clang` or `gcc`) installed.
 
 ```sh
 git clone https://github.com/lxsmnsyc/narra
-cd narra/compiler
-go build -o narra ./cmd/narra
+cd narra
+sh selfhost/bootstrap.sh out
 ```
 
-This leaves a `narra` executable in `narra/compiler`. Put that folder on your `PATH` so you can type `narra` from anywhere, as the rest of the guide does.
+This builds the compiler twice, checks that both builds give the same C, and leaves a `narrac` executable in `narra/out`. Put that folder on your `PATH` so you can type `narrac` from anywhere, as the rest of the guide does.
 
 ## Say hello
 
-Create a file named `hello.nra` and run it with `narra run hello.nra`. Each program in this guide is followed by what it prints:
+Create a file named `hello.nra` and run it with `narrac run hello.nra`. Each program in this guide is followed by what it prints:
 
 ```narra
 export function run(args: Array<string>): int {
@@ -29,7 +29,7 @@ export function run(args: Array<string>): int {
 hello, narra
 ```
 
-`narra run` compiled the file, built an executable, and started it. The executable called the function named `run`, so every program has one. Here is what each part of it does:
+`narrac run` compiled the file, built an executable, and started it. The executable called the function named `run`, so every program has one. Here is what each part of it does:
 
 - `export` makes `run` visible outside the file, which is how the compiler finds it.
 - `args: Array<string>` is the command-line arguments, as a list of strings. The first one is the path of the program.
@@ -68,14 +68,14 @@ export function run(args: Array<string>): int {
 
 `Int.toString` lives in the standard module `std/int`. The `import` line makes the functions of that module available under the name `Int`. Only `print`, `assert` and `panic` are there without an import. Everything else, including the functions for strings, arrays and maps, comes from a module you import.
 
-When you are only looking for mistakes, `narra check hello.nra` reports the errors without building anything.
+When you are only looking for mistakes, `narrac check hello.nra` reports the errors without building anything.
 
 ## Build an executable
 
-`narra run` builds into a temporary place. To keep the executable, use `narra build`:
+`narrac run` builds into a temporary place. To keep the executable, use `narrac build`:
 
 ```sh
-narra build -o hello hello.nra
+narrac build -o hello hello.nra
 ./hello
 ```
 
@@ -124,18 +124,18 @@ export function run(args: Array<string>): int {
 }
 ```
 
-From inside the `shop` folder, `narra run .` builds and runs the package and prints `220`. `narra build .` writes the executable `shop`, named after the `[[binary]]`. Chapter 8 covers modules and imports in full.
+From inside the `shop` folder, `narrac run .` builds and runs the package and prints `220`. `narrac build .` writes the executable `shop`, named after the `[[binary]]`. Chapter 8 covers modules and imports in full.
 
 ## The commands
 
 | Command | What it does |
 | --- | --- |
-| `narra run file.nra` | build and run a program |
-| `narra build -o app file.nra` | build a debug executable |
-| `narra build -release -o app file.nra` | build an optimized executable |
-| `narra check file.nra` | report errors without building |
-| `narra test file.nra` | run the tests in the file (chapter 10) |
+| `narrac run file.nra` | build and run a program |
+| `narrac build -o app file.nra` | build a debug executable |
+| `narrac build -release -o app file.nra` | build an optimized executable |
+| `narrac check file.nra` | report errors without building |
+| `narrac test file.nra` | run the tests in the file (chapter 10) |
 
-For a package, run each command from inside the package folder and write `.` in place of the file: `narra run .`, `narra build -o app .`, `narra check .`, `narra test .`. Without `-o`, `narra build .` names the executable after the `[[binary]]`.
+For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`.
 
 Next: [2. Values and types](02-values-and-types.md).

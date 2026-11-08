@@ -25,7 +25,10 @@ import {
   Arg,
   FieldInit,
   TypeExpr,
+  SourceFacts,
+  createEmptyFacts,
 } from "narrac/ast"
+import { Fix, createFix, insertAt, moveColumn } from "narrac/fixes"
 import {
   Type,
   Field,
@@ -66,6 +69,7 @@ export struct ModScope {
   traits: Map<string, int> // Checker.traits: the module's own traits and its imports'
   modules: Map<string, string> // namespace alias -> module path, package or std
   imported: Map<string, int> // std function imported by name -> Registry.functions index
+  facts: SourceFacts // source text facts for fixes, set by declareModule
 }
 
 // The entry function of one binary: a Checker.functions index, or -1 when the
@@ -150,6 +154,11 @@ export struct LocalInfo {
   pos: Pos
   noEscape: bool
   used: bool
+  // For the fix of an unused local: where the name is written, whether it is
+  // a `{ host }` shorthand, and the positions of the assignments to it.
+  namePos: Pos
+  shorthand: bool = false
+  writes: Array<Pos> = []
   // checker.localCount right after the increment; the C name is v_<name>_<number>
   // (filled by selfhost-emit-program).
   number: int = 0
@@ -339,12 +348,14 @@ export struct FuncInstance {
   result: Type
 }
 
-// A compile error. There are no codes or fixes yet: they go with the driver
-// in selfhost-bootstrap.
+// A compile error. code is the diagnostic code (see diagnostics.nra). fixes
+// are the suggested edits, usually none.
 export struct CheckError {
+  code: string
   file: string
   pos: Pos
   message: string
+  fixes: Array<Fix> = []
 }
 
 // A block expression being checked (Go's blockCtx): the type its returns
@@ -537,26 +548,99 @@ export function newChecker(ids: int): Checker uses alloc {
 
 // reportError records an error in the current module's file. An error equal to
 // one already recorded is dropped, as Go's report does.
-export function reportError(mutable checker: Checker, pos: Pos, message: string) uses alloc {
+export function reportError(
+  mutable checker: Checker,
+  pos: Pos,
+  code: string,
+  message: string,
+) uses alloc {
   let file = ""
   if (Arrays.length(checker.scopes) > 0) {
     file = checker.scopes[checker.current].file
   }
-  reportErrorIn(mutable checker, file, pos, message)
+  reportErrorIn(mutable checker, file, pos, code, message)
 }
 
 export function reportErrorIn(
   mutable checker: Checker,
   file: string,
   pos: Pos,
+  code: string,
   message: string,
 ) uses alloc {
-  const key = `${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
+  reportErrorWithFixes(mutable checker, file, pos, code, [], message)
+}
+
+// reportErrorFix reports an error that carries fixes (Go's errorfFix).
+export function reportErrorFix(
+  mutable checker: Checker,
+  pos: Pos,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+) uses alloc {
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  reportErrorWithFixes(mutable checker, file, pos, code, fixes, message)
+}
+
+function reportErrorWithFixes(
+  mutable checker: Checker,
+  file: string,
+  pos: Pos,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+) uses alloc {
+  const key = `${code}|${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
   if (checker.errorKeys[key] is Some(_)) {
     return
   }
   checker.errorKeys[key] = true
-  Arrays.push(mutable checker.errors, CheckError { file: file, pos: pos, message: message })
+  // In a chain `a + b + c` the inner errors start at the same text. Only the
+  // outermost keeps its fix, because the others would leave an error.
+  if (Arrays.length(fixes) > 0) {
+    for (const index of Ranges.upTo(Arrays.length(checker.errors))) {
+      const old = checker.errors[index].fixes
+      if (
+        Arrays.length(old) > 0 &&
+          old[0].title == fixes[0].title &&
+          isSamePosition(old[0].edits[0].start, fixes[0].edits[0].start)
+      ) {
+        checker.errors[index].fixes = []
+      }
+    }
+  }
+  Arrays.push(mutable checker.errors, CheckError {
+    code: code,
+    file: file,
+    pos: pos,
+    message: message,
+    fixes: fixes,
+  })
+}
+
+function isSamePosition(left: Pos, right: Pos): bool {
+  return left.line == right.line && left.column == right.column
+}
+
+// findImportAt is where a fix adds an import line: the line of the first
+// import, or the line after the leading comment block of the module.
+export function findImportAt(checker: Checker): Pos {
+  const scope = checker.scopes[checker.current]
+  if (Arrays.length(scope.imports) > 0) {
+    return Pos { line: scope.imports[0].pos.line, column: 1 }
+  }
+  return Pos { line: scope.facts.header, column: 1 }
+}
+
+// buildImportFix adds `import * as namespace from "path"` before the first
+// import of the module (Go's importFix).
+export function buildImportFix(checker: Checker, namespace: string, path: string): Fix uses alloc {
+  const at = findImportAt(checker)
+  return createFix(`import ${path}`, [insertAt(at, `import * as ${namespace} from "${path}"\n`)])
 }
 
 // errorText prints the errors as the Go dumps do, one line each.
@@ -614,6 +698,7 @@ export function newScope(
     traits: Map {},
     modules: Map {},
     imported: Map {},
+    facts: createEmptyFacts(),
   }
   Arrays.push(mutable checker.scopes, scope)
   const index = Arrays.length(checker.scopes) - 1
@@ -824,7 +909,12 @@ export function anyTypeParameter(checker: Checker, types: Array<Type>): bool {
 
 // reportTypeError reports an error at the declaration of a struct or enum, in the
 // file of the module that declares it.
-export function reportTypeError(mutable checker: Checker, type: Type, message: string) uses alloc {
+export function reportTypeError(
+  mutable checker: Checker,
+  type: Type,
+  code: string,
+  message: string,
+) uses alloc {
   let scope = 0
   let pos = Pos { line: 0, column: 0 }
   match (type) {
@@ -839,7 +929,7 @@ export function reportTypeError(mutable checker: Checker, type: Type, message: s
     _ => {}
   }
   const saved = enter(mutable checker, scope)
-  reportError(mutable checker, pos, message)
+  reportError(mutable checker, pos, code, message)
   enter(mutable checker, saved)
 }
 
@@ -898,6 +988,7 @@ function visitOrder(
     reportTypeError(
       mutable checker,
       type,
+      "E0109",
       `type ${text} contains itself; put the recursive field in an enum, Box or array`,
     )
     return
@@ -1091,20 +1182,42 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
   }
   for (const index of Arrays.values(unused)) {
     const local = body.locals[index]
+    const fixes = buildRenameUnusedFix(local)
     if (local.param) {
-      reportError(
+      reportErrorFix(
         mutable checker,
         local.pos,
+        "E0922",
+        fixes,
         `parameter "${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
       )
     } else {
-      reportError(
+      reportErrorFix(
         mutable checker,
         local.pos,
+        "E0921",
+        fixes,
         `"${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
       )
     }
   }
+}
+
+// buildRenameUnusedFix puts a `_` before the name of an unused local, and
+// before every assignment to it. The declaration `{ host }` becomes
+// `{ host: _host }`, because renaming alone would change the field.
+function buildRenameUnusedFix(local: LocalInfo): Array<Fix> uses alloc {
+  const unused = `_${local.name}`
+  let edits = [insertAt(local.namePos, "_")]
+  if (local.shorthand) {
+    const end = moveColumn(local.namePos, Str.charCount(local.name))
+    edits = [insertAt(end, `: ${unused}`)]
+  }
+  // The assignments are renamed too, or the file would not compile.
+  for (const written of Arrays.values(local.writes)) {
+    Arrays.push(mutable edits, insertAt(written, "_"))
+  }
+  return [createFix(`Rename to ${unused}`, edits)]
 }
 
 // isPositionBefore compares two source positions.
@@ -1197,13 +1310,19 @@ export function declareLocal(
     reportError(
       mutable checker,
       pos,
+      "E0103",
       `"${name}" is already declared in this function; shadowing is not allowed`,
     )
   }
   checker.localCount = checker.localCount + 1
 
-  // Record the local and the node that declares it.
+  // Record the local and the node that declares it. The name is written at
+  // pos unless the parser noted another place.
   const body = checker.body
+  let namePos = pos
+  if (checker.scopes[checker.current].facts.namePositions[nodeId] is Some(written)) {
+    namePos = written
+  }
   const local = LocalInfo {
     name: name,
     localType: localType,
@@ -1213,6 +1332,8 @@ export function declareLocal(
     noEscape: false,
     used: false,
     number: checker.localCount,
+    namePos: namePos,
+    shorthand: checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_),
   }
   Arrays.push(mutable checker.bodies[body].locals, local)
   const index = Arrays.length(checker.bodies[body].locals) - 1
@@ -1246,7 +1367,7 @@ export function popScope(mutable checker: Checker) {
 // `unsupported:`. what names the construct and the node, as in
 // "`is` (selfhost-check-patterns)".
 export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
-  reportError(mutable checker, pos, `unsupported: ${what}`)
+  reportError(mutable checker, pos, "E0213", `unsupported: ${what}`)
   return Type.TVoid
 }
 

@@ -1,0 +1,77 @@
+// The std-tests suite: programs in testdata/std-tests whose std/test
+// assertions fail. `narrac test` must exit with code 1, print the message of
+// <name>.want, and go on to the next test (`next test` in the output and
+// `1 passed, 1 failed` at the end). It runs with the sanitizers and the leak
+// check and in release mode. NARRA_TEST_TIMEOUT=2 gives the cases whose
+// closure never returns a short limit, so a Test.panics closure gets 1 second
+// and its own message comes first.
+import * as Arrays from "std/array"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "std-tests")
+  for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+    for (const variant of Arrays.values(["debug", "release"])) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "std-tests",
+        name: `${Path.basename(path)}/${variant}`,
+        path: path,
+        variant: variant,
+      })
+    }
+  }
+  const builds = Path.join(Path.join(folder, "builds"), "program.nra")
+  Arrays.push(mutable cases, TestCase {
+    suite: "std-tests",
+    name: "builds/program.nra",
+    path: builds,
+    variant: "builds",
+  })
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "builds") {
+    return runBuilds(context, testCase.path)
+  }
+  const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".want"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  let flag = "-sanitize"
+  if (testCase.variant == "release") {
+    flag = "-release"
+  }
+  const result = Common.runNarracWith(
+    context,
+    "",
+    ["NARRA_TEST_TIMEOUT=2"],
+    ["test", flag, testCase.path],
+  )
+  const expected = Str.trim(want.value)
+  if (result.code != 1 || !Str.contains(result.output, expected)) {
+    return Err(`want exit code 1 and ${expected}, got ${Common.describeRun(result)}`)
+  }
+  if (
+    !Str.contains(result.output, "next test") || !Str.contains(result.output, "1 passed, 1 failed")
+  ) {
+    return Err(`the run did not go on after the failure: ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+// runBuilds checks that a file whose tests use std/test still builds and runs
+// as a program: test blocks are not part of that build.
+function runBuilds(context: Context, path: string): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Files.replaceSuffix(path, ".nra", ".out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const result = Common.runNarrac(context, ["run", "-sanitize", path])
+  return Common.expectRun(result, 0, want.value)
+}

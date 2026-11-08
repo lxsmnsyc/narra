@@ -1,0 +1,831 @@
+// Diagnostic codes, as in Go's diagnostic_codes.go: the table of codes with
+// their message formats, the long texts of `narrac explain`, and the JSON line
+// of `narrac check --json` (contracts/diagnostic.md). The code of a diagnostic is
+// passed at the place that reports it; the formats here only name and explain
+// the codes, so the text of a message never decides its code.
+//
+// Ranges:
+//   E0001-E0099  lexer and parser
+//   E0100-E0199  declarations and types
+//   E0200-E0299  expressions and statements
+//   E0300-E0399  calls and constructors
+//   E0400-E0499  modules, packages and narra.toml
+//   E0500-E0599  traits
+//   E0600-E0699  closures and function values
+//   E0700-E0799  patterns and match
+//   E0800-E0899  effects
+//   E0900-E0999  standard library, including maps
+//
+// Add a code by appending the next free number in the range, at the end of
+// that range's rows. Never renumber or reuse a code. Rows keep the order of
+// the Go table; a code with several formats has several rows.
+import * as Char from "std/char"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import { Pos } from "narrac/ast"
+import { Fix } from "narrac/fixes"
+import { quoteGo } from "narrac/parser"
+import { quoteJson } from "narrac/queryjson"
+
+export struct CodeRow {
+  code: string
+  format: string
+}
+
+export struct Explanation {
+  code: string
+  text: string
+}
+
+const CODE_ROWS: Array<CodeRow> = [
+  CodeRow { code: "E0001", format: "unterminated block comment" },
+  CodeRow {
+    code: "E0002",
+    format: "a character literal holds exactly one character; use double quotes for strings",
+  },
+  CodeRow { code: "E0003", format: "semicolons are not used; end the statement with a line break" },
+  CodeRow { code: "E0004", format: "unexpected character %q" },
+  CodeRow { code: "E0005", format: "unterminated escape" },
+  CodeRow { code: "E0006", format: "expected { after \\u" },
+  CodeRow { code: "E0007", format: "invalid \\u escape" },
+  CodeRow { code: "E0008", format: "unknown escape \\%c" },
+  CodeRow { code: "E0009", format: "unterminated literal" },
+  CodeRow { code: "E0010", format: "unterminated template string" },
+  CodeRow { code: "E0011", format: "expected %q, found %s" },
+  CodeRow { code: "E0012", format: "expected a name, found %s" },
+  CodeRow { code: "E0013", format: "expected the end of the statement, found %s" },
+  CodeRow {
+    code: "E0014",
+    format: "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports",
+  },
+  CodeRow { code: "E0015", format: "expected a module path string" },
+  CodeRow {
+    code: "E0016",
+    format: "implement blocks cannot be exported; export the trait and the type",
+  },
+  CodeRow { code: "E0017", format: "tests cannot be exported" },
+  CodeRow { code: "E0018", format: "expected the test name as a string" },
+  CodeRow { code: "E0019", format: "expected a declaration, found %s" },
+  CodeRow { code: "E0020", format: "there is no `T[]` array type; write `Array<T>`" },
+  CodeRow {
+    code: "E0021",
+    format: "trait constraints on struct and enum type parameters are not supported by this compiler yet",
+  },
+  CodeRow {
+    code: "E0022",
+    format: "retired: generators are compiled now, so this error is no longer reported",
+  },
+  CodeRow {
+    code: "E0023",
+    format: "a trait has no type parameters; use Self for the implementing type",
+  },
+  CodeRow { code: "E0024", format: "a trait has functions only, found %s" },
+  CodeRow {
+    code: "E0025",
+    format: "trait functions have no default implementation; remove the body",
+  },
+  CodeRow { code: "E0026", format: "functions in an implement block cannot be exported" },
+  CodeRow { code: "E0027", format: "an implement block has functions only, found %s" },
+  CodeRow { code: "E0028", format: "arrow function parameters cannot be mutable" },
+  CodeRow { code: "E0029", format: "unexpected end of file inside a block" },
+  CodeRow { code: "E0030", format: "write `for (const item of items)`" },
+  CodeRow { code: "E0031", format: "use `of`; `for ... in` is not part of the language" },
+  CodeRow { code: "E0032", format: "a block must belong to a statement such as if or while" },
+  CodeRow { code: "E0033", format: "use `%s`; there is no strict equality operator" },
+  CodeRow { code: "E0034", format: "compound assignment is not supported; write `x = x %s y`" },
+  CodeRow { code: "E0035", format: "a map key that is not a literal is written [key]: value" },
+  CodeRow { code: "E0036", format: "a struct literal has at most one spread, and it comes first" },
+  CodeRow { code: "E0037", format: "write `%s: %s`; field shorthand is not allowed" },
+  CodeRow { code: "E0038", format: "there is no %s; use `None` with an `Option` type" },
+  CodeRow { code: "E0039", format: "expected an expression, found %s" },
+  CodeRow { code: "E0040", format: "unterminated ${ in template string" },
+  CodeRow { code: "E0041", format: "in template string: %v" },
+  CodeRow { code: "E0042", format: "expected a number after - in a pattern, found %s" },
+  CodeRow { code: "E0043", format: "only an exported type can be opaque; write `export opaque`" },
+  CodeRow { code: "E0044", format: "expected `type` after `distinct`, found %s" },
+  CodeRow {
+    code: "E0045",
+    format: "expected `struct` or `distinct type` after `opaque`, found %s",
+  },
+  CodeRow {
+    code: "E0046",
+    format: "a generator must be a top-level function; declare `function*` at module level",
+  },
+  CodeRow {
+    code: "E0046",
+    format: "`yield` needs a value: write `yield value`, or `yield* generator`",
+  },
+  CodeRow {
+    code: "E0046",
+    format: "`yield` is a statement, so it cannot be part of an expression",
+  },
+  CodeRow { code: "E0100", format: "unknown module %q (this compiler supports %s)" },
+  CodeRow { code: "E0101", format: "module %q has no export %q" },
+  CodeRow { code: "E0102", format: "function %q is declared twice" },
+  CodeRow {
+    code: "E0103",
+    format: "%q is already declared in this function; shadowing is not allowed",
+  },
+  CodeRow { code: "E0104", format: "type %q is declared twice" },
+  CodeRow { code: "E0105", format: "field %q is declared twice" },
+  CodeRow { code: "E0106", format: "a field default must be a constant" },
+  CodeRow {
+    code: "E0107",
+    format: "a default for a field whose type uses a type parameter is not supported by this compiler yet",
+  },
+  CodeRow {
+    code: "E0108",
+    format: "generic type %s contains %s, so each instance needs a larger one without end; every instance needs its own C type, so polymorphic recursion is not supported (use the same type arguments, or an enum or Box)",
+  },
+  CodeRow {
+    code: "E0109",
+    format: "type %s contains itself; put the recursive field in an enum, Box or array",
+  },
+  CodeRow { code: "E0110", format: "Box takes one type argument" },
+  CodeRow { code: "E0111", format: "Map takes two type arguments" },
+  CodeRow { code: "E0112", format: "Array takes one type argument" },
+  CodeRow { code: "E0113", format: "there is no `number`; use `int` or `f64`" },
+  CodeRow { code: "E0114", format: "use `bool`" },
+  CodeRow { code: "E0115", format: "%s takes %d type arguments" },
+  CodeRow { code: "E0116", format: "there is no Tuple type; write a tuple type as #[A, B]" },
+  CodeRow { code: "E0117", format: "type %s is not generic" },
+  CodeRow { code: "E0118", format: "unknown type %q" },
+  CodeRow { code: "E0119", format: "expected %s, found %s" },
+  CodeRow { code: "E0120", format: "distinct type %s cannot be defined in terms of itself" },
+  CodeRow { code: "E0190", format: "constant %q is declared twice" },
+  CodeRow { code: "E0191", format: "constant %q is defined in terms of itself" },
+  CodeRow {
+    code: "E0192",
+    format: "constant %q cannot call function %q; a top-level constant holds literals, constructors, structs, arrays, function names and other constants",
+  },
+  CodeRow {
+    code: "E0193",
+    format: "constant %q cannot use %s; a top-level constant holds literals, constructors, structs, arrays, function names and other constants",
+  },
+  CodeRow { code: "E0194", format: "enum %s declares the constructor %q twice" },
+  CodeRow {
+    code: "E0195",
+    format: "generator %s must declare its return type as Generator<T> or Coroutine<In, Out>",
+  },
+  CodeRow {
+    code: "E0195",
+    format: "the effects of generator %s are written on its return type, as in `Generator<T> uses io`",
+  },
+  CodeRow { code: "E0195", format: "Generator takes one type argument" },
+  CodeRow {
+    code: "E0196",
+    format: "generator %s cannot take a mutable parameter %q; a generator is a value that is resumed later",
+  },
+  CodeRow { code: "E0197", format: "Coroutine takes two type arguments" },
+  CodeRow {
+    code: "E0197",
+    format: "%s is not an export you can import by name; write `import * as Co from \"std/coroutine\"` and call Co.resume",
+  },
+  CodeRow { code: "E0200", format: "integer literal %s does not fit in int" },
+  CodeRow {
+    code: "E0201",
+    format: "a template string part must be a string, found %s; convert it, for example with Int.toString",
+  },
+  CodeRow { code: "E0202", format: "a module is not a value" },
+  CodeRow { code: "E0203", format: "unknown name %q" },
+  CodeRow { code: "E0204", format: "struct %s has no field %q" },
+  CodeRow {
+    code: "E0205",
+    format: "this %s may hold any of its variants; check it with `is` or `match` before reading %q",
+  },
+  CodeRow { code: "E0206", format: "%s has no field %q" },
+  CodeRow { code: "E0207", format: "%s has one field, value" },
+  CodeRow { code: "E0208", format: "there is no .length; use Array.length(x) or Str.length(x)" },
+  CodeRow { code: "E0209", format: "%s has no fields" },
+  CodeRow { code: "E0210", format: "only arrays can be indexed, found %s" },
+  CodeRow { code: "E0211", format: "- needs a number, found %s" },
+  CodeRow { code: "E0212", format: "the type of [] is unknown; add a type annotation" },
+  CodeRow { code: "E0213", format: "unsupported expression" },
+  CodeRow { code: "E0214", format: "cannot compare %s with %s" },
+  CodeRow { code: "E0215", format: "cannot order %s and %s" },
+  CodeRow { code: "E0216", format: "strings are joined with a template string, not +" },
+  CodeRow { code: "E0217", format: "%s needs two numbers of the same type, found %s and %s" },
+  CodeRow { code: "E0218", format: "%s needs two integers, found %s and %s" },
+  CodeRow { code: "E0219", format: "unknown operator %s" },
+  CodeRow {
+    code: "E0220",
+    format: "cannot tell type parameter %s of %s here; add a type annotation",
+  },
+  CodeRow { code: "E0221", format: "%q is not a struct" },
+  CodeRow { code: "E0222", format: "the struct type is unknown here; write `TypeName { ... }`" },
+  CodeRow { code: "E0223", format: "field %q is given twice" },
+  CodeRow { code: "E0224", format: "missing field %q of %s" },
+  CodeRow { code: "E0225", format: "this expression has no value" },
+  CodeRow { code: "E0226", format: "only variables, fields and array elements can be assigned" },
+  CodeRow { code: "E0227", format: "%q is constant; declare it with `let` to change it" },
+  CodeRow { code: "E0228", format: "this expression does nothing" },
+  CodeRow {
+    code: "E0229",
+    format: "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`",
+  },
+  CodeRow { code: "E0230", format: "this function must return a %s" },
+  CodeRow { code: "E0231", format: "this function returns nothing" },
+  CodeRow {
+    code: "E0232",
+    format: "for ... of needs a Range, an Array, a Generator, Str.chars, Array.entries, Map.keys or Map.entries, found %s",
+  },
+  CodeRow { code: "E0233", format: "break must be inside a loop" },
+  CodeRow { code: "E0234", format: "continue must be inside a loop" },
+  CodeRow {
+    code: "E0235",
+    format: "cannot read field %q of %s: it is an opaque struct of module %q",
+  },
+  CodeRow { code: "E0236", format: "cannot spread %s: it is an opaque struct of module %q" },
+  CodeRow { code: "E0237", format: "the type arguments make %s, but the expected type is %s" },
+  CodeRow {
+    code: "E0290",
+    format: "constant %q cannot be changed; copy it into a `let` variable first",
+  },
+  CodeRow {
+    code: "E0291",
+    format: "%s cannot be used %s; it is valid only directly in a function* body",
+  },
+  CodeRow { code: "E0291", format: "yield* needs a %s, found %s" },
+  CodeRow {
+    code: "E0292",
+    format: "return in a generator takes no value; yield the value, then return",
+  },
+  CodeRow {
+    code: "E0293",
+    format: "the value of yield is available only in a coroutine; declare %s as Coroutine<In, Out>, or write `yield value` without a name",
+  },
+  CodeRow {
+    code: "E0293",
+    format: "yield* is not valid in a coroutine; a delegated generator has no input to receive",
+  },
+  CodeRow {
+    code: "E0293",
+    format: "Co.resume changes the generator; write Co.resume(mutable g) or Co.resume(mutable g, input)",
+  },
+  CodeRow {
+    code: "E0293",
+    format: "for ... of cannot iterate a coroutine, which needs an input on each resume; call Co.resume(mutable g, input)",
+  },
+  CodeRow { code: "E0300", format: "constructor %s is ambiguous: %s all have it; write %s.%s" },
+  CodeRow { code: "E0301", format: "%s takes %d fields, found %d" },
+  CodeRow { code: "E0302", format: "cannot tell the type of %s here; add a type annotation" },
+  CodeRow { code: "E0303", format: "constructor fields are not mutable" },
+  CodeRow { code: "E0304", format: "enum %s has no constructor %q" },
+  CodeRow { code: "E0305", format: "unknown function %q" },
+  CodeRow { code: "E0306", format: "module %q has no function %q" },
+  CodeRow { code: "E0307", format: "unknown function %s" },
+  CodeRow {
+    code: "E0308",
+    format: "unknown module %q; import it first, for example `import * as %s from \"std/...\"`",
+  },
+  CodeRow {
+    code: "E0309",
+    format: "there are no method calls; call a module function such as Module.%s(value, ...) (value has type %s)",
+  },
+  CodeRow {
+    code: "E0310",
+    format: "too many instances of generic functions; %s may recurse with ever larger types",
+  },
+  CodeRow { code: "E0311", format: "%s takes %d arguments, found %d" },
+  CodeRow { code: "E0312", format: "%s changes its argument; write `mutable` before it" },
+  CodeRow { code: "E0313", format: "%s does not change its arguments; remove `mutable`" },
+  CodeRow { code: "E0314", format: "a mutable argument must be a variable, a field or an element" },
+  CodeRow { code: "E0315", format: "%q is constant; declare it with `let` to pass it as mutable" },
+  CodeRow { code: "E0316", format: "this call passes %d arguments, the function takes %d" },
+  CodeRow { code: "E0317", format: "parameter %q is mutable; write `mutable` before the argument" },
+  CodeRow { code: "E0318", format: "parameter %q is not mutable; remove `mutable`" },
+  CodeRow {
+    code: "E0319",
+    format: "%q is passed as mutable in this call, so no other argument can use it",
+  },
+  CodeRow {
+    code: "E0320",
+    format: "cannot build %s with a literal: it is an opaque struct of module %q; use that module's functions",
+  },
+  CodeRow {
+    code: "E0321",
+    format: "%s.from is not available outside module %q: %s is an opaque distinct type",
+  },
+  CodeRow { code: "E0322", format: "%s has no function %q; a distinct type has from and %s" },
+  CodeRow { code: "E0323", format: "constructor %s needs its enum; write %s.%s" },
+  CodeRow {
+    code: "E0324",
+    format: "constructor %s needs its enum; %s all have it, for example %s.%s",
+  },
+  CodeRow {
+    code: "E0325",
+    format: "expected %s, found %s; the argument does not fit the generic parameter",
+  },
+  CodeRow {
+    code: "E0326",
+    format: "%s is not a generic function, so it takes no type arguments%s",
+  },
+  CodeRow { code: "E0327", format: "%s takes %d type arguments, found %d" },
+  CodeRow {
+    code: "E0400",
+    format: "the entry function must be `export function %s(args: Array<string>): int`",
+  },
+  CodeRow { code: "E0401", format: "unknown module %q; package %s has no file src/%s.nra" },
+  CodeRow {
+    code: "E0402",
+    format: "%q is not exported by module %q; add `export` to its declaration",
+  },
+  CodeRow {
+    code: "E0403",
+    format: "unknown module %q in type %s; import it with `import * as %s from \"...\"`",
+  },
+  CodeRow { code: "E0404", format: "%s is not a type" },
+  CodeRow { code: "E0405", format: "expected `]]`" },
+  CodeRow { code: "E0406", format: "expected `]`" },
+  CodeRow { code: "E0407", format: "[dependencies] is not supported by this compiler yet" },
+  CodeRow { code: "E0408", format: "expected `key = value`" },
+  CodeRow { code: "E0409", format: "%s: %v" },
+  CodeRow {
+    code: "E0410",
+    format: "package name must be a string of letters, digits and `_`, starting with a letter",
+  },
+  CodeRow { code: "E0411", format: "package name \"std\" is reserved for the standard library" },
+  CodeRow { code: "E0412", format: "%s must be a string" },
+  CodeRow { code: "E0413", format: "%s must be an array of strings" },
+  CodeRow { code: "E0414", format: "[package] needs a name" },
+  CodeRow {
+    code: "E0415",
+    format: "each [[binary]] needs a name and an entry such as \"cli.run\"",
+  },
+  CodeRow { code: "E0416", format: "two [[binary]] entries are named %q" },
+  CodeRow { code: "E0417", format: "modules %q and %q have the same C name hash; rename one file" },
+  CodeRow { code: "E0418", format: "import cycle: %s" },
+  CodeRow {
+    code: "E0419",
+    format: "no entry function; declare `export function run(args: Array<string>): int`",
+  },
+  CodeRow {
+    code: "E0420",
+    format: "binary %q: no entry function %q; declare `export function %s(args: Array<string>): int` in module %q",
+  },
+  CodeRow {
+    code: "E0421",
+    format: "the import alias %s is also a type name; rename it, for example `import * as %s from %q`",
+  },
+  CodeRow { code: "E0422", format: "two imports use the alias %s; give one of them another alias" },
+  CodeRow {
+    code: "E0423",
+    format: "imported name %q is already declared in this module; rename the import with `as`",
+  },
+  CodeRow {
+    code: "E0424",
+    format: "imported name %q is already imported from another module; rename one with `as`",
+  },
+  CodeRow { code: "E0425", format: "%q is a constructor of %s; import the enum and write %s.%s" },
+  CodeRow { code: "E0426", format: "%s is internal to the standard library" },
+  CodeRow { code: "E0500", format: "%q is declared twice" },
+  CodeRow { code: "E0501", format: "%s is listed twice in `implements`" },
+  CodeRow { code: "E0502", format: "derives Shape is not supported by this compiler yet" },
+  CodeRow {
+    code: "E0503",
+    format: "%s cannot be derived; only Equatable, Hashable, Ordered and Show can. List it in `implements` and write `implement %s for %s`",
+  },
+  CodeRow { code: "E0504", format: "%s is listed twice in `derives`" },
+  CodeRow { code: "E0505", format: "unknown trait %q" },
+  CodeRow { code: "E0506", format: "%s is listed twice in the constraint of %s" },
+  CodeRow {
+    code: "E0507",
+    format: "%s implements %s but has no `implement %s for %s` block or `derives %s`",
+  },
+  CodeRow { code: "E0508", format: "%s both derives and implements %s; keep one" },
+  CodeRow {
+    code: "E0509",
+    format: "cannot derive %s for %s: field %q has type %s, which does not implement %s",
+  },
+  CodeRow {
+    code: "E0510",
+    format: "trait functions cannot have type parameters in this compiler yet",
+  },
+  CodeRow { code: "E0511", format: "%s declares function %q twice" },
+  CodeRow {
+    code: "E0512",
+    format: "%s.%s must use Self in a parameter or its result, so a call can tell which implementation to run",
+  },
+  CodeRow {
+    code: "E0513",
+    format: "cannot implement %s for %s: the type is declared in another module; wrap it in a struct",
+  },
+  CodeRow {
+    code: "E0514",
+    format: "implement blocks for generic types are not supported by this compiler yet; use derives",
+  },
+  CodeRow {
+    code: "E0515",
+    format: "%s does not list %s in `implements`; add `implements %s` to its declaration",
+  },
+  CodeRow { code: "E0516", format: "%s is implemented twice for %s" },
+  CodeRow {
+    code: "E0517",
+    format: "functions in an implement block cannot have type parameters in this compiler yet",
+  },
+  CodeRow { code: "E0518", format: "trait %s has no function %q" },
+  CodeRow { code: "E0519", format: "function %q is implemented twice" },
+  CodeRow { code: "E0520", format: "%s.%s for %s must be `%s`" },
+  CodeRow { code: "E0521", format: "implement %s for %s is missing function %s" },
+  CodeRow {
+    code: "E0522",
+    format: "cannot tell which type's %s.%s to call here; add a type annotation",
+  },
+  CodeRow { code: "E0523", format: "%s.%s needs %s to implement %s; declare it as <%s: %s>" },
+  CodeRow { code: "E0524", format: "%s does not implement %s" },
+  CodeRow {
+    code: "E0525",
+    format: "%s does not implement %s, which %s needs for type parameter %s",
+  },
+  CodeRow { code: "E0526", format: "cannot use == on %s: it contains a function" },
+  CodeRow {
+    code: "E0527",
+    format: "== on %s needs Equatable; declare the type parameter as <T: Equatable>",
+  },
+  CodeRow { code: "E0528", format: "%s does not implement Equatable" },
+  CodeRow {
+    code: "E0529",
+    format: "%s.%s has Self only in its result; name the type, as in %s.%s<Type>(...)",
+  },
+  CodeRow { code: "E0600", format: "only a parameter with a function type can be escaping" },
+  CodeRow {
+    code: "E0601",
+    format: "parameter %q cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as `escaping %s` to store, return or capture it",
+  },
+  CodeRow {
+    code: "E0602",
+    format: "a closure cannot capture parameter %q because it is not escaping; declare it as `escaping %s`",
+  },
+  CodeRow {
+    code: "E0603",
+    format: "a closure cannot capture mutable parameter %q; copy it first with `const copy = %s`",
+  },
+  CodeRow {
+    code: "E0604",
+    format: "a closure cannot capture %q because it is declared with let; closures capture only constants",
+  },
+  CodeRow {
+    code: "E0605",
+    format: "function %s has a mutable parameter, so it cannot be used as a value",
+  },
+  CodeRow { code: "E0606", format: "%q is a %s, not a function" },
+  CodeRow { code: "E0607", format: "this expression cannot be called" },
+  CodeRow {
+    code: "E0608",
+    format: "a function value takes no mutable arguments; remove `mutable`",
+  },
+  CodeRow {
+    code: "E0609",
+    format: "%q is passed as mutable inside this call, so it cannot also hold the function being called",
+  },
+  CodeRow {
+    code: "E0610",
+    format: "this arrow function takes %d parameters, but the expected function takes %d",
+  },
+  CodeRow { code: "E0611", format: "cannot tell the type of parameter %q; write it as `%s: Type`" },
+  CodeRow {
+    code: "E0612",
+    format: "a closure cannot capture %q because it is declared with let, unless it is passed straight to a function parameter that is not escaping",
+  },
+  CodeRow {
+    code: "E0613",
+    format: "a closure cannot capture mutable parameter %q unless it is passed straight to a function parameter that is not escaping; copy it first with `const copy = %s`",
+  },
+  CodeRow {
+    code: "E0614",
+    format: "%q is assigned by a closure passed to this call, so no other argument can use it",
+  },
+  CodeRow {
+    code: "E0615",
+    format: "parameter %q of generator %s has a function type, so it must be `escaping`: the generator outlives the call",
+  },
+  CodeRow {
+    code: "E0700",
+    format: "%s is not a constructor of %s; a name that binds starts with a lowercase letter",
+  },
+  CodeRow { code: "E0701", format: "%q is bound twice in this pattern" },
+  CodeRow { code: "E0702", format: "constructor pattern %s needs an enum value, found %s" },
+  CodeRow { code: "E0703", format: "%s.%s does not match a value of type %s" },
+  CodeRow { code: "E0704", format: "%s has %d fields, the pattern lists %d" },
+  CodeRow { code: "E0705", format: "a struct pattern needs a struct value, found %s" },
+  CodeRow { code: "E0706", format: "field %q is listed twice" },
+  CodeRow { code: "E0707", format: "a tuple pattern needs a tuple value, found %s" },
+  CodeRow { code: "E0708", format: "%s has %d elements, the pattern lists %d" },
+  CodeRow {
+    code: "E0709",
+    format: "a literal pattern needs an int, f64, bool, char or string value, found %s",
+  },
+  CodeRow {
+    code: "E0710",
+    format: "an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression",
+  },
+  CodeRow { code: "E0711", format: "match needs a value, found void" },
+  CodeRow {
+    code: "E0712",
+    format: "a match used as a value needs a single expression in each arm",
+  },
+  CodeRow { code: "E0713", format: "match does not cover every %s value; add a `_` arm" },
+  CodeRow { code: "E0714", format: "match does not cover %s; add the cases or a `_` arm" },
+  CodeRow {
+    code: "E0715",
+    format: "this pattern does not match every %s; use match or `is` to test a value",
+  },
+  CodeRow { code: "E0716", format: "a spread needs a struct value, found %s" },
+  CodeRow {
+    code: "E0717",
+    format: "cannot spread %s into a %s literal; the spread must have the literal's type",
+  },
+  CodeRow { code: "E0718", format: "a tuple type needs at least two element types, found %d" },
+  CodeRow { code: "E0719", format: "a tuple needs at least two elements, found %d" },
+  CodeRow {
+    code: "E0720",
+    format: "cannot match the fields of %s: it is an opaque struct of module %q",
+  },
+  CodeRow {
+    code: "E0800",
+    format: "Function `%s` uses `%s`%s but its signature does not declare it; write `uses %s`",
+  },
+  CodeRow {
+    code: "E0801",
+    format: "unknown effect `%s`; the effects are alloc, io and unsafe, or an effect variable declared as `<effect %s>`",
+  },
+  CodeRow {
+    code: "E0802",
+    format: "effect variable `%s` in the `uses` list of `%s` must appear in the function or generator type of a parameter",
+  },
+  CodeRow {
+    code: "E0803",
+    format: "the argument for `%s` of `%s` uses `%s`, but its function type does not declare it; write `uses %s` in the type, or `uses E` with `<effect E>` on `%s`",
+  },
+  CodeRow { code: "E0900", format: "%s cannot be a map key: %s" },
+  CodeRow { code: "E0901", format: "the type of Map {} is unknown; add a type annotation" },
+  CodeRow { code: "E0902", format: "%s needs a map, found %s" },
+  CodeRow { code: "E0903", format: "Map.remove changes the map; write Map.remove(mutable m, key)" },
+  CodeRow { code: "E0904", format: "%s needs an array, found %s" },
+  CodeRow {
+    code: "E0905",
+    format: "Array.push changes the array; write Array.push(mutable items, value)",
+  },
+  CodeRow { code: "E0906", format: "Array.push needs an array, found %s" },
+  CodeRow { code: "E0907", format: "%s can only be called inside a `test` block" },
+  CodeRow { code: "E0908", format: "%s.%s needs an import; add `import * as %s from %q`" },
+  CodeRow { code: "E0909", format: "%s needs an Option<T>, found %s" },
+  CodeRow { code: "E0910", format: "%s needs a Result<T, E>, found %s" },
+  CodeRow { code: "E0911", format: "%s needs a function as argument %d, found %s" },
+  CodeRow {
+    code: "E0912",
+    format: "%s needs a function that returns %s, found one that returns %s",
+  },
+  CodeRow { code: "E0913", format: "%s needs a function that returns a value" },
+  CodeRow { code: "E0914", format: "%s.%s names a type; this module imports %q as %s" },
+  CodeRow {
+    code: "E0915",
+    format: "mutable parameter %q cannot be returned or stored; copy it first with `const copy = %s`",
+  },
+  CodeRow {
+    code: "E0923",
+    format: "there is no `class`; use a `struct` and functions in a module",
+  },
+  CodeRow {
+    code: "E0924",
+    format: "there is no `interface`; use a `struct` for data or a `trait` for behavior",
+  },
+  CodeRow {
+    code: "E0925",
+    format: "there is no `new`; write a struct literal such as `Name { field: value }`, or call a function",
+  },
+  CodeRow {
+    code: "E0926",
+    format: "there is no `try` or `catch`; return a `Result` and check it with `is Err` or `match`",
+  },
+  CodeRow {
+    code: "E0927",
+    format: "there is no `throw`; return `Err(value)`, or call `panic` for a bug",
+  },
+  CodeRow { code: "E0928", format: "there is no `this`; pass the value as a parameter" },
+  CodeRow {
+    code: "E0930",
+    format: "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
+  },
+  CodeRow { code: "E0916", format: "no enclosing loop is labeled %q" },
+  CodeRow { code: "E0917", format: "label %q is already used by an enclosing loop" },
+  CodeRow { code: "E0918", format: "label %q must be on a for or while loop" },
+  CodeRow {
+    code: "E0921",
+    format: "%q is never read; remove it, or name it %q to mark it as unused on purpose",
+  },
+  CodeRow {
+    code: "E0922",
+    format: "parameter %q is never read; remove it, or name it %q to mark it as unused on purpose",
+  },
+  CodeRow {
+    code: "E0920",
+    format: "%s can only be the source of a for ... of loop; use the array itself",
+  },
+  CodeRow {
+    code: "E0929",
+    format: "%q is passed as mutable in one call, so the rest of the expression cannot use it",
+  },
+  CodeRow { code: "E0931", format: "a block expression must end every path with `return value`" },
+  CodeRow {
+    code: "E0932",
+    format: "%s cannot leave a block expression; it can only leave a loop inside the block",
+  },
+  CodeRow {
+    code: "E0933",
+    format: "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`",
+  },
+  CodeRow {
+    code: "E0934",
+    format: "a conditional expression needs `:` and a second value, as in `cond ? a : b`",
+  },
+  CodeRow {
+    code: "E0934",
+    format: "a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`",
+  },
+  CodeRow { code: "E0934", format: "both branches of a conditional expression must have a value" },
+  CodeRow {
+    code: "E0934",
+    format: "the value of a conditional expression must be used; write an `if` statement instead",
+  },
+]
+
+// Long texts of `narrac explain`. A code without one prints its message format.
+const EXPLANATIONS: Array<Explanation> = [
+  Explanation {
+    code: "E0003",
+    text: "Narra has no semicolons. A line break ends a statement.\nFix: delete the `;`.\nExample: `return 0;` becomes `return 0`.",
+  },
+  Explanation {
+    code: "E0014",
+    text: "Imports name the module as a namespace or list the names. There is no default import.\nFix: `import X from \"std/int\"` becomes `import * as X from \"std/int\"`.",
+  },
+  Explanation {
+    code: "E0020",
+    text: "Arrays are written `Array<T>`, not `T[]`.\nFix: `xs: int[]` becomes `xs: Array<int>`.",
+  },
+  Explanation {
+    code: "E0033",
+    text: "There is no strict equality. `==` already compares without conversions.\nFix: `===` becomes `==`, and `!==` becomes `!=`.",
+  },
+  Explanation {
+    code: "E0038",
+    text: "There is no `null` or `undefined`. A value that may be missing has type `Option<T>`.\nFix: `null` becomes `None`.",
+  },
+  Explanation {
+    code: "E0216",
+    text: "Strings are joined with a template string.\nFix: `a + \"x\" + b` becomes `` `${a}x${b}` ``. The fix is offered when every operand is a string name or literal.",
+  },
+  Explanation {
+    code: "E0309",
+    text: "Narra has no method calls. Functions belong to modules.\nFix: `xs.push(v)` becomes `Arrays.push(mutable xs, v)`.",
+  },
+  Explanation {
+    code: "E0323",
+    text: "A constructor of a user enum is always written with its enum, in expressions and in patterns. Some, None, Ok and Err stay bare.\nFix: `Circle(1.0)` becomes `Shape.Circle(1.0)`.",
+  },
+  Explanation {
+    code: "E0324",
+    text: "Two enums visible here have this constructor, so the compiler cannot pick one.\nFix: write Enum.Name for the one you mean, for example `Level.Low`.",
+  },
+  Explanation {
+    code: "E0325",
+    text: "A generic function was called with an argument that cannot match its parameter, for example an int where Option<T> is expected.\nFix: pass a value of the shape the parameter asks for.",
+  },
+  Explanation {
+    code: "E0326",
+    text: "Explicit type arguments, as in f<int>(x), only go with a generic function or a trait function.\nFix: delete the type arguments, or call a generic function.",
+  },
+  Explanation {
+    code: "E0327",
+    text: "A generic function takes one type argument per type parameter, all or none. A trait call takes one, the type that Self stands for.\nFix: write every type argument, or none and let the arguments decide.",
+  },
+  Explanation {
+    code: "E0425",
+    text: "Importing a constructor by name is not allowed. Import the enum; its constructors come with it.\nFix: `import { Teacher }` becomes `import { SchoolPerson }`, and uses become `SchoolPerson.Teacher`.",
+  },
+  Explanation {
+    code: "E0426",
+    text: "Modules under std/internal/ hold the primitives behind the standard library. Only std modules import them.\nFix: use the public std module that wraps the primitive.",
+  },
+  Explanation {
+    code: "E0529",
+    text: "No parameter of this trait function mentions Self, so the call alone cannot tell which implementation to use.\nFix: name the type: `Shape.fromValue<User>(value)`.",
+  },
+  Explanation {
+    code: "E0923",
+    text: "Narra has no classes. Data goes in a struct and behavior in functions of the module.\nFix: `class A {}` becomes `struct A {}`.",
+  },
+  Explanation {
+    code: "E0924",
+    text: "Narra has no interfaces. Use a struct for a data shape and a trait for behavior.\nFix: `interface A {}` becomes `struct A {}`.",
+  },
+  Explanation {
+    code: "E0925",
+    text: "Narra has no `new`. A struct is built with a literal, other values with a function call.\nFix: `new A()` becomes `A {}` when A is a struct without fields.",
+  },
+  Explanation {
+    code: "E0926",
+    text: "Narra has no exceptions. A function that can fail returns `Result<T, E>`; the caller checks it with `is Err` or `match`.",
+  },
+  Explanation {
+    code: "E0927",
+    text: "Narra has no `throw`. Return `Err(value)` from a function that returns a Result.\nFix: `throw \"x\"` becomes `return Err(\"x\")`.",
+  },
+  Explanation {
+    code: "E0928",
+    text: "Narra has no `this`. A function gets the value as a parameter.",
+  },
+  Explanation {
+    code: "E0930",
+    text: "Narra has no function declarations inside a function. Declare the function at module level as a private function and pass the enclosing values as arguments.\nThere is no automatic fix: moving it changes the meaning when its body reads a name that a local shadows, and breaks helpers that use the enclosing type parameters.\nFor a helper that captures, bind an arrow function: `const helper = (x: int): int => x + offset`.\nExample: `function run() { function add(a: int): int { return a + 1 } }` becomes `function add(a: int): int { return a + 1 }` followed by `function run() { ... }`.",
+  },
+]
+
+// getCodeRows returns the table, for tests and tools that check the codes.
+export function getCodeRows(): Array<CodeRow> {
+  return CODE_ROWS
+}
+
+// isKnownCode tells whether code is in the table.
+export function isKnownCode(code: string): bool {
+  for (const row of Arrays.values(CODE_ROWS)) {
+    if (row.code == code) {
+      return true
+    }
+  }
+  return false
+}
+
+// upperAscii turns a-z into A-Z, so `explain e0001` works like `explain E0001`.
+function upperAscii(text: string): string uses alloc {
+  let builder = Str.builder()
+  for (const character of Arrays.values(Str.chars(text))) {
+    const code = Char.code(character)
+    let shown = character
+    if (code >= 97 && code <= 122) {
+      if (Char.fromCode(code - 32) is Some(upper)) {
+        shown = upper
+      }
+    }
+    Str.appendChar(mutable builder, shown)
+  }
+  return Str.build(builder)
+}
+
+// explainCode returns the text of `narrac explain code`, or the error message
+// for an unknown code. A code with several formats prints the last one, as Go does.
+export function explainCode(input: string): Result<string, string> uses alloc {
+  const code = upperAscii(input)
+  let format = ""
+  for (const row of Arrays.values(CODE_ROWS)) {
+    if (row.code == code) {
+      format = row.format
+    }
+  }
+  if (format == "") {
+    return Err(`unknown diagnostic code ${quoteGo(code)}`)
+  }
+  let text = `${code}: ${format}\n`
+  for (const explanation of Arrays.values(EXPLANATIONS)) {
+    if (explanation.code == code) {
+      text = `${text}\n${explanation.text}\n`
+    }
+  }
+  return Ok(text)
+}
+
+function writePair(pos: Pos): string uses alloc {
+  return `[${Int.toString(pos.line)},${Int.toString(pos.column)}]`
+}
+
+// writeDiagnosticJson writes one diagnostic as one line of `narrac check --json`,
+// the bytes of Go's json encoder: keys code, severity, message, file, range,
+// fixes. The range is empty (start equals end) because a diagnostic records a
+// position, not an extent. Each fix is {"title", "edits": [{"file", "range",
+// "text"}]}; every edit names the file of the diagnostic.
+export function writeDiagnosticJson(
+  file: string,
+  pos: Pos,
+  code: string,
+  message: string,
+  fixes: Array<Fix>,
+): string uses alloc {
+  const pair = writePair(pos)
+  let fixTexts: Array<string> = []
+  for (const fix of Arrays.values(fixes)) {
+    let editTexts: Array<string> = []
+    for (const edit of Arrays.values(fix.edits)) {
+      Arrays.push(
+        mutable editTexts,
+        `{"file":${quoteJson(file)},"range":{"start":${writePair(edit.start)},"end":${writePair(edit.end)}},"text":${quoteJson(edit.text)}}`,
+      )
+    }
+    Arrays.push(
+      mutable fixTexts,
+      `{"title":${quoteJson(fix.title)},"edits":[${Str.join(editTexts, ",")}]}`,
+    )
+  }
+  return `{"code":${quoteJson(code)},"severity":"error","message":${quoteJson(message)},"file":${quoteJson(file)},"range":{"start":${pair},"end":${pair}},"fixes":[${Str.join(fixTexts, ",")}]}`
+}

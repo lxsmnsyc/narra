@@ -9,11 +9,13 @@
 // A resolved constructor is recorded as Ref.Constructor on the node.
 import { Pos, Arg, Decl, Expr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
+import { buildQualifyFix } from "narrac/fixes"
 import { Type, Variant } from "narrac/types"
 import {
   Checker,
   Walker,
   reportError,
+  reportErrorFix,
   getExpressionId,
   getExpressionPos,
   getNodeType,
@@ -96,10 +98,17 @@ export function checkConstructor<W: Walker>(
     reportError(
       mutable checker,
       pos,
+      "E0324",
       `constructor ${name} needs its enum; ${Str.join(owners, ", ")} all have it, for example ${owner}.${name}`,
     )
   } else {
-    reportError(mutable checker, pos, `constructor ${name} needs its enum; write ${owner}.${name}`)
+    reportErrorFix(
+      mutable checker,
+      pos,
+      "E0323",
+      [buildQualifyFix(pos, owner)],
+      `constructor ${name} needs its enum; write ${owner}.${name}`,
+    )
   }
   const named = findEnum(checker, owner)
   return Some(checkEnumConstructor(mutable checker, walker, pos, named, name, arguments, want))
@@ -243,6 +252,7 @@ function checkGenericConstructor<W: Walker>(
     reportError(
       mutable checker,
       pos,
+      "E0301",
       `${variant.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`,
     )
     checkArgumentsLoosely(mutable checker, walker, arguments)
@@ -270,6 +280,7 @@ function checkGenericConstructor<W: Walker>(
       reportError(
         mutable checker,
         pos,
+        "E0302",
         `cannot tell the type of ${variant.name} here; add a type annotation`,
       )
       return failed
@@ -292,7 +303,7 @@ function checkGenericConstructor<W: Walker>(
     }
     expectType(mutable checker, getExpressionPos(value), Some(fields[index].fieldType), argType)
     if (arguments[index].isMutable) {
-      reportError(mutable checker, pos, "constructor fields are not mutable")
+      reportError(mutable checker, pos, "E0303", "constructor fields are not mutable")
     }
   }
   return ConstructorResult {
@@ -310,7 +321,12 @@ function reportNoConstructor<W: Walker>(
   name: string,
   arguments: Array<Arg>,
 ): ConstructorResult uses alloc {
-  reportError(mutable checker, pos, `enum ${named.name} has no constructor ${quoteGo(name)}`)
+  reportError(
+    mutable checker,
+    pos,
+    "E0304",
+    `enum ${named.name} has no constructor ${quoteGo(name)}`,
+  )
   checkArgumentsLoosely(mutable checker, walker, arguments)
   return ConstructorResult { constructorType: Type.TVoid, enumIndex: -1, variant: -1 }
 }
@@ -332,13 +348,14 @@ function checkConstructorArguments<W: Walker>(
     reportError(
       mutable checker,
       pos,
+      "E0301",
       `${info.name} takes ${Int.toString(fieldCount)} fields, found ${Int.toString(argCount)}`,
     )
   }
   for (const index of Ranges.between(0, argCount)) {
     const arg = arguments[index]
     if (arg.isMutable) {
-      reportError(mutable checker, pos, "constructor fields are not mutable")
+      reportError(mutable checker, pos, "E0303", "constructor fields are not mutable")
     }
     if (index < fieldCount) {
       const fieldType = info.fields[index].fieldType

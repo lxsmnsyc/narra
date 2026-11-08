@@ -5,6 +5,7 @@
 // popScope (check.nra).
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
+import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/fixes"
 import { Type } from "narrac/types"
 import {
   isConditional,
@@ -14,6 +15,7 @@ import {
   Walker,
   findLocal,
   reportError,
+  reportErrorFix,
   typeString,
   declareLocal,
   pushScope,
@@ -49,6 +51,8 @@ import {
   areArgumentsIrrefutable,
 } from "narrac/patterns"
 import * as Arrays from "std/array"
+import * as Str from "std/string"
+import * as Int from "std/int"
 import * as Ranges from "std/range"
 
 // checkBlock checks the statements of a block in a scope of their own.
@@ -145,6 +149,7 @@ export function checkStatement<W: Walker>(
       pos,
       label,
       "break",
+      "E0233",
       "break must be inside a loop",
     )
     Stmt.ContinueStmt(pos, label) => checkLoopExit(
@@ -152,6 +157,7 @@ export function checkStatement<W: Walker>(
       pos,
       label,
       "continue",
+      "E0234",
       "continue must be inside a loop",
     )
     Stmt.YieldStmt(pos, value, delegate, binding) => checkYield(
@@ -172,6 +178,7 @@ function checkLoopExit(
   pos: Pos,
   label: string,
   word: string,
+  code: string,
   message: string,
 ) uses alloc {
   const blockCount = Arrays.length(checker.blocks)
@@ -186,6 +193,7 @@ function checkLoopExit(
       reportError(
         mutable checker,
         pos,
+        "E0932",
         `${word} cannot leave a block expression; it can only leave a loop inside the block`,
       )
       return
@@ -193,7 +201,7 @@ function checkLoopExit(
   }
   if (label == "") {
     if (checker.loops == 0) {
-      reportError(mutable checker, pos, message)
+      reportError(mutable checker, pos, code, message)
     }
     return
   }
@@ -202,7 +210,7 @@ function checkLoopExit(
       return
     }
   }
-  reportError(mutable checker, pos, `no enclosing loop is labeled "${label}"`)
+  reportError(mutable checker, pos, "E0916", `no enclosing loop is labeled "${label}"`)
 }
 
 // hasOuterLoops reports whether a loop encloses a block expression being checked.
@@ -251,7 +259,12 @@ function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc
     return
   }
   if (hasLabel(checker.labels, label) || hasOuterLabel(checker, label)) {
-    reportError(mutable checker, pos, `label "${label}" is already used by an enclosing loop`)
+    reportError(
+      mutable checker,
+      pos,
+      "E0917",
+      `label "${label}" is already used by an enclosing loop`,
+    )
   }
   Arrays.push(mutable checker.labels, label)
 }
@@ -302,7 +315,7 @@ function checkVariable<W: Walker>(
 
   // A value whose check already failed is void; do not report it twice.
   if (found == Type.TVoid && Arrays.length(checker.errors) == errorCount) {
-    reportError(mutable checker, pos, "this expression has no value")
+    reportError(mutable checker, pos, "E0225", "this expression has no value")
   }
   declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
 }
@@ -324,11 +337,13 @@ function checkAssignment<W: Walker>(
   // caller sees, so a write to it counts as a use.
   let writtenLocal = -1
   let wasUsed = false
-  if (target is Expr.Ident(_, _, targetName)) {
+  if (target is Expr.Ident(_, targetPos, targetName)) {
     const found = findLocal(checker, targetName)
     if (found >= 0 && !(getLocal(checker, found).param && getLocal(checker, found).isMutable)) {
       writtenLocal = found
       wasUsed = getLocal(checker, found).used
+      // The fix of an unused local renames the assignments too.
+      Arrays.push(mutable checker.bodies[checker.body].locals[found].writes, targetPos)
     }
   }
   checker.assigningId = getExpressionId(target)
@@ -342,12 +357,18 @@ function checkAssignment<W: Walker>(
   // The root of the target must be a `let` variable.
   const root = findAssignedLocal(checker, target)
   if (root < 0) {
-    reportError(mutable checker, pos, "only variables, fields and array elements can be assigned")
+    reportError(
+      mutable checker,
+      pos,
+      "E0226",
+      "only variables, fields and array elements can be assigned",
+    )
   } else if (!getLocal(checker, root).isMutable) {
     const name = getLocal(checker, root).name
     reportError(
       mutable checker,
       pos,
+      "E0227",
       `${quoteGo(name)} is constant; declare it with \`let\` to change it`,
     )
   }
@@ -374,6 +395,7 @@ function checkExpressionStatement<W: Walker>(
     reportError(
       mutable checker,
       getExpressionPos(expression),
+      "E0934",
       "the value of a conditional expression must be used; write an `if` statement instead",
     )
     return
@@ -387,12 +409,13 @@ function checkExpressionStatement<W: Walker>(
         reportError(
           mutable checker,
           pos,
+          "E0229",
           "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`",
         )
       }
     }
   } else {
-    reportError(mutable checker, pos, "this expression does nothing")
+    reportError(mutable checker, pos, "E0228", "this expression does nothing")
   }
 }
 
@@ -413,6 +436,7 @@ function checkReturn<W: Walker>(
       reportError(
         mutable checker,
         pos,
+        "E0292",
         "return in a generator takes no value; yield the value, then return",
       )
     }
@@ -432,13 +456,13 @@ function checkReturn<W: Walker>(
     checkNoMutableEscape(mutable checker, expression)
     const found = checkExpression(mutable checker, walker, expression, Some(want))
     if (want == Type.TVoid) {
-      reportError(mutable checker, pos, "this function returns nothing")
+      reportError(mutable checker, pos, "E0231", "this function returns nothing")
       return
     }
     expectType(mutable checker, getExpressionPos(expression), Some(want), found)
   } else if (want != Type.TVoid) {
     const text = typeString(checker, want)
-    reportError(mutable checker, pos, `this function must return a ${text}`)
+    reportError(mutable checker, pos, "E0230", `this function must return a ${text}`)
   }
 }
 
@@ -486,12 +510,18 @@ export function checkBlockBody<W: Walker>(
     reportError(
       mutable checker,
       pos,
+      "E0933",
       "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`",
     )
     return Type.TVoid
   }
   if (!endsInReturn(block)) {
-    reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+    reportError(
+      mutable checker,
+      pos,
+      "E0931",
+      "a block expression must end every path with `return value`",
+    )
   }
   if (finished.result is Some(found)) {
     return found
@@ -531,6 +561,7 @@ function checkBlockReturn<W: Walker>(
             reportError(
               mutable checker,
               pos,
+              "E0934",
               "both branches of a conditional expression must have a value",
             )
           }
@@ -538,6 +569,7 @@ function checkBlockReturn<W: Walker>(
           reportError(
             mutable checker,
             pos,
+            "E0931",
             "a block expression must end every path with `return value`",
           )
         }
@@ -550,7 +582,12 @@ function checkBlockReturn<W: Walker>(
       checker.blocks[last].result = Some(found)
     }
   } else {
-    reportError(mutable checker, pos, "a block expression must end every path with `return value`")
+    reportError(
+      mutable checker,
+      pos,
+      "E0931",
+      "a block expression must end every path with `return value`",
+    )
   }
 }
 
@@ -746,6 +783,7 @@ function checkFor<W: Walker>(
       reportError(
         mutable checker,
         getExpressionPos(iterable),
+        "E0293",
         "for ... of cannot iterate a coroutine, which needs an input on each resume; call Co.resume(mutable g, input)",
       )
     }
@@ -760,6 +798,7 @@ function checkFor<W: Walker>(
     reportError(
       mutable checker,
       getExpressionPos(iterable),
+      "E0232",
       `for ... of needs a Range, an Array, a Generator, Str.chars, Array.entries, Map.keys or Map.entries, found ${text}`,
     )
   }
@@ -800,6 +839,7 @@ function checkYield<W: Walker>(
     reportError(
       mutable checker,
       pos,
+      "E0291",
       `${word} cannot be used ${place}; it is valid only directly in a function* body`,
     )
     checkExpression(mutable checker, walker, value, None)
@@ -813,6 +853,7 @@ function checkYield<W: Walker>(
       reportError(
         mutable checker,
         pos,
+        "E0293",
         `the value of yield is available only in a coroutine; declare ${functionName} as Coroutine<In, Out>, or write \`yield value\` without a name`,
       )
     }
@@ -820,6 +861,7 @@ function checkYield<W: Walker>(
       reportError(
         mutable checker,
         pos,
+        "E0293",
         "yield* is not valid in a coroutine; a delegated generator has no input to receive",
       )
       checkExpression(mutable checker, walker, value, None)
@@ -842,6 +884,7 @@ function checkYield<W: Walker>(
       reportError(
         mutable checker,
         getExpressionPos(value),
+        "E0291",
         `yield* needs a ${wanted}, found ${text}`,
       )
     }
@@ -967,11 +1010,18 @@ struct LocalUse {
   arms: Array<ArmStep>
   order: int
   calleeOf: int // the call whose callee holds the use, or -1
+  hoist: bool // the call can move to its own statement (Go's hoist)
 }
 
+// found are the uses in evaluation order. calls keeps each call by id, for the
+// fix that moves one. blocked counts the places the walk is in where a call
+// cannot move to its own statement: the right side of && and ||, a match arm,
+// and the statements of a block expression.
 struct UseCollector {
   found: Array<LocalUse>
   blocks: int
+  calls: Map<int, Expr>
+  blocked: int
 }
 
 function extendCalls(chain: Array<int>, callId: int): Array<int> uses alloc {
@@ -1008,6 +1058,7 @@ function addUse(
   arms: Array<ArmStep>,
 ) uses alloc {
   const order = Arrays.length(collector.found)
+  const canHoist = collector.blocked == 0
   Arrays.push(mutable collector.found, LocalUse {
     local: local,
     pos: pos,
@@ -1017,6 +1068,7 @@ function addUse(
     arms: arms,
     order: order,
     calleeOf: -1,
+    hoist: canHoist,
   })
 }
 
@@ -1101,6 +1153,7 @@ function collectUses(
           chain,
           extendArms(arms, nodeId, 0, false, Arrays.length(chain)),
         )
+        collector.blocked = collector.blocked + 1
         collectUses(
           checker,
           mutable collector,
@@ -1108,6 +1161,7 @@ function collectUses(
           chain,
           extendArms(arms, nodeId, 1, false, Arrays.length(chain)),
         )
+        collector.blocked = collector.blocked - 1
       } else {
         collectUses(checker, mutable collector, left, chain, arms)
         collectUses(checker, mutable collector, right, chain, arms)
@@ -1117,6 +1171,7 @@ function collectUses(
       // A mutable argument that is also the function called is reported by
       // the closure check, so the callee's uses are marked.
       const inner = extendCalls(chain, nodeId)
+      collector.calls[nodeId] = expression
       const first = Arrays.length(collector.found)
       collectUses(checker, mutable collector, callee, chain, arms)
       markCallee(mutable collector, first, nodeId)
@@ -1178,6 +1233,7 @@ function collectUses(
         chain,
         extendArms(arms, nodeId, -1, false, Arrays.length(chain)),
       )
+      collector.blocked = collector.blocked + 1
       for (const i of Ranges.upTo(Arrays.length(matchArms))) {
         const armSteps = extendArms(arms, nodeId, i, true, Arrays.length(chain))
         if (matchArms[i].guard is Some(guard)) {
@@ -1190,6 +1246,7 @@ function collectUses(
           collectBlockUses(checker, mutable collector, armBlock, chain, armSteps)
         }
       }
+      collector.blocked = collector.blocked - 1
     }
     _ => {}
   }
@@ -1206,11 +1263,13 @@ function collectBlockUses(
   arms: Array<ArmStep>,
 ) uses alloc {
   collector.blocks = collector.blocks + 1
+  collector.blocked = collector.blocked + 1
   const blockNode = -collector.blocks
   for (const i of Ranges.upTo(Arrays.length(block.statements))) {
     const steps = extendArms(arms, blockNode, i, false, Arrays.length(chain))
     collectStatementUses(checker, mutable collector, block.statements[i], chain, steps)
   }
+  collector.blocked = collector.blocked - 1
 }
 
 function collectStatementUses(
@@ -1354,12 +1413,119 @@ function inDifferentArms(first: Array<ArmStep>, second: Array<ArmStep>): bool {
   return false
 }
 
+// findCallStart is where a call's text begins: the start of its callee.
+function findCallStart(expression: Expr): Pos {
+  return match (expression) {
+    Expr.FieldExpr(_, _, target, _) => findCallStart(target)
+    Expr.IndexExpr(_, _, target, _) => findCallStart(target)
+    Expr.CallExpr(_, _, callee, _, _) => findCallStart(callee)
+    _ => getExpressionPos(expression)
+  }
+}
+
+// findStatementPos is the position of a statement that can hold a call.
+function findStatementPos(statement: Stmt): Pos {
+  return match (statement) {
+    Stmt.VarStmt(_, pos, _, _, _, _, _) => pos
+    Stmt.AssignStmt(pos, _, _) => pos
+    Stmt.ExprStmt(pos, _) => pos
+    Stmt.ReturnStmt(pos, _) => pos
+    _ => Pos { line: 0, column: 0 }
+  }
+}
+
+// isBlankText is true for text of spaces and tabs only.
+function isBlankText(characters: Array<char>, first: int, last: int): bool {
+  for (const index of Ranges.between(first, last)) {
+    const character = characters[index]
+    if (character != ' ' && character != '\t' && character != '\r') {
+      return false
+    }
+  }
+  return true
+}
+
+// buildHoistFix binds a `mutable` call to a fresh const on the line before its
+// statement and puts the name in its place (Go's hoistFix). It needs the
+// source text, a statement that starts its line and a call that returns a
+// value.
+function buildHoistFix(
+  checker: Checker,
+  statement: Stmt,
+  callId: int,
+  call: Expr,
+): Array<Fix> uses alloc {
+  const scope = checker.scopes[checker.current]
+  if (!scope.isSource || Str.length(scope.facts.source) == 0) {
+    return []
+  }
+  let end = Pos { line: 0, column: 0 }
+  if (scope.facts.callEnds[callId] is Some(callEnd)) {
+    end = callEnd
+  } else {
+    return []
+  }
+  if (getNodeType(checker, callId) is Some(Type.TVoid)) {
+    return []
+  }
+  const start = findCallStart(call)
+  if (start.line != end.line || start.column == 1) {
+    return []
+  }
+  const statementPos = findStatementPos(statement)
+  const lines = Str.split(scope.facts.source, "\n")
+  if (
+    statementPos.line < 1 ||
+      statementPos.line > Arrays.length(lines) ||
+      start.line > Arrays.length(lines)
+  ) {
+    return []
+  }
+  const statementLine = Str.chars(lines[statementPos.line - 1])
+  if (statementPos.column - 1 > Arrays.length(statementLine)) {
+    return []
+  }
+  if (!isBlankText(statementLine, 0, statementPos.column - 1)) {
+    return []
+  }
+  const indent = sliceCharacters(statementLine, 0, statementPos.column - 1)
+  const callLine = Str.chars(lines[start.line - 1])
+  if (end.column - 1 > Arrays.length(callLine)) {
+    return []
+  }
+  const text = sliceCharacters(callLine, start.column - 1, end.column - 1)
+  // The name comes from the function called, and gets a number while a local
+  // already has it.
+  let base = "result"
+  if (call is Expr.CallExpr(_, _, callee, _, _)) {
+    if (callee is Expr.Ident(_, _, calleeName)) {
+      base = `${calleeName}Result`
+    } else if (callee is Expr.FieldExpr(_, _, _, calleeName)) {
+      base = `${calleeName}Result`
+    }
+  }
+  let name = base
+  let number = 2
+  while (findLocal(checker, name) >= 0) {
+    name = `${base}${Int.toString(number)}`
+    number = number + 1
+  }
+  const lineStart = Pos { line: statementPos.line, column: 1 }
+  return [
+    createFix(
+      "bind the call to a const before the statement",
+      [insertAt(lineStart, `${indent}const ${name} = ${text}\n`), createEdit(start, end, name)],
+    ),
+  ]
+}
+
 // checkMutableConflicts rejects a statement whose expressions pass a local as
 // `mutable` and also use it anywhere else, at any depth (Go's
 // checkMutableConflicts, E0929). Uses inside the arguments of the call
 // itself belong to checkExclusive. It runs after the statement is checked.
 function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses alloc {
-  let collector = UseCollector { found: [], blocks: 0 }
+  let collector = UseCollector { found: [], blocks: 0, calls: Map {}, blocked: 0 }
+  let isFixable = true
   const noCalls: Array<int> = []
   const noArms: Array<ArmStep> = []
   match (statement) {
@@ -1386,34 +1552,22 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
         collectUses(checker, mutable collector, returned, noCalls, noArms)
       }
     }
-    Stmt.IfStmt(_, condition, _, _) => collectUses(
-      checker,
-      mutable collector,
-      condition,
-      noCalls,
-      noArms,
-    )
-    Stmt.WhileStmt(_, _, condition, _) => collectUses(
-      checker,
-      mutable collector,
-      condition,
-      noCalls,
-      noArms,
-    )
-    Stmt.ForStmt(_, _, _, _, iterable, _) => collectUses(
-      checker,
-      mutable collector,
-      iterable,
-      noCalls,
-      noArms,
-    )
-    Stmt.YieldStmt(_, value, _, _) => collectUses(
-      checker,
-      mutable collector,
-      value,
-      noCalls,
-      noArms,
-    )
+    Stmt.IfStmt(_, condition, _, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, condition, noCalls, noArms)
+    }
+    Stmt.WhileStmt(_, _, condition, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, condition, noCalls, noArms)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, iterable, noCalls, noArms)
+    }
+    Stmt.YieldStmt(_, value, _, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, value, noCalls, noArms)
+    }
     _ => {}
   }
   let reported: Array<int> = []
@@ -1440,9 +1594,17 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
       }
       Arrays.push(mutable reported, use.local)
       const localName = getLocal(checker, use.local).name
-      reportError(
+      let fixes: Array<Fix> = []
+      if (isFixable && other.hoist) {
+        if (collector.calls[other.call] is Some(call)) {
+          fixes = buildHoistFix(checker, statement, other.call, call)
+        }
+      }
+      reportErrorFix(
         mutable checker,
         use.pos,
+        "E0929",
+        fixes,
         `${quoteGo(localName)} is passed as mutable in one call, so the rest of the expression cannot use it`,
       )
       break

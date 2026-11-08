@@ -1,0 +1,64 @@
+// The node-ids suite: `narrac pkg --ids PATH` checks that the node ids of a
+// loaded package are unique and inside the id range of their file, and prints
+// `ids ok <next id>`. It runs on every input that loads (`narrac pkg PATH`
+// exits 0): the sample packages (testdata/packages, its errors folder and
+// testdata/pkgdump), selfhost/, and every .nra file under testdata and
+// selfhost/src. The `dup` case copies one id over another with `--ids-dup`
+// and the check must fail.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  Arrays.push(mutable cases, makeCase("dup", Path.join(context.testdata, "generics.nra"), "dup"))
+  const folders = [
+    Path.join(context.testdata, "packages"),
+    Path.join(Path.join(context.testdata, "packages"), "errors"),
+    Path.join(context.testdata, "pkgdump"),
+  ]
+  for (const folder of Arrays.values(folders)) {
+    for (const path of Arrays.values(Files.listPaths(folder, ""))) {
+      if (Fs.exists(Path.join(path, "narra.toml"))) {
+        Arrays.push(
+          mutable cases,
+          makeCase(Files.relativePath(context.repository, path), path, "ids"),
+        )
+      }
+    }
+  }
+  const selfhost = Path.join(context.repository, "selfhost")
+  Arrays.push(mutable cases, makeCase("selfhost", selfhost, "ids"))
+  for (const path of Arrays.values(Files.listCorpus(context.testdata, context.repository))) {
+    Arrays.push(mutable cases, makeCase(Files.relativePath(context.repository, path), path, "ids"))
+  }
+  return cases
+}
+
+function makeCase(name: string, path: string, variant: string): TestCase {
+  return TestCase { suite: "node-ids", name: name, path: path, variant: variant }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "dup") {
+    const result = Common.runNarrac(context, ["pkg", "--ids-dup", testCase.path])
+    if (result.code != 1 || !Str.contains(result.errorOutput, "is used twice")) {
+      return Err(`a duplicate id was not found: ${Common.describeRun(result)}`)
+    }
+    return Ok(true)
+  }
+  // An input that does not load has no ids to check.
+  const loaded = Common.runNarrac(context, ["pkg", testCase.path])
+  if (loaded.code != 0) {
+    return Ok(true)
+  }
+  const result = Common.runNarrac(context, ["pkg", "--ids", testCase.path])
+  if (result.code != 0 || !Str.startsWith(result.output, "ids ok ")) {
+    return Err(`want exit code 0 and "ids ok", got ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}

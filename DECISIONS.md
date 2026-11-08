@@ -764,3 +764,14 @@ Decision: Narra does not add `async { ... }` blocks or inline generator expressi
 - **Reason.** `async { ... }` would mean exactly `async () => { ... }`, a second spelling, and it cannot ship before async functions are built.
 - **Reason.** A generator expression needs capture and lifting work in both compilers, estimated at 450k tokens or more.
 - **Prior art.** Rust has async blocks and unstable `gen` blocks; Kotlin builds generators with `sequence { }`; TypeScript has neither block and uses anonymous `function*` expressions and async IIFEs.
+
+## D89. The Go compiler is retired; a checked-in C seed bootstraps Narra
+
+Decision: the repository has no Go compiler. `seed/narrac.c`, the C that the self-hosted compiler emits for itself, builds the compiler with `cc` alone (`selfhost/bootstrap.sh`), and `scripts/seed-update.sh` regenerates it. The tests run on that compiler through a test runner written in Narra (`selfhost/tests`, `scripts/test.sh`). Go stays only as a benchmark language in `bench/`. The compiler source may only use features that the current seed compiles, so a new feature lands first without itself, then the seed is regenerated.
+
+- **Reason.** Each language feature would otherwise be built twice, in Go and in Narra.
+- **Reason.** Stage 1 and stage 2 already emit the same C, so Go is not needed to start the chain.
+- **Alternative rejected.** Keep Go as the bootstrap: needs a Go toolchain on every machine and a second implementation in step with the first.
+- **Alternative rejected.** Download a release binary to bootstrap: needs a network and a trusted host for every build. GitHub Releases come later, for distribution only.
+- **Cost.** The seed is a 6 MB generated file; a merge that changes `selfhost/` on two branches regenerates it instead of merging it.
+- **Cost.** C is the only backend, so the seed is the same on every platform (macOS arm64 and Linux x86_64 are checked).

@@ -1,0 +1,77 @@
+// Running `narrac fmt` for the fmt suites. The formatter reads narra.toml
+// through $PWD, so every call sets the directory and PWD (see shell.nra); a
+// call can clear PWD instead, as a shell without the variable would.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Context } from "testrunner/context"
+import { CommandResult } from "testrunner/shell"
+import * as Scratch from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+
+// runFormat runs `narrac fmt arguments` in directory. With useStdin, stdinText
+// is the standard input. With clearPwd, PWD is empty.
+export function runFormat(
+  context: Context,
+  scratch: Scratch.Scratch,
+  directory: string,
+  clearPwd: bool,
+  useStdin: bool,
+  stdinText: string,
+  arguments: Array<string>,
+): Result<CommandResult, string> uses io, alloc {
+  let formatArguments = ["fmt"]
+  for (const argument of Arrays.values(arguments)) {
+    Arrays.push(mutable formatArguments, argument)
+  }
+  let command = Shell.newCommand(context.narrac, formatArguments)
+  command.directory = directory
+  command.environment = Shell.leakCheckEnvironment()
+  if (clearPwd) {
+    Arrays.push(mutable command.environment, "PWD=")
+  }
+  if (useStdin) {
+    const written = Scratch.writeFile(scratch.stdinPath, stdinText)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    command.stdinPath = scratch.stdinPath
+  }
+  return Ok(Shell.runCommand(command))
+}
+
+// formatText formats text through --stdin in directory; a failure is an Err.
+export function formatText(
+  context: Context,
+  scratch: Scratch.Scratch,
+  directory: string,
+  text: string,
+): Result<string, string> uses io, alloc {
+  const ran = runFormat(context, scratch, directory, false, true, text, ["--stdin"])
+  if (ran is Err(message)) {
+    return Err(message)
+  }
+  if (ran.value.code != 0) {
+    return Err(
+      `fmt --stdin exit code ${Int.toString(ran.value.code)}\nstderr:\n${Str.trim(ran.value.errorOutput)}`,
+    )
+  }
+  return Ok(ran.value.output)
+}
+
+// expectFormat is Ok when a call exited with wantCode and printed exactly
+// wantOutput and wantErrors.
+export function expectFormat(
+  what: string,
+  result: CommandResult,
+  wantCode: int,
+  wantOutput: string,
+  wantErrors: string,
+): Result<bool, string> uses alloc {
+  if (result.code == wantCode && result.output == wantOutput && result.errorOutput == wantErrors) {
+    return Ok(true)
+  }
+  return Err(
+    `${what}: code ${Int.toString(result.code)} stdout "${result.output}" stderr "${result.errorOutput}", want code ${Int.toString(wantCode)} stdout "${wantOutput}" stderr "${wantErrors}"`,
+  )
+}

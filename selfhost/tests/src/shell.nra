@@ -1,0 +1,97 @@
+// Child processes. Process.run blocks, closes stdin, cannot set environment
+// variables and has no timeout, so every child runs through `sh -c`: the
+// script sets the directory, PWD, the environment and stdin, then execs the
+// program. Arguments reach the script as positional parameters, so no text is
+// ever quoted by hand.
+import * as Arrays from "std/array"
+import * as Process from "std/process"
+import * as Str from "std/string"
+
+// What a child did. A child that could not start has code 127 and the reason
+// in errorOutput.
+export struct CommandResult {
+  code: int
+  output: string
+  errorOutput: string
+}
+
+// A program to run. An empty directory keeps the current one; an empty
+// stdinPath reads /dev/null; each environment entry is `NAME=value`.
+export struct Command {
+  directory: string
+  environment: Array<string>
+  stdinPath: string
+  program: string
+  arguments: Array<string>
+}
+
+// The script of runCommand: $1 is the directory, $2 the stdin file, the rest
+// is `env NAME=value... program arguments...`. `narrac fmt` finds narra.toml
+// through $PWD, so PWD is exported for every child.
+const commandScript = "directory=$1; input=$2; shift 2; if [ -n \"$directory\" ]; then cd \"$directory\" || exit 127; fi; PWD=$(pwd); export PWD; if [ -z \"$input\" ]; then input=/dev/null; fi; exec env \"$@\" < \"$input\""
+
+// newCommand is a command with no directory, environment or stdin file.
+export function newCommand(program: string, arguments: Array<string>): Command uses alloc {
+  return Command {
+    directory: "",
+    environment: [],
+    stdinPath: "",
+    program: program,
+    arguments: arguments,
+  }
+}
+
+// leakCheckEnvironment is the environment of every sample program: the
+// runtime's reference count check on, the sanitizer's own leak check off.
+export function leakCheckEnvironment(): Array<string> uses alloc {
+  return ["NARRA_CHECK_LEAKS=1", "ASAN_OPTIONS=detect_leaks=0"]
+}
+
+// runCommand runs one child and waits for it.
+export function runCommand(command: Command): CommandResult uses io, alloc {
+  let scriptArguments = [command.directory, command.stdinPath]
+  for (const assignment of Arrays.values(command.environment)) {
+    Arrays.push(mutable scriptArguments, assignment)
+  }
+  Arrays.push(mutable scriptArguments, command.program)
+  for (const argument of Arrays.values(command.arguments)) {
+    Arrays.push(mutable scriptArguments, argument)
+  }
+  return runScript(commandScript, scriptArguments)
+}
+
+// runScript runs `sh -c script sh arguments...` and waits for it. The
+// arguments are $1, $2, ... in the script.
+export function runScript(
+  script: string,
+  scriptArguments: Array<string>,
+): CommandResult uses io, alloc {
+  let shellArguments = ["-c", script, "sh"]
+  for (const argument of Arrays.values(scriptArguments)) {
+    Arrays.push(mutable shellArguments, argument)
+  }
+  const ran = Process.run("sh", shellArguments)
+  if (ran is Err(message)) {
+    return CommandResult { code: 127, output: "", errorOutput: message }
+  }
+  const #[code, output, errorOutput] = ran.value
+  return CommandResult { code: code, output: output, errorOutput: errorOutput }
+}
+
+// makeTempDirectory makes a directory that removeTree deletes.
+export function makeTempDirectory(): Result<string, string> uses io, alloc {
+  const made = runScript("mktemp -d", [])
+  if (made.code != 0) {
+    return Err(`mktemp failed: ${Str.trim(made.errorOutput)}`)
+  }
+  return Ok(Str.trim(made.output))
+}
+
+// removeTree deletes a directory and what is in it (`rm -rf`). It refuses an
+// empty path and the root.
+export function removeTree(path: string) uses io, alloc {
+  if (path == "" || path == "/") {
+    return
+  }
+  const _ = runScript("rm -rf -- \"$1\"", [path])
+}

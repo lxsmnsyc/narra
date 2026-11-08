@@ -156,7 +156,7 @@ Run the package from its folder:
 
 ```sh
 cd words
-narra run .
+narrac run .
 ```
 
 ```text
@@ -166,7 +166,7 @@ saw 1
 dog 1
 ```
 
-`narra build .` builds the program instead of running it. The executable is named `words`, after the `name` of the `[[binary]]`.
+`narrac build .` builds the program instead of running it. The executable is named `words`, after the `name` of the `[[binary]]`.
 
 ### Importing a private name
 

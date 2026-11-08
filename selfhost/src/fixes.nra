@@ -1,0 +1,210 @@
+// Fix suggestions, ported from compiler/internal/narra/diagnostic_fixes.go and
+// ApplyFix of diagnostic_json.go. A diagnostic carries zero or more fixes; a
+// fix is a title and edits that replace text. Builders that only need the
+// syntax live here; builders that need checker results sit next to the check
+// that reports the error.
+//
+// Positions are lines and columns from 1, and columns count characters, as the
+// lexer does. An edit replaces the text from `start` up to, not including,
+// `end`.
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Pos } from "narrac/ast"
+
+// STD_ALIAS_PATHS maps the aliases the spec's import table names to their std
+// module, for the add-import fix of an unknown module name.
+export const STD_ALIAS_PATHS: Map<string, string> = Map {
+  "Arrays": "std/array",
+  "Maps": "std/map",
+  "Boxes": "std/box",
+  "Ranges": "std/range",
+  "Options": "std/option",
+  "Results": "std/result",
+  "Str": "std/string",
+  "Int": "std/int",
+  "Float": "std/float",
+  "Char": "std/char",
+  "Env": "std/env",
+  "Fs": "std/fs",
+  "Process": "std/process",
+  "Test": "std/test",
+  "Io": "std/io",
+  "Path": "std/path",
+}
+
+export struct Edit {
+  start: Pos
+  end: Pos
+  text: string
+}
+
+export struct Fix {
+  title: string
+  edits: Array<Edit>
+}
+
+export function createEdit(start: Pos, end: Pos, text: string): Edit {
+  return Edit { start: start, end: end, text: text }
+}
+
+export function createFix(title: string, edits: Array<Edit>): Fix {
+  return Fix { title: title, edits: edits }
+}
+
+// moveColumn is the position `count` characters to the right on the same line.
+export function moveColumn(pos: Pos, count: int): Pos {
+  return Pos { line: pos.line, column: pos.column + count }
+}
+
+// insertAt is an edit that adds text at pos and removes nothing.
+export function insertAt(pos: Pos, text: string): Edit {
+  return Edit { start: pos, end: pos, text: text }
+}
+
+// buildQuoteFix rewrites 'abc' as "abc". open and close are the positions of
+// the two quote marks, raw the text with both marks. It offers the fix only
+// when the text has no escape and no double quote, because then swapping the
+// marks keeps the meaning.
+export function buildQuoteFix(open: Pos, close: Pos, raw: string): Array<Fix> uses alloc {
+  if (Str.contains(raw, "\\") || Str.contains(raw, "\"")) {
+    return []
+  }
+  return [
+    createFix("use double quotes", [
+      Edit { start: open, end: moveColumn(open, 1), text: "\"" },
+      Edit { start: close, end: moveColumn(close, 1), text: "\"" },
+    ]),
+  ]
+}
+
+// buildRemoveSemicolonFix deletes the `;` at pos.
+export function buildRemoveSemicolonFix(pos: Pos): Array<Fix> uses alloc {
+  return [
+    createFix("remove the semicolon", [Edit { start: pos, end: moveColumn(pos, 1), text: "" }]),
+  ]
+}
+
+// buildQualifyFix writes the enum name before the bare constructor at pos.
+export function buildQualifyFix(pos: Pos, enumName: string): Fix uses alloc {
+  return createFix(`qualify the constructor with ${enumName}`, [insertAt(pos, `${enumName}.`)])
+}
+
+// buildTemplateEscape writes text so a template string reads it back
+// unchanged. It is None for a control character that has no escape.
+export function buildTemplateEscape(text: string): Option<string> uses alloc {
+  let builder = Str.builder()
+  for (const character of Arrays.values(Str.chars(text))) {
+    if (character == '\\' || character == '`' || character == '$') {
+      Str.appendChar(mutable builder, '\\')
+      Str.appendChar(mutable builder, character)
+    } else if (character == '\n') {
+      Str.append(mutable builder, "\\n")
+    } else if (character == '\t') {
+      Str.append(mutable builder, "\\t")
+    } else if (character < ' ' || character == '\u{7f}') {
+      return None
+    } else {
+      Str.appendChar(mutable builder, character)
+    }
+  }
+  return Some(Str.build(builder))
+}
+
+// sliceCharacters is the text of characters[first] up to, not including, characters[last].
+export function sliceCharacters(characters: Array<char>, first: int, last: int): string uses alloc {
+  let builder = Str.builder()
+  for (const index of Ranges.between(first, last)) {
+    Str.appendChar(mutable builder, characters[index])
+  }
+  return Str.build(builder)
+}
+
+// ---- Applying a fix
+
+// findOffset is the index in characters of a position in the source, where
+// lineStarts holds the index of each line's first character. A column past the
+// end of the line stops at the end of the line.
+function findOffset(characters: Array<char>, lineStarts: Array<int>, pos: Pos): int {
+  const lineIndex = pos.line - 1
+  if (lineIndex < 0) {
+    return 0
+  }
+  if (lineIndex >= Arrays.length(lineStarts)) {
+    return Arrays.length(characters)
+  }
+  const start = lineStarts[lineIndex]
+  let lineEnd = start
+  while (lineEnd < Arrays.length(characters) && characters[lineEnd] != '\n') {
+    lineEnd = lineEnd + 1
+  }
+  let offset = start + pos.column - 1
+  if (offset > lineEnd) {
+    offset = lineEnd
+  }
+  if (offset < start) {
+    offset = start
+  }
+  return offset
+}
+
+function findLineStarts(characters: Array<char>): Array<int> uses alloc {
+  let starts = [0]
+  for (const index of Ranges.upTo(Arrays.length(characters))) {
+    if (characters[index] == '\n') {
+      Arrays.push(mutable starts, index + 1)
+    }
+  }
+  return starts
+}
+
+// applyFix applies the edits of a fix to source text and returns the result
+// (Go's ApplyFix). Edits must not overlap. They apply from the end of the
+// text to the start, so the offsets of the earlier ones stay valid; two edits
+// at the same place keep their order.
+export function applyFix(source: string, fix: Fix): string uses alloc {
+  let characters = Str.chars(source)
+  const lineStarts = findLineStarts(characters)
+  // Sort the edit order by start offset, largest first (a stable insertion sort).
+  let order: Array<int> = []
+  for (const index of Ranges.upTo(Arrays.length(fix.edits))) {
+    Arrays.push(mutable order, index)
+  }
+  for (const position of Ranges.between(1, Arrays.length(order))) {
+    let current = position
+    while (
+      current > 0 &&
+        findOffset(characters, lineStarts, fix.edits[order[current]].start) >
+          findOffset(characters, lineStarts, fix.edits[order[current - 1]].start)
+    ) {
+      const swapped = order[current]
+      order[current] = order[current - 1]
+      order[current - 1] = swapped
+      current = current - 1
+    }
+  }
+  // Offsets are measured on the original text; each edit rebuilds the text
+  // before its start and after its end.
+  let result = characters
+  for (const editIndex of Arrays.values(order)) {
+    const edit = fix.edits[editIndex]
+    const editStart = findOffset(characters, lineStarts, edit.start)
+    const editEnd = findOffset(characters, lineStarts, edit.end)
+    let rebuilt: Array<char> = []
+    for (const index of Ranges.upTo(editStart)) {
+      Arrays.push(mutable rebuilt, result[index])
+    }
+    for (const character of Arrays.values(Str.chars(edit.text))) {
+      Arrays.push(mutable rebuilt, character)
+    }
+    for (const index of Ranges.between(editEnd, Arrays.length(result))) {
+      Arrays.push(mutable rebuilt, result[index])
+    }
+    result = rebuilt
+  }
+  let builder = Str.builder()
+  for (const character of Arrays.values(result)) {
+    Str.appendChar(mutable builder, character)
+  }
+  return Str.build(builder)
+}

@@ -1,0 +1,71 @@
+// The edge suite: inputs of the lexer and the parser that no other sample
+// covers (escapes, control characters, every lexer error, one case per parser
+// error). Each .nra file in testdata/lex has a .lex golden (`narrac FILE`) and
+// each file in testdata/parse has an .ast golden (`narrac parse FILE`). Both
+// goldens were made by the Go compiler before it was removed. A dump that
+// succeeds is the golden on stdout; a dump that fails exits with code 1 and
+// has the golden on stderr, and a golden that fails starts with `error `.
+// With --update the goldens are rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  addCases(mutable cases, Path.join(context.testdata, "lex"), "lex")
+  addCases(mutable cases, Path.join(context.testdata, "parse"), "parse")
+  return cases
+}
+
+function addCases(mutable cases: Array<TestCase>, folder: string, kind: string) uses io, alloc {
+  for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "edge",
+      name: `${kind}/${Path.basename(path)}`,
+      path: path,
+      variant: kind,
+    })
+  }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  let arguments = [testCase.path]
+  let golden = Files.replaceSuffix(testCase.path, ".nra", ".lex")
+  if (testCase.variant == "parse") {
+    arguments = ["parse", testCase.path]
+    golden = Files.replaceSuffix(testCase.path, ".nra", ".ast")
+  }
+  const result = Common.runNarrac(context, arguments)
+  if (result.code != 0 && result.code != 1) {
+    return Err(`want exit code 0 or 1, got ${Common.describeRun(result)}`)
+  }
+  const failed = result.code == 1
+  let got = result.output
+  if (failed) {
+    got = result.errorOutput
+    if (result.output != "") {
+      return Err(`a failed dump must print nothing on stdout, got ${Common.describeRun(result)}`)
+    }
+  }
+  if (context.update) {
+    const written = Fs.writeText(golden, got)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(golden)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  if (Str.startsWith(want.value, "error ") != failed) {
+    return Err(
+      `the golden ${Path.basename(golden)} and the exit code disagree: ${Common.describeRun(result)}`,
+    )
+  }
+  return Common.compareText("dump", want.value, got)
+}

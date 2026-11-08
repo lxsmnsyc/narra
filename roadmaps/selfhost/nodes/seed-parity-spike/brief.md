@@ -1,7 +1,7 @@
 ---
 id: seed-parity-spike
 title: Measure what only the Go compiler and Go tests cover
-status: todo
+status: active
 priority:
 type: spike
 story: c-seed

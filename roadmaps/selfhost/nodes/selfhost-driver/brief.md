@@ -1,7 +1,7 @@
 ---
 id: selfhost-driver
 title: build, run, check and test commands in narrac
-status: todo
+status: active
 priority:
 type: feature
 story: c-seed

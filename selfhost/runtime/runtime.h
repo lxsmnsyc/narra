@@ -115,7 +115,7 @@ static void* narra_realloc(void* p, size_t n) {
   return q;
 }
 
-// Generators (emit_generator.go). A Generator<T> value points to the header
+// Generators (emitgenerators.nra). A Generator<T> value points to the header
 // of a counted frame. resume writes the next value through out and returns
 // true, or returns false once the generator has finished. state is 0 before
 // the first resume, -1 after the last, and otherwise the yield it waits at.

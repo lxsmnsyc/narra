@@ -1,4 +1,4 @@
-// Map<K, V> with insertion order. std_map.go fills in the @...@ names for
+// Map<K, V> with insertion order. emitmaps.nra fills in the @...@ names for
 // each map type a program uses.
 //
 // Entries sit in insertion order in keys, vals, hashes and alive. idx is an

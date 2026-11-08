@@ -1,7 +1,7 @@
 ---
 id: checker-codes
 title: Diagnostic codes, check --json and explain in narrac
-status: active
+status: done
 priority:
 type: feature
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 193863
 owns:
   - selfhost/src/check.nra
   - selfhost/src/parser.nra
@@ -69,3 +69,5 @@ M: mechanical, many call sites, one data table.
 ## Notes for the worker
 
 - Fix suggestions are the next node (checker-fixes). Leave a `fixes` field empty in the JSON shape if the contract has one.
+
+Landed on feat/c-seed as d83e2a9.

@@ -38,13 +38,13 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 
 ## Bootstrapping
 
-`selfhost/bootstrap.sh` runs these steps by hand and needs only `go` and `cc`:
+`selfhost/bootstrap.sh` needs only `cc`. It builds the compiler from the checked-in C seed, `seed/narrac.c`:
 
-1. Stage 1: `narra build -release -o narrac1 selfhost` (the Go compiler builds the Narra compiler).
-2. `narrac1 emit selfhost > stage1.c`, then `cc -O2 -DNARRA_RELEASE -std=c11 -w -o narrac2 stage1.c -lm` (stage 2: the Narra compiler built from its own C).
-3. `narrac2 emit selfhost > stage2.c`, then `cmp` Go's `narra emit selfhost`, `stage1.c` and `stage2.c`. The script exits non-zero on any difference.
+1. Stage 0: `cc` builds the seed into `narrac0`.
+2. Stage 1: `narrac0 emit selfhost > stage1.c`, then `cc` builds it into `narrac1`.
+3. Stage 2: `narrac1 emit selfhost > stage2.c`. The script exits 1 when `stage1.c` and `stage2.c` differ.
 
-The fixed point shows that the Narra compiler, compiled by itself, translates the source of the compiler into the same C as the Go compiler does. Go is no longer needed to produce a working compiler from that C. `TestSelfhostBootstrap` does the same under AddressSanitizer, UBSan and the leak check, and also compares stage 2 with Go on every emit input.
+`sh scripts/seed-update.sh` regenerates the seed from the stage 2 C. `seed/README.md` explains the seed rule and when to regenerate. The Go compiler is not used by these scripts. `TestSelfhostBootstrap` still builds stage 1 with Go, under AddressSanitizer, UBSan and the leak check, and compares stage 2 with Go on every emit input.
 
 ## Commands of narrac
 

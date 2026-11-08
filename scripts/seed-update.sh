@@ -1,7 +1,7 @@
 #!/bin/sh
 # Regenerate seed/narrac.c from the current source of selfhost/.
 # It runs the bootstrap from the current seed. When the fixed point holds, the stage 2 C
-# becomes the new seed, under a header that names the commit of the source.
+# becomes the new seed, under a fixed header.
 # On an unchanged tree the seed stays byte-identical.
 # Usage: sh scripts/seed-update.sh
 # Exit codes: 0 seed written (or already current); 1 the bootstrap failed, the seed is untouched; 2 bad usage.
@@ -16,16 +16,12 @@ trap 'rm -rf "$work"' EXIT
 
 sh "$root/selfhost/bootstrap.sh" "$work/out"
 
-# The commit that last changed selfhost/, so the header does not change when only the seed changes.
-commit=$(cd "$root" && git log -1 --format=%h -- selfhost 2>/dev/null || true)
-[ -n "$commit" ] || commit=unknown
-
 {
   cat <<HEADER
 /*
  * seed/narrac.c: generated, never edit by hand.
  * It is the C that the self-hosted compiler (selfhost/) emits for itself.
- * Source: selfhost/ at commit $commit.
+ * Source: selfhost/ in the same commit.
  * Made by: sh scripts/seed-update.sh
  * Build it with: cc -O2 -DNARRA_RELEASE -std=c11 -w -o narrac seed/narrac.c -lm
  * Read seed/README.md before changing how it is made.

@@ -1,7 +1,7 @@
 /*
  * seed/narrac.c: generated, never edit by hand.
  * It is the C that the self-hosted compiler (selfhost/) emits for itself.
- * Source: selfhost/ at commit f44ddc0.
+ * Source: selfhost/ in the same commit.
  * Made by: sh scripts/seed-update.sh
  * Build it with: cc -O2 -DNARRA_RELEASE -std=c11 -w -o narrac seed/narrac.c -lm
  * Read seed/README.md before changing how it is made.

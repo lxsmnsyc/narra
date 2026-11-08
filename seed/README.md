@@ -2,7 +2,7 @@
 
 `seed/narrac.c` is the Narra compiler, written out as C. The compiler is written in Narra, so something has to build it the first time. This file does that. Any machine with a C compiler (`cc`) can build it. Nothing else is needed.
 
-Never edit `narrac.c` by hand. It is generated. Its first lines say how, and from which commit.
+Never edit `narrac.c` by hand. It is generated. Its first lines say how it is made.
 
 ## How to build the compiler
 

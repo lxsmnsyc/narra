@@ -9,6 +9,7 @@
 # Exit codes: 0 fixed point holds; 1 it does not, or a step failed; 2 bad usage.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
+# CC must name a single program. It is not split into words.
 cc_cmd=${CC:-cc}
 if [ "$#" -gt 1 ]; then
   echo "usage: sh selfhost/bootstrap.sh [outdir]" >&2

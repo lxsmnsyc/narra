@@ -12,6 +12,8 @@ Run `sh selfhost/bootstrap.sh`. It does three things:
 2. The first compiler compiles the source in `selfhost/`. This gives a second compiler.
 3. The second compiler compiles `selfhost/` again. The C from step 2 and from step 3 must be the same. If they differ, the script fails.
 
+Set `CC` to pick another C compiler. CC must name a single program: it is not split into words, so `CC="ccache cc"` does not work. Use a wrapper script instead.
+
 ## The seed rule
 
 The compiler's source may only use features that the seed can compile.

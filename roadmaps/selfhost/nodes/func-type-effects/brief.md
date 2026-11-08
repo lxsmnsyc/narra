@@ -1,7 +1,7 @@
 ---
 id: func-type-effects
 title: "Function types carry their effects"
-status: todo
+status: active
 priority: must
 type: fix
 story:
@@ -43,7 +43,7 @@ depends_on:
 
 # Function types carry their effects
 
-> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+> Refined 2026-11-09 after the Go compiler was retired (PR #101): the change is in `selfhost/src` only.
 
 ## Goal
 
@@ -53,24 +53,25 @@ Make effect checking sound for function values. Today a function type is interne
 - Type parameters erase effects: `id(f)(1)`, `first(fs)(1)`, `Options.withDefault(o, f)(1)`, a generic struct field `Holder<...>.value(1)`.
 - Bindings without a written type: `is Some(f)`, match arms, `for...of`, destructuring, closures returning a field, arrow parameters.
 
-Put the effect list on the function type, as D78 did for generator types (`GeneratorType` has `Effects`, `Binder`, `Origin`, `Bound`, and a store into a slot with fewer effects is already rejected: `expected Generator<int>, found Generator<int> uses io`).
+Put the effect list on the function type, as D78 did for generator types (the generator type carries its effects, binder, origin and bound, and a store into a slot with fewer effects is already rejected: `expected Generator<int>, found Generator<int> uses io`).
 
 ## Plan (D86)
 
-- A function type's identity includes its effects. `sameType` and the type key compare them; the C name (`funcTypeCName`) ignores them, so emitted C does not change.
+- A function type's identity includes its effects. Type equality and the type key compare them; the C name of a function type ignores them, so emitted C does not change.
 - Assignability: a function with fewer effects may go where more are allowed; storing one with more effects into a slot with fewer (field, element, return, argument, struct literal, `let` with a written type) is a type error naming the extra effects.
 - Effect variables in function types bind as for generators (Binder and Bound).
-- A call through any function value charges the effects of its type. Delete the written-type machinery from #98 (`typeExprOf`, `writtenEffects`, `resultEffects` and the selfhost helpers).
+- A call through any function value charges the effects of its type. Delete the written-type machinery from PR #98 in `selfhost/src/effects.nra`.
 - `Type.TFunc` in selfhost gains the effect field (about 44 match sites).
 
 ## Acceptance
 
 - [ ] D86 in DECISIONS.md: the rule, the subtyping direction, prior art (Koka, Effekt, D78), cost.
-- [ ] Every program in `nodes/func-type-effects/review-cases/` (the #98 review's probes: stores, type parameters, bindings, closures, arrow parameters) that does an effect its function does not declare is rejected, and the clean ones stay clean, in both compilers with the same text. Turn the distinct cases into error tests or clean samples.
+- [ ] Every program in `nodes/func-type-effects/review-cases/` (the #98 review's probes: stores, type parameters, bindings, closures, arrow parameters) that does an effect its function does not declare is rejected, and the clean ones stay clean, with the message text the error tests expect. Turn the distinct cases into error tests or clean samples.
 - [ ] `selfhost/src` and `std/src` gain any `uses` lists the stricter rule needs; the outcome counts them.
-- [ ] Emitted C unchanged for programs that check clean before and after (compare `narrac emit` on the test programs).
-- [ ] Fast check passes, including `TestSelfhostBootstrap`.
+- [ ] Emitted C unchanged for programs that check clean before and after (compare `narrac emit` output on `testdata/*.nra` from the seed compiler and the new one).
+- [ ] `sh scripts/test.sh` passes, including the bootstrap suite.
+- [ ] Last step: `sh scripts/seed-update.sh`, then `sh selfhost/bootstrap.sh` reports the seed is current.
 
 ## Sizing
 
-M (roughly 600 to 1,000 lines across both compilers, from the review's estimate). Risk: the stricter store rule may reject existing code in `selfhost/src` that stores effectful closures into slots typed without `uses`.
+M (roughly 300 to 500 lines in `selfhost/src` now that the Go half is gone, from the review's estimate). Risk: the stricter store rule may reject existing code in `selfhost/src` that stores effectful closures into slots typed without `uses`.

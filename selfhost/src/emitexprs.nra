@@ -28,6 +28,7 @@ import {
   temp,
   ownedTemp,
   consume,
+  retainCode,
   beginStatement,
   endStatement,
   pushScope,
@@ -73,6 +74,16 @@ export function emitExpression<W: EmitWalker>(
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
+  if (emitter.heldPending > 0) {
+    const expressionId = getExpressionId(expression)
+    if (emitter.heldArguments[expressionId] is Some(held)) {
+      if (held.text != "") {
+        emitter.heldArguments[expressionId] = plain("")
+        emitter.heldPending = emitter.heldPending - 1
+        return held
+      }
+    }
+  }
   return match (expression) {
     Expr.IntLit(_, _, text) => plain(integerCode(text))
     Expr.FloatLit(_, _, text) => plain(text)
@@ -467,6 +478,7 @@ function emitCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
+  holdEarlierArguments(walker, mutable emitter, arguments)
   const ref = refOf(emitter, nodeId)
   return match (ref) {
     Ref.Distinct(_) => EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
@@ -502,6 +514,151 @@ function emitCall<W: EmitWalker>(
     )
     _ => unsupportedCode(mutable emitter, "call")
   }
+}
+
+// mayWrite reports whether evaluating an expression can assign a variable
+// that an earlier argument of the same call reads. Block expressions, matches
+// and calls that run a closure can; plain reads, operators and calls with
+// side-effect-free arguments cannot (Go: mayWrite).
+function mayWrite(emitter: Emitter, expression: Expr): bool uses alloc {
+  return match (expression) {
+    Expr.IntLit(_, _, _) => false
+    Expr.FloatLit(_, _, _) => false
+    Expr.StringLit(_, _, _, _) => false
+    Expr.CharLit(_, _, _) => false
+    Expr.BoolLit(_, _, _) => false
+    Expr.Ident(_, _, _) => false
+    Expr.TemplateLit(_, _, parts) => anyMayWrite(emitter, parts)
+    Expr.FieldExpr(_, _, target, _) => mayWrite(emitter, target)
+    Expr.IsExpr(_, _, subject, _) => mayWrite(emitter, subject)
+    Expr.IndexExpr(_, _, target, index) => mayWrite(emitter, target) || mayWrite(emitter, index)
+    Expr.UnaryExpr(_, _, _, operand) => mayWrite(emitter, operand)
+    Expr.BinaryExpr(_, _, _, left, right) => mayWrite(emitter, left) || mayWrite(emitter, right)
+    Expr.ArrayLit(_, _, elements, _) => anyMayWrite(emitter, elements)
+    Expr.MapLit(_, _, _, keys, values) => anyMayWrite(emitter, keys) || anyMayWrite(emitter, values)
+    Expr.StructLit(_, _, _, _, fields, spread) => structMayWrite(emitter, fields, spread)
+    Expr.CallExpr(nodeId, _, _, _, arguments) => callMayWrite(emitter, nodeId, arguments)
+    Expr.ArrowExpr(_, _, _, _, body, block) => arrowMayWrite(emitter, body, block)
+    _ => true
+  }
+}
+
+function anyMayWrite(emitter: Emitter, list: Array<Expr>): bool uses alloc {
+  for (const item of Arrays.values(list)) {
+    if (mayWrite(emitter, item)) {
+      return true
+    }
+  }
+  return false
+}
+
+function structMayWrite(
+  emitter: Emitter,
+  fields: Array<FieldInit>,
+  spread: Option<Expr>,
+): bool uses alloc {
+  if (spread is Some(spreadExpression)) {
+    if (mayWrite(emitter, spreadExpression)) {
+      return true
+    }
+  }
+  for (const field of Arrays.values(fields)) {
+    if (mayWrite(emitter, field.value)) {
+      return true
+    }
+  }
+  return false
+}
+
+function callMayWrite(emitter: Emitter, nodeId: int, arguments: Array<Arg>): bool uses alloc {
+  if (refOf(emitter, nodeId) is Ref.Value) {
+    return true
+  }
+  for (const argument of Arrays.values(arguments)) {
+    if (mayWrite(emitter, argument.value)) {
+      return true
+    }
+  }
+  return false
+}
+
+// arrowMayWrite: a closure runs later, in the call that takes it; a block body
+// can assign, an expression body only through a nested write.
+function arrowMayWrite(
+  emitter: Emitter,
+  body: Option<Expr>,
+  block: Option<Block>,
+): bool uses alloc {
+  if (block is Some(_)) {
+    return true
+  }
+  if (body is Some(bodyExpression)) {
+    return mayWrite(emitter, bodyExpression)
+  }
+  return false
+}
+
+// holdEarlierArguments keeps the written order of the arguments: when a later
+// argument may assign a variable, each earlier argument is evaluated now and
+// its value kept in a temporary. Calls without such an argument emit the same
+// code as before (Go: holdEarlierArgs).
+function holdEarlierArguments<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+) uses alloc {
+  let last = -1
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    if (!arguments[index].isMutable && mayWrite(emitter, arguments[index].value)) {
+      last = index
+    }
+  }
+  for (const index of Ranges.between(0, last)) {
+    if (!arguments[index].isMutable) {
+      holdArgument(walker, mutable emitter, arguments[index].value)
+    }
+  }
+}
+
+// isStableArgument is true for a literal or a name that no later argument can
+// change, which needs no temporary.
+function isStableArgument(emitter: Emitter, value: Expr, nodeId: int): bool {
+  return match (value) {
+    Expr.IntLit(_, _, _) => true
+    Expr.FloatLit(_, _, _) => true
+    Expr.StringLit(_, _, _, _) => true
+    Expr.CharLit(_, _, _) => true
+    Expr.BoolLit(_, _, _) => true
+    Expr.Ident(_, _, _) => !(refOf(emitter, nodeId) is Ref.Local(_))
+    _ => false
+  }
+}
+
+function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Expr) uses alloc {
+  const nodeId = getExpressionId(value)
+  if (isStableArgument(emitter, value, nodeId)) {
+    return
+  }
+  const valueType = typeOf(emitter, nodeId)
+  if (valueType is Type.TFunc(_, _)) {
+    return
+  }
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  let held = code
+  if (!code.owned) {
+    // Keep the value this argument read, even if the variable changes.
+    const name = temp(mutable emitter, valueType, code.text)
+    held = plain(name)
+    if (needsRc(emitter, valueType)) {
+      const retainText = retainCode(emitter, valueType, name)
+      writeLine(mutable emitter, retainText)
+      const top = Arrays.length(emitter.frames) - 1
+      Arrays.push(mutable emitter.frames[top], TempVar { name: name, tempType: valueType })
+      held = Code { text: name, owned: true }
+    }
+  }
+  emitter.heldArguments[nodeId] = held
+  emitter.heldPending = emitter.heldPending + 1
 }
 
 // emitConstructorCall builds a boxed enum value from its fields.

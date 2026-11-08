@@ -67,6 +67,10 @@ func cString(s string) string {
 // expr emits an expression and returns its C code and whether that code is
 // an owned temporary.
 func (e *Emitter) expr(x Expr) (string, bool) {
+	if h, ok := e.held[x]; ok {
+		delete(e.held, x)
+		return h.code, h.owned
+	}
 	switch x := x.(type) {
 	case *IntLit:
 		v, _ := strconv.ParseInt(x.Text, 0, 64)

@@ -7,6 +7,7 @@ import (
 
 func (e *Emitter) call(x *CallExpr) (string, bool) {
 	w := e.where(x.P)
+	e.holdEarlierArgs(x)
 	switch {
 	case x.Distinct != nil:
 		// from and to keep the representation: the argument is the result.
@@ -225,4 +226,115 @@ func (e *Emitter) tailJump(call *CallExpr) {
 	}
 	e.line("goto narra_tail;")
 	e.frames = e.frames[:len(e.frames)-1]
+}
+
+// heldArg is the result of an argument that was evaluated early.
+type heldArg struct {
+	code  string
+	owned bool
+}
+
+// mayWrite reports whether evaluating x can assign a variable that an
+// earlier argument of the same call reads. Block expressions, matches and
+// calls that run a closure can; plain reads, operators and calls with
+// side-effect-free arguments cannot.
+func mayWrite(x Expr) bool {
+	switch x := x.(type) {
+	case *IntLit, *FloatLit, *StringLit, *CharLit, *BoolLit, *Ident:
+		return false
+	case *TemplateLit:
+		return anyMayWrite(x.Parts)
+	case *FieldExpr:
+		return mayWrite(x.Target)
+	case *IsExpr:
+		return mayWrite(x.Subject)
+	case *IndexExpr:
+		return mayWrite(x.Target) || mayWrite(x.Index)
+	case *UnaryExpr:
+		return mayWrite(x.Operand)
+	case *BinaryExpr:
+		return mayWrite(x.Left) || mayWrite(x.Right)
+	case *ArrayLit:
+		return anyMayWrite(x.Elems)
+	case *MapLit:
+		return anyMayWrite(x.Keys) || anyMayWrite(x.Vals)
+	case *StructLit:
+		if x.Spread != nil && mayWrite(x.Spread) {
+			return true
+		}
+		for _, f := range x.Fields {
+			if mayWrite(f.Value) {
+				return true
+			}
+		}
+		return false
+	case *CallExpr:
+		if x.FuncValue != nil {
+			return true
+		}
+		for _, a := range x.Args {
+			if mayWrite(a.Value) {
+				return true
+			}
+		}
+		return false
+	case *ArrowExpr:
+		// A closure runs later, in a call that takes it; see CallExpr.
+		return x.Block != nil || x.Body != nil && mayWrite(x.Body)
+	}
+	return true
+}
+
+func anyMayWrite(list []Expr) bool {
+	for _, x := range list {
+		if mayWrite(x) {
+			return true
+		}
+	}
+	return false
+}
+
+// holdEarlierArgs keeps the written order of the arguments of x: when a
+// later argument may assign a variable, each earlier argument is evaluated
+// now and its value kept in a temporary. Calls without such an argument emit
+// the same code as before.
+func (e *Emitter) holdEarlierArgs(x *CallExpr) {
+	last := -1
+	for i, a := range x.Args {
+		if !a.Mutable && mayWrite(a.Value) {
+			last = i
+		}
+	}
+	for i := 0; i < last; i++ {
+		a := x.Args[i]
+		if a.Mutable {
+			continue
+		}
+		switch v := a.Value.(type) {
+		case *IntLit, *FloatLit, *StringLit, *CharLit, *BoolLit:
+			continue
+		case *Ident:
+			if v.Local == nil {
+				continue
+			}
+		}
+		t := a.Value.Type()
+		if _, isFunc := t.(*FuncType); isFunc {
+			continue
+		}
+		code, owned := e.expr(a.Value)
+		if !owned {
+			// Keep the value this argument read, even if the variable changes.
+			code = e.temp(t, code)
+			if needsRC(t) {
+				e.line("%s", retain(t, code))
+				e.frames[len(e.frames)-1] = append(e.frames[len(e.frames)-1], tempVar{code, t})
+				owned = true
+			}
+		}
+		if e.held == nil {
+			e.held = map[Expr]heldArg{}
+		}
+		e.held[a.Value] = heldArg{code, owned}
+	}
 }

@@ -36,7 +36,8 @@ type Emitter struct {
 	out      strings.Builder // current function body
 	indent   int
 	tempN    int
-	frames   [][]tempVar // owned temporaries, one list per statement in progress
+	held     map[Expr]heldArg // arguments already evaluated for written order
+	frames   [][]tempVar      // owned temporaries, one list per statement in progress
 	scopes   []*scopeFrame
 	loopTemp []int        // frame depth when each enclosing loop started
 	loops    []*loopInfo  // the enclosing loops, parallel to loopTemp

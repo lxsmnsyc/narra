@@ -1,0 +1,334 @@
+// The test runner of the Narra compiler. It runs the suites of registry.nra
+// against a compiler binary and prints one block per failure and a summary.
+//
+//   testrunner [flags]
+//     --narrac PATH       the compiler under test (default $NARRAC, else narrac)
+//     --repository DIR    the repo root (default $PWD)
+//     --testdata DIR      the samples (default <repository>/compiler/testdata)
+//     --suite NAME        run only this suite; repeatable
+//     --skip NAME         leave this suite out; repeatable
+//     --filter TEXT       run only cases whose suite/name contains TEXT
+//     --shard I/N         run the cases whose position modulo N is I - 1
+//     --list              print the case names and stop
+//     --verbose           print a line for each passing case too
+//     --update            rewrite the goldens that differ instead of failing
+//
+// Exit code: 0 when every case passed, 1 when a case failed or none matched,
+// 2 for a bad flag.
+import * as Arrays from "std/array"
+import * as Env from "std/env"
+import * as Int from "std/int"
+import * as Io from "std/io"
+import * as Str from "std/string"
+import { Context, TestCase, caseLabel } from "testrunner/context"
+import { Suite, listSuites } from "testrunner/registry"
+
+struct Options {
+  narrac: string
+  repository: string
+  testdata: string
+  suites: Array<string>
+  skips: Array<string>
+  filter: string
+  shardIndex: int
+  shardCount: int
+  list: bool
+  verbose: bool
+  update: bool
+}
+
+// A case together with the suite that runs it.
+struct PlannedCase {
+  suite: Suite
+  testCase: TestCase
+}
+
+export function run(arguments: Array<string>): int uses io, alloc {
+  const parsed = parseOptions(arguments)
+  if (parsed is Err(message)) {
+    Io.writeError(`${message}\n`)
+    return 2
+  }
+  const options = parsed.value
+  const context = Context {
+    narrac: options.narrac,
+    testdata: options.testdata,
+    repository: options.repository,
+    update: options.update,
+  }
+  const suites = selectSuites(options)
+  if (suites is Err(message)) {
+    Io.writeError(`${message}\n`)
+    return 2
+  }
+  const planned = planCases(context, options, suites.value)
+  if (Arrays.length(planned) == 0) {
+    Io.writeError("no test case matches\n")
+    return 1
+  }
+  const mine = chooseShard(planned, options)
+  if (options.list) {
+    for (const entry of Arrays.values(mine)) {
+      Io.write(`${caseLabel(entry.testCase)}\n`)
+    }
+    return 0
+  }
+  return runCases(context, options, mine)
+}
+
+// --- flags ------------------------------------------------------------------
+
+function parseOptions(arguments: Array<string>): Result<Options, string> uses io, alloc {
+  const repository = absolutePath(readEnvironment("PWD", "."))
+  let options = Options {
+    narrac: readEnvironment("NARRAC", "narrac"),
+    repository: repository,
+    testdata: "",
+    suites: [],
+    skips: [],
+    filter: "",
+    shardIndex: 1,
+    shardCount: 1,
+    list: false,
+    verbose: false,
+    update: false,
+  }
+  let index = 1
+  while (index < Arrays.length(arguments)) {
+    const flag = arguments[index]
+    index = index + 1
+    if (flag == "--list") {
+      options.list = true
+    } else if (flag == "--verbose") {
+      options.verbose = true
+    } else if (flag == "--update") {
+      options.update = true
+    } else if (index >= Arrays.length(arguments)) {
+      return Err(`unknown flag or missing value: ${flag}\n${usageText()}`)
+    } else {
+      // The remaining flags take a value.
+      const value = arguments[index]
+      index = index + 1
+      const applied = applyValueFlag(mutable options, flag, value)
+      if (applied is Err(message)) {
+        return Err(`${message}\n${usageText()}`)
+      }
+    }
+  }
+  options.narrac = absoluteProgram(options.narrac)
+  options.repository = absolutePath(options.repository)
+  if (options.testdata == "") {
+    options.testdata = `${options.repository}/compiler/testdata`
+  }
+  options.testdata = absolutePath(options.testdata)
+  return Ok(options)
+}
+
+// applyValueFlag sets the option that a flag with a value names.
+function applyValueFlag(
+  mutable options: Options,
+  flag: string,
+  value: string,
+): Result<bool, string> uses alloc {
+  if (flag == "--narrac") {
+    options.narrac = value
+  } else if (flag == "--repository") {
+    options.repository = value
+  } else if (flag == "--testdata") {
+    options.testdata = value
+  } else if (flag == "--suite") {
+    Arrays.push(mutable options.suites, value)
+  } else if (flag == "--skip") {
+    Arrays.push(mutable options.skips, value)
+  } else if (flag == "--filter") {
+    options.filter = value
+  } else if (flag == "--shard") {
+    return parseShard(mutable options, value)
+  } else {
+    return Err(`unknown flag: ${flag}`)
+  }
+  return Ok(true)
+}
+
+// parseShard reads `I/N` with 1 <= I <= N.
+function parseShard(mutable options: Options, value: string): Result<bool, string> uses alloc {
+  const parts = Str.split(value, "/")
+  if (Arrays.length(parts) != 2) {
+    return Err(`--shard needs I/N, got ${value}`)
+  }
+  const shardIndex = Int.parse(parts[0], 10)
+  const shardCount = Int.parse(parts[1], 10)
+  if (shardIndex is Err(_)) {
+    return Err(`--shard needs I/N, got ${value}`)
+  }
+  if (shardCount is Err(_)) {
+    return Err(`--shard needs I/N, got ${value}`)
+  }
+  if (shardCount.value < 1 || shardIndex.value < 1 || shardIndex.value > shardCount.value) {
+    return Err(`--shard needs 1 <= I <= N, got ${value}`)
+  }
+  options.shardIndex = shardIndex.value
+  options.shardCount = shardCount.value
+  return Ok(true)
+}
+
+function usageText(): string uses alloc {
+  const lines = [
+    "usage: testrunner [--narrac PATH] [--repository DIR] [--testdata DIR]",
+    "                  [--suite NAME]... [--skip NAME]... [--filter TEXT]",
+    "                  [--shard I/N] [--list] [--verbose] [--update]",
+  ]
+  return Str.join(lines, "\n")
+}
+
+// readEnvironment is the value of a variable, or fallback when it is unset or empty.
+function readEnvironment(name: string, fallback: string): string uses io, alloc {
+  const value = Env.get(name)
+  if (value is Some(text)) {
+    if (text != "") {
+      return text
+    }
+  }
+  return fallback
+}
+
+// absolutePath makes a path absolute with $PWD.
+function absolutePath(path: string): string uses io, alloc {
+  if (Str.startsWith(path, "/")) {
+    return path
+  }
+  const working = readEnvironment("PWD", "")
+  if (working == "") {
+    return path
+  }
+  if (path == ".") {
+    return working
+  }
+  return `${working}/${path}`
+}
+
+// absoluteProgram makes the compiler path absolute when it names a file in a
+// folder; a bare name is looked up on PATH by the shell.
+function absoluteProgram(program: string): string uses io, alloc {
+  if (Str.contains(program, "/")) {
+    return absolutePath(program)
+  }
+  return program
+}
+
+// --- planning ---------------------------------------------------------------
+
+// selectSuites is the suites to run: --suite names or all, without --skip names.
+function selectSuites(options: Options): Result<Array<Suite>, string> uses alloc {
+  const everything = listSuites()
+  for (const name of Arrays.values(options.suites)) {
+    if (!hasSuite(everything, name)) {
+      return Err(`unknown suite: ${name}`)
+    }
+  }
+  for (const name of Arrays.values(options.skips)) {
+    if (!hasSuite(everything, name)) {
+      return Err(`unknown suite: ${name}`)
+    }
+  }
+  let chosen: Array<Suite> = []
+  for (const suite of Arrays.values(everything)) {
+    const wanted = Arrays.length(options.suites) == 0 || contains(options.suites, suite.name)
+    if (wanted && !contains(options.skips, suite.name)) {
+      Arrays.push(mutable chosen, suite)
+    }
+  }
+  return Ok(chosen)
+}
+
+function hasSuite(suites: Array<Suite>, name: string): bool {
+  for (const suite of Arrays.values(suites)) {
+    if (suite.name == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function contains(names: Array<string>, name: string): bool {
+  for (const candidate of Arrays.values(names)) {
+    if (candidate == name) {
+      return true
+    }
+  }
+  return false
+}
+
+// planCases collects the cases of the suites, in suite order, and keeps the
+// ones that match --filter.
+function planCases(
+  context: Context,
+  options: Options,
+  suites: Array<Suite>,
+): Array<PlannedCase> uses io, alloc {
+  let planned: Array<PlannedCase> = []
+  for (const suite of Arrays.values(suites)) {
+    for (const testCase of Arrays.values(suite.collectCases(context))) {
+      if (options.filter == "" || Str.contains(caseLabel(testCase), options.filter)) {
+        Arrays.push(mutable planned, PlannedCase { suite: suite, testCase: testCase })
+      }
+    }
+  }
+  return planned
+}
+
+// chooseShard keeps every shardCount-th case, starting at shardIndex - 1.
+function chooseShard(planned: Array<PlannedCase>, options: Options): Array<PlannedCase> uses alloc {
+  let mine: Array<PlannedCase> = []
+  for (const #[position, entry] of Arrays.entries(planned)) {
+    if (position % options.shardCount == options.shardIndex - 1) {
+      Arrays.push(mutable mine, entry)
+    }
+  }
+  return mine
+}
+
+// --- running ----------------------------------------------------------------
+
+// runCases runs the cases one after the other, prints each failure and the
+// summary, and gives the exit code.
+function runCases(
+  context: Context,
+  options: Options,
+  planned: Array<PlannedCase>,
+): int uses io, alloc {
+  let passed = 0
+  let failed = 0
+  for (const entry of Arrays.values(planned)) {
+    const label = caseLabel(entry.testCase)
+    const outcome = entry.suite.runCase(context, entry.testCase)
+    if (outcome is Err(message)) {
+      failed = failed + 1
+      Io.write(`FAIL ${label}\n${indent(message)}\n`)
+    } else {
+      passed = passed + 1
+      if (options.verbose) {
+        Io.write(`ok   ${label}\n`)
+      }
+    }
+    Io.flush()
+  }
+  let prefix = ""
+  if (options.shardCount > 1) {
+    prefix = `shard ${Int.toString(options.shardIndex)}/${Int.toString(options.shardCount)}: `
+  }
+  Io.write(`${prefix}${Int.toString(passed)} passed, ${Int.toString(failed)} failed\n`)
+  if (failed > 0) {
+    return 1
+  }
+  return 0
+}
+
+// indent puts four spaces before every line of a failure message.
+function indent(text: string): string uses alloc {
+  let builder = Str.builder()
+  for (const line of Arrays.values(Str.split(Str.trim(text), "\n"))) {
+    Str.append(mutable builder, `    ${line}\n`)
+  }
+  return Str.trim(Str.build(builder))
+}

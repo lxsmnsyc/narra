@@ -83,6 +83,8 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 go test ./...
 ```
 
+The test runner written in Narra (`selfhost/tests`) runs programs, panics, compile errors, packages and `runner/` with narrac and no Go: `NARRAC=/path/to/narrac sh scripts/test.sh`. Each sample in `testdata/errors`, `testdata/stage2/errors` and `testdata/packages/errors` also has a golden with narrac's full `check` output: `<name>.err`, or `expected.err` inside a package folder (`--update` rewrites them). The `// error:` lines stay as documentation.
+
 `scripts/linux-check.sh` runs `go vet ./... && go test ./...` in a Linux container (gcc with sanitizers, repo mounted read-only). Docker runs through colima on macOS: `colima start --cpu 4 --memory 8` first.
 
 - `testdata/*.nra` run and compare their output with the matching `.out` file. Each runs twice: a debug build with AddressSanitizer, UndefinedBehaviorSanitizer and the leak check, and a release build.

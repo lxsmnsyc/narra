@@ -1,0 +1,73 @@
+// The programs suite: every testdata/*.nra and testdata/stage2/*.nra is built
+// and run, and its stdout must equal the .out file next to it. Debug runs
+// build with the sanitizers (narrac -sanitize) and the leak check; release
+// runs build with -release. Samples that run their test blocks (tests.nra,
+// std_test*, coroutine_tests*) go through `narrac test`. A .in file is the
+// program's stdin. The stage2 folder holds samples for std modules written in
+// Narra, and runs in debug mode only.
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  for (const path of Arrays.values(Files.listPaths(context.testdata, ".nra"))) {
+    addCases(mutable cases, path, Path.basename(path), ["debug", "release"])
+  }
+  const stage2 = Path.join(context.testdata, "stage2")
+  for (const path of Arrays.values(Files.listPaths(stage2, ".nra"))) {
+    addCases(mutable cases, path, `stage2/${Path.basename(path)}`, ["debug"])
+  }
+  return cases
+}
+
+// addCases adds one case per build mode of a sample.
+function addCases(
+  mutable cases: Array<TestCase>,
+  path: string,
+  name: string,
+  variants: Array<string>,
+) uses alloc {
+  for (const variant of Arrays.values(variants)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "programs",
+      name: `${name}/${variant}`,
+      path: path,
+      variant: variant,
+    })
+  }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const base = Path.basename(testCase.path)
+  const runsTests =
+    base == "tests.nra" ||
+      Str.startsWith(base, "std_test") ||
+      Str.startsWith(base, "coroutine_tests")
+  let arguments = ["run"]
+  if (runsTests) {
+    arguments = ["test"]
+  }
+  if (testCase.variant == "release") {
+    Arrays.push(mutable arguments, "-release")
+  } else {
+    Arrays.push(mutable arguments, "-sanitize")
+  }
+  // <name>.in is the program's stdin; other programs read /dev/null.
+  const input = Files.replaceSuffix(testCase.path, ".nra", ".in")
+  if (!runsTests && Fs.exists(input)) {
+    Arrays.push(mutable arguments, "-stdin")
+    Arrays.push(mutable arguments, input)
+  }
+  Arrays.push(mutable arguments, testCase.path)
+  const result = Common.runNarrac(context, arguments)
+  return Common.expectRun(result, 0, want.value)
+}

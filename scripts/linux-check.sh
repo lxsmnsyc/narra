@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the compiler from the seed and run the test suites inside a Linux
-# container: sh selfhost/bootstrap.sh, then sh scripts/test.sh.
+# container: sh scripts/test.sh, which builds the compiler from the seed once.
 # The repo is mounted read-only; the runner works in /tmp.
 # Usage: scripts/linux-check.sh [runner flags]
 # PLATFORM picks the architecture, for example PLATFORM=linux/amd64 on an arm64 Mac
@@ -34,7 +34,7 @@ docker run --rm ${platform[@]+"${platform[@]}"} \
   --security-opt seccomp=unconfined \
   -v "$root:/repo:ro" \
   "$image" \
-  sh -c 'sh selfhost/bootstrap.sh && sh scripts/test.sh "$@"' sh "$@" || status=$?
+  sh scripts/test.sh "$@" || status=$?
 
 elapsed=$((SECONDS - start))
 if [ "$status" -eq 0 ]; then

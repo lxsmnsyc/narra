@@ -32,6 +32,8 @@ depends_on:
 
 # Cross-compilation targets, including wasm32-wasi
 
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+
 ## Goal
 
 `narra build --target <triple>` builds a binary for another platform from one host: darwin and linux on arm64 and x64, linux musl, windows x64, and `wasm32-wasi`. The triple passes through to the C compiler (`zig cc -target <triple>`, or clang with `--target` and a sysroot; wasi-sdk for wasm). The runtime in `runtimetext.nra` compiles and passes the sample programs on each target. A CI-free script builds every target from one machine, and the samples run under wasmtime for `wasm32-wasi`.

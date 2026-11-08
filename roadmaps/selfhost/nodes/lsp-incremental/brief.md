@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestSelfhostLsp|TestSelfhostBootstrap'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
@@ -22,7 +22,7 @@ added: 2026-11-07
 spent:
 owns:
   - selfhost/src/lspcache.nra
-  - compiler/testdata/lsp/incremental_*/**
+  - testdata/lsp/incremental_*/**
   - roadmaps/selfhost/nodes/lsp-incremental/**
 shared:
   - selfhost/src/lsp.nra
@@ -51,7 +51,7 @@ After a change, the server parses and checks only the changed module and the mod
 
 ## Acceptance
 
-- [ ] An edit inside a function body of one module rechecks that module only; an edit to an exported signature also rechecks its importers; diagnostics are the same as a full recheck (a test compares both paths on scripted edits in `compiler/testdata/lsp/incremental_*/`).
+- [ ] An edit inside a function body of one module rechecks that module only; an edit to an exported signature also rechecks its importers; diagnostics are the same as a full recheck (a test compares both paths on scripted edits in `testdata/lsp/incremental_*/`).
 - [ ] On `selfhost/` as a package, a body edit in a leaf module answers at least 3x faster than the full recheck of language-service, measured as in perf-pass (`bench.py`), and the outcome reports both times.
 - [ ] `narrac check`, `narrac query` and the bootstrap output stay unchanged.
 - [ ] Fast check passes.

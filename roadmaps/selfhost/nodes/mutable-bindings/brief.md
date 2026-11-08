@@ -14,20 +14,19 @@ from:
 size: L
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestPrograms|TestCompileErrors|TestSelfhost'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/mutable_contents*
-  - compiler/testdata/errors/mutable_contents_*
+  - testdata/mutable_contents*
+  - testdata/errors/mutable_contents_*
   - roadmaps/selfhost/nodes/mutable-bindings/**
 shared:
-  - compiler/internal/narra/**
   - selfhost/src/**
-  - compiler/testdata/**
+  - testdata/**
   - docs/guide/**
   - compiler/README.md
   - SPEC.md
@@ -43,6 +42,8 @@ depends_on:
 ---
 
 # Build D81: mutable changes contents, const fixes only the name
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

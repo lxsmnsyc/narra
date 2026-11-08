@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestPrograms|TestCompileErrors|TestSelfhost'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
@@ -22,19 +22,11 @@ added: 2026-11-07
 spent:
 owns:
   - selfhost/src/stdbytes.nra
-  - compiler/internal/narra/std_bytes.go
-  - compiler/testdata/bytes*
-  - compiler/testdata/errors/bytes_*
+  - testdata/bytes*
+  - testdata/errors/bytes_*
   - roadmaps/selfhost/nodes/bytes-type/**
 shared:
-  - compiler/internal/narra/types.go
-  - compiler/internal/narra/check_types.go
-  - compiler/internal/narra/emit_types.go
-  - compiler/internal/narra/std_fs.go
-  - compiler/internal/narra/runtime.h
-  - compiler/internal/narra/runtime_io.h
-  - compiler/internal/narra/runtime_string.h
-  - compiler/internal/narra/diagnostic_codes.go
+  - selfhost/runtime/**
   - selfhost/src/types.nra
   - selfhost/src/resolve.nra
   - selfhost/src/traits.nra
@@ -55,6 +47,8 @@ depends_on:
 ---
 
 # The bytes type and std/bytes
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

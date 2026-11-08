@@ -12,12 +12,12 @@ branches:
 
 ## Outcome
 
-The Narra compiler is written in Narra and compiles itself. The Go bootstrap compiler `narra` first grows to cover the language features the compiler needs. The compiled compiler (stage 1) builds itself (stage 2), and stage 1 and stage 2 produce byte-identical C for the test programs. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Narra with Go and Rust. After self-hosting, milestone m9-adoption makes Narra usable by others: a language guide, an installation guide, `narra fmt`, `narra query`, a language server, agent skills and maybe a linter (should, except the linter: could). The language was named Narra on 2026-10-28, before self-hosting.
+The Narra compiler is written in Narra and compiles itself. The Go bootstrap compiler grew to cover the language features the compiler needed, and was retired on 2026-11-09 (story c-seed): a committed C seed (`seed/narrac.c`) now builds the compiler with `cc` alone. The seed builds stage 1, stage 1 builds stage 2, and both emit byte-identical C. The remaining spec features (`SPEC.md`) are implemented or explicitly deferred, and a benchmark compares Narra with Go and Rust. After self-hosting, milestone m9-adoption makes Narra usable by others: a language guide, an installation guide, `narrac fmt`, `narrac query`, a language server, agent skills and maybe a linter (should, except the linter: could). The language was named Narra on 2026-10-28, before self-hosting.
 
 ## Acceptance
 
-- `cd compiler && go test ./...` passes, with every sample program clean under AddressSanitizer and the leak check.
-- The self-hosted compiler builds itself, and its output matches the Go compiler's output on every program in `compiler/testdata/`.
+- `sh scripts/test.sh` passes, with every sample program clean under AddressSanitizer and the leak check.
+- `sh selfhost/bootstrap.sh` reaches the fixed point (stage 1 and stage 2 emit identical C) and reports that the seed is current.
 - `bench/` reports Narra, Go and Rust times for the same programs.
 
 ## Priorities
@@ -30,19 +30,21 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 ## Constraints
 
 - `SPEC.md` is the source of truth for language behavior. A node that must differ records the difference in `compiler/README.md` under "Differences from the spec".
-- Every new feature adds sample programs to `compiler/testdata/` (run under sanitizers and the leak check) and compile-error tests to `compiler/testdata/errors/`.
+- Every new feature adds sample programs to `testdata/` (run under sanitizers and the leak check) and compile-error tests to `testdata/errors/`.
 - The generated C must stay valid C11 for clang and gcc.
-- Go standard library only in the bootstrap compiler. No third-party Go modules.
+- Seed rule: `selfhost/src` may use only features the committed seed compiles. Land a feature, regenerate the seed with `sh scripts/seed-update.sh`, then use it. Editing text in `selfhost/runtime/` needs two seed updates.
+- Building and testing need only `cc` and `sh`. Platforms: macOS and Linux.
 
 ## Non-goals
 
 - A package registry, an editor plugin, or a debugger.
-- Keeping the Go compiler after self-hosting beyond what bootstrapping needs.
+- Bringing back a Go compiler or a Go test harness. Go stays only as a benchmark language in `bench/`.
 
 ## Verification
 
-- Fast check (safe to run in parallel worktrees): `cd compiler && go vet ./... && go test -timeout 45m ./...` (about 7 minutes alone, up to 24 minutes with four suites in parallel worktrees; no shared resources)
-- Full check: the same, plus `bench/run.sh` once it exists (exclusive: benchmarks need a quiet machine).
+- Targeted check while working: `NARRAC=<built narrac> sh scripts/test.sh --suite <suite>` or `--filter <name>`.
+- Fast check (safe to run in parallel worktrees, no shared resources): `sh scripts/test.sh` (builds narrac from the seed, then runs every suite in shards; about 1 to 3 minutes).
+- Full check: the fast check, `sh scripts/linux-check.sh` (Linux in a container), and `bench/run.sh` when a node touches performance (exclusive: benchmarks need a quiet machine).
 
 ## Numbered resources
 
@@ -50,12 +52,13 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 
 ## Hot files
 
-`parser.go`, `ast.go`, `clone.go`, `check_expr.go` and `emit_expr.go` are edited by several nodes. split-compiler splits the checker and emitter by feature, but the parser stays one recursive-descent file and each feature adds a few `case` lines to the shared switches. Nodes in the same wave merge in the order `plan.py status` prints, and each later branch rebases before review. In wave 2, modules merges first, because it changes how every C name is generated.
+`selfhost/src/types.nra`, `traits.nra` and `stdtext.nra` are edited by many open nodes. Nodes in the same wave land in the order `plan.py status` prints, and each later branch rebases before review. The seed is regenerated by the last node of a batch, not by each node.
 
 ## Sources
 
 - `SPEC.md` and `DECISIONS.md` in the repo root.
-- `compiler/README.md`: what the bootstrap compiler supports and its gaps.
+- `compiler/README.md`: what the compiler supports and its differences from the spec.
+- `seed/README.md`: how the seed is built and regenerated.
 
 ## Coverage
 
@@ -101,6 +104,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-01: the user kept `let` and `mutable` (a full ban was weighed: 2750 `mutable` and 453 `let` uses in `selfhost/src`). Milestone m11-closures: non-escaping closures capture `let` and `mutable` by reference (closure-borrow), escaping closures share mutable state through an explicit `Cell<T>` (cell-capture), after a gated decision on identity type cycles (identity-cycles), which threads also waits for. Direction: later work should keep moving closures closer to TypeScript semantics, as far as memory safety and visible costs allow.
 - 2026-11-05: std-source gate, decided by the orchestrator at the user's request. (1) Merge the std/option prototype once its review is clean. (2) Option (b): the Go compiler loads a std source module only when `selfhost/src` imports it; every other new std module is selfhost-only and tested with stage 2. Option (c), a checked-in C seed that retires the Go compiler, is the parked node c-seed. (3) Primitives behind source modules are builtin modules under `std/internal/`, importable only from `std/` modules. (4) Generic calls report the real mismatch before more modules move to source. Items 3 and 4 and the stage 2 tests are node std-foundation, which every later m10 node waits for.
 - 2026-11-08: the user raised c-seed to must and made it a story (branch `feat/c-seed`). The seed lives in the repository; GitHub Releases come later for distribution (release-binaries). Go goes away fully, including the Go test harness. Platforms: macOS arm64 and Linux x86_64. The backend stays C, not LLVM. Other work waits until the story merges, so it is built once (func-type-effects has a hard dependency on c-seed). New strategy: story children land as direct commits after targeted tests, with one full check, one fresh review and one pull request per story.
+- 2026-11-09: c-seed merged (PR #101). The Go compiler and Go test harness are gone; checks are `sh selfhost/bootstrap.sh` and `sh scripts/test.sh`. Linux x86_64 was not run on real hardware (no host available; AddressSanitizer does not run under emulation); the maintainer accepted that.
 
 ## Gates
 

@@ -14,14 +14,14 @@ from:
 size: S
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestQuery|TestSelfhost'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/query/named_args*
+  - testdata/query/named_args*
   - roadmaps/selfhost/nodes/named-args-query/**
 shared:
   - selfhost/src/query.nra

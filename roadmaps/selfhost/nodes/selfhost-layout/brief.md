@@ -32,6 +32,8 @@ depends_on:
 
 # Group the self-hosted compiler's modules into directories
 
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+
 ## Goal
 
 `selfhost/src/` holds about 50 modules in one flat directory, and fmt, query, the language service and lint will add more. Group them by area (for example lexer and parser, checker, emitter, tools), so a reader finds the code for a feature in one place. Behavior-preserving: the emitted C, every dump and the bootstrap fixed point stay byte-identical. Requested by the maintainer on 2026-11-05.

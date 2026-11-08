@@ -14,21 +14,18 @@ from:
 size: L
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestPrograms|TestCompileErrors|TestDiagnostics|TestSelfhost'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/named_args*
-  - compiler/testdata/errors/named_args*
-  - compiler/testdata/diagnostics/named_args*
+  - testdata/named_args*
+  - testdata/errors/named_args*
+  - testdata/diagnostics/named_args*
   - roadmaps/selfhost/nodes/named-args-check/**
 shared:
-  - compiler/internal/narra/check_call.go
-  - compiler/internal/narra/emit_call.go
-  - compiler/internal/narra/diagnostic_codes.go
   - selfhost/src/calls.nra
   - selfhost/src/emitexprs.nra
   - SPEC.md
@@ -46,6 +43,8 @@ depends_on:
 ---
 
 # Check and lower named arguments
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

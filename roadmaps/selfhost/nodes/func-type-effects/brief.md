@@ -14,27 +14,22 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestCompileErrors|TestPrograms|TestSelfhost|TestTypesDumpEffects'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/errors/func_effects_*
-  - compiler/testdata/func_effects*
+  - testdata/errors/func_effects_*
+  - testdata/func_effects*
   - roadmaps/selfhost/nodes/func-type-effects/**
 shared:
-  - compiler/internal/narra/types.go
-  - compiler/internal/narra/check_effects.go
-  - compiler/internal/narra/check_types.go
-  - compiler/internal/narra/check_call.go
-  - compiler/internal/narra/check_closure.go
   - selfhost/src/**
   - DECISIONS.md
   - SPEC.md
   - compiler/README.md
-  - compiler/testdata/**
+  - testdata/**
 reserves: [decision D86]
 provides: []
 depends_on:
@@ -47,6 +42,8 @@ depends_on:
 ---
 
 # Function types carry their effects
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

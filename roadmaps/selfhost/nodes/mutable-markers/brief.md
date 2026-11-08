@@ -36,6 +36,8 @@ depends_on:
 
 # Where a mutable marker can bind a reference to a part of a value
 
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+
 ## Goal
 
 The maintainer (2026-11-07), after choosing read-only copying bindings for D81: "add a node where we'll explore where we can insert the mutable indicator. For example, `if (x is Some(mutable y))`."

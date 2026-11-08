@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestSelfhostBuiltins|TestSelfhostEmit|TestSelfhostRuntimeText|TestSourcesFormatted|TestPrograms'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
@@ -27,7 +27,6 @@ owns:
   - selfhost/src/runtimetext.nra
   - selfhost/src/std*.nra
   - selfhost/src/runtime*.nra
-  - compiler/internal/narra/selfhost_runtime_test.go
   - roadmaps/selfhost/nodes/std-tables-split/**
 shared:
   - selfhost/CLAUDE.md
@@ -49,6 +48,8 @@ depends_on:
 ---
 
 # Split the self-hosted std tables by module
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

@@ -15,8 +15,9 @@ Script: `python3 <skill>/scripts/plan.py <root> context <id>` lists the files to
 
 Project rules:
 
-- Run `cd compiler && go vet ./... && go test -timeout 45m ./...` before finishing (7 to 24 minutes, depending on load). Every sample program must stay clean under AddressSanitizer and the leak check.
-- Format edited `.nra` files with `narrac fmt` (see `selfhost/CLAUDE.md`); `TestSourcesFormatted` checks it.
+- Run `sh scripts/test.sh` before finishing (1 to 3 minutes; it builds narrac from `seed/narrac.c` with `cc` only). Every sample program must stay clean under AddressSanitizer and the leak check. While working, run only the suites you touch: `NARRAC=<built narrac> sh scripts/test.sh --suite <suite>`.
+- Format edited `.nra` files with `narrac fmt` (see `selfhost/CLAUDE.md`); the `sources` suite checks it.
+- Seed rule: `selfhost/src` may use only features the committed seed compiles. Do not regenerate the seed unless your brief says so; the orchestrator does it once per batch.
 - Follow `SPEC.md`. Record any difference in `compiler/README.md`.
-- New AST node types need a case in `clone.go` and in the checker and emitter switches.
+- New AST node kinds need a case in the checker, emitter, `fmt` and `astdump` switches.
 - Narra code in `selfhost/` reads like the maintainer's JS/TS: full descriptive names for locals, parameters and fields (`parser`, `checker`, `expression`, `leftType`, `index`, never `p`, `c`, `e`, `lt`, `idx`; only `i`/`j` over plain index ranges), function declarations named for their action (`parseBinary`, `findLocal`, `collectIds`, never `<noun>Of`), for-of loops where Narra allows, and short comments on the steps inside a function. Shadowing is an error in Narra, so a binding such as `is Some(block)` needs a name of its own.

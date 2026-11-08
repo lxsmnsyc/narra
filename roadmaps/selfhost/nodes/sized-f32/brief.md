@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestPrograms|TestCompileErrors|TestSelfhost'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
@@ -22,20 +22,11 @@ added: 2026-11-07
 spent:
 owns:
   - selfhost/src/stdf32.nra
-  - compiler/internal/narra/std_f32.go
-  - compiler/testdata/f32*
-  - compiler/testdata/errors/f32_*
+  - testdata/f32*
+  - testdata/errors/f32_*
   - roadmaps/selfhost/nodes/sized-f32/**
 shared:
-  - compiler/internal/narra/types.go
-  - compiler/internal/narra/check_expr.go
-  - compiler/internal/narra/check_types.go
-  - compiler/internal/narra/emit_expr.go
-  - compiler/internal/narra/emit_types.go
-  - compiler/internal/narra/std_float.go
-  - compiler/internal/narra/std_sized.go
-  - compiler/internal/narra/runtime.h
-  - compiler/internal/narra/diagnostic_codes.go
+  - selfhost/runtime/**
   - selfhost/src/types.nra
   - selfhost/src/resolve.nra
   - selfhost/src/literals.nra
@@ -56,6 +47,8 @@ depends_on:
 ---
 
 # The f32 type and float conversions
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

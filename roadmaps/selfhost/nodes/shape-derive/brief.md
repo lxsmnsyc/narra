@@ -14,18 +14,17 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestStage2|TestSelfhostBootstrap'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/stage2/derive_shape*
-  - compiler/testdata/stage2/errors/derive_shape_*
+  - testdata/stage2/derive_shape*
+  - testdata/stage2/errors/derive_shape_*
   - roadmaps/selfhost/nodes/shape-derive/**
 shared:
-  - compiler/internal/narra/diagnostic_codes.go
   - selfhost/src/traits.nra
   - selfhost/src/emittraits.nra
   - selfhost/src/declare.nra
@@ -40,6 +39,8 @@ depends_on:
 ---
 
 # derives Shape for structs and enums
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

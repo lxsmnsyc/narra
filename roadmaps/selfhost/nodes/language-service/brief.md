@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestSelfhostLsp|TestSelfhostBootstrap'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
@@ -23,8 +23,7 @@ spent:
 owns:
   - selfhost/src/lsp.nra
   - selfhost/src/lspserver*.nra
-  - compiler/internal/narra/selfhost_lsp_test.go
-  - compiler/testdata/lsp/**
+  - testdata/lsp/**
   - roadmaps/selfhost/nodes/language-service/**
 shared:
   - selfhost/src/main.nra
@@ -52,6 +51,8 @@ depends_on:
 
 # narrac lsp: protocol, diagnostics and formatting
 
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+
 ## Goal
 
 `narrac lsp`, a Language Server Protocol server in the self-hosted compiler, usable from any LSP client (editor plugins stay a non-goal). This node builds the protocol layer, document sync, diagnostics on open and change, and whole-document formatting. Hover, definition, references and symbols are node lsp-navigation; rechecking only changed modules is node lsp-incremental.
@@ -69,7 +70,7 @@ depends_on:
 - [ ] Lifecycle: `initialize` answers capabilities (full text sync, `documentFormattingProvider`, `positionEncoding` `"utf-8"` when the client offers it, else `"utf-16"` with conversion of columns), `initialized`, `shutdown`, `exit` (code 0 after `shutdown`, 1 before). Requests before `initialize` get error -32002; unknown requests get -32601; unknown notifications are ignored; a malformed message gets -32700 and the server keeps running.
 - [ ] Documents: `didOpen`, `didChange` (full), `didClose` keep in-memory text that overrides the file on disk. After each open or change the server checks the package that holds the file (nearest `narra.toml`, as `fmtconfig.nra` finds it; a file with none is checked alone) and sends `publishDiagnostics` for every module of the package, an empty list for a module that has none. Load errors are reported at their file and position, or at the top of the changed file when they have none.
 - [ ] `textDocument/formatting` returns one edit that replaces the whole document, or an empty list when it is already formatted; a document with a syntax error gets `null`.
-- [ ] `TestSelfhostLsp` (`compiler/internal/narra/selfhost_lsp_test.go`) runs scripted sessions from `compiler/testdata/lsp/<case>/` against the stage 1 binary and compares the framed output: lifecycle, an error appearing and disappearing on change, a two-module package, formatting, UTF-16 columns on a line with non-ASCII text, a malformed message. `NARRA_UPDATE=1` rewrites the expected output.
+- [ ] `TestSelfhostLsp` (`compiler/internal/narra/selfhost_lsp_test.go`) runs scripted sessions from `testdata/lsp/<case>/` against the stage 1 binary and compares the framed output: lifecycle, an error appearing and disappearing on change, a two-module package, formatting, UTF-16 columns on a line with non-ASCII text, a malformed message. `NARRA_UPDATE=1` rewrites the expected output.
 - [ ] SPEC section 14 and `compiler/README.md` describe `narrac lsp` and the supported requests.
 - [ ] Fast check passes, including `TestSelfhostBootstrap`.
 

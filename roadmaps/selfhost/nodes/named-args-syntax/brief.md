@@ -14,21 +14,17 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestParse|TestAstDump|TestSelfhost|TestFmt'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/parse/named_args*
-  - compiler/testdata/fmt/named_args*
+  - testdata/parse/named_args*
+  - testdata/fmt/named_args*
   - roadmaps/selfhost/nodes/named-args-syntax/**
 shared:
-  - compiler/internal/narra/ast.go
-  - compiler/internal/narra/parser.go
-  - compiler/internal/narra/clone.go
-  - compiler/internal/narra/astdump.go
   - selfhost/src/ast.nra
   - selfhost/src/parser.nra
   - selfhost/src/astdump.nra
@@ -39,6 +35,8 @@ depends_on: []
 ---
 
 # Parse named arguments
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

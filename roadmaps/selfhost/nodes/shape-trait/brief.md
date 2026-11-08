@@ -14,23 +14,20 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestStage2|TestStdSources|TestSelfhostBootstrap'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-07
 spent:
 owns:
-  - compiler/testdata/stage2/shape*
-  - compiler/testdata/stage2/errors/shape_*
+  - testdata/stage2/shape*
+  - testdata/stage2/errors/shape_*
   - roadmaps/selfhost/nodes/shape-trait/**
 shared:
   - std/src/shape.nra
   - std/src/json.nra
-  - compiler/internal/narra/std_sources.go
   - selfhost/src/stdtext.nra
-  - compiler/internal/narra/check_traits.go
-  - compiler/internal/narra/diagnostic_codes.go
   - selfhost/src/traits.nra
   - selfhost/src/emittraits.nra
   - selfhost/src/generics.nra
@@ -50,6 +47,8 @@ depends_on:
 ---
 
 # The Shape trait, Json.encode and Json.decode
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 
@@ -72,7 +71,7 @@ const user = Json.decode<User>(text)
 ## Context
 
 - Read `nodes/std-json/outcome.md` and `nodes/call-type-args/outcome.md` first.
-- The prelude impls exist in the self-hosted compiler only. The Go compiler loads `std/shape` and `std/json` (`selfhost/src` imports `std/json`), so both modules must still check under Go: Go needs only the trait declaration and the generic bodies, never an instance. Samples that call `encode` or `decode` go in `compiler/testdata/stage2/` (README "Tests").
+- The prelude impls exist in the self-hosted compiler only. The Go compiler loads `std/shape` and `std/json` (`selfhost/src` imports `std/json`), so both modules must still check under Go: Go needs only the trait declaration and the generic bodies, never an instance. Samples that call `encode` or `decode` go in `testdata/stage2/` (README "Tests").
 - Go's `check_traits.go` has a special case for `derives Shape` ("not supported by this compiler yet"). A source trait named `Shape` must not clash with it.
 
 ## Acceptance

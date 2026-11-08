@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestPrograms|TestCompileErrors|TestStdSources|TestSelfhostBuiltins|TestSelfhostEmit'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: true
@@ -23,16 +23,12 @@ spent:
 owns:
   - std/src/json.nra
   - std/src/shape.nra
-  - compiler/testdata/json*
-  - compiler/testdata/errors/json_*
+  - testdata/json*
+  - testdata/errors/json_*
   - roadmaps/selfhost/nodes/std-json/**
 shared:
-  - compiler/internal/narra/std_sources.go
+  - selfhost/runtime/**
   - selfhost/src/stdtext.nra
-  - compiler/internal/narra/builtins.go
-  - compiler/internal/narra/std_internal.go
-  - compiler/internal/narra/runtime.h
-  - compiler/internal/narra/modules.go
   - selfhost/src/modules.nra
   - selfhost/src/modules.nra
   - selfhost/src/stdtext.nra
@@ -51,6 +47,8 @@ depends_on:
 
 # std/json parse and stringify over a dynamic Value
 
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+
 ## Goal
 
 Two std source modules. `std/shape` declares `Value`, a dynamic tree for structured data. `std/json` reads and writes JSON text as a `Value`. Typed `Json.encode`/`Json.decode` and `derives Shape` come later (nodes shape-trait and shape-derive). The language service (`language-service`) uses this module for JSON-RPC.
@@ -58,7 +56,7 @@ Two std source modules. `std/shape` declares `Value`, a dynamic tree for structu
 ## Context
 
 - Pattern: `std/src/option.nra` and `nodes/std-source/outcome.md` (registering a source module, `NARRA_UPDATE=1 go test -run TestStdSources`), `nodes/std-foundation/outcome.md` (`std/internal/` primitives).
-- Both compilers load these two modules: the language service imports `std/json` from `selfhost/src`, so the Go compiler must build them (README "Tests", decision 2026-11-05 option b). Write them in today's language and put their samples in `compiler/testdata/`, not `testdata/stage2/`.
+- Both compilers load these two modules: the language service imports `std/json` from `selfhost/src`, so the Go compiler must build them (README "Tests", decision 2026-11-05 option b). Write them in today's language and put their samples in `testdata/`, not `testdata/stage2/`.
 - `std/json` importing `std/shape` is the first std source module that imports another. Sort std source modules with `orderModules` in single-file packages too (`compiler/internal/narra/modules.go`, `selfhost/src/modules.nra`); today they skip it (deferred from std-foundation).
 
 ## API
@@ -86,7 +84,7 @@ export function stringify(value: Value): string uses alloc
 
 ## Acceptance
 
-- [ ] Samples `compiler/testdata/json*.nra` with `.out`, clean under ASan and the leak check: round trips of every `Value` form; escapes and surrogate pairs; `Int` versus `Float` (`1`, `1.0`, `1e2`, `9223372036854775808`); float text that reads back exactly (`0.1`, `1e-300`, `5e-324`); a JSON-RPC request picked apart with `match`; error messages with positions for truncated input, a trailing comma, a bad escape, a lone surrogate and nesting over 512.
+- [ ] Samples `testdata/json*.nra` with `.out`, clean under ASan and the leak check: round trips of every `Value` form; escapes and surrogate pairs; `Int` versus `Float` (`1`, `1.0`, `1e2`, `9223372036854775808`); float text that reads back exactly (`0.1`, `1e-300`, `5e-324`); a JSON-RPC request picked apart with `match`; error messages with positions for truncated input, a trailing comma, a bad escape, a lone surrogate and nesting over 512.
 - [ ] The same samples emit identical C in both compilers (`TestSelfhostEmit`), and the bootstrap passes.
 - [ ] SPEC.md "Standard modules" names `std/shape` and `std/json` and shows the API; section 4 "Serialization with `Shape`" says encode and decode are planned. `compiler/README.md` "Supported" lists them.
 - [ ] DECISIONS.md D83 records the design below.

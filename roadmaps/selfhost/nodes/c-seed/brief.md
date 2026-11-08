@@ -1,7 +1,7 @@
 ---
 id: c-seed
 title: Bootstrap from a checked-in C seed and retire the Go compiler
-status: active
+status: done
 priority: must
 type: story
 story:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 193594
 owns: []
 shared: []
 reserves: []

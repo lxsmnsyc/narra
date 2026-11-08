@@ -14,25 +14,18 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestPrograms|TestCompileErrors|TestSelfhost'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-04
 spent:
 owns:
-  - compiler/testdata/sized_int*
-  - compiler/testdata/errors/sized_int_*
+  - testdata/sized_int*
+  - testdata/errors/sized_int_*
   - roadmaps/selfhost/nodes/sized-numbers/**
 shared:
-  - compiler/internal/narra/types.go
-  - compiler/internal/narra/check_types.go
-  - compiler/internal/narra/check_expr.go
-  - compiler/internal/narra/check_traits.go
-  - compiler/internal/narra/emit_expr.go
-  - compiler/internal/narra/emit_types.go
-  - compiler/internal/narra/runtime.h
-  - compiler/internal/narra/diagnostic_codes.go
+  - selfhost/runtime/**
   - selfhost/src/types.nra
   - selfhost/src/resolve.nra
   - selfhost/src/literals.nra
@@ -52,6 +45,8 @@ depends_on:
 ---
 
 # Sized integer types i8 to u64
+
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
 
 ## Goal
 

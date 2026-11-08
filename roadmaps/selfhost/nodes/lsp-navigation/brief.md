@@ -14,7 +14,7 @@ from:
 size: M
 spike: false
 hypothesis:
-verify: cd compiler && go test -count=1 ./internal/narra -run 'TestSelfhostLsp|TestSelfhostQuery'
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
@@ -22,12 +22,11 @@ added: 2026-11-07
 spent:
 owns:
   - selfhost/src/lspnavigation.nra
-  - compiler/testdata/lsp/nav_*/**
+  - testdata/lsp/nav_*/**
   - roadmaps/selfhost/nodes/lsp-navigation/**
 shared:
   - selfhost/src/lsp.nra
   - selfhost/src/query.nra
-  - compiler/internal/narra/selfhost_lsp_test.go
   - compiler/README.md
 reserves: []
 provides: []
@@ -55,7 +54,7 @@ depends_on:
 - [ ] References lists uses of functions, constants and constructors across the package, honouring `includeDeclaration`. Other kinds return an empty list (query-cli limit).
 - [ ] Document symbols list the module's declarations with their kind and range, and enum constructors and struct fields as children.
 - [ ] Positions use the encoding negotiated by language-service. Answers reflect unsaved edits.
-- [ ] Scripted sessions in `compiler/testdata/lsp/nav_*/` cover each request, a cross-module definition, a request on a stale document after a change, and a position inside a template string (whole template, as in `query`).
+- [ ] Scripted sessions in `testdata/lsp/nav_*/` cover each request, a cross-module definition, a request on a stale document after a change, and a position inside a template string (whole template, as in `query`).
 - [ ] Fast check passes.
 
 ## Sizing

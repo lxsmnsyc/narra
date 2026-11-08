@@ -30,6 +30,8 @@ depends_on:
 
 # Math, time, random and hashing
 
+> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+
 ## Goal
 
 `std/math` (abs, min, max, clamp, pow, sqrt and the float functions in C's math.h), `std/time` (monotonic clock, wall clock, durations, sleep), `std/random` (a seeded generator and a system-seeded one) and `std/hash` (the existing `Hash.of`, plus a stable hash for files). Also `Ranges.stepped`, which `SPEC.md` documents but no module registers (inbox, 2026-10-30).

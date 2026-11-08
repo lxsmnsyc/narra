@@ -79,6 +79,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Function types** are written like arrow functions: `(item: T) => U`.
 - **Parameters are constant.** A parameter cannot be reassigned, and its contents cannot be changed unless it is declared `mutable` (section 6). A `mutable` parameter still cannot be reassigned.
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
+- **Arguments are evaluated left to right**, in the order they are written. An argument that is a block expression, a `match` or a closure call can assign a `let` that an earlier argument reads; the earlier argument keeps the value it had when it was evaluated. After `show(items, { items = ["z"]; return 0 })`, `show` received the original `items`.
 - **No currying and no partial application.** To fix some arguments, write an arrow function.
 - **No method calls.** `xs.push(v)` is not valid. Write `Arrays.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
 - **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.

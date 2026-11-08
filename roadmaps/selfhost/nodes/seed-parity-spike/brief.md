@@ -1,7 +1,7 @@
 ---
 id: seed-parity-spike
 title: Measure what only the Go compiler and Go tests cover
-status: active
+status: done
 priority:
 type: spike
 story: c-seed
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-08
-spent:
+spent: 185565
 owns:
   - roadmaps/selfhost/nodes/seed-parity-spike/**
 shared: []
@@ -55,3 +55,5 @@ M: reading 34 test files and running about 300 error samples through stage 2, no
 
 - Do not fix anything. Mismatches are input for checker-parity.
 - A small throwaway script in the node folder to diff diagnostics is fine.
+
+Landed on feat/c-seed as 3f7bf9f.

@@ -92,11 +92,9 @@ function isParenthesized(printer: Printer, id: int): bool {
   return printer.trivia.parenthesized[id] is Some(_)
 }
 
-// dropsParentheses tells written parentheses that the printer leaves out when
-// they hold a comment, so the comment sits with the expression as in oxfmt: a
-// pair is redundant until printWithMinimum finds that precedence needs it. A
-// conditional keeps its pair, which printConditional prints.
 function dropsParentheses(printer: Printer, expression: Expr): bool uses alloc {
+  // A conditional keeps its pair, which printConditional prints. For any other expression, the pair
+  // is redundant until printWithMinimum finds that precedence needs it.
   return !isConditional(expression) && hasCommentInParens(printer, expression)
 }
 
@@ -104,7 +102,6 @@ function hasAttached(printer: Printer, anchor: string): bool {
   return printer.trivia.attached[anchor] is Some(_)
 }
 
-// getOffset is the byte offset of a position (columns count characters).
 function getOffset(source: string, position: Pos): int {
   const length = Str.length(source)
   let offset = 0
@@ -138,20 +135,18 @@ function getBinaryPrecedence(operator: string): int {
   return 1
 }
 
-// isConditional tells `c ? a : b` from a plain block and an `if` value: the
-// parser starts its block at the `?` and the expression at the condition.
 function isConditional(expression: Expr): bool {
   if (expression is Expr.BlockExpr(_, pos, block)) {
+    // The parser starts the block of `c ? a : b` at the `?` and the expression at the condition.
     return block.pos.line != pos.line || block.pos.column != pos.column
   }
   return false
 }
 
-// isIfValue tells an `if` in value position: its block holds one IfStmt that
-// starts where the expression does.
 function isIfValue(expression: Expr): bool {
   if (expression is Expr.BlockExpr(_, pos, block)) {
     if (Arrays.length(block.statements) == 1 && !isConditional(expression)) {
+      // An `if` in value position has one IfStmt that starts where the expression does.
       if (block.statements[0] is Stmt.IfStmt(ifPos, _, _, _)) {
         return ifPos.line == pos.line && ifPos.column == pos.column
       }
@@ -171,11 +166,11 @@ function getPrecedence(expression: Expr): int {
   }
 }
 
-// printWithMinimum prints an operand, in parentheses when its precedence is
-// lower than the position needs and the author did not write them.
 function printWithMinimum(printer: Printer, expression: Expr, minimum: int): Document uses alloc {
   const document = printExpression(printer, expression)
   const dropped = dropsParentheses(printer, expression)
+  // Wrap in parentheses when precedence is lower than the position needs and the author did not
+  // write them.
   if (
     getPrecedence(expression) < minimum &&
       (!isParenthesized(printer, getExprId(expression)) || dropped)
@@ -197,7 +192,6 @@ function printWithMinimum(printer: Printer, expression: Expr, minimum: int): Doc
   return document
 }
 
-// getReturnedValue is the value of the `return value` that a branch holds.
 function getReturnedValue(block: Block): Expr {
   if (block.statements[0] is Stmt.ReturnStmt(_, Some(value))) {
     return value
@@ -205,10 +199,10 @@ function getReturnedValue(block: Block): Expr {
   return Expr.BoolLit(-1, block.pos, false)
 }
 
-// printElement prints an item of a call, array or tuple. Those sit inside
-// brackets, where a conditional may span lines without parentheses.
 function printElement(printer: Printer, expression: Expr): Document uses alloc {
   if (expression is Expr.BlockExpr(id, _, block)) {
+    // Items of a call, array or tuple sit inside brackets, where a conditional may span lines
+    // without parentheses.
     if (isConditional(expression) && !isParenthesized(printer, id)) {
       return withComments(printer, getIdKey(id), printConditional(printer, block, false, true))
     }
@@ -216,8 +210,6 @@ function printElement(printer: Printer, expression: Expr): Document uses alloc {
   return printExpression(printer, expression)
 }
 
-// endsWithUses tells a type whose text ends in a `uses` list. A comma after it
-// would read as one more effect name, so a broken list leaves it out.
 export function endsWithUses(type: TypeExpr): bool {
   // A function type or a `Generator<T> uses E` carries the list.
   if (Arrays.length(type.effects) > 0) {
@@ -232,10 +224,6 @@ export function endsWithUses(type: TypeExpr): bool {
   return false
 }
 
-// printList prints items between open and close: on one line when they fit,
-// else one per line with a trailing comma. blanks says which items have a
-// blank line before them (empty for none); that keeps the list broken.
-// spaced puts a space inside the braces of a flat list.
 function printList(
   printer: Printer,
   open: string,
@@ -248,7 +236,6 @@ function printList(
   return printListWith(printer, open, close, items, blanks, spaced, hasComma, false)
 }
 
-// printListWith is printList; forceBreak keeps the list broken.
 function printListWith(
   printer: Printer,
   open: string,
@@ -262,6 +249,7 @@ function printListWith(
   if (Arrays.length(items) == 0) {
     return createText(`${open}${close}`)
   }
+  // A flat list gets a space inside the braces when spaced is set.
   let edge = Document.SoftLine
   if (spaced) {
     edge = Document.Line
@@ -272,6 +260,7 @@ function printListWith(
     if (index > 0) {
       Arrays.push(mutable inner, createText(","))
       Arrays.push(mutable inner, Document.Line)
+      // A blank line before an item keeps the list broken.
       if (index < Arrays.length(blanks) && blanks[index]) {
         Arrays.push(mutable inner, Document.SoftLine)
         forced = true
@@ -291,13 +280,12 @@ function printListWith(
   return createGroup(createConcat(parts))
 }
 
-// printTypeArguments prints `<A, B>`. It never breaks: a line break before the
-// closing `>` would end the statement, and Narra reads a break only inside
-// parentheses and brackets.
 function printTypeArguments(printer: Printer, typeArguments: Array<TypeExpr>): Document uses alloc {
   if (Arrays.length(typeArguments) == 0) {
     return createEmpty()
   }
+  // Never breaks: a line break before the closing `>` would end the statement, and Narra reads a
+  // break only inside parentheses and brackets.
   let parts: Array<Document> = [createText("<")]
   for (const index of Ranges.between(0, Arrays.length(typeArguments))) {
     if (index > 0) {
@@ -309,8 +297,6 @@ function printTypeArguments(printer: Printer, typeArguments: Array<TypeExpr>): D
   return createConcat(parts)
 }
 
-// printEmptyBraces prints `{}` or, when a comment is inside, the comment
-// between the braces on its own line.
 function printEmptyBraces(
   printer: Printer,
   anchor: string,
@@ -346,11 +332,9 @@ export function printExpression(printer: Printer, expression: Expr): Document us
   return withComments(printer, getIdKey(id), document)
 }
 
-// printKeptParentheses prints an expression in the parentheses it was written
-// in, with its comments inside them. A conditional keeps its parentheses, and
-// so does an operand of a conditional: dropping them would leave a comment
-// after `?` or `:`, which attaches elsewhere when formatted again.
 function printKeptParentheses(printer: Printer, expression: Expr): Document uses alloc {
+  // A conditional keeps its parentheses, and so does an operand of a conditional: dropping them
+  // would leave a comment after `?` or `:`, which attaches elsewhere when formatted again.
   let body = printExpressionBody(printer, expression, true)
   if (expression is Expr.BlockExpr(_, _, block)) {
     if (isConditional(expression)) {
@@ -360,7 +344,6 @@ function printKeptParentheses(printer: Printer, expression: Expr): Document uses
   return printBracketed("(", withComments(printer, getIdKey(getExprId(expression)), body), ")")
 }
 
-// printOperand prints a branch or condition of a conditional.
 function printOperand(printer: Printer, expression: Expr): Document uses alloc {
   if (isParenthesized(printer, getExprId(expression)) && hasCommentInParens(printer, expression)) {
     return printKeptParentheses(printer, expression)
@@ -429,8 +412,6 @@ function printExpressionBody(
   }
 }
 
-// getLiteralText is the source text between two positions, or fallback when
-// the positions do not lie in the source.
 function getLiteralText(
   printer: Printer,
   start: Pos,
@@ -443,7 +424,6 @@ function getLiteralText(
   return getSourceText(printer, start, end)
 }
 
-// getEndedText is the source text of a node that ends where Trivia.ends says.
 function getEndedText(printer: Printer, id: int, start: Pos, fallback: string): string uses alloc {
   const end = printer.trivia.ends[getIdKey(id)]
   if (end is Some(endPos)) {
@@ -456,11 +436,9 @@ function getEndedText(printer: Printer, id: int, start: Pos, fallback: string): 
   return fallback
 }
 
-// cutClosingParens drops the `)` of grouping parentheses, and any comments
-// before them, from the text of a parenthesized literal: Trivia.ends of a
-// parenthesized expression includes its parentheses. The text ends after the
-// last token that is not `)`.
 function cutClosingParens(text: string, fallback: string): string uses alloc {
+  // Trivia.ends of a parenthesized expression includes its parentheses; the text ends after the
+  // last token that is not `)`.
   const lexed = lex(text)
   if (lexed is Err(_)) {
     return fallback
@@ -479,25 +457,23 @@ function cutClosingParens(text: string, fallback: string): string uses alloc {
   return fallback
 }
 
-// printIndex prints `[index]`. A comment on the index keeps it inside the
-// brackets, which then break; without one the brackets are plain text.
 function printIndex(printer: Printer, index: Expr): Document uses alloc {
   const key = getIdKey(getExprId(index))
+  // A comment on the index keeps it inside the brackets, which then break; without one the brackets
+  // are plain text.
   if (hasLeading(printer, key) || hasTrailing(printer, key)) {
     return printBracketed("[", printElement(printer, index), "]")
   }
   return createConcat([createText("["), printElement(printer, index), createText("]")])
 }
 
-// printIs prints `subject is pattern`. A line comment after the subject cannot
-// stay there, as a line break before `is` would end the statement, and a block
-// comment there would move behind `is` when formatted again. They go
-// after `is` and the pattern moves to the next line, which Narra reads (`is`
-// ends a line like an operator) and which formats to the same text again. A
-// comment on the lines before the pattern gets the same layout.
 function printIs(printer: Printer, subject: Expr, pattern: Pattern): Document uses alloc {
   const hoisted = hoistTrailingComments(printer, getIdKey(getExprId(subject)))
   const left = printWithMinimum(hoisted.printer, subject, IS_PRECEDENCE)
+  // A line comment after the subject cannot stay there, as a line break before `is` would end the
+  // statement, and a block comment there would move behind `is` when formatted again. They go after
+  // `is` and the pattern moves to the next line, which Narra reads (`is` ends a line like an
+  // operator). A comment on the lines before the pattern gets the same layout.
   if (hoisted.count == 0 && !hasLeading(printer, getIdKey(getPatternId(pattern)))) {
     return createConcat([left, createText(" is "), printPattern(printer, pattern)])
   }
@@ -512,8 +488,8 @@ function printIs(printer: Printer, subject: Expr, pattern: Pattern): Document us
   return createGroup(createConcat(parts))
 }
 
-// printUnary prints `-x`. Two minus signs get a space, so `- -x` stays two tokens.
 function printUnary(printer: Printer, operator: string, operand: Expr): Document uses alloc {
+  // Two minus signs get a space, so `- -x` stays two tokens.
   let separator = ""
   if (operand is Expr.UnaryExpr(operandId, _, operandOperator, _)) {
     if (
@@ -537,21 +513,17 @@ function printUnary(printer: Printer, operator: string, operand: Expr): Document
   ])
 }
 
-// printBinary prints a chain of binary operators of one precedence. A broken
-// chain breaks after each operator and indents the rest. The chain is walked
-// along the left operands in a loop, so a long chain does not recurse.
 function printBinary(printer: Printer, expression: Expr): Document uses alloc {
   return printBinaryChain(printer, expression, true)
 }
 
-// printBinaryChain is printBinary; indentRest false leaves the operands after
-// the first at the indentation of the caller, for a chain that is already
-// indented, such as an arrow function body.
 function printBinaryChain(
   printer: Printer,
   expression: Expr,
   indentRest: bool,
 ): Document uses alloc {
+  // A broken chain breaks after each operator and indents the rest. The chain is walked along the
+  // left operands in a loop, so a long chain does not recurse.
   let operators: Array<string> = []
   let rights: Array<Expr> = []
   let first = expression
@@ -580,6 +552,8 @@ function printBinaryChain(
       }
     }
   }
+  // indentRest false leaves the operands after the first at the indentation of the caller, for a
+  // chain that is already indented, such as an arrow function body.
   let rest: Array<Document> = []
   let index = Arrays.length(operators) - 1
   while (index >= 0) {
@@ -599,9 +573,9 @@ function printBinaryChain(
   )
 }
 
-// isHuggable tells the last argument that stays on the line of the call and
-// opens its own lines: an arrow function or a non-empty literal.
 function isHuggable(expression: Expr): bool {
+  // The last argument that stays on the line of the call and opens its own lines: an arrow function
+  // or a non-empty literal.
   return match (expression) {
     Expr.ArrowExpr(_, _, _, _, body, _) => isCompactArrowBody(body)
     Expr.StructLit(_, _, _, _, fields, spread) => Arrays.length(fields) > 0 || spread is Some(_)
@@ -611,8 +585,6 @@ function isHuggable(expression: Expr): bool {
   }
 }
 
-// isCompactArrowBody tells an arrow function that is worth hugging: a block
-// body (None) or a compact expression body.
 function isCompactArrowBody(body: Option<Expr>): bool {
   if (body is Some(bodyExpression)) {
     return isCompactBody(bodyExpression)
@@ -620,10 +592,8 @@ function isCompactArrowBody(body: Option<Expr>): bool {
   return true
 }
 
-// getFlatWidth is the width of a document printed on one line, or more than
-// limit when it is wider or holds a hard line. It stops as soon as limit is
-// passed, so it does not walk a large document.
 function getFlatWidth(document: Document, limit: int): int {
+  // A hard line is wider than limit, so a document that holds one never fits.
   return match (document) {
     Document.Text(value) => Str.charCount(value)
     Document.Concat(parts) => getPartsWidth(parts, limit)
@@ -649,9 +619,6 @@ function getPartsWidth(parts: Array<Document>, limit: int): int {
   return width
 }
 
-// printArguments prints a call's `(a, b)`. When the last argument is huggable
-// and the one before it is not, the arguments stay on the line of the call and
-// only the last one breaks, as in `f(a, (x) => { ... })`.
 function printArguments(printer: Printer, arguments: Array<Arg>): Document uses alloc {
   const count = Arrays.length(arguments)
   if (count == 0) {
@@ -668,6 +635,8 @@ function printArguments(printer: Printer, arguments: Array<Arg>): Document uses 
     }
     Arrays.push(mutable items, value)
   }
+  // When the last argument is huggable and the one before it is not, the arguments stay on the line
+  // of the call and only the last one breaks, as in `f(a, (x) => { ... })`.
   const last = arguments[count - 1].value
   let hug = isHuggable(last)
   if (hug && count > 1 && isHuggable(arguments[count - 2].value)) {
@@ -714,10 +683,6 @@ function printBlockExpression(
   return printer.printBlock(printer, block)
 }
 
-// printConditional prints `c ? a : b`. A chain of conditionals in the else
-// branch stays at one level: `a ? b : c ? d : e`. Narra does not read a
-// conditional that spans lines unless it is in parentheses, so a broken one
-// gets them (written says that they are already there).
 function printConditional(
   printer: Printer,
   block: Block,
@@ -757,6 +722,9 @@ function printConditional(
       }
     }
   }
+  // A chain of conditionals in the else branch stays at one level: `a ? b : c ? d : e`. Narra does
+  // not read a conditional that spans lines unless it is in parentheses, so a broken one gets them
+  // (written says that they are already there).
   // The first condition leads, then the rest is indented.
   const head = parts[0]
   let tail: Array<Document> = []
@@ -790,7 +758,6 @@ function printConditionOperand(printer: Printer, condition: Expr): Document uses
   return printWithMinimum(printer, condition, 1)
 }
 
-// printIfValue prints `if (c) { ... } else { ... }`, following `else if`.
 function printIfValue(printer: Printer, block: Block): Document uses alloc {
   let parts: Array<Document> = []
   let current = block
@@ -822,7 +789,6 @@ function printIfValue(printer: Printer, block: Block): Document uses alloc {
   return createConcat(parts)
 }
 
-// printBranch prints the block of an `if` value branch.
 function printBranch(printer: Printer, branch: Expr): Document uses alloc {
   if (branch is Expr.BlockExpr(_, _, inner)) {
     return printer.printBlock(printer, inner)
@@ -905,7 +871,6 @@ function printStructLiteral(
   return createConcat(head)
 }
 
-// getLiteralPos is the position of a literal map key.
 function getLiteralPos(expression: Expr): Pos {
   return match (expression) {
     Expr.IntLit(_, pos, _) => pos
@@ -918,8 +883,6 @@ function getLiteralPos(expression: Expr): Pos {
   }
 }
 
-// isBracketed tells a literal map key that was written as `[key]`: the first
-// character before it, past spaces, is a `[`.
 function isBracketed(printer: Printer, expression: Expr): bool {
   const pos = getLiteralPos(expression)
   if (pos.line == 0) {
@@ -981,8 +944,6 @@ function printMapLiteral(
   return createConcat(head)
 }
 
-// isCompactBody tells an arm or arrow body that stays on the line of its `=>`
-// and opens its own lines.
 function isCompactBody(expression: Expr): bool {
   return match (expression) {
     Expr.StructLit(_, _, _, _, _, _) => true
@@ -997,8 +958,6 @@ function isCompactBody(expression: Expr): bool {
   }
 }
 
-// printBody prints ` body` after an `=>`: on the same line for a compact body,
-// else on the next line, indented, when it does not fit.
 function printBody(printer: Printer, body: Expr): Document uses alloc {
   // A comment on the lines before the body moves it below the `=>`.
   const isLed = hasLeading(printer, getIdKey(getExprId(body))) && !isConditional(body)
@@ -1184,8 +1143,6 @@ function printConstructorPattern(
   return createConcat([createText(fullName), printPatternList(printer, "(", ")", arguments)])
 }
 
-// printStructPattern prints `{ a, b: pattern }`. A field is shorthand when its
-// pattern is a name the parser made at the field's own position.
 function printStructPattern(
   printer: Printer,
   id: int,
@@ -1198,6 +1155,7 @@ function printStructPattern(
   let blanks: Array<bool> = []
   for (const field of Arrays.values(fields)) {
     const key = getPosKey("f", field.pos)
+    // A field is shorthand when its pattern is a name the parser made at the field's own position.
     let isShorthand = false
     if (field.pattern is Pattern.PatName(_, namePos, _)) {
       isShorthand = namePos.line == field.pos.line && namePos.column == field.pos.column
@@ -1241,7 +1199,6 @@ function printTypeBody(printer: Printer, type: TypeExpr): Document uses alloc {
   return createConcat(parts)
 }
 
-// printFunctionType prints `(a: A, B) => R uses e`.
 function printFunctionType(printer: Printer, type: TypeExpr): Document uses alloc {
   const names = getParameterNames(printer, type)
   let items: Array<Document> = []
@@ -1270,11 +1227,10 @@ function printFunctionType(printer: Printer, type: TypeExpr): Document uses allo
   return createConcat(parts)
 }
 
-// getParameterNames reads the parameter names of a function type from its
-// source text, because the syntax tree does not keep them. An unnamed
-// parameter gives an empty string.
 function getParameterNames(printer: Printer, type: TypeExpr): Array<string> uses alloc {
   let names: Array<string> = []
+  // The syntax tree does not keep the parameter names, so read them from the source text. An
+  // unnamed parameter gives an empty string.
   const end = printer.trivia.ends[getPosKey("t", type.pos)]
   let source = ""
   if (end is Some(endPos)) {

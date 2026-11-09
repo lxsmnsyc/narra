@@ -36,14 +36,10 @@ export struct Package {
   single: bool // loaded from one .nra file, without narra.toml
 }
 
-// A load error that is not a diagnostic (an unreadable file).
 function plain(message: string): Array<LoadError> {
   return [LoadError { code: "", file: "", line: 0, column: 0, message: message }]
 }
 
-// load reads a package directory, or a single .nra file as a package with
-// one module and one binary whose entry is `run`. Errors are the diagnostics
-// of the load, in report order.
 export function load(path: string): Result<Package, Array<LoadError>> uses io, alloc {
   return loadWith(path, Map {})
 }
@@ -71,37 +67,33 @@ export function createParseCache(): ParseCache uses alloc {
   return ParseCache { sources: Map {}, nextId: 0 }
 }
 
-// loadWith is load with overriding sources: a source file whose path (as
-// read from disk, `DIR/src/text.nra` or the single file's own path) is a key
-// of overrides is taken from the map instead. narrac lsp passes the text of
-// the documents the editor holds.
 export function loadWith(
   path: string,
   overrides: Map<string, string>,
 ): Result<Package, Array<LoadError>> uses io, alloc {
+  // A source file whose path (as read from disk, `DIR/src/text.nra` or the single file's own path)
+  // is a key of overrides is taken from the map instead; narrac lsp passes the text of the
+  // documents the editor holds.
   let cache = createParseCache()
   return loadCached(path, overrides, mutable cache)
 }
 
-// loadCached is loadWith that takes unchanged sources from cache and adds the
-// sources it parses to it.
 export function loadCached(
   path: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
 ): Result<Package, Array<LoadError>> uses io, alloc {
+  // Unchanged sources come from cache, and the sources parsed here are added to it.
   if (Fs.listDir(path) is Ok(_)) {
     return loadPackage(path, overrides, mutable cache)
   }
   if (!Fs.exists(path) && overrides[path] is None) {
     return Err(plain(`stat ${path}: no such file or directory`))
   }
+  // A single .nra file loads as a package with one module and one binary whose entry is `run`.
   return loadFile(path, overrides, mutable cache)
 }
 
-// parseSource parses a source, with the shape derives when derive is set, or
-// takes it from cache when its text is unchanged. A syntax error is a load
-// error of file.
 function parseSource(
   mutable cache: ParseCache,
   key: string,
@@ -109,6 +101,7 @@ function parseSource(
   file: string,
   derive: bool,
 ): Result<CachedSource, LoadError> uses alloc {
+  // An unchanged text is taken from cache.
   if (cache.sources[key] is Some(cached)) {
     if (cached.text == text) {
       return Ok(cached)
@@ -140,7 +133,6 @@ function parseSource(
   return Ok(source)
 }
 
-// readSource reads a source file, or takes its text from overrides.
 function readSource(
   path: string,
   overrides: Map<string, string>,
@@ -203,9 +195,6 @@ function loadFile(
   })
 }
 
-// loadPackage reads narra.toml and every file under src/, and orders the
-// modules so that each comes after the modules it imports. The files are
-// numbered in one id sequence, in sorted path order (not load order).
 function loadPackage(
   directory: string,
   overrides: Map<string, string>,
@@ -229,6 +218,7 @@ function loadPackage(
   if (Arrays.length(paths) == 0) {
     return Err(plain(`narra.toml: package ${config.name} has no .nra files in src/`))
   }
+  // The files are numbered in one id sequence, in sorted path order (not load order).
   sortStrings(mutable paths)
   let modules: Array<SourceModule> = []
   let errors: Array<LoadError> = []
@@ -288,8 +278,6 @@ function loadPackage(
   })
 }
 
-// collect adds the paths of the .nra files under a folder of root, as paths relative to root.
-// A name that cannot be listed is a file.
 function collect(root: string, relative: string, mutable out: Array<string>) uses io, alloc {
   let here = root
   if (relative != "") {
@@ -315,7 +303,6 @@ function collectEntry(root: string, relative: string, mutable out: Array<string>
   }
 }
 
-// sortStrings sorts by bytes (insertion sort; the lists are short).
 function sortStrings(mutable items: Array<string>) {
   for (const start of Ranges.between(1, Arrays.length(items))) {
     let index = start
@@ -359,8 +346,6 @@ function newModule(
   }
 }
 
-// exportedName gives the name of an exported function, const, struct, enum,
-// trait or distinct type, and "" for anything else.
 function exportedName(declaration: Decl): string {
   match (declaration) {
     Decl.Func(funcDecl) => {
@@ -406,8 +391,6 @@ struct StdLoad {
   seen: Map<string, bool>
 }
 
-// loadStdModules parses the std source modules that modules import,
-// directly or through another std source module, with ids from cache.
 function loadStdModules(
   modules: Array<SourceModule>,
   mutable cache: ParseCache,
@@ -419,8 +402,6 @@ function loadStdModules(
   return load
 }
 
-// addStdImports adds each std source module the file imports and not yet
-// loaded, then the ones that module imports.
 function addStdImports(mutable load: StdLoad, mutable cache: ParseCache, ast: File) uses alloc {
   for (const importDecl of Arrays.values(ast.imports)) {
     const text = stdSourceFor(importDecl.path)
@@ -456,9 +437,6 @@ struct Walk {
   errors: Array<LoadError>
 }
 
-// orderModules sorts modules so imports come first, and reports import
-// cycles. Imports of modules outside the package are skipped; the checker
-// reports unknown modules.
 function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
   let index: Map<string, int> = Map {}
   let state: Array<int> = []
@@ -468,6 +446,7 @@ function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
   }
   let walk = Walk { modules: modules, index: index, state: state, order: [], stack: [], errors: [] }
   for (const i of Ranges.between(0, Arrays.length(modules))) {
+    // Imports of modules outside the package are skipped; the checker reports unknown modules.
     if (walk.state[i] == 0) {
       visit(mutable walk, i)
     }
@@ -522,7 +501,6 @@ function popLast(items: Array<string>): Array<string> uses alloc {
   return out
 }
 
-// binary finds a binary by name. An empty name selects the only binary.
 export function binary(package: Package, name: string): Result<Binary, string> uses alloc {
   if (name != "") {
     for (const candidate of Arrays.values(package.binaries)) {
@@ -532,6 +510,7 @@ export function binary(package: Package, name: string): Result<Binary, string> u
     }
     return Err(`narra.toml: package ${package.name} has no binary ${quoteDump(name)}`)
   }
+  // An empty name selects the only binary.
   const count = Arrays.length(package.binaries)
   if (count == 0) {
     return Err(`narra.toml: package ${package.name} has no [[binary]]; it is a library`)
@@ -548,9 +527,6 @@ export function binary(package: Package, name: string): Result<Binary, string> u
   )
 }
 
-// entryModule resolves the module part of a binary's entry. It accepts the
-// contract form "cli.run" and the spec form "app/cli.run". The module is
-// returned as written when no module of the package matches.
 export function entryModule(package: Package, entry: string): #[string, string] uses alloc {
   let last = -1
   for (const index of Ranges.between(0, Str.length(entry))) {
@@ -561,6 +537,7 @@ export function entryModule(package: Package, entry: string): #[string, string] 
   if (last < 0) {
     return #["", entry]
   }
+  // Accepts the contract form "cli.run" and the spec form "app/cli.run".
   const modulePath = Str.slice(entry, 0, last)
   const functionName = Str.sliceFrom(entry, last + 1)
   for (const module of Arrays.values(package.modules)) {
@@ -568,17 +545,15 @@ export function entryModule(package: Package, entry: string): #[string, string] 
       return #[module.path, functionName]
     }
   }
+  // No module of the package matches: the module is returned as written.
   return #[modulePath, functionName]
 }
 
-// quoteDump quotes like the AST dump: escapes as in the lex dump, plus `"`.
 export function quoteDump(text: string): string uses alloc {
   const parts = Str.split(Lexer.escapeText(text), "\"")
   return `"${Str.join(parts, "\\\"")}"`
 }
 
-// errorText prints load errors as the Go dump does, one `error ...` line per
-// diagnostic, each ending with a newline.
 export function errorText(errors: Array<LoadError>): string uses alloc {
   let builder = Str.builder()
   for (const error of Arrays.values(errors)) {
@@ -605,7 +580,6 @@ function listLine(mutable builder: StringBuilder, name: string, items: Array<str
   Str.append(mutable builder, "\n")
 }
 
-// dump returns the package dump of pkgdump.go, ending with a newline.
 export function dump(package: Package): string uses alloc {
   let builder = Str.builder()
   Str.append(mutable builder, `package ${quoteDump(package.name)}\n`)
@@ -633,10 +607,9 @@ export function dump(package: Package): string uses alloc {
   return Str.build(builder)
 }
 
-// checkIds verifies the id sequence of a package: the id ranges of the files
-// are disjoint, together they cover [0, nextId) with no gap, and none passes
-// nextId. It returns "ids ok <nextId>" or a description of the problem.
 export function checkIds(package: Package): Result<string, string> uses alloc {
+  // The id ranges of the files must be disjoint, together cover [0, nextId) with no gap, and none
+  // may pass nextId.
   let total = 0
   const count = Arrays.length(package.modules)
   for (const first of Ranges.between(0, count)) {

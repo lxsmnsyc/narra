@@ -1160,6 +1160,18 @@ export function sqrt(x: f64): f64
 
 All query commands accept `--json`.
 
+### Language server
+
+`narra lsp` is a Language Server Protocol server on stdin and stdout. It works with any LSP client.
+
+- Messages use the LSP framing: a `Content-Length` header, other headers ignored, then the JSON body.
+- Lifecycle: `initialize`, `initialized`, `shutdown` and `exit`. `exit` ends the server with code 0 after `shutdown` and 1 before it. The end of the input without `exit` also ends it with code 1.
+- `initialize` answers full text sync, `documentFormattingProvider` and a `positionEncoding`. The encoding is `"utf-8"` when the client offers it, else `"utf-16"`.
+- A request before `initialize` gets error -32002, an unknown request -32601 and a message that cannot be read -32700. Unknown notifications are ignored.
+- `textDocument/didOpen`, `didChange` (the full text) and `didClose` keep the editor's text, which replaces the file on disk. After each open or change the server checks the package that holds the file (the nearest `narra.toml`; a file with none is checked alone). It then sends `textDocument/publishDiagnostics` for every module of the package, with an empty list for a module that has no problem. A diagnostic's range starts and ends at its position. Its `code` is the diagnostic code.
+- `didClose` checks the package again from the files on disk and empties the list of the closed document.
+- `textDocument/formatting` formats with the `[fmt]` table of the nearest `narra.toml`. It returns one edit that replaces the whole document, an empty list when the document is already formatted, or `null` when it does not parse.
+
 ### Speed target
 
 `narra check` on an unchanged package with one edited file returns in under 100 ms.

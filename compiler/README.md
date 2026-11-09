@@ -76,6 +76,19 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 - `selfhost/src/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
 - The `query` suite runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by `# exit N` when the exit code is not 0, the expected stdout, and `# stderr` with the expected stderr when there is any) against the package in that folder.
 
+## Language server
+
+`narrac lsp` (the self-hosted compiler) is the server of `SPEC.md` section 14. `selfhost/src/lsp.nra` has the framing, the lifecycle and the dispatch. `lspserver.nra` has the documents, the diagnostics and formatting. `lspserverjson.nra` reads fields of a `Value` and builds the messages. Messages are read and written with `std/json`.
+
+- Supported: `initialize`, `initialized`, `shutdown`, `exit`, `textDocument/didOpen`, `didChange` (full text only, `change: 1`), `didClose` and `textDocument/formatting`. The server sends `textDocument/publishDiagnostics`. Hover, definition, references and symbols are not supported yet: they get -32601.
+- Errors: -32002 before `initialize`, -32601 for an unknown request, -32700 for a body that is not JSON or a header block with no valid `Content-Length` (the server keeps running), -32600 for a message with no `method`, a second `initialize` or a request after `shutdown`, -32602 for a formatting request with no `textDocument.uri`, a URI that is not `file://` or a file that cannot be read.
+- Columns are converted from the compiler's characters to UTF-16 code units, or to UTF-8 bytes when the client offers `utf-8` in `general.positionEncodings`. Ranges are zero-width at the diagnostic's position. Every problem has severity 1 (error). A problem with no code gets `E0000`.
+- The open documents replace the files on disk through `Modules.loadWith(path, overrides)`. `Modules.load` is `loadWith` with an empty map. The whole package is rechecked on each open and change.
+- Diagnostics go to the package's modules, in package order. A load error goes to its file, or to the top of the changed document when it has no file. A document outside `src/` is not a module of the package, so it gets no diagnostics of its own. A document that had problems and is not mentioned in the next check gets an empty list.
+- `didClose` rechecks from disk and sends the closed document one empty list, after the lists of the other modules.
+- The server logs nothing. Stdout carries only protocol messages.
+- The `lsp` suite runs `testdata/lsp/<case>/session.txt`, a scripted session that the runner frames, and compares the server's output with `expected.txt`. The format is in the comment at the top of `selfhost/tests/src/lsp.nra`.
+
 ## Tests
 
 ```sh

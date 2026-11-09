@@ -7,7 +7,7 @@
 // field defaults (the last step of Go's declareModule), then its bodies.
 // After all modules come the pending generic function instances (queued by
 // calls.nra, checked by checkPending), the Map keys, the entry functions and
-// finish. Every checked body gets its own side tables (BodyInfo, D70).
+// finish. Every checked body gets its own side tables (BodyInfo).
 //
 // BodyWalker is the Walker (check.nra) that the modules below narrac/exprs
 // use to reach the expression and block checkers.
@@ -204,9 +204,6 @@ implement Walker for BodyWalker {
   }
 }
 
-// checkPackage runs every pass of `narra check` except the effect pass, as
-// Go's checkPackageBodies does, and lists the checked bodies in
-// Checker.bodies.
 export function checkPackage(package: Package): Checker uses alloc {
   return checkModules(package, Map {}).checker
 }
@@ -221,10 +218,6 @@ export struct ModulesCheck {
   queuedErrors: int
 }
 
-// checkModules is checkPackage that declares every module but checks the
-// field defaults and bodies only of the modules whose path is not a key of
-// skipped (narrac lsp reuses the results of the others). With skipped empty
-// it is checkPackage.
 export function checkModules(
   package: Package,
   skipped: Map<string, bool>,
@@ -245,6 +238,7 @@ export function checkModules(
     const beforeDefaults = Arrays.length(checker.errors)
     checkQueuedDefaults(mutable checker, walker)
     queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforeDefaults
+    // narrac lsp reuses the results of the modules in skipped; with it empty this is checkPackage.
     if (skipped[module.path] is None) {
       checkDefaults(mutable checker, walker, module.ast)
       checkModuleBodies(mutable checker, walker, module.ast)
@@ -280,9 +274,6 @@ export function checkModules(
   return ModulesCheck { checker: checker, unusedStart: unusedStart, queuedErrors: queuedErrors }
 }
 
-// checkQueuedDefaults checks the field defaults of the generic structs built
-// since the last call, in build order (Go checks them inside buildGeneric, a
-// little earlier).
 function checkQueuedDefaults(mutable checker: Checker, walker: BodyWalker) uses alloc {
   const generics = checker.pendingDefaults
   checker.pendingDefaults = []
@@ -291,9 +282,6 @@ function checkQueuedDefaults(mutable checker: Checker, walker: BodyWalker) uses 
   }
 }
 
-// checkDefaults checks the field defaults of the module's non-generic
-// structs, after every field type is known. checkQueuedDefaults has checked
-// those of the generic structs built meanwhile.
 function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
   const scope = checker.current
   for (const declaration of Arrays.values(file.declarations)) {
@@ -315,8 +303,6 @@ function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File)
   }
 }
 
-// checkGenericDefaults checks the defaults of a generic struct's template
-// in its own module, with the type parameters open.
 function checkGenericDefaults(
   mutable checker: Checker,
   walker: BodyWalker,
@@ -340,16 +326,14 @@ function checkGenericDefaults(
   enter(mutable checker, saved)
 }
 
-// qualifiedName is "<module>.<name>", or the name alone in the prelude. It is the
-// owner part of a "default|<owner>|<field>" body key.
 function qualifiedName(module: string, name: string): string uses alloc {
+  // The owner part of a "default|<owner>|<field>" body key.
   if (module == "") {
     return name
   }
   return `${module}.${name}`
 }
 
-// findStruct finds the struct declared as name at pos in scope, or -1.
 function findStruct(checker: Checker, scope: int, name: string, pos: Pos): int {
   // The scope's type table has it, unless the name is declared twice.
   if (checker.scopes[scope].types[name] is Some(Type.TStruct(found))) {
@@ -403,8 +387,6 @@ function checkFieldDefaults(
   }
 }
 
-// checkModuleBodies checks the function, constant, implement and test
-// bodies of the current module in declaration order.
 function checkModuleBodies(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
   for (const declaration of Arrays.values(file.declarations)) {
     match (declaration) {
@@ -424,8 +406,6 @@ function checkModuleBodies(mutable checker: Checker, walker: BodyWalker, file: F
   }
 }
 
-// findFunction finds the Checker.functions entry of a declaration in the
-// current scope, or -1.
 function findFunction(checker: Checker, funcDecl: FuncDecl): int {
   const scope = checker.current
   if (checker.scopes[scope].functions[funcDecl.name] is Some(index)) {
@@ -447,13 +427,12 @@ function findFunction(checker: Checker, funcDecl: FuncDecl): int {
   return -1
 }
 
-// checkFunction checks a function body. A generic one is checked once with
-// its type parameters left open, so errors point at the declaration.
 function checkFunction(
   mutable checker: Checker,
   walker: BodyWalker,
   funcDecl: FuncDecl,
 ) uses alloc {
+  // A generic function is checked once with its type parameters left open, so errors point at the declaration.
   const funcIndex = findFunction(checker, funcDecl)
   if (funcIndex < 0) {
     return
@@ -484,8 +463,6 @@ function checkFunction(
   )
 }
 
-// checkFunctionBody checks a function's body in a body of its own (Go's
-// funcBody): a plain function, an instance or an implement block function.
 function checkFunctionBody(
   mutable checker: Checker,
   walker: BodyWalker,
@@ -520,10 +497,8 @@ function checkFunctionBody(
   finishBody(mutable checker, saved)
 }
 
-// checkPending checks the instances of generic functions as they are
-// discovered, each in the module that declares the generic function (Go's
-// checkPending). Checking one can queue more.
 function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
+  // Checking one instance can queue more.
   while (checker.pendingNext < Arrays.length(checker.pending)) {
     const instanceIndex = checker.pending[checker.pendingNext]
     const instance = checker.instanceList[instanceIndex]
@@ -547,8 +522,6 @@ function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
   }
 }
 
-// declareParams makes each parameter a local of the body (Go's funcBody
-// and funcParam). paramTypes has the type of each parameter.
 function declareParams(
   mutable checker: Checker,
   parameters: Array<Param>,
@@ -583,7 +556,6 @@ function declareParams(
   }
 }
 
-// checkConstDecl checks a constant's value, unless a use already did.
 function checkConstDecl(
   mutable checker: Checker,
   walker: BodyWalker,
@@ -595,14 +567,12 @@ function checkConstDecl(
   Exprs.checkConstType(mutable checker, walker, index, constDecl.pos)
 }
 
-// checkImplBodies checks the functions of a checked implement block (Go's
-// implBodies), each in a body with Self set to the block's type. A block
-// that failed its checks is not in Checker.implementations and is skipped.
 function checkImplBodies(
   mutable checker: Checker,
   walker: BodyWalker,
   implDecl: ImplDecl,
 ) uses alloc {
+  // A block that failed its checks is not in Checker.implementations and is skipped.
   const scope = checker.current
   let block = -1
   for (const index of Ranges.between(0, Arrays.length(checker.implementations))) {
@@ -647,7 +617,6 @@ function checkImplBodies(
   }
 }
 
-// findImplIndex is the index of a function in Checker.implementations[block].functions, or -1.
 function findImplIndex(checker: Checker, block: int, funcDecl: FuncDecl): int {
   let index = 0
   for (const implFunc of Arrays.values(checker.implementations[block].functions)) {
@@ -659,14 +628,13 @@ function findImplIndex(checker: Checker, block: int, funcDecl: FuncDecl): int {
   return -1
 }
 
-// findImplResult is the result type of an implement block function: the
-// one resolveImpl recorded, or resolved again for a function it rejected.
 function findImplResult(
   mutable checker: Checker,
   block: int,
   funcDecl: FuncDecl,
   environment: Map<string, Type>,
 ): Type uses alloc {
+  // The result type is the one resolveImpl recorded, or resolved again for a function it rejected.
   for (const implFunc of Arrays.values(checker.implementations[block].functions)) {
     if (implFunc.declaration.pos == funcDecl.pos) {
       return implFunc.result

@@ -2,10 +2,10 @@
 goal: Replace copy-on-write value semantics for arrays and structs, which hide where copies happen and let TypeScript-valid code mean something different, with a model whose copies and shared mutation are visible in the source
 date: 2026-11-09
 rounds: 3 of 3
-status: proposed
+status: approved
 roadmap: roadmaps/selfhost
 supersedes: none
-decision: none
+decision: DECISIONS.md D94
 ---
 
 # Debate: visible copies and shared writes
@@ -31,6 +31,7 @@ Keep value semantics and TypeScript-style in-place writes (`a[0] = 9`, `u.age = 
      ```
 2. **`copy(x)`** (P11, P12). The one way to duplicate a value, at any depth. At the call it is a single retain; the checker treats the result as unshared, and copy-on-write then copies only the nodes on each written path, once each. `Arrays.copy`, `Maps.copy` and spread stop being copy tools.
 3. **The `from` result marker** (P8, P10, O13). Nothing is inferred across functions. A function whose result shares a parameter says so: `function mergeSort(items: Array<SortItem>): Array<SortItem> from items`. Returning a value that shares a parameter without `from` is an error, checked the way D46 checks `escaping`. About 30 to 50 functions in the compiler need it.
+   - Refinement after the debate (maintainer review): `from` is part of the function type, like effects (D86): `(grid: Grid) => Array<int> from grid`. A function with fresh results fits a slot with `from`; a function with `from` does not fit a slot without it (error with a fix that adds the marker). Open for the node: how a closure that returns a captured value states it, and generic results (`from items` covers the whole parameter).
 4. **The debug copy check** (P4 as kept by P11, P18, O18). Debug builds report every copy-on-write that no `copy(...)` explains, at exit like the leak check (D80). `copy(x)` grants a credit that lasts only while the sharing it created lasts, with debug-only hooks at every reference-count decrement. It covers heap objects; all-scalar structs rely on the compile-time rule, backed by error samples for each D2 form. Release builds are unchanged. It replaces the unbuilt `--report-copies`, `NARRA_TRACE_COPIES` and `@unique` (J3).
 5. **`Cell`** (P13). `Cells.modify` is not added. A value from `Cells.get` or `Cells.update`'s callback shares with the cell, so changing it needs a visible `copy`.
 

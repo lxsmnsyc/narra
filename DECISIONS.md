@@ -956,3 +956,19 @@ Decision (maintainer, 2026-11-09), amending D17 and reopening D88 for async bloc
 - **Open.** The exit code when tasks are still running after a failed entry function, and how loops on several threads share work (threads are parked).
 
 Not built yet. SPEC.md section 8 still describes D17 and is rewritten by the async nodes.
+
+## D94. Shared writes are compile errors, and copies are written as `copy(x)`
+
+Decision (maintainer, 2026-11-09, from the debate `roadmaps/selfhost/debate/value-semantics/debate.md`): Narra keeps value semantics and TypeScript-style in-place writes, and makes every copy visible in the source.
+
+- **Shared write.** A write to an array, map, struct (including all-scalar ones), `FixedArray`, `Box`, `StringBuilder`, generator or coroutine is a compile error while another live name shares the place's root or a containing path. Sharing is tracked in both directions and through chains. Passing `mutable R` writes `R` and everything below it. A non-escaping closure that writes a captured `const` writes it where the closure is passed. Parameters, pattern and `for (const ...)` bindings, captures and values read from identity types always share their source. Assigning a whole place ends its sharing. Liveness is checked inside one function body; each error names the later use.
+- **`copy(x)`** is the one way to duplicate a value, at any depth. It is a retain at the call; copy-on-write copies only the written paths. `Arrays.copy`, `Maps.copy` and spread are not copy tools.
+- **`from`.** A function whose result shares a parameter writes `from <parameter>` after its result type, and the marker is part of its function type: `(grid: Grid) => Array<int> from grid`. A body that returns a shared parameter without it is an error. A function with fresh results fits a type with `from`, not the other way round. Nothing is inferred across functions (D46).
+- **Debug copy check.** Debug builds report, at exit, every copy-on-write that no `copy(...)` explains. It replaces `--report-copies`, `NARRA_TRACE_COPIES` and `@unique`, which were never built; `@unique` is removed. Release builds are unchanged.
+- **Unchanged:** `mutable` parameters, `for (mutable ...)`, `Cell` as the shared reference. `Cells.modify` is not added.
+- **Amends** D1 ("immutable values" now reads "mutable value semantics: a value changes through one name, and no other name sees the change"), D27 (a shared `mutable` argument is an error, not a copy) and D81 rule 5. **Restores** D2 for `const b = a; a[0] = 9`.
+- **Reason.** Copy-on-write hid where copies happen and let TypeScript-valid code mean something else. The rule keeps the syntax and adds no runtime cost.
+- **Rejected:** immutable arrays and structs with `ref` and a mutable array type (rebinding a shared value still copies silently, so it needs the same analysis on a larger rewrite); inference of shared results across functions; shallow copy tools; `Cells.modify`.
+- **Cost.** About 120 to 220 edits in the compiler and 30 to 50 `from` marks; errors depend on liveness, so a later use can turn an accepted write into an error. About 1.45M tokens over six nodes.
+
+Not built yet.

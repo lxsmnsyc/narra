@@ -10,7 +10,7 @@
 // the CallExpr arm and constructor names go through Walker.checkCall and
 // Walker.checkConstructorName.
 //
-// checkExpressionKind is one `match` on Expr. An arm that a later node
+// The checker is one `match` on Expr in checkExpressionKind. An arm that a later node
 // ports calls `unsupported` and names the node; that node replaces the arm
 // with a one-line call into its own module. The modules below this one
 // reach back through the Walker trait (check.nra): every function here takes
@@ -18,7 +18,7 @@
 // `Walker.checkExpression(walker, mutable checker, ...)` without importing
 // this module.
 //
-// Results go into the side tables of the current body (D70): the type of
+// Results go into the side tables of the current body: the type of
 // every checked expression (setNodeType) and what a name or call resolves to
 // (setRef).
 import {
@@ -91,8 +91,6 @@ import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 
-// checkExpression checks an expression and records its type (Go's expr).
-// want is the expected type, or None.
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -107,13 +105,11 @@ export function checkExpression<W: Walker>(
   return found
 }
 
-// checkLoopBorrows rejects a place that overlaps the source of an enclosing
-// `for (mutable item of items)` loop (D85 rule 4): `game`, `game.players`
-// and `game.players[0]` inside a loop over `game.players`, but not
-// `game.round`. Only the whole place is compared, so its root name is
-// recorded and the parts of the place checked after it are skipped. An
-// index matches any index.
 function checkLoopBorrows(mutable checker: Checker, expression: Expr) uses alloc {
+  // Only the whole place is compared, so its root name is recorded and the parts of the
+  // place checked after it are skipped. An index matches any index. `game`,
+  // `game.players` and `game.players[0]` inside a loop over `game.players` are
+  // rejected, `game.round` is not.
   // Walk down to the root name, collecting the path in reverse.
   let reversed: Array<string> = []
   let current = expression
@@ -168,9 +164,8 @@ function checkLoopBorrows(mutable checker: Checker, expression: Expr) uses alloc
   }
 }
 
-// arePathsOverlapping reports whether one field path is a prefix of the
-// other, with "[]" matching any index.
 function arePathsOverlapping(first: Array<string>, second: Array<string>): bool {
+  // "[]" matches any index.
   let count = Arrays.length(first)
   if (Arrays.length(second) < count) {
     count = Arrays.length(second)
@@ -294,8 +289,6 @@ function checkExpressionKind<W: Walker>(
   }
 }
 
-// checkCallEndingNarrowing checks a call. A callee can change what it
-// receives as `mutable`, so the narrowing of those locals ends.
 function checkCallEndingNarrowing<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -306,6 +299,8 @@ function checkCallEndingNarrowing<W: Walker>(
   arguments: Array<Arg>,
   want: Option<Type>,
 ): Type uses alloc {
+  // A callee can change what it receives as `mutable`, so the narrowing of those locals
+  // ends.
   if (Arrays.length(typeArguments) > 0) {
     checker.callTypeArguments[nodeId] = typeArguments
   }
@@ -341,15 +336,15 @@ function checkCallEndingNarrowing<W: Walker>(
   return found
 }
 
-// checkNamedArgumentsTaken rejects named arguments to a callee that has no
-// parameter names: a function value, a std builtin, a constructor or a
-// distinct type's function (D87). A declared function matches them itself.
 function checkNamedArgumentsTaken(
   mutable checker: Checker,
   nodeId: int,
   callee: Expr,
   arguments: Array<Arg>,
 ) uses alloc {
+  // The callees without parameter names are a function value, a std builtin, a
+  // constructor and a distinct type's function. A declared function matches named
+  // arguments itself.
   const ref = getRef(checker, nodeId)
   const hasNoNames = match (ref) {
     Ref.Value => true
@@ -374,11 +369,9 @@ function checkNamedArgumentsTaken(
   }
 }
 
-// bindCallResult gives a call its own result type when the callee's result
-// is a generator type naming the callee's effect variables (Go's
-// bindCallResult). The effect pass replaces each variable by the effects of
-// the argument that binds it, so the name never leaves the callee (D78).
 function bindCallResult(mutable checker: Checker, nodeId: int, found: Type): Type uses alloc {
+  // The effect pass replaces each effect variable by the effects of the argument that
+  // binds it, so the name never leaves the callee.
   if (found is Type.TGenerator(element, _, binder, _, input)) {
     let calleeIndex = -1
     if (getRef(checker, nodeId) is Ref.Function(index)) {
@@ -399,9 +392,8 @@ function bindCallResult(mutable checker: Checker, nodeId: int, found: Type): Typ
   return found
 }
 
-// checkNoMutableEscape rejects a mutable parameter used as the value that is
-// returned or stored. Reading it into a copy (`const copy = p`) is allowed.
 export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses alloc {
+  // Reading it into a copy (`const copy = p`) is allowed.
   if (value is Expr.Ident(_, pos, name)) {
     const index = findLocal(checker, name)
     if (index >= 0) {
@@ -425,14 +417,13 @@ export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses
   }
 }
 
-// expectType reports got when it is not the expected type. No expectation
-// accepts anything.
 export function expectType(
   mutable checker: Checker,
   pos: Pos,
   want: Option<Type>,
   got: Type,
 ) uses alloc {
+  // No expectation accepts anything.
   if (want is Some(expected)) {
     if (expected is Type.TGenerator(wantElement, _, wantBinder, wantOrigin, wantInput)) {
       if (got is Type.TGenerator(gotElement, _, _, gotOrigin, gotInput)) {
@@ -499,11 +490,6 @@ function checkGeneratorResult(
   }
 }
 
-// recordFunctionStore notes a function value stored where a function type with
-// the same signature is expected. The effect pass checks the effects of the
-// value against the type (D86). An expected type naming the effect variables of
-// another function is a parameter of a call: the variables take the value's
-// effects.
 function recordFunctionStore(
   mutable checker: Checker,
   pos: Pos,
@@ -511,6 +497,8 @@ function recordFunctionStore(
   wantBinder: int,
   got: Type,
 ) uses alloc {
+  // An expected type naming the effect variables of another function is a parameter of
+  // a call: the variables take the value's effects.
   if (checker.looseFunctions || (wantBinder >= 0 && wantBinder != checker.functionIndex)) {
     return
   }
@@ -528,12 +516,6 @@ function recordFunctionStore(
   })
 }
 
-// expectGenerator checks a generator value against an expected generator
-// type with the same element type (Go's expectGenerator). The value may have
-// fewer effects than the type, not more. An expected type naming effect
-// variables of another function is a parameter of a call, whose variables
-// take the value's effects. A private generator's effects are known only
-// after the effect pass, so the check waits for it.
 function expectGenerator(
   mutable checker: Checker,
   pos: Pos,
@@ -542,6 +524,10 @@ function expectGenerator(
   inferred: bool,
   got: Type,
 ) uses alloc {
+  // The value may have fewer effects than the type, not more. An expected type naming
+  // effect variables of another function is a parameter of a call, whose variables take
+  // the value's effects. A private generator's effects are known only after the effect
+  // pass, so the check waits for it.
   if (wantBinder >= 0 && wantBinder != checker.functionIndex) {
     return
   }
@@ -564,8 +550,6 @@ function expectGenerator(
   }
 }
 
-// generatorUseFails reports a generator value with an effect its expected
-// type omits.
 export function generatorUseFails(checker: Checker, want: Type, got: Type): bool uses alloc {
   const allowed = generatorEffectList(checker, want)
   for (const name of Arrays.values(generatorEffectList(checker, got))) {
@@ -580,9 +564,8 @@ export function generatorUseFails(checker: Checker, want: Type, got: Type): bool
   return false
 }
 
-// describeType prints a type for an error message that also names another type. When both print
-// the same, a struct or enum gets its module (Go's typeName).
 export function describeType(checker: Checker, described: Type, other: Type): string uses alloc {
+  // When both print the same, a struct or enum gets its module.
   const text = typeString(checker, described)
   if (text != typeString(checker, other)) {
     return text
@@ -603,8 +586,6 @@ export function describeType(checker: Checker, described: Type, other: Type): st
   return text
 }
 
-// checkIntLiteral types a literal from the type the context expects (D82):
-// a sized integer when that is wanted, int otherwise. It must fit that type.
 function checkIntLiteral(
   mutable checker: Checker,
   nodeId: int,
@@ -612,6 +593,7 @@ function checkIntLiteral(
   text: string,
   want: Option<Type>,
 ): Type uses alloc {
+  // A sized integer when that is wanted, int otherwise. The literal must fit that type.
   let literalType = Type.TInt
   if (want is Some(wanted)) {
     if (isSizedInteger(wanted)) {
@@ -636,14 +618,13 @@ function checkIntLiteral(
   return literalType
 }
 
-// checkFloatLiteral types a float literal from the type the context expects
-// f32 when that is wanted, f64 otherwise. An f32 literal must be finite.
 function checkFloatLiteral(
   mutable checker: Checker,
   pos: Pos,
   text: string,
   want: Option<Type>,
 ): Type uses alloc {
+  // f32 when that is wanted, f64 otherwise. An f32 literal must be finite.
   if (want is Some(Type.TF32)) {
     if (!f32LiteralFits(text)) {
       reportError(mutable checker, pos, "E0297", `float literal ${text} does not fit in f32`)
@@ -653,7 +634,6 @@ function checkFloatLiteral(
   return Type.TF64
 }
 
-// stripLeadingZeros drops the zeros at the start of a digit string.
 function stripLeadingZeros(digits: string): string uses alloc {
   let rest = digits
   while (Str.length(rest) > 0 && Str.startsWith(rest, "0")) {
@@ -662,10 +642,10 @@ function stripLeadingZeros(digits: string): string uses alloc {
   return rest
 }
 
-// f32LiteralFits is false when the literal is too large to round to a finite
-// f32: at or above 2^128 - 2^103 = 3.4028235677973366e38. The value is read as
-// 0.DIGITS x 10^magnitude and the digits are compared with that limit.
 function f32LiteralFits(text: string): bool uses alloc {
+  // Too large to round to a finite f32 means at or above 2^128 - 2^103 =
+  // 3.4028235677973366e38. The value is read as 0.DIGITS x 10^magnitude and the digits
+  // are compared with that limit.
   const cleaned = Str.replace(Str.replace(text, "_", ""), "E", "e")
   let mantissa = cleaned
   let exponentText = ""
@@ -716,8 +696,6 @@ function f32LiteralFits(text: string): bool uses alloc {
   return Str.slice(padded, 0, 17) < "34028235677973366"
 }
 
-// splitIntLiteral gives the base of a literal and its digits without the base
-// prefix and the underscores.
 function splitIntLiteral(text: string): #[int, string] uses alloc {
   let base = 10
   let digits = text
@@ -743,7 +721,6 @@ function splitIntLiteral(text: string): #[int, string] uses alloc {
   return #[base, Str.replace(digits, "_", "")]
 }
 
-// sizedMaximum is the largest value of a sized integer type that int holds.
 function sizedMaximum(type: Type): int {
   return match (type) {
     Type.TI8 => 127
@@ -755,10 +732,9 @@ function sizedMaximum(type: Type): int {
   }
 }
 
-// sizedLiteralFits reports whether a literal is in the range of a sized
-// integer type. A negated literal reaches one more below zero for the signed
-// types, and only zero fits an unsigned type.
 function sizedLiteralFits(text: string, type: Type, negated: bool): bool uses alloc {
+  // A negated literal reaches one more below zero for the signed types, and only zero
+  // fits an unsigned type.
   if (Str.contains(text, "_") && !underscoresFit(text)) {
     return false
   }
@@ -787,9 +763,8 @@ function sizedLiteralFits(text: string, type: Type, negated: bool): bool uses al
   return false
 }
 
-// fitsU64 compares digits without leading zeros to 2^64 - 1 by length, since
-// int cannot hold the larger values.
 function fitsU64(base: int, significant: string): bool {
+  // Compares by length, since int cannot hold the larger values.
   const length = Str.length(significant)
   if (base == 10) {
     if (length != 20) {
@@ -810,10 +785,9 @@ function fitsU64(base: int, significant: string): bool {
   return Str.startsWith(significant, "0") || Str.startsWith(significant, "1")
 }
 
-// intLiteralFits reports whether Go's strconv.ParseInt(text, 0, 64)
-// accepts text: an optional base prefix (0x, 0b, 0o, or a leading 0 for
-// octal), digits of the base, and `_` only between digits.
 function intLiteralFits(text: string): bool uses alloc {
+  // Accepts an optional base prefix (0x, 0b, 0o, or a leading 0 for octal), digits of
+  // the base, and `_` only between digits.
   // Find the base and the digits after the prefix.
   let base = 10
   let digits = text
@@ -850,9 +824,8 @@ function intLiteralFits(text: string): bool uses alloc {
   return true
 }
 
-// underscoresFit is Go's underscoreOK: every `_` separates two digits, or
-// follows a base prefix.
 function underscoresFit(text: string): bool {
+  // Every `_` separates two digits, or follows a base prefix.
   let saw = '^'
   let index = 0
   let hex = false
@@ -910,8 +883,6 @@ function checkTemplate<W: Walker>(
   return Type.TStr
 }
 
-// checkName resolves a plain name used as a value: a local, then a
-// constant, then a function, a constructor and a module alias.
 function checkName<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -920,6 +891,8 @@ function checkName<W: Walker>(
   name: string,
   want: Option<Type>,
 ): Type uses alloc {
+  // Resolution order: a local, then a constant, then a function, a constructor and a
+  // module alias.
   // A local of the current body.
   const local = findLocal(checker, name)
   if (local >= 0) {
@@ -954,7 +927,6 @@ function checkName<W: Walker>(
   return Type.TVoid
 }
 
-// isEnumName reports whether name is an enum or a generic enum here.
 export function isEnumName(checker: Checker, name: string): bool {
   const scope = checker.current
   if (checker.scopes[scope].types[name] is Some(Type.TEnum(_))) {
@@ -966,10 +938,8 @@ export function isEnumName(checker: Checker, name: string): bool {
   return false
 }
 
-// isMissingImport reports Array.f, Box.f, Map.f, Option.f, Range.f or
-// Result.f used without the import of their std module. A type the
-// program declares named Box or Map hides the prelude one.
 function isMissingImport(checker: Checker, name: string): bool {
+  // A type the program declares named Box or Map hides the prelude one.
   const scope = checker.current
   if (checker.scopes[scope].modules[name] is Some(_)) {
     return false
@@ -985,9 +955,6 @@ function isMissingImport(checker: Checker, name: string): bool {
   return isNamespaceName(name)
 }
 
-// reportMissingImport reports `Namespace.name` used without the import of
-// the namespace's std module (E0908) and returns true when it did (Go's
-// missingImport; the fixes are not ported). pos is the namespace's.
 export function reportMissingImport(
   mutable checker: Checker,
   pos: Pos,
@@ -1027,8 +994,6 @@ export function reportMissingImport(
   return true
 }
 
-// findAlias is the first alias, by name, under which the current module
-// imports a module path, or "" (Go's aliasFor).
 export function findAlias(checker: Checker, path: string): string uses alloc {
   let best = ""
   for (const entry of Maps.entries(checker.scopes[checker.current].modules)) {
@@ -1040,11 +1005,9 @@ export function findAlias(checker: Checker, path: string): string uses alloc {
   return best
 }
 
-// findModuleEnum returns "Alias.Enum" when target is that expression,
-// Alias being an import of a package module that exports an enum of that
-// name, and gives the alias the type of its module (Go's moduleEnumName,
-// for Geo.Shape.Circle). It returns "" for anything else.
 export function findModuleEnum(mutable checker: Checker, target: Expr): string uses alloc {
+  // Alias is an import of a package module that exports an enum of that name; the alias
+  // gets the type of its module (for Geo.Shape.Circle).
   if (target is Expr.FieldExpr(_, _, inner, enumName)) {
     if (inner is Expr.Ident(aliasId, _, alias)) {
       const scope = checker.current
@@ -1079,12 +1042,9 @@ function exportsEnum(checker: Checker, scope: int, name: string): bool {
   return false
 }
 
-// findModuleConst finds the constant name declared in the package module
-// of scope moduleScope: the last declaration of that name, as Go's
-// moduleConstValue does. It returns its Checker.consts index, or -1. A
-// declaration that declare.nra rejected as a duplicate has no scope entry;
-// findConstInfo gives it an index of its own.
 function findModuleConst(mutable checker: Checker, moduleScope: int, name: string): int uses alloc {
+  // The last declaration of that name wins. A declaration that declare.nra rejected as
+  // a duplicate has no scope entry; findConstInfo gives it an index of its own.
   let found: Option<ConstDecl> = None
   for (const declaration of Arrays.values(checker.scopes[moduleScope].declarations)) {
     if (declaration is Decl.Const(constDecl)) {
@@ -1099,14 +1059,13 @@ function findModuleConst(mutable checker: Checker, moduleScope: int, name: strin
   return -1
 }
 
-// findConstInfo finds the Checker.consts entry of a constant declaration.
-// A duplicate declaration is not in the scope's table; Go checks it like any
-// other constant, so it gets an entry here, once.
 export function findConstInfo(
   mutable checker: Checker,
   scope: int,
   constDecl: ConstDecl,
 ): int uses alloc {
+  // A duplicate declaration is not in the scope's table; it is checked like any other
+  // constant, so it gets an entry here, once.
   for (const index of Ranges.between(0, Arrays.length(checker.consts))) {
     if (
       checker.consts[index].scope == scope && checker.consts[index].declaration.pos == constDecl.pos
@@ -1255,15 +1214,13 @@ function checkField<W: Walker>(
   return Type.TVoid
 }
 
-// buildLengthFix rewrites `x.length` as `Arrays.length(x)`, `Str.length(x)` or
-// `Maps.size(x)`, and adds the import when the module lacks it (Go's
-// lengthFix). The target must be a name that touches the dot on one line.
 function buildLengthFix(
   checker: Checker,
   pos: Pos,
   target: Expr,
   targetType: Type,
 ): Array<Fix> uses alloc {
+  // The target must be a name that touches the dot on one line.
   let targetPos = Pos { line: 0, column: 0 }
   let targetName = ""
   if (target is Expr.Ident(_, identPos, identName)) {
@@ -1314,8 +1271,6 @@ function buildLengthFix(
   ]
 }
 
-// checkConstructorField checks `Enum.Variant` or `Alias.Enum.Variant` used
-// as a value, through the constructor check of ctors.nra.
 function checkConstructorField<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1335,9 +1290,9 @@ function checkConstructorField<W: Walker>(
   return Type.TVoid
 }
 
-// hasNoFields is true for the types Go names in its `.length` hint:
-// arrays, maps and the primitive types.
 function hasNoFields(fieldsType: Type): bool {
+  // These are the types named in the `.length` hint: arrays, maps and the primitive
+  // types.
   return match (fieldsType) {
     Type.TArray(_) => true
     Type.TMap(_, _) => true
@@ -1370,7 +1325,6 @@ export function findField(fields: Array<Field>, name: string): int {
   return -1
 }
 
-// isHiddenStruct reports an opaque struct of another module.
 export function isHiddenStruct(checker: Checker, index: int): bool {
   return checker.structs[index].opaque &&
     checker.structs[index].module != checker.scopes[checker.current].path
@@ -1434,13 +1388,12 @@ function checkUnary<W: Walker>(
   return operandType
 }
 
-// collectConcatLeaves lists the operands of `a + "x" + b` left to right. It is
-// false unless every operand is a string name or a string literal.
 function collectConcatLeaves(
   checker: Checker,
   expression: Expr,
   mutable leaves: Array<Expr>,
 ): bool uses alloc {
+  // False unless every operand is a string name or a string literal.
   match (expression) {
     Expr.BinaryExpr(_, _, operator, left, right) => {
       return operator == "+" &&
@@ -1461,16 +1414,14 @@ function collectConcatLeaves(
   }
 }
 
-// buildConcatFix rewrites `a + "x" + b` as the template string `${a}x${b}`
-// (Go's concatFix). It offers the fix only when every operand is a string name
-// or string literal, because only then are the start and the end of the text
-// known exactly.
 function buildConcatFix(
   checker: Checker,
   operator: string,
   left: Expr,
   right: Expr,
 ): Array<Fix> uses alloc {
+  // The fix is offered only when every operand is a string name or string literal,
+  // because only then are the start and the end of the text known exactly.
   if (operator != "+") {
     return []
   }
@@ -1511,7 +1462,6 @@ function buildConcatFix(
   ]
 }
 
-// isComparison is true for == != < <= > >=.
 function isComparison(operator: string): bool {
   return operator == "==" ||
     operator == "!=" ||
@@ -1521,7 +1471,6 @@ function isComparison(operator: string): bool {
     operator == ">="
 }
 
-// isNumberLiteral is true for an integer or float literal, or one under unary minus.
 function isNumberLiteral(expression: Expr): bool {
   return match (expression) {
     Expr.IntLit(_, _, _) => true
@@ -1532,13 +1481,10 @@ function isNumberLiteral(expression: Expr): bool {
   }
 }
 
-// isFloat is true for f32 and f64.
 function isFloat(type: Type): bool {
   return type == Type.TF32 || type == Type.TF64
 }
 
-// reportMixedIntegers is E0295. The suggestion names the conversion functions
-// of the left type, which the sized-conversions node adds to the standard library.
 function reportMixedIntegers(
   mutable checker: Checker,
   pos: Pos,
@@ -1546,6 +1492,8 @@ function reportMixedIntegers(
   leftType: Type,
   rightType: Type,
 ) uses alloc {
+  // The suggestion names the conversion functions of the left type, which the sized-
+  // conversions node adds to the standard library.
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
   const module = match (leftType) {
@@ -1577,7 +1525,7 @@ function checkBinary<W: Walker>(
 ): Type uses alloc {
   // The left operand gives the expected type of the right one. A sized
   // integer wanted from the whole expression types the left operand of an
-  // integer operator; a literal on the left takes the type of the right (D82).
+  // integer operator; a literal on the left takes the type of the right.
   let leftWant: Option<Type> = None
   if (want is Some(wanted)) {
     if ((isSizedInteger(wanted) || wanted == Type.TF32) && !isComparison(operator)) {
@@ -1694,7 +1642,6 @@ function checkBinary<W: Walker>(
   return Type.TVoid
 }
 
-// containsOpen reports whether a type holds one of the given type parameters.
 export function containsOpen(checker: Checker, searched: Type, parameters: Array<int>): bool {
   return match (searched) {
     Type.TParam(index) => isParamIn(index, parameters)
@@ -1894,10 +1841,6 @@ function checkStructLiteral<W: Walker>(
   return structType
 }
 
-// inferGenericStruct finds the instance a literal of a generic struct
-// builds: the expected type gives the type arguments it can, and the field
-// values the rest. It returns the Checker.structs index, or -1 after an
-// error.
 function inferGenericStruct<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1906,6 +1849,7 @@ function inferGenericStruct<W: Walker>(
   fields: Array<FieldInit>,
   expected: Option<Type>,
 ): int uses alloc {
+  // The expected type gives the type arguments it can, and the field values the rest.
   buildGeneric(mutable checker, generic)
   const parameters = checker.generics[generic].parameters
   let bindings: Map<int, Type> = Map {}
@@ -1999,9 +1943,6 @@ export function checkArgumentsLoosely<W: Walker>(
   }
 }
 
-// checkArguments checks the arguments of a call of a function (Go's arguments).
-// wants gives the expected type of each parameter's argument, or None while
-// it is not known (an open type parameter).
 export function checkArguments<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -2010,6 +1951,8 @@ export function checkArguments<W: Walker>(
   parameters: Array<Param>,
   wants: Array<Option<Type>>,
 ) uses alloc {
+  // wants gives the expected type of each parameter's argument, or None while it is not
+  // known (an open type parameter).
   const argCount = Arrays.length(arguments)
   const paramCount = Arrays.length(parameters)
   if (argCount != paramCount) {
@@ -2040,11 +1983,9 @@ export function checkArguments<W: Walker>(
   checkBorrowed(mutable checker, arguments)
 }
 
-// isImplicitEffectParameter reports a function-type parameter without `uses`
-// of a private function. The effect pass infers private functions, so the
-// parameter acts as an effect variable: a call has the effects of the
-// argument.
 export function isImplicitEffectParameter(checker: Checker, funcIndex: int, param: Param): bool {
+  // The effect pass infers private functions, so such a parameter acts as an effect
+  // variable: a call has the effects of the argument.
   if (funcIndex < 0 || checker.functions[funcIndex].declaration.exported) {
     return false
   }
@@ -2054,9 +1995,6 @@ export function isImplicitEffectParameter(checker: Checker, funcIndex: int, para
   return false
 }
 
-// checkArgument checks argument index of a call against its parameter: the
-// non-escaping rule, the expected type and the mutable marking. The index
-// of a mutable argument is added to mutables (Go's arguments loop body).
 export function checkArgument<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -2066,6 +2004,7 @@ export function checkArgument<W: Walker>(
   want: Option<Type>,
   mutable mutables: Array<int>,
 ) uses alloc {
+  // The index of a mutable argument is added to mutables.
   const arg = arguments[index]
   const param = parameters[index]
   markArgument(mutable checker, param, arg.value)
@@ -2097,14 +2036,12 @@ export function checkArgument<W: Walker>(
   }
 }
 
-// checkExclusive rejects a call that passes a variable as mutable and also
-// passes it, or reads it, in another argument. It runs after the arguments
-// are checked, so their names are resolved.
 export function checkExclusive(
   mutable checker: Checker,
   arguments: Array<Arg>,
   mutables: Array<int>,
 ) uses alloc {
+  // Runs after the arguments are checked, so their names are resolved.
   for (const mutableIndex of Arrays.values(mutables)) {
     const root = findAssignedLocal(checker, arguments[mutableIndex].value)
     if (root < 0) {
@@ -2124,9 +2061,8 @@ export function checkExclusive(
   }
 }
 
-// usesLocal reports whether an expression reads a local (a BodyInfo.locals
-// index). It does not look into closures or match arms.
 export function usesLocal(checker: Checker, expression: Expr, local: int): bool uses alloc {
+  // Does not look into closures or match arms.
   return match (expression) {
     Expr.Ident(nodeId, _, _) => getRef(checker, nodeId) == Ref.Local(local)
     Expr.FieldExpr(_, _, target, _) => usesLocal(checker, target, local)
@@ -2150,9 +2086,8 @@ export function usesLocal(checker: Checker, expression: Expr, local: int): bool 
   }
 }
 
-// capturesLocal reports whether the closure of an arrow function captures a
-// local. A closure uses what it captures.
 function capturesLocal(checker: Checker, arrowId: int, local: int): bool {
+  // A closure uses what it captures.
   const body = checker.body
   if (checker.bodies[body].closureIndex[arrowId] is Some(index)) {
     for (const captured of Arrays.values(checker.bodies[body].closures[index].captures)) {
@@ -2164,12 +2099,9 @@ function capturesLocal(checker: Checker, arrowId: int, local: int): bool {
   return false
 }
 
-// checkBorrowed rejects a call with a stack closure that assigns a captured
-// variable when another argument uses that variable, or another closure
-// argument captures it (Go's checkBorrowed, D77). The closure borrows the
-// variable for the call, and constant parameters are passed by pointer
-// (D50), so the callee could read what the closure frees.
 export function checkBorrowed(mutable checker: Checker, arguments: Array<Arg>) uses alloc {
+  // The closure borrows the variable for the call, and constant parameters are passed
+  // by pointer, so the callee could read what the closure frees.
   const body = checker.body
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     const closure = findStackClosure(checker, arguments[index].value)
@@ -2198,10 +2130,8 @@ export function checkBorrowed(mutable checker: Checker, arguments: Array<Arg>) u
   }
 }
 
-// findStackClosure is the BodyInfo.closures index of an arrow function
-// passed straight to a non-escaping parameter, or -1 for any other
-// expression.
 function findStackClosure(checker: Checker, expression: Expr): int {
+  // Only an arrow function passed straight to a non-escaping parameter counts.
   const body = checker.body
   if (expression is Expr.ArrowExpr(arrowId, _, _, _, _, _)) {
     if (checker.bodies[body].closureIndex[arrowId] is Some(closure)) {
@@ -2222,11 +2152,9 @@ function containsName(names: Array<string>, name: string): bool {
   return false
 }
 
-// listBlockExpressions lists the expressions that the statements of a block
-// hold, at any statement depth, including the guards, bodies and blocks of
-// match statements. It does not look inside the expressions (Go's
-// eachBlockExpr).
 export function listBlockExpressions(block: Block): Array<Expr> uses alloc {
+  // Any statement depth, including the guards, bodies and blocks of match statements.
+  // It does not look inside the expressions.
   let found: Array<Expr> = []
   collectBlockExpressions(block, mutable found)
   return found
@@ -2288,7 +2216,6 @@ function collectStatementExpressions(statement: Stmt, mutable found: Array<Expr>
   }
 }
 
-// collectExpressionAndArms adds an expression, and the arms of a match when it is one.
 function collectExpressionAndArms(expression: Expr, mutable found: Array<Expr>) uses alloc {
   Arrays.push(mutable found, expression)
   if (expression is Expr.MatchExpr(_, _, _, arms)) {
@@ -2306,7 +2233,6 @@ function collectExpressionAndArms(expression: Expr, mutable found: Array<Expr>) 
   }
 }
 
-// armsUseLocal looks in the guards, bodies and blocks of match arms.
 function armsUseLocal(checker: Checker, arms: Array<MatchArm>, local: int): bool {
   for (const arm of Arrays.values(arms)) {
     if (arm.guard is Some(guard)) {
@@ -2355,8 +2281,6 @@ function fieldsUseLocal(checker: Checker, fields: Array<FieldInit>, local: int):
   return false
 }
 
-// checkBuiltinCall checks a call of a std function (Go's builtinCall). A
-// builtin with a named check kind goes to narrac/stdcalls.
 export function checkBuiltinCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -2366,6 +2290,7 @@ export function checkBuiltinCall<W: Walker>(
   builtin: int,
   want: Option<Type>,
 ): Type uses alloc {
+  // A builtin with a named check kind goes to narrac/stdcalls.
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
   const info = checker.registry.functions[builtin]
   if (info.check != "" && info.check != "fixed") {
@@ -2431,8 +2356,6 @@ export function checkBuiltinCall<W: Walker>(
   return result
 }
 
-// checkFixedCall is Go's checkFixed: a wrong argument count stops the check
-// after a loose pass over the arguments.
 export function checkFixedCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -2442,6 +2365,7 @@ export function checkFixedCall<W: Walker>(
   parameters: Array<Type>,
   result: Type,
 ): Type uses alloc {
+  // A wrong argument count stops the check after a loose pass over the arguments.
   const argCount = Arrays.length(arguments)
   if (argCount != Arrays.length(parameters)) {
     reportError(
@@ -2471,9 +2395,8 @@ export function checkFixedCall<W: Walker>(
   return result
 }
 
-// checkMutableArgument checks an argument passed as mutable: it must name
-// a `let` variable, a field or an element of one.
 export function checkMutableArgument(mutable checker: Checker, value: Expr) uses alloc {
+  // The argument must name a `let` variable, a field or an element of one.
   const pos = getExpressionPos(value)
   if (checkConstWrite(mutable checker, pos, value)) {
     return
@@ -2491,11 +2414,6 @@ export function checkMutableArgument(mutable checker: Checker, value: Expr) uses
   checkContentsChange(mutable checker, pos, root, value, true)
 }
 
-// checkContentsChange checks a change to the contents of the local root:
-// a write to a field or element of target, or target passed as mutable
-// (passing). A plain parameter and a binding that copies part of another
-// value are read-only (D81). A closure that changes a captured `const`
-// captures it by reference.
 export function checkContentsChange(
   mutable checker: Checker,
   pos: Pos,
@@ -2503,6 +2421,8 @@ export function checkContentsChange(
   target: Expr,
   passing: bool,
 ) uses alloc {
+  // A plain parameter and a binding that copies part of another value are read-only. A
+  // closure that changes a captured `const` captures it by reference.
   const local = getLocal(checker, root)
   if (canChangeContents(local)) {
     markChangedCapture(mutable checker, pos, root)
@@ -2552,8 +2472,6 @@ export function checkContentsChange(
   reportError(mutable checker, pos, "E0950", message)
 }
 
-// describePlace prints an assignable expression for a message, such as
-// `game.players` or `teams[t].players`.
 export function describePlace(expression: Expr): string uses alloc {
   return match (expression) {
     Expr.Ident(_, _, name) => name
@@ -2571,8 +2489,6 @@ function describeIndex(index: Expr): string {
   }
 }
 
-// findAssignedLocal returns the local at the root of an assignable
-// expression (Go's lvalueRoot), or -1.
 export function findAssignedLocal(checker: Checker, expression: Expr): int {
   let current = expression
   while (true) {
@@ -2602,14 +2518,12 @@ export function findAssignedLocal(checker: Checker, expression: Expr): int {
   return -1
 }
 
-// checkConstWrite reports a write through a top-level constant and returns
-// true, or returns false when the root of expression is no constant. It
-// reads the syntax only, so it can run before the expression is checked.
 export function checkConstWrite(
   mutable checker: Checker,
   pos: Pos,
   expression: Expr,
 ): bool uses alloc {
+  // Reads the syntax only, so it can run before the expression is checked.
   const scope = checker.current
   let current = expression
   while (true) {
@@ -2651,8 +2565,6 @@ export function checkConstWrite(
   return false
 }
 
-// moduleHasConst reports whether alias names a package module that
-// declares the constant name.
 function moduleHasConst(checker: Checker, alias: string, name: string): bool {
   if (checker.scopes[checker.current].modules[alias] is Some(path)) {
     const moduleScope = sourceScope(checker, path)
@@ -2669,15 +2581,14 @@ function moduleHasConst(checker: Checker, alias: string, name: string): bool {
   return false
 }
 
-// checkConstType returns the type of constant index, checking its value
-// first when needed (Go's constType). The value is a body of its own
-// module, outside any function; pos is where the constant is used.
 export function checkConstType<W: Walker>(
   mutable checker: Checker,
   walker: W,
   index: int,
   pos: Pos,
 ): Type uses alloc {
+  // The value is a body of its own module, outside any function; pos is where the
+  // the constant is used.
   const info = checker.consts[index]
   if (info.state == CONST_DONE) {
     if (info.valueType is Some(valueType)) {
@@ -2740,8 +2651,6 @@ export function checkConstType<W: Walker>(
   return found
 }
 
-// checkConstValue reports the first part of a constant's value that a
-// top-level constant cannot hold.
 function checkConstValue(mutable checker: Checker, name: string, value: Expr): bool uses alloc {
   return match (value) {
     Expr.IntLit(_, _, _) => true
@@ -2887,7 +2796,6 @@ function checkConstMap(
   return true
 }
 
-// describeCallee prints the callee of a call for a message (Go's calleeName).
 export function describeCallee(callee: Expr): string uses alloc {
   return match (callee) {
     Expr.Ident(_, _, name) => name
@@ -2903,11 +2811,8 @@ function trimDot(text: string): string uses alloc {
   return text
 }
 
-// isConstantValue reports whether a field default is a constant: a
-// literal, a negated one, an array of them, a bare constructor or a
-// constructor call with constant arguments (Go's isConstant). It reads the
-// refs of the current body.
 export function isConstantValue(checker: Checker, expression: Expr): bool {
+  // Reads the refs of the current body.
   return match (expression) {
     Expr.IntLit(_, _, _) => true
     Expr.FloatLit(_, _, _) => true
@@ -2941,8 +2846,6 @@ function allConstant(checker: Checker, elements: Array<Expr>): bool {
   return true
 }
 
-// findRootName is the variable name at the root of an assignable expression,
-// or an empty string.
 export function findRootName(expression: Expr): string {
   return match (expression) {
     Expr.Ident(_, _, name) => name

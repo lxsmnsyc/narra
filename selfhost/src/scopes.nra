@@ -30,8 +30,6 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-// getDeclarationName is the name a top-level declaration declares, or "" (tests and
-// implement blocks).
 export function getDeclarationName(declaration: Decl): string {
   return match (declaration) {
     Decl.Func(funcDecl) => funcDecl.name
@@ -40,6 +38,7 @@ export function getDeclarationName(declaration: Decl): string {
     Decl.Enum(declared) => declared.name
     Decl.Distinct(declared) => declared.name
     Decl.Trait(declared) => declared.name
+    // Tests and implement blocks declare no name.
     _ => ""
   }
 }
@@ -56,9 +55,8 @@ function isExported(declaration: Decl): bool {
   }
 }
 
-// collectExports maps each exported name to its declaration's index. A later
-// declaration of the same name wins, as in Go's Exports map.
 export function collectExports(declarations: Array<Decl>): Map<string, int> uses alloc {
+  // A later declaration of the same name wins.
   let out: Map<string, int> = Map {}
   for (const index of Ranges.between(0, Arrays.length(declarations))) {
     if (isExported(declarations[index])) {
@@ -68,7 +66,6 @@ export function collectExports(declarations: Array<Decl>): Map<string, int> uses
   return out
 }
 
-// checkTypeName reports a type name already taken in the current scope.
 export function checkTypeName(mutable checker: Checker, pos: Pos, name: string) uses alloc {
   if (lookupType(checker, name) is Some(_)) {
     reportError(mutable checker, pos, "E0104", `type ${quoteGo(name)} is declared twice`)
@@ -89,8 +86,6 @@ export function declareType(
   checker.scopes[scope].types[name] = type
 }
 
-// importModules runs the imports of a file in the current module: a package
-// module, or else a std module of the registry.
 export function importModules(mutable checker: Checker, file: File) uses alloc {
   let aliases: Map<string, bool> = Map {}
   for (const importDecl of Arrays.values(file.imports)) {
@@ -154,9 +149,9 @@ export function importModules(mutable checker: Checker, file: File) uses alloc {
   }
 }
 
-// useModule records a std module the program uses, once, in first-import
-// order (Go's Program.Modules; the emitter writes their runtime C).
 function useModule(mutable checker: Checker, path: string) uses alloc {
+  // Std modules are recorded once, in first-import order; the emitter writes their
+  // runtime C in that order.
   for (const used of Arrays.values(checker.used)) {
     if (used == path) {
       return
@@ -165,7 +160,6 @@ function useModule(mutable checker: Checker, path: string) uses alloc {
   Arrays.push(mutable checker.used, path)
 }
 
-// sourceScope finds the scope of a package module by path, or -1.
 export function sourceScope(checker: Checker, path: string): int {
   if (checker.scopeIndex[path] is Some(scope)) {
     if (checker.scopes[scope].isSource) {
@@ -175,14 +169,13 @@ export function sourceScope(checker: Checker, path: string): int {
   return -1
 }
 
-// bindAlias makes the alias of a namespace import visible. aliases holds the
-// aliases the current file has bound. Another file of the module may bind an
-// alias again for the same path, never for another one.
 function bindAlias(
   mutable checker: Checker,
   importDecl: ImportDecl,
   mutable aliases: Map<string, bool>,
 ) uses alloc {
+  // aliases holds the aliases the current file has bound. Another file of the module
+  // may bind an alias again for the same path, never for another one.
   if (importDecl.alias == "") {
     return
   }
@@ -201,13 +194,13 @@ function bindAlias(
   checker.scopes[current].modules[importDecl.alias] = importDecl.path
 }
 
-// importPackageModule handles an import of a module of this package. It
-// returns false when the path is not one, so the caller tries std modules.
 function importPackageModule(
   mutable checker: Checker,
   importDecl: ImportDecl,
   mutable aliases: Map<string, bool>,
 ): bool uses alloc {
+  // Returns false when the path is not a package module, so the caller tries std
+  // modules.
   const scope = sourceScope(checker, importDecl.path)
   if (scope < 0) {
     const prefix = `${checker.packageName}/`
@@ -255,8 +248,6 @@ function importPackageModule(
   return true
 }
 
-// importDeclaration makes an exported declaration of a scope visible in the
-// current module.
 function importDeclaration(
   mutable checker: Checker,
   pos: Pos,
@@ -308,8 +299,6 @@ function importType(
   }
 }
 
-// importNamedType imports a struct or enum: a generic template by its
-// Checker.generics index, or a type.
 function importNamedType(
   mutable checker: Checker,
   pos: Pos,
@@ -330,8 +319,6 @@ function importNamedType(
   importType(mutable checker, pos, scope, name, local)
 }
 
-// exported returns the declaration a scope exports under a name, or reports why it
-// cannot be used and returns None.
 export function exported(
   mutable checker: Checker,
   pos: Pos,
@@ -371,7 +358,6 @@ export function exported(
   return None
 }
 
-// importTrait makes the exported trait visible by name.
 function importTrait(mutable checker: Checker, pos: Pos, name: string, traitIndex: int) uses alloc {
   if (
     lookupTrait(checker, name) >= 0 ||
@@ -385,7 +371,6 @@ function importTrait(mutable checker: Checker, pos: Pos, name: string, traitInde
   checker.scopes[current].traits[name] = traitIndex
 }
 
-// importConst makes the exported constant visible by name.
 function importConst(mutable checker: Checker, pos: Pos, name: string, index: int) uses alloc {
   const current = checker.current
   if (checker.scopes[current].consts[name] is Some(_) || typeNamed(checker, name)) {
@@ -395,16 +380,15 @@ function importConst(mutable checker: Checker, pos: Pos, name: string, index: in
   checker.scopes[current].consts[name] = index
 }
 
-// typeNamed reports whether name is a type or trait of the current module.
 export function typeNamed(checker: Checker, name: string): bool {
   return lookupType(checker, name) is Some(_) ||
     lookupGeneric(checker, name) is Some(_) ||
     lookupTrait(checker, name) >= 0
 }
 
-// checkImportedConsts reports an imported constant whose name the module
-// later gave to a type: the import ran before the module's types existed.
 export function checkImportedConsts(mutable checker: Checker, file: File) uses alloc {
+  // The import ran before the module's types existed, so a constant may share a name
+  // with a type declared later.
   const current = checker.current
   const path = checker.scopes[current].path
   for (const importDecl of Arrays.values(file.imports)) {
@@ -423,8 +407,6 @@ export function checkImportedConsts(mutable checker: Checker, file: File) uses a
   }
 }
 
-// recordEntryTargets lists the module and name each binary's entry names,
-// before any body is checked.
 export function recordEntryTargets(mutable checker: Checker, package: Package) uses alloc {
   for (const binary of Arrays.values(package.binaries)) {
     const #[modulePath, functionName] = entryModule(package, binary.entry)
@@ -435,8 +417,6 @@ export function recordEntryTargets(mutable checker: Checker, package: Package) u
   }
 }
 
-// checkEntries finds the entry function of each binary and reports one
-// with the wrong signature (Go's entryFunc and checkEntry in CheckPackage).
 export function checkEntries(mutable checker: Checker, package: Package) uses alloc {
   for (const binary of Arrays.values(package.binaries)) {
     const index = entryFunc(checker, package, binary.entry)
@@ -451,7 +431,6 @@ export function checkEntries(mutable checker: Checker, package: Package) uses al
   }
 }
 
-// entryFunc finds the exported function an entry names, or -1.
 function entryFunc(checker: Checker, package: Package, entry: string): int uses alloc {
   const target = entryModule(package, entry)
   const #[modulePath, functionName] = target
@@ -492,10 +471,6 @@ function checkEntry(mutable checker: Checker, index: int) uses alloc {
   }
 }
 
-// findConstructorOwner finds the enum for `import { Teacher }` where Teacher
-// is not an export of the module but a constructor of an exported enum (Go's
-// ctorImport): the first such enum by name. It returns "" for anything else.
-// importsName reports whether an import lists a name, as written or renamed.
 function importsName(importDecl: ImportDecl, name: string): bool {
   for (const imported of Arrays.values(importDecl.names)) {
     if (imported.name == name || imported.local == name) {
@@ -506,9 +481,12 @@ function importsName(importDecl: ImportDecl, name: string): bool {
 }
 
 function findConstructorOwner(checker: Checker, moduleScope: int, name: string): string {
+  // For `import { Teacher }`, Teacher is not an export of the module but a
+  // constructor of an exported enum.
   if (checker.scopes[moduleScope].exports[name] is Some(_)) {
     return ""
   }
+  // The first such enum by name wins.
   let owner = ""
   for (const declaration of Arrays.values(checker.scopes[moduleScope].declarations)) {
     if (declaration is Decl.Enum(enumDecl)) {
@@ -542,8 +520,6 @@ const NAMESPACES = [
   Namespace { name: "Result", path: "std/result", plural: "Results" },
 ]
 
-// isNamespaceName reports a prelude type whose functions live in a std
-// module (Array, Box, Map, Option, Range, Result).
 export function isNamespaceName(name: string): bool {
   for (const namespace of Arrays.values(NAMESPACES)) {
     if (namespace.name == name) {
@@ -553,7 +529,6 @@ export function isNamespaceName(name: string): bool {
   return false
 }
 
-// findNamespace finds the namespace a prelude type name stands for.
 export function findNamespace(name: string): Option<Namespace> uses alloc {
   for (const namespace of Arrays.values(NAMESPACES)) {
     if (namespace.name == name) {
@@ -563,16 +538,13 @@ export function findNamespace(name: string): Option<Namespace> uses alloc {
   return None
 }
 
-// aliasTaken reports whether name is a type, a trait or a prelude
-// namespace type visible in the module.
 function aliasTaken(checker: Checker, name: string): bool {
   return typeNamed(checker, name) || isNamespaceName(name)
 }
 
-// suggestAlias is the alias the alias-equals-type error suggests: the
-// plural of a namespace type, or of the std module the import names, or the
-// alias with an s.
 function suggestAlias(alias: string, path: string): string uses alloc {
+  // Suggests the plural of a namespace type, or of the std module the import names, or
+  // the alias with an s.
   let suggestion = ""
   for (const namespace of Arrays.values(NAMESPACES)) {
     if (namespace.name == alias) {
@@ -590,16 +562,15 @@ function suggestAlias(alias: string, path: string): string uses alloc {
   return suggestion
 }
 
-// buildRenameAliasFix renames an import alias that is also a type name, and
-// its uses before a `.` (Go's fix in checkImportNames). When the alias is also
-// an enum, `Alias.Ctor(...)` is a constructor and stays: only the uses of an
-// export of a std module are renamed, and a package module gets no fix.
 function buildRenameAliasFix(
   checker: Checker,
   file: File,
   importDecl: ImportDecl,
   suggestion: string,
 ): Array<Fix> uses alloc {
+  // When the alias is also an enum, `Alias.Ctor(...)` is a constructor and stays: only
+  // the uses of an export of a std module are renamed, and a package module gets no
+  // fix.
   const scope = checker.current
   const alias = importDecl.alias
   const isEnum = isDeclaredEnum(checker, alias)
@@ -636,7 +607,6 @@ function buildRenameAliasFix(
   return [createFix(`rename the alias to ${suggestion}`, edits)]
 }
 
-// isDeclaredEnum reports whether name is an enum or a generic enum here.
 function isDeclaredEnum(checker: Checker, name: string): bool {
   const scope = checker.current
   if (checker.scopes[scope].types[name] is Some(Type.TEnum(_))) {
@@ -648,11 +618,8 @@ function isDeclaredEnum(checker: Checker, name: string): bool {
   return false
 }
 
-// checkImportNames runs after the module's type names are declared. It
-// reports an alias that equals a type name (E0421) and an imported name
-// that clashes with a declaration, an alias or a type (E0423). Go's fixes
-// are not ported.
 export function checkImportNames(mutable checker: Checker, file: File) uses alloc {
+  // Runs after the module's type names are declared.
   // An alias may not be a type name.
   for (const importDecl of Arrays.values(file.imports)) {
     if (importDecl.alias == "" || !aliasTaken(checker, importDecl.alias)) {
@@ -684,7 +651,7 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
       const isAlias = checker.scopes[scope].modules[name.local] is Some(_)
       if (moduleScope >= 0) {
         // A type or trait import is itself in the type table, and the
-        // import reports a function or constant that clashes with a
+        // The import reports a function or constant that clashes with a
         // declaration. A function can still clash with a type declared
         // later or with an alias.
         if (!isExportedFunc(checker, moduleScope, name.name)) {

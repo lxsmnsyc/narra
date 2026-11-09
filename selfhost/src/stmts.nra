@@ -1,7 +1,7 @@
 // The statement checker, ported from compiler/internal/narra/check_stmt.go
 // (block, stmt, ifStmt, diverges, isResult; lvalueRoot is
 // findAssignedLocal in exprs.nra). Locals go into the current body's
-// tables (D70) through declareLocal; block scopes are pushScope and
+// tables through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
@@ -61,7 +61,6 @@ import * as Str from "std/string"
 import * as Int from "std/int"
 import * as Ranges from "std/range"
 
-// checkBlock checks the statements of a block in a scope of their own.
 export function checkBlock<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -202,7 +201,6 @@ export function checkStatement<W: Walker>(
   checkMutableConflicts(mutable checker, statement)
 }
 
-// checkLoopExit checks a break or continue, with or without a label.
 function checkLoopExit(
   mutable checker: Checker,
   pos: Pos,
@@ -243,7 +241,6 @@ function checkLoopExit(
   reportError(mutable checker, pos, "E0916", `no enclosing loop is labeled "${label}"`)
 }
 
-// hasOuterLoops reports whether a loop encloses a block expression being checked.
 function hasOuterLoops(checker: Checker): bool {
   for (const context of Arrays.values(checker.blocks)) {
     if (context.loops > 0) {
@@ -253,8 +250,6 @@ function hasOuterLoops(checker: Checker): bool {
   return false
 }
 
-// hasOuterLabel reports whether a loop labeled label encloses a block
-// expression being checked.
 function hasOuterLabel(checker: Checker, label: string): bool {
   for (const context of Arrays.values(checker.blocks)) {
     if (hasLabel(context.labels, label)) {
@@ -273,7 +268,6 @@ function hasLabel(labels: Array<string>, label: string): bool {
   return false
 }
 
-// withoutLast copies a list of labels without its last one.
 function withoutLast(labels: Array<string>): Array<string> uses alloc {
   let kept: Array<string> = []
   for (const i of Ranges.upTo(Arrays.length(labels) - 1)) {
@@ -282,8 +276,8 @@ function withoutLast(labels: Array<string>): Array<string> uses alloc {
   return kept
 }
 
-// enterLoop opens a loop body; its label is in scope inside the body only.
 function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc {
+  // The label is in scope inside the body only.
   checker.loops = checker.loops + 1
   if (label == "") {
     return
@@ -426,7 +420,7 @@ function checkAssignment<W: Walker>(
       )
     }
   } else {
-    // A field or element write changes the contents (D81).
+    // A field or element write changes the contents.
     checkContentsChange(mutable checker, pos, root, target, false)
   }
   // Storing a mutable parameter in a field or element is an escape.
@@ -587,23 +581,19 @@ function checkReturn<W: Walker>(
   }
 }
 
-// checkBlockExpression checks a block in value position. Its value is the
-// common type of its returns, and every path must end in a return (Go's
-// blockExpr).
 export function checkBlockExpression<W: Walker>(
   mutable checker: Checker,
   walker: W,
   expression: Expr,
   want: Option<Type>,
 ): Type uses alloc {
+  // The value is the common type of its returns, and every path must end in a return.
   if (expression is Expr.BlockExpr(_, pos, block)) {
     return checkBlockBody(mutable checker, walker, pos, block, want)
   }
   return Type.TVoid
 }
 
-// checkBlockBody checks a block as a block expression (Go's blockBody). A
-// match arm written as a block in value position uses it too.
 export function checkBlockBody<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -611,6 +601,7 @@ export function checkBlockBody<W: Walker>(
   block: Block,
   want: Option<Type>,
 ): Type uses alloc {
+  // A match arm written as a block in value position uses this too.
   const context = BlockContext {
     result: want,
     returns: 0,
@@ -650,7 +641,6 @@ export function checkBlockBody<W: Walker>(
   return Type.TVoid
 }
 
-// withoutLastBlock copies a list of block contexts without its last one.
 function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> uses alloc {
   let kept: Array<BlockContext> = []
   for (const i of Ranges.upTo(Arrays.length(blocks) - 1)) {
@@ -659,7 +649,6 @@ function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> uses
   return kept
 }
 
-// checkBlockReturn checks a return inside a block expression (Go's blockReturn).
 function checkBlockReturn<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -712,8 +701,6 @@ function checkBlockReturn<W: Walker>(
   }
 }
 
-// endsInReturn reports whether every path through a block ends in a return
-// or a panic.
 function endsInReturn(block: Block): bool {
   const count = Arrays.length(block.statements)
   if (count == 0) {
@@ -739,8 +726,6 @@ function ifEndsInReturn(then: Block, orElse: Option<Stmt>): bool {
   return false
 }
 
-// matchEndsInReturn is true for a match statement whose every arm ends in a
-// return or a panic.
 function matchEndsInReturn(expression: Expr): bool {
   if (expression is Expr.MatchExpr(_, _, _, arms)) {
     if (Arrays.length(arms) == 0) {
@@ -764,9 +749,6 @@ function matchEndsInReturn(expression: Expr): bool {
   return false
 }
 
-// checkIf checks an if statement. A condition that is an `is` test may bind
-// names for the then branch and narrows the subject, when it is a `const`
-// local, in the branches (Go's ifStmt).
 function checkIf<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -774,6 +756,8 @@ function checkIf<W: Walker>(
   then: Block,
   orElse: Option<Stmt>,
 ) uses alloc {
+  // A condition that is an `is` test may bind names for the then branch, and narrows
+  // the subject in the branches when it is a `const` local.
   // The whole condition may be an `is` test, the only place that binds.
   let testPattern: Option<Pattern> = None
   let subject = -1
@@ -1007,11 +991,6 @@ function checkFor<W: Walker>(
   popScope(mutable checker)
 }
 
-// checkReferenceFor checks `for (mutable item of items)` and `for (const
-// #[index, mutable item] of Arrays.entries(items))` (D85). The source is an
-// array place the loop may change, as for a `mutable` argument, its elements
-// have contents, the binding acts as a `mutable` parameter, and the body
-// cannot use the source (checkLoopBorrows).
 function checkReferenceFor<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1023,6 +1002,9 @@ function checkReferenceFor<W: Walker>(
   body: Block,
   marker: LoopReference,
 ) uses alloc {
+  // The source is an array place the loop may change, as for a `mutable` argument, its
+  // elements have contents, the binding acts as a `mutable` parameter, and the body
+  // cannot use the source (checkLoopBorrows).
   // The element pointer would have to live in the frame across `yield`.
   if (checker.generator && checker.bodies[checker.body].arrowDepth == 0) {
     reportError(
@@ -1160,9 +1142,8 @@ function checkReferenceFor<W: Walker>(
   popScope(mutable checker)
 }
 
-// findPlacePath is the path of a place after its root name, with "[]" for
-// an element: `game.players[0]` gives players, [].
 function findPlacePath(place: Expr): Array<string> uses alloc {
+  // "[]" stands for an element: `game.players[0]` gives players, [].
   return match (place) {
     Expr.FieldExpr(_, _, target, name) => appendPath(findPlacePath(target), name)
     Expr.IndexExpr(_, _, target, _) => appendPath(findPlacePath(target), "[]")
@@ -1176,9 +1157,6 @@ function appendPath(path: Array<string>, segment: string): Array<string> uses al
   return longer
 }
 
-// checkYield checks `yield value` and `yield* other` (Go's yieldStmt). Both
-// are valid only directly in a function* body or its nested statement
-// blocks: not in an arrow function and not in a block expression.
 function checkYield<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1187,6 +1165,8 @@ function checkYield<W: Walker>(
   delegate: bool,
   binding: Option<YieldBinding>,
 ) uses alloc {
+  // Both are valid only directly in a function* body or its nested statement blocks:
+  // not in an arrow function and not in a block expression.
   let word = "yield"
   if (delegate) {
     word = "yield*"
@@ -1259,7 +1239,6 @@ function checkYield<W: Walker>(
   declareYieldInput(mutable checker, binding, Type.TVoid)
 }
 
-// declareYieldInput declares the local of `const input = yield value`.
 function declareYieldInput(
   mutable checker: Checker,
   binding: Option<YieldBinding>,
@@ -1270,7 +1249,6 @@ function declareYieldInput(
   }
 }
 
-// isResult reports a Result value, which a statement may not drop.
 export function isResult(checker: Checker, valueType: Type): bool {
   if (valueType is Type.TEnum(index)) {
     return checker.enums[index].name == "Result" &&
@@ -1279,8 +1257,6 @@ export function isResult(checker: Checker, valueType: Type): bool {
   return false
 }
 
-// diverges reports whether a block always leaves by return, break,
-// continue or panic.
 export function diverges(block: Block): bool {
   const count = Arrays.length(block.statements)
   if (count == 0) {
@@ -1317,15 +1293,13 @@ function ifDiverges(then: Block, orElse: Option<Stmt>): bool {
   return false
 }
 
-// endLoopNarrowing ends the narrowing of every local that the condition or
-// the body of a loop assigns or passes as `mutable`: the next iteration sees
-// the changed value. Names are matched without scopes, which can only end
-// more narrowing than needed (Go's endLoopNarrowing).
 function endLoopNarrowing(
   mutable checker: Checker,
   condition: Option<Expr>,
   body: Block,
 ) uses alloc {
+  // The next iteration sees the changed value. Names are matched without scopes, which
+  // can only end more narrowing than needed.
   let names: Array<string> = []
   if (condition is Some(testExpression)) {
     collectAssignedInExpr(testExpression, mutable names)
@@ -1337,8 +1311,6 @@ function endLoopNarrowing(
   }
 }
 
-// endExpressionNarrowing ends the narrowing of every local that an
-// expression passes as `mutable` (Go's endExprNarrowing).
 function endExpressionNarrowing(mutable checker: Checker, expression: Expr) uses alloc {
   let names: Array<string> = []
   collectAssignedInExpr(expression, mutable names)
@@ -1436,8 +1408,6 @@ function addUse(
   })
 }
 
-// collectRootUse records the local at the root of an assignable expression
-// and walks the index expressions on the way (Go's useCollector.root).
 function collectRootUse(
   checker: Checker,
   mutable collector: UseCollector,
@@ -1447,6 +1417,7 @@ function collectRootUse(
   chain: Array<int>,
   arms: Array<ArmStep>,
 ) uses alloc {
+  // Walks the index expressions on the way.
   match (expression) {
     Expr.Ident(nodeId, pos, _) => {
       if (getRef(checker, nodeId) is Ref.Local(local)) {
@@ -1480,7 +1451,6 @@ function collectListUses(
   }
 }
 
-// collectUses walks an expression in evaluation order (Go's useCollector.walk).
 function collectUses(
   checker: Checker,
   mutable collector: UseCollector,
@@ -1616,9 +1586,6 @@ function collectUses(
   }
 }
 
-// collectBlockUses walks the statements of a block inside an expression,
-// such as a match arm. The statements run one after the other, so each has a
-// step of its own (Go's useCollector.block).
 function collectBlockUses(
   checker: Checker,
   mutable collector: UseCollector,
@@ -1626,6 +1593,7 @@ function collectBlockUses(
   chain: Array<int>,
   arms: Array<ArmStep>,
 ) uses alloc {
+  // The statements run one after the other, so each has a step of its own.
   collector.blocks = collector.blocks + 1
   collector.blocked = collector.blocked + 1
   const blockNode = -collector.blocks
@@ -1775,9 +1743,9 @@ function chainHas(chain: Array<int>, callId: int): bool {
   return false
 }
 
-// isInsideCall tells whether a use is in the arguments of a call and not in a
-// match arm there: checkExclusive reports those (Go's insideCall).
 function isInsideCall(use: LocalUse, callId: int): bool {
+  // Uses in the arguments of the call, outside any match arm there, are the ones
+  // checkExclusive reports.
   for (const i of Ranges.upTo(Arrays.length(use.chain))) {
     if (use.chain[i] != callId) {
       continue
@@ -1803,7 +1771,6 @@ function inDifferentArms(first: Array<ArmStep>, second: Array<ArmStep>): bool {
   return false
 }
 
-// findCallStart is where a call's text begins: the start of its callee.
 function findCallStart(expression: Expr): Pos {
   return match (expression) {
     Expr.FieldExpr(_, _, target, _) => findCallStart(target)
@@ -1813,7 +1780,6 @@ function findCallStart(expression: Expr): Pos {
   }
 }
 
-// findStatementPos is the position of a statement that can hold a call.
 function findStatementPos(statement: Stmt): Pos {
   return match (statement) {
     Stmt.VarStmt(_, pos, _, _, _, _, _) => pos
@@ -1824,7 +1790,6 @@ function findStatementPos(statement: Stmt): Pos {
   }
 }
 
-// isBlankText is true for text of spaces and tabs only.
 function isBlankText(characters: Array<char>, first: int, last: int): bool {
   for (const index of Ranges.between(first, last)) {
     const character = characters[index]
@@ -1835,16 +1800,14 @@ function isBlankText(characters: Array<char>, first: int, last: int): bool {
   return true
 }
 
-// buildHoistFix binds a `mutable` call to a fresh const on the line before its
-// statement and puts the name in its place (Go's hoistFix). It needs the
-// source text, a statement that starts its line and a call that returns a
-// value.
 function buildHoistFix(
   checker: Checker,
   statement: Stmt,
   callId: int,
   call: Expr,
 ): Array<Fix> uses alloc {
+  // Needs the source text, a statement that starts its line and a call that returns a
+  // value.
   const scope = checker.scopes[checker.current]
   if (!scope.isSource || Str.length(scope.facts.source) == 0) {
     return []
@@ -1909,11 +1872,9 @@ function buildHoistFix(
   ]
 }
 
-// checkMutableConflicts rejects a statement whose expressions pass a local as
-// `mutable` and also use it anywhere else, at any depth (Go's
-// checkMutableConflicts, E0929). Uses inside the arguments of the call
-// itself belong to checkExclusive. It runs after the statement is checked.
 function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses alloc {
+  // Uses inside the arguments of the call itself belong to checkExclusive. This runs
+  // after the statement is checked.
   let collector = UseCollector { found: [], blocks: 0, calls: Map {}, blocked: 0 }
   let isFixable = true
   const noCalls: Array<int> = []

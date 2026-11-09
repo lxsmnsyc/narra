@@ -1,7 +1,7 @@
 ---
 id: named-args-check
 title: Check and lower named arguments
-status: active
+status: done
 priority:
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 230510
 owns:
   - testdata/named_args*
   - testdata/errors/named_args*
@@ -63,3 +63,5 @@ The checker matches named arguments to parameters and the emitter calls the func
 - [ ] Error tests for each error above, with codes E0328-E0332; a `testdata/diagnostics/` case for the close-name fix.
 - [ ] SPEC.md section 2 describes named arguments and amends the D12 line; D87 loses "Not built yet"; the Differences from TypeScript table needs no row (TypeScript has no such syntax).
 - [ ] Fast check passes, including `TestSelfhostBootstrap`.
+
+Landed on feat/batch-1 as 7559ad8 and b532619.

@@ -1,7 +1,7 @@
 ---
 id: named-args-query
 title: narra query reads named arguments
-status: todo
+status: active
 priority:
 type: feature
 story: batch-1

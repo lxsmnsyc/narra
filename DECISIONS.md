@@ -718,7 +718,7 @@ Decision: Narra has no cycle collector and no type rule against cycles. A refere
 
 ## D81. `mutable` changes the contents of a value, never the binding
 
-Decision: `mutable` reaches the contents of a value, its fields and elements, and never the variable that holds it. `const` fixes the name only, as in TypeScript, and `let` adds reassignment of the name. Amends D27 (the argument no longer has to be a `let`, and the callee can no longer replace the whole value) and the deep `const` of section 2. Not built yet: node mutable-bindings builds it.
+Decision: `mutable` reaches the contents of a value, its fields and elements, and never the variable that holds it. `const` fixes the name only, as in TypeScript, and `let` adds reassignment of the name. Amends D27 (the argument no longer has to be a `let`, and the callee can no longer replace the whole value) and the deep `const` of section 2.
 
 **Decided by the maintainer on 2026-11-07:** rules 1 to 5, including the type list of rule 1 and read-only plain parameters in rule 5.
 
@@ -803,7 +803,7 @@ Decision: `trait Shape { function toValue(value: Self): Value uses alloc; functi
 
 ## D85. A `mutable` marker only on `for ... of` over an array
 
-Decision: `for (mutable item of items)` binds `item` to each element of the array `items` in place, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` does the same and also gives the index. `Arrays.values(items)` may be written for `items`. This is the only position the marker gets for now. Pattern bindings, destructuring and a local reference binding stay as D81 left them. Amends D81, whose bindings that copy part of a value stay read-only everywhere else. Not built yet: node mutable-bindings builds it. Chosen by the orchestrator on 2026-11-09 (the maintainer delegated this batch's gate decisions).
+Decision: `for (mutable item of items)` binds `item` to each element of the array `items` in place, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` does the same and also gives the index. `Arrays.values(items)` may be written for `items`. This is the only position the marker gets for now. Pattern bindings, destructuring and a local reference binding stay as D81 left them. Amends D81, whose bindings that copy part of a value stay read-only everywhere else. Not built yet: node mutable-for-of builds it. Chosen by the orchestrator on 2026-11-09 (the maintainer delegated this batch's gate decisions).
 
 Rules of the loop form:
 

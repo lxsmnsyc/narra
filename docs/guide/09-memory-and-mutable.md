@@ -256,6 +256,59 @@ Ana at 5,5
 Bo at 0,0
 ```
 
+### Heal the whole party
+
+A fountain heals every player. A loop that writes to its loop variable does not compile:
+
+```narra error
+// error: 10:5: "player" is a copy of an element of players, so changing it would not change players; write `for (mutable player of players)`, or copy it first with `const copy = player`
+struct Player {
+  name: string
+  hp: int
+}
+
+export function run(args: Array<string>): int {
+  const players = [Player { name: "Ana", hp: 3 }, Player { name: "Bo", hp: 7 }]
+  for (const player of players) {
+    player.hp = player.hp + 5
+  }
+  return 0
+}
+```
+
+`for (const player of players)` gives each element as a copy, as a pattern does. Write `mutable` in place of `const`, and `player` reaches each element of `players` itself, the way a `mutable` parameter reaches the caller's value:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+struct Player {
+  name: string
+  hp: int
+}
+
+export function run(args: Array<string>): int {
+  const players = [Player { name: "Ana", hp: 3 }, Player { name: "Bo", hp: 7 }]
+  for (mutable player of players) {
+    player.hp = player.hp + 5
+  }
+  for (const #[index, mutable player] of Arrays.entries(players)) {
+    player.name = `${Int.toString(index + 1)}. ${player.name}`
+  }
+  for (const player of players) {
+    print(`${player.name}: ${Int.toString(player.hp)}`)
+  }
+  return 0
+}
+```
+
+```text
+1. Ana: 8
+2. Bo: 12
+```
+
+Inside such a loop the body cannot use `players` at all, not even to read it: a `push` there could move the elements `player` points at. Reach the elements through `player`, or write a loop over the indexes when the body needs other elements too. The element type needs contents to change, so `for (mutable n of numbers)` over an `Array<int>` is an error; write `numbers[index] = ...` in an `Arrays.entries` loop.
+
 ### Log the hp before and after healing
 
 Now `heal` adds an amount and returns the new hp, and the game logs the change in one line:

@@ -60,6 +60,7 @@ import {
   Expr,
   Pattern,
   YieldBinding,
+  LoopReference,
   SourceFacts,
   DotUse,
   createEmptyFacts,
@@ -1676,6 +1677,61 @@ function parseLoopExitLabel(mutable parser: Parser): string {
   return ""
 }
 
+// isMarkedEntries reports a `for` head `const #[index, mutable item]`, the
+// marker form over Arrays.entries (D85).
+function isMarkedEntries(parser: Parser): bool {
+  const pattern = peekToken(parser, 1)
+  const index = peekToken(parser, 2)
+  const comma = peekToken(parser, 3)
+  const marker = peekToken(parser, 4)
+  return isAt(parser, "const") &&
+    pattern.kind == TokenKind.TokPunct &&
+    pattern.text == "#[" &&
+    index.kind == TokenKind.TokIdent &&
+    comma.kind == TokenKind.TokPunct &&
+    comma.text == "," &&
+    marker.kind == TokenKind.TokKeyword &&
+    marker.text == "mutable"
+}
+
+// parseReferenceFor parses the rest of `for (mutable item of items) body` or
+// `for (const #[index, mutable item] of Arrays.entries(items)) body`, after
+// the `(`. The head is not desugared into a declaration, which would copy
+// the element (D85).
+function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt uses alloc {
+  let indexName = ""
+  let indexPos = pos
+  if (accept(mutable parser, "const")) {
+    expect(mutable parser, "#[")
+    const indexToken = expectIdent(mutable parser)
+    indexName = indexToken.text
+    indexPos = getPos(indexToken)
+    expect(mutable parser, ",")
+  }
+  expect(mutable parser, "mutable")
+  const nameToken = expectIdent(mutable parser)
+  if (indexName != "") {
+    expect(mutable parser, "]")
+  }
+  expect(mutable parser, "of")
+  const iterable = parseExpr(mutable parser)
+  expect(mutable parser, ")")
+  const body = parseBlock(mutable parser)
+  skipNewlines(mutable parser)
+
+  // The index local and the loop's own local get node ids after the body,
+  // as for the other `for` forms.
+  let indexId = -1
+  if (indexName != "") {
+    indexId = newId(mutable parser)
+    parser.facts.namePositions[indexId] = indexPos
+  }
+  const forId = newId(mutable parser)
+  parser.facts.namePositions[forId] = getPos(nameToken)
+  const reference = LoopReference { indexId: indexId, indexName: indexName }
+  return Stmt.ForStmt(forId, pos, "", nameToken.text, iterable, body, Some(reference))
+}
+
 // parseLabeledStmt parses `name: for ...` and `name: while ...`.
 function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   const labelToken = advance(mutable parser)
@@ -1694,8 +1750,8 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   if (loop is Stmt.WhileStmt(_, _, condition, body)) {
     return Stmt.WhileStmt(labelPos, labelToken.text, condition, body)
   }
-  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body)) {
-    return Stmt.ForStmt(nodeId, labelPos, labelToken.text, name, iterable, body)
+  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference)) {
+    return Stmt.ForStmt(nodeId, labelPos, labelToken.text, name, iterable, body, reference)
   }
   return loop
 }
@@ -1825,6 +1881,9 @@ function parseStmtBody(mutable parser: Parser): Stmt {
   if (isAt(parser, "for")) {
     advance(mutable parser)
     expect(mutable parser, "(")
+    if (isAt(parser, "mutable") || isMarkedEntries(parser)) {
+      return parseReferenceFor(mutable parser, pos)
+    }
     if (!isAt(parser, "const") && !isAt(parser, "let")) {
       failHere(mutable parser, "E0030", "write `for (const item of items)`")
       return Stmt.BreakStmt(pos, "")
@@ -1878,7 +1937,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     }
     const forId = newId(mutable parser)
     parser.facts.namePositions[forId] = headPos
-    return Stmt.ForStmt(forId, pos, "", name, iterable, body)
+    return Stmt.ForStmt(forId, pos, "", name, iterable, body, None)
   }
   if (isAt(parser, "yield")) {
     advance(mutable parser)

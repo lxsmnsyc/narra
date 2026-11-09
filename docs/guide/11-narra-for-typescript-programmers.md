@@ -352,7 +352,7 @@ export function run(args: Array<string>): int {
 
 A value has no identity apart from its contents, so there is no "same object" test. This is the one place where code that TypeScript accepts compiles in Narra with another meaning, and the compiler cannot warn about it: a change through one name never shows through a copy.
 
-A `for ... of` loop variable, a name bound by a pattern (`found is Some(player)`) and a destructured name hold copies too. Since TypeScript code that changes them expects the original to change, the compiler rejects a change to their fields or elements. Write through the source instead, `players[index].hp = 0`, or copy the value first with `const copy = player`.
+A `for ... of` loop variable, a name bound by a pattern (`found is Some(player)`) and a destructured name hold copies too. Since TypeScript code that changes them expects the original to change, the compiler rejects a change to their fields or elements. For the loop over an array, write `for (mutable player of players)`: then `player.hp = 0` changes `players`, as in TypeScript, and the body cannot use `players` itself ([chapter 9](09-memory-and-mutable.md#heal-the-whole-party)). Elsewhere, write through the source, `players[index].hp = 0`, or copy the value first with `const copy = player`.
 
 ## Missing values
 

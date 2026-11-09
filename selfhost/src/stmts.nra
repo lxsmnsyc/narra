@@ -3,7 +3,7 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables (D70) through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
-import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding } from "narrac/ast"
+import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/fixes"
 import { Type } from "narrac/types"
@@ -28,6 +28,7 @@ import {
   getExpressionId,
   getExpressionPos,
   BindingKind,
+  LoopBorrow,
   setBinding,
   isContentsType,
 } from "narrac/check"
@@ -93,7 +94,7 @@ export function checkStatement<W: Walker>(
       }
     }
     Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
-    Stmt.ForStmt(_, _, _, _, iterable, _) => endExpressionNarrowing(mutable checker, iterable)
+    Stmt.ForStmt(_, _, _, _, iterable, _, _) => endExpressionNarrowing(mutable checker, iterable)
     Stmt.YieldStmt(_, value, _, _) => endExpressionNarrowing(mutable checker, value)
     _ => {}
   }
@@ -139,7 +140,7 @@ export function checkStatement<W: Walker>(
       condition,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, name, iterable, body) => checkFor(
+    Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference) => checkFor(
       mutable checker,
       walker,
       nodeId,
@@ -148,6 +149,7 @@ export function checkStatement<W: Walker>(
       name,
       iterable,
       body,
+      reference,
     )
     Stmt.BreakStmt(pos, label) => checkLoopExit(
       mutable checker,
@@ -372,7 +374,14 @@ function checkAssignment<W: Walker>(
   } else if (target is Expr.Ident(_, _, _)) {
     // A whole assignment changes the name: only a `let` can.
     const local = getLocal(checker, root)
-    if (local.param && local.isMutable) {
+    if (local.binding == BindingKind.Reference) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0958",
+        `loop element ${quoteGo(local.name)} cannot be assigned whole; \`mutable\` reaches its fields and elements, so assign those, or write an index loop to replace the element`,
+      )
+    } else if (local.param && local.isMutable) {
       reportError(
         mutable checker,
         pos,
@@ -761,7 +770,12 @@ function checkFor<W: Walker>(
   name: string,
   iterable: Expr,
   body: Block,
+  reference: Option<LoopReference>,
 ) uses alloc {
+  if (reference is Some(marker)) {
+    checkReferenceFor(mutable checker, walker, nodeId, pos, label, name, iterable, body, marker)
+    return
+  }
   // The iterable is a call of a std function that gives the element type.
   const outerLine = checker.forSourceLine
   const outerColumn = checker.forSourceColumn
@@ -851,6 +865,175 @@ function checkFor<W: Walker>(
   checkBlock(mutable checker, walker, body)
   leaveLoop(mutable checker, label)
   popScope(mutable checker)
+}
+
+// checkReferenceFor checks `for (mutable item of items)` and `for (const
+// #[index, mutable item] of Arrays.entries(items))` (D85). The source is an
+// array place the loop may change, as for a `mutable` argument, its elements
+// have contents, the binding acts as a `mutable` parameter, and the body
+// cannot use the source (checkLoopBorrows).
+function checkReferenceFor<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  name: string,
+  iterable: Expr,
+  body: Block,
+  marker: LoopReference,
+) uses alloc {
+  // The element pointer would have to live in the frame across `yield`.
+  if (checker.generator && checker.bodies[checker.body].arrowDepth == 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0957",
+      "`for (mutable ...)` is not supported in a function* body yet; change the elements through an index, as in `items[index].field = value`",
+    )
+  }
+
+  // The iterable is the source, or Arrays.values or Arrays.entries of it.
+  const outerLine = checker.forSourceLine
+  const outerColumn = checker.forSourceColumn
+  const iterablePos = getExpressionPos(iterable)
+  checker.forSourceLine = iterablePos.line
+  checker.forSourceColumn = iterablePos.column
+  const iterableType = checkExpression(mutable checker, walker, iterable, None)
+  checker.forSourceLine = outerLine
+  checker.forSourceColumn = outerColumn
+  let builtin = ""
+  let source = iterable
+  if (iterable is Expr.CallExpr(callId, _, _, _, arguments)) {
+    if (getRef(checker, callId) is Ref.Builtin(index)) {
+      builtin = checker.registry.functions[index].name
+    }
+    if ((builtin == "Array.values" || builtin == "Array.entries") && Arrays.length(arguments) > 0) {
+      source = arguments[0].value
+    }
+  }
+  const sourcePos = getExpressionPos(source)
+  // The element type, also after an error below, so the body is checked
+  // without errors that only follow from it.
+  let element = Type.TVoid
+  const sourceType = getNodeType(checker, getExpressionId(source))
+  if (sourceType is Some(Type.TArray(arrayElement))) {
+    element = arrayElement
+  } else if (sourceType is Some(Type.TMap(_, mapValue))) {
+    element = mapValue
+  }
+  let valid = true
+  if (marker.indexName != "" && builtin != "Array.entries") {
+    reportError(
+      mutable checker,
+      iterablePos,
+      "E0954",
+      `\`#[${marker.indexName}, mutable ${name}]\` needs \`Arrays.entries(items)\` as the source; without the index, write \`for (mutable ${name} of items)\``,
+    )
+    valid = false
+  } else if (marker.indexName == "" && builtin == "Array.entries") {
+    reportError(
+      mutable checker,
+      iterablePos,
+      "E0954",
+      `Arrays.entries gives #[index, item] tuples; write \`for (const #[index, mutable ${name}] of Arrays.entries(items))\``,
+    )
+    valid = false
+  } else if (!(sourceType is Some(Type.TArray(_)))) {
+    const text = typeString(checker, iterableType)
+    reportError(
+      mutable checker,
+      iterablePos,
+      "E0954",
+      `\`for (mutable ...)\` changes the elements of an Array in place, found ${text}`,
+    )
+    valid = false
+  }
+
+  // The loop changes the source, so it must be a place a `mutable` argument
+  // could name.
+  let root = -1
+  if (valid && !checkConstWrite(mutable checker, sourcePos, source)) {
+    root = findAssignedLocal(checker, source)
+    if (root < 0) {
+      reportError(
+        mutable checker,
+        sourcePos,
+        "E0954",
+        "the source of `for (mutable ...)` must be a variable, a field or an element, so the loop can change it in place; store the array in a local first",
+      )
+    } else {
+      checkContentsChange(mutable checker, sourcePos, root, source, true)
+    }
+  }
+  if (root >= 0 && !isContentsType(checker, element)) {
+    const sourceText = describePlace(source)
+    const elementText = typeString(checker, element)
+    let indexName = marker.indexName
+    if (indexName == "") {
+      indexName = "index"
+    }
+    reportError(
+      mutable checker,
+      pos,
+      "E0955",
+      `the elements of ${sourceText} are ${elementText}, which have no contents to change in place; write \`${sourceText}[${indexName}] = ...\` in a \`for (const #[${indexName}, ${name}] of Arrays.entries(${sourceText}))\` loop`,
+    )
+  }
+
+  // The index is a copy; the element binding is a pointer to the element.
+  endLoopNarrowing(mutable checker, None, body)
+  pushScope(mutable checker)
+  const bodyIndex = checker.body
+  if (marker.indexName != "") {
+    const indexLocal = declareLocal(
+      mutable checker,
+      marker.indexId,
+      pos,
+      marker.indexName,
+      Type.TInt,
+      false,
+      false,
+    )
+    checker.bodies[bodyIndex].locals[indexLocal].binding = BindingKind.Loop
+  }
+  const local = declareLocal(mutable checker, nodeId, pos, name, element, true, false)
+  checker.bodies[bodyIndex].locals[local].binding = BindingKind.Reference
+
+  // The body borrows the source.
+  const outerBorrows = checker.loopBorrows
+  if (root >= 0) {
+    Arrays.push(mutable checker.loopBorrows, LoopBorrow {
+      local: root,
+      path: findPlacePath(source),
+      source: describePlace(source),
+      name: name,
+    })
+  }
+  enterLoop(mutable checker, pos, label)
+  checkBlock(mutable checker, walker, body)
+  leaveLoop(mutable checker, label)
+  checker.loopBorrows = outerBorrows
+  if (Arrays.length(checker.loopBorrows) == 0) {
+    checker.borrowChecked = []
+  }
+  popScope(mutable checker)
+}
+
+// findPlacePath is the path of a place after its root name, with "[]" for
+// an element: `game.players[0]` gives players, [].
+function findPlacePath(place: Expr): Array<string> uses alloc {
+  return match (place) {
+    Expr.FieldExpr(_, _, target, name) => appendPath(findPlacePath(target), name)
+    Expr.IndexExpr(_, _, target, _) => appendPath(findPlacePath(target), "[]")
+    _ => []
+  }
+}
+
+function appendPath(path: Array<string>, segment: string): Array<string> uses alloc {
+  let longer = path
+  Arrays.push(mutable longer, segment)
+  return longer
 }
 
 // checkYield checks `yield value` and `yield* other` (Go's yieldStmt). Both
@@ -1386,7 +1569,7 @@ function collectStatementUses(
         extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
       )
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       collector.blocks = collector.blocks + 1
       const stepNode = -collector.blocks
       collectUses(
@@ -1601,7 +1784,7 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
       isFixable = false
       collectUses(checker, mutable collector, condition, noCalls, noArms)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, _, _) => {
       isFixable = false
       collectUses(checker, mutable collector, iterable, noCalls, noArms)
     }

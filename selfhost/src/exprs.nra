@@ -69,6 +69,7 @@ import {
   FunctionStore,
   generatorEffectList,
   BindingKind,
+  LoopBorrow,
   canChangeContents,
 } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
@@ -101,9 +102,88 @@ export function checkExpression<W: Walker>(
   expression: Expr,
   want: Option<Type>,
 ): Type uses alloc {
+  if (Arrays.length(checker.loopBorrows) > 0) {
+    checkLoopBorrows(mutable checker, expression)
+  }
   const found = checkExpressionKind(mutable checker, walker, expression, want)
   setNodeType(mutable checker, getExpressionId(expression), found)
   return found
+}
+
+// checkLoopBorrows rejects a place that overlaps the source of an enclosing
+// `for (mutable item of items)` loop (D85 rule 4): `game`, `game.players`
+// and `game.players[0]` inside a loop over `game.players`, but not
+// `game.round`. Only the whole place is compared, so its root name is
+// recorded and the parts of the place checked after it are skipped. An
+// index matches any index.
+function checkLoopBorrows(mutable checker: Checker, expression: Expr) uses alloc {
+  // Walk down to the root name, collecting the path in reverse.
+  let reversed: Array<string> = []
+  let current = expression
+  let rootId = -1
+  let rootName = ""
+  while (rootId < 0) {
+    match (current) {
+      Expr.Ident(nodeId, _, name) => {
+        rootId = nodeId
+        rootName = name
+      }
+      Expr.FieldExpr(_, _, target, name) => {
+        Arrays.push(mutable reversed, name)
+        current = target
+      }
+      Expr.IndexExpr(_, _, target, _) => {
+        Arrays.push(mutable reversed, "[]")
+        current = target
+      }
+      _ => {
+        return
+      }
+    }
+  }
+  for (const checked of Arrays.values(checker.borrowChecked)) {
+    if (checked == rootId) {
+      return
+    }
+  }
+  Arrays.push(mutable checker.borrowChecked, rootId)
+  const local = findLocal(checker, rootName)
+  if (local < 0) {
+    return
+  }
+  let path: Array<string> = []
+  let position = Arrays.length(reversed) - 1
+  while (position >= 0) {
+    Arrays.push(mutable path, reversed[position])
+    position = position - 1
+  }
+  for (const borrow of Arrays.values(checker.loopBorrows)) {
+    if (borrow.local == local && arePathsOverlapping(path, borrow.path)) {
+      const used = describePlace(expression)
+      reportError(
+        mutable checker,
+        getExpressionPos(expression),
+        "E0956",
+        `${quoteGo(used)} cannot be used inside the loop that changes ${borrow.source} in place; reach its elements through ${borrow.name}, or write an index loop`,
+      )
+      return
+    }
+  }
+}
+
+// arePathsOverlapping reports whether one field path is a prefix of the
+// other, with "[]" matching any index.
+function arePathsOverlapping(first: Array<string>, second: Array<string>): bool {
+  let count = Arrays.length(first)
+  if (Arrays.length(second) < count) {
+    count = Arrays.length(second)
+  }
+  for (const index of Ranges.upTo(count)) {
+    if (first[index] != second[index]) {
+      return false
+    }
+  }
+  return true
 }
 
 function checkExpressionKind<W: Walker>(
@@ -335,6 +415,13 @@ export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses
           pos,
           "E0915",
           `mutable parameter ${quoteGo(name)} cannot be returned or stored; copy it first with \`const copy = ${name}\``,
+        )
+      } else if (local.binding == BindingKind.Reference) {
+        reportError(
+          mutable checker,
+          pos,
+          "E0915",
+          `loop element ${quoteGo(name)} is changed in place, so it cannot be returned or stored; copy it first with \`const copy = ${name}\``,
         )
       }
     }
@@ -2139,7 +2226,7 @@ function collectStatementExpressions(statement: Stmt, mutable found: Array<Expr>
       collectExpressionAndArms(condition, mutable found)
       collectBlockExpressions(body, mutable found)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       collectExpressionAndArms(iterable, mutable found)
       collectBlockExpressions(body, mutable found)
     }
@@ -2839,7 +2926,7 @@ function collectAssignedInStatement(statement: Stmt, mutable names: Array<string
       collectAssignedInExpr(condition, mutable names)
       collectAssignedInBlock(body, mutable names)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       collectAssignedInExpr(iterable, mutable names)
       collectAssignedInBlock(body, mutable names)
     }

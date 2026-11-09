@@ -149,13 +149,26 @@ export enum ProgramFunc {
 // Local). noEscape marks a function-type parameter without `escaping`.
 // selfhost-check-patterns adds narrowing beside it.
 // How a local was bound. Only a Plain local (a `const` or `let` with a plain
-// name) and a `mutable` parameter can have their contents changed (D81); the
-// others hold a copy of part of another value and are read-only.
+// name), a Reference and a `mutable` parameter can have their contents
+// changed (D81); the others hold a copy of part of another value and are
+// read-only. A Reference is the name of `for (mutable item of items)`: a
+// pointer to the element, which acts as a `mutable` parameter (D85).
 export enum BindingKind derives Equatable {
   Plain
   Pattern
   Loop
   Destructured
+  Reference
+}
+
+// The source of a `for (mutable item of items)` loop being checked (D85).
+// The body cannot use a place that overlaps it: local is the BodyInfo.locals
+// index at its root, path the fields after it, with "[]" for an element.
+export struct LoopBorrow {
+  local: int
+  path: Array<string>
+  source: string
+  name: string
 }
 
 export struct LocalInfo {
@@ -518,6 +531,10 @@ export struct Checker {
   // The id of the target of the assignment being checked, or -1 (Go's
   // c.assigning): a Map index there is a write.
   assigningId: int = -1
+  // The sources of the enclosing `for (mutable ...)` loops, innermost last,
+  // and the ids of the root names of the places already compared with them.
+  loopBorrows: Array<LoopBorrow> = []
+  borrowChecked: Array<int> = []
   // The id of the integer literal directly under a unary minus, or -1: the
   // literal may reach one further below zero (D82).
   negatedLiteralId: int = -1
@@ -1379,13 +1396,14 @@ export function getLocal(checker: Checker, index: int): LocalInfo {
 }
 
 // canChangeContents reports whether the fields and elements of a local can
-// be assigned and the local passed as mutable: a `mutable` parameter, or a
-// `const` or `let` declared with a plain name (D81).
+// be assigned and the local passed as mutable: a `mutable` parameter, a
+// `const` or `let` declared with a plain name (D81), or the name of a
+// `for (mutable ...)` loop (D85).
 export function canChangeContents(local: LocalInfo): bool {
   if (local.param) {
     return local.isMutable
   }
-  return local.binding == BindingKind.Plain
+  return local.binding == BindingKind.Plain || local.binding == BindingKind.Reference
 }
 
 // setBinding records how a declared local was bound. The `for` head with a

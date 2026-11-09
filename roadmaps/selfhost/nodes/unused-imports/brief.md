@@ -1,7 +1,7 @@
 ---
 id: unused-imports
 title: "Unused imports and private functions are errors"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 193056
 owns:
   - testdata/errors/unused_import*
   - testdata/errors/unused_function*
@@ -64,3 +64,5 @@ Finish SPEC section 2 "Unused names are errors": an unused import and an unused 
 ## Sizing
 
 M. The rule is small; the cleanup across `selfhost/src` and the test programs is most of the work.
+
+Landed on feat/batch-1 (e9647d8) after a clean rebase onto bytes-type; 12 suites passed. Gate decided by the orchestrator: imports are checked on tokens (a same-named field or argument counts as a use); the check runs only when the package has no other error; the function fix renames to _name. Open for the maintainer: later-pass error samples must have no unused names.

@@ -1,7 +1,7 @@
 ---
 id: lsp-incremental
 title: "narrac lsp: recheck only changed modules"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

@@ -1,0 +1,58 @@
+// std/random: a seeded generator, SplitMix64. The same seed gives the same numbers on every
+// run and every platform. It is fast and small and it is not for cryptography.
+
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as U64 from "std/u64"
+import * as Float from "std/float"
+import * as Entropy from "std/internal/entropy"
+
+export struct Random {
+  state: u64
+}
+
+export function seeded(seed: int): Random {
+  return Random { state: U64.wrap(seed) }
+}
+
+export function fromSystem(): Random uses io {
+  return seeded(Entropy.seed())
+}
+
+export function nextBits(mutable random: Random): u64 {
+  random.state = random.state +% 0x9E3779B97F4A7C15
+  let mixed = random.state
+  mixed = (mixed ^ (mixed >> 30)) *% 0xBF58476D1CE4E5B9
+  mixed = (mixed ^ (mixed >> 27)) *% 0x94D049BB133111EB
+  return mixed ^ (mixed >> 31)
+}
+
+export function nextInt(mutable random: Random, low: int, high: int): int {
+  if (low >= high) {
+    panic("Random.nextInt: the range is empty")
+  }
+  const span = U64.wrap(high) -% U64.wrap(low)
+  const limit = (0 -% span) % span
+  let bits = nextBits(mutable random)
+  while (bits < limit) {
+    bits = nextBits(mutable random)
+  }
+  return Int.wrap(U64.wrap(low) +% bits % span)
+}
+
+export function nextFloat(mutable random: Random): f64 {
+  const bits = nextBits(mutable random) >> 11
+  return Float.from(bits) / 9007199254740992.0
+}
+
+export function shuffle<T>(mutable random: Random, mutable items: Array<T>) {
+  const length = Arrays.length(items)
+  for (const step of Ranges.upTo(length - 1)) {
+    const position = length - 1 - step
+    const other = nextInt(mutable random, 0, position + 1)
+    const held = items[position]
+    items[position] = items[other]
+    items[other] = held
+  }
+}

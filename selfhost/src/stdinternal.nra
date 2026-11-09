@@ -1,4 +1,4 @@
-// The registry rows, checks and emitters of std/internal (coroutine, float and probe).
+// The registry rows, checks and emitters of std/internal (coroutine, float, probe, math, clock and entropy).
 import { StdFunc } from "narrac/builtins"
 import { Type } from "narrac/types"
 import { Checker, Walker, getExpressionId } from "narrac/check"
@@ -17,8 +17,19 @@ import {
   declareUnset,
 } from "narrac/emitstate"
 import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
-import { NODE, plain, owned, argumentText, findVariant, ioEither } from "narrac/stdemithelp"
+import {
+  NODE,
+  FixedCall,
+  plain,
+  owned,
+  argumentText,
+  emitFixedCall,
+  findVariant,
+  ioEither,
+} from "narrac/stdemithelp"
 import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
 
 export const INTERNAL_COROUTINE_FUNCS: Array<StdFunc> = [
   StdFunc {
@@ -75,6 +86,82 @@ export const INTERNAL_PROBE_FUNCS: Array<StdFunc> = [
   },
 ]
 
+const MATH_UNARY_NAMES: Array<string> = [
+  "floor",
+  "ceil",
+  "round",
+  "trunc",
+  "sin",
+  "cos",
+  "tan",
+  "exp",
+  "log",
+]
+
+const MATH_BINARY_NAMES: Array<string> = ["atan2", "pow"]
+
+// internalMathFuncs lists the math.h functions of std/internal/math. Each calls the C function of its name.
+export function internalMathFuncs(): Array<StdFunc> uses alloc {
+  let rows: Array<StdFunc> = []
+  for (const key of Arrays.values(MATH_UNARY_NAMES)) {
+    Arrays.push(mutable rows, StdFunc {
+      name: `Libm.${key}`,
+      module: "std/internal/math",
+      key: key,
+      parameters: ["f64"],
+      result: "f64",
+    })
+  }
+  for (const key of Arrays.values(MATH_BINARY_NAMES)) {
+    Arrays.push(mutable rows, StdFunc {
+      name: `Libm.${key}`,
+      module: "std/internal/math",
+      key: key,
+      parameters: ["f64", "f64"],
+      result: "f64",
+    })
+  }
+  return rows
+}
+
+export const INTERNAL_CLOCK_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Clock.monotonicNanos",
+    module: "std/internal/clock",
+    key: "monotonicNanos",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Clock.sleepNanos",
+    module: "std/internal/clock",
+    key: "sleepNanos",
+    parameters: ["int"],
+    result: "void",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Clock.wallMillis",
+    module: "std/internal/clock",
+    key: "wallMillis",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+]
+
+export const INTERNAL_ENTROPY_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Entropy.seed",
+    module: "std/internal/entropy",
+    key: "seed",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+]
+
 // checkCoResume checks Co.next(mutable g) and Co.resume(mutable g, input) (Go's
 // checkCoResume): the result is Option<Out>.
 function checkCoResume<W: Walker>(
@@ -105,7 +192,7 @@ function checkCoResume<W: Walker>(
   return Type.TVoid
 }
 
-// checkInternalCall checks the calls of std/internal (coroutine, float and probe) that name a check function.
+// checkInternalCall checks the calls of std/internal (coroutine, float, probe, math, clock and entropy) that name a check function.
 export function checkInternalCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -162,12 +249,13 @@ function emitCoResume<W: EmitWalker>(
   return ioEither(mutable emitter, optionType, `${status} > 0`, some, [output], none, [])
 }
 
-// emitInternalCall emits the calls of std/internal (coroutine, float and probe).
+// emitInternalCall emits the calls of std/internal (coroutine, float, probe, math, clock and entropy).
 export function emitInternalCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   name: string,
   nodeId: int,
+  pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
   if (name == "Co.next" || name == "Co.resume") {
@@ -182,6 +270,30 @@ export function emitInternalCall<W: EmitWalker>(
   if (name == "FloatText.parse") {
     const text = argumentText(walker, mutable emitter, arguments, 0)
     return plain(`strtod((${text})->data, NULL)`)
+  }
+  if (Str.startsWith(name, "Libm.")) {
+    // The C function has the name of the key: Libm.floor calls floor.
+    const fixed = FixedCall {
+      name: name,
+      call: Str.sliceFrom(name, 5),
+      withPos: false,
+      owned: false,
+      temporary: false,
+    }
+    return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+  }
+  if (name == "Clock.monotonicNanos") {
+    return plain("narra_clock_monotonic_nanos()")
+  }
+  if (name == "Clock.wallMillis") {
+    return plain("narra_clock_wall_millis()")
+  }
+  if (name == "Clock.sleepNanos") {
+    const nanos = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`narra_clock_sleep_nanos(${nanos})`)
+  }
+  if (name == "Entropy.seed") {
+    return plain("narra_entropy_seed()")
   }
   if (name == "Probe.code") {
     const character = argumentText(walker, mutable emitter, arguments, 0)

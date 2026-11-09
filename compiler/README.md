@@ -9,7 +9,7 @@ sh selfhost/bootstrap.sh out    # writes out/narrac
 
 narrac run testdata/numbers.nra          # build and run
 narrac build -o app file.nra             # build a debug executable
-narrac build -release -o app file.nra    # optimized, integer overflow wraps
+narrac build -release -o app file.nra    # optimized
 narrac test testdata/tests.nra           # run `test` blocks
 narrac emit file.nra                     # print the generated C
 narrac check [--json] file.nra          # report errors; --json prints one object per line
@@ -154,7 +154,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - `is` patterns in conditions. `if (x is Some(v))` binds `v` in the branch. After `if (x is None) { return ... }`, `x.value` reads the value. Narrowing works on constants and parameters.
 - Calls whose `Result` is not checked are compile errors.
 - Template strings.
-- Integer overflow checks in debug builds, and division by zero and bounds checks in every build.
+- Integer overflow wraps in every build (D92); division by zero and bounds checks panic in every build.
 - `test` blocks and `assert`. `std/test` (inside test blocks only): `Test.eq`, `Test.ne`, `Test.panics(f)` and `Test.panicsWith(f, message)` and `Test.golden(name, actual)`. A failed assertion panics with the call's position and both values written with `Show`. `narra test` runs each test in its own process, prints `ok - name` or `FAIL - name: message (file:line:col)`, then `N passed, M failed`, and exits 1 on a failure. `-filter text` runs the tests whose name contains the text and `-time` adds the milliseconds of each test. A test that runs past 10 seconds (or `NARRA_TEST_TIMEOUT`) fails with `timed out`. A filter with no match exits 1 (D66).
 - Reference counting for strings, arrays, and structs and enums that hold them.
 - Arrow functions `(x: int): int => x + 1` and `(x) => { ... }`, function types `(x: int) => int`, named functions as values (`apply(double, 1)`, `Alias.f`), calls through function values (`f(x)`, `make()(x)`, `button.onClick(x)`), and captures of constants. A closure passed straight to a non-escaping parameter also captures `let` variables and `mutable` parameters by reference (D77). Parameter types of an arrow function come from the expected type, also through a generic call such as `map(items, (x) => x * 2)`.

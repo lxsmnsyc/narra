@@ -1,7 +1,7 @@
 ---
 id: type-aliases
 title: "type and export type aliases"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-3

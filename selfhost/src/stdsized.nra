@@ -206,6 +206,30 @@ function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
       key: "wrap",
       check: "checkSizedWrap",
     },
+    StdFunc {
+      name: `${row.prefix}.addChecked`,
+      module: row.path,
+      key: "addChecked",
+      parameters: [row.typeText, row.typeText],
+      result: `Option<${row.typeText}>`,
+      effects: ["alloc"],
+    },
+    StdFunc {
+      name: `${row.prefix}.subChecked`,
+      module: row.path,
+      key: "subChecked",
+      parameters: [row.typeText, row.typeText],
+      result: `Option<${row.typeText}>`,
+      effects: ["alloc"],
+    },
+    StdFunc {
+      name: `${row.prefix}.mulChecked`,
+      module: row.path,
+      key: "mulChecked",
+      parameters: [row.typeText, row.typeText],
+      result: `Option<${row.typeText}>`,
+      effects: ["alloc"],
+    },
   ]
 }
 
@@ -333,6 +357,31 @@ function emitTryFrom<W: EmitWalker>(
   return ioEither(mutable emitter, optionType, condition, some, [payload], none, [])
 }
 
+function emitCheckedArithmetic<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  key: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = readNodeType(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const valueType = variantFieldType(emitter, optionType, some)
+  const left = argumentText(walker, mutable emitter, arguments, 0)
+  const right = argumentText(walker, mutable emitter, arguments, 1)
+  const value = temp(mutable emitter, valueType, "0")
+  let builtin = "__builtin_add_overflow"
+  if (key == "subChecked") {
+    builtin = "__builtin_sub_overflow"
+  } else if (key == "mulChecked") {
+    builtin = "__builtin_mul_overflow"
+  }
+  // The builtin reports overflow at the width of the result type.
+  const fits = temp(mutable emitter, Type.TBool, `!${builtin}(${left}, ${right}, &${value})`)
+  return ioEither(mutable emitter, optionType, fits, some, [value], none, [])
+}
+
 function emitParse<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -375,6 +424,9 @@ export function emitSizedCall<W: EmitWalker>(
     // A C cast keeps the low bits; from only takes values that fit.
     const value = argumentText(walker, mutable emitter, arguments, 0)
     return plain(`((${cType(emitter.checker, readNodeType(emitter, nodeId))})(${value}))`)
+  }
+  if (key == "addChecked" || key == "subChecked" || key == "mulChecked") {
+    return emitCheckedArithmetic(walker, mutable emitter, key, nodeId, arguments)
   }
   if (key == "tryFrom") {
     return emitTryFrom(walker, mutable emitter, target, nodeId, arguments)

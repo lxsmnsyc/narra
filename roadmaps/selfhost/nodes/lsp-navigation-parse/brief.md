@@ -1,7 +1,7 @@
 ---
 id: lsp-navigation-parse
 title: "LSP navigation reuses the parse cache"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-3

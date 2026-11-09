@@ -1,7 +1,7 @@
 ---
 id: template-positions
 title: "Real positions for tokens inside template interpolations"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-3

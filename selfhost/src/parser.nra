@@ -147,11 +147,11 @@ const BINARY_LEVELS = [
   ["^"],
   ["&"],
   ["<<", ">>"],
-  ["+", "-", "+%", "-%"],
-  ["*", "/", "%", "*%"],
+  ["+", "-"],
+  ["*", "/", "%"],
 ]
 
-const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "+%", "-%", "*%"]
+const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
 
 // `x is Pattern` binds tighter than == and looser than < and +.
 const IS_LEVEL = 2
@@ -2294,6 +2294,10 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       )
       return left
     }
+    if (isRemovedWrappingOperator(token)) {
+      reportRemovedWrappingOperator(mutable parser, token)
+      return left
+    }
     if (!matched) {
       return left
     }
@@ -2315,6 +2319,26 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
     noteExpr(mutable parser, startIndex, left)
   }
   return left
+}
+
+function isRemovedWrappingOperator(token: Token): bool {
+  return token.kind == TokenKind.TokPunct &&
+    (token.text == "+%" || token.text == "-%" || token.text == "*%")
+}
+
+function reportRemovedWrappingOperator(mutable parser: Parser, token: Token) {
+  const replacement = Str.slice(token.text, 0, 1)
+  failAtFix(
+    mutable parser,
+    getPos(token),
+    "E0971",
+    [
+      createFix(`write ${replacement}`, [
+        createEdit(getPos(token), moveColumn(getPos(token), 2), replacement),
+      ]),
+    ],
+    `\`${token.text}\` is removed; \`${replacement}\` wraps on overflow`,
+  )
 }
 
 function parseCompoundTail(mutable parser: Parser, pos: Pos, target: Expr): Option<Stmt> {

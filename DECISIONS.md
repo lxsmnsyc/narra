@@ -920,7 +920,7 @@ Decision: when a function with effect variables is used as a value (`const apply
 
 Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, a failed `assert`, an array index out of range, running out of memory and stack overflow. Everything else that panics today becomes a defined result or a compile error.
 
-- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms are removed. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`.
+- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms are removed. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`. Built (E0971 for a removed operator; `Int.addChecked`, `subChecked`, `mulChecked` and the same in `std/i8` to `std/u64`).
 - **Division and remainder need a divisor proven non-zero.** Integer `/` and `%` compile only when the divisor is a non-zero constant or a name narrowed by a check (`if (count != 0) { total / count }`). Any other divisor is a compile error with a hint to add the check. Float division is unchanged (IEEE: infinity and NaN).
 - **Shift counts must be proven in range.** A constant count must be at least 0 and below the bit width. A variable count must be narrowed first (`if (n >= 0 && n < 64) { x << n }`; an unsigned count needs only the upper bound). Any other count is a compile error.
 - **A function with a result must return on every path.** A path ends at `return`, a call to `panic`, an `if`/`else` whose branches all end, an exhaustive `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. The end of any other path is a compile error. The runtime check stays only as an internal compiler error.
@@ -932,7 +932,7 @@ Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, 
 - **Rejected: a NaN for integers.** It needs a reserved value, a check in every operation, and breaks `==` on `int`.
 - **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
 
-Built: the missing-return rule (E0969 for functions, E0970 for arrow functions); the emitted runtime check is now an internal compiler error. Not built yet: the other parts.
+Built: wrapping arithmetic and checked functions; the missing-return rule (E0969 for functions, E0970 for arrow functions), with the emitted runtime check now an internal compiler error. Not built yet: division and shift proofs, and the `Result`/`Option` std functions.
 
 ## D93. `Async<T>` is an eager handle on one implicit event loop per thread
 

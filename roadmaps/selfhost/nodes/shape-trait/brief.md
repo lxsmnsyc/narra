@@ -1,7 +1,7 @@
 ---
 id: shape-trait
 title: "The Shape trait, Json.encode and Json.decode"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-07
-spent:
+spent: 243301
 owns:
   - testdata/stage2/shape*
   - testdata/stage2/errors/shape_*
@@ -102,3 +102,5 @@ Plan (D84): `Shape` converts to and from `Value` (from `std/shape`, D83) with tw
 - Rejected: SPEC's "constant description" read by a generic runtime walker. It needs layout tables (parked node layout-tables) and C code that builds reference-counted values from raw memory.
 - Cost: one intermediate `Value` tree per encode or decode.
 - D84 also records the derived encoding from `nodes/shape-derive/brief.md`: a `None` field is left out, and an enum value is `{"type": "Circle", ...fields}`, TypeScript's discriminated union. Rejected: Rust serde's default `{"Circle": {...}}`, which TypeScript code cannot narrow with a `switch`.
+
+Landed on feat/batch-1 (c5f34a6). Gate decided by the orchestrator: prelude impls are private generic functions in std/shape found by the checker; E0530 replaces E0524/E0525 for Shape; tuples of two to four items; decode errors carry the path as a text prefix.

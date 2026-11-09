@@ -326,6 +326,52 @@ function inferReturns(mutable checker: Checker, block: Block): Type uses alloc {
   return Type.TVoid
 }
 
+function learnFromEarlier(
+  mutable checker: Checker,
+  arguments: Array<Arg>,
+  index: int,
+  parameters: Array<Param>,
+  bindings: Map<int, Type>,
+): Map<int, Type> uses alloc {
+  let known: Map<int, Type> = Map {}
+  for (const entry of Maps.entries(bindings)) {
+    const #[key, bound] = entry
+    known[key] = bound
+  }
+  for (const before of Ranges.between(0, index)) {
+    if (before < Arrays.length(parameters)) {
+      if (getNodeType(checker, getExpressionId(arguments[before].value)) is Some(beforeType)) {
+        unify(checker, checker.paramTypes[parameters[before].id], beforeType, mutable known)
+      }
+    }
+  }
+  return known
+}
+
+function hintNone(
+  mutable checker: Checker,
+  arguments: Array<Arg>,
+  index: int,
+  parameters: Array<Param>,
+  typeParameters: Array<int>,
+  bindings: Map<int, Type>,
+): Option<Type> uses alloc {
+  if (arguments[index].value is Expr.Ident(_, _, name)) {
+    if (name != "None") {
+      return None
+    }
+  } else {
+    return None
+  }
+  const known = learnFromEarlier(mutable checker, arguments, index, parameters, bindings)
+  const declared = checker.paramTypes[parameters[index].id]
+  const substituted = substitute(mutable checker, declared, known)
+  if (containsOpen(checker, substituted, typeParameters)) {
+    return None
+  }
+  return Some(substituted)
+}
+
 // hintArrow gives an arrow function argument of a generic call the parts of
 // its parameter type that the earlier arguments already decide, so
 // `map(items, (x) => x * 2)` knows the type of x (Go's hintArrow). It runs
@@ -347,19 +393,7 @@ function hintArrow(
   }
   const arrowId = getExpressionId(arguments[index].value)
 
-  // Learn from the arguments before it.
-  let known: Map<int, Type> = Map {}
-  for (const entry of Maps.entries(bindings)) {
-    const #[key, bound] = entry
-    known[key] = bound
-  }
-  for (const before of Ranges.between(0, index)) {
-    if (before < Arrays.length(parameters)) {
-      if (getNodeType(checker, getExpressionId(arguments[before].value)) is Some(beforeType)) {
-        unify(checker, checker.paramTypes[parameters[before].id], beforeType, mutable known)
-      }
-    }
-  }
+  const known = learnFromEarlier(mutable checker, arguments, index, parameters, bindings)
   const declared = checker.paramTypes[parameters[index].id]
   const substituted = substitute(mutable checker, declared, known)
   if (substituted is Type.TFunc(funcParams, funcResult, _, _)) {
@@ -418,7 +452,7 @@ export function checkGenericArguments<W: Walker>(
     let want: Option<Type> = Some(paramWant)
     if (containsOpen(checker, paramWant, typeParameters)) {
       hintArrow(mutable checker, arguments, index, parameters, typeParameters, bindings)
-      want = None
+      want = hintNone(mutable checker, arguments, index, parameters, typeParameters, bindings)
     }
     checkArgument(mutable checker, walker, arguments, parameters, index, want, mutable mutables)
   }

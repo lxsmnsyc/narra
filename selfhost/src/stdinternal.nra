@@ -1,4 +1,4 @@
-// The registry rows, checks and emitters of std/internal (coroutine, float, probe, math, clock and entropy).
+// The registry rows, checks and emitters of std/internal (cell, coroutine, float, probe, math, clock and entropy).
 import { StdFunc } from "narrac/builtins"
 import { Type } from "narrac/types"
 import { Checker, Walker, getExpressionId } from "narrac/check"
@@ -15,6 +15,8 @@ import {
   ownedTemp,
   typeOf,
   declareUnset,
+  consume,
+  releaseCode,
 } from "narrac/emitstate"
 import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
 import {
@@ -30,6 +32,16 @@ import {
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
+
+export const INTERNAL_CELL_FUNCS: Array<StdFunc> = [
+  // Writes the slot of a Cell in place, whatever the reference count of its box.
+  StdFunc {
+    name: "CellSlot.store",
+    module: "std/internal/cell",
+    key: "store",
+    check: "checkCellStore",
+  },
+]
 
 export const INTERNAL_COROUTINE_FUNCS: Array<StdFunc> = [
   StdFunc {
@@ -192,7 +204,27 @@ function checkCoResume<W: Walker>(
   return Type.TVoid
 }
 
-// checkInternalCall checks the calls of std/internal (coroutine, float, probe, math, clock and entropy) that name a check function.
+function checkCellStore<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TBox(element)) {
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, element)
+    return Type.TVoid
+  }
+  // Only std/cell calls this, with a box.
+  panic(`internal error: ${name} needs a box`)
+  return Type.TVoid
+}
+
+// checkInternalCall checks the calls of std/internal (cell, coroutine, float, probe, math, clock and entropy) that name a check function.
 export function checkInternalCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -201,6 +233,9 @@ export function checkInternalCall<W: Walker>(
   name: string,
   kind: string,
 ): Type uses alloc {
+  if (kind == "checkCellStore") {
+    return checkCellStore(mutable checker, walker, pos, arguments, name)
+  }
   if (kind == "checkCoResume") {
     return checkCoResume(mutable checker, walker, pos, arguments, name)
   }
@@ -249,7 +284,30 @@ function emitCoResume<W: EmitWalker>(
   return ioEither(mutable emitter, optionType, `${status} > 0`, some, [output], none, [])
 }
 
-// emitInternalCall emits the calls of std/internal (coroutine, float, probe, math, clock and entropy).
+function emitCellStore<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const boxType = typeOf(emitter, getExpressionId(arguments[0].value))
+  if (boxType is Type.TBox(element)) {
+    const boxCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+    const box = temp(mutable emitter, boxType, boxCode.text)
+    const valueCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+    const consumed = consume(mutable emitter, valueCode.text, valueCode.owned, element)
+    // The old value is read after the new one is computed, which may have changed the slot.
+    const previous = temp(mutable emitter, element, `${box}->f_value`)
+    writeLine(mutable emitter, `${box}->f_value = ${consumed};`)
+    const release = releaseCode(emitter, element, previous)
+    if (release != "") {
+      writeLine(mutable emitter, release)
+    }
+    return plain("((void)0)")
+  }
+  return plain(reportUnsupported(mutable emitter, "CellSlot.store needs a box", NODE))
+}
+
+// emitInternalCall emits the calls of std/internal (cell, coroutine, float, probe, math, clock and entropy).
 export function emitInternalCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -258,6 +316,9 @@ export function emitInternalCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
+  if (name == "CellSlot.store") {
+    return emitCellStore(walker, mutable emitter, arguments)
+  }
   if (name == "Co.next" || name == "Co.resume") {
     return emitCoResume(walker, mutable emitter, nodeId, arguments)
   }

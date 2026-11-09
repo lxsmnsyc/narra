@@ -109,6 +109,7 @@ each(numbers, (item) => { total = total + item })
 ```
 
   Every `let` and `mutable` it uses is captured by reference, also when it only reads it. A local `const` whose fields or elements it assigns, or which it passes as `mutable`, directly or through a nested closure, is captured by reference too, by every closure between the change and the declaration, and is borrowed like a `let` it assigns (D81). A `const` that no closure in the chain changes stays a copy. A closure that is not of this kind cannot change a captured value. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
+- **An escaping closure shares changing state through a `Cell`** (D90). `const count = Cells.create(0)` is captured by value like any constant, and every copy of the handle reads and writes the same slot: `Cells.update(count, (value) => value + 1)`, `Cells.get(count)`. Section 8 describes `Cell<T>`.
 - **A variable that such a closure assigns is borrowed for the call.** In that call it cannot be passed as `mutable`, read or assigned in another argument (including `items.length` or `xs[0]`), or captured by another closure argument (E0614). Two closures that only read the same variable are fine. A narrowing by `is` is not seen inside a closure that captures the variable, and a narrowing of a variable that a closure assigns ends at the statement of the call.
 - **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
@@ -246,7 +247,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | --- | --- |
 | `const b = a` gives two names for one object, and a change through one shows through the other | `const` fixes the name, and its contents can change, as in TypeScript (D81). `const b = a` makes a copy: a change to `a` does not show in `b` |
 | `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
-| `let` can be captured by any closure | `let` can be captured only by a closure passed to a non-escaping parameter |
+| `let` can be captured by any closure | `let` can be captured only by a closure passed to a non-escaping parameter; an escaping closure shares changing state through a `Cell` |
 | `null`, `undefined` | Not present. Use `Option<T>` with `None` |
 | `T[]` is an array type | Not present. Write `Array<T>` (D23) |
 | `number` | Not present. Use `int`, `i32`, `f64` and the other sized types |
@@ -274,7 +275,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
   - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (a negative exponent panics, overflow panics as in any `int` arithmetic); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` panics when `low > high`.
@@ -798,10 +799,10 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector. Storing a value inside itself holds a second reference to it while the write runs, so the write copies first.
 - A variable is never stored by reference: storing it stores a copy, and only a closure that cannot outlive the call captures a variable by reference, so no cycle forms.
-- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>`, and `Cell<T>` once it exists; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
+- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>` and `Cell<T>`; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
   - A handle stored in its own payload: `Shared.update(state, ...)` that stores `Some(state)` in the value of `state`, or a `Sender` sent into its own channel.
   - A closure stored in a `Cell` that captures the same `Cell`.
-- **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cell.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
+- **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cells.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
 - A later version may add a collector limited to identity objects. It would only free memory that this rule leaks, so no program changes meaning.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
@@ -943,6 +944,27 @@ The builtin that builds channels must accept the type argument in `Channel.creat
 - Blocking calls have the `io` effect.
 - **A channel in a cycle stays open** (D80). A `Sender` sent through its own channel, or held in a `Shared` that the channel's values reach, keeps the channel alive: it is never freed, and dropping the other copies of the sender does not close it, so a receiver that reads until the close waits forever. When senders travel through channels, close the channel with `Channel.close(sender)` instead of relying on the last drop; the close ends the receiver's wait, and a receiver that reads the channel empty drops the sender it held and breaks the cycle. A `Sender<Reply>` sent inside a request (`Sender<#[Request, Sender<Reply>]>`) is fine: the reply channel does not hold the request channel.
 
+### Cell
+
+`Cell<T>` (D90) is an identity type for state that changes and is shared on one thread, such as a counter two escaping closures use. It is `Shared` without the lock. It is a Narra source module: `import * as Cells from "std/cell"` for the functions and `import { Cell } from "std/cell"` for the type.
+
+```ts
+const count = Cells.create(0)
+const next = (): int => {
+  Cells.update(count, (value) => value + 1)
+  return Cells.get(count)
+}
+const reset = (): int => {
+  Cells.set(count, 0)
+  return 0
+}
+```
+
+- **`Cells.create(value)`** allocates the slot (`uses alloc`). **`Cells.get(cell)`** returns a copy of the value. **`Cells.set(cell, value)`** replaces it and drops the old value at the call. **`Cells.update(cell, change)`** stores `change(value)`; `change` is a function that returns the new value, because a scalar cannot be a `mutable` parameter (D81). None of the last three has an effect: a write to a `Cell` is not tracked.
+- Copying a `Cell`, capturing it, or storing it in a struct copies the handle, so every copy sees every write. `Cell` is an `opaque struct`: its field is not reachable. `==` and `!=` on a `Cell` are a compile error (E0965), and a `Cell` is not `Hashable`, so it cannot be a `Map` key; compare the values with `Cells.get`.
+- **A `Cell` cannot cross threads.** It uses plain reference counts. Use `Shared`. Threads are parked, so the compiler does not check this yet; the node that builds threads must reject a `Cell`, or a value that holds one, captured by a thread function or sent through a channel.
+- **A closure stored in the `Cell` it captures leaks** (D80); clear it with `Cells.set(cell, None)` first.
+
 ### Shared state
 
 A few types have identity: copying one copies a handle to the same object. They are the only way two threads can see the same changing data.
@@ -968,7 +990,7 @@ const now = Shared.read(hits, (count) => count)
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
-- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and the planned `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
+- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. `narra audit` lists every nested `Shared.update`.
 
 ### Async functions

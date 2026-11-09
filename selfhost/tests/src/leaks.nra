@@ -1,0 +1,35 @@
+// The leaks suite: each sample in testdata/leaks builds a cycle through an identity
+// object, so it must print its .out text and then fail the leak check with exit
+// code 102, built with the sanitizers.
+import * as Arrays from "std/array"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "leaks")
+  for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "leaks",
+      name: Path.basename(path),
+      path: path,
+      variant: "debug",
+    })
+  }
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const result = Common.runNarrac(context, ["run", "-sanitize", testCase.path])
+  if (result.code != 102 || !Str.contains(result.errorOutput, "leak check:")) {
+    return Err(`want a leak report and exit code 102, got ${Common.describeRun(result)}`)
+  }
+  return Common.compareText("stdout", want.value, result.output)
+}

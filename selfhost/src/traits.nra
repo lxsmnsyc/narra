@@ -1136,7 +1136,18 @@ export function reportShapeProblem(
   reportError(mutable checker, pos, "E0530", message)
 }
 
+export function isCellType(checker: Checker, type: Type): bool {
+  if (type is Type.TStruct(index)) {
+    return checker.structs[index].module == "std/cell" && checker.structs[index].name == "Cell"
+  }
+  return false
+}
+
 function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  // A Cell is an identity type: no automatic Equatable or Hashable.
+  if (isCellType(checker, type)) {
+    return false
+  }
   const entryIndex = findTypeTraits(mutable checker, type)
   if (entryIndex < 0) {
     return false
@@ -1266,7 +1277,14 @@ export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) u
   }
   let seen: Map<string, bool> = Map {}
   const text = typeString(checker, type)
-  if (containsFunc(checker, type, mutable seen)) {
+  if (isCellType(checker, type)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0965",
+      `cannot use == on ${text}: a Cell is shared by identity; compare the values with Cells.get`,
+    )
+  } else if (containsFunc(checker, type, mutable seen)) {
     reportError(mutable checker, pos, "E0526", `cannot use == on ${text}: it contains a function`)
   } else if (containsTypeParameter(checker, type)) {
     reportError(
@@ -1392,6 +1410,9 @@ function nominalKeyProblem(
   type: Type,
   mutable seen: Map<string, bool>,
 ): string uses alloc {
+  if (isCellType(checker, type)) {
+    return "a Cell is shared by identity, not hashable"
+  }
   for (const field of Arrays.values(listFields(checker, type))) {
     const problem = mapKeyProblem(mutable checker, field.fieldType, mutable seen)
     if (problem != "") {

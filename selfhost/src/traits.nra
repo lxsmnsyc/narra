@@ -783,6 +783,9 @@ export function typeImplements(
 }
 
 function computeImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  if (isShapeTrait(checker, traitIndex) && !(type is Type.TParam(_))) {
+    return shapeImplements(mutable checker, type, traitIndex)
+  }
   const std = checker.traits[traitIndex].std
   const name = checker.traits[traitIndex].name
   match (type) {
@@ -848,6 +851,128 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
   }
 }
 
+// isShapeTrait reports whether a trait is Shape of std/shape.
+export function isShapeTrait(checker: Checker, traitIndex: int): bool {
+  return checker.traits[traitIndex].name == "Shape" &&
+    checker.traits[traitIndex].module == "std/shape"
+}
+
+// shapeImplements is typeImplements for Shape (D84): bool, int, f64, char and
+// string, and Array<T>, Map<string, V>, Option<T> and tuples of two to four
+// items when their contents implement it. A struct or enum needs an
+// implement block. Sized integers, functions and the rest do not implement it.
+function shapeImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  match (type) {
+    Type.TBool => {
+      return true
+    }
+    Type.TInt => {
+      return true
+    }
+    Type.TF64 => {
+      return true
+    }
+    Type.TChar => {
+      return true
+    }
+    Type.TStr => {
+      return true
+    }
+    Type.TArray(element) => {
+      return typeImplements(mutable checker, element, traitIndex)
+    }
+    Type.TMap(key, valueType) => {
+      return key == Type.TStr && typeImplements(mutable checker, valueType, traitIndex)
+    }
+    Type.TEnum(index) => {
+      if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
+        const element = checker.enums[index].arguments[0]
+        return typeImplements(mutable checker, element, traitIndex)
+      }
+      return nominalImplements(mutable checker, type, traitIndex)
+    }
+    Type.TStruct(index) => {
+      if (checker.structs[index].tuple) {
+        const count = Arrays.length(checker.structs[index].arguments)
+        if (count < 2 || count > 4) {
+          return false
+        }
+        for (const argument of Arrays.values(checker.structs[index].arguments)) {
+          if (!typeImplements(mutable checker, argument, traitIndex)) {
+            return false
+          }
+        }
+        return true
+      }
+      return nominalImplements(mutable checker, type, traitIndex)
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+// shapeProblem explains why a type does not implement Shape, naming the part
+// that fails, or returns "" when it does.
+function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): string uses alloc {
+  if (typeImplements(mutable checker, type, traitIndex)) {
+    return ""
+  }
+  const text = typeString(checker, type)
+  match (type) {
+    Type.TArray(element) => {
+      return shapeProblem(mutable checker, element, traitIndex)
+    }
+    Type.TMap(key, valueType) => {
+      if (key != Type.TStr) {
+        return `${text} has keys of type ${typeString(checker, key)}; a Map needs string keys`
+      }
+      return shapeProblem(mutable checker, valueType, traitIndex)
+    }
+    Type.TFunc(_, _, _, _) => {
+      return `${text} is a function, which has no Value form`
+    }
+    Type.TEnum(index) => {
+      if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
+        const element = checker.enums[index].arguments[0]
+        return shapeProblem(mutable checker, element, traitIndex)
+      }
+      return `${text} has no \`implement Shape for ${text}\` block`
+    }
+    Type.TStruct(index) => {
+      if (checker.structs[index].tuple) {
+        const count = Arrays.length(checker.structs[index].arguments)
+        if (count < 2 || count > 4) {
+          return `a tuple of ${Int.toString(count)} items is not supported; use two to four`
+        }
+        for (const argument of Arrays.values(checker.structs[index].arguments)) {
+          const problem = shapeProblem(mutable checker, argument, traitIndex)
+          if (problem != "") {
+            return problem
+          }
+        }
+        return ""
+      }
+      return `${text} has no \`implement Shape for ${text}\` block`
+    }
+    _ => {
+      return `${text} has no Value form`
+    }
+  }
+}
+
+// reportShapeProblem reports E0530 for a type that does not implement Shape.
+export function reportShapeProblem(
+  mutable checker: Checker,
+  pos: Pos,
+  type: Type,
+  traitIndex: int,
+) uses alloc {
+  const reason = shapeProblem(mutable checker, type, traitIndex)
+  const message = `${typeString(checker, type)} does not implement Shape: ${reason}`
+  reportError(mutable checker, pos, "E0530", message)
+}
+
 function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
   const entryIndex = findTypeTraits(mutable checker, type)
   if (entryIndex < 0) {
@@ -889,17 +1014,25 @@ export function checkBounds(
   funcDecl: FuncDecl,
   typeParameters: Array<int>,
   typeArguments: Array<Type>,
-) uses alloc {
+): bool uses alloc {
+  let ok = true
   for (const i of Ranges.between(0, Arrays.length(typeParameters))) {
     if (checker.bounds[typeParameters[i]] is Some(bounds)) {
       for (const traitIndex of Arrays.values(bounds)) {
         if (!typeImplements(mutable checker, typeArguments[i], traitIndex)) {
+          if (isShapeTrait(checker, traitIndex)) {
+            reportShapeProblem(mutable checker, pos, typeArguments[i], traitIndex)
+            ok = false
+            continue
+          }
           const message = `${typeString(checker, typeArguments[i])} does not implement ${checker.traits[traitIndex].name}, which ${funcDecl.name} needs for type parameter ${checker.parameters[typeParameters[i]].name}`
           reportError(mutable checker, pos, "E0525", message)
+          ok = false
         }
       }
     }
   }
+  return ok
 }
 
 // checkEquatable checks that `==` and `!=` work on a type.

@@ -581,16 +581,18 @@ const label = Show.show(price)
 | `Hashable` | `Hash.of`, map keys | Automatically for types without functions or floats |
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
-| `Shape` | A description of fields and constructors, for serialization | By `derives` only |
+| `Shape` | Conversion to and from the `Value` tree of `std/shape`, for serialization | By the compiler for prelude types, by `implement` for a struct or enum (`derives` is planned) |
 
 - A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
 - Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
 
 **Serialization with `Shape`**
 
-- `derives Shape` makes the compiler emit a constant description of the type: field names, field types, defaults and enum constructors.
-- Libraries such as `std/json` read the description: `Json.encode(user)` and `Json.decode(text, User)` work for any type that derives `Shape`. Both are planned (nodes shape-trait and shape-derive); today `std/json` reads and writes the untyped `Value` of `std/shape`.
-- An opaque struct can derive `Shape` only for use inside its own module.
+- `Shape` (D84) has two functions in `std/shape`: `toValue(value: Self): Value` and `fromValue(value: Value): Result<Self, string>`. Formats read and write `Value`, so `Shape` does not know JSON.
+- `Json.encode(value)` is `Json.stringify(Shape.toValue(value))`. `Json.decode<User>(text)` is `Json.parse(text)` followed by `Shape.fromValue<User>`; a parse error is passed through.
+- The compiler provides `Shape` for `bool`, `int`, `f64`, `char` (as a one-character `Text`), `string`, `Array<T>`, `Map<string, V>`, `Option<T>` (`None` is `Null`) and tuples of two to four items (a `List`), when their contents implement it. `Value` implements it as itself. A `Map` with other keys, a function type, a sized integer and a longer tuple do not: E0530 names the type that fails. A struct or enum lists `implements Shape` and writes an `implement Shape for` block.
+- Decoding is strict on types and ignores extra data: `int` accepts only `Value.Int`, `f64` accepts `Int` and `Float`. An error reads `<path>: <reason>` from the root, as in `.users[2].age: expected int, found Text`; at the root it is the reason alone.
+- `derives Shape` is planned (node shape-derive) and is an error until then.
 
 ### Inference
 

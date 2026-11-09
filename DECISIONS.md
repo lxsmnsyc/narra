@@ -787,6 +787,20 @@ Decision: `Value` (`Null`, `Bool`, `Int`, `Float`, `Text`, `List`, `Record`) is 
 - **Alternative rejected.** Reading JSON straight into typed values without a tree: faster, but needs `derives Shape` first, and JSON-RPC needs the tree for messages whose type depends on a field.
 - **Cost.** One primitive, `FloatText.parse` in `std/internal/float`, for `strtod`. `stringify` recurses on the depth of the `Value` it is given; only `parse` bounds depth.
 
+## D84. `Shape` converts to and from `Value`; the target type is an explicit type argument
+
+Decision: `trait Shape { function toValue(value: Self): Value uses alloc; function fromValue(value: Value): Result<Self, string> uses alloc }` is declared in `std/shape`. `std/json` has `encode<T: Shape>(value: T): string` and `decode<T: Shape>(text: string): Result<T, string>`, called as `Json.decode<User>(text)`. The compiler provides `Shape` for `bool`, `int`, `f64`, `char`, `string`, `Array<T>`, `Map<string, V>`, `Option<T>` and tuples of two to four items; `Value` and user types use `implement` blocks. A decode error is `<path>: <reason>` with the path from the root (`.users[2].age: expected int, found Text`). Decoding is strict on types (`int` takes only `Int`; `f64` takes `Int` and `Float`) and ignores extra data. Chosen by the orchestrator on 2026-11-09.
+
+- **Reason.** An explicit type argument is TypeScript's form for a generic call, so no type-witness value is needed.
+- **Reason.** Going through `Value` keeps `Shape` independent of JSON, and every implementation is ordinary Narra code with no runtime type layout.
+- **Mechanism.** The prelude implementations are private generic functions in `std/shape.nra`. The checker points a `Shape` trait call on a prelude type at the matching function and its instance, so no C is written for them and `derives Shape` (node shape-derive) can emit Narra-level conversions the same way.
+- **Alternative rejected.** `Json.decode(text, User)`, a type name passed as a value: it needs a new type-witness type.
+- **Alternative rejected.** A constant description walked by a generic runtime: it needs layout tables (parked node layout-tables) and C code that builds reference-counted values from raw memory.
+- **Alternative rejected.** `implement Shape for Array<T>` blocks written in `std/shape`: implement blocks for generic and prelude types are not supported (E0513, E0514), and lifting that is a larger change.
+- **Alternative rejected.** Generating C for each type in the emitter: more code than the Narra functions it replaces.
+- **Derived encoding (for shape-derive).** A `None` field is left out, and an enum value is `{"type": "Circle", ...fields}`, TypeScript's discriminated union. Rust serde's `{"Circle": {...}}` is rejected because TypeScript code cannot narrow it with a `switch`.
+- **Cost.** One intermediate `Value` tree per encode or decode. Tuples above four items and sized integers have no `Shape`. A nested `Option<Option<T>>` decodes `Null` as the outer `None`. The path of an error is text; a user `fromValue` that returns a message starting with `.` or `[` is read as a path by the containers around it.
+
 ## D85. A `mutable` marker only on `for ... of` over an array
 
 Decision: `for (mutable item of items)` binds `item` to each element of the array `items` in place, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` does the same and also gives the index. `Arrays.values(items)` may be written for `items`. This is the only position the marker gets for now. Pattern bindings, destructuring and a local reference binding stay as D81 left them. Amends D81, whose bindings that copy part of a value stay read-only everywhere else. Not built yet: node mutable-bindings builds it. Chosen by the orchestrator on 2026-11-09 (the maintainer delegated this batch's gate decisions).

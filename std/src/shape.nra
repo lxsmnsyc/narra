@@ -1,10 +1,25 @@
-// std/shape: Value, a dynamic tree for structured data.
+// std/shape: Value, a dynamic tree for structured data, and the Shape trait.
 //
-// Formats such as std/json read and write it. Int and Float are separate
+// Formats such as std/json read and write Value. Int and Float are separate
 // because a 64-bit integer must survive a round trip, which an f64 cannot hold.
 // Record keeps its fields in insertion order (D64).
+//
+// Shape converts a type to and from Value. The compiler provides it for bool,
+// int, f64, char, string, Array<T>, Map<string, V>, Option<T> and tuples of two
+// to four items, when their contents implement it: a call of Shape.toValue or
+// Shape.fromValue on such a type runs the matching private function below
+// (D84). Value, a struct and an enum implement it with an `implement` block.
+//
+// A decode error reads `<path>: <reason>` with the path from the root
+// (`.users[2].age: expected int, found Text`); at the root it is the reason alone.
 
-export enum Value {
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+
+export enum Value implements Shape {
   Null
   Bool(value: bool)
   Int(value: int)
@@ -12,4 +27,275 @@ export enum Value {
   Text(value: string)
   List(items: Array<Value>)
   Record(fields: Map<string, Value>)
+}
+
+export trait Shape {
+  function toValue(value: Self): Value uses alloc
+  function fromValue(value: Value): Result<Self, string> uses alloc
+}
+
+implement Shape for Value {
+  function toValue(value: Value): Value uses alloc {
+    return value
+  }
+
+  function fromValue(value: Value): Result<Value, string> uses alloc {
+    return Ok(value)
+  }
+}
+
+// kindName is the name of a Value variant, for error messages.
+function kindName(value: Value): string {
+  return match (value) {
+    Value.Null => "Null"
+    Value.Bool(_) => "Bool"
+    Value.Int(_) => "Int"
+    Value.Float(_) => "Float"
+    Value.Text(_) => "Text"
+    Value.List(_) => "List"
+    Value.Record(_) => "Record"
+  }
+}
+
+function mismatch(expected: string, value: Value): string uses alloc {
+  return `expected ${expected}, found ${kindName(value)}`
+}
+
+// prefixPath puts a path segment (`.name` or `[2]`) in front of a child error.
+// A child error that already starts with a path keeps it after the segment.
+function prefixPath(segment: string, message: string): string uses alloc {
+  if (Str.startsWith(message, ".") || Str.startsWith(message, "[")) {
+    return `${segment}${message}`
+  }
+  return `${segment}: ${message}`
+}
+
+function boolToValue(value: bool): Value {
+  return Value.Bool(value)
+}
+
+function boolFromValue(value: Value): Result<bool, string> uses alloc {
+  if (value is Value.Bool(flag)) {
+    return Ok(flag)
+  }
+  return Err(mismatch("bool", value))
+}
+
+function intToValue(value: int): Value {
+  return Value.Int(value)
+}
+
+function intFromValue(value: Value): Result<int, string> uses alloc {
+  if (value is Value.Int(number)) {
+    return Ok(number)
+  }
+  return Err(mismatch("int", value))
+}
+
+function floatToValue(value: f64): Value {
+  return Value.Float(value)
+}
+
+function floatFromValue(value: Value): Result<f64, string> uses alloc {
+  if (value is Value.Float(number)) {
+    return Ok(number)
+  }
+  if (value is Value.Int(whole)) {
+    return Ok(Float.fromInt(whole))
+  }
+  return Err(mismatch("f64", value))
+}
+
+function charToValue(value: char): Value uses alloc {
+  return Value.Text(Str.fromChar(value))
+}
+
+function charFromValue(value: Value): Result<char, string> uses alloc {
+  if (value is Value.Text(text)) {
+    if (Str.charCount(text) == 1) {
+      return Ok(Str.charAt(text, 0))
+    }
+    return Err("expected one character, found Text of a different length")
+  }
+  return Err(mismatch("char", value))
+}
+
+function stringToValue(value: string): Value {
+  return Value.Text(value)
+}
+
+function stringFromValue(value: Value): Result<string, string> uses alloc {
+  if (value is Value.Text(text)) {
+    return Ok(text)
+  }
+  return Err(mismatch("string", value))
+}
+
+function arrayToValue<T: Shape>(value: Array<T>): Value uses alloc {
+  let items: Array<Value> = []
+  for (const item of Arrays.values(value)) {
+    Arrays.push(mutable items, Shape.toValue(item))
+  }
+  return Value.List(items)
+}
+
+function arrayFromValue<T: Shape>(value: Value): Result<Array<T>, string> uses alloc {
+  if (value is Value.List(items)) {
+    let out: Array<T> = []
+    for (const #[index, item] of Arrays.entries(items)) {
+      const decoded = Shape.fromValue<T>(item)
+      if (decoded is Err(message)) {
+        return Err(prefixPath(`[${Int.toString(index)}]`, message))
+      }
+      Arrays.push(mutable out, decoded.value)
+    }
+    return Ok(out)
+  }
+  return Err(mismatch("List", value))
+}
+
+function mapToValue<V: Shape>(value: Map<string, V>): Value uses alloc {
+  let fields: Map<string, Value> = Map {}
+  for (const entry of Maps.entries(value)) {
+    const #[key, field] = entry
+    fields[key] = Shape.toValue(field)
+  }
+  return Value.Record(fields)
+}
+
+function mapFromValue<V: Shape>(value: Value): Result<Map<string, V>, string> uses alloc {
+  if (value is Value.Record(fields)) {
+    let out: Map<string, V> = Map {}
+    for (const entry of Maps.entries(fields)) {
+      const #[key, field] = entry
+      const decoded = Shape.fromValue<V>(field)
+      if (decoded is Err(message)) {
+        return Err(prefixPath(`.${key}`, message))
+      }
+      out[key] = decoded.value
+    }
+    return Ok(out)
+  }
+  return Err(mismatch("Record", value))
+}
+
+function optionToValue<T: Shape>(value: Option<T>): Value uses alloc {
+  if (value is Some(inner)) {
+    return Shape.toValue(inner)
+  }
+  return Value.Null
+}
+
+function optionFromValue<T: Shape>(value: Value): Result<Option<T>, string> uses alloc {
+  if (value is Value.Null) {
+    return Ok(None)
+  }
+  const decoded = Shape.fromValue<T>(value)
+  if (decoded is Err(message)) {
+    return Err(message)
+  }
+  return Ok(Some(decoded.value))
+}
+
+// tupleItems checks that a value is a List of count items.
+function tupleItems(value: Value, count: int): Result<Array<Value>, string> uses alloc {
+  if (value is Value.List(items)) {
+    if (Arrays.length(items) != count) {
+      const found = Int.toString(Arrays.length(items))
+      return Err(`expected a List of ${Int.toString(count)} items, found ${found}`)
+    }
+    return Ok(items)
+  }
+  return Err(mismatch("List", value))
+}
+
+function tuple2ToValue<A: Shape, B: Shape>(value: #[A, B]): Value uses alloc {
+  const #[first, second] = value
+  return Value.List([Shape.toValue(first), Shape.toValue(second)])
+}
+
+function tuple2FromValue<A: Shape, B: Shape>(value: Value): Result<#[A, B], string> uses alloc {
+  const items = tupleItems(value, 2)
+  if (items is Err(problem)) {
+    return Err(problem)
+  }
+  const first = Shape.fromValue<A>(items.value[0])
+  if (first is Err(message)) {
+    return Err(prefixPath("[0]", message))
+  }
+  const second = Shape.fromValue<B>(items.value[1])
+  if (second is Err(message)) {
+    return Err(prefixPath("[1]", message))
+  }
+  return Ok(#[first.value, second.value])
+}
+
+function tuple3ToValue<A: Shape, B: Shape, C: Shape>(value: #[A, B, C]): Value uses alloc {
+  const #[first, second, third] = value
+  return Value.List([Shape.toValue(first), Shape.toValue(second), Shape.toValue(third)])
+}
+
+function tuple3FromValue<A: Shape, B: Shape, C: Shape>(value: Value): Result<#[
+  A,
+  B,
+  C,
+], string> uses alloc {
+  const items = tupleItems(value, 3)
+  if (items is Err(problem)) {
+    return Err(problem)
+  }
+  const first = Shape.fromValue<A>(items.value[0])
+  if (first is Err(message)) {
+    return Err(prefixPath("[0]", message))
+  }
+  const second = Shape.fromValue<B>(items.value[1])
+  if (second is Err(message)) {
+    return Err(prefixPath("[1]", message))
+  }
+  const third = Shape.fromValue<C>(items.value[2])
+  if (third is Err(message)) {
+    return Err(prefixPath("[2]", message))
+  }
+  return Ok(#[first.value, second.value, third.value])
+}
+
+function tuple4ToValue<A: Shape, B: Shape, C: Shape, D: Shape>(
+  value: #[A, B, C, D],
+): Value uses alloc {
+  const #[first, second, third, fourth] = value
+  return Value.List([
+    Shape.toValue(first),
+    Shape.toValue(second),
+    Shape.toValue(third),
+    Shape.toValue(fourth),
+  ])
+}
+
+function tuple4FromValue<A: Shape, B: Shape, C: Shape, D: Shape>(value: Value): Result<#[
+  A,
+  B,
+  C,
+  D,
+], string> uses alloc {
+  const items = tupleItems(value, 4)
+  if (items is Err(problem)) {
+    return Err(problem)
+  }
+  const first = Shape.fromValue<A>(items.value[0])
+  if (first is Err(message)) {
+    return Err(prefixPath("[0]", message))
+  }
+  const second = Shape.fromValue<B>(items.value[1])
+  if (second is Err(message)) {
+    return Err(prefixPath("[1]", message))
+  }
+  const third = Shape.fromValue<C>(items.value[2])
+  if (third is Err(message)) {
+    return Err(prefixPath("[2]", message))
+  }
+  const fourth = Shape.fromValue<D>(items.value[3])
+  if (fourth is Err(message)) {
+    return Err(prefixPath("[3]", message))
+  }
+  return Ok(#[first.value, second.value, third.value, fourth.value])
 }

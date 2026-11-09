@@ -34,7 +34,14 @@ import {
 } from "narrac/check"
 import { substitute, resolveType } from "narrac/resolve"
 import { unify } from "narrac/generics"
-import { findTraitFunc, typeImplements, implFunc, checkBounds } from "narrac/traits"
+import {
+  findTraitFunc,
+  typeImplements,
+  implFunc,
+  checkBounds,
+  isShapeTrait,
+  reportShapeProblem,
+} from "narrac/traits"
 import { sourceScope, exported } from "narrac/scopes"
 import { checkValueCall, checkValueCallOf, checkGenericArguments } from "narrac/closures"
 import { findModuleFunction } from "narrac/funcvalues"
@@ -871,7 +878,13 @@ function checkGenericCall<W: Walker>(
       return Type.TVoid
     }
   }
-  checkBounds(mutable checker, pos, info.declaration, typeParameters, typeArguments)
+  const boundsHold = checkBounds(
+    mutable checker,
+    pos,
+    info.declaration,
+    typeParameters,
+    typeArguments,
+  )
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < Arrays.length(parameters)) {
       const declared = checker.paramTypes[parameters[index].id]
@@ -889,7 +902,7 @@ function checkGenericCall<W: Walker>(
   }
   const result = substitute(mutable checker, info.result, bindings)
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-  if (!anyTypeParameter(checker, typeArguments)) {
+  if (boundsHold && !anyTypeParameter(checker, typeArguments)) {
     const instance = addFuncInstance(mutable checker, funcIndex, typeArguments)
     // The emitter finds the instance of this call through the body.
     checker.bodies[checker.body].instanceRefs[nodeId] = instance
@@ -1019,6 +1032,8 @@ function checkTraitCall<W: Walker>(
         "E0523",
         `${traitName}.${name} needs ${paramName} to implement ${traitName}; declare it as <${paramName}: ${traitName}>`,
       )
+    } else if (isShapeTrait(checker, traitIndex)) {
+      reportShapeProblem(mutable checker, pos, selfType, traitIndex)
     } else {
       const message = `${typeString(checker, selfType)} does not implement ${traitName}`
       reportError(mutable checker, pos, "E0524", message)
@@ -1030,12 +1045,88 @@ function checkTraitCall<W: Walker>(
   }
   if (implFunc(checker, selfType, traitIndex, name) is Some(implementation)) {
     setRef(mutable checker, nodeId, Ref.Implementation(implementation.block, implementation.index))
+  } else if (isShapeTrait(checker, traitIndex)) {
+    // The compiler provides Shape for the prelude types through the private
+    // functions of std/shape (D84).
+    setShapeRef(mutable checker, nodeId, selfType, name)
   } else {
     setRef(mutable checker, nodeId, Ref.TraitFunction(traitIndex, name))
     // The emitter reads Self from the body.
     checker.bodies[checker.body].traitSelf[nodeId] = selfType
   }
   return result
+}
+
+// ShapeProvider names the function of std/shape that implements Shape for a
+// prelude type (a name prefix such as "array") and the type arguments of that
+// function.
+struct ShapeProvider {
+  prefix: string
+  typeArguments: Array<Type>
+}
+
+// findShapeProvider tells which std/shape function implements Shape for a
+// type, or None when the type has an implement block instead.
+function findShapeProvider(checker: Checker, type: Type): Option<ShapeProvider> uses alloc {
+  return match (type) {
+    Type.TBool => Some(ShapeProvider { prefix: "bool", typeArguments: [] })
+    Type.TInt => Some(ShapeProvider { prefix: "int", typeArguments: [] })
+    Type.TF64 => Some(ShapeProvider { prefix: "float", typeArguments: [] })
+    Type.TChar => Some(ShapeProvider { prefix: "char", typeArguments: [] })
+    Type.TStr => Some(ShapeProvider { prefix: "string", typeArguments: [] })
+    Type.TArray(element) => Some(ShapeProvider { prefix: "array", typeArguments: [element] })
+    Type.TMap(_, valueType) => Some(ShapeProvider { prefix: "map", typeArguments: [valueType] })
+    Type.TEnum(index) => {
+      if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
+        return Some(ShapeProvider {
+          prefix: "option",
+          typeArguments: checker.enums[index].arguments,
+        })
+      }
+      return None
+    }
+    Type.TStruct(index) => {
+      if (checker.structs[index].tuple) {
+        const count = Int.toString(Arrays.length(checker.structs[index].arguments))
+        return Some(ShapeProvider {
+          prefix: `tuple${count}`,
+          typeArguments: checker.structs[index].arguments,
+        })
+      }
+      return None
+    }
+    _ => None
+  }
+}
+
+// setShapeRef points a Shape.toValue or Shape.fromValue call on a prelude type
+// at the matching function of std/shape, with its instance when it is generic.
+function setShapeRef(
+  mutable checker: Checker,
+  nodeId: int,
+  selfType: Type,
+  name: string,
+) uses alloc {
+  if (findShapeProvider(checker, selfType) is Some(provider)) {
+    let suffix = "FromValue"
+    if (name == "toValue") {
+      suffix = "ToValue"
+    }
+    const functionName = `${provider.prefix}${suffix}`
+    for (const index of Ranges.between(0, Arrays.length(checker.functions))) {
+      if (
+        checker.functions[index].module == "std/shape" &&
+          checker.functions[index].name == functionName
+      ) {
+        setRef(mutable checker, nodeId, Ref.Function(index))
+        if (Arrays.length(provider.typeArguments) > 0) {
+          const instance = addFuncInstance(mutable checker, index, provider.typeArguments)
+          checker.bodies[checker.body].instanceRefs[nodeId] = instance
+        }
+        return
+      }
+    }
+  }
 }
 
 // isSelfInParameters reports whether Self appears in a parameter of a trait

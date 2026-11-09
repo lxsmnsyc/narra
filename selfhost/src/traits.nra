@@ -14,11 +14,12 @@
 // trait of another module becomes visible by name in ModScope.traits).
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Pos, File, Decl, FuncDecl, TraitDecl, ImplDecl, TypeExpr } from "narrac/ast"
+import { Pos, File, Decl, FuncDecl, TraitDecl, ImplDecl, EnumDecl, TypeExpr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import {
   Type,
   Field,
+  Variant,
   ParamInfo,
   TraitInfo,
   TraitFunc,
@@ -44,6 +45,7 @@ import {
   isContentsType,
 } from "narrac/check"
 import { resolveOpt, substitute } from "narrac/resolve"
+import { HIDDEN_SHAPE, isShapeDerive } from "narrac/deriveshape"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -261,21 +263,15 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
     checker.typeTraits[entryIndex].listed[traitIndex] = true
   }
   for (const typeExpr of Arrays.values(info.derivedExpressions)) {
-    if (typeExpr.name == "Shape") {
-      reportError(
-        mutable checker,
-        typeExpr.pos,
-        "E0502",
-        "derives Shape is not supported by this compiler yet",
-      )
-      continue
+    let traitIndex = derivedTrait(checker, typeExpr)
+    if (traitIndex < 0) {
+      traitIndex = traitNamed(mutable checker, typeExpr)
     }
-    const traitIndex = traitNamed(mutable checker, typeExpr)
     if (traitIndex < 0) {
       continue
     }
-    if (!checker.traits[traitIndex].std) {
-      const message = `${checker.traits[traitIndex].name} cannot be derived; only Equatable, Hashable, Ordered and Show can. List it in \`implements\` and write \`implement ${checker.traits[traitIndex].name} for ${info.name}\``
+    if (!checker.traits[traitIndex].std && !isShapeTrait(checker, traitIndex)) {
+      const message = `${checker.traits[traitIndex].name} cannot be derived; only Equatable, Hashable, Ordered, Show and Shape can. List it in \`implements\` and write \`implement ${checker.traits[traitIndex].name} for ${info.name}\``
       reportError(mutable checker, typeExpr.pos, "E0503", message)
       continue
     }
@@ -285,6 +281,17 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
     }
     checker.typeTraits[entryIndex].derived[traitIndex] = true
   }
+}
+
+// derivedTrait finds the trait a `derives` entry names, or -1. A bare Shape
+// is the trait of std/shape when the module has no Shape of its own: the code
+// written for `derives Shape` imports it under a hidden name.
+function derivedTrait(checker: Checker, typeExpr: TypeExpr): int {
+  const traitIndex = lookupTrait(checker, typeExpr.name)
+  if (traitIndex < 0 && isShapeDerive(typeExpr)) {
+    return lookupTrait(checker, HIDDEN_SHAPE)
+  }
+  return traitIndex
 }
 
 // funcBounds resolves the constraints of a generic function's type
@@ -364,6 +371,7 @@ export function resolveTraits(mutable checker: Checker, file: File) uses alloc {
           }
         }
         checkListed(mutable checker, modulePath, enumDecl.name, type)
+        checkShapeTags(mutable checker, enumDecl)
       }
       _ => {}
     }
@@ -396,7 +404,7 @@ function checkListed(
     }
   }
   for (const typeExpr of Arrays.values(info.derivedExpressions)) {
-    const traitIndex = lookupTrait(checker, typeExpr.name)
+    const traitIndex = derivedTrait(checker, typeExpr)
     if (traitIndex < 0) {
       continue
     }
@@ -406,6 +414,16 @@ function checkListed(
     if (checker.typeTraits[entryIndex].blocks[traitIndex] is Some(_)) {
       const message = `${info.name} both derives and implements ${checker.traits[traitIndex].name}; keep one`
       reportError(mutable checker, typeExpr.pos, "E0508", message)
+      continue
+    }
+    if (isShapeTrait(checker, traitIndex)) {
+      for (const field of Arrays.values(shapeCheckedFields(checker, name, type))) {
+        const reason = shapeProblem(mutable checker, field.fieldType, traitIndex)
+        if (reason != "") {
+          const message = `cannot derive Shape for ${info.name}: field ${quoteGo(field.name)} has type ${typeString(checker, field.fieldType)}, which does not implement Shape: ${reason}`
+          reportError(mutable checker, typeExpr.pos, "E0531", message)
+        }
+      }
       continue
     }
     // A generic type derives a trait for the instances whose contents
@@ -420,6 +438,96 @@ function checkListed(
       }
     }
   }
+}
+
+// shapeCheckedFields lists the fields whose types must implement Shape for a
+// type to derive it: every field of a concrete type, and the fields of a
+// generic type that do not mention its type parameters (the generated code
+// bounds those by Shape). The type is TVoid for a generic type.
+function shapeCheckedFields(checker: Checker, name: string, type: Type): Array<Field> uses alloc {
+  if (type != Type.TVoid) {
+    return listFields(checker, type)
+  }
+  let out: Array<Field> = []
+  if (lookupGeneric(checker, name) is Some(generic)) {
+    let fields = checker.generics[generic].fields
+    for (const variant of Arrays.values(checker.generics[generic].variants)) {
+      for (const field of Arrays.values(variant.fields)) {
+        Arrays.push(mutable fields, field)
+      }
+    }
+    for (const field of Arrays.values(fields)) {
+      if (!containsTypeParameter(checker, field.fieldType)) {
+        Arrays.push(mutable out, field)
+      }
+    }
+  }
+  return out
+}
+
+// shapeDerivedIndex is the std/shape trait when the type of the current
+// module derives it, or -1.
+function shapeDerivedIndex(checker: Checker, name: string): int {
+  const entryIndex = typeTraitsAt(checker, `${modPath(checker)}|${name}`)
+  const shape = lookupTrait(checker, HIDDEN_SHAPE)
+  if (entryIndex < 0 || shape < 0) {
+    return -1
+  }
+  if (checker.typeTraits[entryIndex].derived[shape] is None) {
+    return -1
+  }
+  return shape
+}
+
+// checkShapeTags reports a constructor field named type in an enum that
+// derives Shape: the encoding keeps the constructor name under "type".
+function checkShapeTags(mutable checker: Checker, enumDecl: EnumDecl) uses alloc {
+  if (shapeDerivedIndex(checker, enumDecl.name) < 0) {
+    return
+  }
+  for (const variant of Arrays.values(enumDecl.variants)) {
+    for (const field of Arrays.values(variant.fields)) {
+      if (field.name == "type") {
+        const message = `${enumDecl.name} derives Shape, so ${enumDecl.name}.${variant.name} cannot have a field named "type": the encoding writes the constructor name there`
+        reportError(mutable checker, field.pos, "E0532", message)
+      }
+    }
+  }
+}
+
+// shapeDeriveHolds reports whether the type of the current module named
+// typeName derives Shape without error. The body checker skips the generated
+// functions of a type for which it does not hold, so the error is reported
+// once.
+export function shapeDeriveHolds(mutable checker: Checker, typeName: string): bool uses alloc {
+  const shape = shapeDerivedIndex(checker, typeName)
+  if (shape < 0) {
+    return false
+  }
+  let type = Type.TVoid
+  if (lookupType(checker, typeName) is Some(found)) {
+    type = found
+  }
+  for (const field of Arrays.values(shapeCheckedFields(checker, typeName, type))) {
+    if (!typeImplements(mutable checker, field.fieldType, shape)) {
+      return false
+    }
+  }
+  // An enum with a constructor field named type is E0532.
+  let variants: Array<Variant> = []
+  if (type is Type.TEnum(enumIndex)) {
+    variants = checker.enums[enumIndex].variants
+  } else if (lookupGeneric(checker, typeName) is Some(generic)) {
+    variants = checker.generics[generic].variants
+  }
+  for (const variant of Arrays.values(variants)) {
+    for (const field of Arrays.values(variant.fields)) {
+      if (field.name == "type") {
+        return false
+      }
+    }
+  }
+  return true
 }
 
 function containsParam(checker: Checker, type: Type, param: int): bool {
@@ -972,7 +1080,7 @@ function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): st
         const element = checker.enums[index].arguments[0]
         return shapeProblem(mutable checker, element, traitIndex)
       }
-      return `${text} has no \`implement Shape for ${text}\` block`
+      return nominalShapeProblem(mutable checker, type, traitIndex)
     }
     Type.TStruct(index) => {
       if (checker.structs[index].tuple) {
@@ -988,12 +1096,32 @@ function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): st
         }
         return ""
       }
-      return `${text} has no \`implement Shape for ${text}\` block`
+      return nominalShapeProblem(mutable checker, type, traitIndex)
     }
     _ => {
       return `${text} has no Value form`
     }
   }
+}
+
+// nominalShapeProblem explains why a struct or enum does not implement
+// Shape: a field of a derived Shape fails, or it has no implement block.
+function nominalShapeProblem(
+  mutable checker: Checker,
+  type: Type,
+  traitIndex: int,
+): string uses alloc {
+  const text = typeString(checker, type)
+  const entryIndex = findTypeTraits(mutable checker, type)
+  if (entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
+    for (const field of Arrays.values(listFields(checker, type))) {
+      const problem = shapeProblem(mutable checker, field.fieldType, traitIndex)
+      if (problem != "") {
+        return `${text} derives Shape, but its field ${quoteGo(field.name)} does not implement it: ${problem}`
+      }
+    }
+  }
+  return `${text} has no \`implement Shape for ${text}\` block`
 }
 
 // reportShapeProblem reports E0530 for a type that does not implement Shape.
@@ -1063,11 +1191,71 @@ export function checkBounds(
           const message = `${typeString(checker, typeArguments[i])} does not implement ${checker.traits[traitIndex].name}, which ${funcDecl.name} needs for type parameter ${checker.parameters[typeParameters[i]].name}`
           reportError(mutable checker, pos, "E0525", message)
           ok = false
+        } else if (isShapeTrait(checker, traitIndex)) {
+          checkShapeVisible(mutable checker, pos, typeArguments[i], traitIndex)
         }
       }
     }
   }
   return ok
+}
+
+// checkShapeVisible reports E0533 when a type, or an element or type argument
+// of it, is an opaque struct of another module that derives Shape: the
+// derived Shape is usable only in the struct's own module. Instance bodies
+// are not checked; their call site was.
+export function checkShapeVisible(
+  mutable checker: Checker,
+  pos: Pos,
+  type: Type,
+  traitIndex: int,
+) uses alloc {
+  if (
+    checker.body >= 0 &&
+      checker.body < Arrays.length(checker.bodies) &&
+      Arrays.length(checker.bodies[checker.body].typeArguments) > 0
+  ) {
+    return
+  }
+  const name = findOpaqueShape(mutable checker, type, traitIndex)
+  if (name != "") {
+    const message = `${name} is an opaque struct that derives Shape; its Shape is usable only in its own module`
+    reportError(mutable checker, pos, "E0533", message)
+  }
+}
+
+// findOpaqueShape names the first opaque struct of another module that
+// derives Shape in a type, or returns "".
+function findOpaqueShape(mutable checker: Checker, type: Type, traitIndex: int): string uses alloc {
+  let parts: Array<Type> = []
+  match (type) {
+    Type.TArray(element) => {
+      parts = [element]
+    }
+    Type.TMap(_, valueType) => {
+      parts = [valueType]
+    }
+    Type.TStruct(index) => {
+      if (checker.structs[index].opaque && checker.structs[index].module != modPath(checker)) {
+        const entryIndex = findTypeTraits(mutable checker, type)
+        if (entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
+          return typeString(checker, type)
+        }
+      }
+      parts = checker.structs[index].arguments
+    }
+    Type.TEnum(index) => {
+      parts = checker.enums[index].arguments
+    }
+    _ => {}
+  }
+  for (const part of Arrays.values(parts)) {
+    const name = findOpaqueShape(mutable checker, part, traitIndex)
+    if (name != "") {
+      return name
+    }
+  }
+  return ""
 }
 
 // checkEquatable checks that `==` and `!=` work on a type.

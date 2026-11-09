@@ -1,0 +1,479 @@
+// `derives Shape` (D84, SPEC section 4): the loader writes Narra functions
+// for each struct and enum of a file that derives Shape, and the checker
+// points Shape.toValue and Shape.fromValue calls on that type at them, as it
+// does for the prelude functions of std/shape. No C is written for Shape.
+//
+// The functions are parsed from generated text and appended to the file, with
+// hidden imports of std/shape and std/string under names that start with
+// `__`. The text starts after the last line of the file, so its positions are
+// unique. The checker skips their bodies when the derive is in error
+// (shapeDeriveHolds in traits.nra), so a bad field is reported once, as E0531.
+//
+// Encoding: a struct is a Record with one entry per field, in declaration
+// order; an Option field holding None is left out. Decoding takes a missing
+// field's default, None for a missing Option field, and reports any other
+// missing field. An enum is a Record with a "type" entry naming the
+// constructor, then one entry per field.
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Int from "std/int"
+import { File, Decl, FieldDecl, TypeExpr, VariantDecl } from "narrac/ast"
+import { Parsed, parse } from "narrac/parser"
+
+const TO_VALUE_PREFIX = "__shapeToValue_"
+const FROM_VALUE_PREFIX = "__shapeFromValue_"
+
+// The name under which generated code sees the Shape trait of std/shape.
+export const HIDDEN_SHAPE = "__Shape"
+
+// shapeFunctionName names the generated toValue or fromValue function of a type.
+export function shapeFunctionName(functionName: string, typeName: string): string uses alloc {
+  if (functionName == "toValue") {
+    return `${TO_VALUE_PREFIX}${typeName}`
+  }
+  return `${FROM_VALUE_PREFIX}${typeName}`
+}
+
+// derivedShapeType is the type a generated toValue or fromValue function
+// belongs to, or "" for any other function.
+export function derivedShapeType(functionName: string): string uses alloc {
+  if (Str.startsWith(functionName, TO_VALUE_PREFIX)) {
+    return Str.sliceFrom(functionName, Str.length(TO_VALUE_PREFIX))
+  }
+  if (Str.startsWith(functionName, FROM_VALUE_PREFIX)) {
+    return Str.sliceFrom(functionName, Str.length(FROM_VALUE_PREFIX))
+  }
+  return ""
+}
+
+// isShapeDerive reports whether a `derives` entry names Shape.
+export function isShapeDerive(typeExpr: TypeExpr): bool {
+  return typeExpr.name == "Shape" && Arrays.length(typeExpr.arguments) == 0 && !typeExpr.isTuple
+}
+
+function derivesShape(derived: Array<TypeExpr>): bool {
+  for (const typeExpr of Arrays.values(derived)) {
+    if (isShapeDerive(typeExpr)) {
+      return true
+    }
+  }
+  return false
+}
+
+// addShapeDerives appends the generated functions to a parsed file of a
+// package, or returns it unchanged when nothing in it derives Shape.
+export function addShapeDerives(parsed: Parsed, source: string): Parsed uses alloc {
+  let builder = Str.builder()
+  let found = false
+  for (const declaration of Arrays.values(parsed.file.declarations)) {
+    match (declaration) {
+      Decl.Struct(structDecl) => {
+        if (derivesShape(structDecl.derived)) {
+          const header = TypeHeader { name: structDecl.name, parameters: structDecl.typeParameters }
+          writeStructToValue(mutable builder, header, structDecl.fields)
+          writeStructFromValue(mutable builder, header, structDecl.fields)
+          found = true
+        }
+      }
+      Decl.Enum(enumDecl) => {
+        if (derivesShape(enumDecl.derived)) {
+          const header = TypeHeader { name: enumDecl.name, parameters: enumDecl.typeParameters }
+          writeEnumToValue(mutable builder, header, enumDecl.variants)
+          writeEnumFromValue(mutable builder, header, enumDecl.variants)
+          found = true
+        }
+      }
+      _ => {}
+    }
+  }
+  if (!found) {
+    return parsed
+  }
+  writeHelpers(mutable builder)
+
+  // Start the text after the file's last line, then the hidden imports.
+  let text = Str.builder()
+  Str.append(mutable text, Str.repeat("\n", countLines(source)))
+  Str.append(
+    mutable text,
+    `import { Shape as ${HIDDEN_SHAPE}, Value as __Value } from "std/shape"\n`,
+  )
+  Str.append(mutable text, "import * as __ShapeText from \"std/string\"\n")
+  Str.append(mutable text, Str.build(builder))
+  const generated = parse(Str.build(text), parsed.nextId)
+  if (generated is Err(diagnostic)) {
+    panic(`derives Shape: generated code does not parse: ${diagnostic.message}`)
+  }
+  let imports = parsed.file.imports
+  for (const importDecl of Arrays.values(generated.value.file.imports)) {
+    Arrays.push(mutable imports, importDecl)
+  }
+  let declarations = parsed.file.declarations
+  for (const declaration of Arrays.values(generated.value.file.declarations)) {
+    Arrays.push(mutable declarations, declaration)
+  }
+  return Parsed {
+    file: File { ...parsed.file, imports: imports, declarations: declarations },
+    nextId: generated.value.nextId,
+  }
+}
+
+function countLines(source: string): int {
+  let count = 1
+  for (const index of Ranges.between(0, Str.length(source))) {
+    if (Str.byteAt(source, index) == 10) {
+      count = count + 1
+    }
+  }
+  return count
+}
+
+// The name and type parameters of a type that derives Shape.
+struct TypeHeader {
+  name: string
+  parameters: Array<string>
+}
+
+// typeText is the type as written: `User`, or `Box<T>` for a generic one.
+function typeText(header: TypeHeader): string uses alloc {
+  if (Arrays.length(header.parameters) == 0) {
+    return header.name
+  }
+  return `${header.name}<${Str.join(header.parameters, ", ")}>`
+}
+
+// boundsText declares the type parameters with the Shape bound: `<T: __Shape>`.
+function boundsText(header: TypeHeader): string uses alloc {
+  if (Arrays.length(header.parameters) == 0) {
+    return ""
+  }
+  let parts: Array<string> = []
+  for (const parameter of Arrays.values(header.parameters)) {
+    Arrays.push(mutable parts, `${parameter}: ${HIDDEN_SHAPE}`)
+  }
+  return `<${Str.join(parts, ", ")}>`
+}
+
+// fieldTypeText prints a field type for a type argument. A type with a function
+// in it does not implement Shape, so the checker skips the body that would use
+// it; it is printed as int to keep the text valid.
+function fieldTypeText(typeExpr: TypeExpr): string uses alloc {
+  if (hasFunction(typeExpr)) {
+    return "int"
+  }
+  if (Arrays.length(typeExpr.arguments) == 0 && !typeExpr.isTuple) {
+    return typeExpr.name
+  }
+  let parts: Array<string> = []
+  for (const argument of Arrays.values(typeExpr.arguments)) {
+    Arrays.push(mutable parts, fieldTypeText(argument))
+  }
+  if (typeExpr.isTuple) {
+    return `#[${Str.join(parts, ", ")}]`
+  }
+  return `${typeExpr.name}<${Str.join(parts, ", ")}>`
+}
+
+function hasFunction(typeExpr: TypeExpr): bool {
+  if (typeExpr.isFunc) {
+    return true
+  }
+  for (const argument of Arrays.values(typeExpr.arguments)) {
+    if (hasFunction(argument)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isOptionType(typeExpr: TypeExpr): bool {
+  return typeExpr.name == "Option" && Arrays.length(typeExpr.arguments) == 1
+}
+
+// isRequired reports whether decoding fails when the field is missing: it has
+// no default and is not an Option.
+function isRequired(field: FieldDecl): bool {
+  return field.default is None && !isOptionType(field.type)
+}
+
+function writeLine(mutable builder: StringBuilder, depth: int, text: string) uses alloc {
+  Str.append(mutable builder, Str.repeat("  ", depth))
+  Str.append(mutable builder, text)
+  Str.append(mutable builder, "\n")
+}
+
+// writeEncodeField sets the entry of one field; an Option holding None is left out.
+function writeEncodeField(
+  mutable builder: StringBuilder,
+  depth: int,
+  field: FieldDecl,
+  read: string,
+) uses alloc {
+  if (isOptionType(field.type)) {
+    writeLine(mutable builder, depth, `if (${read} is Some(__present)) {`)
+    writeLine(
+      mutable builder,
+      depth + 1,
+      `__fields["${field.name}"] = ${HIDDEN_SHAPE}.toValue(__present)`,
+    )
+    writeLine(mutable builder, depth, "}")
+    return
+  }
+  writeLine(mutable builder, depth, `__fields["${field.name}"] = ${HIDDEN_SHAPE}.toValue(${read})`)
+}
+
+// writeDecodeRequired decodes a field that must be present into __fieldN.
+function writeDecodeRequired(
+  mutable builder: StringBuilder,
+  depth: int,
+  field: FieldDecl,
+  index: int,
+) uses alloc {
+  const number = Int.toString(index)
+  writeLine(mutable builder, depth, `const __entry${number} = __fields["${field.name}"]`)
+  writeLine(mutable builder, depth, `if (__entry${number} is None) {`)
+  writeLine(mutable builder, depth + 1, `return Err(".${field.name}: missing field")`)
+  writeLine(mutable builder, depth, "}")
+  writeLine(
+    mutable builder,
+    depth,
+    `const __field${number} = ${HIDDEN_SHAPE}.fromValue<${fieldTypeText(field.type)}>(__entry${number}.value)`,
+  )
+  writeDecodeError(mutable builder, depth, `__field${number}`, field.name)
+}
+
+// writeDecodeOptional decodes a field that may be missing and assigns it to
+// target when it is present.
+function writeDecodeOptional(
+  mutable builder: StringBuilder,
+  depth: int,
+  field: FieldDecl,
+  index: int,
+  target: string,
+) uses alloc {
+  const number = Int.toString(index)
+  writeLine(mutable builder, depth, `if (__fields["${field.name}"] is Some(__entry${number})) {`)
+  writeLine(
+    mutable builder,
+    depth + 1,
+    `const __decoded${number} = ${HIDDEN_SHAPE}.fromValue<${fieldTypeText(field.type)}>(__entry${number})`,
+  )
+  writeDecodeError(mutable builder, depth + 1, `__decoded${number}`, field.name)
+  writeLine(mutable builder, depth + 1, `${target} = __decoded${number}.value`)
+  writeLine(mutable builder, depth, "}")
+}
+
+function writeDecodeError(
+  mutable builder: StringBuilder,
+  depth: int,
+  local: string,
+  fieldName: string,
+) uses alloc {
+  writeLine(mutable builder, depth, `if (${local} is Err(__message)) {`)
+  writeLine(mutable builder, depth + 1, `return Err(__shapePath(".${fieldName}", __message))`)
+  writeLine(mutable builder, depth, "}")
+}
+
+function writeStructToValue(
+  mutable builder: StringBuilder,
+  header: TypeHeader,
+  fields: Array<FieldDecl>,
+) uses alloc {
+  const name = shapeFunctionName("toValue", header.name)
+  Str.append(mutable builder, "\n")
+  writeLine(
+    mutable builder,
+    0,
+    `function ${name}${boundsText(header)}(__value: ${typeText(header)}): __Value uses alloc {`,
+  )
+  writeLine(mutable builder, 1, "let __fields: Map<string, __Value> = Map {}")
+  for (const field of Arrays.values(fields)) {
+    writeEncodeField(mutable builder, 1, field, `__value.${field.name}`)
+  }
+  writeLine(mutable builder, 1, "return __Value.Record(__fields)")
+  writeLine(mutable builder, 0, "}")
+}
+
+function writeStructFromValue(
+  mutable builder: StringBuilder,
+  header: TypeHeader,
+  fields: Array<FieldDecl>,
+) uses alloc {
+  const name = shapeFunctionName("fromValue", header.name)
+  const type = typeText(header)
+  Str.append(mutable builder, "\n")
+  writeLine(
+    mutable builder,
+    0,
+    `function ${name}${boundsText(header)}(__value: __Value): Result<${type}, string> uses alloc {`,
+  )
+  if (Arrays.length(fields) == 0) {
+    writeLine(mutable builder, 1, "if (__value is __Value.Record(_)) {")
+  } else {
+    writeLine(mutable builder, 1, "if (__value is __Value.Record(__fields)) {")
+  }
+
+  // Decode the required fields, build the struct with the others at their
+  // default (None for an Option), then decode the others that are present.
+  let parts: Array<string> = []
+  let optional = false
+  for (const index of Ranges.between(0, Arrays.length(fields))) {
+    const field = fields[index]
+    if (isRequired(field)) {
+      writeDecodeRequired(mutable builder, 2, field, index)
+      Arrays.push(mutable parts, `${field.name}: __field${Int.toString(index)}.value`)
+    } else {
+      optional = true
+      if (field.default is None) {
+        Arrays.push(mutable parts, `${field.name}: None`)
+      }
+    }
+  }
+  let binding = "const"
+  if (optional) {
+    binding = "let"
+  }
+  writeLine(mutable builder, 2, `${binding} __result = ${type} { ${Str.join(parts, ", ")} }`)
+  for (const index of Ranges.between(0, Arrays.length(fields))) {
+    const field = fields[index]
+    if (!isRequired(field)) {
+      writeDecodeOptional(mutable builder, 2, field, index, `__result.${field.name}`)
+    }
+  }
+  writeLine(mutable builder, 2, "return Ok(__result)")
+  writeLine(mutable builder, 1, "}")
+  writeLine(mutable builder, 1, "return Err(`expected Record, found \${__shapeKind(__value)}`)")
+  writeLine(mutable builder, 0, "}")
+}
+
+function writeEnumToValue(
+  mutable builder: StringBuilder,
+  header: TypeHeader,
+  variants: Array<VariantDecl>,
+) uses alloc {
+  const name = shapeFunctionName("toValue", header.name)
+  Str.append(mutable builder, "\n")
+  writeLine(
+    mutable builder,
+    0,
+    `function ${name}${boundsText(header)}(__value: ${typeText(header)}): __Value uses alloc {`,
+  )
+  writeLine(mutable builder, 1, "let __fields: Map<string, __Value> = Map {}")
+  writeLine(mutable builder, 1, "match (__value) {")
+  for (const variant of Arrays.values(variants)) {
+    let pattern = `${header.name}.${variant.name}`
+    if (Arrays.length(variant.fields) > 0) {
+      let bindings: Array<string> = []
+      for (const index of Ranges.between(0, Arrays.length(variant.fields))) {
+        Arrays.push(mutable bindings, `__field${Int.toString(index)}`)
+      }
+      pattern = `${pattern}(${Str.join(bindings, ", ")})`
+    }
+    writeLine(mutable builder, 2, `${pattern} => {`)
+    writeLine(mutable builder, 3, `__fields["type"] = __Value.Text("${variant.name}")`)
+    for (const index of Ranges.between(0, Arrays.length(variant.fields))) {
+      writeEncodeField(mutable builder, 3, variant.fields[index], `__field${Int.toString(index)}`)
+    }
+    writeLine(mutable builder, 2, "}")
+  }
+  writeLine(mutable builder, 1, "}")
+  writeLine(mutable builder, 1, "return __Value.Record(__fields)")
+  writeLine(mutable builder, 0, "}")
+}
+
+function writeEnumFromValue(
+  mutable builder: StringBuilder,
+  header: TypeHeader,
+  variants: Array<VariantDecl>,
+) uses alloc {
+  const name = shapeFunctionName("fromValue", header.name)
+  const type = typeText(header)
+  Str.append(mutable builder, "\n")
+  writeLine(
+    mutable builder,
+    0,
+    `function ${name}${boundsText(header)}(__value: __Value): Result<${type}, string> uses alloc {`,
+  )
+  writeLine(mutable builder, 1, "if (__value is __Value.Record(__fields)) {")
+  writeLine(mutable builder, 2, "const __tag = __fields[\"type\"]")
+  writeLine(mutable builder, 2, "if (__tag is None) {")
+  writeLine(
+    mutable builder,
+    3,
+    `return Err(".type: missing field; expected a constructor of ${header.name}")`,
+  )
+  writeLine(mutable builder, 2, "}")
+  writeLine(mutable builder, 2, "if (__tag.value is __Value.Text(__name)) {")
+  for (const variant of Arrays.values(variants)) {
+    writeLine(mutable builder, 3, `if (__name == "${variant.name}") {`)
+
+    // Required fields first, then Option fields, which start as None.
+    let arguments: Array<string> = []
+    for (const index of Ranges.between(0, Arrays.length(variant.fields))) {
+      const field = variant.fields[index]
+      const number = Int.toString(index)
+      if (isRequired(field)) {
+        writeDecodeRequired(mutable builder, 4, field, index)
+        Arrays.push(mutable arguments, `__field${number}.value`)
+      } else {
+        writeLine(mutable builder, 4, `let __field${number}: ${fieldTypeText(field.type)} = None`)
+        writeDecodeOptional(mutable builder, 4, field, index, `__field${number}`)
+        Arrays.push(mutable arguments, `__field${number}`)
+      }
+    }
+    let construct = `${header.name}.${variant.name}`
+    if (Arrays.length(arguments) > 0) {
+      construct = `${construct}(${Str.join(arguments, ", ")})`
+    }
+    writeLine(mutable builder, 4, `return Ok(${construct})`)
+    writeLine(mutable builder, 3, "}")
+  }
+  writeLine(
+    mutable builder,
+    3,
+    `return Err(\`.type: ${header.name} has no constructor "\${__name}"\`)`,
+  )
+  writeLine(mutable builder, 2, "}")
+  writeLine(
+    mutable builder,
+    2,
+    "return Err(`.type: expected Text, found \${__shapeKind(__tag.value)}`)",
+  )
+  writeLine(mutable builder, 1, "}")
+  writeLine(mutable builder, 1, "return Err(`expected Record, found \${__shapeKind(__value)}`)")
+  writeLine(mutable builder, 0, "}")
+}
+
+// writeHelpers writes the path and kind helpers of std/shape, which are private there.
+function writeHelpers(mutable builder: StringBuilder) uses alloc {
+  Str.append(mutable builder, "\n")
+  writeLine(
+    mutable builder,
+    0,
+    "function __shapePath(__segment: string, __message: string): string uses alloc {",
+  )
+  writeLine(
+    mutable builder,
+    1,
+    "if (__ShapeText.startsWith(__message, \".\") || __ShapeText.startsWith(__message, \"[\")) {",
+  )
+  writeLine(mutable builder, 2, "return `\${__segment}\${__message}`")
+  writeLine(mutable builder, 1, "}")
+  writeLine(mutable builder, 1, "return `\${__segment}: \${__message}`")
+  writeLine(mutable builder, 0, "}")
+  Str.append(mutable builder, "\n")
+  writeLine(mutable builder, 0, "function __shapeKind(__value: __Value): string {")
+  writeLine(mutable builder, 1, "return match (__value) {")
+  for (const kind of Arrays.values(VALUE_KINDS)) {
+    let pattern = `__Value.${kind}(_)`
+    if (kind == "Null") {
+      pattern = "__Value.Null"
+    }
+    writeLine(mutable builder, 2, `${pattern} => "${kind}"`)
+  }
+  writeLine(mutable builder, 1, "}")
+  writeLine(mutable builder, 0, "}")
+}
+
+const VALUE_KINDS = ["Null", "Bool", "Int", "Float", "Text", "List", "Record"]

@@ -1,0 +1,143 @@
+// derives Shape: structs and enums round-trip through Json.encode and Json.decode.
+import * as Json from "std/json"
+import * as Maps from "std/map"
+import * as Int from "std/int"
+import { Shape } from "std/shape"
+
+struct Address derives Shape, Show {
+  city: string
+  zip: Option<string>
+}
+
+struct User derives Shape, Show {
+  name: string
+  age: int = 18
+  nick: Option<string>
+  tags: Array<string>
+  home: Address
+}
+
+enum Event derives Shape {
+  Click(x: int, y: int)
+  Key(code: string, repeat: Option<int>)
+  Idle
+}
+
+// A recursive enum (D55).
+enum Expr derives Shape {
+  Num(value: f64)
+  Add(left: Expr, right: Expr)
+}
+
+struct Page<T> derives Shape {
+  items: Array<T>
+  next: Option<int>
+}
+
+enum Tree<T> derives Shape {
+  Leaf
+  Node(value: T, children: Array<Tree<T>>)
+}
+
+struct Team derives Shape {
+  members: Map<string, User>
+  history: Array<Event>
+}
+
+struct Empty derives Shape {}
+
+function show(text: string) {
+  print(text)
+}
+
+function showDecoded<T: Shape>(result: Result<T, string>) {
+  if (result is Err(message)) {
+    print(`error: ${message}`)
+  } else {
+    print(`ok: ${Json.encode(result.value)}`)
+  }
+}
+
+function evaluate(expression: Expr): f64 {
+  return match (expression) {
+    Expr.Num(value) => value
+    Expr.Add(left, right) => evaluate(left) + evaluate(right)
+  }
+}
+
+export function run(args: Array<string>): int {
+  const address = Address { city: "Lyon", zip: None }
+  const user = User {
+    name: "Ada",
+    age: 36,
+    nick: Some("ada"),
+    tags: ["admin", "dev"],
+    home: address,
+  }
+
+  // The exact JSON text: fields in declaration order, None left out.
+  show(Json.encode(address))
+  show(Json.encode(user))
+  show(Json.encode(Event.Click(1, 2)))
+  show(Json.encode(Event.Key("a", None)))
+  show(Json.encode(Event.Idle))
+  show(Json.encode(Empty {}))
+
+  // Round trips.
+  const decodedUser = Json.decode<User>(Json.encode(user))
+  if (decodedUser is Ok(back)) {
+    print(Show.show(back))
+    print(Show.show(back.name == user.name))
+  }
+  showDecoded(Json.decode<Event>(Json.encode(Event.Key("b", Some(3)))))
+  showDecoded(Json.decode<Empty>("{}"))
+
+  // Defaults and missing Option fields.
+  showDecoded(Json.decode<User>("{\"name\":\"Bo\",\"tags\":[],\"home\":{\"city\":\"Oslo\"}}"))
+  showDecoded(
+    Json.decode<User>(
+      "{\"name\":\"Bo\",\"nick\":null,\"tags\":[],\"home\":{\"city\":\"Oslo\",\"zip\":\"0150\"},\"extra\":1}",
+    ),
+  )
+
+  // A recursive enum.
+  const sum = Expr.Add(Expr.Num(1.5), Expr.Add(Expr.Num(2.0), Expr.Num(3.0)))
+  show(Json.encode(sum))
+  const decodedSum = Json.decode<Expr>(Json.encode(sum))
+  if (decodedSum is Ok(expression)) {
+    print(Show.show(evaluate(expression) == 6.5))
+  }
+
+  // Generic types.
+  const page = Page<string> { items: ["a", "b"], next: Some(2) }
+  show(Json.encode(page))
+  showDecoded(Json.decode<Page<int>>("{\"items\":[1,2,3]}"))
+  const tree = Tree.Node(1, [Tree.Node(2, []), Tree.Leaf])
+  show(Json.encode(tree))
+  showDecoded(Json.decode<Tree<int>>(Json.encode(tree)))
+
+  // Arrays and maps of derived types.
+  let members: Map<string, User> = Map {}
+  members["ada"] = user
+  const team = Team { members: members, history: [Event.Idle, Event.Click(3, 4)] }
+  show(Json.encode(team))
+  const decodedTeam = Json.decode<Team>(Json.encode(team))
+  if (decodedTeam is Ok(backTeam)) {
+    print(Int.toString(Maps.size(backTeam.members)))
+  }
+  showDecoded(Json.decode<Array<Address>>("[{\"city\":\"A\"},{\"city\":\"B\",\"zip\":\"1\"}]"))
+
+  // Errors carry the path from the root.
+  showDecoded(Json.decode<User>("{\"tags\":[],\"home\":{\"city\":\"Oslo\"}}"))
+  showDecoded(Json.decode<User>("{\"name\":\"Bo\",\"tags\":[1],\"home\":{\"city\":\"Oslo\"}}"))
+  showDecoded(Json.decode<User>("{\"name\":\"Bo\",\"tags\":[],\"home\":{\"city\":7}}"))
+  showDecoded(Json.decode<User>("[]"))
+  showDecoded(Json.decode<Team>("{\"members\":{},\"history\":[{\"type\":\"Click\",\"x\":1}]}"))
+  showDecoded(Json.decode<Event>("{\"x\":1}"))
+  showDecoded(Json.decode<Event>("{\"type\":\"Scroll\"}"))
+  showDecoded(Json.decode<Event>("{\"type\":3}"))
+  showDecoded(
+    Json.decode<Expr>("{\"type\":\"Add\",\"left\":{\"type\":\"Num\",\"value\":1},\"right\":{}}"),
+  )
+  return 0
+}

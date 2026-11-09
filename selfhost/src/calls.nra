@@ -34,6 +34,7 @@ import {
 } from "narrac/check"
 import { substitute, resolveType } from "narrac/resolve"
 import { unify } from "narrac/generics"
+import { shapeFunctionName } from "narrac/deriveshape"
 import {
   findTraitFunc,
   typeImplements,
@@ -41,6 +42,7 @@ import {
   checkBounds,
   isShapeTrait,
   reportShapeProblem,
+  checkShapeVisible,
 } from "narrac/traits"
 import { sourceScope, exported } from "narrac/scopes"
 import { checkValueCall, checkValueCallOf, checkGenericArguments } from "narrac/closures"
@@ -1043,6 +1045,9 @@ function checkTraitCall<W: Walker>(
   if (containsTypeParameter(checker, selfType)) {
     return result
   }
+  if (isShapeTrait(checker, traitIndex)) {
+    checkShapeVisible(mutable checker, pos, selfType, traitIndex)
+  }
   if (implFunc(checker, selfType, traitIndex, name) is Some(implementation)) {
     setRef(mutable checker, nodeId, Ref.Implementation(implementation.block, implementation.index))
   } else if (isShapeTrait(checker, traitIndex)) {
@@ -1125,6 +1130,39 @@ function setShapeRef(
         }
         return
       }
+    }
+    return
+  }
+  // A struct or enum that derives Shape: the function written for it (deriveshape.nra).
+  let module = ""
+  let typeName = ""
+  let typeArguments: Array<Type> = []
+  match (selfType) {
+    Type.TStruct(index) => {
+      module = checker.structs[index].module
+      typeName = checker.structs[index].name
+      typeArguments = checker.structs[index].arguments
+    }
+    Type.TEnum(index) => {
+      module = checker.enums[index].module
+      typeName = checker.enums[index].name
+      typeArguments = checker.enums[index].arguments
+    }
+    _ => {
+      return
+    }
+  }
+  const functionName = shapeFunctionName(name, typeName)
+  for (const index of Ranges.between(0, Arrays.length(checker.functions))) {
+    if (
+      checker.functions[index].module == module && checker.functions[index].name == functionName
+    ) {
+      setRef(mutable checker, nodeId, Ref.Function(index))
+      if (Arrays.length(typeArguments) > 0) {
+        const instance = addFuncInstance(mutable checker, index, typeArguments)
+        checker.bodies[checker.body].instanceRefs[nodeId] = instance
+      }
+      return
     }
   }
 }

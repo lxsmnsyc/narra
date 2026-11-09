@@ -15,14 +15,16 @@ import * as FmtConfig from "narrac/fmtconfig"
 import { getPath, makeNotification, makeRecord } from "narrac/lspserverjson"
 
 // What the server remembers between messages. documents maps a document URI to
-// its text; reported lists the URIs that got a non-empty list of diagnostics
-// the last time, so that a list can be emptied when the problems are gone.
+// its text; reported maps a package (its directory, or the path of a document
+// checked alone) to the URIs that got a non-empty list of diagnostics the last
+// time it was checked, so that a list can be emptied when the problems are
+// gone. A check publishes one package and leaves the others' lists alone.
 export struct Server {
   initialized: bool
   shutdownRequested: bool
   utf8: bool // columns count UTF-8 bytes; otherwise UTF-16 code units
   documents: Map<string, string>
-  reported: Array<string>
+  reported: Map<string, Array<string>>
   cache: CheckCache // the parsed sources and errors of the last check (lspcache.nra)
 }
 
@@ -32,7 +34,7 @@ export function createServer(): Server uses alloc {
     shutdownRequested: false,
     utf8: false,
     documents: Map {},
-    reported: [],
+    reported: Map {},
     cache: createCheckCache(),
   }
 }
@@ -423,12 +425,14 @@ export function checkDocumentPackage(
     }
     Arrays.push(mutable messages, makePublish(target.uri, diagnostics))
   }
-  for (const old of Arrays.values(server.reported)) {
-    if (!containsTarget(order, old)) {
-      Arrays.push(mutable messages, makePublish(old, []))
+  if (server.reported[loadPath] is Some(oldUris)) {
+    for (const old of Arrays.values(oldUris)) {
+      if (!containsTarget(order, old)) {
+        Arrays.push(mutable messages, makePublish(old, []))
+      }
     }
   }
-  server.reported = nonEmpty
+  server.reported[loadPath] = nonEmpty
   return messages
 }
 
@@ -500,12 +504,17 @@ export function closeDocument(mutable server: Server, uri: string): Array<Value>
     Arrays.push(mutable messages, message)
   }
   Arrays.push(mutable messages, makePublish(uri, []))
-  let kept: Array<string> = []
-  for (const reported of Arrays.values(server.reported)) {
-    if (reported != uri) {
-      Arrays.push(mutable kept, reported)
+  let reported: Map<string, Array<string>> = Map {}
+  for (const entry of Maps.entries(server.reported)) {
+    const #[packageKey, uris] = entry
+    let kept: Array<string> = []
+    for (const old of Arrays.values(uris)) {
+      if (old != uri) {
+        Arrays.push(mutable kept, old)
+      }
     }
+    reported[packageKey] = kept
   }
-  server.reported = kept
+  server.reported = reported
   return messages
 }

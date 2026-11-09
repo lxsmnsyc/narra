@@ -208,42 +208,93 @@ implement Walker for BodyWalker {
 // Go's checkPackageBodies does, and lists the checked bodies in
 // Checker.bodies.
 export function checkPackage(package: Package): Checker uses alloc {
+  return checkModules(package, Map {}).checker
+}
+
+// The result of checkModules. The errors before unusedStart come from the
+// passes before the unused check. queuedErrors counts the errors of the
+// generic struct defaults and the generic function instances, which the
+// bodies of other modules queue.
+export struct ModulesCheck {
+  checker: Checker
+  unusedStart: int
+  queuedErrors: int
+}
+
+// checkModules is checkPackage that declares every module but checks the
+// field defaults and bodies only of the modules whose path is not a key of
+// skipped (narrac lsp reuses the results of the others). With skipped empty
+// it is checkPackage.
+export function checkModules(
+  package: Package,
+  skipped: Map<string, bool>,
+): ModulesCheck uses alloc {
   let checker = newPackageChecker(package)
   if (Arrays.length(checker.errors) > 0 && Arrays.length(checker.scopes) == 0) {
-    return checker
+    const count = Arrays.length(checker.errors)
+    return ModulesCheck { checker: checker, unusedStart: count, queuedErrors: 0 }
   }
   checker.checkingBodies = true
   recordEntryTargets(mutable checker, package)
   const walker = BodyWalker {}
+  let queuedErrors = 0
 
   // Each module: declarations, field defaults, bodies.
   for (const module of Arrays.values(package.modules)) {
     declareSourceModule(mutable checker, module)
-    checkDefaults(mutable checker, walker, module.ast)
-    checkModuleBodies(mutable checker, walker, module.ast)
+    const beforeDefaults = Arrays.length(checker.errors)
+    checkQueuedDefaults(mutable checker, walker)
+    queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforeDefaults
+    if (skipped[module.path] is None) {
+      checkDefaults(mutable checker, walker, module.ast)
+      checkModuleBodies(mutable checker, walker, module.ast)
+    }
   }
 
   // Then the checks that need every module.
+  const beforePending = Arrays.length(checker.errors)
   checkPending(mutable checker, walker)
+  queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforePending
   flushMapKeys(mutable checker)
   checkEntries(mutable checker, package)
   const concrete = checker.concrete
   finish(mutable checker, concrete)
+  const unusedStart = Arrays.length(checker.errors)
+  // The unused check leaves out the skipped modules: with their bodies
+  // unchecked, their private functions would look unused.
+  let hidden: Array<int> = []
+  for (const module of Arrays.values(package.modules)) {
+    if (skipped[module.path] is Some(_)) {
+      if (checker.scopeIndex[module.path] is Some(scope)) {
+        if (checker.scopes[scope].isSource) {
+          checker.scopes[scope].isSource = false
+          Arrays.push(mutable hidden, scope)
+        }
+      }
+    }
+  }
   reportUnusedTopLevel(mutable checker)
-  return checker
+  for (const scope of Arrays.values(hidden)) {
+    checker.scopes[scope].isSource = true
+  }
+  return ModulesCheck { checker: checker, unusedStart: unusedStart, queuedErrors: queuedErrors }
 }
 
-// checkDefaults checks the field defaults of the structs the module's
-// declaration made known: first those of the generic structs built
-// meanwhile, in build order (Go checks them inside buildGeneric, a little
-// earlier), then those of the module's non-generic structs, after every
-// field type is known.
-function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
+// checkQueuedDefaults checks the field defaults of the generic structs built
+// since the last call, in build order (Go checks them inside buildGeneric, a
+// little earlier).
+function checkQueuedDefaults(mutable checker: Checker, walker: BodyWalker) uses alloc {
   const generics = checker.pendingDefaults
   checker.pendingDefaults = []
   for (const generic of Arrays.values(generics)) {
     checkGenericDefaults(mutable checker, walker, generic)
   }
+}
+
+// checkDefaults checks the field defaults of the module's non-generic
+// structs, after every field type is known. checkQueuedDefaults has checked
+// those of the generic structs built meanwhile.
+function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
   const scope = checker.current
   for (const declaration of Arrays.values(file.declarations)) {
     if (declaration is Decl.Struct(structDecl)) {

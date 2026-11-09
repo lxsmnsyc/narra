@@ -9,9 +9,7 @@ import * as Path from "std/path"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
 import { Value } from "std/shape"
-import * as Body from "narrac/body"
-import * as Effects from "narrac/effects"
-import * as Modules from "narrac/modules"
+import { CheckCache, checkLoaded, createCheckCache, loadPackage } from "narrac/lspcache"
 import * as Fmt from "narrac/fmt"
 import * as FmtConfig from "narrac/fmtconfig"
 import { getPath, makeNotification, makeRecord } from "narrac/lspserverjson"
@@ -25,6 +23,7 @@ export struct Server {
   utf8: bool // columns count UTF-8 bytes; otherwise UTF-16 code units
   documents: Map<string, string>
   reported: Array<string>
+  cache: CheckCache // the parsed sources and errors of the last check (lspcache.nra)
 }
 
 export function createServer(): Server uses alloc {
@@ -34,6 +33,7 @@ export function createServer(): Server uses alloc {
     utf8: false,
     documents: Map {},
     reported: [],
+    cache: createCheckCache(),
   }
 }
 
@@ -361,7 +361,7 @@ export function checkDocumentPackage(
   // The problems and the files of the package's own modules.
   let problems: Array<Problem> = []
   let moduleFiles: Array<string> = []
-  const loaded = Modules.loadWith(loadPath, overrides)
+  const loaded = loadPackage(mutable server.cache, loadPath, overrides)
   if (loaded is Err(errors)) {
     for (const error of errors) {
       Arrays.push(mutable problems, Problem {
@@ -378,12 +378,7 @@ export function checkDocumentPackage(
         Arrays.push(mutable moduleFiles, module.file)
       }
     }
-    let checker = Body.checkPackage(loaded.value)
-    if (Arrays.length(checker.errors) == 0) {
-      // The effect pass runs only on a package whose bodies have no errors.
-      const _effects = Effects.checkEffects(mutable checker)
-    }
-    for (const error of Arrays.values(checker.errors)) {
+    for (const error of Arrays.values(checkLoaded(mutable server.cache, loaded.value))) {
       Arrays.push(mutable problems, Problem {
         file: error.file,
         line: error.pos.line,

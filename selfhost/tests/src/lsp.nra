@@ -23,6 +23,7 @@ import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Files from "testrunner/files"
 import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
 
 // A plain string: template strings decode only \n and \t.
 const CRLF = "\r\n"
@@ -118,6 +119,17 @@ function describeSession(
   return Ok(text)
 }
 
+function runServer(
+  context: Context,
+  arguments: Array<string>,
+  inputPath: string,
+): Shell.CommandResult uses io, alloc {
+  let command = Shell.newCommand(context.narrac, arguments)
+  command.environment = Shell.leakCheckEnvironment()
+  command.stdinPath = inputPath
+  return Shell.runCommand(command)
+}
+
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
   const sessionPath = Path.join(testCase.path, "session.txt")
   const expectedPath = Path.join(testCase.path, "expected.txt")
@@ -135,14 +147,35 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
     Shell.removeTree(directory.value)
     return Err(message)
   }
-  let command = Shell.newCommand(context.narrac, ["lsp"])
-  command.environment = Shell.leakCheckEnvironment()
-  command.stdinPath = inputPath
-  const result = Shell.runCommand(command)
+  // An incremental_* case traces which modules each check covers, and must
+  // publish the same as a server that checks the whole package every time.
+  const incremental = Str.startsWith(testCase.name, "incremental_")
+  let arguments = ["lsp"]
+  if (incremental) {
+    arguments = ["lsp", "--trace"]
+  }
+  const result = runServer(context, arguments, inputPath)
+  let wholeResult = result
+  if (incremental) {
+    wholeResult = runServer(context, ["lsp", "--full"], inputPath)
+  }
   Shell.removeTree(directory.value)
   const described = describeSession(result, testCase.path)
   if (described is Err(message)) {
     return Err(`${message}\n${Common.describeRun(result)}`)
+  }
+  if (incremental) {
+    const whole = describeSession(CommandResult { ...wholeResult, errorOutput: "" }, testCase.path)
+    if (whole is Err(message)) {
+      return Err(`--full: ${message}\n${Common.describeRun(wholeResult)}`)
+    }
+    const traced = describeSession(CommandResult { ...result, errorOutput: "" }, testCase.path)
+    if (traced is Ok(text)) {
+      const compared = Common.compareText("output of --full", text, whole.value)
+      if (compared is Err(message)) {
+        return Err(message)
+      }
+    }
   }
   if (context.update) {
     const updated = Fs.writeText(expectedPath, described.value)

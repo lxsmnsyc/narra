@@ -48,6 +48,29 @@ export function load(path: string): Result<Package, Array<LoadError>> uses io, a
   return loadWith(path, Map {})
 }
 
+// The parsed sources narrac lsp keeps between loads, by source path (std
+// modules by import path). A source whose text is unchanged keeps its tree and
+// its node ids. A changed one is parsed with ids from nextId on, so the ids of
+// the others stay where they are, and the ids of a package are no longer one
+// gapless sequence. An empty cache numbers the files as load does.
+export struct ParseCache {
+  sources: Map<string, CachedSource>
+  nextId: int
+}
+
+// One parsed source: the tree after the shape derives, and its ids
+// [firstId, endId).
+export struct CachedSource {
+  text: string
+  ast: File
+  firstId: int
+  endId: int
+}
+
+export function createParseCache(): ParseCache uses alloc {
+  return ParseCache { sources: Map {}, nextId: 0 }
+}
+
 // loadWith is load with overriding sources: a source file whose path (as
 // read from disk, `DIR/src/text.nra` or the single file's own path) is a key
 // of overrides is taken from the map instead. narrac lsp passes the text of
@@ -56,13 +79,65 @@ export function loadWith(
   path: string,
   overrides: Map<string, string>,
 ): Result<Package, Array<LoadError>> uses io, alloc {
+  let cache = createParseCache()
+  return loadCached(path, overrides, mutable cache)
+}
+
+// loadCached is loadWith that takes unchanged sources from cache and adds the
+// sources it parses to it.
+export function loadCached(
+  path: string,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+): Result<Package, Array<LoadError>> uses io, alloc {
   if (Fs.listDir(path) is Ok(_)) {
-    return loadPackage(path, overrides)
+    return loadPackage(path, overrides, mutable cache)
   }
   if (!Fs.exists(path) && overrides[path] is None) {
     return Err(plain(`stat ${path}: no such file or directory`))
   }
-  return loadFile(path, overrides)
+  return loadFile(path, overrides, mutable cache)
+}
+
+// parseSource parses a source, with the shape derives when derive is set, or
+// takes it from cache when its text is unchanged. A syntax error is a load
+// error of file.
+function parseSource(
+  mutable cache: ParseCache,
+  key: string,
+  text: string,
+  file: string,
+  derive: bool,
+): Result<CachedSource, LoadError> uses alloc {
+  if (cache.sources[key] is Some(cached)) {
+    if (cached.text == text) {
+      return Ok(cached)
+    }
+  }
+  const parsed = parse(text, cache.nextId)
+  if (parsed is Err(diagnostic)) {
+    return Err(LoadError {
+      code: diagnostic.code,
+      file: file,
+      line: diagnostic.pos.line,
+      column: diagnostic.pos.column,
+      message: diagnostic.message,
+      fixes: diagnostic.fixes,
+    })
+  }
+  let result = parsed.value
+  if (derive) {
+    result = addShapeDerives(parsed.value, text)
+  }
+  const source = CachedSource {
+    text: text,
+    ast: result.file,
+    firstId: cache.nextId,
+    endId: result.nextId,
+  }
+  cache.sources[key] = source
+  cache.nextId = result.nextId
+  return Ok(source)
 }
 
 // readSource reads a source file, or takes its text from overrides.
@@ -96,6 +171,7 @@ function dirName(path: string): string uses alloc {
 function loadFile(
   path: string,
   overrides: Map<string, string>,
+  mutable cache: ParseCache,
 ): Result<Package, Array<LoadError>> uses io, alloc {
   const read = readSource(path, overrides)
   if (read is Err(message)) {
@@ -106,22 +182,13 @@ function loadFile(
   if (Str.endsWith(base, ".nra")) {
     stem = Str.slice(base, 0, Str.length(base) - 4)
   }
-  const parsed = parse(read.value, 0)
-  if (parsed is Err(diagnostic)) {
-    return Err([
-      LoadError {
-        code: diagnostic.code,
-        file: base,
-        line: diagnostic.pos.line,
-        column: diagnostic.pos.column,
-        message: diagnostic.message,
-        fixes: diagnostic.fixes,
-      },
-    ])
+  const parsed = parseSource(mutable cache, path, read.value, base, true)
+  if (parsed is Err(error)) {
+    return Err([error])
   }
-  const derived = addShapeDerives(parsed.value, read.value)
-  const module = newModule(stem, base, derived.file, 0, derived.nextId)
-  const std = loadStdModules([module], derived.nextId)
+  const source = parsed.value
+  const module = newModule(stem, base, source.ast, source.firstId, source.endId)
+  const std = loadStdModules([module], mutable cache)
   let modules = std.modules
   Arrays.push(mutable modules, module)
   return Ok(Package {
@@ -131,7 +198,7 @@ function loadFile(
     binaries: [Binary { name: stem, entry: `${stem}.run` }],
     libraries: [],
     search: [],
-    nextId: std.nextId,
+    nextId: cache.nextId,
     single: true,
   })
 }
@@ -142,6 +209,7 @@ function loadFile(
 function loadPackage(
   directory: string,
   overrides: Map<string, string>,
+  mutable cache: ParseCache,
 ): Result<Package, Array<LoadError>> uses io, alloc {
   const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(message)) {
@@ -164,7 +232,6 @@ function loadPackage(
   sortStrings(mutable paths)
   let modules: Array<SourceModule> = []
   let errors: Array<LoadError> = []
-  let nextId = 0
   let hashes: Map<string, string> = Map {}
   for (const path of Arrays.values(paths)) {
     const relative = Str.slice(path, 0, Str.length(path) - 4)
@@ -173,16 +240,9 @@ function loadPackage(
     if (read is Err(message)) {
       return Err(plain(message))
     }
-    const parsed = parse(read.value, nextId)
-    if (parsed is Err(diagnostic)) {
-      Arrays.push(mutable errors, LoadError {
-        code: diagnostic.code,
-        file: display,
-        line: diagnostic.pos.line,
-        column: diagnostic.pos.column,
-        message: diagnostic.message,
-        fixes: diagnostic.fixes,
-      })
+    const parsed = parseSource(mutable cache, `${directory}/src/${path}`, read.value, display, true)
+    if (parsed is Err(error)) {
+      Arrays.push(mutable errors, error)
       continue
     }
     const modulePath = `${config.name}/${relative}`
@@ -198,22 +258,20 @@ function loadPackage(
       })
     }
     hashes[hash] = modulePath
-    const derived = addShapeDerives(parsed.value, read.value)
+    const source = parsed.value
     Arrays.push(
       mutable modules,
-      newModule(modulePath, display, derived.file, nextId, derived.nextId),
+      newModule(modulePath, display, source.ast, source.firstId, source.endId),
     )
-    nextId = derived.nextId
   }
   if (Arrays.length(errors) > 0) {
     return Err(errors)
   }
-  const std = loadStdModules(modules, nextId)
+  const std = loadStdModules(modules, mutable cache)
   let withStd = std.modules
   for (const module of Arrays.values(modules)) {
     Arrays.push(mutable withStd, module)
   }
-  nextId = std.nextId
   const ordered = orderModules(withStd)
   if (Arrays.length(ordered.errors) > 0) {
     return Err(ordered.errors)
@@ -225,7 +283,7 @@ function loadPackage(
     binaries: config.binaries,
     libraries: config.libraries,
     search: config.search,
-    nextId: nextId,
+    nextId: cache.nextId,
     single: false,
   })
 }
@@ -346,39 +404,40 @@ function exportedName(declaration: Decl): string {
 struct StdLoad {
   modules: Array<SourceModule>
   seen: Map<string, bool>
-  nextId: int
 }
 
 // loadStdModules parses the std source modules that modules import,
-// directly or through another std source module. Their ids start at firstId.
-function loadStdModules(modules: Array<SourceModule>, firstId: int): StdLoad uses alloc {
-  let load = StdLoad { modules: [], seen: Map {}, nextId: firstId }
+// directly or through another std source module, with ids from cache.
+function loadStdModules(
+  modules: Array<SourceModule>,
+  mutable cache: ParseCache,
+): StdLoad uses alloc {
+  let load = StdLoad { modules: [], seen: Map {} }
   for (const module of Arrays.values(modules)) {
-    addStdImports(mutable load, module.ast)
+    addStdImports(mutable load, mutable cache, module.ast)
   }
   return load
 }
 
 // addStdImports adds each std source module the file imports and not yet
 // loaded, then the ones that module imports.
-function addStdImports(mutable load: StdLoad, ast: File) uses alloc {
+function addStdImports(mutable load: StdLoad, mutable cache: ParseCache, ast: File) uses alloc {
   for (const importDecl of Arrays.values(ast.imports)) {
     const text = stdSourceFor(importDecl.path)
     if (text == "" || load.seen[importDecl.path] is Some(_)) {
       continue
     }
     load.seen[importDecl.path] = true
-    const parsed = parse(text, load.nextId)
+    const file = `std/src/${Str.sliceFrom(importDecl.path, 4)}.nra`
+    const parsed = parseSource(mutable cache, importDecl.path, text, file, false)
     match (parsed) {
-      Ok(result) => {
-        const file = `std/src/${Str.sliceFrom(importDecl.path, 4)}.nra`
-        const module = newModule(importDecl.path, file, result.file, load.nextId, result.nextId)
-        load.nextId = result.nextId
+      Ok(source) => {
+        const module = newModule(importDecl.path, file, source.ast, source.firstId, source.endId)
         // The imports of a std module come before it.
-        addStdImports(mutable load, result.file)
+        addStdImports(mutable load, mutable cache, source.ast)
         Arrays.push(mutable load.modules, module)
       }
-      Err(diagnostic) => panic(`std source ${importDecl.path}: ${diagnostic.message}`)
+      Err(error) => panic(`std source ${importDecl.path}: ${error.message}`)
     }
   }
 }

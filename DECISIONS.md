@@ -915,3 +915,21 @@ Decision: when a function with effect variables is used as a value (`const apply
 - **Rejected: an error for a function with effect variables used as a value** (hint: wrap it in a closure). It is simpler, but it rejects `const apply = twice` and `values.map(twice)` style code that is correct, and a closure cannot write the effect variable it needs.
 - **Cost.** A variable that no parameter of the value's type names is not bound at the call. Passing such a value on as an argument is unchanged.
 - **Generator results.** A function type cannot list the `alloc` that creating a generator charges apart from the generator's own `uses`, so storing a generator function in a slot whose result is a generator type does not charge it. A call through any function value whose result type is a generator charges `alloc` at the call instead, so a pure function cannot create a generator frame through a value. A value that returns a generator it did not create pays an `alloc` it may not use; the type cannot tell the two apart.
+
+## D92. No panics from arithmetic, missing returns or std functions
+
+Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, a failed `assert`, an array index out of range, running out of memory and stack overflow. Everything else that panics today becomes a defined result or a compile error.
+
+- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms are removed. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`.
+- **Division and remainder need a divisor proven non-zero.** Integer `/` and `%` compile only when the divisor is a non-zero constant or a name narrowed by a check (`if (count != 0) { total / count }`). Any other divisor is a compile error with a hint to add the check. Float division is unchanged (IEEE: infinity and NaN).
+- **Shift counts must be proven in range.** A constant count must be at least 0 and below the bit width. A variable count must be narrowed first (`if (n >= 0 && n < 64) { x << n }`; an unsigned count needs only the upper bound). Any other count is a compile error.
+- **A function with a result must return on every path.** A path ends at `return`, a call to `panic`, an `if`/`else` whose branches all end, an exhaustive `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. The end of any other path is a compile error. The runtime check stays only as an internal compiler error.
+- **Std functions return `Result` or `Option` instead of panicking** on bad input: `Str.slice`, `Str.split`, `Str.repeat`, `Bytes.at`, `Bytes.slice`, `Float.truncate`, `Arrays.filled`, `Ranges.stepped`, `Math.clamp`, `Math.powInt` and `Random.nextInt`. Compound assignment on a Map index target (`counts[key] += 1`) is removed; `Maps.update` names the missing-key case.
+- **Array indexing still panics.** `items[i]` is bounds checked; `Arrays.get(items, i)` returns an `Option`. Proving indexes in range was weighed and rejected for now.
+- **Reason.** The maintainer wants a language without hidden panics. Each rule keeps the operator syntax and adds no runtime cost: wrapping is what the hardware does, and the proofs reuse narrowing.
+- **Rejected: integer `/` returning a float, or division as a function.** Too verbose (maintainer).
+- **Rejected: `x / 0 = 0` (Gleam, Pony) and masking shift counts (JavaScript, Rust release).** Both give a quiet wrong answer to what is almost always a bug.
+- **Rejected: a NaN for integers.** It needs a reserved value, a check in every operation, and breaks `==` on `int`.
+- **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
+
+Not built yet.

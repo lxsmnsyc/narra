@@ -1,7 +1,7 @@
 ---
 id: cell-capture
 title: "Cell<T> for mutable state in escaping closures"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-2

@@ -1,7 +1,7 @@
 ---
 id: c-style-for
 title: "C-style for loops"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-2

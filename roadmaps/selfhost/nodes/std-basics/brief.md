@@ -1,7 +1,7 @@
 ---
 id: std-basics
 title: "Math, time, random and hashing"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-2

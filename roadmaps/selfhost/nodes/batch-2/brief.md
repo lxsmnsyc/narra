@@ -1,7 +1,7 @@
 ---
 id: batch-2
 title: "Batch 2: inbox fixes, loop and assignment syntax, Cell, std basics, style sweep"
-status: todo
+status: done
 priority: should
 type: story
 story:
@@ -56,3 +56,5 @@ As in batch-1, the orchestrator makes the gate decisions of gated children (cell
 - [x] The pull request lists every gate decision the orchestrator made.
 
 All ten children landed. Fresh review of the whole branch found six problems (Cells.update use-after-free, duplicate C types when generator effects differ, `+=` after a block-bodied closure, `+=` skipping the mutable conflict check, missing `alloc` on calls through generator-returning values, lost E0003 inside brackets), all fixed with tests. The seed was regenerated at the end and again after the review fixes. Final checks at 623f819: scripts/test.sh PASS, linux-check PASS, bootstrap reports the seed current.
+
+Merged into main as PR #106 on 2026-11-09.

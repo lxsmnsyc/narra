@@ -1,7 +1,7 @@
 ---
 id: compound-assign
 title: "Compound assignment, increment and decrement"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-2

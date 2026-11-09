@@ -289,6 +289,8 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     Arrays.push(mutable known, DotUse { pos: getPos(token), member: member })
     dotUses[token.text] = known
   }
+  let referenced: Map<string, bool> = Map {}
+  collectReferencedNames(mutable referenced, parser.tokens)
   return SourceFacts {
     source: source,
     header: findHeaderLine(source),
@@ -297,6 +299,74 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     namePositions: parser.facts.namePositions,
     shorthandIds: parser.facts.shorthandIds,
     callEnds: parser.facts.callEnds,
+    referenced: referenced,
+  }
+}
+
+// collectReferencedNames records the identifiers of tokens that are not
+// written after a `.` and not inside an import declaration, which ends at
+// its path string. The `${}` parts of a template are lexed and read the
+// same way.
+function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<Token>) uses alloc {
+  let inImport = false
+  for (const index of Ranges.upTo(Arrays.length(tokens))) {
+    const token = tokens[index]
+    if (token.kind == TokenKind.TokKeyword && token.text == "import") {
+      inImport = true
+      continue
+    }
+    if (inImport) {
+      inImport = token.kind != TokenKind.TokString
+      continue
+    }
+    if (token.kind == TokenKind.TokTemplate) {
+      collectTemplateNames(mutable names, token.text)
+      continue
+    }
+    if (token.kind != TokenKind.TokIdent) {
+      continue
+    }
+    if (index > 0) {
+      const before = tokens[index - 1]
+      if (before.kind == TokenKind.TokPunct && before.text == ".") {
+        continue
+      }
+    }
+    names[token.text] = true
+  }
+}
+
+// collectTemplateNames lexes each `${}` part of a template's text, as
+// parseTemplate finds them, and records its names.
+function collectTemplateNames(mutable names: Map<string, bool>, text: string) uses alloc {
+  const raw = Str.chars(text)
+  const count = Arrays.length(raw)
+  let index = 0
+  while (index < count) {
+    if (raw[index] == '\\') {
+      index = index + 2
+      continue
+    }
+    if (raw[index] != '$' || index + 1 >= count || raw[index + 1] != '{') {
+      index = index + 1
+      continue
+    }
+    // Find the matching `}`.
+    let depth = 1
+    let closeIndex = index + 2
+    while (closeIndex < count && depth > 0) {
+      if (raw[closeIndex] == '{') {
+        depth = depth + 1
+      } else if (raw[closeIndex] == '}') {
+        depth = depth - 1
+      }
+      closeIndex = closeIndex + 1
+    }
+    const lexed = lex(sliceText(raw, index + 2, closeIndex - 1))
+    if (lexed is Ok(tokens)) {
+      collectReferencedNames(mutable names, tokens)
+    }
+    index = closeIndex
   }
 }
 

@@ -761,8 +761,13 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Cycles
 
-- Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
+- Immutable values cannot form cycles, so reference counting frees everything without a cycle collector. Storing a value inside itself holds a second reference to it while the write runs, so the write copies first.
 - A variable is never stored by reference: storing it stores a copy, and only a closure that cannot outlive the call captures a variable by reference, so no cycle forms.
+- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>`, and `Cell<T>` once it exists; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
+  - A handle stored in its own payload: `Shared.update(state, ...)` that stores `Some(state)` in the value of `state`, or a `Sender` sent into its own channel.
+  - A closure stored in a `Cell` that captures the same `Cell`.
+- **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cell.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
+- A later version may add a collector limited to identity objects. It would only free memory that this rule leaks, so no program changes meaning.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Values across threads
@@ -900,6 +905,7 @@ The builtin that builds channels must accept the type argument in `Channel.creat
 - **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
 - Blocking calls have the `io` effect.
+- **A channel in a cycle stays open** (D80). A `Sender` sent through its own channel, or held in a `Shared` that the channel's values reach, keeps the channel alive: it is never freed, and dropping the other copies of the sender does not close it, so a receiver that reads until the close waits forever. When senders travel through channels, close the channel with `Channel.close(sender)` instead of relying on the last drop; the close ends the receiver's wait, and a receiver that reads the channel empty drops the sender it held and breaks the cycle. A `Sender<Reply>` sent inside a request (`Sender<#[Request, Sender<Reply>]>`) is fine: the reply channel does not hold the request channel.
 
 ### Shared state
 
@@ -926,6 +932,7 @@ const now = Shared.read(hits, (count) => count)
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
+- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and the planned `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. `narra audit` lists every nested `Shared.update`.
 
 ### Async functions
@@ -1192,6 +1199,7 @@ generics = "compact"    # optional: layout tables everywhere, for smaller binari
 These are left out of the first version on purpose.
 
 - **Task cancellation and timeouts.** A task runs until it returns. A cancellation design for async tasks and threads is not decided.
+- **A cycle collector for identity objects.** Cycles through identity types leak and the leak check reports them (section 6, D80).
 - **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.
 - **A bytecode VM.** Possible later for scripting and hot reload. The first target is native code only.

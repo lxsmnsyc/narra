@@ -32,3 +32,44 @@ static lstr* narra_int_to_hex(int64_t n) {
   if (n < 0) buf[--pos] = '-';
   return lstr_from_cstr(buf + pos);
 }
+
+// Parses s in the given base into *out for a sized integer type of `bits` bits, signed or
+// not. The value comes back as the 64 bits of its two's complement. On failure sets *err
+// and returns false; a value outside the type's range says the range.
+static bool narra_sized_parse(lstr* s, int64_t base, int64_t bits, bool is_signed, uint64_t* out, lstr** err) {
+  if (base < 2 || base > 36) { *err = lstr_from_cstr("base must be between 2 and 36"); return false; }
+  int64_t i = 0;
+  bool neg = false;
+  if (s->len > 0 && s->data[0] == '-') { neg = true; i = 1; }
+  if (i >= s->len) { *err = lstr_from_cstr(s->len == 0 ? "empty string" : "no digits after '-'"); return false; }
+  uint64_t all_ones = bits == 64 ? UINT64_MAX : ((uint64_t)1 << bits) - 1;
+  uint64_t limit = is_signed ? (neg ? ((uint64_t)1 << (bits - 1)) : ((uint64_t)1 << (bits - 1)) - 1) : (neg ? 0 : all_ones);
+  uint64_t acc = 0;
+  bool overflow = false;
+  for (; i < s->len; i++) {
+    char ch = s->data[i];
+    int64_t d;
+    if (ch >= '0' && ch <= '9') d = ch - '0';
+    else if (ch >= 'a' && ch <= 'z') d = ch - 'a' + 10;
+    else if (ch >= 'A' && ch <= 'Z') d = ch - 'A' + 10;
+    else d = 99;
+    if (d >= base) { *err = lstr_from_cstr("invalid digit for the base"); return false; }
+    if (!overflow) {
+      if ((uint64_t)d > limit || acc > (limit - (uint64_t)d) / (uint64_t)base) overflow = true;
+      else acc = acc * (uint64_t)base + (uint64_t)d;
+    }
+  }
+  if (overflow) {
+    char buf[96];
+    if (is_signed) {
+      uint64_t half = (uint64_t)1 << (bits - 1);
+      snprintf(buf, sizeof buf, "number does not fit in %d bits (-%" PRIu64 " to %" PRIu64 ")", (int)bits, half, half - 1);
+    } else {
+      snprintf(buf, sizeof buf, "number does not fit in %d bits (0 to %" PRIu64 ")", (int)bits, all_ones);
+    }
+    *err = lstr_from_cstr(buf);
+    return false;
+  }
+  *out = neg ? 0 - acc : acc;
+  return true;
+}

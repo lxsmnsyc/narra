@@ -108,6 +108,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-09: the user started the one-shot: story batch-1 (branch `feat/batch-1`) holds every node with a full brief (19, named-arguments folded in). Children land as direct commits after targeted tests; one full check, one seed update, one fresh review and one pull request at the end. The orchestrator makes the gate decisions of gated children, records them in DECISIONS.md and lists them in the pull request for the user to accept or reject.
 - 2026-11-09: batch-2, scope chosen by the user: the inbox fixes (template-nested-strings, effect-variable-values, generator-function-type, misleading-hints), c-style-for, compound-assign, cell-capture, std-basics, spec-samples-test, then style-sweep last. Same one-shot strategy as batch-1 (branch `feat/batch-2`). release-binaries, narra-skills and selfhost-layout wait.
 - 2026-11-09: batch-2 merged (PR #106). D90 (Cell) and D91 (effect variables through values) accepted by the maintainer with the merge.
+- 2026-11-09: the user moved release-binaries last, after the remaining language features (const-lazy, type-aliases, typed-calls-and-effects); it is could until then.
 
 ## Gates
 

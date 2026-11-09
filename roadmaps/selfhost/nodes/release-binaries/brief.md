@@ -2,7 +2,7 @@
 id: release-binaries
 title: Release workflow with macOS and Linux binaries
 status: todo
-priority: should
+priority: could
 type: chore
 story:
 early: false
@@ -25,6 +25,15 @@ shared: []
 reserves: []
 provides: []
 depends_on:
+  - on: const-lazy
+    kind: hard
+    why: user decision 2026-11-09, binaries ship after the remaining language features
+  - on: type-aliases
+    kind: hard
+    why: same
+  - on: typed-calls-and-effects
+    kind: hard
+    why: same
   - on: c-seed
     kind: hard
     why: releases build from the seed, which the story adds

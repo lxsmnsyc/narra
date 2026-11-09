@@ -4,10 +4,11 @@
 #   stage 1: narrac0 emits selfhost/ as C; cc builds it into narrac1.
 #   stage 2: narrac1 emits selfhost/ as C again.
 #   fixed point: the stage 1 C and the stage 2 C must be identical.
-#   stage 3, only when they differ: the seed's runtime text is older than
-#   selfhost/runtime, so the stage 1 C carries the old runtime. cc builds the
-#   stage 2 C into narrac2, which emits selfhost again; then the stage 2 C and
-#   the stage 3 C must be identical, and narrac2 is the result.
+#   stage 3, only when they differ: the seed is older than the source (for
+#   example its runtime or std text), so narrac0 and narrac1 can emit
+#   different C. cc builds the stage 2 C into narrac2, which emits selfhost
+#   again; then the stage 2 C and the stage 3 C must be identical, and
+#   narrac2 is the result.
 # Usage: sh selfhost/bootstrap.sh [outdir]
 # With outdir, the resulting compiler (narrac1, or narrac2 after stage 3) is copied there as narrac, and the stage 2 C as stage2.c.
 # Exit codes: 0 fixed point holds; 1 it does not, or a step failed; 2 bad usage.
@@ -39,7 +40,7 @@ result="$work/narrac1"
 if cmp -s "$work/stage1.c" "$work/stage2.c"; then
   echo "ok: stage 1 and stage 2 emit identical C ($(wc -l < "$work/stage2.c" | tr -d ' ') lines)"
 else
-  echo "stage 3: stage 1 C differs from stage 2 (older seed runtime); cc builds the stage 2 C and it emits selfhost"
+  echo "stage 3: stage 1 C differs from stage 2 (older seed); cc builds the stage 2 C and it emits selfhost"
   "$cc_cmd" -O2 -DNARRA_RELEASE -std=c11 -w -o "$work/narrac2" "$work/stage2.c" -lm
   "$work/narrac2" emit "$root/selfhost" > "$work/stage3.c"
   if ! cmp "$work/stage2.c" "$work/stage3.c"; then

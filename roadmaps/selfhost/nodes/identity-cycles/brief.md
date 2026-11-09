@@ -1,7 +1,7 @@
 ---
 id: identity-cycles
 title: Reference cycles through identity types
-status: active
+status: done
 priority: should
 type: spike
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-01
-spent:
+spent: 101271
 owns:
   - roadmaps/selfhost/nodes/identity-cycles/**
 shared:
@@ -71,3 +71,5 @@ Plan: documented leaks, caught by the debug leak check (option c of the outline,
 - Rejected: a type rule that bans identity types inside identity payloads. It breaks request and reply channels (`Sender<#[Request, Sender<Reply>]>`) and stops a `Cell` from holding a closure, the main reason `Cell` exists.
 - Rejected for now: a trial-deletion collector for identity objects (Nim ORC, CPython). Each identity decrement that leaves a count above zero would record a candidate, and objects shared across threads need a concurrent collector. It can be added later without breaking programs (point 5).
 - Rejected: weak references (`Weak<T>`). They add a second handle kind for back edges that `std/arena` handles already cover.
+
+Landed on feat/batch-1. Gate decided by the orchestrator (D80): cycles through identity types are documented leaks caught by the leak check; no collector, no type rule, no Weak<T>.

@@ -1,7 +1,7 @@
 ---
 id: language-service
 title: "narrac lsp: protocol, diagnostics and formatting"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

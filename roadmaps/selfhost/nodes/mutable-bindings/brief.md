@@ -1,7 +1,7 @@
 ---
 id: mutable-bindings
 title: "Build D81: mutable changes contents, const fixes only the name"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

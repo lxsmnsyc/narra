@@ -34,7 +34,7 @@ depends_on: []
 
 Run the one-shot strategy the user chose on 2026-11-09: every node that has a full brief lands on `feat/batch-1` as direct commits, with targeted tests per node. At the end: one full check, one regenerated seed, one fresh review and one pull request into main.
 
-Children: func-type-effects, std-tables-split, unused-imports, mutable-bindings, mutable-markers, identity-cycles, sized-numbers, sized-conversions, sized-f32, bytes-type, named-args-syntax, named-args-check, named-args-query, shape-trait, shape-derive, std-json, language-service, lsp-navigation, lsp-incremental. The named-arguments story was folded in; its acceptance is below.
+Children: func-type-effects, std-tables-split, unused-imports, mutable-bindings, mutable-markers, identity-cycles, sized-numbers, sized-conversions, sized-f32, bytes-type, named-args-syntax, named-args-check, named-args-query, shape-trait, shape-derive, std-json, language-service, lsp-navigation, lsp-incremental, and mutable-for-of (added 2026-11-09 to build D85 from mutable-markers). The named-arguments story was folded in; its acceptance is below.
 
 ## Gates
 

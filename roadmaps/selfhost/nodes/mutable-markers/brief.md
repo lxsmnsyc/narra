@@ -1,7 +1,7 @@
 ---
 id: mutable-markers
 title: "Where a mutable marker can bind a reference to a part of a value"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-07
-spent:
+spent: 135418
 owns:
   - roadmaps/selfhost/nodes/mutable-markers/**
 shared:
@@ -71,3 +71,5 @@ Under D81, `match`/`is` pattern bindings, `for ... of` bindings and destructured
 ## Sizing
 
 S. Documents and counts.
+
+Landed on feat/batch-1. Gate decided by the orchestrator (D85): the marker only on for-of over an array; pattern markers deferred, destructuring markers rejected, local reference bindings deferred. The loop form is built by node mutable-for-of.

@@ -40,6 +40,8 @@ import {
   stdTrait,
   typeString,
   containsTypeParameter,
+  checkMutableType,
+  isContentsType,
 } from "narrac/check"
 import { resolveOpt, substitute } from "narrac/resolve"
 import * as Arrays from "std/array"
@@ -474,6 +476,9 @@ function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc 
       const paramType = resolveOpt(mutable checker, param.type)
       setParameterType(mutable checker, param.id, paramType)
       Arrays.push(mutable parameters, paramType)
+      if (param.isMutable) {
+        checkMutableType(mutable checker, param.pos, paramType, selfParameter)
+      }
       if (containsParam(checker, paramType, selfParameter)) {
         mentionsSelf = true
       }
@@ -605,6 +610,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   let selfMap: Map<int, Type> = Map {}
   selfMap[checker.traits[traitIndex].selfParameter] = type
   checker.environment = Map { "Self": type }
+  checkMutableSelf(mutable checker, implDecl.pos, traitIndex, type, info.name)
   let got: Map<string, bool> = Map {}
   for (const funcDecl of Arrays.values(implDecl.functions)) {
     if (Arrays.length(funcDecl.typeParameters) > 0) {
@@ -669,6 +675,35 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
         "E0521",
         `implement ${traitName} for ${info.name} is missing function ${traitFunc.name}`,
       )
+    }
+  }
+}
+
+// checkMutableSelf reports an `implement` for a type with no contents to
+// change of a trait whose functions take `mutable Self` (D81).
+function checkMutableSelf(
+  mutable checker: Checker,
+  pos: Pos,
+  traitIndex: int,
+  type: Type,
+  typeName: string,
+) uses alloc {
+  if (isContentsType(checker, type)) {
+    return
+  }
+  const selfType = Type.TParam(checker.traits[traitIndex].selfParameter)
+  for (const traitFunc of Arrays.values(checker.traits[traitIndex].functions)) {
+    for (const i of Ranges.between(0, Arrays.length(traitFunc.parameters))) {
+      if (traitFunc.declaration.parameters[i].isMutable && traitFunc.parameters[i] == selfType) {
+        const traitName = checker.traits[traitIndex].name
+        reportError(
+          mutable checker,
+          pos,
+          "E0952",
+          `${traitName}.${traitFunc.name} takes \`mutable Self\`, so ${traitName} can only be implemented for a type whose contents change in place (a struct, Array, Map, Box, StringBuilder or Generator), not ${typeName}`,
+        )
+        return
+      }
     }
   }
 }

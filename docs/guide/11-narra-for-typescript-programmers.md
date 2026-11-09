@@ -264,16 +264,26 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A TypeScript `const` array can still be pushed to, since `const` only fixes the name. A Narra `const` is deep: neither the name nor anything inside the value can change ([chapter 2](02-values-and-types.md#arrays-are-values)):
+A `const` means what it means in TypeScript: it fixes the name, and the value's elements can still change. Only giving the name a new value needs `let` ([chapter 2](02-values-and-types.md#arrays-are-values)):
 
-```narra error
-// error: 4:3: "prices" is constant; declare it with `let` to change it
+```narra
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
 export function run(args: Array<string>): int {
   const prices = [250, 320]
   prices[0] = 200
+  Arrays.push(mutable prices, 410)
+  print(Int.toString(prices[0] + prices[2]))
   return 0
 }
 ```
+
+```text
+610
+```
+
+A top-level constant is the exception: it is fixed at every depth, since a constant that could change would be a global variable.
 
 Reading a map gives an `Option`, not a `V | undefined`. `stock["tea"]` has the type `Option<int>`, and you check it before you use it ([chapter 2](02-values-and-types.md#look-up-a-value-by-name)):
 
@@ -322,13 +332,13 @@ struct Player {
 }
 
 export function run(args: Array<string>): int {
-  let scores = [10, 20]
+  const scores = [10, 20]
   const before = scores
   Arrays.push(mutable scores, 30)
   print(Int.toString(Arrays.length(before)))
 
   const hero = Player { name: "Ana", hp: 100 }
-  let copy = hero
+  const copy = hero
   copy.hp = 50
   print(Int.toString(hero.hp))
   return 0
@@ -340,7 +350,9 @@ export function run(args: Array<string>): int {
 100
 ```
 
-A value has no identity apart from its contents, so there is no "same object" test.
+A value has no identity apart from its contents, so there is no "same object" test. This is the one place where code that TypeScript accepts compiles in Narra with another meaning, and the compiler cannot warn about it: a change through one name never shows through a copy.
+
+A `for ... of` loop variable, a name bound by a pattern (`found is Some(player)`) and a destructured name hold copies too. Since TypeScript code that changes them expects the original to change, the compiler rejects a change to their fields or elements. Write through the source instead, `players[index].hp = 0`, or copy the value first with `const copy = player`.
 
 ## Missing values
 
@@ -602,13 +614,17 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Keep the count in a variable of the caller. A function changes it through a `mutable` parameter, or returns the new value:
+Keep the count in a variable of the caller. A function returns the new value, or changes a counter held in a struct through a `mutable` parameter:
 
 ```narra
 import * as Int from "std/int"
 
-function addOne(mutable count: int) {
-  count = count + 1
+struct Counter {
+  count: int
+}
+
+function addOne(mutable counter: Counter) {
+  counter.count = counter.count + 1
 }
 
 function nextCount(count: int): int {
@@ -616,10 +632,11 @@ function nextCount(count: int): int {
 }
 
 export function run(args: Array<string>): int {
-  let count = 0
-  addOne(mutable count)
-  addOne(mutable count)
-  print(Int.toString(count))
+  const counter = Counter { count: 0 }
+  addOne(mutable counter)
+  addOne(mutable counter)
+  print(Int.toString(counter.count))
+  let count = counter.count
   count = nextCount(count)
   print(Int.toString(count))
   return 0
@@ -631,7 +648,7 @@ export function run(args: Array<string>): int {
 3
 ```
 
-A `mutable` parameter cannot be returned, or captured by a closure that outlives the call, so `addOne` returns nothing. The caller reads its own `count`.
+A `mutable` parameter reaches the contents of a value, so its type must have contents to change, and `mutable count: int` is an error. It cannot be returned, or captured by a closure that outlives the call, so `addOne` returns nothing. The caller reads its own `counter`.
 
 A function parameter can be called while the function runs, and nothing more. To return it, store it or capture it in a closure that outlives the call, mark it `escaping`. TypeScript has no such marker, since every function value there may be kept ([chapter 3](03-functions-and-closures.md#make-new-functions-from-old-ones)):
 
@@ -939,7 +956,7 @@ export function run(args: Array<string>): int {
 
 ## Changing a value in a function
 
-A TypeScript function that receives an object can change it, and the caller cannot tell from the call. In Narra, a parameter is a constant copy unless it is declared `mutable`, and then the call writes `mutable` too ([chapter 9](09-memory-and-mutable.md#changing-a-player-in-a-function)):
+A TypeScript function that receives an object can change it, and the caller cannot tell from the call. In Narra, a parameter is a read-only copy unless it is declared `mutable`, and then the call writes `mutable` too ([chapter 9](09-memory-and-mutable.md#changing-a-player-in-a-function)):
 
 ```narra
 import * as Int from "std/int"
@@ -954,7 +971,7 @@ function damage(mutable player: Player, amount: int) {
 }
 
 export function run(args: Array<string>): int {
-  let hero = Player { name: "Ana", hp: 100 }
+  const hero = Player { name: "Ana", hp: 100 }
   damage(mutable hero, 10)
   print(Int.toString(hero.hp))
   return 0
@@ -970,12 +987,13 @@ Compared with a TypeScript object parameter, a `mutable` parameter:
 - is changed only when the function declares it, and the change is visible at the call;
 - cannot be returned, stored or captured by the function;
 - gives the function the only access to the variable during the call, so no other argument of the same call can use it;
-- needs a `let` variable, a `mutable` parameter or a part of one as the argument.
+- needs a local `const` or `let`, a `mutable` parameter or a part of one as the argument;
+- must have a type with contents, such as a struct, an `Array` or a `Map`, and cannot be replaced whole.
 
 Assigning to a field of a plain parameter is an error:
 
 ```narra error
-// error: 8:3: "player" is constant; declare it with `let` to change it
+// error: 8:3: parameter "player" is read-only; declare it as `mutable player` to change the caller's value, or copy it first with `const copy = player`
 struct Player {
   name: string
   hp: int

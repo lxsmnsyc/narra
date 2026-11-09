@@ -300,7 +300,10 @@ function emitArrowParts<W: EmitWalker>(
     let parts = [".h = {-1, NULL}"]
     for (const capture of Arrays.values(closure.captures)) {
       const local = localOf(emitter, capture)
-      Arrays.push(mutable parts, `.c_${localName(local)} = ${captureValue(emitter, capture)}`)
+      Arrays.push(
+        mutable parts,
+        `.c_${localName(local)} = ${captureValue(emitter, closure, capture)}`,
+      )
     }
     writeLine(mutable emitter, `${environmentType} ${environment} = {${Str.join(parts, ", ")}};`)
     return Code {
@@ -334,17 +337,32 @@ function emitArrowParts<W: EmitWalker>(
 }
 
 // captureValue is what a stack environment stores for a capture (Go's
-// captureValue): a pointer to a `let` or mutable parameter, or the value of
-// anything else. A variable that is already a pointer is passed on as it is.
-function captureValue(emitter: Emitter, capture: int): string uses alloc {
+// captureValue): a pointer to a `let`, a mutable parameter or a `const`
+// the closure changes, or the value of anything else. A variable that is
+// already a pointer is passed on as it is.
+function captureValue(emitter: Emitter, closure: ClosureInfo, capture: int): string uses alloc {
   const local = localOf(emitter, capture)
-  if (!local.isMutable) {
+  if (!isCapturedByReference(emitter, closure, capture)) {
     return localRef(emitter, capture)
   }
   if (isReference(emitter, capture)) {
     return localName(local)
   }
   return `&${localRef(emitter, capture)}`
+}
+
+// isCapturedByReference reports whether a closure holds a capture through a
+// pointer: a `let`, a mutable parameter, or a `const` it changes (D81).
+function isCapturedByReference(emitter: Emitter, closure: ClosureInfo, capture: int): bool {
+  if (localOf(emitter, capture).isMutable) {
+    return true
+  }
+  for (const captured of Arrays.values(closure.refCaptures)) {
+    if (captured == capture) {
+      return true
+    }
+  }
+  return false
 }
 
 // emitEnvironmentStruct writes the environment struct of an arrow function
@@ -359,7 +377,7 @@ function emitEnvironmentStruct(
   Str.append(mutable builder, `typedef struct ${environmentType} { narra_env h;`)
   for (const capture of Arrays.values(closure.captures)) {
     const local = localOf(emitter, capture)
-    if (local.isMutable) {
+    if (isCapturedByReference(emitter, closure, capture)) {
       Str.append(
         mutable builder,
         ` ${cType(emitter.checker, local.localType)}* c_${localName(local)};`,
@@ -378,7 +396,7 @@ function emitEnvironmentStruct(
   )
   for (const capture of Arrays.values(closure.captures)) {
     const local = localOf(emitter, capture)
-    if (local.isMutable) {
+    if (isCapturedByReference(emitter, closure, capture)) {
       continue // borrowed through a pointer
     }
     const releaseText = releaseCode(emitter, local.localType, `k->c_${localName(local)}`)
@@ -431,7 +449,7 @@ function emitClosureFunction<W: EmitWalker>(
   // The closure holds each `let` it captures through a pointer.
   emitter.refCaptures = []
   for (const capture of Arrays.values(closure.captures)) {
-    if (localOf(emitter, capture).isMutable) {
+    if (isCapturedByReference(emitter, closure, capture)) {
       Arrays.push(mutable emitter.refCaptures, capture)
     }
   }
@@ -450,7 +468,7 @@ function emitClosureFunction<W: EmitWalker>(
     for (const capture of Arrays.values(closure.captures)) {
       const local = localOf(emitter, capture)
       let pointer = ""
-      if (local.isMutable) {
+      if (isCapturedByReference(emitter, closure, capture)) {
         pointer = "*"
       }
       writeLine(

@@ -148,6 +148,16 @@ export enum ProgramFunc {
 // A local variable, parameter or loop variable of one checked body (Go's
 // Local). noEscape marks a function-type parameter without `escaping`.
 // selfhost-check-patterns adds narrowing beside it.
+// How a local was bound. Only a Plain local (a `const` or `let` with a plain
+// name) and a `mutable` parameter can have their contents changed (D81); the
+// others hold a copy of part of another value and are read-only.
+export enum BindingKind derives Equatable {
+  Plain
+  Pattern
+  Loop
+  Destructured
+}
+
 export struct LocalInfo {
   name: string
   localType: Type
@@ -161,6 +171,12 @@ export struct LocalInfo {
   namePos: Pos
   shorthand: bool = false
   writes: Array<Pos> = []
+  binding: BindingKind
+  // For a Loop binding: the place the loop reads (`players`), or "" when the
+  // source is no place, and whether its elements have contents, for the hint
+  // of a write through the binding.
+  loopSource: string = ""
+  loopContents: bool = false
   // checker.localCount right after the increment; the C name is v_<name>_<number>
   // (filled by selfhost-emit-program).
   number: int = 0
@@ -175,6 +191,9 @@ export struct ClosureInfo {
   nodeId: int
   stack: bool
   captures: Array<int>
+  // The captured local `const`s the closure, or one nested in it, changes:
+  // they are captured by reference, as a `let` is (D81).
+  refCaptures: Array<int> = []
   hasHint: bool
   hintParameters: Array<Option<Type>>
   hintResult: Option<Type>
@@ -1359,6 +1378,83 @@ export function getLocal(checker: Checker, index: int): LocalInfo {
   return checker.bodies[checker.body].locals[index]
 }
 
+// canChangeContents reports whether the fields and elements of a local can
+// be assigned and the local passed as mutable: a `mutable` parameter, or a
+// `const` or `let` declared with a plain name (D81).
+export function canChangeContents(local: LocalInfo): bool {
+  if (local.param) {
+    return local.isMutable
+  }
+  return local.binding == BindingKind.Plain
+}
+
+// setBinding records how a declared local was bound. The `for` head with a
+// pattern or `let` becomes a declaration from the loop's hidden name
+// `__for_L_C` (parser), so such a declaration is a Loop binding that takes
+// the loop's source; any other declaration gets kind.
+export function setBinding(mutable checker: Checker, local: int, value: Expr, kind: BindingKind) {
+  const body = checker.body
+  if (value is Expr.Ident(_, _, name)) {
+    if (Str.startsWith(name, "__for_")) {
+      const hidden = findLocal(checker, name)
+      if (hidden >= 0) {
+        const source = checker.bodies[body].locals[hidden]
+        checker.bodies[body].locals[local].binding = BindingKind.Loop
+        checker.bodies[body].locals[local].loopSource = source.loopSource
+        // A destructured element has no loop form of its own; the hint
+        // writes through the source.
+        checker.bodies[body].locals[local].loopContents =
+          source.loopContents && kind != BindingKind.Destructured
+        return
+      }
+    }
+  }
+  checker.bodies[body].locals[local].binding = kind
+}
+
+// isContentsType reports a type whose contents change in place, the only
+// types a `mutable` parameter can have: a struct, Array, Map, Box,
+// StringBuilder, Generator or Coroutine (D81).
+export function isContentsType(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TStruct(index) => !checker.structs[index].tuple
+    Type.TArray(_) => true
+    Type.TMap(_, _) => true
+    Type.TBox(_) => true
+    Type.TStringBuilder => true
+    Type.TGenerator(_, _, _, _, _) => true
+    _ => false
+  }
+}
+
+// checkMutableType reports a `mutable` parameter whose type has no contents
+// to change (D81): a number, string, enum, tuple, function or bare type
+// parameter. selfParameter is the Self of the trait being declared, or -1;
+// `mutable value: Self` is allowed there.
+export function checkMutableType(
+  mutable checker: Checker,
+  pos: Pos,
+  type: Type,
+  selfParameter: int,
+) uses alloc {
+  if (isContentsType(checker, type) || type == Type.TVoid) {
+    return
+  }
+  let found = typeString(checker, type)
+  if (type is Type.TParam(index)) {
+    if (index == selfParameter) {
+      return
+    }
+    found = `type parameter ${found}`
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0948",
+    `a mutable parameter needs a type whose contents change in place (a struct, Array, Map, Box, StringBuilder or Generator), found ${found}; return the new value instead`,
+  )
+}
+
 // declareLocal adds a local to the innermost scope (Go's declare); nodeId is
 // the declaring node. Shadowing is an error, except for `_`.
 export function declareLocal(
@@ -1392,6 +1488,7 @@ export function declareLocal(
     localType: localType,
     isMutable: isMutable,
     param: param,
+    binding: BindingKind.Plain,
     pos: pos,
     noEscape: false,
     used: false,

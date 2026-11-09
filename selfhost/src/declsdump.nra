@@ -29,7 +29,7 @@ export function dump(mutable checker: Checker): string uses alloc {
   // The implement blocks are in checker.implementations in the order dumpModule meets them.
   let nextImpl = 0
   for (const scope of Ranges.between(0, Arrays.length(checker.scopes))) {
-    dumpModule(mutable builder, checker, scope, mutable nextImpl)
+    nextImpl = dumpModule(mutable builder, checker, scope, nextImpl)
     if (checker.scopes[scope].isSource) {
       dumpScope(mutable builder, checker, scope)
     }
@@ -116,8 +116,10 @@ function dumpModule(
   mutable builder: StringBuilder,
   checker: Checker,
   scopeIndex: int,
-  mutable nextImpl: int,
-) uses alloc {
+  firstImpl: int,
+): int uses alloc {
+  // Returns the index of the implement block after the module's last one.
+  let nextImpl = firstImpl
   const scope = checker.scopes[scopeIndex]
   const moduleAttr = ` module=${quoteDump(scope.path)} `
   for (const declaration of Arrays.values(scope.declarations)) {
@@ -135,14 +137,10 @@ function dumpModule(
           dumpTrait(mutable builder, checker, moduleAttr, traitIndex)
         }
       }
-      Decl.Impl(implDecl) => dumpImpl(
-        mutable builder,
-        checker,
-        moduleAttr,
-        scopeIndex,
-        implDecl,
-        mutable nextImpl,
-      )
+      Decl.Impl(implDecl) => {
+        dumpImpl(mutable builder, checker, moduleAttr, scopeIndex, implDecl, nextImpl)
+        nextImpl = nextImpl + 1
+      }
       Decl.Distinct(distinctDecl) => dumpNamed(
         mutable builder,
         checker,
@@ -162,6 +160,7 @@ function dumpModule(
       _ => {}
     }
   }
+  return nextImpl
 }
 
 // dumpNamed prints a struct, enum or distinct declaration of a scope: its
@@ -265,16 +264,15 @@ function dumpImpl(
   moduleAttr: string,
   scope: int,
   implDecl: ImplDecl,
-  mutable nextImpl: int,
+  implIndex: int,
 ) uses alloc {
-  if (nextImpl >= Arrays.length(checker.implementations)) {
+  if (implIndex >= Arrays.length(checker.implementations)) {
     panic("declsdump: an implement block is missing from Checker.impls")
   }
-  const block = checker.implementations[nextImpl]
+  const block = checker.implementations[implIndex]
   if (block.scope != scope || block.declaration.pos != implDecl.pos) {
     panic("declsdump: Checker.impls is out of declaration order")
   }
-  nextImpl = nextImpl + 1
   Str.append(
     mutable builder,
     `impl${moduleAttr}block ${checker.traits[block.traitIndex].name} ${implTypeName(checker, block.forType)}\n`,

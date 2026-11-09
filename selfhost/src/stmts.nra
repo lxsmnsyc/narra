@@ -27,6 +27,9 @@ import {
   unsupported,
   getExpressionId,
   getExpressionPos,
+  BindingKind,
+  setBinding,
+  isContentsType,
 } from "narrac/check"
 import { resolveType, findTupleType } from "narrac/resolve"
 import {
@@ -36,6 +39,8 @@ import {
   checkNoMutableEscape,
   findAssignedLocal,
   findRootName,
+  checkContentsChange,
+  describePlace,
   collectAssignedInExpr,
   collectAssignedInBlock,
 } from "narrac/exprs"
@@ -317,7 +322,8 @@ function checkVariable<W: Walker>(
   if (found == Type.TVoid && Arrays.length(checker.errors) == errorCount) {
     reportError(mutable checker, pos, "E0225", "this expression has no value")
   }
-  declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
+  const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
+  setBinding(mutable checker, local, value, BindingKind.Plain)
 }
 
 function checkAssignment<W: Walker>(
@@ -363,14 +369,27 @@ function checkAssignment<W: Walker>(
       "E0226",
       "only variables, fields and array elements can be assigned",
     )
-  } else if (!getLocal(checker, root).isMutable) {
-    const name = getLocal(checker, root).name
-    reportError(
-      mutable checker,
-      pos,
-      "E0227",
-      `${quoteGo(name)} is constant; declare it with \`let\` to change it`,
-    )
+  } else if (target is Expr.Ident(_, _, _)) {
+    // A whole assignment changes the name: only a `let` can.
+    const local = getLocal(checker, root)
+    if (local.param && local.isMutable) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0949",
+        `mutable parameter ${quoteGo(local.name)} cannot be assigned whole; \`mutable\` reaches its fields and elements, so return the new value instead`,
+      )
+    } else if (!local.isMutable) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0227",
+        `${quoteGo(local.name)} is constant; declare it with \`let\` to change it`,
+      )
+    }
+  } else {
+    // A field or element write changes the contents (D81).
+    checkContentsChange(mutable checker, pos, root, target, false)
   }
   // Storing a mutable parameter in a field or element is an escape.
   if (!(target is Expr.Ident(_, _, _))) {
@@ -807,9 +826,27 @@ function checkFor<W: Walker>(
     )
   }
 
-  // The loop variable lives in a scope around the body.
+  // The loop variable lives in a scope around the body. It is a copy of an
+  // element, so it is read-only; the hint of a write names the source.
   pushScope(mutable checker)
-  declareLocal(mutable checker, nodeId, pos, name, element, false, false)
+  const local = declareLocal(mutable checker, nodeId, pos, name, element, false, false)
+  const bodyIndex = checker.body
+  checker.bodies[bodyIndex].locals[local].binding = BindingKind.Loop
+  let source = iterable
+  if (builtin == "Array.values" || builtin == "Array.entries") {
+    if (iterable is Expr.CallExpr(_, _, _, _, sourceArguments)) {
+      if (Arrays.length(sourceArguments) > 0) {
+        source = sourceArguments[0].value
+      }
+    }
+  }
+  // Only an array place can be written through by index.
+  if (findAssignedLocal(checker, source) >= 0) {
+    if (getNodeType(checker, getExpressionId(source)) is Some(Type.TArray(sourceElement))) {
+      checker.bodies[bodyIndex].locals[local].loopSource = describePlace(source)
+      checker.bodies[bodyIndex].locals[local].loopContents = isContentsType(checker, sourceElement)
+    }
+  }
   enterLoop(mutable checker, pos, label)
   checkBlock(mutable checker, walker, body)
   leaveLoop(mutable checker, label)

@@ -68,6 +68,8 @@ import {
   GeneratorUse,
   FunctionStore,
   generatorEffectList,
+  BindingKind,
+  canChangeContents,
 } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
 import { unify } from "narrac/generics"
@@ -81,6 +83,8 @@ import {
   checkFunctionValue,
   findModuleFunction,
   isCapturedByArrow,
+  markChangedCapture,
+  isReferenceCapture,
 } from "narrac/funcvalues"
 import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
@@ -2052,7 +2056,8 @@ export function checkBorrowed(mutable checker: Checker, arguments: Array<Arg>) u
     collectAssignedInExpr(arguments[index].value, mutable names)
     for (const captured of Arrays.values(checker.bodies[body].closures[closure].captures)) {
       const local = getLocal(checker, captured)
-      if (!local.isMutable || !containsName(names, local.name)) {
+      const byReference = local.isMutable || isReferenceCapture(checker, closure, captured)
+      if (!byReference || !containsName(names, local.name)) {
         continue
       }
       for (const other of Ranges.between(0, Arrays.length(arguments))) {
@@ -2343,14 +2348,86 @@ export function checkMutableArgument(mutable checker: Checker, value: Expr) uses
     )
     return
   }
+  checkContentsChange(mutable checker, pos, root, value, true)
+}
+
+// checkContentsChange checks a change to the contents of the local root:
+// a write to a field or element of target, or target passed as mutable
+// (passing). A plain parameter and a binding that copies part of another
+// value are read-only (D81). A closure that changes a captured `const`
+// captures it by reference.
+export function checkContentsChange(
+  mutable checker: Checker,
+  pos: Pos,
+  root: int,
+  target: Expr,
+  passing: bool,
+) uses alloc {
   const local = getLocal(checker, root)
-  if (!local.isMutable) {
-    reportError(
-      mutable checker,
-      pos,
-      "E0315",
-      `${quoteGo(local.name)} is constant; declare it with \`let\` to pass it as mutable`,
-    )
+  if (canChangeContents(local)) {
+    markChangedCapture(mutable checker, pos, root)
+    return
+  }
+  const name = quoteGo(local.name)
+  const plain = local.name
+  if (local.param) {
+    if (passing) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0315",
+        `parameter ${name} is read-only; declare it as \`mutable ${plain}\` to pass it on as mutable`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        pos,
+        "E0227",
+        `parameter ${name} is read-only; declare it as \`mutable ${plain}\` to change the caller's value, or copy it first with \`const copy = ${plain}\``,
+      )
+    }
+    return
+  }
+
+  // A copy: the hint names the value it was copied from.
+  const copyHint = `copy it first with \`const copy = ${plain}\``
+  let message = ""
+  if (local.binding == BindingKind.Loop && local.loopSource != "") {
+    const source = local.loopSource
+    const intro = `${name} is a copy of an element of ${source}, so changing it would not change ${source}`
+    if (local.loopContents) {
+      message = `${intro}; write \`for (mutable ${plain} of ${source})\`, or ${copyHint}`
+    } else {
+      // The same path, through an index into the source.
+      const path = Str.sliceFrom(describePlace(target), Str.length(plain))
+      message = `${intro}; write through the source, \`${source}[index]${path}\`, or ${copyHint}`
+    }
+  } else if (local.binding == BindingKind.Loop) {
+    message = `${name} is a copy of an element, so it cannot be changed; ${copyHint}`
+  } else if (local.binding == BindingKind.Pattern) {
+    message = `${name} is bound by a pattern to a copy of part of the value, so it cannot be changed; ${copyHint}`
+  } else {
+    message = `${name} is destructured from a copy of the value, so it cannot be changed; ${copyHint}`
+  }
+  reportError(mutable checker, pos, "E0950", message)
+}
+
+// describePlace prints an assignable expression for a message, such as
+// `game.players` or `teams[t].players`.
+export function describePlace(expression: Expr): string uses alloc {
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, name) => `${describePlace(target)}.${name}`
+    Expr.IndexExpr(_, _, target, index) => `${describePlace(target)}[${describeIndex(index)}]`
+    _ => "..."
+  }
+}
+
+function describeIndex(index: Expr): string {
+  return match (index) {
+    Expr.Ident(_, _, name) => name
+    Expr.IntLit(_, _, text) => text
+    _ => "..."
   }
 }
 
@@ -2405,7 +2482,7 @@ export function checkConstWrite(
           mutable checker,
           pos,
           "E0290",
-          `constant ${quoteGo(name)} cannot be changed; copy it into a \`let\` variable first`,
+          `constant ${quoteGo(name)} cannot be changed; copy it into a local first, as in \`const copy = ${name}\``,
         )
         return true
       }
@@ -2416,7 +2493,7 @@ export function checkConstWrite(
               mutable checker,
               pos,
               "E0290",
-              `constant ${quoteGo(name)} cannot be changed; copy it into a \`let\` variable first`,
+              `constant ${quoteGo(name)} cannot be changed; copy it into a local first, as in \`const copy = ${alias}.${name}\``,
             )
             return true
           }

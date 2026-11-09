@@ -1,7 +1,7 @@
 ---
 id: decls-quadratic
 title: "narrac decls is quadratic in the declarations of a module"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-3

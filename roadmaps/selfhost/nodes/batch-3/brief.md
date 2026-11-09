@@ -1,7 +1,7 @@
 ---
 id: batch-3
 title: "Batch 3: the compiler batch"
-status: todo
+status: active
 priority: should
 type: story
 story:

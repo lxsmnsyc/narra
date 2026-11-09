@@ -1,7 +1,7 @@
 ---
 id: or-patterns
 title: "Or-patterns in match arms"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-3

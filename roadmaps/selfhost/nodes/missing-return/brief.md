@@ -1,7 +1,7 @@
 ---
 id: missing-return
 title: "Missing return is a compile error"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-3

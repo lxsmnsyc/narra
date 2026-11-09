@@ -1,7 +1,7 @@
 ---
 id: lsp-navigation
 title: "narrac lsp: hover, definition, references and symbols"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 191910
 owns:
   - selfhost/src/lspnavigation.nra
   - testdata/lsp/nav_*/**
@@ -60,3 +60,5 @@ depends_on:
 ## Sizing
 
 M. Wiring existing query functions into handlers, plus definition for locals; uncertainty low.
+
+Landed on feat/batch-1 (0c1e0f8) on the current head; its worker ran lsp, query, sources, errors, programs and bootstrap. Gate decided by the orchestrator: hover in a template answers for the whole template; a package with body errors is answered without the effect pass; type and import names resolve from scope; distinct types use symbol kind Class. Each request rechecks the package until lsp-incremental adds a cache.

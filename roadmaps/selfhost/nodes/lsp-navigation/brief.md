@@ -1,7 +1,7 @@
 ---
 id: lsp-navigation
 title: "narrac lsp: hover, definition, references and symbols"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

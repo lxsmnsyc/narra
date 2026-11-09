@@ -1,7 +1,7 @@
 ---
 id: bytes-type
 title: "The bytes type and std/bytes"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 165601
 owns:
   - selfhost/src/stdbytes.nra
   - testdata/bytes*
@@ -83,3 +83,5 @@ Spec-gap F7, `bytes` part: the immutable byte sequence of SPEC section 4 in both
 ## Sizing
 
 M. A primitive type that reuses the string runtime plus one builtin module; uncertainty low.
+
+Landed on feat/batch-1 (47b1e5f) after a clean rebase onto mutable-for-of; touched suites passed. Gate decided by the orchestrator: bytes is a primitive sharing the string representation; Fs.writeBytes returns Result<int, string> like writeText (the table said bool); < <= > >= allowed. Left for later: Shape for bytes, Io.readBytes still returns string, no Bytes or sized-integer entries in STD_ALIAS_PATHS.

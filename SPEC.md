@@ -549,6 +549,22 @@ export function length(r: Range): int {
 - **Fields are all public or all private.** There is no per-field visibility.
 - Use an opaque struct when a type has a rule that every value must follow, such as `start <= finish`.
 
+### Type aliases
+
+`type Name = T` gives a type a second name. `export type` exports it.
+
+```
+type Tok = Token
+type Pair<T> = #[T, T]
+export type Token = Text.Token
+```
+
+- **The alias is the same type.** `Tok` and `Token` can be used in place of each other, and when the target is an enum, `Tok.Word(x)` builds a value and `Tok.Word(text)` works in a pattern.
+- **Generic aliases** take type parameters, and every use gives the arguments. A wrong number of arguments is a compile error.
+- **No recursion.** An alias may not refer to itself, directly or through other aliases; recursive types need an enum.
+- **Diagnostics** show a struct, enum or distinct type reached through an alias as `Tok (Token)`.
+- **Nothing reaches the emitted C.**
+
 ### Distinct types
 
 `distinct type` declares a new type with the same representation as an existing one.

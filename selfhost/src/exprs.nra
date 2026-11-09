@@ -36,7 +36,7 @@ import {
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, createFix, createEdit, moveColumn, buildTemplateEscape } from "narrac/fixes"
-import { Type, Field, isInteger, isSizedInteger, isUnsignedInteger } from "narrac/types"
+import { Type, Field, typeKey, isInteger, isSizedInteger, isUnsignedInteger } from "narrac/types"
 import {
   isConditional,
   Checker,
@@ -565,6 +565,26 @@ export function generatorUseFails(checker: Checker, want: Type, got: Type): bool
 }
 
 export function describeType(checker: Checker, described: Type, other: Type): string uses alloc {
+  const text = describeUnaliased(checker, described, other)
+  // A type reached through an alias also shows the alias.
+  const isNamed = match (described) {
+    Type.TStruct(_) => true
+    Type.TEnum(_) => true
+    Type.TDistinct(_) => true
+    _ => false
+  }
+  if (!isNamed) {
+    return text
+  }
+  if (checker.aliasNames[typeKey(described)] is Some(aliasName)) {
+    if (aliasName != text) {
+      return `${aliasName} (${text})`
+    }
+  }
+  return text
+}
+
+function describeUnaliased(checker: Checker, described: Type, other: Type): string uses alloc {
   // When both print the same, a struct or enum gets its module.
   const text = typeString(checker, described)
   if (text != typeString(checker, other)) {
@@ -1037,7 +1057,8 @@ export function findModuleEnum(mutable checker: Checker, target: Expr): string u
 
 function exportsEnum(checker: Checker, scope: int, name: string): bool {
   if (checker.scopes[scope].exports[name] is Some(index)) {
-    return checker.scopes[scope].declarations[index] is Decl.Enum(_)
+    const declaration = checker.scopes[scope].declarations[index]
+    return declaration is Decl.Enum(_) || declaration is Decl.Alias(_)
   }
   return false
 }

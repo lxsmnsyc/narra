@@ -169,11 +169,14 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 
 - Top-level `const` (`export const` too): literals, operators on constants, constructors, structs, arrays, maps, function names and other constants, in any order; cycles are errors. Scalar constants are emitted at each use. Other constants are built on first use (see Differences).
 
+## Type aliases
+
+- `type Name<T> = Body` and `export type`. A non-generic alias is entered in the module's type table as its resolved type, so constructors, patterns and struct literals work through it, also across modules. A generic alias is resolved again at each use with its arguments, so constructors through a generic alias (`Alias.Ctor`) are not available. Self reference and cycles are E0972, a wrong argument count is E0973. Diagnostics print `Alias (Type)` for a struct, enum or distinct type once an alias of it was used anywhere in the package, even where the source wrote the type name.
+
 ## Not supported yet
 
 - `@const` functions and `lazy` values. A top-level constant cannot call a function.
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
-- `export type` aliases (so constructors through an alias are not available either).
 - `Dynamic<Trait>` and `Hash.of`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: trait function calls to user implementations are not followed; `unsafe` has no source yet.

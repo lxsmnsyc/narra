@@ -845,6 +845,7 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
 - Effect variables are declared in the type parameter list with the `effect` keyword, and appear only after `uses`.
 - **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type or generator type: `export function sum<effect E>(numbers: Generator<int> uses E): int uses E`.
 - At each call, the variable takes the effects of the function or generator passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`. A generator result type that names the variable takes them too: with `relay<effect E>(g: Generator<int> uses E): Generator<int> uses E, alloc`, `relay(lines(path))` is a `Generator<int> uses alloc, io`.
+- **A function used as a value keeps its variables** (D91). After `const apply = twice`, `apply(loud, 1)` has the effects of `loud`, as `twice(loud, 1)` does, through a top-level or a local constant.
 
 ## 8. Generators and concurrency
 

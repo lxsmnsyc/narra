@@ -1,7 +1,7 @@
 ---
 id: effect-variable-values
 title: "Functions with effect variables used as values keep their effects"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-2
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-09
-spent:
+spent: 123166
 owns:
   - testdata/errors/effect_variable_value*
   - testdata/effect_variable_value*

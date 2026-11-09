@@ -905,3 +905,12 @@ Decision: `std/cell` is a Narra source module (`std/src/cell.nra`) that exports 
 - **Rejected: `get` that borrows.** `Cells.get` returns a copy that holds one more reference, so an array in a `Cell` is copied by the next in-place change to the array made through `update`. That is O(n) per update for a large array; a program that updates a large array often should keep it in a struct passed as `mutable`.
 - **Cost.** One heap allocation per `Cell`, plus one reference count per copy of the handle. `Cells.update` on a counted value (string, array, struct) holds the old value while `change` runs.
 - **Cost.** E0966, reserved for this node, is not used: the other misuses (a wrong value type, reaching the field of the opaque struct) are reported by existing codes.
+
+## D91. A call through a value binds the effect variables of the function the value names
+
+Decision: when a function with effect variables is used as a value (`const apply = twice`, or a local constant), a call through the value binds each variable to the effects of the arguments passed to the parameters whose type names it, as a direct call does (D14, D78). `apply(loud, 1)` has the effects of `loud`, and `apply(quiet, 1)` is pure. A variable of the function being checked stays a name, because the caller of that function binds it.
+
+- **Reason.** The effect pass dropped the variable: a local constant tracked the function's effects without its variables, and a top-level constant took the type effects, so `apply(loud, 1)` counted as pure.
+- **Reason.** The type of the value (D86) already holds the parameter types and the function that binds the variables, so the call can bind them with the rule direct calls use. No new syntax and no new error.
+- **Rejected: an error for a function with effect variables used as a value** (hint: wrap it in a closure). It is simpler, but it rejects `const apply = twice` and `values.map(twice)` style code that is correct, and a closure cannot write the effect variable it needs.
+- **Cost.** A variable that no parameter of the value's type names is not bound at the call. Passing such a value on as an argument is unchanged.

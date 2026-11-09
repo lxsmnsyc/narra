@@ -1112,6 +1112,7 @@ function walkCall(
           addEffect(mutable out, effect.name, pos, effect.via)
         }
       }
+      addValueBoundEffects(mutable checker, state, mutable out, pos, callee, arguments)
     }
     Ref.Constructor(enumIndex, variant) => {
       if (Arrays.length(arguments) > 0) {
@@ -1119,6 +1120,73 @@ function walkCall(
       }
     }
     _ => {}
+  }
+}
+
+function addValueBoundEffects(
+  mutable checker: Checker,
+  state: EffectState,
+  mutable out: Array<Effect>,
+  pos: Pos,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
+  // The type of a function value lists no effects, but its parameter types
+  // still name the variables of the function that made it.
+  if (
+    findNodeType(checker, state.body, getExpressionId(callee)) is Some(
+      Type.TFunc(parameters, _, _, _),
+    )
+  ) {
+    for (const index of Ranges.between(0, Arrays.length(parameters))) {
+      if (index >= Arrays.length(arguments)) {
+        continue
+      }
+      let parameterEffects: Array<string> = []
+      let binder = -1
+      if (parameters[index] is Type.TFunc(_, _, functionEffects, functionBinder)) {
+        parameterEffects = functionEffects
+        binder = functionBinder
+      } else if (parameters[index] is Type.TGenerator(_, generatorNames, generatorBinder, _, _)) {
+        parameterEffects = generatorNames
+        binder = generatorBinder
+      }
+      if (binder < 0) {
+        continue
+      }
+      // A variable of the function being walked stays a name: its caller binds it.
+      const declaration = checker.functions[binder].declaration
+      const binderKey = functionKey(checker.functions[binder].module, declaration.pos)
+      if (state.bodyIndex[binderKey] is Some(binderBody)) {
+        if (binderBody == state.body) {
+          continue
+        }
+      }
+      // The variables the function lists in its own `uses` take the argument's effects.
+      for (const name of Arrays.values(parameterEffects)) {
+        if (
+          !containsName(declaration.effectParameters, name) ||
+            !containsName(declaration.effects, name)
+        ) {
+          continue
+        }
+        if (parameters[index] is Type.TFunc(_, _, _, _)) {
+          if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
+            for (const passed of Arrays.values(set)) {
+              addEffect(mutable out, passed.name, pos, passed.via)
+            }
+          }
+        } else if (
+          findNodeType(checker, state.body, getExpressionId(arguments[index].value)) is Some(
+            argumentType,
+          )
+        ) {
+          for (const passed of Arrays.values(generatorEffects(checker, state, argumentType))) {
+            addEffect(mutable out, passed, pos, "")
+          }
+        }
+      }
+    }
   }
 }
 

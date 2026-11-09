@@ -249,6 +249,19 @@ static lstr* lstr_from_f64(double v) {
   return lstr_from_cstr(buf);
 }
 
+// Shortest text that reads back as the same float.
+static lstr* lstr_from_f32(float v) {
+  char buf[40];
+  for (int prec = 1; prec <= 9; prec++) {
+    snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
+    if (strtof(buf, NULL) == v) break;
+  }
+  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {
+    strcat(buf, ".0");
+  }
+  return lstr_from_cstr(buf);
+}
+
 static lstr* lstr_from_char(uint32_t c) {
   char buf[5] = {0};
   int64_t n;
@@ -291,6 +304,7 @@ static int lstr_cmp(lstr* a, lstr* b) {
 // Standard trait functions for primitive types (trait-model contract).
 static bool narra_eq_int(int64_t a, int64_t b) { return a == b; }
 static bool narra_eq_f64(double a, double b) { return a == b; }
+static bool narra_eq_f32(float a, float b) { return a == b; }
 static bool narra_eq_bool(bool a, bool b) { return a == b; }
 static bool narra_eq_char(uint32_t a, uint32_t b) { return a == b; }
 
@@ -320,6 +334,7 @@ static uint64_t lstr_hash(lstr* s) {
 
 static int narra_cmp_int(int64_t a, int64_t b) { return (a > b) - (a < b); }
 static int narra_cmp_f64(double a, double b) { return (a > b) - (a < b); }
+static int narra_cmp_f32(float a, float b) { return (a > b) - (a < b); }
 static int narra_cmp_bool(bool a, bool b) { return (a > b) - (a < b); }
 static int narra_cmp_char(uint32_t a, uint32_t b) { return (a > b) - (a < b); }
 

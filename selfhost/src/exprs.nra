@@ -132,7 +132,7 @@ function checkExpressionKind<W: Walker>(
   }
   return match (expression) {
     Expr.IntLit(nodeId, pos, text) => checkIntLiteral(mutable checker, nodeId, pos, text, want)
-    Expr.FloatLit(_, _, _) => Type.TF64
+    Expr.FloatLit(_, pos, text) => checkFloatLiteral(mutable checker, pos, text, want)
     Expr.StringLit(_, _, _, _) => Type.TStr
     Expr.CharLit(_, _, _) => Type.TChar
     Expr.BoolLit(_, _, _) => Type.TBool
@@ -511,6 +511,86 @@ function checkIntLiteral(
     reportError(mutable checker, pos, "E0294", `integer literal ${shown} does not fit in ${name}`)
   }
   return literalType
+}
+
+// checkFloatLiteral types a float literal from the type the context expects
+// f32 when that is wanted, f64 otherwise. An f32 literal must be finite.
+function checkFloatLiteral(
+  mutable checker: Checker,
+  pos: Pos,
+  text: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (want is Some(Type.TF32)) {
+    if (!f32LiteralFits(text)) {
+      reportError(mutable checker, pos, "E0297", `float literal ${text} does not fit in f32`)
+    }
+    return Type.TF32
+  }
+  return Type.TF64
+}
+
+// stripLeadingZeros drops the zeros at the start of a digit string.
+function stripLeadingZeros(digits: string): string uses alloc {
+  let rest = digits
+  while (Str.length(rest) > 0 && Str.startsWith(rest, "0")) {
+    rest = Str.sliceFrom(rest, 1)
+  }
+  return rest
+}
+
+// f32LiteralFits is false when the literal is too large to round to a finite
+// f32: at or above 2^128 - 2^103 = 3.4028235677973366e38. The value is read as
+// 0.DIGITS x 10^magnitude and the digits are compared with that limit.
+function f32LiteralFits(text: string): bool uses alloc {
+  const cleaned = Str.replace(Str.replace(text, "_", ""), "E", "e")
+  let mantissa = cleaned
+  let exponentText = ""
+  if (Str.indexOf(cleaned, "e") is Some(marker)) {
+    mantissa = Str.slice(cleaned, 0, marker)
+    exponentText = Str.sliceFrom(cleaned, marker + 1)
+  }
+  // The exponent, with its sign.
+  let exponentNegative = false
+  if (Str.startsWith(exponentText, "-")) {
+    exponentNegative = true
+    exponentText = Str.sliceFrom(exponentText, 1)
+  } else if (Str.startsWith(exponentText, "+")) {
+    exponentText = Str.sliceFrom(exponentText, 1)
+  }
+  let exponent = 0
+  if (exponentText != "") {
+    const parsed = Int.parse(exponentText, 10)
+    if (parsed is Ok(value)) {
+      exponent = value
+    } else {
+      return exponentNegative
+    }
+  }
+  if (exponentNegative) {
+    exponent = 0 - exponent
+  }
+  // The digits and the position of the point among them.
+  let wholePart = mantissa
+  let fractionPart = ""
+  if (Str.indexOf(mantissa, ".") is Some(point)) {
+    wholePart = Str.slice(mantissa, 0, point)
+    fractionPart = Str.sliceFrom(mantissa, point + 1)
+  }
+  const allDigits = `${wholePart}${fractionPart}`
+  const digits = stripLeadingZeros(allDigits)
+  if (digits == "") {
+    return true
+  }
+  const magnitude = Str.length(wholePart) - (Str.length(allDigits) - Str.length(digits)) + exponent
+  if (magnitude != 39) {
+    return magnitude < 39
+  }
+  let padded = digits
+  while (Str.length(padded) < 17) {
+    padded = `${padded}0`
+  }
+  return Str.slice(padded, 0, 17) < "34028235677973366"
 }
 
 // splitIntLiteral gives the base of a literal and its digits without the base
@@ -1147,6 +1227,7 @@ function hasNoFields(fieldsType: Type): bool {
     Type.TU32 => true
     Type.TU64 => true
     Type.TF64 => true
+    Type.TF32 => true
     Type.TBool => true
     Type.TChar => true
     Type.TStr => true
@@ -1316,13 +1397,20 @@ function isComparison(operator: string): bool {
     operator == ">="
 }
 
-// isIntegerLiteral is true for a literal, or a literal under unary minus.
-function isIntegerLiteral(expression: Expr): bool {
+// isNumberLiteral is true for an integer or float literal, or one under unary minus.
+function isNumberLiteral(expression: Expr): bool {
   return match (expression) {
     Expr.IntLit(_, _, _) => true
-    Expr.UnaryExpr(_, _, operator, operand) => operator == "-" && operand is Expr.IntLit(_, _, _)
+    Expr.FloatLit(_, _, _) => true
+    Expr.UnaryExpr(_, _, operator, operand) =>
+      operator == "-" && (operand is Expr.IntLit(_, _, _) || operand is Expr.FloatLit(_, _, _))
     _ => false
   }
+}
+
+// isFloat is true for f32 and f64.
+function isFloat(type: Type): bool {
+  return type == Type.TF32 || type == Type.TF64
 }
 
 // reportMixedIntegers is E0295. The suggestion names the conversion functions
@@ -1368,13 +1456,13 @@ function checkBinary<W: Walker>(
   // integer operator; a literal on the left takes the type of the right (D82).
   let leftWant: Option<Type> = None
   if (want is Some(wanted)) {
-    if (isSizedInteger(wanted) && !isComparison(operator)) {
+    if ((isSizedInteger(wanted) || wanted == Type.TF32) && !isComparison(operator)) {
       leftWant = want
     }
   }
   let leftType = Type.TVoid
   let rightType = Type.TVoid
-  if (leftWant is None && isIntegerLiteral(left) && !isIntegerLiteral(right)) {
+  if (leftWant is None && isNumberLiteral(left) && !isNumberLiteral(right)) {
     rightType = checkExpression(mutable checker, walker, right, None)
     leftType = checkExpression(mutable checker, walker, left, Some(rightType))
   } else {
@@ -1388,6 +1476,22 @@ function checkBinary<W: Walker>(
   if (leftType != rightType && isInteger(leftType) && isInteger(rightType)) {
     if (operator != "&&" && operator != "||") {
       reportMixedIntegers(mutable checker, pos, operator, leftType, rightType)
+      if (isComparison(operator)) {
+        return Type.TBool
+      }
+      return leftType
+    }
+  }
+
+  // f32 and f64 are never mixed.
+  if (leftType != rightType && isFloat(leftType) && isFloat(rightType)) {
+    if (operator != "&&" && operator != "||") {
+      reportError(
+        mutable checker,
+        pos,
+        "E0295",
+        `${operator} needs two floats of the same type, found ${leftText} and ${rightText}; convert one side with F32.from or Float.from`,
+      )
       if (isComparison(operator)) {
         return Type.TBool
       }

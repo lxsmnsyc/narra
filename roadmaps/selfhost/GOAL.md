@@ -113,6 +113,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-09: D93, async redesigned with the maintainer: eager `Async<T>` handles on one implicit loop per thread, `then`/`detach`/`peek`/`cancel`, no blocking wait, no Thenable trait. Node async rewritten to match; still parked.
 - 2026-11-09: D94 from the value-semantics debate (approved): shared writes are compile errors, copies are `copy(x)`, a `from` result marker. Nodes copy-builtin, from-marker, shared-write-check, shared-write-sweep, shared-write-error, value-semantics-docs.
 - 2026-11-09: D95, designs for the parked syntax nodes (async exit and Async.idle, contracts as compile-time patterns, fixed arrays with proven indexes, build conditions, inline, C interop with `extern { } from`, dynamic traits). New parked node async-generators.
+- 2026-11-09: D96 (`typeof` in type positions) and D97 (package exports table). Nodes type-of, package-dependencies (found missing: `[dependencies]` is E0407 today), package-exports.
 
 ## Gates
 

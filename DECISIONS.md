@@ -987,3 +987,40 @@ Decision (maintainer, 2026-11-09). Each part replaces the matching SPEC.md text 
 - **Reason.** Each design keeps the syntax TypeScript-like, adds no hidden calls (D12) and no panics outside `unsafe` and array indexing (D92).
 
 Not built yet.
+
+## D96. `typeof` in type positions
+
+Decision (maintainer, 2026-11-09): `typeof name` in a type annotation stands for the declared or inferred type of a value in scope: a `const`, `let`, parameter, top-level constant or function. For a function it is the full function type, with effects (D86) and `from` (D94).
+
+```ts
+const table = Maps.create<string, Array<Entry>>()
+function fill(target: typeof table): void { ... }
+
+export function handle(request: Request): Response uses io { ... }
+export type Handler = typeof handle      // (request: Request) => Response uses io
+```
+
+- Names only in the first version, not field paths or expressions. A `typeof` that refers to its own declaration is an error.
+- **Rejected: runtime `typeof x === "string"`.** Every type is known at compile time; enums and `match` cover values of several shapes.
+
+Not built yet.
+
+## D97. A package lists the module paths it exposes
+
+Decision (maintainer, 2026-11-09): `narra.toml` may have an `[exports]` table that maps import paths to module files. Only listed paths can be imported from other packages; every other module is internal to its package.
+
+```toml
+[exports]
+"json" = "src/index.nra"                  # import * as Json from "json"
+"json/parse" = "src/parse.nra"
+"json/stream" = "src/streaming/reader.nra"
+```
+
+- Without `[exports]`, every module is exposed by its path, as today.
+- Inside the package, modules import each other by their real paths.
+- A key must be the package name or start with it; the bare package name maps to one module.
+- Importing an unlisted path is a compile error that lists the exposed paths. `narra move` updates the table.
+- `std` uses the same table, so `std/internal/*` becomes an ordinary unexported path and E0426 folds into the general rule.
+- **Reason.** A package chooses its public surface, and its file layout can change without breaking importers.
+
+Not built yet. Dependencies themselves (`[dependencies]`) are not built either (E0407).

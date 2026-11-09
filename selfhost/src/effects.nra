@@ -17,7 +17,8 @@
 // position (functionKey), a local by its body and BodyInfo.locals index, and
 // an arrow by its node id. Only the open body of a function is walked (kind
 // func or impl, no type arguments), as Go walks the declarations and not the
-// instances.
+// instances. The reporting walk also visits the value of each top-level
+// constant, so the function stores in it are checked.
 
 import { Pos, Decl, FuncDecl, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
@@ -376,6 +377,26 @@ function walkAll(mutable checker: Checker, mutable state: EffectState, report: b
       }
     }
     enter(mutable checker, saved)
+  }
+  if (report) {
+    walkConstants(mutable checker, mutable state)
+  }
+}
+
+function walkConstants(mutable checker: Checker, mutable state: EffectState) uses alloc {
+  // The reporting walk records the functions a constant's value names, so
+  // the stores in it are checked against what those functions do.
+  for (const index of Ranges.between(0, Arrays.length(checker.consts))) {
+    if (checker.bodyKeys[`const|${Int.toString(index)}`] is Some(bodyIndex)) {
+      if (checker.bodies[bodyIndex].root is BodyRoot.RootExpr(value)) {
+        const scope = checker.consts[index].scope
+        const saved = enter(mutable checker, scope)
+        state.body = bodyIndex
+        let out: Array<Effect> = []
+        walkExpression(mutable checker, mutable state, mutable out, value)
+        enter(mutable checker, saved)
+      }
+    }
   }
 }
 

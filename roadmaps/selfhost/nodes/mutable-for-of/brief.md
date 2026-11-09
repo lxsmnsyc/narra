@@ -1,7 +1,7 @@
 ---
 id: mutable-for-of
 title: "for (mutable item of items) changes array elements in place (D85)"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 225063
 owns:
   - testdata/mutable_for*
   - testdata/errors/mutable_for_*
@@ -55,3 +55,5 @@ The build plan, the selfhost sites and two catches (the loop's own reference to 
 - [ ] Error tests `testdata/errors/mutable_for_*` for: a source that is not a local place, an element type that is not a contents type, a use of the source in the body, the form in a generator or async body, and a write to a `for (const ...)` binding that suggests the marker form.
 - [ ] compiler/README.md no longer lists the form as not built; SPEC.md matches.
 - [ ] `sh scripts/test.sh` passes.
+
+Landed on feat/batch-1 (3b6eca0) after a clean rebase onto shape-derive; bootstrap, errors, codes, programs, packages and std-tests passed. After the end-of-batch seed, check.nra and resolve.nra can use the new loop form.

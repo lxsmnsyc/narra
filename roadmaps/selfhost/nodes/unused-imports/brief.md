@@ -1,7 +1,7 @@
 ---
 id: unused-imports
 title: "Unused imports and private functions are errors"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

@@ -30,6 +30,7 @@ import {
   reportError,
   reportErrorIn,
   enter,
+  findBody,
   findBodySlot,
   getExpressionId,
   getExpressionPos,
@@ -55,6 +56,13 @@ struct Callee {
   key: string
   // label is the name an effect error shows after "through".
   label: string
+}
+
+// A part of a top-level constant's value, with the body of the constant,
+// which holds the refs of its names.
+struct ConstantPart {
+  body: int // Checker.bodies
+  value: Expr
 }
 
 export struct EffectState {
@@ -603,6 +611,16 @@ function valueEffects(
   expression: Expr,
 ): Option<Array<Effect>> uses alloc {
   const bodyIndex = state.body
+  // A top-level constant, or a field or element of one, holds the functions
+  // its value names.
+  const constants = resolveConstant(checker, bodyIndex, expression)
+  if (Arrays.length(constants) > 0) {
+    let set: Array<Effect> = []
+    for (const constant of Arrays.values(constants)) {
+      collectConstantEffects(checker, state, constant.body, constant.value, mutable set)
+    }
+    return Some(set)
+  }
   return match (expression) {
     Expr.ArrowExpr(nodeId, _, _, _, _, _) => state.arrows[nodeId]
     Expr.Ident(nodeId, _, _) => findNamedValue(checker, state, bodyIndex, nodeId)
@@ -817,6 +835,155 @@ function findFunctionValue(
     return Some(concreteEffects(state, callee))
   }
   return None
+}
+
+// resolveConstant lists the parts of top-level constant values that an
+// expression of a body reads: a constant (own or imported), a field of a
+// constant struct literal, or any element of a constant array literal. Each
+// part keeps the body of its constant, where its refs are. The list is empty
+// when the expression reads no constant.
+function resolveConstant(
+  checker: Checker,
+  bodyIndex: int,
+  expression: Expr,
+): Array<ConstantPart> uses alloc {
+  let parts: Array<ConstantPart> = []
+  match (expression) {
+    Expr.Ident(nodeId, _, _) => {
+      if (findRef(checker, bodyIndex, nodeId) is Ref.Const(index)) {
+        return expandConstant(checker, index)
+      }
+    }
+    Expr.FieldExpr(nodeId, _, target, name) => {
+      if (findRef(checker, bodyIndex, nodeId) is Ref.Const(index)) {
+        return expandConstant(checker, index)
+      }
+      for (const owner of Arrays.values(resolveConstant(checker, bodyIndex, target))) {
+        // The field written in the literal, or the whole literal when the
+        // field comes from a default or a spread.
+        let found = false
+        if (owner.value is Expr.StructLit(_, _, _, _, fields, _)) {
+          for (const field of Arrays.values(fields)) {
+            if (field.name == name) {
+              found = true
+              appendConstantParts(checker, owner.body, field.value, mutable parts)
+            }
+          }
+        }
+        if (!found) {
+          Arrays.push(mutable parts, owner)
+        }
+      }
+    }
+    Expr.IndexExpr(_, _, target, _) => {
+      for (const owner of Arrays.values(resolveConstant(checker, bodyIndex, target))) {
+        if (owner.value is Expr.ArrayLit(_, _, elements, _)) {
+          for (const element of Arrays.values(elements)) {
+            appendConstantParts(checker, owner.body, element, mutable parts)
+          }
+        } else {
+          Arrays.push(mutable parts, owner)
+        }
+      }
+    }
+    _ => {}
+  }
+  return parts
+}
+
+// expandConstant is the value of constant index, following a constant that
+// names another one. It is empty when the constant has no checked body.
+function expandConstant(checker: Checker, index: int): Array<ConstantPart> uses alloc {
+  const body = findBody(checker, `const|${Int.toString(index)}`)
+  if (body < 0) {
+    return []
+  }
+  let parts: Array<ConstantPart> = []
+  appendConstantParts(checker, body, checker.consts[index].declaration.value, mutable parts)
+  return parts
+}
+
+// appendConstantParts adds a part of a constant value, or the parts of the
+// constant it names.
+function appendConstantParts(
+  checker: Checker,
+  bodyIndex: int,
+  value: Expr,
+  mutable parts: Array<ConstantPart>,
+) uses alloc {
+  const named = resolveConstant(checker, bodyIndex, value)
+  if (Arrays.length(named) > 0) {
+    for (const part of Arrays.values(named)) {
+      Arrays.push(mutable parts, part)
+    }
+    return
+  }
+  Arrays.push(mutable parts, ConstantPart { body: bodyIndex, value: value })
+}
+
+// collectConstantEffects adds the effects of every function a constant value
+// names, at any depth (a constant cannot hold a closure or call a function).
+function collectConstantEffects(
+  checker: Checker,
+  state: EffectState,
+  bodyIndex: int,
+  value: Expr,
+  mutable out: Array<Effect>,
+) uses alloc {
+  let children: Array<Expr> = []
+  match (value) {
+    // A function name, plain or qualified.
+    Expr.Ident(nodeId, _, _) => addFunctionEffects(checker, state, bodyIndex, nodeId, mutable out)
+    Expr.FieldExpr(nodeId, _, _, _) => addFunctionEffects(
+      checker,
+      state,
+      bodyIndex,
+      nodeId,
+      mutable out,
+    )
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        Arrays.push(mutable children, field.value)
+      }
+      if (spread is Some(base)) {
+        Arrays.push(mutable children, base)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => {
+      children = elements
+    }
+    Expr.MapLit(_, _, _, _, values) => {
+      children = values
+    }
+    Expr.CallExpr(_, _, _, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        Arrays.push(mutable children, argument.value)
+      }
+    }
+    _ => {}
+  }
+  for (const child of Arrays.values(children)) {
+    for (const part of Arrays.values(resolveConstant(checker, bodyIndex, child))) {
+      collectConstantEffects(checker, state, part.body, part.value, mutable out)
+    }
+    collectConstantEffects(checker, state, bodyIndex, child, mutable out)
+  }
+}
+
+// addFunctionEffects adds the effects of the function a name refers to, if
+// it refers to one.
+function addFunctionEffects(
+  checker: Checker,
+  state: EffectState,
+  bodyIndex: int,
+  nodeId: int,
+  mutable out: Array<Effect>,
+) uses alloc {
+  if (findFunctionValue(checker, state, bodyIndex, nodeId) is Some(set)) {
+    for (const effect of Arrays.values(set)) {
+      addEffect(mutable out, effect.name, effect.pos, effect.via)
+    }
+  }
 }
 
 function walkBlock(

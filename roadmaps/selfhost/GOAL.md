@@ -110,6 +110,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-09: batch-2 merged (PR #106). D90 (Cell) and D91 (effect variables through values) accepted by the maintainer with the merge.
 - 2026-11-09: the user moved release-binaries last, after the remaining language features (const-lazy, type-aliases, typed-calls-and-effects); it is could until then.
 - 2026-11-09: D92, no panics from arithmetic, missing returns or std functions (maintainer). Nodes wrapping-arithmetic, proven-operands, missing-return, std-no-panic. Array indexing keeps its panic.
+- 2026-11-09: D93, async redesigned with the maintainer: eager `Async<T>` handles on one implicit loop per thread, `then`/`detach`/`peek`/`cancel`, no blocking wait, no Thenable trait. Node async rewritten to match; still parked.
 
 ## Gates
 

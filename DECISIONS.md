@@ -933,3 +933,26 @@ Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, 
 - **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
 
 Not built yet.
+
+## D93. `Async<T>` is an eager handle on one implicit event loop per thread
+
+Decision (maintainer, 2026-11-09), amending D17 and reopening D88 for async blocks:
+
+- **`Async<T>` is a handle to a result on its way,** like a TypeScript `Promise`. Creating one starts the work. It is an identity type (D80): copies share the same computation, and the finished value is kept until the last handle is dropped. `Task<T>` is folded into it.
+- **An async function returns `Async<T>`.** `async function fetchUser(id: int): User` has the type `(id: int) => Async<User>`, and `fetchUser(1)` starts it and returns the handle. `await handle` gives the `User`; awaiting the same handle again gives the same value.
+- **`async { ... }` is an expression of type `Async<T>`.** It starts at once, like a call. Generator blocks stay parked (D88).
+- **An unused `Async<T>` is a compile error,** like an unchecked `Result`. `Async.detach(handle)` lets it run with nobody waiting.
+- **`Async.then(handle, callback)`** runs `callback` with the value when it is ready and returns nothing. The callback is an ordinary escaping function (no `await` inside); the runtime drops it after it runs or when the handle is cancelled, so it forms no lasting cycle. Its effects are charged at the call.
+- **`Async.peek(handle): Option<T>`** gives the value once finished, `None` before that or after a cancel. It never blocks.
+- **`Async.cancel(handle)`** is cooperative: the I/O the task waits on next returns `Err(Cancelled)`, and the body returns a `T` as for any error. `await` always gives a `T`; a cancelled handle's `then` callbacks do not run.
+- **`Async.all(handles)`** waits for all and gives the values in order; **`Async.race(handles)`** gives the first to finish. `Arrays.map(items, async (x) => ...)` gives `Array<Async<T>>`, so `Async.map` and `Async.forEach` are not needed, and async callbacks are no longer an error.
+- **One implicit event loop per thread.** The entry function runs as the loop's first task and may be `async`; the program exits when it has returned and no work is left. `Async.run` and the explicit `Loop` are removed.
+- **No blocking wait** (`block_on`). Inside a running loop it would hang or run other tasks in the middle of a function, and refusing at runtime would be a panic (D92).
+- **No `Thenable` trait.** `await` works only on `Async<T>`, so it never runs user code (D12, no hidden implementations). A type that can be awaited offers a named function that returns an `Async<T>`.
+- **Effects.** Creating an `Async<T>` charges the effects of its body, since the body starts there.
+- **Reason.** An async expression in a non-async function has to produce a value at once, so the result needs a type of its own. An eager handle matches TypeScript; D17's worry about lost errors does not apply because failures are `Result` values and an unused handle is a compile error.
+- **Rejected: lazy `Async<T>` (Rust futures).** It needs a separate `Task<T>` for running work and an executor to find at runtime.
+- **Rejected: an explicit loop or a thread-local runtime (tokio).** Starting work where no loop runs could only fail at runtime.
+- **Open.** The exit code when tasks are still running after a failed entry function, and how loops on several threads share work (threads are parked).
+
+Not built yet. SPEC.md section 8 still describes D17 and is rewritten by the async nodes.

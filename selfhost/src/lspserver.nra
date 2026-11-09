@@ -51,7 +51,6 @@ struct Problem {
 
 const HEX_DIGITS = "0123456789ABCDEF"
 
-// getHexValue is the value of a hexadecimal digit, or -1.
 function getHexValue(byte: int): int {
   if (byte >= 48 && byte <= 57) {
     return byte - 48
@@ -65,7 +64,6 @@ function getHexValue(byte: int): int {
   return -1
 }
 
-// readEscapedByte is the byte written as %XX at an index, or -1.
 function readEscapedByte(text: string, index: int): int {
   if (index + 2 >= Str.length(text) || Str.byteAt(text, index) != 37) {
     return -1
@@ -78,10 +76,8 @@ function readEscapedByte(text: string, index: int): int {
   return high * 16 + low
 }
 
-// readEscapedChar reads the character written as one or more %XX escapes (the
-// UTF-8 bytes) at an index. It gives the code point and the index after the
-// escapes, or None when the text there is not a valid escape.
 function readEscapedChar(text: string, index: int): Option<#[int, int]> uses alloc {
+  // None when the text there is not a valid escape.
   const first = readEscapedByte(text, index)
   if (first < 0) {
     return None
@@ -117,7 +113,6 @@ function readEscapedChar(text: string, index: int): Option<#[int, int]> uses all
   return Some(#[codePoint, next])
 }
 
-// decodePercent decodes the %XX escapes of a URI path.
 function decodePercent(text: string): string uses alloc {
   let builder = Str.builder()
   const length = Str.length(text)
@@ -143,8 +138,6 @@ function decodePercent(text: string): string uses alloc {
   return Str.build(builder)
 }
 
-// convertUriToPath is the file path of a `file://` URI, or None for any other
-// scheme.
 export function convertUriToPath(uri: string): Option<string> uses alloc {
   if (!Str.startsWith(uri, "file://")) {
     return None
@@ -161,8 +154,6 @@ export function convertUriToPath(uri: string): Option<string> uses alloc {
   return Some(decodePercent(rest))
 }
 
-// convertPathToUri writes a file path as a `file://` URI, escaping every byte
-// that is not unreserved or a slash.
 export function convertPathToUri(path: string): string uses alloc {
   let builder = Str.builder()
   Str.append(mutable builder, "file://")
@@ -188,10 +179,8 @@ export function convertPathToUri(path: string): string uses alloc {
   return Str.build(builder)
 }
 
-// countUnits is the length in the client's unit (UTF-8 bytes or UTF-16 code
-// units) of the first characters of a line. A count past the end of the line
-// adds one unit for each missing character.
 export function countUnits(lineText: string, characters: int, utf8: bool): int {
+  // A count past the end of the line adds one unit for each missing character.
   const length = Str.length(lineText)
   let index = 0
   let units = 0
@@ -219,8 +208,6 @@ export function countUnits(lineText: string, characters: int, utf8: bool): int {
   return units + (characters - seen)
 }
 
-// findPackageDirectory is the directory of the nearest narra.toml at or above
-// the directory of a file, as fmtconfig finds it.
 export function findPackageDirectory(path: string): Option<string> uses io, alloc {
   let directory = Path.dirname(path)
   for (const _level of Ranges.upTo(64)) {
@@ -236,9 +223,8 @@ export function findPackageDirectory(path: string): Option<string> uses io, allo
   return None
 }
 
-// readFileText is the text of a source file: the open document, else the
-// file on disk, else empty.
 function readFileText(overrides: Map<string, string>, path: string): string uses io, alloc {
+  // The open document wins over the file on disk; a missing file gives empty text.
   if (overrides[path] is Some(text)) {
     return text
   }
@@ -253,9 +239,8 @@ export function makePosition(line: int, character: int): Value uses alloc {
   return makeRecord([#["line", Value.Int(line)], #["character", Value.Int(character)]])
 }
 
-// makeDiagnostic is a diagnostic with a zero-width range at the position of
-// the problem (the compiler reports a position, not an extent).
 function makeDiagnostic(problem: Problem, lineText: string, utf8: bool): Value uses alloc {
+  // The compiler reports a position, not an extent, so the range has zero width.
   let line = problem.line - 1
   let character = 0
   if (problem.line < 1) {
@@ -277,7 +262,6 @@ function makeDiagnostic(problem: Problem, lineText: string, utf8: bool): Value u
   ])
 }
 
-// makePublish is the publishDiagnostics notification of one document.
 function makePublish(uri: string, diagnostics: Array<Value>): Value uses alloc {
   return makeNotification(
     "textDocument/publishDiagnostics",
@@ -291,9 +275,6 @@ struct Target {
   path: string
 }
 
-// chooseTarget is the document a problem in a file belongs to. In a package
-// the file is relative to its directory (`src/text.nra`); a problem with no
-// file, and every problem of a file checked alone, goes to the changed document.
 function chooseTarget(
   directory: string,
   file: string,
@@ -301,6 +282,8 @@ function chooseTarget(
   path: string,
   openUris: Map<string, string>,
 ): Target uses alloc {
+  // In a package the file is relative to its directory (`src/text.nra`). A problem with no
+  // file, and every problem of a file checked alone, goes to the changed document.
   if (directory == "" || file == "") {
     return Target { uri: uri, path: path }
   }
@@ -311,7 +294,6 @@ function chooseTarget(
   return Target { uri: convertPathToUri(filePath), path: filePath }
 }
 
-// addTarget adds a target to the list unless its URI is there.
 function addTarget(mutable order: Array<Target>, target: Target) uses alloc {
   if (!containsTarget(order, target.uri)) {
     Arrays.push(mutable order, target)
@@ -327,17 +309,13 @@ function containsTarget(order: Array<Target>, uri: string): bool {
   return false
 }
 
-// checkDocumentPackage loads and checks the package that holds a document,
-// with the text of every open document in place of the files on disk, and
-// returns a publishDiagnostics notification for every module of the package
-// (an empty list for a module with no problem). A document with no narra.toml
-// above it is checked alone. When the package does not load, the errors go to
-// their files and to nothing else; a document whose list was not empty before
-// and is not mentioned now gets an empty list.
 export function checkDocumentPackage(
   mutable server: Server,
   uri: string,
 ): Array<Value> uses io, alloc {
+  // A document with no narra.toml above it is checked alone. When the package does not load,
+  // the errors go to their files and to nothing else; a document whose list was not empty
+  // before and is not mentioned now gets an empty list.
   const maybePath = convertUriToPath(uri)
   if (maybePath is None) {
     return []
@@ -436,12 +414,9 @@ export function checkDocumentPackage(
   return messages
 }
 
-// formatDocument formats the document with the [fmt] settings of the nearest
-// narra.toml. It gives the edits of textDocument/formatting: none when the text
-// is already formatted, else one that replaces the whole document. A document
-// with a syntax error gives Ok(Value.Null). An Err is a reason for an error
-// response.
 export function formatDocument(server: Server, uri: string): Result<Value, string> uses io, alloc {
+  // No edits when the text is already formatted, else one edit that replaces the whole
+  // document. A document with a syntax error gives Ok(Value.Null).
   const maybePath = convertUriToPath(uri)
   if (maybePath is None) {
     return Err(`not a file URI: ${uri}`)
@@ -488,10 +463,8 @@ export function formatDocument(server: Server, uri: string): Result<Value, strin
   return Ok(Value.List([edit]))
 }
 
-// closeDocument forgets a document, rechecks its package from the files on
-// disk and empties the diagnostics of the document itself: the recheck's list
-// for the document is replaced by an empty one.
 export function closeDocument(mutable server: Server, uri: string): Array<Value> uses io, alloc {
+  // The recheck's list for the document itself is replaced by an empty one.
   const _removed = Maps.remove(mutable server.documents, uri)
   let messages: Array<Value> = []
   for (const message of Arrays.values(checkDocumentPackage(mutable server, uri))) {

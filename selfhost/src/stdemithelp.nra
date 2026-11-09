@@ -11,7 +11,7 @@ import {
   where,
   temp,
   ownedTemp,
-  typeOf,
+  readNodeType,
   underlyingType,
 } from "narrac/emitstate"
 import * as Str from "std/string"
@@ -40,7 +40,6 @@ export function owned(text: string): Code {
   return Code { text: text, owned: true }
 }
 
-// emitFixedCall is a builtin that is one runtime call.
 export function emitFixedCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -57,7 +56,7 @@ export function emitFixedCall<W: EmitWalker>(
     Arrays.push(mutable texts, where(emitter, pos))
   }
   const callText = `${fixed.call}(${Str.join(texts, ", ")})`
-  const resultType = typeOf(emitter, nodeId)
+  const resultType = readNodeType(emitter, nodeId)
   if (fixed.owned) {
     return owned(ownedTemp(mutable emitter, resultType, callText))
   }
@@ -67,7 +66,6 @@ export function emitFixedCall<W: EmitWalker>(
   return plain(callText)
 }
 
-// argumentText is the C text of the n-th argument.
 export function argumentText<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -78,18 +76,15 @@ export function argumentText<W: EmitWalker>(
   return code.text
 }
 
-// stringOut declares a string out-parameter for a runtime call.
 export function stringOut(mutable emitter: Emitter): string uses alloc {
   return temp(mutable emitter, Type.TStr, "NULL")
 }
 
-// arrayStruct is the C struct name of an array type: its C name without `*`.
 export function arrayStruct(emitter: Emitter, type: Type): string uses alloc {
   const name = cType(emitter.checker, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
-// findVariant is the index of the variant with the name, in the enum type.
 export function findVariant(emitter: Emitter, enumType: Type, name: string): int {
   const baseType = underlyingType(emitter, enumType)
   if (baseType is Type.TEnum(enumIndex)) {
@@ -102,7 +97,6 @@ export function findVariant(emitter: Emitter, enumType: Type, name: string): int
   return 0 - 1
 }
 
-// variantFieldType is the type of the first field of a variant.
 export function variantFieldType(emitter: Emitter, enumType: Type, variant: int): Type {
   const baseType = underlyingType(emitter, enumType)
   if (baseType is Type.TEnum(enumIndex)) {
@@ -111,9 +105,6 @@ export function variantFieldType(emitter: Emitter, enumType: Type, variant: int)
   return Type.TVoid
 }
 
-// ioEither sets an owned temporary of the enum type to variant `first` holding
-// firstValues when the condition holds, and to `second` otherwise. Each payload
-// is allocated only in the branch taken.
 export function ioEither(
   mutable emitter: Emitter,
   enumType: Type,
@@ -127,6 +118,7 @@ export function ioEither(
   const result = ownedTemp(mutable emitter, enumType, `((${enumName}){0})`)
   writeLine(mutable emitter, `if (${condition}) {`)
   emitter.indent = emitter.indent + 1
+  // Each payload is allocated only in the branch taken.
   const firstCode = Decls.enumAllocation(mutable emitter, enumType, first, firstValues)
   writeLine(mutable emitter, `${result} = ${firstCode.text};`)
   emitter.indent = emitter.indent - 1
@@ -139,8 +131,6 @@ export function ioEither(
   return owned(result)
 }
 
-// ioResult builds a Result from the pieces a runtime function filled in: the
-// success value moves into Ok when `success` holds, the error into Err.
 export function ioResult(
   mutable emitter: Emitter,
   resultType: Type,

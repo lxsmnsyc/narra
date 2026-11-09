@@ -7,7 +7,7 @@
 // it through the Walker trait (checkPatterns), statements calls it directly. The
 // exhaustiveness check and the narrowing helpers are in narrac/patterns.
 //
-// A pattern's results go into the side tables of the current body (D70):
+// A pattern's results go into the side tables of the current body:
 // its type (setNodeType), the variant a name or constructor pattern means
 // (Ref.Constructor on the pattern id) and the local a binding declares
 // (BodyInfo.declared). A binding is created when the pattern resolves but
@@ -59,7 +59,6 @@ function startsUpper(name: string): bool {
   return first >= 'A' && first <= 'Z'
 }
 
-// findVariant is the index of the variant of an enum with this name, or -1.
 function findVariant(checker: Checker, enumIndex: int, name: string): int {
   const variants = checker.enums[enumIndex].variants
   for (const index of Ranges.between(0, Arrays.length(variants))) {
@@ -70,8 +69,6 @@ function findVariant(checker: Checker, enumIndex: int, name: string): int {
   return -1
 }
 
-// createPatternLocal declares the local a PatName binds, without putting it
-// into scope.
 function createPatternLocal(
   mutable checker: Checker,
   nodeId: int,
@@ -102,15 +99,13 @@ function createPatternLocal(
   }
 }
 
-// resolvePattern checks a pattern against the type of the value it matches
-// and creates a local for every name it binds. The caller puts the locals
-// in scope (collectPatternLocals, bindPatternLocals).
 export function resolvePattern<W: Walker>(
   mutable checker: Checker,
   walker: W,
   pattern: Pattern,
   valueType: Type,
 ) uses alloc {
+  // The caller puts the locals in scope (collectPatternLocals, bindPatternLocals).
   let seen: Map<string, bool> = Map {}
   resolveNode(mutable checker, walker, pattern, valueType, mutable seen)
 }
@@ -174,8 +169,6 @@ function resolveNode<W: Walker>(
   }
 }
 
-// resolveName: a name is a constructor without fields when the value is an
-// enum with a variant of that name, otherwise it binds.
 function resolveName(
   mutable checker: Checker,
   nodeId: int,
@@ -184,6 +177,7 @@ function resolveName(
   valueType: Type,
   mutable seen: Map<string, bool>,
 ) uses alloc {
+  // A name is a constructor without fields when the value is an enum with a variant of that name, otherwise it binds.
   if (valueType is Type.TEnum(enumIndex)) {
     const variantIndex = findVariant(checker, enumIndex, name)
     if (variantIndex >= 0) {
@@ -230,13 +224,13 @@ function resolveConstructor<W: Walker>(
   valueType: Type,
   mutable seen: Map<string, bool>,
 ) uses alloc {
-  if (enumOf(valueType) < 0) {
+  if (readEnumIndex(valueType) < 0) {
     const message = `constructor pattern ${name} needs an enum value, found ${typeString(checker, valueType)}`
     reportError(mutable checker, pos, "E0702", message)
     bindRest(mutable checker, pattern, mutable seen)
     return
   }
-  const enumIndex = enumOf(valueType)
+  const enumIndex = readEnumIndex(valueType)
   if (enumName != "" && !namesEnum(checker, enumName, enumIndex)) {
     const message = `${enumName}.${name} does not match a value of type ${typeString(checker, valueType)}`
     reportError(mutable checker, pos, "E0703", message)
@@ -279,8 +273,7 @@ function resolveConstructor<W: Walker>(
   }
 }
 
-// enumOf is the Checker.enums index of an enum type.
-function enumOf(enumType: Type): int {
+function readEnumIndex(enumType: Type): int {
   if (enumType is Type.TEnum(index)) {
     return index
   }
@@ -416,13 +409,12 @@ function resolveLiteral<W: Walker>(
   expectType(mutable checker, pos, Some(valueType), found)
 }
 
-// bindRest binds the names inside a pattern that failed to check, with type
-// void, so their uses do not also report "unknown name".
 function bindRest(
   mutable checker: Checker,
   pattern: Pattern,
   mutable seen: Map<string, bool>,
 ) uses alloc {
+  // The names get type void, so their uses do not also report "unknown name".
   match (pattern) {
     Pattern.PatName(nodeId, pos, name) => {
       const body = checker.bodies[checker.body]
@@ -457,8 +449,6 @@ function bindRest(
   }
 }
 
-// requireQualified reports a constructor pattern written without its enum.
-// Some, None, Ok and Err of the prelude stay bare (D71).
 function requireQualified(
   mutable checker: Checker,
   pos: Pos,
@@ -466,6 +456,7 @@ function requireQualified(
   enumIndex: int,
 ) uses alloc {
   const info = checker.enums[enumIndex]
+  // Some, None, Ok and Err of the prelude stay bare.
   if (info.module == "") {
     if ((name == "Some" || name == "None") && info.name == "Option") {
       return
@@ -498,7 +489,6 @@ function requireQualified(
 
 // ---- is, match, destructuring ----
 
-// checkPatternExpression checks an `is` or `match` expression.
 export function checkPatternExpression<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -527,8 +517,6 @@ export function checkPatternExpression<W: Walker>(
   }
 }
 
-// checkIs checks `subject is Pattern`. binds is true when the test is the
-// whole condition of an if, the only place it may bind names.
 export function checkIs<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -537,6 +525,7 @@ export function checkIs<W: Walker>(
   pattern: Pattern,
   binds: bool,
 ): Type uses alloc {
+  // `binds` is set when the test is the whole condition of an if, the only place it may bind names.
   const subjectType = checkExpression(mutable checker, walker, subject, None)
   resolvePattern(mutable checker, walker, pattern, subjectType)
   let locals: Array<int> = []
@@ -552,7 +541,6 @@ export function checkIs<W: Walker>(
   return Type.TBool
 }
 
-// checkMatch checks a match used as a value or as a statement.
 export function checkMatch<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -594,7 +582,7 @@ export function checkMatch<W: Walker>(
     }
     if (arm.block is Some(block)) {
       if (isValue) {
-        // In value position a block arm is a block expression (D75).
+        // In value position a block arm is a block expression.
         const found = Walker.checkBlockBody(walker, mutable checker, block.pos, block, result)
         if (result is None) {
           result = Some(found)
@@ -649,7 +637,6 @@ export function checkMatch<W: Walker>(
   return Type.TVoid
 }
 
-// checkDestructure checks `const { a, b: c } = s` and `const #[a, b] = t`.
 export function checkDestructure<W: Walker>(
   mutable checker: Checker,
   walker: W,

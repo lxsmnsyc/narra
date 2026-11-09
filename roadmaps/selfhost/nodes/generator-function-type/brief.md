@@ -1,7 +1,7 @@
 ---
 id: generator-function-type
 title: "A function* can be assigned to an annotated function type"
-status: todo
+status: done
 priority: should
 type: fix
 story: batch-2
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 119132
 owns:
   - testdata/generator_function_type*
   - roadmaps/selfhost/nodes/generator-function-type/**

@@ -4,7 +4,7 @@ import { StdFunc } from "narrac/builtins"
 import { Type, isInteger } from "narrac/types"
 import { Checker, Walker, typeString, reportError, getExpressionPos } from "narrac/check"
 import { Pos, Arg } from "narrac/ast"
-import { Emitter, Code, EmitWalker, reportUnsupported, typeOf } from "narrac/emitstate"
+import { Emitter, Code, EmitWalker, reportUnsupported, readNodeType } from "narrac/emitstate"
 import { cType } from "narrac/cnames"
 import { checkExpression } from "narrac/exprs"
 import { checkArgumentCount } from "narrac/stdcheckhelp"
@@ -48,7 +48,6 @@ const F32_FIXED_CALLS: Array<FixedCall> = [
   },
 ]
 
-// isF32Name is true for the builtins this file emits.
 export function isF32Name(name: string): bool {
   return name == "F32.from" ||
     name == "F32.truncate" ||
@@ -56,8 +55,6 @@ export function isF32Name(name: string): bool {
     name == "Float.from"
 }
 
-// checkF32Call checks F32.from (an f64 or an integer) and Float.from (an f32 or an
-// integer). Anything else is E0941.
 export function checkF32Call<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -78,6 +75,7 @@ export function checkF32Call<W: Walker>(
     return resultType
   }
   const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  // Anything but the accepted float or an integer is E0941.
   if (found != accepted && !isInteger(found)) {
     const foundText = typeString(checker, found)
     reportError(
@@ -90,7 +88,6 @@ export function checkF32Call<W: Walker>(
   return resultType
 }
 
-// emitF32Call emits the calls of std/f32 and Float.from.
 export function emitF32Call<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -107,7 +104,7 @@ export function emitF32Call<W: EmitWalker>(
   if (name == "F32.from" || name == "Float.from") {
     // A C cast rounds a double to the nearest float; the other direction is exact.
     const value = argumentText(walker, mutable emitter, arguments, 0)
-    return plain(`((${cType(emitter.checker, typeOf(emitter, nodeId))})(${value}))`)
+    return plain(`((${cType(emitter.checker, readNodeType(emitter, nodeId))})(${value}))`)
   }
   // An unknown name is a compiler bug, not a missing feature.
   return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))

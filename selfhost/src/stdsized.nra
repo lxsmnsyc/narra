@@ -1,5 +1,5 @@
 // The registry rows, checks and emitters of std/i8, std/i16, std/i32, std/u8, std/u16,
-// std/u32 and std/u64 (D82). Each has from, tryFrom, wrap, toString and parse. The
+// std/u32 and std/u64. Each has from, tryFrom, wrap, toString and parse. The
 // same three conversions are also rows of std/int (stdint.nra), which calls
 // emitSizedCall for them.
 import { StdFunc } from "narrac/builtins"
@@ -14,7 +14,7 @@ import {
 } from "narrac/check"
 import { Pos, Arg } from "narrac/ast"
 import { cType } from "narrac/cnames"
-import { Emitter, Code, EmitWalker, reportUnsupported, temp, typeOf } from "narrac/emitstate"
+import { Emitter, Code, EmitWalker, reportUnsupported, temp, readNodeType } from "narrac/emitstate"
 import { checkExpression } from "narrac/exprs"
 import { stdType } from "narrac/stdtypes"
 import { checkArgumentCount } from "narrac/stdcheckhelp"
@@ -121,19 +121,18 @@ const SIZED_ROWS: Array<SizedRow> = [
   },
 ]
 
-// findRow is the row with the prefix. An unknown prefix is a compiler bug.
 function findRow(prefix: string): SizedRow {
   for (const row of Arrays.values(SIZED_ROWS)) {
     if (row.prefix == prefix) {
       return row
     }
   }
+  // An unknown prefix is a compiler bug.
   panic(`stdsized: no integer type with the module prefix ${prefix}`)
   return SIZED_ROWS[0]
 }
 
-// rowOfType is the row of an integer type.
-function rowOfType(type: Type): SizedRow {
+function findTypeRow(type: Type): SizedRow {
   const prefix = match (type) {
     Type.TI8 => "I8"
     Type.TI16 => "I16"
@@ -147,26 +146,23 @@ function rowOfType(type: Type): SizedRow {
   return findRow(prefix)
 }
 
-// prefixOf is the module prefix of a builtin name: "I32" for "I32.from".
-function prefixOf(name: string): string {
+function readPrefix(name: string): string {
   if (Str.indexOf(name, ".") is Some(dot)) {
     return Str.slice(name, 0, dot)
   }
   return name
 }
 
-// keyOf is the function name of a builtin name: "from" for "I32.from".
-function keyOf(name: string): string {
+function readFunctionName(name: string): string {
   if (Str.indexOf(name, ".") is Some(dot)) {
     return Str.sliceFrom(name, dot + 1)
   }
   return name
 }
 
-// isSizedName is true for a builtin of one of the seven sized modules. The
-// conversions of std/int are not included; stdint.nra forwards those.
 export function isSizedName(name: string): bool uses alloc {
-  const prefix = prefixOf(name)
+  // The conversions of std/int are not included; stdint.nra forwards those.
+  const prefix = readPrefix(name)
   return prefix != "Int" && prefix != name && isRowPrefix(prefix)
 }
 
@@ -179,7 +175,6 @@ function isRowPrefix(prefix: string): bool {
   return false
 }
 
-// convertsLosslessly is true when every value of the source type fits the target.
 function convertsLosslessly(source: SizedRow, target: SizedRow): bool {
   if (source.isSigned == target.isSigned) {
     return source.bits <= target.bits
@@ -190,7 +185,6 @@ function convertsLosslessly(source: SizedRow, target: SizedRow): bool {
   return false
 }
 
-// conversionFuncs are from, tryFrom and wrap of one type.
 function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
   return [
     StdFunc {
@@ -215,12 +209,10 @@ function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
   ]
 }
 
-// intConversionFuncs are the conversions added to std/int.
 export function intConversionFuncs(): Array<StdFunc> uses alloc {
   return conversionFuncs(findRow("Int"))
 }
 
-// sizedFuncs are the rows of the seven sized modules.
 export function sizedFuncs(): Array<StdFunc> uses alloc {
   let rows: Array<StdFunc> = []
   for (const row of Arrays.values(SIZED_ROWS)) {
@@ -250,8 +242,6 @@ export function sizedFuncs(): Array<StdFunc> uses alloc {
   return rows
 }
 
-// checkSizedConversion checks the argument of from, tryFrom or wrap: one integer.
-// from also needs a type that fits the target (E0940).
 function checkSizedConversion<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -260,13 +250,14 @@ function checkSizedConversion<W: Walker>(
   name: string,
   isFrom: bool,
 ): Type uses alloc {
-  const target = findRow(prefixOf(name))
+  const target = findRow(readPrefix(name))
   if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
     return stdType(mutable checker, target.typeText)
   }
   const found = checkExpression(mutable checker, walker, arguments[0].value, None)
   const argumentPos = getExpressionPos(arguments[0].value)
   const foundText = typeString(checker, found)
+  // from also needs a type that fits the target (E0940).
   if (!isInteger(found)) {
     reportError(
       mutable checker,
@@ -274,7 +265,7 @@ function checkSizedConversion<W: Walker>(
       "E0941",
       `${name} takes an integer, found ${foundText}`,
     )
-  } else if (isFrom && !convertsLosslessly(rowOfType(found), target)) {
+  } else if (isFrom && !convertsLosslessly(findTypeRow(found), target)) {
     reportError(
       mutable checker,
       argumentPos,
@@ -285,7 +276,6 @@ function checkSizedConversion<W: Walker>(
   return stdType(mutable checker, target.typeText)
 }
 
-// checkSizedCall checks the calls of the sized modules that name a check function.
 export function checkSizedCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -302,14 +292,13 @@ export function checkSizedCall<W: Walker>(
   }
   if (kind == "checkSizedTryFrom") {
     checkSizedConversion(mutable checker, walker, pos, arguments, name, false)
-    const target = findRow(prefixOf(name))
+    const target = findRow(readPrefix(name))
     return stdType(mutable checker, `Option<${target.typeText}>`)
   }
   panic(`checkStdCall: no port of the check ${kind} (${name})`)
   return Type.TVoid
 }
 
-// rangeCondition is the C condition that a value of the source type fits the target.
 function rangeCondition(value: string, source: SizedRow, target: SizedRow): string {
   if (convertsLosslessly(source, target)) {
     return "1"
@@ -326,7 +315,6 @@ function rangeCondition(value: string, source: SizedRow, target: SizedRow): stri
   return `${value} <= (uint64_t)${target.maximum}`
 }
 
-// emitTryFrom is Some(value) when the value fits the target, else None.
 function emitTryFrom<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -334,19 +322,17 @@ function emitTryFrom<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const optionType = typeOf(emitter, nodeId)
+  const optionType = readNodeType(emitter, nodeId)
   const some = findVariant(emitter, optionType, "Some")
   const none = findVariant(emitter, optionType, "None")
-  const sourceType = typeOf(emitter, getExpressionId(arguments[0].value))
+  const sourceType = readNodeType(emitter, getExpressionId(arguments[0].value))
   const sourceText = argumentText(walker, mutable emitter, arguments, 0)
   const value = temp(mutable emitter, sourceType, sourceText)
-  const condition = rangeCondition(value, rowOfType(sourceType), target)
+  const condition = rangeCondition(value, findTypeRow(sourceType), target)
   const payload = `((${cType(emitter.checker, variantFieldType(emitter, optionType, some))})${value})`
   return ioEither(mutable emitter, optionType, condition, some, [payload], none, [])
 }
 
-// emitParse is parse(text, base): Ok(number) or Err(message), the number checked
-// against the width of the type.
 function emitParse<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -354,7 +340,7 @@ function emitParse<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const resultType = typeOf(emitter, nodeId)
+  const resultType = readNodeType(emitter, nodeId)
   const numberType = variantFieldType(emitter, resultType, findVariant(emitter, resultType, "Ok"))
   const text = argumentText(walker, mutable emitter, arguments, 0)
   const base = argumentText(walker, mutable emitter, arguments, 1)
@@ -375,8 +361,6 @@ function emitParse<W: EmitWalker>(
   return ioResult(mutable emitter, resultType, success, number, bad)
 }
 
-// emitSizedCall emits the calls of the seven sized modules and the conversions of
-// std/int.
 export function emitSizedCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -385,12 +369,12 @@ export function emitSizedCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const target = findRow(prefixOf(name))
-  const key = keyOf(name)
+  const target = findRow(readPrefix(name))
+  const key = readFunctionName(name)
   if (key == "from" || key == "wrap") {
     // A C cast keeps the low bits; from only takes values that fit.
     const value = argumentText(walker, mutable emitter, arguments, 0)
-    return plain(`((${cType(emitter.checker, typeOf(emitter, nodeId))})(${value}))`)
+    return plain(`((${cType(emitter.checker, readNodeType(emitter, nodeId))})(${value}))`)
   }
   if (key == "tryFrom") {
     return emitTryFrom(walker, mutable emitter, target, nodeId, arguments)

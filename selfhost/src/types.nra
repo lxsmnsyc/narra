@@ -1,5 +1,5 @@
 // The type model of the checker, ported from compiler/internal/narra/types.go
-// and the declaration half of check_opaque.go (D63).
+// and the declaration half of check_opaque.go.
 //
 // Go compares types by pointer. Here a `Type` is a value: primitives are
 // variants, and a struct, enum, distinct type or type parameter is an index
@@ -28,7 +28,7 @@ import * as Ranges from "std/range"
 
 export enum Type derives Equatable {
   TInt
-  // The sized integers (D82). i64 is TInt.
+  // The sized integers. i64 is TInt.
   TI8
   TI16
   TI32
@@ -57,7 +57,7 @@ export enum Type derives Equatable {
   TFunc(parameters: Array<Type>, result: Type, effects: Array<string>, binder: int)
   // The subject of a for loop over a range (body checker only).
   TRange
-  // Generator<element> uses effects (D78, Go's GeneratorType): effects are
+  // Generator<element> uses effects (Go's GeneratorType): effects are
   // sorted, binder is the Checker.functions index of the function whose
   // effect variables they name, or -1. origin is set (>= 0) for the result
   // type of a private function*, whose effects the effect pass infers into
@@ -65,7 +65,7 @@ export enum Type derives Equatable {
   // the result of a call whose callee's result type names the callee's
   // effect variables: the effect pass fills Checker.boundGenerators[k] with
   // the effects the arguments bind (Go's GeneratorType.Bound).
-  // input is the input type of a Coroutine<input, element>, and TVoid for a Generator<element>.
+  // `input` is the input type of a Coroutine<input, element>, and TVoid for a Generator<element>.
   TGenerator(element: Type, effects: Array<string>, binder: int, origin: int, input: Type)
   // A namespace import such as `Int` used as a value (body checker only).
   TModule(path: string)
@@ -147,12 +147,10 @@ export struct GenericInfo {
   variants: Array<Variant>
 }
 
-// isInteger is true for int (i64) and the sized integers.
 export function isInteger(type: Type): bool {
   return type == Type.TInt || isSizedInteger(type)
 }
 
-// isSizedInteger is true for the integer types other than int (D82).
 export function isSizedInteger(type: Type): bool {
   return match (type) {
     Type.TI8 => true
@@ -166,7 +164,6 @@ export function isSizedInteger(type: Type): bool {
   }
 }
 
-// isUnsignedInteger is true for u8 to u64.
 export function isUnsignedInteger(type: Type): bool {
   return match (type) {
     Type.TU8 => true
@@ -177,21 +174,17 @@ export function isUnsignedInteger(type: Type): bool {
   }
 }
 
-// typeKey is a text that identifies a type, for the instance cache and other
-// maps keyed by type. Go keys by C name (typeID); this key has no hash and
-// is unique because struct, enum, distinct and parameter types are indexes.
 export function typeKey(type: Type): string uses alloc {
-  return keyOf(type, false)
+  // Go keys by C name (typeID); this key has no hash and is unique because struct, enum, distinct and parameter types are indexes.
+  return buildKey(type, false)
 }
 
-// plainTypeKey is typeKey without the effects of function types. Two types
-// with the same plain key have one C name, so the emitter makes one of them
-// (D86).
 export function plainTypeKey(type: Type): string uses alloc {
-  return keyOf(type, true)
+  // Two types with the same plain key have one C name, so the emitter makes one of them.
+  return buildKey(type, true)
 }
 
-function keyOf(type: Type, plain: bool): string uses alloc {
+function buildKey(type: Type, plain: bool): string uses alloc {
   return match (type) {
     Type.TInt => "int"
     Type.TI8 => "i8"
@@ -213,10 +206,10 @@ function keyOf(type: Type, plain: bool): string uses alloc {
     Type.TEnum(index) => `E${Int.toString(index)}`
     Type.TDistinct(index) => `D${Int.toString(index)}`
     Type.TParam(index) => `P${Int.toString(index)}`
-    Type.TArray(element) => `A(${keyOf(element, plain)})`
-    Type.TBox(element) => `B(${keyOf(element, plain)})`
-    Type.TMap(key, value) => `M(${keyOf(key, plain)},${keyOf(value, plain)})`
-    Type.TFunc(parameters, result, effects, binder) => keyOfFunction(
+    Type.TArray(element) => `A(${buildKey(element, plain)})`
+    Type.TBox(element) => `B(${buildKey(element, plain)})`
+    Type.TMap(key, value) => `M(${buildKey(key, plain)},${buildKey(value, plain)})`
+    Type.TFunc(parameters, result, effects, binder) => buildFunctionKey(
       parameters,
       result,
       effects,
@@ -230,12 +223,12 @@ function keyOf(type: Type, plain: bool): string uses alloc {
       binder,
       origin,
       input,
-    ) => `G(${keyOf(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${keyOf(input, plain)})`
+    ) => `G(${buildKey(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${buildKey(input, plain)})`
     Type.TModule(path) => `module ${path}`
   }
 }
 
-function keyOfFunction(
+function buildFunctionKey(
   parameters: Array<Type>,
   result: Type,
   effects: Array<string>,
@@ -246,27 +239,26 @@ function keyOfFunction(
   if (!plain) {
     names = `;${Str.join(effects, ",")};${Int.toString(binder)}`
   }
-  return `F(${keysOf(parameters, plain)};${keyOf(result, plain)}${names})`
+  return `F(${joinKeys(parameters, plain)};${buildKey(result, plain)}${names})`
 }
 
-function keysOf(types: Array<Type>, plain: bool): string uses alloc {
+function joinKeys(types: Array<Type>, plain: bool): string uses alloc {
   let out = ""
   for (const index of Ranges.between(0, Arrays.length(types))) {
     if (index > 0) {
       out = `${out},`
     }
-    out = `${out}${keyOf(types[index], plain)}`
+    out = `${out}${buildKey(types[index], plain)}`
   }
   return out
 }
 
 export function typeKeys(types: Array<Type>): string uses alloc {
-  return keysOf(types, false)
+  return joinKeys(types, false)
 }
 
-// isBoxedEnum reports whether an enum keeps its variant fields on the heap.
-// An enum with no fields stays an inline tag.
 export function isBoxedEnum(info: EnumInfo): bool {
+  // An enum with no fields stays an inline tag.
   for (const variant of Arrays.values(info.variants)) {
     if (Arrays.length(variant.fields) > 0) {
       return true

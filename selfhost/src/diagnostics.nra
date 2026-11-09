@@ -93,7 +93,6 @@ const CODE_ROWS: Array<CodeRow> = [
   CodeRow { code: "E0031", format: "use `of`; `for ... in` is not part of the language" },
   CodeRow { code: "E0032", format: "a block must belong to a statement such as if or while" },
   CodeRow { code: "E0033", format: "use `%s`; there is no strict equality operator" },
-  CodeRow { code: "E0034", format: "compound assignment is not supported; write `x = x %s y`" },
   CodeRow { code: "E0035", format: "a map key that is not a literal is written [key]: value" },
   CodeRow { code: "E0036", format: "a struct literal has at most one spread, and it comes first" },
   CodeRow { code: "E0037", format: "write `%s: %s`; field shorthand is not allowed" },
@@ -416,6 +415,8 @@ const CODE_ROWS: Array<CodeRow> = [
   CodeRow { code: "E0504", format: "%s is listed twice in `derives`" },
   CodeRow { code: "E0505", format: "unknown trait %q" },
   CodeRow { code: "E0506", format: "%s is listed twice in the constraint of %s" },
+  CodeRow { code: "E0507", format: "%s implements %s but has no `implement %s for %s` block" },
+  // A trait that can be derived (a std trait or Shape) also names `derives`.
   CodeRow {
     code: "E0507",
     format: "%s implements %s but has no `implement %s for %s` block or `derives %s`",
@@ -526,7 +527,7 @@ const CODE_ROWS: Array<CodeRow> = [
   CodeRow { code: "E0611", format: "cannot tell the type of parameter %q; write it as `%s: Type`" },
   CodeRow {
     code: "E0612",
-    format: "a closure cannot capture %q because it is declared with let, unless it is passed straight to a function parameter that is not escaping",
+    format: "a closure cannot capture %q because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell",
   },
   CodeRow {
     code: "E0613",
@@ -662,6 +663,10 @@ const CODE_ROWS: Array<CodeRow> = [
     code: "E0930",
     format: "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
   },
+  CodeRow {
+    code: "E0965",
+    format: "cannot use == on %s: a Cell is shared by identity; compare the values with Cells.get",
+  },
   CodeRow { code: "E0916", format: "no enclosing loop is labeled %q" },
   CodeRow { code: "E0917", format: "label %q is already used by an enclosing loop" },
   CodeRow { code: "E0918", format: "label %q must be on a for or while loop" },
@@ -779,6 +784,32 @@ const CODE_ROWS: Array<CodeRow> = [
     code: "E0958",
     format: "loop element %q cannot be assigned whole; `mutable` reaches its fields and elements, so assign those, or write an index loop to replace the element",
   },
+  CodeRow { code: "E0959", format: "the condition of a for loop must be a bool, found %s" },
+  CodeRow {
+    code: "E0960",
+    format: "the first part of a for loop must be `let`, because the step changes it",
+  },
+  CodeRow {
+    code: "E0961",
+    format: "the last part of a for loop must be an assignment or a call",
+  },
+  CodeRow {
+    code: "E0962",
+    format: "%s needs a value of the same type as its target, found %s and %s",
+  },
+  CodeRow { code: "E0962", format: "%s cannot be applied to %s" },
+  CodeRow {
+    code: "E0963",
+    format: "%s needs an integer variable, found %s; write `x += 1` for a float",
+  },
+  CodeRow {
+    code: "E0964",
+    format: "compound assignments and `++` are statements; they have no value, and `++x` is written `x++`",
+  },
+  CodeRow {
+    code: "E0964",
+    format: "there is no prefix `%s`; write `x%s` as a statement",
+  },
 ]
 
 // Long texts of `narrac explain`. A code without one prints its message format.
@@ -889,12 +920,10 @@ const EXPLANATIONS: Array<Explanation> = [
   },
 ]
 
-// getCodeRows returns the table, for tests and tools that check the codes.
 export function getCodeRows(): Array<CodeRow> {
   return CODE_ROWS
 }
 
-// isKnownCode tells whether code is in the table.
 export function isKnownCode(code: string): bool {
   for (const row of Arrays.values(CODE_ROWS)) {
     if (row.code == code) {
@@ -904,7 +933,6 @@ export function isKnownCode(code: string): bool {
   return false
 }
 
-// upperAscii turns a-z into A-Z, so `explain e0001` works like `explain E0001`.
 function upperAscii(text: string): string uses alloc {
   let builder = Str.builder()
   for (const character of Arrays.values(Str.chars(text))) {
@@ -920,11 +948,11 @@ function upperAscii(text: string): string uses alloc {
   return Str.build(builder)
 }
 
-// explainCode returns the text of `narrac explain code`, or the error message
-// for an unknown code. A code with several formats prints the last one, as Go does.
 export function explainCode(input: string): Result<string, string> uses alloc {
+  // Codes are case-insensitive: `explain e0001` works like `explain E0001`.
   const code = upperAscii(input)
   let format = ""
+  // A code with several formats prints the last one.
   for (const row of Arrays.values(CODE_ROWS)) {
     if (row.code == code) {
       format = row.format
@@ -946,11 +974,6 @@ function writePair(pos: Pos): string uses alloc {
   return `[${Int.toString(pos.line)},${Int.toString(pos.column)}]`
 }
 
-// writeDiagnosticJson writes one diagnostic as one line of `narrac check --json`,
-// the bytes of Go's json encoder: keys code, severity, message, file, range,
-// fixes. The range is empty (start equals end) because a diagnostic records a
-// position, not an extent. Each fix is {"title", "edits": [{"file", "range",
-// "text"}]}; every edit names the file of the diagnostic.
 export function writeDiagnosticJson(
   file: string,
   pos: Pos,
@@ -958,6 +981,7 @@ export function writeDiagnosticJson(
   message: string,
   fixes: Array<Fix>,
 ): string uses alloc {
+  // The range is empty (start equals end) because a diagnostic records a position, not an extent. Every edit names the file of the diagnostic.
   const pair = writePair(pos)
   let fixTexts: Array<string> = []
   for (const fix of Arrays.values(fixes)) {

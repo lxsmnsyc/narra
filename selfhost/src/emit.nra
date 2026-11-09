@@ -10,7 +10,7 @@ import * as Str from "std/string"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, typeString, containsTypeParameter } from "narrac/check"
 import { Emitter, newEmitter } from "narrac/emitstate"
-import { typeId, cType, functionName, functionSignature } from "narrac/cnames"
+import { typeId, cType, functionName, functionSignature, dropDuplicateTypes } from "narrac/cnames"
 import { RUNTIME_H } from "narrac/runtimecore"
 import { runtimeFor } from "narrac/runtimetext"
 import * as Decls from "narrac/emitdecls"
@@ -30,9 +30,10 @@ export struct EmitResult {
   unsupported: Array<string>
 }
 
-// emitProgram emits the C of a checked package. entry is the Checker.functions
-// index of the binary's entry function (ignored in a test build).
-export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResult uses alloc {
+export function emitProgram(checked: Checker, entry: int, tests: bool): EmitResult uses alloc {
+  // The entry argument is the Checker.functions index of the binary's entry
+  // function; a test build ignores it.
+  const checker = dropDuplicateTypes(checked)
   let emitter = newEmitter(checker, entry, tests)
   let builder = Str.builder()
 
@@ -99,7 +100,6 @@ export function emitProgram(checker: Checker, entry: int, tests: bool): EmitResu
   return EmitResult { text: Str.build(builder), unsupported: emitter.unsupported }
 }
 
-// emitTestBodies writes the test blocks of a test build: test_<n>.
 function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder) uses alloc {
   // test_<n> numbers the tests of the program; the key numbers them per module.
   let number = 0
@@ -120,7 +120,6 @@ function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder)
   }
 }
 
-// emitPrototypes writes a prototype for each function of Go's Program.Funcs.
 function emitPrototypes(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const program of Arrays.values(emitter.checker.programFunctions)) {
@@ -135,7 +134,6 @@ struct SortItem {
   type: Type
 }
 
-// mergeSort orders items by key in byte order. It is stable.
 function mergeSort(items: Array<SortItem>): Array<SortItem> uses alloc {
   const count = Arrays.length(items)
   if (count < 2) {
@@ -172,8 +170,6 @@ function mergeSort(items: Array<SortItem>): Array<SortItem> uses alloc {
   return merged
 }
 
-// sortKey is the key Go's finish sorts a composite type by: the type id of an
-// array or box element, and "<key id>|<value id>" for a Map.
 function sortKey(emitter: Emitter, type: Type): string uses alloc {
   return match (type) {
     Type.TArray(element) => typeId(emitter.checker, element)
@@ -186,7 +182,6 @@ function sortKey(emitter: Emitter, type: Type): string uses alloc {
   }
 }
 
-// arrays lists the program's array types in Go's order (Program.Arrays).
 function arrays(emitter: Emitter): Array<Type> uses alloc {
   let items: Array<SortItem> = []
   for (const entry of Maps.entries(emitter.checker.composites)) {
@@ -202,7 +197,6 @@ function arrays(emitter: Emitter): Array<Type> uses alloc {
   return sorted
 }
 
-// arrayName is the C struct name of an array type (its C type without "*").
 function arrayName(emitter: Emitter, type: Type): string uses alloc {
   const name = cType(emitter.checker, type)
   return Str.slice(name, 0, Str.length(name) - 1)
@@ -217,7 +211,6 @@ function emitArrayTypedefs(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// emitTypeTypedefs forward-declares the struct of each struct and enum, in definition order.
 function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(emitter.checker.order)) {
@@ -227,7 +220,6 @@ function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// emitArrayStructs defines the struct of each array type.
 function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
@@ -241,8 +233,6 @@ function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// emitCommentTable writes the comment that maps each interned C name to its
-// Narra type, sorted by name (Go's writeCNameTable).
 function emitCommentTable(mutable emitter: Emitter): string uses alloc {
   let items: Array<SortItem> = []
   for (const type of Arrays.values(emitter.checker.order)) {
@@ -259,7 +249,7 @@ function emitCommentTable(mutable emitter: Emitter): string uses alloc {
       })
     }
   }
-  // The table names C types, which do not carry effects (D86).
+  // The table names C types, which do not carry effects.
   emitter.checker.printEffects = false
   let builder = Str.builder()
   for (const item of Arrays.values(mergeSort(items))) {
@@ -269,7 +259,6 @@ function emitCommentTable(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// isInterned is true for a tuple or generic instance, which has a hashed C name.
 function isInterned(emitter: Emitter, type: Type): bool {
   return match (type) {
     Type.TStruct(index) =>
@@ -280,7 +269,6 @@ function isInterned(emitter: Emitter, type: Type): bool {
   }
 }
 
-// emitMain writes the C main of a non-test build: it passes argv to the entry function.
 function emitMain(mutable emitter: Emitter): string uses alloc {
   const arrayType = arrayName(emitter, Type.TArray(Type.TStr))
   const entryName = functionName(emitter.checker, ProgramFunc.PlainFunc(emitter.entry))

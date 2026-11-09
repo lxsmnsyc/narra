@@ -79,8 +79,8 @@ static void narra_free(void* p) {
 // worklist grows and is reused by later drops; it is never freed. It is not
 // counted by narra_live (plain realloc), and it stays reachable through a
 // global, so neither the leak check nor LeakSanitizer reports it.
-// A Range value is its two bounds.
-typedef struct narra_range { int64_t low; int64_t high; } narra_range;
+// A Range value is its two bounds and its step (1 counts up, a negative step counts down).
+typedef struct narra_range { int64_t low; int64_t high; int64_t step; } narra_range;
 
 typedef struct narra_pending { void* p; void (*drop)(void*); } narra_pending;
 static _Thread_local narra_pending* narra_pend = NULL;
@@ -555,6 +555,16 @@ NARRA_SIZED(u8, uint8_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
+
+static narra_range narra_range_stepped(int64_t low, int64_t high, int64_t step, const char* where) {
+  if (step == 0) narra_panic(where, "Ranges.stepped: step is zero");
+  return (narra_range){low, high, step};
+}
+
+// Moves a loop variable by the step; a sum past the int range ends the loop.
+static void narra_range_advance(int64_t* value, int64_t step, int64_t high) {
+  if (__builtin_add_overflow(*value, step, value)) *value = high;
+}
 
 static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_neg(a, where) : a; }
 

@@ -25,8 +25,8 @@ import {
   beginStatement,
   addLocal,
   unwindAll,
-  refOf,
-  localOf,
+  readNodeRef,
+  readLocal,
   localName,
   needsRc,
   retainCode,
@@ -34,7 +34,6 @@ import {
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-// functionDeclaration is the declaration behind a program function.
 function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl {
   return match (program) {
     ProgramFunc.PlainFunc(funcIndex) => checker.functions[funcIndex].declaration
@@ -45,7 +44,6 @@ function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl {
   }
 }
 
-// parameterTypes is the type of each parameter of a program function.
 function parameterTypes(checker: Checker, program: ProgramFunc): Array<Type> uses alloc {
   if (program is ProgramFunc.InstanceFunc(instance)) {
     return checker.instanceList[instance].parameters
@@ -57,9 +55,8 @@ function parameterTypes(checker: Checker, program: ProgramFunc): Array<Type> use
   return types
 }
 
-// callTarget is the program function a call node names, when it names one.
 function callTarget(emitter: Emitter, nodeId: int): Option<ProgramFunc> {
-  const ref = refOf(emitter, nodeId)
+  const ref = readNodeRef(emitter, nodeId)
   if (ref is Ref.Implementation(block, index)) {
     return Some(ProgramFunc.ImplFunc(block, index))
   }
@@ -74,22 +71,19 @@ function callTarget(emitter: Emitter, nodeId: int): Option<ProgramFunc> {
   return None
 }
 
-// passesParameter is true when the argument is the mutable parameter at index, as it is.
 function passesParameter(emitter: Emitter, argument: Expr, index: int): bool {
   if (argument is Expr.Ident(identId, _, _)) {
-    if (refOf(emitter, identId) is Ref.Local(localIndex)) {
+    if (readNodeRef(emitter, identId) is Ref.Local(localIndex)) {
       return localIndex == index
     }
   }
   return false
 }
 
-// isSelfCall is true when the expression is a call of the function being
-// emitted that can become a jump to its start (Go's selfCall). A
-// function-type parameter keeps the plain call, because a closure made for
-// the call may live on the stack of the iteration that ends at the jump. A
-// mutable parameter must be passed on as it is.
 function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): bool uses alloc {
+  // A function-type parameter keeps the plain call, because a closure made for
+  // the call may live on the stack of the iteration that ends at the jump. A
+  // mutable parameter must be passed on as it is.
   if (expression is Expr.CallExpr(nodeId, _, _, _, written)) {
     if (callTarget(emitter, nodeId) is Some(target)) {
       if (functionName(emitter.checker, target) == emitter.owner) {
@@ -116,7 +110,6 @@ function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): b
   return false
 }
 
-// noteTailCall records the call when it is a self call that can jump.
 function noteTailCall(
   emitter: Emitter,
   program: ProgramFunc,
@@ -128,16 +121,15 @@ function noteTailCall(
   }
 }
 
-// findTailCalls lists the self calls in tail position: the value of a
-// `return`, an arm of a returned `match`, and the last statement of a void
-// function, also at the end of an `if` branch or a `match` arm that is in
-// tail position (Go's findTailCalls).
 export function findTailCalls(
   emitter: Emitter,
   program: ProgramFunc,
   block: Block,
   isVoid: bool,
 ): Array<int> uses alloc {
+  // Tail positions are the value of a `return`, an arm of a returned `match`,
+  // and the last statement of a void function, also at the end of an `if`
+  // branch or a `match` arm that is in tail position.
   let found: Array<int> = []
   scanBlock(emitter, program, block, isVoid, mutable found)
   return found
@@ -185,6 +177,9 @@ function scanStatement(
   if (statement is Stmt.WhileStmt(_, _, _, whileBody)) {
     scanBlock(emitter, program, whileBody, false, mutable found)
   }
+  if (statement is Stmt.CForStmt(_, _, _, _, _, cForBody)) {
+    scanBlock(emitter, program, cForBody, false, mutable found)
+  }
   if (statement is Stmt.ForStmt(_, _, _, _, _, forBody, _)) {
     scanBlock(emitter, program, forBody, false, mutable found)
   }
@@ -206,7 +201,6 @@ function scanStatement(
   }
 }
 
-// isTailCall is true when the expression is a call found by findTailCalls.
 export function isTailCall(emitter: Emitter, expression: Expr): bool {
   if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
     for (const found of Arrays.values(emitter.tailCalls)) {
@@ -218,7 +212,6 @@ export function isTailCall(emitter: Emitter, expression: Expr): bool {
   return false
 }
 
-// tailCallArguments is the argument list of a call expression.
 function tailCallArguments(expression: Expr): Array<Arg> {
   if (expression is Expr.CallExpr(_, _, _, _, arguments)) {
     return arguments
@@ -226,7 +219,6 @@ function tailCallArguments(expression: Expr): Array<Arg> {
   return []
 }
 
-// matchHasTailCall is true when an arm of the returned match is a tail call.
 export function matchHasTailCall(emitter: Emitter, arms: Array<MatchArm>): bool {
   for (const arm of Arrays.values(arms)) {
     if (arm.body is Some(body)) {
@@ -238,13 +230,12 @@ export function matchHasTailCall(emitter: Emitter, arms: Array<MatchArm>): bool 
   return false
 }
 
-// openTailLoop makes the function own its parameters, so a jump can replace
-// them, and writes the jump target.
 export function openTailLoop(mutable emitter: Emitter, program: ProgramFunc) uses alloc {
+  // The function owns its parameters, so a jump can replace them.
   const parameters = functionDeclaration(emitter.checker, program).parameters
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     if (!parameters[index].isMutable) {
-      const local = localOf(emitter, index)
+      const local = readLocal(emitter, index)
       const retainText = retainCode(emitter, local.localType, localName(local))
       if (retainText != "") {
         writeLine(mutable emitter, retainText)
@@ -255,8 +246,8 @@ export function openTailLoop(mutable emitter: Emitter, program: ProgramFunc) use
   writeLine(mutable emitter, "narra_tail:;")
 }
 
-// withoutLastFrame closes a statement frame that unwindAll already released.
 export function withoutLastFrame(frames: Array<Array<TempVar>>): Array<Array<TempVar>> uses alloc {
+  // unwindAll already released this frame.
   let kept: Array<Array<TempVar>> = []
   for (const index of Ranges.between(0, Arrays.length(frames) - 1)) {
     Arrays.push(mutable kept, frames[index])
@@ -264,8 +255,6 @@ export function withoutLastFrame(frames: Array<Array<TempVar>>): Array<Array<Tem
   return kept
 }
 
-// emitTailJump evaluates the new arguments into owned temporaries, releases
-// everything the function holds, assigns the parameters and jumps to the start.
 export function emitTailJump<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -297,7 +286,7 @@ export function emitTailJump<W: EmitWalker>(
     unwindAll(mutable emitter)
     for (const index of Ranges.between(0, Arrays.length(parameters))) {
       if (!parameters[index].isMutable) {
-        const parameterName = localName(localOf(emitter, index))
+        const parameterName = localName(readLocal(emitter, index))
         writeLine(mutable emitter, `${parameterName} = ${values[index]};`)
       }
     }
@@ -306,8 +295,6 @@ export function emitTailJump<W: EmitWalker>(
   emitter.frames = withoutLastFrame(emitter.frames)
 }
 
-// emitReturnArm emits one arm of a returned match: a tail call jumps, any
-// other value is returned (Go's returnMatch).
 export function emitReturnArm<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,

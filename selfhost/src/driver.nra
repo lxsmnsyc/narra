@@ -74,7 +74,6 @@ struct DriverOptions {
   programArguments: Array<string>
 }
 
-// isDriverCommand tells main whether the first argument is a command of this module.
 export function isDriverCommand(name: string): bool {
   return name == "build" ||
     name == "run" ||
@@ -84,7 +83,6 @@ export function isDriverCommand(name: string): bool {
     name == "apply-fix"
 }
 
-// runDriver runs the command in arguments[1]. arguments[0] is the program name.
 export function runDriver(arguments: Array<string>): int uses io, alloc {
   const command = arguments[1]
   if (command == "check") {
@@ -139,15 +137,13 @@ function usageText(): string {
   return Str.join(lines, "\n")
 }
 
-// printError writes a line to stderr.
 function printError(text: string) uses io {
   Io.writeError(`${text}\n`)
 }
 
-// writeStandardOutput and writeStandardError write text as is to the real
-// stdout and stderr. They do not reopen either file, so a shell redirect such
-// as `> out 2>&1` keeps both streams.
 function writeStandardOutput(text: string) uses io {
+  // Write as is to the real stdout, without reopening it, so a shell redirect such as `> out 2>&1`
+  // keeps both streams.
   Io.write(text)
   Io.flush()
 }
@@ -158,9 +154,6 @@ function writeStandardError(text: string) uses io {
 
 // --- flags -----------------------------------------------------------------
 
-// parseOptions reads the flags of build, run and test, then the path and the
-// arguments of the program. An Err holds the message to print before the
-// usage (empty for -h).
 function parseOptions(arguments: Array<string>): Result<DriverOptions, string> uses alloc {
   let options = DriverOptions {
     release: false,
@@ -174,6 +167,8 @@ function parseOptions(arguments: Array<string>): Result<DriverOptions, string> u
     path: "",
     programArguments: [],
   }
+  // arguments[0] is the program name and arguments[1] the command. An Err holds the message to
+  // print before the usage (empty for -h).
   let index = 2
   let parsingFlags = true
   while (parsingFlags && index < Arrays.length(arguments)) {
@@ -243,9 +238,8 @@ function isValueFlag(name: string): bool {
   return name == "o" || name == "emit-c" || name == "bin" || name == "filter" || name == "stdin"
 }
 
-// parseBool reads the value of a bool flag like the standard flag syntax: a flag
-// without a value is true.
 function parseBool(name: string, hasValue: bool, value: string): Result<bool, string> uses alloc {
+  // Like the standard flag syntax, a flag without a value is true.
   if (!hasValue) {
     return Ok(true)
   }
@@ -298,7 +292,6 @@ function setValueFlag(mutable options: DriverOptions, name: string, value: strin
 
 // --- load, check, emit -------------------------------------------------------
 
-// formatDiagnostic prints `file:line:col: message`.
 function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
   if (diagnostic.file == "" && diagnostic.line == 0) {
     return diagnostic.message
@@ -318,7 +311,6 @@ function formatDiagnostics(diagnostics: Array<Diagnostic>): string uses alloc {
   return Str.join(lines, "\n")
 }
 
-// convertLoadErrors turns the errors of Modules.load into diagnostics.
 function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> uses alloc {
   let diagnostics: Array<Diagnostic> = []
   for (const error of Arrays.values(errors)) {
@@ -339,14 +331,13 @@ function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> uses all
   return diagnostics
 }
 
-// loadAndCheck loads a file or package and runs every pass of `narrac check`
-// (the bodies, then the effects when the bodies have no errors).
 function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnostic>> uses io, alloc {
   const loaded = Modules.load(path)
   if (loaded is Err(errors)) {
     return Err(convertLoadErrors(errors))
   }
   let checker = Body.checkPackage(loaded.value)
+  // The effects are checked only when the bodies have no errors.
   if (Arrays.length(checker.errors) == 0) {
     const _ = Effects.checkEffects(mutable checker)
   }
@@ -367,8 +358,6 @@ function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnosti
   return Ok(#[loaded.value, checker])
 }
 
-// compileToC returns the C of one binary of the package at path, or of the
-// test program when tests is true. An Err holds the text to print.
 function compileToC(
   path: string,
   binaryName: string,
@@ -401,7 +390,6 @@ function compileToC(
 
 // --- the C compiler ---------------------------------------------------------
 
-// makeTempDirectory runs `mktemp -d` and returns the new directory.
 function makeTempDirectory(): Result<string, string> uses io, alloc {
   const made = Process.run("mktemp", ["-d"])
   if (made is Err(message)) {
@@ -414,9 +402,8 @@ function makeTempDirectory(): Result<string, string> uses io, alloc {
   return Ok(Str.trim(output))
 }
 
-// cCompilerName is $CC when it is set and not empty, else cc. The value is one
-// program name or path; it is never split into words.
 function cCompilerName(): string uses io, alloc {
+  // $CC is one program name or path; it is never split into words.
   const configured = Env.get("CC")
   if (configured is Some(name)) {
     if (name != "") {
@@ -426,9 +413,6 @@ function cCompilerName(): string uses io, alloc {
   return "cc"
 }
 
-// cCompilerArguments is the argument list of the C compiler: debug is `-O0 -g`,
-// release is `-O2 -DNARRA_RELEASE`; sanitize adds the AddressSanitizer and
-// UBSan flags.
 function cCompilerArguments(
   options: DriverOptions,
   cPath: string,
@@ -455,8 +439,6 @@ function cCompilerArguments(
   return arguments
 }
 
-// buildExecutable compiles one binary (or the test program) to an executable.
-// The compiler's output goes to stderr. An Err holds the text to print.
 function buildExecutable(
   options: DriverOptions,
   binaryName: string,
@@ -487,6 +469,7 @@ function buildExecutable(
     return Err(message)
   }
   const #[code, standardOutput, standardError] = ran.value
+  // The compiler's output goes to stderr.
   writeStandardError(standardOutput)
   writeStandardError(standardError)
   if (code != 0) {
@@ -495,7 +478,6 @@ function buildExecutable(
   return Ok(true)
 }
 
-// removeTempDirectory deletes the C file (when it is ours) and the directory.
 function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
   if (removeC) {
     const _ = Fs.removeFile(Path.join(directory, "out.c"))
@@ -505,8 +487,6 @@ function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
 
 // --- build ------------------------------------------------------------------
 
-// runBuild makes one executable for a file, or one per selected binary for a
-// package, named after the file or the binary.
 function runBuild(options: DriverOptions): int uses io, alloc {
   if (!Fs.isDir(options.path)) {
     // A file: the executable is named after it. A missing or broken file is
@@ -554,7 +534,6 @@ function runBuild(options: DriverOptions): int uses io, alloc {
   return 0
 }
 
-// finishBuild prints the error of a failed build and returns the exit code.
 function finishBuild(built: Result<bool, string>): int uses io {
   if (built is Err(message)) {
     printError(message)
@@ -565,13 +544,10 @@ function finishBuild(built: Result<bool, string>): int uses io {
 
 // --- run and test -----------------------------------------------------------
 
-// runProgram builds the program in a temporary directory (or at -o), runs it
-// with the arguments and returns its exit code. In test mode it is the test
-// program, with the arguments of testArguments in front. The program's stdout
-// and stderr are captured and written once it ends, stdout first.
 function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
   let programArguments = options.programArguments
   if (tests) {
+    // In test mode it is the test program, with the arguments of testArguments in front.
     programArguments = testArguments(options)
     for (const argument of Arrays.values(options.programArguments)) {
       Arrays.push(mutable programArguments, argument)
@@ -601,6 +577,7 @@ function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
     printError(message)
     return 1
   }
+  // The program's stdout and stderr are captured and written once it ends, stdout first.
   const #[code, standardOutput, standardError] = ran.value
   writeStandardOutput(standardOutput)
   writeStandardError(standardError)
@@ -614,13 +591,13 @@ function removeProgramDirectory(directory: string, output: string) uses io, allo
   }
 }
 
-// startProgram runs the executable. Without a stdin file it runs directly
-// (stdin is closed); with one it goes through `sh -c 'exec "$@" < file'`.
 function startProgram(
   executable: string,
   programArguments: Array<string>,
   stdinPath: string,
 ): Result<#[int, string, string], string> uses io, alloc {
+  // Without a stdin file it runs directly (stdin is closed); with one it goes through `sh -c 'exec
+  // "$@" < file'`.
   if (stdinPath == "") {
     return Process.run(absoluteIfBare(executable), programArguments)
   }
@@ -637,16 +614,14 @@ function startProgram(
   return Process.run("sh", shellArguments)
 }
 
-// absoluteIfBare makes `program` into `./program`: Process.run searches PATH
-// for a name without a slash.
 function absoluteIfBare(executable: string): string {
+  // Process.run searches PATH for a name without a slash.
   if (Str.contains(executable, "/")) {
     return executable
   }
   return `./${executable}`
 }
 
-// testArguments is the argument list of the test program.
 function testArguments(options: DriverOptions): Array<string> uses io, alloc {
   let arguments: Array<string> = []
   if (options.filter != "") {
@@ -661,9 +636,9 @@ function testArguments(options: DriverOptions): Array<string> uses io, alloc {
   return arguments
 }
 
-// findGoldenDirectory is where Test.golden looks for `<name>.golden`: the
-// directory of the file, or testdata/ of a package, as an absolute path.
 function findGoldenDirectory(path: string): string uses io, alloc {
+  // Test.golden looks for `<name>.golden` in the directory of the file, or in testdata/ of a
+  // package, as an absolute path.
   let directory = Path.dirname(path)
   if (Fs.isDir(path)) {
     directory = Path.join(trimTrailingSlashes(path), "testdata")
@@ -694,11 +669,6 @@ function trimTrailingSlashes(path: string): string {
 
 // --- check ------------------------------------------------------------------
 
-// runCheck is `narrac check [--json] file.nra|dir`. Exit 0: no diagnostics.
-// Exit 1: diagnostics or an unreadable path. Exit 2: usage. The text form is
-// one `file:line:col: message` line each on stderr. With --json, stdout has
-// one JSON object per diagnostic (writeDiagnosticJson).
-// A problem that is not a diagnostic (an unreadable file) is text on stderr.
 function runCheck(arguments: Array<string>): int uses io, alloc {
   let asJson = false
   let paths: Array<string> = []
@@ -722,9 +692,13 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
     const #[package, checker] = checked.value
     diagnostics = findMissingEntries(package, checker)
   }
+  // Exit 0: no diagnostics. Exit 1: diagnostics or an unreadable path. Exit 2: usage.
   if (Arrays.length(diagnostics) == 0) {
     return 0
   }
+  // With --json, stdout has one JSON object per diagnostic; otherwise the text form is one
+  // `file:line:col: message` line each on stderr. A problem that is not a diagnostic (an unreadable
+  // file) is text on stderr.
   if (asJson && diagnostics[0].code != "") {
     let lines = Str.builder()
     for (const diagnostic of Arrays.values(diagnostics)) {
@@ -741,11 +715,10 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
   return 1
 }
 
-// runApplyFix is `narrac apply-fix [--diagnostic N] [--fix M] file.nra|dir`: it
-// prints the source of the file a fix edits, with the fix applied. N is the
-// index of a diagnostic in report order (the first one with a fix when
-// omitted) and M the index of its fix (0 when omitted). Exit 1: no diagnostics, or no such fix. Exit 2: usage.
 function runApplyFix(arguments: Array<string>): int uses io, alloc {
+  // --diagnostic N is the index of a diagnostic in report order (the first one with a fix when
+  // omitted) and --fix M the index of its fix (0 when omitted). Exit 1: no diagnostics, or no such
+  // fix. Exit 2: usage.
   let diagnosticIndex = -1
   let fixIndex = 0
   let paths: Array<string> = []
@@ -821,7 +794,6 @@ function usageApplyFix(): string {
   return "usage: narrac apply-fix [--diagnostic N] [--fix M] file.nra|dir"
 }
 
-// runExplain is `narrac explain CODE`. Exit 2: usage. Exit 1: an unknown code.
 function runExplain(arguments: Array<string>): int uses io, alloc {
   if (Arrays.length(arguments) != 3) {
     printError("usage: narrac explain E0000")
@@ -836,7 +808,6 @@ function runExplain(arguments: Array<string>): int uses io, alloc {
   return 0
 }
 
-// findMissingEntries reports each binary whose entry function is missing.
 function findMissingEntries(package: Package, checker: Checker): Array<Diagnostic> uses alloc {
   let diagnostics: Array<Diagnostic> = []
   for (const binary of Arrays.values(package.binaries)) {

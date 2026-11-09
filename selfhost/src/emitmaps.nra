@@ -22,10 +22,10 @@ import {
   temp,
   ownedTemp,
   consume,
-  typeOf,
-  refOf,
+  readNodeType,
+  readNodeRef,
   localRef,
-  localOf,
+  readLocal,
   underlyingType,
   retainCode,
   releaseCode,
@@ -52,7 +52,6 @@ struct MapItem {
   type: Type
 }
 
-// mergeSort orders items by key in byte order. It is stable.
 function mergeSort(items: Array<MapItem>): Array<MapItem> uses alloc {
   const count = Arrays.length(items)
   if (count < 2) {
@@ -89,9 +88,9 @@ function mergeSort(items: Array<MapItem>): Array<MapItem> uses alloc {
   return merged
 }
 
-// mapTypes lists the program's map types in Go's order (Program.Maps): sorted
-// by "<key id>|<value id>", without types that hold a type parameter.
 function mapTypes(emitter: Emitter): Array<Type> uses alloc {
+  // Go's order (Program.Maps): sorted by "<key id>|<value id>", without types
+  // that hold a type parameter.
   let items: Array<MapItem> = []
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
@@ -107,8 +106,6 @@ function mapTypes(emitter: Emitter): Array<Type> uses alloc {
   return sorted
 }
 
-// containerName is the C struct name of an array or map type (its C type
-// without "*").
 function containerName(emitter: Emitter, type: Type): string uses alloc {
   const name = cType(emitter.checker, type)
   return Str.slice(name, 0, Str.length(name) - 1)
@@ -144,9 +141,9 @@ export function emitMapStructs(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// emitMapPrototypes declares what the reference-counting functions of other
-// types call.
 export function emitMapPrototypes(mutable emitter: Emitter): string uses alloc {
+  // These declarations are what the reference-counting functions of other types
+  // call.
   let builder = Str.builder()
   for (const type of Arrays.values(mapTypes(emitter))) {
     const name = containerName(emitter, type)
@@ -168,9 +165,9 @@ export function emitMapPrototypes(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// emitMapFunctions runs before the constants, because it registers trait
-// needs; its text goes after the trait functions.
 export function emitMapFunctions(mutable emitter: Emitter): string uses alloc {
+  // This runs before the constants because it registers trait needs; its text
+  // goes after the trait functions.
   let builder = Str.builder()
   for (const type of Arrays.values(mapTypes(emitter))) {
     Str.append(mutable builder, mapFunctions(mutable emitter, type))
@@ -178,7 +175,6 @@ export function emitMapFunctions(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-// mapFunctions fills the template for one map type.
 function mapFunctions(mutable emitter: Emitter, type: Type): string uses alloc {
   const keyType = getKeyType(type)
   const valueType = getValueType(type)
@@ -201,14 +197,13 @@ function mapFunctions(mutable emitter: Emitter, type: Type): string uses alloc {
   return `\n${text}`
 }
 
-// emitMapLiteral emits Map { k: v, ... }.
 export function emitMapLiteral<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.MapLit(nodeId, _, _, keys, values)) {
-    const mapType = typeOf(emitter, nodeId)
+    const mapType = readNodeType(emitter, nodeId)
     const name = containerName(emitter, mapType)
     const map = ownedTemp(
       mutable emitter,
@@ -227,7 +222,6 @@ export function emitMapLiteral<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "map literal", NODE), owned: false }
 }
 
-// variantPosition is the position of the named variant in the enum's variants.
 function variantPosition(emitter: Emitter, enumType: Type, name: string): int {
   if (underlyingType(emitter, enumType) is Type.TEnum(enumIndex)) {
     const variants = emitter.checker.enums[enumIndex].variants
@@ -240,20 +234,18 @@ function variantPosition(emitter: Emitter, enumType: Type, name: string): int {
   return 0 - 1
 }
 
-// findOptionEnumIndex is the index into checker.enums of an Option type.
 function findOptionEnumIndex(emitter: Emitter, optionType: Type): int {
   return match (underlyingType(emitter, optionType)) { Type.TEnum(enumIndex) => enumIndex, _ => 0 }
 }
 
-// emitMapGet emits m[k] as an Option<V>.
 export function emitMapGet<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.IndexExpr(nodeId, _, target, index)) {
-    const mapType = typeOf(emitter, getExpressionId(target))
-    const optionType = typeOf(emitter, nodeId)
+    const mapType = readNodeType(emitter, getExpressionId(target))
+    const optionType = readNodeType(emitter, nodeId)
     const name = containerName(emitter, mapType)
     const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
     const map = temp(mutable emitter, mapType, targetCode.text)
@@ -295,16 +287,15 @@ export function emitMapGet<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "map index", NODE), owned: false }
 }
 
-// emitMapBuiltin emits Map.size, Map.remove, Map.keys and Map.entries.
 export function emitMapBuiltin<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.CallExpr(nodeId, _, _, _, arguments)) {
-    if (refOf(emitter, nodeId) is Ref.Builtin(builtinIndex)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Builtin(builtinIndex)) {
       const name = emitter.checker.registry.functions[builtinIndex].name
-      const mapType = typeOf(emitter, getExpressionId(arguments[0].value))
+      const mapType = readNodeType(emitter, getExpressionId(arguments[0].value))
       if (name == "Map.size") {
         const map = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
         return Code { text: `(${map.text})->len`, owned: false }
@@ -335,8 +326,6 @@ export function emitMapBuiltin<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "map builtin", NODE), owned: false }
 }
 
-// entryValue is the C code for entry `position` of `map`: the key, or a
-// #[key, value] tuple.
 function entryValue(
   emitter: Emitter,
   map: string,
@@ -351,7 +340,6 @@ function entryValue(
   return `((${tupleName}){.f_0 = ${map}->keys[${position}], .f_1 = ${map}->vals[${position}]})`
 }
 
-// emitMapToArray emits Map.keys(m) or Map.entries(m) outside a loop.
 function emitMapToArray<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -360,7 +348,7 @@ function emitMapToArray<W: EmitWalker>(
   mapType: Type,
   entries: bool,
 ): Code uses alloc {
-  const arrayType = typeOf(emitter, nodeId)
+  const arrayType = readNodeType(emitter, nodeId)
   const elementType = match (arrayType) { Type.TArray(element) => element, _ => arrayType }
   const sourceCode = EmitWalker.emitExpression(walker, mutable emitter, source)
   const map = temp(mutable emitter, mapType, sourceCode.text)
@@ -386,15 +374,15 @@ function emitMapToArray<W: EmitWalker>(
   return Code { text: array, owned: true }
 }
 
-// emitMapSet emits m[k] = v. The caller wraps the statement.
 export function emitMapSet<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   statement: Stmt,
 ) uses alloc {
+  // The caller wraps the statement.
   if (statement is Stmt.AssignStmt(_, target, value)) {
     if (target is Expr.IndexExpr(_, _, mapTarget, index)) {
-      const mapType = typeOf(emitter, getExpressionId(mapTarget))
+      const mapType = readNodeType(emitter, getExpressionId(mapTarget))
       const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
       const consumedValue = consume(
         mutable emitter,
@@ -413,19 +401,18 @@ export function emitMapSet<W: EmitWalker>(
   const _ = reportUnsupported(mutable emitter, "map assignment", NODE)
 }
 
-// emitMapFor emits `for (const x of Map.keys(m))` and Map.entries. The caller
-// wraps the statement.
 export function emitMapFor<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   statement: Stmt,
 ) uses alloc {
+  // The caller wraps the statement.
   if (statement is Stmt.ForStmt(nodeId, pos, label, _, iterable, body, _)) {
     if (iterable is Expr.CallExpr(callId, _, _, _, arguments)) {
-      if (refOf(emitter, callId) is Ref.Builtin(builtinIndex)) {
+      if (readNodeRef(emitter, callId) is Ref.Builtin(builtinIndex)) {
         const entries = emitter.checker.registry.functions[builtinIndex].name == "Map.entries"
         const source = arguments[0].value
-        const mapType = typeOf(emitter, getExpressionId(source))
+        const mapType = readNodeType(emitter, getExpressionId(source))
         const code = EmitWalker.emitExpression(walker, mutable emitter, source)
         const map = consume(mutable emitter, code.text, code.owned, mapType)
         // The loop owns the map until the statement ends.
@@ -445,7 +432,7 @@ export function emitMapFor<W: EmitWalker>(
         pushScope(mutable emitter, true)
         const info = emitter.checker.bodies[emitter.body]
         const localIndex = info.declared[findBodySlot(info, nodeId)]
-        const localType = localOf(emitter, localIndex).localType
+        const localType = readLocal(emitter, localIndex).localType
         const value = entryValue(emitter, map, position, localType, entries)
         declareLocal(mutable emitter, localIndex, value)
         const variable = localRef(emitter, localIndex)

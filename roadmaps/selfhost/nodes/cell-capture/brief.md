@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-01
-spent:
+spent: 203844
 owns:
   - std/src/cell*
   - testdata/cell*

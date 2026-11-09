@@ -43,7 +43,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 ### Statements and layout
 
 - Blocks use `{ }`.
-- **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error.
+- **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error, except between the parentheses of a `for (init; condition; step)` loop (section 2, Control flow).
 - `narra fmt` defines the one valid layout. CI is expected to run `narra fmt --check`.
 - `narra fmt` reads a `[fmt]` table of `narra.toml` (the nearest one above the file). Keys, with their defaults:
   - `printWidth = 100`: the line width.
@@ -64,7 +64,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
-- There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
+- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` `+%=` `-%=` `*%=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Overflow, division by zero and shift checks are those of the binary operator. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
 - **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
@@ -103,12 +103,20 @@ function gcd(a: int, b: int): int {
 - A closure captures constants (`const` bindings and non-mutable parameters) by value, except a local `const` whose contents it changes (next item).
 - **A non-escaping closure captures `let` variables and `mutable` parameters by reference** (D77). An arrow function written directly as the argument of a non-escaping function-type parameter may read and assign them, as in TypeScript:
 
+<!-- context
+function each(items: Array<int>, f: (item: int) => void) {
+  f(items[0])
+}
+---
+const numbers = [1, 2]
+-->
 ```ts
 let total = 0
 each(numbers, (item) => { total = total + item })
 ```
 
   Every `let` and `mutable` it uses is captured by reference, also when it only reads it. A local `const` whose fields or elements it assigns, or which it passes as `mutable`, directly or through a nested closure, is captured by reference too, by every closure between the change and the declaration, and is borrowed like a `let` it assigns (D81). A `const` that no closure in the chain changes stays a copy. A closure that is not of this kind cannot change a captured value. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
+- **An escaping closure shares changing state through a `Cell`** (D90). `const count = Cells.create(0)` is captured by value like any constant, and every copy of the handle reads and writes the same slot: `Cells.update(count, (value) => value + 1)`, `Cells.get(count)`. Section 8 describes `Cell<T>`.
 - **A variable that such a closure assigns is borrowed for the call.** In that call it cannot be passed as `mutable`, read or assigned in another argument (including `items.length` or `xs[0]`), or captured by another closure argument (E0614). Two closures that only read the same variable are fine. A narrowing by `is` is not seen inside a closure that captures the variable, and a narrowing of a variable that a closure assigns ends at the statement of the call.
 - **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
@@ -139,6 +147,13 @@ const scaled = Arrays.map(prices, (p) => p * rate)    // no closure allocation, 
   - The array is made unique before the first iteration (a shared array is copied once), and the loop takes no reference to it.
   - Not allowed in a `function*` or `async` body yet.
 
+<!-- context
+struct Player {
+  hp: int
+}
+---
+let players: Array<Player> = []
+-->
 ```ts
 for (mutable player of players) {
   player.hp = 0                // changes players
@@ -146,8 +161,14 @@ for (mutable player of players) {
 ```
 
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
-- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step.
+- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 panics. The loop stops before the value would pass the largest or smallest `int`.
 
+<!-- context
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+---
+const items = ["a", "b"]
+-->
 ```ts
 for (const i of Ranges.upTo(Arrays.length(items))) {
   print(items[i])
@@ -155,13 +176,38 @@ for (const i of Ranges.upTo(Arrays.length(items))) {
 ```
 
 - `break` and `continue` work as in TypeScript, including labels: `outer: for (...) { ... break outer }`.
-- There is no C-style `for (init; cond; step)`, no `do ... while`, no `switch` and no `goto`.
+- **C-style `for`.** `for (init; condition; step) { ... }` has TypeScript's meaning, and `for (;;)` loops forever (D76).
+
+<!-- context
+const limit = 3
+let total = 0
+-->
+```ts
+for (let i = 0; i < limit; i = i + 1) {
+  total = total + i
+}
+```
+
+  - `init` is a `let` declaration or empty. Its name is scoped to the loop. `const` is error E0960, because the step could not change it.
+  - `condition` has type `bool`, with no truthiness (error E0959), or is empty.
+  - `step` is an assignment, a call or empty (error E0961 for anything else).
+  - `continue` runs the step, then the condition. Labels work as for the other loops.
+  - The semicolons belong to the parentheses. A `;` anywhere else is still an error.
+  - The loop is a statement, not a value.
+- There is no `do ... while`, no `switch` and no `goto`.
 - `match` replaces `switch` (section 4).
 
 #### Block expressions and `if` as a value
 
 A block has two forms, told apart by position (D75). A block in statement position is a block statement. A block in value position is a block expression: after `=`, as a call argument, as an operand, as a `return` value, inside `${...}`, or as an element of an array, tuple or struct literal.
 
+<!-- context
+function lookup(code: int): string {
+  return "name"
+}
+---
+const code = 1
+-->
 ```ts
 const label = {
   const name = lookup(code)
@@ -180,6 +226,9 @@ const label = {
 - `if (c) { ... } else { ... }` in value position is an expression whose branches are block expressions, each ending in `return`. The `else` branch is required, and `else if` chains are allowed. At the start of a statement `if` is still a statement.
 - `cond ? a : b` is a conditional expression, as in TypeScript. `cond` must be `bool` (no truthiness), `a` and `b` have the same type, and only the chosen branch runs. It binds looser than `||` and is right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`. A missing `:` is E0934. The line rule above applies: a line that starts with `?` or `:` is a new statement, so a conditional expression that spans lines is wrapped in parentheses, where line breaks are ignored, and the Prettier layout works inside them: `const v = (cond` / `? a` / `: b)` on three lines. Without the parentheses the compiler reports E0934 and says to wrap it. A conditional expression is not a constant (a top-level `const` cannot use one), its value must be used (as a statement it is E0934; write an `if`), and both branches need a value. It is a block expression holding an `if` whose branches each `return` one value, so a self call in a returned branch (`return n < 0 ? f(n + 1) : n`) is still a tail call.
 
+<!-- context
+const n = 1
+-->
 ```ts
 const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" } else { return "positive" }
 ```
@@ -218,7 +267,8 @@ There are no macros, no operator overloading and no function overloading.
 | `==` `!=` | Types that implement `Equatable`, compared structurally (section 4) |
 | `&&` `\|\|` `!` | `bool` |
 
-- There is no string concatenation operator. Use a template string or `Str.concat(a, b)`.
+- There is no string concatenation operator. Use a template string or `Str.concat(a, b)`. The statement `s += t` joins strings (section 2, Bindings).
+- Compound assignment (`+=` and the others) and `x++` / `x--` are statements, not operators, and have no value (section 2, Bindings).
 - There is no length operator. Use `Arrays.length(items)`, `Str.length(s)` and `Maps.size(m)`.
 - There is no power operator. Use `Float.pow(x, y)` or `Int.pow(x, y)`.
 - `Int.floorDiv(a, b)` rounds toward negative infinity.
@@ -231,16 +281,18 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | --- | --- |
 | `const b = a` gives two names for one object, and a change through one shows through the other | `const` fixes the name, and its contents can change, as in TypeScript (D81). `const b = a` makes a copy: a change to `a` does not show in `b` |
 | `==` converts types, `===` compares strictly | `==` compares structurally with no conversion. `===` is a compile error |
-| `let` can be captured by any closure | `let` can be captured only by a closure passed to a non-escaping parameter |
+| `let` can be captured by any closure | `let` can be captured only by a closure passed to a non-escaping parameter; an escaping closure shares changing state through a `Cell` |
 | `null`, `undefined` | Not present. Use `Option<T>` with `None` |
 | `T[]` is an array type | Not present. Write `Array<T>` (D23) |
 | `number` | Not present. Use `int`, `i32`, `f64` and the other sized types |
 | `enum` holds named numbers or strings | `enum` holds variants with fields, checked by `match` |
 | `'text'` is a string | `'a'` is a `char`. Strings use `"text"` |
 | `for (const k in obj)` loops over keys | Not present. Use `for (const k of Maps.keys(m))` |
+| `for (init; cond; step)` accepts `var`, `const`, several declarations and any condition | The same form, with `init` a single `let` or empty (`const` is E0960), `condition` a `bool` (E0959) and `step` an assignment or a call (E0961) |
 | `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
 | `xs.push(v)`, `s.length` | Not present. Use `Arrays.push(mutable xs, v)`, `Str.length(s)` |
-| `a + b` joins strings | Not present. Use a template string |
+| `a + b` joins strings | Not present. Use a template string (`s += t` is allowed as a statement) |
+| `y = x++`, `++x`, `a[i] = b += 1` | Compound assignment and `x++` are statements without a value; `++x` is an error (E0964) |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
 | Calling an async function without `await` starts it in the background | A compile error. Use `await f()`, or start a task with `Async.spawn` (section 8) |
@@ -257,8 +309,13 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/option`, `std/path`, `std/process`, `std/range`, `std/result`, `std/shape`, `std/string` and `std/test`.
+- **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
+- **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
+  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (a negative exponent panics, overflow panics as in any `int` arithmetic); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` panics when `low > high`.
+  - `std/time` has `Instant` and `Duration` (both a count of nanoseconds). `now()` reads the monotonic clock, `elapsed(since)` reads it again, `between(earlier, later)` needs no clock, `unixMillis()` is the wall clock, `sleep(duration)` sleeps. `milliseconds`, `seconds` and `nanoseconds` build a `Duration`, `asMilliseconds` and `asNanoseconds` read it. Reading a clock and sleeping have the `io` effect (section 7).
+  - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns an `int` in `[low, high)` without modulo bias and panics when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
+  - `std/hash` has `Hash.of(x)`, the `Hashable` hash of any value (it may change between builds), and `fnv1a(text)`, FNV-1a 64 over the UTF-8 bytes of a string as a `u64`, which never changes. `of` is a keyword, and is accepted as a function name and after `.`, like `from`.
 - **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
@@ -359,10 +416,26 @@ struct Entry<K, V> {
 - Every field is written as `name: value`, even when the value is a variable with the same name. `{ name }` is a compile error in a literal.
 - Type arguments of a generic struct are inferred from the fields: `Entry { key: "a", value: 1 }` is `Entry<string, int>`.
 
+<!-- context
+struct ServerConfig {
+  host: string
+  port: int = 8080
+  tags: Array<string> = []
+}
+---
+-->
 ```ts
 const config = ServerConfig { host: "localhost" }            // port is 8080, tags is []
 const loopback: ServerConfig = { host: "127.0.0.1", port: 3000 }
+```
 
+<!-- context
+struct Entry<K, V> {
+  key: K
+  value: V
+}
+-->
+```ts
 function makeEntry(key: string, value: int): Entry<string, int> {
   return { key: key, value: value }                          // type taken from the return type
 }
@@ -375,6 +448,15 @@ function makeEntry(key: string, value: int): Entry<string, int> {
 - `s.field = value` changes a field in place. `s` must be a local `const` or `let`, a `mutable` parameter, or a field or element of one (section 2, Bindings).
 - To change a caller's struct inside a function, declare the parameter `mutable` (section 6).
 
+<!-- context
+struct ServerConfig {
+  host: string
+  port: int = 8080
+  tags: Array<string> = []
+}
+---
+const config = ServerConfig { host: "localhost" }
+-->
 ```ts
 const moved = { ...config, port: 9000 }
 
@@ -390,6 +472,20 @@ current.tags[0] = "primary"
 - Fields that are not listed are ignored.
 - The same patterns work in `match`. A literal after `:` tests the field's value instead of binding it.
 
+<!-- context
+import * as Float from "std/float"
+struct ServerConfig {
+  host: string
+  port: int = 8080
+}
+struct Point {
+  x: f64
+  y: f64
+}
+---
+const config = ServerConfig { host: "localhost" }
+const point = Point { x: 1.0, y: 2.0 }
+-->
 ```ts
 const { host, port: serverPort } = config
 
@@ -413,6 +509,9 @@ match (point) {
 - `Boxes.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a local `const` or `let` or a `mutable` parameter, in place when the count is 1.
 - Use a box for recursive structs and for large structs that are copied often.
 
+<!-- context
+import * as Boxes from "std/box"
+-->
 ```ts
 struct ListNode {
   value: int
@@ -433,7 +532,7 @@ export opaque struct Range {
   finish: int
 }
 
-export function create(start: int, finish: int): Result<Range, string> {
+export function create(start: int, finish: int): Result<Range, string> uses alloc {
   if (start > finish) {
     return Err("start is after finish")
   }
@@ -457,7 +556,16 @@ export function length(r: Range): int {
 ```ts
 export distinct type UserId = int
 export distinct type OrderId = int
+```
 
+<!-- context
+export distinct type UserId = int
+export distinct type OrderId = int
+function loadUser(id: UserId) {}
+---
+-->
+<!-- error: E0119 -->
+```ts
 const user = UserId.from(42)
 const raw: int = UserId.toInt(user)
 
@@ -483,6 +591,21 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 `match` checks a value against patterns. It must cover every case, or end with a `_` arm.
 
+<!-- context
+import * as Int from "std/int"
+enum Token {
+  Word(text: string)
+  Number(value: int)
+  Space
+}
+enum Status {
+  Active
+  Suspended(reason: string)
+}
+---
+const token = Token.Space
+const status = Status.Active
+-->
 ```ts
 match (token) {
   Token.Word(text) => print(text)
@@ -514,6 +637,9 @@ const label = match (status) {
 - **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
+<!-- context
+import * as Arrays from "std/array"
+-->
 ```ts
 export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
   for (const item of Arrays.values(items)) {
@@ -529,17 +655,20 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
 
 A trait is a named set of functions that a type implements. A type's traits are all listed where the type is declared.
 
+<!-- context
+import * as Int from "std/int"
+-->
 ```ts
-export trait Show {
-  function show(value: Self): string
+export trait Label {
+  function label(value: Self): string
 }
 
-export struct Money implements Show, Ordered {
+export struct Money implements Label, Ordered {
   cents: int
 }
 
-implement Show for Money {
-  function show(value: Money): string {
+implement Label for Money {
+  function label(value: Money): string {
     return `${Int.toString(value.cents / 100)}.${Int.toString(value.cents % 100)}`
   }
 }
@@ -550,7 +679,26 @@ implement Ordered for Money {
   }
 }
 
-const label = Show.show(price)
+```
+
+<!-- context
+import * as Int from "std/int"
+export trait Label {
+  function label(value: Self): string
+}
+export struct Money implements Label {
+  cents: int
+}
+implement Label for Money {
+  function label(value: Money): string {
+    return Int.toString(value.cents)
+  }
+}
+---
+const price = Money { cents: 1250 }
+-->
+```ts
+const text = Label.label(price)
 ```
 
 **Declaring and implementing**
@@ -563,7 +711,7 @@ const label = Show.show(price)
 
 **Calling**
 
-- Trait functions are called through the trait name: `Show.show(price)`. There is no `price.show()` form.
+- Trait functions are called through the trait name: `Label.label(price)`. There is no `price.label()` form.
 - In generic code, `<T: Show>` allows `Show.show(value)` for a `value: T`.
 - A trait function may mention `Self` only in its result, for example `function fromValue(value: Value): Result<Self, string>`. A call names the type that `Self` stands for: `Shape.fromValue<User>(value)`. Exactly one type argument is allowed. Without it, the call is an error unless the expected type fixes `Self`. In a generic body `<T: Shape>`, `Shape.fromValue<T>(value)` is resolved when the body is instantiated.
 
@@ -631,6 +779,9 @@ const label = Show.show(price)
 - `std/fs` has `readBytes(path): Result<bytes, string>` and `writeBytes(path, data: bytes): Result<int, string>`, which work as `readText` and `writeText` without the UTF-8 check.
 - `bytes` implements `Equatable`, `Hashable`, `Ordered` (bytewise, a prefix first, and `<` works as on strings) and `Show`, which writes hex pairs: `bytes[68 69 0a]`. It works as a map key. It is not a contents type, so a `mutable` parameter cannot have it.
 
+<!-- context
+import * as Str from "std/string"
+-->
 ```ts
 export struct Pair {
   key: string
@@ -659,6 +810,15 @@ export function parsePair(line: string): Option<Pair> uses alloc {
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
 
+<!-- context
+import * as File from "std/fs"
+struct Config {
+  name: string
+}
+enum ConfigError {
+  IoFailed(message: string)
+}
+-->
 ```ts
 export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc {
   const text = File.readText(path)
@@ -694,6 +854,10 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 - When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
 - Code that keeps one owner gets in-place mutation with no copies.
 
+<!-- context
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+-->
 ```ts
 let squares: Array<int> = Arrays.filled(0, 1000)
 for (const i of Ranges.upTo(1000)) {
@@ -741,15 +905,47 @@ const summary = Region.run((region) => {
 
 A function changes a caller's data only through a `mutable` parameter. The keyword appears in the declaration and again at the call. A `mutable` parameter reaches the contents of the caller's value, its fields and elements, and never the caller's variable (D81).
 
+<!-- context
+struct Vec2 {
+  x: f64
+  y: f64
+}
+struct Player {
+  name: string
+  hp: int
+  position: Vec2
+}
+-->
+<!-- error: E0949 -->
 ```ts
 function damage(mutable player: Player, amount: int) {
   player.hp = player.hp - amount     // ok: changes a field
   player = { ...player, hp: 0 }      // compile error: a mutable parameter cannot be replaced
 }
+```
 
+<!-- context
+struct Vec2 {
+  x: f64
+  y: f64
+}
+struct Player {
+  name: string
+  hp: int
+  position: Vec2
+}
+function damage(mutable player: Player, amount: int) {
+  player.hp = player.hp - amount
+}
+---
+-->
+```ts
 const hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
 damage(mutable hero, 10)      // hero.hp is now 90
+```
 
+<!-- error: E0948 -->
+```ts
 function bump(mutable n: int) {  // compile error: int has no contents to change
   n = n + 1
 }
@@ -776,10 +972,10 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector. Storing a value inside itself holds a second reference to it while the write runs, so the write copies first.
 - A variable is never stored by reference: storing it stores a copy, and only a closure that cannot outlive the call captures a variable by reference, so no cycle forms.
-- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>`, and `Cell<T>` once it exists; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
+- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>` and `Cell<T>`; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
   - A handle stored in its own payload: `Shared.update(state, ...)` that stores `Some(state)` in the value of `state`, or a `Sender` sent into its own channel.
   - A closure stored in a `Cell` that captures the same `Cell`.
-- **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cell.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
+- **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cells.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
 - A later version may add a collector limited to identity objects. It would only free memory that this rule leaks, so no program changes meaning.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
@@ -822,6 +1018,7 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
 - Effect variables are declared in the type parameter list with the `effect` keyword, and appear only after `uses`.
 - **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type or generator type: `export function sum<effect E>(numbers: Generator<int> uses E): int uses E`.
 - At each call, the variable takes the effects of the function or generator passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`. A generator result type that names the variable takes them too: with `relay<effect E>(g: Generator<int> uses E): Generator<int> uses E, alloc`, `relay(lines(path))` is a `Generator<int> uses alloc, io`.
+- **A function used as a value keeps its variables** (D91). After `const apply = twice`, `apply(loud, 1)` has the effects of `loud`, as `twice(loud, 1)` does, through a top-level or a local constant.
 
 ## 8. Generators and concurrency
 
@@ -839,6 +1036,9 @@ A panic on any thread or task aborts the whole program.
 
 A generator is a function that can suspend itself with `yield` and be resumed later. The syntax is TypeScript's. The compiler turns each generator into a state machine, so no separate stack is allocated.
 
+<!-- context
+import * as Ranges from "std/range"
+-->
 ```ts
 function* counter(limit: int): Generator<int> {
   for (const i of Ranges.upTo(limit)) {
@@ -858,7 +1058,16 @@ function* both(): Generator<int> {
   yield* counter(3)
   yield* evens(10)
 }
+```
 
+<!-- context
+import * as Int from "std/int"
+function* both(): Generator<int> {
+  yield 1
+}
+---
+-->
+```ts
 for (const n of both()) {
   print(Int.toString(n))
 }
@@ -921,6 +1130,30 @@ The builtin that builds channels must accept the type argument in `Channel.creat
 - Blocking calls have the `io` effect.
 - **A channel in a cycle stays open** (D80). A `Sender` sent through its own channel, or held in a `Shared` that the channel's values reach, keeps the channel alive: it is never freed, and dropping the other copies of the sender does not close it, so a receiver that reads until the close waits forever. When senders travel through channels, close the channel with `Channel.close(sender)` instead of relying on the last drop; the close ends the receiver's wait, and a receiver that reads the channel empty drops the sender it held and breaks the cycle. A `Sender<Reply>` sent inside a request (`Sender<#[Request, Sender<Reply>]>`) is fine: the reply channel does not hold the request channel.
 
+### Cell
+
+`Cell<T>` (D90) is an identity type for state that changes and is shared on one thread, such as a counter two escaping closures use. It is `Shared` without the lock. It is a Narra source module: `import * as Cells from "std/cell"` for the functions and `import { Cell } from "std/cell"` for the type.
+
+<!-- context
+import * as Cells from "std/cell"
+-->
+```ts
+const count = Cells.create(0)
+const next = (): int => {
+  Cells.update(count, (value) => value + 1)
+  return Cells.get(count)
+}
+const reset = (): int => {
+  Cells.set(count, 0)
+  return 0
+}
+```
+
+- **`Cells.create(value)`** allocates the slot (`uses alloc`). **`Cells.get(cell)`** returns a copy of the value. **`Cells.set(cell, value)`** replaces it and drops the old value at the call. **`Cells.update(cell, change)`** stores `change(value)`; `change` is a function that returns the new value, because a scalar cannot be a `mutable` parameter (D81). None of the last three has an effect: a write to a `Cell` is not tracked.
+- Copying a `Cell`, capturing it, or storing it in a struct copies the handle, so every copy sees every write. `Cell` is an `opaque struct`: its field is not reachable. `==` and `!=` on a `Cell` are a compile error (E0965), and a `Cell` is not `Hashable`, so it cannot be a `Map` key; compare the values with `Cells.get`.
+- **A `Cell` cannot cross threads.** It uses plain reference counts. Use `Shared`. Threads are parked, so the compiler does not check this yet; the node that builds threads must reject a `Cell`, or a value that holds one, captured by a thread function or sent through a channel.
+- **A closure stored in the `Cell` it captures leaks** (D80); clear it with `Cells.set(cell, None)` first.
+
 ### Shared state
 
 A few types have identity: copying one copies a handle to the same object. They are the only way two threads can see the same changing data.
@@ -946,7 +1179,7 @@ const now = Shared.read(hits, (count) => count)
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
-- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and the planned `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
+- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. `narra audit` lists every nested `Shared.update`.
 
 ### Async functions
@@ -1114,6 +1347,13 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
   - The test binary reads `--filter <text>`, `--time` and `--golden-dir <dir>` (one or two dashes) from its own arguments, so it can be run directly. `narra test` passes the golden directory itself, so the generated C holds no path. Other arguments are an error (exit 2), and so is an option without its value. Flags may also follow the file name.
   - `f` runs in a child process, so nothing it changes or allocates reaches the test. Output it prints appears in order. `Test.panics` and `Test.panicsWith` therefore need a POSIX system (`fork`). A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails.
 
+<!-- context
+import * as Int from "std/int"
+import * as Str from "std/string"
+function divide(a: int, b: int): int {
+  return a / b
+}
+-->
 ```ts
 import * as Test from "std/test"
 

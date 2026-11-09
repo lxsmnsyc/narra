@@ -62,13 +62,10 @@ function typeNamePos(): Pos {
   return Pos { line: 0, column: 0 }
 }
 
-// ownsType reports whether the current module may write `implement` blocks
-// for the type: only the module that declares it.
 function ownsType(checker: Checker, info: TypeTraits): bool {
   return info.module == modPath(checker)
 }
 
-// traitNamed finds the trait a type expression names, or reports it.
 function traitNamed(mutable checker: Checker, typeExpr: TypeExpr): int uses alloc {
   const traitIndex = lookupTrait(checker, typeExpr.name)
   if (traitIndex < 0) {
@@ -77,8 +74,6 @@ function traitNamed(mutable checker: Checker, typeExpr: TypeExpr): int uses allo
   return traitIndex
 }
 
-// findTraitFunc is the index of a function in a trait by name, or -1. The body
-// checker uses it for `Trait.function(arguments)`.
 export function findTraitFunc(checker: Checker, traitIndex: int, name: string): int {
   let found = -1
   for (const index of Ranges.between(0, Arrays.length(checker.traits[traitIndex].functions))) {
@@ -89,9 +84,8 @@ export function findTraitFunc(checker: Checker, traitIndex: int, name: string): 
   return found
 }
 
-// typeTraitsKey names a struct or enum declaration, "<module>|<name>", or ""
-// for any other type. Two modules may use one name.
 function typeTraitsKey(checker: Checker, type: Type): string {
+  // Two modules may use one name, so the key holds the module.
   return match (type) {
     Type.TStruct(index) => `${checker.structs[index].module}|${checker.structs[index].name}`
     Type.TEnum(index) => `${checker.enums[index].module}|${checker.enums[index].name}`
@@ -99,10 +93,6 @@ function typeTraitsKey(checker: Checker, type: Type): string {
   }
 }
 
-// findTypeTraits is the Checker.typeTraits index for a struct or enum type
-// (an instance shares its template's), or -1. Tuples derive Show and
-// Ordered, and get Equatable and Hashable like any struct: Go records that
-// when the first tuple is made, here it is made on first use.
 export function findTypeTraits(mutable checker: Checker, type: Type): int uses alloc {
   const key = typeTraitsKey(checker, type)
   if (key == "") {
@@ -112,6 +102,7 @@ export function findTypeTraits(mutable checker: Checker, type: Type): int uses a
     return index
   }
   if (type is Type.TStruct(structIndex)) {
+    // Tuples derive Show and Ordered, and get Equatable and Hashable like any struct. Go records that when the first tuple is made, here it is made on first use.
     if (checker.structs[structIndex].tuple) {
       let derived: Map<int, bool> = Map {}
       const ordered = stdTrait(checker, "Ordered")
@@ -161,10 +152,8 @@ function addTypeTraitsEntry(
   return newIndex
 }
 
-// declareTraits records trait names and what each struct and enum lists in
-// `implements` and `derives`. It runs after type names are declared and
-// before function signatures, so constraints can name traits.
 export function declareTraits(mutable checker: Checker, file: File) uses alloc {
+  // Runs after type names are declared and before function signatures, so constraints can name traits.
   const modulePath = modPath(checker)
   for (const declaration of Arrays.values(file.declarations)) {
     match (declaration) {
@@ -241,7 +230,6 @@ function declareTrait(
   checker.scopes[scope].traits[traitDecl.name] = index
 }
 
-// declareListed resolves the `implements` and `derives` lists of one type.
 function declareListed(mutable checker: Checker, key: string) uses alloc {
   const entryIndex = typeTraitsAt(checker, key)
   if (entryIndex < 0) {
@@ -283,19 +271,15 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
   }
 }
 
-// derivedTrait finds the trait a `derives` entry names, or -1. A bare Shape
-// is the trait of std/shape when the module has no Shape of its own: the code
-// written for `derives Shape` imports it under a hidden name.
 function derivedTrait(checker: Checker, typeExpr: TypeExpr): int {
   const traitIndex = lookupTrait(checker, typeExpr.name)
+  // A bare Shape is the trait of std/shape when the module has no Shape of its own: the code written for `derives Shape` imports it under a hidden name.
   if (traitIndex < 0 && isShapeDerive(typeExpr)) {
     return lookupTrait(checker, HIDDEN_SHAPE)
   }
   return traitIndex
 }
 
-// funcBounds resolves the constraints of a generic function's type
-// parameters (typeParameters are Checker.parameters indexes).
 export function funcBounds(
   mutable checker: Checker,
   funcDecl: FuncDecl,
@@ -327,10 +311,8 @@ export function funcBounds(
   }
 }
 
-// resolveTraits resolves trait signatures and `implement` blocks, then
-// checks that every listed trait is implemented and every derived trait can
-// be. It runs once every type's fields are known.
 export function resolveTraits(mutable checker: Checker, file: File) uses alloc {
+  // Runs once every type's fields are known.
   const modulePath = modPath(checker)
   for (const declaration of Arrays.values(file.declarations)) {
     if (declaration is Decl.Trait(traitDecl)) {
@@ -378,14 +360,13 @@ export function resolveTraits(mutable checker: Checker, file: File) uses alloc {
   }
 }
 
-// checkListed checks one type: every listed trait has a block or a derive,
-// and every derived trait holds for the fields. The type is TVoid for a generic type.
 function checkListed(
   mutable checker: Checker,
   modulePath: string,
   name: string,
   type: Type,
 ) uses alloc {
+  // The type is TVoid for a generic type.
   const entryIndex = typeTraitsAt(checker, `${modulePath}|${name}`)
   if (entryIndex < 0) {
     return
@@ -398,7 +379,12 @@ function checkListed(
         checker.typeTraits[entryIndex].blocks[traitIndex] is None &&
           checker.typeTraits[entryIndex].derived[traitIndex] is None
       ) {
-        const message = `${info.name} implements ${checker.traits[traitIndex].name} but has no \`implement ${checker.traits[traitIndex].name} for ${info.name}\` block or \`derives ${checker.traits[traitIndex].name}\``
+        const traitName = checker.traits[traitIndex].name
+        let message = `${info.name} implements ${traitName} but has no \`implement ${traitName} for ${info.name}\` block`
+        // Only the built-in traits can be derived.
+        if (checker.traits[traitIndex].std || isShapeTrait(checker, traitIndex)) {
+          message = `${message} or \`derives ${traitName}\``
+        }
         reportError(mutable checker, typeExpr.pos, "E0507", message)
       }
     }
@@ -440,11 +426,8 @@ function checkListed(
   }
 }
 
-// shapeCheckedFields lists the fields whose types must implement Shape for a
-// type to derive it: every field of a concrete type, and the fields of a
-// generic type that do not mention its type parameters (the generated code
-// bounds those by Shape). The type is TVoid for a generic type.
 function shapeCheckedFields(checker: Checker, name: string, type: Type): Array<Field> uses alloc {
+  // A concrete type checks every field. A generic type (TVoid) checks the fields that do not mention its type parameters, since the generated code bounds those by Shape.
   if (type != Type.TVoid) {
     return listFields(checker, type)
   }
@@ -465,8 +448,6 @@ function shapeCheckedFields(checker: Checker, name: string, type: Type): Array<F
   return out
 }
 
-// shapeDerivedIndex is the std/shape trait when the type of the current
-// module derives it, or -1.
 function shapeDerivedIndex(checker: Checker, name: string): int {
   const entryIndex = typeTraitsAt(checker, `${modPath(checker)}|${name}`)
   const shape = lookupTrait(checker, HIDDEN_SHAPE)
@@ -479,14 +460,13 @@ function shapeDerivedIndex(checker: Checker, name: string): int {
   return shape
 }
 
-// checkShapeTags reports a constructor field named type in an enum that
-// derives Shape: the encoding keeps the constructor name under "type".
 function checkShapeTags(mutable checker: Checker, enumDecl: EnumDecl) uses alloc {
   if (shapeDerivedIndex(checker, enumDecl.name) < 0) {
     return
   }
   for (const variant of Arrays.values(enumDecl.variants)) {
     for (const field of Arrays.values(variant.fields)) {
+      // The encoding keeps the constructor name under "type".
       if (field.name == "type") {
         const message = `${enumDecl.name} derives Shape, so ${enumDecl.name}.${variant.name} cannot have a field named "type": the encoding writes the constructor name there`
         reportError(mutable checker, field.pos, "E0532", message)
@@ -495,11 +475,8 @@ function checkShapeTags(mutable checker: Checker, enumDecl: EnumDecl) uses alloc
   }
 }
 
-// shapeDeriveHolds reports whether the type of the current module named
-// typeName derives Shape without error. The body checker skips the generated
-// functions of a type for which it does not hold, so the error is reported
-// once.
 export function shapeDeriveHolds(mutable checker: Checker, typeName: string): bool uses alloc {
+  // The body checker skips the generated functions of a type for which this is false, so the error is reported once.
   const shape = shapeDerivedIndex(checker, typeName)
   if (shape < 0) {
     return false
@@ -616,7 +593,6 @@ function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc 
   checker.environment = Map {}
 }
 
-// typeExprString prints a type as written, for error messages.
 export function typeExprString(typeExpr: TypeExpr): string uses alloc {
   if (typeExpr.isFunc) {
     return "a function type"
@@ -634,8 +610,6 @@ export function typeExprString(typeExpr: TypeExpr): string uses alloc {
   return `${typeExpr.name}<${Str.join(parts, ", ")}>`
 }
 
-// resolveImpl checks one `implement Trait for Type` block and records it in
-// Checker.implementations and Checker.implFunctions.
 function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   const traitIndex = traitNamed(mutable checker, implDecl.traitType)
   if (traitIndex < 0) {
@@ -787,8 +761,6 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   }
 }
 
-// checkMutableSelf reports an `implement` for a type with no contents to
-// change of a trait whose functions take `mutable Self` (D81).
 function checkMutableSelf(
   mutable checker: Checker,
   pos: Pos,
@@ -796,6 +768,7 @@ function checkMutableSelf(
   type: Type,
   typeName: string,
 ) uses alloc {
+  // Only a type whose contents change in place can implement a trait whose functions take `mutable Self`.
   if (isContentsType(checker, type)) {
     return
   }
@@ -816,8 +789,6 @@ function checkMutableSelf(
   }
 }
 
-// sameSignature reports whether an implementing function has the trait
-// function's signature with Self replaced (selfMap).
 function sameSignature(
   mutable checker: Checker,
   funcDecl: FuncDecl,
@@ -851,7 +822,6 @@ function sameSignature(
   return true
 }
 
-// signatureText prints the trait function's signature for an error message.
 function signatureText(
   mutable checker: Checker,
   traitIndex: int,
@@ -880,7 +850,6 @@ function signatureText(
   return text
 }
 
-// listFields lists the fields of a struct, or of every variant of an enum.
 export function listFields(checker: Checker, type: Type): Array<Field> uses alloc {
   let out: Array<Field> = []
   match (type) {
@@ -899,13 +868,6 @@ export function listFields(checker: Checker, type: Type): Array<Field> uses allo
   return out
 }
 
-// typeImplements reports whether a type implements the trait (Go's implements).
-//
-// Equatable and Hashable are automatic for types whose contents implement
-// them (Hashable excludes f64). Arrays, boxes and the prelude enums
-// implement a standard trait when their contents do. A struct or enum
-// implements a trait through an `implement` block or `derives`. A type
-// parameter implements the traits in its constraint.
 export function typeImplements(
   mutable checker: Checker,
   type: Type,
@@ -948,6 +910,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
     Type.TStringBuilder => {
       return false
     }
+    // Arrays, boxes and the prelude enums implement a standard trait when their contents do.
     Type.TArray(element) => {
       return std && typeImplements(mutable checker, element, traitIndex)
     }
@@ -994,16 +957,11 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
   }
 }
 
-// isShapeTrait reports whether a trait is Shape of std/shape.
 export function isShapeTrait(checker: Checker, traitIndex: int): bool {
   return checker.traits[traitIndex].name == "Shape" &&
     checker.traits[traitIndex].module == "std/shape"
 }
 
-// shapeImplements is typeImplements for Shape (D84): bool, int, f64, char and
-// string, and Array<T>, Map<string, V>, Option<T> and tuples of two to four
-// items when their contents implement it. A struct or enum needs an
-// implement block. Sized integers, functions and the rest do not implement it.
 function shapeImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
   match (type) {
     Type.TBool => {
@@ -1034,6 +992,7 @@ function shapeImplements(mutable checker: Checker, type: Type, traitIndex: int):
       }
       return nominalImplements(mutable checker, type, traitIndex)
     }
+    // A tuple of two to four items implements Shape when its items do. A struct or enum needs an implement block.
     Type.TStruct(index) => {
       if (checker.structs[index].tuple) {
         const count = Arrays.length(checker.structs[index].arguments)
@@ -1049,14 +1008,13 @@ function shapeImplements(mutable checker: Checker, type: Type, traitIndex: int):
       }
       return nominalImplements(mutable checker, type, traitIndex)
     }
+    // Sized integers, functions and the rest do not implement Shape.
     _ => {
       return false
     }
   }
 }
 
-// shapeProblem explains why a type does not implement Shape, naming the part
-// that fails, or returns "" when it does.
 function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): string uses alloc {
   if (typeImplements(mutable checker, type, traitIndex)) {
     return ""
@@ -1104,8 +1062,6 @@ function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): st
   }
 }
 
-// nominalShapeProblem explains why a struct or enum does not implement
-// Shape: a field of a derived Shape fails, or it has no implement block.
 function nominalShapeProblem(
   mutable checker: Checker,
   type: Type,
@@ -1124,7 +1080,6 @@ function nominalShapeProblem(
   return `${text} has no \`implement Shape for ${text}\` block`
 }
 
-// reportShapeProblem reports E0530 for a type that does not implement Shape.
 export function reportShapeProblem(
   mutable checker: Checker,
   pos: Pos,
@@ -1136,7 +1091,18 @@ export function reportShapeProblem(
   reportError(mutable checker, pos, "E0530", message)
 }
 
+export function isCellType(checker: Checker, type: Type): bool {
+  if (type is Type.TStruct(index)) {
+    return checker.structs[index].module == "std/cell" && checker.structs[index].name == "Cell"
+  }
+  return false
+}
+
 function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
+  // A Cell is an identity type: no automatic Equatable or Hashable.
+  if (isCellType(checker, type)) {
+    return false
+  }
   const entryIndex = findTypeTraits(mutable checker, type)
   if (entryIndex < 0) {
     return false
@@ -1157,20 +1123,16 @@ function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int
   return true
 }
 
-// implFunc is the user implementation of a trait function for a type, or None
-// when the compiler provides it (automatic Equatable and Hashable, derives).
-// The function is Checker.implementations[ref.block].functions[ref.index].
 export function implFunc(
   checker: Checker,
   type: Type,
   traitIndex: int,
   name: string,
 ): Option<ImplRef> uses alloc {
+  // None when the compiler provides the function (automatic Equatable and Hashable, derives).
   return checker.implFunctions[`${typeKey(type)}|${checker.traits[traitIndex].name}.${name}`]
 }
 
-// checkBounds checks a generic call's type arguments against the
-// constraints of the function's type parameters (typeParameters are parameters indexes).
 export function checkBounds(
   mutable checker: Checker,
   pos: Pos,
@@ -1200,16 +1162,13 @@ export function checkBounds(
   return ok
 }
 
-// checkShapeVisible reports E0533 when a type, or an element or type argument
-// of it, is an opaque struct of another module that derives Shape: the
-// derived Shape is usable only in the struct's own module. Instance bodies
-// are not checked; their call site was.
 export function checkShapeVisible(
   mutable checker: Checker,
   pos: Pos,
   type: Type,
   traitIndex: int,
 ) uses alloc {
+  // Instance bodies are not checked; their call site was.
   if (
     checker.body >= 0 &&
       checker.body < Arrays.length(checker.bodies) &&
@@ -1224,8 +1183,6 @@ export function checkShapeVisible(
   }
 }
 
-// findOpaqueShape names the first opaque struct of another module that
-// derives Shape in a type, or returns "".
 function findOpaqueShape(mutable checker: Checker, type: Type, traitIndex: int): string uses alloc {
   let parts: Array<Type> = []
   match (type) {
@@ -1258,7 +1215,6 @@ function findOpaqueShape(mutable checker: Checker, type: Type, traitIndex: int):
   return ""
 }
 
-// checkEquatable checks that `==` and `!=` work on a type.
 export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) uses alloc {
   const equatable = stdTrait(checker, "Equatable")
   if (type == Type.TVoid || typeImplements(mutable checker, type, equatable)) {
@@ -1266,7 +1222,14 @@ export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) u
   }
   let seen: Map<string, bool> = Map {}
   const text = typeString(checker, type)
-  if (containsFunc(checker, type, mutable seen)) {
+  if (isCellType(checker, type)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0965",
+      `cannot use == on ${text}: a Cell is shared by identity; compare the values with Cells.get`,
+    )
+  } else if (containsFunc(checker, type, mutable seen)) {
     reportError(mutable checker, pos, "E0526", `cannot use == on ${text}: it contains a function`)
   } else if (containsTypeParameter(checker, type)) {
     reportError(
@@ -1327,15 +1290,12 @@ function anyFunc(checker: Checker, type: Type, mutable seen: Map<string, bool>):
   return false
 }
 
-// mapKeyProblem explains why a type cannot be a map key, or returns "". A key
-// needs Equatable and Hashable. A user Equatable without a user Hashable
-// keeps the field-based hash, so equal keys could hash differently: both or
-// neither must be written.
 export function mapKeyProblem(
   mutable checker: Checker,
   type: Type,
   mutable seen: Map<string, bool>,
 ): string uses alloc {
+  // A key needs Equatable and Hashable. A user Equatable without a user Hashable keeps the field-based hash, so equal keys could hash differently: both or neither must be written.
   const key = typeKey(type)
   if (seen[key] is Some(_)) {
     return ""
@@ -1392,6 +1352,9 @@ function nominalKeyProblem(
   type: Type,
   mutable seen: Map<string, bool>,
 ): string uses alloc {
+  if (isCellType(checker, type)) {
+    return "a Cell is shared by identity, not hashable"
+  }
   for (const field of Arrays.values(listFields(checker, type))) {
     const problem = mapKeyProblem(mutable checker, field.fieldType, mutable seen)
     if (problem != "") {
@@ -1411,9 +1374,8 @@ function nominalKeyProblem(
   return ""
 }
 
-// flushMapKeys reports the queued Map key types that cannot be hashed. It
-// runs once every module is declared, as Go's flushMapKeys does.
 export function flushMapKeys(mutable checker: Checker) uses alloc {
+  // Runs once every module is declared.
   const keys = checker.mapKeys
   checker.mapKeys = []
   for (const check of Arrays.values(keys)) {

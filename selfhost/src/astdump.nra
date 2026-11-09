@@ -19,7 +19,6 @@ import {
 } from "narrac/ast"
 import * as Arrays from "std/array"
 
-// dump returns the whole dump, ending with a newline.
 export function dump(file: File): string uses alloc {
   let builder = Str.builder()
   dumpFile(mutable builder, file)
@@ -36,7 +35,6 @@ function formatPos(pos: Pos): string {
   return `${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
-// A node line: `<kind> <line>:<col><attributes>`. attributes start with a space each.
 function writeNode(
   mutable builder: StringBuilder,
   depth: int,
@@ -44,16 +42,16 @@ function writeNode(
   pos: Pos,
   attributes: string,
 ) {
+  // Each attribute starts with a space.
   writeLine(mutable builder, depth, `${kind} ${formatPos(pos)}${attributes}`)
 }
 
-// A slot line: `.<name><attributes>`.
 function writeSlot(mutable builder: StringBuilder, depth: int, name: string, attributes: string) {
   writeLine(mutable builder, depth, `.${name}${attributes}`)
 }
 
-// quoteText escapes like the lex dump and also writes `"` as `\"`.
 function quoteText(text: string): string uses alloc {
+  // Escapes like the lex dump and also writes `"` as `\"`.
   const parts = Str.split(Lexer.escapeText(text), "\"")
   return `"${Str.join(parts, "\\\"")}"`
 }
@@ -62,7 +60,6 @@ function formatStringAttr(name: string, value: string): string uses alloc {
   return ` ${name}=${quoteText(value)}`
 }
 
-// formatLabelAttr is the label attribute of a loop, break or continue, or nothing.
 function formatLabelAttr(label: string): string uses alloc {
   if (label == "") {
     return ""
@@ -396,6 +393,11 @@ function dumpStmt(mutable builder: StringBuilder, depth: int, statement: Stmt) u
       dumpExprSlot(mutable builder, depth + 1, "target", Some(target))
       dumpExprSlot(mutable builder, depth + 1, "value", Some(value))
     }
+    Stmt.CompoundAssignStmt(pos, target, operator, value) => {
+      writeNode(mutable builder, depth, "compound", pos, formatStringAttr("op", operator))
+      dumpExprSlot(mutable builder, depth + 1, "target", Some(target))
+      dumpExprSlot(mutable builder, depth + 1, "value", Some(value))
+    }
     Stmt.ExprStmt(pos, expression) => {
       writeNode(mutable builder, depth, "exprstmt", pos, "")
       dumpExpr(mutable builder, depth + 1, expression)
@@ -420,8 +422,21 @@ function dumpStmt(mutable builder: StringBuilder, depth: int, statement: Stmt) u
       dumpExprSlot(mutable builder, depth + 1, "cond", Some(condition))
       dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
     }
+    Stmt.CForStmt(pos, label, init, condition, step, body) => {
+      writeNode(mutable builder, depth, "cfor", pos, formatLabelAttr(label))
+      if (init is Some(declaration)) {
+        writeSlot(mutable builder, depth + 1, "init", "")
+        dumpStmt(mutable builder, depth + 2, declaration)
+      }
+      dumpExprSlot(mutable builder, depth + 1, "cond", condition)
+      if (step is Some(stepStatement)) {
+        writeSlot(mutable builder, depth + 1, "step", "")
+        dumpStmt(mutable builder, depth + 2, stepStatement)
+      }
+      dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
+    }
     Stmt.ForStmt(_, pos, label, name, iterable, body, reference) => {
-      // The `mutable` marker (D85) adds ` mutable`, and the entries form its
+      // The `mutable` marker adds ` mutable`, and the entries form its
       // index name.
       let referenceAttr = ""
       if (reference is Some(marker)) {

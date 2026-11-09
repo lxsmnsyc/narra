@@ -25,8 +25,6 @@ import { addFuncInstance } from "narrac/instances"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-// findClosure returns the BodyInfo.closures index of an arrow node in the
-// current body and adds the entry on first use.
 export function findClosure(mutable checker: Checker, arrowId: int): int uses alloc {
   const body = checker.body
   if (checker.bodies[body].closureIndex[arrowId] is Some(index)) {
@@ -46,11 +44,8 @@ export function findClosure(mutable checker: Checker, arrowId: int): int uses al
   return index
 }
 
-// markArgument prepares an argument for a parameter before it is checked
-// (Go's funcArg): a non-escaping parameter takes a name of another
-// non-escaping parameter, or an arrow function with its environment on the
-// caller's stack.
 export function markArgument(mutable checker: Checker, param: Param, value: Expr) uses alloc {
+  // A non-escaping parameter takes a name of another non-escaping parameter, or an arrow function with its environment on the caller's stack.
   if (!isNonEscaping(param)) {
     return
   }
@@ -68,8 +63,6 @@ export function markArgument(mutable checker: Checker, param: Param, value: Expr
   }
 }
 
-// isNonEscaping reports a parameter written with a function type and
-// without `escaping`.
 export function isNonEscaping(param: Param): bool {
   if (param.type is Some(typeExpression)) {
     return typeExpression.isFunc && !param.escaping && !param.isMutable
@@ -77,10 +70,8 @@ export function isNonEscaping(param: Param): bool {
   return false
 }
 
-// useLocal checks a use of a local: a non-escaping parameter may only be
-// called or passed on, and the arrow functions being checked capture the
-// locals declared outside them.
 export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index: int) uses alloc {
+  // A non-escaping parameter may only be called or passed on, and the arrow functions being checked capture the locals declared outside them.
   const body = checker.body
   const local = checker.bodies[body].locals[index]
   const name = quoteGo(local.name)
@@ -112,7 +103,7 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
   }
 
   // A let or a mutable parameter is captured by reference, so every closure
-  // between the use and the declaration must be a stack closure (D77).
+  // between the use and the declaration must be a stack closure.
   if (local.isMutable) {
     let check = first
     while (check <= innermost) {
@@ -137,7 +128,7 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
             mutable checker,
             pos,
             "E0612",
-            `a closure cannot capture ${name} because it is declared with let, unless it is passed straight to a function parameter that is not escaping`,
+            `a closure cannot capture ${name} because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell`,
           )
         }
         return
@@ -153,10 +144,6 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
   }
 }
 
-// findOutermostCapture is the BodyInfo.arrows level of the outermost arrow
-// function being checked that captures a local: the arrows from it to the
-// innermost one are declared inside the local's scope. It is arrowDepth
-// when no arrow captures the local.
 function findOutermostCapture(checker: Checker, index: int): int {
   const body = checker.body
   const name = checker.bodies[body].locals[index].name
@@ -170,12 +157,8 @@ function findOutermostCapture(checker: Checker, index: int): int {
   return first
 }
 
-// markChangedCapture records a change to the contents of a local (a field
-// or element write, or a `mutable` argument). A local `const` that the
-// arrow functions being checked capture is then captured by reference in
-// each of them, so each must be a stack closure (D81). A `let` and a
-// `mutable` parameter are captured by reference already (useLocal).
 export function markChangedCapture(mutable checker: Checker, pos: Pos, index: int) uses alloc {
+  // A local `const` that the arrow functions being checked capture is captured by reference in each of them once its contents change, so each must be a stack closure. A `let` and a `mutable` parameter are captured by reference already (useLocal).
   const body = checker.body
   const local = checker.bodies[body].locals[index]
   if (local.isMutable) {
@@ -207,8 +190,6 @@ export function markChangedCapture(mutable checker: Checker, pos: Pos, index: in
   }
 }
 
-// isReferenceCapture reports whether a closure (a BodyInfo.closures index)
-// captures a local `const` by reference because it changes it.
 export function isReferenceCapture(checker: Checker, closure: int, index: int): bool {
   const body = checker.body
   for (const captured of Arrays.values(checker.bodies[body].closures[closure].refCaptures)) {
@@ -219,10 +200,8 @@ export function isReferenceCapture(checker: Checker, closure: int, index: int): 
   return false
 }
 
-// isCapturedByArrow reports whether a `let` or mutable parameter is used
-// inside an arrow function it is declared outside of. The closure holds it
-// by reference, so no `is` test outside the closure narrows it there.
 export function isCapturedByArrow(checker: Checker, index: int): bool {
+  // The closure holds the local by reference, so no `is` test outside the closure narrows it there.
   const body = checker.body
   const depth = checker.bodies[body].arrowDepth
   const local = checker.bodies[body].locals[index]
@@ -247,9 +226,6 @@ function addCapture(mutable checker: Checker, closure: int, local: int) uses all
   Arrays.push(mutable checker.bodies[body].closures[closure].captures, local)
 }
 
-// isDeclaredBelow reports whether a local is declared in a scope from the
-// current one up to, but not including, the scope at stopDepth (Go's
-// declaredBelow).
 function isDeclaredBelow(checker: Checker, stopDepth: int, local: int, name: string): bool {
   let depth = checker.scopeDepth - 1
   while (depth >= stopDepth) {
@@ -263,8 +239,6 @@ function isDeclaredBelow(checker: Checker, stopDepth: int, local: int, name: str
   return false
 }
 
-// findModuleFunction finds the Checker.functions entry of a function declared in
-// a module, or -1.
 export function findModuleFunction(checker: Checker, moduleScope: int, funcDecl: FuncDecl): int {
   if (checker.scopes[moduleScope].functions[funcDecl.name] is Some(index)) {
     if (
@@ -284,10 +258,6 @@ export function findModuleFunction(checker: Checker, moduleScope: int, funcDecl:
   return -1
 }
 
-// checkFunctionValue checks a named function used as a value (Go's
-// funcValue). A generic function takes its type arguments from the expected
-// function type. The node refers to the function; an instance is queued when
-// the type arguments are closed.
 export function checkFunctionValue(
   mutable checker: Checker,
   nodeId: int,
@@ -295,6 +265,7 @@ export function checkFunctionValue(
   funcIndex: int,
   want: Option<Type>,
 ): Type uses alloc {
+  // A generic function takes its type arguments from the expected function type. An instance is queued when the type arguments are closed.
   const info = checker.functions[funcIndex]
   const parameters = info.declaration.parameters
   for (const param of Arrays.values(parameters)) {

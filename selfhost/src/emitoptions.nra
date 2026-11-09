@@ -24,8 +24,8 @@ import {
   temp,
   ownedTemp,
   consume,
-  typeOf,
-  refOf,
+  readNodeType,
+  readNodeRef,
   underlyingType,
   retainCode,
 } from "narrac/emitstate"
@@ -36,16 +36,15 @@ import { TEST_RUNNER_C } from "narrac/runtimetestrunner"
 
 const NODE = "selfhost-emit-options"
 
-// emitOptionCall emits a call of a std/result or std/test function.
 export function emitOptionCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.CallExpr(nodeId, pos, _, _, arguments)) {
-    if (refOf(emitter, nodeId) is Ref.Builtin(index)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Builtin(index)) {
       const name = emitter.checker.registry.functions[index].name
-      const resultType = typeOf(emitter, nodeId)
+      const resultType = readNodeType(emitter, nodeId)
       return emitNamedCall(walker, mutable emitter, name, pos, arguments, resultType)
     }
   }
@@ -84,12 +83,10 @@ function emitNamedCall<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "option call", NODE), owned: false }
 }
 
-// argumentType is the type of the n-th argument.
 function argumentType(emitter: Emitter, arguments: Array<Arg>, number: int): Type {
-  return typeOf(emitter, getExpressionId(arguments[number].value))
+  return readNodeType(emitter, getExpressionId(arguments[number].value))
 }
 
-// borrowArgument emits argument number into a temporary and returns its name.
 function borrowArgument<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -101,7 +98,6 @@ function borrowArgument<W: EmitWalker>(
   return temp(mutable emitter, type, code.text)
 }
 
-// findVariant is the position of the named variant in the enum's variants.
 function findVariant(emitter: Emitter, enumType: Type, name: string): int {
   const base = underlyingType(emitter, enumType)
   if (base is Type.TEnum(enumIndex)) {
@@ -115,7 +111,6 @@ function findVariant(emitter: Emitter, enumType: Type, name: string): int {
   return 0 - 1
 }
 
-// variantTag is the tag number of the named variant.
 function variantTag(emitter: Emitter, enumType: Type, name: string): int {
   const base = underlyingType(emitter, enumType)
   if (base is Type.TEnum(enumIndex)) {
@@ -125,7 +120,6 @@ function variantTag(emitter: Emitter, enumType: Type, name: string): int {
   return 0 - 1
 }
 
-// payloadType is the type of the first field of the named variant.
 function payloadType(emitter: Emitter, enumType: Type, name: string): Type {
   const base = underlyingType(emitter, enumType)
   if (base is Type.TEnum(enumIndex)) {
@@ -135,8 +129,6 @@ function payloadType(emitter: Emitter, enumType: Type, name: string): Type {
   return Type.TVoid
 }
 
-// payloadRead reads the first field of the named variant from the borrowed
-// value.
 function payloadRead(
   emitter: Emitter,
   enumValue: string,
@@ -152,18 +144,15 @@ function payloadRead(
   return enumValue
 }
 
-// retained copies a borrowed value into a new reference.
 function retained(mutable emitter: Emitter, code: string, type: Type): string uses alloc {
   return consume(mutable emitter, code, false, type)
 }
 
-// zeroResult declares the owned temporary a branching builtin fills.
 function zeroResult(mutable emitter: Emitter, type: Type): string uses alloc {
   const typeName = cType(emitter.checker, type)
   return ownedTemp(mutable emitter, type, `((${typeName}){0})`)
 }
 
-// allocateVariant emits the allocation of the named variant of resultType.
 function allocateVariant(
   mutable emitter: Emitter,
   resultType: Type,
@@ -175,7 +164,6 @@ function allocateVariant(
   return allocated.text
 }
 
-// openBranch starts `if (value is variant) {`.
 function openBranch(mutable emitter: Emitter, enumValue: string, tag: int) uses alloc {
   writeLine(mutable emitter, `if (${enumValue}.tag == ${Int.toString(tag)}) {`)
   emitter.indent = emitter.indent + 1
@@ -192,7 +180,6 @@ function closeBranch(mutable emitter: Emitter) uses alloc {
   writeLine(mutable emitter, "}")
 }
 
-// assignCopy sets result to a new reference to the borrowed value.
 function assignCopy(
   mutable emitter: Emitter,
   result: string,
@@ -206,8 +193,6 @@ function assignCopy(
   }
 }
 
-// callCallback calls the function value with arguments and returns the
-// temporary that holds the result.
 function callCallback(
   mutable emitter: Emitter,
   callbackType: Type,
@@ -217,8 +202,6 @@ function callCallback(
   return callFunctionValue(mutable emitter, callbackType, callback, callbackArguments).text
 }
 
-// passOn sets result to the named variant of resultType, holding a new
-// reference to the payload of the borrowed variant `from` of source.
 function passOn(
   mutable emitter: Emitter,
   result: string,
@@ -235,8 +218,6 @@ function passOn(
   writeLine(mutable emitter, `${result} = ${allocated};`)
 }
 
-// emitWithDefault is Result.withDefault: the payload of Ok, else the
-// default. std/option is Narra source (std/src/option.nra).
 function emitWithDefault<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -244,6 +225,7 @@ function emitWithDefault<W: EmitWalker>(
   arguments: Array<Arg>,
   resultType: Type,
 ): Code uses alloc {
+  // std/option is Narra source (std/src/option.nra).
   const hit = "Ok"
   const subject = borrowArgument(walker, mutable emitter, arguments, 0)
   const subjectType = argumentType(emitter, arguments, 0)
@@ -260,7 +242,6 @@ function emitWithDefault<W: EmitWalker>(
   return Code { text: result, owned: true }
 }
 
-// emitResultMap is Result.map (changes Ok) and Result.mapErr (changes Err).
 function emitResultMap<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -291,7 +272,6 @@ function emitResultMap<W: EmitWalker>(
   return Code { text: result, owned: true }
 }
 
-// emitResultAndThen is Result.andThen(result, function).
 function emitResultAndThen<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -314,8 +294,6 @@ function emitResultAndThen<W: EmitWalker>(
   return Code { text: result, owned: true }
 }
 
-// emitResultToOption is Result.ok (the Ok value as Some) and Result.err (the
-// Err value as Some).
 function emitResultToOption<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -340,7 +318,6 @@ function emitResultToOption<W: EmitWalker>(
   return Code { text: result, owned: true }
 }
 
-// emitTestCompare is Test.eq and Test.ne.
 function emitTestCompare<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -368,13 +345,13 @@ function emitTestCompare<W: EmitWalker>(
   return Code { text: "", owned: false }
 }
 
-// emitTestPanics runs the closure in a child process (runtime_test.h).
 function emitTestPanics<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
+  // The closure runs in a child process (runtime_test.h).
   const callback = borrowArgument(walker, mutable emitter, arguments, 0)
   let expected = "NULL"
   if (Arrays.length(arguments) == 2) {
@@ -392,7 +369,6 @@ function emitTestPanics<W: EmitWalker>(
   return Code { text: `narra_test_expect(&${process}, ${expected}, ${position})`, owned: false }
 }
 
-// emitTestGolden is Test.golden(name, actual).
 function emitTestGolden<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -405,7 +381,6 @@ function emitTestGolden<W: EmitWalker>(
   return Code { text: `narra_test_golden(${goldenName}, ${actual}, ${position})`, owned: false }
 }
 
-// testName finds the name of the test numbered moduleNumber in its module.
 function testName(checker: Checker, module: string, moduleNumber: int): string {
   if (checker.scopeIndex[module] is Some(scopeNumber)) {
     let seen = 0
@@ -421,7 +396,6 @@ function testName(checker: Checker, module: string, moduleNumber: int): string {
   return ""
 }
 
-// emitTestMain writes the test runner and the C main of a test build.
 export function emitTestMain(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   Str.append(mutable builder, TEST_RUNNER_C)

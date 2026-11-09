@@ -378,7 +378,7 @@ Decision: a function that returns several values returns a tuple or a struct. Th
 
 ## D45. Counting loops through `Range`
 
-Decision: there is no C-style `for (init; cond; step)`. Counting uses `for (const i of Range.upTo(n))` (section 2).
+Decision: there is no C-style `for (init; cond; step)`. Counting uses `for (const i of Range.upTo(n))` (section 2). Amended by D76: the C-style loop exists; `++` and compound assignment are still open there.
 
 - **Reason.** One loop form, `for ... of`, covers arrays, maps, ranges and generators.
 - **Reason.** `Range.upTo(n)` stops before `n`, which fits 0-based indexes.
@@ -664,6 +664,16 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 - **Reason.** TypeScript code and models write these forms constantly. Accepting them with TypeScript's meaning is allowed by D2, and spares a rewrite.
 - **Kept from D45.** `for (const i of Ranges.upTo(n))` stays the usual way to count over indexes.
 - **Cost.** Two loop forms where D45 had one. The details (whether `init` must be `let`, whether `++` has a value, `continue` jumping to the step, labels, the semicolon rule inside the parentheses) are settled by nodes c-style-for and compound-assign.
+- **Built: the C-style loop.** `init` is `let` or empty (`const` is E0960). `condition` is a `bool` or empty (E0959). `step` is an assignment, a call or empty (E0961). `continue` runs the step. The `;` is a token only inside parentheses, so `;` elsewhere is still E0003. The name from `init` ends with the loop.
+
+Amendment (node compound-assign, 2026-11-09). Rules for compound assignment and `++`/`--`:
+
+- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`.
+- **Statements only.** They have no value and cannot be nested in an expression (E0964). Only the postfix spelling `x++` and `x--` exists; `++x` and `--x` are an error with a hint (E0964), so `--x` no longer parses as a double negation.
+- **Targets.** Every target `=` accepts: a `let`, a field or element of a changeable value (D81), the contents of a `mutable` parameter. A `const` binding and a whole `mutable` parameter are rejected as for `=`.
+- **Types.** The value has the type of the target (E0962). `++` and `--` take an integer of any width (E0963). Overflow, division by zero and shift checks are those of the binary operator.
+- **Strings.** `s += t` joins strings and releases the old value; `+=` is the only compound form on a `string`, and `a + b` stays an error.
+- **Map index.** `counts[key] += 1` panics when the key is missing, since `counts[key]` is an `Option` and the old value is needed. Insert the key first with `Maps.set`.
 
 ## D77. Non-escaping closures capture `let` and `mutable` by reference
 
@@ -878,3 +888,30 @@ Decision: the repository has no Go compiler. `seed/narrac.c`, the C that the sel
 - **Alternative rejected.** Download a release binary to bootstrap: needs a network and a trusted host for every build. GitHub Releases come later, for distribution only.
 - **Cost.** The seed is a 6 MB generated file; a merge that changes `selfhost/` on two branches regenerates it instead of merging it.
 - **Cost.** C is the only backend, so the seed is the same on every platform (macOS arm64 and Linux x86_64 are checked).
+
+## D90. `Cell<T>`: a source module over a box, shared by every copy of the handle
+
+Decision: `std/cell` is a Narra source module (`std/src/cell.nra`) that exports `opaque struct Cell<T>` and four functions: `Cells.create(value)`, `Cells.get(cell)`, `Cells.set(cell, value)` and `Cells.update(cell, change)`, where `change` is `(value: T) => T uses E`. A `Cell` holds one `Box<T>`; copying a `Cell` (a `const` captured by an escaping closure, a struct field, an argument) copies the handle, so every copy reads and writes the same slot. `Cells.set` and `Cells.update` write the box in place through one primitive, `std/internal/cell` `store`, which skips the copy that a write to a shared `Box` makes, and drops the old value at the call (`Cells.set(cell, None)` frees a closure stored in the cell at once, as D80 needs). Escaping closures share changing state by capturing a `const` `Cell`; E0612 (an escaping closure that captures a `let`) now ends with the hint to keep the state in a `Cell` from `std/cell`. Chosen by the orchestrator's worker on 2026-11-09, under the gate the maintainer delegated for batch 2.
+
+- **Import.** `import * as Cells from "std/cell"` for the functions and `import { Cell } from "std/cell"` for the type, the pattern of `std/json` and `Value` (D83). `Cell` is not a prelude type, so there is no `Cell.get` spelling; the plural alias follows D72. SPEC text that wrote `Cell.set` now writes `Cells.set`.
+- **Names.** `create`, `get`, `set` and `update` match `Shared.create` and `Shared.update`; `Shared.read(shared, f)` is `Cells.get(cell)` without the lock and without a callback. `update` takes a function that returns the new value, not a `mutable` parameter, because D81 and E0028 do not allow a scalar as `mutable`. `set`, `get` and `update` have no `alloc` or `io` effect; a `Cell` write is not tracked by the effect system, as D46 only makes the allocation visible, at `create`.
+- **Equality: `==` and `!=` on a `Cell` are a compile error (E0965), and a `Cell` is not `Hashable`, so it cannot be a `Map` key.** Comparing the contents would be the wrong meaning for an identity type. Identity equality can come later if a program needs it; it would need `implement Equatable` and `implement Hashable` together plus a pointer-identity primitive. Built as a check in `nominalImplements` (`traits.nra`): the struct `Cell` of `std/cell` never gets the automatic Equatable or Hashable. The hint names `Cells.get`. Decided by the coordinator after the worker's first version.
+- **Threads.** A `Cell` uses plain reference counts, so it must not reach another thread. Threads are parked, so no thread function or channel exists to reject it today, and the checker says nothing. The node that builds threads must reject a `Cell` (or a type that holds one) captured by a thread function or sent through a channel, and point at `Shared`. SPEC section 8 records the rule.
+- **Cycles.** None handled, as D80 decided. A closure stored in a `Cell` that captures the same `Cell` leaks, and the leak check reports it (`testdata/leaks/cell_cycle.nra`, new `leaks` suite of the test runner, which expects exit code 102 and a `leak check:` report); `Cells.set(cell, None)` before the last outside handle drops frees it (`testdata/cell_cycle_broken.nra`).
+- **Checker change.** A bare `None` argument of a generic call takes its type from the earlier arguments (`Cells.set(slot, None)` with `slot: Cell<Option<string>>`). Before, it reported "cannot tell the type of None". It applies to every generic function, not only the cell ones.
+- **Rejected: a builtin type `TCell` like `Shared`.** It needs a case in about 30 places of the checker, emitter and dump code, and it is one more type kind to carry for a box with a different write rule. The source module needs one primitive and no new type.
+- **Rejected: `Cell` as `Box<T>` itself or a type alias.** `Box` has value semantics: a write to a shared box copies it first (section 6), and `==` compares contents. A `Cell` must share.
+- **Rejected: the `Cell.set` spelling with a prelude `Cell` type.** It would put `Cell` in every module's scope (D67 keeps the prelude small) and make `Cell` a namespace type like `Box`, which needs entries in the namespace table and the missing-import fixes.
+- **Rejected: `get` that borrows.** `Cells.get` returns a copy that holds one more reference, so an array in a `Cell` is copied by the next in-place change to the array made through `update`. That is O(n) per update for a large array; a program that updates a large array often should keep it in a struct passed as `mutable`.
+- **Cost.** One heap allocation per `Cell`, plus one reference count per copy of the handle. `Cells.update` on a counted value (string, array, struct) holds the old value while `change` runs.
+- **Cost.** E0966, reserved for this node, is not used: the other misuses (a wrong value type, reaching the field of the opaque struct) are reported by existing codes.
+
+## D91. A call through a value binds the effect variables of the function the value names
+
+Decision: when a function with effect variables is used as a value (`const apply = twice`, or a local constant), a call through the value binds each variable to the effects of the arguments passed to the parameters whose type names it, as a direct call does (D14, D78). `apply(loud, 1)` has the effects of `loud`, and `apply(quiet, 1)` is pure. A variable of the function being checked stays a name, because the caller of that function binds it.
+
+- **Reason.** The effect pass dropped the variable: a local constant tracked the function's effects without its variables, and a top-level constant took the type effects, so `apply(loud, 1)` counted as pure.
+- **Reason.** The type of the value (D86) already holds the parameter types and the function that binds the variables, so the call can bind them with the rule direct calls use. No new syntax and no new error.
+- **Rejected: an error for a function with effect variables used as a value** (hint: wrap it in a closure). It is simpler, but it rejects `const apply = twice` and `values.map(twice)` style code that is correct, and a closure cannot write the effect variable it needs.
+- **Cost.** A variable that no parameter of the value's type names is not bound at the call. Passing such a value on as an argument is unchanged.
+- **Generator results.** A function type cannot list the `alloc` that creating a generator charges apart from the generator's own `uses`, so storing a generator function in a slot whose result is a generator type does not charge it. A call through any function value whose result type is a generator charges `alloc` at the call instead, so a pure function cannot create a generator frame through a value. A value that returns a generator it did not create pays an `alloc` it may not use; the type cannot tell the two apart.

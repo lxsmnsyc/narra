@@ -6,7 +6,7 @@
 // array and map in it has one owner, so pushes and writes happen in place.
 // Declaration tables are written through `checker.structs[i].fields = ...`.
 //
-// Side tables are indexed by node id (D63). They are sized by the id count
+// Side tables are indexed by node id. They are sized by the id count
 // given to newChecker (the package's `nextId` plus the prelude's ids, see
 // declare.nra), never by the number of nodes, because ids have gaps. A
 // dummy node built after a parse error has id -1; parsed files that reach
@@ -101,7 +101,7 @@ export struct FuncInfo {
 
 // A top-level constant. declaredType is the declared type, set by declareConstTypes;
 // None without an annotation until the body checker infers it. The body
-// checker checks the value once (state CONST_NEW, CONST_BUSY, CONST_DONE)
+// The checker evaluates the value once (state CONST_NEW, CONST_BUSY, CONST_DONE)
 // and keeps its type in valueType.
 export struct ConstInfo {
   name: string
@@ -149,9 +149,9 @@ export enum ProgramFunc {
 // selfhost-check-patterns adds narrowing beside it.
 // How a local was bound. Only a Plain local (a `const` or `let` with a plain
 // name), a Reference and a `mutable` parameter can have their contents
-// changed (D81); the others hold a copy of part of another value and are
+// changed; the others hold a copy of part of another value and are
 // read-only. A Reference is the name of `for (mutable item of items)`: a
-// pointer to the element, which acts as a `mutable` parameter (D85).
+// pointer to the element, which acts as a `mutable` parameter.
 export enum BindingKind derives Equatable {
   Plain
   Pattern
@@ -160,7 +160,7 @@ export enum BindingKind derives Equatable {
   Reference
 }
 
-// The source of a `for (mutable item of items)` loop being checked (D85).
+// The source of a `for (mutable item of items)` loop being checked.
 // The body cannot use a place that overlaps it: local is the BodyInfo.locals
 // index at its root, path the fields after it, with "[]" for an element.
 export struct LoopBorrow {
@@ -185,7 +185,7 @@ export struct LocalInfo {
   writes: Array<Pos> = []
   binding: BindingKind
   // For a Loop binding: the place the loop reads (`players`), or "" when the
-  // source is no place, and whether its elements have contents, for the hint
+  // the source is no place, and whether its elements have contents, for the hint
   // of a write through the binding.
   loopSource: string = ""
   loopContents: bool = false
@@ -204,7 +204,7 @@ export struct ClosureInfo {
   stack: bool
   captures: Array<int>
   // The captured local `const`s the closure, or one nested in it, changes:
-  // they are captured by reference, as a `let` is (D81).
+  // they are captured by reference, as a `let` is.
   refCaptures: Array<int> = []
   hasHint: bool
   hintParameters: Array<Option<Type>>
@@ -225,7 +225,7 @@ export enum BodyRoot {
   RootExpr(expression: Expr)
 }
 
-// The results of one checked body (D70). A generic function is checked once
+// The results of one checked body. A generic function is checked once
 // with its type parameters open and once per instance over the same syntax,
 // so results are kept per body, not per package: types, refs and declared
 // are indexed by `id - first`, where [first, first + length) covers the ids
@@ -370,7 +370,7 @@ export trait Walker {
 
 // An instance of a generic function (Go's pendingFunc with the cloned
 // declaration): the syntax stays shared, so the instance keeps its
-// signature here and its results in its own body (D70). scope is the
+// signature here and its results in its own body. scope is the
 // declaring module and env maps the type parameter names to typeArguments.
 export struct FuncInstance {
   funcIndex: int // Checker.functions
@@ -499,8 +499,8 @@ export struct Checker {
   // by the effect pass.
   generatorUses: Array<GeneratorUse> = []
   // Function values stored where a function type with the same signature is
-  // expected, checked by the effect pass against what the value does (D86).
-  // looseFunctions is set while the argument for a function-type parameter of
+  // expected, checked by the effect pass against what the value does.
+  // The flag looseFunctions is set while the argument for a function-type parameter of
   // a private function is checked: such a parameter takes the effects of the
   // argument at each call.
   functionStores: Array<FunctionStore> = []
@@ -512,11 +512,11 @@ export struct Checker {
   generatorEffects: Map<string, Array<string>>
   // The type arguments written on the call being checked, by call node id
   // (`f<int>(x)`). checkCallEndingNarrowing sets them; the generic and trait
-  // call checks that use them empty the entry, so a non-empty entry after the
-  // check means the callee takes no type arguments.
+  // call code empties the entry when it uses it, so a non-empty entry after
+  // the check means the callee takes no type arguments.
   callTypeArguments: Map<int, Array<TypeExpr>>
   // The order of the named arguments of each call whose arguments are not
-  // written in parameter order, by call node id (D87): entry i is the
+  // written in parameter order, by call node id: entry i is the
   // written index of the argument passed to parameter i. The AST keeps the
   // written order, which is the evaluation order; a pass that pairs an
   // argument with its parameter reads the call through orderArguments.
@@ -535,7 +535,7 @@ export struct Checker {
   loopBorrows: Array<LoopBorrow> = []
   borrowChecked: Array<int> = []
   // The id of the integer literal directly under a unary minus, or -1: the
-  // literal may reach one further below zero (D82).
+  // literal may reach one further below zero.
   negatedLiteralId: int = -1
   // Generic function instances (instances.nra) in discovery order, found by
   // "<func>|<typeKeys>" in funcInstances. pending is the queue of instances
@@ -546,7 +546,7 @@ export struct Checker {
   pending: Array<int> = []
   pendingNext: int = 0
   // Facts for the emitter (contracts/emitter.md, filled by selfhost-emit-program).
-  // programFunctions is Go's Program.Funcs order, programConsts the constants in
+  // programFunctions follows Go's Program.Funcs order, programConsts lists the constants in
   // the order each reaches CONST_DONE, composites every array, box, map and
   // function type by typeKey. Until programRecorded is set the emitter reports
   // "program facts" as unsupported.
@@ -558,7 +558,6 @@ export struct Checker {
   programRecorded: bool = true
 }
 
-// newChecker makes an empty checker whose side tables hold ids [0, ids).
 export function newChecker(ids: int): Checker uses alloc {
   return Checker {
     structs: [],
@@ -604,14 +603,13 @@ export function newChecker(ids: int): Checker uses alloc {
   }
 }
 
-// reportError records an error in the current module's file. An error equal to
-// one already recorded is dropped, as Go's report does.
 export function reportError(
   mutable checker: Checker,
   pos: Pos,
   code: string,
   message: string,
 ) uses alloc {
+  // An error equal to one already recorded is dropped.
   let file = ""
   if (Arrays.length(checker.scopes) > 0) {
     file = checker.scopes[checker.current].file
@@ -629,7 +627,6 @@ export function reportErrorIn(
   reportErrorWithFixes(mutable checker, file, pos, code, [], message)
 }
 
-// reportErrorFix reports an error that carries fixes (Go's errorfFix).
 export function reportErrorFix(
   mutable checker: Checker,
   pos: Pos,
@@ -684,8 +681,6 @@ function isSamePosition(left: Pos, right: Pos): bool {
   return left.line == right.line && left.column == right.column
 }
 
-// findImportAt is where a fix adds an import line: the line of the first
-// import, or the line after the leading comment block of the module.
 export function findImportAt(checker: Checker): Pos {
   const scope = checker.scopes[checker.current]
   if (Arrays.length(scope.imports) > 0) {
@@ -694,14 +689,11 @@ export function findImportAt(checker: Checker): Pos {
   return Pos { line: scope.facts.header, column: 1 }
 }
 
-// buildImportFix adds `import * as namespace from "path"` before the first
-// import of the module (Go's importFix).
 export function buildImportFix(checker: Checker, namespace: string, path: string): Fix uses alloc {
   const at = findImportAt(checker)
   return createFix(`import ${path}`, [insertAt(at, `import * as ${namespace} from "${path}"\n`)])
 }
 
-// errorText prints the errors as the Go dumps do, one line each.
 export function errorText(errors: Array<CheckError>): string uses alloc {
   let builder = Str.builder()
   for (const error of Arrays.values(errors)) {
@@ -713,8 +705,6 @@ export function errorText(errors: Array<CheckError>): string uses alloc {
   return Str.build(builder)
 }
 
-// newScope adds the scope of a module and returns its index. Every module
-// sees the primitive names and the prelude's types and generics.
 export function newScope(
   mutable checker: Checker,
   path: string,
@@ -773,14 +763,12 @@ export function newScope(
   return index
 }
 
-// enter makes a scope current and returns the previous one.
 export function enter(mutable checker: Checker, scope: int): int {
   const previous = checker.current
   checker.current = scope
   return previous
 }
 
-// lookupType finds a non-generic named type in the current scope.
 export function lookupType(checker: Checker, name: string): Option<Type> {
   return checker.scopes[checker.current].types[name]
 }
@@ -789,18 +777,15 @@ export function lookupGeneric(checker: Checker, name: string): Option<int> {
   return checker.scopes[checker.current].generics[name]
 }
 
-// setParameterType records the type of a parameter in the side table. Ids
-// outside the table are ignored.
 export function setParameterType(mutable checker: Checker, nodeId: int, type: Type) {
+  // Ids outside the table are ignored.
   if (nodeId >= 0 && nodeId < Arrays.length(checker.paramTypes)) {
     checker.paramTypes[nodeId] = type
   }
 }
 
-// lookupTrait finds a trait by the name the current module uses for it: its
-// own and imported traits, then the prelude's. It returns the Checker.traits
-// index, or -1.
 export function lookupTrait(checker: Checker, name: string): int {
+  // Its own and imported traits come first, then the prelude's.
   if (checker.scopes[checker.current].traits[name] is Some(index)) {
     return index
   }
@@ -810,7 +795,6 @@ export function lookupTrait(checker: Checker, name: string): int {
   return -1
 }
 
-// stdTrait finds Equatable, Hashable, Ordered or Show, or returns -1.
 export function stdTrait(checker: Checker, name: string): int {
   if (checker.scopes[0].traits[name] is Some(index)) {
     if (checker.traits[index].std) {
@@ -820,11 +804,10 @@ export function stdTrait(checker: Checker, name: string): int {
   return -1
 }
 
-// checkMapKey queues the check of a Map key type. Keys that still hold type
-// parameters are checked when the generic is used. The check runs once every
-// module is declared (flushMapKeys in traits.nra), when the trait facts of
-// later types are known.
 export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses alloc {
+  // Keys that still hold type parameters are checked when the generic is used. The rest
+  // are checked once every module is declared (flushMapKeys in traits.nra), when the
+  // trait facts of later types are known.
   if (containsTypeParameter(checker, key)) {
     return
   }
@@ -836,8 +819,6 @@ export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses 
   Arrays.push(mutable checker.mapKeys, item)
 }
 
-// typeString prints a type as Go's Type.String does: structs and enums by
-// name with their type arguments, tuples as #[A, B].
 export function typeString(checker: Checker, type: Type): string uses alloc {
   return match (type) {
     Type.TInt => "int"
@@ -883,7 +864,6 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
   }
 }
 
-// generatorName writes Generator<T>, or Coroutine<In, Out> when there is an input.
 function generatorName(checker: Checker, element: Type, input: Type): string uses alloc {
   if (input == Type.TVoid) {
     return `Generator<${typeString(checker, element)}>`
@@ -891,10 +871,8 @@ function generatorName(checker: Checker, element: Type, input: Type): string use
   return `Coroutine<${typeString(checker, input)}, ${typeString(checker, element)}>`
 }
 
-// generatorEffectList is the effect list of a generator type: the inferred
-// one of a private generator once the effect pass has run (Go's
-// GeneratorType.effects).
 export function generatorEffectList(checker: Checker, type: Type): Array<string> uses alloc {
+  // A private generator has its inferred effects once the effect pass has run.
   if (type is Type.TGenerator(_, effects, _, origin, _)) {
     if (origin == -1) {
       return effects
@@ -909,28 +887,24 @@ export function generatorEffectList(checker: Checker, type: Type): Array<string>
   return []
 }
 
-// generatorKey names the private function* Checker.functions[index] in
-// Checker.generatorEffects: "<module>|<line>:<column>", the key the effect
-// pass gives its functions.
 export function generatorKey(checker: Checker, index: int): string uses alloc {
+  // The key is "<module>|<line>:<column>", the one the effect pass gives its functions.
   const info = checker.functions[index]
   return `${info.module}|${Int.toString(info.declaration.pos.line)}:${Int.toString(info.declaration.pos.column)}`
 }
 
-// functionUsesSuffix writes the effects of a function type, except the
-// variables of another function: those are bound at each call.
 export function functionUsesSuffix(
   checker: Checker,
   effects: Array<string>,
   binder: int,
 ): string uses alloc {
+  // The effect variables of another function are left out: they are bound at each call.
   if (!checker.printEffects || (binder >= 0 && binder != checker.functionIndex)) {
     return ""
   }
   return usesSuffix(effects)
 }
 
-// usesSuffix writes an effect list as it follows a type, ` uses a, b`.
 export function usesSuffix(effects: Array<string>): string uses alloc {
   if (Arrays.length(effects) == 0) {
     return ""
@@ -961,8 +935,6 @@ export function typeList(checker: Checker, types: Array<Type>): string uses allo
   return Str.join(parts, ", ")
 }
 
-// typeModule is the declaring module of a struct, enum or distinct type, or
-// "" for any other type.
 export function typeModule(checker: Checker, type: Type): string {
   return match (type) {
     Type.TStruct(index) => checker.structs[index].module
@@ -998,8 +970,6 @@ export function anyTypeParameter(checker: Checker, types: Array<Type>): bool {
   return false
 }
 
-// reportTypeError reports an error at the declaration of a struct or enum, in the
-// file of the module that declares it.
 export function reportTypeError(
   mutable checker: Checker,
   type: Type,
@@ -1024,11 +994,9 @@ export function reportTypeError(
   enter(mutable checker, saved)
 }
 
-// finish orders the program's structs and enums for the emitter: concrete
-// are the non-generic ones in declaration order, then come the instances
-// without type parameters. Go's finish also lists arrays, boxes, maps and
-// function types; the emitter collects those itself (selfhost-emit).
 export function finish(mutable checker: Checker, concrete: Array<Type>) uses alloc {
+  // Arrays, boxes, maps and function types are not listed here; the emitter collects
+  // them itself.
   let all = concrete
   for (const type of Arrays.values(checker.instanceTypes)) {
     if (!containsTypeParameter(checker, type)) {
@@ -1041,13 +1009,12 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
   }
 }
 
-// visitOrder places a type after the types it holds inline (Go's orderTypes). A
-// boxed enum is complete before its fields, which lets an enum hold itself.
 function visitOrder(
   mutable checker: Checker,
   mutable state: Map<string, int>,
   type: Type,
 ) uses alloc {
+  // A boxed enum is complete before its fields, which lets an enum hold itself.
   let fields: Array<Field> = []
   let boxed = false
   match (type) {
@@ -1110,7 +1077,7 @@ export struct GeneratorUse {
 }
 
 // A function value used where a function type with the same signature is
-// expected (D86). The value may have fewer effects than the type.
+// expected. The value may have fewer effects than the type.
 export struct FunctionStore {
   pos: Pos
   file: string
@@ -1134,9 +1101,6 @@ export struct BodyState {
   generator: bool
 }
 
-// startBody adds a body to Checker.bodies, makes it current with one empty
-// scope and returns the state to give back to finishBody. Its tables cover
-// the ids of the nodes under root.
 export function startBody(
   mutable checker: Checker,
   kind: string,
@@ -1216,7 +1180,6 @@ export function startBody(
   return saved
 }
 
-// finishBody makes the saved body current again.
 export function finishBody(mutable checker: Checker, saved: BodyState) uses alloc {
   reportUnusedLocals(mutable checker)
   checker.body = saved.body
@@ -1231,11 +1194,9 @@ export function finishBody(mutable checker: Checker, saved: BodyState) uses allo
   checker.generator = saved.generator
 }
 
-// reportUnusedLocals reports the locals of the current body that nothing read
-// (Go's reportUnused). A name that starts with `_` is unused on purpose, the
-// parameter of the entry function `run` is exempt, and a body that already
-// has an error reports nothing.
 function reportUnusedLocals(mutable checker: Checker) uses alloc {
+  // A name that starts with `_` is unused on purpose, the parameter of the entry
+  // function `run` is exempt, and a body that already has an error reports nothing.
   if (checker.body < 0) {
     return
   }
@@ -1304,10 +1265,9 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
   }
 }
 
-// buildRenameUnusedFix puts a `_` before the name of an unused local, and
-// before every assignment to it. The declaration `{ host }` becomes
-// `{ host: _host }`, because renaming alone would change the field.
 function buildRenameUnusedFix(local: LocalInfo): Array<Fix> uses alloc {
+  // The declaration `{ host }` becomes `{ host: _host }`, because renaming alone would
+  // change the field.
   const unused = `_${local.name}`
   let edits = [insertAt(local.namePos, "_")]
   if (local.shorthand) {
@@ -1321,7 +1281,6 @@ function buildRenameUnusedFix(local: LocalInfo): Array<Fix> uses alloc {
   return [createFix(`Rename to ${unused}`, edits)]
 }
 
-// isPositionBefore compares two source positions.
 function isPositionBefore(left: Pos, right: Pos): bool {
   if (left.line != right.line) {
     return left.line < right.line
@@ -1329,7 +1288,6 @@ function isPositionBefore(left: Pos, right: Pos): bool {
   return left.column < right.column
 }
 
-// findBodySlot is the table index of a node id in a body, or -1.
 export function findBodySlot(body: BodyInfo, nodeId: int): int {
   const slot = nodeId - body.first
   if (slot < 0 || slot >= Arrays.length(body.types)) {
@@ -1338,7 +1296,6 @@ export function findBodySlot(body: BodyInfo, nodeId: int): int {
   return slot
 }
 
-// findSlot is the table index of a node id in the current body, or -1.
 function findSlot(checker: Checker, nodeId: int): int {
   if (checker.body < 0) {
     return -1
@@ -1354,7 +1311,6 @@ export function setNodeType(mutable checker: Checker, nodeId: int, nodeType: Typ
   }
 }
 
-// getNodeType is the type the current body gave a node, or None.
 export function getNodeType(checker: Checker, nodeId: int): Option<Type> {
   const slot = findSlot(checker, nodeId)
   if (slot < 0) {
@@ -1379,9 +1335,8 @@ export function getRef(checker: Checker, nodeId: int): Ref {
   return checker.bodies[checker.body].refs[slot]
 }
 
-// findLocal finds a name in the scopes of the current body, innermost
-// first, and returns its BodyInfo.locals index or -1 (Go's lookup).
 export function findLocal(checker: Checker, name: string): int {
+  // Innermost scope first.
   let depth = checker.scopeDepth - 1
   while (depth >= 0) {
     if (checker.localScopes[depth][name] is Some(index)) {
@@ -1396,22 +1351,19 @@ export function getLocal(checker: Checker, index: int): LocalInfo {
   return checker.bodies[checker.body].locals[index]
 }
 
-// canChangeContents reports whether the fields and elements of a local can
-// be assigned and the local passed as mutable: a `mutable` parameter, a
-// `const` or `let` declared with a plain name (D81), or the name of a
-// `for (mutable ...)` loop (D85).
 export function canChangeContents(local: LocalInfo): bool {
+  // A `mutable` parameter, a `const` or `let` declared with a plain name, or the name
+  // of a `for (mutable ...)` loop.
   if (local.param) {
     return local.isMutable
   }
   return local.binding == BindingKind.Plain || local.binding == BindingKind.Reference
 }
 
-// setBinding records how a declared local was bound. The `for` head with a
-// pattern or `let` becomes a declaration from the loop's hidden name
-// `__for_L_C` (parser), so such a declaration is a Loop binding that takes
-// the loop's source; any other declaration gets kind.
 export function setBinding(mutable checker: Checker, local: int, value: Expr, kind: BindingKind) {
+  // The `for` head with a pattern or `let` becomes a declaration from the loop's hidden
+  // name `__for_L_C` (parser), so such a declaration is a Loop binding that takes the
+  // loop's source; any other declaration gets kind.
   const body = checker.body
   if (value is Expr.Ident(_, _, name)) {
     if (Str.startsWith(name, "__for_")) {
@@ -1431,10 +1383,8 @@ export function setBinding(mutable checker: Checker, local: int, value: Expr, ki
   checker.bodies[body].locals[local].binding = kind
 }
 
-// isContentsType reports a type whose contents change in place, the only
-// types a `mutable` parameter can have: a struct, Array, Map, Box,
-// StringBuilder, Generator or Coroutine (D81).
 export function isContentsType(checker: Checker, type: Type): bool {
+  // These are the only types a `mutable` parameter can have.
   return match (type) {
     Type.TStruct(index) => !checker.structs[index].tuple
     Type.TArray(_) => true
@@ -1446,16 +1396,14 @@ export function isContentsType(checker: Checker, type: Type): bool {
   }
 }
 
-// checkMutableType reports a `mutable` parameter whose type has no contents
-// to change (D81): a number, string, enum, tuple, function or bare type
-// parameter. selfParameter is the Self of the trait being declared, or -1;
-// `mutable value: Self` is allowed there.
 export function checkMutableType(
   mutable checker: Checker,
   pos: Pos,
   type: Type,
   selfParameter: int,
 ) uses alloc {
+  // The Self of the trait being declared is selfParameter, or -1; `mutable value: Self`
+  // is allowed there.
   if (isContentsType(checker, type) || type == Type.TVoid) {
     return
   }
@@ -1474,8 +1422,6 @@ export function checkMutableType(
   )
 }
 
-// declareLocal adds a local to the innermost scope (Go's declare); nodeId is
-// the declaring node. Shadowing is an error, except for `_`.
 export function declareLocal(
   mutable checker: Checker,
   nodeId: int,
@@ -1485,6 +1431,7 @@ export function declareLocal(
   isMutable: bool,
   param: bool,
 ): int uses alloc {
+  // Shadowing is an error, except for `_`.
   if (name != "_" && findLocal(checker, name) >= 0) {
     reportError(
       mutable checker,
@@ -1526,9 +1473,8 @@ export function declareLocal(
   return index
 }
 
-// pushScope opens a block scope. The stack keeps popped slots and empties
-// them on reuse, since std/array has no pop.
 export function pushScope(mutable checker: Checker) uses alloc {
+  // The stack keeps popped slots and empties them on reuse, since std/array has no pop.
   if (checker.scopeDepth < Arrays.length(checker.localScopes)) {
     const depth = checker.scopeDepth
     checker.localScopes[depth] = Map {}
@@ -1542,16 +1488,13 @@ export function popScope(mutable checker: Checker) {
   checker.scopeDepth = checker.scopeDepth - 1
 }
 
-// unsupported reports a construct that a later roadmap node ports. The
-// harness (selfhost_bodies_test.go) skips any input whose output holds
-// `unsupported:`. what names the construct and the node, as in
-// "`is` (selfhost-check-patterns)".
 export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
+  // The harness (selfhost_bodies_test.go) skips any input whose output holds
+  // `unsupported:`.
   reportError(mutable checker, pos, "E0213", `unsupported: ${what}`)
   return Type.TVoid
 }
 
-// hasNamedArgument reports whether a call names any of its arguments.
 export function hasNamedArgument(arguments: Array<Arg>): bool {
   for (const argument of Arrays.values(arguments)) {
     if (argument.name is Some(_)) {
@@ -1561,13 +1504,12 @@ export function hasNamedArgument(arguments: Array<Arg>): bool {
   return false
 }
 
-// orderArguments is the arguments of a call in the callee's parameter order.
-// A call without a recorded order passes them as written.
 export function orderArguments(
   checker: Checker,
   nodeId: int,
   arguments: Array<Arg>,
 ): Array<Arg> uses alloc {
+  // A call without a recorded order passes the arguments as written.
   if (checker.argumentOrders[nodeId] is Some(order)) {
     let ordered: Array<Arg> = []
     for (const written of Arrays.values(order)) {
@@ -1578,13 +1520,12 @@ export function orderArguments(
   return arguments
 }
 
-// findParameterIndexes is the parameter index of each of the count written
-// arguments of a call: its own index unless named arguments changed the order.
 export function findParameterIndexes(
   checker: Checker,
   nodeId: int,
   count: int,
 ): Array<int> uses alloc {
+  // Each argument keeps its own index unless named arguments changed the order.
   let indexes: Array<int> = []
   for (const index of Ranges.between(0, count)) {
     Arrays.push(mutable indexes, index)
@@ -1621,9 +1562,8 @@ export function getExpressionId(expression: Expr): int {
   }
 }
 
-// isConditional tells `c ? a : b` from a plain block and an `if` value: the
-// parser starts its block at the `?` and the expression at the condition.
 export function isConditional(expression: Expr): bool {
+  // The parser starts its block at the `?` and the expression at the condition.
   if (expression is Expr.BlockExpr(_, pos, block)) {
     return block.pos.line != pos.line || block.pos.column != pos.column
   }
@@ -1658,21 +1598,19 @@ export function isNumeric(valueType: Type): bool {
   return isInteger(valueType) || valueType == Type.TF64 || valueType == Type.TF32
 }
 
-// findBody returns the BodyInfo index for a key, or -1. Keys: "func|<funcIndex>",
-// "inst|<instance>", "impl|<block>|<index>", "test|<module>|<n-th test of the module>",
-// "const|<constIndex>", "default|<module>.<name>|<field>" (the module is left out in the
-// prelude; a generic struct has one default body shared by its instances).
 export function findBody(checker: Checker, key: string): int {
+  // Keys: "func|<funcIndex>", "inst|<instance>", "impl|<block>|<index>",
+  // "test|<module>|<n-th test of the module>", "const|<constIndex>",
+  // "default|<module>.<name>|<field>" (the module is left out in the prelude; a generic
+  // struct has one default body shared by its instances).
   if (checker.bodyKeys[key] is Some(index)) {
     return index
   }
   return -1
 }
 
-// internComposite records an array, box, map or function type the checker made
-// (Go's arrayOf, boxOf, mapOf and funcOf, which intern by type id) and returns it.
-// Types that hold a type parameter are not recorded, as Go drops them in finish.
 export function internComposite(mutable checker: Checker, type: Type): Type uses alloc {
+  // Types that hold a type parameter are not recorded.
   const key = plainTypeKey(type)
   if (checker.composites[key] is None && !containsTypeParameter(checker, type)) {
     checker.composites[key] = type
@@ -1680,7 +1618,6 @@ export function internComposite(mutable checker: Checker, type: Type): Type uses
   return type
 }
 
-// keyBody names the body just started (the current one) for findBody.
 export function keyBody(mutable checker: Checker, key: string) uses alloc {
   checker.bodyKeys[key] = checker.body
 }

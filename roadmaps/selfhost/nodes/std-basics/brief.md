@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 201629
 owns:
   - std/src/math*
   - std/src/time*

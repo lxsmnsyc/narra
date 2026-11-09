@@ -1,7 +1,7 @@
 ---
 id: style-sweep
 title: "Code style sweep: step comments, no D-numbers, action names"
-status: todo
+status: done
 priority: should
 type: refactor
 story: batch-2
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 175034
 owns:
   - selfhost/src/**
   - std/src/**

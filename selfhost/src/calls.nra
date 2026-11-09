@@ -44,7 +44,7 @@ import {
   checkShapeVisible,
 } from "narrac/traits"
 import { sourceScope, exported } from "narrac/scopes"
-import { checkValueCall, checkValueCallOf, checkGenericArguments } from "narrac/closures"
+import { checkValueCall, checkCallThroughValue, checkGenericArguments } from "narrac/closures"
 import { findModuleFunction } from "narrac/funcvalues"
 import {
   checkExpression,
@@ -70,7 +70,6 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-// checkCall checks a call (Go's call) and returns its type.
 export function checkCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -150,7 +149,6 @@ function checkNamedCall<W: Walker>(
   return Type.TVoid
 }
 
-// checkFunctionCall checks a call of a top-level function, generic or not.
 function checkFunctionCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -164,7 +162,7 @@ function checkFunctionCall<W: Walker>(
   const parameters = info.declaration.parameters
   const isGeneric = Arrays.length(info.typeParameters) > 0
 
-  // Named arguments go to their parameters first (D87).
+  // Named arguments go to their parameters first.
   let ordered = arguments
   if (
     matchNamedArguments(mutable checker, nodeId, pos, info.name, arguments, parameters) is Some(
@@ -195,10 +193,6 @@ function checkFunctionCall<W: Walker>(
   return checker.functions[funcIndex].result
 }
 
-// matchNamedArguments puts the arguments of a call in the order of the
-// callee's parameters (D87): the positional ones first, then each named one
-// at its parameter. It records the order for the passes after the checker
-// when it differs from the written order, and is None after an error.
 function matchNamedArguments(
   mutable checker: Checker,
   nodeId: int,
@@ -210,6 +204,7 @@ function matchNamedArguments(
   if (!hasNamedArgument(arguments)) {
     return Some(arguments)
   }
+  // The order is recorded for the passes after the checker when it differs from the written order. The result is None after an error.
   const argumentCount = Arrays.length(arguments)
   const parameterCount = Arrays.length(parameters)
 
@@ -307,9 +302,6 @@ function findParameter(parameters: Array<Param>, name: string): int {
   return -1
 }
 
-// reportUnknownParameter reports a named argument that names no parameter,
-// with a fix that renames it when exactly one parameter not yet passed is
-// close to the name (D11).
 function reportUnknownParameter(
   mutable checker: Checker,
   calleeName: string,
@@ -350,8 +342,6 @@ function reportUnknownParameter(
   )
 }
 
-// isCloseName reports whether two names differ by at most two single
-// character edits, and by fewer than half of the longer name.
 function isCloseName(left: string, right: string): bool uses alloc {
   const leftChars = Str.chars(left)
   const rightChars = Str.chars(right)
@@ -518,7 +508,7 @@ function checkDottedCall<W: Walker>(
       const fieldType = checker.structs[index].fields[fieldIndex].fieldType
       if (fieldType is Type.TFunc(funcParams, funcResult, _, _)) {
         setNodeType(mutable checker, calleeId, fieldType)
-        return checkValueCallOf(
+        return checkCallThroughValue(
           mutable checker,
           walker,
           nodeId,
@@ -552,9 +542,6 @@ function checkDottedCall<W: Walker>(
   return Type.TVoid
 }
 
-// buildArrayPushFix rewrites `xs.push(v)` as `Arrays.push(mutable xs, v)`, with
-// the alias the module uses (Go's pushFix). It checks that the text between
-// the parts has no spaces, since the AST keeps no spacing.
 function buildArrayPushFix(
   checker: Checker,
   callPos: Pos,
@@ -564,6 +551,7 @@ function buildArrayPushFix(
   targetType: Type,
   argumentCount: int,
 ): Array<Fix> uses alloc {
+  // The AST keeps no spacing, so the fix needs the text between the parts to have no spaces.
   if (!(targetType is Type.TArray(_)) || name != "push" || argumentCount == 0) {
     return []
   }
@@ -600,7 +588,6 @@ function buildArrayPushFix(
   return [createFix(`call ${alias}.push`, edits)]
 }
 
-// checkConstructorCall checks `Enum.Variant(...)` and `Alias.Enum.Variant(...)`.
 function checkConstructorCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -624,8 +611,6 @@ function checkConstructorCall<W: Walker>(
   return Type.TVoid
 }
 
-// checkModuleCall checks `Alias.f(...)` where Alias names a package module
-// (Go's moduleCall).
 function checkModuleCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -639,7 +624,7 @@ function checkModuleCall<W: Walker>(
   want: Option<Type>,
 ): Type uses alloc {
   // Co.resume(mutable g) resumes a generator, and Co.resume(mutable g, input) a
-  // coroutine (D79).
+  // coroutine.
   let exportName = name
   if (checker.scopes[moduleScope].path == "std/coroutine" && name == "resume") {
     exportName = "resumeGenerator"
@@ -671,7 +656,6 @@ function checkModuleCall<W: Walker>(
   return Type.TVoid
 }
 
-// getArgumentType is the type the current body gave an argument.
 function getArgumentType(checker: Checker, arg: Arg): Type {
   if (getNodeType(checker, getExpressionId(arg.value)) is Some(argType)) {
     return argType
@@ -679,15 +663,13 @@ function getArgumentType(checker: Checker, arg: Arg): Type {
   return Type.TVoid
 }
 
-// shapeMismatch reports whether a concrete type cannot match a pattern that
-// still holds open type parameters. Only the positions that hold an open
-// parameter count; the rest is left to expectType (Go's shapeMismatch).
 function shapeMismatch(
   checker: Checker,
   pattern: Type,
   actual: Type,
   parameters: Array<int>,
 ): bool {
+  // Only the positions that hold an open parameter count; the rest is left to expectType.
   if (!containsOpen(checker, pattern, parameters)) {
     return false
   }
@@ -777,10 +759,6 @@ function anyShapeMismatch(
   return false
 }
 
-// checkGenericCall infers the type arguments of a generic function from the
-// expected type and the arguments, and finds or queues the instance (Go's
-// genericCall). Inside a generic body the call can stay open; each instance
-// resolves it again.
 function checkGenericCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -790,6 +768,7 @@ function checkGenericCall<W: Walker>(
   arguments: Array<Arg>,
   want: Option<Type>,
 ): Type uses alloc {
+  // Inside a generic body the call can stay open; each instance resolves it again.
   const info = checker.functions[funcIndex]
   const typeParameters = info.typeParameters
   const parameters = info.declaration.parameters
@@ -911,8 +890,6 @@ function checkGenericCall<W: Walker>(
   return result
 }
 
-// checkTraitCall checks `Trait.function(arguments)` (Go's traitCall): the
-// arguments tell which type's implementation runs.
 function checkTraitCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1051,7 +1028,7 @@ function checkTraitCall<W: Walker>(
     setRef(mutable checker, nodeId, Ref.Implementation(implementation.block, implementation.index))
   } else if (isShapeTrait(checker, traitIndex)) {
     // The compiler provides Shape for the prelude types through the private
-    // functions of std/shape (D84).
+    // functions of std/shape.
     setShapeRef(mutable checker, nodeId, selfType, name)
   } else {
     setRef(mutable checker, nodeId, Ref.TraitFunction(traitIndex, name))
@@ -1069,8 +1046,6 @@ struct ShapeProvider {
   typeArguments: Array<Type>
 }
 
-// findShapeProvider tells which std/shape function implements Shape for a
-// type, or None when the type has an implement block instead.
 function findShapeProvider(checker: Checker, type: Type): Option<ShapeProvider> uses alloc {
   return match (type) {
     Type.TBool => Some(ShapeProvider { prefix: "bool", typeArguments: [] })
@@ -1103,8 +1078,6 @@ function findShapeProvider(checker: Checker, type: Type): Option<ShapeProvider> 
   }
 }
 
-// setShapeRef points a Shape.toValue or Shape.fromValue call on a prelude type
-// at the matching function of std/shape, with its instance when it is generic.
 function setShapeRef(
   mutable checker: Checker,
   nodeId: int,
@@ -1166,8 +1139,6 @@ function setShapeRef(
   }
 }
 
-// isSelfInParameters reports whether Self appears in a parameter of a trait
-// function, which is how a trait call finds the implementing type.
 function isSelfInParameters(checker: Checker, parameters: Array<Type>, self: Array<int>): bool {
   for (const parameter of Arrays.values(parameters)) {
     if (containsOpen(checker, parameter, self)) {
@@ -1177,9 +1148,6 @@ function isSelfInParameters(checker: Checker, parameters: Array<Type>, self: Arr
   return false
 }
 
-// takeTypeArguments resolves the type arguments written on a call to a
-// function with count type parameters (Go's takeTypeArgs). It marks them
-// used, and is None after reporting a wrong count.
 function takeTypeArguments<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1189,6 +1157,7 @@ function takeTypeArguments<W: Walker>(
   count: int,
   arguments: Array<Arg>,
 ): Option<Array<Type>> uses alloc {
+  // Marks the arguments used. The result is None after reporting a wrong count.
   let written: Array<TypeExpr> = []
   if (checker.callTypeArguments[nodeId] is Some(pending)) {
     written = pending
@@ -1212,8 +1181,6 @@ function takeTypeArguments<W: Walker>(
   return Some(types)
 }
 
-// checkDistinctCall checks `T.from(x)` and `T.toInt(x)` on a distinct type
-// (Go's distinctCall).
 function checkDistinctCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1279,10 +1246,8 @@ function checkDistinctCall<W: Walker>(
   return base
 }
 
-// findUnwrapName is the name of a distinct type's unwrap function: "to" and
-// the underlying type's name capitalized, without type arguments (toInt,
-// toString, toArray).
 function findUnwrapName(checker: Checker, distinctIndex: int): string uses alloc {
+  // The name is "to" and the underlying type's name capitalized, without type arguments (toInt, toString, toArray).
   // Follow distinct bases to the underlying type.
   let underlying = Type.TDistinct(distinctIndex)
   let following = true

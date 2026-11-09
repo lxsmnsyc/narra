@@ -29,7 +29,6 @@ import { sourceScope, exported } from "narrac/scopes"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-// resolveOpt resolves an optional type; a missing one is void.
 export function resolveOpt(mutable checker: Checker, typeExpr: Option<TypeExpr>): Type uses alloc {
   if (typeExpr is Some(present)) {
     return resolveType(mutable checker, present)
@@ -43,18 +42,13 @@ export struct Signature {
   result: Type
 }
 
-// resolveSignature resolves the parameter and result types of the function
-// Checker.functions[funcIndex], for its declaration (report set) or for an
-// instance (Go's resolveSignature). A function* must return Generator<T>,
-// cannot take a `mutable` parameter, and takes its function-type parameters
-// as `escaping`. A private function* gets a result type whose effects the
-// effect pass infers.
 export function resolveSignature(
   mutable checker: Checker,
   funcDecl: FuncDecl,
   funcIndex: int,
   report: bool,
 ): Signature uses alloc {
+  // A function* must return Generator<T>, cannot take a `mutable` parameter, and takes its function-type parameters as `escaping`. A private function* gets a result type whose effects the effect pass infers.
   const savedIndex = checker.functionIndex
   checker.functionIndex = funcIndex
   let parameters: Array<Type> = []
@@ -138,8 +132,6 @@ function resolveGeneratorResult(
   return Type.TVoid
 }
 
-// funcResult resolves the result of a function type, where `void` means the
-// function returns nothing.
 export function funcResult(
   mutable checker: Checker,
   typeExpr: Option<Box<TypeExpr>>,
@@ -156,7 +148,6 @@ export function funcResult(
   return Type.TVoid
 }
 
-// sortEffects lists effect names once each, in byte order.
 function sortEffects(effects: Array<string>): Array<string> uses alloc {
   let sorted: Array<string> = []
   for (const name of Arrays.values(effects)) {
@@ -180,8 +171,6 @@ function sortEffects(effects: Array<string>): Array<string> uses alloc {
   return sorted
 }
 
-// findEffectBinder is the Checker.functions index of the function being
-// checked when the effects name one of its effect variables, or -1.
 function findEffectBinder(checker: Checker, effects: Array<string>): int {
   if (checker.functionIndex < 0) {
     return -1
@@ -198,15 +187,13 @@ function findEffectBinder(checker: Checker, effects: Array<string>): int {
   return -1
 }
 
-// makeGenerator makes the type Generator<element> uses effects (Go's
-// generatorOf). Effect variables in the list belong to the function whose
-// signature or body is being checked (D78).
 function makeGenerator(
   checker: Checker,
   element: Type,
   input: Type,
   effects: Array<string>,
 ): Type uses alloc {
+  // Effect variables in the list belong to the function whose signature or body is being checked.
   const sorted = sortEffects(effects)
   return Type.TGenerator(element, sorted, findEffectBinder(checker, sorted), -1, input)
 }
@@ -343,8 +330,6 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   return Type.TVoid
 }
 
-// qualifiedType resolves `Alias.Name`, where Alias is a namespace import of
-// a package module and Name a type it exports (Go's qualifiedType).
 function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
   const alias = Str.split(typeExpr.name, ".")[0]
   const name = Str.sliceFrom(typeExpr.name, Str.length(alias) + 1)
@@ -411,13 +396,10 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
   return Type.TVoid
 }
 
-// userType reports whether the module declares its own type with this name
-// (Box or Map), which hides the builtin.
 function userType(checker: Checker, name: string): bool {
   return lookupGeneric(checker, name) is Some(_) || lookupType(checker, name) is Some(_)
 }
 
-// tupleType resolves #[A, B, ...].
 function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
   const count = Arrays.length(typeExpr.arguments)
   if (count < 2) {
@@ -436,9 +418,8 @@ function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses allo
   return findTupleType(mutable checker, elements)
 }
 
-// findTupleType returns the one tuple type with these element types: a prelude
-// struct named Tuple whose fields are "0", "1", ...
 export function findTupleType(mutable checker: Checker, elements: Array<Type>): Type uses alloc {
+  // A tuple type is a prelude struct named Tuple whose fields are "0", "1", ...
   const key = `T|${typeKeys(elements)}`
   if (checker.instances[key] is Some(type)) {
     return type
@@ -518,11 +499,8 @@ export function resolveVariants(
   return variants
 }
 
-// buildGeneric resolves a generic declaration's fields with its parameters
-// left open, in the declaring module. Instances substitute into this
-// template. It runs once; an instance made while the template is being
-// built (a self-reference) is filled when the build ends, as in Go.
 export function buildGeneric(mutable checker: Checker, generic: int) uses alloc {
+  // Runs once. An instance made while the template is being built (a self-reference) is filled when the build ends.
   if (checker.generics[generic].built) {
     return
   }
@@ -568,15 +546,12 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
   enter(mutable checker, savedScope)
 }
 
-// instantiate returns the instance of a generic for its type arguments, creating it on
-// first use. The instance is cached before its fields are substituted, so a
-// template that holds itself (List<T> in Array<List<T>>) finds it; it joins
-// instanceTypes after its fields, as in Go.
 export function instantiate(
   mutable checker: Checker,
   generic: int,
   arguments: Array<Type>,
 ): Type uses alloc {
+  // The instance is cached before its fields are substituted, so a template that holds itself (List<T> in Array<List<T>>) finds it; it joins instanceTypes after its fields.
   buildGeneric(mutable checker, generic)
   const key = `${Int.toString(generic)}|${typeKeys(arguments)}`
   if (checker.instances[key] is Some(type)) {
@@ -621,8 +596,6 @@ export function instantiate(
   return type
 }
 
-// fillInstance copies the template's fields into the instance, substituting
-// its type arguments, and adds it to instanceTypes.
 function fillInstance(mutable checker: Checker, generic: int, instance: Type) uses alloc {
   const info = checker.generics[generic]
   let bindings: Map<int, Type> = Map {}
@@ -670,8 +643,6 @@ function fillInstance(mutable checker: Checker, generic: int, instance: Type) us
   Arrays.push(mutable checker.instanceTypes, instance)
 }
 
-// substitute replaces the parameters in a type by their bindings, creating the
-// instances it names.
 export function substitute(
   mutable checker: Checker,
   type: Type,

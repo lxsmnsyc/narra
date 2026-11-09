@@ -1,7 +1,7 @@
 ---
 id: misleading-hints
 title: "Two misleading compiler hints"
-status: todo
+status: done
 priority: should
 type: fix
 story: batch-2
@@ -19,9 +19,9 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 60074
 owns:
-  - guide/**
+  - docs/guide/**
   - roadmaps/selfhost/nodes/misleading-hints/**
 shared:
   - selfhost/src/**
@@ -47,7 +47,7 @@ Found while writing guide chapters 6 to 10 (2026-11-05):
 1. Assigning to a field of a parameter says "declare it with `let`". For a parameter the fix is a `mutable` parameter or returning a new value. After D81 (batch-1) check what the hint says now and make it name the parameter case.
 2. A missing `implement` block for a user trait suggests `derives Label`, but only built-in traits can be derived. Suggest an `implement` block for user traits.
 
-Then update the guide's error samples that show these messages (chapters 7 and 9, under `guide/`).
+Then update the guide's error samples that show these messages (chapters 7 and 9, under `docs/guide/`).
 
 ## Acceptance
 

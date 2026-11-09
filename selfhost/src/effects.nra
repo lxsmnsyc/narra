@@ -54,7 +54,7 @@ export struct Effect {
 struct Callee {
   declaration: FuncDecl
   key: string
-  // label is the name an effect error shows after "through".
+  // The name an effect error shows after "through".
   label: string
 }
 
@@ -114,7 +114,6 @@ function hasEffect(effects: Array<Effect>, name: string): bool {
   return false
 }
 
-// addEffect adds a name with its cause, unless the set has it already.
 function addEffect(mutable out: Array<Effect>, name: string, pos: Pos, via: string) uses alloc {
   if (hasEffect(out, name)) {
     return
@@ -122,7 +121,6 @@ function addEffect(mutable out: Array<Effect>, name: string, pos: Pos, via: stri
   Arrays.push(mutable out, Effect { name: name, pos: pos, via: via })
 }
 
-// sortEffectNames lists the names of a set in byte order.
 function sortEffectNames(effects: Array<Effect>): Array<string> uses alloc {
   let sorted: Array<string> = []
   for (const effect of Arrays.values(effects)) {
@@ -147,9 +145,8 @@ function findEffect(effects: Array<Effect>, name: string): Effect {
   return Effect { name: name, pos: Pos { line: 0, column: 0 }, via: "" }
 }
 
-// checkEffects runs the pass over every module of the package. The caller
-// has checked that the bodies have no errors.
 export function checkEffects(mutable checker: Checker): EffectState uses alloc {
+  // The caller has checked that the bodies have no errors.
   let state = EffectState {
     bodyIndex: Map {},
     functions: Map {},
@@ -235,9 +232,8 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
   return state
 }
 
-// checkGeneratorUses runs the generator checks of the body checker that
-// waited for the inferred effects of private generators (expectGenerator).
 function checkGeneratorUses(mutable checker: Checker) uses alloc {
+  // These are the generator checks of the body checker (expectGenerator) that waited for the inferred effects of private generators.
   for (const use of Arrays.values(checker.generatorUses)) {
     if (generatorUseFails(checker, use.want, use.got)) {
       const message = `expected ${describeType(checker, use.want, use.got)}, found ${describeType(checker, use.got, use.want)}`
@@ -246,12 +242,8 @@ function checkGeneratorUses(mutable checker: Checker) uses alloc {
   }
 }
 
-// checkFunctionStores checks each function value stored where a function type
-// with the same signature is expected (D86): the value may do only what the
-// type lists. The value is the expression at the recorded position when it is
-// a function written there (an arrow, a named function, a local), so what it
-// does counts; otherwise the effects of its type count.
 function checkFunctionStores(mutable checker: Checker, mutable state: EffectState) uses alloc {
+  // The value is the expression at the recorded position when it is a function written there (an arrow, a named function, a local), so what it does counts. Otherwise the effects of its type count.
   const saved = state.body
   for (const store of Arrays.values(checker.functionStores)) {
     if (Arrays.length(checker.bodies[store.body].typeArguments) > 0) {
@@ -264,8 +256,14 @@ function checkFunctionStores(mutable checker: Checker, mutable state: EffectStat
         if (findStoredValue(checker, state, store) is Some(effects)) {
           found = effects
         }
+        // Creating a generator allocs its frame, and a function type cannot list that
+        // effect apart from the effects of its generator result
+        const createsGenerator = wantResult is Type.TGenerator(_, _, _, _, _)
         let extra = false
         for (const name of Arrays.values(found)) {
+          if (createsGenerator && name == "alloc") {
+            continue
+          }
           extra = extra || !containsName(wantEffects, name)
         }
         if (extra && !hasErrorAt(checker, store.file, store.pos)) {
@@ -288,8 +286,6 @@ function hasErrorAt(checker: Checker, file: string, pos: Pos): bool {
   return false
 }
 
-// findStoredValue is the sorted effects of the function value a store names,
-// or None when no expression of the walk starts there with the stored type.
 function findStoredValue(
   checker: Checker,
   state: EffectState,
@@ -313,9 +309,6 @@ function positionKey(bodyIndex: int, pos: Pos): string uses alloc {
   return `${Int.toString(bodyIndex)}|${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
-// generatorEffects is the set a generator value has when it runs: the
-// effects of its type, or the body effects found so far for the result type
-// of a private function* (Go's effectState.generatorEffects).
 function generatorEffects(
   checker: Checker,
   state: EffectState,
@@ -323,6 +316,7 @@ function generatorEffects(
 ): Array<string> uses alloc {
   let names: Array<string> = []
   if (type is Type.TGenerator(_, effects, _, origin, _)) {
+    // A private function* has no effects in its type: they are the body effects found so far.
     if (origin == -1) {
       return effects
     }
@@ -341,8 +335,6 @@ function generatorEffects(
   return names
 }
 
-// walkGeneratorRun adds the effects of running the generator value of an
-// expression: a for ... of over it or a yield* of it.
 function walkGeneratorRun(
   checker: Checker,
   state: EffectState,
@@ -398,13 +390,13 @@ function walkConstants(mutable checker: Checker, mutable state: EffectState) use
   }
 }
 
-// walkTest walks a test body. Its effects are discarded.
 function walkTest(
   mutable checker: Checker,
   mutable state: EffectState,
   scope: int,
   block: Block,
 ) uses alloc {
+  // The effects of a test body are discarded.
   const key = functionKey(checker.scopes[scope].path, block.pos)
   if (state.bodyIndex[key] is Some(bodyIndex)) {
     state.body = bodyIndex
@@ -413,8 +405,6 @@ function walkTest(
   }
 }
 
-// analyseFunction walks one function body, stores its set, and in the
-// reporting pass checks an exported function against its declaration.
 function analyseFunction(
   mutable checker: Checker,
   mutable state: EffectState,
@@ -491,7 +481,6 @@ function analyseFunction(
   }
 }
 
-// findDeclaredLocal is the BodyInfo.locals index of the local a node declares, or -1.
 function findDeclaredLocal(checker: Checker, bodyIndex: int, nodeId: int): int {
   const slot = findBodySlot(checker.bodies[bodyIndex], nodeId)
   if (slot < 0) {
@@ -516,8 +505,6 @@ function findNodeType(checker: Checker, bodyIndex: int, nodeId: int): Option<Typ
   return checker.bodies[bodyIndex].types[slot]
 }
 
-// checkSignature reports unknown effect names and effect variables that no
-// parameter binds.
 function checkSignature(mutable checker: Checker, declaration: FuncDecl) uses alloc {
   let bound: Array<string> = []
   for (const param of Arrays.values(declaration.parameters)) {
@@ -588,18 +575,15 @@ function isKnownEffect(
   return false
 }
 
-// describeImplementation names an implement block function as
-// <Type>.<Trait>.<function>, the type written without its module.
 function describeImplementation(checker: Checker, block: int, index: int): string uses alloc {
   const impl = checker.implementations[block]
   return `${typeString(checker, impl.forType)}.${checker.traits[impl.traitIndex].name}.${impl.functions[index].name}`
 }
 
-// describeFunctionLabel is the name an effect error shows after "through". The
-// resume functions of std/coroutine show as Co.resume, as the call was written.
 function describeFunctionLabel(checker: Checker, index: int): string uses alloc {
   const name = checker.functions[index].declaration.name
   if (checker.functions[index].module == "std/coroutine") {
+    // The resume functions of std/coroutine show as Co.resume, as the call was written.
     if (name == "resumeGenerator" || name == "resumeCoroutine") {
       return "Co.resume"
     }
@@ -607,8 +591,6 @@ function describeFunctionLabel(checker: Checker, index: int): string uses alloc 
   return name
 }
 
-// findCallee is the function a ref names: a declared function or an implement
-// block function.
 function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
   return match (ref) {
     Ref.Function(index) => Some(Callee {
@@ -628,8 +610,6 @@ function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
   }
 }
 
-// funcEffects is the set callers see: the declared one for an exported
-// function, the inferred one for a private function.
 function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
   const nowhere = Pos { line: 0, column: 0 }
   let set: Array<Effect> = []
@@ -640,7 +620,7 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses all
     return set
   }
   if (callee.declaration.generator) {
-    // A call creates the generator and runs none of its body (D78).
+    // A call creates the generator and runs none of its body.
     addEffect(mutable set, "alloc", nowhere, "")
     return set
   }
@@ -656,8 +636,6 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses all
   return set
 }
 
-// concreteEffects is funcEffects without the effect variables, for a named
-// function used as a value.
 function concreteEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
   let set: Array<Effect> = []
   for (const effect of Arrays.values(funcEffects(state, callee))) {
@@ -668,10 +646,6 @@ function concreteEffects(state: EffectState, callee: Callee): Array<Effect> uses
   return set
 }
 
-// valueEffects is the set of a function value written as an expression: what
-// an arrow, a named function or a tracked local does, or the effects of the
-// expression's function type (D86). It is None when the expression is not a
-// function.
 function valueEffects(
   checker: Checker,
   state: EffectState,
@@ -690,9 +664,6 @@ function valueEffects(
   return findTypeEffects(checker, state, expression)
 }
 
-// findTypeEffects is the set a function type gives the value of an
-// expression. An effect variable of the function that produced the value
-// takes the effects bound at that call.
 function findTypeEffects(
   checker: Checker,
   state: EffectState,
@@ -718,15 +689,13 @@ function findTypeEffects(
   return None
 }
 
-// bindTypeEffect is the effects an effect name of a function type stands for:
-// the name itself, or when it is a variable of the function that made the
-// value, the effects bound to it at that call.
 function bindTypeEffect(
   checker: Checker,
   state: EffectState,
   source: Option<Expr>,
   name: string,
 ): Array<string> uses alloc {
+  // An effect name stands for itself, or for the effects bound at the call when it is a variable of the function that made the value.
   if (source is Some(Expr.CallExpr(callId, _, _, _, arguments))) {
     if (findCallee(checker, findRef(checker, state.body, callId)) is Some(callee)) {
       if (containsName(callee.declaration.effectParameters, name)) {
@@ -738,8 +707,6 @@ function bindTypeEffect(
   return [name]
 }
 
-// findSourceCall is the call an expression comes from, through an element or
-// a field of its result: `wrap(f)`, `wrap(f)[0]`.
 function findSourceCall(
   checker: Checker,
   state: EffectState,
@@ -827,6 +794,14 @@ function walkStatement(
       walkExpression(mutable checker, mutable state, mutable out, value)
       walkLocalAssignment(checker, mutable state, target, value)
     }
+    Stmt.CompoundAssignStmt(pos, target, _, value) => {
+      walkAssignTarget(mutable checker, mutable state, mutable out, target)
+      walkExpression(mutable checker, mutable state, mutable out, value)
+      // Joining strings allocates the new string.
+      if (findNodeType(checker, state.body, getExpressionId(target)) is Some(Type.TStr)) {
+        addEffect(mutable out, "alloc", pos, "string join")
+      }
+    }
     Stmt.ExprStmt(_, expression) => walkExpression(
       mutable checker,
       mutable state,
@@ -849,6 +824,18 @@ function walkStatement(
       walkExpression(mutable checker, mutable state, mutable out, condition)
       walkBlock(mutable checker, mutable state, mutable out, body)
     }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        walkStatement(mutable checker, mutable state, mutable out, declaration)
+      }
+      if (condition is Some(loopCondition)) {
+        walkExpression(mutable checker, mutable state, mutable out, loopCondition)
+      }
+      walkBlock(mutable checker, mutable state, mutable out, body)
+      if (step is Some(stepStatement)) {
+        walkStatement(mutable checker, mutable state, mutable out, stepStatement)
+      }
+    }
     Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       walkExpression(mutable checker, mutable state, mutable out, iterable)
       walkGeneratorRun(checker, state, mutable out, iterable)
@@ -865,8 +852,6 @@ function walkStatement(
   }
 }
 
-// walkLocalAssignment merges the effects of a function value assigned to a
-// local into the ones the local holds.
 function walkLocalAssignment(
   checker: Checker,
   mutable state: EffectState,
@@ -905,8 +890,6 @@ function walkLocalAssignment(
   }
 }
 
-// walkAssignTarget walks the target of an assignment. A Map index there is
-// a write: it allocates (Go's IndexExpr.MapSet).
 function walkAssignTarget(
   mutable checker: Checker,
   mutable state: EffectState,
@@ -916,6 +899,7 @@ function walkAssignTarget(
   if (target is Expr.IndexExpr(_, pos, indexed, index)) {
     walkExpression(mutable checker, mutable state, mutable out, indexed)
     walkExpression(mutable checker, mutable state, mutable out, index)
+    // A Map index in an assignment target is a write: it allocates.
     if (findNodeType(checker, state.body, getExpressionId(indexed)) is Some(Type.TMap(_, _))) {
       addEffect(mutable out, "alloc", pos, "map update")
     }
@@ -1063,7 +1047,7 @@ function walkCall(
       }
       Arrays.push(mutable state.calls, edge)
     }
-    // The callee's parameters pair with the arguments in parameter order (D87).
+    // The callee's parameters pair with the arguments in parameter order.
     const ordered = orderArguments(checker, nodeId, arguments)
     walkUserCall(mutable checker, mutable state, mutable out, pos, found, ordered)
     bindResultEffects(mutable checker, state, nodeId, found, ordered)
@@ -1092,6 +1076,16 @@ function walkCall(
           addEffect(mutable out, effect.name, pos, effect.via)
         }
       }
+      // The value may be a generator function, whose call allocs a frame that the
+      // function type does not list.
+      if (
+        findNodeType(checker, state.body, getExpressionId(callee)) is Some(
+          Type.TFunc(_, Type.TGenerator(_, _, _, _, _), _, _),
+        )
+      ) {
+        addEffect(mutable out, "alloc", pos, "")
+      }
+      addValueBoundEffects(mutable checker, state, mutable out, pos, callee, arguments)
     }
     Ref.Constructor(enumIndex, variant) => {
       if (Arrays.length(arguments) > 0) {
@@ -1102,11 +1096,73 @@ function walkCall(
   }
 }
 
-// walkUserCall adds the effects of a call to a declared function. A variable
-// of the callee takes the effects of the arguments bound to it.
-// findBoundEffects lists the effects the effect variable name of a callee
-// takes at a call: those of the arguments passed to the parameters whose
-// function or generator type names it (D14, D78), sorted.
+function addValueBoundEffects(
+  mutable checker: Checker,
+  state: EffectState,
+  mutable out: Array<Effect>,
+  pos: Pos,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
+  // The type of a function value lists no effects, but its parameter types
+  // still name the variables of the function that made it.
+  if (
+    findNodeType(checker, state.body, getExpressionId(callee)) is Some(
+      Type.TFunc(parameters, _, _, _),
+    )
+  ) {
+    for (const index of Ranges.between(0, Arrays.length(parameters))) {
+      if (index >= Arrays.length(arguments)) {
+        continue
+      }
+      let parameterEffects: Array<string> = []
+      let binder = -1
+      if (parameters[index] is Type.TFunc(_, _, functionEffects, functionBinder)) {
+        parameterEffects = functionEffects
+        binder = functionBinder
+      } else if (parameters[index] is Type.TGenerator(_, generatorNames, generatorBinder, _, _)) {
+        parameterEffects = generatorNames
+        binder = generatorBinder
+      }
+      if (binder < 0) {
+        continue
+      }
+      // A variable of the function being walked stays a name: its caller binds it.
+      const declaration = checker.functions[binder].declaration
+      const binderKey = functionKey(checker.functions[binder].module, declaration.pos)
+      if (state.bodyIndex[binderKey] is Some(binderBody)) {
+        if (binderBody == state.body) {
+          continue
+        }
+      }
+      // The variables the function lists in its own `uses` take the argument's effects.
+      for (const name of Arrays.values(parameterEffects)) {
+        if (
+          !containsName(declaration.effectParameters, name) ||
+            !containsName(declaration.effects, name)
+        ) {
+          continue
+        }
+        if (parameters[index] is Type.TFunc(_, _, _, _)) {
+          if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
+            for (const passed of Arrays.values(set)) {
+              addEffect(mutable out, passed.name, pos, passed.via)
+            }
+          }
+        } else if (
+          findNodeType(checker, state.body, getExpressionId(arguments[index].value)) is Some(
+            argumentType,
+          )
+        ) {
+          for (const passed of Arrays.values(generatorEffects(checker, state, argumentType))) {
+            addEffect(mutable out, passed, pos, "")
+          }
+        }
+      }
+    }
+  }
+}
+
 function findBoundEffects(
   checker: Checker,
   state: EffectState,
@@ -1116,6 +1172,7 @@ function findBoundEffects(
 ): Array<string> uses alloc {
   let bound: Array<Effect> = []
   const nowhere = Pos { line: 0, column: 0 }
+  // A variable takes the effects of the arguments passed to the parameters whose function or generator type names it.
   for (const index of Ranges.between(0, Arrays.length(declaration.parameters))) {
     if (index >= Arrays.length(arguments)) {
       continue
@@ -1136,7 +1193,7 @@ function findBoundEffects(
         )
       ) {
         // A generator-typed parameter binds the variable to the effects of
-        // the generator passed (D78).
+        // the generator passed.
         for (const passed of Arrays.values(generatorEffects(checker, state, argumentType))) {
           addEffect(mutable bound, passed, nowhere, "")
         }
@@ -1146,9 +1203,6 @@ function findBoundEffects(
   return sortEffectNames(bound)
 }
 
-// bindResultEffects fills the effects of a call result that names the
-// callee's effect variables (bindCallResult in exprs.nra): each variable
-// becomes the effects bound to it at this call.
 function bindResultEffects(
   mutable checker: Checker,
   state: EffectState,
@@ -1273,9 +1327,6 @@ function walkUserCall(
   }
 }
 
-// findRefEffects lists the effects callers of the function a ref names see
-// (funcEffects), sorted, or None when the ref names no declared function.
-// Effect variables stay as names.
 export function findRefEffects(
   checker: Checker,
   state: EffectState,
@@ -1287,8 +1338,6 @@ export function findRefEffects(
   return None
 }
 
-// findArrowEffects lists the effects of an arrow function's body, sorted,
-// or None when the pass did not walk it.
 export function findArrowEffects(
   state: EffectState,
   nodeId: int,
@@ -1299,15 +1348,13 @@ export function findArrowEffects(
   return None
 }
 
-// findExpressionEffects lists the effects of evaluating an expression of a
-// checked body, sorted, after the pass has run. It walks the expression
-// again without reporting; an arrow function there adds nothing.
 export function findExpressionEffects(
   mutable checker: Checker,
   mutable state: EffectState,
   bodyIndex: int,
   expression: Expr,
 ): Array<string> uses alloc {
+  // Walks the expression again without reporting; an arrow function there adds nothing.
   const savedReport = state.report
   const savedBody = state.body
   state.report = false
@@ -1319,10 +1366,6 @@ export function findExpressionEffects(
   return sortEffectNames(out)
 }
 
-// dump prints the effects of every function: one line per open func or impl
-// body, in checking order, with the set callers see (the declared one for an
-// exported function, the inferred one for a private function).
-//     effects module="<m>" <kind> <name> <effect>,<effect>   or `-` when empty
 export function dump(checker: Checker, state: EffectState): string uses alloc {
   let builder = Str.builder()
   for (const body of Arrays.values(checker.bodies)) {
@@ -1340,6 +1383,7 @@ export function dump(checker: Checker, state: EffectState): string uses alloc {
       if (Arrays.length(names) > 0) {
         text = Str.join(names, ",")
       }
+      // Line format: effects module="<m>" <kind> <name> <effect>,<effect>, or `-` when empty.
       Str.append(
         mutable builder,
         `effects module=${quoteDump(body.module)} ${body.kind} ${body.name} ${text}\n`,

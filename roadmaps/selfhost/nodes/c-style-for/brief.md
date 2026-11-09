@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 154436
 owns:
   - testdata/c_style_for*
   - testdata/errors/c_style_for*

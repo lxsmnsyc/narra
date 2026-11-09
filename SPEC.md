@@ -73,6 +73,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 - `function name(a: int, b: int): int { ... }` declares a function. A function is private to its module unless declared with `export function` (section 3). A function cannot be declared inside another function (E0930): declare it at module level as a private function and pass the enclosing values as arguments. A nested declaration in TypeScript captures the enclosing locals, and a module-level copy could read a different name where a local shadows it (D74). To keep a helper that captures, bind an arrow function to a `const`.
 - A function with no return type returns nothing.
+- **A function with a result must return on every path.** A path ends at `return`, a call to `panic`, an `if`/`else` whose branches all end, a `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. Any other path that reaches the closing brace is a compile error that names the path (E0969, E0970 for an arrow function with a block body). Generators have no result value and are exempt (D92).
 - **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
 - **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
 - An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Arrays.map(prices, (p) => p * 2)`.

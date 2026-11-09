@@ -932,7 +932,7 @@ Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, 
 - **Rejected: a NaN for integers.** It needs a reserved value, a check in every operation, and breaks `==` on `int`.
 - **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
 
-Not built yet.
+Built: the missing-return rule (E0969 for functions, E0970 for arrow functions); the emitted runtime check is now an internal compiler error. Not built yet: the other parts.
 
 ## D93. `Async<T>` is an eager handle on one implicit event loop per thread
 

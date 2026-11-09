@@ -4,6 +4,7 @@
 //     narrac query [--package DIR] [--json] type-of FILE:LINE:COL
 //     narrac query [--package DIR] [--json] def NAME
 //     narrac query [--package DIR] [--json] refs NAME
+//     narrac query [--package DIR] [--json] refs FUNCTION.PARAMETER
 //     narrac query [--package DIR] [--json] callers FUNCTION
 //     narrac query [--package DIR] [--json] interface MODULE
 //     narrac query [--package DIR] [--json] recursion MODULE
@@ -557,6 +558,7 @@ function describeSite(
       }
     }
     SiteKind.DeclarationSite => {}
+    SiteKind.LabelSite => {}
   }
   return None
 }
@@ -925,13 +927,85 @@ function writeUses(query: Query, places: Array<Use>, nameFirst: bool): string us
   return Str.join(parts, "")
 }
 
+// queryParameterRefs answers `refs FUNCTION.PARAMETER`: the label of every
+// named argument that passes the parameter.
+function queryParameterRefs(
+  checker: Checker,
+  query: Query,
+  functionName: string,
+  parameterName: string,
+): Result<string, string> uses alloc {
+  const declared = findOneDeclared(query, functionName)
+  if (declared is Err(message)) {
+    return Err(message)
+  }
+  const target = findTarget(checker, query, declared.value)
+  let wanted = -1
+  if (target is Ok(found)) {
+    if (found is Target.FunctionTarget(index)) {
+      wanted = index
+    }
+  }
+  if (wanted < 0) {
+    return Err(`${declared.value.qualified} is a ${declared.value.kind}, not a function`)
+  }
+  // The parameter must exist.
+  let hasParameter = false
+  for (const parameter of Arrays.values(checker.functions[wanted].declaration.parameters)) {
+    if (parameter.name == parameterName) {
+      hasParameter = true
+    }
+  }
+  if (!hasParameter) {
+    return Err(`${declared.value.qualified} has no parameter "${parameterName}"`)
+  }
+  // A label names the parameter of the function its call resolves to.
+  let places: Array<Use> = []
+  for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
+    const view = query.views[viewIndex]
+    for (const site of Arrays.values(view.sites)) {
+      if (site.kind != SiteKind.LabelSite || site.name != parameterName) {
+        continue
+      }
+      if (!isFunctionRef(findSiteRef(checker, view, site), wanted)) {
+        continue
+      }
+      const bodyIndex = findNodeBody(checker, view, site.nodeId)
+      insertUse(mutable places, Use {
+        view: viewIndex,
+        location: siteLocation(view, site),
+        name: describeBody(checker, bodyIndex),
+        inTemplate: site.inTemplate,
+      })
+    }
+  }
+  if (query.json) {
+    const qualifiedParameter = `${declared.value.qualified}.${parameterName}`
+    return Ok(
+      `{"query": "refs", "name": ${quoteJson(qualifiedParameter)}, "uses": ${writeUses(query, places, false)}}\n`,
+    )
+  }
+  return Ok(writeUses(query, places, false))
+}
+
 // queryRefs answers `refs NAME`: every place a body of the package names the
-// declaration, as a call, a value or a pattern.
+// declaration, as a call, a value or a pattern. `refs FUNCTION.PARAMETER`
+// lists the named arguments that pass the parameter.
 function queryRefs(
   checker: Checker,
   query: Query,
   name: string,
 ): Result<string, string> uses alloc {
+  if (Arrays.length(findDeclared(query, name)) == 0) {
+    const parts = Str.split(name, ".")
+    if (Arrays.length(parts) > 1) {
+      const parameterName = parts[Arrays.length(parts) - 1]
+      const functionName = Str.slice(name, 0, Str.length(name) - Str.length(parameterName) - 1)
+      if (Arrays.length(findDeclared(query, functionName)) > 0) {
+        return queryParameterRefs(checker, query, functionName, parameterName)
+      }
+    }
+  }
   const declared = findOneDeclared(query, name)
   if (declared is Err(message)) {
     return Err(message)

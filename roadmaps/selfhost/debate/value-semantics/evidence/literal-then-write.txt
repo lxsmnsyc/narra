@@ -1,0 +1,24 @@
+struct literal field initialised from a name, the name changed in place later in the same function (60-line window): 8
+  selfhost/src/builtins.nra:73: registry.modules[builtin.module] = StdModule { path: builtin.module, functions: functions   | functions written at +4: functions[builtin.key] = index
+  selfhost/src/emitclosures.nra:162: return Code { text: reportUnsupported(mutable emitter, "function value", NODE), owned: fal  | emitter written at +12: text: reportUnsupported(mutable emitter, "generic function v
+  selfhost/src/emitclosures.nra:557: return Code { text: temp(mutable emitter, resultType, callText), owned: false }  | emitter written at +3: text: reportUnsupported(mutable emitter, "call through a fun
+  selfhost/src/emit.nra:240: Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, type), type: type })  | checker written at +13: emitter.checker.printEffects = false
+  selfhost/src/body.nra:228: return ModulesCheck { checker: checker, unusedStart: count, queuedErrors: 0 }  | checker written at +2: checker.checkingBodies = true
+  selfhost/src/parser.nra:1124: return TypeParams { names: names, bounds: bounds, effects: effects }  | names written at +17: Arrays.push(mutable names, parameterName)
+  selfhost/src/parser.nra:1124: return TypeParams { names: names, bounds: bounds, effects: effects }  | bounds written at +29: Arrays.push(mutable bounds, traitBounds)
+  selfhost/src/parser.nra:1124: return TypeParams { names: names, bounds: bounds, effects: effects }  | effects written at +10: Arrays.push(mutable effects, expectIdent(mutable parser).tex
+
+Reading of the 8 hits (proponent, round 2):
+- builtins.nra:73: the store is the last use of `functions` on that path (the write at +4 is in the other branch, line 77-78, a different local). Accepted by plain liveness.
+- emitclosures.nra:162, :557, body.nra:228, parser.nra:1124 (3 hits): the literal is in a `return`, so the name is dead on that path; the later write is on another path. Accepted by plain liveness.
+- emit.nra:240: `checker` in the hit is a field name, not the stored name. False match.
+So 0 of 8 need a source change once liveness follows control flow (a return ends the path). The opponent's 28 used another matcher; the same two causes (return ends the path, other branch) apply.
+
+Save/restore pattern, selfhost/src/closures.nra:150-200 (read):
+  const savedLabels = checker.labels   // savedLabels shares checker.labels
+  checker.labels = []                  // assigning the place ends that sharing: the field now holds a fresh []
+  Walker.checkBlock(walker, mutable checker, arrowBlock)   // checker is unshared again, accepted
+  checker.labels = savedLabels         // last use of savedLabels: a move
+Scalar fields (loops, inferring, generator, resultType of enum type) are never tracked: no contents.
+
+Runtime object header (selfhost/src/runtimecore.nra RUNTIME_H): every counted value starts with `int64_t rc`; strings use a negative count for literals. The leak check is a debug-only global counter reported at exit with code 102.

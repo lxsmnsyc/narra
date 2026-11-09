@@ -1,7 +1,7 @@
 ---
 id: sized-f32
 title: "The f32 type and float conversions"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -70,3 +70,5 @@ Spec-gap F7, float part: `f32` in both compilers, with the rules of D82 for floa
 ## Sizing
 
 M. One more primitive type in both compilers along a path sized-numbers opened; uncertainty low (shortest round-trip printing is the only tricky part).
+
+Landed on feat/batch-1 (4e014b9) after the mid-batch seed. Token spend was lost in a device crash.

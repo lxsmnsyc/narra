@@ -1,7 +1,7 @@
 ---
 id: spec-samples-test
 title: "Every SPEC.md sample is checked by a test"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-2

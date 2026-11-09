@@ -1,7 +1,7 @@
 ---
 id: misleading-hints
 title: "Two misleading compiler hints"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-2
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 60074
 owns:
   - docs/guide/**
   - roadmaps/selfhost/nodes/misleading-hints/**

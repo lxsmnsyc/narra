@@ -32,9 +32,9 @@ import {
   popScope,
   addLocal,
   needsRc,
-  typeOf,
-  refOf,
-  localOf,
+  readNodeType,
+  readNodeRef,
+  readLocal,
   retainCode,
   localRef,
   declareLocal,
@@ -72,7 +72,7 @@ function variantPath(
 
 // tupleFieldName is the name of field `index` of the tuple struct a pattern matches.
 function tupleFieldName(emitter: Emitter, pattern: Pattern, index: int): string {
-  if (typeOf(emitter, getPatternId(pattern)) is Type.TStruct(structIndex)) {
+  if (readNodeType(emitter, getPatternId(pattern)) is Type.TStruct(structIndex)) {
     return emitter.checker.structs[structIndex].fields[index].name
   }
   return ""
@@ -103,12 +103,12 @@ function collectConditions<W: EmitWalker>(
 ) uses alloc {
   match (pattern) {
     Pattern.PatName(nodeId, _, _) => {
-      if (refOf(emitter, nodeId) is Ref.Constructor(_, variantIndex)) {
+      if (readNodeRef(emitter, nodeId) is Ref.Constructor(_, variantIndex)) {
         Arrays.push(mutable conditions, `${path}.tag == ${Int.toString(variantIndex)}`)
       }
     }
     Pattern.PatCtor(nodeId, _, _, _, arguments, _) => {
-      if (refOf(emitter, nodeId) is Ref.Constructor(enumIndex, variantIndex)) {
+      if (readNodeRef(emitter, nodeId) is Ref.Constructor(enumIndex, variantIndex)) {
         Arrays.push(mutable conditions, `${path}.tag == ${Int.toString(variantIndex)}`)
         for (const index of Ranges.between(0, Arrays.length(arguments))) {
           const argumentPath = variantPath(emitter, enumIndex, variantIndex, index, path)
@@ -147,7 +147,7 @@ function collectConditions<W: EmitWalker>(
     }
     Pattern.PatLit(nodeId, _, literal) => {
       const code = EmitWalker.emitExpression(walker, mutable emitter, literal)
-      if (typeOf(emitter, nodeId) == Type.TStr) {
+      if (readNodeType(emitter, nodeId) == Type.TStr) {
         Arrays.push(mutable conditions, `lstr_eq(${path}, ${code.text})`)
       } else {
         Arrays.push(mutable conditions, `${path} == ${code.text}`)
@@ -164,7 +164,7 @@ function bindPattern(mutable emitter: Emitter, pattern: Pattern, path: string) u
     Pattern.PatName(nodeId, _, _) => {
       const localIndex = declaredLocal(emitter, nodeId)
       if (localIndex >= 0) {
-        const local = localOf(emitter, localIndex)
+        const local = readLocal(emitter, localIndex)
         declareLocal(mutable emitter, localIndex, path)
         const name = localRef(emitter, localIndex)
         const retainText = retainCode(emitter, local.localType, name)
@@ -175,7 +175,7 @@ function bindPattern(mutable emitter: Emitter, pattern: Pattern, path: string) u
       }
     }
     Pattern.PatCtor(nodeId, _, _, _, arguments, _) => {
-      if (refOf(emitter, nodeId) is Ref.Constructor(enumIndex, variantIndex)) {
+      if (readNodeRef(emitter, nodeId) is Ref.Constructor(enumIndex, variantIndex)) {
         for (const index of Ranges.between(0, Arrays.length(arguments))) {
           const argumentPath = variantPath(emitter, enumIndex, variantIndex, index, path)
           bindPattern(mutable emitter, arguments[index], argumentPath)
@@ -215,7 +215,7 @@ export function emitIsCondition<W: EmitWalker>(
 ): Code uses alloc {
   if (expression is Expr.IsExpr(_, _, subject, pattern)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
-    const subjectType = typeOf(emitter, getExpressionId(subject))
+    const subjectType = readNodeType(emitter, getExpressionId(subject))
     const held = temp(mutable emitter, subjectType, code.text)
     const condition = emitPatternCondition(walker, mutable emitter, pattern, held)
     return Code { text: `(${condition})`, owned: false }
@@ -232,7 +232,7 @@ export function emitIfIs<W: EmitWalker>(
 ) uses alloc {
   if (statement is Stmt.IfStmt(_, condition, then, orElse)) {
     if (condition is Expr.IsExpr(_, _, subject, pattern)) {
-      const subjectType = typeOf(emitter, getExpressionId(subject))
+      const subjectType = readNodeType(emitter, getExpressionId(subject))
       writeLine(mutable emitter, "{")
       emitter.indent = emitter.indent + 1
       pushScope(mutable emitter, false)
@@ -286,7 +286,7 @@ function emitMatchArms<W: EmitWalker>(
   resultType: Type,
 ) uses alloc {
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
-  const subjectType = typeOf(emitter, getExpressionId(subject))
+  const subjectType = readNodeType(emitter, getExpressionId(subject))
   const held = temp(mutable emitter, subjectType, code.text)
   emitter.tempCount = emitter.tempCount + 1
   const doneName = `m${Int.toString(emitter.tempCount)}`
@@ -352,7 +352,7 @@ function emitStatementArm<W: EmitWalker>(
     }
     beginStatement(mutable emitter)
     const code = EmitWalker.emitExpression(walker, mutable emitter, body)
-    if (code.text != "" && typeOf(emitter, getExpressionId(body)) == Type.TVoid) {
+    if (code.text != "" && readNodeType(emitter, getExpressionId(body)) == Type.TVoid) {
       writeLine(mutable emitter, `${code.text};`)
     }
     endStatement(mutable emitter)
@@ -461,7 +461,7 @@ export function emitReturnMatch<W: EmitWalker>(
   expression: Expr,
 ) uses alloc {
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
-    const resultType = typeOf(emitter, nodeId)
+    const resultType = readNodeType(emitter, nodeId)
     beginStatement(mutable emitter)
     emitMatchArms(walker, mutable emitter, subject, arms, false, true, "", resultType)
     emitter.frames = Tail.withoutLastFrame(emitter.frames)
@@ -477,7 +477,7 @@ export function emitMatchValue<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
-    const resultType = typeOf(emitter, nodeId)
+    const resultType = readNodeType(emitter, nodeId)
     emitter.tempCount = emitter.tempCount + 1
     const resultName = cType(emitter.checker, resultType)
     const variableName = `r${Int.toString(emitter.tempCount)}`
@@ -504,7 +504,7 @@ export function emitDestructure<W: EmitWalker>(
   if (statement is Stmt.VarStmt(_, _, _, _, Some(pattern), _, value)) {
     beginStatement(mutable emitter)
     const code = EmitWalker.emitExpression(walker, mutable emitter, value)
-    const patternType = typeOf(emitter, getPatternId(pattern))
+    const patternType = readNodeType(emitter, getPatternId(pattern))
     const held = temp(mutable emitter, patternType, code.text)
     bindPattern(mutable emitter, pattern, held)
     endStatement(mutable emitter)
@@ -521,14 +521,14 @@ export function emitSpreadLiteral<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.StructLit(nodeId, _, _, _, fields, Some(spread))) {
-    const structType = typeOf(emitter, nodeId)
+    const structType = readNodeType(emitter, nodeId)
     if (structType is Type.TStruct(structIndex)) {
       const spreadCode = EmitWalker.emitExpression(walker, mutable emitter, spread)
       const source = temp(mutable emitter, structType, spreadCode.text)
       let given: Map<string, string> = Map {}
       for (const field of Arrays.values(fields)) {
         const code = EmitWalker.emitExpression(walker, mutable emitter, field.value)
-        const fieldType = typeOf(emitter, getExpressionId(field.value))
+        const fieldType = readNodeType(emitter, getExpressionId(field.value))
         given[field.name] = consume(mutable emitter, code.text, code.owned, fieldType)
       }
       let parts: Array<string> = []
@@ -563,7 +563,7 @@ export function emitTupleLiteral<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.ArrayLit(nodeId, _, elements, _)) {
-    const tupleType = typeOf(emitter, nodeId)
+    const tupleType = readNodeType(emitter, nodeId)
     if (tupleType is Type.TStruct(structIndex)) {
       let parts: Array<string> = []
       for (const index of Ranges.between(0, Arrays.length(elements))) {

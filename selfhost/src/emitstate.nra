@@ -206,9 +206,9 @@ export function cString(text: string): string uses alloc {
     const byte = Str.byteAt(text, index)
     if (byte == 34 || byte == 92) {
       Str.append(mutable builder, "\\")
-      Str.appendChar(mutable builder, charOfByte(byte))
+      Str.appendChar(mutable builder, findByteChar(byte))
     } else if (byte >= 32 && byte < 127 && byte != 63) {
-      Str.appendChar(mutable builder, charOfByte(byte))
+      Str.appendChar(mutable builder, findByteChar(byte))
     } else {
       const high = byte / 64
       const middle = (byte / 8) % 8
@@ -223,7 +223,7 @@ export function cString(text: string): string uses alloc {
   return Str.build(builder)
 }
 
-function charOfByte(byte: int): char {
+function findByteChar(byte: int): char {
   return Str.charAt(Str.slice(ASCII, byte - 32, byte - 31), 0)
 }
 
@@ -246,8 +246,8 @@ export function where(emitter: Emitter, pos: Pos): string uses alloc {
   return cString(`${emitter.file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}`)
 }
 
-// typeOf is the type the emitted body gave a node. refOf is its Ref.
-export function typeOf(emitter: Emitter, nodeId: int): Type {
+// readNodeType is the type the emitted body gave a node. readNodeRef is its Ref.
+export function readNodeType(emitter: Emitter, nodeId: int): Type {
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot >= 0) {
@@ -258,7 +258,7 @@ export function typeOf(emitter: Emitter, nodeId: int): Type {
   return Type.TVoid
 }
 
-export function refOf(emitter: Emitter, nodeId: int): Ref {
+export function readNodeRef(emitter: Emitter, nodeId: int): Ref {
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot < 0) {
@@ -267,7 +267,7 @@ export function refOf(emitter: Emitter, nodeId: int): Ref {
   return info.refs[slot]
 }
 
-export function localOf(emitter: Emitter, index: int): LocalInfo {
+export function readLocal(emitter: Emitter, index: int): LocalInfo {
   return emitter.checker.bodies[emitter.body].locals[index]
 }
 
@@ -276,7 +276,7 @@ export function localOf(emitter: Emitter, index: int): LocalInfo {
 // mutable parameter, the element of a `for (mutable ...)` loop, or a `let`
 // captured by reference inside the closure being emitted (Go's isRef).
 export function isReference(emitter: Emitter, index: int): bool {
-  const local = localOf(emitter, index)
+  const local = readLocal(emitter, index)
   if ((local.param && local.isMutable) || local.binding == BindingKind.Reference) {
     return true
   }
@@ -289,7 +289,7 @@ export function isReference(emitter: Emitter, index: int): bool {
 }
 
 export function localRef(emitter: Emitter, index: int): string uses alloc {
-  const local = localOf(emitter, index)
+  const local = readLocal(emitter, index)
   const name = localName(local)
   if (isReference(emitter, index)) {
     return `(*${name})`
@@ -340,7 +340,7 @@ export function variableRef(emitter: Emitter, name: string): string uses alloc {
 // declareLocalVariable declares a local without a value and returns the
 // text that starts its declaration (Go's declareCounter).
 export function declareLocalVariable(mutable emitter: Emitter, localIndex: int): string uses alloc {
-  const local = localOf(emitter, localIndex)
+  const local = readLocal(emitter, localIndex)
   const typeName = cType(emitter.checker, local.localType)
   return declareVariable(mutable emitter, typeName, localName(local))
 }
@@ -556,7 +556,7 @@ export function popScope(mutable emitter: Emitter) uses alloc {
 function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
   let index = Arrays.length(frame.locals) - 1
   while (index >= 0) {
-    const local = localOf(emitter, frame.locals[index])
+    const local = readLocal(emitter, frame.locals[index])
     const text = releaseCode(emitter, local.localType, variableRef(emitter, localName(local)))
     if (text != "") {
       writeLine(mutable emitter, text)
@@ -581,7 +581,7 @@ export function localName(local: LocalInfo): string uses alloc {
 
 // addLocal registers a BodyInfo.locals index for release at the end of the scope.
 export function addLocal(mutable emitter: Emitter, localIndex: int) uses alloc {
-  const local = localOf(emitter, localIndex)
+  const local = readLocal(emitter, localIndex)
   if (needsRc(emitter, local.localType)) {
     const top = Arrays.length(emitter.scopes) - 1
     Arrays.push(mutable emitter.scopes[top].locals, localIndex)

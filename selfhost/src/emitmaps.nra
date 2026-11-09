@@ -22,10 +22,10 @@ import {
   temp,
   ownedTemp,
   consume,
-  typeOf,
-  refOf,
+  readNodeType,
+  readNodeRef,
   localRef,
-  localOf,
+  readLocal,
   underlyingType,
   retainCode,
   releaseCode,
@@ -208,7 +208,7 @@ export function emitMapLiteral<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.MapLit(nodeId, _, _, keys, values)) {
-    const mapType = typeOf(emitter, nodeId)
+    const mapType = readNodeType(emitter, nodeId)
     const name = containerName(emitter, mapType)
     const map = ownedTemp(
       mutable emitter,
@@ -252,8 +252,8 @@ export function emitMapGet<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.IndexExpr(nodeId, _, target, index)) {
-    const mapType = typeOf(emitter, getExpressionId(target))
-    const optionType = typeOf(emitter, nodeId)
+    const mapType = readNodeType(emitter, getExpressionId(target))
+    const optionType = readNodeType(emitter, nodeId)
     const name = containerName(emitter, mapType)
     const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
     const map = temp(mutable emitter, mapType, targetCode.text)
@@ -302,9 +302,9 @@ export function emitMapBuiltin<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.CallExpr(nodeId, _, _, _, arguments)) {
-    if (refOf(emitter, nodeId) is Ref.Builtin(builtinIndex)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Builtin(builtinIndex)) {
       const name = emitter.checker.registry.functions[builtinIndex].name
-      const mapType = typeOf(emitter, getExpressionId(arguments[0].value))
+      const mapType = readNodeType(emitter, getExpressionId(arguments[0].value))
       if (name == "Map.size") {
         const map = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
         return Code { text: `(${map.text})->len`, owned: false }
@@ -360,7 +360,7 @@ function emitMapToArray<W: EmitWalker>(
   mapType: Type,
   entries: bool,
 ): Code uses alloc {
-  const arrayType = typeOf(emitter, nodeId)
+  const arrayType = readNodeType(emitter, nodeId)
   const elementType = match (arrayType) { Type.TArray(element) => element, _ => arrayType }
   const sourceCode = EmitWalker.emitExpression(walker, mutable emitter, source)
   const map = temp(mutable emitter, mapType, sourceCode.text)
@@ -394,7 +394,7 @@ export function emitMapSet<W: EmitWalker>(
 ) uses alloc {
   if (statement is Stmt.AssignStmt(_, target, value)) {
     if (target is Expr.IndexExpr(_, _, mapTarget, index)) {
-      const mapType = typeOf(emitter, getExpressionId(mapTarget))
+      const mapType = readNodeType(emitter, getExpressionId(mapTarget))
       const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
       const consumedValue = consume(
         mutable emitter,
@@ -422,10 +422,10 @@ export function emitMapFor<W: EmitWalker>(
 ) uses alloc {
   if (statement is Stmt.ForStmt(nodeId, pos, label, _, iterable, body, _)) {
     if (iterable is Expr.CallExpr(callId, _, _, _, arguments)) {
-      if (refOf(emitter, callId) is Ref.Builtin(builtinIndex)) {
+      if (readNodeRef(emitter, callId) is Ref.Builtin(builtinIndex)) {
         const entries = emitter.checker.registry.functions[builtinIndex].name == "Map.entries"
         const source = arguments[0].value
-        const mapType = typeOf(emitter, getExpressionId(source))
+        const mapType = readNodeType(emitter, getExpressionId(source))
         const code = EmitWalker.emitExpression(walker, mutable emitter, source)
         const map = consume(mutable emitter, code.text, code.owned, mapType)
         // The loop owns the map until the statement ends.
@@ -445,7 +445,7 @@ export function emitMapFor<W: EmitWalker>(
         pushScope(mutable emitter, true)
         const info = emitter.checker.bodies[emitter.body]
         const localIndex = info.declared[findBodySlot(info, nodeId)]
-        const localType = localOf(emitter, localIndex).localType
+        const localType = readLocal(emitter, localIndex).localType
         const value = entryValue(emitter, map, position, localType, entries)
         declareLocal(mutable emitter, localIndex, value)
         const variable = localRef(emitter, localIndex)

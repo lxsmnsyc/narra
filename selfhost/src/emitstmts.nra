@@ -31,10 +31,10 @@ import {
   emitStepJump,
   emitBreakLabel,
   emitLabeledExit,
-  typeOf,
-  refOf,
+  readNodeType,
+  readNodeRef,
   localRef,
-  localOf,
+  readLocal,
   retainCode,
   releaseCode,
   declareLocal,
@@ -226,17 +226,17 @@ function emitAssignment<W: EmitWalker>(
   beginStatement(mutable emitter)
   // A write to a Map index is the maps module's.
   if (target is Expr.IndexExpr(_, _, indexTarget, _)) {
-    if (typeOf(emitter, getExpressionId(indexTarget)) is Type.TMap(_, _)) {
+    if (readNodeType(emitter, getExpressionId(indexTarget)) is Type.TMap(_, _)) {
       Maps.emitMapSet(walker, mutable emitter, statement)
       endStatement(mutable emitter)
       return
     }
   }
   const code = EmitWalker.emitExpression(walker, mutable emitter, value)
-  const valueType = typeOf(emitter, getExpressionId(value))
+  const valueType = readNodeType(emitter, getExpressionId(value))
   const consumed = consume(mutable emitter, code.text, code.owned, valueType)
   const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
-  const targetType = typeOf(emitter, getExpressionId(target))
+  const targetType = readNodeType(emitter, getExpressionId(target))
   const releaseText = releaseCode(emitter, targetType, `(*${location})`)
   if (releaseText != "") {
     // The old value is released before the new one is stored.
@@ -266,13 +266,13 @@ function emitCompoundAssignment<W: EmitWalker>(
   } else if (operator == "--") {
     arithmetic = "-"
   }
-  const targetType = typeOf(emitter, getExpressionId(target))
+  const targetType = readNodeType(emitter, getExpressionId(target))
   const operandType = underlyingType(emitter, targetType)
   const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
-  const valueType = typeOf(emitter, getExpressionId(value))
+  const valueType = readNodeType(emitter, getExpressionId(value))
   const valueText = temp(mutable emitter, valueType, valueCode.text)
   if (target is Expr.IndexExpr(_, _, mapTarget, index)) {
-    if (typeOf(emitter, getExpressionId(mapTarget)) is Type.TMap(keyType, mapValueType)) {
+    if (readNodeType(emitter, getExpressionId(mapTarget)) is Type.TMap(keyType, mapValueType)) {
       emitMapCompound(
         walker,
         mutable emitter,
@@ -316,7 +316,7 @@ function emitMapCompound<W: EmitWalker>(
   mapValueType: Type,
   valueText: string,
 ) uses alloc {
-  const mapType = typeOf(emitter, getExpressionId(mapTarget))
+  const mapType = readNodeType(emitter, getExpressionId(mapTarget))
   const keyCode = EmitWalker.emitExpression(walker, mutable emitter, index)
   const key = consume(mutable emitter, keyCode.text, keyCode.owned, keyType)
   const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, mapTarget)
@@ -355,7 +355,7 @@ function emitExpressionStatement<W: EmitWalker>(
   } else {
     // Only a call that returns nothing is a statement of its own.
     const code = EmitWalker.emitExpression(walker, mutable emitter, expression)
-    if (code.text != "" && typeOf(emitter, getExpressionId(expression)) == Type.TVoid) {
+    if (code.text != "" && readNodeType(emitter, getExpressionId(expression)) == Type.TVoid) {
       writeLine(mutable emitter, `${code.text};`)
     }
   }
@@ -373,7 +373,7 @@ function emitBlockReturn<W: EmitWalker>(
   beginStatement(mutable emitter)
   if (value is Some(returned)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
-    const returnedType = typeOf(emitter, getExpressionId(returned))
+    const returnedType = readNodeType(emitter, getExpressionId(returned))
     const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
     writeLine(mutable emitter, `${info.result} = ${consumed};`)
   }
@@ -411,7 +411,7 @@ function emitReturn<W: EmitWalker>(
   beginStatement(mutable emitter)
   if (value is Some(returned)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
-    const returnedType = typeOf(emitter, getExpressionId(returned))
+    const returnedType = readNodeType(emitter, getExpressionId(returned))
     const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
     const result = temp(mutable emitter, returnedType, consumed)
     unwindAll(mutable emitter)
@@ -533,7 +533,7 @@ function emitCFor<W: EmitWalker>(
 // iterableName is the std function a for loop iterates: Range.upTo, Array.values and so on.
 function iterableName(emitter: Emitter, iterable: Expr): string {
   if (iterable is Expr.CallExpr(callId, _, _, _, _)) {
-    if (refOf(emitter, callId) is Ref.Builtin(index)) {
+    if (readNodeRef(emitter, callId) is Ref.Builtin(index)) {
       return emitter.checker.registry.functions[index].name
     }
   }
@@ -557,7 +557,7 @@ function emitFor<W: EmitWalker>(
     emitReferenceFor(walker, mutable emitter, nodeId, pos, label, iterable, body, marker)
   } else if (name == "Range.upTo" || name == "Range.between") {
     emitRangeFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name)
-  } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TRange) {
+  } else if (readNodeType(emitter, getExpressionId(iterable)) is Type.TRange) {
     emitRangeValueFor(walker, mutable emitter, nodeId, pos, label, iterable, body)
   } else if (name == "Map.keys" || name == "Map.entries") {
     Maps.emitMapFor(walker, mutable emitter, statement)
@@ -573,9 +573,9 @@ function emitFor<W: EmitWalker>(
       name == "Array.entries",
       true,
     )
-  } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TArray(_)) {
+  } else if (readNodeType(emitter, getExpressionId(iterable)) is Type.TArray(_)) {
     emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, false, false)
-  } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TGenerator(_, _, _, _, _)) {
+  } else if (readNodeType(emitter, getExpressionId(iterable)) is Type.TGenerator(_, _, _, _, _)) {
     Generators.emitGeneratorFor(walker, mutable emitter, nodeId, pos, label, iterable, body)
   } else {
     const _ = reportUnsupported(mutable emitter, "for loop", NODE)
@@ -673,7 +673,7 @@ function emitReferenceFor<W: EmitWalker>(
   if (iterable is Expr.CallExpr(_, _, _, _, callArguments)) {
     source = callArguments[0].value
   }
-  const arrayType = typeOf(emitter, getExpressionId(source))
+  const arrayType = readNodeType(emitter, getExpressionId(source))
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerName(emitter, arrayType)
     const place = EmitWalker.emitLvaluePointer(walker, mutable emitter, source)
@@ -697,7 +697,7 @@ function emitReferenceFor<W: EmitWalker>(
     }
     const localIndex = declaredLocal(emitter, nodeId)
     const elementType = `${cType(emitter.checker, element)}*`
-    const elementName = localName(localOf(emitter, localIndex))
+    const elementName = localName(readLocal(emitter, localIndex))
     const declaration = declareVariable(mutable emitter, elementType, elementName)
     writeLine(mutable emitter, `${declaration} = &${array}->items[${index}];`)
     emitBlockInScope(walker, mutable emitter, body)
@@ -730,7 +730,7 @@ function emitArrayFor<W: EmitWalker>(
       source = callArguments[0].value
     }
   }
-  const arrayType = typeOf(emitter, getExpressionId(source))
+  const arrayType = readNodeType(emitter, getExpressionId(source))
   if (arrayType is Type.TArray(_)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, source)
     const array = consume(mutable emitter, code.text, code.owned, arrayType)
@@ -754,7 +754,7 @@ function emitArrayFor<W: EmitWalker>(
       // needs a compound literal.
       let tupleValue = `{.f_0 = ${index}, .f_1 = ${array}->items[${index}]}`
       if (emitter.inGenerator) {
-        const tupleName = cType(emitter.checker, localOf(emitter, localIndex).localType)
+        const tupleName = cType(emitter.checker, readLocal(emitter, localIndex).localType)
         tupleValue = `(${tupleName})${tupleValue}`
       }
       declareLocal(mutable emitter, localIndex, tupleValue)
@@ -762,7 +762,7 @@ function emitArrayFor<W: EmitWalker>(
       declareLocal(mutable emitter, localIndex, `${array}->items[${index}]`)
     }
     const variable = localRef(emitter, localIndex)
-    const retainText = retainCode(emitter, localOf(emitter, localIndex).localType, variable)
+    const retainText = retainCode(emitter, readLocal(emitter, localIndex).localType, variable)
     if (retainText != "") {
       writeLine(mutable emitter, retainText)
     }

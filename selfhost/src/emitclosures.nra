@@ -25,9 +25,9 @@ import {
   reportUnsupported,
   writeLine,
   where,
-  typeOf,
-  refOf,
-  localOf,
+  readNodeType,
+  readNodeRef,
+  readLocal,
   localName,
   localRef,
   isReference,
@@ -162,7 +162,7 @@ export function emitFuncValue<W: EmitWalker>(
   const nodeId = getExpressionId(expression)
   const checker = emitter.checker
   let funcIndex = -1
-  if (refOf(emitter, nodeId) is Ref.Function(found)) {
+  if (readNodeRef(emitter, nodeId) is Ref.Function(found)) {
     funcIndex = found
   }
   if (funcIndex < 0) {
@@ -207,7 +207,7 @@ export function emitFuncValue<W: EmitWalker>(
       `${signature} {\n  (void)env;\n  ${returnText}${functionText}(${Str.join(arguments, ", ")});\n}\n\n`,
     )
   }
-  const functionType = cType(checker, typeOf(emitter, nodeId))
+  const functionType = cType(checker, readNodeType(emitter, nodeId))
   return Code { text: `((${functionType}){.fn = ${name}, .env = NULL})`, owned: false }
 }
 
@@ -250,7 +250,7 @@ function emitArrowParts<W: EmitWalker>(
       owned: false,
     }
   }
-  const functionType = typeOf(emitter, nodeId)
+  const functionType = readNodeType(emitter, nodeId)
   const functionTypeName = cType(checker, functionType)
   let result = Type.TVoid
   if (functionType is Type.TFunc(_, resultType, _, _)) {
@@ -303,7 +303,7 @@ function emitArrowParts<W: EmitWalker>(
     // The environment lives on the caller's stack, with a count of -1.
     let parts = [".h = {-1, NULL}"]
     for (const capture of Arrays.values(closure.captures)) {
-      const local = localOf(emitter, capture)
+      const local = readLocal(emitter, capture)
       Arrays.push(
         mutable parts,
         `.c_${localName(local)} = ${captureValue(emitter, closure, capture)}`,
@@ -323,7 +323,7 @@ function emitArrowParts<W: EmitWalker>(
   writeLine(mutable emitter, `${environment}->h.rc = 1;`)
   writeLine(mutable emitter, `${environment}->h.drop = ${dropName};`)
   for (const capture of Arrays.values(closure.captures)) {
-    const local = localOf(emitter, capture)
+    const local = readLocal(emitter, capture)
     const field = `${environment}->c_${localName(local)}`
     const captureRef = localRef(emitter, capture)
     writeLine(mutable emitter, `${field} = ${captureRef};`)
@@ -345,7 +345,7 @@ function emitArrowParts<W: EmitWalker>(
 // the closure changes, or the value of anything else. A variable that is
 // already a pointer is passed on as it is.
 function captureValue(emitter: Emitter, closure: ClosureInfo, capture: int): string uses alloc {
-  const local = localOf(emitter, capture)
+  const local = readLocal(emitter, capture)
   if (!isCapturedByReference(emitter, closure, capture)) {
     return localRef(emitter, capture)
   }
@@ -358,7 +358,7 @@ function captureValue(emitter: Emitter, closure: ClosureInfo, capture: int): str
 // isCapturedByReference reports whether a closure holds a capture through a
 // pointer: a `let`, a mutable parameter, or a `const` it changes (D81).
 function isCapturedByReference(emitter: Emitter, closure: ClosureInfo, capture: int): bool {
-  if (localOf(emitter, capture).isMutable) {
+  if (readLocal(emitter, capture).isMutable) {
     return true
   }
   for (const captured of Arrays.values(closure.refCaptures)) {
@@ -380,7 +380,7 @@ function emitEnvironmentStruct(
   let builder = Str.builder()
   Str.append(mutable builder, `typedef struct ${environmentType} { narra_env h;`)
   for (const capture of Arrays.values(closure.captures)) {
-    const local = localOf(emitter, capture)
+    const local = readLocal(emitter, capture)
     if (isCapturedByReference(emitter, closure, capture)) {
       Str.append(
         mutable builder,
@@ -399,7 +399,7 @@ function emitEnvironmentStruct(
     `static void ${dropName}(narra_env* h) {\n  ${environmentType}* k = (${environmentType}*)h;\n  (void)k;\n`,
   )
   for (const capture of Arrays.values(closure.captures)) {
-    const local = localOf(emitter, capture)
+    const local = readLocal(emitter, capture)
     if (isCapturedByReference(emitter, closure, capture)) {
       continue // borrowed through a pointer
     }
@@ -470,7 +470,7 @@ function emitClosureFunction<W: EmitWalker>(
   } else {
     writeLine(mutable emitter, `${environmentType}* k_env = (${environmentType}*)env;`)
     for (const capture of Arrays.values(closure.captures)) {
-      const local = localOf(emitter, capture)
+      const local = readLocal(emitter, capture)
       let pointer = ""
       if (isCapturedByReference(emitter, closure, capture)) {
         pointer = "*"
@@ -522,7 +522,7 @@ export function emitValueCall<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.CallExpr(_, _, callee, _, arguments)) {
-    const functionType = typeOf(emitter, getExpressionId(callee))
+    const functionType = readNodeType(emitter, getExpressionId(callee))
     // The call owns a reference to the callee until the statement ends, so
     // an argument that reassigns the variable holding it cannot free the
     // environment before the call. Stack and NULL environments ignore it.

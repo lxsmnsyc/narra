@@ -1,7 +1,7 @@
 ---
 id: sized-conversions
 title: "Integer conversions: I32.from, tryFrom and wrap"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 118762
 owns:
   - selfhost/src/stdsized.nra
   - testdata/sized_convert*
@@ -66,3 +66,5 @@ The conversion functions of D82 in both compilers: modules `std/i8`, `std/i16`, 
 ## Sizing
 
 M. Seven small builtin modules from one table in each compiler; uncertainty low, tests automatic.
+
+Landed on feat/batch-1. Gate choice to review: a literal argument to `from` is typed `int`, so `I32.from(5)` is E0940.

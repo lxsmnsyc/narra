@@ -1,7 +1,7 @@
 ---
 id: sized-f32
 title: "The f32 type and float conversions"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

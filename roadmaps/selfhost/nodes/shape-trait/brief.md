@@ -1,7 +1,7 @@
 ---
 id: shape-trait
 title: "The Shape trait, Json.encode and Json.decode"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

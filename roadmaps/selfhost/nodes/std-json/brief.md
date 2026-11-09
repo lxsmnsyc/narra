@@ -1,7 +1,7 @@
 ---
 id: std-json
 title: std/json parse and stringify over a dynamic Value
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-01
-spent:
+spent: 134422
 owns:
   - std/src/json.nra
   - std/src/shape.nra
@@ -106,3 +106,5 @@ Plan (D83): the dynamic tree is `Value` in `std/shape`, a module of its own, and
 - `Value` sits in `std/shape`, not in `std/json`, because the `Shape` trait (node shape-trait) converts types to and from `Value` without knowing the format. A later TOML or binary format reuses it, and `std/shape` never imports `std/json`, so the two modules do not form an import cycle.
 - Separate `Int` and `Float` constructors, because Narra has no single number type, and a 64-bit integer id must survive a round trip, which a `double` cannot hold.
 - Rejected: `Json.Value` in `std/json` (the outline's name). It would tie `Shape` to JSON. Rejected: reading JSON straight into typed values without a tree. It is faster but needs `derives Shape` first, and JSON-RPC needs the tree for messages whose type depends on a field.
+
+Landed on feat/batch-1. Gate decided by the orchestrator: D83 as written; float parsing is an internal primitive; integers outside int become Float.

@@ -63,13 +63,13 @@ export function run(args: Array<string>): int {
 }
 ```
 
-There is no `+=`, `-=`, `++` or `--`. Write the sum out in full, as in `count = count + 1` ([chapter 2](02-values-and-types.md#change-a-value-over-time)):
+`+=`, `-=` and the other compound forms, and `count++` and `count--`, work as in TypeScript, with one difference: they are statements with no value. `const copy = count++` and the prefix `++count` are errors ([chapter 2](02-values-and-types.md#change-a-value-over-time)):
 
 ```narra error
-// error: 4:9: compound assignment is not supported; write `x = x + y`
+// error: 4:3: there is no prefix `++`; write `x++` as a statement
 export function run(args: Array<string>): int {
   let count = 0
-  count += 1
+  ++count
   return count
 }
 ```

@@ -64,7 +64,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
-- There are no compound assignments (`+=`, `++`). Write `x = x + 1`.
+- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` `+%=` `-%=` `*%=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Overflow, division by zero and shift checks are those of the binary operator. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
 - **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
@@ -232,7 +232,8 @@ There are no macros, no operator overloading and no function overloading.
 | `==` `!=` | Types that implement `Equatable`, compared structurally (section 4) |
 | `&&` `\|\|` `!` | `bool` |
 
-- There is no string concatenation operator. Use a template string or `Str.concat(a, b)`.
+- There is no string concatenation operator. Use a template string or `Str.concat(a, b)`. The statement `s += t` joins strings (section 2, Bindings).
+- Compound assignment (`+=` and the others) and `x++` / `x--` are statements, not operators, and have no value (section 2, Bindings).
 - There is no length operator. Use `Arrays.length(items)`, `Str.length(s)` and `Maps.size(m)`.
 - There is no power operator. Use `Float.pow(x, y)` or `Int.pow(x, y)`.
 - `Int.floorDiv(a, b)` rounds toward negative infinity.
@@ -255,7 +256,8 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `for (init; cond; step)` accepts `var`, `const`, several declarations and any condition | The same form, with `init` a single `let` or empty (`const` is E0960), `condition` a `bool` (E0959) and `step` an assignment or a call (E0961) |
 | `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
 | `xs.push(v)`, `s.length` | Not present. Use `Arrays.push(mutable xs, v)`, `Str.length(s)` |
-| `a + b` joins strings | Not present. Use a template string |
+| `a + b` joins strings | Not present. Use a template string (`s += t` is allowed as a statement) |
+| `y = x++`, `++x`, `a[i] = b += 1` | Compound assignment and `x++` are statements without a value; `++x` is an error (E0964) |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
 | Calling an async function without `await` starts it in the background | A compile error. Use `await f()`, or start a task with `Async.spawn` (section 8) |

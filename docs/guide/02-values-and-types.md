@@ -63,15 +63,22 @@ export function run(args: Array<string>): int {
 
 `while` runs its block again and again while the condition in parentheses is true. Each pass assigns new values to the two `let` names with `=`.
 
-You add to a value by writing the sum out in full. The short form is an error:
+You add to a value with `+=`, as in TypeScript. `-=`, `*=`, `/=` and the other compound forms work the same way, and `weeks++` and `weeks--` add and subtract one. They are statements: they have no value, so `const copy = weeks++` is an error, and so is the prefix form `++weeks`.
 
-```narra error
-// error: 4:9: compound assignment is not supported; write `x = x + y`
-export function run(args: Array<string>): int {
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int uses io, alloc {
   let weeks = 0
-  weeks += 1
-  return weeks
+  weeks += 2
+  weeks++
+  print(`${Int.toString(weeks)} weeks`)
+  return 0
 }
+```
+
+```text
+3 weeks
 ```
 
 Use `const` for every name that does not need a new value, and `let` only where it does. A reader then knows which names to watch. As the sections on arrays and structs show, `const` fixes the name, not the contents: the elements of a `const` array can still change.

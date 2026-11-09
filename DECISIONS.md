@@ -666,6 +666,15 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 - **Cost.** Two loop forms where D45 had one. The details (whether `init` must be `let`, whether `++` has a value, `continue` jumping to the step, labels, the semicolon rule inside the parentheses) are settled by nodes c-style-for and compound-assign.
 - **Built: the C-style loop.** `init` is `let` or empty (`const` is E0960). `condition` is a `bool` or empty (E0959). `step` is an assignment, a call or empty (E0961). `continue` runs the step. The `;` is a token only inside parentheses, so `;` elsewhere is still E0003. The name from `init` ends with the loop.
 
+Amendment (node compound-assign, 2026-11-09). Rules for compound assignment and `++`/`--`:
+
+- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`.
+- **Statements only.** They have no value and cannot be nested in an expression (E0964). Only the postfix spelling `x++` and `x--` exists; `++x` and `--x` are an error with a hint (E0964), so `--x` no longer parses as a double negation.
+- **Targets.** Every target `=` accepts: a `let`, a field or element of a changeable value (D81), the contents of a `mutable` parameter. A `const` binding and a whole `mutable` parameter are rejected as for `=`.
+- **Types.** The value has the type of the target (E0962). `++` and `--` take an integer of any width (E0963). Overflow, division by zero and shift checks are those of the binary operator.
+- **Strings.** `s += t` joins strings and releases the old value; `+=` is the only compound form on a `string`, and `a + b` stays an error.
+- **Map index.** `counts[key] += 1` panics when the key is missing, since `counts[key]` is an `Option` and the old value is needed. Insert the key first with `Maps.set`.
+
 ## D77. Non-escaping closures capture `let` and `mutable` by reference
 
 Decision: an arrow function passed straight to a non-escaping function-type parameter may read and assign the `let` variables and `mutable` parameters of the enclosing function, by reference. Every `let` and `mutable` it uses is captured by reference, also when it only reads it. `const` bindings and non-mutable parameters keep the by-value capture. Every arrow function between the use and the declaration must be of this kind; any other closure (stored, returned, passed to an `escaping` parameter or through a function value) still cannot capture them. A variable that such a closure assigns is borrowed for the call: it cannot be passed as `mutable`, used in another argument, or captured by another closure argument. Decided by the maintainer on 2026-11-05.

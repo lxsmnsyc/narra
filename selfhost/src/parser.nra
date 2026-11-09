@@ -111,6 +111,9 @@ struct Parser {
   // return Result, where `throw x` can become `return Err(x)`.
   facts: SourceFacts
   resultFunction: bool
+  // statementStart is the token index where the expression statement being parsed begins;
+  // only an expression that starts there can end in `+=` or `++`.
+  statementStart: int
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -139,6 +142,8 @@ const BINARY_LEVELS = [
   ["*", "/", "%", "*%"],
 ]
 
+const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "+%", "-%", "*%"]
+
 // `x is Pattern` binds tighter than == and looser than < and +.
 const IS_LEVEL = 2
 
@@ -159,6 +164,7 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
     typeNames: [],
     facts: createEmptyFacts(),
     resultFunction: false,
+    statementStart: 0 - 1,
   }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
@@ -190,6 +196,7 @@ export function parseWithTrivia(source: string, firstId: int): Result<#[
     typeNames: [],
     facts: createEmptyFacts(),
     resultFunction: false,
+    statementStart: 0 - 1,
   }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
@@ -1895,9 +1902,12 @@ function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): S
   if (!isAt(parser, ")")) {
     const stepToken = currentToken(parser)
     const stepPos = getPos(stepToken)
+    parser.statementStart = parser.index
     const target = parseExpr(mutable parser)
     if (accept(mutable parser, "=")) {
       step = Some(Stmt.AssignStmt(stepPos, target, parseExpr(mutable parser)))
+    } else if (parseCompoundTail(mutable parser, stepPos, target) is Some(compound)) {
+      step = Some(compound)
     } else if (target is Expr.CallExpr(_, _, _, _, _)) {
       step = Some(Stmt.ExprStmt(stepPos, target))
     } else {
@@ -2141,11 +2151,16 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     failAt(mutable parser, pos, "E0032", "a block must belong to a statement such as if or while")
     return Stmt.BreakStmt(pos, "")
   }
+  parser.statementStart = parser.index
   const expression = parseExpr(mutable parser)
   if (accept(mutable parser, "=")) {
     const value = parseExpr(mutable parser)
     endStatement(mutable parser)
     return Stmt.AssignStmt(pos, expression, value)
+  }
+  if (parseCompoundTail(mutable parser, pos, expression) is Some(compound)) {
+    endStatement(mutable parser)
+    return compound
   }
   if (expression is Expr.MatchExpr(_, _, _, _)) {
     skipNewlines(mutable parser)
@@ -2329,16 +2344,19 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
     if (!matched) {
       return left
     }
-    advance(mutable parser)
-    if (isAt(parser, "=") && currentToken(parser).column == token.column + Str.length(token.text)) {
-      failAt(
-        mutable parser,
-        getPos(token),
-        "E0034",
-        `compound assignment is not supported; write \`x = x ${token.text} y\``,
-      )
+    if (isCompoundOperatorAhead(parser) || isIncrementAhead(parser)) {
+      // The statement parser reads the operator; anywhere else it is an error.
+      if (startIndex != parser.statementStart) {
+        failAt(
+          mutable parser,
+          getPos(token),
+          "E0964",
+          "`+=`, `++` and the other compound assignments are statements; they have no value",
+        )
+      }
       return left
     }
+    advance(mutable parser)
     const right = parseBinary(mutable parser, level + 1)
     left = Expr.BinaryExpr(newId(mutable parser), getPos(token), token.text, left, right)
     noteExpr(mutable parser, startIndex, left)
@@ -2346,9 +2364,91 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
   return left
 }
 
+function parseCompoundTail(mutable parser: Parser, pos: Pos, target: Expr): Option<Stmt> {
+  if (!isOk(parser)) {
+    return None
+  }
+  if (isCompoundOperatorAhead(parser)) {
+    // `target += value`: the operator and the `=` are two tokens.
+    const operatorToken = advance(mutable parser)
+    advance(mutable parser)
+    const value = parseExpr(mutable parser)
+    return Some(Stmt.CompoundAssignStmt(pos, target, `${operatorToken.text}=`, value))
+  }
+  if (isIncrementAhead(parser)) {
+    // `target++`: the value is the implied 1.
+    const operatorToken = advance(mutable parser)
+    advance(mutable parser)
+    const one = Expr.IntLit(newId(mutable parser), getPos(operatorToken), "1")
+    const operator = `${operatorToken.text}${operatorToken.text}`
+    return Some(Stmt.CompoundAssignStmt(pos, target, operator, one))
+  }
+  return None
+}
+
+function isCompoundOperatorAhead(parser: Parser): bool {
+  const token = currentToken(parser)
+  if (token.kind != TokenKind.TokPunct) {
+    return false
+  }
+  const next = peekToken(parser, 1)
+  if (next.kind != TokenKind.TokPunct || next.text != "=") {
+    return false
+  }
+  if (next.line != token.line || next.column != token.column + Str.length(token.text)) {
+    return false
+  }
+  for (const operator of Arrays.values(COMPOUND_OPERATORS)) {
+    if (token.text == operator) {
+      return true
+    }
+  }
+  return false
+}
+
+function isIncrementAhead(parser: Parser): bool {
+  const token = currentToken(parser)
+  if (token.kind != TokenKind.TokPunct || (token.text != "+" && token.text != "-")) {
+    return false
+  }
+  const next = peekToken(parser, 1)
+  if (next.kind != TokenKind.TokPunct || next.text != token.text) {
+    return false
+  }
+  if (next.line != token.line || next.column != token.column + 1) {
+    return false
+  }
+  const after = peekToken(parser, 2)
+  if (after.kind == TokenKind.TokNewline || after.kind == TokenKind.TokEof) {
+    return true
+  }
+  return after.kind == TokenKind.TokPunct && (after.text == "}" || after.text == ")")
+}
+
+function isPrefixIncrementAhead(parser: Parser): bool {
+  const token = currentToken(parser)
+  if (token.kind != TokenKind.TokPunct || (token.text != "+" && token.text != "-")) {
+    return false
+  }
+  const next = peekToken(parser, 1)
+  return next.kind == TokenKind.TokPunct &&
+    next.text == token.text &&
+    next.line == token.line &&
+    next.column == token.column + 1
+}
+
 function parseUnary(mutable parser: Parser): Expr {
   const startIndex = parser.index
   const token = currentToken(parser)
+  if (isPrefixIncrementAhead(parser)) {
+    failAt(
+      mutable parser,
+      getPos(token),
+      "E0964",
+      `there is no prefix \`${token.text}${token.text}\`; write \`x${token.text}${token.text}\` as a statement`,
+    )
+    return Expr.IntLit(newId(mutable parser), getPos(token), "0")
+  }
   if (isAt(parser, "-") || isAt(parser, "!") || isAt(parser, "~")) {
     advance(mutable parser)
     const operand = parseUnary(mutable parser)
@@ -3035,6 +3135,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
         collector: createCollector(false),
         facts: createEmptyFacts(),
         resultFunction: false,
+        statementStart: 0 - 1,
         typeNames: [],
       }
       const expression = parseExpr(mutable innerParser)

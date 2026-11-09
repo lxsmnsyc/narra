@@ -6,7 +6,7 @@
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/fixes"
-import { Type } from "narrac/types"
+import { Type, isInteger } from "narrac/types"
 import {
   isConditional,
   Checker,
@@ -30,6 +30,7 @@ import {
   LoopBorrow,
   setBinding,
   isContentsType,
+  isNumeric,
 } from "narrac/check"
 import { resolveType, findTupleType } from "narrac/resolve"
 import {
@@ -86,6 +87,10 @@ export function checkStatement<W: Walker>(
       endExpressionNarrowing(mutable checker, target)
       endExpressionNarrowing(mutable checker, value)
     }
+    Stmt.CompoundAssignStmt(_, target, _, value) => {
+      endExpressionNarrowing(mutable checker, target)
+      endExpressionNarrowing(mutable checker, value)
+    }
     Stmt.ExprStmt(_, expression) => endExpressionNarrowing(mutable checker, expression)
     Stmt.ReturnStmt(_, value) => {
       if (value is Some(returned)) {
@@ -115,6 +120,15 @@ export function checkStatement<W: Walker>(
       walker,
       pos,
       target,
+      "=",
+      value,
+    )
+    Stmt.CompoundAssignStmt(pos, target, operator, value) => checkAssignment(
+      mutable checker,
+      walker,
+      pos,
+      target,
+      operator,
       value,
     )
     Stmt.ExprStmt(pos, expression) => checkExpressionStatement(
@@ -342,6 +356,7 @@ function checkAssignment<W: Walker>(
   walker: W,
   pos: Pos,
   target: Expr,
+  operator: string,
   value: Expr,
 ) uses alloc {
   // A write through a constant is reported before the target is checked.
@@ -356,7 +371,12 @@ function checkAssignment<W: Walker>(
   let wasUsed = false
   if (target is Expr.Ident(_, targetPos, targetName)) {
     const found = findLocal(checker, targetName)
-    if (found >= 0 && !(getLocal(checker, found).param && getLocal(checker, found).isMutable)) {
+    // A compound assignment reads the local, so it stays used.
+    if (
+      operator == "=" &&
+        found >= 0 &&
+        !(getLocal(checker, found).param && getLocal(checker, found).isMutable)
+    ) {
       writtenLocal = found
       wasUsed = getLocal(checker, found).used
       // The fix of an unused local renames the assignments too.
@@ -413,6 +433,11 @@ function checkAssignment<W: Walker>(
   if (!(target is Expr.Ident(_, _, _))) {
     checkNoMutableEscape(mutable checker, value)
   }
+  if (operator != "=") {
+    checkCompoundOperand(mutable checker, walker, pos, targetType, operator, value)
+    endNarrowing(mutable checker, root)
+    return
+  }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
   // The effect pass tracks what a local holds, so a function assigned to a
   // local adds its effects to the local instead of having to fit its type.
@@ -420,6 +445,61 @@ function checkAssignment<W: Walker>(
   expectType(mutable checker, getExpressionPos(value), Some(targetType), valueType)
   checker.looseFunctions = false
   endNarrowing(mutable checker, root)
+}
+
+function checkCompoundOperand<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  targetType: Type,
+  operator: string,
+  value: Expr,
+) uses alloc {
+  const targetText = typeString(checker, targetType)
+  // `x++` and `x--` take an integer; the value is the implied 1.
+  if (operator == "++" || operator == "--") {
+    if (!isInteger(targetType)) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0963",
+        `${operator} needs an integer variable, found ${targetText}; write \`x += 1\` for a float`,
+      )
+      checkExpression(mutable checker, walker, value, None)
+      return
+    }
+    checkExpression(mutable checker, walker, value, Some(targetType))
+    return
+  }
+  const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
+  const arithmetic = Str.slice(operator, 0, Str.length(operator) - 1)
+  const valueText = typeString(checker, valueType)
+  if (valueType != targetType) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0962",
+      `${operator} needs a value of the same type as its target, found ${targetText} and ${valueText}`,
+    )
+    return
+  }
+  let allowed = false
+  if (arithmetic == "+" && targetType == Type.TStr) {
+    allowed = true
+  } else if (
+    arithmetic == "+" ||
+      arithmetic == "-" ||
+      arithmetic == "*" ||
+      arithmetic == "/" ||
+      arithmetic == "%"
+  ) {
+    allowed = isNumeric(targetType)
+  } else {
+    allowed = isInteger(targetType)
+  }
+  if (!allowed) {
+    reportError(mutable checker, pos, "E0962", `${operator} cannot be applied to ${targetText}`)
+  }
 }
 
 function checkExpressionStatement<W: Walker>(

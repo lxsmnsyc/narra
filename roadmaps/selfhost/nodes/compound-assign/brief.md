@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-02
-spent:
+spent: 194545
 owns:
   - testdata/compound_assign*
   - testdata/errors/compound_assign*

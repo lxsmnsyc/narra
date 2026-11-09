@@ -341,11 +341,11 @@ function quoteString(value: string): string uses alloc {
   return `"${Str.join(parts, "\\\"")}"`
 }
 
-// printAssigned prints ` = value`. A binary or `is` value may move to the next
+// printAssigned prints ` = value`, or ` += value` for another operator. A binary or `is` value may move to the next
 // line after the `=` (an operator at the end of a line continues the
 // statement); any other value, including a block or `if` value, which breaks
 // inside its own braces or parentheses, stays on the `=` line.
-function printAssigned(printer: Printer, value: Expr): Doc uses alloc {
+function printAssigned(printer: Printer, assignOperator: string, value: Expr): Doc uses alloc {
   // Line comments at the end of the value (in parentheses that go away) wait
   // for the end of the line instead of forcing the value to break.
   let active = printer
@@ -387,11 +387,13 @@ function printAssigned(printer: Printer, value: Expr): Doc uses alloc {
   }
   if (canBreak) {
     return Docs.concat([
-      Docs.group(Docs.concat([text(" ="), Docs.indent(Docs.concat([Doc.Line, document]))])),
+      Docs.group(
+        Docs.concat([text(` ${assignOperator}`), Docs.indent(Docs.concat([Doc.Line, document]))]),
+      ),
       Docs.concat(ending),
     ])
   }
-  return Docs.concat([text(" = "), document, Docs.concat(ending)])
+  return Docs.concat([text(` ${assignOperator} `), document, Docs.concat(ending)])
 }
 
 function text(value: string): Doc uses alloc {
@@ -724,7 +726,7 @@ function printConst(printer: Printer, declaration: ConstDecl): Doc uses alloc {
     Arrays.push(mutable parts, text(": "))
     Arrays.push(mutable parts, printer.printType(printer, type))
   }
-  Arrays.push(mutable parts, printAssigned(printer, declaration.value))
+  Arrays.push(mutable parts, printAssigned(printer, "=", declaration.value))
   return Docs.concat(parts)
 }
 
@@ -895,8 +897,14 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc uses alloc {
     )
     Stmt.AssignStmt(_, target, value) => Docs.concat([
       printer.printExpression(printer, target),
-      printAssigned(printer, value),
+      printAssigned(printer, "=", value),
     ])
+    Stmt.CompoundAssignStmt(_, target, operator, value) => printCompoundAssign(
+      printer,
+      target,
+      operator,
+      value,
+    )
     Stmt.ExprStmt(_, expression) => printer.printExpression(printer, expression)
     Stmt.ReturnStmt(_, value) => printReturn(printer, value)
     Stmt.IfStmt(_, condition, thenBlock, orElse) => printIf(printer, condition, thenBlock, orElse)
@@ -961,7 +969,7 @@ function printVariable(
     Arrays.push(mutable parts, text(": "))
     Arrays.push(mutable parts, printer.printType(printer, declared))
   }
-  Arrays.push(mutable parts, printAssigned(printer, value))
+  Arrays.push(mutable parts, printAssigned(printer, "=", value))
   return Docs.concat(parts)
 }
 
@@ -988,6 +996,20 @@ function printYield(
     keyword = "yield* "
   }
   return Docs.concat([text(keyword), printReturned(printer, value)])
+}
+
+function printCompoundAssign(
+  printer: Printer,
+  target: Expr,
+  operator: string,
+  value: Expr,
+): Doc uses alloc {
+  const targetDoc = printer.printExpression(printer, target)
+  // `x++` and `x--` keep their spelling; the value is the implied 1.
+  if (operator == "++" || operator == "--") {
+    return Docs.concat([targetDoc, text(operator)])
+  }
+  return Docs.concat([targetDoc, printAssigned(printer, operator, value)])
 }
 
 // printReturned prints the value of a return or yield. Parentheses that hold a

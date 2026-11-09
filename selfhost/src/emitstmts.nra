@@ -43,13 +43,16 @@ import {
   variableRef,
   localName,
   containerName,
+  underlyingType,
+  where,
 } from "narrac/emitstate"
-import { pointerTemp, declaredLocal } from "narrac/emitexprs"
+import { pointerTemp, declaredLocal, emitArithmetic } from "narrac/emitexprs"
 import * as Generators from "narrac/emitgenerators"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
 import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
+import * as Str from "std/string"
 
 const NODE = "selfhost-emit-bodies"
 
@@ -96,6 +99,14 @@ export function emitStatement<W: EmitWalker>(
       mutable emitter,
       statement,
       target,
+      value,
+    )
+    Stmt.CompoundAssignStmt(pos, target, operator, value) => emitCompoundAssignment(
+      walker,
+      mutable emitter,
+      pos,
+      target,
+      operator,
       value,
     )
     Stmt.ExprStmt(_, expression) => emitExpressionStatement(
@@ -237,6 +248,95 @@ function emitAssignment<W: EmitWalker>(
     writeLine(mutable emitter, `*${location} = ${consumed};`)
   }
   endStatement(mutable emitter)
+}
+
+function emitCompoundAssignment<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  pos: Pos,
+  target: Expr,
+  operator: string,
+  value: Expr,
+) uses alloc {
+  beginStatement(mutable emitter)
+  // `+=` applies `+`; `++` and `--` apply `+` and `-` to the implied 1.
+  let arithmetic = Str.slice(operator, 0, Str.length(operator) - 1)
+  if (operator == "++") {
+    arithmetic = "+"
+  } else if (operator == "--") {
+    arithmetic = "-"
+  }
+  const targetType = typeOf(emitter, getExpressionId(target))
+  const operandType = underlyingType(emitter, targetType)
+  const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
+  const valueType = typeOf(emitter, getExpressionId(value))
+  const valueText = temp(mutable emitter, valueType, valueCode.text)
+  if (target is Expr.IndexExpr(_, _, mapTarget, index)) {
+    if (typeOf(emitter, getExpressionId(mapTarget)) is Type.TMap(keyType, mapValueType)) {
+      emitMapCompound(
+        walker,
+        mutable emitter,
+        pos,
+        arithmetic,
+        mapTarget,
+        index,
+        keyType,
+        mapValueType,
+        valueText,
+      )
+      endStatement(mutable emitter)
+      return
+    }
+  }
+  // The place is found once; the old value is read and the new one stored through it.
+  const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
+  const pointer = pointerTemp(mutable emitter, targetType, location)
+  const old = `(*${pointer})`
+  if (operandType == Type.TStr) {
+    // The joined string is new; the old one is released before it is stored.
+    const joined = temp(mutable emitter, Type.TStr, `lstr_concat(${old}, ${valueText})`)
+    const releaseOld = releaseCode(emitter, targetType, old)
+    writeLine(mutable emitter, releaseOld)
+    writeLine(mutable emitter, `*${pointer} = ${joined};`)
+  } else {
+    const result = emitArithmetic(mutable emitter, pos, arithmetic, operandType, old, valueText)
+    writeLine(mutable emitter, `*${pointer} = ${result.text};`)
+  }
+  endStatement(mutable emitter)
+}
+
+function emitMapCompound<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  pos: Pos,
+  arithmetic: string,
+  mapTarget: Expr,
+  index: Expr,
+  keyType: Type,
+  mapValueType: Type,
+  valueText: string,
+) uses alloc {
+  const mapType = typeOf(emitter, getExpressionId(mapTarget))
+  const keyCode = EmitWalker.emitExpression(walker, mutable emitter, index)
+  const key = consume(mutable emitter, keyCode.text, keyCode.owned, keyType)
+  const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, mapTarget)
+  const pointer = pointerTemp(mutable emitter, mapType, location)
+  const name = containerName(emitter, mapType)
+  // The key must exist: there is no old value to change otherwise.
+  const entry = temp(mutable emitter, Type.TInt, `${name}_lookup(*${pointer}, ${key})`)
+  const position = where(emitter, pos)
+  writeLine(mutable emitter, `if (${entry} < 0) narra_panic(${position}, "map key not found");`)
+  const old = temp(mutable emitter, mapValueType, `(*${pointer})->vals[${entry}]`)
+  const operandType = underlyingType(emitter, mapValueType)
+  let updated = ""
+  if (operandType == Type.TStr) {
+    updated = temp(mutable emitter, Type.TStr, `lstr_concat(${old}, ${valueText})`)
+  } else {
+    const result = emitArithmetic(mutable emitter, pos, arithmetic, operandType, old, valueText)
+    updated = result.text
+  }
+  // The set takes over the key and the new value and releases the old value.
+  writeLine(mutable emitter, `${name}_set(${pointer}, ${key}, ${updated});`)
 }
 
 function emitExpressionStatement<W: EmitWalker>(

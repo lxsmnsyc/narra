@@ -8,9 +8,9 @@
 // token. Declarations record the position of their keyword, so their name
 // is the first identifier token after it with that text.
 //
-// The parser gives every node inside a template string the template's
-// position (parser.nra, parseTemplate), so a site inside one is marked
-// inTemplate and spans the whole template token.
+// A node inside a template string has its own position. The module's tokens
+// hold only the template token, so the end of a token inside `${...}` comes
+// from the parser's facts (templateTokenEnds).
 //
 // collectSites walks the declarations of a module in source order and
 // lists a node before its children, so of the sites that cover a position
@@ -33,6 +33,7 @@ import {
   TypeExpr,
 } from "narrac/ast"
 import { Token, TokenKind } from "narrac/lexer"
+import { getPosKey } from "narrac/trivia"
 
 export enum SiteKind derives Equatable {
   // An expression; nodeId is the expression.
@@ -65,8 +66,6 @@ export struct Site {
   expression: Option<Expr>
   // The type written for a parameter or `const`/`let` name, if any.
   annotation: Option<TypeExpr> = None
-  // Inside a template string: the range is the template's, not the node's.
-  inTemplate: bool = false
   // The callee name of a call: the call's CalleeSite stands for it.
   isCallee: bool = false
 }
@@ -74,11 +73,9 @@ export struct Site {
 struct Collector {
   tokens: Array<Token>
   sites: Array<Site>
-  // The nesting of template strings being walked, and the range of the
-  // outermost one.
+  templateTokenEnds: Map<string, Pos>
+  // The nesting of template strings being walked.
   templateDepth: int
-  templateStart: Pos
-  templateEnd: Pos
 }
 
 export function isBefore(left: Pos, right: Pos): bool {
@@ -100,14 +97,18 @@ function findFirstToken(tokens: Array<Token>, pos: Pos): int {
   return low
 }
 
-function findTokenEnd(tokens: Array<Token>, pos: Pos): Pos {
-  // Inside a template no token starts at pos: the end is then one character after pos.
+function findTokenEnd(collector: Collector, pos: Pos): Pos uses alloc {
+  const tokens = collector.tokens
   const index = findFirstToken(tokens, pos)
   if (index < Arrays.length(tokens)) {
     const token = tokens[index]
     if (token.line == pos.line && token.column == pos.column) {
       return Pos { line: token.endLine, column: token.endColumn }
     }
+  }
+  // Inside a template no token of the module starts at pos.
+  if (collector.templateTokenEnds[getPosKey("t", pos)] is Some(templateEnd)) {
+    return templateEnd
   }
   return Pos { line: pos.line, column: pos.column + 1 }
 }
@@ -141,17 +142,15 @@ function addSite(
   name: string,
   expression: Option<Expr>,
 ) uses alloc {
-  const inTemplate = collector.templateDepth > 0
   const site = Site {
     kind: kind,
     nodeId: nodeId,
-    start: inTemplate ? collector.templateStart : start,
-    end: inTemplate ? collector.templateEnd : end,
+    start: start,
+    end: end,
     name: name,
     declaration: -1,
     member: -1,
     expression: expression,
-    inTemplate: inTemplate,
   }
   Arrays.push(mutable collector.sites, site)
 }
@@ -203,9 +202,8 @@ export function collectSites(file: File, tokens: Array<Token>): Array<Site> uses
   let collector = Collector {
     tokens: tokens,
     sites: [],
+    templateTokenEnds: file.facts.templateTokenEnds,
     templateDepth: 0,
-    templateStart: Pos { line: 0, column: 0 },
-    templateEnd: Pos { line: 0, column: 0 },
   }
   let index = 0
   for (const declaration of Arrays.values(file.declarations)) {
@@ -359,7 +357,7 @@ function addExpressionSite(
   pos: Pos,
   expression: Expr,
 ) uses alloc {
-  const end = findTokenEnd(collector.tokens, pos)
+  const end = findTokenEnd(collector, pos)
   addSite(mutable collector, SiteKind.ExpressionSite, nodeId, pos, end, "", Some(expression))
 }
 
@@ -367,23 +365,16 @@ function collectExpression(mutable collector: Collector, expression: Expr) uses 
   match (expression) {
     Expr.IntLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
     Expr.FloatLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
-    Expr.StringLit(nodeId, pos, _, end) => addSite(
-      mutable collector,
-      SiteKind.ExpressionSite,
-      nodeId,
-      pos,
-      end,
-      "",
-      Some(expression),
-    )
+    Expr.StringLit(nodeId, pos, _, end) => {
+      // A text part of a template has the template's range; the template's own site stands for it.
+      if (collector.templateDepth == 0) {
+        addSite(mutable collector, SiteKind.ExpressionSite, nodeId, pos, end, "", Some(expression))
+      }
+    }
     Expr.CharLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
     Expr.BoolLit(nodeId, pos, _) => addExpressionSite(mutable collector, nodeId, pos, expression)
     Expr.TemplateLit(nodeId, pos, parts) => {
       addExpressionSite(mutable collector, nodeId, pos, expression)
-      if (collector.templateDepth == 0) {
-        collector.templateStart = pos
-        collector.templateEnd = findTokenEnd(collector.tokens, pos)
-      }
       collector.templateDepth = collector.templateDepth + 1
       collectExpressions(mutable collector, parts)
       collector.templateDepth = collector.templateDepth - 1

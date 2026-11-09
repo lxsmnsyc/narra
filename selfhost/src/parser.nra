@@ -27,6 +27,7 @@ import {
   formatLexError,
   lex,
   lexWithComments,
+  lexFrom,
   hex,
 } from "narrac/lexer"
 import {
@@ -311,6 +312,7 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     namePositions: parser.facts.namePositions,
     shorthandIds: parser.facts.shorthandIds,
     callEnds: parser.facts.callEnds,
+    templateTokenEnds: parser.facts.templateTokenEnds,
     referenced: referenced,
   }
 }
@@ -373,7 +375,6 @@ function collectTemplateNames(mutable names: Map<string, bool>, text: string) us
 }
 
 function getCallEnd(parser: Parser): Pos {
-  // Inside a template string the tokens carry the template's position, so this is the template's position plus one.
   return moveColumn(getPos(parser.tokens[parser.index - 1]), 1)
 }
 
@@ -3068,8 +3069,22 @@ function findTemplateEnd(raw: Array<char>, start: int): int {
   return -1
 }
 
+function advancePosition(raw: Array<char>, fromIndex: int, toIndex: int, start: Pos): Pos {
+  let line = start.line
+  let column = start.column
+  for (const rawIndex of Ranges.between(fromIndex, toIndex)) {
+    if (raw[rawIndex] == '\n') {
+      line = line + 1
+      column = 1
+    } else {
+      column = column + 1
+    }
+  }
+  return Pos { line: line, column: column }
+}
+
 function parseTemplate(mutable parser: Parser, token: Token): Expr {
-  // Each expression is lexed and parsed on its own; all its tokens take the template's position (their ends are kept).
+  // Each expression is lexed and parsed on its own, with its tokens placed where they are written.
   const pos = getPos(token)
   const end = Pos { line: token.endLine, column: token.endColumn }
   const raw = Str.chars(token.text)
@@ -3080,23 +3095,15 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
   let index = 0
   // The source position of raw[scanned]; raw starts after the backtick.
   let scanned = 0
-  let line = token.line
-  let column = token.column + 1
+  let cursor = Pos { line: token.line, column: token.column + 1 }
   while (isOk(parser) && index < count) {
     const character = raw[index]
     if (character == '\\') {
       // Find the backslash's own position, since templates span lines.
-      for (const skippedIndex of Ranges.between(scanned, index)) {
-        if (raw[skippedIndex] == '\n') {
-          line = line + 1
-          column = 1
-        } else {
-          column = column + 1
-        }
-      }
+      cursor = advancePosition(raw, scanned, index, cursor)
       scanned = index
       // Decode the escape as a string literal would.
-      const escaped = decodeEscape(raw, index, line, column)
+      const escaped = decodeEscape(raw, index, cursor.line, cursor.column)
       if (escaped is Err(error)) {
         const errorPos = Pos { line: error.line, column: error.column }
         failAt(mutable parser, errorPos, error.code, error.message)
@@ -3122,18 +3129,16 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       for (const sourceIndex of Ranges.between(index + 2, closeIndex - 1)) {
         Str.appendChar(mutable source, raw[sourceIndex])
       }
-      const lexed = lex(Str.build(source))
+      // The expression starts after the `${`.
+      cursor = advancePosition(raw, scanned, index + 2, cursor)
+      scanned = index + 2
+      const lexed = lexFrom(Str.build(source), cursor.line, cursor.column)
       if (lexed is Err(error)) {
         failAt(mutable parser, pos, "E0041", `in template string: ${formatLexError(error)}`)
         return createDummyExpr()
       }
-      // Report errors inside ${...} at the template's position.
-      let inner: Array<Token> = []
-      for (const innerToken of Arrays.values(lexed.value)) {
-        Arrays.push(mutable inner, Token { ...innerToken, line: token.line, column: token.column })
-      }
       let innerParser = Parser {
-        tokens: inner,
+        tokens: lexed.value,
         index: 0,
         nextId: parser.nextId,
         failed: None,
@@ -3146,6 +3151,17 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
+      // Keep where each token ends, for narrac query.
+      for (const innerToken of Arrays.values(lexed.value)) {
+        parser.facts.templateTokenEnds[getPosKey("t", getPos(innerToken))] = Pos {
+          line: innerToken.endLine,
+          column: innerToken.endColumn,
+        }
+      }
+      for (const entry of Maps.entries(innerParser.facts.templateTokenEnds)) {
+        const #[tokenKey, tokenEnd] = entry
+        parser.facts.templateTokenEnds[tokenKey] = tokenEnd
+      }
       for (const entry of Maps.entries(innerParser.facts.callEnds)) {
         const #[callId, callEnd] = entry
         parser.facts.callEnds[callId] = callEnd

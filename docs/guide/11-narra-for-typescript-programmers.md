@@ -150,7 +150,7 @@ export function run(args: Array<string>): int {
 Nothing turns into text on its own. `print` takes only a `string`, and so does every `${...}` part of a template. A number goes through `Int.toString` or `Float.toString` first:
 
 ```narra error
-// error: 4:9: a template string part must be a string, found int; convert it, for example with Int.toString
+// error: 4:12: a template string part must be a string, found int; convert it, for example with Int.toString
 export function run(args: Array<string>): int {
   const count = 3
   print(`${count} items`)
@@ -1015,7 +1015,7 @@ For a parameter, the fix is `mutable player`, or returning a new `Player` built 
 A TypeScript function that prints and a pure function have the same type. In Narra, an exported function lists its effects after its result type with `uses`. It writes `alloc` when it allocates memory, as building a string does, and `io` when it does input or output, such as printing. The list is part of the function's API, the same way its result type is ([chapter 10](10-effects-and-testing.md#what-a-function-does-in-its-signature)):
 
 ```narra error
-// error: 5:10: Function `describe` uses `alloc` (through `Int.toString`) but its signature does not declare it; write `uses alloc`
+// error: 5:25: Function `describe` uses `alloc` (through `Int.toString`) but its signature does not declare it; write `uses alloc`
 import * as Int from "std/int"
 
 export function describe(cents: int): string {

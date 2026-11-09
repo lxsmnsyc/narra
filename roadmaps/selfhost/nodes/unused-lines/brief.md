@@ -1,7 +1,7 @@
 ---
 id: unused-lines
 title: "The unused-names check splits sources only when needed"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-3

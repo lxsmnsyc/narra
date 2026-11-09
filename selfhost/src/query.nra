@@ -100,8 +100,6 @@ export struct Use {
   view: int
   location: Location
   name: string // the function or other body the place is in
-  // Inside a template string: location is the whole template (see querysites.nra).
-  inTemplate: bool
 }
 
 export function runQuery(arguments: Array<string>): int uses io, alloc {
@@ -455,17 +453,6 @@ function findLocalAnnotation(
   return None
 }
 
-function isInterpolated(site: Site): bool {
-  if (site.expression is Some(Expr.TemplateLit(_, _, parts))) {
-    for (const part of Arrays.values(parts)) {
-      if (!(part is Expr.StringLit(_, _, _, _))) {
-        return true
-      }
-    }
-  }
-  return false
-}
-
 function describeSite(
   mutable checker: Checker,
   mutable effects: EffectState,
@@ -640,9 +627,6 @@ function queryType(
       }
       return Ok(`${answer.typeText}\neffects: ${Str.join(answer.effects, ", ")}\n`)
     }
-    TypeAt.InTemplate(_) => {
-      return Err("positions inside template strings are not supported yet")
-    }
     TypeAt.Nothing => {
       return Err(`no expression at ${operand}`)
     }
@@ -656,12 +640,9 @@ export struct TypeAnswer {
   effects: Array<string>
 }
 
-// What findTypeAt finds: an answer, a position inside a template string with
-// `${...}` parts (start is the template's backtick, which answers for the
-// whole template), or nothing.
+// What findTypeAt finds: an answer or nothing.
 export enum TypeAt {
   Found(answer: TypeAnswer)
-  InTemplate(start: Pos)
   Nothing
 }
 
@@ -679,11 +660,7 @@ export function findTypeAt(
   while (index >= 0) {
     const site = view.sites[index]
     const covers = !isBefore(cursor, site.start) && isBefore(cursor, site.end)
-    // Nodes inside a template string have no positions of their own.
-    if (covers && !site.inTemplate && isInterpolated(site) && cursor != site.start) {
-      return TypeAt.InTemplate(site.start)
-    }
-    if (covers && !site.inTemplate) {
+    if (covers) {
       const described = describeSite(mutable checker, mutable effects, effectsKnown, view, site)
       if (described is Some(found)) {
         const #[typeText, names] = found
@@ -902,7 +879,7 @@ function insertUse(mutable places: Array<Use>, use: Use) uses alloc {
   // A second use at the same place (a call's callee and its name) is dropped.
   for (const other of Arrays.values(places)) {
     const samePlace = other.view == use.view && other.location.start == use.location.start
-    if (samePlace && !use.inTemplate && !other.inTemplate) {
+    if (samePlace) {
       return
     }
   }
@@ -924,24 +901,18 @@ function isUseBefore(left: Use, right: Use): bool {
 function writeUses(query: Query, places: Array<Use>, nameFirst: bool): string uses alloc {
   let parts: Array<string> = []
   for (const use of Arrays.values(places)) {
-    let templateField = ""
-    let templateNote = ""
-    if (use.inTemplate) {
-      templateField = ", \"inTemplate\": true"
-      templateNote = " (in a template string)"
-    }
     if (query.json && nameFirst) {
       Arrays.push(
         mutable parts,
-        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}${templateField}}`,
+        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}}`,
       )
     } else if (query.json) {
       Arrays.push(
         mutable parts,
-        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}${templateField}}`,
+        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}}`,
       )
     } else {
-      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}${templateNote}\n`)
+      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}\n`)
     }
   }
   if (query.json) {
@@ -999,7 +970,6 @@ function queryParameterRefs(
         view: viewIndex,
         location: siteLocation(view, site),
         name: describeBody(checker, bodyIndex),
-        inTemplate: site.inTemplate,
       })
     }
   }
@@ -1062,7 +1032,6 @@ export function findUses(checker: Checker, query: Query, target: Target): Array<
         view: viewIndex,
         location: siteLocation(view, site),
         name: describeBody(checker, bodyIndex),
-        inTemplate: site.inTemplate,
       })
     }
   }
@@ -1105,11 +1074,9 @@ function queryCallers(
       start: call.pos,
       end: Pos { line: call.pos.line, column: call.pos.column + Str.charCount(functionName) },
     }
-    let inTemplate = false
     for (const site of Arrays.values(query.views[viewIndex].sites)) {
       if (site.kind == SiteKind.CalleeSite && site.nodeId == call.callId) {
         location = siteLocation(query.views[viewIndex], site)
-        inTemplate = site.inTemplate
         break
       }
     }
@@ -1117,7 +1084,6 @@ function queryCallers(
       view: viewIndex,
       location: location,
       name: describeBody(checker, call.body),
-      inTemplate: inTemplate,
     })
   }
   if (query.json) {

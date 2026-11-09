@@ -1,7 +1,7 @@
 ---
 id: adopt-new-syntax
 title: "Use compound assignment, C-style for and or-patterns in the compiler"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-3

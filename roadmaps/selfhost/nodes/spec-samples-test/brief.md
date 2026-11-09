@@ -1,7 +1,7 @@
 ---
 id: spec-samples-test
 title: "Every SPEC.md sample is checked by a test"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-2
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 136789
 owns:
   - selfhost/tests/src/spec*
   - selfhost/tests/spec-skip*

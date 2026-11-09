@@ -1,0 +1,408 @@
+// The spec suite: every fenced `ts` block of SPEC.md goes through `narrac check`.
+//
+// A block that starts with a declaration (import, export, struct, enum,
+// function, trait, implement, test, type, opaque, distinct, an attribute) is a
+// module. Any other block is a list of statements, wrapped in the body of
+// `run`. A module without `run` gets an empty one.
+//
+// Comments right before a block, in the SPEC.md source only (the rendered
+// spec does not change), set up the check:
+//   <!-- error: E0123 -->   the block must fail, and the diagnostics hold E0123
+//   <!-- context ... -->    the lines inside declare the names the block uses;
+//                           `import` lines go to the top of the module. A module
+//                           takes the others after its code. For statements,
+//                           the lines before a `---` line go to the module
+//                           level and the others before the statements, in
+//                           `run`; without `---` all of them go in `run`
+//
+// spec-skip.txt lists the samples that do not check yet, one per line:
+//   SECTION | FIRST LINE OF THE SAMPLE | REASON
+// SECTION is the heading above the block and the first line may be shortened
+// to its start. A skipped sample must still fail; when it starts to pass the
+// case fails and says to remove the line. A line that matches no sample fails
+// the `skip-list` case.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Scratch from "testrunner/scratch"
+
+const UNUSED_NAME_CODES = ["E0921", "E0922", "E0946", "E0947"]
+
+const DECLARATION_STARTS = [
+  "import ",
+  "export ",
+  "struct ",
+  "enum ",
+  "function",
+  "trait ",
+  "implement ",
+  "test ",
+  "type ",
+  "opaque ",
+  "distinct ",
+  "@",
+]
+
+// A ts block of SPEC.md. line is the line of the opening fence (1-based).
+struct SpecSample {
+  line: int
+  section: string
+  code: string
+  firstLine: string
+  errorCode: string
+  context: Array<string>
+}
+
+struct SkipEntry {
+  section: string
+  prefix: string
+  reason: string
+}
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = [
+    TestCase { suite: "spec", name: "skip-list", path: "", variant: "skip-list" },
+  ]
+  const read = Fs.readText(specPath(context))
+  if (read is Err(message)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "spec",
+      name: "SPEC.md",
+      path: "",
+      variant: `broken ${message}`,
+    })
+    return cases
+  }
+  for (const sample of Arrays.values(extractSpecSamples(read.value))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "spec",
+      name: `SPEC.md:${Int.toString(sample.line)}`,
+      path: "",
+      variant: "sample",
+    })
+  }
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (Str.startsWith(testCase.variant, "broken ")) {
+    return Err(Str.sliceFrom(testCase.variant, 7))
+  }
+  const read = Fs.readText(specPath(context))
+  if (read is Err(message)) {
+    return Err(message)
+  }
+  const samples = extractSpecSamples(read.value)
+  const skipped = readSkipEntries(context)
+  if (skipped is Err(message)) {
+    return Err(message)
+  }
+  if (testCase.variant == "skip-list") {
+    return checkSkipList(samples, skipped.value)
+  }
+  const line = Int.parse(Str.sliceFrom(testCase.name, Str.length("SPEC.md:")), 10)
+  if (line is Err(_)) {
+    return Err(`bad case name ${testCase.name}`)
+  }
+  for (const sample of Arrays.values(samples)) {
+    if (sample.line == line.value) {
+      return checkSample(context, sample, skipReason(sample, skipped.value))
+    }
+  }
+  return Err(`no sample at line ${Int.toString(line.value)}`)
+}
+
+function specPath(context: Context): string uses alloc {
+  return Path.join(context.repository, "SPEC.md")
+}
+
+function skipPath(context: Context): string uses alloc {
+  return Path.join(Path.join(context.repository, "selfhost/tests"), "spec-skip.txt")
+}
+
+function readSkipEntries(context: Context): Result<Array<SkipEntry>, string> uses io, alloc {
+  const read = Fs.readText(skipPath(context))
+  if (read is Err(message)) {
+    return Err(message)
+  }
+  let entries: Array<SkipEntry> = []
+  for (const line of Arrays.values(Str.split(read.value, "\n"))) {
+    if (Str.trim(line) == "" || Str.startsWith(line, "#")) {
+      continue
+    }
+    const parts = Str.split(line, " | ")
+    if (Arrays.length(parts) != 3 || Str.trim(parts[2]) == "") {
+      return Err(`spec-skip.txt: want "section | first line | reason", got: ${line}`)
+    }
+    Arrays.push(mutable entries, SkipEntry {
+      section: Str.trim(parts[0]),
+      prefix: Str.trim(parts[1]),
+      reason: Str.trim(parts[2]),
+    })
+  }
+  return Ok(entries)
+}
+
+function skipReason(sample: SpecSample, entries: Array<SkipEntry>): string {
+  for (const entry of Arrays.values(entries)) {
+    if (entryMatches(entry, sample)) {
+      return entry.reason
+    }
+  }
+  return ""
+}
+
+function entryMatches(entry: SkipEntry, sample: SpecSample): bool {
+  return entry.section == sample.section && Str.startsWith(sample.firstLine, entry.prefix)
+}
+
+function checkSkipList(
+  samples: Array<SpecSample>,
+  entries: Array<SkipEntry>,
+): Result<bool, string> uses alloc {
+  for (const entry of Arrays.values(entries)) {
+    let found = false
+    for (const sample of Arrays.values(samples)) {
+      if (entryMatches(entry, sample)) {
+        found = true
+      }
+    }
+    if (!found) {
+      return Err(`the skip "${entry.section} | ${entry.prefix}" matches no sample of SPEC.md`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkSample(
+  context: Context,
+  sample: SpecSample,
+  reason: string,
+): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const path = Path.join(scratch.work, "sample.nra")
+  let outcome: Result<bool, string> = Ok(true)
+  const written = Scratch.writeFile(path, buildModule(sample))
+  if (written is Err(message)) {
+    outcome = Err(message)
+  } else {
+    outcome = runCheck(context, sample, path, reason)
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function runCheck(
+  context: Context,
+  sample: SpecSample,
+  path: string,
+  reason: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarracWith(context, Path.dirname(path), [], [
+    "check",
+    "--json",
+    Path.basename(path),
+  ])
+  // A sample may bind names it never reads, so unused-name diagnostics are not
+  // judged.
+  let diagnostics: Array<string> = []
+  for (const line of Arrays.values(Str.split(result.output, "\n"))) {
+    if (line != "" && !isUnusedNameDiagnostic(line)) {
+      Arrays.push(mutable diagnostics, line)
+    }
+  }
+  const shown = Str.join(diagnostics, "\n")
+  let problem = ""
+  if (sample.errorCode == "") {
+    if (Arrays.length(diagnostics) > 0 || result.errorOutput != "") {
+      problem = `want a clean check, got:\n${shown}${result.errorOutput}`
+    }
+  } else if (Arrays.length(diagnostics) == 0) {
+    problem = `want ${sample.errorCode}, but the check is clean`
+  } else if (!Str.contains(shown, `"code":"${sample.errorCode}"`)) {
+    problem = `want ${sample.errorCode}, got:\n${shown}`
+  }
+  if (reason == "") {
+    if (problem != "") {
+      return Err(problem)
+    }
+    return Ok(true)
+  }
+  if (problem == "") {
+    return Err(`the sample checks now; remove its line from spec-skip.txt (${reason})`)
+  }
+  return Ok(true)
+}
+
+function isUnusedNameDiagnostic(line: string): bool {
+  for (const code of Arrays.values(UNUSED_NAME_CODES)) {
+    if (Str.startsWith(line, `{"code":"${code}"`)) {
+      return true
+    }
+  }
+  return false
+}
+
+function buildModule(sample: SpecSample): string uses alloc {
+  const wrapped = !isModule(sample.firstLine)
+  let hasSeparator = false
+  for (const line of Arrays.values(sample.context)) {
+    if (line == "---") {
+      hasSeparator = true
+    }
+  }
+  let imports: Array<string> = []
+  let moduleLines: Array<string> = []
+  let bodyLines: Array<string> = []
+  // Lines after `---` go to the body of a wrapped sample. Without a `---`,
+  // all of them do. A module takes every line at the module level.
+  let afterSeparator = false
+  for (const line of Arrays.values(sample.context)) {
+    if (line == "---") {
+      afterSeparator = true
+    } else if (Str.startsWith(line, "import ")) {
+      Arrays.push(mutable imports, line)
+    } else if (wrapped && (afterSeparator || !hasSeparator)) {
+      Arrays.push(mutable bodyLines, line)
+    } else {
+      Arrays.push(mutable moduleLines, line)
+    }
+  }
+  let text = ""
+  for (const line of Arrays.values(imports)) {
+    text = `${text}${line}\n`
+  }
+  if (wrapped) {
+    text = `${text}${joinLines(moduleLines)}`
+    text = `${text}export function run(args: Array<string>): int uses io, alloc {\n`
+    text = `${text}${joinLines(bodyLines)}${sample.code}  return 0\n}\n`
+    return text
+  }
+  text = `${text}${sample.code}${joinLines(moduleLines)}`
+  if (!Str.contains(sample.code, "export function run(")) {
+    text = `${text}export function run(args: Array<string>): int {\n  return 0\n}\n`
+  }
+  return text
+}
+
+function joinLines(lines: Array<string>): string uses alloc {
+  let text = ""
+  for (const line of Arrays.values(lines)) {
+    text = `${text}${line}\n`
+  }
+  return text
+}
+
+function isModule(firstLine: string): bool {
+  for (const start of Arrays.values(DECLARATION_STARTS)) {
+    if (Str.startsWith(firstLine, start)) {
+      return true
+    }
+  }
+  return false
+}
+
+function extractSpecSamples(text: string): Array<SpecSample> uses alloc {
+  let samples: Array<SpecSample> = []
+  const lines = Str.split(text, "\n")
+  let section = ""
+  let index = 0
+  while (index < Arrays.length(lines)) {
+    const line = lines[index]
+    if (Str.startsWith(line, "```")) {
+      const start = index
+      let body: Array<string> = []
+      index = index + 1
+      while (index < Arrays.length(lines) && !Str.startsWith(lines[index], "```")) {
+        Arrays.push(mutable body, lines[index])
+        index = index + 1
+      }
+      if (Str.trim(Str.sliceFrom(line, 3)) == "ts") {
+        Arrays.push(mutable samples, buildSample(lines, start, section, body))
+      }
+    } else if (Str.startsWith(line, "#")) {
+      section = Str.trim(trimHashes(line))
+    }
+    index = index + 1
+  }
+  return samples
+}
+
+function trimHashes(line: string): string uses alloc {
+  let start = 0
+  while (start < Str.length(line) && Str.byteAt(line, start) == 35) {
+    start = start + 1
+  }
+  return Str.sliceFrom(line, start)
+}
+
+function buildSample(
+  lines: Array<string>,
+  start: int,
+  section: string,
+  body: Array<string>,
+): SpecSample uses alloc {
+  let sample = SpecSample {
+    line: start + 1,
+    section: section,
+    code: `${Str.join(body, "\n")}\n`,
+    firstLine: "",
+    errorCode: "",
+    context: [],
+  }
+  for (const line of Arrays.values(body)) {
+    if (!Str.startsWith(Str.trim(line), "//")) {
+      sample.firstLine = Str.trim(line)
+      break
+    }
+  }
+  // Read the comments above the fence, nearest first.
+  let index = start - 1
+  while (index >= 0) {
+    if (Str.trim(lines[index]) == "") {
+      index = index - 1
+      continue
+    }
+    if (!Str.endsWith(Str.trim(lines[index]), "-->")) {
+      break
+    }
+    const end = index
+    while (index > 0 && !Str.startsWith(lines[index], "<!--")) {
+      index = index - 1
+    }
+    readComment(mutable sample, lines, index, end)
+    index = index - 1
+  }
+  return sample
+}
+
+function readComment(
+  mutable sample: SpecSample,
+  lines: Array<string>,
+  first: int,
+  last: int,
+) uses alloc {
+  const head = Str.trim(Str.sliceFrom(lines[first], 4))
+  if (Str.startsWith(head, "error:")) {
+    const rest = Str.trim(Str.sliceFrom(head, 6))
+    sample.errorCode = Str.trim(Str.replace(rest, "-->", ""))
+    return
+  }
+  if (head != "context") {
+    return
+  }
+  let collected: Array<string> = []
+  for (const position of Ranges.between(first + 1, last)) {
+    Arrays.push(mutable collected, lines[position])
+  }
+  sample.context = collected
+}

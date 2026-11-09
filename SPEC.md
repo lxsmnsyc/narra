@@ -103,6 +103,13 @@ function gcd(a: int, b: int): int {
 - A closure captures constants (`const` bindings and non-mutable parameters) by value, except a local `const` whose contents it changes (next item).
 - **A non-escaping closure captures `let` variables and `mutable` parameters by reference** (D77). An arrow function written directly as the argument of a non-escaping function-type parameter may read and assign them, as in TypeScript:
 
+<!-- context
+function each(items: Array<int>, f: (item: int) => void) {
+  f(items[0])
+}
+---
+const numbers = [1, 2]
+-->
 ```ts
 let total = 0
 each(numbers, (item) => { total = total + item })
@@ -140,6 +147,13 @@ const scaled = Arrays.map(prices, (p) => p * rate)    // no closure allocation, 
   - The array is made unique before the first iteration (a shared array is copied once), and the loop takes no reference to it.
   - Not allowed in a `function*` or `async` body yet.
 
+<!-- context
+struct Player {
+  hp: int
+}
+---
+let players: Array<Player> = []
+-->
 ```ts
 for (mutable player of players) {
   player.hp = 0                // changes players
@@ -149,6 +163,12 @@ for (mutable player of players) {
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 panics. The loop stops before the value would pass the largest or smallest `int`.
 
+<!-- context
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+---
+const items = ["a", "b"]
+-->
 ```ts
 for (const i of Ranges.upTo(Arrays.length(items))) {
   print(items[i])
@@ -158,6 +178,10 @@ for (const i of Ranges.upTo(Arrays.length(items))) {
 - `break` and `continue` work as in TypeScript, including labels: `outer: for (...) { ... break outer }`.
 - **C-style `for`.** `for (init; condition; step) { ... }` has TypeScript's meaning, and `for (;;)` loops forever (D76).
 
+<!-- context
+const limit = 3
+let total = 0
+-->
 ```ts
 for (let i = 0; i < limit; i = i + 1) {
   total = total + i
@@ -177,6 +201,13 @@ for (let i = 0; i < limit; i = i + 1) {
 
 A block has two forms, told apart by position (D75). A block in statement position is a block statement. A block in value position is a block expression: after `=`, as a call argument, as an operand, as a `return` value, inside `${...}`, or as an element of an array, tuple or struct literal.
 
+<!-- context
+function lookup(code: int): string {
+  return "name"
+}
+---
+const code = 1
+-->
 ```ts
 const label = {
   const name = lookup(code)
@@ -195,6 +226,9 @@ const label = {
 - `if (c) { ... } else { ... }` in value position is an expression whose branches are block expressions, each ending in `return`. The `else` branch is required, and `else if` chains are allowed. At the start of a statement `if` is still a statement.
 - `cond ? a : b` is a conditional expression, as in TypeScript. `cond` must be `bool` (no truthiness), `a` and `b` have the same type, and only the chosen branch runs. It binds looser than `||` and is right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`. A missing `:` is E0934. The line rule above applies: a line that starts with `?` or `:` is a new statement, so a conditional expression that spans lines is wrapped in parentheses, where line breaks are ignored, and the Prettier layout works inside them: `const v = (cond` / `? a` / `: b)` on three lines. Without the parentheses the compiler reports E0934 and says to wrap it. A conditional expression is not a constant (a top-level `const` cannot use one), its value must be used (as a statement it is E0934; write an `if`), and both branches need a value. It is a block expression holding an `if` whose branches each `return` one value, so a self call in a returned branch (`return n < 0 ? f(n + 1) : n`) is still a tail call.
 
+<!-- context
+const n = 1
+-->
 ```ts
 const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" } else { return "positive" }
 ```
@@ -382,10 +416,26 @@ struct Entry<K, V> {
 - Every field is written as `name: value`, even when the value is a variable with the same name. `{ name }` is a compile error in a literal.
 - Type arguments of a generic struct are inferred from the fields: `Entry { key: "a", value: 1 }` is `Entry<string, int>`.
 
+<!-- context
+struct ServerConfig {
+  host: string
+  port: int = 8080
+  tags: Array<string> = []
+}
+---
+-->
 ```ts
 const config = ServerConfig { host: "localhost" }            // port is 8080, tags is []
 const loopback: ServerConfig = { host: "127.0.0.1", port: 3000 }
+```
 
+<!-- context
+struct Entry<K, V> {
+  key: K
+  value: V
+}
+-->
+```ts
 function makeEntry(key: string, value: int): Entry<string, int> {
   return { key: key, value: value }                          // type taken from the return type
 }
@@ -398,6 +448,15 @@ function makeEntry(key: string, value: int): Entry<string, int> {
 - `s.field = value` changes a field in place. `s` must be a local `const` or `let`, a `mutable` parameter, or a field or element of one (section 2, Bindings).
 - To change a caller's struct inside a function, declare the parameter `mutable` (section 6).
 
+<!-- context
+struct ServerConfig {
+  host: string
+  port: int = 8080
+  tags: Array<string> = []
+}
+---
+const config = ServerConfig { host: "localhost" }
+-->
 ```ts
 const moved = { ...config, port: 9000 }
 
@@ -413,6 +472,20 @@ current.tags[0] = "primary"
 - Fields that are not listed are ignored.
 - The same patterns work in `match`. A literal after `:` tests the field's value instead of binding it.
 
+<!-- context
+import * as Float from "std/float"
+struct ServerConfig {
+  host: string
+  port: int = 8080
+}
+struct Point {
+  x: f64
+  y: f64
+}
+---
+const config = ServerConfig { host: "localhost" }
+const point = Point { x: 1.0, y: 2.0 }
+-->
 ```ts
 const { host, port: serverPort } = config
 
@@ -436,6 +509,9 @@ match (point) {
 - `Boxes.new(value)` creates one. `b.value` reads the value. `b.value = v` replaces it when `b` is a local `const` or `let` or a `mutable` parameter, in place when the count is 1.
 - Use a box for recursive structs and for large structs that are copied often.
 
+<!-- context
+import * as Boxes from "std/box"
+-->
 ```ts
 struct ListNode {
   value: int
@@ -456,7 +532,7 @@ export opaque struct Range {
   finish: int
 }
 
-export function create(start: int, finish: int): Result<Range, string> {
+export function create(start: int, finish: int): Result<Range, string> uses alloc {
   if (start > finish) {
     return Err("start is after finish")
   }
@@ -480,7 +556,16 @@ export function length(r: Range): int {
 ```ts
 export distinct type UserId = int
 export distinct type OrderId = int
+```
 
+<!-- context
+export distinct type UserId = int
+export distinct type OrderId = int
+function loadUser(id: UserId) {}
+---
+-->
+<!-- error: E0119 -->
+```ts
 const user = UserId.from(42)
 const raw: int = UserId.toInt(user)
 
@@ -506,6 +591,21 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 `match` checks a value against patterns. It must cover every case, or end with a `_` arm.
 
+<!-- context
+import * as Int from "std/int"
+enum Token {
+  Word(text: string)
+  Number(value: int)
+  Space
+}
+enum Status {
+  Active
+  Suspended(reason: string)
+}
+---
+const token = Token.Space
+const status = Status.Active
+-->
 ```ts
 match (token) {
   Token.Word(text) => print(text)
@@ -537,6 +637,9 @@ const label = match (status) {
 - **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
+<!-- context
+import * as Arrays from "std/array"
+-->
 ```ts
 export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
   for (const item of Arrays.values(items)) {
@@ -552,17 +655,20 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
 
 A trait is a named set of functions that a type implements. A type's traits are all listed where the type is declared.
 
+<!-- context
+import * as Int from "std/int"
+-->
 ```ts
-export trait Show {
-  function show(value: Self): string
+export trait Label {
+  function label(value: Self): string
 }
 
-export struct Money implements Show, Ordered {
+export struct Money implements Label, Ordered {
   cents: int
 }
 
-implement Show for Money {
-  function show(value: Money): string {
+implement Label for Money {
+  function label(value: Money): string {
     return `${Int.toString(value.cents / 100)}.${Int.toString(value.cents % 100)}`
   }
 }
@@ -573,7 +679,26 @@ implement Ordered for Money {
   }
 }
 
-const label = Show.show(price)
+```
+
+<!-- context
+import * as Int from "std/int"
+export trait Label {
+  function label(value: Self): string
+}
+export struct Money implements Label {
+  cents: int
+}
+implement Label for Money {
+  function label(value: Money): string {
+    return Int.toString(value.cents)
+  }
+}
+---
+const price = Money { cents: 1250 }
+-->
+```ts
+const text = Label.label(price)
 ```
 
 **Declaring and implementing**
@@ -586,7 +711,7 @@ const label = Show.show(price)
 
 **Calling**
 
-- Trait functions are called through the trait name: `Show.show(price)`. There is no `price.show()` form.
+- Trait functions are called through the trait name: `Label.label(price)`. There is no `price.label()` form.
 - In generic code, `<T: Show>` allows `Show.show(value)` for a `value: T`.
 - A trait function may mention `Self` only in its result, for example `function fromValue(value: Value): Result<Self, string>`. A call names the type that `Self` stands for: `Shape.fromValue<User>(value)`. Exactly one type argument is allowed. Without it, the call is an error unless the expected type fixes `Self`. In a generic body `<T: Shape>`, `Shape.fromValue<T>(value)` is resolved when the body is instantiated.
 
@@ -654,6 +779,9 @@ const label = Show.show(price)
 - `std/fs` has `readBytes(path): Result<bytes, string>` and `writeBytes(path, data: bytes): Result<int, string>`, which work as `readText` and `writeText` without the UTF-8 check.
 - `bytes` implements `Equatable`, `Hashable`, `Ordered` (bytewise, a prefix first, and `<` works as on strings) and `Show`, which writes hex pairs: `bytes[68 69 0a]`. It works as a map key. It is not a contents type, so a `mutable` parameter cannot have it.
 
+<!-- context
+import * as Str from "std/string"
+-->
 ```ts
 export struct Pair {
   key: string
@@ -682,6 +810,15 @@ export function parsePair(line: string): Option<Pair> uses alloc {
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
 
+<!-- context
+import * as File from "std/fs"
+struct Config {
+  name: string
+}
+enum ConfigError {
+  IoFailed(message: string)
+}
+-->
 ```ts
 export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc {
   const text = File.readText(path)
@@ -717,6 +854,10 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 - When the reference count of the old value is 1, the compiler writes into it instead of copying. This is called reuse.
 - Code that keeps one owner gets in-place mutation with no copies.
 
+<!-- context
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+-->
 ```ts
 let squares: Array<int> = Arrays.filled(0, 1000)
 for (const i of Ranges.upTo(1000)) {
@@ -764,15 +905,47 @@ const summary = Region.run((region) => {
 
 A function changes a caller's data only through a `mutable` parameter. The keyword appears in the declaration and again at the call. A `mutable` parameter reaches the contents of the caller's value, its fields and elements, and never the caller's variable (D81).
 
+<!-- context
+struct Vec2 {
+  x: f64
+  y: f64
+}
+struct Player {
+  name: string
+  hp: int
+  position: Vec2
+}
+-->
+<!-- error: E0949 -->
 ```ts
 function damage(mutable player: Player, amount: int) {
   player.hp = player.hp - amount     // ok: changes a field
   player = { ...player, hp: 0 }      // compile error: a mutable parameter cannot be replaced
 }
+```
 
+<!-- context
+struct Vec2 {
+  x: f64
+  y: f64
+}
+struct Player {
+  name: string
+  hp: int
+  position: Vec2
+}
+function damage(mutable player: Player, amount: int) {
+  player.hp = player.hp - amount
+}
+---
+-->
+```ts
 const hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
 damage(mutable hero, 10)      // hero.hp is now 90
+```
 
+<!-- error: E0948 -->
+```ts
 function bump(mutable n: int) {  // compile error: int has no contents to change
   n = n + 1
 }
@@ -863,6 +1036,9 @@ A panic on any thread or task aborts the whole program.
 
 A generator is a function that can suspend itself with `yield` and be resumed later. The syntax is TypeScript's. The compiler turns each generator into a state machine, so no separate stack is allocated.
 
+<!-- context
+import * as Ranges from "std/range"
+-->
 ```ts
 function* counter(limit: int): Generator<int> {
   for (const i of Ranges.upTo(limit)) {
@@ -882,7 +1058,16 @@ function* both(): Generator<int> {
   yield* counter(3)
   yield* evens(10)
 }
+```
 
+<!-- context
+import * as Int from "std/int"
+function* both(): Generator<int> {
+  yield 1
+}
+---
+-->
+```ts
 for (const n of both()) {
   print(Int.toString(n))
 }
@@ -949,6 +1134,9 @@ The builtin that builds channels must accept the type argument in `Channel.creat
 
 `Cell<T>` (D90) is an identity type for state that changes and is shared on one thread, such as a counter two escaping closures use. It is `Shared` without the lock. It is a Narra source module: `import * as Cells from "std/cell"` for the functions and `import { Cell } from "std/cell"` for the type.
 
+<!-- context
+import * as Cells from "std/cell"
+-->
 ```ts
 const count = Cells.create(0)
 const next = (): int => {
@@ -1159,6 +1347,13 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
   - The test binary reads `--filter <text>`, `--time` and `--golden-dir <dir>` (one or two dashes) from its own arguments, so it can be run directly. `narra test` passes the golden directory itself, so the generated C holds no path. Other arguments are an error (exit 2), and so is an option without its value. Flags may also follow the file name.
   - `f` runs in a child process, so nothing it changes or allocates reaches the test. Output it prints appears in order. `Test.panics` and `Test.panicsWith` therefore need a POSIX system (`fork`). A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails.
 
+<!-- context
+import * as Int from "std/int"
+import * as Str from "std/string"
+function divide(a: int, b: int): int {
+  return a / b
+}
+-->
 ```ts
 import * as Test from "std/test"
 

@@ -1,7 +1,7 @@
 ---
 id: style-sweep
 title: "Code style sweep: step comments, no D-numbers, action names"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-2

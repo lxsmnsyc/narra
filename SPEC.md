@@ -585,8 +585,12 @@ const label = Show.show(price)
 ### Numbers
 
 - Integer overflow panics in debug builds and wraps in release builds. `+%`, `-%` and `*%` always wrap.
-- Integer division or remainder by zero panics in every build.
-- Conversions are explicit: `Float.fromInt(x)`, `Float.truncate(f)`, and for sized numbers (planned) `Int.toI32(x)`.
+- Integer division or remainder by zero panics in every build. `MIN / -1` of a signed type panics in debug builds and gives `MIN` in release builds.
+- **Sized integers (D82).** `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types of that width; `i64` is the same type as `int`. All of them implement `Equatable`, `Hashable`, `Ordered` and `Show`, and work as map keys, fields, tuple elements, enum fields and generic arguments. `Array<u8>` stores one byte per element.
+- **Literals take the type the context expects** (an annotation, a parameter, a field, an element, a return type, the other operand, a literal pattern), and `int` when nothing is expected. A literal must fit its type: `const x: u8 = 256` and `const y: u8 = -1` are E0294. `-128` is a valid `i8`.
+- **There is no implicit conversion.** Arithmetic, comparison and bitwise operators need operands of the same type; `u8 + i32` is E0295, and the message names the conversion functions. Unary `-` on an unsigned type is E0296. Shift counts have the type of the value shifted, and a count at or above the width panics.
+- **Overflow is checked at the type's own width:** `u8` `200 + 100` and `i8` `-128 - 1` panic in debug builds and wrap in release builds. `+%`, `-%` and `*%` wrap at the width.
+- Conversions are explicit functions named after the target type, in one module per type (`I32.from(x)`, `I32.tryFrom(x)`, `I32.wrap(x)`; modules `std/i8` to `std/u64`; `std/int` serves `i64`), and `Float.fromInt(x)`, `Float.truncate(f)`. `from` is for conversions where every value fits, `tryFrom` returns an `Option`, `wrap` keeps the low bits. These modules come with the sized-conversions node.
 
 ### Strings
 

@@ -741,6 +741,27 @@ Decision: `mutable` reaches the contents of a value, its fields and elements, an
 - **Cost.** `const b = a` followed by `a.hp = 1` now compiles and leaves `b` unchanged, where TypeScript would change both. It has no diagnostic: finding it needs a check of every copy across the function. SPEC sections 2 and 14 now name it as the one exception to "valid TypeScript with another meaning is a compile error". The case was already open for `let`.
 - **Cost.** Output parameters of scalar types are gone; a function returns the value, or wraps the counter in a struct. The checker splits "the name can be reassigned" from "the contents can change".
 
+## D82. Sized integers follow Go and Rust: context-typed literals, no implicit conversion
+
+Decision: `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types; `i64` is another name for `int`. SPEC section 4 "Numbers" states the rules. Conversions are functions named after the target type, one module per type, built by node sized-conversions.
+
+**Chosen by the orchestrator on 2026-11-09 (the maintainer delegated this batch's gate decisions):**
+
+1. **Literals.** A literal takes the sized integer type its context expects, else `int`, and must fit (E0294). A negative literal under an unsigned type is E0294, not E0296; E0296 is for `-x` on an unsigned value that is not a literal. `-128` is a valid `i8`: a literal directly under unary minus is checked with its sign.
+2. **Context.** An operator's wanted type types the left operand, so `const m: u8 = 1 << 3` works. A literal on the left of a binary operator takes the type of the right operand (`1 + d` with `d: u8`).
+3. **No mixing.** Two integer types that differ, one of them sized, are E0295 for arithmetic, bitwise operators, shifts and comparison, including `==`. The message names `<Target>.from`, `.tryFrom` and `.wrap` of the left type. Bitwise operators and shifts need operands of one integer type. Shift counts have the type of the value.
+4. **Overflow.** Checked at the type's own width with `__builtin_*_overflow` on that C type, panicking in debug builds and wrapping in release builds. `MIN / -1` follows `int`. Division and remainder by zero panic in every build. Shifts by the width or more, or by a negative count, panic.
+5. **Runtime.** One macro in `runtime.h` defines the add, sub, mul, neg, div, rem, shift, wrap, `eq`, `cmp`, `hash` and `show` functions of each type, suffixed with the type (`narra_add_u8`). `hash` goes through the `int` hash, so equal values hash alike.
+6. **Printing.** Template string parts stay strings (E0201). A sized value prints through `Show.show(x)`; `U8.toString` comes with sized-conversions.
+
+- **Reason.** Go and Rust: mixed-type arithmetic hides where values change size, and the lossy cases (`wrap`) are visible at the call.
+- **Rejected: implicit widening as in C.** Hides size changes.
+- **Rejected: `as` casts.** A keyword with one form for lossless and lossy conversions.
+- **Rejected: `Int.toI32(x)` names in `std/int`.** More than 60 names for pairs of types.
+- **Rejected: literal suffixes (`200u8`).** Context typing covers them; they can be added later without breaking programs.
+- **Rejected: a negative literal under an unsigned type reports E0296.** The literal is the mistake, and it names the value that does not fit.
+- **Cost.** A literal on the left takes its type from the right operand, so the right operand is checked first and an error in it appears before an error in the left one.
+
 ## D87. Named arguments, in any order, with every argument passed
 
 Decision: a call can name its arguments, `move(x: 1, y: 2)`, spelled like struct literal fields. Positional arguments come first, then named ones in any order. A positional argument after a named one is an error, and each parameter is passed exactly once, by position or by name. `mutable` follows the colon: `buf: mutable xs`. Names work only when the callee is a declaration with parameter names; a call through a function value or a std builtin registered without names takes positions only, with an error that says so. Arguments are evaluated in the order they are written. Amends D12, which ruled out labeled arguments; the rest of D12 stays, and parameter defaults are a separate decision. Not built yet. Debate: `roadmaps/selfhost/debate/named-arguments/debate.md`.

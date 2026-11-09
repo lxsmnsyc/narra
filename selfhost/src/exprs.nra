@@ -36,7 +36,7 @@ import {
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, createFix, createEdit, moveColumn, buildTemplateEscape } from "narrac/fixes"
-import { Type, Field } from "narrac/types"
+import { Type, Field, isInteger, isSizedInteger, isUnsignedInteger } from "narrac/types"
 import {
   isConditional,
   Checker,
@@ -130,7 +130,7 @@ function checkExpressionKind<W: Walker>(
     _ => {}
   }
   return match (expression) {
-    Expr.IntLit(_, pos, text) => checkIntLiteral(mutable checker, pos, text)
+    Expr.IntLit(nodeId, pos, text) => checkIntLiteral(mutable checker, nodeId, pos, text, want)
     Expr.FloatLit(_, _, _) => Type.TF64
     Expr.StringLit(_, _, _, _) => Type.TStr
     Expr.CharLit(_, _, _) => Type.TChar
@@ -181,6 +181,7 @@ function checkExpressionKind<W: Walker>(
       operator,
       left,
       right,
+      want,
     )
     Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => checkStructLiteral(
       mutable checker,
@@ -418,11 +419,131 @@ export function describeType(checker: Checker, described: Type, other: Type): st
   return text
 }
 
-function checkIntLiteral(mutable checker: Checker, pos: Pos, text: string): Type uses alloc {
-  if (!intLiteralFits(text)) {
-    reportError(mutable checker, pos, "E0200", `integer literal ${text} does not fit in int`)
+// checkIntLiteral types a literal from the type the context expects (D82):
+// a sized integer when that is wanted, int otherwise. It must fit that type.
+function checkIntLiteral(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  text: string,
+  want: Option<Type>,
+): Type uses alloc {
+  let literalType = Type.TInt
+  if (want is Some(wanted)) {
+    if (isSizedInteger(wanted)) {
+      literalType = wanted
+    }
   }
-  return Type.TInt
+  const negated = checker.negatedLiteralId == nodeId
+  if (literalType == Type.TInt) {
+    if (!intLiteralFits(text)) {
+      reportError(mutable checker, pos, "E0200", `integer literal ${text} does not fit in int`)
+    }
+    return literalType
+  }
+  if (!sizedLiteralFits(text, literalType, negated)) {
+    let shown = text
+    if (negated) {
+      shown = `-${text}`
+    }
+    const name = typeString(checker, literalType)
+    reportError(mutable checker, pos, "E0294", `integer literal ${shown} does not fit in ${name}`)
+  }
+  return literalType
+}
+
+// splitIntLiteral gives the base of a literal and its digits without the base
+// prefix and the underscores.
+function splitIntLiteral(text: string): #[int, string] uses alloc {
+  let base = 10
+  let digits = text
+  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
+    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
+      base = 16
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
+    ) {
+      base = 2
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
+    ) {
+      base = 8
+      digits = Str.sliceFrom(text, 2)
+    } else {
+      base = 8
+      digits = Str.sliceFrom(text, 1)
+    }
+  }
+  return #[base, Str.replace(digits, "_", "")]
+}
+
+// sizedMaximum is the largest value of a sized integer type that int holds.
+function sizedMaximum(type: Type): int {
+  return match (type) {
+    Type.TI8 => 127
+    Type.TI16 => 32767
+    Type.TI32 => 2147483647
+    Type.TU8 => 255
+    Type.TU16 => 65535
+    _ => 4294967295
+  }
+}
+
+// sizedLiteralFits reports whether a literal is in the range of a sized
+// integer type. A negated literal reaches one more below zero for the signed
+// types, and only zero fits an unsigned type.
+function sizedLiteralFits(text: string, type: Type, negated: bool): bool uses alloc {
+  if (Str.contains(text, "_") && !underscoresFit(text)) {
+    return false
+  }
+  const #[base, digits] = splitIntLiteral(text)
+  let significant = digits
+  while (Str.length(significant) > 0 && Str.startsWith(significant, "0")) {
+    significant = Str.sliceFrom(significant, 1)
+  }
+  if (significant == "") {
+    return true
+  }
+  if (negated && isUnsignedInteger(type)) {
+    return false
+  }
+  if (type == Type.TU64) {
+    return fitsU64(base, significant)
+  }
+  const parsed = Int.parse(significant, base)
+  if (parsed is Ok(value)) {
+    let limit = sizedMaximum(type)
+    if (negated) {
+      limit = limit + 1
+    }
+    return value <= limit
+  }
+  return false
+}
+
+// fitsU64 compares digits without leading zeros to 2^64 - 1 by length, since
+// int cannot hold the larger values.
+function fitsU64(base: int, significant: string): bool {
+  const length = Str.length(significant)
+  if (base == 10) {
+    if (length != 20) {
+      return length < 20
+    }
+    return significant <= "18446744073709551615"
+  }
+  if (base == 16) {
+    return length <= 16
+  }
+  if (base == 2) {
+    return length <= 64
+  }
+  // Octal: 22 digits hold 64 bits when the first is 0 or 1.
+  if (length != 22) {
+    return length < 22
+  }
+  return Str.startsWith(significant, "0") || Str.startsWith(significant, "1")
 }
 
 // intLiteralFits reports whether Go's strconv.ParseInt(text, 0, 64)
@@ -957,6 +1078,13 @@ function hasNoFields(fieldsType: Type): bool {
     Type.TArray(_) => true
     Type.TMap(_, _) => true
     Type.TInt => true
+    Type.TI8 => true
+    Type.TI16 => true
+    Type.TI32 => true
+    Type.TU8 => true
+    Type.TU16 => true
+    Type.TU32 => true
+    Type.TU64 => true
     Type.TF64 => true
     Type.TBool => true
     Type.TChar => true
@@ -1012,16 +1140,30 @@ function checkUnary<W: Walker>(
   operand: Expr,
   want: Option<Type>,
 ): Type uses alloc {
+  // A literal under - is checked with its sign.
+  let negatedLiteral = false
+  if (operator == "-") {
+    if (operand is Expr.IntLit(literalId, _, _)) {
+      checker.negatedLiteralId = literalId
+      negatedLiteral = true
+    }
+  }
   const operandType = checkExpression(mutable checker, walker, operand, want)
+  checker.negatedLiteralId = -1
   if (operator == "-") {
     if (!isNumeric(operandType)) {
       const text = typeString(checker, operandType)
       reportError(mutable checker, pos, "E0211", `- needs a number, found ${text}`)
+    } else if (isUnsignedInteger(operandType) && !negatedLiteral) {
+      const text = typeString(checker, operandType)
+      reportError(mutable checker, pos, "E0296", `- cannot negate ${text}, which is unsigned`)
     }
   } else if (operator == "!") {
     expectType(mutable checker, pos, Some(Type.TBool), operandType)
   } else if (operator == "~") {
-    expectType(mutable checker, pos, Some(Type.TInt), operandType)
+    if (!isInteger(operandType)) {
+      expectType(mutable checker, pos, Some(Type.TInt), operandType)
+    }
   }
   return operandType
 }
@@ -1103,6 +1245,54 @@ function buildConcatFix(
   ]
 }
 
+// isComparison is true for == != < <= > >=.
+function isComparison(operator: string): bool {
+  return operator == "==" ||
+    operator == "!=" ||
+    operator == "<" ||
+    operator == "<=" ||
+    operator == ">" ||
+    operator == ">="
+}
+
+// isIntegerLiteral is true for a literal, or a literal under unary minus.
+function isIntegerLiteral(expression: Expr): bool {
+  return match (expression) {
+    Expr.IntLit(_, _, _) => true
+    Expr.UnaryExpr(_, _, operator, operand) => operator == "-" && operand is Expr.IntLit(_, _, _)
+    _ => false
+  }
+}
+
+// reportMixedIntegers is E0295. The suggestion names the conversion functions
+// of the left type, which the sized-conversions node adds to the standard library.
+function reportMixedIntegers(
+  mutable checker: Checker,
+  pos: Pos,
+  operator: string,
+  leftType: Type,
+  rightType: Type,
+) uses alloc {
+  const leftText = typeString(checker, leftType)
+  const rightText = typeString(checker, rightType)
+  const module = match (leftType) {
+    Type.TI8 => "I8"
+    Type.TI16 => "I16"
+    Type.TI32 => "I32"
+    Type.TU8 => "U8"
+    Type.TU16 => "U16"
+    Type.TU32 => "U32"
+    Type.TU64 => "U64"
+    _ => "Int"
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0295",
+    `${operator} needs two integers of the same type, found ${leftText} and ${rightText}; convert one side with ${module}.from, ${module}.tryFrom or ${module}.wrap`,
+  )
+}
+
 function checkBinary<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1110,12 +1300,39 @@ function checkBinary<W: Walker>(
   operator: string,
   left: Expr,
   right: Expr,
+  want: Option<Type>,
 ): Type uses alloc {
-  // The left operand gives the expected type of the right one.
-  const leftType = checkExpression(mutable checker, walker, left, None)
-  const rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+  // The left operand gives the expected type of the right one. A sized
+  // integer wanted from the whole expression types the left operand of an
+  // integer operator; a literal on the left takes the type of the right (D82).
+  let leftWant: Option<Type> = None
+  if (want is Some(wanted)) {
+    if (isSizedInteger(wanted) && !isComparison(operator)) {
+      leftWant = want
+    }
+  }
+  let leftType = Type.TVoid
+  let rightType = Type.TVoid
+  if (leftWant is None && isIntegerLiteral(left) && !isIntegerLiteral(right)) {
+    rightType = checkExpression(mutable checker, walker, right, None)
+    leftType = checkExpression(mutable checker, walker, left, Some(rightType))
+  } else {
+    leftType = checkExpression(mutable checker, walker, left, leftWant)
+    rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+  }
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
+
+  // Two different integer types, one of them sized, are never mixed.
+  if (leftType != rightType && isInteger(leftType) && isInteger(rightType)) {
+    if (operator != "&&" && operator != "||") {
+      reportMixedIntegers(mutable checker, pos, operator, leftType, rightType)
+      if (isComparison(operator)) {
+        return Type.TBool
+      }
+      return leftType
+    }
+  }
 
   // Then the rule of the operator.
   if (operator == "&&" || operator == "||") {
@@ -1170,7 +1387,7 @@ function checkBinary<W: Walker>(
       operator == "<<" ||
       operator == ">>"
   ) {
-    if (leftType != Type.TInt || rightType != Type.TInt) {
+    if (!isInteger(leftType) || leftType != rightType) {
       reportError(
         mutable checker,
         pos,
@@ -1178,7 +1395,7 @@ function checkBinary<W: Walker>(
         `${operator} needs two integers, found ${leftText} and ${rightText}`,
       )
     }
-    return Type.TInt
+    return leftType
   }
   reportError(mutable checker, pos, "E0219", `unknown operator ${operator}`)
   return Type.TVoid

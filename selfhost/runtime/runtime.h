@@ -230,6 +230,12 @@ static lstr* lstr_from_int(int64_t v) {
   return lstr_from_cstr(buf);
 }
 
+static lstr* lstr_from_uint(uint64_t v) {
+  char buf[32];
+  snprintf(buf, sizeof buf, "%" PRIu64, v);
+  return lstr_from_cstr(buf);
+}
+
 // Shortest text that reads back as the same double.
 static lstr* lstr_from_f64(double v) {
   char buf[40];
@@ -455,6 +461,68 @@ static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
   if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
   return a >> b;
 }
+
+// The sized integers (D82): one set of functions per type, named with the
+// type's suffix (narra_add_u8). They check overflow at the type's own width.
+#define NARRA_SIZED(N, T, MIN, SHOW) \
+  static T narra_add_##N(T a, T b, const char* where) { \
+    T r; \
+    if (__builtin_add_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+    return r; \
+  } \
+  static T narra_sub_##N(T a, T b, const char* where) { \
+    T r; \
+    if (__builtin_sub_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+    return r; \
+  } \
+  static T narra_mul_##N(T a, T b, const char* where) { \
+    T r; \
+    if (__builtin_mul_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+    return r; \
+  } \
+  static T narra_neg_##N(T a, const char* where) { \
+    if ((MIN) != 0 && a == (T)(MIN)) { \
+      if (NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+      return a; \
+    } \
+    return (T)(-a); \
+  } \
+  static T narra_div_##N(T a, T b, const char* where) { \
+    if (b == 0) narra_panic(where, "division by zero"); \
+    if ((MIN) != 0 && a == (T)(MIN) && b == (T)-1) { \
+      if (NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+      return a; \
+    } \
+    return (T)(a / b); \
+  } \
+  static T narra_rem_##N(T a, T b, const char* where) { \
+    if (b == 0) narra_panic(where, "division by zero"); \
+    if ((MIN) != 0 && b == (T)-1) return 0; \
+    return (T)(a % b); \
+  } \
+  static T narra_wrap_add_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
+  static T narra_wrap_sub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
+  static T narra_wrap_mul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
+  static T narra_shl_##N(T a, T b, const char* where) { \
+    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+    return (T)((uint64_t)a << b); \
+  } \
+  static T narra_shr_##N(T a, T b, const char* where) { \
+    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+    return (T)(a >> b); \
+  } \
+  static bool narra_eq_##N(T a, T b) { return a == b; } \
+  static int narra_cmp_##N(T a, T b) { return (a > b) - (a < b); } \
+  static uint64_t narra_hash_##N(T v) { return narra_hash_int((int64_t)v); } \
+  static lstr* narra_show_##N(T v) { return SHOW; }
+
+NARRA_SIZED(i8, int8_t, INT8_MIN, lstr_from_int((int64_t)v))
+NARRA_SIZED(i16, int16_t, INT16_MIN, lstr_from_int((int64_t)v))
+NARRA_SIZED(i32, int32_t, INT32_MIN, lstr_from_int((int64_t)v))
+NARRA_SIZED(u8, uint8_t, 0, lstr_from_uint((uint64_t)v))
+NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
+NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
+NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
 
 static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_neg(a, where) : a; }
 

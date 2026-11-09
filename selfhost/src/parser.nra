@@ -1812,6 +1812,16 @@ function parseCStyleForHead(
   return parseCStyleFor(mutable parser, pos, Some(declaration))
 }
 
+function parseStatementExpr(mutable parser: Parser): Expr uses alloc {
+  // A closure body inside the expression parses statements of its own, so put
+  // back the start of the enclosing statement afterwards.
+  const enclosingStart = parser.statementStart
+  parser.statementStart = parser.index
+  const expression = parseExpr(mutable parser)
+  parser.statementStart = enclosingStart
+  return expression
+}
+
 function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): Stmt uses alloc {
   expect(mutable parser, ";")
   // An empty condition loops forever.
@@ -1825,8 +1835,7 @@ function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): S
   if (!isAt(parser, ")")) {
     const stepToken = currentToken(parser)
     const stepPos = getPos(stepToken)
-    parser.statementStart = parser.index
-    const target = parseExpr(mutable parser)
+    const target = parseStatementExpr(mutable parser)
     if (accept(mutable parser, "=")) {
       step = Some(Stmt.AssignStmt(stepPos, target, parseExpr(mutable parser)))
     } else if (parseCompoundTail(mutable parser, stepPos, target) is Some(compound)) {
@@ -2074,8 +2083,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     failAt(mutable parser, pos, "E0032", "a block must belong to a statement such as if or while")
     return Stmt.BreakStmt(pos, "")
   }
-  parser.statementStart = parser.index
-  const expression = parseExpr(mutable parser)
+  const expression = parseStatementExpr(mutable parser)
   if (accept(mutable parser, "=")) {
     const value = parseExpr(mutable parser)
     endStatement(mutable parser)

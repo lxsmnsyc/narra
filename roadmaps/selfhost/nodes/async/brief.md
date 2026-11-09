@@ -39,3 +39,5 @@ Outline. Split into children when refined (rough plan, each M):
 - async-api: `then`, `detach`, `peek`, `cancel` (cooperative, `Err(Cancelled)`), `all`, `race`.
 - std-async-io: `std/async/net`, `file` and `time` with the blocking modules' names.
 Open (D93): the exit code with tasks still running after a failed entry function; loops on several threads.
+
+- 2026-11-09: design settled in D95 (maintainer). Refine the brief from it.

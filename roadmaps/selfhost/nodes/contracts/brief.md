@@ -40,3 +40,5 @@ SPEC lines 1007-1016 (F11). `requires x >= 0.0` / `ensures result >= 0.0` fail t
 
 - From the spec-gap audit (`roadmaps/selfhost/nodes/spec-gap-audit/outcome.md`): its findings table has the minimal program and the exact error.
 - Outline. Break into a full brief when `plan.py refine` lists it.
+
+- 2026-11-09: design settled in D95 (maintainer). Refine the brief from it.

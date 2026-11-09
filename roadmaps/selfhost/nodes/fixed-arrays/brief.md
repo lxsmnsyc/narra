@@ -34,3 +34,5 @@ depends_on:
 ## Notes
 
 Outline. Break into full briefs when `plan.py refine` lists it.
+
+- 2026-11-09: design settled in D95 (maintainer). Refine the brief from it.

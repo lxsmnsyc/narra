@@ -36,3 +36,5 @@ depends_on:
 Outline. Break into full briefs when `plan.py refine` lists it.
 - 2026-10-30: the user wants better closure management once std/option and std/result add more higher-order helpers; std-option-result records the cost per call to measure against.
 - From closures: a non-escaping closure gets a stack environment, which is a block-local C variable. Inlining or any tail-call rewrite must not move a pointer to it out of its block.
+
+- 2026-11-09: design settled in D95 (maintainer). Refine the brief from it.

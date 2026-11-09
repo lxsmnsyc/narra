@@ -39,3 +39,5 @@ From hashed-cnames: `__` and edge `_` are now allowed in names, so `@export(C)` 
 Outline. Break into full briefs when `plan.py refine` lists it.
 
 - From the sum-type-syntax debate (D73): `Red = 1` in an enum without `@repr` must give an error whose fix adds `@repr(i32)`, with a `testdata/diagnostics/` case. Today it is a bare parse error (`expected a name, found "="`). It belongs here because the fix only compiles once `@repr` exists.
+
+- 2026-11-09: design settled in D95 (maintainer). Refine the brief from it.

@@ -1,0 +1,58 @@
+// Helpers shared by the checks of the std modules (stdarray, stdmap, stdresult, ...).
+// stdcalls.nra dispatches to the modules, so the helpers live here and not there.
+import { Type } from "narrac/types"
+import { Checker, Walker, reportError, getExpressionPos } from "narrac/check"
+import { instantiate } from "narrac/resolve"
+import { Pos, Expr, Arg } from "narrac/ast"
+import { checkExpression, expectType, checkArgumentsLoosely } from "narrac/exprs"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+// checkArgumentCount reports a wrong argument count for a builtin that
+// checks its own arguments, and checks the arguments loosely so their errors
+// still show (Go's argCount).
+export function checkArgumentCount<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  count: int,
+): bool uses alloc {
+  if (Arrays.length(arguments) != count) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0311",
+      `${name} takes ${Int.toString(count)} arguments, found ${Int.toString(Arrays.length(arguments))}`,
+    )
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return false
+  }
+  return true
+}
+
+// checkArgumentAgainst checks an argument with an expected type and reports
+// a mismatch at the argument.
+export function checkArgumentAgainst<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  argument: Expr,
+  expected: Type,
+) uses alloc {
+  const found = checkExpression(mutable checker, walker, argument, Some(expected))
+  expectType(mutable checker, getExpressionPos(argument), Some(expected), found)
+}
+
+// makePreludeEnum instantiates a generic enum of the prelude, such as Result
+// (Go's preludeEnum).
+export function makePreludeEnum(
+  mutable checker: Checker,
+  name: string,
+  typeArguments: Array<Type>,
+): Type uses alloc {
+  if (checker.scopes[0].generics[name] is Some(generic)) {
+    return instantiate(mutable checker, generic, typeArguments)
+  }
+  return Type.TVoid
+}

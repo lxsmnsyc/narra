@@ -1,0 +1,378 @@
+// The registry rows, checks of std/result.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  internComposite,
+  typeString,
+  Walker,
+  reportError,
+  getExpressionPos,
+} from "narrac/check"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression, expectType, checkBorrowed } from "narrac/exprs"
+import { checkArrowArgument } from "narrac/closures"
+import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+export const RESULT_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Result.andThen",
+    module: "std/result",
+    key: "andThen",
+    effects: ["alloc"],
+    callbacks: [1],
+    check: "checkResultAndThen",
+  },
+  StdFunc {
+    name: "Result.err",
+    module: "std/result",
+    key: "err",
+    effects: ["alloc"],
+    check: "checkResultToOption",
+  },
+  StdFunc {
+    name: "Result.map",
+    module: "std/result",
+    key: "map",
+    effects: ["alloc"],
+    callbacks: [1],
+    check: "checkResultMap",
+  },
+  StdFunc {
+    name: "Result.mapErr",
+    module: "std/result",
+    key: "mapErr",
+    effects: ["alloc"],
+    callbacks: [1],
+    check: "checkResultMap",
+  },
+  StdFunc {
+    name: "Result.ok",
+    module: "std/result",
+    key: "ok",
+    effects: ["alloc"],
+    check: "checkResultToOption",
+  },
+  StdFunc {
+    name: "Result.withDefault",
+    module: "std/result",
+    key: "withDefault",
+    check: "checkResultWithDefault",
+  },
+]
+
+// checkWithDefault checks Result.withDefault.
+function checkWithDefault<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  enumName: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (
+    checkPreludeArgument(mutable checker, walker, arguments, name, 0, enumName) is Some(enumType)
+  ) {
+    const element = listEnumArguments(checker, enumType)[0]
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, element)
+    return element
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  return Type.TVoid
+}
+
+// checkResultMap checks Result.map (the callback takes the Ok value) and
+// Result.mapErr (it takes the Err value).
+function checkResultMap<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (
+    checkPreludeArgument(mutable checker, walker, arguments, name, 0, "Result") is Some(resultType)
+  ) {
+    const resultArgs = listEnumArguments(checker, resultType)
+    if (name == "Result.mapErr") {
+      if (
+        checkCallback(
+          mutable checker,
+          walker,
+          pos,
+          arguments,
+          name,
+          1,
+          [resultArgs[1]],
+          None,
+        ) is Some(mappedError)
+      ) {
+        return makePreludeEnum(mutable checker, "Result", [resultArgs[0], mappedError])
+      }
+      return Type.TVoid
+    }
+    if (
+      checkCallback(
+        mutable checker,
+        walker,
+        pos,
+        arguments,
+        name,
+        1,
+        [resultArgs[0]],
+        None,
+      ) is Some(mappedValue)
+    ) {
+      return makePreludeEnum(mutable checker, "Result", [mappedValue, resultArgs[1]])
+    }
+    return Type.TVoid
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  return Type.TVoid
+}
+
+function checkResultAndThen<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (
+    checkPreludeArgument(mutable checker, walker, arguments, name, 0, "Result") is Some(resultType)
+  ) {
+    const resultArgs = listEnumArguments(checker, resultType)
+
+    // The expected type of the call, when its error type is the argument's,
+    // gives the callback its result, so `Err("e")` needs no annotation there.
+    let wantResult: Option<Type> = None
+    if (want is Some(wantType)) {
+      if (findPreludeEnum(checker, wantType, "Result") is Some(wantEnum)) {
+        if (listEnumArguments(checker, wantEnum)[1] == resultArgs[1]) {
+          wantResult = Some(wantEnum)
+        }
+      }
+    }
+    const callbackResult = checkCallback(
+      mutable checker,
+      walker,
+      pos,
+      arguments,
+      name,
+      1,
+      [resultArgs[0]],
+      wantResult,
+    )
+    if (
+      checkCallbackReturns(mutable checker, arguments, name, callbackResult, "Result") is Some(
+        returned,
+      )
+    ) {
+      // The callback keeps the error type: an Err passes through unchanged.
+      const returnedError = listEnumArguments(checker, returned)[1]
+      if (returnedError != resultArgs[1]) {
+        const message = `expected ${typeString(checker, resultArgs[1])}, found ${typeString(checker, returnedError)}`
+        reportError(mutable checker, getExpressionPos(arguments[1].value), "E0119", message)
+      }
+      return returned
+    }
+    return Type.TVoid
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  return Type.TVoid
+}
+
+// checkResultToOption checks Result.ok and Result.err.
+function checkResultToOption<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (
+    checkPreludeArgument(mutable checker, walker, arguments, name, 0, "Result") is Some(resultType)
+  ) {
+    const resultArgs = listEnumArguments(checker, resultType)
+    if (name == "Result.err") {
+      return makePreludeEnum(mutable checker, "Option", [resultArgs[1]])
+    }
+    return makePreludeEnum(mutable checker, "Option", [resultArgs[0]])
+  }
+  return Type.TVoid
+}
+
+// findPreludeEnum returns the type when it is an instance of the prelude
+// enum name (Option or Result), as Go's preludeEnumArg does: a user enum
+// of the same name is not accepted.
+function findPreludeEnum(checker: Checker, found: Type, name: string): Option<Type> {
+  if (found is Type.TEnum(index)) {
+    const info = checker.enums[index]
+    if (info.name != name || Arrays.length(info.arguments) == 0) {
+      return None
+    }
+    if (checker.scopes[0].generics[name] is Some(generic)) {
+      if (info.generic == generic) {
+        return Some(found)
+      }
+    }
+  }
+  return None
+}
+
+// listEnumArguments lists the type arguments of an enum instance.
+function listEnumArguments(checker: Checker, enumType: Type): Array<Type> {
+  if (enumType is Type.TEnum(index)) {
+    return checker.enums[index].arguments
+  }
+  return []
+}
+
+// checkPreludeArgument checks argument index and returns it as an instance of
+// the prelude enum name, or None after reporting the mismatch (Go's
+// preludeArg).
+function checkPreludeArgument<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  arguments: Array<Arg>,
+  name: string,
+  index: int,
+  enumName: string,
+): Option<Type> uses alloc {
+  const found = checkExpression(mutable checker, walker, arguments[index].value, None)
+  if (findPreludeEnum(checker, found, enumName) is Some(enumType)) {
+    return Some(enumType)
+  }
+  if (found == Type.TVoid) {
+    return None
+  }
+  const argumentPos = getExpressionPos(arguments[index].value)
+  if (enumName == "Option") {
+    const message = `${name} needs an Option<T>, found ${typeString(checker, found)}`
+    reportError(mutable checker, argumentPos, "E0909", message)
+  } else {
+    const message = `${name} needs a Result<T, E>, found ${typeString(checker, found)}`
+    reportError(mutable checker, argumentPos, "E0910", message)
+  }
+  return None
+}
+
+// checkCallback checks argument index, a function the builtin calls with
+// parameters. An arrow function gets the parameter types as its hint and a stack
+// environment, because the builtin never keeps the function. result is the
+// required result type, or None when the callback decides it. It returns the
+// callback's result type, or None after an error (Go's checkCallback).
+function checkCallback<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  index: int,
+  parameters: Array<Type>,
+  result: Option<Type>,
+): Option<Type> uses alloc {
+  const argument = arguments[index].value
+  if (arguments[index].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0313",
+      `${name} does not change its arguments; remove \`mutable\``,
+    )
+  }
+  const errorsBefore = Arrays.length(checker.errors)
+  const found = checkArrowArgument(mutable checker, walker, argument, parameters, result)
+  // The callback may assign a variable another argument reads (D77).
+  checkBorrowed(mutable checker, arguments)
+  const argumentPos = getExpressionPos(argument)
+  if (found is Type.TFunc(_, foundResult)) {
+    if (foundResult == Type.TVoid) {
+      // An arrow whose body failed to check also ends up void; its error is
+      // already reported.
+      if (Arrays.length(checker.errors) == errorsBefore) {
+        reportError(
+          mutable checker,
+          argumentPos,
+          "E0913",
+          `${name} needs a function that returns a value`,
+        )
+      }
+      return None
+    }
+    if (result is Some(requiredResult)) {
+      const requiredType = internComposite(mutable checker, Type.TFunc(parameters, requiredResult))
+      expectType(mutable checker, argumentPos, Some(requiredType), found)
+      return Some(requiredResult)
+    }
+    const foundType = internComposite(mutable checker, Type.TFunc(parameters, foundResult))
+    expectType(mutable checker, argumentPos, Some(foundType), found)
+    return Some(foundResult)
+  }
+  if (found != Type.TVoid) {
+    const message = `${name} needs a function as argument ${Int.toString(index + 1)}, found ${typeString(checker, found)}`
+    reportError(mutable checker, argumentPos, "E0911", message)
+  }
+  return None
+}
+
+// checkCallbackReturns checks that a callback result is an instance of the
+// prelude enum name. It returns the instance, or None after an error (Go's
+// callbackReturns).
+function checkCallbackReturns(
+  mutable checker: Checker,
+  arguments: Array<Arg>,
+  name: string,
+  callbackResult: Option<Type>,
+  enumName: string,
+): Option<Type> uses alloc {
+  if (callbackResult is Some(resultType)) {
+    if (findPreludeEnum(checker, resultType, enumName) is Some(enumType)) {
+      return Some(enumType)
+    }
+    const message = `${name} needs a function that returns ${enumName}, found one that returns ${typeString(checker, resultType)}`
+    reportError(mutable checker, getExpressionPos(arguments[1].value), "E0912", message)
+  }
+  return None
+}
+
+// checkResultCall checks the calls of std/result that name a check function.
+export function checkResultCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (kind == "checkResultMap") {
+    return checkResultMap(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkResultAndThen") {
+    return checkResultAndThen(mutable checker, walker, pos, arguments, name, want)
+  }
+  if (kind == "checkResultWithDefault") {
+    return checkWithDefault(mutable checker, walker, pos, arguments, name, "Result")
+  }
+  if (kind == "checkResultToOption") {
+    return checkResultToOption(mutable checker, walker, pos, arguments, name)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+  return Type.TVoid
+}

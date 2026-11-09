@@ -1,0 +1,144 @@
+// The registry rows, checks of std/array.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Checker, internComposite, typeString, Walker, reportError } from "narrac/check"
+import { findTupleType } from "narrac/resolve"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/exprs"
+import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+
+export const ARRAY_FUNCS: Array<StdFunc> = [
+  StdFunc { name: "Array.entries", module: "std/array", key: "entries", check: "checkArrayLength" },
+  StdFunc {
+    name: "Array.filled",
+    module: "std/array",
+    key: "filled",
+    effects: ["alloc"],
+    check: "checkArrayFilled",
+  },
+  StdFunc { name: "Array.length", module: "std/array", key: "length", check: "checkArrayLength" },
+  StdFunc {
+    name: "Array.push",
+    module: "std/array",
+    key: "push",
+    mutables: [true, false],
+    effects: ["alloc"],
+    check: "checkArrayPush",
+  },
+  StdFunc { name: "Array.values", module: "std/array", key: "values", check: "checkArrayLength" },
+]
+
+// checkArrayLength checks Array.length, Array.values and Array.entries.
+function checkArrayLength<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TArray(_)) {
+    if (name == "Array.length") {
+      return Type.TInt
+    }
+    if (checker.forSourceLine != pos.line || checker.forSourceColumn != pos.column) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0920",
+        `${name} can only be the source of a for ... of loop; use the array itself`,
+      )
+      return Type.TVoid
+    }
+    if (name == "Array.entries") {
+      if (found is Type.TArray(elementType)) {
+        const tupleType = findTupleType(mutable checker, [Type.TInt, elementType])
+        return internComposite(mutable checker, Type.TArray(tupleType))
+      }
+    }
+    return found
+  }
+  const message = `${name} needs an array, found ${typeString(checker, found)}`
+  reportError(mutable checker, pos, "E0904", message)
+  return Type.TVoid
+}
+
+function checkArrayPush<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (!arguments[0].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0905",
+      "Array.push changes the array; write Array.push(mutable items, value)",
+    )
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TArray(element)) {
+    // The argument is checked before checkMutableArgument reads its local.
+    checkMutableArgument(mutable checker, arguments[0].value)
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, element)
+    checkExclusive(mutable checker, arguments, [0])
+    return Type.TVoid
+  }
+  const message = `Array.push needs an array, found ${typeString(checker, found)}`
+  reportError(mutable checker, pos, "E0906", message)
+  return Type.TVoid
+}
+
+function checkArrayFilled<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  // The expected array type gives the element a hint.
+  let hint: Option<Type> = None
+  if (want is Some(wantType)) {
+    if (wantType is Type.TArray(wantElement)) {
+      hint = Some(wantElement)
+    }
+  }
+  const element = checkExpression(mutable checker, walker, arguments[0].value, hint)
+  checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+  return internComposite(mutable checker, Type.TArray(element))
+}
+
+// checkArrayCall checks the calls of std/array that name a check function.
+export function checkArrayCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (kind == "checkArrayLength") {
+    return checkArrayLength(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkArrayPush") {
+    return checkArrayPush(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkArrayFilled") {
+    return checkArrayFilled(mutable checker, walker, pos, arguments, name, want)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+  return Type.TVoid
+}

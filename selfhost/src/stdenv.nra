@@ -1,0 +1,88 @@
+// The registry rows and emitters of std/env.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Arg } from "narrac/ast"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  writeLine,
+  temp,
+  ownedTemp,
+  typeOf,
+} from "narrac/emitstate"
+import {
+  NODE,
+  plain,
+  owned,
+  argumentText,
+  arrayStruct,
+  findVariant,
+  ioEither,
+} from "narrac/stdemithelp"
+
+export const ENV_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Env.args",
+    module: "std/env",
+    key: "args",
+    result: "Array<string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Env.get",
+    module: "std/env",
+    key: "get",
+    parameters: ["string"],
+    result: "Option<string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+]
+
+// Env.get(name): Some(value) or None.
+function emitEnvGet<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const name = argumentText(walker, mutable emitter, arguments, 0)
+  const value = temp(mutable emitter, Type.TStr, `narra_env_get(${name})`)
+  return ioEither(mutable emitter, optionType, value, some, [value], none, [])
+}
+
+// Env.args()
+function emitEnvArgs(mutable emitter: Emitter, nodeId: int): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const structName = arrayStruct(emitter, arrayType)
+  const array = ownedTemp(mutable emitter, arrayType, `${structName}_new(narra_env_argc())`)
+  writeLine(
+    mutable emitter,
+    `for (int64_t i = 0, n = narra_env_argc(); i < n; i++) ${array}->items[${array}->len++] = narra_env_arg(i);`,
+  )
+  return owned(array)
+}
+
+// emitEnvCall emits the calls of std/env.
+export function emitEnvCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "Env.get") {
+    return emitEnvGet(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Env.args") {
+    return emitEnvArgs(mutable emitter, nodeId)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

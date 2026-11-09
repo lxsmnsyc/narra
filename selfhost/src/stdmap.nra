@@ -1,0 +1,144 @@
+// The registry rows, checks of std/map.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Checker, internComposite, typeString, Walker, reportError } from "narrac/check"
+import { findTupleType } from "narrac/resolve"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/exprs"
+import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+
+export const MAP_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Map.entries",
+    module: "std/map",
+    key: "entries",
+    effects: ["alloc"],
+    check: "checkMapIter",
+  },
+  StdFunc {
+    name: "Map.keys",
+    module: "std/map",
+    key: "keys",
+    effects: ["alloc"],
+    check: "checkMapIter",
+  },
+  StdFunc {
+    name: "Map.remove",
+    module: "std/map",
+    key: "remove",
+    mutables: [true, false],
+    effects: ["alloc"],
+    check: "checkMapRemove",
+  },
+  StdFunc { name: "Map.size", module: "std/map", key: "size", check: "checkMapSize" },
+]
+
+// checkMapArgument checks argument index and returns it when it is a map
+// (Go's mapArg).
+function checkMapArgument<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  index: int,
+): Option<Type> uses alloc {
+  const found = checkExpression(mutable checker, walker, arguments[index].value, None)
+  if (found is Type.TMap(_, _)) {
+    return Some(found)
+  }
+  const message = `${name} needs a map, found ${typeString(checker, found)}`
+  reportError(mutable checker, pos, "E0902", message)
+  return None
+}
+
+function checkMapSize<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  const _ = checkMapArgument(mutable checker, walker, pos, arguments, name, 0)
+  return Type.TInt
+}
+
+function checkMapRemove<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (!arguments[0].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0903",
+      "Map.remove changes the map; write Map.remove(mutable m, key)",
+    )
+  }
+  const mapType = checkMapArgument(mutable checker, walker, pos, arguments, name, 0)
+  checkMutableArgument(mutable checker, arguments[0].value)
+  if (mapType is Some(foundMap)) {
+    if (foundMap is Type.TMap(keyType, _)) {
+      checkArgumentAgainst(mutable checker, walker, arguments[1].value, keyType)
+      checkExclusive(mutable checker, arguments, [0])
+      return Type.TBool
+    }
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  return Type.TVoid
+}
+
+// checkMapIter checks Map.keys and Map.entries.
+function checkMapIter<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  const mapType = checkMapArgument(mutable checker, walker, pos, arguments, name, 0)
+  if (mapType is Some(foundMap)) {
+    if (foundMap is Type.TMap(keyType, valueType)) {
+      if (name == "Map.keys") {
+        return internComposite(mutable checker, Type.TArray(keyType))
+      }
+      const tupleType = findTupleType(mutable checker, [keyType, valueType])
+      return internComposite(mutable checker, Type.TArray(tupleType))
+    }
+  }
+  return Type.TVoid
+}
+
+// checkMapCall checks the calls of std/map that name a check function.
+export function checkMapCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+): Type uses alloc {
+  if (kind == "checkMapSize") {
+    return checkMapSize(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkMapRemove") {
+    return checkMapRemove(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkMapIter") {
+    return checkMapIter(mutable checker, walker, pos, arguments, name)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+  return Type.TVoid
+}

@@ -1,0 +1,473 @@
+// The registry rows and emitters of std/string.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Pos, Arg } from "narrac/ast"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  writeLine,
+  where,
+  temp,
+  ownedTemp,
+  typeOf,
+  declareVariable,
+  variableRef,
+} from "narrac/emitstate"
+import {
+  NODE,
+  FixedCall,
+  plain,
+  owned,
+  emitFixedCall,
+  argumentText,
+  arrayStruct,
+  findVariant,
+  ioEither,
+} from "narrac/stdemithelp"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+export const STRING_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Str.append",
+    module: "std/string",
+    key: "append",
+    parameters: ["StringBuilder", "string"],
+    mutables: [true, false],
+    result: "void",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.appendChar",
+    module: "std/string",
+    key: "appendChar",
+    parameters: ["StringBuilder", "char"],
+    mutables: [true, false],
+    result: "void",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.build",
+    module: "std/string",
+    key: "build",
+    parameters: ["StringBuilder"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.builder",
+    module: "std/string",
+    key: "builder",
+    result: "StringBuilder",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.byteAt",
+    module: "std/string",
+    key: "byteAt",
+    parameters: ["string", "int"],
+    result: "int",
+  },
+  StdFunc {
+    name: "Str.charAt",
+    module: "std/string",
+    key: "charAt",
+    parameters: ["string", "int"],
+    result: "char",
+  },
+  StdFunc {
+    name: "Str.charCount",
+    module: "std/string",
+    key: "charCount",
+    parameters: ["string"],
+    result: "int",
+  },
+  StdFunc {
+    name: "Str.chars",
+    module: "std/string",
+    key: "chars",
+    parameters: ["string"],
+    result: "Array<char>",
+    effects: ["alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Str.concat",
+    module: "std/string",
+    key: "concat",
+    parameters: ["string", "string"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.contains",
+    module: "std/string",
+    key: "contains",
+    parameters: ["string", "string"],
+    result: "bool",
+  },
+  StdFunc {
+    name: "Str.endsWith",
+    module: "std/string",
+    key: "endsWith",
+    parameters: ["string", "string"],
+    result: "bool",
+  },
+  StdFunc {
+    name: "Str.fromChar",
+    module: "std/string",
+    key: "fromChar",
+    parameters: ["char"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.indexOf",
+    module: "std/string",
+    key: "indexOf",
+    parameters: ["string", "string"],
+    result: "Option<int>",
+    effects: ["alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Str.join",
+    module: "std/string",
+    key: "join",
+    parameters: ["Array<string>", "string"],
+    result: "string",
+    effects: ["alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Str.length",
+    module: "std/string",
+    key: "length",
+    parameters: ["string"],
+    result: "int",
+  },
+  StdFunc {
+    name: "Str.nextChar",
+    module: "std/string",
+    key: "nextChar",
+    parameters: ["string", "int"],
+    result: "int",
+  },
+  StdFunc {
+    name: "Str.repeat",
+    module: "std/string",
+    key: "repeat",
+    parameters: ["string", "int"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.replace",
+    module: "std/string",
+    key: "replace",
+    parameters: ["string", "string", "string"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.slice",
+    module: "std/string",
+    key: "slice",
+    parameters: ["string", "int", "int"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.sliceFrom",
+    module: "std/string",
+    key: "sliceFrom",
+    parameters: ["string", "int"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Str.split",
+    module: "std/string",
+    key: "split",
+    parameters: ["string", "string"],
+    result: "Array<string>",
+    effects: ["alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Str.startsWith",
+    module: "std/string",
+    key: "startsWith",
+    parameters: ["string", "string"],
+    result: "bool",
+  },
+  StdFunc {
+    name: "Str.trim",
+    module: "std/string",
+    key: "trim",
+    parameters: ["string"],
+    result: "string",
+    effects: ["alloc"],
+  },
+]
+
+const STRING_FIXED_CALLS: Array<FixedCall> = [
+  FixedCall {
+    name: "Str.slice",
+    call: "narra_str_slice",
+    withPos: true,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.sliceFrom",
+    call: "narra_str_slice_from",
+    withPos: true,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.byteAt",
+    call: "narra_str_byte_at",
+    withPos: true,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.charAt",
+    call: "narra_str_char_at",
+    withPos: true,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.nextChar",
+    call: "narra_str_next_char",
+    withPos: true,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.charCount",
+    call: "narra_str_char_count",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.trim",
+    call: "narra_str_trim",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.startsWith",
+    call: "narra_str_starts_with",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.endsWith",
+    call: "narra_str_ends_with",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.contains",
+    call: "narra_str_contains",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.replace",
+    call: "narra_str_replace",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.builder",
+    call: "narra_sb_new",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.build",
+    call: "narra_sb_build",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.concat",
+    call: "lstr_concat",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.fromChar",
+    call: "lstr_from_char",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Str.repeat",
+    call: "lstr_repeat",
+    withPos: true,
+    owned: true,
+    temporary: false,
+  },
+]
+
+// Str.join(parts, separator)
+function emitJoin<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const parts = argumentText(walker, mutable emitter, arguments, 0)
+  const separator = argumentText(walker, mutable emitter, arguments, 1)
+  return owned(
+    ownedTemp(
+      mutable emitter,
+      Type.TStr,
+      `narra_str_join(${parts}->items, ${parts}->len, ${separator})`,
+    ),
+  )
+}
+
+// Str.indexOf(text, needle): Some(position) or None.
+function emitIndexOf<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const needle = argumentText(walker, mutable emitter, arguments, 1)
+  const position = temp(mutable emitter, Type.TInt, `narra_str_index_of(${text}, ${needle})`)
+  return ioEither(mutable emitter, optionType, `${position} >= 0`, some, [position], none, [])
+}
+
+// Str.split(text, separator)
+function emitSplit<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const separator = argumentText(walker, mutable emitter, arguments, 1)
+  const count = temp(mutable emitter, Type.TInt, "0")
+  const position = where(emitter, pos)
+  const pieces = rawTemp(
+    mutable emitter,
+    "lstr**",
+    `narra_str_split(${text}, ${separator}, &${count}, ${position})`,
+  )
+  const structName = arrayStruct(emitter, arrayType)
+  const array = ownedTemp(mutable emitter, arrayType, `${structName}_new(${count})`)
+  writeLine(
+    mutable emitter,
+    `for (int64_t i = 0; i < ${count}; i++) ${array}->items[${array}->len++] = ${pieces}[i];`,
+  )
+  writeLine(mutable emitter, `narra_free(${pieces});`)
+  return owned(array)
+}
+
+// Str.chars(text)
+function emitChars<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const arrayType = typeOf(emitter, nodeId)
+  const text = argumentText(walker, mutable emitter, arguments, 0)
+  const structName = arrayStruct(emitter, arrayType)
+  const array = ownedTemp(
+    mutable emitter,
+    arrayType,
+    `${structName}_new(narra_str_char_count(${text}))`,
+  )
+  writeLine(
+    mutable emitter,
+    `for (int64_t i = 0; i < ${text}->len; i += narra_str_char_len(${text}, i)) ${array}->items[${array}->len++] = narra_str_decode(${text}, i);`,
+  )
+  return owned(array)
+}
+
+// Str.append and Str.appendChar: the builder is passed by pointer.
+function emitAppend<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  call: string,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const value = argumentText(walker, mutable emitter, arguments, 1)
+  const builder = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  return plain(`${call}(${builder}, ${value})`)
+}
+
+// rawTemp declares a temporary of a C type given as text.
+function rawTemp(mutable emitter: Emitter, cTypeText: string, code: string): string uses alloc {
+  emitter.tempCount = emitter.tempCount + 1
+  const name = `t${Int.toString(emitter.tempCount)}`
+  const declaration = declareVariable(mutable emitter, cTypeText, name)
+  writeLine(mutable emitter, `${declaration} = ${code};`)
+  return variableRef(emitter, name)
+}
+
+// emitStringCall emits the calls of std/string.
+export function emitStringCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  for (const fixed of Arrays.values(STRING_FIXED_CALLS)) {
+    if (fixed.name == name) {
+      return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+    }
+  }
+  if (name == "Str.join") {
+    return emitJoin(walker, mutable emitter, arguments)
+  }
+  if (name == "Str.indexOf") {
+    return emitIndexOf(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Str.split") {
+    return emitSplit(walker, mutable emitter, nodeId, pos, arguments)
+  }
+  if (name == "Str.chars") {
+    return emitChars(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Str.append") {
+    return emitAppend(walker, mutable emitter, "narra_sb_append", arguments)
+  }
+  if (name == "Str.appendChar") {
+    return emitAppend(walker, mutable emitter, "narra_sb_append_char", arguments)
+  }
+  if (name == "Str.length") {
+    const text = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`(${text})->len`)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

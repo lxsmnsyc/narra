@@ -762,6 +762,16 @@ Decision: `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types; `
 - **Rejected: a negative literal under an unsigned type reports E0296.** The literal is the mistake, and it names the value that does not fit.
 - **Cost.** A literal on the left takes its type from the right operand, so the right operand is checked first and an error in it appears before an error in the left one.
 
+## D83. The dynamic tree is `Value` in `std/shape`; `std/json` has `parse` and `stringify`
+
+Decision: `Value` (`Null`, `Bool`, `Int`, `Float`, `Text`, `List`, `Record`) is declared in `std/shape`. `std/json` has `parse(text): Result<Value, string>` and `stringify(value): string`, the names of TypeScript's `JSON`. `Record` is a `Map<string, Value>`, so it keeps insertion order (D64); a duplicate key takes the last value in the first place. A number without fraction or exponent that fits `int` is `Int`, any other number is `Float`. Errors read `<line>:<column>: <reason>`; nesting deeper than 512 is an error.
+
+- **Reason.** The `Shape` trait (node shape-trait) converts types to and from `Value` without knowing the format. A later TOML or binary format reuses it, and `std/shape` never imports `std/json`, so there is no import cycle.
+- **Reason.** Narra has no single number type, and a 64-bit integer id must survive a round trip, which an `f64` cannot hold, so `Int` and `Float` are separate.
+- **Alternative rejected.** `Json.Value` in `std/json`: it ties `Shape` to JSON.
+- **Alternative rejected.** Reading JSON straight into typed values without a tree: faster, but needs `derives Shape` first, and JSON-RPC needs the tree for messages whose type depends on a field.
+- **Cost.** One primitive, `FloatText.parse` in `std/internal/float`, for `strtod`. `stringify` recurses on the depth of the `Value` it is given; only `parse` bounds depth.
+
 ## D85. A `mutable` marker only on `for ... of` over an array
 
 Decision: `for (mutable item of items)` binds `item` to each element of the array `items` in place, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` does the same and also gives the index. `Arrays.values(items)` may be written for `items`. This is the only position the marker gets for now. Pattern bindings, destructuring and a local reference binding stay as D81 left them. Amends D81, whose bindings that copy part of a value stay read-only everywhere else. Not built yet: node mutable-bindings builds it. Chosen by the orchestrator on 2026-11-09 (the maintainer delegated this batch's gate decisions).

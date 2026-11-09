@@ -1,7 +1,7 @@
 ---
 id: bytes-type
 title: "The bytes type and std/bytes"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

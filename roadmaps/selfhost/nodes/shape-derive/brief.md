@@ -1,7 +1,7 @@
 ---
 id: shape-derive
 title: derives Shape for structs and enums
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 212750
 owns:
   - testdata/stage2/derive_shape*
   - testdata/stage2/errors/derive_shape_*
@@ -68,3 +68,5 @@ depends_on:
 ## Sizing
 
 M. Code generation for two declaration kinds in the self-hosted compiler only; the pattern is set by shape-trait, tests automatic.
+
+Landed on feat/batch-1 (47decc3), targeted suites only. Gate decided by the orchestrator: the loader parses generated Narra functions per derived type, found by setShapeRef; hidden aliased imports; a bare `derives Shape` needs no import. Open for the maintainer: generated names starting with `__shape` and the `__Shape`, `__Value`, `__ShapeText` aliases are not reserved; an alias of Option counts as a required field; std source modules cannot derive Shape.

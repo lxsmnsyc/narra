@@ -1,7 +1,7 @@
 ---
 id: language-service
 title: "narrac lsp: protocol, diagnostics and formatting"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 120798
 owns:
   - selfhost/src/lsp.nra
   - selfhost/src/lspserver*.nra
@@ -82,3 +82,5 @@ M. New modules only plus one dispatch line and an override hook in the loader; u
 
 - `Modules.load(path)` reads files from disk. Add an optional map of overriding sources, path to text, in the smallest way that keeps `narrac check` unchanged; lsp-incremental builds on it.
 - Log to stderr only; stdout carries the protocol.
+
+Landed on feat/batch-1 (27ceacc). Gate decided by the orchestrator: messages go through std/json and std/shape; didClose rechecks from disk and clears the closed document; documents outside src/ get no diagnostics; every diagnostic has severity 1. Spent counts only the worker resumed after the device crash.

@@ -1,7 +1,7 @@
 ---
 id: effect-variable-values
 title: "Functions with effect variables used as values keep their effects"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-2

@@ -1,7 +1,7 @@
 ---
 id: generator-function-type
 title: "A function* can be assigned to an annotated function type"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-2

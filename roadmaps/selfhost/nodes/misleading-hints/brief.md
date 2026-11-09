@@ -1,7 +1,7 @@
 ---
 id: misleading-hints
 title: "Two misleading compiler hints"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-2

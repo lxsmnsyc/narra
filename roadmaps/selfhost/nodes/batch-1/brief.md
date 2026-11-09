@@ -1,7 +1,7 @@
 ---
 id: batch-1
 title: "Batch 1: every detailed should node, one pull request"
-status: active
+status: done
 priority: should
 type: story
 story:
@@ -42,8 +42,10 @@ The user decided on 2026-11-09 that the orchestrator makes the gate decisions of
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] Named arguments: SPEC.md section 2 (Functions) describes them; the D12 line "no labeled arguments" is amended; D87 loses "Not built yet".
-- [ ] `sh scripts/test.sh` passes on the story branch, and `sh scripts/linux-check.sh` passes on Linux aarch64.
-- [ ] The seed is regenerated once at the end and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] The pull request lists every gate decision the orchestrator made.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] Named arguments: SPEC.md section 2 (Functions) describes them; the D12 line "no labeled arguments" is amended; D87 loses "Not built yet".
+- [x] `sh scripts/test.sh` passes on the story branch, and `sh scripts/linux-check.sh` passes on Linux aarch64.
+- [x] The seed is regenerated once at the end and `sh selfhost/bootstrap.sh` reports it current.
+- [x] The pull request lists every gate decision the orchestrator made.
+
+Merged into main as PR #102 on 2026-11-09. All 20 children landed. The seed was regenerated twice: once at the end and once after the review fixes (named-argument order, Json.parse panic, LSP diagnostics across packages, derived Shape with an Option default). Final checks at a4d49ba: scripts/test.sh PASS (5265 tests), linux-check PASS on aarch64, bootstrap reports the seed current.

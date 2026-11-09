@@ -807,6 +807,7 @@ Rules:
 - Panics are not an effect. Any function can panic.
 - The entry function (section 15) has every effect. It is not `async`. `Async.run` runs async code from it.
 - `async` and `function*` are not effects. They mark the type of function a declaration is (section 8).
+- **Function types carry effects** (D86): `(v: int) => int uses io`. A call through a function value has the effects of its type, and a function cannot be stored where the type lists fewer effects than it has. A function value's own type lists none, so a top-level constant that holds a function with effects writes its type: `const step: (v: int) => int uses io = loud`.
 - **Generator types carry effects** (D78), as function types do: `Generator<string> uses io` is a generator whose body does I/O when it runs. `Generator<T>` alone is pure. The effects are charged where the body runs: a `for ... of` over the generator, a `yield*` of it, and `Co.resume`. Creating a generator charges only `alloc`, for its frame.
 - A generator value may be used where a generator type with more effects is expected, not fewer: passing a `Generator<T> uses io` where `Generator<T>` is expected is a compile error.
 

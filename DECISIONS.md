@@ -491,7 +491,7 @@ Decision: an exported function's body effects must be inside its declared `uses`
 
 - **Reason.** Signatures are the module boundary, so they must state effects. Inside a module, writing `uses` on every helper is noise.
 - **Reason.** Making private higher-order functions strict rejected valid code (found in review of #14).
-- **Cost.** Function types carry no effects in the type checker yet. Calls through struct fields, call results and arrays of functions count as pure.
+- **Cost.** A call through a function value charges the effects of its type, so a function value is only as precise as the type it is stored in (D86). A top-level constant that holds a function with effects must write them in its type.
 
 ## D59. Diagnostic codes come from the message format
 
@@ -838,6 +838,7 @@ Decision: a function type is `(params) => result uses effects`, and the effects 
 - **How it checks.** A function value written as an arrow or a name has effects only the effect pass knows, so its type lists none. `expectType` records each function value stored where a function type with the same signature is expected; the effect pass checks what the value does (an arrow's set, a named function's, a local's tracked set, or the effects of its type) against the slot, after the fixed point. A nested position (`Array<F>` against `Array<F uses io>`) needs equal types.
 - **Private functions.** A function-type parameter without `uses` on a private function stays an implicit effect variable: the call has the effects of the argument, and the store is not checked. Assigning to a local adds the effects to the local (it is tracked) instead of being checked against its type.
 - **Inference.** A type argument inferred from a function value takes the value's type, which lists no effects, so `Holder { value: loud }` with an effectful `loud` is rejected. Write the type: `Holder<(value: int) => int uses io>`.
+- **Constants.** A top-level constant is used from other functions and modules through its type alone, so its value counts as a store. Without a written type the constant takes the type of its value: `const step = loud` and `const steps = [quiet, loud]` are rejected when `loud` does `io`. Write the type: `const step: (value: int) => int uses io = loud`, `const steps: Array<(value: int) => int uses io> = [quiet, loud]`. An array literal's element type is the written type or the first element's, never a union of the elements' effects: a union needs the effects of private functions while types are checked, and the effect pass finds them only afterwards. The stores inside a constant's value (elements, fields, spreads) are checked like those in a function.
 - **Prior art.** Koka and Effekt put effects on function types and infer them; D78 for generators in this repo.
 - **Rejected: follow the written type in the effect pass.** It cannot see stores or type parameters.
 - **Rejected: a unique type per arrow or named function with its effects resolved later.** Two closures in one array would have different types, and a generic function would be instantiated once per closure.

@@ -26,7 +26,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Pos, Decl, FuncDecl, Expr, TypeExpr } from "narrac/ast"
-import { formatLexError, lex } from "narrac/lexer"
+import { Token, formatLexError, lex } from "narrac/lexer"
 import * as Modules from "narrac/modules"
 import { Package, SourceModule } from "narrac/modules"
 import { LoadError } from "narrac/manifest"
@@ -60,23 +60,25 @@ const USAGE = "usage: narrac query [--package DIR] [--json] type-of FILE:LINE:CO
 
 const COMMANDS = ["type-of", "def", "refs", "callers", "interface", "recursion"]
 
-// One module of the package with its position index and the open bodies
-// checked in it.
-struct ModuleView {
+// One module of the package with its text, tokens, position index and the
+// open bodies checked in it.
+export struct ModuleView {
   path: string
   file: string
   module: SourceModule
+  text: string
+  tokens: Array<Token>
   sites: Array<Site>
   bodies: Array<int> // Checker.bodies without type arguments, in checking order
 }
 
-struct Query {
+export struct Query {
   json: bool
   views: Array<ModuleView> // sorted by file
 }
 
 // A top-level declaration (or enum variant) that def and refs can name.
-struct Declared {
+export struct Declared {
   qualified: string // "app/text.helper", "app/shape.Shape.Circle"
   kind: string
   names: Array<string> // the spellings that find it
@@ -87,14 +89,14 @@ struct Declared {
 }
 
 // What refs looks for in the refs of the bodies.
-enum Target {
+export enum Target {
   FunctionTarget(index: int) // Checker.functions
   ConstTarget(index: int) // Checker.consts
   VariantTarget(module: string, enumName: string, variant: int)
 }
 
 // A reported place: a use for refs, a call for callers.
-struct Use {
+export struct Use {
   view: int
   location: Location
   name: string // the function or other body the place is in
@@ -140,7 +142,7 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
   if (Arrays.length(checker.errors) > 0) {
     return reportCheckErrors(json, checker.errors)
   }
-  const views = buildViews(checker, package)
+  const views = buildViews(checker, package, Map {})
   if (views is Err(message)) {
     return reportAnswer(json, Err(message))
   }
@@ -228,21 +230,31 @@ function reportCheckErrors(json: bool, errors: Array<CheckError>): int uses io, 
 }
 
 // buildViews indexes the package's own modules, sorted by file, so that
-// no output depends on the order of the files on disk.
-function buildViews(
+// no output depends on the order of the files on disk. A file whose path
+// (`DIR/src/text.nra`) is a key of overrides is read from the map, as
+// Modules.loadWith reads it.
+export function buildViews(
   checker: Checker,
   package: Package,
+  overrides: Map<string, string>,
 ): Result<Array<ModuleView>, string> uses io, alloc {
   let views: Array<ModuleView> = []
   for (const module of Arrays.values(package.modules)) {
     if (Str.startsWith(module.path, "std/")) {
       continue
     }
-    const read = Fs.readText(`${package.directory}/${module.file}`)
-    if (read is Err(message)) {
-      return Err(message)
+    const filePath = `${package.directory}/${module.file}`
+    let text = ""
+    if (overrides[filePath] is Some(open)) {
+      text = open
+    } else {
+      const read = Fs.readText(filePath)
+      if (read is Err(message)) {
+        return Err(message)
+      }
+      text = read.value
     }
-    const tokens = lex(read.value)
+    const tokens = lex(text)
     if (tokens is Err(message)) {
       return Err(`${module.file}:${formatLexError(message)}`)
     }
@@ -257,6 +269,8 @@ function buildViews(
       path: module.path,
       file: module.file,
       module: module,
+      text: text,
+      tokens: tokens.value,
       sites: collectSites(module.ast, tokens.value),
       bodies: bodies,
     }
@@ -285,7 +299,7 @@ function findView(query: Query, path: string): int {
 }
 
 // findNodeBody is the open body of a module whose tables cover a node id, or -1.
-function findNodeBody(checker: Checker, view: ModuleView, nodeId: int): int {
+export function findNodeBody(checker: Checker, view: ModuleView, nodeId: int): int {
   for (const bodyIndex of Arrays.values(view.bodies)) {
     if (findBodySlot(checker.bodies[bodyIndex], nodeId) >= 0) {
       return bodyIndex
@@ -304,7 +318,7 @@ function findSiteRef(checker: Checker, view: ModuleView, site: Site): Ref {
   return body.refs[findBodySlot(body, site.nodeId)]
 }
 
-function siteLocation(view: ModuleView, site: Site): Location {
+export function siteLocation(view: ModuleView, site: Site): Location {
   return Location { file: view.file, start: site.start, end: site.end }
 }
 
@@ -469,10 +483,12 @@ function isInterpolated(site: Site): bool {
 }
 
 // describeSite is the type text and effects at a site, or None when the
-// checker recorded nothing there.
+// checker recorded nothing there. Without effectsKnown the effects of
+// expressions are left out.
 function describeSite(
   mutable checker: Checker,
   mutable effects: EffectState,
+  effectsKnown: bool,
   view: ModuleView,
   site: Site,
 ): Option<#[string, Array<string>]> uses alloc {
@@ -510,12 +526,14 @@ function describeSite(
         }
         let names: Array<string> = []
         if (site.expression is Some(expression)) {
-          names = Effects.findExpressionEffects(
-            mutable checker,
-            mutable effects,
-            bodyIndex,
-            expression,
-          )
+          if (effectsKnown) {
+            names = Effects.findExpressionEffects(
+              mutable checker,
+              mutable effects,
+              bodyIndex,
+              expression,
+            )
+          }
         }
         return Some(#[typeText, names])
       }
@@ -533,12 +551,14 @@ function describeSite(
       if (nodeType is Some(found)) {
         let names: Array<string> = []
         if (site.expression is Some(expression)) {
-          names = Effects.findExpressionEffects(
-            mutable checker,
-            mutable effects,
-            bodyIndex,
-            expression,
-          )
+          if (effectsKnown) {
+            names = Effects.findExpressionEffects(
+              mutable checker,
+              mutable effects,
+              bodyIndex,
+              expression,
+            )
+          }
         }
         return Some(#[typeString(checker, found), names])
       }
@@ -628,9 +648,54 @@ function queryTypeOf(
   if (viewIndex < 0) {
     return Err(`no module has the file "${file}"`)
   }
-  const view = query.views[viewIndex]
   const cursor = Pos { line: lineNumber, column: columnNumber }
+  match (findTypeAt(mutable checker, mutable effects, true, query.views[viewIndex], cursor)) {
+    TypeAt.Found(answer) => {
+      if (query.json) {
+        return Ok(
+          `{"query": "type-of", "location": ${writeLocation(answer.location)}, "type": ${quoteJson(answer.typeText)}, "effects": ${writeStringList(answer.effects)}}\n`,
+        )
+      }
+      if (Arrays.length(answer.effects) == 0) {
+        return Ok(`${answer.typeText}\n`)
+      }
+      return Ok(`${answer.typeText}\neffects: ${Str.join(answer.effects, ", ")}\n`)
+    }
+    TypeAt.InTemplate(_) => {
+      return Err("positions inside template strings are not supported yet")
+    }
+    TypeAt.Nothing => {
+      return Err(`no expression at ${operand}`)
+    }
+  }
+}
 
+// The type-of answer at a position: the type text and effects of a site.
+export struct TypeAnswer {
+  location: Location
+  typeText: string
+  effects: Array<string>
+}
+
+// What findTypeAt finds: an answer, a position inside a template string with
+// `${...}` parts (start is the template's backtick, which answers for the
+// whole template), or nothing.
+export enum TypeAt {
+  Found(answer: TypeAnswer)
+  InTemplate(start: Pos)
+  Nothing
+}
+
+// findTypeAt is the type-of answer at a position of a module: the innermost
+// site that covers it and has a recorded type. Without effectsKnown (the
+// effect pass did not run) the effects of expressions are left out.
+export function findTypeAt(
+  mutable checker: Checker,
+  mutable effects: EffectState,
+  effectsKnown: bool,
+  view: ModuleView,
+  cursor: Pos,
+): TypeAt uses alloc {
   // Sites are listed outer first: try the last one that covers the cursor.
   let index = Arrays.length(view.sites) - 1
   while (index >= 0) {
@@ -638,31 +703,27 @@ function queryTypeOf(
     const covers = !isBefore(cursor, site.start) && isBefore(cursor, site.end)
     // Nodes inside a template string have no positions of their own.
     if (covers && !site.inTemplate && isInterpolated(site) && cursor != site.start) {
-      return Err("positions inside template strings are not supported yet")
+      return TypeAt.InTemplate(site.start)
     }
     if (covers && !site.inTemplate) {
-      if (describeSite(mutable checker, mutable effects, view, site) is Some(found)) {
+      const described = describeSite(mutable checker, mutable effects, effectsKnown, view, site)
+      if (described is Some(found)) {
         const #[typeText, names] = found
-        const location = siteLocation(view, site)
-        if (query.json) {
-          return Ok(
-            `{"query": "type-of", "location": ${writeLocation(location)}, "type": ${quoteJson(typeText)}, "effects": ${writeStringList(names)}}\n`,
-          )
-        }
-        if (Arrays.length(names) == 0) {
-          return Ok(`${typeText}\n`)
-        }
-        return Ok(`${typeText}\neffects: ${Str.join(names, ", ")}\n`)
+        return TypeAt.Found(TypeAnswer {
+          location: siteLocation(view, site),
+          typeText: typeText,
+          effects: names,
+        })
       }
     }
     index = index - 1
   }
-  return Err(`no expression at ${operand}`)
+  return TypeAt.Nothing
 }
 
 // listDeclarations lists every top-level declaration and enum variant of
 // the package, in file and position order.
-function listDeclarations(query: Query): Array<Declared> uses alloc {
+export function listDeclarations(query: Query): Array<Declared> uses alloc {
   let declared: Array<Declared> = []
   for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
     const view = query.views[viewIndex]
@@ -811,7 +872,7 @@ function describeBody(checker: Checker, bodyIndex: int): string uses alloc {
   return `${body.module}.${body.name}`
 }
 
-function findTarget(
+export function findTarget(
   checker: Checker,
   query: Query,
   declared: Declared,
@@ -1014,6 +1075,18 @@ function queryRefs(
   if (target is Err(message)) {
     return Err(message)
   }
+  const places = findUses(checker, query, target.value)
+  if (query.json) {
+    return Ok(
+      `{"query": "refs", "name": ${quoteJson(declared.value.qualified)}, "uses": ${writeUses(query, places, false)}}\n`,
+    )
+  }
+  return Ok(writeUses(query, places, false))
+}
+
+// findUses lists every place a body of the package names a target, as a
+// call, a value or a pattern, in file and position order.
+export function findUses(checker: Checker, query: Query, target: Target): Array<Use> uses alloc {
   let places: Array<Use> = []
   for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
     const view = query.views[viewIndex]
@@ -1023,7 +1096,7 @@ function queryRefs(
       if (!isName && site.kind != SiteKind.CalleeSite && site.kind != SiteKind.VariantPatternSite) {
         continue
       }
-      if (!isTargetRef(checker, findSiteRef(checker, view, site), target.value)) {
+      if (!isTargetRef(checker, findSiteRef(checker, view, site), target)) {
         continue
       }
       const bodyIndex = findNodeBody(checker, view, site.nodeId)
@@ -1035,12 +1108,7 @@ function queryRefs(
       })
     }
   }
-  if (query.json) {
-    return Ok(
-      `{"query": "refs", "name": ${quoteJson(declared.value.qualified)}, "uses": ${writeUses(query, places, false)}}\n`,
-    )
-  }
-  return Ok(writeUses(query, places, false))
+  return places
 }
 
 // queryCallers answers `callers FUNCTION` from the effect pass's call graph.

@@ -1,0 +1,685 @@
+// The navigation requests of narrac lsp: textDocument/hover, definition,
+// references and documentSymbol. Each request loads and checks the package
+// of the document with the open documents' text, as checkDocumentPackage
+// does, and answers from the site index and the checker results of narrac
+// query (query.nra, querysites.nra).
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Value } from "std/shape"
+import { Pos, Decl } from "narrac/ast"
+import { Token, TokenKind } from "narrac/lexer"
+import { Checker, Ref, findBodySlot } from "narrac/check"
+import { Type } from "narrac/types"
+import * as Body from "narrac/body"
+import * as Effects from "narrac/effects"
+import { EffectState } from "narrac/effects"
+import * as Modules from "narrac/modules"
+import { Location } from "narrac/queryjson"
+import { Site, SiteKind, isBefore } from "narrac/querysites"
+import {
+  Declared,
+  ModuleView,
+  Query,
+  TypeAt,
+  buildViews,
+  findNodeBody,
+  findTarget,
+  findTypeAt,
+  findUses,
+  listDeclarations,
+  siteLocation,
+} from "narrac/query"
+import {
+  Server,
+  convertPathToUri,
+  convertUriToPath,
+  countUnits,
+  findPackageDirectory,
+  makePosition,
+} from "narrac/lspserver"
+import { getField, getPath, getText, makeRecord } from "narrac/lspserverjson"
+
+const NAVIGATION_METHODS = [
+  "textDocument/hover",
+  "textDocument/definition",
+  "textDocument/references",
+  "textDocument/documentSymbol",
+]
+
+// The LSP SymbolKind numbers the symbols use.
+const SYMBOL_ENUM = 10
+const SYMBOL_INTERFACE = 11
+const SYMBOL_FUNCTION = 12
+const SYMBOL_CONSTANT = 14
+const SYMBOL_STRUCT = 23
+const SYMBOL_CLASS = 5
+const SYMBOL_FIELD = 8
+const SYMBOL_ENUM_MEMBER = 22
+
+// The checked package of a request. lines and uris have one entry per view:
+// the lines of the module's text and the URI to report it under. view is the
+// view of the requested document, or -1.
+struct Navigation {
+  checker: Checker
+  effects: EffectState
+  effectsKnown: bool
+  query: Query
+  declared: Array<Declared>
+  lines: Array<Array<string>>
+  uris: Array<string>
+  view: int
+  utf8: bool
+}
+
+// What a position names: a top-level declaration (or enum variant), a local
+// or parameter, or nothing the server can follow.
+enum NameAt {
+  DeclarationName(declared: Declared)
+  LocalName(location: Location)
+  NoName
+}
+
+export function isNavigationRequest(method: string): bool {
+  for (const name of Arrays.values(NAVIGATION_METHODS)) {
+    if (name == method) {
+      return true
+    }
+  }
+  return false
+}
+
+// answerNavigation answers one navigation request with its result. An Err
+// is a reason for an error response (params without a document or position).
+export function answerNavigation(
+  server: Server,
+  method: string,
+  params: Value,
+): Result<Value, string> uses io, alloc {
+  const document = getField(params, "textDocument")
+  let uri = ""
+  if (document is Some(found)) {
+    if (getText(found, "uri") is Some(text)) {
+      uri = text
+    }
+  }
+  if (uri == "") {
+    return Err("textDocument.uri is missing")
+  }
+  // The position, 0-based, in the negotiated unit.
+  let line = -1
+  let character = -1
+  if (getPath(params, ["position", "line"]) is Some(Value.Int(found))) {
+    line = found
+  }
+  if (getPath(params, ["position", "character"]) is Some(Value.Int(found))) {
+    character = found
+  }
+  const needsPosition = method != "textDocument/documentSymbol"
+  if (needsPosition && (line < 0 || character < 0)) {
+    return Err("position is missing")
+  }
+  const loaded = loadNavigation(server, uri)
+  if (loaded is None) {
+    // A document that is not a module of a package that loads.
+    return Ok(Value.Null)
+  }
+  const navigation = loaded.value
+  if (method == "textDocument/documentSymbol") {
+    return Ok(listSymbols(navigation))
+  }
+  const cursor = convertPosition(navigation, navigation.view, line, character)
+  if (method == "textDocument/hover") {
+    return Ok(answerHover(navigation, cursor))
+  }
+  const found = findNameAt(navigation, cursor)
+  if (method == "textDocument/definition") {
+    return match (found) {
+      NameAt.DeclarationName(declared) => Ok(makeLocation(navigation, declared.location))
+      NameAt.LocalName(location) => Ok(makeLocation(navigation, location))
+      NameAt.NoName => Ok(Value.Null)
+    }
+  }
+  let includeDeclaration = false
+  if (getPath(params, ["context", "includeDeclaration"]) is Some(Value.Bool(flag))) {
+    includeDeclaration = flag
+  }
+  return Ok(listReferences(navigation, found, includeDeclaration))
+}
+
+// loadNavigation loads and checks the package of a document with the text of
+// every open document, or gives None when the URI is not a file, the package
+// does not load or the document is not one of its modules. A package whose
+// bodies have errors is still answered from what the checker recorded, but
+// without the effect pass (it needs bodies without errors).
+function loadNavigation(server: Server, uri: string): Option<Navigation> uses io, alloc {
+  const maybePath = convertUriToPath(uri)
+  if (maybePath is None) {
+    return None
+  }
+  const path = maybePath.value
+  let overrides: Map<string, string> = Map {}
+  let openUris: Map<string, string> = Map {}
+  for (const entry of Maps.entries(server.documents)) {
+    const #[documentUri, text] = entry
+    if (convertUriToPath(documentUri) is Some(documentPath)) {
+      overrides[documentPath] = text
+      openUris[documentPath] = documentUri
+    }
+  }
+  let loadPath = path
+  if (findPackageDirectory(path) is Some(directory)) {
+    loadPath = directory
+  }
+  const loaded = Modules.loadWith(loadPath, overrides)
+  if (loaded is Err(_)) {
+    return None
+  }
+  const package = loaded.value
+  let checker = Body.checkPackage(package)
+  let effectsKnown = Arrays.length(checker.errors) == 0
+  let effects = EffectState {
+    bodyIndex: Map {},
+    functions: Map {},
+    locals: Map {},
+    valuesAt: Map {},
+    sources: Map {},
+    arrows: Map {},
+    entries: Map {},
+    report: false,
+    changed: false,
+    body: -1,
+  }
+  if (effectsKnown) {
+    effects = Effects.checkEffects(mutable checker)
+  }
+  const views = buildViews(checker, package, overrides)
+  if (views is Err(_)) {
+    return None
+  }
+  const query = Query { json: false, views: views.value }
+  // The lines and URI of each module, and the requested document's view.
+  let lines: Array<Array<string>> = []
+  let uris: Array<string> = []
+  let view = -1
+  for (const index of Ranges.between(0, Arrays.length(query.views))) {
+    const filePath = `${package.directory}/${query.views[index].file}`
+    Arrays.push(mutable lines, Str.split(query.views[index].text, "\n"))
+    if (openUris[filePath] is Some(open)) {
+      Arrays.push(mutable uris, open)
+    } else {
+      Arrays.push(mutable uris, convertPathToUri(filePath))
+    }
+    if (filePath == path) {
+      view = index
+    }
+  }
+  if (view < 0) {
+    return None
+  }
+  return Some(Navigation {
+    checker: checker,
+    effects: effects,
+    effectsKnown: effectsKnown,
+    query: query,
+    declared: listDeclarations(query),
+    lines: lines,
+    uris: uris,
+    view: view,
+    utf8: server.utf8,
+  })
+}
+
+// countCharacters is the number of characters of a line that the first units
+// (UTF-8 bytes or UTF-16 code units) cover. Units past the end of the line
+// count one character each, as countUnits does.
+function countCharacters(lineText: string, units: int, utf8: bool): int {
+  const length = Str.length(lineText)
+  let index = 0
+  let seen = 0
+  let characters = 0
+  while (seen < units && index < length) {
+    const lead = Str.byteAt(lineText, index)
+    let width = 1
+    let wide = 1
+    if (lead >= 240) {
+      width = 4
+      wide = 2
+    } else if (lead >= 224) {
+      width = 3
+    } else if (lead >= 192) {
+      width = 2
+    }
+    if (utf8) {
+      seen = seen + width
+    } else {
+      seen = seen + wide
+    }
+    index = index + width
+    characters = characters + 1
+  }
+  return characters + (units - seen)
+}
+
+function findLineText(navigation: Navigation, view: int, line: int): string {
+  const lines = navigation.lines[view]
+  if (line >= 0 && line < Arrays.length(lines)) {
+    return lines[line]
+  }
+  return ""
+}
+
+// convertPosition is the compiler position (1-based line and character
+// column) of an LSP position in a module.
+function convertPosition(navigation: Navigation, view: int, line: int, character: int): Pos {
+  const lineText = findLineText(navigation, view, line)
+  return Pos { line: line + 1, column: countCharacters(lineText, character, navigation.utf8) + 1 }
+}
+
+// makeLspPosition is the LSP position of a compiler position in a module.
+function makeLspPosition(navigation: Navigation, view: int, pos: Pos): Value uses alloc {
+  const lineText = findLineText(navigation, view, pos.line - 1)
+  let character = 0
+  if (pos.column > 1) {
+    character = countUnits(lineText, pos.column - 1, navigation.utf8)
+  }
+  return makePosition(pos.line - 1, character)
+}
+
+function makeRange(navigation: Navigation, view: int, start: Pos, end: Pos): Value uses alloc {
+  return makeRecord([
+    #["start", makeLspPosition(navigation, view, start)],
+    #["end", makeLspPosition(navigation, view, end)],
+  ])
+}
+
+function findFileView(navigation: Navigation, file: string): int {
+  let index = 0
+  for (const view of Arrays.values(navigation.query.views)) {
+    if (view.file == file) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+// makeLocation is the LSP Location of a range in a module of the package.
+function makeLocation(navigation: Navigation, location: Location): Value uses alloc {
+  const view = findFileView(navigation, location.file)
+  if (view < 0) {
+    return Value.Null
+  }
+  return makeRecord([
+    #["uri", Value.Text(navigation.uris[view])],
+    #["range", makeRange(navigation, view, location.start, location.end)],
+  ])
+}
+
+// answerHover is the type-of answer at a position as a Markdown code block,
+// with the effects on a `uses` line, or null. Inside a template string with
+// `${...}` parts the whole template answers, as at its backtick.
+function answerHover(navigation: Navigation, cursor: Pos): Value uses alloc {
+  // The effect queries walk expressions with the checker and the pass state.
+  let checker = navigation.checker
+  let effects = navigation.effects
+  const effectsKnown = navigation.effectsKnown
+  const view = navigation.query.views[navigation.view]
+  let found = findTypeAt(mutable checker, mutable effects, effectsKnown, view, cursor)
+  if (found is TypeAt.InTemplate(start)) {
+    found = findTypeAt(mutable checker, mutable effects, effectsKnown, view, start)
+  }
+  if (found is TypeAt.Found(answer)) {
+    let text = answer.typeText
+    if (Arrays.length(answer.effects) > 0) {
+      text = `${text}\nuses ${Str.join(answer.effects, ", ")}`
+    }
+    return makeRecord([
+      #[
+        "contents",
+        makeRecord([
+          #["kind", Value.Text("markdown")],
+          #["value", Value.Text(`\`\`\`narra\n${text}\n\`\`\``)],
+        ]),
+      ],
+      #[
+        "range",
+        makeRange(navigation, navigation.view, answer.location.start, answer.location.end),
+      ],
+    ])
+  }
+  return Value.Null
+}
+
+function findDeclared(navigation: Navigation, qualified: string): Option<Declared> {
+  for (const declared of Arrays.values(navigation.declared)) {
+    if (declared.qualified == qualified) {
+      return Some(declared)
+    }
+  }
+  return None
+}
+
+// describeRef is the qualified name of the declaration a ref names
+// (`app/text.helper`, `app/text.Shape.Circle`), or "".
+function describeRef(checker: Checker, ref: Ref): string uses alloc {
+  return match (ref) {
+    Ref.Function(index) => `${checker.functions[index].module}.${checker.functions[index].name}`
+    Ref.Const(index) => `${checker.consts[index].module}.${checker.consts[index].name}`
+    Ref.Distinct(index) => `${checker.distincts[index].module}.${checker.distincts[index].name}`
+    Ref.Constructor(enumIndex, variant) => {
+      const info = checker.enums[enumIndex]
+      // An instance of a generic enum is named after the generic.
+      let enumName = info.name
+      if (info.generic >= 0) {
+        enumName = checker.generics[info.generic].name
+      }
+      return `${info.module}.${enumName}.${info.variants[variant].name}`
+    }
+    _ => ""
+  }
+}
+
+// describeType is the qualified name of the declaration of a named type, or "".
+function describeType(checker: Checker, type: Type): string uses alloc {
+  return match (type) {
+    Type.TStruct(index) => `${checker.structs[index].module}.${checker.structs[index].name}`
+    Type.TEnum(index) => `${checker.enums[index].module}.${checker.enums[index].name}`
+    Type.TDistinct(index) => `${checker.distincts[index].module}.${checker.distincts[index].name}`
+    _ => ""
+  }
+}
+
+// findSiteName is what a site names: a declaration through its ref, a local
+// through the checker's local ids, or nothing.
+function findSiteName(navigation: Navigation, view: ModuleView, site: Site): NameAt uses alloc {
+  if (site.kind == SiteKind.DeclarationSite || site.kind == SiteKind.LocalSite) {
+    if (site.kind == SiteKind.LocalSite) {
+      return NameAt.LocalName(siteLocation(view, site))
+    }
+    for (const declared of Arrays.values(navigation.declared)) {
+      const sameView = navigation.query.views[declared.view].path == view.path
+      if (sameView && declared.declaration == site.declaration && declared.member == site.member) {
+        return NameAt.DeclarationName(declared)
+      }
+    }
+    return NameAt.NoName
+  }
+  if (site.kind == SiteKind.LabelSite) {
+    return NameAt.NoName
+  }
+  const checker = navigation.checker
+  const bodyIndex = findNodeBody(checker, view, site.nodeId)
+  if (bodyIndex < 0) {
+    return NameAt.NoName
+  }
+  const body = checker.bodies[bodyIndex]
+  const ref = body.refs[findBodySlot(body, site.nodeId)]
+  if (ref is Ref.Local(localIndex)) {
+    // A local of an open body: where its name is written in that module.
+    const local = body.locals[localIndex]
+    for (const other of Arrays.values(navigation.query.views)) {
+      if (other.path == body.module) {
+        return NameAt.LocalName(Location {
+          file: other.file,
+          start: local.namePos,
+          end: Pos {
+            line: local.namePos.line,
+            column: local.namePos.column + Str.charCount(local.name),
+          },
+        })
+      }
+    }
+    return NameAt.NoName
+  }
+  const qualified = describeRef(checker, ref)
+  if (findDeclared(navigation, qualified) is Some(declared)) {
+    return NameAt.DeclarationName(declared)
+  }
+  return NameAt.NoName
+}
+
+// findTokenIndex is the index of the first token that ends after pos.
+function findTokenIndex(tokens: Array<Token>, pos: Pos): int {
+  let low = 0
+  let high = Arrays.length(tokens)
+  while (low < high) {
+    const middle = (low + high) / 2
+    const token = tokens[middle]
+    if (!isBefore(pos, Pos { line: token.endLine, column: token.endColumn })) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
+// findTokenName is what the identifier under a position names when no site
+// covers it: a type, trait or imported name (`Point` in an annotation or an
+// import list), looked up in the module's scope, or `Text.Point` through a
+// namespace import.
+function findTokenName(navigation: Navigation, view: ModuleView, cursor: Pos): NameAt uses alloc {
+  const tokens = view.tokens
+  const index = findTokenIndex(tokens, cursor)
+  if (index >= Arrays.length(tokens)) {
+    return NameAt.NoName
+  }
+  const token = tokens[index]
+  const covers = !isBefore(cursor, Pos { line: token.line, column: token.column })
+  if (!covers || token.kind != TokenKind.TokIdent) {
+    return NameAt.NoName
+  }
+  const checker = navigation.checker
+  const maybeScope = checker.scopeIndex[view.path]
+  if (maybeScope is None) {
+    return NameAt.NoName
+  }
+  const scope = checker.scopes[maybeScope.value]
+  const name = token.text
+  let qualified = ""
+  if (index >= 2 && tokens[index - 1].text == ".") {
+    if (scope.modules[tokens[index - 2].text] is Some(module)) {
+      qualified = `${module}.${name}`
+    }
+  } else if (scope.types[name] is Some(type)) {
+    qualified = describeType(checker, type)
+  } else if (scope.generics[name] is Some(genericIndex)) {
+    qualified = `${checker.generics[genericIndex].module}.${name}`
+  } else if (scope.traits[name] is Some(traitIndex)) {
+    qualified = `${checker.traits[traitIndex].module}.${name}`
+  } else if (scope.functions[name] is Some(functionIndex)) {
+    qualified = describeRef(checker, Ref.Function(functionIndex))
+  } else if (scope.consts[name] is Some(constIndex)) {
+    qualified = describeRef(checker, Ref.Const(constIndex))
+  }
+  if (findDeclared(navigation, qualified) is Some(declared)) {
+    return NameAt.DeclarationName(declared)
+  }
+  return NameAt.NoName
+}
+
+// findNameAt is what the innermost site at a position names, else what the
+// identifier there names. Sites inside a template string span the whole
+// template, so they name nothing.
+function findNameAt(navigation: Navigation, cursor: Pos): NameAt uses alloc {
+  const view = navigation.query.views[navigation.view]
+  let index = Arrays.length(view.sites) - 1
+  while (index >= 0) {
+    const site = view.sites[index]
+    const covers = !isBefore(cursor, site.start) && isBefore(cursor, site.end)
+    if (covers && !site.inTemplate) {
+      const found = findSiteName(navigation, view, site)
+      if (!(found is NameAt.NoName)) {
+        return found
+      }
+    }
+    index = index - 1
+  }
+  return findTokenName(navigation, view, cursor)
+}
+
+// listReferences lists the uses of the function, constant or enum variant a
+// position names, with its declaration first when includeDeclaration is set.
+// Other names give an empty list (narrac query finds no other refs).
+function listReferences(
+  navigation: Navigation,
+  found: NameAt,
+  includeDeclaration: bool,
+): Value uses alloc {
+  let locations: Array<Value> = []
+  if (found is NameAt.DeclarationName(declared)) {
+    const target = findTarget(navigation.checker, navigation.query, declared)
+    if (target is Ok(wanted)) {
+      if (includeDeclaration) {
+        Arrays.push(mutable locations, makeLocation(navigation, declared.location))
+      }
+      for (const use of Arrays.values(findUses(navigation.checker, navigation.query, wanted))) {
+        Arrays.push(mutable locations, makeLocation(navigation, use.location))
+      }
+    }
+  }
+  return Value.List(locations)
+}
+
+function findDeclarationPos(declaration: Decl): Pos {
+  return match (declaration) {
+    Decl.Func(found) => found.pos
+    Decl.Const(found) => found.pos
+    Decl.Struct(found) => found.pos
+    Decl.Enum(found) => found.pos
+    Decl.Distinct(found) => found.pos
+    Decl.Test(found) => found.pos
+    Decl.Trait(found) => found.pos
+    Decl.Impl(found) => found.pos
+  }
+}
+
+// findFirstToken is the index of the first token of a declaration: its
+// keyword, or the `export` before it.
+function findFirstToken(view: ModuleView, declaration: int): int {
+  const pos = findDeclarationPos(view.module.ast.declarations[declaration])
+  const index = findTokenIndex(view.tokens, pos)
+  if (index > 0 && view.tokens[index - 1].text == "export") {
+    return index - 1
+  }
+  return index
+}
+
+function isLayoutToken(token: Token): bool {
+  return token.kind == TokenKind.TokNewline || token.kind == TokenKind.TokEof
+}
+
+// findDeclarationRange is the extent of a declaration: from its first token
+// to the last token before the next declaration (or the end of the file).
+function findDeclarationRange(view: ModuleView, declaration: int): #[Pos, Pos] {
+  const tokens = view.tokens
+  const first = findFirstToken(view, declaration)
+  let next = Arrays.length(tokens)
+  if (declaration + 1 < Arrays.length(view.module.ast.declarations)) {
+    next = findFirstToken(view, declaration + 1)
+  }
+  // The last token that is not a newline or the end of the file.
+  let last = next - 1
+  while (last > first && isLayoutToken(tokens[last])) {
+    last = last - 1
+  }
+  if (first >= Arrays.length(tokens) || last < first) {
+    const start = findDeclarationPos(view.module.ast.declarations[declaration])
+    return #[start, start]
+  }
+  const start = Pos { line: tokens[first].line, column: tokens[first].column }
+  return #[start, Pos { line: tokens[last].endLine, column: tokens[last].endColumn }]
+}
+
+function makeSymbol(
+  navigation: Navigation,
+  name: string,
+  kind: int,
+  start: Pos,
+  end: Pos,
+  selection: Location,
+  children: Array<Value>,
+): Value uses alloc {
+  let entries = [
+    #["name", Value.Text(name)],
+    #["kind", Value.Int(kind)],
+    #["range", makeRange(navigation, navigation.view, start, end)],
+    #["selectionRange", makeRange(navigation, navigation.view, selection.start, selection.end)],
+  ]
+  if (Arrays.length(children) > 0) {
+    Arrays.push(mutable entries, #["children", Value.List(children)])
+  }
+  return makeRecord(entries)
+}
+
+// listSymbols lists the declarations of the document in source order, with
+// the variants of an enum and the fields of a struct as children.
+function listSymbols(navigation: Navigation): Value uses alloc {
+  const view = navigation.query.views[navigation.view]
+  let symbols: Array<Value> = []
+  for (const declared of Arrays.values(navigation.declared)) {
+    if (declared.view != navigation.view || declared.member >= 0) {
+      continue
+    }
+    let kind = SYMBOL_FUNCTION
+    let children: Array<Value> = []
+    match (view.module.ast.declarations[declared.declaration]) {
+      Decl.Const(_) => {
+        kind = SYMBOL_CONSTANT
+      }
+      Decl.Struct(structDecl) => {
+        kind = SYMBOL_STRUCT
+        for (const field of Arrays.values(structDecl.fields)) {
+          const end = Pos {
+            line: field.pos.line,
+            column: field.pos.column + Str.charCount(field.name),
+          }
+          const location = Location { file: view.file, start: field.pos, end: end }
+          Arrays.push(
+            mutable children,
+            makeSymbol(navigation, field.name, SYMBOL_FIELD, field.pos, end, location, []),
+          )
+        }
+      }
+      Decl.Enum(_) => {
+        kind = SYMBOL_ENUM
+        for (const variant of Arrays.values(navigation.declared)) {
+          if (
+            variant.view == declared.view &&
+              variant.declaration == declared.declaration &&
+              variant.member >= 0
+          ) {
+            const location = variant.location
+            Arrays.push(
+              mutable children,
+              makeSymbol(
+                navigation,
+                variant.names[1],
+                SYMBOL_ENUM_MEMBER,
+                location.start,
+                location.end,
+                location,
+                [],
+              ),
+            )
+          }
+        }
+      }
+      Decl.Distinct(_) => {
+        kind = SYMBOL_CLASS
+      }
+      Decl.Trait(_) => {
+        kind = SYMBOL_INTERFACE
+      }
+      _ => {}
+    }
+    const #[start, end] = findDeclarationRange(view, declared.declaration)
+    Arrays.push(
+      mutable symbols,
+      makeSymbol(navigation, declared.names[0], kind, start, end, declared.location, children),
+    )
+  }
+  return Value.List(symbols)
+}

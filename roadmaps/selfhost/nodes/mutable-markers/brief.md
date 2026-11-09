@@ -1,7 +1,7 @@
 ---
 id: mutable-markers
 title: "Where a mutable marker can bind a reference to a part of a value"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-1

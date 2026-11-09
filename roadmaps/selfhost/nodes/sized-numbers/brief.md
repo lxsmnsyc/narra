@@ -1,7 +1,7 @@
 ---
 id: sized-numbers
 title: "Sized integer types i8 to u64"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-04
-spent:
+spent: 176040
 owns:
   - testdata/sized_int*
   - testdata/errors/sized_int_*
@@ -100,3 +100,5 @@ Modules `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64
 - Rejected: `as` casts. One form for lossless and lossy conversions, and a new keyword.
 - Rejected: `Int.toI32(x)` style names in `std/int` (the spec placeholder). One function per pair of types, more than 60 names.
 - Rejected: literal suffixes (`200u8`). Context typing covers them; they can be added later without breaking programs.
+
+Landed on feat/batch-1 as 5640e55.

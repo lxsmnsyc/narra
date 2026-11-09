@@ -1,7 +1,7 @@
 ---
 id: sized-conversions
 title: "Integer conversions: I32.from, tryFrom and wrap"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

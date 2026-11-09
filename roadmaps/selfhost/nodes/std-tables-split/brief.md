@@ -1,7 +1,7 @@
 ---
 id: std-tables-split
 title: Split the self-hosted std tables by module
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 145176
 owns:
   - selfhost/src/stdlib.nra
   - selfhost/src/stdcalls.nra
@@ -77,3 +77,5 @@ M. Mechanical move of about 2,000 lines plus a generator change; uncertainty low
 
 - Start from the latest main, after the four nodes above merged. Do nothing else in this change, so the review only checks that code moved.
 - Shadowing is an error in Narra and names are module-scoped: moved private helpers used by several modules stay in the shared file and become exported.
+
+Landed on feat/batch-1 as 0561e67.

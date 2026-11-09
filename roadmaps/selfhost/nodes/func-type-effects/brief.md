@@ -1,7 +1,7 @@
 ---
 id: func-type-effects
 title: "Function types carry their effects"
-status: active
+status: done
 priority: must
 type: fix
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 252485
 owns:
   - testdata/errors/func_effects_*
   - testdata/func_effects*
@@ -75,3 +75,5 @@ Put the effect list on the function type, as D78 did for generator types (the ge
 ## Sizing
 
 M (roughly 300 to 500 lines in `selfhost/src` now that the Go half is gone, from the review's estimate). Risk: the stricter store rule may reject existing code in `selfhost/src` that stores effectful closures into slots typed without `uses`.
+
+Landed on feat/batch-1 as 9e015ad.

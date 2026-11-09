@@ -1,7 +1,7 @@
 ---
 id: lsp-incremental
 title: "narrac lsp: recheck only changed modules"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 225503
 owns:
   - selfhost/src/lspcache.nra
   - testdata/lsp/incremental_*/**
@@ -63,3 +63,5 @@ M. Uncertainty medium (id stability across modules in the checker's side tables)
 ## Notes for the worker
 
 - If stable ids need a change to the checker's tables that is larger than this node, stop after the measurement and write the design in the outcome; the orchestrator splits the work.
+
+Landed on feat/batch-1 (249f3ba) on the current head; its worker ran lsp, query, errors, packages, sources, dumps, programs and bootstrap. A body edit in a leaf module of selfhost/ answers in 11.1 ms instead of 363.6 ms. Gate decided by the orchestrator: stable ids from a parse cache with a growing counter; errors reused, not checker state; conservative signature (all but non-generic function bodies); effect errors force whole checks; --full and --trace flags.

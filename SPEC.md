@@ -58,9 +58,9 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 - `const x = expr` binds a name that cannot be reassigned. **`const` fixes the name, not the contents** (D81): the fields and elements of a local `const` struct, array, map or other contents type (section 6, Mutable parameters) can be assigned, and the `const` can be passed as `mutable`.
 - `let x = expr` binds a name that can also be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
-- **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other.
+- **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other. The one exception is a `for (mutable item of items)` binding, which reaches an element of `items` (section 2, Control flow).
 - **A plain parameter is read-only.** Its fields and elements cannot be assigned, and it cannot be passed as `mutable` (section 6).
-- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81).
+- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write `for (mutable p of players)` (section 2, Control flow), write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81). A `mutable` marker exists only in that loop (D85); `x is Some(mutable y)`, `const { mutable a } = s` and a local `mutable name = place` do not.
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
@@ -131,6 +131,20 @@ const scaled = Arrays.map(prices, (p) => p * rate)    // no closure allocation, 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
 - `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
+- **`for (mutable item of items)` changes the elements in place** (D85). `item` reaches each element of the array, as a `mutable` parameter would, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` also gives the index, and `Arrays.values(items)` may be written for `items`.
+  - The source is a local place of type `Array<T>`: a local `const` or `let`, a `mutable` parameter, or a field or element path of one. A call result, a plain parameter, a top-level constant, a map, a range and a generator are compile errors.
+  - `T` has contents (section 6, Mutable parameters): `for (mutable n of numbers)` over `Array<int>` is a compile error; write `numbers[index] = ...` in an `Arrays.entries` loop.
+  - The binding follows the rules of a `mutable` parameter: its fields and elements can be assigned and it can be passed as `mutable`, but it cannot be assigned whole or escape.
+  - The source is borrowed for the whole body: the body cannot read, assign, pass or capture the source or any path that overlaps it (`players`, `players[0]`, and `game` for a source `game.players`; `game.round` is fine).
+  - The array is made unique before the first iteration (a shared array is copied once), and the loop takes no reference to it.
+  - Not allowed in a `function*` or `async` body yet.
+
+```ts
+for (mutable player of players) {
+  player.hp = 0                // changes players
+}
+```
+
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step.
 
@@ -673,7 +687,7 @@ for (const i of Ranges.upTo(1000)) {
 }
 ```
 
-- `items[i] = v` and `u.age = v` require the target to be a local `const` or `let`, a `mutable` parameter, or a field or element of one. A plain parameter and a top-level constant cannot be changed. Pattern, `for ... of` and destructured bindings are open (section 2, Bindings).
+- `items[i] = v` and `u.age = v` require the target to be a local `const` or `let`, a `mutable` parameter, or a field or element of one. A plain parameter and a top-level constant cannot be changed. Pattern, `for (const ...)` and destructured bindings are read-only; a `for (mutable item of items)` binding can be changed and changes `items` (section 2, Control flow).
 
 ### Copies on shared values
 
@@ -730,13 +744,13 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 - **The parameter's type has contents.** A `mutable` parameter must have a contents type: a struct (an `opaque struct` too), `Array<T>`, `FixedArray<T, N>`, `Map<K, V>`, `Box<T>`, `StringBuilder`, `Generator<T>`, or `Coroutine<In, Out>`. Any other type is a compile error at the parameter: numbers, `bool`, `char`, `string`, `bytes`, distinct types, enums (`Option` and `Result` included), tuples, function types, the prelude `Range`, `Sender`, `Receiver`, `Shared` and `Atomic`. To give a new scalar or enum back to the caller, return it, or keep it in a field of a struct passed as `mutable`.
 - **Generic parameters.** `mutable value: T` with a bare type parameter `T` is a compile error, whatever its constraint: no trait guarantees a contents type. A generic instance of a contents type is fine: `mutable items: Array<T>`. Proposed (D81): in a trait, `mutable value: Self` is allowed, every `implement` of the trait must be for a contents type, and a `Dynamic<Trait>` cannot be passed to such a function.
 - **The callee changes contents, never the parameter.** Through a `mutable` parameter the callee may assign fields and elements at any depth, call std functions that change contents (`Arrays.push`, `Maps.set`, `Str.append`, `Co.resume`), and pass the value or a part of it on as `mutable`. Assigning the parameter itself (`player = other`, `count += 1`) is a compile error.
-- **The argument is a local place.** It must be a local binding that holds a contents type, or a field or element path of one: a `const`, a `let`, or a `mutable` parameter. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for ... of` and destructured bindings are open (section 2, Bindings). Passing a `const` as `mutable` adds nothing that direct code lacks, since its fields can be assigned directly (section 2, Bindings).
+- **The argument is a local place.** It must be a local binding that holds a contents type, or a field or element path of one: a `const`, a `let`, or a `mutable` parameter. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for (const ...)` and destructured bindings are read-only copies and are compile errors too; a `for (mutable item of items)` binding can be passed (D85). Passing a `const` as `mutable` adds nothing that direct code lacks, since its fields can be assigned directly (section 2, Bindings).
 - **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
 - **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `p.hp + heal(mutable p)` and `pair(p, heal(mutable p))` are compile errors. Bind the call first: `const healed = heal(mutable p)`, then `p.hp + healed`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`. These rules hold for every binding passed as `mutable`, `const` included.
 - **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `const copy = player` is allowed.
 - **No copies.** The compiler passes a pointer to the caller's value. Changes are written in place, with no copy and no reference count change for the value itself. A value shared with other owners is copied on its first change, as in any in-place update.
 - **Other parameters are values.** A parameter without `mutable` is a read-only copy: its fields cannot be assigned, and it cannot be passed as `mutable`. To build new data instead of changing the caller's data, return a new value.
-- **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back.
+- **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back. A `mutable` marker in a pattern (`x is Some(mutable y)`) does not exist (D85).
 
 | Goal | Form |
 | --- | --- |

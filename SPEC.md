@@ -189,7 +189,7 @@ const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" }
 ### Literals
 
 - **Strings** use double quotes: `"text"`. They have no interpolation.
-- **Template strings** use backticks: `` `Hello ${name}` ``. Each `${...}` must hold an expression of type `string`. Template strings can span several lines.
+- **Template strings** use backticks: `` `Hello ${name}` ``. Each `${...}` must hold an expression of type `string`. Template strings can span several lines. They take the same escapes as strings: `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `` \` ``, `\$` and `\u{<hex>}`. Any other `\X` is a compile error, reported at the backslash. `\${` is a literal `${`, not an interpolation.
 - **Characters** use single quotes: `'a'`, `'\n'`, `'\u{1F600}'`. A character literal has type `char`. `'abc'` is a compile error.
 - **Integers:** `42`, `0xFF`, `0o755`, `0b1010`. `_` can separate digits: `1_000_000`.
 - **Floats:** `3.14`, `1.0e-9`, `1_000.5`.

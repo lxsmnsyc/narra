@@ -1,0 +1,159 @@
+// The lsp suite: each folder in testdata/lsp is a package (narra.toml and
+// src/) with a session.txt, a scripted `narrac lsp` session, and the
+// expected.txt it must give.
+//
+// session.txt: lines starting with `#` and blank lines are comments. A line
+// `> Name: value` adds that header to the next message. A line `!nolength`
+// sends a header block with no Content-Length. Any other line is the body of
+// one message; the runner adds `Content-Length` and frames it. `$ROOT` in a
+// body is the absolute path of the case folder, so the files are the same on
+// every machine.
+//
+// expected.txt: the output of the server, one body per line (the runner checks
+// that every message is framed with an exact Content-Length), with the folder
+// path written back as `$ROOT`. A last line `# exit N` gives a nonzero exit
+// code, and `# stderr` starts the standard error when there is some.
+// With --update the expected output is rewritten from narrac's output.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
+
+// A plain string: template strings decode only \n and \t.
+const CRLF = "\r\n"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "lsp")
+  for (const path of Arrays.values(Files.listPaths(folder, ""))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "lsp",
+      name: Path.basename(path),
+      path: path,
+      variant: "",
+    })
+  }
+  return cases
+}
+
+// buildInput frames the messages of a session.txt as the client would send
+// them.
+function buildInput(session: string, root: string): string uses alloc {
+  let builder = Str.builder()
+  let headers = ""
+  for (const line of Arrays.values(Str.split(session, "\n"))) {
+    if (line == "" || Str.startsWith(line, "#")) {
+      continue
+    }
+    if (Str.startsWith(line, "> ")) {
+      headers = `${headers}${Str.sliceFrom(line, 2)}${CRLF}`
+    } else if (line == "!nolength") {
+      Str.append(mutable builder, `${headers}X-Test: no length${CRLF}${CRLF}`)
+      headers = ""
+    } else {
+      const body = Str.replace(line, "$ROOT", root)
+      Str.append(
+        mutable builder,
+        `${headers}Content-Length: ${Int.toString(Str.length(body))}${CRLF}${CRLF}${body}`,
+      )
+      headers = ""
+    }
+  }
+  return Str.build(builder)
+}
+
+// splitFrames reads the server output as framed messages and returns the
+// bodies, or the reason the framing is wrong.
+function splitFrames(output: string): Result<Array<string>, string> uses alloc {
+  let bodies: Array<string> = []
+  let position = 0
+  const prefix = "Content-Length: "
+  while (position < Str.length(output)) {
+    const rest = Str.sliceFrom(output, position)
+    if (!Str.startsWith(rest, prefix)) {
+      return Err(`output at byte ${Int.toString(position)} is not a Content-Length header`)
+    }
+    const separator = Str.indexOf(rest, "\r\n\r\n")
+    if (separator is None) {
+      return Err(`no blank line after the header at byte ${Int.toString(position)}`)
+    }
+    const count = Int.parse(Str.slice(rest, Str.length(prefix), separator.value), 10)
+    if (count is Err(_)) {
+      return Err(`invalid Content-Length at byte ${Int.toString(position)}`)
+    }
+    const start = separator.value + 4
+    if (start + count.value > Str.length(rest)) {
+      return Err(`the message at byte ${Int.toString(position)} is shorter than its Content-Length`)
+    }
+    Arrays.push(mutable bodies, Str.slice(rest, start, start + count.value))
+    position = position + start + count.value
+  }
+  return Ok(bodies)
+}
+
+// describeSession is the output of the server in the expected.txt form.
+function describeSession(
+  result: Shell.CommandResult,
+  root: string,
+): Result<string, string> uses alloc {
+  const bodies = splitFrames(result.output)
+  if (bodies is Err(message)) {
+    return Err(message)
+  }
+  let text = ""
+  for (const body of Arrays.values(bodies.value)) {
+    text = `${text}${Str.replace(body, root, "$ROOT")}\n`
+  }
+  if (result.code != 0) {
+    text = `${text}# exit ${Int.toString(result.code)}\n`
+  }
+  if (result.errorOutput != "") {
+    text = `${text}# stderr\n${Str.replace(result.errorOutput, root, "$ROOT")}`
+  }
+  return Ok(text)
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const sessionPath = Path.join(testCase.path, "session.txt")
+  const expectedPath = Path.join(testCase.path, "expected.txt")
+  const session = Fs.readText(sessionPath)
+  if (session is Err(message)) {
+    return Err(`cannot read ${sessionPath}: ${message}`)
+  }
+  const directory = Shell.makeTempDirectory()
+  if (directory is Err(message)) {
+    return Err(message)
+  }
+  const inputPath = Path.join(directory.value, "input")
+  const written = Fs.writeText(inputPath, buildInput(session.value, testCase.path))
+  if (written is Err(message)) {
+    Shell.removeTree(directory.value)
+    return Err(message)
+  }
+  let command = Shell.newCommand(context.narrac, ["lsp"])
+  command.environment = Shell.leakCheckEnvironment()
+  command.stdinPath = inputPath
+  const result = Shell.runCommand(command)
+  Shell.removeTree(directory.value)
+  const described = describeSession(result, testCase.path)
+  if (described is Err(message)) {
+    return Err(`${message}\n${Common.describeRun(result)}`)
+  }
+  if (context.update) {
+    const updated = Fs.writeText(expectedPath, described.value)
+    if (updated is Err(message)) {
+      return Err(message)
+    }
+    return Ok(true)
+  }
+  const expected = Common.readExpected(expectedPath)
+  if (expected is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("session output", expected.value, described.value)
+}

@@ -44,13 +44,35 @@ function plain(message: string): Array<LoadError> {
 // one module and one binary whose entry is `run`. Errors are the diagnostics
 // of the load, in report order.
 export function load(path: string): Result<Package, Array<LoadError>> uses io, alloc {
+  return loadWith(path, Map {})
+}
+
+// loadWith is load with overriding sources: a source file whose path (as
+// read from disk, `DIR/src/text.nra` or the single file's own path) is a key
+// of overrides is taken from the map instead. narrac lsp passes the text of
+// the documents the editor holds.
+export function loadWith(
+  path: string,
+  overrides: Map<string, string>,
+): Result<Package, Array<LoadError>> uses io, alloc {
   if (Fs.listDir(path) is Ok(_)) {
-    return loadPackage(path)
+    return loadPackage(path, overrides)
   }
-  if (!Fs.exists(path)) {
+  if (!Fs.exists(path) && overrides[path] is None) {
     return Err(plain(`stat ${path}: no such file or directory`))
   }
-  return loadFile(path)
+  return loadFile(path, overrides)
+}
+
+// readSource reads a source file, or takes its text from overrides.
+function readSource(
+  path: string,
+  overrides: Map<string, string>,
+): Result<string, string> uses io, alloc {
+  if (overrides[path] is Some(text)) {
+    return Ok(text)
+  }
+  return Fs.readText(path)
 }
 
 function baseName(path: string): string uses alloc {
@@ -70,8 +92,11 @@ function dirName(path: string): string uses alloc {
   return Str.join(keep, "/")
 }
 
-function loadFile(path: string): Result<Package, Array<LoadError>> uses io, alloc {
-  const read = Fs.readText(path)
+function loadFile(
+  path: string,
+  overrides: Map<string, string>,
+): Result<Package, Array<LoadError>> uses io, alloc {
+  const read = readSource(path, overrides)
   if (read is Err(message)) {
     return Err(plain(message))
   }
@@ -112,7 +137,10 @@ function loadFile(path: string): Result<Package, Array<LoadError>> uses io, allo
 // loadPackage reads narra.toml and every file under src/, and orders the
 // modules so that each comes after the modules it imports. The files are
 // numbered in one id sequence, in sorted path order (not load order).
-function loadPackage(directory: string): Result<Package, Array<LoadError>> uses io, alloc {
+function loadPackage(
+  directory: string,
+  overrides: Map<string, string>,
+): Result<Package, Array<LoadError>> uses io, alloc {
   const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(message)) {
     return Err(plain(message))
@@ -139,7 +167,7 @@ function loadPackage(directory: string): Result<Package, Array<LoadError>> uses 
   for (const path of Arrays.values(paths)) {
     const relative = Str.slice(path, 0, Str.length(path) - 4)
     const display = `src/${path}`
-    const read = Fs.readText(`${directory}/src/${path}`)
+    const read = readSource(`${directory}/src/${path}`, overrides)
     if (read is Err(message)) {
       return Err(plain(message))
     }

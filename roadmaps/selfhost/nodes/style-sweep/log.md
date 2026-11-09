@@ -12,3 +12,10 @@
 - Baseline compiler built from the base tree. After each group: the compiler's own C (stage 2) is compared with the baseline's after applying the renames and dropping source positions and string lengths; the C of all 111 top-level samples in `testdata/` is compared byte for byte.
 - std/src positions appear in the emitted C of samples (bounds-check messages, for example `"std/src/json.nra:L:C"`). Removing lines in `std/src` would change sample C, so std/src edits keep every line in place.
 - `narrac fmt` with no paths formats the whole repo; pass paths. std/src is not formatted (the sources suite does not cover it, and formatting moves lines).
+
+## After
+
+- Seven helper agents swept the comments, one per file group; each group was checked (code-only diff, fmt --check) and committed on its own.
+- Go-form grep: 0. D-number grep: 10 lines, all hex literals or generated text. `Of` names: `emitIndexOf`, `lastIndexOf`, kept. Function comment blocks: 25 (std/src kept in place, Walker trait signatures).
+- Compiler C and sample C compared with the baseline: see outcome.md.
+- `sh scripts/test.sh`: PASS. `sh selfhost/bootstrap.sh`: fixed point at stage 3.

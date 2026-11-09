@@ -21,6 +21,7 @@ import {
   findBody,
   findBodySlot,
   orderArguments,
+  findParameterIndexes,
 } from "narrac/check"
 import { cType, typeId, functionName, constGetterName } from "narrac/cnames"
 import {
@@ -524,8 +525,8 @@ function emitCall<W: EmitWalker>(
 ): Code uses alloc {
   // Named arguments in another order than the parameters are evaluated as
   // written, then passed in parameter order (D87).
-  if (emitter.checker.argumentOrders[nodeId] is Some(order)) {
-    holdReorderedArguments(walker, mutable emitter, arguments, order)
+  if (emitter.checker.argumentOrders[nodeId] is Some(_)) {
+    holdReorderedArguments(walker, mutable emitter, nodeId, arguments)
   } else {
     holdEarlierArguments(walker, mutable emitter, arguments)
   }
@@ -674,20 +675,15 @@ function holdEarlierArguments<W: EmitWalker>(
 // holdReorderedArguments keeps the written order of named arguments that are
 // passed in another order: an argument is evaluated now into a temporary
 // when an argument written after it is passed before it, or when a later
-// argument may assign a variable. order[i] is the written index of the
-// argument for parameter i.
+// argument may assign a variable.
 function holdReorderedArguments<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
+  nodeId: int,
   arguments: Array<Arg>,
-  order: Array<int>,
 ) uses alloc {
   const count = Arrays.length(arguments)
-  // parameterIndexes[i] is the parameter that written argument i is passed to.
-  let parameterIndexes = Arrays.filled(0, count)
-  for (const parameter of Ranges.between(0, Arrays.length(order))) {
-    parameterIndexes[order[parameter]] = parameter
-  }
+  const parameterIndexes = findParameterIndexes(emitter.checker, nodeId, count)
   let last = -1
   for (const index of Ranges.between(0, count)) {
     if (!arguments[index].isMutable && mayWrite(emitter, arguments[index].value)) {

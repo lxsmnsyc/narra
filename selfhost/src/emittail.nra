@@ -6,7 +6,14 @@
 // node id in Emitter.tailCalls, so a call inside a closure never matches.
 import { Stmt, Block, Expr, Arg, FuncDecl, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Ref, ProgramFunc, Checker, getExpressionId, orderArguments } from "narrac/check"
+import {
+  Ref,
+  ProgramFunc,
+  Checker,
+  getExpressionId,
+  orderArguments,
+  findParameterIndexes,
+} from "narrac/check"
 import { functionName } from "narrac/cnames"
 import {
   Emitter,
@@ -219,27 +226,6 @@ function tailCallArguments(expression: Expr): Array<Arg> {
   return []
 }
 
-// findParameterIndexes is the parameter index of each written argument of a
-// call (D87): its own index unless named arguments changed the order.
-function findParameterIndexes(
-  emitter: Emitter,
-  expression: Expr,
-  count: int,
-): Array<int> uses alloc {
-  let indexes: Array<int> = []
-  for (const index of Ranges.between(0, count)) {
-    Arrays.push(mutable indexes, index)
-  }
-  if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
-    if (emitter.checker.argumentOrders[nodeId] is Some(order)) {
-      for (const parameter of Ranges.between(0, Arrays.length(order))) {
-        indexes[order[parameter]] = parameter
-      }
-    }
-  }
-  return indexes
-}
-
 // matchHasTailCall is true when an arm of the returned match is a tail call.
 export function matchHasTailCall(emitter: Emitter, arms: Array<MatchArm>): bool {
   for (const arm of Arrays.values(arms)) {
@@ -291,7 +277,11 @@ export function emitTailJump<W: EmitWalker>(
     const parameters = functionDeclaration(emitter.checker, program).parameters
     const types = parameterTypes(emitter.checker, program)
     // Evaluate in written order; values is in parameter order.
-    const parameterIndexes = findParameterIndexes(emitter, call, Arrays.length(arguments))
+    const parameterIndexes = findParameterIndexes(
+      emitter.checker,
+      getExpressionId(call),
+      Arrays.length(arguments),
+    )
     let values = Arrays.filled("", Arrays.length(arguments))
     for (const index of Ranges.between(0, Arrays.length(arguments))) {
       const parameter = parameterIndexes[index]

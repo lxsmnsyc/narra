@@ -653,9 +653,19 @@ function lexQuoted(
 function lexTemplate(mutable lexer: Lexer, line: int, column: int): Result<string, LexError> {
   advance(mutable lexer)
   const start = lexer.index
+  const failure = skipTemplateBody(mutable lexer, line, column)
+  if (failure is Some(error)) {
+    return Err(error)
+  }
+  return Ok(readText(lexer, start, lexer.index - 1))
+}
+
+// skipTemplateBody moves past the closing backtick of a template whose opening
+// backtick is already consumed.
+function skipTemplateBody(mutable lexer: Lexer, line: int, column: int): Option<LexError> {
   while (true) {
     if (lexer.index >= getSize(lexer)) {
-      return fail(line, column, "E0010", "unterminated template string")
+      return errorAt(line, column, "E0010", "unterminated template string")
     }
     const character = peek(lexer, 0)
     if (character == '\\') {
@@ -664,14 +674,69 @@ function lexTemplate(mutable lexer: Lexer, line: int, column: int): Result<strin
         advance(mutable lexer)
       }
     } else if (character == '`') {
-      const raw = readText(lexer, start, lexer.index)
       advance(mutable lexer)
-      return Ok(raw)
+      return None
+    } else if (character == '$' && peek(lexer, 1) == '{') {
+      advance(mutable lexer)
+      advance(mutable lexer)
+      const failure = skipInterpolation(mutable lexer, line, column)
+      if (failure is Some(_)) {
+        return failure
+      }
     } else {
       advance(mutable lexer)
     }
   }
-  return fail(line, column, "E0010", "unreachable")
+  return errorAt(line, column, "E0010", "unreachable")
+}
+
+// skipInterpolation moves past the closing brace of a ${...} part. Strings,
+// character literals and nested templates inside it are skipped whole.
+function skipInterpolation(mutable lexer: Lexer, line: int, column: int): Option<LexError> {
+  let depth = 1
+  while (depth > 0) {
+    if (lexer.index >= getSize(lexer)) {
+      return errorAt(line, column, "E0010", "unterminated template string")
+    }
+    const character = peek(lexer, 0)
+    const innerLine = lexer.line
+    const innerColumn = lexer.column
+    advance(mutable lexer)
+    if (character == '{') {
+      depth = depth + 1
+    } else if (character == '}') {
+      depth = depth - 1
+    } else if (character == '"' || character == '\'') {
+      const failure = skipQuoted(mutable lexer, character, innerLine, innerColumn)
+      if (failure is Some(_)) {
+        return failure
+      }
+    } else if (character == '`') {
+      const failure = skipTemplateBody(mutable lexer, innerLine, innerColumn)
+      if (failure is Some(_)) {
+        return failure
+      }
+    }
+  }
+  return None
+}
+
+// skipQuoted moves past the closing quote of a string or character literal
+// whose opening quote is already consumed.
+function skipQuoted(mutable lexer: Lexer, quote: char, line: int, column: int): Option<LexError> {
+  while (true) {
+    if (lexer.index >= getSize(lexer) || peek(lexer, 0) == '\n') {
+      return errorAt(line, column, "E0009", "unterminated literal")
+    }
+    const character = advance(mutable lexer)
+    if (character == quote) {
+      return None
+    }
+    if (character == '\\' && lexer.index < getSize(lexer) && peek(lexer, 0) != '\n') {
+      advance(mutable lexer)
+    }
+  }
+  return errorAt(line, column, "E0009", "unreachable")
 }
 
 // hex writes value (not negative) in lowercase hexadecimal with at least

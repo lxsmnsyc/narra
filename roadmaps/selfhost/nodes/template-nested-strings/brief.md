@@ -1,7 +1,7 @@
 ---
 id: template-nested-strings
 title: "Template interpolation scan skips nested strings"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-2
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 80465
 owns:
   - testdata/template_nested*
   - testdata/errors/template_nested*

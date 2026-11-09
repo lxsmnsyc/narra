@@ -368,15 +368,9 @@ function collectTemplateNames(mutable names: Map<string, bool>, text: string) us
       continue
     }
     // Find the matching `}`.
-    let depth = 1
-    let closeIndex = index + 2
-    while (closeIndex < count && depth > 0) {
-      if (raw[closeIndex] == '{') {
-        depth = depth + 1
-      } else if (raw[closeIndex] == '}') {
-        depth = depth - 1
-      }
-      closeIndex = closeIndex + 1
+    let closeIndex = findInterpolationEnd(raw, index + 2)
+    if (closeIndex < 0) {
+      closeIndex = count
     }
     const lexed = lex(sliceText(raw, index + 2, closeIndex - 1))
     if (lexed is Ok(tokens)) {
@@ -3051,6 +3045,76 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
   return createDummyExpr()
 }
 
+// findInterpolationEnd returns the index after the brace that closes a ${...}
+// part whose contents start at `start`, or -1 when there is none. Strings,
+// character literals and nested templates inside it are skipped whole.
+function findInterpolationEnd(raw: Array<char>, start: int): int {
+  const count = Arrays.length(raw)
+  let depth = 1
+  let index = start
+  while (index < count && depth > 0) {
+    const character = raw[index]
+    index = index + 1
+    if (character == '{') {
+      depth = depth + 1
+    } else if (character == '}') {
+      depth = depth - 1
+    } else if (character == '"' || character == '\'') {
+      index = findQuoteEnd(raw, index, character)
+    } else if (character == '`') {
+      index = findTemplateEnd(raw, index)
+    }
+    if (index < 0) {
+      return -1
+    }
+  }
+  if (depth != 0) {
+    return -1
+  }
+  return index
+}
+
+// findQuoteEnd returns the index after the quote that closes a string or
+// character literal whose contents start at `start`, or -1.
+function findQuoteEnd(raw: Array<char>, start: int, quote: char): int {
+  const count = Arrays.length(raw)
+  let index = start
+  while (index < count) {
+    const character = raw[index]
+    index = index + 1
+    if (character == quote) {
+      return index
+    }
+    if (character == '\\') {
+      index = index + 1
+    }
+  }
+  return -1
+}
+
+// findTemplateEnd returns the index after the backtick that closes a template
+// whose contents start at `start`, or -1.
+function findTemplateEnd(raw: Array<char>, start: int): int {
+  const count = Arrays.length(raw)
+  let index = start
+  while (index < count) {
+    const character = raw[index]
+    index = index + 1
+    if (character == '`') {
+      return index
+    }
+    if (character == '\\') {
+      index = index + 1
+    } else if (character == '$' && index < count && raw[index] == '{') {
+      index = findInterpolationEnd(raw, index + 1)
+      if (index < 0) {
+        return -1
+      }
+    }
+  }
+  return -1
+}
+
 // parseTemplate splits a template string into string pieces and the expressions
 // inside `${...}`. Each expression is lexed and parsed on its own; all its
 // tokens take the template's position (their ends are kept, as in Go).
@@ -3093,17 +3157,8 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       continue
     }
     if (character == '$' && index + 1 < count && raw[index + 1] == '{') {
-      let depth = 1
-      let closeIndex = index + 2
-      while (closeIndex < count && depth > 0) {
-        if (raw[closeIndex] == '{') {
-          depth = depth + 1
-        } else if (raw[closeIndex] == '}') {
-          depth = depth - 1
-        }
-        closeIndex = closeIndex + 1
-      }
-      if (depth != 0) {
+      const closeIndex = findInterpolationEnd(raw, index + 2)
+      if (closeIndex < 0) {
         failAt(mutable parser, pos, "E0040", "unterminated ${ in template string")
         return createDummyExpr()
       }

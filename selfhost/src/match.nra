@@ -12,9 +12,9 @@
 // (Ref.Constructor on the pattern id) and the local a binding declares
 // (BodyInfo.declared). A binding is created when the pattern resolves but
 // is put into scope later by the caller (bindPatternLocals), as in Go.
-import { Pos, Expr, Decl, Pattern, FieldPattern, MatchArm, Block, TypeExpr } from "narrac/ast"
+import { Pos, Expr, Pattern, FieldPattern, MatchArm, TypeExpr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
-import { Type } from "narrac/types"
+import { Type, isInteger } from "narrac/types"
 import {
   Checker,
   Ref,
@@ -32,10 +32,9 @@ import {
   findBodySlot,
   getExpressionPos,
 } from "narrac/check"
-import { LocalInfo } from "narrac/check"
+import { LocalInfo, BindingKind, setBinding } from "narrac/check"
 import { buildQualifyFix, insertAt } from "narrac/fixes"
 import { resolveType } from "narrac/resolve"
-import { sourceScope } from "narrac/scopes"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
 import { namesEnum, findEnumName } from "narrac/ctors"
 import {
@@ -45,11 +44,11 @@ import {
   bindPatternLocals,
   isIrrefutable,
   findMissingCases,
+  CaseBudget,
 } from "narrac/patterns"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
-import * as Maps from "std/map"
 import * as Ranges from "std/range"
 
 function startsUpper(name: string): bool {
@@ -87,6 +86,7 @@ function createPatternLocal(
     localType: localType,
     isMutable: false,
     param: false,
+    binding: BindingKind.Pattern,
     pos: pos,
     noEscape: false,
     used: false,
@@ -400,8 +400,9 @@ function resolveLiteral<W: Walker>(
   valueType: Type,
 ) uses alloc {
   const isPrimitive =
-    valueType == Type.TInt ||
+    isInteger(valueType) ||
       valueType == Type.TF64 ||
+      valueType == Type.TF32 ||
       valueType == Type.TBool ||
       valueType == Type.TChar ||
       valueType == Type.TStr ||
@@ -616,8 +617,8 @@ export function checkMatch<W: Walker>(
 
   // Every value of the subject must match some arm.
   if (!patternFailed) {
-    let limit = 10
-    const missing = findMissingCases(checker, rows, [subjectType], mutable limit)
+    let budget = CaseBudget { remaining: 10 }
+    const missing = findMissingCases(checker, rows, [subjectType], mutable budget)
     if (Arrays.length(missing) > 0) {
       let names: Array<string> = []
       let other = false
@@ -678,6 +679,7 @@ export function checkDestructure<W: Walker>(
   for (const index of Arrays.values(locals)) {
     const body = checker.body
     checker.bodies[body].locals[index].isMutable = isMutable
+    setBinding(mutable checker, index, value, BindingKind.Destructured)
   }
   bindPatternLocals(mutable checker, locals)
 }

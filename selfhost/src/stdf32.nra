@@ -1,0 +1,114 @@
+// The registry rows, checks and emitters of std/f32: F32.from, F32.truncate
+// and F32.toString, and Float.from of std/float.
+import { StdFunc } from "narrac/builtins"
+import { Type, isInteger } from "narrac/types"
+import { Checker, Walker, typeString, reportError, getExpressionPos } from "narrac/check"
+import { Pos, Arg } from "narrac/ast"
+import { Emitter, Code, EmitWalker, reportUnsupported, typeOf } from "narrac/emitstate"
+import { cType } from "narrac/cnames"
+import { checkExpression } from "narrac/exprs"
+import { checkArgumentCount } from "narrac/stdcheckhelp"
+import { NODE, FixedCall, plain, emitFixedCall, argumentText } from "narrac/stdemithelp"
+import * as Arrays from "std/array"
+
+export const F32_FUNCS: Array<StdFunc> = [
+  StdFunc { name: "F32.from", module: "std/f32", key: "from", check: "checkF32From" },
+  StdFunc {
+    name: "F32.truncate",
+    module: "std/f32",
+    key: "truncate",
+    parameters: ["f32"],
+    result: "int",
+  },
+  StdFunc {
+    name: "F32.toString",
+    module: "std/f32",
+    key: "toString",
+    parameters: ["f32"],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc { name: "Float.from", module: "std/float", key: "from", check: "checkF32FloatFrom" },
+]
+
+const F32_FIXED_CALLS: Array<FixedCall> = [
+  FixedCall {
+    name: "F32.toString",
+    call: "lstr_from_f32",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "F32.truncate",
+    call: "narra_truncate",
+    withPos: true,
+    owned: false,
+    temporary: true,
+  },
+]
+
+// isF32Name is true for the builtins this file emits.
+export function isF32Name(name: string): bool {
+  return name == "F32.from" ||
+    name == "F32.truncate" ||
+    name == "F32.toString" ||
+    name == "Float.from"
+}
+
+// checkF32Call checks F32.from (an f64 or an integer) and Float.from (an f32 or an
+// integer). Anything else is E0941.
+export function checkF32Call<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+): Type uses alloc {
+  let resultType = Type.TF32
+  let accepted = Type.TF64
+  let acceptedText = "an f64"
+  if (kind == "checkF32FloatFrom") {
+    resultType = Type.TF64
+    accepted = Type.TF32
+    acceptedText = "an f32"
+  }
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return resultType
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found != accepted && !isInteger(found)) {
+    const foundText = typeString(checker, found)
+    reportError(
+      mutable checker,
+      getExpressionPos(arguments[0].value),
+      "E0941",
+      `${name} takes ${acceptedText} or an integer, found ${foundText}`,
+    )
+  }
+  return resultType
+}
+
+// emitF32Call emits the calls of std/f32 and Float.from.
+export function emitF32Call<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  for (const fixed of Arrays.values(F32_FIXED_CALLS)) {
+    if (fixed.name == name) {
+      return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+    }
+  }
+  if (name == "F32.from" || name == "Float.from") {
+    // A C cast rounds a double to the nearest float; the other direction is exact.
+    const value = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`((${cType(emitter.checker, typeOf(emitter, nodeId))})(${value}))`)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

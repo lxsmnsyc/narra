@@ -230,12 +230,31 @@ static lstr* lstr_from_int(int64_t v) {
   return lstr_from_cstr(buf);
 }
 
+static lstr* lstr_from_uint(uint64_t v) {
+  char buf[32];
+  snprintf(buf, sizeof buf, "%" PRIu64, v);
+  return lstr_from_cstr(buf);
+}
+
 // Shortest text that reads back as the same double.
 static lstr* lstr_from_f64(double v) {
   char buf[40];
   for (int prec = 1; prec <= 17; prec++) {
     snprintf(buf, sizeof buf, "%.*g", prec, v);
     if (strtod(buf, NULL) == v) break;
+  }
+  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {
+    strcat(buf, ".0");
+  }
+  return lstr_from_cstr(buf);
+}
+
+// Shortest text that reads back as the same float.
+static lstr* lstr_from_f32(float v) {
+  char buf[40];
+  for (int prec = 1; prec <= 9; prec++) {
+    snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
+    if (strtof(buf, NULL) == v) break;
   }
   if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {
     strcat(buf, ".0");
@@ -285,6 +304,7 @@ static int lstr_cmp(lstr* a, lstr* b) {
 // Standard trait functions for primitive types (trait-model contract).
 static bool narra_eq_int(int64_t a, int64_t b) { return a == b; }
 static bool narra_eq_f64(double a, double b) { return a == b; }
+static bool narra_eq_f32(float a, float b) { return a == b; }
 static bool narra_eq_bool(bool a, bool b) { return a == b; }
 static bool narra_eq_char(uint32_t a, uint32_t b) { return a == b; }
 
@@ -314,6 +334,7 @@ static uint64_t lstr_hash(lstr* s) {
 
 static int narra_cmp_int(int64_t a, int64_t b) { return (a > b) - (a < b); }
 static int narra_cmp_f64(double a, double b) { return (a > b) - (a < b); }
+static int narra_cmp_f32(float a, float b) { return (a > b) - (a < b); }
 static int narra_cmp_bool(bool a, bool b) { return (a > b) - (a < b); }
 static int narra_cmp_char(uint32_t a, uint32_t b) { return (a > b) - (a < b); }
 
@@ -379,6 +400,23 @@ static lstr* narra_show_char(uint32_t c) {
 }
 
 static lstr* narra_show_string(lstr* v) { return narra_quote(v->data, v->len, '"'); }
+
+// bytes as `bytes[68 69 0a]`: two lowercase hex digits per byte.
+static lstr* narra_show_bytes(lstr* v) {
+  static const char digits[] = "0123456789abcdef";
+  int64_t n = 7 + (v->len > 0 ? v->len * 3 - 1 : 0);
+  lstr* s = lstr_new(n);
+  memcpy(s->data, "bytes[", 6);
+  int64_t j = 6;
+  for (int64_t i = 0; i < v->len; i++) {
+    unsigned char c = (unsigned char)v->data[i];
+    if (i > 0) s->data[j++] = ' ';
+    s->data[j++] = digits[c >> 4];
+    s->data[j++] = digits[c & 15];
+  }
+  s->data[j] = ']';
+  return s;
+}
 
 static void narra_print(lstr* s) {
   fwrite(s->data, 1, (size_t)s->len, stdout);
@@ -455,6 +493,68 @@ static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
   if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
   return a >> b;
 }
+
+// The sized integers (D82): one set of functions per type, named with the
+// type's suffix (narra_add_u8). They check overflow at the type's own width.
+#define NARRA_SIZED(N, T, MIN, SHOW) \
+  static T narra_add_##N(T a, T b, const char* where) { \
+    T r; \
+    if (__builtin_add_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+    return r; \
+  } \
+  static T narra_sub_##N(T a, T b, const char* where) { \
+    T r; \
+    if (__builtin_sub_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+    return r; \
+  } \
+  static T narra_mul_##N(T a, T b, const char* where) { \
+    T r; \
+    if (__builtin_mul_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+    return r; \
+  } \
+  static T narra_neg_##N(T a, const char* where) { \
+    if ((MIN) != 0 && a == (T)(MIN)) { \
+      if (NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+      return a; \
+    } \
+    return (T)(-a); \
+  } \
+  static T narra_div_##N(T a, T b, const char* where) { \
+    if (b == 0) narra_panic(where, "division by zero"); \
+    if ((MIN) != 0 && a == (T)(MIN) && b == (T)-1) { \
+      if (NARRA_CHECKED) narra_panic(where, "integer overflow"); \
+      return a; \
+    } \
+    return (T)(a / b); \
+  } \
+  static T narra_rem_##N(T a, T b, const char* where) { \
+    if (b == 0) narra_panic(where, "division by zero"); \
+    if ((MIN) != 0 && b == (T)-1) return 0; \
+    return (T)(a % b); \
+  } \
+  static T narra_wrap_add_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
+  static T narra_wrap_sub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
+  static T narra_wrap_mul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
+  static T narra_shl_##N(T a, T b, const char* where) { \
+    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+    return (T)((uint64_t)a << b); \
+  } \
+  static T narra_shr_##N(T a, T b, const char* where) { \
+    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+    return (T)(a >> b); \
+  } \
+  static bool narra_eq_##N(T a, T b) { return a == b; } \
+  static int narra_cmp_##N(T a, T b) { return (a > b) - (a < b); } \
+  static uint64_t narra_hash_##N(T v) { return narra_hash_int((int64_t)v); } \
+  static lstr* narra_show_##N(T v) { return SHOW; }
+
+NARRA_SIZED(i8, int8_t, INT8_MIN, lstr_from_int((int64_t)v))
+NARRA_SIZED(i16, int16_t, INT16_MIN, lstr_from_int((int64_t)v))
+NARRA_SIZED(i32, int32_t, INT32_MIN, lstr_from_int((int64_t)v))
+NARRA_SIZED(u8, uint8_t, 0, lstr_from_uint((uint64_t)v))
+NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
+NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
+NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
 
 static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_neg(a, where) : a; }
 

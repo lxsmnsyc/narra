@@ -1,0 +1,192 @@
+// The registry rows, checks and emitters of std/internal (coroutine, float and probe).
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Checker, Walker, getExpressionId } from "narrac/check"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/exprs"
+import { cType } from "narrac/cnames"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  writeLine,
+  temp,
+  ownedTemp,
+  typeOf,
+  declareUnset,
+} from "narrac/emitstate"
+import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
+import { NODE, plain, owned, argumentText, findVariant, ioEither } from "narrac/stdemithelp"
+import * as Int from "std/int"
+
+export const INTERNAL_COROUTINE_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Co.next",
+    module: "std/internal/coroutine",
+    key: "next",
+    mutables: [true],
+    effects: ["alloc"],
+    check: "checkCoResume",
+  },
+  StdFunc {
+    name: "Co.panicMessage",
+    module: "std/internal/coroutine",
+    key: "panicMessage",
+    parameters: [],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Co.panicked",
+    module: "std/internal/coroutine",
+    key: "panicked",
+    parameters: [],
+    result: "bool",
+  },
+  StdFunc {
+    name: "Co.resume",
+    module: "std/internal/coroutine",
+    key: "resume",
+    mutables: [true, false],
+    effects: ["alloc"],
+    check: "checkCoResume",
+  },
+]
+
+export const INTERNAL_FLOAT_FUNCS: Array<StdFunc> = [
+  // The text must already follow the JSON number grammar; strtod reads all of it.
+  StdFunc {
+    name: "FloatText.parse",
+    module: "std/internal/float",
+    key: "parse",
+    parameters: ["string"],
+    result: "f64",
+  },
+]
+
+export const INTERNAL_PROBE_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Probe.code",
+    module: "std/internal/probe",
+    key: "code",
+    parameters: ["char"],
+    result: "int",
+  },
+]
+
+// checkCoResume checks Co.next(mutable g) and Co.resume(mutable g, input) (Go's
+// checkCoResume): the result is Option<Out>.
+function checkCoResume<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  let count = 1
+  if (name == "Co.resume") {
+    count = 2
+  }
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, count)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TGenerator(element, _, _, _, input)) {
+    checkMutableArgument(mutable checker, arguments[0].value)
+    if (count == 2) {
+      checkArgumentAgainst(mutable checker, walker, arguments[1].value, input)
+    }
+    checkExclusive(mutable checker, arguments, [0])
+    return makePreludeEnum(mutable checker, "Option", [element])
+  }
+  // Only std/coroutine calls these, with the right arguments.
+  panic(`internal error: ${name} needs a generator`)
+  return Type.TVoid
+}
+
+// checkInternalCall checks the calls of std/internal (coroutine, float and probe) that name a check function.
+export function checkInternalCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+): Type uses alloc {
+  if (kind == "checkCoResume") {
+    return checkCoResume(mutable checker, walker, pos, arguments, name)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+  return Type.TVoid
+}
+
+// Co.next(mutable g) and Co.resume(mutable g, input) of std/internal/coroutine
+// (Go's emitCoResume): one narra_co_next step, as Some(value) or None. Only a
+// test build catches a panic of the coroutine.
+function emitCoResume<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const generatorType = typeOf(emitter, getExpressionId(arguments[0].value))
+  let inputPointer = "NULL"
+  let elementType = Type.TVoid
+  if (generatorType is Type.TGenerator(element, _, _, _, input)) {
+    elementType = element
+    if (input != Type.TVoid) {
+      const inputCode = argumentText(walker, mutable emitter, arguments, 1)
+      inputPointer = `&${temp(mutable emitter, input, inputCode)}`
+    }
+  }
+  const generator = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  const elementName = cType(emitter.checker, elementType)
+  emitter.tempCount = emitter.tempCount + 1
+  const outputName = `t${Int.toString(emitter.tempCount)}`
+  const output = declareUnset(mutable emitter, elementName, outputName)
+  emitter.tempCount = emitter.tempCount + 1
+  const statusName = `t${Int.toString(emitter.tempCount)}`
+  const status = declareUnset(mutable emitter, "int", statusName)
+  let guard = "false"
+  if (emitter.tests) {
+    guard = "true"
+  }
+  writeLine(
+    mutable emitter,
+    `${status} = narra_co_next(${generator}, &${output}, ${inputPointer}, ${guard});`,
+  )
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  return ioEither(mutable emitter, optionType, `${status} > 0`, some, [output], none, [])
+}
+
+// emitInternalCall emits the calls of std/internal (coroutine, float and probe).
+export function emitInternalCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "Co.next" || name == "Co.resume") {
+    return emitCoResume(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Co.panicked") {
+    return plain("narra_co_panicked")
+  }
+  if (name == "Co.panicMessage") {
+    return owned(ownedTemp(mutable emitter, Type.TStr, "lstr_from_cstr(narra_panic_text)"))
+  }
+  if (name == "FloatText.parse") {
+    const text = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`strtod((${text})->data, NULL)`)
+  }
+  if (name == "Probe.code") {
+    const character = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`((int64_t)${character})`)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

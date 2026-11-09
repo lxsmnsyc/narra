@@ -3,7 +3,7 @@
 // temporaries of their expressions do so here, as in Go, before and after
 // the call into a feature module.
 import * as Int from "std/int"
-import { Pos, Stmt, Block, Expr, Pattern } from "narrac/ast"
+import { Pos, Stmt, Block, Expr, Pattern, LoopReference } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId } from "narrac/check"
 import { cType } from "narrac/cnames"
@@ -38,6 +38,8 @@ import {
   declareLocalVariable,
   declareVariable,
   variableRef,
+  localName,
+  containerName,
 } from "narrac/emitstate"
 import { pointerTemp, declaredLocal } from "narrac/emitexprs"
 import * as Generators from "narrac/emitgenerators"
@@ -45,7 +47,6 @@ import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
 import * as Tail from "narrac/emittail"
 import * as Arrays from "std/array"
-import * as Ranges from "std/range"
 
 const NODE = "selfhost-emit-bodies"
 
@@ -117,7 +118,7 @@ export function emitStatement<W: EmitWalker>(
       condition,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, _, iterable, body) => emitFor(
+    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference) => emitFor(
       walker,
       mutable emitter,
       statement,
@@ -126,6 +127,7 @@ export function emitStatement<W: EmitWalker>(
       label,
       iterable,
       body,
+      reference,
     )
     Stmt.BreakStmt(_, label) => emitLoopExit(mutable emitter, label, true)
     Stmt.ContinueStmt(_, label) => emitLoopExit(mutable emitter, label, false)
@@ -392,10 +394,13 @@ function emitFor<W: EmitWalker>(
   label: string,
   iterable: Expr,
   body: Block,
+  reference: Option<LoopReference>,
 ) uses alloc {
   const name = iterableName(emitter, iterable)
   beginStatement(mutable emitter)
-  if (name == "Range.upTo" || name == "Range.between") {
+  if (reference is Some(marker)) {
+    emitReferenceFor(walker, mutable emitter, nodeId, pos, label, iterable, body, marker)
+  } else if (name == "Range.upTo" || name == "Range.between") {
     emitRangeFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name)
   } else if (typeOf(emitter, getExpressionId(iterable)) is Type.TRange) {
     emitRangeValueFor(walker, mutable emitter, nodeId, pos, label, iterable, body)
@@ -490,6 +495,66 @@ function emitRangeValueFor<W: EmitWalker>(
   emitter.indent = emitter.indent - 1
   writeLine(mutable emitter, "}")
   emitBreakLabel(mutable emitter, info)
+}
+
+// emitReferenceFor writes `for (mutable item of items)` and `for (const
+// #[index, mutable item] of Arrays.entries(items))` (D85). The source array
+// is made unique once, as for a `mutable` argument; the body cannot reach the
+// source, so its storage stays where it is. The loop holds no reference to
+// the array, and the element local is a pointer into it that is never
+// retained or released.
+function emitReferenceFor<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  iterable: Expr,
+  body: Block,
+  marker: LoopReference,
+) uses alloc {
+  // The source is the iterable, or the argument of Arrays.values or Arrays.entries.
+  let source = iterable
+  if (iterable is Expr.CallExpr(_, _, _, _, callArguments)) {
+    source = callArguments[0].value
+  }
+  const arrayType = typeOf(emitter, getExpressionId(source))
+  if (arrayType is Type.TArray(element)) {
+    const arrayStruct = containerName(emitter, arrayType)
+    const place = EmitWalker.emitLvaluePointer(walker, mutable emitter, source)
+    const pointer = pointerTemp(mutable emitter, arrayType, place)
+    writeLine(mutable emitter, `*${pointer} = ${arrayStruct}_unique(*${pointer});`)
+    const array = temp(mutable emitter, arrayType, `*${pointer}`)
+    emitter.tempCount = emitter.tempCount + 1
+    const indexName = `i${Int.toString(emitter.tempCount)}`
+    const indexDeclaration = declareVariable(mutable emitter, "int64_t", indexName)
+    const index = variableRef(emitter, indexName)
+    writeLine(
+      mutable emitter,
+      `for (${indexDeclaration} = 0; ${index} < ${array}->len; ${index}++) {`,
+    )
+    emitter.indent = emitter.indent + 1
+    enterLoop(mutable emitter, label, pos)
+    pushScope(mutable emitter, true)
+    if (marker.indexName != "") {
+      const indexLocal = declaredLocal(emitter, marker.indexId)
+      declareLocal(mutable emitter, indexLocal, index)
+    }
+    const localIndex = declaredLocal(emitter, nodeId)
+    const elementType = `${cType(emitter.checker, element)}*`
+    const elementName = localName(localOf(emitter, localIndex))
+    const declaration = declareVariable(mutable emitter, elementType, elementName)
+    writeLine(mutable emitter, `${declaration} = &${array}->items[${index}];`)
+    emitBlockInScope(walker, mutable emitter, body)
+    popScope(mutable emitter)
+    emitContinueLabel(mutable emitter)
+    const info = leaveLoop(mutable emitter)
+    emitter.indent = emitter.indent - 1
+    writeLine(mutable emitter, "}")
+    emitBreakLabel(mutable emitter, info)
+    return
+  }
+  const _ = reportUnsupported(mutable emitter, "for loop", NODE)
 }
 
 function emitArrayFor<W: EmitWalker>(

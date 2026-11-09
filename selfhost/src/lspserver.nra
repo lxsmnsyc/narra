@@ -1,0 +1,520 @@
+// The state and the work of narrac lsp: the documents the editor holds, the
+// check of the package a document belongs to, the diagnostics it publishes and
+// whole-document formatting. lsp.nra owns the protocol (framing and dispatch).
+import * as Arrays from "std/array"
+import * as Char from "std/char"
+import * as Fs from "std/fs"
+import * as Maps from "std/map"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Value } from "std/shape"
+import { CheckCache, checkLoaded, createCheckCache, loadPackage } from "narrac/lspcache"
+import * as Fmt from "narrac/fmt"
+import * as FmtConfig from "narrac/fmtconfig"
+import { getPath, makeNotification, makeRecord } from "narrac/lspserverjson"
+
+// What the server remembers between messages. documents maps a document URI to
+// its text; reported maps a package (its directory, or the path of a document
+// checked alone) to the URIs that got a non-empty list of diagnostics the last
+// time it was checked, so that a list can be emptied when the problems are
+// gone. A check publishes one package and leaves the others' lists alone.
+export struct Server {
+  initialized: bool
+  shutdownRequested: bool
+  utf8: bool // columns count UTF-8 bytes; otherwise UTF-16 code units
+  documents: Map<string, string>
+  reported: Map<string, Array<string>>
+  cache: CheckCache // the parsed sources and errors of the last check (lspcache.nra)
+}
+
+export function createServer(): Server uses alloc {
+  return Server {
+    initialized: false,
+    shutdownRequested: false,
+    utf8: false,
+    documents: Map {},
+    reported: Map {},
+    cache: createCheckCache(),
+  }
+}
+
+// One problem found by the load or the check, with the position of the
+// compiler: 1-based line and column, the column counting characters.
+struct Problem {
+  file: string
+  line: int
+  column: int
+  code: string
+  message: string
+}
+
+const HEX_DIGITS = "0123456789ABCDEF"
+
+// getHexValue is the value of a hexadecimal digit, or -1.
+function getHexValue(byte: int): int {
+  if (byte >= 48 && byte <= 57) {
+    return byte - 48
+  }
+  if (byte >= 65 && byte <= 70) {
+    return byte - 55
+  }
+  if (byte >= 97 && byte <= 102) {
+    return byte - 87
+  }
+  return -1
+}
+
+// readEscapedByte is the byte written as %XX at an index, or -1.
+function readEscapedByte(text: string, index: int): int {
+  if (index + 2 >= Str.length(text) || Str.byteAt(text, index) != 37) {
+    return -1
+  }
+  const high = getHexValue(Str.byteAt(text, index + 1))
+  const low = getHexValue(Str.byteAt(text, index + 2))
+  if (high < 0 || low < 0) {
+    return -1
+  }
+  return high * 16 + low
+}
+
+// readEscapedChar reads the character written as one or more %XX escapes (the
+// UTF-8 bytes) at an index. It gives the code point and the index after the
+// escapes, or None when the text there is not a valid escape.
+function readEscapedChar(text: string, index: int): Option<#[int, int]> uses alloc {
+  const first = readEscapedByte(text, index)
+  if (first < 0) {
+    return None
+  }
+  if (first < 128) {
+    return Some(#[first, index + 3])
+  }
+  let codePoint = 0
+  let extra = 0
+  if (first >= 240 && first < 248) {
+    codePoint = first - 240
+    extra = 3
+  } else if (first >= 224) {
+    codePoint = first - 224
+    extra = 2
+  } else if (first >= 192) {
+    codePoint = first - 192
+    extra = 1
+  } else {
+    return None
+  }
+  let next = index + 3
+  let remaining = extra
+  while (remaining > 0) {
+    const continuation = readEscapedByte(text, next)
+    if (continuation < 128 || continuation >= 192) {
+      return None
+    }
+    codePoint = codePoint * 64 + (continuation - 128)
+    next = next + 3
+    remaining = remaining - 1
+  }
+  return Some(#[codePoint, next])
+}
+
+// decodePercent decodes the %XX escapes of a URI path.
+function decodePercent(text: string): string uses alloc {
+  let builder = Str.builder()
+  const length = Str.length(text)
+  let runStart = 0
+  let index = 0
+  while (index < length) {
+    if (Str.byteAt(text, index) == 37) {
+      const escaped = readEscapedChar(text, index)
+      if (escaped is Some(#[codePoint, next])) {
+        const character = Char.fromCode(codePoint)
+        if (character is Some(found)) {
+          Str.append(mutable builder, Str.slice(text, runStart, index))
+          Str.appendChar(mutable builder, found)
+          index = next
+          runStart = next
+          continue
+        }
+      }
+    }
+    index = index + 1
+  }
+  Str.append(mutable builder, Str.slice(text, runStart, length))
+  return Str.build(builder)
+}
+
+// convertUriToPath is the file path of a `file://` URI, or None for any other
+// scheme.
+export function convertUriToPath(uri: string): Option<string> uses alloc {
+  if (!Str.startsWith(uri, "file://")) {
+    return None
+  }
+  let rest = Str.sliceFrom(uri, 7)
+  if (!Str.startsWith(rest, "/")) {
+    // A host name before the path (`file://localhost/a`) is dropped.
+    const slash = Str.indexOf(rest, "/")
+    if (slash is None) {
+      return None
+    }
+    rest = Str.sliceFrom(rest, slash.value)
+  }
+  return Some(decodePercent(rest))
+}
+
+// convertPathToUri writes a file path as a `file://` URI, escaping every byte
+// that is not unreserved or a slash.
+export function convertPathToUri(path: string): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, "file://")
+  for (const index of Ranges.upTo(Str.length(path))) {
+    const byte = Str.byteAt(path, index)
+    const keep =
+      (byte >= 48 && byte <= 57) ||
+        (byte >= 65 && byte <= 90) ||
+        (byte >= 97 && byte <= 122) ||
+        byte == 45 ||
+        byte == 46 ||
+        byte == 47 ||
+        byte == 95 ||
+        byte == 126
+    if (keep) {
+      Str.append(mutable builder, Str.slice(path, index, index + 1))
+    } else {
+      const high = Str.slice(HEX_DIGITS, byte / 16, byte / 16 + 1)
+      const low = Str.slice(HEX_DIGITS, byte % 16, byte % 16 + 1)
+      Str.append(mutable builder, `%${high}${low}`)
+    }
+  }
+  return Str.build(builder)
+}
+
+// countUnits is the length in the client's unit (UTF-8 bytes or UTF-16 code
+// units) of the first characters of a line. A count past the end of the line
+// adds one unit for each missing character.
+export function countUnits(lineText: string, characters: int, utf8: bool): int {
+  const length = Str.length(lineText)
+  let index = 0
+  let units = 0
+  let seen = 0
+  while (seen < characters && index < length) {
+    const lead = Str.byteAt(lineText, index)
+    let width = 1
+    let wide = 1
+    if (lead >= 240) {
+      width = 4
+      wide = 2
+    } else if (lead >= 224) {
+      width = 3
+    } else if (lead >= 192) {
+      width = 2
+    }
+    if (utf8) {
+      units = units + width
+    } else {
+      units = units + wide
+    }
+    index = index + width
+    seen = seen + 1
+  }
+  return units + (characters - seen)
+}
+
+// findPackageDirectory is the directory of the nearest narra.toml at or above
+// the directory of a file, as fmtconfig finds it.
+export function findPackageDirectory(path: string): Option<string> uses io, alloc {
+  let directory = Path.dirname(path)
+  for (const _level of Ranges.upTo(64)) {
+    if (Fs.exists(Path.join(directory, "narra.toml"))) {
+      return Some(directory)
+    }
+    const parent = Path.dirname(directory)
+    if (parent == directory) {
+      break
+    }
+    directory = parent
+  }
+  return None
+}
+
+// readFileText is the text of a source file: the open document, else the
+// file on disk, else empty.
+function readFileText(overrides: Map<string, string>, path: string): string uses io, alloc {
+  if (overrides[path] is Some(text)) {
+    return text
+  }
+  const read = Fs.readText(path)
+  if (read is Ok(text)) {
+    return text
+  }
+  return ""
+}
+
+export function makePosition(line: int, character: int): Value uses alloc {
+  return makeRecord([#["line", Value.Int(line)], #["character", Value.Int(character)]])
+}
+
+// makeDiagnostic is a diagnostic with a zero-width range at the position of
+// the problem (the compiler reports a position, not an extent).
+function makeDiagnostic(problem: Problem, lineText: string, utf8: bool): Value uses alloc {
+  let line = problem.line - 1
+  let character = 0
+  if (problem.line < 1) {
+    line = 0
+  } else if (problem.column > 1) {
+    character = countUnits(lineText, problem.column - 1, utf8)
+  }
+  let code = problem.code
+  if (code == "") {
+    code = "E0000"
+  }
+  const position = makePosition(line, character)
+  return makeRecord([
+    #["range", makeRecord([#["start", position], #["end", position]])],
+    #["severity", Value.Int(1)],
+    #["code", Value.Text(code)],
+    #["source", Value.Text("narrac")],
+    #["message", Value.Text(problem.message)],
+  ])
+}
+
+// makePublish is the publishDiagnostics notification of one document.
+function makePublish(uri: string, diagnostics: Array<Value>): Value uses alloc {
+  return makeNotification(
+    "textDocument/publishDiagnostics",
+    makeRecord([#["uri", Value.Text(uri)], #["diagnostics", Value.List(diagnostics)]]),
+  )
+}
+
+// A document that gets a publishDiagnostics notification.
+struct Target {
+  uri: string
+  path: string
+}
+
+// chooseTarget is the document a problem in a file belongs to. In a package
+// the file is relative to its directory (`src/text.nra`); a problem with no
+// file, and every problem of a file checked alone, goes to the changed document.
+function chooseTarget(
+  directory: string,
+  file: string,
+  uri: string,
+  path: string,
+  openUris: Map<string, string>,
+): Target uses alloc {
+  if (directory == "" || file == "") {
+    return Target { uri: uri, path: path }
+  }
+  const filePath = `${directory}/${file}`
+  if (openUris[filePath] is Some(open)) {
+    return Target { uri: open, path: filePath }
+  }
+  return Target { uri: convertPathToUri(filePath), path: filePath }
+}
+
+// addTarget adds a target to the list unless its URI is there.
+function addTarget(mutable order: Array<Target>, target: Target) uses alloc {
+  if (!containsTarget(order, target.uri)) {
+    Arrays.push(mutable order, target)
+  }
+}
+
+function containsTarget(order: Array<Target>, uri: string): bool {
+  for (const target of Arrays.values(order)) {
+    if (target.uri == uri) {
+      return true
+    }
+  }
+  return false
+}
+
+// checkDocumentPackage loads and checks the package that holds a document,
+// with the text of every open document in place of the files on disk, and
+// returns a publishDiagnostics notification for every module of the package
+// (an empty list for a module with no problem). A document with no narra.toml
+// above it is checked alone. When the package does not load, the errors go to
+// their files and to nothing else; a document whose list was not empty before
+// and is not mentioned now gets an empty list.
+export function checkDocumentPackage(
+  mutable server: Server,
+  uri: string,
+): Array<Value> uses io, alloc {
+  const maybePath = convertUriToPath(uri)
+  if (maybePath is None) {
+    return []
+  }
+  const path = maybePath.value
+  const maybeDirectory = findPackageDirectory(path)
+  let overrides: Map<string, string> = Map {}
+  let openUris: Map<string, string> = Map {}
+  for (const entry of Maps.entries(server.documents)) {
+    const #[documentUri, text] = entry
+    const documentPath = convertUriToPath(documentUri)
+    if (documentPath is Some(found)) {
+      overrides[found] = text
+      openUris[found] = documentUri
+    }
+  }
+  let loadPath = path
+  let directory = ""
+  if (maybeDirectory is Some(found)) {
+    loadPath = found
+    directory = found
+  }
+  // The problems and the files of the package's own modules.
+  let problems: Array<Problem> = []
+  let moduleFiles: Array<string> = []
+  const loaded = loadPackage(mutable server.cache, loadPath, overrides)
+  if (loaded is Err(errors)) {
+    for (const error of errors) {
+      Arrays.push(mutable problems, Problem {
+        file: error.file,
+        line: error.line,
+        column: error.column,
+        code: error.code,
+        message: error.message,
+      })
+    }
+  } else {
+    for (const module of Arrays.values(loaded.value.modules)) {
+      if (!Str.startsWith(module.path, "std/")) {
+        Arrays.push(mutable moduleFiles, module.file)
+      }
+    }
+    for (const error of Arrays.values(checkLoaded(mutable server.cache, loaded.value))) {
+      Arrays.push(mutable problems, Problem {
+        file: error.file,
+        line: error.pos.line,
+        column: error.pos.column,
+        code: error.code,
+        message: error.message,
+      })
+    }
+  }
+  // The publish order: the modules in package order, then the files that only
+  // problems mention, then the documents to empty.
+  let order: Array<Target> = []
+  for (const file of Arrays.values(moduleFiles)) {
+    addTarget(mutable order, chooseTarget(directory, file, uri, path, openUris))
+  }
+  for (const problem of Arrays.values(problems)) {
+    addTarget(mutable order, chooseTarget(directory, problem.file, uri, path, openUris))
+  }
+  let messages: Array<Value> = []
+  let nonEmpty: Array<string> = []
+  for (const target of Arrays.values(order)) {
+    let diagnostics: Array<Value> = []
+    // The lines of the target, read at its first problem only.
+    let lineTexts: Array<string> = []
+    let linesRead = false
+    for (const problem of Arrays.values(problems)) {
+      const problemTarget = chooseTarget(directory, problem.file, uri, path, openUris)
+      if (problemTarget.uri == target.uri) {
+        if (!linesRead) {
+          lineTexts = Str.split(readFileText(overrides, target.path), "\n")
+          linesRead = true
+        }
+        let lineText = ""
+        if (problem.line >= 1 && problem.line <= Arrays.length(lineTexts)) {
+          lineText = lineTexts[problem.line - 1]
+        }
+        Arrays.push(mutable diagnostics, makeDiagnostic(problem, lineText, server.utf8))
+      }
+    }
+    if (Arrays.length(diagnostics) > 0) {
+      Arrays.push(mutable nonEmpty, target.uri)
+    }
+    Arrays.push(mutable messages, makePublish(target.uri, diagnostics))
+  }
+  if (server.reported[loadPath] is Some(oldUris)) {
+    for (const old of Arrays.values(oldUris)) {
+      if (!containsTarget(order, old)) {
+        Arrays.push(mutable messages, makePublish(old, []))
+      }
+    }
+  }
+  server.reported[loadPath] = nonEmpty
+  return messages
+}
+
+// formatDocument formats the document with the [fmt] settings of the nearest
+// narra.toml. It gives the edits of textDocument/formatting: none when the text
+// is already formatted, else one that replaces the whole document. A document
+// with a syntax error gives Ok(Value.Null). An Err is a reason for an error
+// response.
+export function formatDocument(server: Server, uri: string): Result<Value, string> uses io, alloc {
+  const maybePath = convertUriToPath(uri)
+  if (maybePath is None) {
+    return Err(`not a file URI: ${uri}`)
+  }
+  let text = ""
+  if (server.documents[uri] is Some(open)) {
+    text = open
+  } else {
+    const read = Fs.readText(maybePath.value)
+    if (read is Err(message)) {
+      return Err(message)
+    }
+    text = read.value
+  }
+  const config = FmtConfig.findConfig(FmtConfig.getDirectory(maybePath.value, false))
+  if (config is Err(message)) {
+    return Err(message)
+  }
+  const formatted = Fmt.formatSource(text, config.value)
+  if (formatted is Err(_)) {
+    return Ok(Value.Null)
+  }
+  if (formatted.value == text) {
+    return Ok(Value.List([]))
+  }
+  // The edit replaces everything, up to the end of the last line.
+  const lineTexts = Str.split(text, "\n")
+  const lastLine = Arrays.length(lineTexts) - 1
+  const lastCharacters = countUnits(
+    lineTexts[lastLine],
+    Str.charCount(lineTexts[lastLine]),
+    server.utf8,
+  )
+  const edit = makeRecord([
+    #[
+      "range",
+      makeRecord([
+        #["start", makePosition(0, 0)],
+        #["end", makePosition(lastLine, lastCharacters)],
+      ]),
+    ],
+    #["newText", Value.Text(formatted.value)],
+  ])
+  return Ok(Value.List([edit]))
+}
+
+// closeDocument forgets a document, rechecks its package from the files on
+// disk and empties the diagnostics of the document itself: the recheck's list
+// for the document is replaced by an empty one.
+export function closeDocument(mutable server: Server, uri: string): Array<Value> uses io, alloc {
+  const _removed = Maps.remove(mutable server.documents, uri)
+  let messages: Array<Value> = []
+  for (const message of Arrays.values(checkDocumentPackage(mutable server, uri))) {
+    const target = getPath(message, ["params", "uri"])
+    if (target is Some(Value.Text(targetUri))) {
+      if (targetUri == uri) {
+        continue
+      }
+    }
+    Arrays.push(mutable messages, message)
+  }
+  Arrays.push(mutable messages, makePublish(uri, []))
+  let reported: Map<string, Array<string>> = Map {}
+  for (const entry of Maps.entries(server.reported)) {
+    const #[packageKey, uris] = entry
+    let kept: Array<string> = []
+    for (const old of Arrays.values(uris)) {
+      if (old != uri) {
+        Arrays.push(mutable kept, old)
+      }
+    }
+    reported[packageKey] = kept
+  }
+  server.reported = reported
+  return messages
+}

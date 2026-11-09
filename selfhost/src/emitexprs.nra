@@ -12,15 +12,23 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Char from "std/char"
 import { Expr, Stmt, Block, Arg, Pos, FieldInit } from "narrac/ast"
-import { Type } from "narrac/types"
-import { Checker, Ref, ProgramFunc, getExpressionId, findBody, findBodySlot } from "narrac/check"
-import { cType, functionName, constGetterName } from "narrac/cnames"
+import { Type, isInteger, isSizedInteger } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  ProgramFunc,
+  getExpressionId,
+  findBody,
+  findBodySlot,
+  orderArguments,
+  findParameterIndexes,
+} from "narrac/check"
+import { cType, typeId, functionName, constGetterName } from "narrac/cnames"
 import {
   Emitter,
   Code,
   EmitWalker,
   TempVar,
-  BlockInfo,
   reportUnsupported,
   writeLine,
   literal,
@@ -31,10 +39,7 @@ import {
   retainCode,
   beginStatement,
   endStatement,
-  pushScope,
-  popScope,
   needsRc,
-  withoutLastBlock,
   typeOf,
   refOf,
   localOf,
@@ -85,8 +90,8 @@ export function emitExpression<W: EmitWalker>(
     }
   }
   return match (expression) {
-    Expr.IntLit(_, _, text) => plain(integerCode(text))
-    Expr.FloatLit(_, _, text) => plain(text)
+    Expr.IntLit(nodeId, _, text) => plain(typedIntegerCode(emitter, nodeId, text))
+    Expr.FloatLit(nodeId, _, text) => plain(floatLiteralCode(emitter, nodeId, text))
     Expr.StringLit(_, _, value, _) => plain(literal(mutable emitter, value))
     Expr.CharLit(_, _, value) => plain(`${Int.toString(Char.code(Str.charAt(value, 0)))}U`)
     Expr.BoolLit(_, _, value) => plain(boolText(value))
@@ -210,7 +215,24 @@ function parseIntegerText(text: string): int uses alloc {
   if (parsed is Ok(value)) {
     return value
   }
-  return 0
+  // A u64 above int's maximum: keep the low 64 bits, so the cast to uint64_t
+  // gives the value back.
+  let wrapped = 0
+  for (const index of Ranges.between(0, Str.length(joined))) {
+    if (Int.parse(Str.slice(joined, index, index + 1), base) is Ok(digit)) {
+      wrapped = wrapped *% base +% digit
+    }
+  }
+  return wrapped
+}
+
+// typedIntegerCode casts the literal to its C type when it is a sized integer.
+function typedIntegerCode(emitter: Emitter, nodeId: int, text: string): string uses alloc {
+  const type = typeOf(emitter, nodeId)
+  if (isSizedInteger(type)) {
+    return `((${cType(emitter.checker, type)})${integerCode(text)})`
+  }
+  return integerCode(text)
 }
 
 // integerCode is INT64_C(value), or INT64_MIN for the smallest int.
@@ -337,9 +359,20 @@ function emitUnary<W: EmitWalker>(
 ): Code uses alloc {
   const value = EmitWalker.emitExpression(walker, mutable emitter, operand).text
   if (operator == "-") {
-    if (typeOf(emitter, nodeId) == Type.TInt) {
+    const operandType = typeOf(emitter, nodeId)
+    if (operandType == Type.TInt) {
       const position = where(emitter, pos)
       return plain(temp(mutable emitter, Type.TInt, `narra_neg(${value}, ${position})`))
+    }
+    if (isSizedInteger(operandType)) {
+      const cName = cType(emitter.checker, operandType)
+      // A negated literal is written whole, so -128 is a valid i8.
+      if (operand is Expr.IntLit(_, _, literalText)) {
+        return plain(`((${cName})(-${integerCode(literalText)}))`)
+      }
+      const suffix = typeId(emitter.checker, operandType)
+      const position = where(emitter, pos)
+      return plain(temp(mutable emitter, operandType, `narra_neg_${suffix}(${value}, ${position})`))
     }
     return plain(`(-${value})`)
   }
@@ -347,6 +380,10 @@ function emitUnary<W: EmitWalker>(
     return plain(`(!${value})`)
   }
   if (operator == "~") {
+    const operandType = typeOf(emitter, nodeId)
+    if (isSizedInteger(operandType)) {
+      return plain(`((${cType(emitter.checker, operandType)})(~${value}))`)
+    }
     return plain(`(~${value})`)
   }
   return unsupportedCode(mutable emitter, "unary operator")
@@ -400,7 +437,7 @@ function isPrimitive(type: Type): bool {
     Type.TArray(_) => false
     Type.TBox(_) => false
     Type.TMap(_, _) => false
-    Type.TFunc(_, _) => false
+    Type.TFunc(_, _, _, _) => false
     _ => true
   }
 }
@@ -442,7 +479,7 @@ function emitBinary<W: EmitWalker>(
   const rightCode = EmitWalker.emitExpression(walker, mutable emitter, right)
   const leftText = leftCode.text
   const rightText = rightCode.text
-  if (leftType == Type.TStr) {
+  if (leftType == Type.TStr || leftType == Type.TBytes) {
     if (operator == "==") {
       return plain(`lstr_eq(${leftText}, ${rightText})`)
     }
@@ -451,21 +488,28 @@ function emitBinary<W: EmitWalker>(
     }
     return plain(`(lstr_cmp(${leftText}, ${rightText}) ${operator} 0)`)
   }
-  if (leftType == Type.TInt) {
+  if (isInteger(leftType)) {
     const position = where(emitter, pos)
+    // A sized integer has its own functions, named with the type.
+    let suffix = ""
+    if (leftType != Type.TInt) {
+      suffix = `_${typeId(emitter.checker, leftType)}`
+    }
     const checked = checkedFunction(operator)
     if (checked != "") {
-      return plain(
-        temp(mutable emitter, Type.TInt, `${checked}(${leftText}, ${rightText}, ${position})`),
-      )
+      const call = `${checked}${suffix}(${leftText}, ${rightText}, ${position})`
+      return plain(temp(mutable emitter, leftType, call))
     }
     const wrapping = wrappingFunction(operator)
     if (wrapping != "") {
-      return plain(`${wrapping}(${leftText}, ${rightText})`)
+      return plain(`${wrapping}${suffix}(${leftText}, ${rightText})`)
     }
   }
   if (leftType == Type.TF64 && operator == "%") {
     return plain(`fmod(${leftText}, ${rightText})`)
+  }
+  if (leftType == Type.TF32 && operator == "%") {
+    return plain(`fmodf(${leftText}, ${rightText})`)
   }
   return plain(`(${leftText} ${operator} ${rightText})`)
 }
@@ -478,7 +522,14 @@ function emitCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  holdEarlierArguments(walker, mutable emitter, arguments)
+  // Named arguments in another order than the parameters are evaluated as
+  // written, then passed in parameter order (D87).
+  if (emitter.checker.argumentOrders[nodeId] is Some(_)) {
+    holdReorderedArguments(walker, mutable emitter, nodeId, arguments)
+  } else {
+    holdEarlierArguments(walker, mutable emitter, arguments)
+  }
+  const ordered = orderArguments(emitter.checker, nodeId, arguments)
   const ref = refOf(emitter, nodeId)
   return match (ref) {
     Ref.Distinct(_) => EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
@@ -503,17 +554,25 @@ function emitCall<W: EmitWalker>(
       walker,
       mutable emitter,
       ProgramFunc.ImplFunc(block, index),
-      arguments,
+      ordered,
     )
     Ref.Function(funcIndex) => emitPlainOrInstanceCall(
       walker,
       mutable emitter,
       nodeId,
       funcIndex,
-      arguments,
+      ordered,
     )
     _ => unsupportedCode(mutable emitter, "call")
   }
+}
+
+// floatLiteralCode is the C text of a float literal; an f32 literal takes the f suffix.
+function floatLiteralCode(emitter: Emitter, nodeId: int, text: string): string uses alloc {
+  if (typeOf(emitter, nodeId) == Type.TF32) {
+    return `${text}f`
+  }
+  return text
 }
 
 // mayWrite reports whether evaluating an expression can assign a variable
@@ -620,6 +679,40 @@ function holdEarlierArguments<W: EmitWalker>(
   }
 }
 
+// holdReorderedArguments keeps the written order of named arguments that are
+// passed in another order. An argument needs a temporary when an argument
+// written after it is passed before it, or when a later argument may assign a
+// variable; every argument written before the last one that needs it is held
+// too, so it still runs first.
+function holdReorderedArguments<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+) uses alloc {
+  const count = Arrays.length(arguments)
+  const parameterIndexes = findParameterIndexes(emitter.checker, nodeId, count)
+  let last = -1
+  for (const index of Ranges.between(0, count)) {
+    if (!arguments[index].isMutable && mayWrite(emitter, arguments[index].value)) {
+      last = index
+    }
+  }
+  // the last written argument that a later-written one is passed before
+  for (const index of Ranges.between(0, count)) {
+    for (const later of Ranges.between(index + 1, count)) {
+      if (parameterIndexes[later] < parameterIndexes[index] && index + 1 > last) {
+        last = index + 1
+      }
+    }
+  }
+  for (const index of Ranges.between(0, last)) {
+    if (!arguments[index].isMutable) {
+      holdArgument(walker, mutable emitter, arguments[index].value)
+    }
+  }
+}
+
 // isStableArgument is true for a literal or a name that no later argument can
 // change, which needs no temporary.
 function isStableArgument(emitter: Emitter, value: Expr, nodeId: int): bool {
@@ -640,7 +733,7 @@ function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value:
     return
   }
   const valueType = typeOf(emitter, nodeId)
-  if (valueType is Type.TFunc(_, _)) {
+  if (valueType is Type.TFunc(_, _, _, _)) {
     return
   }
   const code = EmitWalker.emitExpression(walker, mutable emitter, value)

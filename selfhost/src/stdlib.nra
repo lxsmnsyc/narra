@@ -1,725 +1,79 @@
-// The standard library's signature data: one StdFunc per Go builtin, in the
-// order of `narra`'s builtin dump (BuiltinDump in decldump.go: the prelude,
-// then the modules in moduleList order, functions by export name). The
-// table is hand-written; TestSelfhostBuiltins fails when it differs from
-// the Go registry, so a std function added only in Go fails until it is
-// added here too.
+// The standard library's registry: one StdFunc per builtin, in the order of the
+// std modules (the prelude first). The rows of each module are in std<module>.nra
+// beside its checks and emitters; this file registers them and resolves the type
+// texts of the rows.
 import { StdFunc, Registry, newRegistry, register } from "narrac/builtins"
-import { Type } from "narrac/types"
-import { Checker, internComposite, typeString } from "narrac/check"
-import { instantiate, findTupleType } from "narrac/resolve"
-import * as Str from "std/string"
+import { Checker, typeString } from "narrac/check"
+import { stdType } from "narrac/stdtypes"
 import * as Arrays from "std/array"
-import * as Ranges from "std/range"
+import { PRELUDE_FUNCS } from "narrac/stdprelude"
+import { INT_FUNCS } from "narrac/stdint"
+import { FLOAT_FUNCS } from "narrac/stdfloat"
+import { STRING_FUNCS } from "narrac/stdstring"
+import { ARRAY_FUNCS } from "narrac/stdarray"
+import { BOX_FUNCS } from "narrac/stdbox"
+import { CHAR_FUNCS } from "narrac/stdchar"
+import { COROUTINE_FUNCS } from "narrac/stdcoroutine"
+import {
+  INTERNAL_COROUTINE_FUNCS,
+  INTERNAL_FLOAT_FUNCS,
+  INTERNAL_PROBE_FUNCS,
+} from "narrac/stdinternal"
+import { ENV_FUNCS } from "narrac/stdenv"
+import { FS_FUNCS } from "narrac/stdfs"
+import { IO_FUNCS } from "narrac/stdio"
+import { JSON_FUNCS } from "narrac/stdjson"
+import { MAP_FUNCS } from "narrac/stdmap"
+import { OPTION_FUNCS } from "narrac/stdoption"
+import { PATH_FUNCS } from "narrac/stdpath"
+import { PROCESS_FUNCS } from "narrac/stdprocess"
+import { RANGE_FUNCS } from "narrac/stdrange"
+import { RESULT_FUNCS } from "narrac/stdresult"
+import { SHAPE_FUNCS } from "narrac/stdshape"
+import { TEST_FUNCS } from "narrac/stdtest"
+import { F32_FUNCS } from "narrac/stdf32"
+import { BYTES_FUNCS } from "narrac/stdbytes"
+import { sizedFuncs, intConversionFuncs } from "narrac/stdsized"
 
-const STD_FUNCS: Array<StdFunc> = [
-  StdFunc { name: "assert", module: "", key: "assert", parameters: ["bool"], result: "void" },
-  StdFunc { name: "panic", module: "", key: "panic", parameters: ["string"], result: "void" },
-  StdFunc {
-    name: "print",
-    module: "",
-    key: "print",
-    parameters: ["string"],
-    result: "void",
-    effects: ["io"],
-  },
-  StdFunc { name: "Int.abs", module: "std/int", key: "abs", parameters: ["int"], result: "int" },
-  StdFunc {
-    name: "Int.parse",
-    module: "std/int",
-    key: "parse",
-    parameters: ["string", "int"],
-    result: "Result<int, string>",
-    effects: ["alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Int.toHex",
-    module: "std/int",
-    key: "toHex",
-    parameters: ["int"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Int.toString",
-    module: "std/int",
-    key: "toString",
-    parameters: ["int"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Float.fromInt",
-    module: "std/float",
-    key: "fromInt",
-    parameters: ["int"],
-    result: "f64",
-  },
-  StdFunc {
-    name: "Float.sqrt",
-    module: "std/float",
-    key: "sqrt",
-    parameters: ["f64"],
-    result: "f64",
-  },
-  StdFunc {
-    name: "Float.toString",
-    module: "std/float",
-    key: "toString",
-    parameters: ["f64"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Float.truncate",
-    module: "std/float",
-    key: "truncate",
-    parameters: ["f64"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Str.append",
-    module: "std/string",
-    key: "append",
-    parameters: ["StringBuilder", "string"],
-    mutables: [true, false],
-    result: "void",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.appendChar",
-    module: "std/string",
-    key: "appendChar",
-    parameters: ["StringBuilder", "char"],
-    mutables: [true, false],
-    result: "void",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.build",
-    module: "std/string",
-    key: "build",
-    parameters: ["StringBuilder"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.builder",
-    module: "std/string",
-    key: "builder",
-    result: "StringBuilder",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.byteAt",
-    module: "std/string",
-    key: "byteAt",
-    parameters: ["string", "int"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Str.charAt",
-    module: "std/string",
-    key: "charAt",
-    parameters: ["string", "int"],
-    result: "char",
-  },
-  StdFunc {
-    name: "Str.charCount",
-    module: "std/string",
-    key: "charCount",
-    parameters: ["string"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Str.chars",
-    module: "std/string",
-    key: "chars",
-    parameters: ["string"],
-    result: "Array<char>",
-    effects: ["alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Str.concat",
-    module: "std/string",
-    key: "concat",
-    parameters: ["string", "string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.contains",
-    module: "std/string",
-    key: "contains",
-    parameters: ["string", "string"],
-    result: "bool",
-  },
-  StdFunc {
-    name: "Str.endsWith",
-    module: "std/string",
-    key: "endsWith",
-    parameters: ["string", "string"],
-    result: "bool",
-  },
-  StdFunc {
-    name: "Str.fromChar",
-    module: "std/string",
-    key: "fromChar",
-    parameters: ["char"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.indexOf",
-    module: "std/string",
-    key: "indexOf",
-    parameters: ["string", "string"],
-    result: "Option<int>",
-    effects: ["alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Str.join",
-    module: "std/string",
-    key: "join",
-    parameters: ["Array<string>", "string"],
-    result: "string",
-    effects: ["alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Str.length",
-    module: "std/string",
-    key: "length",
-    parameters: ["string"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Str.nextChar",
-    module: "std/string",
-    key: "nextChar",
-    parameters: ["string", "int"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Str.repeat",
-    module: "std/string",
-    key: "repeat",
-    parameters: ["string", "int"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.replace",
-    module: "std/string",
-    key: "replace",
-    parameters: ["string", "string", "string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.slice",
-    module: "std/string",
-    key: "slice",
-    parameters: ["string", "int", "int"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.sliceFrom",
-    module: "std/string",
-    key: "sliceFrom",
-    parameters: ["string", "int"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Str.split",
-    module: "std/string",
-    key: "split",
-    parameters: ["string", "string"],
-    result: "Array<string>",
-    effects: ["alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Str.startsWith",
-    module: "std/string",
-    key: "startsWith",
-    parameters: ["string", "string"],
-    result: "bool",
-  },
-  StdFunc {
-    name: "Str.trim",
-    module: "std/string",
-    key: "trim",
-    parameters: ["string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc { name: "Array.entries", module: "std/array", key: "entries", check: "checkArrayLength" },
-  StdFunc {
-    name: "Array.filled",
-    module: "std/array",
-    key: "filled",
-    effects: ["alloc"],
-    check: "checkArrayFilled",
-  },
-  StdFunc { name: "Array.length", module: "std/array", key: "length", check: "checkArrayLength" },
-  StdFunc {
-    name: "Array.push",
-    module: "std/array",
-    key: "push",
-    mutables: [true, false],
-    effects: ["alloc"],
-    check: "checkArrayPush",
-  },
-  StdFunc { name: "Array.values", module: "std/array", key: "values", check: "checkArrayLength" },
-  StdFunc {
-    name: "Box.new",
-    module: "std/box",
-    key: "new",
-    effects: ["alloc"],
-    check: "checkBoxNew",
-  },
-  StdFunc {
-    name: "Char.code",
-    module: "std/char",
-    key: "code",
-    parameters: ["char"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Char.fromCode",
-    module: "std/char",
-    key: "fromCode",
-    parameters: ["int"],
-    result: "Option<char>",
-    check: "fixed",
-  },
-  // std/coroutine is Narra source (std/src/coroutine.nra): a module row with no function.
-  StdFunc { name: "std/coroutine", module: "std/coroutine", key: "", check: "source" },
-  StdFunc {
-    name: "Co.next",
-    module: "std/internal/coroutine",
-    key: "next",
-    mutables: [true],
-    effects: ["alloc"],
-    check: "checkCoResume",
-  },
-  StdFunc {
-    name: "Co.panicMessage",
-    module: "std/internal/coroutine",
-    key: "panicMessage",
-    parameters: [],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Co.panicked",
-    module: "std/internal/coroutine",
-    key: "panicked",
-    parameters: [],
-    result: "bool",
-  },
-  StdFunc {
-    name: "Co.resume",
-    module: "std/internal/coroutine",
-    key: "resume",
-    mutables: [true, false],
-    effects: ["alloc"],
-    check: "checkCoResume",
-  },
-  StdFunc {
-    name: "Env.args",
-    module: "std/env",
-    key: "args",
-    result: "Array<string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Env.get",
-    module: "std/env",
-    key: "get",
-    parameters: ["string"],
-    result: "Option<string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.createDir",
-    module: "std/fs",
-    key: "createDir",
-    parameters: ["string"],
-    result: "Result<bool, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.createDirAll",
-    module: "std/fs",
-    key: "createDirAll",
-    parameters: ["string"],
-    result: "Result<bool, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.exists",
-    module: "std/fs",
-    key: "exists",
-    parameters: ["string"],
-    result: "bool",
-    effects: ["io"],
-  },
-  StdFunc {
-    name: "Fs.isDir",
-    module: "std/fs",
-    key: "isDir",
-    parameters: ["string"],
-    result: "bool",
-    effects: ["io"],
-  },
-  StdFunc {
-    name: "Fs.listDir",
-    module: "std/fs",
-    key: "listDir",
-    parameters: ["string"],
-    result: "Result<Array<string>, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.readText",
-    module: "std/fs",
-    key: "readText",
-    parameters: ["string"],
-    result: "Result<string, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.removeDir",
-    module: "std/fs",
-    key: "removeDir",
-    parameters: ["string"],
-    result: "Result<bool, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.removeFile",
-    module: "std/fs",
-    key: "removeFile",
-    parameters: ["string"],
-    result: "Result<bool, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Fs.writeText",
-    module: "std/fs",
-    key: "writeText",
-    parameters: ["string", "string"],
-    result: "Result<int, string>",
-    effects: ["io"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Probe.code",
-    module: "std/internal/probe",
-    key: "code",
-    parameters: ["char"],
-    result: "int",
-  },
-  StdFunc {
-    name: "Io.flush",
-    module: "std/io",
-    key: "flush",
-    result: "void",
-    effects: ["io"],
-  },
-  StdFunc {
-    name: "Io.readAll",
-    module: "std/io",
-    key: "readAll",
-    result: "Result<string, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Io.readBytes",
-    module: "std/io",
-    key: "readBytes",
-    parameters: ["int"],
-    result: "Result<string, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Io.readLine",
-    module: "std/io",
-    key: "readLine",
-    result: "Result<Option<string>, string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Io.write",
-    module: "std/io",
-    key: "write",
-    parameters: ["string"],
-    result: "void",
-    effects: ["io"],
-  },
-  StdFunc {
-    name: "Io.writeError",
-    module: "std/io",
-    key: "writeError",
-    parameters: ["string"],
-    result: "void",
-    effects: ["io"],
-  },
-  StdFunc {
-    name: "Map.entries",
-    module: "std/map",
-    key: "entries",
-    effects: ["alloc"],
-    check: "checkMapIter",
-  },
-  StdFunc {
-    name: "Map.keys",
-    module: "std/map",
-    key: "keys",
-    effects: ["alloc"],
-    check: "checkMapIter",
-  },
-  StdFunc {
-    name: "Map.remove",
-    module: "std/map",
-    key: "remove",
-    mutables: [true, false],
-    effects: ["alloc"],
-    check: "checkMapRemove",
-  },
-  StdFunc { name: "Map.size", module: "std/map", key: "size", check: "checkMapSize" },
-  // std/option is Narra source (std/src/option.nra): a module row with no function.
-  StdFunc { name: "std/option", module: "std/option", key: "", check: "source" },
-  StdFunc {
-    name: "Path.basename",
-    module: "std/path",
-    key: "basename",
-    parameters: ["string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Path.dirname",
-    module: "std/path",
-    key: "dirname",
-    parameters: ["string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Path.extname",
-    module: "std/path",
-    key: "extname",
-    parameters: ["string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Path.join",
-    module: "std/path",
-    key: "join",
-    parameters: ["string", "string"],
-    result: "string",
-    effects: ["alloc"],
-  },
-  StdFunc {
-    name: "Process.run",
-    module: "std/process",
-    key: "run",
-    parameters: ["string", "Array<string>"],
-    result: "Result<#[int, string, string], string>",
-    effects: ["io", "alloc"],
-    check: "fixed",
-  },
-  StdFunc {
-    name: "Range.between",
-    module: "std/range",
-    key: "between",
-    check: "checkRangeBetween",
-  },
-  StdFunc { name: "Range.upTo", module: "std/range", key: "upTo", check: "checkRangeUpTo" },
-  StdFunc {
-    name: "Result.andThen",
-    module: "std/result",
-    key: "andThen",
-    effects: ["alloc"],
-    callbacks: [1],
-    check: "checkResultAndThen",
-  },
-  StdFunc {
-    name: "Result.err",
-    module: "std/result",
-    key: "err",
-    effects: ["alloc"],
-    check: "checkResultToOption",
-  },
-  StdFunc {
-    name: "Result.map",
-    module: "std/result",
-    key: "map",
-    effects: ["alloc"],
-    callbacks: [1],
-    check: "checkResultMap",
-  },
-  StdFunc {
-    name: "Result.mapErr",
-    module: "std/result",
-    key: "mapErr",
-    effects: ["alloc"],
-    callbacks: [1],
-    check: "checkResultMap",
-  },
-  StdFunc {
-    name: "Result.ok",
-    module: "std/result",
-    key: "ok",
-    effects: ["alloc"],
-    check: "checkResultToOption",
-  },
-  StdFunc {
-    name: "Result.withDefault",
-    module: "std/result",
-    key: "withDefault",
-    check: "checkResultWithDefault",
-  },
-  StdFunc {
-    name: "Test.eq",
-    module: "std/test",
-    key: "eq",
-    effects: ["alloc"],
-    check: "checkTestCompare",
-  },
-  StdFunc {
-    name: "Test.golden",
-    module: "std/test",
-    key: "golden",
-    effects: ["io"],
-    check: "checkTestGolden",
-  },
-  StdFunc {
-    name: "Test.ne",
-    module: "std/test",
-    key: "ne",
-    effects: ["alloc"],
-    check: "checkTestCompare",
-  },
-  StdFunc {
-    name: "Test.panics",
-    module: "std/test",
-    key: "panics",
-    effects: ["io"],
-    check: "checkTestPanics",
-  },
-  StdFunc {
-    name: "Test.panicsWith",
-    module: "std/test",
-    key: "panicsWith",
-    effects: ["io"],
-    check: "checkTestPanics",
-  },
-]
-
-// stdRegistry builds the registry from the table. Registration order gives
-// the module order of Go's moduleList.
-export function stdRegistry(): Registry uses alloc {
-  let registry = newRegistry()
-  for (const builtin of Arrays.values(STD_FUNCS)) {
+// registerAll adds the rows of one module to the registry.
+function registerAll(mutable registry: Registry, table: Array<StdFunc>) uses alloc {
+  for (const builtin of Arrays.values(table)) {
     register(mutable registry, builtin)
   }
+}
+
+// stdRegistry builds the registry from the rows of the modules. Registration order gives
+// the module order of the registry. A new std module adds its import and one line here.
+export function stdRegistry(): Registry uses alloc {
+  let registry = newRegistry()
+  registerAll(mutable registry, PRELUDE_FUNCS)
+  registerAll(mutable registry, INT_FUNCS)
+  registerAll(mutable registry, intConversionFuncs())
+  registerAll(mutable registry, FLOAT_FUNCS)
+  registerAll(mutable registry, STRING_FUNCS)
+  registerAll(mutable registry, ARRAY_FUNCS)
+  registerAll(mutable registry, BOX_FUNCS)
+  registerAll(mutable registry, CHAR_FUNCS)
+  registerAll(mutable registry, COROUTINE_FUNCS)
+  registerAll(mutable registry, INTERNAL_COROUTINE_FUNCS)
+  registerAll(mutable registry, ENV_FUNCS)
+  registerAll(mutable registry, FS_FUNCS)
+  registerAll(mutable registry, INTERNAL_FLOAT_FUNCS)
+  registerAll(mutable registry, INTERNAL_PROBE_FUNCS)
+  registerAll(mutable registry, IO_FUNCS)
+  registerAll(mutable registry, JSON_FUNCS)
+  registerAll(mutable registry, MAP_FUNCS)
+  registerAll(mutable registry, OPTION_FUNCS)
+  registerAll(mutable registry, PATH_FUNCS)
+  registerAll(mutable registry, PROCESS_FUNCS)
+  registerAll(mutable registry, RANGE_FUNCS)
+  registerAll(mutable registry, RESULT_FUNCS)
+  registerAll(mutable registry, SHAPE_FUNCS)
+  registerAll(mutable registry, TEST_FUNCS)
+  registerAll(mutable registry, sizedFuncs())
+  registerAll(mutable registry, F32_FUNCS)
+  registerAll(mutable registry, BYTES_FUNCS)
   return registry
-}
-
-// stdType resolves the type text of a registry entry (`Option<int>`,
-// `Result<#[int, string, string], string>`). Option and Result are the
-// prelude's generics, so an instance is made on first use, as Go's
-// preludeEnum does when a builtin's Check runs. The body checker calls it
-// at the call site, never during the declaration passes.
-export function stdType(mutable checker: Checker, text: string): Type uses alloc {
-  const length = Str.length(text)
-  if (Str.startsWith(text, "#[")) {
-    let elements: Array<Type> = []
-    for (const part of Arrays.values(splitTop(Str.slice(text, 2, length - 1)))) {
-      Arrays.push(mutable elements, stdType(mutable checker, part))
-    }
-    return findTupleType(mutable checker, elements)
-  }
-  const open = Str.indexOf(text, "<")
-  if (open is Some(index)) {
-    const head = Str.slice(text, 0, index)
-    let arguments: Array<Type> = []
-    for (const part of Arrays.values(splitTop(Str.slice(text, index + 1, length - 1)))) {
-      Arrays.push(mutable arguments, stdType(mutable checker, part))
-    }
-    if (head == "Array") {
-      return internComposite(mutable checker, Type.TArray(arguments[0]))
-    }
-    if (head == "Box") {
-      return internComposite(mutable checker, Type.TBox(arguments[0]))
-    }
-    if (head == "Map") {
-      return internComposite(mutable checker, Type.TMap(arguments[0], arguments[1]))
-    }
-    if (checker.scopes[0].generics[head] is Some(generic)) {
-      return instantiate(mutable checker, generic, arguments)
-    }
-    panic(`stdType: unknown generic ${head}`)
-  }
-  const prims = ["int", "f64", "bool", "char", "string", "void", "StringBuilder"]
-  const types = [
-    Type.TInt,
-    Type.TF64,
-    Type.TBool,
-    Type.TChar,
-    Type.TStr,
-    Type.TVoid,
-    Type.TStringBuilder,
-  ]
-  for (const index of Ranges.between(0, Arrays.length(prims))) {
-    if (prims[index] == text) {
-      return types[index]
-    }
-  }
-  panic(`stdType: unknown type ${text}`)
-  return Type.TVoid
-}
-
-// splitTop splits type arguments at the commas outside < > and [ ].
-function splitTop(text: string): Array<string> uses alloc {
-  let parts: Array<string> = []
-  let depth = 0
-  let start = 0
-  const length = Str.length(text)
-  for (const index of Ranges.between(0, length)) {
-    const byte = Str.byteAt(text, index)
-    if (byte == 60 || byte == 91) {
-      depth = depth + 1
-    } else if (byte == 62 || byte == 93) {
-      depth = depth - 1
-    } else if (byte == 44 && depth == 0) {
-      Arrays.push(mutable parts, Str.trim(Str.slice(text, start, index)))
-      start = index + 1
-    }
-  }
-  Arrays.push(mutable parts, Str.trim(Str.sliceFrom(text, start)))
-  return parts
 }
 
 // typeProblems resolves every type text of the registry with stdType and

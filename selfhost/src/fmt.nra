@@ -44,7 +44,6 @@ import {
   DistinctDecl,
   VariantDecl,
   EnumDecl,
-  TestDecl,
   TraitDecl,
   ImplDecl,
   Decl,
@@ -53,8 +52,9 @@ import {
   Expr,
   Pattern,
   YieldBinding,
+  LoopReference,
 } from "narrac/ast"
-import { FmtConfig, createDefaultConfig, getDirectory, findConfig } from "narrac/fmtconfig"
+import { FmtConfig, getDirectory, findConfig } from "narrac/fmtconfig"
 import {
   Settings,
   Printer,
@@ -331,17 +331,6 @@ function getByteAt(source: string, offset: int): int {
     return -1
   }
   return Str.byteAt(source, offset)
-}
-
-function getPatternPosition(pattern: Pattern): Pos {
-  return match (pattern) {
-    Pattern.PatWildcard(_, pos) => pos
-    Pattern.PatName(_, pos, _) => pos
-    Pattern.PatCtor(_, pos, _, _, _, _) => pos
-    Pattern.PatStruct(_, pos, _) => pos
-    Pattern.PatTuple(_, pos, _) => pos
-    Pattern.PatLit(_, pos, _) => pos
-  }
 }
 
 // ---- Helpers
@@ -912,13 +901,14 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc uses alloc {
     Stmt.ReturnStmt(_, value) => printReturn(printer, value)
     Stmt.IfStmt(_, condition, thenBlock, orElse) => printIf(printer, condition, thenBlock, orElse)
     Stmt.WhileStmt(pos, label, condition, body) => printWhile(printer, pos, label, condition, body)
-    Stmt.ForStmt(_, pos, label, name, iterable, body) => printFor(
+    Stmt.ForStmt(_, pos, label, name, iterable, body, reference) => printFor(
       printer,
       pos,
       label,
       name,
       iterable,
       body,
+      reference,
     )
     Stmt.YieldStmt(_, value, delegate, binding) => printYield(printer, value, delegate, binding)
     Stmt.BreakStmt(_, label) => text(getJump("break", label))
@@ -1158,9 +1148,19 @@ function printFor(
   name: string,
   iterable: Expr,
   body: Block,
+  reference: Option<LoopReference>,
 ): Doc uses alloc {
   let keyword = "const "
   let declaredName = name
+  // The `mutable` marker (D85) is written in place of `const`, or inside
+  // the entries tuple.
+  if (reference is Some(marker)) {
+    keyword = "mutable "
+    if (marker.indexName != "") {
+      keyword = `const #[${marker.indexName}, mutable `
+      declaredName = `${name}]`
+    }
+  }
   let declaredPattern: Option<Pattern> = None
   let loopBody = body
   if (Str.startsWith(name, "__for_") && Arrays.length(body.statements) > 0) {

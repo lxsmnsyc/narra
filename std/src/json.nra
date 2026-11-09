@@ -1,0 +1,542 @@
+// std/json: parse and stringify JSON text (RFC 8259) as a Value of std/shape.
+
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Char from "std/char"
+import * as Float from "std/float"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as FloatText from "std/internal/float"
+import { Value, Shape } from "std/shape"
+
+// Containers nested deeper than this are an error, so the recursion is bounded.
+const MAX_DEPTH = 512
+
+struct Parser {
+  text: string
+  length: int
+  position: int
+}
+
+// parse reads one JSON value. Errors read `<line>:<column>: <reason>`.
+export function parse(text: string): Result<Value, string> uses alloc {
+  let parser = Parser { text: text, length: Str.length(text), position: 0 }
+  skipSpace(mutable parser)
+  const value = parseValue(mutable parser, 0)
+  if (value is Err(message)) {
+    return Err(message)
+  }
+  skipSpace(mutable parser)
+  if (parser.position < parser.length) {
+    return fail(parser, parser.position, "unexpected character after the value")
+  }
+  return Ok(value.value)
+}
+
+// stringify writes a value as compact JSON text. A non-finite Float is null.
+export function stringify(value: Value): string uses alloc {
+  let builder = Str.builder()
+  writeValue(mutable builder, value)
+  return Str.build(builder)
+}
+
+// fail builds the error for the byte at position, as line:column: reason.
+function fail<T>(parser: Parser, position: int, reason: string): Result<T, string> uses alloc {
+  let line = 1
+  let column = 1
+  let index = 0
+  while (index < position && index < parser.length) {
+    const byte = Str.byteAt(parser.text, index)
+    if (byte == 10) {
+      line = line + 1
+      column = 1
+    } else if (byte < 128 || byte >= 192) {
+      column = column + 1
+    }
+    index = index + 1
+  }
+  if (position >= parser.length) {
+    return Err(`${Int.toString(line)}:${Int.toString(column)}: unexpected end of input`)
+  }
+  return Err(`${Int.toString(line)}:${Int.toString(column)}: ${reason}`)
+}
+
+function skipSpace(mutable parser: Parser) {
+  while (parser.position < parser.length) {
+    const byte = Str.byteAt(parser.text, parser.position)
+    if (byte != 32 && byte != 9 && byte != 10 && byte != 13) {
+      return
+    }
+    parser.position = parser.position + 1
+  }
+}
+
+function parseValue(mutable parser: Parser, depth: int): Result<Value, string> uses alloc {
+  if (parser.position >= parser.length) {
+    return fail(parser, parser.position, "expected a value")
+  }
+  const byte = Str.byteAt(parser.text, parser.position)
+  if (byte == 123) {
+    return parseRecord(mutable parser, depth + 1)
+  }
+  if (byte == 91) {
+    return parseList(mutable parser, depth + 1)
+  }
+  if (byte == 34) {
+    const text = parseString(mutable parser)
+    if (text is Err(message)) {
+      return Err(message)
+    }
+    return Ok(Value.Text(text.value))
+  }
+  if (byte == 45 || (byte >= 48 && byte <= 57)) {
+    return parseNumber(mutable parser)
+  }
+  if (readWord(mutable parser, "true")) {
+    return Ok(Value.Bool(true))
+  }
+  if (readWord(mutable parser, "false")) {
+    return Ok(Value.Bool(false))
+  }
+  if (readWord(mutable parser, "null")) {
+    return Ok(Value.Null)
+  }
+  return fail(parser, parser.position, "expected a value")
+}
+
+// readWord consumes word when the text continues with it. It compares bytes,
+// because a slice of the text could end inside a multibyte character.
+function readWord(mutable parser: Parser, word: string): bool {
+  const count = Str.length(word)
+  if (parser.position + count > parser.length) {
+    return false
+  }
+  let index = 0
+  while (index < count) {
+    if (Str.byteAt(parser.text, parser.position + index) != Str.byteAt(word, index)) {
+      return false
+    }
+    index = index + 1
+  }
+  parser.position = parser.position + count
+  return true
+}
+
+function parseList(mutable parser: Parser, depth: int): Result<Value, string> uses alloc {
+  if (depth > MAX_DEPTH) {
+    return fail(parser, parser.position, "nesting is deeper than 512")
+  }
+  // Skip the [.
+  parser.position = parser.position + 1
+  let items: Array<Value> = []
+  skipSpace(mutable parser)
+  if (parser.position < parser.length && Str.byteAt(parser.text, parser.position) == 93) {
+    parser.position = parser.position + 1
+    return Ok(Value.List(items))
+  }
+  while (true) {
+    skipSpace(mutable parser)
+    const item = parseValue(mutable parser, depth)
+    if (item is Err(message)) {
+      return Err(message)
+    }
+    Arrays.push(mutable items, item.value)
+    skipSpace(mutable parser)
+    if (parser.position >= parser.length) {
+      return fail(parser, parser.position, "expected , or ]")
+    }
+    const byte = Str.byteAt(parser.text, parser.position)
+    parser.position = parser.position + 1
+    if (byte == 93) {
+      return Ok(Value.List(items))
+    }
+    if (byte != 44) {
+      return fail(parser, parser.position - 1, "expected , or ]")
+    }
+  }
+  return fail(parser, parser.position, "unreachable")
+}
+
+function parseRecord(mutable parser: Parser, depth: int): Result<Value, string> uses alloc {
+  if (depth > MAX_DEPTH) {
+    return fail(parser, parser.position, "nesting is deeper than 512")
+  }
+  // Skip the {.
+  parser.position = parser.position + 1
+  let fields: Map<string, Value> = Map {}
+  skipSpace(mutable parser)
+  if (parser.position < parser.length && Str.byteAt(parser.text, parser.position) == 125) {
+    parser.position = parser.position + 1
+    return Ok(Value.Record(fields))
+  }
+  while (true) {
+    skipSpace(mutable parser)
+    if (parser.position >= parser.length || Str.byteAt(parser.text, parser.position) != 34) {
+      return fail(parser, parser.position, "expected a string key")
+    }
+    const key = parseString(mutable parser)
+    if (key is Err(message)) {
+      return Err(message)
+    }
+    skipSpace(mutable parser)
+    if (parser.position >= parser.length || Str.byteAt(parser.text, parser.position) != 58) {
+      return fail(parser, parser.position, "expected :")
+    }
+    parser.position = parser.position + 1
+    skipSpace(mutable parser)
+    const field = parseValue(mutable parser, depth)
+    if (field is Err(message)) {
+      return Err(message)
+    }
+    // The last duplicate wins; an existing key keeps its place (D64).
+    fields[key.value] = field.value
+    skipSpace(mutable parser)
+    if (parser.position >= parser.length) {
+      return fail(parser, parser.position, "expected , or }")
+    }
+    const byte = Str.byteAt(parser.text, parser.position)
+    parser.position = parser.position + 1
+    if (byte == 125) {
+      return Ok(Value.Record(fields))
+    }
+    if (byte != 44) {
+      return fail(parser, parser.position - 1, "expected , or }")
+    }
+  }
+  return fail(parser, parser.position, "unreachable")
+}
+
+function isDigit(byte: int): bool {
+  return byte >= 48 && byte <= 57
+}
+
+// skipDigits moves past a run of digits and says how many there were.
+function skipDigits(mutable parser: Parser): int {
+  let count = 0
+  while (parser.position < parser.length && isDigit(Str.byteAt(parser.text, parser.position))) {
+    parser.position = parser.position + 1
+    count = count + 1
+  }
+  return count
+}
+
+function parseNumber(mutable parser: Parser): Result<Value, string> uses alloc {
+  const start = parser.position
+  let isFloat = false
+  if (Str.byteAt(parser.text, parser.position) == 45) {
+    parser.position = parser.position + 1
+  }
+  // Integer part: 0, or a nonzero digit and more digits.
+  if (parser.position < parser.length && Str.byteAt(parser.text, parser.position) == 48) {
+    parser.position = parser.position + 1
+  } else if (skipDigits(mutable parser) == 0) {
+    return fail(parser, parser.position, "invalid number")
+  }
+  if (parser.position < parser.length && Str.byteAt(parser.text, parser.position) == 46) {
+    isFloat = true
+    parser.position = parser.position + 1
+    if (skipDigits(mutable parser) == 0) {
+      return fail(parser, parser.position, "invalid number")
+    }
+  }
+  if (parser.position < parser.length) {
+    const marker = Str.byteAt(parser.text, parser.position)
+    if (marker == 101 || marker == 69) {
+      isFloat = true
+      parser.position = parser.position + 1
+      if (parser.position < parser.length) {
+        const sign = Str.byteAt(parser.text, parser.position)
+        if (sign == 43 || sign == 45) {
+          parser.position = parser.position + 1
+        }
+      }
+      if (skipDigits(mutable parser) == 0) {
+        return fail(parser, parser.position, "invalid number")
+      }
+    }
+  }
+  const digits = Str.slice(parser.text, start, parser.position)
+  if (!isFloat) {
+    // An integer outside int becomes a Float.
+    const whole = Int.parse(digits, 10)
+    if (whole is Ok(number)) {
+      return Ok(Value.Int(number))
+    }
+  }
+  return Ok(Value.Float(FloatText.parse(digits)))
+}
+
+// hexValue is the value of a hexadecimal digit, or -1.
+function hexValue(byte: int): int {
+  if (byte >= 48 && byte <= 57) {
+    return byte - 48
+  }
+  if (byte >= 97 && byte <= 102) {
+    return byte - 87
+  }
+  if (byte >= 65 && byte <= 70) {
+    return byte - 55
+  }
+  return -1
+}
+
+// readHex4 reads the four hex digits at parser.position.
+function readHex4(mutable parser: Parser): Result<int, string> uses alloc {
+  let code = 0
+  let count = 0
+  while (count < 4) {
+    if (parser.position >= parser.length) {
+      return fail(parser, parser.position, "")
+    }
+    const digit = hexValue(Str.byteAt(parser.text, parser.position))
+    if (digit < 0) {
+      return fail(parser, parser.position, "invalid \\u escape")
+    }
+    code = code * 16 + digit
+    parser.position = parser.position + 1
+    count = count + 1
+  }
+  return Ok(code)
+}
+
+// parseString reads a string whose opening quote is at parser.position.
+function parseString(mutable parser: Parser): Result<string, string> uses alloc {
+  parser.position = parser.position + 1
+  let builder = Str.builder()
+  // runStart is the start of the plain bytes not yet copied.
+  let runStart = parser.position
+  while (true) {
+    if (parser.position >= parser.length) {
+      return fail(parser, parser.position, "")
+    }
+    const byte = Str.byteAt(parser.text, parser.position)
+    if (byte == 34) {
+      Str.append(mutable builder, Str.slice(parser.text, runStart, parser.position))
+      parser.position = parser.position + 1
+      return Ok(Str.build(builder))
+    }
+    if (byte < 32) {
+      return fail(parser, parser.position, "control character in string")
+    }
+    if (byte != 92) {
+      parser.position = parser.position + 1
+      continue
+    }
+    Str.append(mutable builder, Str.slice(parser.text, runStart, parser.position))
+    parser.position = parser.position + 1
+    if (parser.position >= parser.length) {
+      return fail(parser, parser.position, "")
+    }
+    const escape = Str.byteAt(parser.text, parser.position)
+    const escapeAt = parser.position - 1
+    parser.position = parser.position + 1
+    if (escape == 117) {
+      const unit = readHex4(mutable parser)
+      if (unit is Err(message)) {
+        return Err(message)
+      }
+      const code = readCodePoint(mutable parser, unit.value, escapeAt)
+      if (code is Err(message)) {
+        return Err(message)
+      }
+      if (Char.fromCode(code.value) is Some(character)) {
+        Str.appendChar(mutable builder, character)
+      }
+    } else {
+      const simple = simpleEscape(escape)
+      if (simple == "") {
+        return fail(parser, escapeAt, "invalid escape")
+      }
+      Str.append(mutable builder, simple)
+    }
+    runStart = parser.position
+  }
+  return fail(parser, parser.position, "unreachable")
+}
+
+// simpleEscape is the text for the escape letter after a backslash, or "".
+function simpleEscape(letter: int): string uses alloc {
+  if (letter == 34) {
+    return "\""
+  }
+  if (letter == 92) {
+    return "\\"
+  }
+  if (letter == 47) {
+    return "/"
+  }
+  if (letter == 98) {
+    return controlText(8)
+  }
+  if (letter == 102) {
+    return controlText(12)
+  }
+  if (letter == 110) {
+    return "\n"
+  }
+  if (letter == 114) {
+    return "\r"
+  }
+  if (letter == 116) {
+    return "\t"
+  }
+  return ""
+}
+
+function controlText(code: int): string uses alloc {
+  if (Char.fromCode(code) is Some(character)) {
+    return Str.fromChar(character)
+  }
+  return ""
+}
+
+// readCodePoint joins a surrogate pair; a lone surrogate is an error at escapeAt.
+function readCodePoint(
+  mutable parser: Parser,
+  unit: int,
+  escapeAt: int,
+): Result<int, string> uses alloc {
+  if (unit >= 56320 && unit <= 57343) {
+    return fail(parser, escapeAt, "lone surrogate")
+  }
+  if (unit < 55296 || unit > 56319) {
+    return Ok(unit)
+  }
+  // A high surrogate needs \u and a low surrogate right after it.
+  if (!readWord(mutable parser, "\\u")) {
+    return fail(parser, escapeAt, "lone surrogate")
+  }
+  const low = readHex4(mutable parser)
+  if (low is Err(message)) {
+    return Err(message)
+  }
+  if (low.value < 56320 || low.value > 57343) {
+    return fail(parser, escapeAt, "lone surrogate")
+  }
+  return Ok(65536 + (unit - 55296) * 1024 + (low.value - 56320))
+}
+
+function writeValue(mutable builder: StringBuilder, value: Value) uses alloc {
+  match (value) {
+    Value.Null => Str.append(mutable builder, "null")
+    Value.Bool(flag) => {
+      if (flag) {
+        Str.append(mutable builder, "true")
+      } else {
+        Str.append(mutable builder, "false")
+      }
+    }
+    Value.Int(number) => Str.append(mutable builder, Int.toString(number))
+    Value.Float(number) => {
+      // NaN and infinities have no JSON form; JSON.stringify writes null.
+      if (number - number != 0.0) {
+        Str.append(mutable builder, "null")
+      } else {
+        Str.append(mutable builder, floatText(number))
+      }
+    }
+    Value.Text(text) => writeString(mutable builder, text)
+    Value.List(items) => {
+      Str.append(mutable builder, "[")
+      let first = true
+      for (const item of Arrays.values(items)) {
+        if (!first) {
+          Str.append(mutable builder, ",")
+        }
+        first = false
+        writeValue(mutable builder, item)
+      }
+      Str.append(mutable builder, "]")
+    }
+    Value.Record(fields) => {
+      Str.append(mutable builder, "{")
+      let first = true
+      for (const entry of Maps.entries(fields)) {
+        const #[key, field] = entry
+        if (!first) {
+          Str.append(mutable builder, ",")
+        }
+        first = false
+        writeString(mutable builder, key)
+        Str.append(mutable builder, ":")
+        writeValue(mutable builder, field)
+      }
+      Str.append(mutable builder, "}")
+    }
+  }
+}
+
+// floatText writes a finite Float. A whole number below 1e15 reads as digits and
+// ".0" (Float.toString would write 1e+02 for 100.0); the rest keeps its shortest text.
+function floatText(number: f64): string uses alloc {
+  if (number > -1000000000000000.0 && number < 1000000000000000.0) {
+    const whole = Float.truncate(number)
+    if (Float.fromInt(whole) == number) {
+      return `${Int.toString(whole)}.0`
+    }
+  }
+  return Float.toString(number)
+}
+
+function writeString(mutable builder: StringBuilder, text: string) uses alloc {
+  Str.append(mutable builder, "\"")
+  const length = Str.length(text)
+  // runStart is the start of the bytes that need no escape and are not yet copied.
+  let runStart = 0
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte >= 32 && byte != 34 && byte != 92) {
+      index = index + 1
+      continue
+    }
+    Str.append(mutable builder, Str.slice(text, runStart, index))
+    Str.append(mutable builder, escapeByte(byte))
+    index = index + 1
+    runStart = index
+  }
+  Str.append(mutable builder, Str.slice(text, runStart, length))
+  Str.append(mutable builder, "\"")
+}
+
+// escapeByte is the JSON escape for a quote, a backslash or a control character.
+function escapeByte(byte: int): string uses alloc {
+  if (byte == 34) {
+    return "\\\""
+  }
+  if (byte == 92) {
+    return "\\\\"
+  }
+  if (byte == 10) {
+    return "\\n"
+  }
+  if (byte == 13) {
+    return "\\r"
+  }
+  if (byte == 9) {
+    return "\\t"
+  }
+  if (byte == 8) {
+    return "\\b"
+  }
+  if (byte == 12) {
+    return "\\f"
+  }
+  const hex = Int.toHex(byte)
+  return `\\u${Str.repeat("0", 4 - Str.length(hex))}${hex}`
+}
+
+// encode writes any value that implements Shape as compact JSON text.
+export function encode<T: Shape>(value: T): string uses alloc {
+  return stringify(Shape.toValue(value))
+}
+
+// decode reads JSON text as a T: `Json.decode<User>(text)`. A parse error is
+// passed through; a shape error reads `<path>: <reason>` (see std/shape).
+export function decode<T: Shape>(text: string): Result<T, string> uses alloc {
+  const value = parse(text)
+  if (value is Err(message)) {
+    return Err(message)
+  }
+  return Shape.fromValue<T>(value.value)
+}

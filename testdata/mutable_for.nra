@@ -1,0 +1,126 @@
+// `for (mutable item of items)` binds item to each element in place (D85):
+// writes through it change the array, at any depth, and it can be passed on
+// as mutable or captured by a stack closure.
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+struct Player {
+  name: string
+  hp: int
+  items: Array<string>
+}
+
+struct Team {
+  name: string
+  players: Array<Player>
+  round: int
+}
+
+function heal(mutable player: Player, amount: int) {
+  player.hp = player.hp + amount
+}
+
+function twice(action: () => void) {
+  action()
+  action()
+}
+
+// A source reached through a mutable parameter's field.
+function resetTeam(mutable team: Team) {
+  for (mutable player of team.players) {
+    player.hp = 0
+  }
+  team.round = team.round + 1
+}
+
+// A return from inside the loop leaves the element in place.
+function findWounded(mutable players: Array<Player>): string {
+  for (mutable player of players) {
+    if (player.hp < 5) {
+      player.name = `${player.name}!`
+      return player.name
+    }
+  }
+  return "none"
+}
+
+function show(players: Array<Player>): string {
+  let text = ""
+  for (const player of players) {
+    text = `${text}${player.name}:${Int.toString(player.hp)}:${Int.toString(Arrays.length(player.items))} `
+  }
+  return text
+}
+
+export function run(args: Array<string>): int {
+  // Field writes, a nested array changed in place and a mutable argument.
+  const players = [
+    Player { name: "Ada", hp: 3, items: [] },
+    Player { name: "Bo", hp: 7, items: ["map"] },
+  ]
+  for (mutable player of players) {
+    player.hp = player.hp * 2
+    Arrays.push(mutable player.items, "sword")
+    heal(mutable player, 1)
+  }
+  print(show(players))
+
+  // Arrays.values names the same loop.
+  for (mutable player of Arrays.values(players)) {
+    player.items[0] = `${player.name}-first`
+  }
+  print(`${players[0].items[0]} ${players[1].items[0]}`)
+
+  // The entries form gives the index too; break and continue work as usual.
+  for (const #[index, mutable player] of Arrays.entries(players)) {
+    if (index == 0) {
+      continue
+    }
+    player.hp = 100 + index
+    break
+  }
+  print(show(players))
+
+  // Nested loops: the inner source is a field of the outer element.
+  const teams = [Team { name: "red", players: players, round: 0 }]
+  for (mutable outer of teams) {
+    outer.round = 5
+    for (mutable member of outer.players) {
+      member.hp = member.hp + outer.round
+    }
+  }
+  print(`${show(teams[0].players)}${Int.toString(teams[0].round)}`)
+  // players shared its array with the team, so it is unchanged.
+  print(show(players))
+  const team = teams[0]
+  resetTeam(mutable team)
+  print(`${show(team.players)}${Int.toString(team.round)}`)
+
+  // A stack closure captures the element by reference.
+  for (mutable player of team.players) {
+    twice(() => {
+      player.hp = player.hp + 10
+    })
+  }
+  print(show(team.players))
+
+  // A copy of the element stays a copy.
+  for (mutable player of team.players) {
+    const copy = player
+    player.hp = 1
+    print(`${Int.toString(copy.hp)} ${Int.toString(player.hp)}`)
+  }
+  print(findWounded(mutable team.players))
+  print(show(team.players))
+
+  // Elements that are arrays.
+  const grid = [[1, 2], [3]]
+  for (mutable row of grid) {
+    Arrays.push(mutable row, 0)
+    row[0] = row[0] * 10
+  }
+  print(
+    `${Int.toString(Arrays.length(grid[0]))} ${Int.toString(grid[0][0])} ${Int.toString(grid[1][0])}`,
+  )
+  return 0
+}

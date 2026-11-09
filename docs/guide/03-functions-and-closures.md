@@ -76,7 +76,7 @@ export function run(args: Array<string>): int {
 no discount yet
 ```
 
-The same goes for a parameter: if a function has to take a value it does not need, write the parameter as `_scale` instead of `scale`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed.
+The same goes for a parameter: if a function has to take a value it does not need, write the parameter as `_scale` instead of `scale`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed. The rule reaches the top of a file as well: an import you never use and a function without `export` that nothing calls are errors too, and the same `_` prefix marks them as unused on purpose.
 
 ## A function that calls itself
 
@@ -306,7 +306,7 @@ export function run(args: Array<string>): int {
 290
 ```
 
-An arrow function that uses names from around it is called a closure, and it captures those names. A closure captures `const` names and parameters by value, since they cannot change. It can also use a `let` name, as long as it is passed straight to a parameter that is not `escaping`, such as `action` below. The closure then works on the variable itself, so a write inside it is visible after the call:
+An arrow function that uses names from around it is called a closure, and it captures those names. A closure that only reads a `const` name or a parameter captures its value. It can also use a `let` name, or change the contents of a `const`, as long as it is passed straight to a parameter that is not `escaping`, such as `action` below. The closure then works on the variable itself, so a write inside it is visible after the call:
 
 ```narra
 import * as Int from "std/int"
@@ -332,7 +332,7 @@ export function run(args: Array<string>): int {
 6
 ```
 
-A closure that is stored, returned or passed to an `escaping` parameter cannot capture a `let` name:
+A closure that is stored, returned or passed to an `escaping` parameter cannot capture a `let` name, and cannot change what it captures:
 
 ```narra error
 // error: 8:22: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping

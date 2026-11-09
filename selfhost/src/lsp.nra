@@ -1,0 +1,349 @@
+// narrac lsp: a Language Server Protocol server on stdin and stdout. This file
+// has the protocol: Content-Length framing, the lifecycle and the dispatch of
+// requests and notifications. The documents, diagnostics and formatting are in
+// lspserver.nra. Only protocol messages go to stdout; a log line would go to
+// stderr.
+//
+// Supported: initialize, initialized, shutdown, exit, textDocument/didOpen,
+// didChange (full text), didClose, textDocument/formatting, hover,
+// definition, references and documentSymbol (lspnavigation.nra), and the
+// textDocument/publishDiagnostics notification the server sends.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Io from "std/io"
+import * as Json from "std/json"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Value } from "std/shape"
+import {
+  Server,
+  checkDocumentPackage,
+  closeDocument,
+  createServer,
+  formatDocument,
+} from "narrac/lspserver"
+import {
+  getField,
+  getList,
+  getPath,
+  getText,
+  makeError,
+  makeRecord,
+  makeResponse,
+} from "narrac/lspserverjson"
+import { answerNavigation, isNavigationRequest } from "narrac/lspnavigation"
+
+const PARSE_ERROR = -32700
+const INVALID_REQUEST = -32600
+const METHOD_NOT_FOUND = -32601
+const INVALID_PARAMS = -32602
+const SERVER_NOT_INITIALIZED = -32002
+
+// A plain string: template strings decode only \n and \t (parseTemplate).
+const CRLF = "\r\n"
+
+// What the input gave: a message body, a message that cannot be read (the
+// server answers and goes on) or the end of the input.
+enum Frame {
+  Message(body: string)
+  Malformed(reason: string)
+  EndOfInput
+}
+
+// What a message made the server do: the messages to send, and the exit code
+// when the server must stop (-1 keeps it running).
+struct Reply {
+  messages: Array<Value>
+  exitCode: int
+}
+
+// equalsIgnoringCase compares text with an ASCII lowercase word, ignoring the
+// case of the text's letters: header names follow HTTP, where case does not
+// matter.
+function equalsIgnoringCase(text: string, lowercase: string): bool {
+  if (Str.length(text) != Str.length(lowercase)) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(text))) {
+    let byte = Str.byteAt(text, index)
+    if (byte >= 65 && byte <= 90) {
+      byte = byte + 32
+    }
+    if (byte != Str.byteAt(lowercase, index)) {
+      return false
+    }
+  }
+  return true
+}
+
+// readFrame reads the headers of one message, then the body. Headers other
+// than Content-Length are ignored; header names match in any case.
+function readFrame(): Frame uses io, alloc {
+  let length = -1
+  let badLength = false
+  let started = false
+  while (true) {
+    const read = Io.readLine()
+    if (read is Err(_)) {
+      return Frame.EndOfInput
+    }
+    const maybeLine = read.value
+    if (maybeLine is None) {
+      return Frame.EndOfInput
+    }
+    const line = Str.trim(maybeLine.value)
+    if (line == "") {
+      break
+    }
+    started = true
+    const colon = Str.indexOf(line, ":")
+    if (colon is None) {
+      continue
+    }
+    const name = Str.trim(Str.slice(line, 0, colon.value))
+    if (equalsIgnoringCase(name, "content-length")) {
+      const parsed = Int.parse(Str.trim(Str.sliceFrom(line, colon.value + 1)), 10)
+      if (parsed is Ok(count)) {
+        length = count
+      } else {
+        badLength = true
+      }
+    }
+  }
+  if (badLength || length < 0) {
+    if (!started) {
+      return Frame.Malformed("empty header")
+    }
+    return Frame.Malformed("missing or invalid Content-Length header")
+  }
+  if (length == 0) {
+    return Frame.Message("")
+  }
+  const body = Io.readBytes(length)
+  if (body is Err(_)) {
+    return Frame.EndOfInput
+  }
+  return Frame.Message(body.value)
+}
+
+// writeMessage frames a message and flushes it.
+function writeMessage(message: Value) uses io, alloc {
+  const body = Json.stringify(message)
+  Io.write(`Content-Length: ${Int.toString(Str.length(body))}${CRLF}${CRLF}${body}`)
+  Io.flush()
+}
+
+function replyWith(messages: Array<Value>): Reply uses alloc {
+  return Reply { messages: messages, exitCode: -1 }
+}
+
+function replyNothing(): Reply uses alloc {
+  return Reply { messages: [], exitCode: -1 }
+}
+
+// handleInitialize answers the initialize request and records the position
+// encoding: UTF-8 when the client offers it, else UTF-16.
+function handleInitialize(mutable server: Server, id: Value, params: Value): Value uses alloc {
+  let encoding = "utf-16"
+  const offered = getPath(params, ["capabilities", "general", "positionEncodings"])
+  if (offered is Some(Value.List(items))) {
+    for (const item of items) {
+      if (item is Value.Text("utf-8")) {
+        encoding = "utf-8"
+      }
+    }
+  }
+  server.utf8 = encoding == "utf-8"
+  server.initialized = true
+  const capabilities = makeRecord([
+    #["positionEncoding", Value.Text(encoding)],
+    #[
+      "textDocumentSync",
+      makeRecord([#["openClose", Value.Bool(true)], #["change", Value.Int(1)]]),
+    ],
+    #["documentFormattingProvider", Value.Bool(true)],
+    #["hoverProvider", Value.Bool(true)],
+    #["definitionProvider", Value.Bool(true)],
+    #["referencesProvider", Value.Bool(true)],
+    #["documentSymbolProvider", Value.Bool(true)],
+  ])
+  return makeResponse(
+    id,
+    makeRecord([
+      #["capabilities", capabilities],
+      #["serverInfo", makeRecord([#["name", Value.Text("narrac")]])],
+    ]),
+  )
+}
+
+// getDocumentUri is params.textDocument.uri.
+function getDocumentUri(params: Value): Option<string> uses alloc {
+  const document = getField(params, "textDocument")
+  if (document is Some(found)) {
+    return getText(found, "uri")
+  }
+  return None
+}
+
+// handleNotification runs a notification of an initialized server.
+function handleNotification(
+  mutable server: Server,
+  method: string,
+  params: Value,
+): Reply uses io, alloc {
+  const maybeUri = getDocumentUri(params)
+  if (maybeUri is None) {
+    // Unknown notifications and notifications with unusable params are ignored.
+    return replyNothing()
+  }
+  const uri = maybeUri.value
+  if (method == "textDocument/didOpen") {
+    const document = getField(params, "textDocument")
+    if (document is Some(found)) {
+      if (getText(found, "text") is Some(text)) {
+        server.documents[uri] = text
+        return replyWith(checkDocumentPackage(mutable server, uri))
+      }
+    }
+    return replyNothing()
+  }
+  if (method == "textDocument/didChange") {
+    // The server asks for full text, so the last change holds the whole text.
+    const changes = getList(params, "contentChanges")
+    if (changes is Some(items)) {
+      let latest: Option<string> = None
+      for (const change of items) {
+        if (getText(change, "text") is Some(text)) {
+          latest = Some(text)
+        }
+      }
+      if (latest is Some(text)) {
+        server.documents[uri] = text
+        return replyWith(checkDocumentPackage(mutable server, uri))
+      }
+    }
+    return replyNothing()
+  }
+  if (method == "textDocument/didClose") {
+    return replyWith(closeDocument(mutable server, uri))
+  }
+  return replyNothing()
+}
+
+// handleRequest answers a request of an initialized server.
+function handleRequest(
+  mutable server: Server,
+  id: Value,
+  method: string,
+  params: Value,
+): Value uses io, alloc {
+  if (method == "initialize") {
+    return makeError(id, INVALID_REQUEST, "the server is already initialized")
+  }
+  if (server.shutdownRequested) {
+    return makeError(id, INVALID_REQUEST, "the server is shutting down")
+  }
+  if (method == "shutdown") {
+    server.shutdownRequested = true
+    return makeResponse(id, Value.Null)
+  }
+  if (method == "textDocument/formatting") {
+    const maybeUri = getDocumentUri(params)
+    if (maybeUri is None) {
+      return makeError(id, INVALID_PARAMS, "textDocument.uri is missing")
+    }
+    const edits = formatDocument(server, maybeUri.value)
+    if (edits is Err(message)) {
+      return makeError(id, INVALID_PARAMS, message)
+    }
+    return makeResponse(id, edits.value)
+  }
+  if (isNavigationRequest(method)) {
+    const answer = answerNavigation(server, method, params)
+    if (answer is Err(message)) {
+      return makeError(id, INVALID_PARAMS, message)
+    }
+    return makeResponse(id, answer.value)
+  }
+  return makeError(id, METHOD_NOT_FOUND, `method not found: ${method}`)
+}
+
+// handleBody parses one message and runs it.
+function handleBody(mutable server: Server, body: string): Reply uses io, alloc {
+  const parsed = Json.parse(body)
+  if (parsed is Err(message)) {
+    return replyWith([makeError(Value.Null, PARSE_ERROR, `parse error: ${message}`)])
+  }
+  const message = parsed.value
+  const maybeId = getField(message, "id")
+  let id = Value.Null
+  if (maybeId is Some(found)) {
+    id = found
+  }
+  const maybeMethod = getText(message, "method")
+  if (maybeMethod is None) {
+    return replyWith([makeError(id, INVALID_REQUEST, "invalid request: no method")])
+  }
+  const method = maybeMethod.value
+  let params = Value.Null
+  if (getField(message, "params") is Some(found)) {
+    params = found
+  }
+  if (method == "exit" && maybeId is None) {
+    if (server.shutdownRequested) {
+      return Reply { messages: [], exitCode: 0 }
+    }
+    return Reply { messages: [], exitCode: 1 }
+  }
+  if (maybeId is None) {
+    // A notification gets no answer, and the server ignores it before initialize.
+    if (!server.initialized || server.shutdownRequested) {
+      return replyNothing()
+    }
+    return handleNotification(mutable server, method, params)
+  }
+  if (method == "initialize" && !server.initialized) {
+    return replyWith([handleInitialize(mutable server, id, params)])
+  }
+  if (!server.initialized) {
+    return replyWith([makeError(id, SERVER_NOT_INITIALIZED, "the server is not initialized")])
+  }
+  return replyWith([handleRequest(mutable server, id, method, params)])
+}
+
+// runLsp runs `narrac lsp` until `exit` or the end of the input. The exit
+// code is 0 after shutdown and 1 otherwise.
+export function runLsp(arguments: Array<string>): int uses io, alloc {
+  // --full checks the whole package on every change; --trace writes a line
+  // per check to the standard error (lspcache.nra).
+  let server = createServer()
+  for (const index of Ranges.between(2, Arrays.length(arguments))) {
+    if (arguments[index] == "--full") {
+      server.cache.full = true
+    } else if (arguments[index] == "--trace") {
+      server.cache.trace = true
+    } else {
+      Io.writeError("usage: narrac lsp [--full] [--trace]\n")
+      return 2
+    }
+  }
+  while (true) {
+    const frame = readFrame()
+    if (frame is Frame.EndOfInput) {
+      return 1
+    }
+    let reply = replyNothing()
+    if (frame is Frame.Malformed(reason)) {
+      reply = replyWith([makeError(Value.Null, PARSE_ERROR, `parse error: ${reason}`)])
+    } else if (frame is Frame.Message(body)) {
+      reply = handleBody(mutable server, body)
+    }
+    for (const message of Arrays.values(reply.messages)) {
+      writeMessage(message)
+    }
+    if (reply.exitCode >= 0) {
+      return reply.exitCode
+    }
+  }
+  return 1
+}

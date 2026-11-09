@@ -16,6 +16,7 @@ import {
   reportError,
   setRef,
   anyTypeParameter,
+  BindingKind,
 } from "narrac/check"
 import { substitute } from "narrac/resolve"
 import { unify } from "narrac/generics"
@@ -96,18 +97,7 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
   // The arrow functions from the innermost outwards, up to the one inside
   // the scope that declares the local, all capture it.
   const innermost = checker.bodies[body].arrowDepth - 1
-  let first = innermost + 1
-  while (
-    first > 0 &&
-      !isDeclaredBelow(
-        checker,
-        checker.bodies[body].arrows[first - 1].outerDepth,
-        index,
-        local.name,
-      )
-  ) {
-    first = first - 1
-  }
+  const first = findOutermostCapture(checker, index)
   if (first == innermost + 1) {
     return
   }
@@ -135,6 +125,13 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
             "E0613",
             `a closure cannot capture mutable parameter ${name} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
           )
+        } else if (local.binding == BindingKind.Reference) {
+          reportError(
+            mutable checker,
+            pos,
+            "E0613",
+            `a closure cannot capture loop element ${name}, which is changed in place, unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+          )
         } else {
           reportError(
             mutable checker,
@@ -154,6 +151,72 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
     addCapture(mutable checker, closure, index)
     level = level + 1
   }
+}
+
+// findOutermostCapture is the BodyInfo.arrows level of the outermost arrow
+// function being checked that captures a local: the arrows from it to the
+// innermost one are declared inside the local's scope. It is arrowDepth
+// when no arrow captures the local.
+function findOutermostCapture(checker: Checker, index: int): int {
+  const body = checker.body
+  const name = checker.bodies[body].locals[index].name
+  let first = checker.bodies[body].arrowDepth
+  while (
+    first > 0 &&
+      !isDeclaredBelow(checker, checker.bodies[body].arrows[first - 1].outerDepth, index, name)
+  ) {
+    first = first - 1
+  }
+  return first
+}
+
+// markChangedCapture records a change to the contents of a local (a field
+// or element write, or a `mutable` argument). A local `const` that the
+// arrow functions being checked capture is then captured by reference in
+// each of them, so each must be a stack closure (D81). A `let` and a
+// `mutable` parameter are captured by reference already (useLocal).
+export function markChangedCapture(mutable checker: Checker, pos: Pos, index: int) uses alloc {
+  const body = checker.body
+  const local = checker.bodies[body].locals[index]
+  if (local.isMutable) {
+    return
+  }
+  const innermost = checker.bodies[body].arrowDepth - 1
+  const first = findOutermostCapture(checker, index)
+  let level = first
+  while (level <= innermost) {
+    const closure = checker.bodies[body].arrows[level].closure
+    if (!checker.bodies[body].closures[closure].stack) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0951",
+        `a closure cannot change captured ${quoteGo(local.name)} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+      )
+      return
+    }
+    level = level + 1
+  }
+  level = first
+  while (level <= innermost) {
+    const closure = checker.bodies[body].arrows[level].closure
+    if (!isReferenceCapture(checker, closure, index)) {
+      Arrays.push(mutable checker.bodies[body].closures[closure].refCaptures, index)
+    }
+    level = level + 1
+  }
+}
+
+// isReferenceCapture reports whether a closure (a BodyInfo.closures index)
+// captures a local `const` by reference because it changes it.
+export function isReferenceCapture(checker: Checker, closure: int, index: int): bool {
+  const body = checker.body
+  for (const captured of Arrays.values(checker.bodies[body].closures[closure].refCaptures)) {
+    if (captured == index) {
+      return true
+    }
+  }
+  return false
 }
 
 // isCapturedByArrow reports whether a `let` or mutable parameter is used
@@ -253,12 +316,12 @@ export function checkFunctionValue(
     for (const param of Arrays.values(parameters)) {
       Arrays.push(mutable plainTypes, checker.paramTypes[param.id])
     }
-    return internComposite(mutable checker, Type.TFunc(plainTypes, info.result))
+    return internComposite(mutable checker, Type.TFunc(plainTypes, info.result, [], -1))
   }
 
   // A generic one is unified with the expected function type.
   let bindings: Map<int, Type> = Map {}
-  if (want is Some(Type.TFunc(wantParams, wantResult))) {
+  if (want is Some(Type.TFunc(wantParams, wantResult, _, _))) {
     if (Arrays.length(wantParams) == Arrays.length(parameters)) {
       for (const index of Ranges.between(0, Arrays.length(parameters))) {
         unify(
@@ -281,9 +344,15 @@ export function checkFunctionValue(
       return Type.TVoid
     }
   }
-  checkBounds(mutable checker, pos, info.declaration, info.typeParameters, typeArguments)
+  const boundsHold = checkBounds(
+    mutable checker,
+    pos,
+    info.declaration,
+    info.typeParameters,
+    typeArguments,
+  )
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-  if (!anyTypeParameter(checker, typeArguments)) {
+  if (boundsHold && !anyTypeParameter(checker, typeArguments)) {
     const instance = addFuncInstance(mutable checker, funcIndex, typeArguments)
     // The emitter finds the instance of this use through the body.
     checker.bodies[checker.body].instanceRefs[nodeId] = instance
@@ -296,5 +365,5 @@ export function checkFunctionValue(
     Arrays.push(mutable genericTypes, substitute(mutable checker, declared, bindings))
   }
   const result = substitute(mutable checker, info.result, bindings)
-  return internComposite(mutable checker, Type.TFunc(genericTypes, result))
+  return internComposite(mutable checker, Type.TFunc(genericTypes, result, [], -1))
 }

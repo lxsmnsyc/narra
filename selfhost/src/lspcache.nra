@@ -1,0 +1,435 @@
+// The incremental check of narrac lsp. The server keeps the parsed sources
+// (Modules.ParseCache) and, per module, the errors of the last check. After a
+// change it checks the bodies of the changed modules only, and of the modules
+// that import them, directly or not, when a change touches more than function
+// bodies (SPEC section 4: other modules check against exported signatures
+// only). The other modules are declared again but their bodies are skipped,
+// and their errors come from the cache.
+//
+// A module's errors come in three phases, in the order the full check reports
+// them: the check (declarations, defaults, bodies, instances, entries,
+// finish), the unused check (only when the package has no check error) and the
+// effect pass (only when it has no error at all). Each module keeps the errors
+// of its file for the first two; the unused list is known, and the effect pass
+// found nothing, only once a check ran that phase for the module's current
+// text. A module whose list is missing is checked again.
+//
+// The check falls back to the whole package when the incremental result could
+// differ from it: the module list changed, an error lies outside every module
+// file, a generic struct default or generic function instance has an error
+// (other modules' bodies queue those), or the effect pass found an error (it
+// stops the pass for every module).
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Io from "std/io"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Decl } from "narrac/ast"
+import * as Body from "narrac/body"
+import { CheckError } from "narrac/check"
+import * as Effects from "narrac/effects"
+import { TokenKind, lex } from "narrac/lexer"
+import * as Modules from "narrac/modules"
+import { Package, ParseCache, SourceModule } from "narrac/modules"
+import { LoadError } from "narrac/manifest"
+
+// What the cache keeps of one module: the module it checked and its errors.
+// A changed source is parsed with new ids, so an equal firstId means an equal
+// text.
+struct ModuleResult {
+  module: SourceModule
+  checkErrors: Array<CheckError>
+  unusedErrors: Array<CheckError>
+  unusedKnown: bool
+  effectsKnown: bool // the effect pass ran on it and found no error
+}
+
+// The state narrac lsp keeps between checks. results holds the modules of the
+// last checked package by module path, paths their load order, and valid is
+// false until a whole-package check filled them. full makes every check a
+// whole-package check (`narrac lsp --full`); trace writes one line per check
+// to the standard error (`narrac lsp --trace`).
+export struct CheckCache {
+  parses: ParseCache
+  liveIds: int
+  directory: string
+  paths: Array<string>
+  results: Map<string, ModuleResult>
+  valid: bool
+  full: bool
+  trace: bool
+}
+
+export function createCheckCache(): CheckCache uses alloc {
+  return CheckCache {
+    parses: Modules.createParseCache(),
+    liveIds: 0,
+    directory: "",
+    paths: [],
+    results: Map {},
+    valid: false,
+    full: false,
+    trace: false,
+  }
+}
+
+// loadPackage loads a package with the parse cache. Each changed source takes
+// new ids, so the ids grow with the edits; when they pass four times the ids
+// the package uses, the cache starts over and the next check is whole.
+export function loadPackage(
+  mutable cache: CheckCache,
+  path: string,
+  overrides: Map<string, string>,
+): Result<Package, Array<LoadError>> uses io, alloc {
+  if (cache.parses.nextId > 4 * cache.liveIds + 100000) {
+    cache.parses = Modules.createParseCache()
+    cache.valid = false
+  }
+  const loaded = Modules.loadCached(path, overrides, mutable cache.parses)
+  if (loaded is Ok(package)) {
+    let live = 0
+    for (const module of Arrays.values(package.modules)) {
+      live = live + module.endId - module.firstId
+    }
+    cache.liveIds = live
+  }
+  return loaded
+}
+
+// checkLoaded checks a loaded package as `narrac check` does (Body.checkPackage,
+// then the effect pass when there is no error) and returns its errors, each
+// file's in the order of that check. It reuses the cached results where they
+// cannot change.
+export function checkLoaded(
+  mutable cache: CheckCache,
+  package: Package,
+): Array<CheckError> uses io, alloc {
+  if (!cache.full && canReuse(cache, package)) {
+    const first = checkChanged(mutable cache, package, Map {})
+    match (first) {
+      Ok(errors) => {
+        return errors
+      }
+      Err(missing) => {
+        // Check again with the modules whose unused or effect list was missing.
+        if (Arrays.length(missing) > 0) {
+          let extra: Map<string, bool> = Map {}
+          for (const path of Arrays.values(missing)) {
+            extra[path] = true
+          }
+          const second = checkChanged(mutable cache, package, extra)
+          if (second is Ok(errors)) {
+            return errors
+          }
+        }
+      }
+    }
+  }
+  return checkWhole(mutable cache, package)
+}
+
+// canReuse tells whether the cache holds the results of the same package with
+// the same modules in the same order.
+function canReuse(cache: CheckCache, package: Package): bool {
+  if (!cache.valid || cache.directory != package.directory) {
+    return false
+  }
+  if (Arrays.length(cache.paths) != Arrays.length(package.modules)) {
+    return false
+  }
+  let index = 0
+  for (const module of Arrays.values(package.modules)) {
+    if (cache.paths[index] != module.path) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+// checkWhole checks every module and stores the results by module.
+function checkWhole(mutable cache: CheckCache, package: Package): Array<CheckError> uses io, alloc {
+  const result = Body.checkModules(package, Map {})
+  let checker = result.checker
+  const unusedRan = result.unusedStart == 0
+  const checkCount = Arrays.length(checker.errors)
+  const effectsRan = checkCount == 0
+  if (effectsRan) {
+    const _effects = Effects.checkEffects(mutable checker)
+  }
+  const errors = checker.errors
+  let moduleFiles: Map<string, bool> = Map {}
+  for (const module of Arrays.values(package.modules)) {
+    moduleFiles[module.file] = true
+  }
+  // Every error must lie in a module file to be kept by module. An effect
+  // error stops the effect pass for every module, so the results are reused
+  // only when there is none.
+  let attributable = result.queuedErrors == 0 && Arrays.length(errors) == checkCount
+  for (const error of Arrays.values(errors)) {
+    attributable = attributable && moduleFiles[error.file] is Some(_)
+  }
+  cache.directory = package.directory
+  cache.paths = []
+  cache.results = Map {}
+  for (const module of Arrays.values(package.modules)) {
+    Arrays.push(mutable cache.paths, module.path)
+    cache.results[module.path] = ModuleResult {
+      module: module,
+      checkErrors: selectErrors(errors, 0, result.unusedStart, module.file),
+      unusedErrors: selectErrors(errors, result.unusedStart, checkCount, module.file),
+      unusedKnown: unusedRan,
+      effectsKnown: effectsRan,
+    }
+  }
+  cache.valid = attributable
+  writeTrace(cache, "whole package")
+  return errors
+}
+
+// selectErrors is the errors in [start, end) of a file.
+function selectErrors(
+  errors: Array<CheckError>,
+  start: int,
+  end: int,
+  file: string,
+): Array<CheckError> uses alloc {
+  let selected: Array<CheckError> = []
+  for (const index of Ranges.upTo(Arrays.length(errors))) {
+    if (index >= start && index < end && errors[index].file == file) {
+      Arrays.push(mutable selected, errors[index])
+    }
+  }
+  return selected
+}
+
+// checkChanged checks the bodies of the changed modules and of the modules
+// their signature changes reach, and merges their errors with the cached ones.
+// An error lists the modules to add to extra, the modules checked anyway, and
+// is empty when the whole package must be checked.
+function checkChanged(
+  mutable cache: CheckCache,
+  package: Package,
+  extra: Map<string, bool>,
+): Result<Array<CheckError>, Array<string>> uses io, alloc {
+  // The changed modules, and those whose signature changed.
+  let dirty = extra
+  let reach: Array<string> = []
+  let results: Array<ModuleResult> = []
+  for (const module of Arrays.values(package.modules)) {
+    const cached = cache.results[module.path]
+    if (cached is None) {
+      return Err([])
+    }
+    Arrays.push(mutable results, cached.value)
+    if (cached.value.module.firstId != module.firstId) {
+      dirty[module.path] = true
+      if (makeSignature(module) != makeSignature(cached.value.module)) {
+        Arrays.push(mutable reach, module.path)
+      }
+    }
+  }
+  addImporters(mutable dirty, package, reach)
+
+  // The others are declared but not checked.
+  let skipped: Map<string, bool> = Map {}
+  let dirtyFiles: Map<string, bool> = Map {}
+  let moduleFiles: Map<string, bool> = Map {}
+  let checkedNames: Array<string> = []
+  for (const module of Arrays.values(package.modules)) {
+    moduleFiles[module.file] = true
+    if (dirty[module.path] is Some(_)) {
+      dirtyFiles[module.file] = true
+      Arrays.push(mutable checkedNames, module.file)
+    } else {
+      skipped[module.path] = true
+    }
+  }
+  const result = Body.checkModules(package, skipped)
+  if (result.queuedErrors > 0) {
+    return Err([])
+  }
+  let checker = result.checker
+  let checkCount = 0
+  let unusedCount = 0
+  for (const index of Ranges.upTo(Arrays.length(checker.errors))) {
+    const error = checker.errors[index]
+    if (moduleFiles[error.file] is None) {
+      return Err([])
+    }
+    if (dirtyFiles[error.file] is Some(_)) {
+      if (index < result.unusedStart) {
+        checkCount = checkCount + 1
+      } else {
+        unusedCount = unusedCount + 1
+      }
+    }
+  }
+  for (const index of Ranges.upTo(Arrays.length(package.modules))) {
+    if (dirty[package.modules[index].path] is None) {
+      checkCount = checkCount + Arrays.length(results[index].checkErrors)
+    }
+  }
+
+  // The unused check runs when no module has a check error. It ran here only
+  // if the declarations of the skipped modules gave no error either.
+  const unusedRuns = checkCount == 0
+  if (unusedRuns) {
+    if (result.unusedStart != 0) {
+      return Err([])
+    }
+    let missing: Array<string> = []
+    for (const index of Ranges.upTo(Arrays.length(package.modules))) {
+      const path = package.modules[index].path
+      if (dirty[path] is None) {
+        if (!results[index].unusedKnown) {
+          Arrays.push(mutable missing, path)
+        }
+        unusedCount = unusedCount + Arrays.length(results[index].unusedErrors)
+      }
+    }
+    if (Arrays.length(missing) > 0) {
+      return Err(missing)
+    }
+  }
+
+  // The effect pass runs when no module has an error; the checker then holds
+  // none either (the unused check left out the skipped modules).
+  const effectsRun = unusedRuns && unusedCount == 0
+  const errors = checker.errors
+  if (effectsRun) {
+    let missing: Array<string> = []
+    for (const index of Ranges.upTo(Arrays.length(package.modules))) {
+      const path = package.modules[index].path
+      if (dirty[path] is None && !results[index].effectsKnown) {
+        Arrays.push(mutable missing, path)
+      }
+    }
+    if (Arrays.length(missing) > 0) {
+      return Err(missing)
+    }
+    const _effects = Effects.checkEffects(mutable checker)
+    // An effect error stops the pass for every module (checkWhole).
+    if (Arrays.length(checker.errors) > 0) {
+      return Err([])
+    }
+  }
+
+  // Store the results of the checked modules.
+  for (const index of Ranges.upTo(Arrays.length(package.modules))) {
+    const module = package.modules[index]
+    if (dirty[module.path] is Some(_)) {
+      results[index] = ModuleResult {
+        module: module,
+        checkErrors: selectErrors(errors, 0, result.unusedStart, module.file),
+        unusedErrors: selectErrors(errors, result.unusedStart, Arrays.length(errors), module.file),
+        unusedKnown: unusedRuns,
+        effectsKnown: effectsRun,
+      }
+      cache.results[module.path] = results[index]
+    }
+  }
+  if (Arrays.length(checkedNames) == 0) {
+    writeTrace(cache, "no module changed")
+  } else {
+    writeTrace(cache, `modules ${Str.join(checkedNames, " ")}`)
+  }
+
+  // The errors, phase by phase, module by module. The effect pass gave none.
+  let merged: Array<CheckError> = []
+  for (const moduleResult of Arrays.values(results)) {
+    appendErrors(mutable merged, moduleResult.checkErrors)
+  }
+  if (unusedRuns) {
+    for (const moduleResult of Arrays.values(results)) {
+      appendErrors(mutable merged, moduleResult.unusedErrors)
+    }
+  }
+  return Ok(merged)
+}
+
+function appendErrors(mutable merged: Array<CheckError>, errors: Array<CheckError>) uses alloc {
+  for (const error of Arrays.values(errors)) {
+    Arrays.push(mutable merged, error)
+  }
+}
+
+// addImporters adds to dirty every module that imports one of reach,
+// directly or through other modules.
+function addImporters(
+  mutable dirty: Map<string, bool>,
+  package: Package,
+  reach: Array<string>,
+) uses alloc {
+  let reached: Map<string, bool> = Map {}
+  let queue = reach
+  let next = 0
+  while (next < Arrays.length(queue)) {
+    const target = queue[next]
+    next = next + 1
+    for (const module of Arrays.values(package.modules)) {
+      if (reached[module.path] is Some(_)) {
+        continue
+      }
+      for (const importDecl of Arrays.values(module.ast.imports)) {
+        if (importDecl.path == target) {
+          reached[module.path] = true
+          dirty[module.path] = true
+          Arrays.push(mutable queue, module.path)
+          break
+        }
+      }
+    }
+  }
+}
+
+// makeSignature is what importers of the module can depend on: its tokens,
+// without the bodies of its non-generic functions. A source that does not lex
+// gives its whole text.
+function makeSignature(module: SourceModule): string uses alloc {
+  const source = module.ast.facts.source
+  const lexed = lex(source)
+  if (lexed is Err(_)) {
+    return source
+  }
+  const tokens = lexed.value
+  // The positions of the opening braces of the bodies to leave out.
+  let bodyStarts: Map<string, bool> = Map {}
+  for (const declaration of Arrays.values(module.ast.declarations)) {
+    if (declaration is Decl.Func(funcDecl)) {
+      if (Arrays.length(funcDecl.typeParameters) == 0) {
+        if (funcDecl.body is Some(block)) {
+          bodyStarts[`${Int.toString(block.pos.line)}:${Int.toString(block.pos.column)}`] = true
+        }
+      }
+    }
+  }
+  let builder = Str.builder()
+  let depth = 0
+  for (const token of Arrays.values(tokens)) {
+    if (depth > 0) {
+      if (token.kind == TokenKind.TokPunct && token.text == "{") {
+        depth = depth + 1
+      } else if (token.kind == TokenKind.TokPunct && token.text == "}") {
+        depth = depth - 1
+      }
+      continue
+    }
+    if (token.kind == TokenKind.TokPunct && token.text == "{") {
+      if (bodyStarts[`${Int.toString(token.line)}:${Int.toString(token.column)}`] is Some(_)) {
+        depth = 1
+        Str.append(mutable builder, "{}\n")
+        continue
+      }
+    }
+    Str.append(mutable builder, token.text)
+    Str.append(mutable builder, "\n")
+  }
+  return Str.build(builder)
+}
+
+function writeTrace(cache: CheckCache, text: string) uses io {
+  if (cache.trace) {
+    Io.writeError(`check: ${text}\n`)
+  }
+}

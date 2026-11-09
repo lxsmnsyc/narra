@@ -58,9 +58,9 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 - `const x = expr` binds a name that cannot be reassigned. **`const` fixes the name, not the contents** (D81): the fields and elements of a local `const` struct, array, map or other contents type (section 6, Mutable parameters) can be assigned, and the `const` can be passed as `mutable`.
 - `let x = expr` binds a name that can also be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
-- **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other.
+- **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other. The one exception is a `for (mutable item of items)` binding, which reaches an element of `items` (section 2, Control flow).
 - **A plain parameter is read-only.** Its fields and elements cannot be assigned, and it cannot be passed as `mutable` (section 6).
-- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81).
+- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write `for (mutable p of players)` (section 2, Control flow), write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81). A `mutable` marker exists only in that loop (D85); `x is Some(mutable y)`, `const { mutable a } = s` and a local `mutable name = place` do not.
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
@@ -80,6 +80,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Parameters are constant.** A parameter cannot be reassigned, and its contents cannot be changed unless it is declared `mutable` (section 6). A `mutable` parameter still cannot be reassigned.
 - **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
 - **Arguments are evaluated left to right**, in the order they are written. An argument that is a block expression, a `match` or a closure call can assign a `let` that an earlier argument reads; the earlier argument keeps the value it had when it was evaluated. After `show(items, { items = ["z"]; return 0 })`, `show` received the original `items`.
+- **Named arguments.** A call can name its arguments, written like struct literal fields: `move(x: 1, y: 2)`. Positional arguments come first, then named ones in any order: `move(1, z: 3, y: 2)`. A positional argument after a named one is an error. Each parameter is passed exactly once, by position or by name. `mutable` follows the colon: `fill(buffer: mutable items, value: 0)`. Names work when the callee is a declared function or a trait function. A function value, an enum constructor, and a std function built into the compiler such as `Str.slice` take positions only (D87). The arguments are evaluated in the order they are written and passed in the order of the parameters. A parameter's name is part of the function's interface: renaming it breaks the calls that use the name.
 - **No currying and no partial application.** To fix some arguments, write an arrow function.
 - **No method calls.** `xs.push(v)` is not valid. Write `Arrays.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
 - **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.
@@ -107,7 +108,7 @@ let total = 0
 each(numbers, (item) => { total = total + item })
 ```
 
-  Every `let` and `mutable` it uses is captured by reference, also when it only reads it. A local `const` whose fields or elements it assigns, or which it passes as `mutable`, directly or through a nested closure, is captured by reference too, by every closure between the change and the declaration, and is borrowed like a `let` it assigns (D81, proposed). A `const` that no closure in the chain changes stays a copy. A closure that is not of this kind cannot change a captured value. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
+  Every `let` and `mutable` it uses is captured by reference, also when it only reads it. A local `const` whose fields or elements it assigns, or which it passes as `mutable`, directly or through a nested closure, is captured by reference too, by every closure between the change and the declaration, and is borrowed like a `let` it assigns (D81). A `const` that no closure in the chain changes stays a copy. A closure that is not of this kind cannot change a captured value. Every arrow function between the use and the declaration must be of this kind. A closure that is stored, returned, passed to an `escaping` parameter or through a function value, or that sits inside one of those, cannot capture a `let` or a `mutable` parameter (E0612, E0613).
 - **A variable that such a closure assigns is borrowed for the call.** In that call it cannot be passed as `mutable`, read or assigned in another argument (including `items.length` or `xs[0]`), or captured by another closure argument (E0614). Two closures that only read the same variable are fine. A narrowing by `is` is not seen inside a closure that captures the variable, and a narrowing of a variable that a closure assigns ends at the statement of the call.
 - **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
@@ -130,6 +131,20 @@ const scaled = Arrays.map(prices, (p) => p * rate)    // no closure allocation, 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
 - `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
+- **`for (mutable item of items)` changes the elements in place** (D85). `item` reaches each element of the array, as a `mutable` parameter would, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` also gives the index, and `Arrays.values(items)` may be written for `items`.
+  - The source is a local place of type `Array<T>`: a local `const` or `let`, a `mutable` parameter, or a field or element path of one. A call result, a plain parameter, a top-level constant, a map, a range and a generator are compile errors.
+  - `T` has contents (section 6, Mutable parameters): `for (mutable n of numbers)` over `Array<int>` is a compile error; write `numbers[index] = ...` in an `Arrays.entries` loop.
+  - The binding follows the rules of a `mutable` parameter: its fields and elements can be assigned and it can be passed as `mutable`, but it cannot be assigned whole or escape.
+  - The source is borrowed for the whole body: the body cannot read, assign, pass or capture the source or any path that overlaps it (`players`, `players[0]`, and `game` for a source `game.players`; `game.round` is fine).
+  - The array is made unique before the first iteration (a shared array is copied once), and the loop takes no reference to it.
+  - Not allowed in a `function*` or `async` body yet.
+
+```ts
+for (mutable player of players) {
+  player.hp = 0                // changes players
+}
+```
+
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step.
 
@@ -242,7 +257,8 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/io`, `std/map`, `std/option`, `std/path`, `std/process`, `std/range`, `std/result`, `std/string` and `std/test`.
+- **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/option`, `std/path`, `std/process`, `std/range`, `std/result`, `std/shape`, `std/string` and `std/test`.
+- **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
@@ -565,16 +581,21 @@ const label = Show.show(price)
 | `Hashable` | `Hash.of`, map keys | Automatically for types without functions or floats |
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
-| `Shape` | A description of fields and constructors, for serialization | By `derives` only |
+| `Shape` | Conversion to and from the `Value` tree of `std/shape`, for serialization | By the compiler for prelude types, by `derives` or `implement` for a struct or enum |
 
 - A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
 - Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
 
 **Serialization with `Shape`**
 
-- `derives Shape` makes the compiler emit a constant description of the type: field names, field types, defaults and enum constructors.
-- Libraries such as `std/json` read the description: `Json.encode(user)` and `Json.decode(text, User)` work for any type that derives `Shape`.
-- An opaque struct can derive `Shape` only for use inside its own module.
+- `Shape` (D84) has two functions in `std/shape`: `toValue(value: Self): Value` and `fromValue(value: Value): Result<Self, string>`. Formats read and write `Value`, so `Shape` does not know JSON.
+- `Json.encode(value)` is `Json.stringify(Shape.toValue(value))`. `Json.decode<User>(text)` is `Json.parse(text)` followed by `Shape.fromValue<User>`; a parse error is passed through.
+- The compiler provides `Shape` for `bool`, `int`, `f64`, `char` (as a one-character `Text`), `string`, `Array<T>`, `Map<string, V>`, `Option<T>` (`None` is `Null`) and tuples of two to four items (a `List`), when their contents implement it. `Value` implements it as itself. A `Map` with other keys, a function type, a sized integer and a longer tuple do not: E0530 names the type that fails. A struct or enum derives it (`derives Shape`) or lists `implements Shape` and writes an `implement Shape for` block.
+- Decoding is strict on types and ignores extra data: `int` accepts only `Value.Int`, `f64` accepts `Int` and `Float`. An error reads `<path>: <reason>` from the root, as in `.users[2].age: expected int, found Text`; at the root it is the reason alone.
+- `derives Shape` writes the implementation. A struct is a `Record` with one entry per field, in declaration order; a field of type `Option<T>` holding `None` is left out, as `JSON.stringify` leaves out `undefined`. An `Option` field whose default is not `None` (`hint: Option<int> = Some(5)`) writes `None` as `Null` instead, so that it does not decode as its default. Decoding a struct gives a missing field its default (`age: int = 0`) and a missing `Option` field `None`, and decodes `Null` in an `Option` field as `None`; any other missing field is an error (`.age: missing field`). Unknown fields are ignored.
+- An enum is a `Record` with a `"type"` entry naming the constructor, then one entry per field, as a TypeScript discriminated union: `{"type":"Circle","radius":1.0}`, `{"type":"Empty"}`. A missing, non-text or unknown `type` is an error naming the enum. A constructor field named `type` would clash, so deriving `Shape` on such an enum is E0532.
+- Every field type must implement `Shape` (E0531 names the field and its type). A generic type derives `Shape` for the instances whose type arguments implement it, as `derives Show` does. Recursive enums (D55) derive it too.
+- The derived `Shape` of an `export opaque struct` builds and reads its fields, so only the declaring module may use it; a `Shape` call or a `T: Shape` bound on it in another module is E0533.
 
 ### Inference
 
@@ -585,8 +606,13 @@ const label = Show.show(price)
 ### Numbers
 
 - Integer overflow panics in debug builds and wraps in release builds. `+%`, `-%` and `*%` always wrap.
-- Integer division or remainder by zero panics in every build.
-- Conversions are explicit: `Float.fromInt(x)`, `Float.truncate(f)`, and for sized numbers (planned) `Int.toI32(x)`.
+- Integer division or remainder by zero panics in every build. `MIN / -1` of a signed type panics in debug builds and gives `MIN` in release builds.
+- **Sized integers (D82).** `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types of that width; `i64` is the same type as `int`. All of them implement `Equatable`, `Hashable`, `Ordered` and `Show`, and work as map keys, fields, tuple elements, enum fields and generic arguments. `Array<u8>` stores one byte per element.
+- **Literals take the type the context expects** (an annotation, a parameter, a field, an element, a return type, the other operand, a literal pattern), and `int` when nothing is expected. A literal must fit its type: `const x: u8 = 256` and `const y: u8 = -1` are E0294. `-128` is a valid `i8`.
+- **There is no implicit conversion.** Arithmetic, comparison and bitwise operators need operands of the same type; `u8 + i32` is E0295, and the message names the conversion functions. Unary `-` on an unsigned type is E0296. Shift counts have the type of the value shifted, and a count at or above the width panics.
+- **Overflow is checked at the type's own width:** `u8` `200 + 100` and `i8` `-128 - 1` panic in debug builds and wrap in release builds. `+%`, `-%` and `*%` wrap at the width.
+- Conversions are explicit functions named after the target type, in one module per type (`I32.from(x)`, `I32.tryFrom(x)`, `I32.wrap(x)`; modules `std/i8` to `std/u64`; `std/int` serves `i64`), and `Float.fromInt(x)`, `Float.truncate(f)`. `from` is for conversions where every value fits, `tryFrom` returns an `Option`, `wrap` keeps the low bits. Each of the seven modules also has `toString(x)` and `parse(text, base)`, and `std/int` has `from`, `tryFrom` and `wrap`. `X.from(v)` takes any integer type whose every value fits `X`; another integer type is E0940 and a value that is not an integer is E0941. `tryFrom` and `wrap` take any integer type. `parse` is `Int.parse` with the range of the type in its error text. A literal argument is an `int`, so `I32.from(5)` is E0940; write `const x: i32 = 5`.
+- **`f32`** is a 32-bit float (C `float`) beside `f64`. A float literal takes `f32` when the context expects it and `f64` otherwise; an integer literal never becomes a float. A literal too large to be finite in `f32` is E0297. `f32` and `f64` do not mix in arithmetic or comparison (E0295). `f32` implements `Equatable`, `Ordered` and `Show` (the shortest text that reads back as the same `f32`) but not `Hashable`, so it is not a map key. `F32.from(v)` takes an `f64` (rounds to nearest) or any integer type, `F32.truncate(v)` gives an `int`, `F32.toString(v)` a string (module `std/f32`), and `Float.from(v)` takes an `f32` (exact) or any integer type. Another argument type is E0941.
 
 ### Strings
 
@@ -597,6 +623,13 @@ const label = Show.show(price)
 - **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
 - `Str.length(s)` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
+
+### Bytes
+
+- `bytes` is an immutable byte sequence with no UTF-8 guarantee. It has the representation of `string`, so `Bytes.fromString(text)` shares the buffer, and `Bytes.toString(data)` shares it too when the bytes are valid UTF-8. Otherwise it returns `Err("invalid UTF-8 at byte N")`, with the offset of the first bad byte.
+- `std/bytes` (alias `Bytes`): `fromString(text): bytes`, `toString(data): Result<string, string>`, `length(data): int`, `at(data, index: int): u8`, `slice(data, start: int, end: int): bytes`, `concat(left, right): bytes`, `fromArray(items: Array<u8>): bytes` and `toArray(data): Array<u8>`. `at` and `slice` panic out of range. `slice` copies the bytes.
+- `std/fs` has `readBytes(path): Result<bytes, string>` and `writeBytes(path, data: bytes): Result<int, string>`, which work as `readText` and `writeText` without the UTF-8 check.
+- `bytes` implements `Equatable`, `Hashable`, `Ordered` (bytewise, a prefix first, and `<` works as on strings) and `Show`, which writes hex pairs: `bytes[68 69 0a]`. It works as a map key. It is not a contents type, so a `mutable` parameter cannot have it.
 
 ```ts
 export struct Pair {
@@ -668,7 +701,7 @@ for (const i of Ranges.upTo(1000)) {
 }
 ```
 
-- `items[i] = v` and `u.age = v` require the target to be a local `const` or `let`, a `mutable` parameter, or a field or element of one. A plain parameter and a top-level constant cannot be changed. Pattern, `for ... of` and destructured bindings are open (section 2, Bindings).
+- `items[i] = v` and `u.age = v` require the target to be a local `const` or `let`, a `mutable` parameter, or a field or element of one. A plain parameter and a top-level constant cannot be changed. Pattern, `for (const ...)` and destructured bindings are read-only; a `for (mutable item of items)` binding can be changed and changes `items` (section 2, Control flow).
 
 ### Copies on shared values
 
@@ -723,15 +756,15 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 ```
 
 - **The parameter's type has contents.** A `mutable` parameter must have a contents type: a struct (an `opaque struct` too), `Array<T>`, `FixedArray<T, N>`, `Map<K, V>`, `Box<T>`, `StringBuilder`, `Generator<T>`, or `Coroutine<In, Out>`. Any other type is a compile error at the parameter: numbers, `bool`, `char`, `string`, `bytes`, distinct types, enums (`Option` and `Result` included), tuples, function types, the prelude `Range`, `Sender`, `Receiver`, `Shared` and `Atomic`. To give a new scalar or enum back to the caller, return it, or keep it in a field of a struct passed as `mutable`.
-- **Generic parameters.** `mutable value: T` with a bare type parameter `T` is a compile error, whatever its constraint: no trait guarantees a contents type. A generic instance of a contents type is fine: `mutable items: Array<T>`. Proposed (D81): in a trait, `mutable value: Self` is allowed, every `implement` of the trait must be for a contents type, and a `Dynamic<Trait>` cannot be passed to such a function.
+- **Generic parameters.** `mutable value: T` with a bare type parameter `T` is a compile error, whatever its constraint: no trait guarantees a contents type. A generic instance of a contents type is fine: `mutable items: Array<T>`. In a trait, `mutable value: Self` is allowed, every `implement` of the trait must be for a contents type, and a `Dynamic<Trait>` cannot be passed to such a function.
 - **The callee changes contents, never the parameter.** Through a `mutable` parameter the callee may assign fields and elements at any depth, call std functions that change contents (`Arrays.push`, `Maps.set`, `Str.append`, `Co.resume`), and pass the value or a part of it on as `mutable`. Assigning the parameter itself (`player = other`, `count += 1`) is a compile error.
-- **The argument is a local place.** It must be a local binding that holds a contents type, or a field or element path of one: a `const`, a `let`, or a `mutable` parameter. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for ... of` and destructured bindings are open (section 2, Bindings). Passing a `const` as `mutable` adds nothing that direct code lacks, since its fields can be assigned directly (section 2, Bindings).
+- **The argument is a local place.** It must be a local binding that holds a contents type, or a field or element path of one: a `const`, a `let`, or a `mutable` parameter. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for (const ...)` and destructured bindings are read-only copies and are compile errors too; a `for (mutable item of items)` binding can be passed (D85). Passing a `const` as `mutable` adds nothing that direct code lacks, since its fields can be assigned directly (section 2, Bindings).
 - **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
 - **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `p.hp + heal(mutable p)` and `pair(p, heal(mutable p))` are compile errors. Bind the call first: `const healed = heal(mutable p)`, then `p.hp + healed`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`. These rules hold for every binding passed as `mutable`, `const` included.
 - **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `const copy = player` is allowed.
 - **No copies.** The compiler passes a pointer to the caller's value. Changes are written in place, with no copy and no reference count change for the value itself. A value shared with other owners is copied on its first change, as in any in-place update.
 - **Other parameters are values.** A parameter without `mutable` is a read-only copy: its fields cannot be assigned, and it cannot be passed as `mutable`. To build new data instead of changing the caller's data, return a new value.
-- **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back.
+- **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back. A `mutable` marker in a pattern (`x is Some(mutable y)`) does not exist (D85).
 
 | Goal | Form |
 | --- | --- |
@@ -741,8 +774,13 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Cycles
 
-- Immutable values cannot form cycles, so reference counting frees everything without a cycle collector.
+- Immutable values cannot form cycles, so reference counting frees everything without a cycle collector. Storing a value inside itself holds a second reference to it while the write runs, so the write copies first.
 - A variable is never stored by reference: storing it stores a copy, and only a closure that cannot outlive the call captures a variable by reference, so no cycle forms.
+- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>`, and `Cell<T>` once it exists; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
+  - A handle stored in its own payload: `Shared.update(state, ...)` that stores `Some(state)` in the value of `state`, or a `Sender` sent into its own channel.
+  - A closure stored in a `Cell` that captures the same `Cell`.
+- **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cell.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
+- A later version may add a collector limited to identity objects. It would only free memory that this rule leaks, so no program changes meaning.
 - **Graphs** use `Arena<T>` and `Handle<T>` from `std/arena`. A handle is an index plus a generation number. `Arena.get(arena, h)` returns `None` when the slot was freed or reused. Handles can point anywhere in the arena, including in cycles, and the arena frees all its slots at once.
 
 ### Values across threads
@@ -880,6 +918,7 @@ The builtin that builds channels must accept the type argument in `Channel.creat
 - **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
 - Blocking calls have the `io` effect.
+- **A channel in a cycle stays open** (D80). A `Sender` sent through its own channel, or held in a `Shared` that the channel's values reach, keeps the channel alive: it is never freed, and dropping the other copies of the sender does not close it, so a receiver that reads until the close waits forever. When senders travel through channels, close the channel with `Channel.close(sender)` instead of relying on the last drop; the close ends the receiver's wait, and a receiver that reads the channel empty drops the sender it held and breaks the cycle. A `Sender<Reply>` sent inside a request (`Sender<#[Request, Sender<Reply>]>`) is fine: the reply channel does not hold the request channel.
 
 ### Shared state
 
@@ -906,6 +945,7 @@ const now = Shared.read(hits, (count) => count)
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
+- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and the planned `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. `narra audit` lists every nested `Shared.update`.
 
 ### Async functions
@@ -1130,6 +1170,18 @@ export function sqrt(x: f64): f64
 
 All query commands accept `--json`.
 
+### Language server
+
+`narra lsp` is a Language Server Protocol server on stdin and stdout. It works with any LSP client.
+
+- Messages use the LSP framing: a `Content-Length` header, other headers ignored, then the JSON body.
+- Lifecycle: `initialize`, `initialized`, `shutdown` and `exit`. `exit` ends the server with code 0 after `shutdown` and 1 before it. The end of the input without `exit` also ends it with code 1.
+- `initialize` answers full text sync, `documentFormattingProvider` and a `positionEncoding`. The encoding is `"utf-8"` when the client offers it, else `"utf-16"`.
+- A request before `initialize` gets error -32002, an unknown request -32601 and a message that cannot be read -32700. Unknown notifications are ignored.
+- `textDocument/didOpen`, `didChange` (the full text) and `didClose` keep the editor's text, which replaces the file on disk. After each open or change the server checks the package that holds the file (the nearest `narra.toml`; a file with none is checked alone). It then sends `textDocument/publishDiagnostics` for every module of the package, with an empty list for a module that has no problem. A diagnostic's range starts and ends at its position. Its `code` is the diagnostic code.
+- `didClose` checks the package again from the files on disk and empties the list of the closed document.
+- `textDocument/formatting` formats with the `[fmt]` table of the nearest `narra.toml`. It returns one edit that replaces the whole document, an empty list when the document is already formatted, or `null` when it does not parse.
+
 ### Speed target
 
 `narra check` on an unchanged package with one edited file returns in under 100 ms.
@@ -1172,6 +1224,7 @@ generics = "compact"    # optional: layout tables everywhere, for smaller binari
 These are left out of the first version on purpose.
 
 - **Task cancellation and timeouts.** A task runs until it returns. A cancellation design for async tasks and threads is not decided.
+- **A cycle collector for identity objects.** Cycles through identity types leak and the leak check reports them (section 6, D80).
 - **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.
 - **A bytecode VM.** Possible later for scripting and hot reload. The first target is native code only.

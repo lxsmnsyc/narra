@@ -1,0 +1,7 @@
+# Log: mutable-markers
+
+- 2026-11-09: branch `spike/mutable-markers` from `origin/feat/batch-1`. Read D50, D55, D77, D81, SPEC sections 2 and 6, and the mutable-reference outcome.
+- Looked at how bindings lower today in selfhost/src: `emitmatch.nra` `bindPattern` copies and retains each pattern binding from a subject held in a temporary; `emitstmts.nra` `emitArrayFor` holds a reference to the array for the loop and retains each element; `emitexprs.nra` `emitLvaluePointer` makes arrays on a path unique (`_at`) and gives a pointer; `emitstate.nra` `isReference` already marks `mutable` parameters and by-reference captures as C pointers. A loop pointer local fits that last path.
+- The parser already desugars `for (let x of ...)` and `for (const <pattern> of ...)` into a hidden loop name plus a `VarStmt` (`parser.nra:1855`). `for (mutable p of xs)` is a parse error today ("write `for (const item of items)`"), checked with the built `out/narrac`.
+- Wrote `count.py`. The useful numbers: 2 of 119 index loops write their own source by index; 0 enum payload write-backs (the 8 matches are list walks and one `Map` entry); 11 functions write through one element path 3+ times (49 writes); 23 `mutable path[...]` arguments.
+- Decision (gate delegated): the marker goes only on `for ... of` over an array. Patterns deferred (D55 and D81 rule 7, 0 users), destructuring rejected, local reference binding deferred, `x = f(mutable x)` rejected. D85 written, SPEC sections 2 and 6 updated, README line added.

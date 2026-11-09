@@ -18,7 +18,6 @@ import {
   FuncDecl,
   ConstDecl,
   Decl,
-  File,
   ImportDecl,
   Expr,
   Block,
@@ -43,7 +42,9 @@ import {
   ImplRef,
   MapKeyCheck,
   typeKey,
+  plainTypeKey,
   isBoxedEnum,
+  isInteger,
 } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
 import { collectFuncIds, collectBlockIds, collectExpressionIds } from "narrac/idcheck"
@@ -146,6 +147,29 @@ export enum ProgramFunc {
 // A local variable, parameter or loop variable of one checked body (Go's
 // Local). noEscape marks a function-type parameter without `escaping`.
 // selfhost-check-patterns adds narrowing beside it.
+// How a local was bound. Only a Plain local (a `const` or `let` with a plain
+// name), a Reference and a `mutable` parameter can have their contents
+// changed (D81); the others hold a copy of part of another value and are
+// read-only. A Reference is the name of `for (mutable item of items)`: a
+// pointer to the element, which acts as a `mutable` parameter (D85).
+export enum BindingKind derives Equatable {
+  Plain
+  Pattern
+  Loop
+  Destructured
+  Reference
+}
+
+// The source of a `for (mutable item of items)` loop being checked (D85).
+// The body cannot use a place that overlaps it: local is the BodyInfo.locals
+// index at its root, path the fields after it, with "[]" for an element.
+export struct LoopBorrow {
+  local: int
+  path: Array<string>
+  source: string
+  name: string
+}
+
 export struct LocalInfo {
   name: string
   localType: Type
@@ -159,6 +183,12 @@ export struct LocalInfo {
   namePos: Pos
   shorthand: bool = false
   writes: Array<Pos> = []
+  binding: BindingKind
+  // For a Loop binding: the place the loop reads (`players`), or "" when the
+  // source is no place, and whether its elements have contents, for the hint
+  // of a write through the binding.
+  loopSource: string = ""
+  loopContents: bool = false
   // checker.localCount right after the increment; the C name is v_<name>_<number>
   // (filled by selfhost-emit-program).
   number: int = 0
@@ -173,6 +203,9 @@ export struct ClosureInfo {
   nodeId: int
   stack: bool
   captures: Array<int>
+  // The captured local `const`s the closure, or one nested in it, changes:
+  // they are captured by reference, as a `let` is (D81).
+  refCaptures: Array<int> = []
   hasHint: bool
   hintParameters: Array<Option<Type>>
   hintResult: Option<Type>
@@ -465,12 +498,29 @@ export struct Checker {
   // the inferred effects of each private function* by generatorKey, filled
   // by the effect pass.
   generatorUses: Array<GeneratorUse> = []
+  // Function values stored where a function type with the same signature is
+  // expected, checked by the effect pass against what the value does (D86).
+  // looseFunctions is set while the argument for a function-type parameter of
+  // a private function is checked: such a parameter takes the effects of the
+  // argument at each call.
+  functionStores: Array<FunctionStore> = []
+  looseFunctions: bool = false
+  // False while the emitter writes the C name table: C types carry no effects.
+  printEffects: bool = true
+  // The Checker.functions index of the function whose call is being checked, or -1.
+  calleeIndex: int = -1
   generatorEffects: Map<string, Array<string>>
   // The type arguments written on the call being checked, by call node id
   // (`f<int>(x)`). checkCallEndingNarrowing sets them; the generic and trait
   // call checks that use them empty the entry, so a non-empty entry after the
   // check means the callee takes no type arguments.
   callTypeArguments: Map<int, Array<TypeExpr>>
+  // The order of the named arguments of each call whose arguments are not
+  // written in parameter order, by call node id (D87): entry i is the
+  // written index of the argument passed to parameter i. The AST keeps the
+  // written order, which is the evaluation order; a pass that pairs an
+  // argument with its parameter reads the call through orderArguments.
+  argumentOrders: Map<int, Array<int>>
   // The effects of each call result with bound generator effects (a
   // TGenerator origin of -2 - index), filled by the effect pass.
   boundGenerators: Array<Array<string>> = []
@@ -480,6 +530,13 @@ export struct Checker {
   // The id of the target of the assignment being checked, or -1 (Go's
   // c.assigning): a Map index there is a write.
   assigningId: int = -1
+  // The sources of the enclosing `for (mutable ...)` loops, innermost last,
+  // and the ids of the root names of the places already compared with them.
+  loopBorrows: Array<LoopBorrow> = []
+  borrowChecked: Array<int> = []
+  // The id of the integer literal directly under a unary minus, or -1: the
+  // literal may reach one further below zero (D82).
+  negatedLiteralId: int = -1
   // Generic function instances (instances.nra) in discovery order, found by
   // "<func>|<typeKeys>" in funcInstances. pending is the queue of instances
   // to check (instanceList indexes); checkPending (body.nra) works through
@@ -543,6 +600,7 @@ export function newChecker(ids: int): Checker uses alloc {
     bodyKeys: Map {},
     generatorEffects: Map {},
     callTypeArguments: Map {},
+    argumentOrders: Map {},
   }
 }
 
@@ -668,10 +726,19 @@ export function newScope(
   let types: Map<string, Type> = Map {
     "int": Type.TInt,
     "i64": Type.TInt,
+    "i8": Type.TI8,
+    "i16": Type.TI16,
+    "i32": Type.TI32,
+    "u8": Type.TU8,
+    "u16": Type.TU16,
+    "u32": Type.TU32,
+    "u64": Type.TU64,
     "f64": Type.TF64,
+    "f32": Type.TF32,
     "bool": Type.TBool,
     "char": Type.TChar,
     "string": Type.TStr,
+    "bytes": Type.TBytes,
   }
   let generics: Map<string, int> = Map {}
   if (Arrays.length(checker.scopes) > 0) {
@@ -774,10 +841,19 @@ export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses 
 export function typeString(checker: Checker, type: Type): string uses alloc {
   return match (type) {
     Type.TInt => "int"
+    Type.TI8 => "i8"
+    Type.TI16 => "i16"
+    Type.TI32 => "i32"
+    Type.TU8 => "u8"
+    Type.TU16 => "u16"
+    Type.TU32 => "u32"
+    Type.TU64 => "u64"
     Type.TF64 => "f64"
+    Type.TF32 => "f32"
     Type.TBool => "bool"
     Type.TChar => "char"
     Type.TStr => "string"
+    Type.TBytes => "bytes"
     Type.TVoid => "void"
     Type.TStringBuilder => "StringBuilder"
     Type.TStruct(index) => structString(checker, index)
@@ -792,7 +868,9 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TFunc(
       parameters,
       result,
-    ) => `(${typeList(checker, parameters)}) => ${typeString(checker, result)}`
+      effects,
+      binder,
+    ) => `(${typeList(checker, parameters)}) => ${typeString(checker, result)}${functionUsesSuffix(checker, effects, binder)}`
     Type.TRange => "Range"
     Type.TGenerator(
       element,
@@ -837,6 +915,19 @@ export function generatorEffectList(checker: Checker, type: Type): Array<string>
 export function generatorKey(checker: Checker, index: int): string uses alloc {
   const info = checker.functions[index]
   return `${info.module}|${Int.toString(info.declaration.pos.line)}:${Int.toString(info.declaration.pos.column)}`
+}
+
+// functionUsesSuffix writes the effects of a function type, except the
+// variables of another function: those are bound at each call.
+export function functionUsesSuffix(
+  checker: Checker,
+  effects: Array<string>,
+  binder: int,
+): string uses alloc {
+  if (!checker.printEffects || (binder >= 0 && binder != checker.functionIndex)) {
+    return ""
+  }
+  return usesSuffix(effects)
 }
 
 // usesSuffix writes an effect list as it follows a type, ` uses a, b`.
@@ -884,7 +975,7 @@ export function typeModule(checker: Checker, type: Type): string {
 export function containsTypeParameter(checker: Checker, type: Type): bool {
   return match (type) {
     Type.TParam(_) => true
-    Type.TFunc(parameters, result) =>
+    Type.TFunc(parameters, result, _, _) =>
       anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
     Type.TArray(element) => containsTypeParameter(checker, element)
     Type.TBox(element) => containsTypeParameter(checker, element)
@@ -1014,6 +1105,16 @@ function visitOrder(
 export struct GeneratorUse {
   pos: Pos
   file: string
+  want: Type
+  got: Type
+}
+
+// A function value used where a function type with the same signature is
+// expected (D86). The value may have fewer effects than the type.
+export struct FunctionStore {
+  pos: Pos
+  file: string
+  body: int
   want: Type
   got: Type
 }
@@ -1295,6 +1396,84 @@ export function getLocal(checker: Checker, index: int): LocalInfo {
   return checker.bodies[checker.body].locals[index]
 }
 
+// canChangeContents reports whether the fields and elements of a local can
+// be assigned and the local passed as mutable: a `mutable` parameter, a
+// `const` or `let` declared with a plain name (D81), or the name of a
+// `for (mutable ...)` loop (D85).
+export function canChangeContents(local: LocalInfo): bool {
+  if (local.param) {
+    return local.isMutable
+  }
+  return local.binding == BindingKind.Plain || local.binding == BindingKind.Reference
+}
+
+// setBinding records how a declared local was bound. The `for` head with a
+// pattern or `let` becomes a declaration from the loop's hidden name
+// `__for_L_C` (parser), so such a declaration is a Loop binding that takes
+// the loop's source; any other declaration gets kind.
+export function setBinding(mutable checker: Checker, local: int, value: Expr, kind: BindingKind) {
+  const body = checker.body
+  if (value is Expr.Ident(_, _, name)) {
+    if (Str.startsWith(name, "__for_")) {
+      const hidden = findLocal(checker, name)
+      if (hidden >= 0) {
+        const source = checker.bodies[body].locals[hidden]
+        checker.bodies[body].locals[local].binding = BindingKind.Loop
+        checker.bodies[body].locals[local].loopSource = source.loopSource
+        // A destructured element has no loop form of its own; the hint
+        // writes through the source.
+        checker.bodies[body].locals[local].loopContents =
+          source.loopContents && kind != BindingKind.Destructured
+        return
+      }
+    }
+  }
+  checker.bodies[body].locals[local].binding = kind
+}
+
+// isContentsType reports a type whose contents change in place, the only
+// types a `mutable` parameter can have: a struct, Array, Map, Box,
+// StringBuilder, Generator or Coroutine (D81).
+export function isContentsType(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TStruct(index) => !checker.structs[index].tuple
+    Type.TArray(_) => true
+    Type.TMap(_, _) => true
+    Type.TBox(_) => true
+    Type.TStringBuilder => true
+    Type.TGenerator(_, _, _, _, _) => true
+    _ => false
+  }
+}
+
+// checkMutableType reports a `mutable` parameter whose type has no contents
+// to change (D81): a number, string, enum, tuple, function or bare type
+// parameter. selfParameter is the Self of the trait being declared, or -1;
+// `mutable value: Self` is allowed there.
+export function checkMutableType(
+  mutable checker: Checker,
+  pos: Pos,
+  type: Type,
+  selfParameter: int,
+) uses alloc {
+  if (isContentsType(checker, type) || type == Type.TVoid) {
+    return
+  }
+  let found = typeString(checker, type)
+  if (type is Type.TParam(index)) {
+    if (index == selfParameter) {
+      return
+    }
+    found = `type parameter ${found}`
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0948",
+    `a mutable parameter needs a type whose contents change in place (a struct, Array, Map, Box, StringBuilder or Generator), found ${found}; return the new value instead`,
+  )
+}
+
 // declareLocal adds a local to the innermost scope (Go's declare); nodeId is
 // the declaring node. Shadowing is an error, except for `_`.
 export function declareLocal(
@@ -1328,6 +1507,7 @@ export function declareLocal(
     localType: localType,
     isMutable: isMutable,
     param: param,
+    binding: BindingKind.Plain,
     pos: pos,
     noEscape: false,
     used: false,
@@ -1369,6 +1549,52 @@ export function popScope(mutable checker: Checker) {
 export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
   reportError(mutable checker, pos, "E0213", `unsupported: ${what}`)
   return Type.TVoid
+}
+
+// hasNamedArgument reports whether a call names any of its arguments.
+export function hasNamedArgument(arguments: Array<Arg>): bool {
+  for (const argument of Arrays.values(arguments)) {
+    if (argument.name is Some(_)) {
+      return true
+    }
+  }
+  return false
+}
+
+// orderArguments is the arguments of a call in the callee's parameter order.
+// A call without a recorded order passes them as written.
+export function orderArguments(
+  checker: Checker,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Array<Arg> uses alloc {
+  if (checker.argumentOrders[nodeId] is Some(order)) {
+    let ordered: Array<Arg> = []
+    for (const written of Arrays.values(order)) {
+      Arrays.push(mutable ordered, arguments[written])
+    }
+    return ordered
+  }
+  return arguments
+}
+
+// findParameterIndexes is the parameter index of each of the count written
+// arguments of a call: its own index unless named arguments changed the order.
+export function findParameterIndexes(
+  checker: Checker,
+  nodeId: int,
+  count: int,
+): Array<int> uses alloc {
+  let indexes: Array<int> = []
+  for (const index of Ranges.between(0, count)) {
+    Arrays.push(mutable indexes, index)
+  }
+  if (checker.argumentOrders[nodeId] is Some(order)) {
+    for (const parameter of Ranges.between(0, Arrays.length(order))) {
+      indexes[order[parameter]] = parameter
+    }
+  }
+  return indexes
 }
 
 export function getExpressionId(expression: Expr): int {
@@ -1429,7 +1655,7 @@ export function getExpressionPos(expression: Expr): Pos {
 }
 
 export function isNumeric(valueType: Type): bool {
-  return valueType == Type.TInt || valueType == Type.TF64
+  return isInteger(valueType) || valueType == Type.TF64 || valueType == Type.TF32
 }
 
 // findBody returns the BodyInfo index for a key, or -1. Keys: "func|<funcIndex>",
@@ -1447,7 +1673,7 @@ export function findBody(checker: Checker, key: string): int {
 // (Go's arrayOf, boxOf, mapOf and funcOf, which intern by type id) and returns it.
 // Types that hold a type parameter are not recorded, as Go drops them in finish.
 export function internComposite(mutable checker: Checker, type: Type): Type uses alloc {
-  const key = typeKey(type)
+  const key = plainTypeKey(type)
   if (checker.composites[key] is None && !containsTypeParameter(checker, type)) {
     checker.composites[key] = type
   }

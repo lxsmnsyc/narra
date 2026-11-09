@@ -1,0 +1,287 @@
+// The registry rows and emitters of std/fs.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Pos, Arg } from "narrac/ast"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  writeLine,
+  temp,
+  typeOf,
+} from "narrac/emitstate"
+import {
+  NODE,
+  FixedCall,
+  plain,
+  owned,
+  emitFixedCall,
+  argumentText,
+  stringOut,
+  arrayStruct,
+  findVariant,
+  variantFieldType,
+  ioResult,
+} from "narrac/stdemithelp"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+export const FS_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Fs.createDir",
+    module: "std/fs",
+    key: "createDir",
+    parameters: ["string"],
+    result: "Result<bool, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.createDirAll",
+    module: "std/fs",
+    key: "createDirAll",
+    parameters: ["string"],
+    result: "Result<bool, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.exists",
+    module: "std/fs",
+    key: "exists",
+    parameters: ["string"],
+    result: "bool",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Fs.isDir",
+    module: "std/fs",
+    key: "isDir",
+    parameters: ["string"],
+    result: "bool",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Fs.listDir",
+    module: "std/fs",
+    key: "listDir",
+    parameters: ["string"],
+    result: "Result<Array<string>, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.readBytes",
+    module: "std/fs",
+    key: "readBytes",
+    parameters: ["string"],
+    result: "Result<bytes, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.readText",
+    module: "std/fs",
+    key: "readText",
+    parameters: ["string"],
+    result: "Result<string, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.removeDir",
+    module: "std/fs",
+    key: "removeDir",
+    parameters: ["string"],
+    result: "Result<bool, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.removeFile",
+    module: "std/fs",
+    key: "removeFile",
+    parameters: ["string"],
+    result: "Result<bool, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.writeBytes",
+    module: "std/fs",
+    key: "writeBytes",
+    parameters: ["string", "bytes"],
+    result: "Result<int, string>",
+    effects: ["io"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.writeText",
+    module: "std/fs",
+    key: "writeText",
+    parameters: ["string", "string"],
+    result: "Result<int, string>",
+    effects: ["io"],
+    check: "fixed",
+  },
+]
+
+const FS_FIXED_CALLS: Array<FixedCall> = [
+  FixedCall {
+    name: "Fs.exists",
+    call: "narra_fs_exists",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Fs.isDir",
+    call: "narra_fs_is_dir",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+]
+
+// Fs.readText(path) and Fs.readBytes(path), whose runtime call skips the UTF-8 check.
+function emitReadFile<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  call: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const output = stringOut(mutable emitter)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `${call}(${path}, &${output}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, output, bad)
+}
+
+// Fs.writeText(path, text) and Fs.writeBytes(path, data): Ok holds the number
+// of bytes written. Both are an lstr in C.
+function emitWriteText<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const text = argumentText(walker, mutable emitter, arguments, 1)
+  const written = temp(mutable emitter, Type.TInt, "0")
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_write(${path}, ${text}, &${written}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, written, bad)
+}
+
+// Fs.listDir(path): the names move from the runtime's list into an array.
+function emitListDir<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const okVariant = findVariant(emitter, resultType, "Ok")
+  const arrayType = variantFieldType(emitter, resultType, okVariant)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  emitter.tempCount = emitter.tempCount + 1
+  const names = `t${Int.toString(emitter.tempCount)}`
+  writeLine(mutable emitter, `narra_fs_names ${names} = {0};`)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `narra_fs_list(${path}, &${names}, &${bad})`)
+  const array = temp(mutable emitter, arrayType, "NULL")
+  const structName = arrayStruct(emitter, arrayType)
+  writeLine(mutable emitter, `if (${success}) {`)
+  writeLine(mutable emitter, `  ${array} = ${structName}_new(${names}.len);`)
+  writeLine(
+    mutable emitter,
+    `  for (int64_t i = 0; i < ${names}.len; i++) ${array}->items[${array}->len++] = ${names}.items[i];`,
+  )
+  writeLine(mutable emitter, `  free(${names}.items);`)
+  writeLine(mutable emitter, "}")
+  return ioResult(mutable emitter, resultType, success, array, bad)
+}
+
+// Fs.createDir, Fs.removeFile and Fs.removeDir: Ok(true) or Err(message).
+function emitFsChange<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  call: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const bad = stringOut(mutable emitter)
+  const success = temp(mutable emitter, Type.TBool, `${call}(${path}, &${bad})`)
+  return ioResult(mutable emitter, resultType, success, "true", bad)
+}
+
+// Fs.createDirAll(path): Ok holds whether a directory was created.
+function emitCreateDirAll<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = typeOf(emitter, nodeId)
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const created = temp(mutable emitter, Type.TBool, "false")
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_mkdir_all(${path}, &${created}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, created, bad)
+}
+
+// emitFsCall emits the calls of std/fs.
+export function emitFsCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  for (const fixed of Arrays.values(FS_FIXED_CALLS)) {
+    if (fixed.name == name) {
+      return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+    }
+  }
+  if (name == "Fs.readText") {
+    return emitReadFile(walker, mutable emitter, "narra_fs_read", nodeId, arguments)
+  }
+  if (name == "Fs.readBytes") {
+    return emitReadFile(walker, mutable emitter, "narra_fs_read_bytes", nodeId, arguments)
+  }
+  if (name == "Fs.writeText" || name == "Fs.writeBytes") {
+    return emitWriteText(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.listDir") {
+    return emitListDir(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.createDir") {
+    return emitFsChange(walker, mutable emitter, "narra_fs_mkdir", nodeId, arguments)
+  }
+  if (name == "Fs.removeFile") {
+    return emitFsChange(walker, mutable emitter, "narra_fs_unlink", nodeId, arguments)
+  }
+  if (name == "Fs.removeDir") {
+    return emitFsChange(walker, mutable emitter, "narra_fs_rmdir", nodeId, arguments)
+  }
+  if (name == "Fs.createDirAll") {
+    return emitCreateDirAll(walker, mutable emitter, nodeId, arguments)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

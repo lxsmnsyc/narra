@@ -62,6 +62,8 @@ export struct DotUse {
 // - namePositions: where the name of a Param, VarStmt or ForStmt is written,
 //   by node id; shorthandIds: the PatName ids written as `{ host }`.
 // - callEnds: the position just after the closing `)` of a call, by node id.
+// - referenced: the names written outside the imports and not after a `.`,
+//   including those inside `${}` of templates, for the unused-import check.
 export struct SourceFacts {
   source: string
   header: int
@@ -70,6 +72,7 @@ export struct SourceFacts {
   namePositions: Map<int, Pos>
   shorthandIds: Map<int, bool>
   callEnds: Map<int, Pos>
+  referenced: Map<string, bool>
 }
 
 // createEmptyFacts is the facts of a source nobody parsed.
@@ -82,6 +85,7 @@ export function createEmptyFacts(): SourceFacts uses alloc {
     namePositions: Map {},
     shorthandIds: Map {},
     callEnds: Map {},
+    referenced: Map {},
   }
 }
 
@@ -231,6 +235,8 @@ export struct Block {
 }
 
 export struct Arg {
+  pos: Pos // the first token of the argument: its name, `mutable`, or its value
+  name: Option<string> // Some for `name: value`, None for a positional argument
   isMutable: bool
   value: Expr
 }
@@ -273,13 +279,32 @@ export enum Stmt {
   // orElse is a BlockStmt or an IfStmt.
   IfStmt(pos: Pos, condition: Expr, then: Block, orElse: Option<Stmt>)
   WhileStmt(pos: Pos, label: string, condition: Expr, body: Block)
-  ForStmt(id: int, pos: Pos, label: string, name: string, iterable: Expr, body: Block)
+  // reference is set for the `mutable` marker (D85).
+  ForStmt(
+    id: int,
+    pos: Pos,
+    label: string,
+    name: string,
+    iterable: Expr,
+    body: Block,
+    reference: Option<LoopReference>,
+  )
   // `yield value`, or `yield* other` when delegate is set. `const input = yield
   // value` in a coroutine also has a binding; the statement's pos is the
   // `yield` and the binding's pos is the `const`.
   YieldStmt(pos: Pos, value: Expr, delegate: bool, binding: Option<YieldBinding>)
   BreakStmt(pos: Pos, label: string)
   ContinueStmt(pos: Pos, label: string)
+}
+
+// The `mutable` marker of a `for` head (D85): `for (mutable item of items)`
+// binds the loop's name to each element in place. In `for (const #[index,
+// mutable item] of Arrays.entries(items))` the loop's name is item, and
+// indexName and indexId are the name and node id of index; indexName is ""
+// without one.
+export struct LoopReference {
+  indexId: int
+  indexName: string
 }
 
 // Every expression carries an id and the position the Go parser records.

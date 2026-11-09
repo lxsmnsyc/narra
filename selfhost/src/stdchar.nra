@@ -1,0 +1,60 @@
+// The registry rows and emitters of std/char.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Arg } from "narrac/ast"
+import { Emitter, Code, EmitWalker, reportUnsupported, temp, typeOf } from "narrac/emitstate"
+import { NODE, plain, argumentText, findVariant, ioEither } from "narrac/stdemithelp"
+
+export const CHAR_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Char.code",
+    module: "std/char",
+    key: "code",
+    parameters: ["char"],
+    result: "int",
+  },
+  StdFunc {
+    name: "Char.fromCode",
+    module: "std/char",
+    key: "fromCode",
+    parameters: ["int"],
+    result: "Option<char>",
+    check: "fixed",
+  },
+]
+
+// Char.fromCode(number): None for surrogates, negatives and values above 0x10FFFF.
+function emitFromCode<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = typeOf(emitter, nodeId)
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const value = argumentText(walker, mutable emitter, arguments, 0)
+  const number = temp(mutable emitter, Type.TInt, value)
+  const character = temp(mutable emitter, Type.TChar, `(uint32_t)${number}`)
+  const condition = `${number} >= 0 && ${number} <= 0x10FFFF && !(${number} >= 0xD800 && ${number} <= 0xDFFF)`
+  return ioEither(mutable emitter, optionType, condition, some, [character], none, [])
+}
+
+// emitCharCall emits the calls of std/char.
+export function emitCharCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "Char.code") {
+    const character = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`((int64_t)${character})`)
+  }
+  if (name == "Char.fromCode") {
+    return emitFromCode(walker, mutable emitter, nodeId, arguments)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

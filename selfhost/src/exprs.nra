@@ -36,7 +36,7 @@ import {
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, createFix, createEdit, moveColumn, buildTemplateEscape } from "narrac/fixes"
-import { Type, Field } from "narrac/types"
+import { Type, Field, isInteger, isSizedInteger, isUnsignedInteger } from "narrac/types"
 import {
   isConditional,
   Checker,
@@ -45,7 +45,6 @@ import {
   BodyRoot,
   Walker,
   ConstInfo,
-  CONST_NEW,
   CONST_BUSY,
   CONST_DONE,
   reportError,
@@ -66,20 +65,24 @@ import {
   getExpressionPos,
   isNumeric,
   GeneratorUse,
+  FunctionStore,
   generatorEffectList,
+  BindingKind,
+  canChangeContents,
 } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
-import { stdType } from "narrac/stdlib"
+import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
 import {
   useLocal,
   markArgument,
-  isNonEscaping,
   checkFunctionValue,
   findModuleFunction,
   isCapturedByArrow,
+  markChangedCapture,
+  isReferenceCapture,
 } from "narrac/funcvalues"
 import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
@@ -96,9 +99,88 @@ export function checkExpression<W: Walker>(
   expression: Expr,
   want: Option<Type>,
 ): Type uses alloc {
+  if (Arrays.length(checker.loopBorrows) > 0) {
+    checkLoopBorrows(mutable checker, expression)
+  }
   const found = checkExpressionKind(mutable checker, walker, expression, want)
   setNodeType(mutable checker, getExpressionId(expression), found)
   return found
+}
+
+// checkLoopBorrows rejects a place that overlaps the source of an enclosing
+// `for (mutable item of items)` loop (D85 rule 4): `game`, `game.players`
+// and `game.players[0]` inside a loop over `game.players`, but not
+// `game.round`. Only the whole place is compared, so its root name is
+// recorded and the parts of the place checked after it are skipped. An
+// index matches any index.
+function checkLoopBorrows(mutable checker: Checker, expression: Expr) uses alloc {
+  // Walk down to the root name, collecting the path in reverse.
+  let reversed: Array<string> = []
+  let current = expression
+  let rootId = -1
+  let rootName = ""
+  while (rootId < 0) {
+    match (current) {
+      Expr.Ident(nodeId, _, name) => {
+        rootId = nodeId
+        rootName = name
+      }
+      Expr.FieldExpr(_, _, target, name) => {
+        Arrays.push(mutable reversed, name)
+        current = target
+      }
+      Expr.IndexExpr(_, _, target, _) => {
+        Arrays.push(mutable reversed, "[]")
+        current = target
+      }
+      _ => {
+        return
+      }
+    }
+  }
+  for (const checked of Arrays.values(checker.borrowChecked)) {
+    if (checked == rootId) {
+      return
+    }
+  }
+  Arrays.push(mutable checker.borrowChecked, rootId)
+  const local = findLocal(checker, rootName)
+  if (local < 0) {
+    return
+  }
+  let path: Array<string> = []
+  let position = Arrays.length(reversed) - 1
+  while (position >= 0) {
+    Arrays.push(mutable path, reversed[position])
+    position = position - 1
+  }
+  for (const borrow of Arrays.values(checker.loopBorrows)) {
+    if (borrow.local == local && arePathsOverlapping(path, borrow.path)) {
+      const used = describePlace(expression)
+      reportError(
+        mutable checker,
+        getExpressionPos(expression),
+        "E0956",
+        `${quoteGo(used)} cannot be used inside the loop that changes ${borrow.source} in place; reach its elements through ${borrow.name}, or write an index loop`,
+      )
+      return
+    }
+  }
+}
+
+// arePathsOverlapping reports whether one field path is a prefix of the
+// other, with "[]" matching any index.
+function arePathsOverlapping(first: Array<string>, second: Array<string>): bool {
+  let count = Arrays.length(first)
+  if (Arrays.length(second) < count) {
+    count = Arrays.length(second)
+  }
+  for (const index of Ranges.upTo(count)) {
+    if (first[index] != second[index]) {
+      return false
+    }
+  }
+  return true
 }
 
 function checkExpressionKind<W: Walker>(
@@ -130,8 +212,8 @@ function checkExpressionKind<W: Walker>(
     _ => {}
   }
   return match (expression) {
-    Expr.IntLit(_, pos, text) => checkIntLiteral(mutable checker, pos, text)
-    Expr.FloatLit(_, _, _) => Type.TF64
+    Expr.IntLit(nodeId, pos, text) => checkIntLiteral(mutable checker, nodeId, pos, text, want)
+    Expr.FloatLit(_, pos, text) => checkFloatLiteral(mutable checker, pos, text, want)
     Expr.StringLit(_, _, _, _) => Type.TStr
     Expr.CharLit(_, _, _) => Type.TChar
     Expr.BoolLit(_, _, _) => Type.TBool
@@ -181,6 +263,7 @@ function checkExpressionKind<W: Walker>(
       operator,
       left,
       right,
+      want,
     )
     Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => checkStructLiteral(
       mutable checker,
@@ -228,6 +311,7 @@ function checkCallEndingNarrowing<W: Walker>(
   }
   const errorsBefore = Arrays.length(checker.errors)
   const checked = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+  checkNamedArgumentsTaken(mutable checker, nodeId, callee, arguments)
   if (Arrays.length(typeArguments) > 0) {
     // Only a generic function or a trait function takes the type arguments.
     // A callee that failed to resolve has its own error already.
@@ -255,6 +339,39 @@ function checkCallEndingNarrowing<W: Walker>(
     }
   }
   return found
+}
+
+// checkNamedArgumentsTaken rejects named arguments to a callee that has no
+// parameter names: a function value, a std builtin, a constructor or a
+// distinct type's function (D87). A declared function matches them itself.
+function checkNamedArgumentsTaken(
+  mutable checker: Checker,
+  nodeId: int,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
+  const ref = getRef(checker, nodeId)
+  const hasNoNames = match (ref) {
+    Ref.Value => true
+    Ref.Builtin(_) => true
+    Ref.Constructor(_, _) => true
+    Ref.Distinct(_) => true
+    _ => false
+  }
+  if (!hasNoNames) {
+    return
+  }
+  for (const argument of Arrays.values(arguments)) {
+    if (argument.name is Some(_)) {
+      reportError(
+        mutable checker,
+        argument.pos,
+        "E0332",
+        `${describeCallee(callee)} has no parameter names; pass its arguments by position`,
+      )
+      return
+    }
+  }
 }
 
 // bindCallResult gives a call its own result type when the callee's result
@@ -296,6 +413,13 @@ export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses
           "E0915",
           `mutable parameter ${quoteGo(name)} cannot be returned or stored; copy it first with \`const copy = ${name}\``,
         )
+      } else if (local.binding == BindingKind.Reference) {
+        reportError(
+          mutable checker,
+          pos,
+          "E0915",
+          `loop element ${quoteGo(name)} is changed in place, so it cannot be returned or stored; copy it first with \`const copy = ${name}\``,
+        )
       }
     }
   }
@@ -325,11 +449,48 @@ export function expectType(
         }
       }
     }
+    if (expected is Type.TFunc(wantParameters, wantResult, _, wantBinder)) {
+      if (got is Type.TFunc(gotParameters, gotResult, _, _)) {
+        if (wantParameters == gotParameters && wantResult == gotResult) {
+          recordFunctionStore(mutable checker, pos, expected, wantBinder, got)
+          return
+        }
+      }
+    }
     if (expected != got) {
       const message = `expected ${describeType(checker, expected, got)}, found ${describeType(checker, got, expected)}`
       reportError(mutable checker, pos, "E0119", message)
     }
   }
+}
+
+// recordFunctionStore notes a function value stored where a function type with
+// the same signature is expected. The effect pass checks the effects of the
+// value against the type (D86). An expected type naming the effect variables of
+// another function is a parameter of a call: the variables take the value's
+// effects.
+function recordFunctionStore(
+  mutable checker: Checker,
+  pos: Pos,
+  want: Type,
+  wantBinder: int,
+  got: Type,
+) uses alloc {
+  if (checker.looseFunctions || (wantBinder >= 0 && wantBinder != checker.functionIndex)) {
+    return
+  }
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  const body = checker.body
+  Arrays.push(mutable checker.functionStores, FunctionStore {
+    pos: pos,
+    file: file,
+    body: body,
+    want: want,
+    got: got,
+  })
 }
 
 // expectGenerator checks a generator value against an expected generator
@@ -407,11 +568,211 @@ export function describeType(checker: Checker, described: Type, other: Type): st
   return text
 }
 
-function checkIntLiteral(mutable checker: Checker, pos: Pos, text: string): Type uses alloc {
-  if (!intLiteralFits(text)) {
-    reportError(mutable checker, pos, "E0200", `integer literal ${text} does not fit in int`)
+// checkIntLiteral types a literal from the type the context expects (D82):
+// a sized integer when that is wanted, int otherwise. It must fit that type.
+function checkIntLiteral(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  text: string,
+  want: Option<Type>,
+): Type uses alloc {
+  let literalType = Type.TInt
+  if (want is Some(wanted)) {
+    if (isSizedInteger(wanted)) {
+      literalType = wanted
+    }
   }
-  return Type.TInt
+  const negated = checker.negatedLiteralId == nodeId
+  if (literalType == Type.TInt) {
+    if (!intLiteralFits(text)) {
+      reportError(mutable checker, pos, "E0200", `integer literal ${text} does not fit in int`)
+    }
+    return literalType
+  }
+  if (!sizedLiteralFits(text, literalType, negated)) {
+    let shown = text
+    if (negated) {
+      shown = `-${text}`
+    }
+    const name = typeString(checker, literalType)
+    reportError(mutable checker, pos, "E0294", `integer literal ${shown} does not fit in ${name}`)
+  }
+  return literalType
+}
+
+// checkFloatLiteral types a float literal from the type the context expects
+// f32 when that is wanted, f64 otherwise. An f32 literal must be finite.
+function checkFloatLiteral(
+  mutable checker: Checker,
+  pos: Pos,
+  text: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (want is Some(Type.TF32)) {
+    if (!f32LiteralFits(text)) {
+      reportError(mutable checker, pos, "E0297", `float literal ${text} does not fit in f32`)
+    }
+    return Type.TF32
+  }
+  return Type.TF64
+}
+
+// stripLeadingZeros drops the zeros at the start of a digit string.
+function stripLeadingZeros(digits: string): string uses alloc {
+  let rest = digits
+  while (Str.length(rest) > 0 && Str.startsWith(rest, "0")) {
+    rest = Str.sliceFrom(rest, 1)
+  }
+  return rest
+}
+
+// f32LiteralFits is false when the literal is too large to round to a finite
+// f32: at or above 2^128 - 2^103 = 3.4028235677973366e38. The value is read as
+// 0.DIGITS x 10^magnitude and the digits are compared with that limit.
+function f32LiteralFits(text: string): bool uses alloc {
+  const cleaned = Str.replace(Str.replace(text, "_", ""), "E", "e")
+  let mantissa = cleaned
+  let exponentText = ""
+  if (Str.indexOf(cleaned, "e") is Some(marker)) {
+    mantissa = Str.slice(cleaned, 0, marker)
+    exponentText = Str.sliceFrom(cleaned, marker + 1)
+  }
+  // The exponent, with its sign.
+  let exponentNegative = false
+  if (Str.startsWith(exponentText, "-")) {
+    exponentNegative = true
+    exponentText = Str.sliceFrom(exponentText, 1)
+  } else if (Str.startsWith(exponentText, "+")) {
+    exponentText = Str.sliceFrom(exponentText, 1)
+  }
+  let exponent = 0
+  if (exponentText != "") {
+    const parsed = Int.parse(exponentText, 10)
+    if (parsed is Ok(value)) {
+      exponent = value
+    } else {
+      return exponentNegative
+    }
+  }
+  if (exponentNegative) {
+    exponent = 0 - exponent
+  }
+  // The digits and the position of the point among them.
+  let wholePart = mantissa
+  let fractionPart = ""
+  if (Str.indexOf(mantissa, ".") is Some(point)) {
+    wholePart = Str.slice(mantissa, 0, point)
+    fractionPart = Str.sliceFrom(mantissa, point + 1)
+  }
+  const allDigits = `${wholePart}${fractionPart}`
+  const digits = stripLeadingZeros(allDigits)
+  if (digits == "") {
+    return true
+  }
+  const magnitude = Str.length(wholePart) - (Str.length(allDigits) - Str.length(digits)) + exponent
+  if (magnitude != 39) {
+    return magnitude < 39
+  }
+  let padded = digits
+  while (Str.length(padded) < 17) {
+    padded = `${padded}0`
+  }
+  return Str.slice(padded, 0, 17) < "34028235677973366"
+}
+
+// splitIntLiteral gives the base of a literal and its digits without the base
+// prefix and the underscores.
+function splitIntLiteral(text: string): #[int, string] uses alloc {
+  let base = 10
+  let digits = text
+  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
+    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
+      base = 16
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
+    ) {
+      base = 2
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
+    ) {
+      base = 8
+      digits = Str.sliceFrom(text, 2)
+    } else {
+      base = 8
+      digits = Str.sliceFrom(text, 1)
+    }
+  }
+  return #[base, Str.replace(digits, "_", "")]
+}
+
+// sizedMaximum is the largest value of a sized integer type that int holds.
+function sizedMaximum(type: Type): int {
+  return match (type) {
+    Type.TI8 => 127
+    Type.TI16 => 32767
+    Type.TI32 => 2147483647
+    Type.TU8 => 255
+    Type.TU16 => 65535
+    _ => 4294967295
+  }
+}
+
+// sizedLiteralFits reports whether a literal is in the range of a sized
+// integer type. A negated literal reaches one more below zero for the signed
+// types, and only zero fits an unsigned type.
+function sizedLiteralFits(text: string, type: Type, negated: bool): bool uses alloc {
+  if (Str.contains(text, "_") && !underscoresFit(text)) {
+    return false
+  }
+  const #[base, digits] = splitIntLiteral(text)
+  let significant = digits
+  while (Str.length(significant) > 0 && Str.startsWith(significant, "0")) {
+    significant = Str.sliceFrom(significant, 1)
+  }
+  if (significant == "") {
+    return true
+  }
+  if (negated && isUnsignedInteger(type)) {
+    return false
+  }
+  if (type == Type.TU64) {
+    return fitsU64(base, significant)
+  }
+  const parsed = Int.parse(significant, base)
+  if (parsed is Ok(value)) {
+    let limit = sizedMaximum(type)
+    if (negated) {
+      limit = limit + 1
+    }
+    return value <= limit
+  }
+  return false
+}
+
+// fitsU64 compares digits without leading zeros to 2^64 - 1 by length, since
+// int cannot hold the larger values.
+function fitsU64(base: int, significant: string): bool {
+  const length = Str.length(significant)
+  if (base == 10) {
+    if (length != 20) {
+      return length < 20
+    }
+    return significant <= "18446744073709551615"
+  }
+  if (base == 16) {
+    return length <= 16
+  }
+  if (base == 2) {
+    return length <= 64
+  }
+  // Octal: 22 digits hold 64 bits when the first is 0 or 1.
+  if (length != 22) {
+    return length < 22
+  }
+  return Str.startsWith(significant, "0") || Str.startsWith(significant, "1")
 }
 
 // intLiteralFits reports whether Go's strconv.ParseInt(text, 0, 64)
@@ -946,10 +1307,19 @@ function hasNoFields(fieldsType: Type): bool {
     Type.TArray(_) => true
     Type.TMap(_, _) => true
     Type.TInt => true
+    Type.TI8 => true
+    Type.TI16 => true
+    Type.TI32 => true
+    Type.TU8 => true
+    Type.TU16 => true
+    Type.TU32 => true
+    Type.TU64 => true
     Type.TF64 => true
+    Type.TF32 => true
     Type.TBool => true
     Type.TChar => true
     Type.TStr => true
+    Type.TBytes => true
     Type.TVoid => true
     Type.TStringBuilder => true
     _ => false
@@ -1001,16 +1371,30 @@ function checkUnary<W: Walker>(
   operand: Expr,
   want: Option<Type>,
 ): Type uses alloc {
+  // A literal under - is checked with its sign.
+  let negatedLiteral = false
+  if (operator == "-") {
+    if (operand is Expr.IntLit(literalId, _, _)) {
+      checker.negatedLiteralId = literalId
+      negatedLiteral = true
+    }
+  }
   const operandType = checkExpression(mutable checker, walker, operand, want)
+  checker.negatedLiteralId = -1
   if (operator == "-") {
     if (!isNumeric(operandType)) {
       const text = typeString(checker, operandType)
       reportError(mutable checker, pos, "E0211", `- needs a number, found ${text}`)
+    } else if (isUnsignedInteger(operandType) && !negatedLiteral) {
+      const text = typeString(checker, operandType)
+      reportError(mutable checker, pos, "E0296", `- cannot negate ${text}, which is unsigned`)
     }
   } else if (operator == "!") {
     expectType(mutable checker, pos, Some(Type.TBool), operandType)
   } else if (operator == "~") {
-    expectType(mutable checker, pos, Some(Type.TInt), operandType)
+    if (!isInteger(operandType)) {
+      expectType(mutable checker, pos, Some(Type.TInt), operandType)
+    }
   }
   return operandType
 }
@@ -1092,6 +1476,61 @@ function buildConcatFix(
   ]
 }
 
+// isComparison is true for == != < <= > >=.
+function isComparison(operator: string): bool {
+  return operator == "==" ||
+    operator == "!=" ||
+    operator == "<" ||
+    operator == "<=" ||
+    operator == ">" ||
+    operator == ">="
+}
+
+// isNumberLiteral is true for an integer or float literal, or one under unary minus.
+function isNumberLiteral(expression: Expr): bool {
+  return match (expression) {
+    Expr.IntLit(_, _, _) => true
+    Expr.FloatLit(_, _, _) => true
+    Expr.UnaryExpr(_, _, operator, operand) =>
+      operator == "-" && (operand is Expr.IntLit(_, _, _) || operand is Expr.FloatLit(_, _, _))
+    _ => false
+  }
+}
+
+// isFloat is true for f32 and f64.
+function isFloat(type: Type): bool {
+  return type == Type.TF32 || type == Type.TF64
+}
+
+// reportMixedIntegers is E0295. The suggestion names the conversion functions
+// of the left type, which the sized-conversions node adds to the standard library.
+function reportMixedIntegers(
+  mutable checker: Checker,
+  pos: Pos,
+  operator: string,
+  leftType: Type,
+  rightType: Type,
+) uses alloc {
+  const leftText = typeString(checker, leftType)
+  const rightText = typeString(checker, rightType)
+  const module = match (leftType) {
+    Type.TI8 => "I8"
+    Type.TI16 => "I16"
+    Type.TI32 => "I32"
+    Type.TU8 => "U8"
+    Type.TU16 => "U16"
+    Type.TU32 => "U32"
+    Type.TU64 => "U64"
+    _ => "Int"
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0295",
+    `${operator} needs two integers of the same type, found ${leftText} and ${rightText}; convert one side with ${module}.from, ${module}.tryFrom or ${module}.wrap`,
+  )
+}
+
 function checkBinary<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -1099,12 +1538,55 @@ function checkBinary<W: Walker>(
   operator: string,
   left: Expr,
   right: Expr,
+  want: Option<Type>,
 ): Type uses alloc {
-  // The left operand gives the expected type of the right one.
-  const leftType = checkExpression(mutable checker, walker, left, None)
-  const rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+  // The left operand gives the expected type of the right one. A sized
+  // integer wanted from the whole expression types the left operand of an
+  // integer operator; a literal on the left takes the type of the right (D82).
+  let leftWant: Option<Type> = None
+  if (want is Some(wanted)) {
+    if ((isSizedInteger(wanted) || wanted == Type.TF32) && !isComparison(operator)) {
+      leftWant = want
+    }
+  }
+  let leftType = Type.TVoid
+  let rightType = Type.TVoid
+  if (leftWant is None && isNumberLiteral(left) && !isNumberLiteral(right)) {
+    rightType = checkExpression(mutable checker, walker, right, None)
+    leftType = checkExpression(mutable checker, walker, left, Some(rightType))
+  } else {
+    leftType = checkExpression(mutable checker, walker, left, leftWant)
+    rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+  }
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
+
+  // Two different integer types, one of them sized, are never mixed.
+  if (leftType != rightType && isInteger(leftType) && isInteger(rightType)) {
+    if (operator != "&&" && operator != "||") {
+      reportMixedIntegers(mutable checker, pos, operator, leftType, rightType)
+      if (isComparison(operator)) {
+        return Type.TBool
+      }
+      return leftType
+    }
+  }
+
+  // f32 and f64 are never mixed.
+  if (leftType != rightType && isFloat(leftType) && isFloat(rightType)) {
+    if (operator != "&&" && operator != "||") {
+      reportError(
+        mutable checker,
+        pos,
+        "E0295",
+        `${operator} needs two floats of the same type, found ${leftText} and ${rightText}; convert one side with F32.from or Float.from`,
+      )
+      if (isComparison(operator)) {
+        return Type.TBool
+      }
+      return leftType
+    }
+  }
 
   // Then the rule of the operator.
   if (operator == "&&" || operator == "||") {
@@ -1121,7 +1603,11 @@ function checkBinary<W: Walker>(
     return Type.TBool
   }
   if (operator == "<" || operator == "<=" || operator == ">" || operator == ">=") {
-    const ordered = isNumeric(leftType) || leftType == Type.TChar || leftType == Type.TStr
+    const ordered =
+      isNumeric(leftType) ||
+        leftType == Type.TChar ||
+        leftType == Type.TStr ||
+        leftType == Type.TBytes
     if (leftType != rightType || !ordered) {
       reportError(mutable checker, pos, "E0215", `cannot order ${leftText} and ${rightText}`)
     }
@@ -1159,7 +1645,7 @@ function checkBinary<W: Walker>(
       operator == "<<" ||
       operator == ">>"
   ) {
-    if (leftType != Type.TInt || rightType != Type.TInt) {
+    if (!isInteger(leftType) || leftType != rightType) {
       reportError(
         mutable checker,
         pos,
@@ -1167,7 +1653,7 @@ function checkBinary<W: Walker>(
         `${operator} needs two integers, found ${leftText} and ${rightText}`,
       )
     }
-    return Type.TInt
+    return leftType
   }
   reportError(mutable checker, pos, "E0219", `unknown operator ${operator}`)
   return Type.TVoid
@@ -1183,7 +1669,7 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
       containsOpen(checker, element, parameters) || containsOpen(checker, input, parameters)
     Type.TMap(key, value) =>
       containsOpen(checker, key, parameters) || containsOpen(checker, value, parameters)
-    Type.TFunc(functionParameters, result) =>
+    Type.TFunc(functionParameters, result, _, _) =>
       anyOpen(checker, functionParameters, parameters) || containsOpen(checker, result, parameters)
     Type.TStruct(index) => anyOpen(checker, checker.structs[index].arguments, parameters)
     Type.TEnum(index) => anyOpen(checker, checker.enums[index].arguments, parameters)
@@ -1519,6 +2005,20 @@ export function checkArguments<W: Walker>(
   checkBorrowed(mutable checker, arguments)
 }
 
+// isImplicitEffectParameter reports a function-type parameter without `uses`
+// of a private function. The effect pass infers private functions, so the
+// parameter acts as an effect variable: a call has the effects of the
+// argument.
+export function isImplicitEffectParameter(checker: Checker, funcIndex: int, param: Param): bool {
+  if (funcIndex < 0 || checker.functions[funcIndex].declaration.exported) {
+    return false
+  }
+  if (param.type is Some(typeExpression)) {
+    return typeExpression.isFunc && Arrays.length(typeExpression.effects) == 0
+  }
+  return false
+}
+
 // checkArgument checks argument index of a call against its parameter: the
 // non-escaping rule, the expected type and the mutable marking. The index
 // of a mutable argument is added to mutables (Go's arguments loop body).
@@ -1534,8 +2034,11 @@ export function checkArgument<W: Walker>(
   const arg = arguments[index]
   const param = parameters[index]
   markArgument(mutable checker, param, arg.value)
+  const callee = checker.calleeIndex
   const argType = checkExpression(mutable checker, walker, arg.value, want)
+  checker.looseFunctions = isImplicitEffectParameter(checker, callee, param)
   expectType(mutable checker, getExpressionPos(arg.value), want, argType)
+  checker.looseFunctions = false
 
   // The argument is mutable exactly when the parameter is.
   const argPos = getExpressionPos(arg.value)
@@ -1642,7 +2145,8 @@ export function checkBorrowed(mutable checker: Checker, arguments: Array<Arg>) u
     collectAssignedInExpr(arguments[index].value, mutable names)
     for (const captured of Arrays.values(checker.bodies[body].closures[closure].captures)) {
       const local = getLocal(checker, captured)
-      if (!local.isMutable || !containsName(names, local.name)) {
+      const byReference = local.isMutable || isReferenceCapture(checker, closure, captured)
+      if (!byReference || !containsName(names, local.name)) {
         continue
       }
       for (const other of Ranges.between(0, Arrays.length(arguments))) {
@@ -1724,7 +2228,7 @@ function collectStatementExpressions(statement: Stmt, mutable found: Array<Expr>
       collectExpressionAndArms(condition, mutable found)
       collectBlockExpressions(body, mutable found)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       collectExpressionAndArms(iterable, mutable found)
       collectBlockExpressions(body, mutable found)
     }
@@ -1868,7 +2372,9 @@ export function checkBuiltinCall<W: Walker>(
       checkMutableArgument(mutable checker, arg.value)
       Arrays.push(mutable mutables, index)
     }
+    checker.looseFunctions = true
     expectType(mutable checker, getExpressionPos(arg.value), paramWant, got)
+    checker.looseFunctions = false
   }
   checkExclusive(mutable checker, arguments, mutables)
   return result
@@ -1907,7 +2413,9 @@ export function checkFixedCall<W: Walker>(
       )
     }
     const got = checkExpression(mutable checker, walker, arg.value, Some(parameters[index]))
+    checker.looseFunctions = true
     expectType(mutable checker, getExpressionPos(arg.value), Some(parameters[index]), got)
+    checker.looseFunctions = false
   }
   return result
 }
@@ -1929,14 +2437,86 @@ export function checkMutableArgument(mutable checker: Checker, value: Expr) uses
     )
     return
   }
+  checkContentsChange(mutable checker, pos, root, value, true)
+}
+
+// checkContentsChange checks a change to the contents of the local root:
+// a write to a field or element of target, or target passed as mutable
+// (passing). A plain parameter and a binding that copies part of another
+// value are read-only (D81). A closure that changes a captured `const`
+// captures it by reference.
+export function checkContentsChange(
+  mutable checker: Checker,
+  pos: Pos,
+  root: int,
+  target: Expr,
+  passing: bool,
+) uses alloc {
   const local = getLocal(checker, root)
-  if (!local.isMutable) {
-    reportError(
-      mutable checker,
-      pos,
-      "E0315",
-      `${quoteGo(local.name)} is constant; declare it with \`let\` to pass it as mutable`,
-    )
+  if (canChangeContents(local)) {
+    markChangedCapture(mutable checker, pos, root)
+    return
+  }
+  const name = quoteGo(local.name)
+  const plain = local.name
+  if (local.param) {
+    if (passing) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0315",
+        `parameter ${name} is read-only; declare it as \`mutable ${plain}\` to pass it on as mutable`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        pos,
+        "E0227",
+        `parameter ${name} is read-only; declare it as \`mutable ${plain}\` to change the caller's value, or copy it first with \`const copy = ${plain}\``,
+      )
+    }
+    return
+  }
+
+  // A copy: the hint names the value it was copied from.
+  const copyHint = `copy it first with \`const copy = ${plain}\``
+  let message = ""
+  if (local.binding == BindingKind.Loop && local.loopSource != "") {
+    const source = local.loopSource
+    const intro = `${name} is a copy of an element of ${source}, so changing it would not change ${source}`
+    if (local.loopContents) {
+      message = `${intro}; write \`for (mutable ${plain} of ${source})\`, or ${copyHint}`
+    } else {
+      // The same path, through an index into the source.
+      const path = Str.sliceFrom(describePlace(target), Str.length(plain))
+      message = `${intro}; write through the source, \`${source}[index]${path}\`, or ${copyHint}`
+    }
+  } else if (local.binding == BindingKind.Loop) {
+    message = `${name} is a copy of an element, so it cannot be changed; ${copyHint}`
+  } else if (local.binding == BindingKind.Pattern) {
+    message = `${name} is bound by a pattern to a copy of part of the value, so it cannot be changed; ${copyHint}`
+  } else {
+    message = `${name} is destructured from a copy of the value, so it cannot be changed; ${copyHint}`
+  }
+  reportError(mutable checker, pos, "E0950", message)
+}
+
+// describePlace prints an assignable expression for a message, such as
+// `game.players` or `teams[t].players`.
+export function describePlace(expression: Expr): string uses alloc {
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, name) => `${describePlace(target)}.${name}`
+    Expr.IndexExpr(_, _, target, index) => `${describePlace(target)}[${describeIndex(index)}]`
+    _ => "..."
+  }
+}
+
+function describeIndex(index: Expr): string {
+  return match (index) {
+    Expr.Ident(_, _, name) => name
+    Expr.IntLit(_, _, text) => text
+    _ => "..."
   }
 }
 
@@ -1991,7 +2571,7 @@ export function checkConstWrite(
           mutable checker,
           pos,
           "E0290",
-          `constant ${quoteGo(name)} cannot be changed; copy it into a \`let\` variable first`,
+          `constant ${quoteGo(name)} cannot be changed; copy it into a local first, as in \`const copy = ${name}\``,
         )
         return true
       }
@@ -2002,7 +2582,7 @@ export function checkConstWrite(
               mutable checker,
               pos,
               "E0290",
-              `constant ${quoteGo(name)} cannot be changed; copy it into a \`let\` variable first`,
+              `constant ${quoteGo(name)} cannot be changed; copy it into a local first, as in \`const copy = ${alias}.${name}\``,
             )
             return true
           }
@@ -2348,7 +2928,7 @@ function collectAssignedInStatement(statement: Stmt, mutable names: Array<string
       collectAssignedInExpr(condition, mutable names)
       collectAssignedInBlock(body, mutable names)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       collectAssignedInExpr(iterable, mutable names)
       collectAssignedInBlock(body, mutable names)
     }

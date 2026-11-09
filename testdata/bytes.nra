@@ -1,0 +1,108 @@
+import * as Bytes from "std/bytes"
+import * as Fs from "std/fs"
+import * as Env from "std/env"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+
+struct Packet derives Equatable, Hashable, Ordered, Show {
+  tag: u8
+  payload: bytes
+}
+
+function show<T: Show>(value: T) uses alloc {
+  print(Show.show(value))
+}
+
+function tempDir(): string {
+  const found = Env.get("TMPDIR")
+  if (found is Some(dir)) {
+    return dir
+  }
+  return "/tmp"
+}
+
+function printText(data: bytes) uses alloc {
+  const text = Bytes.toString(data)
+  if (text is Ok(value)) {
+    print(`ok: ${value}`)
+  } else if (text is Err(message)) {
+    print(`err: ${message}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // A string's bytes, shown as hex pairs.
+  const hello = Bytes.fromString("hi\n")
+  show(hello)
+  show(Bytes.fromString(""))
+  print(Int.toString(Bytes.length(hello)))
+  show(Bytes.at(hello, 1))
+
+  // Slices copy; concat joins.
+  const both = Bytes.concat(hello, Bytes.fromString("there"))
+  show(both)
+  show(Bytes.slice(both, 3, 6))
+  show(Bytes.slice(both, 8, 8))
+
+  // Arrays of u8 and back.
+  const raw = Bytes.fromArray([0, 127, 128, 255])
+  show(raw)
+  let items = Bytes.toArray(raw)
+  Arrays.push(mutable items, 16)
+  show(items)
+  show(Bytes.fromArray(items))
+
+  // toString checks UTF-8 and names the first bad byte.
+  printText(Bytes.fromString("héllo"))
+  printText(Bytes.fromArray([104, 105, 255, 33]))
+  printText(Bytes.fromArray([0xe2, 0x82]))
+
+  // Equatable, Ordered and Hashable compare the bytes.
+  show(hello == Bytes.fromString("hi\n"))
+  show(hello != both)
+  show(hello < both)
+  show(Bytes.fromString("b") > Bytes.fromString("ab"))
+  show(Ordered.compare(Bytes.fromString("a"), Bytes.fromString("a")))
+  show(Hashable.hash(hello) == Hashable.hash(Bytes.fromString("hi\n")))
+
+  // bytes as a map key.
+  let seen: Map<bytes, int> = Map {}
+  seen[raw] = 1
+  seen[hello] = 2
+  seen[Bytes.fromArray([0, 127, 128, 255])] = 3
+  print(Int.toString(Maps.size(seen)))
+  if (seen[Bytes.fromArray([0, 127, 128, 255])] is Some(value)) {
+    print(Int.toString(value))
+  }
+
+  // bytes in a derived struct.
+  const packet = Packet { tag: 7, payload: raw }
+  show(packet)
+  show(packet == Packet { tag: 7, payload: Bytes.fromArray([0, 127, 128, 255]) })
+
+  // A binary file written and read back.
+  const file = `${tempDir()}/narra_bytes_test.bin`
+  const wrote = Fs.writeBytes(file, raw)
+  if (wrote is Ok(count)) {
+    print(`wrote ${Int.toString(count)} bytes`)
+  }
+  const read = Fs.readBytes(file)
+  if (read is Ok(data)) {
+    show(data)
+    show(data == raw)
+  }
+  const asText = Fs.readText(file)
+  if (asText is Err(_)) {
+    print("readText refuses the file")
+  }
+  const removed = Fs.removeFile(file)
+  if (removed is Err(message)) {
+    print(message)
+  }
+  const missing = Fs.readBytes(file)
+  if (missing is Err(_)) {
+    print("missing file is an error")
+  }
+  return 0
+}

@@ -26,7 +26,7 @@ total: 750 cents
 
 The text in backticks is a template string. Each `${...}` inside it is replaced by the value of the expression it holds. That expression must be a `string`, so the number goes through `Int.toString` first.
 
-A `const` keeps its value. If you try to change one, the compiler stops you and says what to write instead:
+A `const` name keeps its value. If you try to give it a new one, the compiler stops you and says what to write instead:
 
 ```narra error
 // error: 4:3: "totalCents" is constant; declare it with `let` to change it
@@ -74,7 +74,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Use `const` for every name that does not need to change, and `let` only where it does. A reader then knows which values to watch.
+Use `const` for every name that does not need a new value, and `let` only where it does. A reader then knows which names to watch. As the sections on arrays and structs show, `const` fixes the name, not the contents: the elements of a `const` array can still change.
 
 An inner block, such as the body of an `if` or a loop, cannot declare a name that is still in scope from outside it. That way a name never silently changes meaning partway through a function:
 
@@ -411,7 +411,7 @@ import * as Int from "std/int"
 import * as Arrays from "std/array"
 
 export function run(args: Array<string>): int {
-  let prices: Array<int> = [250, 320]
+  const prices: Array<int> = [250, 320]
   const snapshot = prices
   Arrays.push(mutable prices, 400)
   print(Int.toString(Arrays.length(prices)))
@@ -427,13 +427,13 @@ export function run(args: Array<string>): int {
 
 The snapshot keeps two prices. Assigning an array to another name gives that name its own copy, so a change through one name never shows up through another. The copy is cheap: the two names share the elements until one of them changes, and only then are the elements copied.
 
-A `const` array cannot change at all, not even its elements:
+`prices` is a `const`, and it still grows. A `const` fixes the name: `prices` names the same array for the whole function, and its elements can change, through `prices[0] = 200` or `Arrays.push(mutable prices, 400)`. A `let` adds one thing, giving the name a new value with `prices = [...]`:
 
 ```narra error
 // error: 4:3: "prices" is constant; declare it with `let` to change it
 export function run(args: Array<string>): int {
   const prices = [250, 320]
-  prices[0] = 200
+  prices = [200]
   return 0
 }
 ```

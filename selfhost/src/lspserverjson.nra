@@ -1,0 +1,79 @@
+// JSON helpers of narrac lsp: reading the fields of a request by matching on
+// Value (std/shape), and building the messages the server sends. Messages are
+// parsed and written with std/json.
+import { Value } from "std/shape"
+
+// getField is the field of a record, or None when the value is not a record
+// or has no such field.
+export function getField(value: Value, name: string): Option<Value> uses alloc {
+  if (value is Value.Record(fields)) {
+    return fields[name]
+  }
+  return None
+}
+
+// getText is the string in a field, or None.
+export function getText(value: Value, name: string): Option<string> uses alloc {
+  const field = getField(value, name)
+  if (field is Some(Value.Text(text))) {
+    return Some(text)
+  }
+  return None
+}
+
+// getList is the items of an array in a field, or None.
+export function getList(value: Value, name: string): Option<Array<Value>> uses alloc {
+  const field = getField(value, name)
+  if (field is Some(Value.List(items))) {
+    return Some(items)
+  }
+  return None
+}
+
+// getPath follows a chain of record fields.
+export function getPath(value: Value, names: Array<string>): Option<Value> uses alloc {
+  let current = value
+  for (const name of names) {
+    const next = getField(current, name)
+    if (next is Some(found)) {
+      current = found
+    } else {
+      return None
+    }
+  }
+  return Some(current)
+}
+
+// makeRecord builds a record from key and value pairs, in order.
+export function makeRecord(entries: Array<#[string, Value]>): Value uses alloc {
+  let fields: Map<string, Value> = Map {}
+  for (const entry of entries) {
+    const #[key, value] = entry
+    fields[key] = value
+  }
+  return Value.Record(fields)
+}
+
+// makeResponse is the answer to a request.
+export function makeResponse(id: Value, result: Value): Value uses alloc {
+  return makeRecord([#["jsonrpc", Value.Text("2.0")], #["id", id], #["result", result]])
+}
+
+// makeError is the error answer to a request, or to a message without an id
+// (the id is then Value.Null).
+export function makeError(id: Value, code: int, message: string): Value uses alloc {
+  return makeRecord([
+    #["jsonrpc", Value.Text("2.0")],
+    #["id", id],
+    #["error", makeRecord([#["code", Value.Int(code)], #["message", Value.Text(message)]])],
+  ])
+}
+
+// makeNotification is a message from the server that expects no answer.
+export function makeNotification(method: string, params: Value): Value uses alloc {
+  return makeRecord([
+    #["jsonrpc", Value.Text("2.0")],
+    #["method", Value.Text(method)],
+    #["params", params],
+  ])
+}

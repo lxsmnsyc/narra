@@ -1,0 +1,128 @@
+// std/shape: a hand-written Shape round-trips through Json.encode and Json.decode.
+import * as Json from "std/json"
+import { Value, Shape } from "std/shape"
+
+struct User implements Shape {
+  name: string
+  age: int
+  nick: Option<string>
+}
+
+implement Shape for User {
+  function toValue(value: User): Value uses alloc {
+    let fields: Map<string, Value> = Map {}
+    fields["name"] = Shape.toValue(value.name)
+    fields["age"] = Shape.toValue(value.age)
+    fields["nick"] = Shape.toValue(value.nick)
+    return Value.Record(fields)
+  }
+
+  function fromValue(value: Value): Result<User, string> uses alloc {
+    if (value is Value.Record(fields)) {
+      if (fields["age"] is Some(ageValue)) {
+        const age = Shape.fromValue<int>(ageValue)
+        if (age is Err(message)) {
+          return Err(`.age: ${message}`)
+        }
+        let name = ""
+        if (fields["name"] is Some(nameValue)) {
+          const decoded = Shape.fromValue<string>(nameValue)
+          if (decoded is Err(message)) {
+            return Err(`.name: ${message}`)
+          }
+          name = decoded.value
+        }
+        let nick: Option<string> = None
+        if (fields["nick"] is Some(nickValue)) {
+          const decoded = Shape.fromValue<Option<string>>(nickValue)
+          if (decoded is Err(message)) {
+            return Err(`.nick: ${message}`)
+          }
+          nick = decoded.value
+        }
+        return Ok(User { name: name, age: age.value, nick: nick })
+      }
+      return Err("missing field age")
+    }
+    return Err("expected Record")
+  }
+}
+
+struct Team implements Shape {
+  users: Array<User>
+}
+
+implement Shape for Team {
+  function toValue(value: Team): Value uses alloc {
+    let fields: Map<string, Value> = Map {}
+    fields["users"] = Shape.toValue(value.users)
+    return Value.Record(fields)
+  }
+
+  function fromValue(value: Value): Result<Team, string> uses alloc {
+    if (value is Value.Record(fields)) {
+      if (fields["users"] is Some(usersValue)) {
+        const users = Shape.fromValue<Array<User>>(usersValue)
+        if (users is Err(message)) {
+          return Err(`.users${message}`)
+        }
+        return Ok(Team { users: users.value })
+      }
+    }
+    return Err("expected Record with users")
+  }
+}
+
+function show<T: Shape>(label: string, text: string) uses io, alloc {
+  const decoded = Json.decode<T>(text)
+  if (decoded is Ok(value)) {
+    print(`${label}: ${Json.encode(value)}`)
+  } else if (decoded is Err(message)) {
+    print(`${label}: error ${message}`)
+  }
+}
+
+export function run(args: Array<string>): int {
+  const user = User { name: "ada", age: 36, nick: Some("countess") }
+  print(Json.encode(user))
+  print(Json.encode(Team { users: [user, User { name: "bob", age: 5, nick: None }] }))
+
+  // Prelude types.
+  print(Json.encode(true))
+  print(Json.encode(7))
+  print(Json.encode(2.5))
+  print(Json.encode('x'))
+  print(Json.encode("text"))
+  print(Json.encode([1, 2, 3]))
+  print(Json.encode([[1], [], [2, 3]]))
+  print(Json.encode(Map { "a": 1, "b": 2 }))
+  print(Json.encode(#[1, "two", 3.5]))
+  print(Json.encode([Some(1), None]))
+  print(Json.encode(Value.List([Value.Int(1), Value.Null])))
+
+  // Decoding.
+  show<User>("user", `{"name":"ada","age":36,"nick":null,"extra":true}`)
+  show<Team>("team", `{"users":[{"name":"a","age":1},{"name":"b","age":2,"nick":"bee"}]}`)
+  show<Array<Array<int>>>("nested", "[[1,2],[3]]")
+  show<Map<string, Array<bool>>>("map", `{"x":[true],"y":[]}`)
+  show<Option<int>>("none", "null")
+  show<Option<int>>("some", "5")
+  show<#[int, string]>("pair", `[1,"a"]`)
+  show<f64>("float from int", "3")
+  show<f64>("float", "3.25")
+  show<char>("char", `"z"`)
+
+  // Errors.
+  show<int>("int from float", "1.5")
+  show<int>("int from text", `"a"`)
+  show<Team>("deep", `{"users":[{"name":"a","age":1},{"name":"b","age":"old"}]}`)
+  show<Array<int>>("list item", "[1,2,true]")
+  show<Map<string, int>>("map item", `{"a":1,"b":null}`)
+  show<#[int, int]>("short", "[1]")
+  show<#[int, int]>("not list", "{}")
+  show<bool>("bool", "0")
+  show<string>("string", "[]")
+  show<char>("long char", `"zz"`)
+  show<Array<int>>("parse", "[1,")
+  return 0
+}

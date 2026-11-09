@@ -9,8 +9,8 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Expr } from "narrac/ast"
-import { Type, typeKey } from "narrac/types"
-import { Ref, ProgramFunc, getExpressionId } from "narrac/check"
+import { Type, typeKey, isInteger } from "narrac/types"
+import { Ref, ProgramFunc, getExpressionId, orderArguments } from "narrac/check"
 import { cType, typeId, opFuncName, functionName } from "narrac/cnames"
 import {
   Emitter,
@@ -46,18 +46,23 @@ function variantField(variantName: string, name: string): string uses alloc {
 
 function isPrimitive(type: Type): bool {
   return match (type) {
-    Type.TInt => true
     Type.TF64 => true
+    Type.TF32 => true
     Type.TBool => true
     Type.TChar => true
     Type.TStr => true
-    _ => false
+    Type.TBytes => true
+    _ => isInteger(type)
   }
 }
 
 // primitiveName is the name of the runtime function of a primitive type.
 function primitiveName(operation: string, type: Type): string uses alloc {
-  if (type == Type.TStr) {
+  // bytes shares the string representation, so only show differs.
+  if (type == Type.TBytes && operation == "show") {
+    return "narra_show_bytes"
+  }
+  if (type == Type.TStr || type == Type.TBytes) {
     return match (operation) {
       "eq" => "lstr_eq"
       "hash" => "lstr_hash"
@@ -68,10 +73,18 @@ function primitiveName(operation: string, type: Type): string uses alloc {
   const name = match (type) {
     Type.TInt => "int"
     Type.TF64 => "f64"
+    Type.TF32 => "f32"
     Type.TBool => "bool"
-    _ => "char"
+    Type.TChar => "char"
+    Type.TI8 => "i8"
+    Type.TI16 => "i16"
+    Type.TI32 => "i32"
+    Type.TU8 => "u8"
+    Type.TU16 => "u16"
+    Type.TU32 => "u32"
+    _ => "u64"
   }
-  if (operation == "show" && (type == Type.TInt || type == Type.TF64)) {
+  if (operation == "show" && (type == Type.TInt || type == Type.TF64 || type == Type.TF32)) {
     return `lstr_from_${name}`
   }
   return `narra_${operation}_${name}`
@@ -153,9 +166,10 @@ export function emitTraitCall<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.CallExpr(nodeId, _, _, _, arguments)) {
-    // The arguments are evaluated first, as in Go.
+    // The arguments are evaluated first, as in Go, in parameter order;
+    // emitCall already held the ones written earlier.
     let argumentTexts: Array<string> = []
-    for (const argument of Arrays.values(arguments)) {
+    for (const argument of Arrays.values(orderArguments(emitter.checker, nodeId, arguments))) {
       const code = EmitWalker.emitExpression(walker, mutable emitter, argument.value)
       Arrays.push(mutable argumentTexts, code.text)
     }

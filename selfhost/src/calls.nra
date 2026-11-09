@@ -8,7 +8,7 @@
 // resolves to is recorded on the CallExpr: Ref.Function (a plain or generic
 // function; an instance names its generic function), Ref.Builtin,
 // Ref.Constructor, Ref.Implementation, Ref.TraitFunction or Ref.Distinct.
-import { Pos, Expr, Arg, Decl, Param, FuncDecl, TypeExpr } from "narrac/ast"
+import { Pos, Expr, Arg, Decl, Param, TypeExpr } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, STD_ALIAS_PATHS, createFix, createEdit, insertAt, moveColumn } from "narrac/fixes"
 import { Type } from "narrac/types"
@@ -24,16 +24,25 @@ import {
   setNodeType,
   getNodeType,
   findLocal,
-  unsupported,
   getExpressionId,
   getExpressionPos,
   lookupTrait,
   containsTypeParameter,
   anyTypeParameter,
+  hasNamedArgument,
 } from "narrac/check"
 import { substitute, resolveType } from "narrac/resolve"
 import { unify } from "narrac/generics"
-import { findTraitFunc, typeImplements, implFunc, checkBounds } from "narrac/traits"
+import { shapeFunctionName } from "narrac/deriveshape"
+import {
+  findTraitFunc,
+  typeImplements,
+  implFunc,
+  checkBounds,
+  isShapeTrait,
+  reportShapeProblem,
+  checkShapeVisible,
+} from "narrac/traits"
 import { sourceScope, exported } from "narrac/scopes"
 import { checkValueCall, checkValueCallOf, checkGenericArguments } from "narrac/closures"
 import { findModuleFunction } from "narrac/funcvalues"
@@ -51,6 +60,7 @@ import {
   findAlias,
   startsUpper,
   containsOpen,
+  isImplicitEffectParameter,
 } from "narrac/exprs"
 import { checkConstructor } from "narrac/ctors"
 import { addFuncInstance } from "narrac/instances"
@@ -150,17 +160,233 @@ function checkFunctionCall<W: Walker>(
   arguments: Array<Arg>,
   want: Option<Type>,
 ): Type uses alloc {
-  if (Arrays.length(checker.functions[funcIndex].typeParameters) > 0) {
-    return checkGenericCall(mutable checker, walker, nodeId, pos, funcIndex, arguments, want)
+  const info = checker.functions[funcIndex]
+  const parameters = info.declaration.parameters
+  const isGeneric = Arrays.length(info.typeParameters) > 0
+
+  // Named arguments go to their parameters first (D87).
+  let ordered = arguments
+  if (
+    matchNamedArguments(mutable checker, nodeId, pos, info.name, arguments, parameters) is Some(
+      matched,
+    )
+  ) {
+    ordered = matched
+  } else {
+    setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    if (isGeneric) {
+      return Type.TVoid
+    }
+    return info.result
+  }
+  if (isGeneric) {
+    return checkGenericCall(mutable checker, walker, nodeId, pos, funcIndex, ordered, want)
   }
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-  const parameters = checker.functions[funcIndex].declaration.parameters
   let wants: Array<Option<Type>> = []
   for (const param of Arrays.values(parameters)) {
     Arrays.push(mutable wants, Some(checker.paramTypes[param.id]))
   }
-  checkArguments(mutable checker, walker, pos, arguments, parameters, wants)
+  const savedCallee = checker.calleeIndex
+  checker.calleeIndex = funcIndex
+  checkArguments(mutable checker, walker, pos, ordered, parameters, wants)
+  checker.calleeIndex = savedCallee
   return checker.functions[funcIndex].result
+}
+
+// matchNamedArguments puts the arguments of a call in the order of the
+// callee's parameters (D87): the positional ones first, then each named one
+// at its parameter. It records the order for the passes after the checker
+// when it differs from the written order, and is None after an error.
+function matchNamedArguments(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  calleeName: string,
+  arguments: Array<Arg>,
+  parameters: Array<Param>,
+): Option<Array<Arg>> uses alloc {
+  if (!hasNamedArgument(arguments)) {
+    return Some(arguments)
+  }
+  const argumentCount = Arrays.length(arguments)
+  const parameterCount = Arrays.length(parameters)
+
+  // passed[i] is the written index of the argument for parameter i, or -1.
+  let passed = Arrays.filled(-1, parameterCount)
+  let unknown: Array<int> = []
+  let failed = false
+  let seenNamed = false
+  for (const index of Ranges.between(0, argumentCount)) {
+    const argument = arguments[index]
+    if (argument.name is Some(argumentName)) {
+      seenNamed = true
+      const parameter = findParameter(parameters, argumentName)
+      if (parameter < 0) {
+        Arrays.push(mutable unknown, index)
+      } else if (passed[parameter] >= 0) {
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E0329",
+          `parameter ${quoteGo(argumentName)} is passed twice`,
+        )
+        failed = true
+      } else {
+        passed[parameter] = index
+      }
+    } else if (seenNamed) {
+      reportError(
+        mutable checker,
+        argument.pos,
+        "E0330",
+        "a positional argument cannot follow a named one; name it, or move it before the named arguments",
+      )
+      failed = true
+    } else if (index < parameterCount) {
+      passed[index] = index
+    }
+  }
+  // A parameter passed twice already explains a count that is too high.
+  if (!failed && argumentCount > parameterCount) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0316",
+      `this call passes ${Int.toString(argumentCount)} arguments, the function takes ${Int.toString(parameterCount)}`,
+    )
+    return None
+  }
+
+  // An unknown name gets a fix when exactly one parameter left is close to it.
+  for (const index of Arrays.values(unknown)) {
+    reportUnknownParameter(mutable checker, calleeName, arguments[index], parameters, passed)
+    failed = true
+  }
+  if (failed) {
+    return None
+  }
+  for (const parameter of Ranges.between(0, parameterCount)) {
+    if (passed[parameter] < 0) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0331",
+        `this call passes no argument for parameter ${quoteGo(parameters[parameter].name)}`,
+      )
+      failed = true
+    }
+  }
+  if (failed) {
+    return None
+  }
+
+  // A call written in parameter order needs no recorded order.
+  let reordered = false
+  let ordered: Array<Arg> = []
+  for (const parameter of Ranges.between(0, parameterCount)) {
+    if (passed[parameter] != parameter) {
+      reordered = true
+    }
+    Arrays.push(mutable ordered, arguments[passed[parameter]])
+  }
+  if (!reordered) {
+    return Some(arguments)
+  }
+  checker.argumentOrders[nodeId] = passed
+  return Some(ordered)
+}
+
+function findParameter(parameters: Array<Param>, name: string): int {
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (parameters[index].name == name) {
+      return index
+    }
+  }
+  return -1
+}
+
+// reportUnknownParameter reports a named argument that names no parameter,
+// with a fix that renames it when exactly one parameter not yet passed is
+// close to the name (D11).
+function reportUnknownParameter(
+  mutable checker: Checker,
+  calleeName: string,
+  argument: Arg,
+  parameters: Array<Param>,
+  passed: Array<int>,
+) uses alloc {
+  let argumentName = ""
+  if (argument.name is Some(written)) {
+    argumentName = written
+  }
+  let closeName = ""
+  let closeCount = 0
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    const parameterName = parameters[index].name
+    if (passed[index] < 0 && isCloseName(argumentName, parameterName)) {
+      closeName = parameterName
+      closeCount = closeCount + 1
+    }
+  }
+  if (closeCount != 1) {
+    reportError(
+      mutable checker,
+      argument.pos,
+      "E0328",
+      `${calleeName} has no parameter ${quoteGo(argumentName)}`,
+    )
+    return
+  }
+  const nameEnd = moveColumn(argument.pos, Str.charCount(argumentName))
+  const rename = createFix(`rename to ${closeName}`, [createEdit(argument.pos, nameEnd, closeName)])
+  reportErrorFix(
+    mutable checker,
+    argument.pos,
+    "E0328",
+    [rename],
+    `${calleeName} has no parameter ${quoteGo(argumentName)}; did you mean ${quoteGo(closeName)}?`,
+  )
+}
+
+// isCloseName reports whether two names differ by at most two single
+// character edits, and by fewer than half of the longer name.
+function isCloseName(left: string, right: string): bool uses alloc {
+  const leftChars = Str.chars(left)
+  const rightChars = Str.chars(right)
+  const leftCount = Arrays.length(leftChars)
+  const rightCount = Arrays.length(rightChars)
+  let longest = leftCount
+  if (rightCount > longest) {
+    longest = rightCount
+  }
+
+  // Edit distance, one row of the table at a time.
+  let previous: Array<int> = []
+  for (const column of Ranges.between(0, rightCount + 1)) {
+    Arrays.push(mutable previous, column)
+  }
+  for (const row of Ranges.between(1, leftCount + 1)) {
+    let current = [row]
+    for (const column of Ranges.between(1, rightCount + 1)) {
+      let cost = 1
+      if (leftChars[row - 1] == rightChars[column - 1]) {
+        cost = 0
+      }
+      let best = previous[column - 1] + cost
+      if (previous[column] + 1 < best) {
+        best = previous[column] + 1
+      }
+      if (current[column - 1] + 1 < best) {
+        best = current[column - 1] + 1
+      }
+      Arrays.push(mutable current, best)
+    }
+    previous = current
+  }
+  const distance = previous[rightCount]
+  return distance <= 2 && distance * 2 < longest
 }
 
 function checkDottedCall<W: Walker>(
@@ -290,7 +516,7 @@ function checkDottedCall<W: Walker>(
     const fieldIndex = findField(checker.structs[index].fields, name)
     if (fieldIndex >= 0) {
       const fieldType = checker.structs[index].fields[fieldIndex].fieldType
-      if (fieldType is Type.TFunc(funcParams, funcResult)) {
+      if (fieldType is Type.TFunc(funcParams, funcResult, _, _)) {
         setNodeType(mutable checker, calleeId, fieldType)
         return checkValueCallOf(
           mutable checker,
@@ -491,8 +717,8 @@ function shapeMismatch(
       }
       return true
     }
-    Type.TFunc(patternParams, patternResult) => {
-      if (actual is Type.TFunc(actualParams, actualResult)) {
+    Type.TFunc(patternParams, patternResult, _, _) => {
+      if (actual is Type.TFunc(actualParams, actualResult, _, _)) {
         if (Arrays.length(actualParams) != Arrays.length(patternParams)) {
           // An arrow function with the wrong arity already has its own error.
           return false
@@ -596,6 +822,8 @@ function checkGenericCall<W: Walker>(
 
   // An argument whose parameter type is still open is checked without an
   // expected type; an arrow function argument gets a hint.
+  const savedCallee = checker.calleeIndex
+  checker.calleeIndex = funcIndex
   checkGenericArguments(
     mutable checker,
     walker,
@@ -605,6 +833,7 @@ function checkGenericCall<W: Walker>(
     typeParameters,
     bindings,
   )
+  checker.calleeIndex = savedCallee
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < Arrays.length(parameters)) {
       const argType = getArgumentType(checker, arguments[index])
@@ -650,23 +879,31 @@ function checkGenericCall<W: Walker>(
       return Type.TVoid
     }
   }
-  checkBounds(mutable checker, pos, info.declaration, typeParameters, typeArguments)
+  const boundsHold = checkBounds(
+    mutable checker,
+    pos,
+    info.declaration,
+    typeParameters,
+    typeArguments,
+  )
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < Arrays.length(parameters)) {
       const declared = checker.paramTypes[parameters[index].id]
       const paramType = substitute(mutable checker, declared, bindings)
       const argType = getArgumentType(checker, arguments[index])
+      checker.looseFunctions = isImplicitEffectParameter(checker, funcIndex, parameters[index])
       expectType(
         mutable checker,
         getExpressionPos(arguments[index].value),
         Some(paramType),
         argType,
       )
+      checker.looseFunctions = false
     }
   }
   const result = substitute(mutable checker, info.result, bindings)
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
-  if (!anyTypeParameter(checker, typeArguments)) {
+  if (boundsHold && !anyTypeParameter(checker, typeArguments)) {
     const instance = addFuncInstance(mutable checker, funcIndex, typeArguments)
     // The emitter finds the instance of this call through the body.
     checker.bodies[checker.body].instanceRefs[nodeId] = instance
@@ -699,6 +936,23 @@ function checkTraitCall<W: Walker>(
     return Type.TVoid
   }
   const traitFunc = checker.traits[traitIndex].functions[funcIndex]
+  const parameters = traitFunc.declaration.parameters
+  let ordered = arguments
+  if (
+    matchNamedArguments(
+      mutable checker,
+      nodeId,
+      pos,
+      `${traitName}.${name}`,
+      arguments,
+      parameters,
+    ) is Some(matched)
+  ) {
+    ordered = matched
+  } else {
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return Type.TVoid
+  }
   const selfParameter = checker.traits[traitIndex].selfParameter
   const self = [selfParameter]
   let bindings: Map<int, Type> = Map {}
@@ -736,12 +990,11 @@ function checkTraitCall<W: Walker>(
       Arrays.push(mutable wants, Some(paramWant))
     }
   }
-  const parameters = traitFunc.declaration.parameters
-  checkArguments(mutable checker, walker, pos, arguments, parameters, wants)
+  checkArguments(mutable checker, walker, pos, ordered, parameters, wants)
   const paramCount = Arrays.length(traitFunc.parameters)
-  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+  for (const index of Ranges.between(0, Arrays.length(ordered))) {
     if (index < paramCount) {
-      const argType = getArgumentType(checker, arguments[index])
+      const argType = getArgumentType(checker, ordered[index])
       unify(checker, traitFunc.parameters[index], argType, mutable bindings)
     }
   }
@@ -761,16 +1014,11 @@ function checkTraitCall<W: Walker>(
     )
     return Type.TVoid
   }
-  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+  for (const index of Ranges.between(0, Arrays.length(ordered))) {
     if (index < paramCount) {
       const paramType = substitute(mutable checker, traitFunc.parameters[index], bindings)
-      const argType = getArgumentType(checker, arguments[index])
-      expectType(
-        mutable checker,
-        getExpressionPos(arguments[index].value),
-        Some(paramType),
-        argType,
-      )
+      const argType = getArgumentType(checker, ordered[index])
+      expectType(mutable checker, getExpressionPos(ordered[index].value), Some(paramType), argType)
     }
   }
   const result = substitute(mutable checker, traitFunc.result, bindings)
@@ -785,6 +1033,8 @@ function checkTraitCall<W: Walker>(
         "E0523",
         `${traitName}.${name} needs ${paramName} to implement ${traitName}; declare it as <${paramName}: ${traitName}>`,
       )
+    } else if (isShapeTrait(checker, traitIndex)) {
+      reportShapeProblem(mutable checker, pos, selfType, traitIndex)
     } else {
       const message = `${typeString(checker, selfType)} does not implement ${traitName}`
       reportError(mutable checker, pos, "E0524", message)
@@ -794,14 +1044,126 @@ function checkTraitCall<W: Walker>(
   if (containsTypeParameter(checker, selfType)) {
     return result
   }
+  if (isShapeTrait(checker, traitIndex)) {
+    checkShapeVisible(mutable checker, pos, selfType, traitIndex)
+  }
   if (implFunc(checker, selfType, traitIndex, name) is Some(implementation)) {
     setRef(mutable checker, nodeId, Ref.Implementation(implementation.block, implementation.index))
+  } else if (isShapeTrait(checker, traitIndex)) {
+    // The compiler provides Shape for the prelude types through the private
+    // functions of std/shape (D84).
+    setShapeRef(mutable checker, nodeId, selfType, name)
   } else {
     setRef(mutable checker, nodeId, Ref.TraitFunction(traitIndex, name))
     // The emitter reads Self from the body.
     checker.bodies[checker.body].traitSelf[nodeId] = selfType
   }
   return result
+}
+
+// ShapeProvider names the function of std/shape that implements Shape for a
+// prelude type (a name prefix such as "array") and the type arguments of that
+// function.
+struct ShapeProvider {
+  prefix: string
+  typeArguments: Array<Type>
+}
+
+// findShapeProvider tells which std/shape function implements Shape for a
+// type, or None when the type has an implement block instead.
+function findShapeProvider(checker: Checker, type: Type): Option<ShapeProvider> uses alloc {
+  return match (type) {
+    Type.TBool => Some(ShapeProvider { prefix: "bool", typeArguments: [] })
+    Type.TInt => Some(ShapeProvider { prefix: "int", typeArguments: [] })
+    Type.TF64 => Some(ShapeProvider { prefix: "float", typeArguments: [] })
+    Type.TChar => Some(ShapeProvider { prefix: "char", typeArguments: [] })
+    Type.TStr => Some(ShapeProvider { prefix: "string", typeArguments: [] })
+    Type.TArray(element) => Some(ShapeProvider { prefix: "array", typeArguments: [element] })
+    Type.TMap(_, valueType) => Some(ShapeProvider { prefix: "map", typeArguments: [valueType] })
+    Type.TEnum(index) => {
+      if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
+        return Some(ShapeProvider {
+          prefix: "option",
+          typeArguments: checker.enums[index].arguments,
+        })
+      }
+      return None
+    }
+    Type.TStruct(index) => {
+      if (checker.structs[index].tuple) {
+        const count = Int.toString(Arrays.length(checker.structs[index].arguments))
+        return Some(ShapeProvider {
+          prefix: `tuple${count}`,
+          typeArguments: checker.structs[index].arguments,
+        })
+      }
+      return None
+    }
+    _ => None
+  }
+}
+
+// setShapeRef points a Shape.toValue or Shape.fromValue call on a prelude type
+// at the matching function of std/shape, with its instance when it is generic.
+function setShapeRef(
+  mutable checker: Checker,
+  nodeId: int,
+  selfType: Type,
+  name: string,
+) uses alloc {
+  if (findShapeProvider(checker, selfType) is Some(provider)) {
+    let suffix = "FromValue"
+    if (name == "toValue") {
+      suffix = "ToValue"
+    }
+    const functionName = `${provider.prefix}${suffix}`
+    for (const index of Ranges.between(0, Arrays.length(checker.functions))) {
+      if (
+        checker.functions[index].module == "std/shape" &&
+          checker.functions[index].name == functionName
+      ) {
+        setRef(mutable checker, nodeId, Ref.Function(index))
+        if (Arrays.length(provider.typeArguments) > 0) {
+          const instance = addFuncInstance(mutable checker, index, provider.typeArguments)
+          checker.bodies[checker.body].instanceRefs[nodeId] = instance
+        }
+        return
+      }
+    }
+    return
+  }
+  // A struct or enum that derives Shape: the function written for it (deriveshape.nra).
+  let module = ""
+  let typeName = ""
+  let typeArguments: Array<Type> = []
+  match (selfType) {
+    Type.TStruct(index) => {
+      module = checker.structs[index].module
+      typeName = checker.structs[index].name
+      typeArguments = checker.structs[index].arguments
+    }
+    Type.TEnum(index) => {
+      module = checker.enums[index].module
+      typeName = checker.enums[index].name
+      typeArguments = checker.enums[index].arguments
+    }
+    _ => {
+      return
+    }
+  }
+  const functionName = shapeFunctionName(name, typeName)
+  for (const index of Ranges.between(0, Arrays.length(checker.functions))) {
+    if (
+      checker.functions[index].module == module && checker.functions[index].name == functionName
+    ) {
+      setRef(mutable checker, nodeId, Ref.Function(index))
+      if (Arrays.length(typeArguments) > 0) {
+        const instance = addFuncInstance(mutable checker, index, typeArguments)
+        checker.bodies[checker.body].instanceRefs[nodeId] = instance
+      }
+      return
+    }
+  }
 }
 
 // isSelfInParameters reports whether Self appears in a parameter of a trait

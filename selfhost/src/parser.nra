@@ -2727,13 +2727,28 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
   let text = Str.builder()
   let pending = 0 // characters in text
   let index = 0
+  // The source position of raw[scanned]; raw starts after the backtick.
+  let scanned = 0
+  let line = token.line
+  let column = token.column + 1
   while (isOk(parser) && index < count) {
     const character = raw[index]
     if (character == '\\') {
+      // Find the backslash's own position, since templates span lines.
+      for (const skippedIndex of Ranges.between(scanned, index)) {
+        if (raw[skippedIndex] == '\n') {
+          line = line + 1
+          column = 1
+        } else {
+          column = column + 1
+        }
+      }
+      scanned = index
       // Decode the escape as a string literal would.
-      const escaped = decodeEscape(raw, index, token.line, token.column)
+      const escaped = decodeEscape(raw, index, line, column)
       if (escaped is Err(error)) {
-        failAt(mutable parser, pos, error.code, error.message)
+        const errorPos = Pos { line: error.line, column: error.column }
+        failAt(mutable parser, errorPos, error.code, error.message)
         return createDummyExpr()
       }
       Str.append(mutable text, escaped.value.text)

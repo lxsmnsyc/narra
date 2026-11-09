@@ -332,6 +332,46 @@ export function functionSignature(checker: Checker, program: ProgramFunc): strin
   return `static ${cType(checker, result)} ${functionName(checker, program)}(${Str.join(parts, ", ")})`
 }
 
+export function dropDuplicateTypes(checker: Checker): Checker uses alloc {
+  // Types that differ only in a generator's effects or origin share one C name, and
+  // so do the generic instances over them. Keep the first function and type of each name.
+  let seen: Map<string, bool> = Map {}
+  let functions: Array<ProgramFunc> = []
+  for (const program of Arrays.values(checker.programFunctions)) {
+    const name = functionName(checker, program)
+    if (seen[name] is None) {
+      seen[name] = true
+      Arrays.push(mutable functions, program)
+    }
+  }
+  let order: Array<Type> = []
+  for (const type of Arrays.values(checker.order)) {
+    const name = typeId(checker, type)
+    if (seen[name] is None) {
+      seen[name] = true
+      Arrays.push(mutable order, type)
+    }
+  }
+  let composites: Map<string, Type> = Map {}
+  let dropped =
+    Arrays.length(functions) != Arrays.length(checker.programFunctions) ||
+      Arrays.length(order) != Arrays.length(checker.order)
+  for (const entry of Maps.entries(checker.composites)) {
+    const #[key, type] = entry
+    const name = typeId(checker, type)
+    if (seen[name] is None) {
+      seen[name] = true
+      composites[key] = type
+    } else {
+      dropped = true
+    }
+  }
+  if (!dropped) {
+    return checker
+  }
+  return { ...checker, programFunctions: functions, order: order, composites: composites }
+}
+
 export function checkNameCollisions(checker: Checker): Option<string> uses alloc {
   // This runs once after naming. Some(message) is an internal error.
   let seen: Map<string, string> = Map {}

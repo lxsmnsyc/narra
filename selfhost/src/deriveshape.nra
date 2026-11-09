@@ -10,15 +10,16 @@
 // (shapeDeriveHolds in traits.nra), so a bad field is reported once, as E0531.
 //
 // Encoding: a struct is a Record with one entry per field, in declaration
-// order; an Option field holding None is left out. Decoding takes a missing
-// field's default, None for a missing Option field, and reports any other
-// missing field. An enum is a Record with a "type" entry naming the
+// order; an Option field holding None is left out, unless the field has a
+// default other than None: then None is Null, so that decoding does not give
+// it the default. Decoding takes a missing field's default, None for a missing
+// Option field, and reports any other missing field; Null decodes as None. An enum is a Record with a "type" entry naming the
 // constructor, then one entry per field.
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Int from "std/int"
-import { File, Decl, FieldDecl, TypeExpr, VariantDecl } from "narrac/ast"
+import { File, Decl, Expr, FieldDecl, TypeExpr, VariantDecl } from "narrac/ast"
 import { Parsed, parse } from "narrac/parser"
 
 const TO_VALUE_PREFIX = "__shapeToValue_"
@@ -203,14 +204,38 @@ function writeLine(mutable builder: StringBuilder, depth: int, text: string) use
   Str.append(mutable builder, "\n")
 }
 
-// writeEncodeField sets the entry of one field; an Option holding None is left out.
+// isNoneExpression reports whether a default is written `None` or `None()`.
+function isNoneExpression(expression: Expr): bool {
+  return match (expression) {
+    Expr.Ident(_, _, name) => name == "None"
+    Expr.CallExpr(_, _, callee, _, arguments) => {
+      if (callee is Expr.Ident(_, _, name)) {
+        return name == "None" && Arrays.length(arguments) == 0
+      }
+      return false
+    }
+    _ => false
+  }
+}
+
+// keepsNone reports whether an Option field writes None as Null: its default
+// is something other than None, which a missing entry would decode as.
+function keepsNone(field: FieldDecl): bool {
+  if (field.default is Some(expression)) {
+    return !isNoneExpression(expression)
+  }
+  return false
+}
+
+// writeEncodeField sets the entry of one field; an Option holding None is left
+// out unless keepsNone.
 function writeEncodeField(
   mutable builder: StringBuilder,
   depth: int,
   field: FieldDecl,
   read: string,
 ) uses alloc {
-  if (isOptionType(field.type)) {
+  if (isOptionType(field.type) && !keepsNone(field)) {
     writeLine(mutable builder, depth, `if (${read} is Some(__present)) {`)
     writeLine(
       mutable builder,

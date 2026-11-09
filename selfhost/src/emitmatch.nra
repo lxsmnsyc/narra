@@ -48,9 +48,9 @@ import * as Ranges from "std/range"
 
 const NODE = "selfhost-emit-match"
 
-// declaredLocal is the BodyInfo.locals index that a PatName node declares, or -1.
 function declaredLocal(emitter: Emitter, nodeId: int): int {
   const info = emitter.checker.bodies[emitter.body]
+  // Only a PatName node declares a local.
   const slot = findBodySlot(info, nodeId)
   if (slot < 0) {
     return -1
@@ -58,7 +58,6 @@ function declaredLocal(emitter: Emitter, nodeId: int): int {
   return info.declared[slot]
 }
 
-// variantPath is the C path of field `index` of a variant's payload.
 function variantPath(
   emitter: Emitter,
   enumIndex: int,
@@ -70,7 +69,6 @@ function variantPath(
   return `${path}.u->v_${variant.name}.f_${variant.fields[index].name}`
 }
 
-// tupleFieldName is the name of field `index` of the tuple struct a pattern matches.
 function tupleFieldName(emitter: Emitter, pattern: Pattern, index: int): string {
   if (readNodeType(emitter, getPatternId(pattern)) is Type.TStruct(structIndex)) {
     return emitter.checker.structs[structIndex].fields[index].name
@@ -78,14 +76,13 @@ function tupleFieldName(emitter: Emitter, pattern: Pattern, index: int): string 
   return ""
 }
 
-// emitPatternCondition returns a C condition that is true when the value at
-// path matches the pattern. It may write lines for literal values.
 function emitPatternCondition<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   pattern: Pattern,
   path: string,
 ): string uses alloc {
+  // This may write lines for literal values.
   let conditions: Array<string> = []
   collectConditions(walker, mutable emitter, pattern, path, mutable conditions)
   if (Arrays.length(conditions) == 0) {
@@ -157,9 +154,8 @@ function collectConditions<W: EmitWalker>(
   }
 }
 
-// bindPattern declares the names a pattern binds, reading from path. Each
-// local takes its own reference.
 function bindPattern(mutable emitter: Emitter, pattern: Pattern, path: string) uses alloc {
+  // Each local takes its own reference.
   match (pattern) {
     Pattern.PatName(nodeId, _, _) => {
       const localIndex = declaredLocal(emitter, nodeId)
@@ -198,8 +194,6 @@ function bindPattern(mutable emitter: Emitter, pattern: Pattern, path: string) u
   }
 }
 
-// holdSubject makes the innermost scope release a held subject (Go: a local
-// named "subject").
 function holdSubject(mutable emitter: Emitter, name: string, subjectType: Type) uses alloc {
   if (needsRc(emitter, subjectType)) {
     const top = Arrays.length(emitter.scopes) - 1
@@ -207,7 +201,6 @@ function holdSubject(mutable emitter: Emitter, name: string, subjectType: Type) 
   }
 }
 
-// emitIsCondition emits `x is Pattern` outside the condition of an if.
 export function emitIsCondition<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -223,13 +216,13 @@ export function emitIsCondition<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "is expression", NODE), owned: false }
 }
 
-// emitIfIs emits `if (x is Pattern) { ... }`. The subject is held for the
-// whole statement, because the pattern's names read from it.
 export function emitIfIs<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   statement: Stmt,
 ) uses alloc {
+  // The subject is held for the whole statement, because the pattern's names
+  // read from it.
   if (statement is Stmt.IfStmt(_, condition, then, orElse)) {
     if (condition is Expr.IsExpr(_, _, subject, pattern)) {
       const subjectType = readNodeType(emitter, getExpressionId(subject))
@@ -273,8 +266,6 @@ export function emitIfIs<W: EmitWalker>(
   const _ = reportUnsupported(mutable emitter, "if is", NODE)
 }
 
-// emitMatchArms emits an if-chain over the arms. A value match assigns each
-// arm's value to result; a statement match runs each arm.
 function emitMatchArms<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -285,6 +276,8 @@ function emitMatchArms<W: EmitWalker>(
   result: string,
   resultType: Type,
 ) uses alloc {
+  // A value match assigns each arm's value to result; a statement match runs
+  // each arm.
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
   const subjectType = readNodeType(emitter, getExpressionId(subject))
   const held = temp(mutable emitter, subjectType, code.text)
@@ -359,7 +352,6 @@ function emitStatementArm<W: EmitWalker>(
   }
 }
 
-// emitReturnBlockArm returns the value of a block arm of a returned match.
 function emitReturnBlockArm<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -375,16 +367,14 @@ function emitReturnBlockArm<W: EmitWalker>(
   emitter.frames = Tail.withoutLastFrame(emitter.frames)
 }
 
-// emitBlockBody emits a block in value position as a C block with a result
-// variable (Go's blockBody). Each return stores its value, releases what the
-// block holds and jumps to the label after the block. A match arm written as
-// a block uses it too.
 export function emitBlockBody<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   block: Block,
   resultType: Type,
 ): Code uses alloc {
+  // Each return stores its value, releases what the block holds and jumps to
+  // the label after the block. A match arm written as a block uses this too.
   emitter.tempCount = emitter.tempCount + 1
   const number = Int.toString(emitter.tempCount)
   const typeName = cType(emitter.checker, resultType)
@@ -437,13 +427,12 @@ function emitValueArm<W: EmitWalker>(
   }
 }
 
-// emitMatchStatement emits a match whose value is unused. The caller has
-// opened the statement's temporary frame.
 export function emitMatchStatement<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   statement: Stmt,
 ) uses alloc {
+  // The caller has opened the statement's temporary frame.
   if (statement is Stmt.ExprStmt(_, expression)) {
     if (expression is Expr.MatchExpr(_, _, subject, arms)) {
       emitMatchArms(walker, mutable emitter, subject, arms, false, false, "", Type.TVoid)
@@ -453,13 +442,13 @@ export function emitMatchStatement<W: EmitWalker>(
   const _ = reportUnsupported(mutable emitter, "match statement", NODE)
 }
 
-// emitReturnMatch emits `return match ...` with each arm returning its own
-// value, so an arm that is a tail call becomes a jump (Go's returnMatch).
 export function emitReturnMatch<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ) uses alloc {
+  // Each arm returns its own value, so an arm that is a tail call becomes a
+  // jump.
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
     const resultType = readNodeType(emitter, nodeId)
     beginStatement(mutable emitter)
@@ -470,7 +459,6 @@ export function emitReturnMatch<W: EmitWalker>(
   const _ = reportUnsupported(mutable emitter, "match expression", NODE)
 }
 
-// emitMatchValue emits a match used as a value into a result variable.
 export function emitMatchValue<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -493,14 +481,13 @@ export function emitMatchValue<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "match expression", NODE), owned: false }
 }
 
-// emitDestructure emits `const { a, b: c } = s` and `const #[a, b] = t`. The
-// value is held in a temporary for the statement; each bound name retains its
-// part, and an owned value is released at the end of the statement.
 export function emitDestructure<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   statement: Stmt,
 ) uses alloc {
+  // The value is held in a temporary for the statement; each bound name retains
+  // its part, and an owned value is released at the end of the statement.
   if (statement is Stmt.VarStmt(_, _, _, _, Some(pattern), _, value)) {
     beginStatement(mutable emitter)
     const code = EmitWalker.emitExpression(walker, mutable emitter, value)
@@ -513,13 +500,13 @@ export function emitDestructure<W: EmitWalker>(
   const _ = reportUnsupported(mutable emitter, "destructuring", NODE)
 }
 
-// emitSpreadLiteral emits `{ ...s, field: v }`. Given fields are consumed;
-// the others are copied from s and retained, so the result owns every field.
 export function emitSpreadLiteral<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
+  // Given fields are consumed; the others are copied from the spread value and
+  // retained, so the result owns every field.
   if (expression is Expr.StructLit(nodeId, _, _, _, fields, Some(spread))) {
     const structType = readNodeType(emitter, nodeId)
     if (structType is Type.TStruct(structIndex)) {
@@ -556,7 +543,6 @@ export function emitSpreadLiteral<W: EmitWalker>(
   return Code { text: reportUnsupported(mutable emitter, "spread literal", NODE), owned: false }
 }
 
-// emitTupleLiteral emits `#[a, b]`.
 export function emitTupleLiteral<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,

@@ -138,8 +138,8 @@ export trait EmitWalker {
   ): string uses alloc
 }
 
-// newEmitter makes the state for one program. The checker is shared, not copied.
 export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter uses alloc {
+  // The checker is shared, not copied.
   return Emitter {
     checker: checker,
     typeNames: Map {},
@@ -171,13 +171,12 @@ export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter u
   }
 }
 
-// reportUnsupported records a construct a stub cannot emit yet (once per
-// distinct text) and returns the marker line text for the C output.
 export function reportUnsupported(
   mutable emitter: Emitter,
   construct: string,
   node: string,
 ): string uses alloc {
+  // A construct is recorded once per distinct text.
   const text = `${construct} (${node})`
   let seen = false
   for (const known of Arrays.values(emitter.unsupported)) {
@@ -191,15 +190,13 @@ export function reportUnsupported(
   return `/* unsupported: ${text} */`
 }
 
-// writeLine writes one indented line to the current function body.
 export function writeLine(mutable emitter: Emitter, text: string) uses alloc {
   const padding = Str.repeat("  ", emitter.indent)
   Str.append(mutable emitter.out, `${padding}${text}\n`)
 }
 
-// cString is a C string literal for text, with octal escapes for bytes
-// outside printable ASCII and for `?`.
 export function cString(text: string): string uses alloc {
+  // Bytes outside printable ASCII and `?` become octal escapes.
   let builder = Str.builder()
   Str.append(mutable builder, "\"")
   for (const index of Ranges.between(0, Str.length(text))) {
@@ -230,7 +227,6 @@ function findByteChar(byte: int): char {
 // The printable ASCII characters from space (32) to tilde (126).
 const ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
-// literal adds a string to the literal pool and returns the C expression for it.
 export function literal(mutable emitter: Emitter, text: string): string uses alloc {
   emitter.literalCount = emitter.literalCount + 1
   const name = `L${Int.toString(emitter.literalCount)}`
@@ -241,12 +237,10 @@ export function literal(mutable emitter: Emitter, text: string): string uses all
   return `(&${name})`
 }
 
-// where is the C string "file:line:col" of a position, for panic messages.
 export function where(emitter: Emitter, pos: Pos): string uses alloc {
   return cString(`${emitter.file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}`)
 }
 
-// readNodeType is the type the emitted body gave a node. readNodeRef is its Ref.
 export function readNodeType(emitter: Emitter, nodeId: int): Type {
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
@@ -271,11 +265,9 @@ export function readLocal(emitter: Emitter, index: int): LocalInfo {
   return emitter.checker.bodies[emitter.body].locals[index]
 }
 
-// localRef is the C expression for a local: a mutable parameter is passed as a pointer.
-// isReference reports whether the C variable of a local holds a pointer: a
-// mutable parameter, the element of a `for (mutable ...)` loop, or a `let`
-// captured by reference inside the closure being emitted (Go's isRef).
 export function isReference(emitter: Emitter, index: int): bool {
+  // A mutable parameter, the element of a `for (mutable ...)` loop, or a `let`
+  // captured by reference inside the closure being emitted holds a pointer.
   const local = readLocal(emitter, index)
   if ((local.param && local.isMutable) || local.binding == BindingKind.Reference) {
     return true
@@ -297,14 +289,13 @@ export function localRef(emitter: Emitter, index: int): string uses alloc {
   return variableRef(emitter, name)
 }
 
-// declareVariable declares a C variable and returns the text before
-// ` = value`: the C declaration, or in a generator body the frame field,
-// which it adds to the frame (Go's cVar).
 export function declareVariable(
   mutable emitter: Emitter,
   typeName: string,
   name: string,
 ): string uses alloc {
+  // In a generator body this adds a frame field to the frame and returns the
+  // field access instead of a C declaration.
   if (!emitter.inGenerator) {
     return `${typeName} ${name}`
   }
@@ -315,13 +306,12 @@ export function declareVariable(
   return `f->${name}`
 }
 
-// declareUnset declares a C variable without a value and returns its name.
-// A frame field needs no line (Go's declareUnset).
 export function declareUnset(
   mutable emitter: Emitter,
   typeName: string,
   name: string,
 ): string uses alloc {
+  // A frame field needs no line.
   const declaration = declareVariable(mutable emitter, typeName, name)
   if (!emitter.inGenerator) {
     writeLine(mutable emitter, `${declaration};`)
@@ -329,7 +319,6 @@ export function declareUnset(
   return variableRef(emitter, name)
 }
 
-// variableRef is how the body names a C variable it declared.
 export function variableRef(emitter: Emitter, name: string): string uses alloc {
   if (emitter.inGenerator) {
     return `f->${name}`
@@ -337,28 +326,23 @@ export function variableRef(emitter: Emitter, name: string): string uses alloc {
   return name
 }
 
-// declareLocalVariable declares a local without a value and returns the
-// text that starts its declaration (Go's declareCounter).
 export function declareLocalVariable(mutable emitter: Emitter, localIndex: int): string uses alloc {
   const local = readLocal(emitter, localIndex)
   const typeName = cType(emitter.checker, local.localType)
   return declareVariable(mutable emitter, typeName, localName(local))
 }
 
-// declareLocal writes the declaration of a local holding value (Go's declareLocal).
 export function declareLocal(mutable emitter: Emitter, localIndex: int, value: string) uses alloc {
   const declaration = declareLocalVariable(mutable emitter, localIndex)
   writeLine(mutable emitter, `${declaration} = ${value};`)
 }
 
-// switchBody makes another body the one being emitted and returns the saved index.
 export function switchBody(mutable emitter: Emitter, body: int): int {
   const saved = emitter.body
   emitter.body = body
   return saved
 }
 
-// underlyingType strips distinct types down to their base.
 export function underlyingType(emitter: Emitter, type: Type): Type {
   if (type is Type.TDistinct(index)) {
     if (emitter.checker.distincts[index].base is Some(base)) {
@@ -368,7 +352,6 @@ export function underlyingType(emitter: Emitter, type: Type): Type {
   return type
 }
 
-// needsRc reports whether values of the type hold reference-counted data.
 export function needsRc(emitter: Emitter, type: Type): bool {
   return match (type) {
     Type.TStr => true
@@ -404,18 +387,15 @@ function isBoxed(emitter: Emitter, index: int): bool {
   return false
 }
 
-// containerName is a C array, box or map type without its "*".
 export function containerName(emitter: Emitter, type: Type): string uses alloc {
   const name = cType(emitter.checker, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
-// retainCode is the C statement that retains one value of the type, or "".
 export function retainCode(emitter: Emitter, type: Type, value: string): string uses alloc {
   return refCountCode(emitter, "retain", type, value)
 }
 
-// releaseCode is the C statement that releases one value of the type, or "".
 export function releaseCode(emitter: Emitter, type: Type, value: string): string uses alloc {
   return refCountCode(emitter, "release", type, value)
 }
@@ -454,9 +434,8 @@ function structOrEnumCode(
   return `${opFuncName(operation, typeId(emitter.checker, base))}(${value});`
 }
 
-// temp declares a C temporary holding code and returns its name. The counter
-// is program-wide: it is never reset per function.
 export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
+  // The counter is program-wide: it is never reset per function.
   emitter.tempCount = emitter.tempCount + 1
   const name = `t${Int.toString(emitter.tempCount)}`
   const typeName = cType(emitter.checker, type)
@@ -465,7 +444,6 @@ export function temp(mutable emitter: Emitter, type: Type, code: string): string
   return variableRef(emitter, name)
 }
 
-// ownedTemp is a temporary the current statement releases at its end.
 export function ownedTemp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   const name = temp(mutable emitter, type, code)
   if (needsRc(emitter, type)) {
@@ -479,7 +457,6 @@ export function beginStatement(mutable emitter: Emitter) uses alloc {
   Arrays.push(mutable emitter.frames, [])
 }
 
-// endStatement releases the statement's owned temporaries, newest first.
 export function endStatement(mutable emitter: Emitter) uses alloc {
   const top = emitter.frames[Arrays.length(emitter.frames) - 1]
   releaseTemporaries(mutable emitter, top)
@@ -505,7 +482,6 @@ function releaseTemporaries(mutable emitter: Emitter, temporaries: Array<TempVar
   }
 }
 
-// consume turns an expression result into an owned reference the caller takes over.
 export function consume(
   mutable emitter: Emitter,
   code: string,
@@ -538,7 +514,6 @@ export function consume(
   return name
 }
 
-// pushScope opens a block scope; a loop scope is where break and continue unwind to.
 export function pushScope(mutable emitter: Emitter, loop: bool) uses alloc {
   Arrays.push(mutable emitter.scopes, ScopeFrame { locals: [], loop: loop })
 }
@@ -574,12 +549,10 @@ function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
   }
 }
 
-// localName is the C name of a local without the by-reference parentheses.
 export function localName(local: LocalInfo): string uses alloc {
   return `v_${local.name}_${Int.toString(local.number)}`
 }
 
-// addLocal registers a BodyInfo.locals index for release at the end of the scope.
 export function addLocal(mutable emitter: Emitter, localIndex: int) uses alloc {
   const local = readLocal(emitter, localIndex)
   if (needsRc(emitter, local.localType)) {
@@ -588,7 +561,6 @@ export function addLocal(mutable emitter: Emitter, localIndex: int) uses alloc {
   }
 }
 
-// unwindAll releases every temporary and local, for a return.
 export function unwindAll(mutable emitter: Emitter) uses alloc {
   let frame = Arrays.length(emitter.frames) - 1
   while (frame >= 0) {
@@ -604,8 +576,6 @@ export function unwindAll(mutable emitter: Emitter) uses alloc {
   }
 }
 
-// unwindBlock releases what a block expression holds, down to where it
-// started, for a return inside it.
 export function unwindBlock(mutable emitter: Emitter, info: BlockInfo) uses alloc {
   let frame = Arrays.length(emitter.frames) - 1
   while (frame >= info.frames) {
@@ -621,7 +591,6 @@ export function unwindBlock(mutable emitter: Emitter, info: BlockInfo) uses allo
   }
 }
 
-// withoutLastBlock copies the block expressions without the innermost one.
 export function withoutLastBlock(blocks: Array<BlockInfo>): Array<BlockInfo> uses alloc {
   let kept: Array<BlockInfo> = []
   for (const index of Ranges.upTo(Arrays.length(blocks) - 1)) {
@@ -630,14 +599,11 @@ export function withoutLastBlock(blocks: Array<BlockInfo>): Array<BlockInfo> use
   return kept
 }
 
-// unwindLoop releases the temporaries and locals made inside the innermost
-// loop, for a break or continue.
 export function unwindLoop(mutable emitter: Emitter) uses alloc {
   const innermost = Arrays.length(emitter.loopFrames) - 1
   unwindToLoop(mutable emitter, innermost)
 }
 
-// enterLoop records a loop that starts at the current frame depth.
 export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) uses alloc {
   const depth = Arrays.length(emitter.frames)
   Arrays.push(mutable emitter.loopFrames, depth)
@@ -651,7 +617,6 @@ export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) use
   })
 }
 
-// leaveLoop forgets the innermost loop and gives its record back.
 export function leaveLoop(mutable emitter: Emitter): LoopInfo uses alloc {
   const last = Arrays.length(emitter.loopInfos) - 1
   const info = emitter.loopInfos[last]
@@ -685,7 +650,6 @@ export function emitStepJump(mutable emitter: Emitter) uses alloc {
   )
 }
 
-// emitContinueLabel ends a loop body with the label that `continue name` jumps to.
 export function emitContinueLabel(mutable emitter: Emitter) uses alloc {
   const info = emitter.loopInfos[Arrays.length(emitter.loopInfos) - 1]
   if (info.continueUsed) {
@@ -696,7 +660,6 @@ export function emitContinueLabel(mutable emitter: Emitter) uses alloc {
   }
 }
 
-// emitBreakLabel follows a loop with the label that `break name` jumps to.
 export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses alloc {
   if (info.breakUsed) {
     writeLine(
@@ -706,8 +669,6 @@ export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses al
   }
 }
 
-// emitLabeledExit leaves the loop called label and jumps to its break or
-// continue label.
 export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
   let index = Arrays.length(emitter.loopInfos) - 1
   while (index >= 0) {
@@ -728,9 +689,8 @@ export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak
   }
 }
 
-// unwindToLoop releases what the loops inside loop k, and loop k's own body,
-// hold. The scope of loop k is the k-th loop scope from the outside.
 function unwindToLoop(mutable emitter: Emitter, loopIndex: int) uses alloc {
+  // The scope of loop k is the k-th loop scope from the outside.
   const depth = emitter.loopFrames[loopIndex]
   let remaining = Arrays.length(emitter.loopFrames) - 1 - loopIndex
   let frame = Arrays.length(emitter.frames) - 1

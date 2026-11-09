@@ -4,7 +4,7 @@
 // A function type such as (int) => int is a struct holding a C function
 // pointer and an environment. A call passes the environment first. A named
 // function used as a value is a thunk with a NULL environment. An arrow
-// function is a C function of its own, emitted while the enclosing body is
+// function becomes a C function of its own, emitted while the enclosing body is
 // being emitted, so its text goes to the closure buffers of the Emitter and
 // the per-function state is saved and restored around it.
 import * as Int from "std/int"
@@ -62,8 +62,6 @@ struct FunctionTypeItem {
   type: Type
 }
 
-// sortFunctionTypes orders function types by their type id in byte order
-// (Go's finishFuncTypes). It is a stable insertion sort.
 function sortFunctionTypes(items: Array<FunctionTypeItem>): Array<FunctionTypeItem> uses alloc {
   let sorted: Array<FunctionTypeItem> = []
   for (const item of Arrays.values(items)) {
@@ -87,7 +85,6 @@ function sortFunctionTypes(items: Array<FunctionTypeItem>): Array<FunctionTypeIt
   return sorted
 }
 
-// listFunctionTypes lists the program's function types in Go's order (Program.FuncTypes).
 function listFunctionTypes(emitter: Emitter): Array<Type> uses alloc {
   let items: Array<FunctionTypeItem> = []
   let seen: Map<string, bool> = Map {}
@@ -110,8 +107,6 @@ function listFunctionTypes(emitter: Emitter): Array<Type> uses alloc {
   return types
 }
 
-// emitFuncTypeDefinitions writes envRuntime and the struct of each function
-// type, only when function types exist.
 export function emitFuncTypeDefinitions(mutable emitter: Emitter): string uses alloc {
   const types = listFunctionTypes(emitter)
   if (Arrays.length(types) == 0) {
@@ -140,10 +135,9 @@ export function emitFuncTypeDefinitions(mutable emitter: Emitter): string uses a
   return Str.build(builder)
 }
 
-// emitClosureFunctions writes the "\n// Closures\n" section: environments,
-// prototypes and definitions made while the bodies were emitted. Go writes
-// the section only when a thunk or an arrow function made one.
 export function emitClosureFunctions(mutable emitter: Emitter): string uses alloc {
+  // Go writes this section only when a thunk or an arrow function made an
+  // environment or closure.
   const prototypes = Str.build(emitter.closurePrototypes)
   if (prototypes == "") {
     return ""
@@ -153,7 +147,6 @@ export function emitClosureFunctions(mutable emitter: Emitter): string uses allo
   return `\n// Closures\n${environments}${prototypes}${definitions}`
 }
 
-// emitFuncValue returns a named function as a value, through its thunk.
 export function emitFuncValue<W: EmitWalker>(
   _walker: W,
   mutable emitter: Emitter,
@@ -211,7 +204,6 @@ export function emitFuncValue<W: EmitWalker>(
   return Code { text: `((${functionType}){.fn = ${name}, .env = NULL})`, owned: false }
 }
 
-// emitArrow emits an arrow function's C function and returns the value.
 export function emitArrow<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -340,11 +332,10 @@ function emitArrowParts<W: EmitWalker>(
   return Code { text: value, owned: true }
 }
 
-// captureValue is what a stack environment stores for a capture (Go's
-// captureValue): a pointer to a `let`, a mutable parameter or a `const`
-// the closure changes, or the value of anything else. A variable that is
-// already a pointer is passed on as it is.
 function captureValue(emitter: Emitter, closure: ClosureInfo, capture: int): string uses alloc {
+  // A capture is a pointer to a `let`, a mutable parameter or a `const` the
+  // closure changes, and the value of anything else. A variable that is already
+  // a pointer is passed on as it is.
   const local = readLocal(emitter, capture)
   if (!isCapturedByReference(emitter, closure, capture)) {
     return localRef(emitter, capture)
@@ -355,9 +346,9 @@ function captureValue(emitter: Emitter, closure: ClosureInfo, capture: int): str
   return `&${localRef(emitter, capture)}`
 }
 
-// isCapturedByReference reports whether a closure holds a capture through a
-// pointer: a `let`, a mutable parameter, or a `const` it changes (D81).
 function isCapturedByReference(emitter: Emitter, closure: ClosureInfo, capture: int): bool {
+  // A closure holds a `let`, a mutable parameter, or a `const` it changes
+  // through a pointer.
   if (readLocal(emitter, capture).isMutable) {
     return true
   }
@@ -369,8 +360,6 @@ function isCapturedByReference(emitter: Emitter, closure: ClosureInfo, capture: 
   return false
 }
 
-// emitEnvironmentStruct writes the environment struct of an arrow function
-// and the function that releases its captures.
 function emitEnvironmentStruct(
   mutable emitter: Emitter,
   environmentType: string,
@@ -412,10 +401,6 @@ function emitEnvironmentStruct(
   Str.append(mutable emitter.closureEnvs, Str.build(builder))
 }
 
-// emitClosureFunction emits the C function of an arrow function. Captures
-// are read from the environment into locals with their usual C names,
-// borrowed. It runs in the middle of another body, so every piece of
-// per-function state of the Emitter is saved and restored.
 function emitClosureFunction<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -427,6 +412,9 @@ function emitClosureFunction<W: EmitWalker>(
   result: Type,
   pos: Pos,
 ) uses alloc {
+  // Captures are read from the environment into borrowed locals with their
+  // usual C names. This runs in the middle of another body, so every piece of
+  // per-function state of the Emitter is saved and restored.
   const checker = emitter.checker
   const info = checker.bodies[emitter.body]
 
@@ -515,7 +503,6 @@ function emitClosureFunction<W: EmitWalker>(
   emitter.refCaptures = savedRefCaptures
 }
 
-// emitValueCall emits a call through a function value.
 export function emitValueCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -550,15 +537,14 @@ export function emitValueCall<W: EmitWalker>(
   }
 }
 
-// callFunctionValue calls a function value held in the C expression callee
-// (Go's callFn). A void call is the call text; any other result goes into a
-// block-local temporary that the caller moves into a payload or the result.
 export function callFunctionValue(
   mutable emitter: Emitter,
   functionType: Type,
   callee: string,
   arguments: Array<string>,
 ): Code uses alloc {
+  // A void call is the call text; any other result goes into a block-local
+  // temporary that the caller moves into a payload or the result.
   let parts = [`${callee}.env`]
   for (const argument of Arrays.values(arguments)) {
     Arrays.push(mutable parts, argument)

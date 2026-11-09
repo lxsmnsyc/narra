@@ -1,7 +1,7 @@
 ---
 id: shape-derive
 title: derives Shape for structs and enums
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

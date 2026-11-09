@@ -1,7 +1,7 @@
 ---
 id: mutable-for-of
 title: "for (mutable item of items) changes array elements in place (D85)"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-1

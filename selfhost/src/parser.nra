@@ -1,7 +1,7 @@
 // The parser, ported from compiler/internal/narra/parser.go (and the parse
 // half of check_opaque.go). Each function ports the Go function of the same
 // name without the parse, create or is prefix (Go's binary is parseBinary,
-// tok is currentToken, posOf is getPos). `narrac parse` prints the same AST
+// Go's tok is currentToken, Go's posOf is getPos). `narrac parse` prints the same AST
 // dump as `narra parse`.
 //
 // Error flow: Go's p.fail panics and file() recovers. Narra has no recover,
@@ -111,7 +111,7 @@ struct Parser {
   // return Result, where `throw x` can become `return Err(x)`.
   facts: SourceFacts
   resultFunction: bool
-  // statementStart is the token index where the expression statement being parsed begins;
+  // The token index where the expression statement being parsed begins;
   // only an expression that starts there can end in `+=` or `++`.
   statementStart: int
 }
@@ -147,8 +147,6 @@ const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", 
 // `x is Pattern` binds tighter than == and looser than < and +.
 const IS_LEVEL = 2
 
-// parse lexes and parses src. Ids start at firstId. A lex or parse error
-// gives the first error, as Go's Parse does.
 export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> uses alloc {
   const lexed = lex(source)
   if (lexed is Err(error)) {
@@ -174,9 +172,6 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
   return Ok(Parsed { file: File { ...file, facts: facts }, nextId: parser.nextId })
 }
 
-// parseWithTrivia parses like parse and also returns the side tables of
-// narrac/trivia: comments and where they attach, blank lines, written
-// parentheses and node ends. The tree and the ids are the same as parse's.
 export function parseWithTrivia(source: string, firstId: int): Result<#[
   Parsed,
   Trivia,
@@ -209,8 +204,6 @@ export function parseWithTrivia(source: string, firstId: int): Result<#[
 
 // ---- Source facts for fixes
 
-// isAsciiLetter is true for A-Z, a-z and `_`, the start of a name in
-// Go's templateDot pattern.
 function isNameStart(character: char): bool {
   return (character >= 'a' && character <= 'z') ||
     (character >= 'A' && character <= 'Z') ||
@@ -221,10 +214,8 @@ function isNameCharacter(character: char): bool {
   return isNameStart(character) || (character >= '0' && character <= '9')
 }
 
-// markTemplateDots notes each `Name.` inside the raw text of a template
-// string. The parser keeps no positions inside ${...}, so a fix cannot rename a
-// name used there.
 function markTemplateDots(mutable names: Map<string, bool>, text: string) uses alloc {
+  // The parser keeps no positions inside ${...}, so a fix cannot rename a name used there.
   const characters = Str.chars(text)
   const count = Arrays.length(characters)
   let index = 0
@@ -254,12 +245,11 @@ function sliceText(characters: Array<char>, first: int, last: int): string uses 
   return Str.build(builder)
 }
 
-// findHeaderLine is the line after the leading comment block that a blank
-// line follows; a comment right above a declaration is its doc comment.
 function findHeaderLine(source: string): int uses alloc {
   let header = 1
   const lines = Str.split(source, "\n")
   let index = 0
+  // A blank line after the leading comment block ends the header; a comment right above a declaration is its doc comment.
   while (index < Arrays.length(lines) && Str.startsWith(lines[index], "//")) {
     if (index + 1 < Arrays.length(lines) && Str.trim(lines[index + 1]) == "") {
       header = index + 2
@@ -269,9 +259,6 @@ function findHeaderLine(source: string): int uses alloc {
   return header
 }
 
-// finishFacts completes the side tables of a parse with what Go's Parse reads
-// from the source and the tokens: the text, the header line, the names used in
-// templates and the names written before a `.`.
 function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
   let inTemplate: Map<string, bool> = Map {}
   let dotUses: Map<string, Array<DotUse>> = Map {}
@@ -319,11 +306,8 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
   }
 }
 
-// collectReferencedNames records the identifiers of tokens that are not
-// written after a `.` and not inside an import declaration, which ends at
-// its path string. The `${}` parts of a template are lexed and read the
-// same way.
 function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<Token>) uses alloc {
+  // An import declaration ends at its path string; its names are not recorded.
   let inImport = false
   for (const index of Ranges.upTo(Arrays.length(tokens))) {
     const token = tokens[index]
@@ -336,6 +320,7 @@ function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<
       continue
     }
     if (token.kind == TokenKind.TokTemplate) {
+      // The `${}` parts of a template are lexed and read the same way.
       collectTemplateNames(mutable names, token.text)
       continue
     }
@@ -352,8 +337,6 @@ function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<
   }
 }
 
-// collectTemplateNames lexes each `${}` part of a template's text, as
-// parseTemplate finds them, and records its names.
 function collectTemplateNames(mutable names: Map<string, bool>, text: string) uses alloc {
   const raw = Str.chars(text)
   const count = Arrays.length(raw)
@@ -380,18 +363,15 @@ function collectTemplateNames(mutable names: Map<string, bool>, text: string) us
   }
 }
 
-// getCallEnd is the position just after the `)` that closed a call. Inside a
-// template string the tokens carry the template's position, so it is the
-// template's position plus one, as in Go.
 function getCallEnd(parser: Parser): Pos {
+  // Inside a template string the tokens carry the template's position, so this is the template's position plus one.
   return moveColumn(getPos(parser.tokens[parser.index - 1]), 1)
 }
 
 // ---- Trivia notes. Each does nothing unless the collector is enabled.
 
-// getEndPos is the position after the last token consumed, not counting
-// line breaks.
 function getEndPos(parser: Parser): Pos {
+  // Line breaks do not count.
   let index = parser.index - 1
   while (index >= 0 && parser.tokens[index].kind == TokenKind.TokNewline) {
     index = index - 1
@@ -403,8 +383,6 @@ function getEndPos(parser: Parser): Pos {
   return Pos { line: token.endLine, column: token.endColumn }
 }
 
-// noteKey records the node that started at token startIndex and ends at the
-// last consumed token.
 function noteKey(mutable parser: Parser, key: string, startIndex: int) {
   if (parser.collector.enabled && isOk(parser)) {
     const start = getPos(parser.tokens[startIndex])
@@ -425,12 +403,10 @@ function noteType(mutable parser: Parser, startIndex: int, type: TypeExpr) {
   }
 }
 
-// formatDiagnostic formats an error as Go's Diagnostic.Error does.
 export function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
   return `${Int.toString(diagnostic.pos.line)}:${Int.toString(diagnostic.pos.column)}: ${diagnostic.message}`
 }
 
-// splitLexError turns a lex error into a diagnostic (Go: syntaxDiagnostic).
 function splitLexError(error: LexError): Diagnostic {
   return Diagnostic {
     code: error.code,
@@ -446,13 +422,10 @@ function isOk(parser: Parser): bool {
   return parser.failed is None
 }
 
-// failAt records the first error. Later errors are ignored, like the code
-// after a Go panic that never runs.
 function failAt(mutable parser: Parser, pos: Pos, code: string, message: string) {
   failAtFix(mutable parser, pos, code, [], message)
 }
 
-// failAtFix is failAt with the fixes of the error (Go's failFix).
 function failAtFix(
   mutable parser: Parser,
   pos: Pos,
@@ -460,18 +433,17 @@ function failAtFix(
   fixes: Array<Fix>,
   message: string,
 ) {
+  // Only the first error is kept; later errors are ignored.
   if (parser.failed is None) {
     parser.failed = Some(Diagnostic { code: code, pos: pos, message: message, fixes: fixes })
   }
 }
 
-// failHere fails at the current token.
 function failHere(mutable parser: Parser, code: string, message: string) {
   const token = currentToken(parser)
   failAt(mutable parser, getPos(token), code, message)
 }
 
-// failFound fails at the current token with "<message>, found <token>".
 function failFound(mutable parser: Parser, code: string, message: string) {
   const token = currentToken(parser)
   failAt(mutable parser, getPos(token), code, `${message}, found ${describeToken(token)}`)
@@ -491,9 +463,6 @@ function currentToken(parser: Parser): Token {
   return parser.tokens[parser.index]
 }
 
-// peekToken reads the token offset places ahead, or the last token (EOF) past the end.
-// reportHabitWord fails on a TypeScript word that starts an expression: this,
-// new, try and throw. token is the identifier just consumed.
 function reportHabitWord(mutable parser: Parser, token: Token) {
   const pos = getPos(token)
   const next = currentToken(parser)
@@ -540,20 +509,16 @@ function reportHabitWord(mutable parser: Parser, token: Token) {
   }
 }
 
-// isStatementStart tells whether the token just consumed, the one before
-// the current token, begins a statement.
 function isStatementStart(parser: Parser): bool {
   if (parser.index < 2) {
     return false
   }
+  // The token just consumed is at index - 1, so the one before it is at index - 2.
   const before = parser.tokens[parser.index - 2]
   return before.kind == TokenKind.TokNewline ||
     (before.kind == TokenKind.TokPunct && (before.text == "{" || before.text == "}"))
 }
 
-// speculateExpression parses an expression at the current token and gives
-// where it ends, which must be the end of the line or a `}`. The parser
-// position is restored; a syntax error gives None.
 function speculateExpression(mutable parser: Parser): Option<Pos> uses alloc {
   const savedIndex = parser.index
   const savedId = parser.nextId
@@ -561,6 +526,7 @@ function speculateExpression(mutable parser: Parser): Option<Pos> uses alloc {
   let end: Option<Pos> = None
   if (isOk(parser)) {
     const last = parser.tokens[parser.index - 1]
+    // The expression must end at the end of the line or at a `}`.
     const after = currentToken(parser)
     if (
       after.kind == TokenKind.TokNewline || (after.kind == TokenKind.TokPunct && after.text == "}")
@@ -574,7 +540,6 @@ function speculateExpression(mutable parser: Parser): Option<Pos> uses alloc {
   return end
 }
 
-// isThrowOperand tells whether a token can start the value after `throw`.
 function isThrowOperand(token: Token): bool {
   const kind = token.kind
   return kind == TokenKind.TokIdent ||
@@ -590,10 +555,10 @@ function peekToken(parser: Parser, offset: int): Token {
   if (parser.index + offset < count) {
     return parser.tokens[parser.index + offset]
   }
+  // Past the end, the last token (EOF).
   return parser.tokens[count - 1]
 }
 
-// advance is Go's next: it returns the token and moves on, but never past EOF.
 function advance(mutable parser: Parser): Token {
   const token = parser.tokens[parser.index]
   if (parser.index < Arrays.length(parser.tokens) - 1) {
@@ -602,7 +567,6 @@ function advance(mutable parser: Parser): Token {
   return token
 }
 
-// isAt is Go's is: the current token is that punctuation or keyword.
 function isAt(parser: Parser, text: string): bool {
   const token = parser.tokens[parser.index]
   return (token.kind == TokenKind.TokPunct || token.kind == TokenKind.TokKeyword) &&
@@ -659,8 +623,6 @@ function skipNewlines(mutable parser: Parser) {
   }
 }
 
-// endStatement accepts the end of a statement: a line break, or a closing
-// brace or end of file that follows on the same line.
 function endStatement(mutable parser: Parser) {
   const token = currentToken(parser)
   if (token.kind == TokenKind.TokNewline) {
@@ -677,9 +639,8 @@ function endStatement(mutable parser: Parser) {
   }
 }
 
-// endTypeDecl ends a declaration whose last token is a type. The lexer emits
-// no line break after a `>`, so the next token on a later line ends it.
 function endTypeDecl(mutable parser: Parser) {
+  // The lexer emits no line break after a `>`, so the next token on a later line ends the declaration.
   if (parser.index > 0) {
     const previous = parser.tokens[parser.index - 1]
     const current = currentToken(parser)
@@ -702,10 +663,8 @@ function describeToken(token: Token): string {
   return quoteGo(token.text)
 }
 
-// quoteGo copies Go's strconv.Quote. Of the non-ASCII characters it escapes
-// only the C1 controls and the common spaces and format characters that Go
-// does not count as printable; the rest are written as they are.
 export function quoteGo(text: string): string uses alloc {
+  // Of the non-ASCII characters, only the C1 controls and the common spaces and format characters that Go does not count as printable are escaped; the rest are written as they are.
   let builder = Str.builder()
   Str.append(mutable builder, "\"")
   for (const character of Arrays.values(Str.chars(text))) {
@@ -864,10 +823,8 @@ function parseImport(mutable parser: Parser): ImportDecl {
   return ImportDecl { pos: pos, alias: alias, aliasPos: aliasPos, names: names, path: path }
 }
 
-// isFieldsOnlyBody reports whether the tokens after the current `class` or
-// `interface` are `Name {` and then lines of `field: type`, with no method,
-// modifier, separator or generic parameter.
 function isFieldsOnlyBody(parser: Parser): bool {
+  // The tokens after the current `class` or `interface` must be `Name {` and then lines of `field: type`, with no method, modifier, separator or generic parameter.
   const name = peekToken(parser, 1)
   const open = peekToken(parser, 2)
   if (name.kind != TokenKind.TokIdent || open.kind != TokenKind.TokPunct || open.text != "{") {
@@ -902,7 +859,6 @@ function isFieldsOnlyBody(parser: Parser): bool {
   return false
 }
 
-// isTypeBreaker is true for punctuation that cannot be part of a plain field type.
 function isTypeBreaker(text: string): bool {
   return text == ";" ||
     text == "," ||
@@ -1002,9 +958,6 @@ function parseDeclBody(mutable parser: Parser): Decl {
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
 }
 
-// parseOpaqueOrDistinct parses `opaque struct`, `distinct type` and
-// `opaque distinct type` after an optional `export` (Go: check_opaque.go).
-// It returns None when the declaration is none of them.
 function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<Decl> {
   let opaque = false
   if (isWord(parser, "opaque")) {
@@ -1116,7 +1069,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   }
   if (name == "Generator" || name == "Coroutine") {
     // A generator type carries the effects its body has when it runs:
-    // `Generator<string> uses io` (D78).
+    // `Generator<string> uses io`.
     const effects = parseUsesList(mutable parser)
     if (Arrays.length(effects) > 0) {
       return TypeExpr { ...named, arguments: arguments, effects: effects }
@@ -1137,9 +1090,8 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   return TypeExpr { ...named, arguments: arguments }
 }
 
-// parseTypeParams parses `<A, B: Show & Ordered, effect E>`. Effect
-// variables are returned apart from the type parameters.
 function parseTypeParams(mutable parser: Parser): TypeParams {
+  // Effect variables are kept apart from the type parameters.
   let names: Array<string> = []
   let bounds: Array<Array<TypeExpr>> = []
   let effects: Array<string> = []
@@ -1182,7 +1134,6 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
   return TypeParams { names: names, bounds: bounds, effects: effects }
 }
 
-// createNamedType is a TypeExpr with only a name, for trait names.
 function createNamedType(token: Token): TypeExpr {
   return TypeExpr {
     pos: getPos(token),
@@ -1195,11 +1146,10 @@ function createNamedType(token: Token): TypeExpr {
   }
 }
 
-// parseTypeParamsNoBounds parses type parameters of a struct or enum, which cannot
-// have constraints in this compiler.
 function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
   const pos = getPos(currentToken(parser))
   const typeParameters = parseTypeParams(mutable parser)
+  // Struct and enum type parameters cannot have constraints in this compiler.
   for (const traitBounds of Arrays.values(typeParameters.bounds)) {
     if (Arrays.length(traitBounds) > 0) {
       failAt(
@@ -1213,7 +1163,6 @@ function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
   return typeParameters.names
 }
 
-// parseConstDecl parses a top-level `const NAME: T = value`.
 function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
   const pos = getPos(expect(mutable parser, "const"))
   const name = expectIdent(mutable parser).text
@@ -1239,7 +1188,6 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   return FuncDecl { ...header, body: Some(body) }
 }
 
-// parseFuncHeader parses a function declaration up to its body.
 function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   const pos = getPos(expect(mutable parser, "function"))
   const generator = accept(mutable parser, "*")
@@ -1410,7 +1358,6 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   }
 }
 
-// parseTraitLists parses `implements A, B` and `derives C, D` after a type name.
 function parseTraitLists(mutable parser: Parser): TraitLists {
   let implementations: Array<TypeExpr> = []
   let derived: Array<TypeExpr> = []
@@ -1476,9 +1423,8 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
   return TraitDecl { pos: pos, name: name, exported: exported, functions: functions }
 }
 
-// rejectNestedGenerator rejects `function*` in a trait or an implement
-// block: a generator is a top-level function (D74).
 function rejectNestedGenerator(mutable parser: Parser) {
+  // A generator is a top-level function, so `function*` in a trait or an implement block is rejected.
   const next = peekToken(parser, 1)
   if (next.kind == TokenKind.TokPunct && next.text == "*") {
     failAt(
@@ -1523,9 +1469,8 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
   return ImplDecl { pos: pos, traitType: traitType, type: declaredType, functions: functions }
 }
 
-// parseFuncType parses a function type such as `(item: T) => U`. Parameter
-// names are optional and ignored.
 function parseFuncType(mutable parser: Parser): TypeExpr {
+  // Parameter names are optional and ignored.
   const pos = getPos(expect(mutable parser, "("))
   let arguments: Array<TypeExpr> = []
   while (isOk(parser) && !isAt(parser, ")")) {
@@ -1558,7 +1503,6 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   }
 }
 
-// parseUsesList reads an optional `uses a, b` list of effect names.
 function parseUsesList(mutable parser: Parser): Array<string> {
   let names: Array<string> = []
   if (accept(mutable parser, "uses")) {
@@ -1575,9 +1519,8 @@ function parseUsesList(mutable parser: Parser): Array<string> {
   return names
 }
 
-// acceptEscaping accepts the `escaping` marker before a parameter name.
-// It is not a keyword, so a parameter can still be named escaping.
 function acceptEscaping(mutable parser: Parser): bool {
+  // `escaping` is not a keyword, so a parameter can still be named escaping.
   const token = currentToken(parser)
   if (
     token.kind == TokenKind.TokIdent &&
@@ -1590,11 +1533,8 @@ function acceptEscaping(mutable parser: Parser): bool {
   return false
 }
 
-// isParamAfterComma reports whether the `,` at the current token is followed
-// by `name:`, `mutable name` or `escaping name`, the next parameter of a
-// function. It ends a `uses` list written inside a parameter list. (This is
-// the version of PR #21, which also accepts `mutable`.)
 function isParamAfterComma(parser: Parser): bool {
+  // A `,` followed by `name:`, `mutable name` or `escaping name` ends a `uses` list written inside a parameter list.
   if (parser.index + 2 >= Arrays.length(parser.tokens)) {
     return false
   }
@@ -1612,8 +1552,6 @@ function isParamAfterComma(parser: Parser): bool {
 
 // ---- Statements
 
-// isArrowAhead reports whether the `(` at the current token starts an arrow
-// function: its matching `)` is followed by `=>` or by `:` and a result type.
 function isArrowAhead(parser: Parser): bool {
   let depth = 0
   let index = parser.index
@@ -1645,10 +1583,8 @@ function isArrowAhead(parser: Parser): bool {
   return false
 }
 
-// isResultTypeThenArrow tells an arrow's `: R =>` from the `:` of a conditional
-// expression such as `c ? (a) : b`. From the token after the `:`, it looks for
-// a `=>` outside brackets before anything that ends an expression.
 function isResultTypeThenArrow(parser: Parser, start: int): bool {
+  // This tells an arrow's `: R =>` from the `:` of a conditional expression such as `c ? (a) : b`: from the token after the `:`, look for a `=>` outside brackets before anything that ends an expression.
   let depth = 0
   let index = start
   const count = Arrays.length(parser.tokens)
@@ -1686,8 +1622,6 @@ function isResultTypeThenArrow(parser: Parser, start: int): bool {
   return false
 }
 
-// parseArrow parses `(a: A, b) : R => body`, where the body is an
-// expression or a block. Parameter and result types may be left out.
 function parseArrow(mutable parser: Parser): Expr {
   const pos = getPos(expect(mutable parser, "("))
   let parameters: Array<Param> = []
@@ -1699,6 +1633,7 @@ function parseArrow(mutable parser: Parser): Expr {
     const paramPos = getPos(currentToken(parser))
     const paramStart = parser.index
     const paramName = expectIdent(mutable parser).text
+    // Parameter types may be left out.
     let paramType: Option<TypeExpr> = None
     if (accept(mutable parser, ":")) {
       paramType = Some(parseType(mutable parser))
@@ -1756,7 +1691,6 @@ function parseBlock(mutable parser: Parser): Block {
   return Block { pos: pos, statements: statements }
 }
 
-// parseLoopExitLabel reads the optional label after break or continue.
 function parseLoopExitLabel(mutable parser: Parser): string {
   if (currentToken(parser).kind == TokenKind.TokIdent) {
     return advance(mutable parser).text
@@ -1764,9 +1698,8 @@ function parseLoopExitLabel(mutable parser: Parser): string {
   return ""
 }
 
-// isMarkedEntries reports a `for` head `const #[index, mutable item]`, the
-// marker form over Arrays.entries (D85).
 function isMarkedEntries(parser: Parser): bool {
+  // The marker form over Arrays.entries: `for (const #[index, mutable item] of ...)`.
   const pattern = peekToken(parser, 1)
   const index = peekToken(parser, 2)
   const comma = peekToken(parser, 3)
@@ -1781,11 +1714,8 @@ function isMarkedEntries(parser: Parser): bool {
     marker.text == "mutable"
 }
 
-// parseReferenceFor parses the rest of `for (mutable item of items) body` or
-// `for (const #[index, mutable item] of Arrays.entries(items)) body`, after
-// the `(`. The head is not desugared into a declaration, which would copy
-// the element (D85).
 function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt uses alloc {
+  // The head is not desugared into a declaration, which would copy the element.
   let indexName = ""
   let indexPos = pos
   if (accept(mutable parser, "const")) {
@@ -1819,7 +1749,6 @@ function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt uses alloc {
   return Stmt.ForStmt(forId, pos, "", nameToken.text, iterable, body, Some(reference))
 }
 
-// parseLabeledStmt parses `name: for ...` and `name: while ...`.
 function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   const labelToken = advance(mutable parser)
   const labelPos = getPos(labelToken)
@@ -2197,10 +2126,6 @@ function parseIfBody(mutable parser: Parser): Stmt {
 
 // ---- Expressions
 
-// parseExpr parses an expression: a binary expression, or `cond ? a : b`,
-// which is looser than `||` and right-associative. It becomes a block
-// expression holding one if statement whose branches each return one value,
-// like an `if` in value position. Only the chosen branch runs.
 function parseExpr(mutable parser: Parser): Expr {
   const startIndex = parser.index
   const expression = parseExprBody(mutable parser)
@@ -2211,6 +2136,7 @@ function parseExpr(mutable parser: Parser): Expr {
 function parseExprBody(mutable parser: Parser): Expr {
   const start = getPos(currentToken(parser))
   const condition = parseBinary(mutable parser, 0)
+  // A ternary is looser than `||` and right-associative. It becomes a block expression holding one if statement whose branches each return one value, so only the chosen branch runs.
   if (!isAt(parser, "?")) {
     return condition
   }
@@ -2252,7 +2178,6 @@ function parseExprBody(mutable parser: Parser): Expr {
   return Expr.BlockExpr(ternaryId, start, Block { pos: pos, statements: [ifStatement] })
 }
 
-// isTernary tells whether the expression came from `c ? a : b`.
 function isTernary(parser: Parser, expression: Expr): bool {
   if (expression is Expr.BlockExpr(expressionId, _, _)) {
     for (const ternaryId of Arrays.values(parser.ternaryIds)) {
@@ -2264,7 +2189,6 @@ function isTernary(parser: Parser, expression: Expr): bool {
   return false
 }
 
-// getReturnedValue is the value of the `return value` that a ternary branch holds.
 function getReturnedValue(block: Block): Expr {
   if (block.statements[0] is Stmt.ReturnStmt(_, Some(value))) {
     return value
@@ -2272,10 +2196,8 @@ function getReturnedValue(block: Block): Expr {
   return createDummyExpr()
 }
 
-// convertReturnedTernary turns `return c ? a : b` into `if (c) { return a }
-// else { return b }`, so a self call in a branch is a tail call. A branch that
-// is itself a ternary is turned the same way.
 function convertReturnedTernary(mutable parser: Parser, value: Expr): Stmt {
+  // `return c ? a : b` becomes `if (c) { return a } else { return b }`, so a self call in a branch is a tail call. A branch that is itself a ternary is turned the same way.
   if (!isTernary(parser, value)) {
     return Stmt.ReturnStmt(getExpressionPos(value), Some(value))
   }
@@ -2515,8 +2437,6 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
   return expression
 }
 
-// parseCallArguments parses the arguments of a call after its `(`, and the
-// closing `)`.
 function parseCallArguments(mutable parser: Parser): Array<Arg> {
   let arguments: Array<Arg> = []
   while (isOk(parser) && !isAt(parser, ")")) {
@@ -2547,12 +2467,6 @@ function parseCallArguments(mutable parser: Parser): Array<Arg> {
   return arguments
 }
 
-// isCallTypeArgsAhead reports whether the `<` at the current token starts the
-// type arguments of a call on callee: a name or `Module.name`, then a
-// balanced `<` ... `>` of type names followed directly by `(`. A name not
-// followed by `.` must be a type: a type parameter in scope, a primitive
-// type name, or a capitalized name that is not SCREAMING_CASE. So
-// `a < b > (c)` and `x < MAX, MIN > (y)` stay comparisons.
 function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
   if (callee is Expr.FieldExpr(_, _, target, _)) {
     if (!(target is Expr.Ident(_, _, _))) {
@@ -2561,6 +2475,7 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
   } else if (!(callee is Expr.Ident(_, _, _))) {
     return false
   }
+  // A name not followed by `.` must be a type: a type parameter in scope, a primitive type name, or a capitalized name that is not SCREAMING_CASE. So `a < b > (c)` and `x < MAX, MIN > (y)` stay comparisons.
   let depth = 0
   let offset = 0
   const count = Arrays.length(parser.tokens)
@@ -2600,10 +2515,6 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
   return false
 }
 
-// isTypeNameAhead reports whether a name in call type arguments can be a
-// type: a type parameter in scope, a primitive type, or a capitalized name
-// that is not a constant (two or more characters with no lowercase letter,
-// such as MAX or LIMIT_2).
 function isTypeNameAhead(parser: Parser, name: string): bool {
   for (const typeName of Arrays.values(parser.typeNames)) {
     if (typeName == name) {
@@ -2613,11 +2524,10 @@ function isTypeNameAhead(parser: Parser, name: string): bool {
   if (isPrimitiveTypeName(name)) {
     return true
   }
+  // A capitalized name is a type unless it looks like a constant.
   return startsUpper(name) && !isConstantName(name)
 }
 
-// isConstantName reports whether name looks like a constant: it has two or
-// more characters and no lowercase letter.
 function isConstantName(name: string): bool {
   if (Str.length(name) < 2) {
     return false
@@ -2631,7 +2541,6 @@ function isConstantName(name: string): bool {
   return true
 }
 
-// isPrimitiveTypeName reports whether text is a type written in lowercase.
 function isPrimitiveTypeName(text: string): bool {
   return text == "int" ||
     text == "f64" ||
@@ -2641,20 +2550,16 @@ function isPrimitiveTypeName(text: string): bool {
     text == "void"
 }
 
-// parseMemberName reads the name after `.`. `from` and `of` are keywords, but
-// `UserId.from(x)` and `Hash.of(x)` need them as member names.
 function parseMemberName(mutable parser: Parser): Token {
+  // `from` and `of` are keywords, but `UserId.from(x)` and `Hash.of(x)` need them as member names.
   if (isAt(parser, "from") || isAt(parser, "of")) {
     return advance(mutable parser)
   }
   return expectIdent(mutable parser)
 }
 
-// isLiteralTypeArgsAhead reports whether the `<` at the current token starts the
-// type arguments of a literal: a balanced `<` ... `>` holding only names,
-// `.`, `,`, `#[`, `]` and nested `<>`, followed by `{`. Anything else is a
-// comparison, so `a < B` never changes meaning. `>>` closes two levels.
 function isLiteralTypeArgsAhead(parser: Parser): bool {
+  // Only names, `.`, `,`, `#[`, `]` and nested `<>` may sit between the brackets, followed by `{`. Anything else is a comparison, so `a < B` never changes meaning. `>>` closes two levels.
   let depth = 0
   let offset = 0
   const count = Arrays.length(parser.tokens)
@@ -2689,12 +2594,11 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
   return false
 }
 
-// parseLiteralTypeArgs parses the `<A, B>` before a literal's `{`. A trailing `>>`
-// is split by parseType, as in a type.
 function parseLiteralTypeArgs(mutable parser: Parser): Array<TypeExpr> {
   expect(mutable parser, "<")
   let arguments: Array<TypeExpr> = []
   while (isOk(parser)) {
+    // A trailing `>>` is split by parseType, as in a type.
     Arrays.push(mutable arguments, parseType(mutable parser))
     if (!accept(mutable parser, ",")) {
       break
@@ -2712,8 +2616,6 @@ function startsUpper(text: string): bool {
   return firstByte >= 65 && firstByte <= 90
 }
 
-// parseMapLit parses `Map { "a": 1, [key]: 2 }`. A key that is not a literal is
-// written in brackets.
 function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<TypeExpr>): Expr {
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
@@ -2721,6 +2623,7 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<Type
   let values: Array<Expr> = []
   while (isOk(parser) && !isAt(parser, "}")) {
     let key = createDummyExpr()
+    // A key that is not a literal is written in brackets.
     if (accept(mutable parser, "[")) {
       key = parseExpr(mutable parser)
       expect(mutable parser, "]")
@@ -2762,7 +2665,6 @@ function isLiteralKey(expression: Expr): bool {
   }
 }
 
-// getExpressionPos is Go's Expr.position().
 function getExpressionPos(expression: Expr): Pos {
   return match (expression) {
     Expr.IntLit(_, pos, _) => pos
@@ -2787,11 +2689,8 @@ function getExpressionPos(expression: Expr): Pos {
   }
 }
 
-// isStructLitAhead reports whether the `{` at the current token starts a
-// struct literal whose type comes from context: `{}`, `{ ...spread }` or
-// `{ name: value }`. Any other `{` in value position is a block expression.
-// A label (`name: for`, `name: while`) starts a block.
 function isStructLitAhead(parser: Parser): bool {
+  // A `{` in value position is a struct literal when it holds `{}`, `{ ...spread }` or `{ name: value }`; any other `{` is a block expression. A label (`name: for`, `name: while`) starts a block.
   let offset = 1
   while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
     offset = offset + 1
@@ -2822,29 +2721,24 @@ function isStructLitAhead(parser: Parser): bool {
   return !(third.kind == TokenKind.TokKeyword && (third.text == "for" || third.text == "while"))
 }
 
-// parseBlockExpr parses a block in value position.
 function parseBlockExpr(mutable parser: Parser): Expr {
   const pos = getPos(currentToken(parser))
   const block = parseBlock(mutable parser)
   return Expr.BlockExpr(newId(mutable parser), pos, block)
 }
 
-// createReturnBlock is a block holding `return value`, positioned at the value.
 function createReturnBlock(value: Expr): Block {
   const pos = getExpressionPos(value)
   return Block { pos: pos, statements: [Stmt.ReturnStmt(pos, Some(value))] }
 }
 
-// parseIfExpr parses `if (c) { ... } else { ... }` in value position. It
-// becomes a block expression holding one if statement whose branches each
-// return a block expression. The else branch is required; `else if` chains
-// are allowed.
 function parseIfExpr(mutable parser: Parser): Expr {
   const pos = getPos(expect(mutable parser, "if"))
   expect(mutable parser, "(")
   const condition = parseExpr(mutable parser)
   expect(mutable parser, ")")
   const thenBranch = parseBlockExpr(mutable parser)
+  // The else branch is required; `else if` chains are allowed.
   const savedIndex = parser.index
   skipNewlines(mutable parser)
   if (isOk(parser) && !accept(mutable parser, "else")) {
@@ -2857,6 +2751,7 @@ function parseIfExpr(mutable parser: Parser): Expr {
   } else {
     elseBranch = parseBlockExpr(mutable parser)
   }
+  // An if expression becomes a block expression holding one if statement whose branches each return a block expression.
   const ifStatement = Stmt.IfStmt(
     pos,
     condition,
@@ -2866,14 +2761,13 @@ function parseIfExpr(mutable parser: Parser): Expr {
   return Expr.BlockExpr(newId(mutable parser), pos, Block { pos: pos, statements: [ifStatement] })
 }
 
-// parseStructLit parses `{ ...spread, field: value }`. typeName is empty and pos
-// is the `{` without a type name; with one, pos is the name's.
 function parseStructLit(
   mutable parser: Parser,
   typeName: string,
   typeArguments: Array<TypeExpr>,
   pos: Pos,
 ): Expr {
+  // Without a type name, pos is the `{`; with one, it is the name's.
   expect(mutable parser, "{")
   skipNewlines(mutable parser)
   let fields: Array<FieldInit> = []
@@ -3045,10 +2939,8 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
   return createDummyExpr()
 }
 
-// findInterpolationEnd returns the index after the brace that closes a ${...}
-// part whose contents start at `start`, or -1 when there is none. Strings,
-// character literals and nested templates inside it are skipped whole.
 function findInterpolationEnd(raw: Array<char>, start: int): int {
+  // Strings, character literals and nested templates inside the part are skipped whole.
   const count = Arrays.length(raw)
   let depth = 1
   let index = start
@@ -3074,8 +2966,6 @@ function findInterpolationEnd(raw: Array<char>, start: int): int {
   return index
 }
 
-// findQuoteEnd returns the index after the quote that closes a string or
-// character literal whose contents start at `start`, or -1.
 function findQuoteEnd(raw: Array<char>, start: int, quote: char): int {
   const count = Arrays.length(raw)
   let index = start
@@ -3092,8 +2982,6 @@ function findQuoteEnd(raw: Array<char>, start: int, quote: char): int {
   return -1
 }
 
-// findTemplateEnd returns the index after the backtick that closes a template
-// whose contents start at `start`, or -1.
 function findTemplateEnd(raw: Array<char>, start: int): int {
   const count = Arrays.length(raw)
   let index = start
@@ -3115,10 +3003,8 @@ function findTemplateEnd(raw: Array<char>, start: int): int {
   return -1
 }
 
-// parseTemplate splits a template string into string pieces and the expressions
-// inside `${...}`. Each expression is lexed and parsed on its own; all its
-// tokens take the template's position (their ends are kept, as in Go).
 function parseTemplate(mutable parser: Parser, token: Token): Expr {
+  // Each expression is lexed and parsed on its own; all its tokens take the template's position (their ends are kept).
   const pos = getPos(token)
   const end = Pos { line: token.endLine, column: token.endColumn }
   const raw = Str.chars(token.text)
@@ -3380,7 +3266,6 @@ function parsePatternBody(mutable parser: Parser): Pattern {
   return Pattern.PatName(newId(mutable parser), pos, name)
 }
 
-// parsePatternList parses patterns up to close, which it consumes.
 function parsePatternList(mutable parser: Parser, close: string): Array<Pattern> {
   let list: Array<Pattern> = []
   skipNewlines(mutable parser)

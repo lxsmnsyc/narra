@@ -184,15 +184,13 @@ function isSamePos(left: Pos, right: Pos): bool {
 
 // ---- Collecting
 
-// noteNode records a finished node. A node noted again (the same expression
-// returned by each parse level) keeps its first range, unless the new range
-// is larger: a parenthesized expression grows to include its parentheses.
 export function noteNode(
   mutable collector: Collector,
   key: string,
   start: Pos,
   end: Pos,
 ) uses alloc {
+  // A node noted again (the same expression returned by each parse level) keeps its first range, unless the new range is larger: a parenthesized expression grows to include its parentheses.
   if (collector.recordIndex[key] is Some(index)) {
     const old = collector.records[index]
     const grows = !isBefore(old.start, start) && !isBefore(end, old.end)
@@ -218,15 +216,13 @@ struct RecordTree {
   rootChildren: Array<int>
 }
 
-// buildTree nests the records. They come in post order, so when a record
-// arrives, every pending record that starts at or after its start is inside
-// it.
 function buildTree(records: Array<NodeRecord>): RecordTree uses alloc {
   let childLists: Array<Array<int>> = []
   let stack: Array<int> = []
   let stackSize = 0
   for (const index of Ranges.upTo(Arrays.length(records))) {
     const record = records[index]
+    // Records come in post order, so when a record arrives, every pending record that starts at or after its start is inside it.
     // pop the records inside this one (last first)
     let reversed: Array<int> = []
     while (stackSize > 0 && !isBefore(records[stack[stackSize - 1]].start, record.start)) {
@@ -258,8 +254,8 @@ function isSpace(character: char): bool {
   return character == ' ' || character == '\t' || character == '\r'
 }
 
-// isBlankLine tells whether line number `line` (from 1) has only whitespace.
 function isBlankLine(lines: Array<string>, line: int): bool uses alloc {
+  // Line numbers start at 1.
   if (line < 1 || line > Arrays.length(lines)) {
     return false
   }
@@ -271,7 +267,6 @@ function isBlankLine(lines: Array<string>, line: int): bool uses alloc {
   return true
 }
 
-// hasBlankLineBetween tells whether a blank line lies between two lines.
 function hasBlankLineBetween(lines: Array<string>, fromLine: int, toLine: int): bool uses alloc {
   let line = fromLine + 1
   while (line < toLine) {
@@ -283,7 +278,6 @@ function hasBlankLineBetween(lines: Array<string>, fromLine: int, toLine: int): 
   return false
 }
 
-// endsLine tells whether only whitespace follows the comment on its last line.
 function endsLine(lines: Array<string>, comment: Comment): bool uses alloc {
   const isLine = match (comment.kind) {
     CommentKind.Line => true
@@ -305,9 +299,6 @@ function endsLine(lines: Array<string>, comment: Comment): bool uses alloc {
   return true
 }
 
-// isFollowedByCloser tells whether the next character after a block comment
-// on its line is a comma, a closing bracket or a semicolon, which end the
-// node the comment sits behind.
 function isFollowedByCloser(lines: Array<string>, comment: Comment): bool uses alloc {
   if (comment.end.line < 1 || comment.end.line > Arrays.length(lines)) {
     return false
@@ -316,6 +307,7 @@ function isFollowedByCloser(lines: Array<string>, comment: Comment): bool uses a
   for (const index of Ranges.between(comment.end.column - 1, Arrays.length(characters))) {
     const character = characters[index]
     if (!isSpace(character)) {
+      // A comma, closing bracket or semicolon ends the node the comment sits behind.
       return character == ',' ||
         character == ')' ||
         character == ']' ||
@@ -326,9 +318,6 @@ function isFollowedByCloser(lines: Array<string>, comment: Comment): bool uses a
   return false
 }
 
-// isOnlySpaceBetween tells whether only blanks lie between the end of a
-// comment and the start of the next comment on the same line, so code between
-// them does not count as a run of comments.
 function isOnlySpaceBetween(
   lines: Array<string>,
   comment: Comment,
@@ -338,6 +327,7 @@ function isOnlySpaceBetween(
     return true
   }
   const characters = Str.chars(lines[comment.end.line - 1])
+  // Code between two comments on a line does not count as a run of comments.
   for (const index of Ranges.between(comment.end.column - 1, next.pos.column - 1)) {
     if (!isSpace(characters[index])) {
       return false
@@ -346,19 +336,17 @@ function isOnlySpaceBetween(
   return true
 }
 
-// endsLineAfterComments tells whether only whitespace, further comments or a
-// closing character follow a comment on its last line, so a run of comments
-// after one node attaches the same way and keeps its order, and a comment
-// before a comma stays with the node on its left.
 function endsLineAfterComments(
   lines: Array<string>,
   comments: Array<Comment>,
   index: int,
 ): bool uses alloc {
   const comment = comments[index]
+  // A comment before a comma stays with the node on its left.
   if (endsLine(lines, comment) || isFollowedByCloser(lines, comment)) {
     return true
   }
+  // A run of comments after one node attaches the same way and keeps its order.
   if (index + 1 < Arrays.length(comments)) {
     const next = comments[index + 1]
     if (
@@ -372,12 +360,6 @@ function endsLineAfterComments(
   return false
 }
 
-// isBeforeCloser tells whether the next code after a comment, past blanks, line
-// ends and further comments, is a closing bracket. Such a comment sits at the
-// end of its brackets, so no node after the bracket may take it as a leading
-// comment: in `function f(a: int, // c` followed by `)` and `: int`, the result
-// type is outside the parameter list, and in `if (x // c` followed by `)` and
-// `{`, the block is outside the condition.
 function isBeforeCloser(
   lines: Array<string>,
   comments: Array<Comment>,
@@ -386,6 +368,7 @@ function isBeforeCloser(
   let line = comments[index].end.line
   let column = comments[index].end.column
   let next = index + 1
+  // Look past blanks, line ends and further comments to the next code. A closing bracket there means the comment sits at the end of its brackets, so no node after the bracket may take it as a leading comment: in `function f(a: int, // c` followed by `)` and `: int`, the result type is outside the parameter list, and in `if (x // c` followed by `)` and `{`, the block is outside the condition.
   while (line >= 1 && line <= Arrays.length(lines)) {
     const characters = Str.chars(lines[line - 1])
     if (column > Arrays.length(characters)) {
@@ -413,17 +396,13 @@ function isBeforeCloser(
   return false
 }
 
-// getInnerRanges gives, for each record, the range it covers without the
-// parentheses written around it or around the operand at its start or end.
-// Prettier's tree has no node for parentheses, so a comment between them and
-// the expression belongs to the parent: it leads or trails the expression
-// instead of sitting inside it.
 function getInnerRanges(
   records: Array<NodeRecord>,
   tree: RecordTree,
   insideParens: Map<string, NodeRecord>,
   convertedKeys: Map<string, bool>,
 ): Array<NodeRecord> uses alloc {
+  // Prettier's tree has no node for parentheses, so a comment between them and the expression belongs to the parent: it leads or trails the expression instead of sitting inside it.
   let inner: Array<NodeRecord> = []
   for (const index of Ranges.upTo(Arrays.length(records))) {
     const record = records[index]
@@ -468,15 +447,6 @@ function addAttached(
   attached[key] = list
 }
 
-// attachComments gives each comment to a node, as Prettier does. The
-// enclosing node is the deepest one that contains the comment; its
-// children give the preceding and following node.
-//   own line:            leading of the following node, else trailing of the
-//                        preceding one, else dangling on the enclosing node
-//   end of line:         trailing of the preceding node, else leading of the
-//                        following one, else dangling
-//   code follows on the line: leading of the following node, else trailing of
-//                        the preceding one, else dangling
 function attachComments(
   records: Array<NodeRecord>,
   tree: RecordTree,
@@ -521,6 +491,10 @@ function attachComments(
     if (following != "" && !isInPrecedingParens && isBeforeCloser(lines, comments, commentIndex)) {
       following = ""
     }
+    // Placement follows Prettier.
+    //   own line: leading of the following node, else trailing of the preceding one, else dangling on the enclosing node.
+    //   end of line: trailing of the preceding node, else leading of the following one, else dangling.
+    //   code follows on the line: leading of the following node, else trailing of the preceding one, else dangling.
     if (comment.ownLine) {
       if (following != "") {
         addAttached(mutable attached, following, commentIndex, Placement.Leading)
@@ -550,10 +524,8 @@ function attachComments(
   return attached
 }
 
-// isListKey tells whether a key names a node that sits in a list where the
-// printer keeps blank lines: statement, declaration, field, variant, arm,
-// import.
 function isListKey(key: string): bool {
+  // The printer keeps blank lines in lists of statements, declarations, fields, variants, arms and imports.
   const letter = Str.slice(key, 0, 1)
   return letter == "s" ||
     letter == "d" ||
@@ -563,8 +535,6 @@ function isListKey(key: string): bool {
     letter == "i"
 }
 
-// getTrailingEndLine is the last line of the previous sibling, with the
-// comments that trail it.
 function getTrailingEndLine(
   record: NodeRecord,
   attached: Map<string, Array<Attached>>,
@@ -584,12 +554,6 @@ function getTrailingEndLine(
   return endLine
 }
 
-// findBlankLines marks the nodes and comments with a blank line before
-// them. In each list of siblings, what comes before a node is its leading
-// comments and, before those, the previous sibling (with its trailing
-// comments). Nothing comes before the first item unless it has leading
-// comments, so the first item never has a blank line before it, nor its
-// first comment.
 function findBlankLines(
   records: Array<NodeRecord>,
   tree: RecordTree,
@@ -598,6 +562,7 @@ function findBlankLines(
   lines: Array<string>,
 ): Map<string, bool> uses alloc {
   let blank: Map<string, bool> = Map {}
+  // In each list of siblings, what comes before a node is its leading comments and, before those, the previous sibling (with its trailing comments). Nothing comes before the first item unless it has leading comments, so the first item never has a blank line before it, nor its first comment.
   markBlankLines(mutable blank, records, tree.rootChildren, attached, comments, lines)
   for (const children of Arrays.values(tree.childLists)) {
     markBlankLines(mutable blank, records, children, attached, comments, lines)
@@ -638,8 +603,6 @@ function markBlankLines(
   }
 }
 
-// buildTrivia turns what the parser collected, and the comments the lexer
-// kept, into the side tables.
 export function buildTrivia(
   collector: Collector,
   comments: Array<Comment>,
@@ -668,7 +631,6 @@ export function buildTrivia(
   }
 }
 
-// checkAttached fails when a comment is not attached exactly once.
 export function checkAttached(trivia: Trivia): Option<string> uses alloc {
   let counts: Array<int> = Arrays.filled(0, Arrays.length(trivia.comments))
   for (const key of Arrays.values(Maps.keys(trivia.attached))) {

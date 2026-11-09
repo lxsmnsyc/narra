@@ -13,7 +13,15 @@ import * as Str from "std/string"
 import * as Char from "std/char"
 import { Expr, Stmt, Block, Arg, Pos, FieldInit } from "narrac/ast"
 import { Type, isInteger, isSizedInteger } from "narrac/types"
-import { Checker, Ref, ProgramFunc, getExpressionId, findBody, findBodySlot } from "narrac/check"
+import {
+  Checker,
+  Ref,
+  ProgramFunc,
+  getExpressionId,
+  findBody,
+  findBodySlot,
+  orderArguments,
+} from "narrac/check"
 import { cType, typeId, functionName, constGetterName } from "narrac/cnames"
 import {
   Emitter,
@@ -514,7 +522,14 @@ function emitCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  holdEarlierArguments(walker, mutable emitter, arguments)
+  // Named arguments in another order than the parameters are evaluated as
+  // written, then passed in parameter order (D87).
+  if (emitter.checker.argumentOrders[nodeId] is Some(order)) {
+    holdReorderedArguments(walker, mutable emitter, arguments, order)
+  } else {
+    holdEarlierArguments(walker, mutable emitter, arguments)
+  }
+  const ordered = orderArguments(emitter.checker, nodeId, arguments)
   const ref = refOf(emitter, nodeId)
   return match (ref) {
     Ref.Distinct(_) => EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
@@ -539,14 +554,14 @@ function emitCall<W: EmitWalker>(
       walker,
       mutable emitter,
       ProgramFunc.ImplFunc(block, index),
-      arguments,
+      ordered,
     )
     Ref.Function(funcIndex) => emitPlainOrInstanceCall(
       walker,
       mutable emitter,
       nodeId,
       funcIndex,
-      arguments,
+      ordered,
     )
     _ => unsupportedCode(mutable emitter, "call")
   }
@@ -651,6 +666,45 @@ function holdEarlierArguments<W: EmitWalker>(
   }
   for (const index of Ranges.between(0, last)) {
     if (!arguments[index].isMutable) {
+      holdArgument(walker, mutable emitter, arguments[index].value)
+    }
+  }
+}
+
+// holdReorderedArguments keeps the written order of named arguments that are
+// passed in another order: an argument is evaluated now into a temporary
+// when an argument written after it is passed before it, or when a later
+// argument may assign a variable. order[i] is the written index of the
+// argument for parameter i.
+function holdReorderedArguments<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+  order: Array<int>,
+) uses alloc {
+  const count = Arrays.length(arguments)
+  // parameterIndexes[i] is the parameter that written argument i is passed to.
+  let parameterIndexes = Arrays.filled(0, count)
+  for (const parameter of Ranges.between(0, Arrays.length(order))) {
+    parameterIndexes[order[parameter]] = parameter
+  }
+  let last = -1
+  for (const index of Ranges.between(0, count)) {
+    if (!arguments[index].isMutable && mayWrite(emitter, arguments[index].value)) {
+      last = index
+    }
+  }
+  for (const index of Ranges.between(0, count)) {
+    if (arguments[index].isMutable) {
+      continue
+    }
+    let passedLater = index < last
+    for (const later of Ranges.between(index + 1, count)) {
+      if (parameterIndexes[later] < parameterIndexes[index]) {
+        passedLater = true
+      }
+    }
+    if (passedLater) {
       holdArgument(walker, mutable emitter, arguments[index].value)
     }
   }

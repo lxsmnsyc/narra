@@ -228,19 +228,9 @@ function checkCallEndingNarrowing<W: Walker>(
   if (Arrays.length(typeArguments) > 0) {
     checker.callTypeArguments[nodeId] = typeArguments
   }
-  // Named arguments parse, but nothing resolves them yet (named-args-check).
-  for (const argument of Arrays.values(arguments)) {
-    if (argument.name is Some(argumentName)) {
-      reportError(
-        mutable checker,
-        argument.pos,
-        "E0213",
-        `named argument \`${argumentName}\` is not supported yet`,
-      )
-    }
-  }
   const errorsBefore = Arrays.length(checker.errors)
   const checked = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
+  checkNamedArgumentsTaken(mutable checker, nodeId, callee, arguments)
   if (Arrays.length(typeArguments) > 0) {
     // Only a generic function or a trait function takes the type arguments.
     // A callee that failed to resolve has its own error already.
@@ -268,6 +258,39 @@ function checkCallEndingNarrowing<W: Walker>(
     }
   }
   return found
+}
+
+// checkNamedArgumentsTaken rejects named arguments to a callee that has no
+// parameter names: a function value, a std builtin, a constructor or a
+// distinct type's function (D87). A declared function matches them itself.
+function checkNamedArgumentsTaken(
+  mutable checker: Checker,
+  nodeId: int,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
+  const ref = getRef(checker, nodeId)
+  const hasNoNames = match (ref) {
+    Ref.Value => true
+    Ref.Builtin(_) => true
+    Ref.Constructor(_, _) => true
+    Ref.Distinct(_) => true
+    _ => false
+  }
+  if (!hasNoNames) {
+    return
+  }
+  for (const argument of Arrays.values(arguments)) {
+    if (argument.name is Some(_)) {
+      reportError(
+        mutable checker,
+        argument.pos,
+        "E0332",
+        `${describeCallee(callee)} has no parameter names; pass its arguments by position`,
+      )
+      return
+    }
+  }
 }
 
 // bindCallResult gives a call its own result type when the callee's result

@@ -484,6 +484,12 @@ export struct Checker {
   // call checks that use them empty the entry, so a non-empty entry after the
   // check means the callee takes no type arguments.
   callTypeArguments: Map<int, Array<TypeExpr>>
+  // The order of the named arguments of each call whose arguments are not
+  // written in parameter order, by call node id (D87): entry i is the
+  // written index of the argument passed to parameter i. The AST keeps the
+  // written order, which is the evaluation order; a pass that pairs an
+  // argument with its parameter reads the call through orderArguments.
+  argumentOrders: Map<int, Array<int>>
   // The effects of each call result with bound generator effects (a
   // TGenerator origin of -2 - index), filled by the effect pass.
   boundGenerators: Array<Array<string>> = []
@@ -559,6 +565,7 @@ export function newChecker(ids: int): Checker uses alloc {
     bodyKeys: Map {},
     generatorEffects: Map {},
     callTypeArguments: Map {},
+    argumentOrders: Map {},
   }
 }
 
@@ -1424,6 +1431,33 @@ export function popScope(mutable checker: Checker) {
 export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
   reportError(mutable checker, pos, "E0213", `unsupported: ${what}`)
   return Type.TVoid
+}
+
+// hasNamedArgument reports whether a call names any of its arguments.
+export function hasNamedArgument(arguments: Array<Arg>): bool {
+  for (const argument of Arrays.values(arguments)) {
+    if (argument.name is Some(_)) {
+      return true
+    }
+  }
+  return false
+}
+
+// orderArguments is the arguments of a call in the callee's parameter order.
+// A call without a recorded order passes them as written.
+export function orderArguments(
+  checker: Checker,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Array<Arg> uses alloc {
+  if (checker.argumentOrders[nodeId] is Some(order)) {
+    let ordered: Array<Arg> = []
+    for (const written of Arrays.values(order)) {
+      Arrays.push(mutable ordered, arguments[written])
+    }
+    return ordered
+  }
+  return arguments
 }
 
 export function getExpressionId(expression: Expr): int {

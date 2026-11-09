@@ -100,7 +100,7 @@ Decision: JSON diagnostics with exact fix edits, stable error codes, and a query
 
 ## D12. One call form and built-in operators
 
-Decision: a call passes every argument. There is no currying, partial application, pipe, method call, varargs, optional parameters or labeled arguments. Operators are built in, and there are no operators for joining strings, length or powers (section 2).
+Decision: a call passes every argument. There is no currying, partial application, pipe, method call, varargs or optional parameters. Labeled arguments were ruled out too; D87 later added named arguments, which the checker puts back in parameter order. Operators are built in, and there are no operators for joining strings, length or powers (section 2).
 
 - **Reason.** Each call has one reading and one form, `f(x, y)`. Code has one call form to read, search and generate.
 - **Reason.** A function compiles to one C function with a fixed parameter list. No closures are allocated for partly applied calls.
@@ -777,7 +777,7 @@ Decision: a function type is `(params) => result uses effects`, and the effects 
 
 ## D87. Named arguments, in any order, with every argument passed
 
-Decision: a call can name its arguments, `move(x: 1, y: 2)`, spelled like struct literal fields. Positional arguments come first, then named ones in any order. A positional argument after a named one is an error, and each parameter is passed exactly once, by position or by name. `mutable` follows the colon: `buf: mutable xs`. Names work only when the callee is a declaration with parameter names; a call through a function value or a std builtin registered without names takes positions only, with an error that says so. Arguments are evaluated in the order they are written. Amends D12, which ruled out labeled arguments; the rest of D12 stays, and parameter defaults are a separate decision. Not built yet. Debate: `roadmaps/selfhost/debate/named-arguments/debate.md`.
+Decision: a call can name its arguments, `move(x: 1, y: 2)`, spelled like struct literal fields. Positional arguments come first, then named ones in any order. A positional argument after a named one is an error, and each parameter is passed exactly once, by position or by name. `mutable` follows the colon: `buf: mutable xs`. Names work only when the callee is a declaration with parameter names; a call through a function value or a std builtin registered without names takes positions only, with an error that says so. Arguments are evaluated in the order they are written. Amends D12, which ruled out labeled arguments; the rest of D12 stays, and parameter defaults are a separate decision. Debate: `roadmaps/selfhost/debate/named-arguments/debate.md`.
 
 - **Reason.** Calls with many parameters or bare `true`/`false` arguments do not show what each argument means: 363 of 1477 functions in selfhost/src and std take 4 or more parameters, and about 30 callees take a trailing bool literal.
 - **Reason.** The checker puts named arguments back in declaration order, so each function still compiles to one C function with a fixed parameter list (D12).

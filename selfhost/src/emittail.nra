@@ -6,7 +6,7 @@
 // node id in Emitter.tailCalls, so a call inside a closure never matches.
 import { Stmt, Block, Expr, Arg, FuncDecl, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Ref, ProgramFunc, Checker, getExpressionId } from "narrac/check"
+import { Ref, ProgramFunc, Checker, getExpressionId, orderArguments } from "narrac/check"
 import { functionName } from "narrac/cnames"
 import {
   Emitter,
@@ -83,9 +83,10 @@ function passesParameter(emitter: Emitter, argument: Expr, index: int): bool {
 // the call may live on the stack of the iteration that ends at the jump. A
 // mutable parameter must be passed on as it is.
 function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): bool uses alloc {
-  if (expression is Expr.CallExpr(nodeId, _, _, _, arguments)) {
+  if (expression is Expr.CallExpr(nodeId, _, _, _, written)) {
     if (callTarget(emitter, nodeId) is Some(target)) {
       if (functionName(emitter.checker, target) == emitter.owner) {
+        const arguments = orderArguments(emitter.checker, nodeId, written)
         const parameters = functionDeclaration(emitter.checker, program).parameters
         const types = parameterTypes(emitter.checker, program)
         if (Arrays.length(arguments) != Arrays.length(parameters)) {
@@ -218,6 +219,27 @@ function tailCallArguments(expression: Expr): Array<Arg> {
   return []
 }
 
+// findParameterIndexes is the parameter index of each written argument of a
+// call (D87): its own index unless named arguments changed the order.
+function findParameterIndexes(
+  emitter: Emitter,
+  expression: Expr,
+  count: int,
+): Array<int> uses alloc {
+  let indexes: Array<int> = []
+  for (const index of Ranges.between(0, count)) {
+    Arrays.push(mutable indexes, index)
+  }
+  if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
+    if (emitter.checker.argumentOrders[nodeId] is Some(order)) {
+      for (const parameter of Ranges.between(0, Arrays.length(order))) {
+        indexes[order[parameter]] = parameter
+      }
+    }
+  }
+  return indexes
+}
+
 // matchHasTailCall is true when an arm of the returned match is a tail call.
 export function matchHasTailCall(emitter: Emitter, arms: Array<MatchArm>): bool {
   for (const arm of Arrays.values(arms)) {
@@ -268,17 +290,18 @@ export function emitTailJump<W: EmitWalker>(
   if (emitter.tailProgram is Some(program)) {
     const parameters = functionDeclaration(emitter.checker, program).parameters
     const types = parameterTypes(emitter.checker, program)
-    let values: Array<string> = []
+    // Evaluate in written order; values is in parameter order.
+    const parameterIndexes = findParameterIndexes(emitter, call, Arrays.length(arguments))
+    let values = Arrays.filled("", Arrays.length(arguments))
     for (const index of Ranges.between(0, Arrays.length(arguments))) {
-      if (parameters[index].isMutable) {
-        Arrays.push(mutable values, "")
-      } else {
+      const parameter = parameterIndexes[index]
+      if (!parameters[parameter].isMutable) {
         const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
-        let value = consume(mutable emitter, code.text, code.owned, types[index])
-        if (!needsRc(emitter, types[index])) {
-          value = temp(mutable emitter, types[index], value)
+        let value = consume(mutable emitter, code.text, code.owned, types[parameter])
+        if (!needsRc(emitter, types[parameter])) {
+          value = temp(mutable emitter, types[parameter], value)
         }
-        Arrays.push(mutable values, value)
+        values[parameter] = value
       }
     }
     unwindAll(mutable emitter)

@@ -1,7 +1,7 @@
 ---
 id: named-args-query
 title: narra query reads named arguments
-status: active
+status: done
 priority:
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 77766
 owns:
   - testdata/query/named_args*
   - roadmaps/selfhost/nodes/named-args-query/**
@@ -45,3 +45,5 @@ depends_on:
 
 - [ ] Query goldens for refs of a parameter with named call sites, and callers of a function called with named arguments.
 - [ ] Fast check passes.
+
+Landed on feat/batch-1. Query form `refs FUNCTION.PARAMETER` lists labels only (orchestrator gate choice).

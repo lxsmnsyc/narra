@@ -1,7 +1,7 @@
 ---
 id: identity-cycles
 title: Reference cycles through identity types
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-1

@@ -1,7 +1,7 @@
 ---
 id: wrapping-arithmetic
 title: "Integer overflow wraps in every build"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-3

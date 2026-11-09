@@ -19,7 +19,16 @@
 import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { LexError, Token, TokenKind, formatLexError, lex, lexWithComments, hex } from "narrac/lexer"
+import {
+  LexError,
+  Token,
+  TokenKind,
+  decodeEscape,
+  formatLexError,
+  lex,
+  lexWithComments,
+  hex,
+} from "narrac/lexer"
 import {
   Trivia,
   Collector,
@@ -2720,17 +2729,16 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
   let index = 0
   while (isOk(parser) && index < count) {
     const character = raw[index]
-    if (character == '\\' && index + 1 < count) {
-      const escaped = raw[index + 1]
-      if (escaped == 'n') {
-        Str.appendChar(mutable text, '\n')
-      } else if (escaped == 't') {
-        Str.appendChar(mutable text, '\t')
-      } else {
-        Str.appendChar(mutable text, escaped)
+    if (character == '\\') {
+      // Decode the escape as a string literal would.
+      const escaped = decodeEscape(raw, index, token.line, token.column)
+      if (escaped is Err(error)) {
+        failAt(mutable parser, pos, error.code, error.message)
+        return createDummyExpr()
       }
+      Str.append(mutable text, escaped.value.text)
       pending = pending + 1
-      index = index + 2
+      index = escaped.value.end
       continue
     }
     if (character == '$' && index + 1 < count && raw[index + 1] == '{') {

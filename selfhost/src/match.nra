@@ -31,6 +31,7 @@ import {
   popScope,
   findBodySlot,
   getExpressionPos,
+  getLocal,
 } from "narrac/check"
 import { LocalInfo, BindingKind, setBinding } from "narrac/check"
 import { buildQualifyFix, insertAt } from "narrac/fixes"
@@ -44,6 +45,7 @@ import {
   bindPatternLocals,
   isIrrefutable,
   findMissingCases,
+  isUseful,
   CaseBudget,
 } from "narrac/patterns"
 import * as Int from "std/int"
@@ -166,6 +168,137 @@ function resolveNode<W: Walker>(
       literal,
       valueType,
     )
+    Pattern.PatOr(_, _, alternatives) => resolveAlternatives(
+      mutable checker,
+      walker,
+      alternatives,
+      valueType,
+      mutable seen,
+    )
+  }
+}
+
+function resolveAlternatives<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  alternatives: Array<Pattern>,
+  valueType: Type,
+  mutable seen: Map<string, bool>,
+) uses alloc {
+  // The first alternative declares the locals. Each later one resolves on its own, then its names are checked against the first and its nodes point at the first one's locals.
+  resolveNode(mutable checker, walker, alternatives[0], valueType, mutable seen)
+  let firstLocals: Array<int> = []
+  collectPatternLocals(checker, alternatives[0], mutable firstLocals)
+  for (const index of Ranges.between(1, Arrays.length(alternatives))) {
+    const alternative = alternatives[index]
+    const errorCount = Arrays.length(checker.errors)
+    let alternativeSeen: Map<string, bool> = Map {}
+    resolveNode(mutable checker, walker, alternative, valueType, mutable alternativeSeen)
+    if (Arrays.length(checker.errors) > errorCount) {
+      continue
+    }
+    let locals: Array<int> = []
+    collectPatternLocals(checker, alternative, mutable locals)
+    if (checkAlternativeLocals(mutable checker, alternative, firstLocals, locals)) {
+      let nodeIds: Array<int> = []
+      collectNameIds(checker, alternative, mutable nodeIds)
+      shareLocals(mutable checker, firstLocals, nodeIds)
+    }
+    // The locals this alternative created are never read.
+    for (const local of Arrays.values(locals)) {
+      checker.bodies[checker.body].locals[local].used = true
+    }
+  }
+}
+
+function findLocalByName(checker: Checker, locals: Array<int>, name: string): int {
+  for (const local of Arrays.values(locals)) {
+    if (getLocal(checker, local).name == name) {
+      return local
+    }
+  }
+  return -1
+}
+
+function checkAlternativeLocals(
+  mutable checker: Checker,
+  alternative: Pattern,
+  firstLocals: Array<int>,
+  locals: Array<int>,
+): bool uses alloc {
+  const pos = getPatternPos(alternative)
+  for (const local of Arrays.values(locals)) {
+    const name = getLocal(checker, local).name
+    const first = findLocalByName(checker, firstLocals, name)
+    if (first < 0) {
+      const message = `${quoteGo(name)} is bound in one alternative but not in the other; every alternative binds the same names`
+      reportError(mutable checker, pos, "E0967", message)
+      return false
+    }
+    const firstType = getLocal(checker, first).localType
+    const type = getLocal(checker, local).localType
+    if (firstType != type) {
+      const message = `${quoteGo(name)} has type ${typeString(checker, type)} here and ${typeString(checker, firstType)} in the first alternative; every alternative binds the same types`
+      reportError(mutable checker, pos, "E0968", message)
+      return false
+    }
+  }
+  for (const first of Arrays.values(firstLocals)) {
+    const name = getLocal(checker, first).name
+    if (findLocalByName(checker, locals, name) < 0) {
+      const message = `${quoteGo(name)} is bound in one alternative but not in the other; every alternative binds the same names`
+      reportError(mutable checker, pos, "E0967", message)
+      return false
+    }
+  }
+  return true
+}
+
+function collectNameIds(
+  checker: Checker,
+  pattern: Pattern,
+  mutable nodeIds: Array<int>,
+) uses alloc {
+  match (pattern) {
+    Pattern.PatName(nodeId, _, _) => {
+      const body = checker.bodies[checker.body]
+      const slot = findBodySlot(body, nodeId)
+      if (slot >= 0 && body.declared[slot] >= 0) {
+        Arrays.push(mutable nodeIds, nodeId)
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectNameIds(checker, argument, mutable nodeIds)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        collectNameIds(checker, field.pattern, mutable nodeIds)
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectNameIds(checker, argument, mutable nodeIds)
+      }
+    }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        collectNameIds(checker, alternative, mutable nodeIds)
+      }
+    }
+    _ => {}
+  }
+}
+
+function shareLocals(mutable checker: Checker, firstLocals: Array<int>, nodeIds: Array<int>) {
+  for (const nodeId of Arrays.values(nodeIds)) {
+    const slot = findBodySlot(checker.bodies[checker.body], nodeId)
+    const name = getLocal(checker, checker.bodies[checker.body].declared[slot]).name
+    const first = findLocalByName(checker, firstLocals, name)
+    if (first >= 0) {
+      checker.bodies[checker.body].declared[slot] = first
+    }
   }
 }
 
@@ -445,6 +578,11 @@ function bindRest(
         bindRest(mutable checker, argument, mutable seen)
       }
     }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        bindRest(mutable checker, alternative, mutable seen)
+      }
+    }
     _ => {}
   }
 }
@@ -517,6 +655,35 @@ export function checkPatternExpression<W: Walker>(
   }
 }
 
+function findAlternatives(pattern: Pattern): Option<Pos> {
+  if (pattern is Pattern.PatOr(_, pos, _)) {
+    return Some(pos)
+  }
+  if (pattern is Pattern.PatCtor(_, _, _, _, arguments, _)) {
+    return findAlternativesIn(arguments)
+  }
+  if (pattern is Pattern.PatTuple(_, _, arguments)) {
+    return findAlternativesIn(arguments)
+  }
+  if (pattern is Pattern.PatStruct(_, _, fields)) {
+    for (const field of Arrays.values(fields)) {
+      if (findAlternatives(field.pattern) is Some(pos)) {
+        return Some(pos)
+      }
+    }
+  }
+  return None
+}
+
+function findAlternativesIn(patterns: Array<Pattern>): Option<Pos> {
+  for (const pattern of Arrays.values(patterns)) {
+    if (findAlternatives(pattern) is Some(pos)) {
+      return Some(pos)
+    }
+  }
+  return None
+}
+
 export function checkIs<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -527,6 +694,15 @@ export function checkIs<W: Walker>(
 ): Type uses alloc {
   // `binds` is set when the test is the whole condition of an if, the only place it may bind names.
   const subjectType = checkExpression(mutable checker, walker, subject, None)
+  if (findAlternatives(pattern) is Some(alternativesPos)) {
+    reportError(
+      mutable checker,
+      alternativesPos,
+      "E0974",
+      "an `is` test takes one pattern, not alternatives; use `match` to list alternatives",
+    )
+    return Type.TBool
+  }
   resolvePattern(mutable checker, walker, pattern, subjectType)
   let locals: Array<int> = []
   collectPatternLocals(checker, pattern, mutable locals)
@@ -539,6 +715,32 @@ export function checkIs<W: Walker>(
     )
   }
   return Type.TBool
+}
+
+function reportCoveredAlternatives(
+  mutable checker: Checker,
+  rows: Array<Array<Pattern>>,
+  pattern: Pattern,
+  subjectType: Type,
+) uses alloc {
+  // Each alternative is tested against the earlier arms and the alternatives before it.
+  if (pattern is Pattern.PatOr(_, _, alternatives)) {
+    let covered: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(rows)) {
+      Arrays.push(mutable covered, row)
+    }
+    for (const alternative of Arrays.values(alternatives)) {
+      if (!isUseful(checker, covered, [alternative], [subjectType])) {
+        reportError(
+          mutable checker,
+          getPatternPos(alternative),
+          "E0974",
+          "this alternative is unreachable: the arms and alternatives before it already match every value it matches",
+        )
+      }
+      Arrays.push(mutable covered, [alternative])
+    }
+  }
 }
 
 export function checkMatch<W: Walker>(
@@ -578,6 +780,7 @@ export function checkMatch<W: Walker>(
       const guardType = checkExpression(mutable checker, walker, guard, Some(Type.TBool))
       expectType(mutable checker, getExpressionPos(guard), Some(Type.TBool), guardType)
     } else {
+      reportCoveredAlternatives(mutable checker, rows, arm.pattern, subjectType)
       Arrays.push(mutable rows, [arm.pattern])
     }
     if (arm.block is Some(block)) {

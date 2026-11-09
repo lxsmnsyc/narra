@@ -32,6 +32,7 @@ export function getPatternId(pattern: Pattern): int {
     Pattern.PatStruct(nodeId, _, _) => nodeId
     Pattern.PatTuple(nodeId, _, _) => nodeId
     Pattern.PatLit(nodeId, _, _) => nodeId
+    Pattern.PatOr(nodeId, _, _) => nodeId
   }
 }
 
@@ -43,6 +44,7 @@ export function getPatternPos(pattern: Pattern): Pos {
     Pattern.PatStruct(_, pos, _) => pos
     Pattern.PatTuple(_, pos, _) => pos
     Pattern.PatLit(_, pos, _) => pos
+    Pattern.PatOr(_, pos, _) => pos
   }
 }
 
@@ -74,6 +76,12 @@ export function collectPatternLocals(
         collectPatternLocals(checker, argument, mutable locals)
       }
     }
+    // Every alternative binds the same locals; the first one stands for all.
+    Pattern.PatOr(_, _, alternatives) => collectPatternLocals(
+      checker,
+      alternatives[0],
+      mutable locals,
+    )
     _ => {}
   }
 }
@@ -148,7 +156,17 @@ export function isIrrefutable(checker: Checker, pattern: Pattern): bool {
     Pattern.PatStruct(_, _, fields) => structFieldsIrrefutable(checker, fields)
     Pattern.PatTuple(_, _, arguments) => allIrrefutable(checker, arguments)
     Pattern.PatLit(_, _, _) => false
+    Pattern.PatOr(_, _, alternatives) => isAnyIrrefutable(checker, alternatives)
   }
+}
+
+function isAnyIrrefutable(checker: Checker, patterns: Array<Pattern>): bool {
+  for (const pattern of Arrays.values(patterns)) {
+    if (isIrrefutable(checker, pattern)) {
+      return true
+    }
+  }
+  return false
 }
 
 function isSingleVariantOrBinding(checker: Checker, nodeId: int): bool {
@@ -313,6 +331,30 @@ function specialize(
   return Some(createWildcards(count))
 }
 
+function hasAlternativeHead(rows: Array<Array<Pattern>>): bool {
+  for (const row of Arrays.values(rows)) {
+    if (row[0] is Pattern.PatOr(_, _, _)) {
+      return true
+    }
+  }
+  return false
+}
+
+function expandAlternativeHeads(rows: Array<Array<Pattern>>): Array<Array<Pattern>> uses alloc {
+  let expanded: Array<Array<Pattern>> = []
+  for (const row of Arrays.values(rows)) {
+    if (row[0] is Pattern.PatOr(_, _, alternatives)) {
+      const rest = sliceItems(row, 1, Arrays.length(row))
+      for (const alternative of Arrays.values(alternatives)) {
+        Arrays.push(mutable expanded, joinItems([alternative], rest))
+      }
+    } else {
+      Arrays.push(mutable expanded, row)
+    }
+  }
+  return expanded
+}
+
 function sliceItems<T>(items: Array<T>, start: int, end: int): Array<T> uses alloc {
   let out: Array<T> = []
   for (const index of Ranges.between(start, end)) {
@@ -353,6 +395,9 @@ export function findMissingCases(
   }
   if (Arrays.length(types) == 0) {
     return []
+  }
+  if (hasAlternativeHead(rows)) {
+    return findMissingCases(checker, expandAlternativeHeads(rows), types, mutable budget)
   }
   const type = types[0]
   const count = countConstructors(checker, type)
@@ -413,6 +458,110 @@ export function findMissingCases(
     }
   }
   return out
+}
+
+// ---- unreachable alternatives ----
+
+function findPatternConstructor(checker: Checker, pattern: Pattern): int {
+  if (isWild(checker, pattern)) {
+    return -1
+  }
+  if (pattern is Pattern.PatName(nodeId, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Constructor(_, variantIndex)) {
+      return variantIndex
+    }
+    return -1
+  }
+  if (pattern is Pattern.PatCtor(nodeId, _, _, _, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Constructor(_, variantIndex)) {
+      return variantIndex
+    }
+    return -1
+  }
+  if (pattern is Pattern.PatStruct(_, _, _)) {
+    return 0
+  }
+  if (pattern is Pattern.PatTuple(_, _, _)) {
+    return 0
+  }
+  if (pattern is Pattern.PatLit(_, _, literal)) {
+    if (literal is Expr.BoolLit(_, _, value)) {
+      if (value) {
+        return 1
+      }
+      return 0
+    }
+  }
+  return -1
+}
+
+export function isUseful(
+  checker: Checker,
+  rows: Array<Array<Pattern>>,
+  vector: Array<Pattern>,
+  types: Array<Type>,
+): bool uses alloc {
+  if (Arrays.length(types) == 0) {
+    return Arrays.length(rows) == 0
+  }
+  if (vector[0] is Pattern.PatOr(_, _, alternatives)) {
+    const rest = sliceItems(vector, 1, Arrays.length(vector))
+    for (const alternative of Arrays.values(alternatives)) {
+      if (isUseful(checker, rows, joinItems([alternative], rest), types)) {
+        return true
+      }
+    }
+    return false
+  }
+  const expandedRows = expandAlternativeHeads(rows)
+  const type = types[0]
+  const count = countConstructors(checker, type)
+  const restVector = sliceItems(vector, 1, Arrays.length(vector))
+  const restTypes = sliceItems(types, 1, Arrays.length(types))
+  const selected = findPatternConstructor(checker, vector[0])
+  if (count < 0 || (selected < 0 && !isWild(checker, vector[0]))) {
+    // Only rows that start with a wildcard are known to cover this column.
+    let defaults: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(expandedRows)) {
+      if (isWild(checker, row[0])) {
+        Arrays.push(mutable defaults, sliceItems(row, 1, Arrays.length(row)))
+      }
+    }
+    return isUseful(checker, defaults, restVector, restTypes)
+  }
+  for (const constructorIndex of Ranges.between(0, count)) {
+    if (selected >= 0 && selected != constructorIndex) {
+      continue
+    }
+    const argumentTypes = listConstructorTypes(checker, type, constructorIndex)
+    const argumentCount = Arrays.length(argumentTypes)
+    let specializedRows: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(expandedRows)) {
+      if (specialize(checker, row[0], type, constructorIndex, argumentCount) is Some(patterns)) {
+        Arrays.push(
+          mutable specializedRows,
+          joinItems(patterns, sliceItems(row, 1, Arrays.length(row))),
+        )
+      }
+    }
+    let head = createWildcards(argumentCount)
+    if (selected >= 0) {
+      if (specialize(checker, vector[0], type, constructorIndex, argumentCount) is Some(patterns)) {
+        head = patterns
+      }
+    }
+    if (
+      isUseful(
+        checker,
+        specializedRows,
+        joinItems(head, restVector),
+        joinItems(argumentTypes, restTypes),
+      )
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 function describeConstructor(

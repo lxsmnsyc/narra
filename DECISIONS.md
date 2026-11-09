@@ -1037,4 +1037,4 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - `narrac fmt` keeps short lists on one line and puts one alternative per line, each starting with `|`, when the arm does not fit.
 - Contract patterns (D95) use the same alternatives.
 
-Not built yet.
+Built, except contract patterns (D95), which do not exist yet. E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.

@@ -3199,6 +3199,37 @@ function parseMatch(mutable parser: Parser): Expr {
 
 function parsePattern(mutable parser: Parser): Pattern {
   const startIndex = parser.index
+  const pos = getPos(currentToken(parser))
+  const first = parseSinglePattern(mutable parser)
+  if (!isOk(parser) || !isAlternativeAhead(parser)) {
+    return first
+  }
+  let alternatives: Array<Pattern> = [first]
+  while (isOk(parser) && isAlternativeAhead(parser)) {
+    // A bar may start the next line, for a long list of alternatives.
+    skipNewlines(mutable parser)
+    advance(mutable parser)
+    skipNewlines(mutable parser)
+    Arrays.push(mutable alternatives, parseSinglePattern(mutable parser))
+  }
+  const pattern = Pattern.PatOr(newId(mutable parser), pos, alternatives)
+  if (parser.collector.enabled && isOk(parser)) {
+    noteKey(mutable parser, getIdKey(getPatternId(pattern)), startIndex)
+  }
+  return pattern
+}
+
+function isAlternativeAhead(parser: Parser): bool {
+  let offset = 0
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset = offset + 1
+  }
+  const token = peekToken(parser, offset)
+  return token.kind == TokenKind.TokPunct && token.text == "|"
+}
+
+function parseSinglePattern(mutable parser: Parser): Pattern {
+  const startIndex = parser.index
   const pattern = parsePatternBody(mutable parser)
   if (parser.collector.enabled && isOk(parser)) {
     noteKey(mutable parser, getIdKey(getPatternId(pattern)), startIndex)

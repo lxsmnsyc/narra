@@ -401,6 +401,23 @@ static lstr* narra_show_char(uint32_t c) {
 
 static lstr* narra_show_string(lstr* v) { return narra_quote(v->data, v->len, '"'); }
 
+// bytes as `bytes[68 69 0a]`: two lowercase hex digits per byte.
+static lstr* narra_show_bytes(lstr* v) {
+  static const char digits[] = "0123456789abcdef";
+  int64_t n = 7 + (v->len > 0 ? v->len * 3 - 1 : 0);
+  lstr* s = lstr_new(n);
+  memcpy(s->data, "bytes[", 6);
+  int64_t j = 6;
+  for (int64_t i = 0; i < v->len; i++) {
+    unsigned char c = (unsigned char)v->data[i];
+    if (i > 0) s->data[j++] = ' ';
+    s->data[j++] = digits[c >> 4];
+    s->data[j++] = digits[c & 15];
+  }
+  s->data[j] = ']';
+  return s;
+}
+
 static void narra_print(lstr* s) {
   fwrite(s->data, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);

@@ -72,6 +72,15 @@ export const FS_FUNCS: Array<StdFunc> = [
     check: "fixed",
   },
   StdFunc {
+    name: "Fs.readBytes",
+    module: "std/fs",
+    key: "readBytes",
+    parameters: ["string"],
+    result: "Result<bytes, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
     name: "Fs.readText",
     module: "std/fs",
     key: "readText",
@@ -96,6 +105,15 @@ export const FS_FUNCS: Array<StdFunc> = [
     parameters: ["string"],
     result: "Result<bool, string>",
     effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.writeBytes",
+    module: "std/fs",
+    key: "writeBytes",
+    parameters: ["string", "bytes"],
+    result: "Result<int, string>",
+    effects: ["io"],
     check: "fixed",
   },
   StdFunc {
@@ -126,10 +144,11 @@ const FS_FIXED_CALLS: Array<FixedCall> = [
   },
 ]
 
-// Fs.readText(path)
-function emitReadText<W: EmitWalker>(
+// Fs.readText(path) and Fs.readBytes(path), whose runtime call skips the UTF-8 check.
+function emitReadFile<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
+  call: string,
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
@@ -137,11 +156,12 @@ function emitReadText<W: EmitWalker>(
   const path = argumentText(walker, mutable emitter, arguments, 0)
   const output = stringOut(mutable emitter)
   const bad = stringOut(mutable emitter)
-  const success = temp(mutable emitter, Type.TBool, `narra_fs_read(${path}, &${output}, &${bad})`)
+  const success = temp(mutable emitter, Type.TBool, `${call}(${path}, &${output}, &${bad})`)
   return ioResult(mutable emitter, resultType, success, output, bad)
 }
 
-// Fs.writeText(path, text): Ok holds the number of bytes written.
+// Fs.writeText(path, text) and Fs.writeBytes(path, data): Ok holds the number
+// of bytes written. Both are an lstr in C.
 function emitWriteText<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -239,9 +259,12 @@ export function emitFsCall<W: EmitWalker>(
     }
   }
   if (name == "Fs.readText") {
-    return emitReadText(walker, mutable emitter, nodeId, arguments)
+    return emitReadFile(walker, mutable emitter, "narra_fs_read", nodeId, arguments)
   }
-  if (name == "Fs.writeText") {
+  if (name == "Fs.readBytes") {
+    return emitReadFile(walker, mutable emitter, "narra_fs_read_bytes", nodeId, arguments)
+  }
+  if (name == "Fs.writeText" || name == "Fs.writeBytes") {
     return emitWriteText(walker, mutable emitter, nodeId, arguments)
   }
   if (name == "Fs.listDir") {

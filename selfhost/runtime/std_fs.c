@@ -88,7 +88,8 @@ typedef struct narra_fs_names {
   int64_t len;
 } narra_fs_names;
 
-static bool narra_fs_read(lstr* path, lstr** out, lstr** err) {
+// Reads a whole file. With utf8 set, a file that is not valid UTF-8 fails.
+static bool narra_fs_read_all(lstr* path, bool utf8, lstr** out, lstr** err) {
   if (!narra_io_no_nul(path, err)) return false;
   FILE* f = fopen(path->data, "rb");
   if (!f) {
@@ -113,7 +114,7 @@ static bool narra_fs_read(lstr* path, lstr** out, lstr** err) {
     }
   }
   fclose(f);
-  if (!fail && !narra_io_utf8((const unsigned char*)buf, (int64_t)len)) fail = "file is not valid UTF-8";
+  if (!fail && utf8 && !narra_io_utf8((const unsigned char*)buf, (int64_t)len)) fail = "file is not valid UTF-8";
   if (fail) {
     free(buf);
     *err = narra_io_fail(path->data, path->len, fail);
@@ -123,6 +124,14 @@ static bool narra_fs_read(lstr* path, lstr** out, lstr** err) {
   memcpy((*out)->data, buf, len);
   free(buf);
   return true;
+}
+
+static bool narra_fs_read(lstr* path, lstr** out, lstr** err) {
+  return narra_fs_read_all(path, true, out, err);
+}
+
+static bool narra_fs_read_bytes(lstr* path, lstr** out, lstr** err) {
+  return narra_fs_read_all(path, false, out, err);
 }
 
 static bool narra_fs_write(lstr* path, lstr* text, int64_t* written, lstr** err) {

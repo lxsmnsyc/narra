@@ -15,7 +15,7 @@ import { Type } from "narrac/types"
 import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { EffectState } from "narrac/effects"
-import * as Modules from "narrac/modules"
+import { loadPackage } from "narrac/lspcache"
 import { Location } from "narrac/queryjson"
 import { Site, SiteKind, isBefore } from "narrac/querysites"
 import {
@@ -91,7 +91,7 @@ export function isNavigationRequest(method: string): bool {
 }
 
 export function answerNavigation(
-  server: Server,
+  mutable server: Server,
   method: string,
   params: Value,
 ): Result<Value, string> uses io, alloc {
@@ -119,7 +119,7 @@ export function answerNavigation(
   if (needsPosition && (line < 0 || character < 0)) {
     return Err("position is missing")
   }
-  const loaded = loadNavigation(server, uri)
+  const loaded = loadNavigation(mutable server, uri)
   if (loaded is None) {
     // A document that is not a module of a package that loads.
     return Ok(Value.Null)
@@ -147,7 +147,7 @@ export function answerNavigation(
   return Ok(listReferences(navigation, found, includeDeclaration))
 }
 
-function loadNavigation(server: Server, uri: string): Option<Navigation> uses io, alloc {
+function loadNavigation(mutable server: Server, uri: string): Option<Navigation> uses io, alloc {
   // A package whose bodies have errors is still answered from what the checker recorded, but
   // without the effect pass, which needs bodies without errors.
   const maybePath = convertUriToPath(uri)
@@ -168,7 +168,8 @@ function loadNavigation(server: Server, uri: string): Option<Navigation> uses io
   if (findPackageDirectory(path) is Some(directory)) {
     loadPath = directory
   }
-  const loaded = Modules.loadWith(loadPath, overrides)
+  // The parse cache of the checks keeps the trees of unchanged sources.
+  const loaded = loadPackage(mutable server.cache, loadPath, overrides)
   if (loaded is Err(_)) {
     return None
   }

@@ -1,7 +1,7 @@
 ---
 id: mutable-bindings
 title: "Build D81: mutable changes contents, const fixes only the name"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-1
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-07
-spent:
+spent: 56288
 owns:
   - testdata/mutable_contents*
   - testdata/errors/mutable_contents_*
@@ -77,3 +77,5 @@ Build D81 (DECISIONS.md) in both compilers, and rewrite every program, test and 
 ## Sizing
 
 L. Checker split of `Local.Mutable` in both compilers plus a large mechanical rewrite of tests and guide samples. If the worker finds it too large for one reviewable PR, split after the checker change: the rules land with the test rewrites, the guide in a second commit of the same PR.
+
+Landed on feat/batch-1 (860f4ae, then 7d12e22 marks D81 built in DECISIONS.md). Open for the maintainer: a distinct type over a struct or Array is not a contents type, so `mutable value: Wrapped` is E0948; D81 does not say. Spent counts only the worker resumed after the device crash.

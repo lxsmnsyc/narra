@@ -74,7 +74,14 @@ import {
   DotUse,
   createEmptyFacts,
 } from "narrac/ast"
-import { Fix, createFix, createEdit, insertAt, moveColumn } from "narrac/fixes"
+import {
+  Fix,
+  createFix,
+  createEdit,
+  insertAt,
+  moveColumn,
+  buildRemoveSemicolonFix,
+} from "narrac/fixes"
 import * as Arrays from "std/array"
 import * as Boxes from "std/box"
 import * as Ranges from "std/range"
@@ -114,6 +121,8 @@ struct Parser {
   // The token index where the expression statement being parsed begins;
   // only an expression that starts there can end in `+=` or `++`.
   statementStart: int
+  // Set between the parentheses of a C-style for, the one place a `;` belongs.
+  forHead: bool = false
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -434,9 +443,25 @@ function failAtFix(
   message: string,
 ) {
   // Only the first error is kept; later errors are ignored.
-  if (parser.failed is None) {
-    parser.failed = Some(Diagnostic { code: code, pos: pos, message: message, fixes: fixes })
+  if (parser.failed is Some(_)) {
+    return
   }
+  // The lexer lets a `;` inside brackets through for the C-style for, so any other
+  // error at one is the semicolon itself.
+  const token = currentToken(parser)
+  if (token.kind == TokenKind.TokPunct && token.text == ";" && !parser.forHead) {
+    const semicolonPos = getPos(token)
+    if (semicolonPos.line == pos.line && semicolonPos.column == pos.column) {
+      parser.failed = Some(Diagnostic {
+        code: "E0003",
+        pos: pos,
+        message: "semicolons are not used; end the statement with a line break",
+        fixes: buildRemoveSemicolonFix(pos),
+      })
+      return
+    }
+  }
+  parser.failed = Some(Diagnostic { code: code, pos: pos, message: message, fixes: fixes })
 }
 
 function failHere(mutable parser: Parser, code: string, message: string) {
@@ -1781,6 +1806,7 @@ function parseCStyleForHead(
   keywordPos: Pos,
   isMutable: bool,
 ): Stmt uses alloc {
+  parser.forHead = true
   const nameToken = expectIdent(mutable parser)
   const namePos = getPos(nameToken)
   if (!isMutable) {
@@ -1823,6 +1849,7 @@ function parseStatementExpr(mutable parser: Parser): Expr uses alloc {
 }
 
 function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): Stmt uses alloc {
+  parser.forHead = true
   expect(mutable parser, ";")
   // An empty condition loops forever.
   let condition: Option<Expr> = None
@@ -1852,6 +1879,7 @@ function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): S
     }
   }
   expect(mutable parser, ")")
+  parser.forHead = false
   const body = parseBlock(mutable parser)
   skipNewlines(mutable parser)
   return Stmt.CForStmt(pos, "", init, condition, step, body)

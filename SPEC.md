@@ -43,7 +43,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 ### Statements and layout
 
 - Blocks use `{ }`.
-- **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error.
+- **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error, except between the parentheses of a `for (init; condition; step)` loop (section 2, Control flow).
 - `narra fmt` defines the one valid layout. CI is expected to run `narra fmt --check`.
 - `narra fmt` reads a `[fmt]` table of `narra.toml` (the nearest one above the file). Keys, with their defaults:
   - `printWidth = 100`: the line width.
@@ -155,7 +155,21 @@ for (const i of Ranges.upTo(Arrays.length(items))) {
 ```
 
 - `break` and `continue` work as in TypeScript, including labels: `outer: for (...) { ... break outer }`.
-- There is no C-style `for (init; cond; step)`, no `do ... while`, no `switch` and no `goto`.
+- **C-style `for`.** `for (init; condition; step) { ... }` has TypeScript's meaning, and `for (;;)` loops forever (D76).
+
+```ts
+for (let i = 0; i < limit; i = i + 1) {
+  total = total + i
+}
+```
+
+  - `init` is a `let` declaration or empty. Its name is scoped to the loop. `const` is error E0960, because the step could not change it.
+  - `condition` has type `bool`, with no truthiness (error E0959), or is empty.
+  - `step` is an assignment, a call or empty (error E0961 for anything else).
+  - `continue` runs the step, then the condition. Labels work as for the other loops.
+  - The semicolons belong to the parentheses. A `;` anywhere else is still an error.
+  - The loop is a statement, not a value.
+- There is no `do ... while`, no `switch` and no `goto`.
 - `match` replaces `switch` (section 4).
 
 #### Block expressions and `if` as a value
@@ -238,6 +252,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `enum` holds named numbers or strings | `enum` holds variants with fields, checked by `match` |
 | `'text'` is a string | `'a'` is a `char`. Strings use `"text"` |
 | `for (const k in obj)` loops over keys | Not present. Use `for (const k of Maps.keys(m))` |
+| `for (init; cond; step)` accepts `var`, `const`, several declarations and any condition | The same form, with `init` a single `let` or empty (`const` is E0960), `condition` a `bool` (E0959) and `step` an assignment or a call (E0961) |
 | `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
 | `xs.push(v)`, `s.length` | Not present. Use `Arrays.push(mutable xs, v)`, `Str.length(s)` |
 | `a + b` joins strings | Not present. Use a template string |

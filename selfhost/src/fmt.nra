@@ -901,6 +901,15 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc uses alloc {
     Stmt.ReturnStmt(_, value) => printReturn(printer, value)
     Stmt.IfStmt(_, condition, thenBlock, orElse) => printIf(printer, condition, thenBlock, orElse)
     Stmt.WhileStmt(pos, label, condition, body) => printWhile(printer, pos, label, condition, body)
+    Stmt.CForStmt(pos, label, init, condition, step, body) => printCFor(
+      printer,
+      pos,
+      label,
+      init,
+      condition,
+      step,
+      body,
+    )
     Stmt.ForStmt(_, pos, label, name, iterable, body, reference) => printFor(
       printer,
       pos,
@@ -1136,6 +1145,55 @@ function printWhile(
     text(" "),
     printBlock(taken.printer, body),
   ])
+}
+
+function printCFor(
+  printer: Printer,
+  pos: Pos,
+  label: string,
+  init: Option<Stmt>,
+  condition: Option<Expr>,
+  step: Option<Stmt>,
+  body: Block,
+): Doc uses alloc {
+  const taken = takeLabelComments(printer, pos, label, [])
+  const active = taken.printer
+  if (init is None && condition is None && step is None) {
+    return Docs.concat([taken.prefix, text("for (;;) "), printBlock(active, body)])
+  }
+  // Each part of the head may be empty.
+  let initDocument = empty()
+  if (init is Some(declaration)) {
+    initDocument = printStatementBody(active, declaration)
+  }
+  let conditionDocument = empty()
+  if (condition is Some(loopCondition)) {
+    conditionDocument = active.printExpression(active, loopCondition)
+  }
+  let stepDocument = empty()
+  if (step is Some(stepStatement)) {
+    stepDocument = printStatementBody(active, stepStatement)
+  }
+  const header = Docs.group(
+    Docs.concat([
+      text("for ("),
+      Docs.indent(
+        Docs.concat([
+          Doc.SoftLine,
+          initDocument,
+          text(";"),
+          Doc.Line,
+          conditionDocument,
+          text(";"),
+          Doc.Line,
+          stepDocument,
+        ]),
+      ),
+      Doc.SoftLine,
+      text(") "),
+    ]),
+  )
+  return Docs.concat([taken.prefix, header, printBlock(active, body)])
 }
 
 // printFor prints a for loop. The parser turns `for (const pattern of xs)` and

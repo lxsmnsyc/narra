@@ -1829,10 +1829,83 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   if (loop is Stmt.WhileStmt(_, _, condition, body)) {
     return Stmt.WhileStmt(labelPos, labelToken.text, condition, body)
   }
+  if (loop is Stmt.CForStmt(_, _, init, condition, step, body)) {
+    return Stmt.CForStmt(labelPos, labelToken.text, init, condition, step, body)
+  }
   if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference)) {
     return Stmt.ForStmt(nodeId, labelPos, labelToken.text, name, iterable, body, reference)
   }
   return loop
+}
+
+function parseCStyleForHead(
+  mutable parser: Parser,
+  pos: Pos,
+  keywordPos: Pos,
+  isMutable: bool,
+): Stmt uses alloc {
+  const nameToken = expectIdent(mutable parser)
+  const namePos = getPos(nameToken)
+  if (!isMutable) {
+    failAt(
+      mutable parser,
+      namePos,
+      "E0960",
+      "the first part of a for loop must be `let`, because the step changes it",
+    )
+    return Stmt.BreakStmt(pos, "")
+  }
+  let declaredType: Option<TypeExpr> = None
+  if (accept(mutable parser, ":")) {
+    declaredType = Some(parseType(mutable parser))
+  }
+  expect(mutable parser, "=")
+  const value = parseExpr(mutable parser)
+  const varId = newId(mutable parser)
+  parser.facts.namePositions[varId] = namePos
+  const declaration = Stmt.VarStmt(
+    varId,
+    keywordPos,
+    true,
+    nameToken.text,
+    None,
+    declaredType,
+    value,
+  )
+  return parseCStyleFor(mutable parser, pos, Some(declaration))
+}
+
+function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): Stmt uses alloc {
+  expect(mutable parser, ";")
+  // An empty condition loops forever.
+  let condition: Option<Expr> = None
+  if (!isAt(parser, ";")) {
+    condition = Some(parseExpr(mutable parser))
+  }
+  expect(mutable parser, ";")
+  // The step is an assignment or a call.
+  let step: Option<Stmt> = None
+  if (!isAt(parser, ")")) {
+    const stepToken = currentToken(parser)
+    const stepPos = getPos(stepToken)
+    const target = parseExpr(mutable parser)
+    if (accept(mutable parser, "=")) {
+      step = Some(Stmt.AssignStmt(stepPos, target, parseExpr(mutable parser)))
+    } else if (target is Expr.CallExpr(_, _, _, _, _)) {
+      step = Some(Stmt.ExprStmt(stepPos, target))
+    } else {
+      failAt(
+        mutable parser,
+        stepPos,
+        "E0961",
+        "the last part of a for loop must be an assignment or a call",
+      )
+    }
+  }
+  expect(mutable parser, ")")
+  const body = parseBlock(mutable parser)
+  skipNewlines(mutable parser)
+  return Stmt.CForStmt(pos, "", init, condition, step, body)
 }
 
 function parseStmt(mutable parser: Parser): Stmt {
@@ -1963,13 +2036,24 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     if (isAt(parser, "mutable") || isMarkedEntries(parser)) {
       return parseReferenceFor(mutable parser, pos)
     }
+    if (isAt(parser, ";")) {
+      return parseCStyleFor(mutable parser, pos, None)
+    }
     if (!isAt(parser, "const") && !isAt(parser, "let")) {
       failHere(mutable parser, "E0030", "write `for (const item of items)`")
       return Stmt.BreakStmt(pos, "")
     }
+    const keywordPos = getPos(currentToken(parser))
     const isMutable = advance(mutable parser).text == "let"
     const headPos = getPos(currentToken(parser))
     const after = peekToken(parser, 1)
+    if (
+      currentToken(parser).kind == TokenKind.TokIdent &&
+        after.kind == TokenKind.TokPunct &&
+        (after.text == "=" || after.text == ":")
+    ) {
+      return parseCStyleForHead(mutable parser, pos, keywordPos, isMutable)
+    }
     const isConstructor =
       currentToken(parser).kind == TokenKind.TokIdent &&
         after.kind == TokenKind.TokPunct &&

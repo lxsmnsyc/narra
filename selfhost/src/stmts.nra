@@ -42,6 +42,7 @@ import {
   describePlace,
   collectAssignedInExpr,
   collectAssignedInBlock,
+  collectAssignedInStatement,
 } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
 import {
@@ -136,6 +137,16 @@ export function checkStatement<W: Walker>(
       pos,
       label,
       condition,
+      body,
+    )
+    Stmt.CForStmt(pos, label, init, condition, step, body) => checkCFor(
+      mutable checker,
+      walker,
+      pos,
+      label,
+      init,
+      condition,
+      step,
       body,
     )
     Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference) => checkFor(
@@ -757,6 +768,57 @@ function checkWhile<W: Walker>(
   enterLoop(mutable checker, pos, label)
   checkBlock(mutable checker, walker, body)
   leaveLoop(mutable checker, label)
+}
+
+function checkCFor<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  label: string,
+  init: Option<Stmt>,
+  condition: Option<Expr>,
+  step: Option<Stmt>,
+  body: Block,
+) uses alloc {
+  // The loop variable lives in a scope around the whole loop.
+  pushScope(mutable checker)
+  if (init is Some(declaration)) {
+    checkStatement(mutable checker, walker, declaration)
+  }
+  // Names that the condition, the step or the body assign lose their narrowing.
+  endLoopNarrowing(mutable checker, condition, body)
+  let stepNames: Array<string> = []
+  if (step is Some(stepStatement)) {
+    collectAssignedInStatement(stepStatement, mutable stepNames)
+  }
+  for (const name of Arrays.values(stepNames)) {
+    const stepLocal = findLocal(checker, name)
+    endNarrowing(mutable checker, stepLocal)
+  }
+  if (condition is Some(loopCondition)) {
+    const found = checkExpression(mutable checker, walker, loopCondition, Some(Type.TBool))
+    if (found != Type.TBool) {
+      const foundText = typeString(checker, found)
+      reportError(
+        mutable checker,
+        getExpressionPos(loopCondition),
+        "E0959",
+        `the condition of a for loop must be a bool, found ${foundText}`,
+      )
+    }
+  }
+  enterLoop(mutable checker, pos, label)
+  checkBlock(mutable checker, walker, body)
+  leaveLoop(mutable checker, label)
+  // The step runs after the body, so narrowing from the body does not hold.
+  for (const name of Arrays.values(stepNames)) {
+    const stepLocal = findLocal(checker, name)
+    endNarrowing(mutable checker, stepLocal)
+  }
+  if (step is Some(stepStatement)) {
+    checkStatement(mutable checker, walker, stepStatement)
+  }
+  popScope(mutable checker)
 }
 
 function checkFor<W: Walker>(
@@ -1567,6 +1629,32 @@ function collectStatementUses(
         extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
       )
     }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        collectStatementUses(checker, mutable collector, declaration, chain, arms)
+      }
+      collector.blocks = collector.blocks + 1
+      const stepNode = -collector.blocks
+      if (condition is Some(loopCondition)) {
+        collectUses(
+          checker,
+          mutable collector,
+          loopCondition,
+          chain,
+          extendArms(arms, stepNode, 0, false, Arrays.length(chain)),
+        )
+      }
+      collectBlockUses(
+        checker,
+        mutable collector,
+        body,
+        chain,
+        extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
+      )
+      if (step is Some(stepStatement)) {
+        collectStatementUses(checker, mutable collector, stepStatement, chain, arms)
+      }
+    }
     Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       collector.blocks = collector.blocks + 1
       const stepNode = -collector.blocks
@@ -1781,6 +1869,12 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
     Stmt.WhileStmt(_, _, condition, _) => {
       isFixable = false
       collectUses(checker, mutable collector, condition, noCalls, noArms)
+    }
+    Stmt.CForStmt(_, _, _, condition, _, _) => {
+      isFixable = false
+      if (condition is Some(loopCondition)) {
+        collectUses(checker, mutable collector, loopCondition, noCalls, noArms)
+      }
     }
     Stmt.ForStmt(_, _, _, _, iterable, _, _) => {
       isFixable = false

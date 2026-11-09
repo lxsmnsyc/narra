@@ -378,7 +378,7 @@ Decision: a function that returns several values returns a tuple or a struct. Th
 
 ## D45. Counting loops through `Range`
 
-Decision: there is no C-style `for (init; cond; step)`. Counting uses `for (const i of Range.upTo(n))` (section 2).
+Decision: there is no C-style `for (init; cond; step)`. Counting uses `for (const i of Range.upTo(n))` (section 2). Amended by D76: the C-style loop exists; `++` and compound assignment are still open there.
 
 - **Reason.** One loop form, `for ... of`, covers arrays, maps, ranges and generators.
 - **Reason.** `Range.upTo(n)` stops before `n`, which fits 0-based indexes.
@@ -664,6 +664,7 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 - **Reason.** TypeScript code and models write these forms constantly. Accepting them with TypeScript's meaning is allowed by D2, and spares a rewrite.
 - **Kept from D45.** `for (const i of Ranges.upTo(n))` stays the usual way to count over indexes.
 - **Cost.** Two loop forms where D45 had one. The details (whether `init` must be `let`, whether `++` has a value, `continue` jumping to the step, labels, the semicolon rule inside the parentheses) are settled by nodes c-style-for and compound-assign.
+- **Built: the C-style loop.** `init` is `let` or empty (`const` is E0960). `condition` is a `bool` or empty (E0959). `step` is an assignment, a call or empty (E0961). `continue` runs the step. The `;` is a token only inside parentheses, so `;` elsewhere is still E0003. The name from `init` ends with the loop.
 
 ## D77. Non-escaping closures capture `let` and `mutable` by reference
 

@@ -26,6 +26,9 @@ import {
   enterLoop,
   leaveLoop,
   emitContinueLabel,
+  markStepLoop,
+  hasStepLoop,
+  emitStepJump,
   emitBreakLabel,
   emitLabeledExit,
   typeOf,
@@ -118,6 +121,16 @@ export function emitStatement<W: EmitWalker>(
       condition,
       body,
     )
+    Stmt.CForStmt(pos, label, init, condition, step, body) => emitCFor(
+      walker,
+      mutable emitter,
+      pos,
+      label,
+      init,
+      condition,
+      step,
+      body,
+    )
     Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference) => emitFor(
       walker,
       mutable emitter,
@@ -156,6 +169,10 @@ function emitNestedBlock<W: EmitWalker>(
 function emitLoopExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
   if (label != "") {
     emitLabeledExit(mutable emitter, label, isBreak)
+    return
+  }
+  if (!isBreak && hasStepLoop(emitter)) {
+    emitStepJump(mutable emitter)
     return
   }
   unwindLoop(mutable emitter)
@@ -373,6 +390,44 @@ function emitWhile<W: EmitWalker>(
   emitter.indent = emitter.indent - 1
   writeLine(mutable emitter, "}")
   emitBreakLabel(mutable emitter, info)
+}
+
+function emitCFor<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  pos: Pos,
+  label: string,
+  init: Option<Stmt>,
+  condition: Option<Expr>,
+  step: Option<Stmt>,
+  body: Block,
+) uses alloc {
+  // The loop variable lives in a scope around the whole loop.
+  pushScope(mutable emitter, false)
+  if (init is Some(declaration)) {
+    emitStatement(walker, mutable emitter, declaration)
+  }
+  writeLine(mutable emitter, "while (1) {")
+  emitter.indent = emitter.indent + 1
+  if (condition is Some(loopCondition)) {
+    beginStatement(mutable emitter)
+    const code = EmitWalker.emitExpression(walker, mutable emitter, loopCondition)
+    const holds = temp(mutable emitter, Type.TBool, code.text)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (!${holds}) break;`)
+  }
+  enterLoop(mutable emitter, label, pos)
+  markStepLoop(mutable emitter)
+  emitBlock(walker, mutable emitter, body, true)
+  emitContinueLabel(mutable emitter)
+  const info = leaveLoop(mutable emitter)
+  if (step is Some(stepStatement)) {
+    emitStatement(walker, mutable emitter, stepStatement)
+  }
+  emitter.indent = emitter.indent - 1
+  writeLine(mutable emitter, "}")
+  emitBreakLabel(mutable emitter, info)
+  popScope(mutable emitter)
 }
 
 // iterableName is the std function a for loop iterates: Range.upTo, Array.values and so on.

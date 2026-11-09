@@ -1,0 +1,21 @@
+1:1 keyword for
+1:5 punct (
+1:6 keyword let
+1:10 ident i
+1:12 punct =
+1:14 int 0
+1:15 punct ;
+1:17 ident i
+1:19 punct <
+1:21 int 3
+1:22 punct ;
+1:24 ident i
+1:26 punct =
+1:28 ident i
+1:30 punct +
+1:32 int 1
+1:33 punct )
+1:35 punct {
+2:1 punct }
+2:2 newline \n
+3:1 eof 

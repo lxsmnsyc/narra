@@ -36,12 +36,18 @@ export function reportUnusedTopLevel(mutable checker: Checker) uses alloc {
 
 function reportUnusedImports(mutable checker: Checker, scope: int) uses alloc {
   const facts = checker.scopes[scope].facts
-  const lines = Str.split(facts.source, "\n")
+  // The source is split into lines on the first unused import.
+  let lines: Array<string> = []
+  let isSplit = false
   for (const importDecl of Arrays.values(checker.scopes[scope].imports)) {
     // `import * as Alias from "path"`.
     if (importDecl.alias != "") {
       if (!isUnusedName(facts.referenced, importDecl.alias)) {
         continue
+      }
+      if (!isSplit) {
+        lines = Str.split(facts.source, "\n")
+        isSplit = true
       }
       reportErrorFix(
         mutable checker,
@@ -60,6 +66,10 @@ function reportUnusedImports(mutable checker: Checker, scope: int) uses alloc {
       if (isUnusedName(facts.referenced, importDecl.names[index].local)) {
         Arrays.push(mutable unused, index)
       }
+    }
+    if (!isSplit && Arrays.length(unused) > 0) {
+      lines = Str.split(facts.source, "\n")
+      isSplit = true
     }
     const removesAll = Arrays.length(unused) == Arrays.length(importDecl.names)
     for (const index of Arrays.values(unused)) {
@@ -169,7 +179,9 @@ function isOwnBody(checker: Checker, body: BodyInfo, funcIndex: int): bool {
 }
 
 function reportUnusedFunctions(mutable checker: Checker, scope: int, used: Array<bool>) uses alloc {
-  const lines = Str.split(checker.scopes[scope].facts.source, "\n")
+  // The source is split into lines on the first unused function.
+  let lines: Array<string> = []
+  let isSplit = false
   for (const index of Ranges.upTo(Arrays.length(checker.functions))) {
     const info = checker.functions[index]
     if (info.scope != scope || info.declaration.exported || used[index]) {
@@ -177,6 +189,10 @@ function reportUnusedFunctions(mutable checker: Checker, scope: int, used: Array
     }
     if (Str.startsWith(info.name, "_") || info.declaration.body is None) {
       continue
+    }
+    if (!isSplit) {
+      lines = Str.split(checker.scopes[scope].facts.source, "\n")
+      isSplit = true
     }
     const nameUses = findNameUses(lines, info.declaration.pos, info.name)
     let pos = info.declaration.pos

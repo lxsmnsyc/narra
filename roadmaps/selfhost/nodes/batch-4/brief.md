@@ -40,6 +40,7 @@ Children:
 - Then profile-compiler (spike), and perceus after the two emitter fixes.
 - Then option-inline, then perceus-reuse and const-params-pointer.
 - fast-alloc (added 2026-11-10 from regions-design) runs beside perceus: it edits only the runtime.
+- From profile-compiler (2026-11-10): int-to-string, effect-int-keys, cache-type-names, finish-facts-lines, emit-string-helpers, quote-on-error, template-one-alloc and lexer-slices. Tail-loop parameter borrowing (profile proposal 3) went to the inbox.
 - profile-compiler may propose more children; the orchestrator adds the ones the maintainer accepts.
 
 Benchmark children hold the `benchmarks` resource, so they never run at the same time.

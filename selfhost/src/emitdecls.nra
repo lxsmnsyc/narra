@@ -11,8 +11,8 @@ import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { Type, Variant, isBoxedEnum } from "narrac/types"
-import { Checker, isHeapEnum } from "narrac/check"
-import { typeId, cType, payloadName, opFuncName } from "narrac/cnames"
+import { Checker, isHeapEnum, isPassedByPointer } from "narrac/check"
+import { typeId, cType, payloadName, opFuncName, parameterCType } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -225,10 +225,10 @@ export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
     if (needsRc(emitter, type)) {
       const retainName = opFuncName("retain", typeId(emitter.checker, type))
       const releaseName = opFuncName("release", typeId(emitter.checker, type))
-      const name = cType(emitter.checker, type)
+      const parameterType = parameterCType(emitter.checker, type, false)
       Str.append(
         mutable builder,
-        `static void ${retainName}(${name} v);\nstatic void ${releaseName}(${name} v);\n`,
+        `static void ${retainName}(${parameterType} v);\nstatic void ${releaseName}(${parameterType} v);\n`,
       )
     }
   }
@@ -257,7 +257,8 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     return ""
   }
   let builder = Str.builder()
-  const name = cType(emitter.checker, type)
+  const parameterType = parameterCType(emitter.checker, type, false)
+  const value = formatRcValue(emitter, type)
   const id = typeId(emitter.checker, type)
   if (type is Type.TEnum(inlineIndex)) {
     if (!isHeapEnum(emitter.checker, inlineIndex)) {
@@ -295,13 +296,13 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     Str.append(mutable builder, "  default: break;\n  }\n  narra_free(q);\n}\n")
   }
   for (const operation of Arrays.values(["retain", "release"])) {
-    Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${name} v) {\n`)
+    Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${parameterType} v) {\n`)
     if (type is Type.TStruct(structIndex)) {
       for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
-        const value = `v.${fieldName(field.name)}`
-        let statement = retainCode(emitter, field.fieldType, value)
+        const fieldValue = `${value}.${fieldName(field.name)}`
+        let statement = retainCode(emitter, field.fieldType, fieldValue)
         if (operation == "release") {
-          statement = releaseCode(emitter, field.fieldType, value)
+          statement = releaseCode(emitter, field.fieldType, fieldValue)
         }
         if (statement != "") {
           Str.append(mutable builder, `  ${statement}\n`)
@@ -325,18 +326,19 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
 
 function inlineEnumRcFunctions(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {
   let builder = Str.builder()
-  const name = cType(emitter.checker, type)
+  const parameterType = parameterCType(emitter.checker, type, false)
+  const enumValue = formatRcValue(emitter, type)
   const id = typeId(emitter.checker, type)
   for (const operation of Arrays.values(["retain", "release"])) {
     Str.append(
       mutable builder,
-      `static void ${opFuncName(operation, id)}(${name} v) {\n  switch (v.tag) {\n`,
+      `static void ${opFuncName(operation, id)}(${parameterType} v) {\n  switch (${enumValue}.tag) {\n`,
     )
     // Each case counts the fields of one variant, as a struct counts its fields.
     for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
       let statements: Array<string> = []
       for (const field of Arrays.values(variant.fields)) {
-        const value = `v.u.${variantName(variant)}.${fieldName(field.name)}`
+        const value = `${enumValue}.u.${variantName(variant)}.${fieldName(field.name)}`
         let statement = retainCode(emitter, field.fieldType, value)
         if (operation == "release") {
           statement = releaseCode(emitter, field.fieldType, value)
@@ -355,6 +357,14 @@ function inlineEnumRcFunctions(emitter: Emitter, type: Type, enumIndex: int): st
     Str.append(mutable builder, "  default: break;\n  }\n}\n")
   }
   return Str.build(builder)
+}
+
+function formatRcValue(emitter: Emitter, type: Type): string uses alloc {
+  // A large value reaches its retain and release functions by pointer.
+  if (isPassedByPointer(emitter.checker, type)) {
+    return "(*v)"
+  }
+  return "v"
 }
 
 function arrayFunctions(emitter: Emitter, array: Type): string uses alloc {

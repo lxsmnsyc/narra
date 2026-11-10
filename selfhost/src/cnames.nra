@@ -18,7 +18,13 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import * as Cells from "std/cell"
 import { Type, plainTypeKey, typeKey } from "narrac/types"
-import { Checker, ProgramFunc, findBody, containsTypeParameter } from "narrac/check"
+import {
+  Checker,
+  ProgramFunc,
+  findBody,
+  containsTypeParameter,
+  isPassedByPointer,
+} from "narrac/check"
 import { xxh32, hex8, relativeModule, moduleHash } from "narrac/hash"
 
 function declHead(module: string, name: string): string uses alloc {
@@ -364,16 +370,27 @@ export function functionSignature(checker: Checker, program: ProgramFunc): strin
       const local = checker.bodies[bodyIndex].locals[index]
       name = `v_${local.name}_${Int.toString(local.number)}`
     }
-    let star = ""
-    if (declared.parameters[index].isMutable) {
-      star = "*"
-    }
-    Arrays.push(mutable parts, `${cType(checker, parameterTypes[index])}${star} ${name}`)
+    Arrays.push(
+      mutable parts,
+      `${parameterCType(checker, parameterTypes[index], declared.parameters[index].isMutable)} ${name}`,
+    )
   }
   if (Arrays.length(parts) == 0) {
     parts = ["void"]
   }
   return `static ${cType(checker, result)} ${functionName(checker, program)}(${Str.join(parts, ", ")})`
+}
+
+export function parameterCType(checker: Checker, type: Type, isMutable: bool): string uses alloc {
+  // A mutable parameter points at the caller's place, and a large constant one
+  // at a value the caller keeps for the call.
+  if (isMutable) {
+    return `${cType(checker, type)}*`
+  }
+  if (isPassedByPointer(checker, type)) {
+    return `const ${cType(checker, type)}*`
+  }
+  return cType(checker, type)
 }
 
 export function dropDuplicateTypes(checker: Checker): Checker uses alloc {

@@ -457,6 +457,10 @@ export struct Checker {
   // package has no errors: true when a value holds reference counts.
   countedStructs: Array<bool>
   countedEnums: Array<bool>
+  // By Checker.structs and Checker.enums index, set by finish when the
+  // package has no errors: the size and alignment of the C value.
+  structLayouts: Array<CLayout>
+  enumLayouts: Array<CLayout>
   // The std registry (stdlib.nra), the scope index of each module path,
   // the package (for unknown-module errors), the std modules the program
   // uses in first-import order (Go's Program.Modules) and the entry
@@ -602,6 +606,8 @@ export function newChecker(ids: int): Checker uses alloc {
     heapEnums: [],
     countedStructs: [],
     countedEnums: [],
+    structLayouts: [],
+    enumLayouts: [],
     registry: newRegistry(),
     scopeIndex: Map {},
     packageName: "",
@@ -1044,6 +1050,180 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
   }
   checker.countedStructs = countedStructs
   checker.countedEnums = countedEnums
+  // C layouts, which decide how a value is passed to a function.
+  let layouts: Map<int, CLayout> = Map {}
+  let structLayouts: Array<CLayout> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
+    Arrays.push(mutable structLayouts, layoutStruct(checker, index, mutable layouts))
+  }
+  let enumLayouts: Array<CLayout> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable enumLayouts, layoutEnum(checker, index, mutable layouts))
+  }
+  checker.structLayouts = structLayouts
+  checker.enumLayouts = enumLayouts
+}
+
+// The size and alignment in bytes of a value in the emitted C.
+export struct CLayout {
+  size: int
+  align: int
+}
+
+// Values larger than this many bytes are passed to functions by pointer.
+const POINTER_PARAMETER_LIMIT = 16
+
+export function isPassedByPointer(checker: Checker, type: Type): bool uses alloc {
+  if (type is Type.TStruct(structIndex)) {
+    return readStructLayout(checker, structIndex).size > POINTER_PARAMETER_LIMIT
+  }
+  if (type is Type.TEnum(enumIndex)) {
+    return readEnumLayout(checker, enumIndex).size > POINTER_PARAMETER_LIMIT
+  }
+  if (type is Type.TDistinct(distinctIndex)) {
+    if (checker.distincts[distinctIndex].base is Some(base)) {
+      return isPassedByPointer(checker, base)
+    }
+    return false
+  }
+  // A range is three ints.
+  return type == Type.TRange
+}
+
+function readStructLayout(checker: Checker, index: int): CLayout uses alloc {
+  if (index < Arrays.length(checker.structLayouts)) {
+    return checker.structLayouts[index]
+  }
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutStruct(checker, index, mutable layouts)
+}
+
+function readEnumLayout(checker: Checker, index: int): CLayout uses alloc {
+  if (index < Arrays.length(checker.enumLayouts)) {
+    return checker.enumLayouts[index]
+  }
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutEnum(checker, index, mutable layouts)
+}
+
+function alignUp(offset: int, align: int): int {
+  return (offset + align - 1) / align * align
+}
+
+function layoutValue(
+  checker: Checker,
+  type: Type,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  return match (type) {
+    Type.TI8 | Type.TU8 | Type.TBool => CLayout { size: 1, align: 1 }
+    Type.TI16 | Type.TU16 => CLayout { size: 2, align: 2 }
+    Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => CLayout { size: 4, align: 4 }
+    Type.TFunc(_, _, _, _) => CLayout { size: 16, align: 8 }
+    Type.TRange => CLayout { size: 24, align: 8 }
+    Type.TStruct(index) => layoutStruct(checker, index, mutable layouts)
+    Type.TEnum(index) => layoutEnum(checker, index, mutable layouts)
+    Type.TDistinct(index) => layoutDistinct(checker, index, mutable layouts)
+    _ => CLayout { size: 8, align: 8 }
+  }
+}
+
+function layoutFields(
+  checker: Checker,
+  fields: Array<Field>,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  // C places each field at the next offset its alignment allows.
+  let offset = 0
+  let align = 1
+  for (const field of Arrays.values(fields)) {
+    const fieldLayout = layoutValue(checker, field.fieldType, mutable layouts)
+    offset = alignUp(offset, fieldLayout.align) + fieldLayout.size
+    if (fieldLayout.align > align) {
+      align = fieldLayout.align
+    }
+  }
+  // A struct without fields holds one char.
+  if (offset == 0) {
+    return CLayout { size: 1, align: 1 }
+  }
+  return CLayout { size: alignUp(offset, align), align: align }
+}
+
+function layoutStruct(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (index < Arrays.length(checker.structLayouts)) {
+    return checker.structLayouts[index]
+  }
+  const key = 0 - 1 - index
+  if (layouts[key] is Some(known)) {
+    return known
+  }
+  // A struct that holds itself meets its own key as one byte; it is an error.
+  layouts[key] = CLayout { size: 1, align: 1 }
+  const layout = layoutFields(checker, checker.structs[index].fields, mutable layouts)
+  layouts[key] = layout
+  return layout
+}
+
+function layoutEnum(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (index < Arrays.length(checker.enumLayouts)) {
+    return checker.enumLayouts[index]
+  }
+  // A tag alone, or a tag and a pointer to the heap payload.
+  if (!isBoxedEnum(checker.enums[index])) {
+    return CLayout { size: 4, align: 4 }
+  }
+  if (isHeapEnum(checker, index)) {
+    return CLayout { size: 16, align: 8 }
+  }
+  if (layouts[index] is Some(known)) {
+    return known
+  }
+  layouts[index] = CLayout { size: 4, align: 4 }
+  // An inline payload is a union of one struct per variant after the tag.
+  let unionSize = 0
+  let unionAlign = 1
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    if (Arrays.length(variant.fields) > 0) {
+      const variantLayout = layoutFields(checker, variant.fields, mutable layouts)
+      if (variantLayout.size > unionSize) {
+        unionSize = variantLayout.size
+      }
+      if (variantLayout.align > unionAlign) {
+        unionAlign = variantLayout.align
+      }
+    }
+  }
+  let align = 4
+  if (unionAlign > align) {
+    align = unionAlign
+  }
+  const unionOffset = alignUp(4, unionAlign)
+  const layout = CLayout {
+    size: alignUp(unionOffset + alignUp(unionSize, unionAlign), align),
+    align: align,
+  }
+  layouts[index] = layout
+  return layout
+}
+
+function layoutDistinct(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return layoutValue(checker, base, mutable layouts)
+  }
+  return CLayout { size: 8, align: 8 }
 }
 
 export function isCountedType(checker: Checker, type: Type): bool {

@@ -1,0 +1,146 @@
+// Structs and enums over 16 bytes passed to direct calls, generic instances,
+// trait implementations, function values, closures and their own retain and
+// release helpers, as places and as values that are not places.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+struct Inner {
+  label: string
+  values: Array<int>
+  weight: int
+}
+
+struct Big implements Equatable {
+  name: string
+  inner: Inner
+  count: int
+  scale: f64
+}
+
+struct Small {
+  left: int
+  right: int
+}
+
+enum Shape {
+  Box(label: string, width: int, height: int)
+  Dot
+}
+
+const ORIGIN = Big {
+  name: "origin",
+  inner: Inner { label: "zero", values: [0, 0], weight: 0 },
+  count: 0,
+  scale: 1.0,
+}
+
+implement Equatable for Big {
+  function equals(left: Big, right: Big): bool {
+    return left.name == right.name && left.count == right.count
+  }
+}
+
+function describeBool(value: bool): string {
+  if (value) {
+    return "equal"
+  }
+  return "different"
+}
+
+function makeBig(name: string, count: int): Big {
+  return Big {
+    name: Str.repeat(name, 2),
+    inner: Inner { label: `${name}-inner`, values: [count, count + 1], weight: count * 2 },
+    count: count,
+    scale: 0.5,
+  }
+}
+
+function describe(big: Big): string {
+  const total = big.inner.values[0] + big.inner.values[1] + big.inner.weight
+  return `${big.name}/${big.inner.label}/${Int.toString(big.count)}/${Int.toString(total)}`
+}
+
+function describeInner(inner: Inner): string {
+  return `${inner.label}:${Int.toString(Arrays.length(inner.values))}`
+}
+
+function forward(big: Big, small: Small): string {
+  // A pointer parameter passed on, and a field of it.
+  return `${describe(big)} ${describeInner(big.inner)} ${Int.toString(small.left + small.right)}`
+}
+
+function first<T>(items: Array<T>, fallback: T): T {
+  if (Arrays.length(items) > 0) {
+    return items[0]
+  }
+  return fallback
+}
+
+function area(shape: Shape): int {
+  return match (shape) { Shape.Box(_, width, height) => width * height, Shape.Dot => 0 }
+}
+
+function pick(choice: Option<Big>): string {
+  return match (choice) { Some(big) => describe(big), None => "none" }
+}
+
+function apply(big: Big, transform: (value: Big) => string uses alloc): string {
+  return transform(big)
+}
+
+function rename(big: Big, name: string): Big {
+  // The copy shares the inner array and keeps the original alive.
+  return { ...big, name: name }
+}
+
+export function run(args: Array<string>): int {
+  const big = makeBig("a", 3)
+  print(describe(big))
+  print(forward(big, Small { left: 1, right: 2 }))
+
+  // Values that are not places: a call result, a literal and a constant.
+  print(describe(makeBig("b", 4)))
+  print(
+    describe(Big {
+      name: "literal",
+      inner: Inner { label: "in", values: [5, 6], weight: 1 },
+      count: 7,
+      scale: 2.0,
+    }),
+  )
+  print(describe(ORIGIN))
+
+  // A generic instance, an inline enum and an Option.
+  print(describe(first([makeBig("c", 1)], big)))
+  print(describe(first([], big)))
+  print(Int.toString(area(Shape.Box(Str.repeat("x", 3), 4, 5))))
+  print(pick(Some(makeBig("d", 2))))
+  print(pick(None))
+
+  // A trait implementation reached through ==.
+  print(`${describeBool(big == makeBig("a", 3))} ${describeBool(big == ORIGIN)}`)
+
+  // A named function and arrow functions as values.
+  const describer: (value: Big) => string uses alloc = describe
+  print(describer(big))
+  print(apply(big, describe))
+  const suffix = Str.repeat("!", 2)
+  print(apply(big, (value) => `${value.name}${suffix}`))
+  const counted = apply(big, (value) => {
+    const inner = (other: Big) => `${Int.toString(other.count + value.count)}`
+    return inner(makeBig("e", 10))
+  })
+  print(counted)
+
+  // Copies that outlive the value they came from.
+  let renamed = rename(makeBig("f", 5), "renamed")
+  print(describe(renamed))
+  renamed = rename(renamed, "again")
+  print(describe(renamed))
+  let list = [big, renamed]
+  Arrays.push(mutable list, makeBig("g", 6))
+  print(describe(list[2]))
+  return 0
+}

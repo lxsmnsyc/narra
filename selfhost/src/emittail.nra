@@ -4,6 +4,8 @@
 // temporaries, releases everything the function holds, assigns the parameters
 // and jumps. The calls are found before the body is emitted and recorded by
 // node id in Emitter.tailCalls, so a call inside a closure never matches.
+// A large parameter is a pointer to the caller's value until the first jump,
+// and then to a variable of the function that holds the new value.
 import { Stmt, Block, Expr, Arg, FuncDecl, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
 import {
@@ -14,7 +16,7 @@ import {
   orderArguments,
   findParameterIndexes,
 } from "narrac/check"
-import { functionName } from "narrac/cnames"
+import { functionName, cType } from "narrac/cnames"
 import {
   Emitter,
   EmitWalker,
@@ -28,6 +30,8 @@ import {
   readNodeRef,
   readLocal,
   localName,
+  localRef,
+  isPointerParameter,
   needsRc,
   retainCode,
 } from "narrac/emitstate"
@@ -236,7 +240,11 @@ export function openTailLoop(mutable emitter: Emitter, program: ProgramFunc) use
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     if (!parameters[index].isMutable) {
       const local = readLocal(emitter, index)
-      const retainText = retainCode(emitter, local.localType, localName(local))
+      if (isPointerParameter(emitter, index)) {
+        const typeName = cType(emitter.checker, local.localType)
+        writeLine(mutable emitter, `${typeName} ${localName(local)}_held;`)
+      }
+      const retainText = retainCode(emitter, local.localType, localRef(emitter, index))
       if (retainText != "") {
         writeLine(mutable emitter, retainText)
         addLocal(mutable emitter, index)
@@ -287,7 +295,14 @@ export function emitTailJump<W: EmitWalker>(
     for (const index of Ranges.between(0, Arrays.length(parameters))) {
       if (!parameters[index].isMutable) {
         const parameterName = localName(readLocal(emitter, index))
-        writeLine(mutable emitter, `${parameterName} = ${values[index]};`)
+        if (isPointerParameter(emitter, index)) {
+          // Every new value is in a temporary by now, so no write here changes
+          // a value that another parameter still points at.
+          writeLine(mutable emitter, `${parameterName}_held = ${values[index]};`)
+          writeLine(mutable emitter, `${parameterName} = &${parameterName}_held;`)
+        } else {
+          writeLine(mutable emitter, `${parameterName} = ${values[index]};`)
+        }
       }
     }
     writeLine(mutable emitter, "goto narra_tail;")

@@ -424,6 +424,14 @@ Decision: large constant parameters are passed by pointer, and reads of fields a
 - **Reason.** Value semantics do not require physical copies. Parameters are constant and access is exclusive, so a pointer is indistinguishable from a copy.
 - **Reason.** It removes the cost of passing large structs and of reading from containers, with no syntax.
 
+Amendment (node const-params-pointer, 2026-11-10). Built for parameters; reads of fields and elements still copy:
+
+- **Limit.** A constant parameter whose C value is over 16 bytes is passed as `const T*`: structs, inline enums (D99) and ranges. The C ABI already passes such a struct through memory, as a pointer to a copy the caller makes on arm64 and as a copy on the stack on x86-64, so the copy was all the by-value form added. The size is the C layout (field alignment included), computed once per struct and enum in `finish` (`isPassedByPointer`, `selfhost/src/check.nra`).
+- **One convention per type.** The choice depends only on the parameter's type, so direct calls, generic instances, trait implementations, function types, thunks for named functions and arrow functions agree. The generated `retain_*` and `release_*` functions of a large type take a pointer too.
+- **Arguments.** A place (a variable, a field path, a parameter) is passed by address. Any other value (a call result, a literal, a constant) is first stored in a temporary of the caller.
+- **Where the value is copied.** The callee cannot change the value: the caller keeps it for the call, E0319 rejects passing a variable as `mutable` and using it in another argument, and E0614 rejects a closure argument that assigns a variable another argument uses. Three places keep the parameter past the call or change it, and copy it: a generator or coroutine frame copies it when created; a closure environment copies a captured parameter, and the closure reads it through a pointer to that copy; a function with self tail calls stores each new value in a variable of its own (`<name>_held`) after all new arguments are evaluated, and points the parameter at it.
+- **Measured.** `narrac emit selfhost`: 3.10 G to 2.62 G instructions retired (-15.6%).
+
 ## D51. Parameters reached through a function value are escaping
 
 Decision: a function type has no `escaping` marker, so the parameters of a function value are treated as escaping. An argument passed through a function value must be an escaping value, and a function-type parameter of an arrow function may be stored. This makes D46 stricter.

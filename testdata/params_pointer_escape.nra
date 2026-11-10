@@ -1,0 +1,99 @@
+// Large parameters that outlive the call: kept by a generator and a coroutine
+// across yields, and captured by closures that are returned or stored. The
+// caller's value is replaced or released before they are used.
+import * as Co from "std/coroutine"
+import { Step } from "std/coroutine"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+struct Big {
+  name: string
+  tags: Array<string>
+  count: int
+  weight: int
+}
+
+struct Holder {
+  read: () => string uses alloc
+  label: string
+}
+
+function makeBig(name: string, count: int): Big {
+  return Big { name: Str.repeat(name, 2), tags: [name, `${name}-tag`], count: count, weight: 1 }
+}
+
+function* labels(big: Big): Generator<string> uses alloc {
+  yield big.name
+  yield big.tags[1]
+  yield Int.toString(big.count)
+}
+
+function* totals(big: Big): Coroutine<int, string> {
+  let sum = big.count
+  while (true) {
+    const next = yield `${big.name}=${Int.toString(sum)}`
+    sum = sum + next
+  }
+}
+
+function startLabels(count: int): Generator<string> uses alloc {
+  // The argument is a temporary of this call, released when it returns.
+  return labels(makeBig("t", count))
+}
+
+function makeReader(big: Big): () => string uses alloc {
+  return () => `${big.name}/${big.tags[1]}/${Int.toString(big.count)}`
+}
+
+function makeHolder(big: Big): Holder {
+  return Holder { read: () => `${big.tags[0]}:${Int.toString(big.weight)}`, label: big.name }
+}
+
+function startReader(count: int): () => string uses alloc {
+  return makeReader(makeBig("s", count))
+}
+
+function show(step: Step<string>): string {
+  return match (step) {
+    Step.Yielded(value) => value
+    Step.Done => "done"
+    Step.Panicked(message) => `panicked ${message}`
+  }
+}
+
+export function run(args: Array<string>): int {
+  // A generator holds its own copy of the parameter.
+  let big = makeBig("a", 1)
+  const generator = labels(big)
+  big = makeBig("b", 2)
+  let seen: Array<string> = []
+  for (const label of generator) {
+    Arrays.push(mutable seen, label)
+  }
+  print(Str.join(seen, " "))
+  seen = []
+  for (const label of startLabels(7)) {
+    Arrays.push(mutable seen, label)
+  }
+  print(Str.join(seen, " "))
+
+  // A coroutine resumed after the caller's value is replaced.
+  let source = makeBig("c", 10)
+  let running = totals(source)
+  source = makeBig("d", 20)
+  print(show(Co.resume(mutable running, 0)))
+  print(show(Co.resume(mutable running, 5)))
+  print(`${source.name} ${Int.toString(source.count)}`)
+
+  // Closures returned and stored keep their own copy too.
+  let value = makeBig("e", 3)
+  const reader = makeReader(value)
+  const holder = makeHolder(value)
+  value = makeBig("f", 4)
+  print(reader())
+  print(`${holder.read()} ${holder.label} ${value.name}`)
+  const later = startReader(9)
+  print(later())
+  return 0
+}

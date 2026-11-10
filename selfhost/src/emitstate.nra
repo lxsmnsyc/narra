@@ -5,7 +5,8 @@
 //
 // Ownership rules for reference-counted values in generated C:
 //   - A local variable owns one reference. It is released when its scope ends.
-//   - Parameters are borrowed. The caller keeps them alive for the call.
+//   - Parameters are borrowed. The caller keeps them alive for the call. A
+//     constant parameter over 16 bytes is a pointer to the caller's value.
 //   - A call returns an owned reference.
 //   - Each expression produces either an owned temporary or a borrowed value.
 //     Owned temporaries are released at the end of the statement unless a
@@ -34,6 +35,7 @@ import {
   findBodySlot,
   isHeapEnum,
   isCountedType,
+  isPassedByPointer,
 } from "narrac/check"
 import { cachedCType, cachedTypeId, opFuncName } from "narrac/cnames"
 import * as Cells from "std/cell"
@@ -302,10 +304,20 @@ export function isReference(emitter: Emitter, index: int): bool {
   return false
 }
 
+export function isPointerParameter(emitter: Emitter, index: int): bool uses alloc {
+  // A large constant parameter points at the caller's value. A generator frame
+  // holds a copy instead.
+  const local = readLocal(emitter, index)
+  return local.param &&
+    !local.isMutable &&
+    !emitter.inGenerator &&
+    isPassedByPointer(emitter.checker, local.localType)
+}
+
 export function localRef(emitter: Emitter, index: int): string uses alloc {
   const local = readLocal(emitter, index)
   const name = localName(local)
-  if (isReference(emitter, index)) {
+  if (isReference(emitter, index) || isPointerParameter(emitter, index)) {
     return `(*${name})`
   }
   return variableRef(emitter, name)
@@ -434,7 +446,60 @@ function structOrEnumCode(
   if (!needsRc(emitter, base)) {
     return ""
   }
-  return `${opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, base))}(${value});`
+  const name = opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, base))
+  // A large value is passed by pointer, as to any function.
+  if (isPassedByPointer(emitter.checker, base)) {
+    return `${name}(&(${value}));`
+  }
+  return `${name}(${value});`
+}
+
+export function passArgument(
+  mutable emitter: Emitter,
+  type: Type,
+  text: string,
+): string uses alloc {
+  // A large constant argument is passed as a pointer to a place the caller
+  // keeps for the call; a value that is not a place is copied to a temporary.
+  if (!isPassedByPointer(emitter.checker, type)) {
+    return text
+  }
+  if (isPlace(text)) {
+    return `&${text}`
+  }
+  return `&${temp(mutable emitter, type, text)}`
+}
+
+function isPlace(text: string): bool {
+  // A name followed by fields, through `.`, `->` and `(*pointer)`, is a place.
+  let named = false
+  let index = 0
+  const length = Str.length(text)
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    let next = 0
+    if (index + 1 < length) {
+      next = Str.byteAt(text, index + 1)
+    }
+    if (byte == 40 && next == 42) {
+      // (*
+      index += 2
+    } else if (byte == 45 && next == 62) {
+      // ->
+      index += 2
+    } else if (byte == 41 || byte == 46) {
+      // ) and .
+      index++
+    } else if ((byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || byte == 95) {
+      named = true
+      index++
+    } else if (byte >= 48 && byte <= 57 && named) {
+      index++
+    } else {
+      return false
+    }
+  }
+  return named
 }
 
 export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
@@ -544,7 +609,7 @@ export function popScope(mutable emitter: Emitter) uses alloc {
 function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
   for (let index = Arrays.length(frame.locals) - 1; index >= 0; index--) {
     const local = readLocal(emitter, frame.locals[index])
-    const text = releaseCode(emitter, local.localType, variableRef(emitter, localName(local)))
+    const text = releaseCode(emitter, local.localType, localRef(emitter, frame.locals[index]))
     if (text != "") {
       writeLine(mutable emitter, text)
     }

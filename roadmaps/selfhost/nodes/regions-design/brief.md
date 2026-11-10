@@ -1,7 +1,7 @@
 ---
 id: regions-design
 title: "Spike: how regions skip reference counts and stay safe"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-4

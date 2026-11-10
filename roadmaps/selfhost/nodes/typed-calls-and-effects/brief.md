@@ -1,7 +1,7 @@
 ---
 id: typed-calls-and-effects
 title: "Effects of function values"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-4

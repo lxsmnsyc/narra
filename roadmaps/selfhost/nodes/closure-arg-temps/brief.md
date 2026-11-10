@@ -1,7 +1,7 @@
 ---
 id: closure-arg-temps
 title: "Block-bodied arrow arguments do not count as writers"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-4

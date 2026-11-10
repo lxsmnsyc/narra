@@ -1,7 +1,7 @@
 ---
 id: nested-or-guards
 title: "Guards try every alternative of a nested or-pattern"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-4

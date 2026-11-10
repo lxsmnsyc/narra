@@ -1,7 +1,7 @@
 ---
 id: batch-4
 title: "Batch 4: the performance batch"
-status: todo
+status: active
 priority: should
 type: story
 story:

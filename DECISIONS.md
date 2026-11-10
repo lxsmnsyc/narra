@@ -1005,6 +1005,10 @@ Amendment (node shared-write-check, 2026-11-11). The shared-write rule is built 
 - **Loops.** A `for ... of` loop's iterator holds the place it walks while the body runs, so a write that copies that place warns too. Assigning one element keeps the sharing of the other elements, because indexes are not compared. Known limit: reassigning the same index still warns (`let row = grid[0]; grid[0] = [9]; row[0] = 5` while `grid[0]` is used later); shared-write-error decides whether it stays.
 - **Counts at the start of shared-write-sweep:** 198 in `selfhost/src` (34 of them writes inside a loop over the written place), 0 in `std/src`, 3 in `selfhost/tests/src`, 36 in `testdata` (the copy samples that keep a hidden copy on purpose).
 
+Amendment (node shared-write-sweep, 2026-11-11, decided by the orchestrator). `copy(x)` also takes an enum whose payload can hold a tracked value, at any depth: `Option<Array<int>>`, `Result<Team, string>`, a recursive enum with a struct payload. An enum value is never changed in place, but a part taken out of its payload can be, so a function whose result is such an enum may need to copy a second shared parameter, and only `copy` can do that. The copy retains the payload; a write to a part taken out of the copy copies only that part. The debug copy check gives a credit to each counted value inside a heap enum payload that the copy reaches, so those copies on write are explained. An enum whose payloads hold only scalars and strings is still E0975. The E0976 and E0978 fixes offer `copy(...)` for exactly the types `copy` takes.
+
+- **Rejected:** treating enum results as unshared in E0976 and E0978. It is unsound: `match (lookup(table)) { Some(row) => row[0] = 1 }` would copy a shared array without showing it.
+
 ## D95. Designs for the parked syntax: async exit, contracts, fixed arrays, build conditions, inline, C interop, dynamic traits
 
 Decision (maintainer, 2026-11-09). Each part replaces the matching SPEC.md text when its node is built.

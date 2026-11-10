@@ -6,7 +6,7 @@
 import { splitString } from "narrac/textops"
 import { Pos, Expr, Arg } from "narrac/ast"
 import { TokenKind, lex } from "narrac/lexer"
-import { Type } from "narrac/types"
+import { Type, typeKey } from "narrac/types"
 import {
   Checker,
   Walker,
@@ -29,6 +29,7 @@ import {
   writeLine,
   readNodeType,
 } from "narrac/emitstate"
+import { creditCode } from "narrac/emitdecls"
 import * as Arrays from "std/array"
 import * as Char from "std/char"
 import * as Int from "std/int"
@@ -72,7 +73,7 @@ export function checkCopyCall<W: Walker>(
   // An instance of a generic function is checked with concrete type
   // arguments; the generic body was already checked with its parameters.
   if (
-    valueType != Type.TVoid && !isCheckingInstance(checker) && !isCopyTracked(checker, valueType)
+    valueType != Type.TVoid && !isCheckingInstance(checker) && !canShareType(checker, valueType)
   ) {
     const shown = typeString(checker, valueType)
     const fixes = buildRemoveFix(checker, nodeId, calleePos, argument.value)
@@ -130,6 +131,38 @@ function isDistinctTracked(checker: Checker, index: int): bool {
   return false
 }
 
+export function canShareType(checker: Checker, type: Type): bool uses alloc {
+  // A value that can hold a tracked value: a tracked type, or an enum with such a payload.
+  let visited: Map<string, bool> = Map {}
+  return canShareVisiting(checker, type, mutable visited)
+}
+
+function canShareVisiting(
+  checker: Checker,
+  type: Type,
+  mutable visited: Map<string, bool>,
+): bool uses alloc {
+  if (isCopyTracked(checker, type)) {
+    return true
+  }
+  // An enum already visited adds nothing new.
+  if (type is Type.TEnum(index)) {
+    const typeName = typeKey(type)
+    if (visited[typeName] is Some(_)) {
+      return false
+    }
+    visited[typeName] = true
+    for (const variant of Arrays.values(checker.enums[index].variants)) {
+      for (const field of Arrays.values(variant.fields)) {
+        if (canShareVisiting(checker, field.fieldType, mutable visited)) {
+          return true
+        }
+      }
+    }
+  }
+  return false
+}
+
 export function buildConstantHint(
   checker: Checker,
   scope: int,
@@ -149,7 +182,7 @@ export function buildConstantHint(
   return `, as in \`let ${buildLocalName(name)} = ${text}\``
 }
 
-function findConstantType(checker: Checker, scope: int, name: string): Option<Type> {
+function findConstantType(checker: Checker, scope: int, name: string): Option<Type> from checker {
   for (const constant of Arrays.values(checker.consts)) {
     if (constant.scope == scope && constant.name == name) {
       if (constant.declaredType is Some(declared)) {
@@ -262,7 +295,7 @@ function buildRemoveFix(
   nodeId: int,
   calleePos: Pos,
   value: Expr,
-): Array<Fix> uses alloc {
+): Array<Fix> from calleePos uses alloc {
   // Needs the source text and a call on one line written `copy(` with the `)`
   // right after its argument.
   const scope = checker.scopes[checker.current]
@@ -339,6 +372,13 @@ export function emitCopyCall<W: EmitWalker>(
   const copied = ownedTemp(mutable emitter, valueType, code.text)
   const retainText = retainCode(emitter, valueType, copied)
   writeLine(mutable emitter, retainText)
+  // The parts a retain does not reach get their credits here, in debug builds.
+  const creditText = creditCode(emitter, valueType, copied)
+  if (creditText != "") {
+    writeLine(mutable emitter, "#ifndef NARRA_RELEASE")
+    writeLine(mutable emitter, `if (narra_copy_on) { ${creditText} }`)
+    writeLine(mutable emitter, "#endif")
+  }
   writeLine(mutable emitter, "NARRA_COPY_GRANT(false);")
   return Code { text: copied, owned: true }
 }

@@ -80,7 +80,7 @@ export function checkCall<W: Walker>(
   callee: Expr,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   return match (callee) {
     Expr.Ident(_, calleePos, name) => checkNamedCall(
       mutable checker,
@@ -120,7 +120,7 @@ function checkNamedCall<W: Walker>(
   name: string,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // A local or constant holds a function value.
   const scope = checker.current
   if (findLocal(checker, name) >= 0 || checker.scopes[scope].consts[name] is Some(_)) {
@@ -162,8 +162,8 @@ function checkFunctionCall<W: Walker>(
   funcIndex: int,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
-  const info = checker.functions[funcIndex]
+): Type from checker uses alloc {
+  const info = copy(checker.functions[funcIndex])
   const parameters = info.declaration.parameters
   const isGeneric = Arrays.length(info.typeParameters) > 0
 
@@ -205,7 +205,7 @@ function matchNamedArguments(
   calleeName: string,
   arguments: Array<Arg>,
   parameters: Array<Param>,
-): Option<Array<Arg>> uses alloc {
+): Option<Array<Arg>> from arguments uses alloc {
   if (!hasNamedArgument(arguments)) {
     return Some(arguments)
   }
@@ -396,7 +396,7 @@ function checkDottedCall<W: Walker>(
   name: string,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // `Name.f(...)` where Name is not a local: a trait, a module alias, a
   // namespace, a distinct type, an enum or an unknown module.
   const scope = checker.current
@@ -528,6 +528,7 @@ function checkDottedCall<W: Walker>(
     if (fieldIndex >= 0) {
       const fieldType = checker.structs[index].fields[fieldIndex].fieldType
       if (fieldType is Type.TFunc(funcParams, funcResult, _, _, _)) {
+        const parameterTypes = copy(funcParams)
         setNodeType(mutable checker, calleeId, fieldType)
         return checkCallThroughValue(
           mutable checker,
@@ -536,7 +537,7 @@ function checkDottedCall<W: Walker>(
           pos,
           callee,
           arguments,
-          funcParams,
+          parameterTypes,
           funcResult,
         )
       }
@@ -571,7 +572,7 @@ function buildArrayPushFix(
   name: string,
   targetType: Type,
   argumentCount: int,
-): Array<Fix> uses alloc {
+): Array<Fix> from target uses alloc {
   // The AST keeps no spacing, so the fix needs the text between the parts to have no spaces.
   if (!(targetType is Type.TArray(_)) || name != "push" || argumentCount == 0) {
     return []
@@ -618,7 +619,7 @@ function checkConstructorCall<W: Walker>(
   name: string,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (
     checkConstructor(mutable checker, walker, calleePos, enumName, name, arguments, want) is Some(
       result,
@@ -643,7 +644,7 @@ function checkModuleCall<W: Walker>(
   name: string,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // Co.resume(mutable g) resumes a generator, and Co.resume(mutable g, input) a
   // coroutine.
   let exportName = name
@@ -677,7 +678,7 @@ function checkModuleCall<W: Walker>(
   return Type.TVoid
 }
 
-function getArgumentType(checker: Checker, arg: Arg): Type {
+function getArgumentType(checker: Checker, arg: Arg): Type from checker {
   if (getNodeType(checker, getExpressionId(arg.value)) is Some(argType)) {
     return argType
   }
@@ -788,11 +789,11 @@ function checkGenericCall<W: Walker>(
   funcIndex: int,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // Inside a generic body the call can stay open; each instance resolves it again.
-  const info = checker.functions[funcIndex]
-  const typeParameters = info.typeParameters
-  const parameters = info.declaration.parameters
+  const info = copy(checker.functions[funcIndex])
+  const typeParameters = copy(info.typeParameters)
+  const parameters = copy(info.declaration.parameters)
   let bindings: Map<int, Type> = Map {}
   if (checker.callTypeArguments[nodeId] is Some(written)) {
     if (Arrays.length(written) > 0) {
@@ -846,7 +847,7 @@ function checkGenericCall<W: Walker>(
   let mismatch = false
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     if (index < Arrays.length(parameters)) {
-      const argType = getArgumentType(checker, arguments[index])
+      const argType = copy(getArgumentType(checker, arguments[index]))
       const declared = checker.paramTypes[parameters[index].id]
       const paramType = substitute(mutable checker, declared, bindings)
       if (
@@ -872,7 +873,7 @@ function checkGenericCall<W: Walker>(
       if (containsOpen(checker, partial, typeParameters)) {
         return Type.TVoid
       }
-      return partial
+      return copy(partial)
     } else {
       const message = `cannot tell type parameter ${checker.parameters[param].name} of ${info.name} here; add a type annotation`
       reportError(mutable checker, pos, "E0220", message)
@@ -890,7 +891,7 @@ function checkGenericCall<W: Walker>(
     if (index < Arrays.length(parameters)) {
       const declared = checker.paramTypes[parameters[index].id]
       const paramType = substitute(mutable checker, declared, bindings)
-      const argType = getArgumentType(checker, arguments[index])
+      const argType = copy(getArgumentType(checker, arguments[index]))
       checker.looseFunctions = isImplicitEffectParameter(checker, funcIndex, parameters[index])
       expectType(
         mutable checker,
@@ -908,7 +909,7 @@ function checkGenericCall<W: Walker>(
     // The emitter finds the instance of this call through the body.
     checker.bodies[checker.body].instanceRefs[nodeId] = instance
   }
-  return result
+  return copy(result)
 }
 
 function checkTraitCall<W: Walker>(
@@ -920,7 +921,7 @@ function checkTraitCall<W: Walker>(
   name: string,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   const traitName = checker.traits[traitIndex].name
   const funcIndex = findTraitFunc(checker, traitIndex, name)
   if (funcIndex < 0) {
@@ -933,7 +934,7 @@ function checkTraitCall<W: Walker>(
     checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
   }
-  const traitFunc = checker.traits[traitIndex].functions[funcIndex]
+  const traitFunc = copy(checker.traits[traitIndex].functions[funcIndex])
   const parameters = traitFunc.declaration.parameters
   let ordered = arguments
   if (
@@ -1037,10 +1038,10 @@ function checkTraitCall<W: Walker>(
       const message = `${typeString(checker, selfType)} does not implement ${traitName}`
       reportError(mutable checker, pos, "E0524", message)
     }
-    return result
+    return copy(result)
   }
   if (containsTypeParameter(checker, selfType)) {
-    return result
+    return copy(result)
   }
   if (isShapeTrait(checker, traitIndex)) {
     checkShapeVisible(mutable checker, pos, selfType, traitIndex)
@@ -1056,7 +1057,7 @@ function checkTraitCall<W: Walker>(
     // The emitter reads Self from the body.
     checker.bodies[checker.body].traitSelf[nodeId] = selfType
   }
-  return result
+  return copy(result)
 }
 
 // ShapeProvider names the function of std/shape that implements Shape for a
@@ -1067,36 +1068,41 @@ struct ShapeProvider {
   typeArguments: Array<Type>
 }
 
-function findShapeProvider(checker: Checker, type: Type): Option<ShapeProvider> uses alloc {
-  return match (type) {
-    Type.TBool => Some(ShapeProvider { prefix: "bool", typeArguments: [] })
-    Type.TInt => Some(ShapeProvider { prefix: "int", typeArguments: [] })
-    Type.TF64 => Some(ShapeProvider { prefix: "float", typeArguments: [] })
-    Type.TChar => Some(ShapeProvider { prefix: "char", typeArguments: [] })
-    Type.TStr => Some(ShapeProvider { prefix: "string", typeArguments: [] })
-    Type.TArray(element) => Some(ShapeProvider { prefix: "array", typeArguments: [element] })
-    Type.TMap(_, valueType) => Some(ShapeProvider { prefix: "map", typeArguments: [valueType] })
-    Type.TEnum(index) => {
-      if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
-        return Some(ShapeProvider {
-          prefix: "option",
-          typeArguments: checker.enums[index].arguments,
-        })
+function findShapeProvider(
+  checker: Checker,
+  type: Type,
+): Option<ShapeProvider> from checker uses alloc {
+  return copy(
+    match (type) {
+      Type.TBool => Some(ShapeProvider { prefix: "bool", typeArguments: [] })
+      Type.TInt => Some(ShapeProvider { prefix: "int", typeArguments: [] })
+      Type.TF64 => Some(ShapeProvider { prefix: "float", typeArguments: [] })
+      Type.TChar => Some(ShapeProvider { prefix: "char", typeArguments: [] })
+      Type.TStr => Some(ShapeProvider { prefix: "string", typeArguments: [] })
+      Type.TArray(element) => Some(ShapeProvider { prefix: "array", typeArguments: [element] })
+      Type.TMap(_, valueType) => Some(ShapeProvider { prefix: "map", typeArguments: [valueType] })
+      Type.TEnum(index) => {
+        if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
+          return Some(ShapeProvider {
+            prefix: "option",
+            typeArguments: checker.enums[index].arguments,
+          })
+        }
+        return None
       }
-      return None
-    }
-    Type.TStruct(index) => {
-      if (checker.structs[index].tuple) {
-        const count = Int.toString(Arrays.length(checker.structs[index].arguments))
-        return Some(ShapeProvider {
-          prefix: `tuple${count}`,
-          typeArguments: checker.structs[index].arguments,
-        })
+      Type.TStruct(index) => {
+        if (checker.structs[index].tuple) {
+          const count = Int.toString(Arrays.length(checker.structs[index].arguments))
+          return Some(ShapeProvider {
+            prefix: `tuple${count}`,
+            typeArguments: checker.structs[index].arguments,
+          })
+        }
+        return None
       }
-      return None
-    }
-    _ => None
-  }
+      _ => None
+    },
+  )
 }
 
 function setShapeRef(
@@ -1106,6 +1112,7 @@ function setShapeRef(
   name: string,
 ) uses alloc {
   if (findShapeProvider(checker, selfType) is Some(provider)) {
+    const providerArguments = copy(provider.typeArguments)
     let suffix = "FromValue"
     if (name == "toValue") {
       suffix = "ToValue"
@@ -1117,8 +1124,8 @@ function setShapeRef(
           checker.functions[index].name == functionName
       ) {
         setRef(mutable checker, nodeId, Ref.Function(index))
-        if (Arrays.length(provider.typeArguments) > 0) {
-          const instance = addFuncInstance(mutable checker, index, provider.typeArguments)
+        if (Arrays.length(providerArguments) > 0) {
+          const instance = addFuncInstance(mutable checker, index, providerArguments)
           checker.bodies[checker.body].instanceRefs[nodeId] = instance
         }
         return
@@ -1134,12 +1141,12 @@ function setShapeRef(
     Type.TStruct(index) => {
       module = checker.structs[index].module
       typeName = checker.structs[index].name
-      typeArguments = checker.structs[index].arguments
+      typeArguments = copy(checker.structs[index].arguments)
     }
     Type.TEnum(index) => {
       module = checker.enums[index].module
       typeName = checker.enums[index].name
-      typeArguments = checker.enums[index].arguments
+      typeArguments = copy(checker.enums[index].arguments)
     }
     _ => {
       return
@@ -1177,7 +1184,7 @@ function takeTypeArguments<W: Walker>(
   name: string,
   count: int,
   arguments: Array<Arg>,
-): Option<Array<Type>> uses alloc {
+): Option<Array<Type>> from checker uses alloc {
   // Marks the arguments used. The result is None after reporting a wrong count.
   let written: Array<TypeExpr> = []
   if (checker.callTypeArguments[nodeId] is Some(pending)) {
@@ -1213,7 +1220,7 @@ function checkDistinctCall<W: Walker>(
   arguments: Array<Arg>,
 ): Type uses alloc {
   setRef(mutable checker, nodeId, Ref.Distinct(distinctIndex))
-  const info = checker.distincts[distinctIndex]
+  const info = copy(checker.distincts[distinctIndex])
   const distinctType = Type.TDistinct(distinctIndex)
   let base = Type.TVoid
   if (info.base is Some(declared)) {

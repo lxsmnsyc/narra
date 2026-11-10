@@ -26,8 +26,8 @@ import {
 } from "narrac/check"
 import { Fix, createFix, insertAt } from "narrac/fixes"
 import { collectPatternLocals } from "narrac/patterns"
-import { isCopyTracked, isCopyCall } from "narrac/stdcopy"
-import { findSharedArgument, canShareType, findExpressionStart } from "narrac/sharedresults"
+import { isCopyTracked, isCopyCall, canShareType } from "narrac/stdcopy"
+import { findSharedArgument, findExpressionStart } from "narrac/sharedresults"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 import * as Ranges from "std/range"
@@ -336,12 +336,12 @@ function hasPending(pending: Array<PendingWrite>, site: int, other: string): boo
   return false
 }
 
-function mergeStates(left: FlowState, right: FlowState): FlowState uses alloc {
+function mergeStates(left: FlowState, right: FlowState): FlowState from right uses alloc {
   if (!left.reachable) {
     return right
   }
   if (!right.reachable) {
-    return left
+    return copy(left)
   }
   let pairs = copy(left.pairs)
   for (const pair of Arrays.values(right.pairs)) {
@@ -884,7 +884,7 @@ function walkLoop(
     if (condition is Some(loopCondition)) {
       const _ = evaluate(checker, mutable walk, loopCondition)
     }
-    exits = mergeStates(exits, walk.state)
+    exits = copy(mergeStates(exits, walk.state))
     if (local >= 0) {
       declareLocal(mutable walk, local)
       let elements: Array<ValueShare> = []
@@ -918,7 +918,7 @@ function evaluateBound(
   checker: Checker,
   mutable walk: WriteWalk,
   value: Expr,
-): Array<ValueShare> uses alloc {
+): Array<ValueShare> from walk uses alloc {
   // The element a `for (const <pattern> of xs)` loop binds through its hidden local.
   if (value is Expr.Ident(nodeId, _, _)) {
     const local = findLocalRef(checker, nodeId)
@@ -935,7 +935,7 @@ function evaluateIterable(
   checker: Checker,
   mutable walk: WriteWalk,
   iterable: Expr,
-): Array<ValueShare> uses alloc {
+): Array<ValueShare> from walk uses alloc {
   // A loop over copy(items) walks a value nothing else shares.
   if (isCopyCall(checker, iterable)) {
     const _ = evaluate(checker, mutable walk, iterable)
@@ -1004,7 +1004,10 @@ function evaluatePlaceParts(
   }
 }
 
-function extendShares(shares: Array<ValueShare>, suffix: string): Array<ValueShare> uses alloc {
+function extendShares(
+  shares: Array<ValueShare>,
+  suffix: string,
+): Array<ValueShare> from shares uses alloc {
   // A part of a value: the places the value shares, one level down.
   let parts: Array<ValueShare> = []
   for (const share of Arrays.values(shares)) {
@@ -1017,7 +1020,10 @@ function extendShares(shares: Array<ValueShare>, suffix: string): Array<ValueSha
   return parts
 }
 
-function nestShares(shares: Array<ValueShare>, suffix: string): Array<ValueShare> uses alloc {
+function nestShares(
+  shares: Array<ValueShare>,
+  suffix: string,
+): Array<ValueShare> from shares uses alloc {
   // The shares of a part placed inside a new value at suffix.
   let nested: Array<ValueShare> = []
   for (const share of Arrays.values(shares)) {
@@ -1040,7 +1046,7 @@ function evaluate(
   checker: Checker,
   mutable walk: WriteWalk,
   expression: Expr,
-): Array<ValueShare> uses alloc {
+): Array<ValueShare> from walk uses alloc {
   // Walks an expression in evaluation order and returns the places its value
   // shares. A value whose type holds no tracked value shares nothing.
   const nodeId = getExpressionId(expression)
@@ -1068,7 +1074,7 @@ function evaluateParts(
   checker: Checker,
   mutable walk: WriteWalk,
   expression: Expr,
-): Array<ValueShare> uses alloc {
+): Array<ValueShare> from walk uses alloc {
   match (expression) {
     Expr.Ident(nodeId, pos, _) => {
       const local = findLocalRef(checker, nodeId)
@@ -1244,7 +1250,7 @@ function evaluateCall(
   nodeId: int,
   callee: Expr,
   arguments: Array<Arg>,
-): Array<ValueShare> uses alloc {
+): Array<ValueShare> from walk uses alloc {
   const ref = getRef(checker, nodeId)
   if (ref is Ref.Value) {
     const _ = evaluate(checker, mutable walk, callee)
@@ -1471,7 +1477,7 @@ function reportWarning(mutable checker: Checker, site: WriteSite, found: FoundWa
   }
 }
 
-function buildCopyFix(checker: Checker, origin: Option<Expr>): Array<Fix> uses alloc {
+function buildCopyFix(checker: Checker, origin: Option<Expr>): Array<Fix> from checker uses alloc {
   // Wraps the value that started the sharing in copy(...), when the parser
   // noted where it ends and copy accepts its type.
   if (origin is Some(value)) {
@@ -1479,7 +1485,7 @@ function buildCopyFix(checker: Checker, origin: Option<Expr>): Array<Fix> uses a
       return []
     }
     if (getNodeType(checker, getExpressionId(value)) is Some(valueType)) {
-      if (!isCopyTracked(checker, valueType)) {
+      if (!canShareType(checker, valueType)) {
         return []
       }
     }

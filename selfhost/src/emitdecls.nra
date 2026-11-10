@@ -246,6 +246,22 @@ export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
       `static void ${name}_retain(${name}* a);\nstatic void ${name}_release(${name}* a);\n`,
     )
   }
+  // The credit functions exist only where the debug copy check does.
+  for (const type of Arrays.values(emitter.checker.order)) {
+    if (type is Type.TEnum(enumIndex)) {
+      if (isHeapEnum(emitter.checker, enumIndex) && needsRc(emitter, type)) {
+        const creditName = opFuncName(
+          "credit",
+          cachedTypeId(emitter.checker, emitter.typeNames, type),
+        )
+        const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
+        Str.append(
+          mutable builder,
+          `#ifndef NARRA_RELEASE\nstatic void ${creditName}(${parameterType} v);\n#endif\n`,
+        )
+      }
+    }
+  }
   // Functions: types, then arrays, then boxes.
   for (const type of Arrays.values(emitter.checker.order)) {
     Str.append(mutable builder, typeRcFunctions(emitter, type))
@@ -301,6 +317,7 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
       }
     }
     Str.append(mutable builder, "  default: break;\n  }\n  narra_free(q);\n}\n")
+    Str.append(mutable builder, creditFunction(emitter, type, enumIndex))
   }
   for (const operation of Arrays.values(["retain", "release"])) {
     Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${parameterType} v) {\n`)
@@ -329,6 +346,189 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     Str.append(mutable builder, "}\n")
   }
   return Str.build(builder)
+}
+
+function creditFunction(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {
+  // A copy(...) of a heap enum retains only its payload box, and a payload is
+  // never written. The debug copy check gives a credit to each counted value
+  // inside the payload instead, so a copy on write of a part taken out of the
+  // copy is explained.
+  let builder = Str.builder()
+  const id = cachedTypeId(emitter.checker, emitter.typeNames, type)
+  const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
+  const enumValue = formatRcValue(emitter, type)
+  const payload = payloadName(emitter.checker, type)
+  Str.append(
+    mutable builder,
+    `#ifndef NARRA_RELEASE\nstatic void ${opFuncName("credit", id)}(${parameterType} v) {\n  if (!${enumValue}.u) return;\n  ${payload}* q = ${enumValue}.u;\n  switch (q->tag) {\n`,
+  )
+  for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+    let statements: Array<string> = []
+    for (const field of Arrays.values(variant.fields)) {
+      const statement = creditPartCode(
+        emitter,
+        field.fieldType,
+        `q->${variantName(variant)}.${fieldName(field.name)}`,
+      )
+      if (statement != "") {
+        Arrays.push(mutable statements, statement)
+      }
+    }
+    if (Arrays.length(statements) > 0) {
+      Str.append(
+        mutable builder,
+        `  case ${Int.toString(variant.index)}: ${Str.join(statements, " ")} break;\n`,
+      )
+    }
+  }
+  Str.append(mutable builder, "  default: break;\n  }\n}\n#endif\n")
+  return Str.build(builder)
+}
+
+export function creditCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  // The statements that give a credit to each counted value that a retain of
+  // value does not reach: the parts of a heap enum payload. Empty when a
+  // retain reaches every part.
+  const base = underlyingType(emitter, type)
+  if (!holdsHeapEnum(emitter, base)) {
+    return ""
+  }
+  return match (base) {
+    Type.TEnum(enumIndex) => {
+      if (isHeapEnum(emitter.checker, enumIndex)) {
+        const name = opFuncName("credit", cachedTypeId(emitter.checker, emitter.typeNames, base))
+        if (isPassedByPointer(emitter.checker, base)) {
+          return `${name}(&(${value}));`
+        }
+        return `${name}(${value});`
+      }
+      let cases: Array<string> = []
+      for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+        let statements: Array<string> = []
+        for (const field of Arrays.values(variant.fields)) {
+          const statement = creditCode(
+            emitter,
+            field.fieldType,
+            `(${value}).u.${variantName(variant)}.${fieldName(field.name)}`,
+          )
+          if (statement != "") {
+            Arrays.push(mutable statements, statement)
+          }
+        }
+        if (Arrays.length(statements) > 0) {
+          Arrays.push(
+            mutable cases,
+            `case ${Int.toString(variant.index)}: ${Str.join(statements, " ")} break;`,
+          )
+        }
+      }
+      return `switch ((${value}).tag) { ${Str.join(cases, " ")} default: break; }`
+    }
+    Type.TStruct(structIndex) => {
+      let statements: Array<string> = []
+      for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+        const statement = creditCode(
+          emitter,
+          field.fieldType,
+          `(${value}).${fieldName(field.name)}`,
+        )
+        if (statement != "") {
+          Arrays.push(mutable statements, statement)
+        }
+      }
+      return Str.join(statements, " ")
+    }
+    _ => ""
+  }
+}
+
+function creditPartCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  // The statements that give a credit to every counted value in a part of a
+  // heap enum payload, which no retain of the copy reaches.
+  const base = underlyingType(emitter, type)
+  return match (base) {
+    Type.TArray(_)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TStringBuilder
+      | Type.TGenerator(_, _, _, _, _) => `if (${value}) NARRA_COPY_SHARED(${value});`
+    Type.TEnum(enumIndex) => {
+      if (!needsRc(emitter, base)) {
+        return ""
+      }
+      if (isHeapEnum(emitter.checker, enumIndex)) {
+        return creditCode(emitter, base, value)
+      }
+      let cases: Array<string> = []
+      for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+        let statements: Array<string> = []
+        for (const field of Arrays.values(variant.fields)) {
+          const statement = creditPartCode(
+            emitter,
+            field.fieldType,
+            `(${value}).u.${variantName(variant)}.${fieldName(field.name)}`,
+          )
+          if (statement != "") {
+            Arrays.push(mutable statements, statement)
+          }
+        }
+        if (Arrays.length(statements) > 0) {
+          Arrays.push(
+            mutable cases,
+            `case ${Int.toString(variant.index)}: ${Str.join(statements, " ")} break;`,
+          )
+        }
+      }
+      if (Arrays.length(cases) == 0) {
+        return ""
+      }
+      return `switch ((${value}).tag) { ${Str.join(cases, " ")} default: break; }`
+    }
+    Type.TStruct(structIndex) => {
+      let statements: Array<string> = []
+      for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+        const statement = creditPartCode(
+          emitter,
+          field.fieldType,
+          `(${value}).${fieldName(field.name)}`,
+        )
+        if (statement != "") {
+          Arrays.push(mutable statements, statement)
+        }
+      }
+      return Str.join(statements, " ")
+    }
+    _ => ""
+  }
+}
+
+function holdsHeapEnum(emitter: Emitter, type: Type): bool {
+  // Whether a value of type has a heap enum in a part that a retain reaches
+  // directly: a field of a struct or a payload field of an inline enum.
+  return match (type) {
+    Type.TEnum(enumIndex) => {
+      if (isHeapEnum(emitter.checker, enumIndex)) {
+        return needsRc(emitter, type)
+      }
+      for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          if (holdsHeapEnum(emitter, underlyingType(emitter, field.fieldType))) {
+            return true
+          }
+        }
+      }
+      return false
+    }
+    Type.TStruct(structIndex) => {
+      for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+        if (holdsHeapEnum(emitter, underlyingType(emitter, field.fieldType))) {
+          return true
+        }
+      }
+      return false
+    }
+    _ => false
+  }
 }
 
 function inlineEnumRcFunctions(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {

@@ -954,7 +954,7 @@ for (const i of Ranges.upTo(1000)) {
 When an update targets a value whose reference count is greater than 1, the value is copied first. The copy is correct, but it costs time proportional to the value's size, and the source does not show it. `copy(x)` makes the copy visible (D94):
 
 - **`copy(x)`** duplicates a value at any depth. At the call it is one reference count increment, so it costs nothing until a write. A later write to `x` or to the copy then copies only the objects on the written path, once each: after `const other = copy(team)`, `other.scores[1][0] = 30` copies the outer array of `other.scores` and one row, not the other rows.
-- `copy` takes one argument of a type that a write changes in place: a struct (all-scalar ones too), `Array<T>`, `Map<K, V>`, `FixedArray<T, N>`, `Box<T>`, `StringBuilder`, `Generator<T>` or `Coroutine<In, Out>`, a tuple holding one of them, a distinct type over one, or a type parameter. Any other argument (numbers, `bool`, `char`, `string`, `bytes`, enums with `Option` and `Result`, function values) is a compile error whose fix removes the call, and so are a second argument and `copy(mutable x)` (E0975).
+- `copy` takes one argument of a type that a write changes in place: a struct (all-scalar ones too), `Array<T>`, `Map<K, V>`, `FixedArray<T, N>`, `Box<T>`, `StringBuilder`, `Generator<T>` or `Coroutine<In, Out>`, a tuple holding one of them, a distinct type over one, or a type parameter. It also takes an enum whose payload can hold one of them, at any depth (`Option<Array<int>>`, `Result<Team, string>`, a recursive enum with a struct payload). An enum value itself is never changed in place, but a part taken out of its payload can be: the copy retains the payload, and a later write to a part taken out of the copy copies only that part. Any other argument (numbers, `bool`, `char`, `string`, `bytes`, enums whose payloads hold only such values, function values) is a compile error whose fix removes the call, and so are a second argument and `copy(mutable x)` (E0975).
 - `copy` is a prelude function, not a keyword. A local or parameter may be named `copy`, as one may be named `panic`; inside its scope a call `copy(x)` then calls the local. A top-level function named `copy` is never called: the prelude's `copy` is found first.
 - **The debug copy check.** A debug build run with `NARRA_CHECK_COPIES` set counts every copy on write of an array, map, `Box`, `StringBuilder` or generator, and at exit reports the ones that no `copy(...)` explains, with exit code 103, like the leak check (D80): `copy check: copies on write that no copy(...) explains: array 2`. Each `copy(x)` gives the objects it shares one credit, a copy on write uses one credit of the object it copies and gives one to each object the two copies now share, and a credit ends when the object's count falls back to 1. So at most one hidden copy per `copy(...)` call goes unreported. All-scalar structs live inline and never copy on write; the compile-time shared-write rule covers them. Release builds have no credits and no hooks.
 
@@ -966,6 +966,42 @@ const scores = [[1, 2], [3, 4]]
 let other = copy(scores)
 other[1][0] = 30            // copies the outer array and one row; scores is unchanged
 Arrays.push(mutable other, [5, 6])
+```
+
+A copy of an enum with a tracked payload:
+
+<!-- context
+struct Row {
+  cells: Array<int>
+}
+enum Slot {
+  Empty
+  Filled(row: Row)
+}
+---
+-->
+```ts
+const found: Option<Array<int>> = Some([1, 2])
+const kept = copy(found)
+if (kept is Some(items)) {
+  let list = items
+  list[0] = 9                 // copies this array only; found still holds [1, 2]
+}
+
+const slot = Slot.Filled(Row { cells: [3, 4] })
+const other = copy(slot)
+if (other is Slot.Filled(row)) {
+  let edited = row
+  edited.cells[0] = 5         // copies the cells of this row only
+}
+```
+
+An enum whose payloads hold only scalars and strings has nothing to copy:
+
+<!-- error: E0975 -->
+```ts
+const count: Option<int> = Some(3)
+const same = copy(count)      // E0975: remove the call
 ```
 
 ### Shared results

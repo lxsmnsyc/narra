@@ -382,7 +382,7 @@ function checkAssignment<W: Walker>(
       writtenLocal = found
       wasUsed = getLocal(checker, found).used
       // The fix of an unused local renames the assignments too.
-      Arrays.push(mutable checker.bodies[checker.body].locals[found].writes, targetPos)
+      Arrays.push(mutable checker.bodies[checker.body].locals[found].writes, copy(targetPos))
     }
   }
   checker.assigningId = getExpressionId(target)
@@ -619,7 +619,7 @@ export function checkBlockExpression<W: Walker>(
   walker: W,
   expression: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // The value is the common type of its returns, and every path must end in a return.
   if (expression is Expr.BlockExpr(_, pos, block)) {
     return checkBlockBody(mutable checker, walker, pos, block, want)
@@ -633,7 +633,7 @@ export function checkBlockBody<W: Walker>(
   pos: Pos,
   block: Block,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // A match arm written as a block in value position uses this too.
   const context = BlockContext {
     result: want,
@@ -648,8 +648,8 @@ export function checkBlockBody<W: Walker>(
   checker.labels = []
   checkBlock(mutable checker, walker, block)
   const finished = checker.blocks[Arrays.length(checker.blocks) - 1]
-  checker.loops = context.loops
-  checker.labels = context.labels
+  checker.loops = finished.loops
+  checker.labels = finished.labels
   checker.blocks = withoutLastBlock(checker.blocks)
   if (finished.returns == 0) {
     reportError(
@@ -674,7 +674,7 @@ export function checkBlockBody<W: Walker>(
   return Type.TVoid
 }
 
-function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> uses alloc {
+function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> from blocks uses alloc {
   let kept: Array<BlockContext> = []
   for (const i of Ranges.upTo(Arrays.length(blocks) - 1)) {
     Arrays.push(mutable kept, blocks[i])
@@ -959,7 +959,7 @@ function checkFor<W: Walker>(
     }
     if (Arrays.length(arguments) > 0) {
       if (getNodeType(checker, getExpressionId(arguments[0].value)) is Some(argumentType)) {
-        firstArgument = argumentType
+        firstArgument = copy(argumentType)
       }
     }
   }
@@ -1023,8 +1023,9 @@ function checkFor<W: Walker>(
   // Only an array place can be written through by index.
   if (findAssignedLocal(checker, source) >= 0) {
     if (getNodeType(checker, getExpressionId(source)) is Some(Type.TArray(sourceElement))) {
+      const contents = isContentsType(checker, sourceElement)
       checker.bodies[bodyIndex].locals[local].loopSource = describePlace(source)
-      checker.bodies[bodyIndex].locals[local].loopContents = isContentsType(checker, sourceElement)
+      checker.bodies[bodyIndex].locals[local].loopContents = contents
     }
   }
   enterLoop(mutable checker, pos, label)
@@ -1082,9 +1083,9 @@ function checkReferenceFor<W: Walker>(
   let element = Type.TVoid
   const sourceType = getNodeType(checker, getExpressionId(source))
   if (sourceType is Some(Type.TArray(arrayElement))) {
-    element = arrayElement
+    element = copy(arrayElement)
   } else if (sourceType is Some(Type.TMap(_, mapValue))) {
-    element = mapValue
+    element = copy(mapValue)
   }
   let valid = true
   if (marker.indexName != "" && builtin != "Array.entries") {
@@ -1164,8 +1165,8 @@ function checkReferenceFor<W: Walker>(
   const local = declareLocal(mutable checker, nodeId, pos, name, element, true, false)
   checker.bodies[bodyIndex].locals[local].binding = BindingKind.Reference
 
-  // The body borrows the source.
-  const outerBorrows = checker.loopBorrows
+  // The body borrows the source. The outer list stays as it is, so the push copies it.
+  const outerBorrows = copy(checker.loopBorrows)
   if (root >= 0) {
     Arrays.push(mutable checker.loopBorrows, LoopBorrow {
       local: root,
@@ -1193,8 +1194,8 @@ function findPlacePath(place: Expr): Array<string> uses alloc {
   }
 }
 
-function appendPath(path: Array<string>, segment: string): Array<string> uses alloc {
-  let longer = path
+function appendPath(path: Array<string>, segment: string): Array<string> from path uses alloc {
+  let longer = copy(path)
   Arrays.push(mutable longer, segment)
   return longer
 }
@@ -1406,7 +1407,7 @@ function extendArms(
   arm: int,
   isMatch: bool,
   calls: int,
-): Array<ArmStep> uses alloc {
+): Array<ArmStep> from arms uses alloc {
   let extended: Array<ArmStep> = []
   for (const step of Arrays.values(arms)) {
     Arrays.push(mutable extended, step)
@@ -1816,7 +1817,7 @@ function findStatementPos(statement: Stmt): Pos {
       | Stmt.AssignStmt(pos, _, _)
       | Stmt.CompoundAssignStmt(pos, _, _, _)
       | Stmt.ExprStmt(pos, _)
-      | Stmt.ReturnStmt(pos, _) => pos
+      | Stmt.ReturnStmt(pos, _) => copy(pos)
     _ => Pos { line: 0, column: 0 }
   }
 }

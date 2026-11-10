@@ -38,7 +38,7 @@ import {
 import { Fix, createFix, insertAt } from "narrac/fixes"
 import { collectPatternLocals } from "narrac/patterns"
 import { getPosKey } from "narrac/trivia"
-import { isCopyTracked, isCopyCall } from "narrac/stdcopy"
+import { isCopyTracked, isCopyCall, canShareType } from "narrac/stdcopy"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -91,7 +91,10 @@ export function checkSharedResultsIn(mutable checker: Checker, block: Block) use
   checkArrowReturns(mutable checker, facts)
 }
 
-export function findSharedArgument(checker: Checker, call: Expr): Option<Expr> uses alloc {
+export function findSharedArgument(
+  checker: Checker,
+  call: Expr,
+): Option<Expr> from call uses alloc {
   // The argument the call's result shares, or None for a fresh result. It reads the side
   // tables of the body being checked.
   if (call is Expr.CallExpr(nodeId, _, callee, _, arguments)) {
@@ -135,7 +138,11 @@ export function findSharedArgument(checker: Checker, call: Expr): Option<Expr> u
   return None
 }
 
-function findArgument(arguments: Array<Arg>, parameters: Array<Param>, index: int): Option<Expr> {
+function findArgument(
+  arguments: Array<Arg>,
+  parameters: Array<Param>,
+  index: int,
+): Option<Expr> from arguments {
   // Positional arguments come first; a named one matches the parameter's name.
   for (const position of Ranges.upTo(Arrays.length(arguments))) {
     const argument = arguments[position]
@@ -184,7 +191,7 @@ function noteDeclared(checker: Checker, mutable facts: SharingFacts, nodeId: int
 function addGiven(mutable facts: SharingFacts, local: int, value: Expr) uses alloc {
   let values: Array<Expr> = []
   if (facts.given[local] is Some(known)) {
-    values = known
+    values = copy(known)
   }
   Arrays.push(mutable values, value)
   facts.given[local] = values
@@ -429,7 +436,10 @@ function noteMutableArguments(
   }
 }
 
-function collectHeldTypes(checker: Checker, type: Option<Type>): Map<string, bool> uses alloc {
+function collectHeldTypes(
+  checker: Checker,
+  type: Option<Type>,
+): Map<string, bool> from checker uses alloc {
   // The tracked types a value holds, itself included, by type key. An unknown type or a
   // type parameter is "*", which overlaps every set.
   let held: Map<string, bool> = Map {}
@@ -580,38 +590,6 @@ function isStopLocal(checker: Checker, facts: SharingFacts, owner: int, local: i
   return !isInsideArrow(facts, local, owner)
 }
 
-export function canShareType(checker: Checker, type: Type): bool uses alloc {
-  // A value that can hold a tracked value: a tracked type, or an enum with such a payload.
-  let visited: Map<string, bool> = Map {}
-  return canShareVisiting(checker, type, mutable visited)
-}
-
-function canShareVisiting(
-  checker: Checker,
-  type: Type,
-  mutable visited: Map<string, bool>,
-): bool uses alloc {
-  if (isCopyTracked(checker, type)) {
-    return true
-  }
-  // An enum already visited adds nothing new.
-  if (type is Type.TEnum(index)) {
-    const typeName = typeKey(type)
-    if (visited[typeName] is Some(_)) {
-      return false
-    }
-    visited[typeName] = true
-    for (const variant of Arrays.values(checker.enums[index].variants)) {
-      for (const field of Arrays.values(variant.fields)) {
-        if (canShareVisiting(checker, field.fieldType, mutable visited)) {
-          return true
-        }
-      }
-    }
-  }
-  return false
-}
-
 function addFound(mutable query: SharingQuery, local: int) uses alloc {
   for (const known of Arrays.values(query.found)) {
     if (known == local) {
@@ -750,7 +728,7 @@ function findSharedLocals(
   facts: SharingFacts,
   owner: int,
   value: Expr,
-): Array<int> uses alloc {
+): Array<int> from checker uses alloc {
   let query = SharingQuery { owner: owner, visited: Map {}, blocks: Map {}, found: [] }
   collectShared(checker, facts, mutable query, value)
   return query.found
@@ -769,7 +747,7 @@ function checkFunctionReturns(
     if (site.owner != -1) {
       continue
     }
-    for (const local of Arrays.values(findSharedLocals(checker, facts, -1, site.value))) {
+    for (const local of Arrays.values(copy(findSharedLocals(checker, facts, -1, site.value)))) {
       const index = findParameterPosition(checker, funcDecl.parameters, local)
       if (index < 0 || index == shared || reported[index] is Some(_)) {
         continue
@@ -831,7 +809,9 @@ function checkArrowReturns(mutable checker: Checker, facts: SharingFacts) uses a
   for (const site of Arrays.values(facts.returns)) {
     if (facts.arrows[site.owner] is Some(Expr.ArrowExpr(_, _, parameters, result, _, _))) {
       const shared = findArrowShared(checker, site.owner, result, parameters)
-      for (const local of Arrays.values(findSharedLocals(checker, facts, site.owner, site.value))) {
+      for (const local of Arrays.values(
+        copy(findSharedLocals(checker, facts, site.owner, site.value)),
+      )) {
         const index = findParameterPosition(checker, parameters, local)
         if (index >= 0) {
           if (index == shared) {
@@ -902,8 +882,14 @@ function expectsFreshResult(checker: Checker, arrowId: int): bool {
   return false
 }
 
-function buildCopyFix(checker: Checker, value: Expr): Array<Fix> uses alloc {
-  // Wraps the returned value in copy(...) when the parser noted where it ends.
+function buildCopyFix(checker: Checker, value: Expr): Array<Fix> from checker uses alloc {
+  // Wraps the returned value in copy(...) when the parser noted where it ends
+  // and copy accepts its type.
+  if (getNodeType(checker, getExpressionId(value)) is Some(valueType)) {
+    if (!canShareType(checker, valueType)) {
+      return []
+    }
+  }
   const scope = checker.scopes[checker.current]
   if (scope.facts.valueEnds[getExpressionId(value)] is Some(end)) {
     const start = findExpressionStart(value)

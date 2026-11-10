@@ -36,7 +36,10 @@ import { sourceScope, exported } from "narrac/scopes"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-export function resolveOpt(mutable checker: Checker, typeExpr: Option<TypeExpr>): Type uses alloc {
+export function resolveOpt(
+  mutable checker: Checker,
+  typeExpr: Option<TypeExpr>,
+): Type from checker uses alloc {
   if (typeExpr is Some(present)) {
     return resolveType(mutable checker, present)
   }
@@ -54,7 +57,7 @@ export function resolveSignature(
   funcDecl: FuncDecl,
   funcIndex: int,
   report: bool,
-): Signature uses alloc {
+): Signature from checker uses alloc {
   // A function* must return Generator<T>, cannot take a `mutable` parameter, and takes its function-type parameters as `escaping`. A private function* gets a result type whose effects the effect pass infers.
   const savedIndex = checker.functionIndex
   checker.functionIndex = funcIndex
@@ -120,7 +123,7 @@ function resolveGeneratorResult(
   funcDecl: FuncDecl,
   funcIndex: int,
   report: bool,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (!funcDecl.generator) {
     return resolveOpt(mutable checker, funcDecl.result)
   }
@@ -164,7 +167,7 @@ function resolveGeneratorResult(
 export function funcResult(
   mutable checker: Checker,
   typeExpr: Option<Box<TypeExpr>>,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (typeExpr is Some(boxed)) {
     const resultExpr = boxed.value
     if (
@@ -177,7 +180,7 @@ export function funcResult(
   return Type.TVoid
 }
 
-function resolveTypeof(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+function resolveTypeof(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
   const name = typeExpr.typeofName
   // A name being resolved by its own type is a cycle.
   if (checker.busy[`typeof|${name}`] is Some(true)) {
@@ -205,7 +208,7 @@ function resolveTypeof(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
     return resolveFunctionTypeof(mutable checker, typeExpr, funcDecl, funcIndex)
   }
   // A declaration of this module that the declaration pass has not reached yet.
-  for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+  for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
     if (declaration is Decl.Const(constDecl)) {
       if (constDecl.name == name) {
         return resolveConstTypeof(mutable checker, typeExpr, constDecl, -1)
@@ -259,7 +262,7 @@ function resolveConstTypeof(
   typeExpr: TypeExpr,
   constDecl: ConstDecl,
   constIndex: int,
-): Type uses alloc {
+): Type from checker uses alloc {
   const name = typeExpr.typeofName
   // A constant that has been checked has its type.
   let scope = checker.current
@@ -300,7 +303,7 @@ function resolveFunctionTypeof(
   typeExpr: TypeExpr,
   funcDecl: FuncDecl,
   funcIndex: int,
-): Type uses alloc {
+): Type from checker uses alloc {
   const name = typeExpr.typeofName
   // A generic function, one with effect variables and one with a `mutable` parameter
   // have no function type to write.
@@ -401,10 +404,10 @@ function makeGenerator(
   element: Type,
   input: Type,
   effects: Array<string>,
-): Type uses alloc {
+): Type from element uses alloc {
   // Effect variables in the list belong to the function whose signature or body is being checked.
   const sorted = sortEffects(effects)
-  return Type.TGenerator(element, sorted, findEffectBinder(checker, sorted), -1, input)
+  return copy(Type.TGenerator(element, sorted, findEffectBinder(checker, sorted), -1, input))
 }
 
 function noteWrittenFunctionType(
@@ -419,7 +422,7 @@ function noteWrittenFunctionType(
   const key = typeKey(resolved)
   let written: Array<WrittenFunctionType> = []
   if (checker.writtenFunctionTypes[key] is Some(known)) {
-    written = known
+    written = copy(known)
   }
   for (const site of Arrays.values(written)) {
     if (site.scope == checker.current && site.type.pos == typeExpr.pos) {
@@ -453,7 +456,10 @@ function findTypeShared(mutable checker: Checker, typeExpr: TypeExpr): int uses 
   return -1
 }
 
-export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+export function resolveType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
   if (typeExpr.typeofName != "") {
     return resolveTypeof(mutable checker, typeExpr)
   }
@@ -599,7 +605,7 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   return Type.TVoid
 }
 
-function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
   const alias = splitString(typeExpr.name, ".")[0]
   const name = Str.sliceFrom(typeExpr.name, Str.length(alias) + 1)
   let scope = -1
@@ -693,10 +699,11 @@ export function resolveAlias(mutable checker: Checker, alias: int, usePos: Pos):
     return false
   }
   checker.aliases[alias].state = 1
-  const info = checker.aliases[alias]
+  const info = copy(checker.aliases[alias])
   const savedScope = enter(mutable checker, info.scope)
-  const savedEnv = checker.environment
+  // Save the environment after makeParameters, so nothing changes the checker while two names hold it.
   const parameters = makeParameters(mutable checker, info.typeParameters)
+  const savedEnv = checker.environment
   checker.environment = makeEnv(checker, parameters)
   const body = resolveType(mutable checker, info.body)
   checker.environment = savedEnv
@@ -711,11 +718,15 @@ export function resolveAlias(mutable checker: Checker, alias: int, usePos: Pos):
   return checker.aliases[alias].state == 2
 }
 
-function useAlias(mutable checker: Checker, alias: int, typeExpr: TypeExpr): Type uses alloc {
+function useAlias(
+  mutable checker: Checker,
+  alias: int,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
   if (!resolveAlias(mutable checker, alias, typeExpr.pos)) {
     return Type.TVoid
   }
-  const info = checker.aliases[alias]
+  const info = copy(checker.aliases[alias])
   const want = Arrays.length(info.typeParameters)
   const argCount = Arrays.length(typeExpr.arguments)
   if (argCount != want) {
@@ -753,7 +764,7 @@ function noteAliasUse(mutable checker: Checker, name: string, type: Type) uses a
   checker.aliasNames[typeKey(type)] = name
 }
 
-function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
   const count = Arrays.length(typeExpr.arguments)
   if (count < 2) {
     reportError(
@@ -771,7 +782,10 @@ function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses allo
   return findTupleType(mutable checker, elements)
 }
 
-export function findTupleType(mutable checker: Checker, elements: Array<Type>): Type uses alloc {
+export function findTupleType(
+  mutable checker: Checker,
+  elements: Array<Type>,
+): Type from checker uses alloc {
   // A tuple type is a prelude struct named Tuple whose fields are "0", "1", ...
   const key = `T|${typeKeys(elements)}`
   if (checker.instances[key] is Some(type)) {
@@ -812,7 +826,7 @@ function zeroPos(): Pos {
 export function resolveFields(
   mutable checker: Checker,
   declarations: Array<FieldDecl>,
-): Array<Field> uses alloc {
+): Array<Field> from declarations uses alloc {
   let fields: Array<Field> = []
   let seen: Map<string, bool> = Map {}
   for (const fieldDecl of Arrays.values(declarations)) {
@@ -833,13 +847,13 @@ export function resolveFields(
       pos: fieldDecl.pos,
     })
   }
-  return fields
+  return copy(fields)
 }
 
 export function resolveVariants(
   mutable checker: Checker,
   declarations: Array<VariantDecl>,
-): Array<Variant> uses alloc {
+): Array<Variant> from declarations uses alloc {
   let variants: Array<Variant> = []
   for (const index of Ranges.between(0, Arrays.length(declarations))) {
     const fields = resolveFields(mutable checker, declarations[index].fields)
@@ -859,12 +873,12 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
   }
   checker.generics[generic].built = true
   checker.generics[generic].building = true
-  const info = checker.generics[generic]
+  const info = copy(checker.generics[generic])
   const savedScope = enter(mutable checker, info.scope)
   const savedEnv = checker.environment
   checker.environment = makeEnv(checker, info.parameters)
   if (info.isStruct) {
-    let fields = resolveFields(mutable checker, info.fieldDeclarations)
+    let fields = copy(resolveFields(mutable checker, info.fieldDeclarations))
     for (const index of Ranges.between(0, Arrays.length(fields))) {
       if (
         fields[index].default is Some(_) && containsTypeParameter(checker, fields[index].fieldType)
@@ -903,7 +917,7 @@ export function instantiate(
   mutable checker: Checker,
   generic: int,
   arguments: Array<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // The instance is cached before its fields are substituted, so a template that holds itself (List<T> in Array<List<T>>) finds it; it joins instanceTypes after its fields.
   buildGeneric(mutable checker, generic)
   const key = `${Int.toString(generic)}|${typeKeys(arguments)}`
@@ -925,7 +939,7 @@ export function instantiate(
       pos: pos,
       opaque: info.opaque,
       tuple: false,
-      arguments: arguments,
+      arguments: copy(arguments),
       generic: generic,
       fields: [],
     })
@@ -935,7 +949,7 @@ export function instantiate(
       module: info.module,
       scope: info.scope,
       pos: pos,
-      arguments: arguments,
+      arguments: copy(arguments),
       generic: generic,
       variants: [],
     })
@@ -950,7 +964,7 @@ export function instantiate(
 }
 
 function fillInstance(mutable checker: Checker, generic: int, instance: Type) uses alloc {
-  const info = checker.generics[generic]
+  const info = copy(checker.generics[generic])
   let bindings: Map<int, Type> = Map {}
   if (instance is Type.TStruct(index)) {
     const arguments = checker.structs[index].arguments
@@ -1000,13 +1014,13 @@ export function substitute(
   mutable checker: Checker,
   type: Type,
   bindings: Map<int, Type>,
-): Type uses alloc {
+): Type from bindings uses alloc {
   match (type) {
     Type.TParam(param) => {
       if (bindings[param] is Some(bound)) {
         return bound
       }
-      return type
+      return copy(type)
     }
     Type.TArray(element) => {
       const newElement = substitute(mutable checker, element, bindings)
@@ -1018,11 +1032,11 @@ export function substitute(
     }
     Type.TGenerator(element, effects, binder, origin, input) => {
       if (!containsTypeParameter(checker, element) && !containsTypeParameter(checker, input)) {
-        return type
+        return copy(type)
       }
       const newElement = substitute(mutable checker, element, bindings)
       const newInput = substitute(mutable checker, input, bindings)
-      return Type.TGenerator(newElement, effects, binder, origin, newInput)
+      return copy(Type.TGenerator(newElement, effects, binder, origin, newInput))
     }
     Type.TMap(key, value) => {
       const newKey = substitute(mutable checker, key, bindings)
@@ -1031,36 +1045,35 @@ export function substitute(
     }
     Type.TFunc(parameters, result, effects, binder, shared) => {
       if (!containsTypeParameter(checker, type)) {
-        return type
+        return copy(type)
       }
       const newParams = substituteAll(mutable checker, parameters, bindings)
       const newResult = substitute(mutable checker, result, bindings)
-      return internComposite(
-        mutable checker,
-        Type.TFunc(newParams, newResult, effects, binder, shared),
+      return copy(
+        internComposite(mutable checker, Type.TFunc(newParams, newResult, effects, binder, shared)),
       )
     }
     Type.TStruct(index) => {
-      const info = checker.structs[index]
+      const info = copy(checker.structs[index])
       if (Arrays.length(info.arguments) == 0) {
-        return type
+        return copy(type)
       }
       const arguments = substituteAll(mutable checker, info.arguments, bindings)
       if (info.tuple) {
-        return findTupleType(mutable checker, arguments)
+        return copy(findTupleType(mutable checker, arguments))
       }
-      return instantiate(mutable checker, info.generic, arguments)
+      return copy(instantiate(mutable checker, info.generic, arguments))
     }
     Type.TEnum(index) => {
-      const info = checker.enums[index]
+      const info = copy(checker.enums[index])
       if (Arrays.length(info.arguments) == 0) {
-        return type
+        return copy(type)
       }
       const arguments = substituteAll(mutable checker, info.arguments, bindings)
-      return instantiate(mutable checker, info.generic, arguments)
+      return copy(instantiate(mutable checker, info.generic, arguments))
     }
     _ => {
-      return type
+      return copy(type)
     }
   }
 }
@@ -1069,7 +1082,7 @@ export function substituteAll(
   mutable checker: Checker,
   types: Array<Type>,
   bindings: Map<int, Type>,
-): Array<Type> uses alloc {
+): Array<Type> from bindings uses alloc {
   let out: Array<Type> = []
   for (const type of Arrays.values(types)) {
     Arrays.push(mutable out, substitute(mutable checker, type, bindings))

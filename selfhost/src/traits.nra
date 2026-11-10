@@ -239,7 +239,7 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
   checker.typeTraits[entryIndex].listed = Map {}
   checker.typeTraits[entryIndex].derived = Map {}
   checker.typeTraits[entryIndex].blocks = Map {}
-  const info = checker.typeTraits[entryIndex]
+  const info = copy(checker.typeTraits[entryIndex])
   for (const typeExpr of Arrays.values(info.implementationExpressions)) {
     const traitIndex = traitNamed(mutable checker, typeExpr)
     if (traitIndex < 0) {
@@ -304,7 +304,7 @@ export function funcBounds(
       seen[traitIndex] = true
       let current: Array<int> = []
       if (checker.bounds[typeParameters[i]] is Some(bounds)) {
-        current = bounds
+        current = copy(bounds)
       }
       Arrays.push(mutable current, traitIndex)
       checker.bounds[typeParameters[i]] = current
@@ -372,7 +372,7 @@ function checkListed(
   if (entryIndex < 0) {
     return
   }
-  const info = checker.typeTraits[entryIndex]
+  const info = copy(checker.typeTraits[entryIndex])
   for (const typeExpr of Arrays.values(info.implementationExpressions)) {
     const traitIndex = lookupTrait(checker, typeExpr.name)
     if (traitIndex >= 0) {
@@ -404,7 +404,7 @@ function checkListed(
       continue
     }
     if (isShapeTrait(checker, traitIndex)) {
-      for (const field of Arrays.values(shapeCheckedFields(checker, name, type))) {
+      for (const field of Arrays.values(copy(shapeCheckedFields(checker, name, type)))) {
         const reason = shapeProblem(mutable checker, field.fieldType, traitIndex)
         if (reason != "") {
           const message = `cannot derive Shape for ${info.name}: field ${quoteGo(field.name)} has type ${typeString(checker, field.fieldType)}, which does not implement Shape: ${reason}`
@@ -418,7 +418,7 @@ function checkListed(
     if (type == Type.TVoid) {
       continue
     }
-    for (const field of Arrays.values(listFields(checker, type))) {
+    for (const field of Arrays.values(copy(listFields(checker, type)))) {
       if (!typeImplements(mutable checker, field.fieldType, traitIndex)) {
         const message = `cannot derive ${checker.traits[traitIndex].name} for ${info.name}: field ${quoteGo(field.name)} has type ${typeString(checker, field.fieldType)}, which does not implement ${checker.traits[traitIndex].name}`
         reportError(mutable checker, typeExpr.pos, "E0509", message)
@@ -427,14 +427,18 @@ function checkListed(
   }
 }
 
-function shapeCheckedFields(checker: Checker, name: string, type: Type): Array<Field> uses alloc {
+function shapeCheckedFields(
+  checker: Checker,
+  name: string,
+  type: Type,
+): Array<Field> from checker uses alloc {
   // A concrete type checks every field. A generic type (TVoid) checks the fields that do not mention its type parameters, since the generated code bounds those by Shape.
   if (type != Type.TVoid) {
     return listFields(checker, type)
   }
   let out: Array<Field> = []
   if (lookupGeneric(checker, name) is Some(generic)) {
-    let fields = checker.generics[generic].fields
+    let fields = copy(checker.generics[generic].fields)
     for (const variant of Arrays.values(checker.generics[generic].variants)) {
       for (const field of Arrays.values(variant.fields)) {
         Arrays.push(mutable fields, field)
@@ -484,9 +488,9 @@ export function shapeDeriveHolds(mutable checker: Checker, typeName: string): bo
   }
   let type = Type.TVoid
   if (lookupType(checker, typeName) is Some(found)) {
-    type = found
+    type = copy(found)
   }
-  for (const field of Arrays.values(shapeCheckedFields(checker, typeName, type))) {
+  for (const field of Arrays.values(copy(shapeCheckedFields(checker, typeName, type)))) {
     if (!typeImplements(mutable checker, field.fieldType, shape)) {
       return false
     }
@@ -532,7 +536,7 @@ function anyParam(checker: Checker, types: Array<Type>, param: int): bool {
 }
 
 function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc {
-  const traitDecl = checker.traits[traitIndex].declaration
+  const traitDecl = copy(checker.traits[traitIndex].declaration)
   const name = checker.traits[traitIndex].name
   const selfParameter = checker.traits[traitIndex].selfParameter
   checker.environment = Map { "Self": Type.TParam(selfParameter) }
@@ -584,7 +588,7 @@ function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc 
     }
     const traitFunc = TraitFunc {
       name: funcDecl.name,
-      declaration: funcDecl,
+      declaration: copy(funcDecl),
       parameters: parameters,
       result: result,
     }
@@ -643,7 +647,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
     )
     return
   }
-  const info = checker.typeTraits[entryIndex]
+  const info = copy(checker.typeTraits[entryIndex])
   if (info.generic) {
     reportError(
       mutable checker,
@@ -659,7 +663,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   }
   let type = Type.TVoid
   if (lookupType(checker, typeExpr.name) is Some(namedType)) {
-    type = namedType
+    type = copy(namedType)
   }
   if (info.listed[traitIndex] is None) {
     reportError(
@@ -682,7 +686,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   const blockIndex = Arrays.length(checker.implementations)
   checker.typeTraits[entryIndex].blocks[traitIndex] = blockIndex
   const block = ImplInfo {
-    declaration: implDecl,
+    declaration: copy(implDecl),
     scope: checker.current,
     traitIndex: traitIndex,
     forType: type,
@@ -740,7 +744,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
     const implIndex = Arrays.length(checker.implementations[blockIndex].functions)
     Arrays.push(
       mutable checker.implementations[blockIndex].functions,
-      ImplFunc { name: funcDecl.name, declaration: funcDecl, result: result },
+      ImplFunc { name: funcDecl.name, declaration: copy(funcDecl), result: result },
     )
     checker.implFunctions[`${typeKey(type)}|${traitName}.${funcDecl.name}`] = ImplRef {
       block: blockIndex,
@@ -749,7 +753,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
     Arrays.push(mutable checker.programFunctions, ProgramFunc.ImplFunc(blockIndex, implIndex))
   }
   checker.environment = Map {}
-  for (const traitFunc of Arrays.values(checker.traits[traitIndex].functions)) {
+  for (const traitFunc of Arrays.values(copy(checker.traits[traitIndex].functions))) {
     if (got[traitFunc.name] is None) {
       reportError(
         mutable checker,
@@ -773,7 +777,7 @@ function checkMutableSelf(
     return
   }
   const selfType = Type.TParam(checker.traits[traitIndex].selfParameter)
-  for (const traitFunc of Arrays.values(checker.traits[traitIndex].functions)) {
+  for (const traitFunc of Arrays.values(copy(checker.traits[traitIndex].functions))) {
     for (const i of Ranges.between(0, Arrays.length(traitFunc.parameters))) {
       if (traitFunc.declaration.parameters[i].isMutable && traitFunc.parameters[i] == selfType) {
         const traitName = checker.traits[traitIndex].name
@@ -797,8 +801,8 @@ function sameSignature(
   funcIndex: int,
   selfMap: Map<int, Type>,
 ): bool uses alloc {
-  const traitFunc = checker.traits[traitIndex].functions[funcIndex]
-  const want = traitFunc.declaration
+  const traitFunc = copy(checker.traits[traitIndex].functions[funcIndex])
+  const want = copy(traitFunc.declaration)
   if (Arrays.length(funcDecl.parameters) != Arrays.length(want.parameters)) {
     return false
   }
@@ -833,10 +837,10 @@ function signatureText(
   funcIndex: int,
   selfMap: Map<int, Type>,
 ): string uses alloc {
-  const traitFunc = checker.traits[traitIndex].functions[funcIndex]
+  const traitFunc = copy(checker.traits[traitIndex].functions[funcIndex])
   let parts: Array<string> = []
   for (const i of Ranges.between(0, Arrays.length(traitFunc.declaration.parameters))) {
-    const param = traitFunc.declaration.parameters[i]
+    const param = copy(traitFunc.declaration.parameters[i])
     let flags = ""
     if (param.isMutable) {
       flags = "mutable "
@@ -860,7 +864,7 @@ function signatureText(
   return text
 }
 
-export function listFields(checker: Checker, type: Type): Array<Field> uses alloc {
+export function listFields(checker: Checker, type: Type): Array<Field> from checker uses alloc {
   let out: Array<Field> = []
   match (type) {
     Type.TStruct(index) => {
@@ -980,7 +984,7 @@ function shapeImplements(mutable checker: Checker, type: Type, traitIndex: int):
         if (count < 2 || count > 4) {
           return false
         }
-        for (const argument of Arrays.values(checker.structs[index].arguments)) {
+        for (const argument of Arrays.values(copy(checker.structs[index].arguments))) {
           if (!typeImplements(mutable checker, argument, traitIndex)) {
             return false
           }
@@ -1027,7 +1031,7 @@ function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): st
         if (count < 2 || count > 4) {
           return `a tuple of ${Int.toString(count)} items is not supported; use two to four`
         }
-        for (const argument of Arrays.values(checker.structs[index].arguments)) {
+        for (const argument of Arrays.values(copy(checker.structs[index].arguments))) {
           const problem = shapeProblem(mutable checker, argument, traitIndex)
           if (problem != "") {
             return problem
@@ -1051,7 +1055,7 @@ function nominalShapeProblem(
   const text = typeString(checker, type)
   const entryIndex = findTypeTraits(mutable checker, type)
   if (entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
-    for (const field of Arrays.values(listFields(checker, type))) {
+    for (const field of Arrays.values(copy(listFields(checker, type)))) {
       const problem = shapeProblem(mutable checker, field.fieldType, traitIndex)
       if (problem != "") {
         return `${text} derives Shape, but its field ${quoteGo(field.name)} does not implement it: ${problem}`
@@ -1096,7 +1100,7 @@ function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int
   if (!auto && checker.typeTraits[entryIndex].derived[traitIndex] is None) {
     return false
   }
-  for (const field of Arrays.values(listFields(checker, type))) {
+  for (const field of Arrays.values(copy(listFields(checker, type)))) {
     if (!typeImplements(mutable checker, field.fieldType, traitIndex)) {
       return false
     }
@@ -1109,7 +1113,7 @@ export function implFunc(
   type: Type,
   traitIndex: int,
   name: string,
-): Option<ImplRef> uses alloc {
+): Option<ImplRef> from checker uses alloc {
   // None when the compiler provides the function (automatic Equatable and Hashable, derives).
   return checker.implFunctions[`${typeKey(type)}|${checker.traits[traitIndex].name}.${name}`]
 }
@@ -1321,7 +1325,7 @@ function nominalKeyProblem(
   if (isCellType(checker, type)) {
     return "a Cell is shared by identity, not hashable"
   }
-  for (const field of Arrays.values(listFields(checker, type))) {
+  for (const field of Arrays.values(copy(listFields(checker, type)))) {
     const problem = mapKeyProblem(mutable checker, field.fieldType, mutable seen)
     if (problem != "") {
       return problem

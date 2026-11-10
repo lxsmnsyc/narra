@@ -1,7 +1,7 @@
 ---
 id: std-spec-functions
 title: "Std functions and constants the spec uses"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-6

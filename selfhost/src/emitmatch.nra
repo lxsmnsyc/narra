@@ -239,9 +239,9 @@ function bindAlternatives<W: EmitWalker>(
     } else {
       writeLine(mutable emitter, "} else {")
     }
-    emitter.indent = emitter.indent + 1
+    emitter.indent++
     bindPattern(walker, mutable emitter, alternatives[index], path, true)
-    emitter.indent = emitter.indent - 1
+    emitter.indent--
   }
   writeLine(mutable emitter, "}")
 }
@@ -314,8 +314,7 @@ function bindPattern<W: EmitWalker>(
         }
       }
     }
-    Pattern.PatLit(_, _, _) => {}
-    Pattern.PatWildcard(_, _) => {}
+    Pattern.PatLit(_, _, _) | Pattern.PatWildcard(_, _) => {}
   }
 }
 
@@ -352,7 +351,7 @@ export function emitIfIs<W: EmitWalker>(
     if (condition is Expr.IsExpr(_, _, subject, pattern)) {
       const subjectType = readNodeType(emitter, getExpressionId(subject))
       writeLine(mutable emitter, "{")
-      emitter.indent = emitter.indent + 1
+      emitter.indent++
       pushScope(mutable emitter, false)
       beginStatement(mutable emitter)
       const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
@@ -365,25 +364,25 @@ export function emitIfIs<W: EmitWalker>(
       const holds = temp(mutable emitter, Type.TBool, matchTest)
       endStatement(mutable emitter)
       writeLine(mutable emitter, `if (${holds}) {`)
-      emitter.indent = emitter.indent + 1
+      emitter.indent++
       pushScope(mutable emitter, false)
       bindPattern(walker, mutable emitter, pattern, held, false)
       EmitWalker.emitBlockInScope(walker, mutable emitter, then)
       popScope(mutable emitter)
-      emitter.indent = emitter.indent - 1
+      emitter.indent--
       if (orElse is Some(otherwise)) {
         writeLine(mutable emitter, "} else {")
-        emitter.indent = emitter.indent + 1
+        emitter.indent++
         if (otherwise is Stmt.BlockStmt(elseBlock)) {
           EmitWalker.emitBlock(walker, mutable emitter, elseBlock, false)
         } else {
           EmitWalker.emitStatement(walker, mutable emitter, otherwise)
         }
-        emitter.indent = emitter.indent - 1
+        emitter.indent--
       }
       writeLine(mutable emitter, "}")
       popScope(mutable emitter)
-      emitter.indent = emitter.indent - 1
+      emitter.indent--
       writeLine(mutable emitter, "}")
       return
     }
@@ -406,20 +405,20 @@ function emitMatchArms<W: EmitWalker>(
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
   const subjectType = readNodeType(emitter, getExpressionId(subject))
   const held = temp(mutable emitter, subjectType, code.text)
-  emitter.tempCount = emitter.tempCount + 1
+  emitter.tempCount++
   const doneName = `m${Int.toString(emitter.tempCount)}`
   const doneDeclaration = declareVariable(mutable emitter, "bool", doneName)
   const done = variableRef(emitter, doneName)
   writeLine(mutable emitter, `${doneDeclaration} = false;`)
   for (const arm of Arrays.values(arms)) {
     writeLine(mutable emitter, `if (!${done}) {`)
-    emitter.indent = emitter.indent + 1
+    emitter.indent++
     beginStatement(mutable emitter)
     const condition = emitPatternCondition(walker, mutable emitter, arm.pattern, held)
     const holds = temp(mutable emitter, Type.TBool, condition)
     endStatement(mutable emitter)
     writeLine(mutable emitter, `if (${holds}) {`)
-    emitter.indent = emitter.indent + 1
+    emitter.indent++
     pushScope(mutable emitter, false)
     bindPattern(walker, mutable emitter, arm.pattern, held, false)
     if (arm.guard is Some(guard)) {
@@ -428,7 +427,7 @@ function emitMatchArms<W: EmitWalker>(
       const guardHolds = temp(mutable emitter, Type.TBool, guardCode.text)
       endStatement(mutable emitter)
       writeLine(mutable emitter, `if (${guardHolds}) {`)
-      emitter.indent = emitter.indent + 1
+      emitter.indent++
     }
     writeLine(mutable emitter, `${done} = true;`)
     if (returning) {
@@ -443,13 +442,13 @@ function emitMatchArms<W: EmitWalker>(
       emitStatementArm(walker, mutable emitter, arm)
     }
     if (arm.guard is Some(_)) {
-      emitter.indent = emitter.indent - 1
+      emitter.indent--
       writeLine(mutable emitter, "}")
     }
     popScope(mutable emitter)
-    emitter.indent = emitter.indent - 1
+    emitter.indent--
     writeLine(mutable emitter, "}")
-    emitter.indent = emitter.indent - 1
+    emitter.indent--
     writeLine(mutable emitter, "}")
   }
 }
@@ -500,7 +499,7 @@ export function emitBlockBody<W: EmitWalker>(
 ): Code uses alloc {
   // Each return stores its value, releases what the block holds and jumps to
   // the label after the block. A match arm written as a block uses this too.
-  emitter.tempCount = emitter.tempCount + 1
+  emitter.tempCount++
   const number = Int.toString(emitter.tempCount)
   const typeName = cType(emitter.checker, resultType)
   const result = declareUnset(mutable emitter, typeName, `r${number}`)
@@ -511,13 +510,13 @@ export function emitBlockBody<W: EmitWalker>(
     scopes: Arrays.length(emitter.scopes),
   }
   writeLine(mutable emitter, "{")
-  emitter.indent = emitter.indent + 1
+  emitter.indent++
   Arrays.push(mutable emitter.blocks, info)
   pushScope(mutable emitter, false)
   EmitWalker.emitBlockInScope(walker, mutable emitter, block)
   popScope(mutable emitter)
   emitter.blocks = withoutLastBlock(emitter.blocks)
-  emitter.indent = emitter.indent - 1
+  emitter.indent--
   writeLine(mutable emitter, "}")
   writeLine(mutable emitter, `${info.label}:;`)
   if (needsRc(emitter, resultType)) {
@@ -591,7 +590,7 @@ export function emitMatchValue<W: EmitWalker>(
 ): Code uses alloc {
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
     const resultType = readNodeType(emitter, nodeId)
-    emitter.tempCount = emitter.tempCount + 1
+    emitter.tempCount++
     const resultName = cType(emitter.checker, resultType)
     const variableName = `r${Int.toString(emitter.tempCount)}`
     const result = declareUnset(mutable emitter, resultName, variableName)

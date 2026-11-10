@@ -228,7 +228,7 @@ function findByteChar(byte: int): char {
 const ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
 export function literal(mutable emitter: Emitter, text: string): string uses alloc {
-  emitter.literalCount = emitter.literalCount + 1
+  emitter.literalCount++
   const name = `L${Int.toString(emitter.literalCount)}`
   Str.append(
     mutable emitter.literals,
@@ -354,14 +354,14 @@ export function underlyingType(emitter: Emitter, type: Type): Type {
 
 export function needsRc(emitter: Emitter, type: Type): bool {
   return match (type) {
-    Type.TStr => true
-    Type.TBytes => true
-    Type.TStringBuilder => true
-    Type.TArray(_) => true
-    Type.TFunc(_, _, _, _) => true
-    Type.TBox(_) => true
-    Type.TMap(_, _) => true
-    Type.TGenerator(_, _, _, _, _) => true
+    Type.TStr
+      | Type.TBytes
+      | Type.TStringBuilder
+      | Type.TArray(_)
+      | Type.TFunc(_, _, _, _)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TGenerator(_, _, _, _, _) => true
     Type.TStruct(index) => structNeedsRc(emitter, index)
     Type.TEnum(index) => isBoxed(emitter, index)
     Type.TDistinct(_) => needsRc(emitter, underlyingType(emitter, type))
@@ -408,16 +408,14 @@ function refCountCode(
 ): string uses alloc {
   const base = underlyingType(emitter, type)
   return match (base) {
-    Type.TStr => `lstr_${operation}(${value});`
-    Type.TBytes => `lstr_${operation}(${value});`
+    Type.TStr | Type.TBytes => `lstr_${operation}(${value});`
     Type.TStringBuilder => `narra_sb_${operation}(${value});`
-    Type.TArray(_) => `${containerName(emitter, base)}_${operation}(${value});`
-    Type.TBox(_) => `${containerName(emitter, base)}_${operation}(${value});`
-    Type.TMap(_, _) => `${containerName(emitter, base)}_${operation}(${value});`
+    Type.TArray(_)
+      | Type.TBox(_)
+      | Type.TMap(_, _) => `${containerName(emitter, base)}_${operation}(${value});`
     Type.TFunc(_, _, _, _) => `narra_env_${operation}((${value}).env);`
     Type.TGenerator(_, _, _, _, _) => `narra_gen_${operation}(${value});`
-    Type.TStruct(_) => structOrEnumCode(emitter, operation, base, value)
-    Type.TEnum(_) => structOrEnumCode(emitter, operation, base, value)
+    Type.TStruct(_) | Type.TEnum(_) => structOrEnumCode(emitter, operation, base, value)
     _ => ""
   }
 }
@@ -436,7 +434,7 @@ function structOrEnumCode(
 
 export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   // The counter is program-wide: it is never reset per function.
-  emitter.tempCount = emitter.tempCount + 1
+  emitter.tempCount++
   const name = `t${Int.toString(emitter.tempCount)}`
   const typeName = cType(emitter.checker, type)
   const declaration = declareVariable(mutable emitter, typeName, name)
@@ -472,13 +470,11 @@ function withoutLast<T>(items: Array<Array<T>>): Array<Array<T>> uses alloc {
 }
 
 function releaseTemporaries(mutable emitter: Emitter, temporaries: Array<TempVar>) uses alloc {
-  let index = Arrays.length(temporaries) - 1
-  while (index >= 0) {
+  for (let index = Arrays.length(temporaries) - 1; index >= 0; index--) {
     const text = releaseCode(emitter, temporaries[index].tempType, temporaries[index].name)
     if (text != "") {
       writeLine(mutable emitter, text)
     }
-    index = index - 1
   }
 }
 
@@ -529,23 +525,19 @@ export function popScope(mutable emitter: Emitter) uses alloc {
 }
 
 function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
-  let index = Arrays.length(frame.locals) - 1
-  while (index >= 0) {
+  for (let index = Arrays.length(frame.locals) - 1; index >= 0; index--) {
     const local = readLocal(emitter, frame.locals[index])
     const text = releaseCode(emitter, local.localType, variableRef(emitter, localName(local)))
     if (text != "") {
       writeLine(mutable emitter, text)
     }
-    index = index - 1
   }
-  let heldIndex = Arrays.length(frame.held) - 1
-  while (heldIndex >= 0) {
+  for (let heldIndex = Arrays.length(frame.held) - 1; heldIndex >= 0; heldIndex--) {
     const heldValue = frame.held[heldIndex]
     const heldText = releaseCode(emitter, heldValue.tempType, heldValue.name)
     if (heldText != "") {
       writeLine(mutable emitter, heldText)
     }
-    heldIndex = heldIndex - 1
   }
 }
 
@@ -562,32 +554,24 @@ export function addLocal(mutable emitter: Emitter, localIndex: int) uses alloc {
 }
 
 export function unwindAll(mutable emitter: Emitter) uses alloc {
-  let frame = Arrays.length(emitter.frames) - 1
-  while (frame >= 0) {
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= 0; frame--) {
     const temporaries = emitter.frames[frame]
     releaseTemporaries(mutable emitter, temporaries)
-    frame = frame - 1
   }
-  let scope = Arrays.length(emitter.scopes) - 1
-  while (scope >= 0) {
+  for (let scope = Arrays.length(emitter.scopes) - 1; scope >= 0; scope--) {
     const frameScope = emitter.scopes[scope]
     releaseLocals(mutable emitter, frameScope)
-    scope = scope - 1
   }
 }
 
 export function unwindBlock(mutable emitter: Emitter, info: BlockInfo) uses alloc {
-  let frame = Arrays.length(emitter.frames) - 1
-  while (frame >= info.frames) {
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= info.frames; frame--) {
     const temporaries = emitter.frames[frame]
     releaseTemporaries(mutable emitter, temporaries)
-    frame = frame - 1
   }
-  let scope = Arrays.length(emitter.scopes) - 1
-  while (scope >= info.scopes) {
+  for (let scope = Arrays.length(emitter.scopes) - 1; scope >= info.scopes; scope--) {
     const frameScope = emitter.scopes[scope]
     releaseLocals(mutable emitter, frameScope)
-    scope = scope - 1
   }
 }
 
@@ -670,8 +654,7 @@ export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses al
 }
 
 export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
-  let index = Arrays.length(emitter.loopInfos) - 1
-  while (index >= 0) {
+  for (let index = Arrays.length(emitter.loopInfos) - 1; index >= 0; index--) {
     const info = emitter.loopInfos[index]
     if (info.label == label) {
       unwindToLoop(mutable emitter, index)
@@ -685,7 +668,6 @@ export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak
       }
       return
     }
-    index = index - 1
   }
 }
 
@@ -693,22 +675,18 @@ function unwindToLoop(mutable emitter: Emitter, loopIndex: int) uses alloc {
   // The scope of loop k is the k-th loop scope from the outside.
   const depth = emitter.loopFrames[loopIndex]
   let remaining = Arrays.length(emitter.loopFrames) - 1 - loopIndex
-  let frame = Arrays.length(emitter.frames) - 1
-  while (frame >= depth) {
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= depth; frame--) {
     const temporaries = emitter.frames[frame]
     releaseTemporaries(mutable emitter, temporaries)
-    frame = frame - 1
   }
-  let scope = Arrays.length(emitter.scopes) - 1
-  while (scope >= 0) {
+  for (let scope = Arrays.length(emitter.scopes) - 1; scope >= 0; scope--) {
     const frameScope = emitter.scopes[scope]
     releaseLocals(mutable emitter, frameScope)
     if (frameScope.loop) {
       if (remaining == 0) {
         return
       }
-      remaining = remaining - 1
+      remaining--
     }
-    scope = scope - 1
   }
 }

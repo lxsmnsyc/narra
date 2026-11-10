@@ -202,7 +202,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - `narrac check --json` ranges are positions only: `range.end` equals `range.start` for a diagnostic (fix edits have real ranges), and `file` is the base name for a single file.
 - Enums are stored inline as tagged unions, so an enum cannot contain itself.
 - `Str.length` returns `int` instead of `ByteIndex`, and so do all string positions (`Str.indexOf`, `Str.slice`, `Str.nextChar` and the rest). Slices are copies, not views of the original buffer.
-- Reference counts are updated on every copy. The Perceus-style removal of unneeded updates is not implemented.
+- Reference counts are removed in two cases only: a `for` item over an array borrows from the array the loop holds, and an `is` or `match` binding borrows from the subject the statement holds (the rules are in the comment at the top of `selfhost/src/emitstate.nra`). Every other copy updates the count. Moving a local into its last use and Perceus reuse of freed cells are not implemented.
 - Generic functions and types are compiled once per set of type arguments in every build. The spec's layout tables for debug builds are not implemented.
 - Generic function bodies are checked once with their type parameters left open, then again for each instance.
 - One C file per program, not one per module. Declaration C names are `<kind>_<module hash>_<name>`, such as `f_3fa9c1e7_show`: the hash is xxHash32 (seed 0) of the module path relative to the package. Composite types (generic instances, tuples, function types, arrays) are interned as `<kind>_<head>_<hash>`, and a comment table in the C maps each to its Narra type. A single file `hello.nra` is module `"hello"`. A package cannot be named `std`.

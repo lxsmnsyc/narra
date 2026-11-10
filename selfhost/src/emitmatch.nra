@@ -4,8 +4,9 @@
 // Patterns read from a subject held in a C variable for the whole match or
 // if statement. A test is a chain of conditions on C paths into the subject,
 // joined with &&, so a field of a union member is read only after its tag is
-// checked. A binding copies the value at its path and retains it, so the
-// local owns one reference and is released with its scope.
+// checked. A binding in `is` or `match` borrows the value at its path: the
+// subject is held for the whole statement, and payloads are never written. A
+// destructuring binding outlives its statement, so it retains its part.
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Expr, Stmt, Block, Pattern, FieldPattern, MatchArm } from "narrac/ast"
@@ -35,8 +36,8 @@ import {
   readNodeType,
   readNodeRef,
   readLocal,
+  isReference,
   retainCode,
-  releaseCode,
   localRef,
   declareLocal,
   declareLocalVariable,
@@ -222,6 +223,7 @@ function bindAlternatives<W: EmitWalker>(
   mutable emitter: Emitter,
   alternatives: Array<Pattern>,
   path: string,
+  borrowed: bool,
 ) uses alloc {
   // Test the alternatives in order and bind from the first one that matches. The last one needs no test, because the pattern already matched.
   const count = Arrays.length(alternatives)
@@ -241,7 +243,7 @@ function bindAlternatives<W: EmitWalker>(
       writeLine(mutable emitter, "} else {")
     }
     emitter.indent++
-    bindPattern(walker, mutable emitter, alternatives[index], path, true)
+    bindPattern(walker, mutable emitter, alternatives[index], path, true, borrowed)
     emitter.indent--
   }
   writeLine(mutable emitter, "}")
@@ -253,8 +255,9 @@ function bindPattern<W: EmitWalker>(
   pattern: Pattern,
   path: string,
   assignOnly: bool,
+  borrowed: bool,
 ) uses alloc {
-  // Each local takes its own reference. Inside a list of alternatives the locals are declared once before it, so a binding only assigns.
+  // A borrowed local only copies the value; any other local takes its own reference. Inside a list of alternatives the locals are declared once before it, so a binding only assigns.
   match (pattern) {
     Pattern.PatName(nodeId, _, _) => {
       const localIndex = declaredLocal(emitter, nodeId)
@@ -266,13 +269,15 @@ function bindPattern<W: EmitWalker>(
         } else {
           declareLocal(mutable emitter, localIndex, path)
         }
-        const name = localRef(emitter, localIndex)
-        const retainText = retainCode(emitter, local.localType, name)
-        if (retainText != "") {
-          writeLine(mutable emitter, retainText)
-        }
-        if (!assignOnly) {
-          addLocal(mutable emitter, localIndex)
+        if (!borrowed) {
+          const name = localRef(emitter, localIndex)
+          const retainText = retainCode(emitter, local.localType, name)
+          if (retainText != "") {
+            writeLine(mutable emitter, retainText)
+          }
+          if (!assignOnly) {
+            addLocal(mutable emitter, localIndex)
+          }
         }
       }
     }
@@ -280,19 +285,33 @@ function bindPattern<W: EmitWalker>(
       if (readNodeRef(emitter, nodeId) is Ref.Constructor(enumIndex, variantIndex)) {
         for (const index of Ranges.between(0, Arrays.length(arguments))) {
           const argumentPath = variantPath(emitter, enumIndex, variantIndex, index, path)
-          bindPattern(walker, mutable emitter, arguments[index], argumentPath, assignOnly)
+          bindPattern(walker, mutable emitter, arguments[index], argumentPath, assignOnly, borrowed)
         }
       }
     }
     Pattern.PatStruct(_, _, fields) => {
       for (const field of Arrays.values(fields)) {
-        bindPattern(walker, mutable emitter, field.pattern, `${path}.f_${field.name}`, assignOnly)
+        bindPattern(
+          walker,
+          mutable emitter,
+          field.pattern,
+          `${path}.f_${field.name}`,
+          assignOnly,
+          borrowed,
+        )
       }
     }
     Pattern.PatTuple(_, _, arguments) => {
       for (const index of Ranges.between(0, Arrays.length(arguments))) {
         const name = tupleFieldName(emitter, pattern, index)
-        bindPattern(walker, mutable emitter, arguments[index], `${path}.f_${name}`, assignOnly)
+        bindPattern(
+          walker,
+          mutable emitter,
+          arguments[index],
+          `${path}.f_${name}`,
+          assignOnly,
+          borrowed,
+        )
       }
     }
     Pattern.PatOr(_, _, alternatives) => {
@@ -307,8 +326,8 @@ function bindPattern<W: EmitWalker>(
             }
           }
         }
-        bindAlternatives(walker, mutable emitter, alternatives, path)
-        if (!assignOnly) {
+        bindAlternatives(walker, mutable emitter, alternatives, path, borrowed)
+        if (!assignOnly && !borrowed) {
           for (const localIndex of Arrays.values(locals)) {
             addLocal(mutable emitter, localIndex)
           }
@@ -317,6 +336,29 @@ function bindPattern<W: EmitWalker>(
     }
     Pattern.PatLit(_, _, _) | Pattern.PatWildcard(_, _) => {}
   }
+}
+
+function isStableSubject(emitter: Emitter, subject: Expr): bool {
+  // A local that cannot be assigned keeps its value until its scope ends.
+  if (subject is Expr.Ident(nodeId, _, _)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Local(index)) {
+      return !readLocal(emitter, index).isMutable && !isReference(emitter, index)
+    }
+  }
+  return false
+}
+
+function hasCountedBinding(emitter: Emitter, arms: Array<MatchArm>): bool {
+  for (const arm of Arrays.values(arms)) {
+    let locals: Array<int> = []
+    collectBoundLocals(emitter, arm.pattern, mutable locals)
+    for (const localIndex of Arrays.values(locals)) {
+      if (needsRc(emitter, readLocal(emitter, localIndex).localType)) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 function holdSubject(mutable emitter: Emitter, name: string, subjectType: Type) uses alloc {
@@ -356,10 +398,17 @@ export function emitIfIs<W: EmitWalker>(
       pushScope(mutable emitter, false)
       beginStatement(mutable emitter)
       const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
-      const consumed = consume(mutable emitter, code.text, code.owned, subjectType)
-      const held = temp(mutable emitter, subjectType, consumed)
-      endStatement(mutable emitter)
-      holdSubject(mutable emitter, held, subjectType)
+      // A read-only local stays alive for the statement on its own.
+      let held = ""
+      if (!code.owned && isStableSubject(emitter, subject)) {
+        held = temp(mutable emitter, subjectType, code.text)
+        endStatement(mutable emitter)
+      } else {
+        const consumed = consume(mutable emitter, code.text, code.owned, subjectType)
+        held = temp(mutable emitter, subjectType, consumed)
+        endStatement(mutable emitter)
+        holdSubject(mutable emitter, held, subjectType)
+      }
       beginStatement(mutable emitter)
       const matchTest = emitPatternCondition(walker, mutable emitter, pattern, held)
       const holds = temp(mutable emitter, Type.TBool, matchTest)
@@ -367,7 +416,7 @@ export function emitIfIs<W: EmitWalker>(
       writeLine(mutable emitter, `if (${holds}) {`)
       emitter.indent++
       pushScope(mutable emitter, false)
-      bindPattern(walker, mutable emitter, pattern, held, false)
+      bindPattern(walker, mutable emitter, pattern, held, false, true)
       EmitWalker.emitBlockInScope(walker, mutable emitter, then)
       popScope(mutable emitter)
       emitter.indent--
@@ -405,7 +454,17 @@ function emitMatchArms<W: EmitWalker>(
   // each arm.
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
   const subjectType = readNodeType(emitter, getExpressionId(subject))
-  const held = temp(mutable emitter, subjectType, code.text)
+  // The bindings borrow from the subject, so the statement holds it: an owned
+  // temporary or a read-only local already lives long enough; any other value
+  // that an arm binds from is retained until the statement ends.
+  let held = ""
+  if (code.owned || isStableSubject(emitter, subject) || !hasCountedBinding(emitter, arms)) {
+    held = temp(mutable emitter, subjectType, code.text)
+  } else {
+    held = consume(mutable emitter, code.text, false, subjectType)
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name: held, tempType: subjectType })
+  }
   emitter.tempCount++
   const doneName = `m${Int.toString(emitter.tempCount)}`
   const doneDeclaration = declareVariable(mutable emitter, "bool", doneName)
@@ -443,7 +502,7 @@ function emitMatchArms<W: EmitWalker>(
     writeLine(mutable emitter, `if (${holds}) {`)
     emitter.indent++
     pushScope(mutable emitter, false)
-    bindPattern(walker, mutable emitter, arm.pattern, held, false)
+    bindPattern(walker, mutable emitter, arm.pattern, held, false, true)
     if (arm.guard is Some(guard)) {
       beginStatement(mutable emitter)
       const guardCode = EmitWalker.emitExpression(walker, mutable emitter, guard)
@@ -630,7 +689,7 @@ function emitGuardedAlternatives<W: EmitWalker>(
     endStatement(mutable emitter)
     writeLine(mutable emitter, `if (!${selected} && ${holds}) {`)
     emitter.indent++
-    bindPattern(walker, mutable emitter, alternative, held, true)
+    bindPattern(walker, mutable emitter, alternative, held, true, true)
     beginStatement(mutable emitter)
     const guardCode = EmitWalker.emitExpression(walker, mutable emitter, guard)
     const guardHolds = temp(mutable emitter, Type.TBool, guardCode.text)
@@ -639,16 +698,6 @@ function emitGuardedAlternatives<W: EmitWalker>(
     emitter.indent++
     writeLine(mutable emitter, `${selected} = true;`)
     emitter.indent--
-    writeLine(mutable emitter, "} else {")
-    emitter.indent++
-    for (const localIndex of Arrays.values(locals)) {
-      const local = readLocal(emitter, localIndex)
-      const releaseText = releaseCode(emitter, local.localType, localRef(emitter, localIndex))
-      if (releaseText != "") {
-        writeLine(mutable emitter, releaseText)
-      }
-    }
-    emitter.indent--
     writeLine(mutable emitter, "}")
     emitter.indent--
     writeLine(mutable emitter, "}")
@@ -656,9 +705,6 @@ function emitGuardedAlternatives<W: EmitWalker>(
   writeLine(mutable emitter, `if (${selected}) {`)
   emitter.indent++
   pushScope(mutable emitter, false)
-  for (const localIndex of Arrays.values(locals)) {
-    addLocal(mutable emitter, localIndex)
-  }
   emitArmBody(walker, mutable emitter, arm, returning, isValue, result, resultType, done)
   popScope(mutable emitter)
   emitter.indent--
@@ -829,7 +875,7 @@ export function emitDestructure<W: EmitWalker>(
     const code = EmitWalker.emitExpression(walker, mutable emitter, value)
     const patternType = readNodeType(emitter, getPatternId(pattern))
     const held = temp(mutable emitter, patternType, code.text)
-    bindPattern(walker, mutable emitter, pattern, held, false)
+    bindPattern(walker, mutable emitter, pattern, held, false, false)
     endStatement(mutable emitter)
     return
   }

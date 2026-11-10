@@ -467,7 +467,7 @@ Decision: every C name comes from `compiler/internal/narra/cnames.go`. A declara
 Decision: an enum with at least one fielded variant is `{ tag, payload pointer }`. The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
 
 - **Reason.** SPEC section 6 asks for this, and recursive enums (an AST) need it.
-- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates. The `interp` benchmark is about 2x slower until node `perceus` removes retains on borrowed values. The user accepted this.
+- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates. The user accepted this. It made the `interp` benchmark about 2x slower (0.39 s against 0.24 s) through a retain and release of each loop item; since node `perceus`, for-of items and `is`/`match` bindings borrow, and `interp` runs in 0.16 s.
 - **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths.
 - **Limit.** User functions still recurse on the C stack; about 20000 deep overflows under ASan. Not solved here.
 

@@ -1,7 +1,7 @@
 ---
 id: batch-3
 title: "Batch 3: the compiler batch"
-status: active
+status: done
 priority: should
 type: story
 story:
@@ -48,3 +48,5 @@ adopt-new-syntax uses or-patterns and compound assignment in `selfhost/src`. The
 - [x] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
 
 All nine children landed (decls-quadratic as not reproduced). One fresh review found three should-fix items (or-pattern guards tried only the first alternative, or-patterns accepted in destructuring, stale powInt text) and four nits, all fixed. Seed regenerated mid-batch, at the end and after the review fixes. Final checks at 9542ff5: scripts/test.sh PASS, linux-check PASS, bootstrap reports the seed current.
+
+Merged into main as PR #107 on 2026-11-10.

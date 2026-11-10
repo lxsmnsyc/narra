@@ -1,7 +1,7 @@
 ---
 id: value-semantics-docs
 title: "Document visible copies and shared writes"
-status: active
+status: done
 priority: should
 type: docs
 story: batch-6
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 114986
 owns:
   - roadmaps/selfhost/nodes/value-semantics-docs/**
 shared:

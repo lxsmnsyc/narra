@@ -1,7 +1,7 @@
 ---
 id: lexer-slices
 title: "Lexer reads bytes and slices token text"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 179000
 owns:
   - roadmaps/selfhost/nodes/lexer-slices/**
 shared:

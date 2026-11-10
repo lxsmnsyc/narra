@@ -1,7 +1,7 @@
 ---
 id: const-params-pointer
 title: "Pass large constant parameters by pointer"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-4

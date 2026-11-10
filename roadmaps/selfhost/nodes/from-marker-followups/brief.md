@@ -1,7 +1,7 @@
 ---
 id: from-marker-followups
 title: "Follow-ups from the batch-5 reviews"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-6

@@ -8,7 +8,7 @@
 // (selfhost-check-imports, scopes.nra).
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl } from "narrac/ast"
+import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl, ConstDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { createFix, createEdit, moveColumn } from "narrac/fixes"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKey, typeKeys } from "narrac/types"
@@ -24,6 +24,9 @@ import {
   containsTypeParameter,
   findSharedParameter,
   findFromNamePos,
+  findLocal,
+  getLocal,
+  CONST_BUSY,
   WrittenFunctionType,
   checkMutableType,
 } from "narrac/check"
@@ -55,9 +58,12 @@ export function resolveSignature(
   const savedIndex = checker.functionIndex
   checker.functionIndex = funcIndex
   let parameters: Array<Type> = []
+  const savedNames = checker.signatureNames
+  checker.signatureNames = Map {}
   for (const param of Arrays.values(funcDecl.parameters)) {
     const resolvedType = resolveOpt(mutable checker, param.type)
     Arrays.push(mutable parameters, resolvedType)
+    checker.signatureNames[param.name] = resolvedType
     if (param.isMutable && report) {
       checkMutableType(mutable checker, param.pos, resolvedType, -1)
     }
@@ -89,6 +95,7 @@ export function resolveSignature(
     checkResultFrom(mutable checker, funcDecl)
   }
   checker.functionIndex = savedIndex
+  checker.signatureNames = savedNames
   return Signature { parameters: parameters, result: result }
 }
 
@@ -167,6 +174,184 @@ export function funcResult(
     return resolveType(mutable checker, resultExpr)
   }
   return Type.TVoid
+}
+
+function resolveTypeof(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  const name = typeExpr.typeofName
+  // A name being resolved by its own type is a cycle.
+  if (checker.busy[`typeof|${name}`] is Some(true)) {
+    return reportTypeofCycle(mutable checker, typeExpr)
+  }
+  // A parameter written earlier in the signature being resolved.
+  if (checker.signatureNames[name] is Some(parameterType)) {
+    return parameterType
+  }
+  // A local or parameter of the body being checked.
+  if (checker.body >= 0) {
+    const local = findLocal(checker, name)
+    if (local >= 0) {
+      checker.bodies[checker.body].locals[local].used = true
+      return getLocal(checker, local).localType
+    }
+  }
+  const scope = checker.current
+  if (checker.scopes[scope].consts[name] is Some(constIndex)) {
+    const constDecl = checker.consts[constIndex].declaration
+    return resolveConstTypeof(mutable checker, typeExpr, constDecl, constIndex)
+  }
+  if (checker.scopes[scope].functions[name] is Some(funcIndex)) {
+    const funcDecl = checker.functions[funcIndex].declaration
+    return resolveFunctionTypeof(mutable checker, typeExpr, funcDecl, funcIndex)
+  }
+  // A declaration of this module that the declaration pass has not reached yet.
+  for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+    if (declaration is Decl.Const(constDecl)) {
+      if (constDecl.name == name) {
+        return resolveConstTypeof(mutable checker, typeExpr, constDecl, -1)
+      }
+    }
+    if (declaration is Decl.Func(funcDecl)) {
+      if (funcDecl.name == name) {
+        return resolveFunctionTypeof(mutable checker, typeExpr, funcDecl, -1)
+      }
+    }
+  }
+  const isType =
+    checker.scopes[scope].types[name] is Some(_) ||
+      checker.scopes[scope].generics[name] is Some(_) ||
+      checker.scopes[scope].aliases[name] is Some(_) ||
+      checker.environment[name] is Some(_)
+  if (isType) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof needs a value, but ${quoteGo(name)} is a type; write the type itself, or the name of a const, let, parameter or function`,
+    )
+    return Type.TVoid
+  }
+  if (checker.scopes[scope].modules[name] is Some(_)) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof needs a value, but ${quoteGo(name)} is a module; name a const, let, parameter or function`,
+    )
+    return Type.TVoid
+  }
+  reportError(mutable checker, typeExpr.pos, "E0203", `unknown name ${quoteGo(name)}`)
+  return Type.TVoid
+}
+
+function reportTypeofCycle(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  reportError(
+    mutable checker,
+    typeExpr.pos,
+    "E0981",
+    `typeof ${typeExpr.typeofName} refers to its own declaration; write the type out`,
+  )
+  return Type.TVoid
+}
+
+function resolveConstTypeof(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+  constDecl: ConstDecl,
+  constIndex: int,
+): Type uses alloc {
+  const name = typeExpr.typeofName
+  // A constant that has been checked has its type.
+  let scope = checker.current
+  if (constIndex >= 0) {
+    const info = checker.consts[constIndex]
+    scope = info.scope
+    if (info.valueType is Some(valueType)) {
+      return valueType
+    }
+    if (info.state == CONST_BUSY) {
+      return reportTypeofCycle(mutable checker, typeExpr)
+    }
+    if (info.declaredType is Some(declaredType)) {
+      return declaredType
+    }
+  }
+  // Otherwise the written type is the only one known here.
+  if (constDecl.type is Some(written)) {
+    const busyKey = `typeof|${name}`
+    checker.busy[busyKey] = true
+    const savedScope = enter(mutable checker, scope)
+    const resolved = resolveType(mutable checker, written)
+    enter(mutable checker, savedScope)
+    checker.busy[busyKey] = false
+    return resolved
+  }
+  reportError(
+    mutable checker,
+    typeExpr.pos,
+    "E0982",
+    `the type of constant ${quoteGo(name)} is not known here; write it as \`const ${name}: Type = ...\``,
+  )
+  return Type.TVoid
+}
+
+function resolveFunctionTypeof(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+): Type uses alloc {
+  const name = typeExpr.typeofName
+  // A generic function, one with effect variables and one with a `mutable` parameter
+  // have no function type to write.
+  let mutableParameter = false
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    if (parameter.isMutable) {
+      mutableParameter = true
+    }
+  }
+  if (
+    Arrays.length(funcDecl.typeParameters) > 0 ||
+      Arrays.length(funcDecl.effectParameters) > 0 ||
+      mutableParameter
+  ) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof ${name} has no function type to write: a generic function, one with effect variables and one with a mutable parameter cannot be used as a value`,
+    )
+    return Type.TVoid
+  }
+  let parameters: Array<Type> = []
+  let result = Type.TVoid
+  if (funcIndex >= 0) {
+    // A declared function has its types.
+    for (const parameter of Arrays.values(funcDecl.parameters)) {
+      Arrays.push(mutable parameters, checker.paramTypes[parameter.id])
+    }
+    result = checker.functions[funcIndex].result
+  } else {
+    // The signature is resolved here, in this module, without the type parameters of the caller.
+    const busyKey = `typeof|${name}`
+    checker.busy[busyKey] = true
+    const savedEnvironment = checker.environment
+    checker.environment = Map {}
+    const signature = resolveSignature(mutable checker, funcDecl, -1, false)
+    checker.environment = savedEnvironment
+    checker.busy[busyKey] = false
+    parameters = signature.parameters
+    result = signature.result
+  }
+  return internComposite(
+    mutable checker,
+    Type.TFunc(
+      parameters,
+      result,
+      sortEffects(funcDecl.effects),
+      -1,
+      findSharedParameter(funcDecl),
+    ),
+  )
 }
 
 function sortEffects(effects: Array<string>): Array<string> uses alloc {
@@ -268,6 +453,9 @@ function findTypeShared(mutable checker: Checker, typeExpr: TypeExpr): int uses 
 }
 
 export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  if (typeExpr.typeofName != "") {
+    return resolveTypeof(mutable checker, typeExpr)
+  }
   if (typeExpr.isFunc) {
     let parameters: Array<Type> = []
     for (const argument of Arrays.values(typeExpr.arguments)) {

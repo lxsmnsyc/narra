@@ -564,6 +564,42 @@ export type Token = Text.Token
 - **Diagnostics** show a struct, enum or distinct type reached through an alias as `Tok (Token)`.
 - **Nothing reaches the emitted C.**
 
+### typeof
+
+`typeof name` in a type position stands for the type of a value in scope: a `const`, `let`, a parameter, a top-level constant or a function (D96). Its use is to keep a type in step with a value, without writing the type twice.
+
+```ts
+export const table: Map<string, Array<int>> = Map {}
+
+function fill(mutable target: typeof table, key: string) {
+  target[key] = [1]
+}
+```
+
+For a function it is the full function type, with its effects and `from`:
+
+<!-- context
+struct Request {
+  path: string
+}
+struct Response {
+  status: int
+}
+-->
+```ts
+export function handle(request: Request): Response uses io {
+  return Response { status: 200 }
+}
+
+export type Handler = typeof handle // (request: Request) => Response uses io
+```
+
+- **Names only.** A field path or an expression after `typeof` is a parse error. A parameter can be named by the parameters after it in the same signature: `(request: Request, other: typeof request)`.
+- **A name that is not a value is E0982**: a type, a module, a generic function, a function with effect variables or a `mutable` parameter (none has a function type to write).
+- **A `typeof` that refers to its own declaration is E0981**, for example `const count: typeof count = 1` or `function f(handler: typeof f)`.
+- **A constant without a written type** has the type of its value, which is known once the constant has been checked: `typeof` of it works in function bodies, but not in a declaration of the same module (a signature, a field, an alias), where it is E0982 and asks for the written type. A constant of another module is always checked first.
+- **Nothing reaches the emitted C**: the type is replaced by the type it stands for.
+
 ### Distinct types
 
 `distinct type` declares a new type with the same representation as an existing one.

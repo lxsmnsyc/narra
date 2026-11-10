@@ -1021,7 +1021,12 @@ export type Handler = typeof handle      // (request: Request) => Response uses 
 - Names only in the first version, not field paths or expressions. A `typeof` that refers to its own declaration is an error.
 - **Rejected: runtime `typeof x === "string"`.** Every type is known at compile time; enums and `match` cover values of several shapes.
 
-Not built yet.
+Built (type-of). Amendments from the build:
+
+- A parameter can be named by the parameters after it in the same signature.
+- A generic function, a function with effect variables and a function with a `mutable` parameter have no function type to write, so `typeof` of one is E0982, like a type or a module.
+- A constant without a written type has its type from its value, which is known only once the constant is checked. `typeof` of it works in bodies and across modules, but not in a declaration of the same module (a signature, field or alias), where it is E0982 and asks for the written type. Lifting this needs the declaration passes to check constants on demand.
+- E0981 and E0982 are the codes; a field path or an expression after `typeof` is the parser's ordinary unexpected-token error.
 
 ## D97. A package lists the module paths it exposes
 

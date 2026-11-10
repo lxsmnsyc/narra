@@ -1,7 +1,7 @@
 ---
 id: template-escapes
 title: "Template strings decode every escape plain strings do"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -16,10 +16,10 @@ spike: false
 hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
-fulfilled_by:
+fulfilled_by: fb246d8
 gate: false
 added: 2026-11-10
-spent:
+spent: 47034
 owns:
   - testdata/template_escapes*
   - roadmaps/selfhost/nodes/template-escapes/**

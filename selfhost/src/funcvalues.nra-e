@@ -1,0 +1,333 @@
+// The half of the closure rules that sits below narrac/exprs, ported from
+// compiler/internal/narra/check_closure.go: the closure tables of a body
+// (closureOf), the non-escaping parameter rule (funcArg, useLocal,
+// declaredBelow) and named functions used as values (funcValue,
+// moduleFuncValue). exprs.nra calls these from names, fields and
+// arguments. Arrow functions and calls of function values are in
+// closures.nra, above exprs.
+import { Pos, Expr, Param, FuncDecl } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  internComposite,
+  ClosureInfo,
+  Ref,
+  reportError,
+  setRef,
+  anyTypeParameter,
+  BindingKind,
+} from "narrac/check"
+import { substitute } from "narrac/resolve"
+import { unify } from "narrac/generics"
+import { checkBounds } from "narrac/traits"
+import { addFuncInstance } from "narrac/instances"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function findClosure(mutable checker: Checker, arrowId: int): int uses alloc {
+  const body = checker.body
+  if (checker.bodies[body].closureIndex[arrowId] is Some(index)) {
+    return index
+  }
+  const info = ClosureInfo {
+    nodeId: arrowId,
+    stack: false,
+    captures: [],
+    hasHint: false,
+    hintParameters: [],
+    hintResult: None,
+  }
+  Arrays.push(mutable checker.bodies[body].closures, info)
+  const index = Arrays.length(checker.bodies[body].closures) - 1
+  checker.bodies[body].closureIndex[arrowId] = index
+  return index
+}
+
+export function markArgument(mutable checker: Checker, param: Param, value: Expr) uses alloc {
+  // A non-escaping parameter takes a name of another non-escaping parameter, or an arrow function with its environment on the caller's stack.
+  if (!isNonEscaping(param)) {
+    return
+  }
+  match (value) {
+    Expr.Ident(nodeId, _, _) => {
+      const body = checker.body
+      checker.bodies[body].allowedId = nodeId
+    }
+    Expr.ArrowExpr(nodeId, _, _, _, _, _) => {
+      const closure = findClosure(mutable checker, nodeId)
+      const body = checker.body
+      checker.bodies[body].closures[closure].stack = true
+    }
+    _ => {}
+  }
+}
+
+export function isNonEscaping(param: Param): bool {
+  if (param.type is Some(typeExpression)) {
+    return typeExpression.isFunc && !param.escaping && !param.isMutable
+  }
+  return false
+}
+
+export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index: int) uses alloc {
+  // A non-escaping parameter may only be called or passed on, and the arrow functions being checked capture the locals declared outside them.
+  const body = checker.body
+  const local = checker.bodies[body].locals[index]
+  if (local.noEscape && checker.bodies[body].allowedId != nodeId) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0601",
+      `parameter ${name} cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as \`escaping ${local.name}\` to store, return or capture it`,
+    )
+    return
+  }
+
+  // The arrow functions from the innermost outwards, up to the one inside
+  // the scope that declares the local, all capture it.
+  const innermost = checker.bodies[body].arrowDepth - 1
+  const first = findOutermostCapture(checker, index)
+  if (first == innermost + 1) {
+    return
+  }
+  if (local.noEscape) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0602",
+      `a closure cannot capture parameter ${name} because it is not escaping; declare it as \`escaping ${local.name}\``,
+    )
+    return
+  }
+
+  // A let or a mutable parameter is captured by reference, so every closure
+  // between the use and the declaration must be a stack closure.
+  if (local.isMutable) {
+    for (let check = first; check <= innermost; check++) {
+      const closure = checker.bodies[body].arrows[check].closure
+      if (!checker.bodies[body].closures[closure].stack) {
+        if (local.param) {
+          reportError(
+            mutable checker,
+            pos,
+            "E0613",
+            `a closure cannot capture mutable parameter ${name} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+          )
+        } else if (local.binding == BindingKind.Reference) {
+          reportError(
+            mutable checker,
+            pos,
+            "E0613",
+            `a closure cannot capture loop element ${name}, which is changed in place, unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+          )
+        } else {
+          reportError(
+            mutable checker,
+            pos,
+            "E0612",
+            `a closure cannot capture ${name} because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell`,
+          )
+        }
+        return
+      }
+    }
+  }
+  for (let level = first; level <= innermost; level++) {
+    const closure = checker.bodies[body].arrows[level].closure
+    addCapture(mutable checker, closure, index)
+  }
+}
+
+function findOutermostCapture(checker: Checker, index: int): int {
+  const body = checker.body
+  const name = checker.bodies[body].locals[index].name
+  let first = checker.bodies[body].arrowDepth
+  while (
+    first > 0 &&
+      !isDeclaredBelow(checker, checker.bodies[body].arrows[first - 1].outerDepth, index, name)
+  ) {
+    first--
+  }
+  return first
+}
+
+export function markChangedCapture(mutable checker: Checker, pos: Pos, index: int) uses alloc {
+  // A local `const` that the arrow functions being checked capture is captured by reference in each of them once its contents change, so each must be a stack closure. A `let` and a `mutable` parameter are captured by reference already (useLocal).
+  const body = checker.body
+  const local = checker.bodies[body].locals[index]
+  if (local.isMutable) {
+    return
+  }
+  const innermost = checker.bodies[body].arrowDepth - 1
+  const first = findOutermostCapture(checker, index)
+  let level = first
+  while (level <= innermost) {
+    const closure = checker.bodies[body].arrows[level].closure
+    if (!checker.bodies[body].closures[closure].stack) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0951",
+        `a closure cannot change captured ${quoteGo(local.name)} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+      )
+      return
+    }
+    level++
+  }
+  level = first
+  while (level <= innermost) {
+    const closure = checker.bodies[body].arrows[level].closure
+    if (!isReferenceCapture(checker, closure, index)) {
+      Arrays.push(mutable checker.bodies[body].closures[closure].refCaptures, index)
+    }
+    level++
+  }
+}
+
+export function isReferenceCapture(checker: Checker, closure: int, index: int): bool {
+  const body = checker.body
+  for (const captured of Arrays.values(checker.bodies[body].closures[closure].refCaptures)) {
+    if (captured == index) {
+      return true
+    }
+  }
+  return false
+}
+
+export function isCapturedByArrow(checker: Checker, index: int): bool {
+  // The closure holds the local by reference, so no `is` test outside the closure narrows it there.
+  const body = checker.body
+  const depth = checker.bodies[body].arrowDepth
+  const local = checker.bodies[body].locals[index]
+  if (!local.isMutable || depth == 0) {
+    return false
+  }
+  return !isDeclaredBelow(
+    checker,
+    checker.bodies[body].arrows[depth - 1].outerDepth,
+    index,
+    local.name,
+  )
+}
+
+function addCapture(mutable checker: Checker, closure: int, local: int) uses alloc {
+  const body = checker.body
+  for (const captured of Arrays.values(checker.bodies[body].closures[closure].captures)) {
+    if (captured == local) {
+      return
+    }
+  }
+  Arrays.push(mutable checker.bodies[body].closures[closure].captures, local)
+}
+
+function isDeclaredBelow(checker: Checker, stopDepth: int, local: int, name: string): bool {
+  for (let depth = checker.scopeDepth - 1; depth >= stopDepth; depth--) {
+    if (checker.localScopes[depth][name] is Some(found)) {
+      if (found == local) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+export function findModuleFunction(checker: Checker, moduleScope: int, funcDecl: FuncDecl): int {
+  if (checker.scopes[moduleScope].functions[funcDecl.name] is Some(index)) {
+    if (
+      checker.functions[index].scope == moduleScope &&
+        checker.functions[index].declaration.pos == funcDecl.pos
+    ) {
+      return index
+    }
+  }
+  let index = 0
+  for (const info of Arrays.values(checker.functions)) {
+    if (info.scope == moduleScope && info.declaration.pos == funcDecl.pos) {
+      return index
+    }
+    index++
+  }
+  return -1
+}
+
+export function checkFunctionValue(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  funcIndex: int,
+  want: Option<Type>,
+): Type uses alloc {
+  // A generic function takes its type arguments from the expected function type. An instance is queued when the type arguments are closed.
+  const info = checker.functions[funcIndex]
+  const parameters = info.declaration.parameters
+  for (const param of Arrays.values(parameters)) {
+    if (param.isMutable) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0605",
+        `function ${info.name} has a mutable parameter, so it cannot be used as a value`,
+      )
+      return Type.TVoid
+    }
+  }
+
+  // A plain function has its declared signature.
+  if (Arrays.length(info.typeParameters) == 0) {
+    setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+    let plainTypes: Array<Type> = []
+    for (const param of Arrays.values(parameters)) {
+      Arrays.push(mutable plainTypes, checker.paramTypes[param.id])
+    }
+    return internComposite(mutable checker, Type.TFunc(plainTypes, info.result, [], -1))
+  }
+
+  // A generic one is unified with the expected function type.
+  let bindings: Map<int, Type> = Map {}
+  if (want is Some(Type.TFunc(wantParams, wantResult, _, _))) {
+    if (Arrays.length(wantParams) == Arrays.length(parameters)) {
+      for (const index of Ranges.between(0, Arrays.length(parameters))) {
+        unify(
+          checker,
+          checker.paramTypes[parameters[index].id],
+          wantParams[index],
+          mutable bindings,
+        )
+      }
+      unify(checker, info.result, wantResult, mutable bindings)
+    }
+  }
+  let typeArguments: Array<Type> = []
+  for (const typeParam of Arrays.values(info.typeParameters)) {
+    if (bindings[typeParam] is Some(bound)) {
+      Arrays.push(mutable typeArguments, bound)
+    } else {
+      const message = `cannot tell type parameter ${checker.parameters[typeParam].name} of ${info.name} here; add a type annotation`
+      reportError(mutable checker, pos, "E0220", message)
+      return Type.TVoid
+    }
+  }
+  const boundsHold = checkBounds(
+    mutable checker,
+    pos,
+    info.declaration,
+    info.typeParameters,
+    typeArguments,
+  )
+  setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+  if (boundsHold && !anyTypeParameter(checker, typeArguments)) {
+    const instance = addFuncInstance(mutable checker, funcIndex, typeArguments)
+    // The emitter finds the instance of this use through the body.
+    checker.bodies[checker.body].instanceRefs[nodeId] = instance
+  }
+
+  // The signature with the type arguments in place.
+  let genericTypes: Array<Type> = []
+  for (const param of Arrays.values(parameters)) {
+    const declared = checker.paramTypes[param.id]
+    Arrays.push(mutable genericTypes, substitute(mutable checker, declared, bindings))
+  }
+  const result = substitute(mutable checker, info.result, bindings)
+  return internComposite(mutable checker, Type.TFunc(genericTypes, result, [], -1))
+}

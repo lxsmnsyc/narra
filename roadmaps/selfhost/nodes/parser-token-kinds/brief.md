@@ -1,7 +1,7 @@
 ---
 id: parser-token-kinds
 title: "The parser compares token kinds, not text"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

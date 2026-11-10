@@ -7,6 +7,7 @@ import { Pos, Stmt, Block, Expr, Pattern, LoopReference, MatchArm } from "narrac
 import { Type } from "narrac/types"
 import { Ref, BindingKind, getExpressionId } from "narrac/check"
 import { cachedCType } from "narrac/cnames"
+import { isPanicCall } from "narrac/pathends"
 import {
   Emitter,
   EmitWalker,
@@ -472,9 +473,10 @@ function emitWhile<W: EmitWalker>(
   condition: Expr,
   body: Block,
 ) uses alloc {
-  let scan = HoistScan { places: [], disqualified: [] }
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
   scanHoistExpression(emitter, mutable scan, condition)
   scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
   const outerHoisted = Arrays.length(emitter.hoistedArrays)
   const hoisted = chooseHoistedArrays(mutable emitter, scan)
   const firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
@@ -509,7 +511,7 @@ function emitCFor<W: EmitWalker>(
   if (init is Some(declaration)) {
     emitStatement(walker, mutable emitter, declaration)
   }
-  let scan = HoistScan { places: [], disqualified: [] }
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
   if (condition is Some(scannedCondition)) {
     scanHoistExpression(emitter, mutable scan, scannedCondition)
   }
@@ -517,6 +519,7 @@ function emitCFor<W: EmitWalker>(
     scanHoistStatement(emitter, mutable scan, scannedStep)
   }
   scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
   const outerHoisted = Arrays.length(emitter.hoistedArrays)
   const hoisted = chooseHoistedArrays(mutable emitter, scan)
   let firstFlag = ""
@@ -633,8 +636,9 @@ function emitRangeFor<W: EmitWalker>(
   const localIndex = declaredLocal(emitter, nodeId)
   const declaration = declareLocalVariable(mutable emitter, localIndex)
   const variable = localRef(emitter, localIndex)
-  let scan = HoistScan { places: [], disqualified: [] }
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
   scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
   const outerHoisted = Arrays.length(emitter.hoistedArrays)
   const hoisted = chooseHoistedArrays(mutable emitter, scan)
   emitGuardedUniques(walker, mutable emitter, hoisted, `${low} < ${high}`)
@@ -665,12 +669,13 @@ function emitRangeValueFor<W: EmitWalker>(
   const localIndex = declaredLocal(emitter, nodeId)
   const declaration = declareLocalVariable(mutable emitter, localIndex)
   const variable = localRef(emitter, localIndex)
-  let scan = HoistScan { places: [], disqualified: [] }
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
   scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
   const outerHoisted = Arrays.length(emitter.hoistedArrays)
   const hoisted = chooseHoistedArrays(mutable emitter, scan)
-  const runsOnce = `${range}.step > 0 ? ${range}.low < ${range}.high : ${range}.low > ${range}.high`
-  emitGuardedUniques(walker, mutable emitter, hoisted, runsOnce)
+  const runsAtLeastOnce = `${range}.step > 0 ? ${range}.low < ${range}.high : ${range}.low > ${range}.high`
+  emitGuardedUniques(walker, mutable emitter, hoisted, runsAtLeastOnce)
   writeLine(
     mutable emitter,
     `for (${declaration} = ${range}.low; ${range}.step > 0 ? ${variable} < ${range}.high : ${variable} > ${range}.high; narra_range_advance(&${variable}, ${range}.step, ${range}.high)) {`,
@@ -816,6 +821,8 @@ function emitArrayFor<W: EmitWalker>(
 struct HoistScan {
   places: Array<Expr>
   disqualified: Array<int>
+  unconditional: Array<int>
+  exits: int
 }
 
 function findArrayLocal(emitter: Emitter, expression: Expr): int {
@@ -846,7 +853,7 @@ function chooseHoistedArrays(mutable emitter: Emitter, scan: HoistScan): Array<E
   }
   for (const place of Arrays.values(scan.places)) {
     const index = findArrayLocal(emitter, place)
-    if (!canHoistArray(emitter, scan, index)) {
+    if (!containsLocal(scan.unconditional, index) || !canHoistArray(emitter, scan, index)) {
       continue
     }
     Arrays.push(mutable chosen, place)
@@ -987,6 +994,7 @@ function scanHoistStatement(emitter: Emitter, mutable scan: HoistScan, statement
       scanHoistExpression(emitter, mutable scan, expression)
     }
     Stmt.ReturnStmt(_, value) => {
+      scan.exits++
       if (value is Some(returned)) {
         scanHoistExpression(emitter, mutable scan, returned)
       }
@@ -1021,8 +1029,12 @@ function scanHoistStatement(emitter: Emitter, mutable scan: HoistScan, statement
     Stmt.YieldStmt(_, value, _, _) => {
       scanHoistExpression(emitter, mutable scan, value)
     }
-    Stmt.BreakStmt(_, _) => {}
-    Stmt.ContinueStmt(_, _) => {}
+    Stmt.BreakStmt(_, _) => {
+      scan.exits++
+    }
+    Stmt.ContinueStmt(_, _) => {
+      scan.exits++
+    }
   }
 }
 
@@ -1086,6 +1098,9 @@ function scanHoistExpression(
       scanHoistExpression(emitter, mutable scan, index)
     }
     Expr.CallExpr(callId, _, callee, _, arguments) => {
+      if (isPanicCall(expression)) {
+        scan.exits++
+      }
       scanHoistExpression(emitter, mutable scan, callee)
       let measured = false
       if (readNodeRef(emitter, callId) is Ref.Builtin(builtin)) {
@@ -1145,5 +1160,29 @@ function scanHoistExpression(
     }
     // Closures are checked through their captures in canHoistArray.
     _ => {}
+  }
+}
+
+function scanUnconditionalWrites(
+  emitter: Emitter,
+  mutable scan: HoistScan,
+  body: Block,
+) uses alloc {
+  // A write counts when no statement before it, or the statement itself, can leave the body.
+  for (const statement of Arrays.values(body.statements)) {
+    let probe = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+    scanHoistStatement(emitter, mutable probe, statement)
+    if (probe.exits > 0) {
+      return
+    }
+    let written = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+    if (statement is Stmt.AssignStmt(_, target, _)) {
+      noteArrayWrite(emitter, mutable written, target)
+    } else if (statement is Stmt.CompoundAssignStmt(_, target, _, _)) {
+      noteArrayWrite(emitter, mutable written, target)
+    }
+    for (const place of Arrays.values(written.places)) {
+      Arrays.push(mutable scan.unconditional, findArrayLocal(emitter, place))
+    }
   }
 }

@@ -15,3 +15,11 @@
 - Fix: the choice of arrays (`chooseHoistedArrays`) is split from the emission. Range loops emit the unique under `if (<first condition>)` before the loop. While and C-style loops declare `int firstN = 1;` before the loop and emit the unique after the first condition check, under `if (firstN) { firstN = 0; ... }`. A C-style loop without a condition emits it before the loop.
 - Branch: the same command passes (debug and release); `--filter loop_unique` passes.
 - Instructions retired, release builds, 6 alternating base/branch pairs (base is feat/batch-5, which has the hoist): particles base 1.512G to 1.517G, branch 1.513G to 1.515G; sieve base 0.503G to 0.527G, branch 0.505G to 0.523G. The hoist gains hold.
+
+## 2026-11-10: hoist only for unconditional writes
+
+- Finding: a loop that runs but never makes its write (the write sits under an `if`, or a `break`/`continue` comes first) still made the shared array unique, and the debug copy check reported a copy the source never makes.
+- Proof on the base (feat/batch-5 at d2743a04, compiler built from an archive of it, stage 2 C built with `cc`): `NARRAC=<base narrac> sh scripts/test.sh --suite programs --filter copy_hoist` fails `programs/copy_hoist_guarded.nra/debug`: want exit code 0, got exit code 103, `copy check: copies on write that no copy(...) explains: array 4`.
+- Branch: the same command passes (debug and release); `--filter loop_unique` passes; `--suite errors` passes with the two new `from_deep_*` samples.
+- Rule: an array is hoisted only when a write to it sits at the top level of the loop body (not in `if`, `match`, a nested loop or a closure) before any statement that contains `break`, `continue`, `return` or `panic`. Other writes keep their per-write check. The first-iteration guard stays.
+- Instructions retired, release builds, 6 alternating base/branch pairs: particles base 1.512G to 1.514G, branch 1.512G to 1.515G; sieve base 0.493G to 0.524G, branch 0.496G to 0.527G. The gains hold; no loop in the benchmarks lost its hoist.

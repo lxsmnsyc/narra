@@ -1,7 +1,7 @@
 ---
 id: nested-or-guards
 title: "Guards try every alternative of a nested or-pattern"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 97247
 owns:
   - testdata/or_patterns_nested_guard*
   - roadmaps/selfhost/nodes/nested-or-guards/**

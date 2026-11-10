@@ -1038,3 +1038,35 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - Contract patterns (D95) use the same alternatives.
 
 Built, except contract patterns (D95), which do not exist yet. E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.
+
+## D100. Regions are parked, and the allocator comes first
+
+Decision (spike regions-design, for the maintainer at the gate): do not build `Region.run` now. Node regions stays a user feature with priority could, and is parked. Most of the measured cost is in `malloc` and `free`, not in reference counts, so a size-class allocator in `narra_alloc` comes first. The design below is what regions would need when someone builds them. Measurements: `roadmaps/selfhost/nodes/regions-design/prototype/measure.sh` on an Apple M2 (8 GB, macOS 27), instructions retired from `/usr/bin/time -l`, load average 2 to 5.
+
+Measured on `narrac emit selfhost` (the compiler emitting its own C, 183786 lines). Each variant rewrites the compiler's emitted C and emits byte-identical C:
+
+| variant | instructions | user s | peak memory |
+| --- | --- | --- | --- |
+| base (`malloc`/`free`) | 9.27 G | 0.57 | 135 MB |
+| size-class free lists, frees reuse blocks | 5.45 G | 0.42 | 153 MB |
+| bump allocation, counts kept, `free` does nothing | 5.04 G | 0.42 | 807 to 911 MB |
+| bump, counts kept, no drop walk | 4.63 G | 0.36 | 898 MB |
+| bump, no retain and no release at all | 3.75 G | 0.29 | 909 MB |
+| base plus a sign check on every retain and release | 9.64 G | 0.58 | 135 MB |
+
+One run makes 19.6 M allocations (580 MB), 510 K reallocs, 60.2 M retains, 70.3 M releases and 15232 copies on write.
+
+- **Skipping counts (question 1).** A region value would carry a negative count, as string literals and stack closure environments do. The sign check costs 3.9% more instructions on the compiler, with no change in user time. On `bench/` it costs 4.9% on `interp`, 0.3% on `strings`, and under 0.4% either way on `sieve`, and nothing on `fib`, `matmul` and `particles`. But a negative count is never 1, so every `_unique` copies, and `Arrays.push` on a region array becomes quadratic. Region values can be written in place only when the checker proves no other name shares them, which is D94 (node shared-write-check). `copy(x)` of a region value must then copy at once instead of relying on copy-on-write.
+- **Routing (question 1).** A per-thread "in region" flag read by `narra_alloc` routes arrays, maps, strings, boxes, enum payloads, closure environments and `StringBuilder`. It is not enough alone. A heap value stored into a region container is never released, because the container's release is skipped. Each store site must add the value to a list that the region releases at its end. A generator or coroutine created outside and resumed inside must clear the flag for the resume, and `Co.resume` must copy a region input. `Cell`, `Shared`, `Sender`, `Receiver` and `Task` objects stay on the heap with counts.
+- **Escape (question 2).** Drop the parameter: `Region.run(() => ...)`. Allocation follows the flag, so the region value has no use, and no `Scope` rules are needed. Two compile errors need codes. First, the arrow assigns or passes as `mutable` a captured `let` or `mutable` parameter (D77 captures by reference, and reading stays allowed). Second, the result type contains an identity type, `Generator`, `Coroutine` or `Async`. A callee can still write a region value into a `Cell`, `Shared` or channel created outside, and the checker cannot see that. Those writes copy at run time when the identity object is not in the current region. SPEC already says so for channels and `Shared`. `Thread.start` inside a region copies the closure environment to the heap.
+- **Copying out (question 3).** The emitter generates one copy function per type that holds boxed values: `string`, `bytes`, `Array<T>`, `Map<K, V>`, `Box<T>`, enum payloads, tuples and structs with boxed fields, `StringBuilder`, and function values (one per closure environment). Only region objects are copied. Heap objects inside the result are retained. A copied object leaves a forwarding pointer in its dead header, so shared subtrees are copied once. The cost is linear in the result's region part. For `narrac fmt` it is one string of the file's size. The compiler has no per-file summary today: the checker reads whole trees.
+- **Growth and runtime buffers (question 4).** `narra_realloc` cannot call `realloc` on a region block. Growth takes a new region block and copies. The old block stays until the region ends, so doubling wastes at most the final size. The choice follows the owner's mark (`a->rc < 0`), not the thread flag, since a heap array with count 1 can grow inside a region. The raw `malloc` buffers in `selfhost/runtime/std_io.c`, `std_fs.c` and `std_test.c` are freed in the same call, `std_env.c` keeps one process-wide buffer, and the drop worklist uses plain `realloc`. None of them hold Narra values, so they stay outside the region.
+- **Value to the compiler (question 5).** Per-module parsing does not fit: `Modules.load` keeps every tree for the whole compile. Per-function emission does not fit: `Consts.emitFunction` writes the shared `mutable emitter` (literals, closures, counters), which the first escape error forbids. Two phases have a clear end and a string result. `formatSource` (`selfhost/src/fmt.nra:257`) per file: `narrac fmt --check selfhost/src` is 14.21 G instructions base, 9.22 G with free lists, and 8.77 G at most with a region that skips all counts, 5% below free lists. `compileToC` (`selfhost/src/driver.nra:361`) as one region: at most 3.75 G against 5.45 G with free lists (31% fewer, 0.29 s against 0.42 s user), at 6 times the peak memory (909 MB against 153 MB). The 3.75 G bound skips the 15232 copies on write, which is safe only once D94 rejects shared writes.
+- **Reason.** The size-class allocator gives 41% fewer instructions and 26% less user time on the compiler, with no language change and 13% more peak memory. A region adds at most 31% more on one phase, needs D94, deep copies, a store list, two errors and run-time copies at identity objects, and keeps all memory until the region ends.
+- **Cost.** SPEC section 6 "Regions" and D48 stay as written until the node is built. The SPEC example's `(region) =>` parameter is wrong under this design.
+- **Rejected: keeping counts in a region and skipping only `free` (bump row).** 7.5% fewer instructions than free lists, at 5 times the peak memory.
+- **Rejected: skipping counts on outer values inside a region.** An outer value can be dropped during the region through a `Cell` write, so a borrowed pointer would dangle. The sign check is per object.
+- **Rejected: a region per module parse or per emitted function.** The trees live for the whole compile, and emission writes shared state.
+- **Rejected: never freeing in the compiler (one process-wide region).** 6 times the peak memory on the compiler's own source, and it grows with program size on an 8 GB machine.
+
+Not built yet.

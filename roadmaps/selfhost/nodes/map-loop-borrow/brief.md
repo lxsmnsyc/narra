@@ -4,7 +4,7 @@ title: "Borrow items in for loops over Map keys and entries"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-5
 early: false
 outline: false
 milestone: m6-performance

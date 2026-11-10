@@ -1,10 +1,10 @@
 ---
 id: profile-compiler-2
 title: "Spike: profile the compiler again after batch-4"
-status: todo
+status: active
 priority: should
 type: spike
-story:
+story: batch-5
 early: false
 outline: false
 milestone: m6-performance

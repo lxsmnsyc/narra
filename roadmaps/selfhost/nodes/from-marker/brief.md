@@ -4,9 +4,9 @@ title: "The from result marker"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-5
 early: false
-outline: true
+outline: false
 milestone: m12-spec-gaps
 target:
 ship: auto
@@ -20,22 +20,46 @@ fulfilled_by:
 gate: false
 added: 2026-11-09
 spent:
-owns: []
-shared: []
-reserves: []
+owns:
+  - testdata/from_*
+  - testdata/errors/from_*
+  - testdata/fmt/*from_marker*
+  - roadmaps/selfhost/nodes/from-marker/**
+shared:
+  - selfhost/src/**
+  - std/src/**
+  - selfhost/tests/src/**
+  - testdata/**
+  - docs/guide/**
+  - SPEC.md
+  - DECISIONS.md
+  - compiler/README.md
+reserves: [diag E0976, diag E0977]
 provides: []
 depends_on:
-  - on: batch-2
+  - on: copy-builtin
     kind: hard
-    why: same
+    why: the debate orders them one after the other (P20); both edit the checker's sharing facts
 ---
 
 # The from result marker
 
 ## Goal
 
-`from <parameter>` after the result type, part of the function type (P10, D94). Body check: returning a value that shares a parameter without the marker is an error with a fix. Function-type assignability: fresh fits `from`, not the reverse. Settle closures returning captures and generic results. Printed in errors and `narra query`.
+Build the `from <parameter>` marker from D94 (debate `roadmaps/selfhost/debate/value-semantics/debate.md`, settled structure item 3, claims P8, P10, O13).
 
-## Notes
+- Syntax: `function mergeSort(items: Array<SortItem>): Array<SortItem> from items`. The marker follows the result type and names one parameter. It is part of the function type, like effects (D86): `(grid: Grid) => Array<int> from grid`.
+- Body check (E0976): returning a value that shares a parameter without `from` naming it is an error, checked the way D46 checks `escaping`. The fix adds `from <parameter>`. Nothing is inferred across functions.
+- Assignability (E0977): a function with fresh results fits a slot with `from`; a function with `from` does not fit a slot without it. The fix adds the marker to the slot's type.
+- Settle and record in DECISIONS.md (amend D94, no new number) how a closure that returns a captured value states it, and how generic results work (`from items` covers the whole parameter).
+- The marker is printed in errors, hover text and `narra query` signatures.
 
-Outline, from D94 and `roadmaps/selfhost/debate/value-semantics/debate.md` (step 2 of 6). Refine with the debate's claims named here.
+The compiler's own functions get their marks in shared-write-sweep, not here.
+
+## Acceptance
+
+- [ ] `from` parses in declarations and function types, and formats, dumps and round-trips through `narrac fmt`.
+- [ ] E0976 and E0977 each have an error sample whose fix is applied by `narrac apply-fix`.
+- [ ] A sample passes a fresh function to a `from` slot and runs.
+- [ ] SPEC.md section 6 describes the marker, and DECISIONS.md D94 records the closure and generic answers.
+- [ ] `sh scripts/test.sh` passes.

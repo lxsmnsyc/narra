@@ -117,6 +117,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-09: D96 (`typeof` in type positions) and D97 (package exports table). Nodes type-of, package-dependencies (found missing: `[dependencies]` is E0407 today), package-exports.
 - 2026-11-09: D98 (or-patterns in `match` only). Batch-3, the compiler batch chosen by the maintainer: or-patterns, missing-return, wrapping-arithmetic, type-aliases, decls-quadratic, template-positions, lsp-navigation-parse, unused-lines, adopt-new-syntax last. One-shot strategy as batch-2.
 - 2026-11-10: batch-3 merged (PR #107). The E0971 deprecation path for the removed `+%` operators is dropped in a follow-up pull request, per the no-deprecation rule.
+- 2026-11-10: batch-5 opened (branch `feat/batch-5`): the seven performance nodes planned after batch-4 (profile-compiler-2, profile-programs, interp-selects, cache-type-names-rest, string-concat-one-alloc, map-loop-borrow, tail-loop-borrow) and D94 steps 1 and 2 (copy-builtin, then from-marker). Same one-shot strategy as batch-4.
 
 ## Gates
 

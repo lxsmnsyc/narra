@@ -4,7 +4,7 @@ title: "Build string + chains in one allocation"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-5
 early: false
 outline: false
 milestone: m6-performance

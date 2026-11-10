@@ -8,7 +8,7 @@
 // local owns one reference and is released with its scope.
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { Expr, Stmt, Block, Pattern, MatchArm } from "narrac/ast"
+import { Expr, Stmt, Block, Pattern, FieldPattern, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId, findBodySlot } from "narrac/check"
 import { getPatternId } from "narrac/patterns"
@@ -416,26 +416,24 @@ function emitMatchArms<W: EmitWalker>(
     emitter.indent++
     let armLocals: Array<int> = []
     collectBoundLocals(emitter, arm.pattern, mutable armLocals)
-    if (arm.pattern is Pattern.PatOr(_, _, armAlternatives)) {
-      if (arm.guard is Some(armGuard)) {
-        if (Arrays.length(armLocals) > 0) {
-          emitGuardedAlternatives(
-            walker,
-            mutable emitter,
-            arm,
-            armAlternatives,
-            armGuard,
-            held,
-            returning,
-            isValue,
-            result,
-            resultType,
-            done,
-          )
-          emitter.indent--
-          writeLine(mutable emitter, "}")
-          continue
-        }
+    if (arm.guard is Some(armGuard)) {
+      if (Arrays.length(armLocals) > 0 && containsOrPattern(arm.pattern)) {
+        emitGuardedAlternatives(
+          walker,
+          mutable emitter,
+          arm,
+          expandOrPatterns(arm.pattern),
+          armGuard,
+          held,
+          returning,
+          isValue,
+          result,
+          resultType,
+          done,
+        )
+        emitter.indent--
+        writeLine(mutable emitter, "}")
+        continue
       }
     }
     beginStatement(mutable emitter)
@@ -489,6 +487,113 @@ function emitArmBody<W: EmitWalker>(
   } else {
     emitStatementArm(walker, mutable emitter, arm)
   }
+}
+
+function containsOrPattern(pattern: Pattern): bool {
+  match (pattern) {
+    Pattern.PatOr(_, _, _) => {
+      return true
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
+        if (containsOrPattern(argument)) {
+          return true
+        }
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        if (containsOrPattern(field.pattern)) {
+          return true
+        }
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        if (containsOrPattern(argument)) {
+          return true
+        }
+      }
+    }
+    _ => {}
+  }
+  return false
+}
+
+function combinePatternOptions(options: Array<Array<Pattern>>): Array<Array<Pattern>> uses alloc {
+  // Every way to pick one pattern from each list, in order.
+  let combinations: Array<Array<Pattern>> = [[]]
+  for (const choices of Arrays.values(options)) {
+    let extended: Array<Array<Pattern>> = []
+    for (const prefix of Arrays.values(combinations)) {
+      for (const choice of Arrays.values(choices)) {
+        let combination: Array<Pattern> = []
+        for (const earlier of Arrays.values(prefix)) {
+          Arrays.push(mutable combination, earlier)
+        }
+        Arrays.push(mutable combination, choice)
+        Arrays.push(mutable extended, combination)
+      }
+    }
+    combinations = extended
+  }
+  return combinations
+}
+
+function expandOrPatterns(pattern: Pattern): Array<Pattern> uses alloc {
+  // The patterns without an or-pattern that together match what this one matches, so a guard can try each.
+  let expanded: Array<Pattern> = []
+  match (pattern) {
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        for (const choice of Arrays.values(expandOrPatterns(alternative))) {
+          Arrays.push(mutable expanded, choice)
+        }
+      }
+    }
+    Pattern.PatCtor(nodeId, pos, enumName, name, arguments, bare) => {
+      let options: Array<Array<Pattern>> = []
+      for (const argument of Arrays.values(arguments)) {
+        Arrays.push(mutable options, expandOrPatterns(argument))
+      }
+      for (const combination of Arrays.values(combinePatternOptions(options))) {
+        Arrays.push(
+          mutable expanded,
+          Pattern.PatCtor(nodeId, pos, enumName, name, combination, bare),
+        )
+      }
+    }
+    Pattern.PatStruct(nodeId, pos, fields) => {
+      let options: Array<Array<Pattern>> = []
+      for (const field of Arrays.values(fields)) {
+        Arrays.push(mutable options, expandOrPatterns(field.pattern))
+      }
+      for (const combination of Arrays.values(combinePatternOptions(options))) {
+        let rebuilt: Array<FieldPattern> = []
+        for (const index of Ranges.between(0, Arrays.length(fields))) {
+          Arrays.push(mutable rebuilt, FieldPattern {
+            pos: fields[index].pos,
+            name: fields[index].name,
+            pattern: combination[index],
+          })
+        }
+        Arrays.push(mutable expanded, Pattern.PatStruct(nodeId, pos, rebuilt))
+      }
+    }
+    Pattern.PatTuple(nodeId, pos, arguments) => {
+      let options: Array<Array<Pattern>> = []
+      for (const argument of Arrays.values(arguments)) {
+        Arrays.push(mutable options, expandOrPatterns(argument))
+      }
+      for (const combination of Arrays.values(combinePatternOptions(options))) {
+        Arrays.push(mutable expanded, Pattern.PatTuple(nodeId, pos, combination))
+      }
+    }
+    _ => {
+      Arrays.push(mutable expanded, pattern)
+    }
+  }
+  return expanded
 }
 
 function emitGuardedAlternatives<W: EmitWalker>(

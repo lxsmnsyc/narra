@@ -1,7 +1,7 @@
 ---
 id: array-write-cold-paths
 title: "Array writes keep their panic and copy paths out of line"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: [benchmarks]
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 104430
 owns:
   - roadmaps/selfhost/nodes/array-write-cold-paths/**
 shared:
@@ -49,11 +49,11 @@ Mark `narra_panic` noreturn and cold. Split `narra_bounds` into an inline unsign
 
 ## Acceptance
 
-- [ ] sieve and particles times and instructions before and after (`perl bench/median.pl 15`, `/usr/bin/time -l`), with the sieve gain above the spread.
-- [ ] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. Report the change; no gain is required here.
-- [ ] An index-out-of-range sample prints the same panic message and position as on the base.
-- [ ] The emitted C compiles with `-std=c11 -pedantic` without new warnings on clang.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] sieve and particles times and instructions before and after (`perl bench/median.pl 15`, `/usr/bin/time -l`), with the sieve gain above the spread.
+- [x] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. Report the change; no gain is required here.
+- [x] An index-out-of-range sample prints the same panic message and position as on the base.
+- [x] The emitted C compiles with `-std=c11 -pedantic` without new warnings on clang.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
 
 ## Notes for the worker
 

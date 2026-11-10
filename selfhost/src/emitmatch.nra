@@ -36,6 +36,7 @@ import {
   readNodeRef,
   readLocal,
   retainCode,
+  releaseCode,
   localRef,
   declareLocal,
   declareLocalVariable,
@@ -413,6 +414,30 @@ function emitMatchArms<W: EmitWalker>(
   for (const arm of Arrays.values(arms)) {
     writeLine(mutable emitter, `if (!${done}) {`)
     emitter.indent++
+    let armLocals: Array<int> = []
+    collectBoundLocals(emitter, arm.pattern, mutable armLocals)
+    if (arm.pattern is Pattern.PatOr(_, _, armAlternatives)) {
+      if (arm.guard is Some(armGuard)) {
+        if (Arrays.length(armLocals) > 0) {
+          emitGuardedAlternatives(
+            walker,
+            mutable emitter,
+            arm,
+            armAlternatives,
+            armGuard,
+            held,
+            returning,
+            isValue,
+            result,
+            resultType,
+            done,
+          )
+          emitter.indent--
+          writeLine(mutable emitter, "}")
+          continue
+        }
+      }
+    }
     beginStatement(mutable emitter)
     const condition = emitPatternCondition(walker, mutable emitter, arm.pattern, held)
     const holds = temp(mutable emitter, Type.TBool, condition)
@@ -429,18 +454,7 @@ function emitMatchArms<W: EmitWalker>(
       writeLine(mutable emitter, `if (${guardHolds}) {`)
       emitter.indent++
     }
-    writeLine(mutable emitter, `${done} = true;`)
-    if (returning) {
-      if (arm.body is Some(armBody)) {
-        Tail.emitReturnArm(walker, mutable emitter, armBody, resultType)
-      } else if (arm.block is Some(armBlock)) {
-        emitReturnBlockArm(walker, mutable emitter, armBlock, resultType)
-      }
-    } else if (isValue) {
-      emitValueArm(walker, mutable emitter, arm, result, resultType)
-    } else {
-      emitStatementArm(walker, mutable emitter, arm)
-    }
+    emitArmBody(walker, mutable emitter, arm, returning, isValue, result, resultType, done)
     if (arm.guard is Some(_)) {
       emitter.indent--
       writeLine(mutable emitter, "}")
@@ -451,6 +465,99 @@ function emitMatchArms<W: EmitWalker>(
     emitter.indent--
     writeLine(mutable emitter, "}")
   }
+}
+
+function emitArmBody<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arm: MatchArm,
+  returning: bool,
+  isValue: bool,
+  result: string,
+  resultType: Type,
+  done: string,
+) uses alloc {
+  writeLine(mutable emitter, `${done} = true;`)
+  if (returning) {
+    if (arm.body is Some(armBody)) {
+      Tail.emitReturnArm(walker, mutable emitter, armBody, resultType)
+    } else if (arm.block is Some(armBlock)) {
+      emitReturnBlockArm(walker, mutable emitter, armBlock, resultType)
+    }
+  } else if (isValue) {
+    emitValueArm(walker, mutable emitter, arm, result, resultType)
+  } else {
+    emitStatementArm(walker, mutable emitter, arm)
+  }
+}
+
+function emitGuardedAlternatives<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arm: MatchArm,
+  alternatives: Array<Pattern>,
+  guard: Expr,
+  held: string,
+  returning: bool,
+  isValue: bool,
+  result: string,
+  resultType: Type,
+  done: string,
+) uses alloc {
+  // Each alternative that matches binds its own names and runs the guard; the first one whose guard holds selects the arm.
+  let locals: Array<int> = []
+  collectBoundLocals(emitter, arm.pattern, mutable locals)
+  for (const localIndex of Arrays.values(locals)) {
+    const declaration = declareLocalVariable(mutable emitter, localIndex)
+    if (!emitter.inGenerator) {
+      writeLine(mutable emitter, `${declaration};`)
+    }
+  }
+  emitter.tempCount++
+  const selectedName = `m${Int.toString(emitter.tempCount)}`
+  const selectedDeclaration = declareVariable(mutable emitter, "bool", selectedName)
+  const selected = variableRef(emitter, selectedName)
+  writeLine(mutable emitter, `${selectedDeclaration} = false;`)
+  for (const alternative of Arrays.values(alternatives)) {
+    beginStatement(mutable emitter)
+    const condition = emitPatternCondition(walker, mutable emitter, alternative, held)
+    const holds = temp(mutable emitter, Type.TBool, condition)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (!${selected} && ${holds}) {`)
+    emitter.indent++
+    bindPattern(walker, mutable emitter, alternative, held, true)
+    beginStatement(mutable emitter)
+    const guardCode = EmitWalker.emitExpression(walker, mutable emitter, guard)
+    const guardHolds = temp(mutable emitter, Type.TBool, guardCode.text)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (${guardHolds}) {`)
+    emitter.indent++
+    writeLine(mutable emitter, `${selected} = true;`)
+    emitter.indent--
+    writeLine(mutable emitter, "} else {")
+    emitter.indent++
+    for (const localIndex of Arrays.values(locals)) {
+      const local = readLocal(emitter, localIndex)
+      const releaseText = releaseCode(emitter, local.localType, localRef(emitter, localIndex))
+      if (releaseText != "") {
+        writeLine(mutable emitter, releaseText)
+      }
+    }
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+  }
+  writeLine(mutable emitter, `if (${selected}) {`)
+  emitter.indent++
+  pushScope(mutable emitter, false)
+  for (const localIndex of Arrays.values(locals)) {
+    addLocal(mutable emitter, localIndex)
+  }
+  emitArmBody(walker, mutable emitter, arm, returning, isValue, result, resultType, done)
+  popScope(mutable emitter)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
 }
 
 function emitStatementArm<W: EmitWalker>(

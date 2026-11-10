@@ -27,7 +27,21 @@ static const char* narra_golden_dir = "testdata";
 static jmp_buf* narra_panic_jmp = NULL;
 static char narra_panic_text[256];
 
-static void narra_panic(const char* where, const char* msg) {
+// Failure and copy paths stay out of line so the hot paths inline. The
+// attributes are GNU extensions; other compilers get plain C11.
+#if defined(__GNUC__)
+#define NARRA_COLD __attribute__((cold, noinline))
+#define NARRA_NOINLINE __attribute__((noinline))
+#define NARRA_UNLIKELY(condition) __builtin_expect((condition) != 0, 0)
+#define NARRA_LIKELY(condition) __builtin_expect((condition) != 0, 1)
+#else
+#define NARRA_COLD
+#define NARRA_NOINLINE
+#define NARRA_UNLIKELY(condition) (condition)
+#define NARRA_LIKELY(condition) (condition)
+#endif
+
+_Noreturn NARRA_COLD static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);
   if (narra_panic_jmp) {
     strncpy(narra_panic_text, msg, sizeof narra_panic_text - 1);
@@ -646,10 +660,12 @@ static int64_t narra_truncate(double v, const char* where) {
   return (int64_t)v;
 }
 
-static void narra_bounds(int64_t i, int64_t len, const char* where) {
-  if (i < 0 || i >= len) {
-    char msg[96];
-    snprintf(msg, sizeof msg, "index %" PRId64 " out of range for length %" PRId64, i, len);
-    narra_panic(where, msg);
-  }
+_Noreturn NARRA_COLD static void narra_bounds_fail(int64_t i, int64_t len, const char* where) {
+  char msg[96];
+  snprintf(msg, sizeof msg, "index %" PRId64 " out of range for length %" PRId64, i, len);
+  narra_panic(where, msg);
+}
+
+static inline void narra_bounds(int64_t i, int64_t len, const char* where) {
+  if (NARRA_UNLIKELY((uint64_t)i >= (uint64_t)len)) narra_bounds_fail(i, len, where);
 }

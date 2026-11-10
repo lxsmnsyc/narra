@@ -37,11 +37,12 @@ depends_on:
 
 ## Goal
 
-cache-type-names moved only the 4 hottest callers of `cnames.typeId` and `cnames.cType` to the cache; 88 call sites, including `functionSignature`, still rebuild names and hashes. Move the rest.
+cache-type-names moved only the 4 hottest callers of `cnames.typeId` and `cnames.cType` to the cache; 88 call sites, including `functionSignature`, still rebuild names and hashes. Move the rest, and also cache `declName` per declaration and the module hash per module (widened by the maintainer on 2026-11-10 after profile-compiler-2: about 1.2% for the brief as first written, inside the 1.3% spread; about 2.5% widened).
 
 ## Context
 
 - Read `git show feat/batch-4:roadmaps/selfhost/nodes/cache-type-names/outcome.md`.
+- Evidence: read `git show feat/batch-5:roadmaps/selfhost/nodes/profile-compiler-2/outcome.md`, proposal 7 and the verdict on this node.
 - Source: the batch-4 final report (2026-11-10) and the batch-4 inbox entries.
 
 ## Acceptance

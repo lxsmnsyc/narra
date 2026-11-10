@@ -118,6 +118,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - 2026-11-09: D98 (or-patterns in `match` only). Batch-3, the compiler batch chosen by the maintainer: or-patterns, missing-return, wrapping-arithmetic, type-aliases, decls-quadratic, template-positions, lsp-navigation-parse, unused-lines, adopt-new-syntax last. One-shot strategy as batch-2.
 - 2026-11-10: batch-3 merged (PR #107). The E0971 deprecation path for the removed `+%` operators is dropped in a follow-up pull request, per the no-deprecation rule.
 - 2026-11-10: batch-5 opened (branch `feat/batch-5`): the seven performance nodes planned after batch-4 (profile-compiler-2, profile-programs, interp-selects, cache-type-names-rest, string-concat-one-alloc, map-loop-borrow, tail-loop-borrow) and D94 steps 1 and 2 (copy-builtin, then from-marker). Same one-shot strategy as batch-4.
+- 2026-11-10: batch-5 spikes landed. The maintainer accepted every proposal: array-write-cold-paths, loop-unique-hoist, cli-skip-teardown (keyed on NARRA_CHECK_LEAKS, reversing the first profile's rejection), lexer-punctuation, body-id-ranges, effect-values-skip, map-helpers-split, scope-map, parser-token-kinds, and a widened cache-type-names-rest. string-concat-one-alloc and map-loop-borrow dropped for lack of evidence. interp-selects proposed no node; D99's cost stands.
 
 ## Gates
 

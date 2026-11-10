@@ -1,10 +1,10 @@
 ---
 id: map-loop-borrow
 title: "Borrow items in for loops over Map keys and entries"
-status: todo
+status: dropped
 priority: should
 type: feature
-story: batch-5
+story:
 early: false
 outline: false
 milestone: m6-performance
@@ -47,3 +47,7 @@ depends_on:
 
 - [ ] Samples where the body reassigns, inserts into and removes from the map it iterates, clean under AddressSanitizer; a mutant compiler without the loop hold fails them. Instructions for `narrac emit selfhost` before and after.
 - [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+
+## Dropped
+
+Dropped by the maintainer on 2026-11-10: profile-compiler-2 found all 25 map `for` loops in functions under 0.5% of the run, about 0.1% in total, and profile-programs found no map loops in the slow programs.

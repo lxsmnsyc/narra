@@ -1,7 +1,7 @@
 ---
 id: profile-compiler
 title: "Spike: profile the compiler compiling itself"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-4

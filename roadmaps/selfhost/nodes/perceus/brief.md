@@ -1,7 +1,7 @@
 ---
 id: perceus
 title: "Borrow loop items and match bindings, move locals at last use"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-4

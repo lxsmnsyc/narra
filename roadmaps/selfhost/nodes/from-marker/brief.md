@@ -51,7 +51,9 @@ Build the `from <parameter>` marker from D94 (debate `roadmaps/selfhost/debate/v
 - Syntax: `function mergeSort(items: Array<SortItem>): Array<SortItem> from items`. The marker follows the result type and names one parameter. It is part of the function type, like effects (D86): `(grid: Grid) => Array<int> from grid`.
 - Body check (E0976): returning a value that shares a parameter without `from` naming it is an error, checked the way D46 checks `escaping`. The fix adds `from <parameter>`. Nothing is inferred across functions.
 - Assignability (E0977): a function with fresh results fits a slot with `from`; a function with `from` does not fit a slot without it. The fix adds the marker to the slot's type.
-- Settle and record in DECISIONS.md (amend D94, no new number) how a closure that returns a captured value states it, and how generic results work (`from items` covers the whole parameter).
+- Closures (settled 2026-11-10, the maintainer may still revise): `from` can name only a parameter, never a capture. An arrow function whose result shares a captured value is an E0976 error; the fix wraps the returned value in `copy(...)`. An arrow function whose result shares one of its own parameters writes `from <parameter>` like any function.
+- Generic results (settled 2026-11-10): `from items` covers the whole parameter and everything reached through it, at any depth, whatever the type arguments are. A result of type `T` taken out of `items: Array<T>` shares `items`. When `T` is a scalar type the marker is still allowed and changes nothing.
+- Record both answers in DECISIONS.md as an amendment to D94 (no new number).
 - The marker is printed in errors, hover text and `narra query` signatures.
 
 The compiler's own functions get their marks in shared-write-sweep, not here.
@@ -62,4 +64,5 @@ The compiler's own functions get their marks in shared-write-sweep, not here.
 - [ ] E0976 and E0977 each have an error sample whose fix is applied by `narrac apply-fix`.
 - [ ] A sample passes a fresh function to a `from` slot and runs.
 - [ ] SPEC.md section 6 describes the marker, and DECISIONS.md D94 records the closure and generic answers.
+- [ ] Error samples: an arrow function returning a captured array (E0976, fix `copy(...)`), and a generic function returning an element of its `from` parameter that passes the check.
 - [ ] `sh scripts/test.sh` passes.

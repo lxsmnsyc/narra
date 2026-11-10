@@ -1,7 +1,7 @@
 ---
 id: loop-unique-hoist
 title: "Make a local array unique once before a loop that writes it by index"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

@@ -1,7 +1,7 @@
 ---
 id: shared-write-check
 title: "Shared-write analysis, as a warning"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-6

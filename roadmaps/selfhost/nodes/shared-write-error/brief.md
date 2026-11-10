@@ -32,7 +32,7 @@ shared:
 reserves: []
 provides: []
 depends_on:
-  - on: shared-write-sweep
+  - on: shared-write-sweep-rest
     kind: hard
     why: the compiler must be clean first
 ---

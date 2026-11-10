@@ -34,6 +34,7 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - The generated C must stay valid C11 for clang and gcc.
 - Seed rule: `selfhost/src` may use only features the committed seed compiles. Land a feature, regenerate the seed with `sh scripts/seed-update.sh`, then use it. Editing text in `selfhost/runtime/` needs two seed updates.
 - Building and testing need only `cc` and `sh`. Platforms: macOS and Linux.
+- No deprecation paths: the language is not released, so a removed or replaced form gets no special error, fix or shim (maintainer, 2026-11-10).
 
 ## Non-goals
 

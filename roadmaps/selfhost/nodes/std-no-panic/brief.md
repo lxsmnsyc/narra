@@ -34,7 +34,7 @@ depends_on:
 
 ## Goal
 
-D92: `Str.slice`, `Str.split`, `Str.repeat`, `Bytes.at`, `Bytes.slice`, `Float.truncate`, `Arrays.filled`, `Ranges.stepped`, `Math.clamp`, `Math.powInt` and `Random.nextInt` stop panicking on bad input. Pick `Option` where there is one failure and `Result` where the caller needs the reason; name them in a table in SPEC.md. Remove compound assignment on a Map index target and add `Maps.update(mutable map, key, initial, change)`. Update every caller in `selfhost/src` and `std/src`, the guide and the samples.
+D92: `Str.slice`, `Str.split`, `Str.repeat`, `Bytes.at`, `Bytes.slice`, `Float.truncate`, `Arrays.filled`, `Ranges.stepped`, `Math.clamp`, `Math.powInt` and `Random.nextInt` stop panicking on bad input. Pick `Option` where there is one failure and `Result` where the caller needs the reason; name them in a table in SPEC.md. Remove compound assignment on a Map index target (no special error for the removed form; GOAL.md constraint) and add `Maps.update(mutable map, key, initial, change)`. Update every caller in `selfhost/src` and `std/src`, the guide and the samples.
 
 ## Notes
 

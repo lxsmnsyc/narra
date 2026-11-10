@@ -2,6 +2,26 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-10, end of batch-4
+
+Run of `bench/run.sh -n 9` at commit afb1eac3 on `feat/batch-4`, same machine and toolchains as the start-of-batch run below. No agent was running. The load average was 1.99 (1 minute) at the start and 3.57 at the end; the benchmark itself adds about 1.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.115 | 0.127 | 0.123 | 39088169   |
+| sieve     | 0.265 | 0.177 | 0.148 | 1270607    |
+| matmul    | 0.112 | 0.204 | 0.126 | 3547800000 |
+| strings   | 0.238 | 0.370 | 0.369 | 100000     |
+| interp    | 0.190 | 0.274 | 0.179 | 972838     |
+| particles | 0.108 | 0.074 | 0.099 | 6996184    |
+| compiler  | 0.272 | -     | -     | peak memory 125 MB |
+
+The compiler row emits the final source, which is larger than at the start of the batch. On the same input (the start-of-batch `selfhost`, 9 alternating runs each), the start-of-batch compiler took 0.61 s, 9.30G instructions and 129 MB, and the final one 0.23 s, 2.59G instructions and 121 MB.
+
+Instructions retired for programs built by each compiler (start of batch to end): interp 4.88G to 1.97G, particles 4.21G to 2.61G, strings 1.24G to 1.10G, sieve 2.41G to 2.28G, fib and matmul unchanged.
+
 ## 2026-11-10, start of batch-4
 
 Run of `bench/run.sh -n 9` (median of 9 runs, wall-clock seconds) at commit 4518a91 on `feat/batch-4`.

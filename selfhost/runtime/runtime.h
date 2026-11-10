@@ -326,16 +326,29 @@ static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
   return s;
 }
 
+static lstr* lstr_from_digits(uint64_t magnitude, int negative) {
+  char buf[24];
+  char* end = buf + sizeof buf;
+  char* start = end;
+  // Write the digits from the last one backwards
+  do {
+    *--start = (char)('0' + magnitude % 10);
+    magnitude /= 10;
+  } while (magnitude != 0);
+  if (negative) *--start = '-';
+  lstr* s = lstr_new(end - start);
+  memcpy(s->data, start, (size_t)(end - start));
+  return s;
+}
+
 static lstr* lstr_from_int(int64_t v) {
-  char buf[32];
-  snprintf(buf, sizeof buf, "%" PRId64, v);
-  return lstr_from_cstr(buf);
+  // Negate in unsigned arithmetic so INT64_MIN does not overflow
+  if (v < 0) return lstr_from_digits(0 - (uint64_t)v, 1);
+  return lstr_from_digits((uint64_t)v, 0);
 }
 
 static lstr* lstr_from_uint(uint64_t v) {
-  char buf[32];
-  snprintf(buf, sizeof buf, "%" PRIu64, v);
-  return lstr_from_cstr(buf);
+  return lstr_from_digits(v, 0);
 }
 
 // Shortest text that reads back as the same double.

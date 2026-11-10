@@ -1,7 +1,7 @@
 ---
 id: type-of
 title: "typeof in type positions"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-6

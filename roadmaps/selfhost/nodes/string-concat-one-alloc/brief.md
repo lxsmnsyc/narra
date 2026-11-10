@@ -1,10 +1,10 @@
 ---
 id: string-concat-one-alloc
 title: "Build string + chains in one allocation"
-status: todo
+status: dropped
 priority: should
 type: feature
-story: batch-5
+story:
 early: false
 outline: false
 milestone: m6-performance
@@ -47,3 +47,7 @@ template-one-alloc builds template literals with one `lstr_concat_n` call, but `
 
 - [ ] A sample with chains of 2, 3 and many operands, including an operand that assigns a variable read by an earlier one, with output captured from the base compiler. Instructions for `narrac emit selfhost` and `bench/strings` before and after.
 - [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+
+## Dropped
+
+Dropped by the maintainer on 2026-11-10: profile-compiler-2 found `lstr_concat` at 0 samples in the compiler (7 call sites against 1,906 for `lstr_concat_n`), and profile-programs found no `+` chains in the slow programs.

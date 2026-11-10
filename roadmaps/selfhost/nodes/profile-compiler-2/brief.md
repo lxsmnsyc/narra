@@ -1,7 +1,7 @@
 ---
 id: profile-compiler-2
 title: "Spike: profile the compiler again after batch-4"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 281662
 owns:
   - roadmaps/selfhost/nodes/profile-compiler-2/**
 shared: []

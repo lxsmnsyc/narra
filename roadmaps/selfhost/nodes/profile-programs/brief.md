@@ -1,7 +1,7 @@
 ---
 id: profile-programs
 title: "Spike: why sieve and particles trail Go and Rust"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: [benchmarks]
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 241355
 owns:
   - roadmaps/selfhost/nodes/profile-programs/**
 shared: []

@@ -1,98 +1,34 @@
-// Text and array helpers the compiler calls in place of Str.slice, Str.split, Str.repeat and
-// Arrays.filled. Their bodies use only builtins whose types are the same in the seed and in the
-// current source, so the compiler builds with either table. After the seed reads the Option
-// forms, each body becomes one call.
+// Text and array helpers that turn the Option results of Str.slice, Str.split, Str.repeat and
+// Arrays.filled into plain values. The compiler only passes ranges and counts it has checked, so
+// a None here is a compiler bug.
 import * as Arrays from "std/array"
 import * as Int from "std/int"
-import * as Ranges from "std/range"
 import * as Str from "std/string"
 
-function isBoundary(text: string, position: int): bool {
-  // The end of the text and any byte that is not a continuation byte start a character.
-  if (position == Str.length(text)) {
-    return true
-  }
-  return (Str.byteAt(text, position) & 192) != 128
-}
-
 export function substring(text: string, start: int, end: int): string uses alloc {
-  if (start < 0 || end > Str.length(text) || start > end) {
-    panic(`substring: range ${Int.toString(start)}..${Int.toString(end)} is outside the text`)
+  if (Str.slice(text, start, end) is Some(piece)) {
+    return piece
   }
-  if (!isBoundary(text, start) || !isBoundary(text, end)) {
-    panic(`substring: range ${Int.toString(start)}..${Int.toString(end)} is inside a character`)
-  }
-  // A tail is one copy by a builtin that kept its type.
-  if (end == Str.length(text)) {
-    return Str.sliceFrom(text, start)
-  }
-  if (start == end) {
-    return ""
-  }
-  let builder = Str.builder()
-  let position = start
-  // Copy one character at a time; both ends sit on character boundaries.
-  while (position < end) {
-    Str.appendChar(mutable builder, Str.charAt(text, position))
-    position = Str.nextChar(text, position)
-  }
-  return Str.build(builder)
-}
-
-function matchesAt(text: string, position: int, separator: string): bool {
-  const width = Str.length(separator)
-  if (position + width > Str.length(text)) {
-    return false
-  }
-  for (const offset of Ranges.upTo(width)) {
-    if (Str.byteAt(text, position + offset) != Str.byteAt(separator, offset)) {
-      return false
-    }
-  }
-  return true
+  panic(`substring: range ${Int.toString(start)}..${Int.toString(end)} is not in the text`)
 }
 
 export function splitString(text: string, separator: string): Array<string> uses alloc {
-  if (Str.length(separator) == 0) {
-    panic("splitString: the separator is empty")
+  if (Str.split(text, separator) is Some(pieces)) {
+    return pieces
   }
-  const length = Str.length(text)
-  let pieces: Array<string> = []
-  let builder = Str.builder()
-  let position = 0
-  // Scan once: a separator ends the piece, any other character joins it.
-  while (position < length) {
-    if (matchesAt(text, position, separator)) {
-      Arrays.push(mutable pieces, Str.build(builder))
-      builder = Str.builder()
-      position = position + Str.length(separator)
-    } else {
-      Str.appendChar(mutable builder, Str.charAt(text, position))
-      position = Str.nextChar(text, position)
-    }
-  }
-  Arrays.push(mutable pieces, Str.build(builder))
-  return pieces
+  panic("splitString: the separator is empty")
 }
 
 export function repeatString(text: string, count: int): string uses alloc {
-  if (count < 0) {
-    panic("repeatString: the count is negative")
+  if (Str.repeat(text, count) is Some(repeated)) {
+    return repeated
   }
-  let builder = Str.builder()
-  for (const _step of Ranges.upTo(count)) {
-    Str.append(mutable builder, text)
-  }
-  return Str.build(builder)
+  panic("repeatString: the count is negative")
 }
 
 export function filledArray<T>(value: T, count: int): Array<T> from value uses alloc {
-  if (count < 0) {
-    panic("filledArray: the count is negative")
+  if (Arrays.filled(value, count) is Some(items)) {
+    return items
   }
-  let items: Array<T> = []
-  for (const _step of Ranges.upTo(count)) {
-    Arrays.push(mutable items, value)
-  }
-  return items
+  panic("filledArray: the count is negative")
 }

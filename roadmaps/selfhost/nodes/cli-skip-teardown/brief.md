@@ -1,7 +1,7 @@
 ---
 id: cli-skip-teardown
 title: "narrac emit and build skip the final release unless the leak check runs"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

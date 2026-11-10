@@ -198,6 +198,9 @@ struct Item {
 }
 
 function splitTotal(totalCents: int, people: int): #[int, int] {
+  if (people == 0) {
+    return #[0, 0]
+  }
   return #[totalCents / people, totalCents % people]
 }
 

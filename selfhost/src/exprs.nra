@@ -78,12 +78,15 @@ import {
   generatorEffectList,
   BindingKind,
   canChangeContents,
+  pushScope,
+  popScope,
 } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
+import { splitIntLiteral, narrowByCondition, checkDivisor, checkShiftCount } from "narrac/operands"
 import { buildConstantHint } from "narrac/stdcopy"
 import { canShareType } from "narrac/sharedresults"
 import {
@@ -779,31 +782,6 @@ function f32LiteralFits(text: string): bool uses alloc {
     padded = `${padded}0`
   }
   return Str.slice(padded, 0, 17) < "34028235677973366"
-}
-
-function splitIntLiteral(text: string): #[int, string] uses alloc {
-  let base = 10
-  let digits = text
-  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
-    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
-      base = 16
-      digits = Str.sliceFrom(text, 2)
-    } else if (
-      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
-    ) {
-      base = 2
-      digits = Str.sliceFrom(text, 2)
-    } else if (
-      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
-    ) {
-      base = 8
-      digits = Str.sliceFrom(text, 2)
-    } else {
-      base = 8
-      digits = Str.sliceFrom(text, 1)
-    }
-  }
-  return #[base, Str.replace(digits, "_", "")]
 }
 
 function sizedMaximum(type: Type): int {
@@ -1624,7 +1602,15 @@ function checkBinary<W: Walker>(
     leftType = checkExpression(mutable checker, walker, left, Some(rightType))
   } else {
     leftType = checkExpression(mutable checker, walker, left, leftWant)
+    // The right side of && sees the left one true, and the right side of || sees it false.
+    pushScope(mutable checker)
+    if (operator == "&&") {
+      narrowByCondition(mutable checker, left, true)
+    } else if (operator == "||") {
+      narrowByCondition(mutable checker, left, false)
+    }
     rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+    popScope(mutable checker)
   }
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
@@ -1701,6 +1687,9 @@ function checkBinary<W: Walker>(
         )
       }
     }
+    if (operator == "/" || operator == "%") {
+      checkDivisor(mutable checker, right, leftType)
+    }
     return leftType
   }
   if (
@@ -1713,6 +1702,8 @@ function checkBinary<W: Walker>(
         "E0218",
         `${operator} needs two integers, found ${leftText} and ${rightText}`,
       )
+    } else if (operator == "<<" || operator == ">>") {
+      checkShiftCount(mutable checker, right, leftType)
     }
     return leftType
   }

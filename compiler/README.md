@@ -154,7 +154,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - `is` patterns in conditions. `if (x is Some(v))` binds `v` in the branch. After `if (x is None) { return ... }`, `x.value` reads the value. Narrowing works on constants and parameters.
 - Calls whose `Result` is not checked are compile errors.
 - Template strings.
-- Integer overflow wraps in every build (D92); division by zero and bounds checks panic in every build.
+- Integer overflow wraps in every build (D92); bounds checks panic in every build. Integer `/`, `%` and shifts compile only with a proven divisor or count (D92, E0979 and E0980), so the emitted C has no division or shift panic.
 - `test` blocks and `assert`. `std/test` (inside test blocks only): `Test.eq`, `Test.ne`, `Test.panics(f)` and `Test.panicsWith(f, message)` and `Test.golden(name, actual)`. A failed assertion panics with the call's position and both values written with `Show`. `narra test` runs each test in its own process, prints `ok - name` or `FAIL - name: message (file:line:col)`, then `N passed, M failed`, and exits 1 on a failure. `-filter text` runs the tests whose name contains the text and `-time` adds the milliseconds of each test. A test that runs past 10 seconds (or `NARRA_TEST_TIMEOUT`) fails with `timed out`. A filter with no match exits 1 (D66).
 - Reference counting for strings, arrays, and structs and enums that hold them.
 - Constant parameters over 16 bytes are passed by pointer (D50): direct calls, generic instances, trait implementations, function values, arrow functions, tail calls and the retain and release functions of large types. Reads of fields and elements still copy.

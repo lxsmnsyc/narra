@@ -8,6 +8,8 @@
 //                      gives the same C
 //   cnames/stable-under-edits   adding an unrelated function does not change
 //                      the C names of the types the program already had
+//   proven-operands/no-panic-path   the C of a program with proven divisors and
+//                      shift counts has no division or shift panic
 import * as Arrays from "std/array"
 import * as Path from "std/path"
 import * as Str from "std/string"
@@ -33,6 +35,11 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     ),
     makeCase("cnames/stable-under-edits", cnames, "stable-under-edits"),
     makeCase("xxh32", cnames, "xxh32"),
+    makeCase(
+      "proven-operands/no-panic-path",
+      Path.join(context.testdata, "proven_operands.nra"),
+      "no-panic-path",
+    ),
   ]
 }
 
@@ -52,6 +59,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
       testCase.path,
       "unknown_binary.err",
     )
+  }
+  if (testCase.variant == "no-panic-path") {
+    return checkNoOperandPanic(context, testCase.path)
   }
   if (testCase.variant == "xxh32") {
     return checkHashVectors(context)
@@ -77,6 +87,26 @@ function expectEmitError(
     return Err(message)
   }
   return Common.compareText("stderr", want.value, result.errorOutput)
+}
+
+function checkNoOperandPanic(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  const forbidden = ["division by zero", "shift count out of range"]
+  for (const text of Arrays.values(forbidden)) {
+    if (Str.contains(result.output, text)) {
+      return Err(`the emitted C has a panic path: ${text}`)
+    }
+  }
+  if (!Str.contains(result.output, "narra_div(") || !Str.contains(result.output, "narra_shl(")) {
+    return Err("the emitted C has no division or shift to check")
+  }
+  return Ok(true)
 }
 
 function emitIn(context: Context, folder: string): Result<string, string> uses io, alloc {

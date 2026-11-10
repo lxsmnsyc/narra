@@ -942,7 +942,13 @@ Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, 
 - **Rejected: a NaN for integers.** It needs a reserved value, a check in every operation, and breaks `==` on `int`.
 - **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
 
-Built: wrapping arithmetic and checked functions; the missing-return rule (E0969 for functions, E0970 for arrow functions), with the emitted runtime check now an internal compiler error. Not built yet: division and shift proofs, and the `Result`/`Option` std functions.
+Built: wrapping arithmetic and checked functions; the missing-return rule (E0969 for functions, E0970 for arrow functions), with the emitted runtime check now an internal compiler error. Division and shift proofs are built (E0979 for a divisor, E0980 for a shift count); not built yet: the `Result`/`Option` std functions.
+
+Amendment (proven-operands, 2026-11-11):
+- **What counts as a check.** The narrowing of `let` and `is` (let-narrowing) carries over: a comparison of a local integer name with a constant (`!= 0`, `> 0`, `< 0`, `>= 0`, `< 64` and the other orders, either side), joined by `&&`, `||` and `!`. A check narrows the `then` branch, the `else` branch with the opposite, the body of a `while`, the right operand of `&&` and `||`, and the rest of the block after an `if` whose `then` branch ends. Constants are literals, negated literals and top-level `const` values built from them with `+`, `-`, `*` and `<<`, and a `const` local set from one.
+- **How a narrowing ends.** Like the variant narrowing: an assignment to the name, a call that passes it as `mutable`, and the start of a loop that does either. A name an arrow function captures by reference is not narrowed there.
+- **Field paths are not narrowed.** `size.count` cannot be proven, because any call could change the field. The message says to copy the field into a local and check the local.
+- **Cost.** Three sites in the compiler (`hash`, `alignUp`, the test runner's shard split) and one in std (`Random.nextInt`) needed an added check; the runtime has no division or shift panic.
 
 ## D93. `Async<T>` is an eager handle on one implicit event loop per thread
 

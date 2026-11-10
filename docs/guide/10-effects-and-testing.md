@@ -169,7 +169,11 @@ export function average(readings: Array<int>): int {
   for (const reading of readings) {
     total = total + reading
   }
-  return total / Arrays.length(readings)
+  const count = Arrays.length(readings)
+  if (count == 0) {
+    panic("no readings")
+  }
+  return total / count
 }
 
 test "water freezes at 32 F" {
@@ -185,7 +189,7 @@ test "parse rejects a missing unit" {
 }
 
 test "average of no readings panics" {
-  Test.panicsWith(() => average([]), "division by zero")
+  Test.panicsWith(() => average([]), "no readings")
 }
 
 test "water boils at 211 F" {
@@ -198,7 +202,7 @@ A `test "name" { ... }` block holds statements, like a function body with no par
 - `Test.eq(actual, expected)` passes when the two values are equal. `Test.ne(actual, other)` passes when they differ.
 - `Test.panicsWith(f, message)` calls `f` and passes when it panics with a message that contains `message`. `Test.panics(f)` passes on any panic.
 
-Because errors are values (chapter 6), a test of a failure compares with an `Err` like any other value, as `"parse rejects a missing unit"` does. `Test.panicsWith` is for failures that stop the program, such as the division by zero in `average([])`.
+Because errors are values (chapter 6), a test of a failure compares with an `Err` like any other value, as `"parse rejects a missing unit"` does. `Test.panicsWith` is for failures that stop the program, such as the empty list in `average([])`.
 
 Run the tests with `narrac test`:
 

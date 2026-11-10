@@ -716,32 +716,29 @@ static void narra_panic_str(lstr* msg, const char* where) {
 }
 
 // Integer arithmetic. + - * and unary - wrap at the type's width in every
-// build. Division by zero panics in every build; MIN / -1 gives MIN and
-// MIN % -1 gives 0.
+// build. The checker proves every divisor is not zero and every shift count is
+// inside the bit width, so the functions below do not test them. MIN / -1 gives
+// MIN and MIN % -1 gives 0.
 static int64_t narra_wrap_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
 static int64_t narra_wrap_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
 static int64_t narra_wrap_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
 static int64_t narra_wrap_neg(int64_t a) { return (int64_t)(0 - (uint64_t)a); }
 
-static int64_t narra_div(int64_t a, int64_t b, const char* where) {
-  if (b == 0) narra_panic(where, "division by zero");
+static int64_t narra_div(int64_t a, int64_t b) {
   if (a == INT64_MIN && b == -1) return a;
   return a / b;
 }
 
-static int64_t narra_rem(int64_t a, int64_t b, const char* where) {
-  if (b == 0) narra_panic(where, "division by zero");
+static int64_t narra_rem(int64_t a, int64_t b) {
   if (b == -1) return 0;
   return a % b;
 }
 
-static int64_t narra_shl(int64_t a, int64_t b, const char* where) {
-  if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
+static int64_t narra_shl(int64_t a, int64_t b) {
   return (int64_t)((uint64_t)a << b);
 }
 
-static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
-  if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
+static int64_t narra_shr(int64_t a, int64_t b) {
   return a >> b;
 }
 
@@ -752,22 +749,18 @@ static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
   static T narra_wrap_sub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
   static T narra_wrap_mul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
   static T narra_wrap_neg_##N(T a) { return (T)(0 - (uint64_t)a); } \
-  static T narra_div_##N(T a, T b, const char* where) { \
-    if (b == 0) narra_panic(where, "division by zero"); \
+  static T narra_div_##N(T a, T b) { \
     if ((MIN) != 0 && a == (T)(MIN) && b == (T)-1) return a; \
     return (T)(a / b); \
   } \
-  static T narra_rem_##N(T a, T b, const char* where) { \
-    if (b == 0) narra_panic(where, "division by zero"); \
+  static T narra_rem_##N(T a, T b) { \
     if ((MIN) != 0 && b == (T)-1) return 0; \
     return (T)(a % b); \
   } \
-  static T narra_shl_##N(T a, T b, const char* where) { \
-    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+  static T narra_shl_##N(T a, T b) { \
     return (T)((uint64_t)a << b); \
   } \
-  static T narra_shr_##N(T a, T b, const char* where) { \
-    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+  static T narra_shr_##N(T a, T b) { \
     return (T)(a >> b); \
   } \
   static bool narra_eq_##N(T a, T b) { return a == b; } \

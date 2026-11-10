@@ -57,6 +57,12 @@ import {
   findOtherVariant,
   areArgumentsIrrefutable,
 } from "narrac/patterns"
+import {
+  narrowByCondition,
+  recordConstantLocal,
+  checkDivisor,
+  checkShiftCount,
+} from "narrac/operands"
 import * as Arrays from "std/array"
 import * as Str from "std/string"
 import * as Int from "std/int"
@@ -343,6 +349,7 @@ function checkVariable<W: Walker>(
   }
   const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
   setBinding(mutable checker, local, value, BindingKind.Plain)
+  recordConstantLocal(mutable checker, local, value)
 }
 
 function checkAssignment<W: Walker>(
@@ -468,6 +475,13 @@ function checkCompoundOperand<W: Walker>(
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
   const arithmetic = Str.slice(operator, 0, Str.length(operator) - 1)
   const valueText = typeString(checker, valueType)
+  if (valueType == targetType) {
+    if (arithmetic == "/" || arithmetic == "%") {
+      checkDivisor(mutable checker, value, targetType)
+    } else if (arithmetic == "<<" || arithmetic == ">>") {
+      checkShiftCount(mutable checker, value, targetType)
+    }
+  }
   if (valueType != targetType) {
     reportError(
       mutable checker,
@@ -794,6 +808,7 @@ function checkIf<W: Walker>(
   if (variantIndex >= 0) {
     setNarrowed(mutable checker, subject, variantIndex)
   }
+  narrowByCondition(mutable checker, condition, true)
   for (const statement of Arrays.values(then.statements)) {
     checkStatement(mutable checker, walker, statement)
   }
@@ -812,10 +827,14 @@ function checkIf<W: Walker>(
     if (otherVariant >= 0) {
       setNarrowed(mutable checker, subject, otherVariant)
     }
+    narrowByCondition(mutable checker, condition, false)
     checkStatement(mutable checker, walker, other)
     popScope(mutable checker)
-  } else if (otherVariant >= 0 && diverges(then)) {
-    setNarrowed(mutable checker, subject, otherVariant)
+  } else if (diverges(then)) {
+    if (otherVariant >= 0) {
+      setNarrowed(mutable checker, subject, otherVariant)
+    }
+    narrowByCondition(mutable checker, condition, false)
   }
 }
 
@@ -830,7 +849,11 @@ function checkWhile<W: Walker>(
   endLoopNarrowing(mutable checker, Some(condition), body)
   checkCondition(mutable checker, walker, condition)
   enterLoop(mutable checker, pos, label)
+  // The body runs only where the condition held.
+  pushScope(mutable checker)
+  narrowByCondition(mutable checker, condition, true)
   checkBlock(mutable checker, walker, body)
+  popScope(mutable checker)
   leaveLoop(mutable checker, label)
 }
 

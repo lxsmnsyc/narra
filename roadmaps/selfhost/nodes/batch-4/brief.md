@@ -1,7 +1,7 @@
 ---
 id: batch-4
 title: "Batch 4: the performance batch"
-status: active
+status: done
 priority: should
 type: story
 story:
@@ -51,7 +51,15 @@ Every child changes the emitted C. The seed is regenerated after perceus, after 
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `bench/BASELINE.md` has a row for the start of the batch and one for the end, recorded on an idle machine, including the compiler row.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] `bench/BASELINE.md` has a row for the start of the batch and one for the end, recorded on an idle machine, including the compiler row.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
+
+All 22 children landed. Speed nodes: fast-alloc, perceus, const-params-pointer, effect-int-keys, lexer-slices, option-inline, int-to-string, emit-string-helpers, template-one-alloc, quote-on-error, finish-facts-lines and cache-type-names. Fixes: closure-arg-temps, nested-or-guards, or-pattern-crash and map-key-panic-sample. Spikes and measurement: bench-compiler, profile-compiler, regions-design (D100, regions parked at could) and perceus-reuse (measured, not built). template-escapes and typed-calls-and-effects were already fixed on main.
+
+Start to end, same input, idle M2: `narrac emit selfhost` 0.61 s to 0.23 s (9.30G to 2.59G instructions, 129 MB to 121 MB peak). interp 0.41 s to 0.19 s, particles 0.18 s to 0.11 s, strings 0.31 s to 0.22 s; fib, sieve and matmul about the same. Cost: interp about 20% slower than right after perceus because of option-inline (D99).
+
+One fresh review of the whole branch: no blocking findings; a D55 cost line, the D50 number and a SPEC sentence fixed. Final checks at afb1eac3: scripts/test.sh PASS, linux-check PASS, the seed current.
+
+Merged into main as PR #109 on 2026-11-10. Follow-ups planned as nodes: profile-compiler-2, profile-programs, tail-loop-borrow, map-loop-borrow, cache-type-names-rest, string-concat-one-alloc and interp-selects.

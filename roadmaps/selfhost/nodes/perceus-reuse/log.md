@@ -1,0 +1,12 @@
+# Log: perceus-reuse
+
+- Base: feat/batch-4 9501a3c, compiler built with `sh selfhost/bootstrap.sh`. `narrac emit selfhost`: 3.122, 3.085, 3.089 G instructions, 127 MB.
+- Ownership on base: parameters are borrowed, `match` and `is` bindings borrow, and locals are released at scope end (no last-use moves). A payload can die inside an arm only when the subject is an owned temporary (`match (f(x))`).
+- Counted with a mutant (`measure/count-arms-mutant.py` on `emitmatch.nra`, `measure/count-arms-runtime.py` on the C): every arm on a heap-enum subject reports its subject's count; every payload allocation checks for a pending dead cell of the same size in the same C frame.
+  - The mutant was checked on a list sample: `double(build(100))` gave 100 borrowed hits, `match (build(n))` 1 owned hit.
+  - Compiler: 3,509,453 arms entered, 59,467 with an owned temporary subject, 56,038 of those with count 1. 253,278 payload allocations (24.5 MB). Same-size allocation in an owned count-1 arm: 78. In a borrowed count-1 arm (would need owned parameters and moves): 16.
+- Bench programs: no heap payload type in any of the six (`grep -c '^struct Q_'` on the emitted C is 0). Every enum there is inline since option-inline.
+- Drop specialization bound: `measure/leak-bound-mutant.py` makes the compiler never release an owned heap-enum subject of `match` or `is` (46 release sites, leaks). Interleaved 5 runs: base 3.080 to 3.096 G, leak 3.045 to 3.062 G, so all those releases together cost 34 M (1.1%), subtrees included. Drop specialization keeps the subtree frees and saves only the dispatch (narra_drop, indirect call, tag switch) on 56,038 freed cells, under 2 M (0.05%). The arms read their bindings, so no field retain/release pairs exist to cancel.
+- Decision: no code. Reuse would save at most 78 allocations of 253,278; drop specialization under 0.05%; base run-to-run spread is 0.5% to 1.2%.
+- Samples added anyway: `testdata/perceus_reuse_lists`, `perceus_reuse_tree`. Pass on base under the runner.
+- Hand mutant `measure/unsound-lists.py` on the lists sample's C: the arms write into the subject's cell with no uniqueness check. ASan: heap-use-after-free in `swapFirst` (old head read after the cell is rewritten, closure case). Without the `swapFirst` site: the shared list prints `11!,22!,33!` for both other names instead of `11,22,33`. The owned unique case (`bumpFirst`) prints the right output, as it should.

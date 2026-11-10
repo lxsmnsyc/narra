@@ -16,8 +16,15 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
-import { Type, plainTypeKey } from "narrac/types"
-import { Checker, ProgramFunc, findBody, containsTypeParameter } from "narrac/check"
+import * as Cells from "std/cell"
+import { Type, plainTypeKey, typeKey } from "narrac/types"
+import {
+  Checker,
+  ProgramFunc,
+  findBody,
+  containsTypeParameter,
+  isPassedByPointer,
+} from "narrac/check"
 import { xxh32, hex8, relativeModule, moduleHash } from "narrac/hash"
 
 function declHead(module: string, name: string): string uses alloc {
@@ -169,6 +176,54 @@ export function cType(checker: Checker, type: Type): string uses alloc {
   }
 }
 
+function isCachedType(type: Type): bool {
+  return match (type) {
+    Type.TStruct(_)
+      | Type.TEnum(_)
+      | Type.TDistinct(_)
+      | Type.TArray(_)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TFunc(_, _, _, _)
+      | Type.TGenerator(_, _, _, _, _) => true
+    _ => false
+  }
+}
+
+export function cachedTypeId(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  type: Type,
+): string uses alloc {
+  if (!isCachedType(type)) {
+    return typeId(checker, type)
+  }
+  const key = typeKey(type)
+  if (Cells.get(cache)[key] is Some(name)) {
+    return name
+  }
+  const name = typeId(checker, type)
+  // Take the map out of the cell, so the write does not copy it.
+  let names = Cells.get(cache)
+  const empty: Map<string, string> = Map {}
+  Cells.set(cache, empty)
+  names[key] = name
+  Cells.set(cache, names)
+  return name
+}
+
+export function cachedCType(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  type: Type,
+): string uses alloc {
+  return match (type) {
+    Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => `${cachedTypeId(checker, cache, type)}*`
+    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _) => cachedTypeId(checker, cache, type)
+    _ => cType(checker, type)
+  }
+}
+
 function cDistinctType(checker: Checker, index: int): string uses alloc {
   if (checker.distincts[index].base is Some(base)) {
     return cType(checker, base)
@@ -315,16 +370,27 @@ export function functionSignature(checker: Checker, program: ProgramFunc): strin
       const local = checker.bodies[bodyIndex].locals[index]
       name = `v_${local.name}_${Int.toString(local.number)}`
     }
-    let star = ""
-    if (declared.parameters[index].isMutable) {
-      star = "*"
-    }
-    Arrays.push(mutable parts, `${cType(checker, parameterTypes[index])}${star} ${name}`)
+    Arrays.push(
+      mutable parts,
+      `${parameterCType(checker, parameterTypes[index], declared.parameters[index].isMutable)} ${name}`,
+    )
   }
   if (Arrays.length(parts) == 0) {
     parts = ["void"]
   }
   return `static ${cType(checker, result)} ${functionName(checker, program)}(${Str.join(parts, ", ")})`
+}
+
+export function parameterCType(checker: Checker, type: Type, isMutable: bool): string uses alloc {
+  // A mutable parameter points at the caller's place, and a large constant one
+  // at a value the caller keeps for the call.
+  if (isMutable) {
+    return `${cType(checker, type)}*`
+  }
+  if (isPassedByPointer(checker, type)) {
+    return `const ${cType(checker, type)}*`
+  }
+  return cType(checker, type)
 }
 
 export function dropDuplicateTypes(checker: Checker): Checker uses alloc {

@@ -15,7 +15,7 @@ import * as Ranges from "std/range"
 import { Pos, Expr, Stmt, Block, Param } from "narrac/ast"
 import { Type } from "narrac/types"
 import { ProgramFunc, ClosureInfo, Ref, getExpressionId } from "narrac/check"
-import { cType, typeId, functionName, closureName, thunkName } from "narrac/cnames"
+import { cType, typeId, functionName, closureName, thunkName, parameterCType } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -31,6 +31,8 @@ import {
   localName,
   localRef,
   isReference,
+  isPointerParameter,
+  passArgument,
   ownedTemp,
   temp,
   consume,
@@ -123,7 +125,7 @@ export function emitFuncTypeDefinitions(mutable emitter: Emitter): string uses a
     if (type is Type.TFunc(parameters, result, _, _)) {
       let parts = ["narra_env*"]
       for (const parameter of Arrays.values(parameters)) {
-        Arrays.push(mutable parts, cType(emitter.checker, parameter))
+        Arrays.push(mutable parts, parameterCType(emitter.checker, parameter, false))
       }
       const name = cType(emitter.checker, type)
       Str.append(
@@ -186,7 +188,10 @@ export function emitFuncValue<W: EmitWalker>(
     let parts = ["narra_env* env"]
     let arguments: Array<string> = []
     for (const index of Ranges.between(0, Arrays.length(parameterTypes))) {
-      Arrays.push(mutable parts, `${cType(checker, parameterTypes[index])} p${Int.toString(index)}`)
+      Arrays.push(
+        mutable parts,
+        `${parameterCType(checker, parameterTypes[index], false)} p${Int.toString(index)}`,
+      )
       Arrays.push(mutable arguments, `p${Int.toString(index)}`)
     }
     const signature = `static ${cType(checker, result)} ${name}(${Str.join(parts, ", ")})`
@@ -422,7 +427,10 @@ function emitClosureFunction<W: EmitWalker>(
   let parts = ["narra_env* env"]
   for (const parameter of Arrays.values(parameters)) {
     const local = info.locals[info.declared[parameter.id - info.first]]
-    Arrays.push(mutable parts, `${cType(checker, local.localType)} ${localName(local)}`)
+    Arrays.push(
+      mutable parts,
+      `${parameterCType(checker, local.localType, false)} ${localName(local)}`,
+    )
   }
   const signature = `static ${cType(checker, result)} ${name}(${Str.join(parts, ", ")})`
   Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
@@ -459,14 +467,16 @@ function emitClosureFunction<W: EmitWalker>(
     writeLine(mutable emitter, `${environmentType}* k_env = (${environmentType}*)env;`)
     for (const capture of Arrays.values(closure.captures)) {
       const local = readLocal(emitter, capture)
-      let pointer = ""
+      const typeName = cType(checker, local.localType)
+      const captureName = localName(local)
       if (isCapturedByReference(emitter, closure, capture)) {
-        pointer = "*"
+        writeLine(mutable emitter, `${typeName}* ${captureName} = k_env->c_${captureName};`)
+      } else if (isPointerParameter(emitter, capture)) {
+        // A large parameter stays a pointer, here to the environment's copy.
+        writeLine(mutable emitter, `const ${typeName}* ${captureName} = &k_env->c_${captureName};`)
+      } else {
+        writeLine(mutable emitter, `${typeName} ${captureName} = k_env->c_${captureName};`)
       }
-      writeLine(
-        mutable emitter,
-        `${cType(checker, local.localType)}${pointer} ${localName(local)} = k_env->c_${localName(local)};`,
-      )
     }
   }
   emitter.scopes = [ScopeFrame { locals: [], loop: false }]
@@ -518,9 +528,20 @@ export function emitValueCall<W: EmitWalker>(
     const top = Arrays.length(emitter.frames) - 1
     Arrays.push(mutable emitter.frames[top], TempVar { name: holder, tempType: functionType })
     let parts = [`${holder}.env`]
-    for (const argument of Arrays.values(arguments)) {
-      const argumentCode = EmitWalker.emitExpression(walker, mutable emitter, argument.value)
-      Arrays.push(mutable parts, argumentCode.text)
+    let parameterTypes: Array<Type> = []
+    if (functionType is Type.TFunc(types, _, _, _)) {
+      parameterTypes = types
+    }
+    for (const index of Ranges.between(0, Arrays.length(arguments))) {
+      const argumentCode = EmitWalker.emitExpression(
+        walker,
+        mutable emitter,
+        arguments[index].value,
+      )
+      Arrays.push(
+        mutable parts,
+        passArgument(mutable emitter, parameterTypes[index], argumentCode.text),
+      )
     }
     const callText = `${holder}.fn(${Str.join(parts, ", ")})`
     if (functionType is Type.TFunc(_, resultType, _, _)) {
@@ -546,8 +567,15 @@ export function callFunctionValue(
   // A void call is the call text; any other result goes into a block-local
   // temporary that the caller moves into a payload or the result.
   let parts = [`${callee}.env`]
-  for (const argument of Arrays.values(arguments)) {
-    Arrays.push(mutable parts, argument)
+  let parameterTypes: Array<Type> = []
+  if (functionType is Type.TFunc(types, _, _, _)) {
+    parameterTypes = types
+  }
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    Arrays.push(
+      mutable parts,
+      passArgument(mutable emitter, parameterTypes[index], arguments[index]),
+    )
   }
   const callText = `${callee}.fn(${Str.join(parts, ", ")})`
   if (functionType is Type.TFunc(_, resultType, _, _)) {

@@ -1,0 +1,171 @@
+// Recursive enums keep their payload on the heap, next to inline ones: an
+// enum that holds itself directly, one that reaches itself through a struct
+// and through another enum, an inline enum that holds a heap one, and an
+// enum whose payload is too large to copy.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+enum Expr derives Show {
+  Num(value: int)
+  Name(text: string)
+  Add(left: Expr, right: Expr)
+  // Reaches Expr through Option<Expr>, so the Option stays on the heap too.
+  Neg(inner: Option<Expr>)
+}
+
+// Reaches itself through a struct held by value.
+struct Node {
+  label: string
+  next: Link
+}
+
+enum Link {
+  End
+  Next(node: Node)
+}
+
+// Two enums that reach each other.
+enum Ping {
+  Stop
+  Pong(value: Pong)
+}
+
+enum Pong {
+  Back(label: string, value: Ping)
+}
+
+// Inline: it holds a heap enum, but does not reach itself.
+enum Holder {
+  Held(expr: Expr, note: string)
+  Nothing
+}
+
+struct Wide {
+  a: string
+  b: string
+  c: string
+  d: string
+  e: string
+  f: string
+  g: string
+  h: string
+  i: string
+  j: string
+}
+
+// Its payload is over the size limit, so it stays on the heap.
+enum Big {
+  Full(wide: Wide)
+  Small
+}
+
+function evaluate(expr: Expr): int {
+  return match (expr) {
+    Expr.Num(value) => value
+    Expr.Name(text) => Str.length(text)
+    Expr.Add(left, right) => evaluate(left) + evaluate(right)
+    Expr.Neg(inner) => match (inner) { Some(value) => 0 - evaluate(value), None => 0 }
+  }
+}
+
+function chain(count: int): Link {
+  let link = Link.End
+  for (let i = 0; i < count; i++) {
+    link = Link.Next(Node { label: Str.repeat("x", i + 1), next: link })
+  }
+  return link
+}
+
+function labels(link: Link): string {
+  let text = ""
+  let current = link
+  let more = true
+  while (more) {
+    match (current) {
+      Link.Next(node) => {
+        text = `${text}${node.label},`
+        current = node.next
+      }
+      Link.End => {
+        more = false
+      }
+    }
+  }
+  return text
+}
+
+function bounce(depth: int): Ping {
+  if (depth == 0) {
+    return Ping.Stop
+  }
+  return Ping.Pong(Pong.Back(Str.repeat("p", depth), bounce(depth - 1)))
+}
+
+function countPings(ping: Ping): int {
+  let count = 0
+  let current = ping
+  let more = true
+  while (more) {
+    match (current) {
+      Ping.Pong(Pong.Back(_, value)) => {
+        count++
+        current = value
+      }
+      Ping.Stop => {
+        more = false
+      }
+    }
+  }
+  return count
+}
+
+function wide(seed: string): Wide {
+  const text = Str.repeat(seed, 2)
+  return Wide {
+    a: text,
+    b: text,
+    c: text,
+    d: text,
+    e: text,
+    f: text,
+    g: text,
+    h: text,
+    i: text,
+    j: text,
+  }
+}
+
+export function run(args: Array<string>): int {
+  let expr = Expr.Add(Expr.Num(2), Expr.Neg(Some(Expr.Name(Str.repeat("ab", 2)))))
+  const holder = Holder.Held(expr, Str.repeat("h", 2))
+  expr = Expr.Num(0)
+  print(Int.toString(evaluate(expr)))
+  match (holder) {
+    Holder.Held(held, note) => print(`${note} ${Int.toString(evaluate(held))}`)
+    Holder.Nothing => print("nothing")
+  }
+  print(Show.show(Expr.Neg(None)))
+
+  let list = chain(3)
+  const saved = list
+  list = chain(1)
+  print(labels(saved))
+  print(labels(list))
+
+  // A long chain is freed without deep C recursion.
+  print(Int.toString(Str.length(labels(chain(2000)))))
+
+  print(Int.toString(countPings(bounce(5))))
+
+  let big = Big.Full(wide("w"))
+  const bigCopy = big
+  big = Big.Small
+  if (bigCopy is Big.Full(value)) {
+    print(`${value.a}${value.j}`)
+  }
+  let holders: Array<Holder> = [holder, Holder.Nothing, holder]
+  holders[0] = Holder.Nothing
+  print(Int.toString(Arrays.length(holders)))
+  return 0
+}

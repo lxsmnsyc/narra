@@ -450,6 +450,17 @@ export struct Checker {
   // Structs and enums in C definition order, set by finish (Go's
   // Program.Types).
   order: Array<Type>
+  // By Checker.enums index, set by finish: true when the enum keeps its
+  // payload on the heap, false when the payload is stored in the value.
+  heapEnums: Array<bool>
+  // By Checker.structs and Checker.enums index, set by finish when the
+  // package has no errors: true when a value holds reference counts.
+  countedStructs: Array<bool>
+  countedEnums: Array<bool>
+  // By Checker.structs and Checker.enums index, set by finish when the
+  // package has no errors: the size and alignment of the C value.
+  structLayouts: Array<CLayout>
+  enumLayouts: Array<CLayout>
   // The std registry (stdlib.nra), the scope index of each module path,
   // the package (for unknown-module errors), the std modules the program
   // uses in first-import order (Go's Program.Modules) and the entry
@@ -592,6 +603,11 @@ export function newChecker(ids: int): Checker uses alloc {
     errors: [],
     errorKeys: Map {},
     order: [],
+    heapEnums: [],
+    countedStructs: [],
+    countedEnums: [],
+    structLayouts: [],
+    enumLayouts: [],
     registry: newRegistry(),
     scopeIndex: Map {},
     packageName: "",
@@ -1009,10 +1025,420 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
       Arrays.push(mutable all, type)
     }
   }
+  // Layouts first: the order depends on which enums keep a heap payload.
+  let memo = LayoutMemo { heapEnums: Map {}, sizes: Map {} }
+  let heapEnums: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable heapEnums, decideHeapEnum(checker, index, mutable memo))
+  }
+  checker.heapEnums = heapEnums
   let state: Map<string, int> = Map {}
   for (const type of Arrays.values(all)) {
     visitOrder(mutable checker, mutable state, type)
   }
+  // A struct that holds itself would not end the walk; it is an error by now.
+  if (Arrays.length(checker.errors) > 0) {
+    return
+  }
+  let countedStructs: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
+    Arrays.push(mutable countedStructs, isCountedType(checker, Type.TStruct(index)))
+  }
+  let countedEnums: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable countedEnums, isCountedType(checker, Type.TEnum(index)))
+  }
+  checker.countedStructs = countedStructs
+  checker.countedEnums = countedEnums
+  // C layouts, which decide how a value is passed to a function.
+  let layouts: Map<int, CLayout> = Map {}
+  let structLayouts: Array<CLayout> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
+    Arrays.push(mutable structLayouts, layoutStruct(checker, index, mutable layouts))
+  }
+  let enumLayouts: Array<CLayout> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable enumLayouts, layoutEnum(checker, index, mutable layouts))
+  }
+  checker.structLayouts = structLayouts
+  checker.enumLayouts = enumLayouts
+}
+
+// The size and alignment in bytes of a value in the emitted C.
+export struct CLayout {
+  size: int
+  align: int
+}
+
+// Values larger than this many bytes are passed to functions by pointer.
+const POINTER_PARAMETER_LIMIT = 16
+
+export function isPassedByPointer(checker: Checker, type: Type): bool uses alloc {
+  if (type is Type.TStruct(structIndex)) {
+    return readStructLayout(checker, structIndex).size > POINTER_PARAMETER_LIMIT
+  }
+  if (type is Type.TEnum(enumIndex)) {
+    return readEnumLayout(checker, enumIndex).size > POINTER_PARAMETER_LIMIT
+  }
+  if (type is Type.TDistinct(distinctIndex)) {
+    if (checker.distincts[distinctIndex].base is Some(base)) {
+      return isPassedByPointer(checker, base)
+    }
+    return false
+  }
+  // A range is three ints.
+  return type == Type.TRange
+}
+
+function readStructLayout(checker: Checker, index: int): CLayout uses alloc {
+  if (index < Arrays.length(checker.structLayouts)) {
+    return checker.structLayouts[index]
+  }
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutStruct(checker, index, mutable layouts)
+}
+
+function readEnumLayout(checker: Checker, index: int): CLayout uses alloc {
+  if (index < Arrays.length(checker.enumLayouts)) {
+    return checker.enumLayouts[index]
+  }
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutEnum(checker, index, mutable layouts)
+}
+
+function alignUp(offset: int, align: int): int {
+  return (offset + align - 1) / align * align
+}
+
+function layoutValue(
+  checker: Checker,
+  type: Type,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  return match (type) {
+    Type.TI8 | Type.TU8 | Type.TBool => CLayout { size: 1, align: 1 }
+    Type.TI16 | Type.TU16 => CLayout { size: 2, align: 2 }
+    Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => CLayout { size: 4, align: 4 }
+    Type.TFunc(_, _, _, _) => CLayout { size: 16, align: 8 }
+    Type.TRange => CLayout { size: 24, align: 8 }
+    Type.TStruct(index) => layoutStruct(checker, index, mutable layouts)
+    Type.TEnum(index) => layoutEnum(checker, index, mutable layouts)
+    Type.TDistinct(index) => layoutDistinct(checker, index, mutable layouts)
+    _ => CLayout { size: 8, align: 8 }
+  }
+}
+
+function layoutFields(
+  checker: Checker,
+  fields: Array<Field>,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  // C places each field at the next offset its alignment allows.
+  let offset = 0
+  let align = 1
+  for (const field of Arrays.values(fields)) {
+    const fieldLayout = layoutValue(checker, field.fieldType, mutable layouts)
+    offset = alignUp(offset, fieldLayout.align) + fieldLayout.size
+    if (fieldLayout.align > align) {
+      align = fieldLayout.align
+    }
+  }
+  // A struct without fields holds one char.
+  if (offset == 0) {
+    return CLayout { size: 1, align: 1 }
+  }
+  return CLayout { size: alignUp(offset, align), align: align }
+}
+
+function layoutStruct(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (index < Arrays.length(checker.structLayouts)) {
+    return checker.structLayouts[index]
+  }
+  const key = 0 - 1 - index
+  if (layouts[key] is Some(known)) {
+    return known
+  }
+  // A struct that holds itself meets its own key as one byte; it is an error.
+  layouts[key] = CLayout { size: 1, align: 1 }
+  const layout = layoutFields(checker, checker.structs[index].fields, mutable layouts)
+  layouts[key] = layout
+  return layout
+}
+
+function layoutEnum(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (index < Arrays.length(checker.enumLayouts)) {
+    return checker.enumLayouts[index]
+  }
+  // A tag alone, or a tag and a pointer to the heap payload.
+  if (!isBoxedEnum(checker.enums[index])) {
+    return CLayout { size: 4, align: 4 }
+  }
+  if (isHeapEnum(checker, index)) {
+    return CLayout { size: 16, align: 8 }
+  }
+  if (layouts[index] is Some(known)) {
+    return known
+  }
+  layouts[index] = CLayout { size: 4, align: 4 }
+  // An inline payload is a union of one struct per variant after the tag.
+  let unionSize = 0
+  let unionAlign = 1
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    if (Arrays.length(variant.fields) > 0) {
+      const variantLayout = layoutFields(checker, variant.fields, mutable layouts)
+      if (variantLayout.size > unionSize) {
+        unionSize = variantLayout.size
+      }
+      if (variantLayout.align > unionAlign) {
+        unionAlign = variantLayout.align
+      }
+    }
+  }
+  let align = 4
+  if (unionAlign > align) {
+    align = unionAlign
+  }
+  const unionOffset = alignUp(4, unionAlign)
+  const layout = CLayout {
+    size: alignUp(unionOffset + alignUp(unionSize, unionAlign), align),
+    align: align,
+  }
+  layouts[index] = layout
+  return layout
+}
+
+function layoutDistinct(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return layoutValue(checker, base, mutable layouts)
+  }
+  return CLayout { size: 8, align: 8 }
+}
+
+export function isCountedType(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TStr
+      | Type.TBytes
+      | Type.TStringBuilder
+      | Type.TArray(_)
+      | Type.TFunc(_, _, _, _)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TGenerator(_, _, _, _, _) => true
+    Type.TStruct(index) => isCountedStruct(checker, index)
+    Type.TEnum(index) => isCountedEnum(checker, index)
+    Type.TDistinct(index) => isCountedDistinct(checker, index)
+    _ => false
+  }
+}
+
+function isCountedStruct(checker: Checker, index: int): bool {
+  if (index < Arrays.length(checker.countedStructs)) {
+    return checker.countedStructs[index]
+  }
+  for (const field of Arrays.values(checker.structs[index].fields)) {
+    if (isCountedType(checker, field.fieldType)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isCountedEnum(checker: Checker, index: int): bool {
+  if (index < Arrays.length(checker.countedEnums)) {
+    return checker.countedEnums[index]
+  }
+  // A heap payload is counted; an inline payload is counted through its fields.
+  if (isHeapEnum(checker, index)) {
+    return true
+  }
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    for (const field of Arrays.values(variant.fields)) {
+      if (isCountedType(checker, field.fieldType)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function isCountedDistinct(checker: Checker, index: int): bool {
+  if (checker.distincts[index].base is Some(base)) {
+    return isCountedType(checker, base)
+  }
+  return false
+}
+
+// Payloads up to this many bytes are stored in the enum value.
+const INLINE_PAYLOAD_LIMIT = 32
+
+export function isHeapEnum(checker: Checker, index: int): bool {
+  if (index < Arrays.length(checker.heapEnums)) {
+    return checker.heapEnums[index]
+  }
+  // An enum made after finish keeps the heap layout, which fits every enum.
+  return isBoxedEnum(checker.enums[index])
+}
+
+// Layout decisions and sizes found so far, by enum index; a struct's size is
+// kept under the negative key -1 - index.
+struct LayoutMemo {
+  heapEnums: Map<int, bool>
+  sizes: Map<int, int>
+}
+
+function decideHeapEnum(checker: Checker, index: int, mutable memo: LayoutMemo): bool uses alloc {
+  if (memo.heapEnums[index] is Some(decided)) {
+    return decided
+  }
+  // An enum without fields is a tag.
+  let heap = false
+  if (isBoxedEnum(checker.enums[index])) {
+    // An enum that holds itself, or whose payload is large, keeps it on the heap.
+    let visited: Map<int, bool> = Map {}
+    for (const variant of Arrays.values(checker.enums[index].variants)) {
+      for (const field of Arrays.values(variant.fields)) {
+        if (reachesEnum(checker, field.fieldType, index, mutable visited)) {
+          heap = true
+        }
+      }
+    }
+    if (!heap) {
+      heap = measurePayload(checker, index, mutable memo) > INLINE_PAYLOAD_LIMIT
+    }
+  }
+  memo.heapEnums[index] = heap
+  return heap
+}
+
+function reachesEnum(
+  checker: Checker,
+  type: Type,
+  target: int,
+  mutable visited: Map<int, bool>,
+): bool uses alloc {
+  // Only structs, enums and distinct types are followed: arrays, maps, boxes
+  // and functions are pointers.
+  match (type) {
+    Type.TEnum(index) => {
+      if (index == target) {
+        return true
+      }
+      if (visited[index] is Some(_)) {
+        return false
+      }
+      visited[index] = true
+      for (const variant of Arrays.values(checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          if (reachesEnum(checker, field.fieldType, target, mutable visited)) {
+            return true
+          }
+        }
+      }
+    }
+    Type.TStruct(index) => {
+      // Struct keys are negative, so they never equal an enum index.
+      const key = 0 - 1 - index
+      if (visited[key] is Some(_)) {
+        return false
+      }
+      visited[key] = true
+      for (const field of Arrays.values(checker.structs[index].fields)) {
+        if (reachesEnum(checker, field.fieldType, target, mutable visited)) {
+          return true
+        }
+      }
+    }
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return reachesEnum(checker, base, target, mutable visited)
+      }
+    }
+    _ => {}
+  }
+  return false
+}
+
+function measurePayload(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  // The largest variant, each field rounded up to 8 bytes.
+  let largest = 0
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    let size = 0
+    for (const field of Arrays.values(variant.fields)) {
+      size = size + roundUp(measureValue(checker, field.fieldType, mutable memo))
+    }
+    if (size > largest) {
+      largest = size
+    }
+  }
+  return largest
+}
+
+function roundUp(size: int): int {
+  return (size + 7) / 8 * 8
+}
+
+function measureValue(checker: Checker, type: Type, mutable memo: LayoutMemo): int uses alloc {
+  return match (type) {
+    Type.TI8 | Type.TU8 | Type.TBool => 1
+    Type.TI16 | Type.TU16 => 2
+    Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => 4
+    Type.TFunc(_, _, _, _) => 16
+    Type.TRange => 24
+    Type.TStruct(index) => measureStruct(checker, index, mutable memo)
+    Type.TEnum(index) => measureEnum(checker, index, mutable memo)
+    Type.TDistinct(index) => measureDistinct(checker, index, mutable memo)
+    _ => 8
+  }
+}
+
+function measureStruct(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  const key = 0 - 1 - index
+  if (memo.sizes[key] is Some(known)) {
+    return known
+  }
+  // A struct that holds itself meets its own key as 0; it is reported later.
+  memo.sizes[key] = 0
+  let size = 0
+  for (const field of Arrays.values(checker.structs[index].fields)) {
+    size = size + roundUp(measureValue(checker, field.fieldType, mutable memo))
+  }
+  memo.sizes[key] = size
+  return size
+}
+
+function measureEnum(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  if (!isBoxedEnum(checker.enums[index])) {
+    return 4
+  }
+  // This enum does not reach the one being measured, so the walk ends.
+  if (decideHeapEnum(checker, index, mutable memo)) {
+    return 16
+  }
+  if (memo.sizes[index] is Some(known)) {
+    return known
+  }
+  const size = 8 + measurePayload(checker, index, mutable memo)
+  memo.sizes[index] = size
+  return size
+}
+
+function measureDistinct(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return measureValue(checker, base, mutable memo)
+  }
+  return 8
 }
 
 function visitOrder(
@@ -1028,7 +1454,7 @@ function visitOrder(
       fields = checker.structs[index].fields
     }
     Type.TEnum(index) => {
-      boxed = isBoxedEnum(checker.enums[index])
+      boxed = isHeapEnum(checker, index)
       for (const variant of Arrays.values(checker.enums[index].variants)) {
         for (const field of Arrays.values(variant.fields)) {
           Arrays.push(mutable fields, field)
@@ -1061,6 +1487,10 @@ function visitOrder(
     state[key] = 2
     Arrays.push(mutable checker.order, type)
     for (const field of Arrays.values(fields)) {
+      // A struct still being visited holds this enum; it is defined after it.
+      if (state[typeKey(field.fieldType)] is Some(1)) {
+        continue
+      }
       visitOrder(mutable checker, mutable state, field.fieldType)
     }
     return

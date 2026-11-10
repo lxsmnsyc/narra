@@ -1,0 +1,105 @@
+// A match arm that takes a list cell apart and builds a cell of the same
+// shape. A unique cell may only be rewritten when no other name, closure or
+// generator can still read it, so each case keeps one more reader alive and
+// checks that it still sees the old fields.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+enum List {
+  Cons(head: string, tail: List)
+  Nil
+}
+
+function build(count: int): List {
+  let list = List.Nil
+  let index = count
+  while (index > 0) {
+    list = List.Cons(Str.repeat(Int.toString(index), 2), list)
+    index--
+  }
+  return list
+}
+
+function shout(list: List): List {
+  return match (list) {
+    List.Cons(head, tail) => List.Cons(`${head}!`, shout(tail))
+    List.Nil => List.Nil
+  }
+}
+
+function render(list: List): string {
+  return match (list) {
+    List.Cons(head, List.Nil) => head
+    List.Cons(head, tail) => `${head},${render(tail)}`
+    List.Nil => ""
+  }
+}
+
+function bumpFirst(count: int): List {
+  // The subject is a fresh list that nothing else holds.
+  return match (build(count)) {
+    List.Cons(head, tail) => List.Cons(`${head}+`, tail)
+    List.Nil => List.Nil
+  }
+}
+
+function swapFirst(list: List): List {
+  // The new cell is built while the old fields are still read afterwards.
+  match (list) {
+    List.Cons(head, tail) => {
+      const swapped = List.Cons(Str.repeat(head, 2), tail)
+      print(`old head ${head}, old tail ${render(tail)}`)
+      return swapped
+    }
+    List.Nil => {}
+  }
+  return List.Nil
+}
+
+function* heads(list: List): Generator<string> {
+  let rest = list
+  let walking = true
+  while (walking) {
+    if (rest is List.Cons(head, tail)) {
+      yield head
+      rest = tail
+    } else {
+      walking = false
+    }
+  }
+}
+
+export function run(args: Array<string>): int {
+  // A list mapped while nothing else holds it.
+  print(render(shout(build(3))))
+  print(render(bumpFirst(3)))
+
+  // A shared list mapped while another name holds it: the original stays.
+  const shared = build(3)
+  const copy = shared
+  const shouted = shout(shared)
+  print(render(shouted))
+  print(render(shared))
+  print(render(copy))
+
+  // A closure keeps the list alive while a rewrite runs.
+  const captured = build(2)
+  const show = () => render(captured)
+  const rewritten = swapFirst(captured)
+  print(render(rewritten))
+  print(show())
+
+  // A suspended generator keeps the list alive while a rewrite runs.
+  const walked = build(3)
+  let seen: Array<string> = []
+  for (const head of heads(walked)) {
+    Arrays.push(mutable seen, head)
+    if (Arrays.length(seen) == 1) {
+      print(render(swapFirst(walked)))
+    }
+  }
+  print(Str.join(seen, ","))
+  print(render(walked))
+  return 0
+}

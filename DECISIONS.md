@@ -424,6 +424,14 @@ Decision: large constant parameters are passed by pointer, and reads of fields a
 - **Reason.** Value semantics do not require physical copies. Parameters are constant and access is exclusive, so a pointer is indistinguishable from a copy.
 - **Reason.** It removes the cost of passing large structs and of reading from containers, with no syntax.
 
+Amendment (node const-params-pointer, 2026-11-10). Built for parameters; reads of fields and elements still copy:
+
+- **Limit.** A constant parameter whose C value is over 16 bytes is passed as `const T*`: structs, inline enums (D99) and ranges. The C ABI already passes such a struct through memory, as a pointer to a copy the caller makes on arm64 and as a copy on the stack on x86-64, so the copy was all the by-value form added. The size is the C layout (field alignment included), computed once per struct and enum in `finish` (`isPassedByPointer`, `selfhost/src/check.nra`).
+- **One convention per type.** The choice depends only on the parameter's type, so direct calls, generic instances, trait implementations, function types, thunks for named functions and arrow functions agree. The generated `retain_*` and `release_*` functions of a large type take a pointer too.
+- **Arguments.** A place (a variable, a field path, a parameter) is passed by address. Any other value (a call result, a literal, a constant) is first stored in a temporary of the caller.
+- **Where the value is copied.** The callee cannot change the value: the caller keeps it for the call, E0319 rejects passing a variable as `mutable` and using it in another argument, and E0614 rejects a closure argument that assigns a variable another argument uses. Three places keep the parameter past the call or change it, and copy it: a generator or coroutine frame copies it when created; a closure environment copies a captured parameter, and the closure reads it through a pointer to that copy; a function with self tail calls stores each new value in a variable of its own (`<name>_held`) after all new arguments are evaluated, and points the parameter at it.
+- **Measured.** `narrac emit selfhost`: 3.16 G to 2.64 G instructions retired (-16.6%) on the batch-4 branch after option-inline and perceus-reuse.
+
 ## D51. Parameters reached through a function value are escaping
 
 Decision: a function type has no `escaping` marker, so the parameters of a function value are treated as escaping. An argument passed through a function value must be an escaping value, and a function-type parameter of an arrow function may be stored. This makes D46 stricter.
@@ -464,11 +472,11 @@ Decision: every C name comes from `compiler/internal/narra/cnames.go`. A declara
 
 ## D55. Fielded enum variants live on the heap, and `Box<T>` exists
 
-Decision: an enum with at least one fielded variant is `{ tag, payload pointer }`. The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
+Decision: an enum with at least one fielded variant is `{ tag, payload pointer }` (since D99, only when it reaches itself or its payload is over 32 bytes). The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
 
 - **Reason.** SPEC section 6 asks for this, and recursive enums (an AST) need it.
-- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates. The `interp` benchmark is about 2x slower until node `perceus` removes retains on borrowed values. The user accepted this.
-- **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths.
+- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates (since D99, only for heap enums). The user accepted this. It made the `interp` benchmark about 2x slower (0.39 s against 0.24 s) through a retain and release of each loop item; since node `perceus`, for-of items and `is`/`match` bindings borrow, and `interp` runs in 0.16 s.
+- **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths. Superseded by D99: an enum that does not reach itself and has a payload of up to 32 bytes is stored inline; this decision still holds for the rest.
 - **Limit.** User functions still recurse on the C stack; about 20000 deep overflows under ASan. Not solved here.
 
 ## D56. Polymorphic recursion is an error
@@ -1038,3 +1046,51 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - Contract patterns (D95) use the same alternatives.
 
 Built, except contract patterns (D95), which do not exist yet. E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.
+
+## D99. Enums that do not reach themselves store their payload inline
+
+Decision (maintainer accepted, 2026-11-10): an enum with a fielded variant is a tagged union held by value, `struct E { int32_t tag; union { ... } u; }`, unless it reaches itself or its payload is over 32 bytes. Those two keep the counted heap payload of D55. This replaces D55's "Rejected: inline payload" line for enums that do not reach themselves.
+
+- **Reaching itself.** A variant field reaches the enum through structs, enums and distinct types held by value. `Array`, `Map`, `Box`, generators and function values are pointers and stop the walk. Two enums that reach each other both stay on the heap. An enum that holds a heap enum (an AST) without reaching itself is inline.
+- **Size limit.** The payload is the largest variant, each field rounded up to 8 bytes. Over 32 bytes (four words) the payload stays on the heap.
+- **Copies.** An inline value is copied like a struct: retain and release switch on the tag and count the fields of that variant. An inline enum with no counted fields has no reference count functions. A variant without fields (`None`) never takes a retain.
+- **Monomorphized.** `Option<T>` and `Result<T, E>` get the layout of each instance. A future layout table (layout-tables) must carry the size of each instance.
+- **Language.** Unchanged. Payloads stay immutable, and constructors with fields still count as `alloc` for effects (D58), so a program's effects do not depend on a layout choice.
+- **Reason.** Instructions retired, base and branch compilers built from `feat/batch-4` 8de99b4, macOS arm64. `narrac emit selfhost`: 3.28 G to 3.08 G (6.0% fewer), user time 0.26 s to 0.24 s, peak memory 130 MB to 125 MB. A loop of 20 M `Option<int>` and `Result<int, string>` returns and matches: 1.77 G to 0.44 G, 0.09 s to 0.02 s. Part of the compiler gain comes from caching which structs and enums hold counted values (`Checker.countedStructs`, `countedEnums`); on e64faa2 the same compiler with every enum on the heap took 3.53 G against 3.67 G for the base and 3.45 G inline.
+- **Cost.** `bench/interp` takes 1.4% more instructions and about 20% more user time (0.15 s to 0.18 s). With the payload in the value, clang turns the `Add` and `Sub` arms of its hot `match` into conditional selects, which lengthens the dependency chain on the accumulator. The other bench programs compile to the same C.
+- **Rejected: no size limit.** The compiler took 3.87 G instructions on e64faa2, 5.6% more than the base: `Option<Emitter>` is 808 bytes and a `Result` of a checker struct 704, and both are copied by value. With the cache, limits of 8, 16, 48 and 64 bytes gave 3.48, 3.46, 3.51 and 3.56 G against 3.45 G at 32.
+- **Rejected: a pointer only for the recursive fields.** It needs a second rule for which fields are pointers, and a recursive enum then allocates for each recursive constructor anyway.
+
+## D100. Regions are parked, and the allocator comes first
+
+Decision (spike regions-design, for the maintainer at the gate): do not build `Region.run` now. Node regions stays a user feature with priority could, and is parked. Most of the measured cost is in `malloc` and `free`, not in reference counts, so a size-class allocator in `narra_alloc` comes first. The design below is what regions would need when someone builds them. Measurements: `roadmaps/selfhost/nodes/regions-design/prototype/measure.sh` on an Apple M2 (8 GB, macOS 27), instructions retired from `/usr/bin/time -l`, load average 2 to 5.
+
+Measured on `narrac emit selfhost` (the compiler emitting its own C, 183786 lines). Each variant rewrites the compiler's emitted C and emits byte-identical C:
+
+| variant | instructions | user s | peak memory |
+| --- | --- | --- | --- |
+| base (`malloc`/`free`) | 9.27 G | 0.57 | 135 MB |
+| size-class free lists, frees reuse blocks | 5.45 G | 0.42 | 153 MB |
+| bump allocation, counts kept, `free` does nothing | 5.04 G | 0.42 | 807 to 911 MB |
+| bump, counts kept, no drop walk | 4.63 G | 0.36 | 898 MB |
+| bump, no retain and no release at all | 3.75 G | 0.29 | 909 MB |
+| base plus a sign check on every retain and release | 9.64 G | 0.58 | 135 MB |
+
+One run makes 19.6 M allocations (580 MB), 510 K reallocs, 60.2 M retains, 70.3 M releases and 15232 copies on write.
+
+- **Skipping counts (question 1).** A region value would carry a negative count, as string literals and stack closure environments do. The sign check costs 3.9% more instructions on the compiler, with no change in user time. On `bench/` it costs 4.9% on `interp`, 0.3% on `strings`, and under 0.4% either way on `sieve`, and nothing on `fib`, `matmul` and `particles`. But a negative count is never 1, so every `_unique` copies, and `Arrays.push` on a region array becomes quadratic. Region values can be written in place only when the checker proves no other name shares them, which is D94 (node shared-write-check). `copy(x)` of a region value must then copy at once instead of relying on copy-on-write.
+- **Routing (question 1).** A per-thread "in region" flag read by `narra_alloc` routes arrays, maps, strings, boxes, enum payloads, closure environments and `StringBuilder`. It is not enough alone. A heap value stored into a region container is never released, because the container's release is skipped. Each store site must add the value to a list that the region releases at its end. A generator or coroutine created outside and resumed inside must clear the flag for the resume, and `Co.resume` must copy a region input. `Cell`, `Shared`, `Sender`, `Receiver` and `Task` objects stay on the heap with counts.
+- **Escape (question 2).** Drop the parameter: `Region.run(() => ...)`. Allocation follows the flag, so the region value has no use, and no `Scope` rules are needed. Two compile errors need codes. First, the arrow assigns or passes as `mutable` a captured `let` or `mutable` parameter (D77 captures by reference, and reading stays allowed). Second, the result type contains an identity type, `Generator`, `Coroutine` or `Async`. A callee can still write a region value into a `Cell`, `Shared` or channel created outside, and the checker cannot see that. Those writes copy at run time when the identity object is not in the current region. SPEC already says so for channels and `Shared`. `Thread.start` inside a region copies the closure environment to the heap.
+- **Copying out (question 3).** The emitter generates one copy function per type that holds boxed values: `string`, `bytes`, `Array<T>`, `Map<K, V>`, `Box<T>`, enum payloads, tuples and structs with boxed fields, `StringBuilder`, and function values (one per closure environment). Only region objects are copied. Heap objects inside the result are retained. A copied object leaves a forwarding pointer in its dead header, so shared subtrees are copied once. The cost is linear in the result's region part. For `narrac fmt` it is one string of the file's size. The compiler has no per-file summary today: the checker reads whole trees.
+- **Growth and runtime buffers (question 4).** `narra_realloc` cannot call `realloc` on a region block. Growth takes a new region block and copies. The old block stays until the region ends, so doubling wastes at most the final size. The choice follows the owner's mark (`a->rc < 0`), not the thread flag, since a heap array with count 1 can grow inside a region. The raw `malloc` buffers in `selfhost/runtime/std_io.c`, `std_fs.c` and `std_test.c` are freed in the same call, `std_env.c` keeps one process-wide buffer, and the drop worklist uses plain `realloc`. None of them hold Narra values, so they stay outside the region.
+- **Value to the compiler (question 5).** Per-module parsing does not fit: `Modules.load` keeps every tree for the whole compile. Per-function emission does not fit: `Consts.emitFunction` writes the shared `mutable emitter` (literals, closures, counters), which the first escape error forbids. Two phases have a clear end and a string result. `formatSource` (`selfhost/src/fmt.nra:257`) per file: `narrac fmt --check selfhost/src` is 14.21 G instructions base, 9.22 G with free lists, and 8.77 G at most with a region that skips all counts, 5% below free lists. `compileToC` (`selfhost/src/driver.nra:361`) as one region: at most 3.75 G against 5.45 G with free lists (31% fewer, 0.29 s against 0.42 s user), at 6 times the peak memory (909 MB against 153 MB). The 3.75 G bound skips the 15232 copies on write, which is safe only once D94 rejects shared writes.
+- **Reason.** The size-class allocator gives 41% fewer instructions and 26% less user time on the compiler, with no language change and 13% more peak memory. A region adds at most 31% more on one phase, needs D94, deep copies, a store list, two errors and run-time copies at identity objects, and keeps all memory until the region ends.
+- **Cost.** SPEC section 6 "Regions" and D48 stay as written until the node is built. The SPEC example's `(region) =>` parameter is wrong under this design.
+- **Rejected: keeping counts in a region and skipping only `free` (bump row).** 7.5% fewer instructions than free lists, at 5 times the peak memory.
+- **Rejected: skipping counts on outer values inside a region.** An outer value can be dropped during the region through a `Cell` write, so a borrowed pointer would dangle. The sign check is per object.
+- **Rejected: a region per module parse or per emitted function.** The trees live for the whole compile, and emission writes shared state.
+- **Rejected: never freeing in the compiler (one process-wide region).** 6 times the peak memory on the compiler's own source, and it grows with program size on an 8 GB machine.
+
+Size-class allocator: built (node fast-alloc). `narra_alloc` takes blocks of up to 512 bytes, header included, from 32 free lists in steps of 16 bytes, carved from 1 MiB chunks that are never returned to the system. Larger blocks use `malloc`. An 8-byte header holds the class (0 for a `malloc` block), so blocks are 8-byte aligned. `narra_realloc` keeps a small block that still fits, moves it to another class or to `malloc` otherwise, and calls `realloc` on a `malloc` block. AddressSanitizer builds (`-sanitize`) and builds that define `NARRA_PLAIN_MALLOC` keep plain `malloc` and `free`. `narra_live` counts as before. The lists are one global set; making `NARRA_HEAP_LOCAL` `_Thread_local` gives one set per thread. Measured on `narrac emit selfhost` (same machine, median of 9 alternating runs, load average 25 to 46): 9.35 G instructions before, 5.33 G after (43% fewer), user time 1.48 s to 1.12 s, peak memory 133 MB to 150 MB (13% more).
+
+Regions: not built yet.

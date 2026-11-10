@@ -5,11 +5,20 @@
 //
 // Ownership rules for reference-counted values in generated C:
 //   - A local variable owns one reference. It is released when its scope ends.
-//   - Parameters are borrowed. The caller keeps them alive for the call.
+//   - Parameters are borrowed. The caller keeps them alive for the call. A
+//     constant parameter over 16 bytes is a pointer to the caller's value.
 //   - A call returns an owned reference.
 //   - Each expression produces either an owned temporary or a borrowed value.
 //     Owned temporaries are released at the end of the statement unless a
 //     binding, field or return takes them over.
+//   - A for-of item borrows from the array the loop holds. Items are
+//     read-only, and a write to the source copies the array first.
+//   - An `is` or `match` binding borrows from the subject. The statement holds
+//     the subject: an owned temporary, a local that cannot be assigned, or
+//     else a retained copy. A destructuring binding owns its part.
+//   - An enum without a heap payload is copied like a struct: its retain and
+//     release count the fields of the variant its tag names. A variant
+//     without fields holds nothing and takes no retain.
 //
 // The Emitter holds the Checker read-only. Never pass `emitter.checker` as
 // `mutable`: a write would copy every checker table.
@@ -17,8 +26,19 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, Expr, Stmt, Block } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Checker, LocalInfo, Ref, ProgramFunc, BindingKind, findBodySlot } from "narrac/check"
-import { cType, opFuncName, typeId } from "narrac/cnames"
+import {
+  Checker,
+  LocalInfo,
+  Ref,
+  ProgramFunc,
+  BindingKind,
+  findBodySlot,
+  isHeapEnum,
+  isCountedType,
+  isPassedByPointer,
+} from "narrac/check"
+import { cachedCType, cachedTypeId, opFuncName } from "narrac/cnames"
+import * as Cells from "std/cell"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -50,7 +70,7 @@ export struct TraitNeed {
 
 export struct Emitter {
   checker: Checker
-  typeNames: Map<string, string>
+  typeNames: Cells.Cell<Map<string, string>>
   entry: int
   tests: bool
   file: string
@@ -142,7 +162,7 @@ export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter u
   // The checker is shared, not copied.
   return Emitter {
     checker: checker,
-    typeNames: Map {},
+    typeNames: Cells.create(Map {}),
     entry: entry,
     tests: tests,
     file: "",
@@ -191,41 +211,45 @@ export function reportUnsupported(
 }
 
 export function writeLine(mutable emitter: Emitter, text: string) uses alloc {
-  const padding = Str.repeat("  ", emitter.indent)
-  Str.append(mutable emitter.out, `${padding}${text}\n`)
+  // Append the indent, the text and the newline straight to the output.
+  for (const _level of Ranges.between(0, emitter.indent)) {
+    Str.append(mutable emitter.out, "  ")
+  }
+  Str.append(mutable emitter.out, text)
+  Str.append(mutable emitter.out, "\n")
 }
 
 export function cString(text: string): string uses alloc {
   // Bytes outside printable ASCII and `?` become octal escapes.
   let builder = Str.builder()
   Str.append(mutable builder, "\"")
-  for (const index of Ranges.between(0, Str.length(text))) {
+  const length = Str.length(text)
+  // Start of the run of bytes that copy unchanged.
+  let runStart = 0
+  for (const index of Ranges.between(0, length)) {
     const byte = Str.byteAt(text, index)
-    if (byte == 34 || byte == 92) {
+    const copies = byte >= 32 && byte < 127 && byte != 63 && byte != 34 && byte != 92
+    if (!copies) {
+      if (runStart < index) {
+        Str.append(mutable builder, Str.slice(text, runStart, index))
+      }
+      runStart = index + 1
       Str.append(mutable builder, "\\")
-      Str.appendChar(mutable builder, findByteChar(byte))
-    } else if (byte >= 32 && byte < 127 && byte != 63) {
-      Str.appendChar(mutable builder, findByteChar(byte))
-    } else {
-      const high = byte / 64
-      const middle = (byte / 8) % 8
-      const low = byte % 8
-      Str.append(
-        mutable builder,
-        `\\${Int.toString(high)}${Int.toString(middle)}${Int.toString(low)}`,
-      )
+      if (byte == 34 || byte == 92) {
+        Str.append(mutable builder, Str.slice(text, index, index + 1))
+      } else {
+        Str.append(mutable builder, Int.toString(byte / 64))
+        Str.append(mutable builder, Int.toString((byte / 8) % 8))
+        Str.append(mutable builder, Int.toString(byte % 8))
+      }
     }
+  }
+  if (runStart < length) {
+    Str.append(mutable builder, Str.slice(text, runStart, length))
   }
   Str.append(mutable builder, "\"")
   return Str.build(builder)
 }
-
-function findByteChar(byte: int): char {
-  return Str.charAt(Str.slice(ASCII, byte - 32, byte - 31), 0)
-}
-
-// The printable ASCII characters from space (32) to tilde (126).
-const ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
 export function literal(mutable emitter: Emitter, text: string): string uses alloc {
   emitter.literalCount++
@@ -280,10 +304,20 @@ export function isReference(emitter: Emitter, index: int): bool {
   return false
 }
 
+export function isPointerParameter(emitter: Emitter, index: int): bool uses alloc {
+  // A large constant parameter points at the caller's value. A generator frame
+  // holds a copy instead.
+  const local = readLocal(emitter, index)
+  return local.param &&
+    !local.isMutable &&
+    !emitter.inGenerator &&
+    isPassedByPointer(emitter.checker, local.localType)
+}
+
 export function localRef(emitter: Emitter, index: int): string uses alloc {
   const local = readLocal(emitter, index)
   const name = localName(local)
-  if (isReference(emitter, index)) {
+  if (isReference(emitter, index) || isPointerParameter(emitter, index)) {
     return `(*${name})`
   }
   return variableRef(emitter, name)
@@ -328,7 +362,7 @@ export function variableRef(emitter: Emitter, name: string): string uses alloc {
 
 export function declareLocalVariable(mutable emitter: Emitter, localIndex: int): string uses alloc {
   const local = readLocal(emitter, localIndex)
-  const typeName = cType(emitter.checker, local.localType)
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
   return declareVariable(mutable emitter, typeName, localName(local))
 }
 
@@ -353,42 +387,25 @@ export function underlyingType(emitter: Emitter, type: Type): Type {
 }
 
 export function needsRc(emitter: Emitter, type: Type): bool {
-  return match (type) {
-    Type.TStr
-      | Type.TBytes
-      | Type.TStringBuilder
-      | Type.TArray(_)
-      | Type.TFunc(_, _, _, _)
-      | Type.TBox(_)
-      | Type.TMap(_, _)
-      | Type.TGenerator(_, _, _, _, _) => true
-    Type.TStruct(index) => structNeedsRc(emitter, index)
-    Type.TEnum(index) => isBoxed(emitter, index)
-    Type.TDistinct(_) => needsRc(emitter, underlyingType(emitter, type))
-    _ => false
-  }
+  return isCountedType(emitter.checker, type)
 }
 
-function structNeedsRc(emitter: Emitter, index: int): bool {
-  for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
-    if (needsRc(emitter, field.fieldType)) {
-      return true
-    }
+export function buildVariantFieldPath(
+  emitter: Emitter,
+  enumIndex: int,
+  variantName: string,
+  fieldName: string,
+  value: string,
+): string uses alloc {
+  // u is a pointer to a heap payload, or the union of an inline one.
+  if (isHeapEnum(emitter.checker, enumIndex)) {
+    return `${value}.u->v_${variantName}.f_${fieldName}`
   }
-  return false
-}
-
-function isBoxed(emitter: Emitter, index: int): bool {
-  for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
-    if (Arrays.length(variant.fields) > 0) {
-      return true
-    }
-  }
-  return false
+  return `${value}.u.v_${variantName}.f_${fieldName}`
 }
 
 export function containerName(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
@@ -429,14 +446,67 @@ function structOrEnumCode(
   if (!needsRc(emitter, base)) {
     return ""
   }
-  return `${opFuncName(operation, typeId(emitter.checker, base))}(${value});`
+  const name = opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, base))
+  // A large value is passed by pointer, as to any function.
+  if (isPassedByPointer(emitter.checker, base)) {
+    return `${name}(&(${value}));`
+  }
+  return `${name}(${value});`
+}
+
+export function passArgument(
+  mutable emitter: Emitter,
+  type: Type,
+  text: string,
+): string uses alloc {
+  // A large constant argument is passed as a pointer to a place the caller
+  // keeps for the call; a value that is not a place is copied to a temporary.
+  if (!isPassedByPointer(emitter.checker, type)) {
+    return text
+  }
+  if (isPlace(text)) {
+    return `&${text}`
+  }
+  return `&${temp(mutable emitter, type, text)}`
+}
+
+function isPlace(text: string): bool {
+  // A name followed by fields, through `.`, `->` and `(*pointer)`, is a place.
+  let named = false
+  let index = 0
+  const length = Str.length(text)
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    let next = 0
+    if (index + 1 < length) {
+      next = Str.byteAt(text, index + 1)
+    }
+    if (byte == 40 && next == 42) {
+      // (*
+      index += 2
+    } else if (byte == 45 && next == 62) {
+      // ->
+      index += 2
+    } else if (byte == 41 || byte == 46) {
+      // ) and .
+      index++
+    } else if ((byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || byte == 95) {
+      named = true
+      index++
+    } else if (byte >= 48 && byte <= 57 && named) {
+      index++
+    } else {
+      return false
+    }
+  }
+  return named
 }
 
 export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   // The counter is program-wide: it is never reset per function.
   emitter.tempCount++
   const name = `t${Int.toString(emitter.tempCount)}`
-  const typeName = cType(emitter.checker, type)
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, type)
   const declaration = declareVariable(mutable emitter, typeName, name)
   writeLine(mutable emitter, `${declaration} = ${code};`)
   return variableRef(emitter, name)
@@ -478,6 +548,14 @@ function releaseTemporaries(mutable emitter: Emitter, temporaries: Array<TempVar
   }
 }
 
+function isTagOnly(code: string): bool {
+  // Matches the ((Name){.tag = N}) that constructorValue writes.
+  return Str.startsWith(code, "((") &&
+    Str.endsWith(code, "})") &&
+    Str.contains(code, "){.tag = ") &&
+    !Str.contains(code, ",")
+}
+
 export function consume(
   mutable emitter: Emitter,
   code: string,
@@ -485,6 +563,10 @@ export function consume(
   type: Type,
 ): string uses alloc {
   if (!needsRc(emitter, type)) {
+    return code
+  }
+  if (isTagOnly(code)) {
+    // A variant without fields holds no reference.
     return code
   }
   if (owned) {
@@ -527,7 +609,7 @@ export function popScope(mutable emitter: Emitter) uses alloc {
 function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
   for (let index = Arrays.length(frame.locals) - 1; index >= 0; index--) {
     const local = readLocal(emitter, frame.locals[index])
-    const text = releaseCode(emitter, local.localType, variableRef(emitter, localName(local)))
+    const text = releaseCode(emitter, local.localType, localRef(emitter, frame.locals[index]))
     if (text != "") {
       writeLine(mutable emitter, text)
     }

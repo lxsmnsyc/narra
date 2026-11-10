@@ -1,0 +1,98 @@
+// A for-of item borrows from the array the loop holds: no retain and no
+// release per item. Each case drops every other owner of the array or the item
+// while the item is still in use, so a wrong borrow reads freed memory.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+enum Op {
+  Push(text: string)
+  Pop
+}
+
+struct Holder {
+  words: Array<string>
+}
+
+function makeWords(count: int): Array<string> {
+  let words: Array<string> = []
+  for (let i = 0; i < count; i++) {
+    Arrays.push(mutable words, Str.repeat(Int.toString(i), 2))
+  }
+  return words
+}
+
+function joinAll(words: Array<string>): string {
+  let joined = ""
+  for (const word of words) {
+    joined = `${joined}${word};`
+  }
+  return joined
+}
+
+function firstLong(words: Array<string>): string {
+  // An item returned from the loop keeps its own reference.
+  for (const word of words) {
+    if (Str.length(word) > 2) {
+      return word
+    }
+  }
+  return "none"
+}
+
+export function run(args: Array<string>): int {
+  // The body reassigns the array it iterates.
+  let words = makeWords(4)
+  for (const word of words) {
+    words = []
+    print(word)
+  }
+  print(Int.toString(Arrays.length(words)))
+
+  // The body pushes to the array it iterates; the push copies it.
+  let growing = makeWords(3)
+  for (const word of Arrays.values(growing)) {
+    Arrays.push(mutable growing, `${word}+`)
+    print(word)
+  }
+  print(joinAll(growing))
+
+  // Items stored elsewhere outlive the array.
+  let kept: Array<string> = []
+  for (const word of makeWords(3)) {
+    Arrays.push(mutable kept, word)
+  }
+  print(joinAll(kept))
+
+  // A loop over a field of a struct that the body replaces.
+  let holder = Holder { words: makeWords(3) }
+  for (const word of holder.words) {
+    holder = Holder { words: [] }
+    print(word)
+  }
+
+  // Array.entries, break and continue.
+  for (const #[index, word] of Arrays.entries(makeWords(6))) {
+    if (index == 1) {
+      continue
+    }
+    if (index == 4) {
+      break
+    }
+    print(`${Int.toString(index)}=${word}`)
+  }
+
+  // Enum items with payloads, matched in the body while the source changes.
+  let program = [Op.Push(Str.repeat("x", 3)), Op.Pop, Op.Push(Str.repeat("y", 2))]
+  let stack: Array<string> = []
+  for (const op of program) {
+    program = [Op.Pop]
+    match (op) {
+      Op.Push(text) => Arrays.push(mutable stack, text)
+      Op.Pop => Arrays.push(mutable stack, "pop")
+    }
+  }
+  print(joinAll(stack))
+  print(firstLong(makeWords(12)))
+  return 0
+}

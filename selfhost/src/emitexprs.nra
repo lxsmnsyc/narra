@@ -45,11 +45,13 @@ import {
   readLocal,
   localRef,
   isReference,
+  passArgument,
   switchBody,
   underlyingType,
   localName,
   declareVariable,
   variableRef,
+  buildVariantFieldPath,
 } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
@@ -243,16 +245,30 @@ function emitTemplate<W: EmitWalker>(
   if (Arrays.length(parts) == 0) {
     return plain(literal(mutable emitter, ""))
   }
+  // A later part that may assign a variable forces each earlier part into a
+  // temporary now, to keep the written order.
+  let last = -1
+  for (const index of Ranges.between(0, Arrays.length(parts))) {
+    if (mayWrite(emitter, parts[index])) {
+      last = index
+    }
+  }
+  for (const index of Ranges.between(0, last)) {
+    holdArgument(walker, mutable emitter, parts[index])
+  }
   const first = EmitWalker.emitExpression(walker, mutable emitter, parts[0])
-  let accumulated = first.text
-  let owned = first.owned
+  if (Arrays.length(parts) == 1) {
+    return first
+  }
+  // Collect every part, then join them in one runtime call
+  let texts = first.text
   for (const index of Ranges.between(1, Arrays.length(parts))) {
     const next = EmitWalker.emitExpression(walker, mutable emitter, parts[index])
-    const concatenated = `lstr_concat(${accumulated}, ${next.text})`
-    accumulated = ownedTemp(mutable emitter, Type.TStr, concatenated)
-    owned = true
+    texts = `${texts}, ${next.text}`
   }
-  return Code { text: accumulated, owned: owned }
+  const count = Int.toString(Arrays.length(parts))
+  const joined = `lstr_concat_n(${count}, (lstr*[]){${texts}})`
+  return Code { text: ownedTemp(mutable emitter, Type.TStr, joined), owned: true }
 }
 
 function containerStruct(emitter: Emitter, type: Type): string uses alloc {
@@ -302,7 +318,9 @@ function emitFieldRead<W: EmitWalker>(
   const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
   if (ref is Ref.Narrow(enumIndex, variantIndex)) {
     const variantName = emitter.checker.enums[enumIndex].variants[variantIndex].name
-    return plain(`(${targetCode.text}).u->v_${variantName}.f_${name}`)
+    return plain(
+      buildVariantFieldPath(emitter, enumIndex, variantName, name, `(${targetCode.text})`),
+    )
   }
   if (readNodeType(emitter, getExpressionId(target)) is Type.TBox(_)) {
     return plain(`(${targetCode.text})->f_${name}`)
@@ -562,7 +580,8 @@ function floatLiteralCode(emitter: Emitter, nodeId: int, text: string): string u
 
 function mayWrite(emitter: Emitter, expression: Expr): bool uses alloc {
   // Block expressions, matches and calls that run a closure can assign; plain
-  // reads, operators and calls with side-effect-free arguments cannot.
+  // reads, operators, arrows (their body runs later) and calls with
+  // side-effect-free arguments cannot.
   return match (expression) {
     Expr.IntLit(_, _, _)
       | Expr.FloatLit(_, _, _)
@@ -580,7 +599,7 @@ function mayWrite(emitter: Emitter, expression: Expr): bool uses alloc {
     Expr.MapLit(_, _, _, keys, values) => anyMayWrite(emitter, keys) || anyMayWrite(emitter, values)
     Expr.StructLit(_, _, _, _, fields, spread) => structMayWrite(emitter, fields, spread)
     Expr.CallExpr(nodeId, _, _, _, arguments) => callMayWrite(emitter, nodeId, arguments)
-    Expr.ArrowExpr(_, _, _, _, body, block) => arrowMayWrite(emitter, body, block)
+    Expr.ArrowExpr(_, _, _, _, _, _) => false
     _ => true
   }
 }
@@ -620,22 +639,6 @@ function callMayWrite(emitter: Emitter, nodeId: int, arguments: Array<Arg>): boo
     if (mayWrite(emitter, argument.value)) {
       return true
     }
-  }
-  return false
-}
-
-function arrowMayWrite(
-  emitter: Emitter,
-  body: Option<Expr>,
-  block: Option<Block>,
-): bool uses alloc {
-  // A closure runs later, in the call that takes it. A block body can assign,
-  // an expression body only through a nested write.
-  if (block is Some(_)) {
-    return true
-  }
-  if (body is Some(bodyExpression)) {
-    return mayWrite(emitter, bodyExpression)
   }
   return false
 }
@@ -779,11 +782,13 @@ function emitFunctionCall<W: EmitWalker>(
 ): Code uses alloc {
   const checker = emitter.checker
   let parameterMutable: Array<bool> = []
+  let parameterTypes: Array<Type> = []
   let result = Type.TVoid
   match (program) {
     ProgramFunc.PlainFunc(funcIndex) => {
       for (const parameter of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
         Arrays.push(mutable parameterMutable, parameter.isMutable)
+        Arrays.push(mutable parameterTypes, checker.paramTypes[parameter.id])
       }
       result = checker.functions[funcIndex].result
     }
@@ -792,6 +797,7 @@ function emitFunctionCall<W: EmitWalker>(
       for (const parameter of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
         Arrays.push(mutable parameterMutable, parameter.isMutable)
       }
+      parameterTypes = checker.instanceList[instance].parameters
       result = checker.instanceList[instance].result
     }
     ProgramFunc.ImplFunc(block, index) => {
@@ -799,6 +805,7 @@ function emitFunctionCall<W: EmitWalker>(
         checker.implementations[block].functions[index].declaration.parameters,
       )) {
         Arrays.push(mutable parameterMutable, parameter.isMutable)
+        Arrays.push(mutable parameterTypes, checker.paramTypes[parameter.id])
       }
       result = checker.implementations[block].functions[index].result
     }
@@ -810,7 +817,8 @@ function emitFunctionCall<W: EmitWalker>(
       Arrays.push(mutable texts, pointer)
     } else {
       const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
-      Arrays.push(mutable texts, code.text)
+      const text = passArgument(mutable emitter, parameterTypes[index], code.text)
+      Arrays.push(mutable texts, text)
     }
   }
   const callCode = `${functionName(checker, program)}(${Str.join(texts, ", ")})`

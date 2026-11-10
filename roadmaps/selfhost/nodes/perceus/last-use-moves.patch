@@ -1,0 +1,581 @@
+diff --git a/selfhost/src/emitconsts.nra b/selfhost/src/emitconsts.nra
+index f3359f4..0528dd6 100644
+--- a/selfhost/src/emitconsts.nra
++++ b/selfhost/src/emitconsts.nra
+@@ -25,6 +25,8 @@ import {
+   beginStatement,
+   endStatement,
+   unwindAll,
++  findMoves,
++  clearMoves,
+   releaseCode,
+ } from "narrac/emitstate"
+ import * as Exprs from "narrac/emitexprs"
+@@ -225,6 +227,11 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
+   const owner = functionName(emitter.checker, program)
+   startFunction(mutable emitter, body, owner)
+   emitter.resultType = facts.result
++  if (bodyBlock(emitter.checker, body) is Some(movesBlock)) {
++    findMoves(mutable emitter, movesBlock)
++  } else {
++    clearMoves(mutable emitter)
++  }
+   const signature = functionSignature(emitter.checker, program)
+   if (emitter.checker.bodies[body].root is BodyRoot.RootFunc(generatorDeclaration)) {
+     if (generatorDeclaration.generator) {
+@@ -282,6 +289,7 @@ export function emitTestBody(
+     return `${reportUnsupported(mutable emitter, "test body", NODE)}\n`
+   }
+   startFunction(mutable emitter, found, declName("f", module, "test"))
++  clearMoves(mutable emitter)
+   writeLine(mutable emitter, `static void test_${Int.toString(number)}(void) {`)
+   emitter.indent++
+   if (emitter.checker.bodies[found].root is BodyRoot.RootBlock(block)) {
+diff --git a/selfhost/src/emitexprs.nra b/selfhost/src/emitexprs.nra
+index a482fdc..44b8ea8 100644
+--- a/selfhost/src/emitexprs.nra
++++ b/selfhost/src/emitexprs.nra
+@@ -45,6 +45,7 @@ import {
+   readLocal,
+   localRef,
+   isReference,
++  takeMove,
+   switchBody,
+   underlyingType,
+   localName,
+@@ -273,7 +274,7 @@ function emitIdent<W: EmitWalker>(
+ ): Code uses alloc {
+   const ref = readNodeRef(emitter, nodeId)
+   return match (ref) {
+-    Ref.Local(index) => plain(localRef(emitter, index))
++    Ref.Local(index) => emitLocalRead(mutable emitter, nodeId, index)
+     Ref.Const(index) => plain(constRef(mutable emitter, index))
+     Ref.Constructor(enumIndex, variant) => plain(constructorValue(emitter, enumIndex, variant))
+     Ref.Function(_) => Closures.emitFuncValue(walker, mutable emitter, expression)
+@@ -281,6 +282,18 @@ function emitIdent<W: EmitWalker>(
+   }
+ }
+ 
++function emitLocalRead(mutable emitter: Emitter, nodeId: int, localIndex: int): Code uses alloc {
++  // The last use of a local hands its reference to an owned temporary, which
++  // keeps the value even if the statement writes the local afterwards.
++  if (takeMove(mutable emitter, nodeId, localIndex)) {
++    const localType = readLocal(emitter, localIndex).localType
++    const current = localRef(emitter, localIndex)
++    const moved = ownedTemp(mutable emitter, localType, current)
++    return Code { text: moved, owned: true }
++  }
++  return plain(localRef(emitter, localIndex))
++}
++
+ function emitFieldRead<W: EmitWalker>(
+   walker: W,
+   mutable emitter: Emitter,
+diff --git a/selfhost/src/emitstate.nra b/selfhost/src/emitstate.nra
+index e9c8c68..6829dca 100644
+--- a/selfhost/src/emitstate.nra
++++ b/selfhost/src/emitstate.nra
+@@ -10,6 +10,17 @@
+ //   - Each expression produces either an owned temporary or a borrowed value.
+ //     Owned temporaries are released at the end of the statement unless a
+ //     binding, field or return takes them over.
++//   - A for-of item borrows from the array the loop holds. Items are
++//     read-only, and a write to the source copies the array first.
++//   - An `is` or `match` binding borrows from the subject. The statement holds
++//     the subject: an owned temporary, a local that cannot be assigned, or
++//     else a retained copy. A destructuring binding owns its part.
++//   - A `const` or `let` local moves at its last use (findMoves): the read
++//     becomes an owned temporary and the scope no longer releases the local.
++//     The use must be a statement of the local's own block (not inside a
++//     branch or loop), not in a closure, a match, a loop condition, the right
++//     side of && or ||, or an argument of a builtin other than Array.push, and
++//     the only use of the local in that statement.
+ //
+ // The Emitter holds the Checker read-only. Never pass `emitter.checker` as
+ // `mutable`: a write would copy every checker table.
+@@ -99,6 +110,10 @@ export struct Emitter {
+   // not taken yet (Go: held).
+   heldArguments: Map<int, Code>
+   heldPending: int = 0
++  // The reads that move their local at its last use, by node id, with the
++  // local; -1 once taken. They belong to the body movesBody (findMoves).
++  moves: Map<int, int>
++  movesBody: int = -1
+ }
+ 
+ // BlockInfo is a block expression being emitted: where a return stores its
+@@ -168,6 +183,7 @@ export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter u
+     frameSeen: Map {},
+     generatorElement: Type.TVoid,
+     heldArguments: Map {},
++    moves: Map {},
+   }
+ }
+ 
+@@ -690,3 +706,292 @@ function unwindToLoop(mutable emitter: Emitter, loopIndex: int) uses alloc {
+     }
+   }
+ }
++
++// The scan for last-use moves over one function body. depth is the block
++// depth, and statements[depth] the serial of the statement being walked in
++// the block at that depth. A candidate is a `const` or `let` local of a
++// counted type; for each one the scan keeps its declaring depth, the serial of
++// the statement at that depth that holds its latest reference, and that
++// reference's node id, or -1 when the reference cannot move.
++struct MoveScan {
++  depth: int = 0
++  serial: int = 0
++  statements: Array<int> = [0]
++  arrows: int = 0
++  declaredDepth: Map<int, int>
++  lastStatement: Map<int, int>
++  lastRead: Map<int, int>
++  pinned: Map<int, bool>
++}
++
++export function findMoves(mutable emitter: Emitter, block: Block) uses alloc {
++  let scan = MoveScan {
++    declaredDepth: Map {},
++    lastStatement: Map {},
++    lastRead: Map {},
++    pinned: Map {},
++  }
++  scanBlock(emitter, mutable scan, block)
++  let moves: Map<int, int> = Map {}
++  for (const local of Arrays.values(emitter.checker.bodies[emitter.body].declared)) {
++    if (scan.lastRead[local] is Some(nodeId)) {
++      if (nodeId >= 0 && scan.pinned[local] is None) {
++        moves[nodeId] = local
++      }
++    }
++  }
++  emitter.moves = moves
++  emitter.movesBody = emitter.body
++}
++
++export function clearMoves(mutable emitter: Emitter) uses alloc {
++  emitter.moves = Map {}
++  emitter.movesBody = -1
++}
++
++function scanBlock(emitter: Emitter, mutable scan: MoveScan, block: Block) uses alloc {
++  for (const statement of Arrays.values(block.statements)) {
++    scanNested(emitter, mutable scan, statement)
++  }
++}
++
++function scanNested(emitter: Emitter, mutable scan: MoveScan, statement: Stmt) uses alloc {
++  // The statement is walked one block deeper, so nothing in it can move a
++  // local declared outside: a block statement, a branch, or a loop step.
++  scan.depth++
++  if (Arrays.length(scan.statements) <= scan.depth) {
++    Arrays.push(mutable scan.statements, 0)
++  }
++  scan.serial++
++  scan.statements[scan.depth] = scan.serial
++  scanStatement(emitter, mutable scan, statement)
++  scan.depth--
++}
++
++function scanStatement(emitter: Emitter, mutable scan: MoveScan, statement: Stmt) uses alloc {
++  match (statement) {
++    Stmt.BlockStmt(block) => scanBlock(emitter, mutable scan, block)
++    Stmt.VarStmt(nodeId, _, _, _, pattern, _, value) => {
++      scanExpression(emitter, mutable scan, value, true)
++      if (pattern is None) {
++        noteDeclaration(emitter, mutable scan, nodeId)
++      }
++    }
++    Stmt.AssignStmt(_, target, value) => {
++      scanExpression(emitter, mutable scan, value, true)
++      scanExpression(emitter, mutable scan, target, false)
++    }
++    Stmt.CompoundAssignStmt(_, target, _, value) => {
++      scanExpression(emitter, mutable scan, target, false)
++      scanExpression(emitter, mutable scan, value, false)
++    }
++    Stmt.ExprStmt(_, expression) => scanExpression(emitter, mutable scan, expression, true)
++    Stmt.ReturnStmt(_, value) => {
++      if (value is Some(returned)) {
++        scanExpression(emitter, mutable scan, returned, true)
++      }
++    }
++    Stmt.IfStmt(_, condition, then, orElse) => {
++      scanExpression(emitter, mutable scan, condition, true)
++      scanBlock(emitter, mutable scan, then)
++      if (orElse is Some(otherwise)) {
++        scanNested(emitter, mutable scan, otherwise)
++      }
++    }
++    Stmt.WhileStmt(_, _, condition, body) => {
++      scanExpression(emitter, mutable scan, condition, false)
++      scanBlock(emitter, mutable scan, body)
++    }
++    Stmt.CForStmt(_, _, init, condition, step, body) => {
++      if (init is Some(declaration)) {
++        scanStatement(emitter, mutable scan, declaration)
++      }
++      if (condition is Some(loopCondition)) {
++        scanExpression(emitter, mutable scan, loopCondition, false)
++      }
++      scanBlock(emitter, mutable scan, body)
++      if (step is Some(stepStatement)) {
++        scanNested(emitter, mutable scan, stepStatement)
++      }
++    }
++    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
++      scanExpression(emitter, mutable scan, iterable, false)
++      scanBlock(emitter, mutable scan, body)
++    }
++    Stmt.YieldStmt(_, value, _, _) => scanExpression(emitter, mutable scan, value, true)
++    Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => {}
++  }
++}
++
++function noteDeclaration(emitter: Emitter, mutable scan: MoveScan, nodeId: int) uses alloc {
++  // Only a plain `const` or `let` local of a counted type can move.
++  const info = emitter.checker.bodies[emitter.body]
++  const slot = findBodySlot(info, nodeId)
++  if (slot < 0) {
++    return
++  }
++  const localIndex = info.declared[slot]
++  if (localIndex < 0) {
++    return
++  }
++  const local = info.locals[localIndex]
++  if (local.param || local.binding != BindingKind.Plain || !needsRc(emitter, local.localType)) {
++    return
++  }
++  scan.declaredDepth[localIndex] = scan.depth
++}
++
++function noteReference(
++  emitter: Emitter,
++  mutable scan: MoveScan,
++  nodeId: int,
++  movable: bool,
++) uses alloc {
++  if (readNodeRef(emitter, nodeId) is Ref.Local(localIndex)) {
++    if (scan.declaredDepth[localIndex] is Some(depth)) {
++      if (scan.arrows > 0) {
++        // A closure captures it.
++        scan.pinned[localIndex] = true
++        return
++      }
++      // A second reference in the same statement keeps the local: the
++      // emitter does not always evaluate a statement in written order.
++      const statement = scan.statements[depth]
++      if (scan.lastStatement[localIndex] is Some(previous)) {
++        if (previous == statement) {
++          scan.lastRead[localIndex] = -1
++          return
++        }
++      }
++      scan.lastStatement[localIndex] = statement
++      if (movable && scan.depth == depth) {
++        scan.lastRead[localIndex] = nodeId
++      } else {
++        scan.lastRead[localIndex] = -1
++      }
++    }
++  }
++}
++
++function scanExpression(
++  emitter: Emitter,
++  mutable scan: MoveScan,
++  expression: Expr,
++  movable: bool,
++) uses alloc {
++  // movable is false where the expression may run more than once, on some
++  // paths only, or as a place.
++  match (expression) {
++    Expr.Ident(nodeId, _, _) => noteReference(emitter, mutable scan, nodeId, movable)
++    Expr.TemplateLit(_, _, parts) => {
++      for (const part of Arrays.values(parts)) {
++        scanExpression(emitter, mutable scan, part, movable)
++      }
++    }
++    Expr.FieldExpr(_, _, target, _) => scanExpression(emitter, mutable scan, target, movable)
++    Expr.IsExpr(_, _, subject, _) => scanExpression(emitter, mutable scan, subject, false)
++    Expr.IndexExpr(_, _, target, index) => {
++      scanExpression(emitter, mutable scan, target, movable)
++      scanExpression(emitter, mutable scan, index, movable)
++    }
++    Expr.MapLit(_, _, _, keys, values) => {
++      for (const index of Ranges.upTo(Arrays.length(keys))) {
++        scanExpression(emitter, mutable scan, keys[index], movable)
++        scanExpression(emitter, mutable scan, values[index], movable)
++      }
++    }
++    Expr.CallExpr(nodeId, _, callee, _, arguments) => {
++      scanExpression(emitter, mutable scan, callee, movable)
++      const passes = movable && callEvaluatesOnce(emitter, nodeId)
++      for (const argument of Arrays.values(arguments)) {
++        scanExpression(emitter, mutable scan, argument.value, passes && !argument.isMutable)
++      }
++    }
++    Expr.UnaryExpr(_, _, _, operand) => scanExpression(emitter, mutable scan, operand, movable)
++    Expr.BinaryExpr(_, _, operator, left, right) => {
++      scanExpression(emitter, mutable scan, left, movable)
++      const always = operator != "&&" && operator != "||"
++      scanExpression(emitter, mutable scan, right, movable && always)
++    }
++    Expr.StructLit(_, _, _, _, fields, spread) => {
++      for (const field of Arrays.values(fields)) {
++        scanExpression(emitter, mutable scan, field.value, movable)
++      }
++      if (spread is Some(source)) {
++        scanExpression(emitter, mutable scan, source, movable)
++      }
++    }
++    Expr.ArrayLit(_, _, elements, _) => {
++      for (const element of Arrays.values(elements)) {
++        scanExpression(emitter, mutable scan, element, movable)
++      }
++    }
++    Expr.MatchExpr(_, _, subject, arms) => {
++      scanExpression(emitter, mutable scan, subject, false)
++      for (const arm of Arrays.values(arms)) {
++        if (arm.guard is Some(guard)) {
++          scanExpression(emitter, mutable scan, guard, false)
++        }
++        if (arm.body is Some(body)) {
++          scanExpression(emitter, mutable scan, body, false)
++        }
++        if (arm.block is Some(armBlock)) {
++          scanBlock(emitter, mutable scan, armBlock)
++        }
++      }
++    }
++    Expr.BlockExpr(_, _, block) => scanBlock(emitter, mutable scan, block)
++    Expr.ArrowExpr(_, _, _, _, body, block) => {
++      scan.arrows++
++      if (body is Some(arrowBody)) {
++        scanExpression(emitter, mutable scan, arrowBody, false)
++      }
++      if (block is Some(arrowBlock)) {
++        scanBlock(emitter, mutable scan, arrowBlock)
++      }
++      scan.arrows--
++    }
++    _ => {}
++  }
++}
++
++function callEvaluatesOnce(emitter: Emitter, nodeId: int): bool {
++  // Calls of functions and constructors evaluate each argument once. Of the
++  // builtins only Array.push is known to; the others may skip an argument or
++  // read it twice.
++  return match (readNodeRef(emitter, nodeId)) {
++    Ref.Function(_) | Ref.Implementation(_, _) | Ref.Constructor(_, _) | Ref.Value => true
++    Ref.Builtin(index) => emitter.checker.registry.functions[index].name == "Array.push"
++    _ => false
++  }
++}
++
++export function takeMove(mutable emitter: Emitter, nodeId: int, localIndex: int): bool uses alloc {
++  // The read is the local's last use: the local leaves its scope, so no
++  // unwind emitted after this point releases it.
++  if (emitter.movesBody != emitter.body || Arrays.length(emitter.frames) == 0) {
++    return false
++  }
++  if (emitter.moves[nodeId] is Some(movedLocal)) {
++    if (movedLocal != localIndex) {
++      return false
++    }
++    emitter.moves[nodeId] = -1
++    for (let scope = Arrays.length(emitter.scopes) - 1; scope >= 0; scope--) {
++      const locals = emitter.scopes[scope].locals
++      for (const position of Ranges.upTo(Arrays.length(locals))) {
++        if (locals[position] == localIndex) {
++          let kept: Array<int> = []
++          for (const other of Ranges.upTo(Arrays.length(locals))) {
++            if (other != position) {
++              Arrays.push(mutable kept, locals[other])
++            }
++          }
++          emitter.scopes[scope].locals = kept
++          return true
++        }
++      }
++    }
++  }
++  return false
++}
+diff --git a/testdata/perceus_moves.nra b/testdata/perceus_moves.nra
+new file mode 100644
+index 0000000..b40b951
+--- /dev/null
++++ b/testdata/perceus_moves.nra
+@@ -0,0 +1,146 @@
++// A local whose last use takes it over moves there: no retain at the use and
++// no release when its scope ends. Each case has a path where a wrong move
++// would free the value early, free it twice, or leak it.
++import * as Int from "std/int"
++import * as Str from "std/string"
++import * as Arrays from "std/array"
++
++struct Pair {
++  left: string
++  right: string
++}
++
++enum Tree {
++  Leaf(text: string)
++  Branch(left: Tree, right: Tree)
++}
++
++function make(text: string): string {
++  return Str.repeat(text, 2)
++}
++
++function wrap(text: string): Pair {
++  // `text` is a parameter: it is borrowed and never moves.
++  const left = make(text)
++  const right = make(left)
++  return Pair { left: left, right: right }
++}
++
++function collect(count: int, stopAt: int): Array<string> {
++  let out: Array<string> = []
++  // A local from outside the loop is read on every iteration.
++  const shared = make("s")
++  for (let i = 0; i < count; i++) {
++    // A local of the loop body moves each iteration.
++    const item = make(Int.toString(i))
++    if (i == stopAt) {
++      // An early exit before the move releases it.
++      break
++    }
++    Arrays.push(mutable out, item)
++    Arrays.push(mutable out, shared)
++  }
++  return out
++}
++
++function firstOrEmpty(flag: bool): string {
++  const value = make("v")
++  if (flag) {
++    // The early return releases value; the later move does not happen.
++    return "early"
++  }
++  return value
++}
++
++function pick(flag: bool): string {
++  // Moved on one branch only: the other branch still releases it.
++  const value = make("p")
++  if (flag) {
++    return value
++  }
++  print(value)
++  return "other"
++}
++
++function grow(list: Array<string>, item: string): Array<string> {
++  let copy = list
++  Arrays.push(mutable copy, item)
++  return copy
++}
++
++function build(depth: int): Tree {
++  if (depth == 0) {
++    return Tree.Leaf(make(Int.toString(depth)))
++  }
++  const left = build(depth - 1)
++  const right = build(depth - 1)
++  return Tree.Branch(left, right)
++}
++
++function count(tree: Tree): int {
++  return match (tree) { Tree.Leaf(_) => 1, Tree.Branch(left, right) => count(left) + count(right) }
++}
++
++function sum(items: Array<string>, index: int, total: int): int {
++  if (index == Arrays.length(items)) {
++    return total
++  }
++  // A local passed to a self tail call.
++  const next = items[index]
++  return sum(items, index + 1, total + Str.length(next))
++}
++
++export function run(args: Array<string>): int {
++  const pair = wrap("w")
++  print(`${pair.left} ${pair.right}`)
++  print(Str.join(collect(4, 9), ","))
++  print(Str.join(collect(4, 2), ","))
++  print(firstOrEmpty(true))
++  print(firstOrEmpty(false))
++  print(pick(true))
++  print(pick(false))
++
++  // A local that a later statement reads is not moved before it.
++  const text = make("t")
++  const both = Pair { left: text, right: text }
++  print(`${both.left}/${both.right}/${text}`)
++
++  // The value and the target of an assignment name the same local.
++  let list: Array<string> = []
++  list = grow(list, make("g"))
++  list = grow(list, make("h"))
++  print(Str.join(list, ","))
++
++  // A short-circuit right side runs on some paths only.
++  const maybe = make("m")
++  if (Arrays.length(list) > 5 && Str.length(maybe) > 0) {
++    print("never")
++  }
++
++  // A local captured by a closure is never moved.
++  const captured = make("c")
++  const read = () => captured
++  print(read())
++
++  // Moves inside a loop body that breaks, and into a returned block value.
++  let rounds = 0
++  while (true) {
++    const piece = make(Int.toString(rounds))
++    rounds++
++    if (rounds > 2) {
++      const last = Pair { left: piece, right: "end" }
++      print(last.left)
++      break
++    }
++    Arrays.push(mutable list, piece)
++  }
++  print(Str.join(list, ","))
++
++  // Destructuring and nested constructors take moved locals.
++  const whole = Pair { left: make("l"), right: make("r") }
++  const { left, right } = whole
++  print(`${left}${right}`)
++  print(Int.toString(count(build(4))))
++  print(Int.toString(sum(collect(5, 9), 0, 0)))
++  return 0
++}
+diff --git a/testdata/perceus_moves.out b/testdata/perceus_moves.out
+new file mode 100644
+index 0000000..d2d8105
+--- /dev/null
++++ b/testdata/perceus_moves.out
+@@ -0,0 +1,16 @@
++ww wwww
++00,ss,11,ss,22,ss,33,ss
++00,ss,11,ss
++early
++vv
++pp
++pp
++other
++tt/tt/tt
++gg,hh
++cc
++22
++gg,hh,00,11
++llrr
++16
++20

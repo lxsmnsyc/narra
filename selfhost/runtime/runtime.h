@@ -62,16 +62,98 @@ static void narra_report_leaks(void) {
   }
 }
 
+// AddressSanitizer builds keep plain malloc and free, so the sanitizer sees
+// every block. Defining NARRA_PLAIN_MALLOC does the same in any build.
+#if defined(__SANITIZE_ADDRESS__)
+#define NARRA_PLAIN_MALLOC 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define NARRA_PLAIN_MALLOC 1
+#endif
+#endif
+
+#ifndef NARRA_PLAIN_MALLOC
+// Blocks of up to 512 bytes, header included, come from size-class free
+// lists in steps of 16 bytes, carved from 1 MiB chunks. Larger blocks use
+// malloc. An 8-byte header in front of each block holds its class, 0 for a
+// malloc block. Chunks are never returned to the system.
+#define NARRA_SMALL_MAX 512
+#define NARRA_CHUNK_SIZE ((size_t)1 << 20)
+// Make this _Thread_local when threads exist: one heap per thread.
+#define NARRA_HEAP_LOCAL
+typedef struct narra_heap {
+  uint64_t* free_lists[NARRA_SMALL_MAX / 16 + 1];
+  char* at;
+  char* end;
+  void* chunks; // linked through each chunk's first word, so they stay reachable
+} narra_heap;
+static NARRA_HEAP_LOCAL narra_heap narra_small;
+
+static uint64_t* narra_carve(size_t size) {
+  if (!narra_small.at || (size_t)(narra_small.end - narra_small.at) < size) {
+    char* chunk = malloc(NARRA_CHUNK_SIZE);
+    if (!chunk) narra_panic("runtime", "out of memory");
+    *(void**)chunk = narra_small.chunks;
+    narra_small.chunks = chunk;
+    narra_small.at = chunk + 16;
+    narra_small.end = chunk + NARRA_CHUNK_SIZE;
+  }
+  uint64_t* block = (uint64_t*)narra_small.at;
+  narra_small.at += size;
+  return block;
+}
+
+static void* narra_block_new(size_t n) {
+  uint64_t* block;
+  if (n <= NARRA_SMALL_MAX - 8) {
+    // The header keeps its class while the block sits in a free list.
+    size_t size_class = (n + 8 + 15) >> 4;
+    block = narra_small.free_lists[size_class];
+    if (block) {
+      narra_small.free_lists[size_class] = *(uint64_t**)(block + 1);
+    } else {
+      block = narra_carve(size_class << 4);
+      *block = size_class;
+    }
+  } else {
+    if (n > SIZE_MAX - 8) narra_panic("runtime", "out of memory");
+    block = malloc(n + 8);
+    if (!block) narra_panic("runtime", "out of memory");
+    *block = 0;
+  }
+  return block + 1;
+}
+
+static void narra_block_free(void* p) {
+  uint64_t* block = (uint64_t*)p - 1;
+  uint64_t size_class = *block;
+  if (size_class == 0) {
+    free(block);
+    return;
+  }
+  *(uint64_t**)p = narra_small.free_lists[size_class];
+  narra_small.free_lists[size_class] = block;
+}
+#endif
+
 static void* narra_alloc(size_t n) {
+#ifdef NARRA_PLAIN_MALLOC
   void* p = malloc(n ? n : 1);
   if (!p) narra_panic("runtime", "out of memory");
+#else
+  void* p = narra_block_new(n);
+#endif
   narra_live++;
   return p;
 }
 
 static void narra_free(void* p) {
   narra_live--;
+#ifdef NARRA_PLAIN_MALLOC
   free(p);
+#else
+  narra_block_free(p);
+#endif
 }
 
 // Dropping a heap value queues the values it holds instead of recursing, so
@@ -110,9 +192,29 @@ static void narra_drop(void* p, void (*drop)(void*)) {
 }
 
 static void* narra_realloc(void* p, size_t n) {
+#ifdef NARRA_PLAIN_MALLOC
   void* q = realloc(p, n ? n : 1);
   if (!q) narra_panic("runtime", "out of memory");
   return q;
+#else
+  if (!p) return narra_block_new(n);
+  uint64_t* block = (uint64_t*)p - 1;
+  uint64_t size_class = *block;
+  // A malloc block stays one, even when it shrinks.
+  if (size_class == 0) {
+    if (n > SIZE_MAX - 8) narra_panic("runtime", "out of memory");
+    block = realloc(block, n + 8);
+    if (!block) narra_panic("runtime", "out of memory");
+    return block + 1;
+  }
+  // A small block that still fits stays; otherwise it moves to another class or to malloc.
+  size_t room = (size_t)(size_class << 4) - 8;
+  if (n <= room) return p;
+  void* q = narra_block_new(n);
+  memcpy(q, p, room);
+  narra_block_free(p);
+  return q;
+#endif
 }
 
 // Generators (emitgenerators.nra). A Generator<T> value points to the header
@@ -217,6 +319,19 @@ static lstr* lstr_concat(lstr* a, lstr* b) {
   return s;
 }
 
+static lstr* lstr_concat_n(int64_t count, lstr** parts) {
+  // Sum the lengths, then copy each part once
+  int64_t total = 0;
+  for (int64_t i = 0; i < count; i++) total += parts[i]->len;
+  lstr* s = lstr_new(total);
+  char* cursor = s->data;
+  for (int64_t i = 0; i < count; i++) {
+    memcpy(cursor, parts[i]->data, (size_t)parts[i]->len);
+    cursor += parts[i]->len;
+  }
+  return s;
+}
+
 static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
   if (n < 0) narra_panic(where, "Str.repeat with a negative count");
   lstr* s = lstr_new(a->len * n);
@@ -224,16 +339,29 @@ static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
   return s;
 }
 
+static lstr* lstr_from_digits(uint64_t magnitude, int negative) {
+  char buf[24];
+  char* end = buf + sizeof buf;
+  char* start = end;
+  // Write the digits from the last one backwards
+  do {
+    *--start = (char)('0' + magnitude % 10);
+    magnitude /= 10;
+  } while (magnitude != 0);
+  if (negative) *--start = '-';
+  lstr* s = lstr_new(end - start);
+  memcpy(s->data, start, (size_t)(end - start));
+  return s;
+}
+
 static lstr* lstr_from_int(int64_t v) {
-  char buf[32];
-  snprintf(buf, sizeof buf, "%" PRId64, v);
-  return lstr_from_cstr(buf);
+  // Negate in unsigned arithmetic so INT64_MIN does not overflow
+  if (v < 0) return lstr_from_digits(0 - (uint64_t)v, 1);
+  return lstr_from_digits((uint64_t)v, 0);
 }
 
 static lstr* lstr_from_uint(uint64_t v) {
-  char buf[32];
-  snprintf(buf, sizeof buf, "%" PRIu64, v);
-  return lstr_from_cstr(buf);
+  return lstr_from_digits(v, 0);
 }
 
 // Shortest text that reads back as the same double.

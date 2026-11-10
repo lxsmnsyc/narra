@@ -1,0 +1,85 @@
+// Borrowed loop items and borrowed bindings inside generators, and a local
+// held across a yield. A generator stopped at a yield holds what its frame
+// needs, and a generator that is dropped early releases it.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+enum Token {
+  Word(text: string)
+  Gap
+}
+
+function* items(): Generator<string> {
+  // The body reassigns the loop source while items are yielded.
+  let source = makeWords()
+  for (const word of source) {
+    source = []
+    yield word
+    yield `${word}!`
+  }
+}
+
+function* texts(tokens: Array<Token>): Generator<string> {
+  for (const token of tokens) {
+    match (token) {
+      Token.Word(text) => {
+        yield text
+        yield Str.repeat(text, 2)
+      }
+      Token.Gap => {
+        yield "gap"
+      }
+    }
+  }
+}
+
+function* pieces(count: int): Generator<string> {
+  for (let i = 0; i < count; i++) {
+    // A local of the loop body is held across a yield, then yielded.
+    const piece = Str.repeat(Int.toString(i), 3)
+    yield "next"
+    yield piece
+  }
+}
+
+function makeWords(): Array<string> {
+  return [Str.repeat("a", 2), Str.repeat("b", 2)]
+}
+
+export function run(args: Array<string>): int {
+  let seen: Array<string> = []
+  for (const text of items()) {
+    Arrays.push(mutable seen, text)
+  }
+  print(Str.join(seen, ","))
+
+  seen = []
+  for (const text of texts([Token.Word(Str.repeat("w", 2)), Token.Gap, Token.Word("v")])) {
+    Arrays.push(mutable seen, text)
+  }
+  print(Str.join(seen, ","))
+
+  seen = []
+  for (const text of pieces(3)) {
+    Arrays.push(mutable seen, text)
+  }
+  print(Str.join(seen, ","))
+
+  // Dropped while suspended in the middle of the loop and of the arm.
+  for (const text of items()) {
+    print(text)
+    break
+  }
+  for (const text of texts([Token.Word(Str.repeat("x", 2))])) {
+    print(text)
+    break
+  }
+  for (const text of pieces(2)) {
+    if (text != "next") {
+      print(text)
+      break
+    }
+  }
+  return 0
+}

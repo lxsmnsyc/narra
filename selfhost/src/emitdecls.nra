@@ -11,8 +11,8 @@ import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { Type, Variant, isBoxedEnum } from "narrac/types"
-import { Checker } from "narrac/check"
-import { typeId, cType, payloadName, opFuncName } from "narrac/cnames"
+import { Checker, isHeapEnum, isPassedByPointer } from "narrac/check"
+import { typeId, cType, payloadName, opFuncName, parameterCType } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -36,9 +36,9 @@ function findEnumIndex(type: Type): int {
   return match (type) { Type.TEnum(index) => index, _ => 0 - 1 }
 }
 
-function isBoxedEnumType(checker: Checker, type: Type): bool {
+function isHeapEnumType(checker: Checker, type: Type): bool {
   const index = findEnumIndex(type)
-  return index >= 0 && isBoxedEnum(checker.enums[index])
+  return index >= 0 && isHeapEnum(checker, index)
 }
 
 // An array or box type with the key Go sorts it by.
@@ -127,7 +127,7 @@ export function emitHeapTypedefs(mutable emitter: Emitter): string uses alloc {
     Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
   }
   for (const type of Arrays.values(emitter.checker.order)) {
-    if (isBoxedEnumType(emitter.checker, type)) {
+    if (isHeapEnumType(emitter.checker, type)) {
       const payload = payloadName(emitter.checker, type)
       Str.append(mutable builder, `typedef struct ${payload} ${payload};\n`)
     }
@@ -157,36 +157,43 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
     return `${text} };\n`
   }
   if (type is Type.TEnum(enumIndex)) {
-    if (isBoxedEnum(emitter.checker.enums[enumIndex])) {
+    if (isHeapEnum(emitter.checker, enumIndex)) {
       return `struct ${name} { int32_t tag; ${payloadName(emitter.checker, type)}* u; };\n`
+    }
+    if (isBoxedEnum(emitter.checker.enums[enumIndex])) {
+      return `struct ${name} { int32_t tag; union {${buildVariantMembers(emitter, enumIndex)} } u; };\n`
     }
     return `struct ${name} { int32_t tag; };\n`
   }
   return ""
 }
 
+function buildVariantMembers(emitter: Emitter, enumIndex: int): string uses alloc {
+  let builder = Str.builder()
+  for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+    if (Arrays.length(variant.fields) > 0) {
+      Str.append(mutable builder, " struct {")
+      for (const field of Arrays.values(variant.fields)) {
+        Str.append(
+          mutable builder,
+          ` ${cType(emitter.checker, field.fieldType)} ${fieldName(field.name)};`,
+        )
+      }
+      Str.append(mutable builder, ` } ${variantName(variant)};`)
+    }
+  }
+  return Str.build(builder)
+}
+
 export function emitHeapDefinitions(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(emitter.checker.order)) {
-    if (isBoxedEnumType(emitter.checker, type)) {
+    if (isHeapEnumType(emitter.checker, type)) {
+      const members = buildVariantMembers(emitter, findEnumIndex(type))
       Str.append(
         mutable builder,
-        `struct ${payloadName(emitter.checker, type)} { int64_t rc; int32_t tag; union {`,
+        `struct ${payloadName(emitter.checker, type)} { int64_t rc; int32_t tag; union {${members} }; };\n`,
       )
-      const index = findEnumIndex(type)
-      for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
-        if (Arrays.length(variant.fields) > 0) {
-          Str.append(mutable builder, " struct {")
-          for (const field of Arrays.values(variant.fields)) {
-            Str.append(
-              mutable builder,
-              ` ${cType(emitter.checker, field.fieldType)} ${fieldName(field.name)};`,
-            )
-          }
-          Str.append(mutable builder, ` } ${variantName(variant)};`)
-        }
-      }
-      Str.append(mutable builder, " }; };\n")
     }
   }
   for (const box of Arrays.values(compositeTypes(emitter, true))) {
@@ -218,10 +225,10 @@ export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
     if (needsRc(emitter, type)) {
       const retainName = opFuncName("retain", typeId(emitter.checker, type))
       const releaseName = opFuncName("release", typeId(emitter.checker, type))
-      const name = cType(emitter.checker, type)
+      const parameterType = parameterCType(emitter.checker, type, false)
       Str.append(
         mutable builder,
-        `static void ${retainName}(${name} v);\nstatic void ${releaseName}(${name} v);\n`,
+        `static void ${retainName}(${parameterType} v);\nstatic void ${releaseName}(${parameterType} v);\n`,
       )
     }
   }
@@ -250,8 +257,14 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     return ""
   }
   let builder = Str.builder()
-  const name = cType(emitter.checker, type)
+  const parameterType = parameterCType(emitter.checker, type, false)
+  const value = formatRcValue(emitter, type)
   const id = typeId(emitter.checker, type)
+  if (type is Type.TEnum(inlineIndex)) {
+    if (!isHeapEnum(emitter.checker, inlineIndex)) {
+      return inlineEnumRcFunctions(emitter, type, inlineIndex)
+    }
+  }
   if (type is Type.TEnum(enumIndex)) {
     // The drop function runs when the count reaches zero. Releasing a child
     // there queues it (narra_drop) instead of recursing, so the depth of a
@@ -283,13 +296,13 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     Str.append(mutable builder, "  default: break;\n  }\n  narra_free(q);\n}\n")
   }
   for (const operation of Arrays.values(["retain", "release"])) {
-    Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${name} v) {\n`)
+    Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${parameterType} v) {\n`)
     if (type is Type.TStruct(structIndex)) {
       for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
-        const value = `v.${fieldName(field.name)}`
-        let statement = retainCode(emitter, field.fieldType, value)
+        const fieldValue = `${value}.${fieldName(field.name)}`
+        let statement = retainCode(emitter, field.fieldType, fieldValue)
         if (operation == "release") {
-          statement = releaseCode(emitter, field.fieldType, value)
+          statement = releaseCode(emitter, field.fieldType, fieldValue)
         }
         if (statement != "") {
           Str.append(mutable builder, `  ${statement}\n`)
@@ -309,6 +322,49 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     Str.append(mutable builder, "}\n")
   }
   return Str.build(builder)
+}
+
+function inlineEnumRcFunctions(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {
+  let builder = Str.builder()
+  const parameterType = parameterCType(emitter.checker, type, false)
+  const enumValue = formatRcValue(emitter, type)
+  const id = typeId(emitter.checker, type)
+  for (const operation of Arrays.values(["retain", "release"])) {
+    Str.append(
+      mutable builder,
+      `static void ${opFuncName(operation, id)}(${parameterType} v) {\n  switch (${enumValue}.tag) {\n`,
+    )
+    // Each case counts the fields of one variant, as a struct counts its fields.
+    for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+      let statements: Array<string> = []
+      for (const field of Arrays.values(variant.fields)) {
+        const value = `${enumValue}.u.${variantName(variant)}.${fieldName(field.name)}`
+        let statement = retainCode(emitter, field.fieldType, value)
+        if (operation == "release") {
+          statement = releaseCode(emitter, field.fieldType, value)
+        }
+        if (statement != "") {
+          Arrays.push(mutable statements, statement)
+        }
+      }
+      if (Arrays.length(statements) > 0) {
+        Str.append(
+          mutable builder,
+          `  case ${Int.toString(variant.index)}: ${Str.join(statements, " ")} break;\n`,
+        )
+      }
+    }
+    Str.append(mutable builder, "  default: break;\n  }\n}\n")
+  }
+  return Str.build(builder)
+}
+
+function formatRcValue(emitter: Emitter, type: Type): string uses alloc {
+  // A large value reaches its retain and release functions by pointer.
+  if (isPassedByPointer(emitter.checker, type)) {
+    return "(*v)"
+  }
+  return "v"
 }
 
 function arrayFunctions(emitter: Emitter, array: Type): string uses alloc {
@@ -428,6 +484,17 @@ export function enumAllocation(
   const tag = Int.toString(info.index)
   if (Arrays.length(fields) == 0) {
     return Code { text: `((${name}){.tag = ${tag}})`, owned: false }
+  }
+  if (!isHeapEnum(emitter.checker, enumIndex)) {
+    // An inline payload is a compound literal; the value owns the fields.
+    let members: Array<string> = []
+    for (const index of Ranges.between(0, Arrays.length(info.fields))) {
+      Arrays.push(mutable members, `.${fieldName(info.fields[index].name)} = ${fields[index]}`)
+    }
+    return Code {
+      text: `((${name}){.tag = ${tag}, .u.${variantName(info)} = {${Str.join(members, ", ")}}})`,
+      owned: false,
+    }
   }
   // A variant with fields lives in a heap payload.
   emitter.tempCount++

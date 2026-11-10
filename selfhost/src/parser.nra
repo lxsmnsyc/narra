@@ -256,16 +256,46 @@ function sliceText(characters: Array<char>, first: int, last: int): string uses 
   return Str.build(builder)
 }
 
-function findHeaderLine(source: string): int uses alloc {
-  let header = 1
-  const lines = Str.split(source, "\n")
-  let index = 0
-  // A blank line after the leading comment block ends the header; a comment right above a declaration is its doc comment.
-  while (index < Arrays.length(lines) && Str.startsWith(lines[index], "//")) {
-    if (index + 1 < Arrays.length(lines) && Str.trim(lines[index + 1]) == "") {
-      header = index + 2
+function isBlankRange(source: string, first: int, end: int): bool {
+  for (const index of Ranges.between(first, end)) {
+    const byte = Str.byteAt(source, index)
+    if (byte != 32 && byte != 9 && byte != 13 && byte != 11 && byte != 12) {
+      return false
     }
-    index++
+  }
+  return true
+}
+
+function findLineEnd(source: string, first: int): int {
+  const size = Str.length(source)
+  let end = first
+  while (end < size && Str.byteAt(source, end) != 10) {
+    end++
+  }
+  return end
+}
+
+function findHeaderLine(source: string): int {
+  let header = 1
+  const size = Str.length(source)
+  let lineStart = 0
+  let lineNumber = 1
+  // A blank line after the leading comment block ends the header; a comment right above a declaration is its doc comment.
+  while (
+    lineStart + 1 < size &&
+      Str.byteAt(source, lineStart) == 47 &&
+      Str.byteAt(source, lineStart + 1) == 47
+  ) {
+    const lineEnd = findLineEnd(source, lineStart)
+    if (lineEnd >= size) {
+      break
+    }
+    const nextStart = lineEnd + 1
+    if (isBlankRange(source, nextStart, findLineEnd(source, nextStart))) {
+      header = lineNumber + 1
+    }
+    lineStart = nextStart
+    lineNumber++
   }
   return header
 }
@@ -303,7 +333,8 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     Arrays.push(mutable known, DotUse { pos: getPos(token), member: member })
     dotUses[token.text] = known
   }
-  let referenced: Map<string, bool> = Map {}
+  // The `${}` parts of templates added their names while the parser read them.
+  let referenced: Map<string, bool> = parser.facts.referenced
   collectReferencedNames(mutable referenced, parser.tokens)
   return SourceFacts {
     source: source,
@@ -331,11 +362,6 @@ function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<
       inImport = token.kind != TokenKind.TokString
       continue
     }
-    if (token.kind == TokenKind.TokTemplate) {
-      // The `${}` parts of a template are lexed and read the same way.
-      collectTemplateNames(mutable names, token.text)
-      continue
-    }
     if (token.kind != TokenKind.TokIdent) {
       continue
     }
@@ -346,32 +372,6 @@ function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<
       }
     }
     names[token.text] = true
-  }
-}
-
-function collectTemplateNames(mutable names: Map<string, bool>, text: string) uses alloc {
-  const raw = Str.chars(text)
-  const count = Arrays.length(raw)
-  let index = 0
-  while (index < count) {
-    if (raw[index] == '\\') {
-      index += 2
-      continue
-    }
-    if (raw[index] != '$' || index + 1 >= count || raw[index + 1] != '{') {
-      index++
-      continue
-    }
-    // Find the matching `}`.
-    let closeIndex = findInterpolationEnd(raw, index + 2)
-    if (closeIndex < 0) {
-      closeIndex = count
-    }
-    const lexed = lex(sliceText(raw, index + 2, closeIndex - 1))
-    if (lexed is Ok(tokens)) {
-      collectReferencedNames(mutable names, tokens)
-    }
-    index = closeIndex
   }
 }
 
@@ -3157,6 +3157,11 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       for (const entry of Maps.entries(innerParser.facts.templateTokenEnds)) {
         const #[tokenKey, tokenEnd] = entry
         parser.facts.templateTokenEnds[tokenKey] = tokenEnd
+      }
+      collectReferencedNames(mutable parser.facts.referenced, lexed.value)
+      for (const entry of Maps.entries(innerParser.facts.referenced)) {
+        const #[referencedName, referencedFlag] = entry
+        parser.facts.referenced[referencedName] = referencedFlag
       }
       for (const entry of Maps.entries(innerParser.facts.callEnds)) {
         const #[callId, callEnd] = entry

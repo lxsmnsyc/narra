@@ -1,0 +1,118 @@
+// Bindings of `is` and `match` borrow from the subject, which the statement
+// holds. Each case drops the subject's other owner while a binding is in use,
+// so a binding that borrowed from a value nobody holds reads freed memory.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+enum Chain {
+  Link(name: string, next: Chain)
+  End
+}
+
+enum Shape {
+  Circle(label: string)
+  Square(label: string)
+  Empty
+}
+
+struct State {
+  current: Chain
+}
+
+function link(name: string, next: Chain): Chain {
+  return Chain.Link(Str.repeat(name, 2), next)
+}
+
+function firstName(chain: Chain): string {
+  // A binding that is returned takes its own reference.
+  match (chain) {
+    Chain.Link(name, _) => {
+      return name
+    }
+    Chain.End => {}
+  }
+  return "none"
+}
+
+function lastName(chain: Chain, last: string): string {
+  // A self tail call replaces the parameter the bindings came from.
+  if (chain is Chain.Link(name, next)) {
+    return lastName(next, name)
+  }
+  return last
+}
+
+function describe(shape: Shape): string {
+  return match (shape) {
+    Shape.Circle(label) | Shape.Square(label) if (Str.length(label) > 3) => `big ${label}`
+    Shape.Circle(label) => `circle ${label}`
+    Shape.Square(label) => `square ${label}`
+    Shape.Empty => "empty"
+  }
+}
+
+export function run(args: Array<string>): int {
+  // An arm reassigns the matched local.
+  let current = link("a", link("b", Chain.End))
+  match (current) {
+    Chain.Link(name, next) => {
+      current = Chain.End
+      print(name)
+      if (next is Chain.Link(nextName, _)) {
+        print(nextName)
+      }
+    }
+    Chain.End => print("end")
+  }
+
+  // `if (x is P(y))` whose body reassigns x.
+  let shape = Shape.Circle(Str.repeat("c", 2))
+  if (shape is Shape.Circle(label)) {
+    shape = Shape.Empty
+    print(label)
+  }
+  print(describe(shape))
+
+  // A match on a field whose owner the arm replaces.
+  let state = State { current: link("s", Chain.End) }
+  match (state.current) {
+    Chain.Link(name, _) => {
+      state = State { current: Chain.End }
+      print(name)
+    }
+    Chain.End => print("end")
+  }
+
+  // A walk that reassigns the subject in the loop body.
+  let walk = link("x", link("y", link("z", Chain.End)))
+  let names: Array<string> = []
+  while (true) {
+    if (walk is Chain.Link(name, next)) {
+      walk = next
+      Arrays.push(mutable names, name)
+    } else {
+      break
+    }
+  }
+  print(Str.join(names, ","))
+
+  // A binding captured by a closure outlives the match.
+  let later: () => string = () => "unset"
+  let held = link("k", Chain.End)
+  if (held is Chain.Link(name, _)) {
+    later = () => name
+  }
+  held = Chain.End
+  print(later())
+
+  // Guarded or-patterns, read-only subjects and tail calls.
+  print(describe(Shape.Square(Str.repeat("q", 5))))
+  print(describe(Shape.Square(Str.repeat("q", 2))))
+  const fixed = link("f", Chain.End)
+  print(firstName(fixed))
+  print(firstName(Chain.End))
+  print(lastName(link("p", link("r", link("t", Chain.End))), "none"))
+  print(Int.toString(Arrays.length(names)))
+  return 0
+}

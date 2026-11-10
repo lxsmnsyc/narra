@@ -475,7 +475,9 @@ function emitWhile<W: EmitWalker>(
   let scan = HoistScan { places: [], disqualified: [] }
   scanHoistExpression(emitter, mutable scan, condition)
   scanHoistBlock(emitter, mutable scan, body)
-  const outerHoisted = hoistArrayUniques(walker, mutable emitter, scan)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  const firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
   beginStatement(mutable emitter)
@@ -483,6 +485,7 @@ function emitWhile<W: EmitWalker>(
   const holds = temp(mutable emitter, Type.TBool, code.text)
   endStatement(mutable emitter)
   writeLine(mutable emitter, `if (!${holds}) break;`)
+  emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   emitLoopBody(walker, mutable emitter, label, pos, body)
   const info = leaveLoop(mutable emitter)
   emitter.indent--
@@ -514,7 +517,15 @@ function emitCFor<W: EmitWalker>(
     scanHoistStatement(emitter, mutable scan, scannedStep)
   }
   scanHoistBlock(emitter, mutable scan, body)
-  const outerHoisted = hoistArrayUniques(walker, mutable emitter, scan)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  let firstFlag = ""
+  if (condition is None) {
+    // Without a condition the body always runs.
+    emitHoistedUniques(walker, mutable emitter, hoisted)
+  } else {
+    firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
+  }
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
   if (condition is Some(loopCondition)) {
@@ -523,6 +534,7 @@ function emitCFor<W: EmitWalker>(
     const holds = temp(mutable emitter, Type.TBool, code.text)
     endStatement(mutable emitter)
     writeLine(mutable emitter, `if (!${holds}) break;`)
+    emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   }
   enterLoop(mutable emitter, label, pos)
   markStepLoop(mutable emitter)
@@ -623,7 +635,9 @@ function emitRangeFor<W: EmitWalker>(
   const variable = localRef(emitter, localIndex)
   let scan = HoistScan { places: [], disqualified: [] }
   scanHoistBlock(emitter, mutable scan, body)
-  const outerHoisted = hoistArrayUniques(walker, mutable emitter, scan)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  emitGuardedUniques(walker, mutable emitter, hoisted, `${low} < ${high}`)
   writeLine(
     mutable emitter,
     `for (${declaration} = ${low}; ${variable} < ${high}; ${variable}++) {`,
@@ -653,7 +667,10 @@ function emitRangeValueFor<W: EmitWalker>(
   const variable = localRef(emitter, localIndex)
   let scan = HoistScan { places: [], disqualified: [] }
   scanHoistBlock(emitter, mutable scan, body)
-  const outerHoisted = hoistArrayUniques(walker, mutable emitter, scan)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  const runsOnce = `${range}.step > 0 ? ${range}.low < ${range}.high : ${range}.low > ${range}.high`
+  emitGuardedUniques(walker, mutable emitter, hoisted, runsOnce)
   writeLine(
     mutable emitter,
     `for (${declaration} = ${range}.low; ${range}.step > 0 ? ${variable} < ${range}.high : ${variable} > ${range}.high; narra_range_advance(&${variable}, ${range}.step, ${range}.high)) {`,
@@ -822,29 +839,84 @@ function containsLocal(locals: Array<int>, index: int): bool {
   return false
 }
 
-function hoistArrayUniques<W: EmitWalker>(
-  walker: W,
-  mutable emitter: Emitter,
-  scan: HoistScan,
-): int uses alloc {
-  const outerCount = Arrays.length(emitter.hoistedArrays)
+function chooseHoistedArrays(mutable emitter: Emitter, scan: HoistScan): Array<Expr> uses alloc {
+  let chosen: Array<Expr> = []
   if (emitter.inGenerator) {
-    return outerCount
+    return chosen
   }
   for (const place of Arrays.values(scan.places)) {
     const index = findArrayLocal(emitter, place)
     if (!canHoistArray(emitter, scan, index)) {
       continue
     }
+    Arrays.push(mutable chosen, place)
+    Arrays.push(mutable emitter.hoistedArrays, index)
+  }
+  return chosen
+}
+
+function emitHoistedUniques<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+) uses alloc {
+  for (const place of Arrays.values(places)) {
     // The array is made unique through the place of the local, as for a `mutable` argument.
+    const index = findArrayLocal(emitter, place)
     const arrayType = readLocal(emitter, index).localType
     const arrayStruct = containerName(emitter, arrayType)
     const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, place)
     const pointer = pointerTemp(mutable emitter, arrayType, location)
     writeLine(mutable emitter, `*${pointer} = ${arrayStruct}_unique(*${pointer});`)
-    Arrays.push(mutable emitter.hoistedArrays, index)
   }
-  return outerCount
+}
+
+function emitGuardedUniques<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+  guard: string,
+) uses alloc {
+  if (Arrays.length(places) == 0) {
+    return
+  }
+  // The loop may run zero times, and then nothing writes the array.
+  writeLine(mutable emitter, `if (${guard}) {`)
+  emitter.indent++
+  emitHoistedUniques(walker, mutable emitter, places)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+}
+
+function declareFirstIterationFlag(
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+): string uses alloc {
+  if (Arrays.length(places) == 0) {
+    return ""
+  }
+  emitter.tempCount++
+  const flag = `first${Int.toString(emitter.tempCount)}`
+  writeLine(mutable emitter, `int ${flag} = 1;`)
+  return flag
+}
+
+function emitFirstIterationUniques<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+  flag: string,
+) uses alloc {
+  if (flag == "") {
+    return
+  }
+  // The uniqueness test waits for the first pass through the loop body.
+  writeLine(mutable emitter, `if (${flag}) {`)
+  emitter.indent++
+  writeLine(mutable emitter, `${flag} = 0;`)
+  emitHoistedUniques(walker, mutable emitter, places)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
 }
 
 function restoreHoistedArrays(mutable emitter: Emitter, count: int) uses alloc {

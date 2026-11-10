@@ -7,3 +7,11 @@
 - Not hoisted: generator bodies, locals captured by a closure, `Reference` bindings, non-mutable parameters, locals not yet declared at the loop, any bare use of the array.
 - Samples: `testdata/loop_unique_generator.nra` (prints `1 2 3 2 3`), `testdata/loop_unique_hoist.nra` (hoisted and not hoisted cases; same output on base and branch).
 - Measurements are in outcome.md.
+
+## 2026-11-10: hoist ran before loops that run zero times
+
+- Finding: `hoistArrayUniques` made the array unique before the loop, so a shared array was copied even when the loop ran zero times. The debug copy check reported it.
+- Proof on the base (feat/batch-5 at 94943913, compiler built from an archive of it, stage 2 C built with `cc`): `NARRAC=<base narrac> sh scripts/test.sh --suite programs --filter copy_hoist` fails `programs/copy_hoist_empty_loop.nra/debug`: want exit code 0, got exit code 103, `copy check: copies on write that no copy(...) explains: array 3` (one per loop form: range, while, C-style).
+- Fix: the choice of arrays (`chooseHoistedArrays`) is split from the emission. Range loops emit the unique under `if (<first condition>)` before the loop. While and C-style loops declare `int firstN = 1;` before the loop and emit the unique after the first condition check, under `if (firstN) { firstN = 0; ... }`. A C-style loop without a condition emits it before the loop.
+- Branch: the same command passes (debug and release); `--filter loop_unique` passes.
+- Instructions retired, release builds, 6 alternating base/branch pairs (base is feat/batch-5, which has the hoist): particles base 1.512G to 1.517G, branch 1.513G to 1.515G; sieve base 0.503G to 0.527G, branch 0.505G to 0.523G. The hoist gains hold.

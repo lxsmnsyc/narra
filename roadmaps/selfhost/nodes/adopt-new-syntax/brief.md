@@ -1,7 +1,7 @@
 ---
 id: adopt-new-syntax
 title: "Use compound assignment, C-style for and or-patterns in the compiler"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 200000
 owns:
   - roadmaps/selfhost/nodes/adopt-new-syntax/**
 shared:

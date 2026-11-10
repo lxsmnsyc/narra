@@ -45,6 +45,7 @@ D94 step 5 (debate settled structure items 1 and 4, P18, O18):
 
 - The shared-write warning (E0978) becomes an error. Keep the fix.
 - Turn the debug copy check on for every program sample: `isCopySample` true for every program, or `COPY_CHECK_ENVIRONMENT` in `Shell.leakCheckEnvironment()` (see `nodes/copy-builtin/outcome.md`). Any report that remains is a hidden copy to fix or explain in the outcome.
+- Run the analysis in every command that checks: `build`, `run`, `test`, `emit`, `check`, `apply-fix` and the language server (`lspcache.nra`). Today it runs only in `check` and `apply-fix`, after checking, and returns early when there are other errors (`sharedwrites.nra`, `driver.nra`; see `nodes/shared-write-check/outcome.md`). Drop that early return so E0978 is reported next to other errors. Accept the cost: about +0.33G instructions per selfhost compile, measured by shared-write-check. Record the before and after cost in the outcome.
 - Error samples for each D2 form with all-scalar structs, which the runtime check cannot see (copy-builtin outcome, Gotchas: borrowed values and inline all-scalar structs).
 
 ## Acceptance

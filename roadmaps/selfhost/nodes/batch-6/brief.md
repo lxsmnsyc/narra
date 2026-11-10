@@ -55,9 +55,9 @@ batch-5 ended with a seed update, so the seed reads `copy(...)` and `from`. shar
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] The textops helpers (`substring`, `splitString`, `repeatString`, `filledArray` in `selfhost/src/textops.nra`) call the Option builtins directly, and the seed is regenerated again. The seed shared-write-sweep regenerated mid-batch (e61449e6) already reads the Option builtins, so the switch needs only the end-of-batch seed update after it. Until then the compiler costs about 32% more instructions (std-no-panic review, 2026-11-11). The end-of-batch bench row must show it gone.
-- [ ] A fresh review of the whole story branch, before the pull request (wave-18 lesson).
-- [ ] `bench/BASELINE.md` has an end-of-batch row, recorded on an idle machine (the sweep adds `copy(...)` calls to the compiler).
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
+- [x] The textops helpers (`substring`, `splitString`, `repeatString`, `filledArray` in `selfhost/src/textops.nra`) call the Option builtins directly, and the seed is regenerated again. The seed shared-write-sweep regenerated mid-batch (e61449e6) already reads the Option builtins, so the switch needs only the end-of-batch seed update after it. Until then the compiler costs about 32% more instructions (std-no-panic review, 2026-11-11). The end-of-batch bench row must show it gone.
+- [x] A fresh review of the whole story branch, before the pull request (wave-18 lesson).
+- [x] `bench/BASELINE.md` has an end-of-batch row, recorded on an idle machine (the sweep adds `copy(...)` calls to the compiler).

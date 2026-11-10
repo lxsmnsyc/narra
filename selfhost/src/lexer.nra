@@ -82,46 +82,34 @@ const KEYWORDS = Map {
   "yield": true,
 }
 
-// Longest punctuation first, so "==" is matched before "=".
-const PUNCTS = [
-  "===",
-  "!==",
-  "...",
-  "#[",
-  "=>",
-  "==",
-  "!=",
-  "<=",
-  ">=",
-  "&&",
-  "||",
-  "<<",
-  ">>",
-  "+",
-  "-",
-  "*",
-  "/",
-  "%",
-  "<",
-  ">",
-  "=",
-  "!",
-  "&",
-  "|",
-  "^",
-  "~",
-  "(",
-  ")",
-  "{",
-  "}",
-  "[",
-  "]",
-  ",",
-  ":",
-  ".",
-  ";",
-  "?",
-]
+// Punctuation by first byte, longest first, so "==" is matched before "=".
+const PUNCTS_BY_FIRST_BYTE = Map {
+  61: ["===", "=>", "==", "="],
+  33: ["!==", "!=", "!"],
+  46: ["...", "."],
+  35: ["#["],
+  60: ["<=", "<<", "<"],
+  62: [">=", ">>", ">"],
+  38: ["&&", "&"],
+  124: ["||", "|"],
+  43: ["+"],
+  45: ["-"],
+  42: ["*"],
+  47: ["/"],
+  37: ["%"],
+  94: ["^"],
+  126: ["~"],
+  40: ["("],
+  41: [")"],
+  123: ["{"],
+  125: ["}"],
+  91: ["["],
+  93: ["]"],
+  44: [","],
+  58: [":"],
+  59: [";"],
+  63: ["?"],
+}
 
 // Byte values of the ASCII characters the lexer tests.
 const TAB = 9
@@ -451,44 +439,47 @@ function runLexer(mutable lexer: Lexer): Option<LexError> {
 }
 
 function lexPunctuation(mutable lexer: Lexer, line: int, column: int): Option<LexError> {
-  for (const punctuation of Arrays.values(PUNCTS)) {
-    if (hasPrefix(lexer, punctuation)) {
-      // Punctuation is ASCII, so each byte is one column.
-      const length = Str.length(punctuation)
-      lexer.index += length
-      lexer.column += length
-      if (punctuation == ";" && lexer.depth == 0) {
-        return errorWithFixesAt(
-          line,
-          column,
-          "E0003",
-          buildRemoveSemicolonFix(Pos { line: line, column: column }),
-          "semicolons are not used; end the statement with a line break",
-        )
+  const candidates = PUNCTS_BY_FIRST_BYTE[peek(lexer, 0)]
+  if (candidates is Some(punctuationList)) {
+    for (const punctuation of Arrays.values(punctuationList)) {
+      if (hasPrefix(lexer, punctuation)) {
+        // Punctuation is ASCII, so each byte is one column.
+        const length = Str.length(punctuation)
+        lexer.index += length
+        lexer.column += length
+        if (punctuation == ";" && lexer.depth == 0) {
+          return errorWithFixesAt(
+            line,
+            column,
+            "E0003",
+            buildRemoveSemicolonFix(Pos { line: line, column: column }),
+            "semicolons are not used; end the statement with a line break",
+          )
+        }
+        if (punctuation == "(" || punctuation == "[" || punctuation == "#[") {
+          lexer.depth++
+        } else if (punctuation == "{") {
+          const outerDepth = lexer.depth
+          if (lexer.savedCount < Arrays.length(lexer.savedDepths)) {
+            lexer.savedDepths[lexer.savedCount] = outerDepth
+          } else {
+            Arrays.push(mutable lexer.savedDepths, outerDepth)
+          }
+          lexer.savedCount++
+          lexer.depth = 0
+        } else if (punctuation == "}") {
+          if (lexer.savedCount > 0) {
+            lexer.savedCount--
+            lexer.depth = lexer.savedDepths[lexer.savedCount]
+          }
+        } else if (punctuation == ")" || punctuation == "]") {
+          if (lexer.depth > 0) {
+            lexer.depth--
+          }
+        }
+        emit(mutable lexer, TokenKind.TokPunct, punctuation, line, column)
+        return None
       }
-      if (punctuation == "(" || punctuation == "[" || punctuation == "#[") {
-        lexer.depth++
-      } else if (punctuation == "{") {
-        const outerDepth = lexer.depth
-        if (lexer.savedCount < Arrays.length(lexer.savedDepths)) {
-          lexer.savedDepths[lexer.savedCount] = outerDepth
-        } else {
-          Arrays.push(mutable lexer.savedDepths, outerDepth)
-        }
-        lexer.savedCount++
-        lexer.depth = 0
-      } else if (punctuation == "}") {
-        if (lexer.savedCount > 0) {
-          lexer.savedCount--
-          lexer.depth = lexer.savedDepths[lexer.savedCount]
-        }
-      } else if (punctuation == ")" || punctuation == "]") {
-        if (lexer.depth > 0) {
-          lexer.depth--
-        }
-      }
-      emit(mutable lexer, TokenKind.TokPunct, punctuation, line, column)
-      return None
     }
   }
   const unexpected = Str.charAt(lexer.source, lexer.index)

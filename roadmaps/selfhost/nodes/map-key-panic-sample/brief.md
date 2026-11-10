@@ -1,7 +1,7 @@
 ---
 id: map-key-panic-sample
 title: "Panic sample for a compound assignment on a missing map key"
-status: active
+status: done
 priority: should
 type: chore
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 48120
 owns:
   - testdata/panics/map_missing_key*
   - roadmaps/selfhost/nodes/map-key-panic-sample/**

@@ -1,7 +1,7 @@
 ---
 id: bench-compiler
 title: "Benchmark the compiler compiling itself"
-status: todo
+status: active
 priority: should
 type: chore
 story: batch-4

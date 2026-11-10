@@ -1,7 +1,7 @@
 ---
 id: from-marker
 title: "The from result marker"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 720647
 owns:
   - testdata/from_*
   - testdata/errors/from_*
@@ -60,9 +60,9 @@ The compiler's own functions get their marks in shared-write-sweep, not here.
 
 ## Acceptance
 
-- [ ] `from` parses in declarations and function types, and formats, dumps and round-trips through `narrac fmt`.
-- [ ] E0976 and E0977 each have an error sample whose fix is applied by `narrac apply-fix`.
-- [ ] A sample passes a fresh function to a `from` slot and runs.
-- [ ] SPEC.md section 6 describes the marker, and DECISIONS.md D94 records the closure and generic answers.
-- [ ] Error samples: an arrow function returning a captured array (E0976, fix `copy(...)`), and a generic function returning an element of its `from` parameter that passes the check.
-- [ ] `sh scripts/test.sh` passes.
+- [x] `from` parses in declarations and function types, and formats, dumps and round-trips through `narrac fmt`.
+- [x] E0976 and E0977 each have an error sample whose fix is applied by `narrac apply-fix`.
+- [x] A sample passes a fresh function to a `from` slot and runs.
+- [x] SPEC.md section 6 describes the marker, and DECISIONS.md D94 records the closure and generic answers.
+- [x] Error samples: an arrow function returning a captured array (E0976, fix `copy(...)`), and a generic function returning an element of its `from` parameter that passes the check.
+- [x] `sh scripts/test.sh` passes.

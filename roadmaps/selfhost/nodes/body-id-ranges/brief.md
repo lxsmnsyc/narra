@@ -1,7 +1,7 @@
 ---
 id: body-id-ranges
 title: "The parser records each body's node id range"
-status: active
+status: dropped
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 90369
 owns:
   - roadmaps/selfhost/nodes/body-id-ranges/**
 shared:

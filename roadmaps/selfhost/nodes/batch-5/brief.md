@@ -41,6 +41,7 @@ Children:
 - From profile-compiler-2, ranked: tail-loop-borrow first, then cli-skip-teardown, lexer-punctuation, body-id-ranges, scope-map, effect-values-skip, cache-type-names-rest (widened to declaration names and module hashes), map-helpers-split, and parser-token-kinds after lexer-punctuation.
 - D94 steps 1 and 2: copy-builtin, then from-marker. They run one after the other, as the debate orders them (P20), because both edit the checker's sharing facts. The compiler does not use them until shared-write-sweep.
 - Dropped on 2026-11-10 with the spike evidence: string-concat-one-alloc and map-loop-borrow.
+- Dropped on 2026-11-10 after measuring: body-id-ranges. About 1% fewer instructions, within the 4% spread under load (12 of 18 pairs); its outcome on feat/batch-5 has the numbers, and the code stays on the local branch `feat/body-id-ranges`.
 
 Benchmark children hold the `benchmarks` resource, so they never run at the same time.
 

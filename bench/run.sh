@@ -20,7 +20,7 @@ fi
 if [ "$#" -gt 0 ]; then
   programs=("$@")
 else
-  programs=(fib sieve matmul strings interp particles)
+  programs=(fib sieve matmul strings interp particles compiler)
 fi
 
 mkdir -p "$build"
@@ -45,7 +45,38 @@ printf '%-12s %10s %10s %10s   %s\n' program narra go rust check
 failed=0
 skipped=0
 
+# Median wall-clock seconds of `narrac emit selfhost` (output discarded), then peak memory of one more run.
+bench_compiler() {
+  local narrac="$build/narrac-out/narrac"
+  local seconds
+  # median.pl runs a single string through the shell; the emitted C goes to /dev/null.
+  seconds="$(perl "$here/median.pl" "$runs" "'$narrac' emit '$root/selfhost' >/dev/null")" || return 1
+  seconds="${seconds%% *}"
+  local memory="n/a"
+  local report="$build/compiler-time.log"
+  if /usr/bin/time -l true >/dev/null 2>&1; then
+    /usr/bin/time -l "$narrac" emit "$root/selfhost" >/dev/null 2>"$report" || return 1
+    memory="$(awk '/maximum resident set size/ { printf "%.0f MB", $1 / 1048576 }' "$report")"
+  elif /usr/bin/time -v true >/dev/null 2>&1; then
+    /usr/bin/time -v "$narrac" emit "$root/selfhost" >/dev/null 2>"$report" || return 1
+    memory="$(awk -F: '/Maximum resident set size/ { printf "%.0f MB", $2 / 1024 }' "$report")"
+  fi
+  echo "$seconds $memory"
+}
+
 for p in "${programs[@]}"; do
+  if [ "$p" = compiler ]; then
+    if [ "$have_narra" = 0 ]; then
+      printf '%-12s %10s %10s %10s   %s\n' compiler - - - skipped
+      skipped=1
+    elif result="$(bench_compiler)"; then
+      printf '%-12s %10s %10s %10s   peak memory %s\n' compiler "${result%% *}" - - "${result#* }"
+    else
+      printf '%-12s %10s %10s %10s   %s\n' compiler FAIL - - FAIL
+      failed=1
+    fi
+    continue
+  fi
   dir="$here/$p"
   cols=()
   outputs=()

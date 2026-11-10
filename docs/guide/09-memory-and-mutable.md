@@ -1,21 +1,79 @@
 # 9. Memory and `mutable`
 
-You never free memory in Narra, and you never decide whether two names share one object. What you do decide is where a value may change. This chapter follows a player in a small game. It shows how the game's values are stored, how a function changes the player, and what a closure may capture.
+You never free memory in Narra, and a change to a value never shows up through another name by surprise. What you decide is where a value is copied and where it may change. This chapter follows a player in a small game. It shows how the game's values are stored, why the compiler refuses some writes, how a function changes the player, and what a closure may capture.
 
 ## Why copies are cheap
 
-Chapters 2 and 4 showed that assigning an array or a struct gives the new name its own copy. After `const snapshot = prices`, pushing to `prices` leaves `snapshot` as it was, and after `let moreTea = tea`, changing `moreTea` leaves `tea` alone. So when you pass a value to a function, it comes back unchanged, unless the call marks it `mutable`.
+Chapters 2 and 4 showed `copy(...)`. After `const snapshot = copy(prices)`, pushing to `prices` leaves `snapshot` as it was, and after `let moreTea = copy(tea)`, changing `moreTea` leaves `tea` alone. So when you pass a value to a function, it comes back unchanged, unless the call marks it `mutable`.
 
-Copying a large array at every assignment would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values are kept on the heap. The heap is memory set aside apart from the variable, which lives until nothing uses it. The variable holds a reference to it. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are referenced one by one.
+Copying a large array every time would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values are kept on the heap. The heap is memory set aside apart from the variable, which lives until nothing uses it. The variable holds a reference to it. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are referenced one by one.
 
 Each heap value counts the references to it, which is called reference counting. In chapter 2's example:
 
-1. `const snapshot = prices` copies nothing. Both names refer to the same array, and its count goes up to 2.
+1. `const snapshot = copy(prices)` copies nothing yet. Both names refer to the same array, and its count goes up to 2.
 2. `Arrays.push(mutable prices, 400)` sees the count of 2. Writing in place would change `snapshot` too, so it copies the array first and writes to the copy.
 3. When a value's count is 1, a write changes it in place with no copy.
 4. When the count drops to 0, the value is freed.
 
-So a loop that changes an array held by one name writes in place every time. Had a second name held the array, the first write would copy it once. To keep large updates fast, avoid holding a second name for a value while you change it.
+So a loop that changes an array held by one name writes in place every time. Had a second name held the array, the first write would copy it once. `copy(...)` is where you ask for that second name. When you write it, you choose to pay for the copy.
+
+## Writing to a shared value
+
+Now take the second name without `copy`. Say the game keeps a backup of the hero to show on the results screen, and the backup is taken by plain assignment:
+
+```narra error
+// error: 10:3: backup.hp = ... may change backup, which hero still uses at line 11; take a copy where it is shared, with copy(...)
+struct Player {
+  name: string
+  hp: int
+}
+
+export function run(args: Array<string>): int {
+  const hero = Player { name: "Ana", hp: 100 }
+  let backup = hero
+  backup.hp = 0
+  print(hero.name)
+  return 0
+}
+```
+
+`backup` and `hero` name one player. The write to `backup.hp` would have to copy that player first, so that `hero` keeps its hp, and the source would not show it. The compiler reports the write instead of copying silently. The error names the write, the place it may change and the later line that uses the other name.
+
+The fix is the one the message gives: write `copy(...)` where the sharing starts. Now the two names hold two players, and the copy happens where you can see it:
+
+```narra
+import * as Int from "std/int"
+
+struct Player {
+  name: string
+  hp: int
+}
+
+export function run(args: Array<string>): int {
+  const hero = Player { name: "Ana", hp: 100 }
+  let backup = copy(hero)
+  backup.hp = 0
+  print(`${Int.toString(hero.hp)} ${Int.toString(backup.hp)}`)
+  return 0
+}
+```
+
+```text
+100 0
+```
+
+`narrac apply-fix` writes this change for you. The rule has these details:
+
+- It looks at both names. Writing through `hero` while `backup` is still used is an error just like the one above.
+- It follows chains. After `const a = hero; const b = a`, a write to any of the three is checked against the other two.
+- It ends when the other name is no longer used. In the sample above, removing the `print(hero.name)` line makes the write legal, because nothing reads `hero` afterwards.
+- It ends when a name gets a whole new value, as in `backup = other`.
+- While a `for` loop walks `players`, a write to `players` in the body is an error. Loop over `copy(players)`, or write after the loop.
+- A closure that captures a value shares it, so calling the closure counts as a use of that value.
+- Passing `mutable` writes the argument and everything below it, so `damage(mutable hero, 10)` is checked the same way.
+- A plain parameter shares its value with the caller, and a top-level constant shares with every user, so a write to something they share is an error at once. A function whose result is part of a parameter says so with `from`, covered later in this chapter, and a caller then treats the result as shared with the argument.
+
+Two index places count as the same unless the compiler can tell them apart. A literal index is a place of its own: `rows[0]` and `rows[1]` are different places, so after `const first = rows[0]`, a write to `rows[1][0]` is allowed. An index that is a variable, such as `rows[i]` and `rows[j]`, or a map key, may name any element, so it counts as the same place as every other index. Writing `rows[j][0]` while `first = rows[i]` is still used is an error.
 
 ## Changing a player in a function
 
@@ -455,7 +513,7 @@ A closure captures what it uses in one of two ways, and the way depends on where
 
 A closure passed straight to a parameter that is not `escaping` can only run during that call. It works directly on the `let` variables and `mutable` parameters around it, and on each `const` whose fields or elements it changes, with no copy. So it sees every assignment, and its own changes are visible afterwards ([chapter 3](03-functions-and-closures.md#use-values-from-around-a-function)). Nothing is copied or counted, because the variable outlives the closure.
 
-Every other closure, one that is stored, returned or passed to an `escaping` parameter, can run after the function has returned. It keeps a copy of each value it captures, made when the closure is created, the same way `const saved = value` copies. Such a closure cannot change what it captures, since the change would reach only its copy. A `let` is an error there too. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. Copy it into a `const` first:
+Every other closure, one that is stored, returned or passed to an `escaping` parameter, can run after the function has returned. It keeps a copy of each value it captures, made when the closure is created, the same way `copy(value)` does. Such a closure cannot change what it captures, since the change would reach only its copy. A `let` is an error there too. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. Copy it into a `const` first:
 
 ```narra
 import * as Int from "std/int"
@@ -526,6 +584,6 @@ The fix is the same: copy it into a `const` (`const current = score.points`) and
 
 A value is freed when the last name that holds it goes away. That happens when a function returns, or when a variable gets a new value. There is no `free` call and no collector that runs later.
 
-A count can only reach zero if no value points back at itself, and the rules in this chapter make sure of that. A write to a shared value copies it first. A `mutable` parameter cannot be stored, and only a closure that cannot outlive the call reaches a variable directly, so a value can never come to contain itself. Run a program with `NARRA_CHECK_LEAKS=1` to check: it reports any memory still held when the program exits.
+A count can only reach zero if no value points back at itself, and the rules in this chapter make sure of that. A write to a value that another name holds copies it first, and `copy(...)` is where you ask for that. A `mutable` parameter cannot be stored, and only a closure that cannot outlive the call reaches a variable directly, so a value can never come to contain itself. Run a program with `NARRA_CHECK_LEAKS=1` to check: it reports any memory still held when the program exits.
 
 Next: [10. Effects and testing](10-effects-and-testing.md).

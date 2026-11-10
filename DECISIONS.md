@@ -244,6 +244,7 @@ Decision: a function changes a caller's variable only through a parameter declar
 - **Reason.** It gives generators and collections one explicit form: `Co.resume(mutable g, x)` and `Array.push(mutable xs, v)`.
 - **Rejected: guaranteeing in-place updates for `x = f(x)`.** The fast path would depend on a pattern that is not visible. `y = f(x)` looks almost the same and copies.
 - **Rejected keywords.** `inout` describes the mechanism instead of the meaning. `mut` is an abbreviation. `ref` suggests references that could be stored.
+- **Amended by D94.** Passing a `mutable` argument that another live name shares is a compile error (E0978), not a copy. Write `copy(x)` where the sharing starts.
 - **Cost.** Two ways to produce changed data: a `mutable` parameter or a returned value. The rule is `mutable` to change the caller's data, and a return value to build new data.
 
 ## D28. Scoped threads
@@ -746,7 +747,7 @@ Decision: `mutable` reaches the contents of a value, its fields and elements, an
 2. **Inside the callee.** Through a `mutable` parameter the callee may assign fields and elements at any depth, call the std functions that change contents (`Arrays.push`, `Maps.set`, `Str.append`, `Co.resume`) and pass the value or a part of it on as `mutable`. Assigning the parameter itself (`player = other`, `count += 1`) is a compile error.
 3. **Arguments.** The argument may be a local `const`, a local `let` or a `mutable` parameter that holds a contents type, or a field or element path of one. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for ... of` and destructured bindings are the open question below.
 4. **`const`.** A local `const` fixes the name. Its fields and elements can be assigned directly (`hero.hp = 1`, `items[0] = 2`, `b.value = v`), and it can be passed as `mutable`, so `mutable` adds no power that direct code lacks. A local `let` adds reassignment of the name. `@unique` may be written on either.
-5. **Copies stay copies.** `const copy = hero` is a copy (copy on write, as before); changing `hero` afterwards does not change `copy`. A plain parameter is still a read-only copy: its fields cannot be assigned and it cannot be passed as `mutable`.
+5. **Copies stay copies.** `const copy = hero` is a copy (copy on write, as before); changing `hero` afterwards does not change `copy`. A plain parameter is still a read-only copy: its fields cannot be assigned and it cannot be passed as `mutable`. Amended by D94: `const copy = hero` followed by a write to `hero` while `copy` is still used is a compile error (E0978), because the write would copy silently. The copy is written `copy(hero)`.
 
 **Proposed by the spike and decided by the maintainer on 2026-11-07:** rules 6 to 10.
 
@@ -987,7 +988,7 @@ Decision (maintainer, 2026-11-09, from the debate `roadmaps/selfhost/debate/valu
 - **Rejected:** immutable arrays and structs with `ref` and a mutable array type (rebinding a shared value still copies silently, so it needs the same analysis on a larger rewrite); inference of shared results across functions; shallow copy tools; `Cells.modify`.
 - **Cost.** About 120 to 220 edits in the compiler and 30 to 50 `from` marks; errors depend on liveness, so a later use can turn an accepted write into an error. About 1.45M tokens over six nodes.
 
-`copy(x)` and the debug copy check: built. `copy` is a prelude function (E0975 for a wrong argument count, `copy(mutable x)` and an argument of a type that is never changed in place, with a fix that removes the call). A local may be named `copy` and hides it, as for `panic`. The check runs in debug builds with `NARRA_CHECK_COPIES` set and exits with code 103; release builds (`-DNARRA_RELEASE`) compile none of it. `@unique`, `--report-copies` and `NARRA_TRACE_COPIES` are gone from SPEC.md. The shared-write rule is not built yet.
+`copy(x)` and the debug copy check: built. `copy` is a prelude function (E0975 for a wrong argument count, `copy(mutable x)` and an argument of a type that is never changed in place, with a fix that removes the call). A local may be named `copy` and hides it, as for `panic`. The check runs in debug builds with `NARRA_CHECK_COPIES` set and exits with code 103; release builds (`-DNARRA_RELEASE`) compile none of it. `@unique`, `--report-copies` and `NARRA_TRACE_COPIES` are gone from SPEC.md. The shared-write rule is built (amendments below), so every part of this decision is built. SPEC.md section 6 describes the final rule (Copies on shared values, Shared writes, Shared results).
 
 Amendment (node from-marker, 2026-11-10). The `from` marker is built (SPEC.md section 6, Shared results), with two answers the debate left open, settled by the maintainer:
 

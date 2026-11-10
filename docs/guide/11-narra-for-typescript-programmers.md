@@ -31,7 +31,7 @@ export function run(args: Array<string>): int {
 
 Underneath, four things differ, and most of the rest of this chapter follows from them:
 
-- Values are copied, not shared. Assigning an array or a struct to another name copies it, and two names never share one object.
+- Values are not shared. A change through one name never shows through another, and `copy(x)` makes the second value.
 - There is no `null` and no `undefined`. A value that may be missing has the type `Option<T>`.
 - There are no exceptions. A function that can fail returns a `Result<T, E>`.
 - There is no garbage collector. Memory is freed by reference counting, at the moment the last copy of a value goes away.
@@ -320,7 +320,7 @@ scores.push(30)
 console.log(before.length) // 3
 ```
 
-In Narra, assignment copies the value, so `before` keeps two elements. The copy is cheap: the two names share the elements until one of them changes ([chapter 2](02-values-and-types.md#arrays-are-values), [chapter 9](09-memory-and-mutable.md#why-copies-are-cheap)):
+In Narra, a value has one meaning wherever it is stored: a change through one name never shows up through another. To get that, Narra makes the copy visible. `copy(scores)` gives `before` a value of its own, so it keeps two elements. The copy is cheap: the two names share the elements until one of them changes ([chapter 2](02-values-and-types.md#arrays-are-values), [chapter 9](09-memory-and-mutable.md#why-copies-are-cheap)):
 
 ```narra
 import * as Arrays from "std/array"
@@ -350,7 +350,23 @@ export function run(args: Array<string>): int {
 100
 ```
 
-A value has no identity apart from its contents, so there is no "same object" test. This is the one place where code that TypeScript accepts compiles in Narra with another meaning, and the compiler cannot warn about it: a change through one name never shows through a copy.
+A value has no identity apart from its contents, so there is no "same object" test. The TypeScript habit that breaks is `const before = scores` followed by a change to `scores`. In TypeScript the change shows through `before`. Narra neither copies silently nor shares the change, so it rejects the write instead: a write to a value that another name still uses is a compile error that suggests `copy(...)` ([chapter 9](09-memory-and-mutable.md#writing-to-a-shared-value)):
+
+```narra error
+// error: 8:15: Arrays.push(mutable scores, ...) may change scores, which before still uses at line 9; take a copy where it is shared, with copy(...)
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const scores = [10, 20]
+  const before = scores
+  Arrays.push(mutable scores, 30)
+  print(Int.toString(Arrays.length(before)))
+  return 0
+}
+```
+
+So TypeScript code that relied on sharing either gives the same result or stops with an error that names the fix.
 
 A `for ... of` loop variable, a name bound by a pattern (`found is Some(player)`) and a destructured name hold copies too. Since TypeScript code that changes them expects the original to change, the compiler rejects a change to their fields or elements. For the loop over an array, write `for (mutable player of players)`: then `player.hp = 0` changes `players`, as in TypeScript, and the body cannot use `players` itself ([chapter 9](09-memory-and-mutable.md#heal-the-whole-party)). Elsewhere, write through the source, `players[index].hp = 0`, or copy the value first with `copy(player)`.
 

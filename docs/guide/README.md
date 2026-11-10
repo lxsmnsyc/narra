@@ -14,7 +14,7 @@ A test compiles and runs every program in the guide. Each one works with the com
 6. [Option and Result](06-option-and-result.md): `std/option`, `std/result`, errors without exceptions.
 7. [Traits](07-traits.md): declarations, `implement`, constraints, `derives`, equality and ordering.
 8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
-9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, `mutable` parameters and their rules.
+9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, writes to shared values, `mutable` parameters and their rules.
 10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narrac test`.
 11. [Narra for TypeScript programmers](11-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 

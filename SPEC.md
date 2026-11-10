@@ -1004,6 +1004,61 @@ const count: Option<int> = Some(3)
 const same = copy(count)      // E0975: remove the call
 ```
 
+### Shared writes
+
+A write to a place is a compile error while another name that is still used shares that place, a place that contains it or a place inside it (E0978, D94). Without the rule the write would copy the value, and the source would not show it. Sharing starts where a value is read into a second name and ends when that name is no longer used:
+
+<!-- context
+struct Bag {
+  items: Array<int>
+  count: int
+}
+---
+-->
+<!-- error: E0978 -->
+```ts
+let bag = Bag { items: [1, 2], count: 0 }
+const items = bag.items
+bag.items[0] = 9              // E0978: items still shares bag.items
+const seen = items[0]
+```
+
+`copy(...)` around the value that started the sharing is the fix (`const items = copy(bag.items)`), and `narrac apply-fix` writes it. The write then copies nothing at the write:
+
+<!-- context
+struct Bag {
+  items: Array<int>
+  count: int
+}
+---
+-->
+```ts
+let bag = Bag { items: [1, 2], count: 0 }
+const items = copy(bag.items)
+bag.items[0] = 9
+const seen = items[0] + bag.items[0]    // 1 + 9
+```
+
+- **What writes.** An assignment to a field or element, `Arrays.push(mutable items, v)` and any other `mutable` argument. Passing `mutable R` writes `R` and everything below it. A non-escaping closure that writes a captured `const` writes it where the closure is passed. All-scalar structs are checked too, though they live inline and a write never copies them.
+- **What shares.** A `const` or `let` initialized from a place, an assignment, a pattern, destructured or `for (const ...)` binding, a struct, array, tuple or map holding the place, the result of a call whose callee has `from` for that argument (above), and a function value made from an arrow function, which shares what it captured: calling it uses those values. A parameter, a top-level constant, a `Cell` and a value read from an identity type count as used for the whole body, so a write to the value they share is an error at once. `copy(x)` shares nothing. Sharing runs in both directions and through chains: after `const b = a; const c = b`, a write to any of the three is checked against the other two.
+- **When it ends.** Assigning a local or a field path (`bag = other`, `bag.items = []`) ends its sharing; assigning an indexed place (`rows[0] = x`) does not. Liveness is checked inside one function body: the error names the later use. A write after the other name's last use is accepted. While a `for ... of` loop other than `for (mutable ...)` runs, its iterator holds the place it walks, so a write to that place in the body is an error; loop over `copy(items)` or write after the loop.
+- **Which index places are the same.** Two different integer literal indexes name different places: `const first = rows[0]; rows[1][0] = 4` is accepted. Every other index may name any element, so an identifier or other expression (`rows[i]` and `rows[j]`, `rows[i]` and `rows[0]`) and a map key match every element and the other indexes. The same literal index is one place, and assigning it does not end its sharing (a known false positive: `let row = grid[0]; grid[0] = [9]; row[0] = 5` is reported while `grid[0]` is used later).
+- **Known gap.** A write after the other name's last use is accepted, but that name holds the value until its scope ends, so the write still copies at run time. The debug copy check (above) reports it.
+- **Where it runs.** Every command that checks a package (`build`, `run`, `test`, `emit`, `check`, `apply-fix` and the language server), also when the package has other errors. A write that another error already points at is reported once.
+
+<!-- context
+struct Row {
+  cells: Array<int>
+}
+---
+-->
+```ts
+let rows = [Row { cells: [1] }, Row { cells: [2] }]
+const first = rows[0]
+rows[1].cells[0] = 4          // accepted: rows[0] and rows[1] are different places
+const seen = first.cells[0] + rows[1].cells[0]
+```
+
 ### Shared results
 
 A function whose result shares a parameter says so with `from <parameter>` after the result type (D94). Nothing is inferred across functions: a call's result shares one of its arguments only when the callee's signature or function type has `from`, so a caller sees it in the signature.

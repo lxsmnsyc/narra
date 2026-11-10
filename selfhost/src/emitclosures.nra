@@ -15,7 +15,14 @@ import * as Ranges from "std/range"
 import { Pos, Expr, Stmt, Block, Param } from "narrac/ast"
 import { Type } from "narrac/types"
 import { ProgramFunc, ClosureInfo, Ref, getExpressionId } from "narrac/check"
-import { cType, typeId, functionName, closureName, thunkName, parameterCType } from "narrac/cnames"
+import {
+  cachedCType,
+  cachedTypeId,
+  cachedFunctionName,
+  closureName,
+  thunkName,
+  parameterCType,
+} from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -93,7 +100,7 @@ function listFunctionTypes(emitter: Emitter): Array<Type> uses alloc {
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
     if (composite is Type.TFunc(_, _, _, _)) {
-      const key = typeId(emitter.checker, composite)
+      const key = cachedTypeId(emitter.checker, emitter.typeNames, composite)
       // Types that differ only in effects share one C struct
       if (seen[key] is Some(_)) {
         continue
@@ -118,19 +125,22 @@ export function emitFuncTypeDefinitions(mutable emitter: Emitter): string uses a
   Str.append(mutable builder, ENV_RUNTIME)
   // Forward declarations first, since structs hold function values inline.
   for (const type of Arrays.values(types)) {
-    const name = cType(emitter.checker, type)
+    const name = cachedCType(emitter.checker, emitter.typeNames, type)
     Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
   }
   for (const type of Arrays.values(types)) {
     if (type is Type.TFunc(parameters, result, _, _)) {
       let parts = ["narra_env*"]
       for (const parameter of Arrays.values(parameters)) {
-        Arrays.push(mutable parts, parameterCType(emitter.checker, parameter, false))
+        Arrays.push(
+          mutable parts,
+          parameterCType(emitter.checker, emitter.typeNames, parameter, false),
+        )
       }
-      const name = cType(emitter.checker, type)
+      const name = cachedCType(emitter.checker, emitter.typeNames, type)
       Str.append(
         mutable builder,
-        `struct ${name} { ${cType(emitter.checker, result)} (*fn)(${Str.join(parts, ", ")}); narra_env* env; };\n`,
+        `struct ${name} { ${cachedCType(emitter.checker, emitter.typeNames, result)} (*fn)(${Str.join(parts, ", ")}); narra_env* env; };\n`,
       )
     }
   }
@@ -181,7 +191,7 @@ export function emitFuncValue<W: EmitWalker>(
       Arrays.push(mutable parameterTypes, checker.paramTypes[parameter.id])
     }
   }
-  const functionText = functionName(checker, program)
+  const functionText = cachedFunctionName(checker, emitter.typeNames, program)
   const name = thunkName(functionText)
   if (emitter.thunks[name] is None) {
     emitter.thunks[name] = true
@@ -190,11 +200,11 @@ export function emitFuncValue<W: EmitWalker>(
     for (const index of Ranges.between(0, Arrays.length(parameterTypes))) {
       Arrays.push(
         mutable parts,
-        `${parameterCType(checker, parameterTypes[index], false)} p${Int.toString(index)}`,
+        `${parameterCType(checker, emitter.typeNames, parameterTypes[index], false)} p${Int.toString(index)}`,
       )
       Arrays.push(mutable arguments, `p${Int.toString(index)}`)
     }
-    const signature = `static ${cType(checker, result)} ${name}(${Str.join(parts, ", ")})`
+    const signature = `static ${cachedCType(checker, emitter.typeNames, result)} ${name}(${Str.join(parts, ", ")})`
     Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
     let returnText = "return "
     if (result == Type.TVoid) {
@@ -205,7 +215,7 @@ export function emitFuncValue<W: EmitWalker>(
       `${signature} {\n  (void)env;\n  ${returnText}${functionText}(${Str.join(arguments, ", ")});\n}\n\n`,
     )
   }
-  const functionType = cType(checker, readNodeType(emitter, nodeId))
+  const functionType = cachedCType(checker, emitter.typeNames, readNodeType(emitter, nodeId))
   return Code { text: `((${functionType}){.fn = ${name}, .env = NULL})`, owned: false }
 }
 
@@ -248,7 +258,7 @@ function emitArrowParts<W: EmitWalker>(
     }
   }
   const functionType = readNodeType(emitter, nodeId)
-  const functionTypeName = cType(checker, functionType)
+  const functionTypeName = cachedCType(checker, emitter.typeNames, functionType)
   let result = Type.TVoid
   if (functionType is Type.TFunc(_, resultType, _, _)) {
     result = resultType
@@ -378,13 +388,13 @@ function emitEnvironmentStruct(
     if (isCapturedByReference(emitter, closure, capture)) {
       Str.append(
         mutable builder,
-        ` ${cType(emitter.checker, local.localType)}* c_${localName(local)};`,
+        ` ${cachedCType(emitter.checker, emitter.typeNames, local.localType)}* c_${localName(local)};`,
       )
       continue
     }
     Str.append(
       mutable builder,
-      ` ${cType(emitter.checker, local.localType)} c_${localName(local)};`,
+      ` ${cachedCType(emitter.checker, emitter.typeNames, local.localType)} c_${localName(local)};`,
     )
   }
   Str.append(mutable builder, ` } ${environmentType};\n`)
@@ -429,10 +439,10 @@ function emitClosureFunction<W: EmitWalker>(
     const local = info.locals[info.declared[parameter.id - info.first]]
     Arrays.push(
       mutable parts,
-      `${parameterCType(checker, local.localType, false)} ${localName(local)}`,
+      `${parameterCType(checker, emitter.typeNames, local.localType, false)} ${localName(local)}`,
     )
   }
-  const signature = `static ${cType(checker, result)} ${name}(${Str.join(parts, ", ")})`
+  const signature = `static ${cachedCType(checker, emitter.typeNames, result)} ${name}(${Str.join(parts, ", ")})`
   Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
 
   // Save the state of the body being emitted.
@@ -467,7 +477,7 @@ function emitClosureFunction<W: EmitWalker>(
     writeLine(mutable emitter, `${environmentType}* k_env = (${environmentType}*)env;`)
     for (const capture of Arrays.values(closure.captures)) {
       const local = readLocal(emitter, capture)
-      const typeName = cType(checker, local.localType)
+      const typeName = cachedCType(checker, emitter.typeNames, local.localType)
       const captureName = localName(local)
       if (isCapturedByReference(emitter, closure, capture)) {
         writeLine(mutable emitter, `${typeName}* ${captureName} = k_env->c_${captureName};`)
@@ -492,7 +502,8 @@ function emitClosureFunction<W: EmitWalker>(
       mutable emitter,
       `narra_panic(${position}, "internal compiler error: function ended without returning a value");`,
     )
-    writeLine(mutable emitter, `return (${cType(checker, result)}){0};`)
+    const resultName = cachedCType(checker, emitter.typeNames, result)
+    writeLine(mutable emitter, `return (${resultName}){0};`)
   }
   emitter.indent--
   writeLine(mutable emitter, "}")

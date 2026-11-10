@@ -11,7 +11,7 @@ import * as Ranges from "std/range"
 import { Expr } from "narrac/ast"
 import { Type, typeKey, isInteger } from "narrac/types"
 import { Ref, ProgramFunc, getExpressionId, orderArguments, isPassedByPointer } from "narrac/check"
-import { cType, typeId, opFuncName, functionName } from "narrac/cnames"
+import { cachedCType, cachedTypeId, opFuncName, cachedFunctionName } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -82,7 +82,7 @@ function standardName(emitter: Emitter, operation: string, type: Type): string u
   if (isPrimitive(type)) {
     return primitiveName(operation, type)
   }
-  return opFuncName(operation, typeId(emitter.checker, type))
+  return opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, type))
 }
 
 function useTraitFunction(
@@ -172,7 +172,11 @@ export function emitTraitCall<W: EmitWalker>(
     }
     if (member == "Ordered.compare") {
       const compare = useCmp(mutable emitter, selfType)
-      const orderingType = cType(emitter.checker, readNodeType(emitter, nodeId))
+      const orderingType = cachedCType(
+        emitter.checker,
+        emitter.typeNames,
+        readNodeType(emitter, nodeId),
+      )
       return Code {
         text: `((${orderingType}){.tag = narra_ordering(${compare}(${argumentTexts[0]}, ${argumentTexts[1]}))})`,
         owned: false,
@@ -217,7 +221,7 @@ function writeDefinition(
   mutable builder: StringBuilder,
   need: TraitNeed,
 ): string uses alloc {
-  const ctype = cType(emitter.checker, need.needType)
+  const ctype = cachedCType(emitter.checker, emitter.typeNames, need.needType)
   let prototype = ""
   if (need.operation == "eq") {
     prototype = `static bool ${need.name}(${ctype} a, ${ctype} b)`
@@ -233,8 +237,9 @@ function writeDefinition(
   // A user implementation, when there is one, is called as is.
   const key = `${typeKey(need.needType)}|${traitMember(need.operation)}`
   if (emitter.checker.implFunctions[key] is Some(implementation)) {
-    const call = functionName(
+    const call = cachedFunctionName(
       emitter.checker,
+      emitter.typeNames,
       ProgramFunc.ImplFunc(implementation.block, implementation.index),
     )
     // The implementation takes a large value by pointer.

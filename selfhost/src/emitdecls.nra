@@ -12,7 +12,7 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { Type, Variant, isBoxedEnum } from "narrac/types"
 import { Checker, isHeapEnum, isPassedByPointer } from "narrac/check"
-import { typeId, cType, payloadName, opFuncName, parameterCType } from "narrac/cnames"
+import { cachedTypeId, cachedCType, payloadName, opFuncName, parameterCType } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -90,14 +90,14 @@ function compositeTypes(emitter: Emitter, boxes: bool): Array<Type> uses alloc {
     if (!boxes) {
       if (composite is Type.TArray(element)) {
         Arrays.push(mutable items, SortItem {
-          key: typeId(emitter.checker, element),
+          key: cachedTypeId(emitter.checker, emitter.typeNames, element),
           type: composite,
         })
       }
     } else {
       if (composite is Type.TBox(boxElement)) {
         Arrays.push(mutable items, SortItem {
-          key: typeId(emitter.checker, boxElement),
+          key: cachedTypeId(emitter.checker, emitter.typeNames, boxElement),
           type: composite,
         })
       }
@@ -111,7 +111,7 @@ function compositeTypes(emitter: Emitter, boxes: bool): Array<Type> uses alloc {
 }
 
 function containerName(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
@@ -144,7 +144,7 @@ export function emitTypeDefinitions(mutable emitter: Emitter): string uses alloc
 }
 
 function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   if (type is Type.TStruct(structIndex)) {
     let text = `struct ${name} {`
     const fields = emitter.checker.structs[structIndex].fields
@@ -152,7 +152,7 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
       text = `${text} char unused;`
     }
     for (const field of Arrays.values(fields)) {
-      text = `${text} ${cType(emitter.checker, field.fieldType)} ${fieldName(field.name)};`
+      text = `${text} ${cachedCType(emitter.checker, emitter.typeNames, field.fieldType)} ${fieldName(field.name)};`
     }
     return `${text} };\n`
   }
@@ -176,7 +176,7 @@ function buildVariantMembers(emitter: Emitter, enumIndex: int): string uses allo
       for (const field of Arrays.values(variant.fields)) {
         Str.append(
           mutable builder,
-          ` ${cType(emitter.checker, field.fieldType)} ${fieldName(field.name)};`,
+          ` ${cachedCType(emitter.checker, emitter.typeNames, field.fieldType)} ${fieldName(field.name)};`,
         )
       }
       Str.append(mutable builder, ` } ${variantName(variant)};`)
@@ -199,7 +199,7 @@ export function emitHeapDefinitions(mutable emitter: Emitter): string uses alloc
   for (const box of Arrays.values(compositeTypes(emitter, true))) {
     Str.append(
       mutable builder,
-      `struct ${containerName(emitter, box)} { int64_t rc; ${cType(emitter.checker, getElementType(box))} ${fieldName("value")}; };\n`,
+      `struct ${containerName(emitter, box)} { int64_t rc; ${cachedCType(emitter.checker, emitter.typeNames, getElementType(box))} ${fieldName("value")}; };\n`,
     )
   }
   return Str.build(builder)
@@ -223,9 +223,15 @@ export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
   // Prototypes: types that need counting, then arrays.
   for (const type of Arrays.values(emitter.checker.order)) {
     if (needsRc(emitter, type)) {
-      const retainName = opFuncName("retain", typeId(emitter.checker, type))
-      const releaseName = opFuncName("release", typeId(emitter.checker, type))
-      const parameterType = parameterCType(emitter.checker, type, false)
+      const retainName = opFuncName(
+        "retain",
+        cachedTypeId(emitter.checker, emitter.typeNames, type),
+      )
+      const releaseName = opFuncName(
+        "release",
+        cachedTypeId(emitter.checker, emitter.typeNames, type),
+      )
+      const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
       Str.append(
         mutable builder,
         `static void ${retainName}(${parameterType} v);\nstatic void ${releaseName}(${parameterType} v);\n`,
@@ -257,9 +263,9 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
     return ""
   }
   let builder = Str.builder()
-  const parameterType = parameterCType(emitter.checker, type, false)
+  const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
   const value = formatRcValue(emitter, type)
-  const id = typeId(emitter.checker, type)
+  const id = cachedTypeId(emitter.checker, emitter.typeNames, type)
   if (type is Type.TEnum(inlineIndex)) {
     if (!isHeapEnum(emitter.checker, inlineIndex)) {
       return inlineEnumRcFunctions(emitter, type, inlineIndex)
@@ -326,9 +332,9 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
 
 function inlineEnumRcFunctions(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {
   let builder = Str.builder()
-  const parameterType = parameterCType(emitter.checker, type, false)
+  const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
   const enumValue = formatRcValue(emitter, type)
-  const id = typeId(emitter.checker, type)
+  const id = cachedTypeId(emitter.checker, emitter.typeNames, type)
   for (const operation of Arrays.values(["retain", "release"])) {
     Str.append(
       mutable builder,
@@ -370,7 +376,7 @@ function formatRcValue(emitter: Emitter, type: Type): string uses alloc {
 function arrayFunctions(emitter: Emitter, array: Type): string uses alloc {
   const n = containerName(emitter, array)
   const element = getElementType(array)
-  const et = cType(emitter.checker, element)
+  const et = cachedCType(emitter.checker, emitter.typeNames, element)
   const rel = releaseCode(emitter, element, "a->items[i]")
   const ret = retainCode(emitter, element, "c->items[i]")
   const retAll = retainCode(emitter, element, "a->items[i]")
@@ -437,7 +443,7 @@ static ${n}* ${n}_filled(${et} v, int64_t n, const char* where) {
 function boxFunctions(emitter: Emitter, box: Type): string uses alloc {
   const n = containerName(emitter, box)
   const element = getElementType(box)
-  const et = cType(emitter.checker, element)
+  const et = cachedCType(emitter.checker, emitter.typeNames, element)
   const rel = releaseCode(emitter, element, "a->f_value")
   const ret = retainCode(emitter, element, "c->f_value")
   return `
@@ -490,7 +496,7 @@ export function enumAllocation(
     }
   }
   const info = emitter.checker.enums[enumIndex].variants[variant]
-  const name = cType(emitter.checker, baseType)
+  const name = cachedCType(emitter.checker, emitter.typeNames, baseType)
   const tag = Int.toString(info.index)
   if (Arrays.length(fields) == 0) {
     return Code { text: `((${name}){.tag = ${tag}})`, owned: false }

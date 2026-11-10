@@ -11,7 +11,7 @@ import * as Ranges from "std/range"
 import { Expr, Stmt } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId, findBodySlot } from "narrac/check"
-import { typeId, cType } from "narrac/cnames"
+import { cachedTypeId, cachedCType } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -95,7 +95,7 @@ function mapTypes(emitter: Emitter): Array<Type> uses alloc {
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
     if (composite is Type.TMap(keyType, valueType)) {
-      const sortKey = `${typeId(emitter.checker, keyType)}|${typeId(emitter.checker, valueType)}`
+      const sortKey = `${cachedTypeId(emitter.checker, emitter.typeNames, keyType)}|${cachedTypeId(emitter.checker, emitter.typeNames, valueType)}`
       Arrays.push(mutable items, MapItem { key: sortKey, type: composite })
     }
   }
@@ -107,7 +107,7 @@ function mapTypes(emitter: Emitter): Array<Type> uses alloc {
 }
 
 function containerName(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
@@ -131,8 +131,8 @@ export function emitMapTypedefs(mutable emitter: Emitter): string uses alloc {
 export function emitMapStructs(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(mapTypes(emitter))) {
-    const keyName = cType(emitter.checker, getKeyType(type))
-    const valueName = cType(emitter.checker, getValueType(type))
+    const keyName = cachedCType(emitter.checker, emitter.typeNames, getKeyType(type))
+    const valueName = cachedCType(emitter.checker, emitter.typeNames, getValueType(type))
     Str.append(
       mutable builder,
       `struct ${containerName(emitter, type)} { int64_t rc; int64_t len; int64_t used; int64_t cap; int64_t mask; ${keyName}* keys; ${valueName}* vals; uint64_t* hashes; uint8_t* alive; int64_t* idx; };\n`,
@@ -147,8 +147,8 @@ export function emitMapPrototypes(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(mapTypes(emitter))) {
     const name = containerName(emitter, type)
-    const keyName = cType(emitter.checker, getKeyType(type))
-    const valueName = cType(emitter.checker, getValueType(type))
+    const keyName = cachedCType(emitter.checker, emitter.typeNames, getKeyType(type))
+    const valueName = cachedCType(emitter.checker, emitter.typeNames, getValueType(type))
     Str.append(
       mutable builder,
       `static void ${name}_retain(${name}* a);\nstatic void ${name}_release(${name}* a);\n`,
@@ -240,8 +240,8 @@ function mapFunctions(
   // The values follow the order of MAP_PLACEHOLDERS.
   const values = [
     containerName(emitter, type),
-    cType(emitter.checker, keyType),
-    cType(emitter.checker, valueType),
+    cachedCType(emitter.checker, emitter.typeNames, keyType),
+    cachedCType(emitter.checker, emitter.typeNames, valueType),
     equalsName,
     hashName,
     releaseCode(emitter, keyType, "m->keys[i]"),
@@ -319,7 +319,7 @@ export function emitMapGet<W: EmitWalker>(
     const keyCode = EmitWalker.emitExpression(walker, mutable emitter, index)
     const entry = temp(mutable emitter, Type.TInt, `${name}_lookup(${map}, ${keyCode.text})`)
     emitter.tempCount++
-    const optionName = cType(emitter.checker, optionType)
+    const optionName = cachedCType(emitter.checker, emitter.typeNames, optionType)
     const resultName = `t${Int.toString(emitter.tempCount)}`
     const result = declareUnset(mutable emitter, optionName, resultName)
     writeLine(mutable emitter, `if (${entry} >= 0) {`)
@@ -403,7 +403,7 @@ function entryValue(
   if (!entries) {
     return `${map}->keys[${position}]`
   }
-  const tupleName = cType(emitter.checker, elementType)
+  const tupleName = cachedCType(emitter.checker, emitter.typeNames, elementType)
   return `((${tupleName}){.f_0 = ${map}->keys[${position}], .f_1 = ${map}->vals[${position}]})`
 }
 

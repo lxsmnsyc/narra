@@ -1,7 +1,7 @@
 ---
 id: copy-builtin
 title: "copy(x) and the debug copy check"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 538127
 owns:
   - testdata/copy_*
   - testdata/errors/copy_*
@@ -57,9 +57,9 @@ The shared-write rule itself is not part of this node (shared-write-check). Unti
 
 ## Acceptance
 
-- [ ] `copy(x)` parses, checks, formats, dumps and emits; E0975 reports a misuse (wrong argument count, or an untracked type where a copy means nothing, with a fix that drops the call).
-- [ ] Samples: a nested write after `copy` changes only the copy; a debug run reports a copy-on-write without `copy`, and one with `copy` reports nothing.
-- [ ] A release build of a `copy` sample emits no credit or hook code.
-- [ ] `@unique` is gone from SPEC.md and testdata.
-- [ ] No diagnostic hint suggests `const copy = ...`; the error samples that print those hints are updated.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] `copy(x)` parses, checks, formats, dumps and emits; E0975 reports a misuse (wrong argument count, or an untracked type where a copy means nothing, with a fix that drops the call).
+- [x] Samples: a nested write after `copy` changes only the copy; a debug run reports a copy-on-write without `copy`, and one with `copy` reports nothing.
+- [x] A release build of a `copy` sample emits no credit or hook code.
+- [x] `@unique` is gone from SPEC.md and testdata.
+- [x] No diagnostic hint suggests `const copy = ...`; the error samples that print those hints are updated.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.

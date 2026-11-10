@@ -4,6 +4,7 @@
 // paths a write reaches. Debug builds grant the debug copy check a credit for
 // each object the retain reaches (NARRA_COPY_GRANT in runtime.h).
 import { Pos, Expr, Arg } from "narrac/ast"
+import { TokenKind, lex } from "narrac/lexer"
 import { Type } from "narrac/types"
 import {
   Checker,
@@ -160,30 +161,87 @@ function findConstantType(checker: Checker, scope: int, name: string): Option<Ty
 }
 
 function buildLocalName(name: string): string uses alloc {
-  // STARTING_KIT becomes startingKit; a name that is not all capitals gets a suffix.
+  // STARTING_KIT becomes startingKit and MaxValue becomes maxValue; a name
+  // that does not change, or that comes out as a keyword, gets a suffix.
+  let hasLower = false
+  for (const character of Str.chars(name)) {
+    const code = Char.code(character)
+    if (code >= 97 && code <= 122) {
+      hasLower = true
+    }
+  }
+  let local = ""
+  if (hasLower) {
+    local = lowerLeadingCapitals(name)
+  } else {
+    local = buildCamelCase(name)
+  }
+  if (local == "" || local == name) {
+    return `${name}Copy`
+  }
+  if (isKeywordName(local)) {
+    return `${local}Copy`
+  }
+  return local
+}
+
+function lowerLeadingCapitals(name: string): string uses alloc {
+  // A run of capitals at the start is lowercased, except the last one when a
+  // lowercase letter follows it: HTTPServer becomes httpServer.
+  const characters = Str.chars(name)
+  let end = 0
+  while (end < Arrays.length(characters)) {
+    const code = Char.code(characters[end])
+    if (code < 65 || code > 90) {
+      break
+    }
+    end += 1
+  }
+  if (end > 1 && end < Arrays.length(characters)) {
+    end -= 1
+  }
+  let builder = Str.builder()
+  let index = 0
+  for (const character of characters) {
+    const code = Char.code(character)
+    if (index < end && code >= 65 && code <= 90) {
+      if (Char.fromCode(code + 32) is Some(lower)) {
+        Str.append(mutable builder, Str.fromChar(lower))
+      }
+    } else {
+      Str.append(mutable builder, Str.fromChar(character))
+    }
+    index += 1
+  }
+  return Str.build(builder)
+}
+
+function buildCamelCase(name: string): string uses alloc {
+  // STARTING_KIT becomes startingKit.
   let builder = Str.builder()
   let upperNext = false
-  let changed = false
   for (const character of Str.chars(name)) {
     const code = Char.code(character)
     if (character == '_') {
       upperNext = Str.length(Str.build(builder)) > 0
-      changed = true
     } else if (code >= 65 && code <= 90 && !upperNext) {
       if (Char.fromCode(code + 32) is Some(lower)) {
         Str.append(mutable builder, Str.fromChar(lower))
       }
-      changed = true
     } else {
       Str.append(mutable builder, Str.fromChar(character))
       upperNext = false
     }
   }
-  const local = Str.build(builder)
-  if (!changed || local == "") {
-    return `${name}Copy`
+  return Str.build(builder)
+}
+
+function isKeywordName(name: string): bool uses alloc {
+  // The lexer knows the keywords: a name that lexes as one cannot be a local.
+  if (lex(name) is Ok(tokens)) {
+    return Arrays.length(tokens) > 0 && tokens[0].kind == TokenKind.TokKeyword
   }
-  return local
+  return false
 }
 
 export function isCopyCall(checker: Checker, expression: Expr): bool {

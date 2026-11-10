@@ -1,7 +1,7 @@
 ---
 id: map-key-panic-sample
 title: "Panic sample for a compound assignment on a missing map key"
-status: todo
+status: active
 priority: should
 type: chore
 story: batch-4

@@ -1,7 +1,7 @@
 ---
 id: cache-type-names-rest
 title: "Use the C type name cache at every call site"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 129597
 owns:
   - roadmaps/selfhost/nodes/cache-type-names-rest/**
 shared:
@@ -47,5 +47,5 @@ cache-type-names moved only the 4 hottest callers of `cnames.typeId` and `cnames
 
 ## Acceptance
 
-- [ ] Emitted C byte-identical; instructions for `narrac emit selfhost` before and after, with the gain above the spread, or the node closes as not worth it.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] Emitted C byte-identical; instructions for `narrac emit selfhost` before and after, with the gain above the spread, or the node closes as not worth it.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.

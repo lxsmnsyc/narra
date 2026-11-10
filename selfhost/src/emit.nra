@@ -10,7 +10,13 @@ import * as Str from "std/string"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, typeString, containsTypeParameter } from "narrac/check"
 import { Emitter, newEmitter } from "narrac/emitstate"
-import { typeId, cType, functionName, functionSignature, dropDuplicateTypes } from "narrac/cnames"
+import {
+  cachedTypeId,
+  cachedCType,
+  cachedFunctionName,
+  functionSignature,
+  dropDuplicateTypes,
+} from "narrac/cnames"
 import { RUNTIME_H } from "narrac/runtimecore"
 import { runtimeFor } from "narrac/runtimetext"
 import * as Decls from "narrac/emitdecls"
@@ -123,7 +129,10 @@ function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder)
 function emitPrototypes(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const program of Arrays.values(emitter.checker.programFunctions)) {
-    Str.append(mutable builder, `${functionSignature(emitter.checker, program)};\n`)
+    Str.append(
+      mutable builder,
+      `${functionSignature(emitter.checker, emitter.typeNames, program)};\n`,
+    )
   }
   return Str.build(builder)
 }
@@ -172,12 +181,16 @@ function mergeSort(items: Array<SortItem>): Array<SortItem> uses alloc {
 
 function sortKey(emitter: Emitter, type: Type): string uses alloc {
   return match (type) {
-    Type.TArray(element) | Type.TBox(element) => typeId(emitter.checker, element)
+    Type.TArray(element) | Type.TBox(element) => cachedTypeId(
+      emitter.checker,
+      emitter.typeNames,
+      element,
+    )
     Type.TMap(
       key,
       valueType,
-    ) => `${typeId(emitter.checker, key)}|${typeId(emitter.checker, valueType)}`
-    _ => typeId(emitter.checker, type)
+    ) => `${cachedTypeId(emitter.checker, emitter.typeNames, key)}|${cachedTypeId(emitter.checker, emitter.typeNames, valueType)}`
+    _ => cachedTypeId(emitter.checker, emitter.typeNames, type)
   }
 }
 
@@ -197,7 +210,7 @@ function arrays(emitter: Emitter): Array<Type> uses alloc {
 }
 
 function arrayName(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
@@ -213,7 +226,7 @@ function emitArrayTypedefs(mutable emitter: Emitter): string uses alloc {
 function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(emitter.checker.order)) {
-    const name = cType(emitter.checker, type)
+    const name = cachedCType(emitter.checker, emitter.typeNames, type)
     Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
   }
   return Str.build(builder)
@@ -225,7 +238,7 @@ function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
     if (type is Type.TArray(element)) {
       Str.append(
         mutable builder,
-        `struct ${arrayName(emitter, type)} { int64_t rc; int64_t len; int64_t cap; ${cType(emitter.checker, element)}* items; };\n`,
+        `struct ${arrayName(emitter, type)} { int64_t rc; int64_t len; int64_t cap; ${cachedCType(emitter.checker, emitter.typeNames, element)}* items; };\n`,
       )
     }
   }
@@ -236,14 +249,17 @@ function emitCommentTable(mutable emitter: Emitter): string uses alloc {
   let items: Array<SortItem> = []
   for (const type of Arrays.values(emitter.checker.order)) {
     if (isInterned(emitter, type)) {
-      Arrays.push(mutable items, SortItem { key: typeId(emitter.checker, type), type: type })
+      Arrays.push(mutable items, SortItem {
+        key: cachedTypeId(emitter.checker, emitter.typeNames, type),
+        type: type,
+      })
     }
   }
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
     if (!containsTypeParameter(emitter.checker, composite)) {
       Arrays.push(mutable items, SortItem {
-        key: typeId(emitter.checker, composite),
+        key: cachedTypeId(emitter.checker, emitter.typeNames, composite),
         type: composite,
       })
     }
@@ -270,9 +286,13 @@ function isInterned(emitter: Emitter, type: Type): bool {
 
 function emitMain(mutable emitter: Emitter): string uses alloc {
   const arrayType = arrayName(emitter, Type.TArray(Type.TStr))
-  const entryName = functionName(emitter.checker, ProgramFunc.PlainFunc(emitter.entry))
+  const entryName = cachedFunctionName(
+    emitter.checker,
+    emitter.typeNames,
+    ProgramFunc.PlainFunc(emitter.entry),
+  )
   let builder = Str.builder()
-  Str.append(mutable builder, "\nint main(int argc, char** argv) {\n")
+  Str.append(mutable builder, "\nint main(int argc, char** argv) {\n  NARRA_COPY_START();\n")
   Str.append(mutable builder, `  ${arrayType}* args = ${arrayType}_new(argc);\n`)
   Str.append(
     mutable builder,
@@ -284,7 +304,7 @@ function emitMain(mutable emitter: Emitter): string uses alloc {
   )
   Str.append(
     mutable builder,
-    "  fflush(stdout);\n  narra_consts_release();\n  narra_report_leaks();\n  return (int)code;\n}\n",
+    "  fflush(stdout);\n  narra_consts_release();\n  NARRA_COPY_REPORT();\n  narra_report_leaks();\n  return (int)code;\n}\n",
   )
   return Str.build(builder)
 }

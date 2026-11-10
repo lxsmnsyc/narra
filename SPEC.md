@@ -58,11 +58,10 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 - `const x = expr` binds a name that cannot be reassigned. **`const` fixes the name, not the contents** (D81): the fields and elements of a local `const` struct, array, map or other contents type (section 6, Mutable parameters) can be assigned, and the `const` can be passed as `mutable`.
 - `let x = expr` binds a name that can also be reassigned with `x = expr`. A closure passed straight to a non-escaping function parameter can capture it, by reference (section 2, Closures).
-- **Every binding holds its own value.** `const copy = hero` copies `hero`, so a later change to either one does not show in the other. The one exception is a `for (mutable item of items)` binding, which reaches an element of `items` (section 2, Control flow).
+- **Every binding holds its own value.** `const other = hero` copies `hero`, so a later change to either one does not show in the other. The one exception is a `for (mutable item of items)` binding, which reaches an element of `items` (section 2, Control flow).
 - **A plain parameter is read-only.** Its fields and elements cannot be assigned, and it cannot be passed as `mutable` (section 6).
-- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write `for (mutable p of players)` (section 2, Control flow), write through the array, `players[index].hp = 0`, or make a copy first with `const copy = p` (D81). A `mutable` marker exists only in that loop (D85); `x is Some(mutable y)`, `const { mutable a } = s` and a local `mutable name = place` do not.
+- **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write `for (mutable p of players)` (section 2, Control flow), write through the array, `players[index].hp = 0`, or make a copy first with `copy(p)` (D81, D94). A `mutable` marker exists only in that loop (D85); `x is Some(mutable y)`, `const { mutable a } = s` and a local `mutable name = place` do not.
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
-- `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
 - **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, division by zero and shift checks are those of the binary operator. The wrapping operators `+%=`, `-%=` and `*%=` do not exist. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
@@ -306,7 +305,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **One file is one module.** Its path from the package root is its name: `src/app/text.nra` is `"app/text"`.
 - **Names are private by default.** `export` makes a top-level declaration visible to other modules: `export function`, `export const`, `export type`, `export struct`, `export enum`, `export trait`.
 - **Imports are explicit.** A module sees only its own declarations, the names it imports, and the prelude.
-- **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert` and `panic`. Nothing else is in scope without an import. These three are the only global functions.
+- **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
 - **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
@@ -888,16 +887,76 @@ for (const i of Ranges.upTo(1000)) {
 
 ### Copies on shared values
 
-When an update targets a value whose reference count is greater than 1, the value is copied first. The copy is correct, but it costs time proportional to the value's size, and the source does not show it. Three tools make these copies visible:
+When an update targets a value whose reference count is greater than 1, the value is copied first. The copy is correct, but it costs time proportional to the value's size, and the source does not show it. `copy(x)` makes the copy visible (D94):
 
-- **`narra check --report-copies`** lists every update where the compiler cannot prove the count is 1.
-- **`NARRA_TRACE_COPIES=1`** makes a program log every copy at runtime, with its source location and size.
-- **`@unique`** on a `const` or `let` declares that the variable is never shared. In debug builds, an update that would copy it panics. In release builds the check is removed.
+- **`copy(x)`** duplicates a value at any depth. At the call it is one reference count increment, so it costs nothing until a write. A later write to `x` or to the copy then copies only the objects on the written path, once each: after `const other = copy(team)`, `other.scores[1][0] = 30` copies the outer array of `other.scores` and one row, not the other rows.
+- `copy` takes one argument of a type that a write changes in place: a struct (all-scalar ones too), `Array<T>`, `Map<K, V>`, `FixedArray<T, N>`, `Box<T>`, `StringBuilder`, `Generator<T>` or `Coroutine<In, Out>`, a tuple holding one of them, a distinct type over one, or a type parameter. Any other argument (numbers, `bool`, `char`, `string`, `bytes`, enums with `Option` and `Result`, function values) is a compile error whose fix removes the call, and so are a second argument and `copy(mutable x)` (E0975).
+- `copy` is a prelude function, not a keyword. A local or parameter may be named `copy`, as one may be named `panic`; inside its scope a call `copy(x)` then calls the local. A top-level function named `copy` is never called: the prelude's `copy` is found first.
+- **The debug copy check.** A debug build run with `NARRA_CHECK_COPIES` set counts every copy on write of an array, map, `Box`, `StringBuilder` or generator, and at exit reports the ones that no `copy(...)` explains, with exit code 103, like the leak check (D80): `copy check: copies on write that no copy(...) explains: array 2`. Each `copy(x)` gives the objects it shares one credit, a copy on write uses one credit of the object it copies and gives one to each object the two copies now share, and a credit ends when the object's count falls back to 1. So at most one hidden copy per `copy(...)` call goes unreported. All-scalar structs live inline and never copy on write; the compile-time shared-write rule covers them. Release builds have no credits and no hooks.
 
+<!-- context
+import * as Arrays from "std/array"
+-->
 ```ts
-@unique let buffer: Array<u8> = Arrays.withCapacity(65536)
-Arrays.push(mutable buffer, 0)        // debug builds panic here if buffer is shared
-const view = buffer                  // shares buffer: the next update would panic in debug
+const scores = [[1, 2], [3, 4]]
+let other = copy(scores)
+other[1][0] = 30            // copies the outer array and one row; scores is unchanged
+Arrays.push(mutable other, [5, 6])
+```
+
+### Shared results
+
+A function whose result shares a parameter says so with `from <parameter>` after the result type (D94). Nothing is inferred across functions: a call's result shares one of its arguments only when the callee's signature or function type has `from`, so a caller sees it in the signature.
+
+<!-- context
+import * as Arrays from "std/array"
+struct SortItem {
+  key: int
+}
+-->
+```ts
+function firstItem(items: Array<SortItem>): SortItem from items {
+  return items[0]
+}
+
+function lastItem<T>(items: Array<T>): T from items {
+  return items[Arrays.length(items) - 1]
+}
+```
+
+- **What shares.** A returned value shares a parameter when it is the parameter, a field, element or narrowed payload of it, a local, pattern or `for ... of` binding that took such a value, a struct, array, tuple, map or constructor holding one (a spread `{ ...base }` holds only the fields of `base` it does not write), or the result of a call whose `from` names an argument that shares it. A local also takes the values assigned to it and the values passed beside it when it is a `mutable` argument. A value whose type holds no struct, array, map, `Box`, `StringBuilder`, generator or type parameter (numbers, `bool`, `char`, `string`, `bytes`, enums without such payloads, function values) shares nothing. `copy(x)` is unshared.
+- **The check (E0976).** Returning a value that shares a parameter the marker does not name is an error. Without a marker the fix adds `from <parameter>`; with a marker that names another parameter, the fix wraps the value in `copy(...)`. A `from` that names no parameter is also E0976.
+- **Generic results.** `from items` covers the whole parameter and everything reached through it, at any depth, whatever the type arguments are: a result of type `T` taken out of `items: Array<T>` shares `items`. When `T` is a scalar type the marker is allowed and changes nothing.
+- **Arrow functions.** An arrow function whose result shares one of its own parameters writes `from` after its result type: `(row: Row): Array<int> from row => row.cells`. An arrow function that writes no `from` takes the `from` of its expected function type, as it takes its parameter types, so `(row) => row.cells` fits a `(row: Row) => Array<int> from row` slot. When the expected type has no `from`, or the arrow function writes no result type, a result that shares a parameter is E0976 with a fix that wraps the value in `copy(...)`. `from` names only a parameter, never a capture: an arrow function whose result shares a captured value is E0976, and the fix wraps the value in `copy(...)`.
+- **Function types.** `from` is part of a function type, like `uses` (section 7), and names one of the type's parameter names: `(grid: Grid) => Array<int> from grid uses alloc`. `from` comes before `uses`. A function with a fresh result fits a slot whose type has `from`; a function with `from` does not fit a slot without the same `from` (E0977), unless the result holds no tracked value. The fix adds the marker to the slot's type, naming the parameter `source` when the type writes no name for it. A type printed by the compiler names the shared parameter `source`: `(source: Grid) => Array<int> from source`.
+- **Trait functions.** An implementation may leave out the `from` its trait function has, but may not add one the trait function lacks.
+- **Generators** are not checked: a generator's result is the generator.
+- A package whose `narra.toml` has `shared-results = "unchecked"` in `[package]` is not checked. The compiler's own package sets it until its functions carry their markers.
+
+<!-- context
+import * as Arrays from "std/array"
+struct Grid {
+  rows: Array<Array<int>>
+}
+-->
+```ts
+struct Picker {
+  pick: (grid: Grid) => Array<int> from grid uses alloc
+}
+
+function firstRow(grid: Grid): Array<int> from grid {
+  return grid.rows[0]
+}
+
+function rowSizes(grid: Grid): Array<int> uses alloc {
+  return [Arrays.length(grid.rows)]
+}
+
+function listPickers(): Array<Picker> uses alloc {
+  // A fresh result fits the `from` slot too.
+  const second = (grid: Grid): Array<int> from grid => grid.rows[1]
+  return [Picker { pick: firstRow }, Picker { pick: rowSizes }, Picker { pick: second }]
+}
 ```
 
 ### Regions
@@ -976,7 +1035,7 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 - **The argument is a local place.** It must be a local binding that holds a contents type, or a field or element path of one: a `const`, a `let`, or a `mutable` parameter. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for (const ...)` and destructured bindings are read-only copies and are compile errors too; a `for (mutable item of items)` binding can be passed (D85). Passing a `const` as `mutable` adds nothing that direct code lacks, since its fields can be assigned directly (section 2, Bindings).
 - **Access is exclusive during the call.** A variable cannot be passed as `mutable` twice in one call. It cannot be passed as `mutable` and also read in another argument. `swap(mutable a, mutable a)` and `move(mutable p, p.x)` are compile errors.
 - **A `mutable` variable is not used elsewhere in the same expression.** Within one statement's expression, a variable passed as `mutable` cannot also be read, assigned or passed again anywhere else, at any depth, including fields and elements of it. `p.hp + heal(mutable p)` and `pair(p, heal(mutable p))` are compile errors. Bind the call first: `const healed = heal(mutable p)`, then `p.hp + healed`. Two `mutable` calls on different variables are fine, and so are the two sides of `&&` and `||` and different arms of a `match`. These rules hold for every binding passed as `mutable`, `const` included.
-- **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `const copy = player` is allowed.
+- **A `mutable` parameter cannot escape.** It cannot be stored, returned, or captured by a closure that is not passed straight to a non-escaping parameter (D77). Copying its value with `copy(player)` is allowed.
 - **No copies.** The compiler passes a pointer to the caller's value. Changes are written in place, with no copy and no reference count change for the value itself. A value shared with other owners is copied on its first change, as in any in-place update.
 - **Other parameters are values.** A parameter without `mutable` is a read-only copy: its fields cannot be assigned, and it cannot be passed as `mutable`. To build new data instead of changing the caller's data, return a new value.
 - **Enums and tuples are replaced, not changed** (D81). A struct inside an enum payload or a tuple is not a place: enum fields are fixed and tuples have no element assignment. A field that holds one is assigned whole: `state.current = Some(next)`. To change a struct held in an `Option`, read it with `is`, build the changed copy, and store it back. A `mutable` marker in a pattern (`x is Some(mutable y)`) does not exist (D85).

@@ -1,6 +1,8 @@
 // The top of the emitter: `narrac emit` (the port of CompileBinary in
 // driver.go) and EmitterWalker, the EmitWalker that the body modules use to
 // reach expressions and statements (contracts/emitter.md).
+import * as Cells from "std/cell"
+import * as Env from "std/env"
 import * as Fs from "std/fs"
 import * as Str from "std/string"
 import { Expr, Stmt, Block } from "narrac/ast"
@@ -66,6 +68,24 @@ function printError(text: string) uses io {
   const _ = Fs.writeText("/dev/stderr", text)
 }
 
+struct Retained {
+  checker: Check.Checker
+  package: Package
+  holder: Cells.Cell<Option<Retained>>
+}
+
+export function skipTeardown(checker: Check.Checker, package: Package) uses io, alloc {
+  // The leak check needs every value released.
+  if (Env.get("NARRA_CHECK_LEAKS") is Some(_)) {
+    return
+  }
+  // A cell that holds a value that holds the cell is never freed, and neither is what the value
+  // holds, so the process exit frees the checker and the syntax tree instead of the compiler.
+  const holder: Cells.Cell<Option<Retained>> = Cells.create(None)
+  const retained = Retained { checker: checker, package: package, holder: holder }
+  Cells.set(holder, Some(retained))
+}
+
 export function runEmit(arguments: Array<string>): int uses io, alloc {
   // Exit 0: the C on stdout. Exit 1: load, check or effect errors, or a missing
   // or unknown binary or entry function. Exit 3: C with unsupported markers on
@@ -123,6 +143,7 @@ export function runEmit(arguments: Array<string>): int uses io, alloc {
 
   // Emit. Markers in the C mean unsupported constructs: exit 3.
   const result = emitProgram(checker, entry, tests)
+  skipTeardown(checker, loaded.value)
   const written = Fs.writeText("/dev/stdout", result.text)
   if (written is Err(message)) {
     printError(`${message}\n`)

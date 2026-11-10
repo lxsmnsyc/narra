@@ -22,7 +22,7 @@ So a loop that changes an array held by one name writes in place every time. Had
 A trap hits a player for some damage. The first try changes the parameter:
 
 ```narra error
-// error: 8:3: parameter "player" is read-only; declare it as `mutable player` to change the caller's value, or copy it first with `const copy = player`
+// error: 8:3: parameter "player" is read-only; declare it as `mutable player` to change the caller's value, or copy it first with `copy(player)`
 struct Player {
   name: string
   hp: int
@@ -158,7 +158,7 @@ Repeating the word at the call means you can tell, without opening `heal`, that 
 Every player starts with the items in a constant, and the hero gets a shield on top. Pushing the shield onto the constant fails. A local `const` fixes only its name, but a top-level constant is fixed at every depth: there are no global variables, and a constant that could change would be one.
 
 ```narra error
-// error: 7:23: constant "STARTING_KIT" cannot be changed; copy it into a local first, as in `const copy = STARTING_KIT`
+// error: 7:23: constant "STARTING_KIT" cannot be changed; copy it into a local first, as in `let startingKit = STARTING_KIT`
 import * as Arrays from "std/array"
 
 const STARTING_KIT = ["sword"]
@@ -261,7 +261,7 @@ Bo at 0,0
 A fountain heals every player. A loop that writes to its loop variable does not compile:
 
 ```narra error
-// error: 10:5: "player" is a copy of an element of players, so changing it would not change players; write `for (mutable player of players)`, or copy it first with `const copy = player`
+// error: 10:5: "player" is a copy of an element of players, so changing it would not change players; write `for (mutable player of players)`, or copy it first with `copy(player)`
 struct Player {
   name: string
   hp: int
@@ -365,7 +365,7 @@ export function run(args: Array<string>): int {
 A knockout sets the hp to 0, and the game wants the player as it was before, to show on the results screen. Returning the `mutable` parameter fails:
 
 ```narra error
-// error: 8:10: mutable parameter "player" cannot be returned or stored; copy it first with `const copy = player`
+// error: 8:10: mutable parameter "player" cannot be returned or stored; copy it first with `copy(player)`
 struct Player {
   hp: int
 }
@@ -380,7 +380,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A `mutable` parameter reaches the caller's variable only while the call runs, so it cannot be returned or stored in anything that outlives the call. Copy it into a `const` first. The copy is an ordinary value, and you can return it:
+A `mutable` parameter reaches the caller's variable only while the call runs, so it cannot be returned or stored in anything that outlives the call. Copy it into a `const` first with `copy(player)`. The copy is an ordinary value, and you can return it:
 
 ```narra
 import * as Int from "std/int"
@@ -390,7 +390,7 @@ struct Player {
 }
 
 function knockOut(mutable player: Player): Player {
-  const before = player
+  const before = copy(player)
   player.hp = 0
   return before
 }
@@ -407,13 +407,55 @@ export function run(args: Array<string>): int {
 7 -> 0
 ```
 
+### Return part of a parameter
+
+The results screen also shows the party's leader. `leader` returns a player that is still stored in the party, so the result and the parameter share one value. The signature says so with `from party` after the result type. Then every caller can see, from the signature alone, that the player it gets back is part of the party it passed. Without `from` the compiler reports the shared result and offers to add it.
+
+`from` names one parameter. A function that may return either of two parameters names one of them and copies the other with `copy(...)`, so the result never shares the unnamed one. A copy costs nothing until one of the two values changes, as described at the start of this chapter.
+
+```narra
+struct Player {
+  name: string
+  hp: int
+}
+
+struct Party {
+  players: Array<Player>
+}
+
+function leader(party: Party): Player from party {
+  return party.players[0]
+}
+
+function healthier(first: Player, second: Player): Player from first {
+  if (second.hp > first.hp) {
+    return copy(second)
+  }
+  return first
+}
+
+export function run(args: Array<string>): int {
+  const party = Party { players: [Player { name: "Ana", hp: 60 }, Player { name: "Bo", hp: 80 }] }
+  print(leader(party).name)
+  print(healthier(party.players[0], party.players[1]).name)
+  return 0
+}
+```
+
+```text
+Ana
+Bo
+```
+
+An arrow function can write `from` too, as in `(party: Party): Player from party => party.players[0]`. One that is passed to a function whose parameter type has no `from` returns a copy instead: `(party) => copy(party.players[0])`.
+
 ## Closures and `let`
 
 A closure captures what it uses in one of two ways, and the way depends on where the closure goes.
 
 A closure passed straight to a parameter that is not `escaping` can only run during that call. It works directly on the `let` variables and `mutable` parameters around it, and on each `const` whose fields or elements it changes, with no copy. So it sees every assignment, and its own changes are visible afterwards ([chapter 3](03-functions-and-closures.md#use-values-from-around-a-function)). Nothing is copied or counted, because the variable outlives the closure.
 
-Every other closure, one that is stored, returned or passed to an `escaping` parameter, can run after the function has returned. It keeps a copy of each value it captures, made when the closure is created, the same way `const copy = value` copies. Such a closure cannot change what it captures, since the change would reach only its copy. A `let` is an error there too. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. Copy it into a `const` first:
+Every other closure, one that is stored, returned or passed to an `escaping` parameter, can run after the function has returned. It keeps a copy of each value it captures, made when the closure is created, the same way `const saved = value` copies. Such a closure cannot change what it captures, since the change would reach only its copy. A `let` is an error there too. After `score = score + 1`, the closure would still see the old score, while the code reads as if it sees the current one. Copy it into a `const` first:
 
 ```narra
 import * as Int from "std/int"
@@ -463,7 +505,7 @@ export function run(args: Array<string>): int {
 A `mutable` parameter cannot be captured by a closure that outlives the call, for a stronger reason. It is the caller's variable, reached only while the call runs, and such a closure can still be called after the function has returned:
 
 ```narra error
-// error: 7:16: a closure cannot capture mutable parameter "score" unless it is passed straight to a function parameter that is not escaping; copy it first with `const copy = score`
+// error: 7:16: a closure cannot capture mutable parameter "score" unless it is passed straight to a function parameter that is not escaping; copy it first with `copy(score)`
 struct Score {
   points: int
 }

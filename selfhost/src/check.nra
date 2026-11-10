@@ -16,6 +16,7 @@ import * as Str from "std/string"
 import {
   Pos,
   FuncDecl,
+  Param,
   ConstDecl,
   Decl,
   ImportDecl,
@@ -28,6 +29,7 @@ import {
   createEmptyFacts,
 } from "narrac/ast"
 import { Fix, createFix, insertAt, moveColumn } from "narrac/fixes"
+import { getPosKey } from "narrac/trivia"
 import {
   Type,
   Field,
@@ -194,6 +196,14 @@ export struct LocalInfo {
   // checker.localCount right after the increment; the C name is v_<name>_<number>
   // (filled by selfhost-emit-program).
   number: int = 0
+  // The depth of the scope that last bound the name.
+  depth: int = 0
+}
+
+// A name bound in a scope and the value it replaced (-1 for none).
+export struct ScopeBinding {
+  name: string
+  previous: int
 }
 
 // What the checker knows about one arrow function of a body (Go's Closure).
@@ -208,6 +218,9 @@ export struct ClosureInfo {
   // The captured local `const`s the closure, or one nested in it, changes:
   // they are captured by reference, as a `let` is.
   refCaptures: Array<int> = []
+  // Set when the arrow is checked against an expected function type whose
+  // result is fresh, so its result may not share a parameter.
+  expectsFresh: bool = false
   hasHint: bool
   hintParameters: Array<Option<Type>>
   hintResult: Option<Type>
@@ -476,8 +489,12 @@ export struct Checker {
   // set by `narrac types`; without it the declaration passes skip field
   // defaults, as `narrac declarations` did before bodies existed. bodies lists
   // the checked bodies in the order their checks start; body is the one
-  // being checked, or -1. localScopes is the stack of block scopes of that
-  // body, each mapping a name to a BodyInfo.locals index. resultType is the
+  // being checked, or -1. localNames maps every name bound in an open block
+  // scope of that body to a BodyInfo.locals index (or -1), and so do the
+  // narrowing keys. scopeUndo holds the first scopeUndoCount bindings made in
+  // the open scopes, each with the value it replaced, and scopeStarts holds
+  // where each scope's bindings begin, so closing a scope restores the names
+  // it replaced. resultType is the
   // result of the function being checked (void outside functions), loops
   // the depth of loops, and inTest is set inside a test body.
   checkingBodies: bool = false
@@ -486,7 +503,10 @@ export struct Checker {
   pendingDefaults: Array<int> = []
   bodies: Array<BodyInfo> = []
   body: int = -1
-  localScopes: Array<Map<string, int>> = []
+  localNames: Map<string, int>
+  scopeUndo: Array<ScopeBinding> = []
+  scopeUndoCount: int = 0
+  scopeStarts: Array<int> = []
   scopeDepth: int = 0
   resultType: Type
   // Set while the result of an arrow function is inferred from its returns
@@ -571,6 +591,17 @@ export struct Checker {
   // BodyInfo index by the keys findBody documents (see keyBody).
   bodyKeys: Map<string, int>
   programRecorded: bool = true
+  // The function types written in source modules without `from`, by type key,
+  // for the fix that adds `from` to the type a shared result does not fit.
+  writtenFunctionTypes: Map<string, Array<WrittenFunctionType>>
+  // Set from the package's `shared-results = "unchecked"`.
+  sharedResultsUnchecked: bool = false
+}
+
+// A function type as written, and the scope of the module that writes it.
+export struct WrittenFunctionType {
+  scope: int
+  type: TypeExpr
 }
 
 export function newChecker(ids: int): Checker uses alloc {
@@ -588,6 +619,7 @@ export function newChecker(ids: int): Checker uses alloc {
     instanceTypes: [],
     concrete: [],
     scopes: [],
+    localNames: Map {},
     current: 0,
     environment: Map {},
     paramTypes: Arrays.filled(Type.TVoid, ids),
@@ -619,6 +651,7 @@ export function newChecker(ids: int): Checker uses alloc {
     funcInstances: Map {},
     composites: Map {},
     bodyKeys: Map {},
+    writtenFunctionTypes: Map {},
     generatorEffects: Map {},
     callTypeArguments: Map {},
     argumentOrders: Map {},
@@ -874,7 +907,8 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
       result,
       effects,
       binder,
-    ) => `(${typeList(checker, parameters)}) => ${typeString(checker, result)}${functionUsesSuffix(checker, effects, binder)}`
+      shared,
+    ) => `(${listSharedTypes(checker, parameters, shared)}) => ${typeString(checker, result)}${formatSharedSuffix(shared)}${functionUsesSuffix(checker, effects, binder)}`
     Type.TRange => "Range"
     Type.TGenerator(
       element,
@@ -928,6 +962,67 @@ export function functionUsesSuffix(
   return usesSuffix(effects)
 }
 
+function listSharedTypes(
+  checker: Checker,
+  parameters: Array<Type>,
+  shared: int,
+): string uses alloc {
+  let texts: Array<string> = []
+  for (const parameter of Arrays.values(parameters)) {
+    Arrays.push(mutable texts, typeString(checker, parameter))
+  }
+  return joinSharedTypes(texts, shared)
+}
+
+export function joinSharedTypes(texts: Array<string>, shared: int): string uses alloc {
+  // A function type keeps no parameter names, so the shared one is printed as `source`.
+  let parts: Array<string> = []
+  for (const index of Ranges.upTo(Arrays.length(texts))) {
+    if (index == shared) {
+      Arrays.push(mutable parts, `source: ${texts[index]}`)
+    } else {
+      Arrays.push(mutable parts, texts[index])
+    }
+  }
+  return Str.join(parts, ", ")
+}
+
+export function formatSharedSuffix(shared: int): string {
+  if (shared < 0) {
+    return ""
+  }
+  return " from source"
+}
+
+export function findSharedParameter(funcDecl: FuncDecl): int {
+  // The index of the parameter `from` names, or -1.
+  if (funcDecl.result is Some(result)) {
+    return findParameterIndex(funcDecl.parameters, result.resultFrom)
+  }
+  return -1
+}
+
+export function findFromNamePos(checker: Checker, resultType: TypeExpr): Pos uses alloc {
+  // Where the name after `from` is written, or the result type when it is not known.
+  const facts = checker.scopes[checker.current].facts
+  if (facts.fromNames[getPosKey("r", resultType.pos)] is Some(namePos)) {
+    return namePos
+  }
+  return resultType.pos
+}
+
+export function findParameterIndex(parameters: Array<Param>, name: string): int {
+  if (name == "") {
+    return -1
+  }
+  for (const index of Ranges.upTo(Arrays.length(parameters))) {
+    if (parameters[index].name == name) {
+      return index
+    }
+  }
+  return -1
+}
+
 export function usesSuffix(effects: Array<string>): string uses alloc {
   if (Arrays.length(effects) == 0) {
     return ""
@@ -970,7 +1065,7 @@ export function typeModule(checker: Checker, type: Type): string {
 export function containsTypeParameter(checker: Checker, type: Type): bool {
   return match (type) {
     Type.TParam(_) => true
-    Type.TFunc(parameters, result, _, _) =>
+    Type.TFunc(parameters, result, _, _, _) =>
       anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
     Type.TArray(element) | Type.TBox(element) => containsTypeParameter(checker, element)
     Type.TGenerator(element, _, _, _, input) =>
@@ -1119,7 +1214,7 @@ function layoutValue(
     Type.TI8 | Type.TU8 | Type.TBool => CLayout { size: 1, align: 1 }
     Type.TI16 | Type.TU16 => CLayout { size: 2, align: 2 }
     Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => CLayout { size: 4, align: 4 }
-    Type.TFunc(_, _, _, _) => CLayout { size: 16, align: 8 }
+    Type.TFunc(_, _, _, _, _) => CLayout { size: 16, align: 8 }
     Type.TRange => CLayout { size: 24, align: 8 }
     Type.TStruct(index) => layoutStruct(checker, index, mutable layouts)
     Type.TEnum(index) => layoutEnum(checker, index, mutable layouts)
@@ -1232,7 +1327,7 @@ export function isCountedType(checker: Checker, type: Type): bool {
       | Type.TBytes
       | Type.TStringBuilder
       | Type.TArray(_)
-      | Type.TFunc(_, _, _, _)
+      | Type.TFunc(_, _, _, _, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
       | Type.TGenerator(_, _, _, _, _) => true
@@ -1394,7 +1489,7 @@ function measureValue(checker: Checker, type: Type, mutable memo: LayoutMemo): i
     Type.TI8 | Type.TU8 | Type.TBool => 1
     Type.TI16 | Type.TU16 => 2
     Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => 4
-    Type.TFunc(_, _, _, _) => 16
+    Type.TFunc(_, _, _, _, _) => 16
     Type.TRange => 24
     Type.TStruct(index) => measureStruct(checker, index, mutable memo)
     Type.TEnum(index) => measureEnum(checker, index, mutable memo)
@@ -1526,7 +1621,10 @@ export struct FunctionStore {
 // constant checked at its first use) is checked in the middle of it.
 export struct BodyState {
   body: int
-  localScopes: Array<Map<string, int>>
+  localNames: Map<string, int>
+  scopeUndo: Array<ScopeBinding>
+  scopeUndoCount: int
+  scopeStarts: Array<int>
   scopeDepth: int
   resultType: Type
   loops: int
@@ -1571,7 +1669,10 @@ export function startBody(
   // Save the outer body's state and start the new one.
   const saved = BodyState {
     body: checker.body,
-    localScopes: checker.localScopes,
+    localNames: checker.localNames,
+    scopeUndo: checker.scopeUndo,
+    scopeUndoCount: checker.scopeUndoCount,
+    scopeStarts: checker.scopeStarts,
     scopeDepth: checker.scopeDepth,
     resultType: checker.resultType,
     loops: checker.loops,
@@ -1604,7 +1705,10 @@ export function startBody(
   }
   Arrays.push(mutable checker.bodies, info)
   checker.body = Arrays.length(checker.bodies) - 1
-  checker.localScopes = [Map {}]
+  checker.localNames = Map {}
+  checker.scopeUndo = []
+  checker.scopeUndoCount = 0
+  checker.scopeStarts = [0]
   checker.scopeDepth = 1
   checker.resultType = resultType
   checker.loops = 0
@@ -1619,7 +1723,10 @@ export function startBody(
 export function finishBody(mutable checker: Checker, saved: BodyState) uses alloc {
   reportUnusedLocals(mutable checker)
   checker.body = saved.body
-  checker.localScopes = saved.localScopes
+  checker.localNames = saved.localNames
+  checker.scopeUndo = saved.scopeUndo
+  checker.scopeUndoCount = saved.scopeUndoCount
+  checker.scopeStarts = saved.scopeStarts
   checker.scopeDepth = saved.scopeDepth
   checker.resultType = saved.resultType
   checker.loops = saved.loops
@@ -1772,11 +1879,8 @@ export function getRef(checker: Checker, nodeId: int): Ref {
 }
 
 export function findLocal(checker: Checker, name: string): int {
-  // Innermost scope first.
-  for (let depth = checker.scopeDepth - 1; depth >= 0; depth--) {
-    if (checker.localScopes[depth][name] is Some(index)) {
-      return index
-    }
+  if (checker.localNames[name] is Some(index)) {
+    return index
   }
   return -1
 }
@@ -1902,23 +2006,46 @@ export function declareLocal(
   if (slot >= 0) {
     checker.bodies[body].declared[slot] = index
   }
-  const depth = checker.scopeDepth - 1
-  checker.localScopes[depth][name] = index
+  bindName(mutable checker, name, index)
+  checker.bodies[body].locals[index].depth = checker.scopeDepth - 1
   return index
 }
 
-export function pushScope(mutable checker: Checker) uses alloc {
-  // The stack keeps popped slots and empties them on reuse, since std/array has no pop.
-  if (checker.scopeDepth < Arrays.length(checker.localScopes)) {
-    const depth = checker.scopeDepth
-    checker.localScopes[depth] = Map {}
+export function bindName(mutable checker: Checker, name: string, index: int) uses alloc {
+  // Keep the replaced value so that closing the scope restores it.
+  let previous = -1
+  if (checker.localNames[name] is Some(replaced)) {
+    previous = replaced
+  }
+  const binding = ScopeBinding { name: name, previous: previous }
+  if (checker.scopeUndoCount < Arrays.length(checker.scopeUndo)) {
+    checker.scopeUndo[checker.scopeUndoCount] = binding
   } else {
-    Arrays.push(mutable checker.localScopes, Map {})
+    Arrays.push(mutable checker.scopeUndo, binding)
+  }
+  checker.scopeUndoCount++
+  checker.localNames[name] = index
+}
+
+export function pushScope(mutable checker: Checker) uses alloc {
+  // The stack keeps popped slots and overwrites them on reuse, since std/array has no pop.
+  if (checker.scopeDepth < Arrays.length(checker.scopeStarts)) {
+    checker.scopeStarts[checker.scopeDepth] = checker.scopeUndoCount
+  } else {
+    const start = checker.scopeUndoCount
+    Arrays.push(mutable checker.scopeStarts, start)
   }
   checker.scopeDepth++
 }
 
-export function popScope(mutable checker: Checker) {
+export function popScope(mutable checker: Checker) uses alloc {
+  // Give back the names this scope replaced, last binding first.
+  const start = checker.scopeStarts[checker.scopeDepth - 1]
+  while (checker.scopeUndoCount > start) {
+    checker.scopeUndoCount--
+    const binding = checker.scopeUndo[checker.scopeUndoCount]
+    checker.localNames[binding.name] = binding.previous
+  }
   checker.scopeDepth--
 }
 

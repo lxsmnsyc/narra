@@ -29,6 +29,73 @@ import {
   lexWithComments,
   lexFrom,
   hex,
+  SYMBOLS_BY_TEXT,
+  SYMBOL_AMPERSAND,
+  SYMBOL_AND,
+  SYMBOL_ARROW,
+  SYMBOL_BANG,
+  SYMBOL_CARET,
+  SYMBOL_COLON,
+  SYMBOL_COMMA,
+  SYMBOL_DOT,
+  SYMBOL_ELLIPSIS,
+  SYMBOL_EQUALS,
+  SYMBOL_EQUAL_EQUAL,
+  SYMBOL_GREATER,
+  SYMBOL_GREATER_EQUAL,
+  SYMBOL_HASH_BRACKET,
+  SYMBOL_KEYWORD_AS,
+  SYMBOL_KEYWORD_BREAK,
+  SYMBOL_KEYWORD_CONST,
+  SYMBOL_KEYWORD_CONTINUE,
+  SYMBOL_KEYWORD_DERIVES,
+  SYMBOL_KEYWORD_ELSE,
+  SYMBOL_KEYWORD_ENUM,
+  SYMBOL_KEYWORD_EXPORT,
+  SYMBOL_KEYWORD_FALSE,
+  SYMBOL_KEYWORD_FOR,
+  SYMBOL_KEYWORD_FROM,
+  SYMBOL_KEYWORD_FUNCTION,
+  SYMBOL_KEYWORD_IF,
+  SYMBOL_KEYWORD_IMPLEMENT,
+  SYMBOL_KEYWORD_IMPLEMENTS,
+  SYMBOL_KEYWORD_IMPORT,
+  SYMBOL_KEYWORD_IS,
+  SYMBOL_KEYWORD_LET,
+  SYMBOL_KEYWORD_MATCH,
+  SYMBOL_KEYWORD_MUTABLE,
+  SYMBOL_KEYWORD_OF,
+  SYMBOL_KEYWORD_RETURN,
+  SYMBOL_KEYWORD_STRUCT,
+  SYMBOL_KEYWORD_TEST,
+  SYMBOL_KEYWORD_TRAIT,
+  SYMBOL_KEYWORD_TRUE,
+  SYMBOL_KEYWORD_USES,
+  SYMBOL_KEYWORD_WHILE,
+  SYMBOL_KEYWORD_YIELD,
+  SYMBOL_LEFT_BRACE,
+  SYMBOL_LEFT_BRACKET,
+  SYMBOL_LEFT_PAREN,
+  SYMBOL_LESS,
+  SYMBOL_LESS_EQUAL,
+  SYMBOL_MINUS,
+  SYMBOL_NOT_DOUBLE_EQUAL,
+  SYMBOL_NOT_EQUAL,
+  SYMBOL_OR,
+  SYMBOL_PERCENT,
+  SYMBOL_PIPE,
+  SYMBOL_PLUS,
+  SYMBOL_QUESTION,
+  SYMBOL_RIGHT_BRACE,
+  SYMBOL_RIGHT_BRACKET,
+  SYMBOL_RIGHT_PAREN,
+  SYMBOL_SEMICOLON,
+  SYMBOL_SHIFT_LEFT,
+  SYMBOL_SHIFT_RIGHT,
+  SYMBOL_SLASH,
+  SYMBOL_STAR,
+  SYMBOL_TILDE,
+  SYMBOL_TRIPLE_EQUAL,
 } from "narrac/lexer"
 import {
   Trivia,
@@ -141,16 +208,16 @@ struct TraitLists {
 
 // Operator precedence, lowest first.
 const BINARY_LEVELS = [
-  ["||"],
-  ["&&"],
-  ["==", "!="],
-  ["<", "<=", ">", ">="],
-  ["|"],
-  ["^"],
-  ["&"],
-  ["<<", ">>"],
-  ["+", "-"],
-  ["*", "/", "%"],
+  [SYMBOL_OR],
+  [SYMBOL_AND],
+  [SYMBOL_EQUAL_EQUAL, SYMBOL_NOT_EQUAL],
+  [SYMBOL_LESS, SYMBOL_LESS_EQUAL, SYMBOL_GREATER, SYMBOL_GREATER_EQUAL],
+  [SYMBOL_PIPE],
+  [SYMBOL_CARET],
+  [SYMBOL_AMPERSAND],
+  [SYMBOL_SHIFT_LEFT, SYMBOL_SHIFT_RIGHT],
+  [SYMBOL_PLUS, SYMBOL_MINUS],
+  [SYMBOL_STAR, SYMBOL_SLASH, SYMBOL_PERCENT],
 ]
 
 const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
@@ -346,6 +413,9 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     callEnds: parser.facts.callEnds,
     templateTokenEnds: parser.facts.templateTokenEnds,
     referenced: referenced,
+    resultEnds: parser.facts.resultEnds,
+    fromNames: parser.facts.fromNames,
+    valueEnds: parser.facts.valueEnds,
   }
 }
 
@@ -594,28 +664,36 @@ function advance(mutable parser: Parser): Token {
   return token
 }
 
-function isAt(parser: Parser, text: string): bool {
-  const token = parser.tokens[parser.index]
-  return (token.kind == TokenKind.TokPunct || token.kind == TokenKind.TokKeyword) &&
-    token.text == text
+function isAt(parser: Parser, symbol: int): bool {
+  return parser.tokens[parser.index].symbol == symbol
 }
 
-function accept(mutable parser: Parser, text: string): bool {
-  if (isAt(parser, text)) {
+function getSymbolText(symbol: int): string {
+  for (const entry of Maps.entries(SYMBOLS_BY_TEXT)) {
+    const #[text, candidate] = entry
+    if (candidate == symbol) {
+      return text
+    }
+  }
+  return ""
+}
+
+function accept(mutable parser: Parser, symbol: int): bool {
+  if (isAt(parser, symbol)) {
     advance(mutable parser)
     return true
   }
   return false
 }
 
-function expect(mutable parser: Parser, text: string): Token {
-  if (!isAt(parser, text)) {
+function expect(mutable parser: Parser, symbol: int): Token {
+  if (!isAt(parser, symbol)) {
     const token = currentToken(parser)
     failAt(
       mutable parser,
       getPos(token),
       "E0011",
-      `expected "${text}", found ${describeToken(token)}`,
+      `expected "${getSymbolText(symbol)}", found ${describeToken(token)}`,
     )
     return token
   }
@@ -654,7 +732,7 @@ function endStatement(mutable parser: Parser) {
   const token = currentToken(parser)
   if (token.kind == TokenKind.TokNewline) {
     skipNewlines(mutable parser)
-  } else if (isAt(parser, "}") || token.kind == TokenKind.TokEof) {
+  } else if (isAt(parser, SYMBOL_RIGHT_BRACE) || token.kind == TokenKind.TokEof) {
     return
   } else {
     failAt(
@@ -773,7 +851,7 @@ function parseFile(mutable parser: Parser): File {
   let imports: Array<ImportDecl> = []
   let declarations: Array<Decl> = []
   skipNewlines(mutable parser)
-  while (isOk(parser) && isAt(parser, "import")) {
+  while (isOk(parser) && isAt(parser, SYMBOL_KEYWORD_IMPORT)) {
     Arrays.push(mutable imports, parseImport(mutable parser))
     skipNewlines(mutable parser)
   }
@@ -787,23 +865,23 @@ function parseFile(mutable parser: Parser): File {
 
 function parseImport(mutable parser: Parser): ImportDecl {
   const startIndex = parser.index
-  const pos = getPos(expect(mutable parser, "import"))
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_IMPORT))
   let alias = ""
   let aliasPos = createEmptyPos()
   let names: Array<ImportName> = []
-  if (accept(mutable parser, "*")) {
-    expect(mutable parser, "as")
+  if (accept(mutable parser, SYMBOL_STAR)) {
+    expect(mutable parser, SYMBOL_KEYWORD_AS)
     const aliasToken = expectIdent(mutable parser)
     alias = aliasToken.text
     aliasPos = getPos(aliasToken)
-  } else if (accept(mutable parser, "{")) {
+  } else if (accept(mutable parser, SYMBOL_LEFT_BRACE)) {
     skipNewlines(mutable parser)
-    while (isOk(parser) && !isAt(parser, "}")) {
+    while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
       const nameToken = expectIdent(mutable parser)
       const name = nameToken.text
       let local = name
       let end = moveColumn(getPos(nameToken), Str.charCount(name))
-      if (accept(mutable parser, "as")) {
+      if (accept(mutable parser, SYMBOL_KEYWORD_AS)) {
         const localToken = expectIdent(mutable parser)
         local = localToken.text
         end = moveColumn(getPos(localToken), Str.charCount(local))
@@ -815,13 +893,13 @@ function parseImport(mutable parser: Parser): ImportDecl {
         end: end,
       })
       skipNewlines(mutable parser)
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
       skipNewlines(mutable parser)
     }
     skipNewlines(mutable parser)
-    expect(mutable parser, "}")
+    expect(mutable parser, SYMBOL_RIGHT_BRACE)
   } else {
     const at = getPos(currentToken(parser))
     let fixes: Array<Fix> = []
@@ -836,7 +914,7 @@ function parseImport(mutable parser: Parser): ImportDecl {
       "use `import * as Name from \"path\"` or `import { a, b } from \"path\"`; there are no default imports",
     )
   }
-  expect(mutable parser, "from")
+  expect(mutable parser, SYMBOL_KEYWORD_FROM)
   let path = ""
   if (currentToken(parser).kind != TokenKind.TokString) {
     failHere(mutable parser, "E0015", "expected a module path string")
@@ -906,7 +984,7 @@ function parseDecl(mutable parser: Parser): Decl {
 }
 
 function parseDeclBody(mutable parser: Parser): Decl {
-  const exported = accept(mutable parser, "export")
+  const exported = accept(mutable parser, SYMBOL_KEYWORD_EXPORT)
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
     return declaration
@@ -914,22 +992,22 @@ function parseDeclBody(mutable parser: Parser): Decl {
   if (isWord(parser, "type") && peekToken(parser, 1).kind == TokenKind.TokIdent) {
     return Decl.Alias(parseAliasDecl(mutable parser, exported))
   }
-  if (isAt(parser, "function")) {
+  if (isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
     return Decl.Func(parseFuncDecl(mutable parser, exported))
   }
-  if (isAt(parser, "const")) {
+  if (isAt(parser, SYMBOL_KEYWORD_CONST)) {
     return Decl.Const(parseConstDecl(mutable parser, exported))
   }
-  if (isAt(parser, "struct")) {
+  if (isAt(parser, SYMBOL_KEYWORD_STRUCT)) {
     return Decl.Struct(parseStructDecl(mutable parser, exported))
   }
-  if (isAt(parser, "enum")) {
+  if (isAt(parser, SYMBOL_KEYWORD_ENUM)) {
     return Decl.Enum(parseEnumDecl(mutable parser, exported))
   }
-  if (isAt(parser, "trait")) {
+  if (isAt(parser, SYMBOL_KEYWORD_TRAIT)) {
     return Decl.Trait(parseTraitDecl(mutable parser, exported))
   }
-  if (isAt(parser, "implement")) {
+  if (isAt(parser, SYMBOL_KEYWORD_IMPLEMENT)) {
     if (exported) {
       failHere(
         mutable parser,
@@ -939,7 +1017,7 @@ function parseDeclBody(mutable parser: Parser): Decl {
     }
     return Decl.Impl(parseImplDecl(mutable parser))
   }
-  if (isAt(parser, "test")) {
+  if (isAt(parser, SYMBOL_KEYWORD_TEST)) {
     if (exported) {
       failHere(mutable parser, "E0017", "tests cannot be exported")
     }
@@ -1001,7 +1079,7 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
     advance(mutable parser)
     opaque = true
   }
-  if (isAt(parser, "struct") && opaque) {
+  if (isAt(parser, SYMBOL_KEYWORD_STRUCT) && opaque) {
     const structDeclaration = parseStructDecl(mutable parser, exported)
     return Some(Decl.Struct(StructDecl { ...structDeclaration, opaque: true }))
   }
@@ -1012,7 +1090,7 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
     }
     advance(mutable parser)
     const name = expectIdent(mutable parser).text
-    expect(mutable parser, "=")
+    expect(mutable parser, SYMBOL_EQUALS)
     const base = parseType(mutable parser)
     endTypeDecl(mutable parser)
     return Some(
@@ -1039,20 +1117,20 @@ function parseType(mutable parser: Parser): TypeExpr {
 }
 
 function parseTypeBody(mutable parser: Parser): TypeExpr {
-  if (isAt(parser, "(")) {
+  if (isAt(parser, SYMBOL_LEFT_PAREN)) {
     return parseFuncType(mutable parser)
   }
-  if (isAt(parser, "#[")) {
+  if (isAt(parser, SYMBOL_HASH_BRACKET)) {
     // A tuple type, written like the literal: #[int, string].
     const pos = getPos(advance(mutable parser))
     let arguments: Array<TypeExpr> = []
-    while (isOk(parser) && !isAt(parser, "]")) {
+    while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACKET)) {
       Arrays.push(mutable arguments, parseType(mutable parser))
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
     }
-    expect(mutable parser, "]")
+    expect(mutable parser, SYMBOL_RIGHT_BRACKET)
     return TypeExpr {
       pos: pos,
       name: "",
@@ -1068,7 +1146,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     return createDummyType()
   }
   let name = token.text
-  if (accept(mutable parser, ".")) {
+  if (accept(mutable parser, SYMBOL_DOT)) {
     // a type from a namespace import, such as Text.Token
     name = `${name}.${expectIdent(mutable parser).text}`
   }
@@ -1082,20 +1160,25 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     effects: [],
     isTuple: false,
   }
-  if (accept(mutable parser, "<")) {
+  if (accept(mutable parser, SYMBOL_LESS)) {
     while (isOk(parser)) {
       Arrays.push(mutable arguments, parseType(mutable parser))
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
     }
     // In `Array<Array<int>>` the lexer reads `>>` as one token. Split it.
-    if (isAt(parser, ">>")) {
+    if (isAt(parser, SYMBOL_SHIFT_RIGHT)) {
       const shift = currentToken(parser)
-      parser.tokens[parser.index] = Token { ...shift, text: ">", column: shift.column + 1 }
+      parser.tokens[parser.index] = Token {
+        ...shift,
+        text: ">",
+        column: shift.column + 1,
+        symbol: SYMBOL_GREATER,
+      }
       return TypeExpr { ...named, arguments: arguments }
     }
-    expect(mutable parser, ">")
+    expect(mutable parser, SYMBOL_GREATER)
   }
   if (name == "Generator" || name == "Coroutine") {
     // A generator type carries the effects its body has when it runs:
@@ -1106,7 +1189,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     }
   }
   const after = peekToken(parser, 1)
-  if (isAt(parser, "[") && after.kind == TokenKind.TokPunct && after.text == "]") {
+  if (isAt(parser, SYMBOL_LEFT_BRACKET) && after.kind == TokenKind.TokPunct && after.text == "]") {
     const open = getPos(currentToken(parser))
     const shut = moveColumn(getPos(after), 1)
     failAtFix(
@@ -1125,10 +1208,10 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
   let names: Array<string> = []
   let bounds: Array<Array<TypeExpr>> = []
   let effects: Array<string> = []
-  if (!accept(mutable parser, "<")) {
+  if (!accept(mutable parser, SYMBOL_LESS)) {
     return TypeParams { names: names, bounds: bounds, effects: effects }
   }
-  while (isOk(parser) && !isAt(parser, ">")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_GREATER)) {
     const token = currentToken(parser)
     if (
       token.kind == TokenKind.TokIdent &&
@@ -1137,7 +1220,7 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
     ) {
       advance(mutable parser)
       Arrays.push(mutable effects, expectIdent(mutable parser).text)
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
       continue
@@ -1146,21 +1229,21 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
     Arrays.push(mutable names, parameterName)
     Arrays.push(mutable parser.typeNames, parameterName)
     let traitBounds: Array<TypeExpr> = []
-    if (accept(mutable parser, ":")) {
+    if (accept(mutable parser, SYMBOL_COLON)) {
       while (isOk(parser)) {
         const boundName = expectIdent(mutable parser)
         Arrays.push(mutable traitBounds, createNamedType(boundName))
-        if (!accept(mutable parser, "&")) {
+        if (!accept(mutable parser, SYMBOL_AMPERSAND)) {
           break
         }
       }
     }
     Arrays.push(mutable bounds, traitBounds)
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
-  expect(mutable parser, ">")
+  expect(mutable parser, SYMBOL_GREATER)
   return TypeParams { names: names, bounds: bounds, effects: effects }
 }
 
@@ -1194,13 +1277,13 @@ function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
 }
 
 function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
-  const pos = getPos(expect(mutable parser, "const"))
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_CONST))
   const name = expectIdent(mutable parser).text
   let declaredType: Option<TypeExpr> = None
-  if (accept(mutable parser, ":")) {
+  if (accept(mutable parser, SYMBOL_COLON)) {
     declaredType = Some(parseType(mutable parser))
   }
-  expect(mutable parser, "=")
+  expect(mutable parser, SYMBOL_EQUALS)
   const value = parseExpr(mutable parser)
   endStatement(mutable parser)
   return ConstDecl { pos: pos, name: name, exported: exported, type: declaredType, value: value }
@@ -1219,30 +1302,30 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
 }
 
 function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
-  const pos = getPos(expect(mutable parser, "function"))
-  const generator = accept(mutable parser, "*")
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_FUNCTION))
+  const generator = accept(mutable parser, SYMBOL_STAR)
   // A function may be named `of` (std/hash declares Hash.of), though it is a keyword.
   let nameToken = currentToken(parser)
-  if (isAt(parser, "of")) {
+  if (isAt(parser, SYMBOL_KEYWORD_OF)) {
     nameToken = advance(mutable parser)
   } else {
     nameToken = expectIdent(mutable parser)
   }
   const name = nameToken.text
   const typeParameters = parseTypeParams(mutable parser)
-  expect(mutable parser, "(")
+  expect(mutable parser, SYMBOL_LEFT_PAREN)
   let parameters: Array<Param> = []
-  while (isOk(parser) && !isAt(parser, ")")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const paramPos = getPos(currentToken(parser))
     const paramStart = parser.index
-    const isMutable = accept(mutable parser, "mutable")
+    const isMutable = accept(mutable parser, SYMBOL_KEYWORD_MUTABLE)
     let escaping = false
     if (!isMutable) {
       escaping = acceptEscaping(mutable parser)
     }
     const paramNameToken = expectIdent(mutable parser)
     const paramName = paramNameToken.text
-    expect(mutable parser, ":")
+    expect(mutable parser, SYMBOL_COLON)
     const paramType = parseType(mutable parser)
     const paramId = newId(mutable parser)
     parser.facts.namePositions[paramId] = getPos(paramNameToken)
@@ -1257,14 +1340,14 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     if (parser.collector.enabled) {
       noteKey(mutable parser, getIdKey(paramId), paramStart)
     }
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   let result: Option<TypeExpr> = None
-  if (accept(mutable parser, ":")) {
-    result = Some(parseType(mutable parser))
+  if (accept(mutable parser, SYMBOL_COLON)) {
+    result = Some(parseResultType(mutable parser))
   }
   const effects = parseUsesList(mutable parser)
   return FuncDecl {
@@ -1285,14 +1368,14 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
 function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
   let fields: Array<FieldDecl> = []
   skipNewlines(mutable parser)
-  while (isOk(parser) && !isAt(parser, "}")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
     const pos = getPos(currentToken(parser))
     const fieldStart = parser.index
     const name = expectIdent(mutable parser).text
-    expect(mutable parser, ":")
+    expect(mutable parser, SYMBOL_COLON)
     const fieldType = parseType(mutable parser)
     let defaultValue: Option<Expr> = None
-    if (accept(mutable parser, "=")) {
+    if (accept(mutable parser, SYMBOL_EQUALS)) {
       defaultValue = Some(parseExpr(mutable parser))
     }
     Arrays.push(mutable fields, FieldDecl {
@@ -1304,7 +1387,7 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("f", pos), fieldStart)
     }
-    accept(mutable parser, ",")
+    accept(mutable parser, SYMBOL_COMMA)
     skipNewlines(mutable parser)
   }
   return fields
@@ -1314,7 +1397,7 @@ function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
   const pos = getPos(advance(mutable parser))
   const name = expectIdent(mutable parser).text
   const typeParameters = parseTypeParamsNoBounds(mutable parser)
-  expect(mutable parser, "=")
+  expect(mutable parser, SYMBOL_EQUALS)
   const body = parseType(mutable parser)
   endTypeDecl(mutable parser)
   return AliasDecl {
@@ -1327,13 +1410,13 @@ function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
 }
 
 function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
-  const pos = getPos(expect(mutable parser, "struct"))
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_STRUCT))
   const name = expectIdent(mutable parser).text
   const typeParameters = parseTypeParamsNoBounds(mutable parser)
   const traitLists = parseTraitLists(mutable parser)
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   const fields = parseFieldList(mutable parser)
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return StructDecl {
     pos: pos,
     name: name,
@@ -1347,24 +1430,24 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
 }
 
 function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
-  const pos = getPos(expect(mutable parser, "enum"))
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_ENUM))
   const name = expectIdent(mutable parser).text
   const typeParameters = parseTypeParamsNoBounds(mutable parser)
   const traitLists = parseTraitLists(mutable parser)
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
   let variants: Array<VariantDecl> = []
-  while (isOk(parser) && !isAt(parser, "}")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
     const variantPos = getPos(currentToken(parser))
     const variantStart = parser.index
     const variantName = expectIdent(mutable parser).text
     let fields: Array<FieldDecl> = []
-    if (accept(mutable parser, "(")) {
-      while (isOk(parser) && !isAt(parser, ")")) {
+    if (accept(mutable parser, SYMBOL_LEFT_PAREN)) {
+      while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
         const fieldPos = getPos(currentToken(parser))
         const fieldStart = parser.index
         const fieldName = expectIdent(mutable parser).text
-        expect(mutable parser, ":")
+        expect(mutable parser, SYMBOL_COLON)
         const fieldType = parseType(mutable parser)
         Arrays.push(mutable fields, FieldDecl {
           pos: fieldPos,
@@ -1375,11 +1458,11 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
         if (parser.collector.enabled) {
           noteKey(mutable parser, getPosKey("f", fieldPos), fieldStart)
         }
-        if (!accept(mutable parser, ",")) {
+        if (!accept(mutable parser, SYMBOL_COMMA)) {
           break
         }
       }
-      expect(mutable parser, ")")
+      expect(mutable parser, SYMBOL_RIGHT_PAREN)
     }
     Arrays.push(mutable variants, VariantDecl {
       pos: variantPos,
@@ -1389,10 +1472,10 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("v", variantPos), variantStart)
     }
-    accept(mutable parser, ",")
+    accept(mutable parser, SYMBOL_COMMA)
     skipNewlines(mutable parser)
   }
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return EnumDecl {
     pos: pos,
     name: name,
@@ -1407,10 +1490,10 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
 function parseTraitLists(mutable parser: Parser): TraitLists {
   let implementations: Array<TypeExpr> = []
   let derived: Array<TypeExpr> = []
-  if (accept(mutable parser, "implements")) {
+  if (accept(mutable parser, SYMBOL_KEYWORD_IMPLEMENTS)) {
     implementations = parseTraitNames(mutable parser)
   }
-  if (accept(mutable parser, "derives")) {
+  if (accept(mutable parser, SYMBOL_KEYWORD_DERIVES)) {
     derived = parseTraitNames(mutable parser)
   }
   return TraitLists { implementations: implementations, derived: derived }
@@ -1424,7 +1507,7 @@ function parseTraitNames(mutable parser: Parser): Array<TypeExpr> {
     const traitType = createNamedType(token)
     Arrays.push(mutable traits, traitType)
     noteType(mutable parser, traitStart, traitType)
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
@@ -1432,27 +1515,27 @@ function parseTraitNames(mutable parser: Parser): Array<TypeExpr> {
 }
 
 function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
-  const pos = getPos(expect(mutable parser, "trait"))
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_TRAIT))
   const name = expectIdent(mutable parser).text
-  if (isAt(parser, "<")) {
+  if (isAt(parser, SYMBOL_LESS)) {
     failHere(
       mutable parser,
       "E0023",
       "a trait has no type parameters; use Self for the implementing type",
     )
   }
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
   let functions: Array<FuncDecl> = []
-  while (isOk(parser) && !isAt(parser, "}")) {
-    if (!isAt(parser, "function")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
+    if (!isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
       failFound(mutable parser, "E0024", `a trait has functions only`)
       break
     }
     const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
     const header = parseFuncHeader(mutable parser, false)
-    if (isAt(parser, "{")) {
+    if (isAt(parser, SYMBOL_LEFT_BRACE)) {
       failHere(
         mutable parser,
         "E0025",
@@ -1465,7 +1548,7 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
       noteKey(mutable parser, getPosKey("d", header.pos), functionStart)
     }
   }
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return TraitDecl { pos: pos, name: name, exported: exported, functions: functions }
 }
 
@@ -1483,22 +1566,22 @@ function rejectNestedGenerator(mutable parser: Parser) {
 }
 
 function parseImplDecl(mutable parser: Parser): ImplDecl {
-  const pos = getPos(expect(mutable parser, "implement"))
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_IMPLEMENT))
   const traitStart = parser.index
   const token = expectIdent(mutable parser)
   const traitType = createNamedType(token)
   noteType(mutable parser, traitStart, traitType)
-  expect(mutable parser, "for")
+  expect(mutable parser, SYMBOL_KEYWORD_FOR)
   const declaredType = parseType(mutable parser)
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
   let functions: Array<FuncDecl> = []
-  while (isOk(parser) && !isAt(parser, "}")) {
-    if (isAt(parser, "export")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
+    if (isAt(parser, SYMBOL_KEYWORD_EXPORT)) {
       failHere(mutable parser, "E0026", "functions in an implement block cannot be exported")
       break
     }
-    if (!isAt(parser, "function")) {
+    if (!isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
       failFound(mutable parser, "E0027", `an implement block has functions only`)
       break
     }
@@ -1511,32 +1594,35 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
     }
     skipNewlines(mutable parser)
   }
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return ImplDecl { pos: pos, traitType: traitType, type: declaredType, functions: functions }
 }
 
 function parseFuncType(mutable parser: Parser): TypeExpr {
   // Parameter names are optional and ignored.
-  const pos = getPos(expect(mutable parser, "("))
+  const pos = getPos(expect(mutable parser, SYMBOL_LEFT_PAREN))
   let arguments: Array<TypeExpr> = []
-  while (isOk(parser) && !isAt(parser, ")")) {
+  let names: Array<string> = []
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const colon = peekToken(parser, 1)
+    let name = ""
     if (
       currentToken(parser).kind == TokenKind.TokIdent &&
         colon.kind == TokenKind.TokPunct &&
         colon.text == ":"
     ) {
-      advance(mutable parser)
+      name = advance(mutable parser).text
       advance(mutable parser)
     }
+    Arrays.push(mutable names, name)
     Arrays.push(mutable arguments, parseType(mutable parser))
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
-  expect(mutable parser, ")")
-  expect(mutable parser, "=>")
-  const result = parseType(mutable parser)
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
+  expect(mutable parser, SYMBOL_ARROW)
+  const result = parseResultType(mutable parser)
   const effects = parseUsesList(mutable parser)
   return TypeExpr {
     pos: pos,
@@ -1546,18 +1632,35 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
     result: Some(Boxes.new(result)),
     effects: effects,
     isTuple: false,
+    parameterNames: names,
   }
+}
+
+function parseResultType(mutable parser: Parser): TypeExpr {
+  // A result type may name the parameter it shares: `: Array<T> from items`.
+  const result = parseType(mutable parser)
+  parser.facts.resultEnds[getPosKey("r", result.pos)] = getEndPos(parser)
+  if (!accept(mutable parser, SYMBOL_KEYWORD_FROM)) {
+    return result
+  }
+  if (currentToken(parser).kind != TokenKind.TokIdent) {
+    failFound(mutable parser, "E0976", "`from` needs the name of a parameter")
+    return result
+  }
+  const name = advance(mutable parser)
+  parser.facts.fromNames[getPosKey("r", result.pos)] = getPos(name)
+  return TypeExpr { ...result, resultFrom: name.text }
 }
 
 function parseUsesList(mutable parser: Parser): Array<string> {
   let names: Array<string> = []
-  if (accept(mutable parser, "uses")) {
+  if (accept(mutable parser, SYMBOL_KEYWORD_USES)) {
     while (isOk(parser)) {
       Arrays.push(mutable names, expectIdent(mutable parser).text)
-      if (isAt(parser, ",") && isParamAfterComma(parser)) {
+      if (isAt(parser, SYMBOL_COMMA) && isParamAfterComma(parser)) {
         break
       }
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
     }
@@ -1669,10 +1772,10 @@ function isResultTypeThenArrow(parser: Parser, start: int): bool {
 }
 
 function parseArrow(mutable parser: Parser): Expr {
-  const pos = getPos(expect(mutable parser, "("))
+  const pos = getPos(expect(mutable parser, SYMBOL_LEFT_PAREN))
   let parameters: Array<Param> = []
-  while (isOk(parser) && !isAt(parser, ")")) {
-    if (isAt(parser, "mutable")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
+    if (isAt(parser, SYMBOL_KEYWORD_MUTABLE)) {
       failHere(mutable parser, "E0028", "arrow function parameters cannot be mutable")
       return createDummyExpr()
     }
@@ -1681,7 +1784,7 @@ function parseArrow(mutable parser: Parser): Expr {
     const paramName = expectIdent(mutable parser).text
     // Parameter types may be left out.
     let paramType: Option<TypeExpr> = None
-    if (accept(mutable parser, ":")) {
+    if (accept(mutable parser, SYMBOL_COLON)) {
       paramType = Some(parseType(mutable parser))
     }
     const paramId = newId(mutable parser)
@@ -1696,34 +1799,35 @@ function parseArrow(mutable parser: Parser): Expr {
     if (parser.collector.enabled) {
       noteKey(mutable parser, getIdKey(paramId), paramStart)
     }
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   let result: Option<TypeExpr> = None
-  if (accept(mutable parser, ":")) {
-    result = Some(parseType(mutable parser))
+  if (accept(mutable parser, SYMBOL_COLON)) {
+    result = Some(parseResultType(mutable parser))
   }
-  expect(mutable parser, "=>")
+  expect(mutable parser, SYMBOL_ARROW)
   const savedResult = parser.resultFunction
   parser.resultFunction = false
-  if (isAt(parser, "{")) {
+  if (isAt(parser, SYMBOL_LEFT_BRACE)) {
     const block = parseBlock(mutable parser)
     parser.resultFunction = savedResult
     return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, None, Some(block))
   }
   const body = parseExpr(mutable parser)
+  parser.facts.valueEnds[getExprId(body)] = getEndPos(parser)
   parser.resultFunction = savedResult
   return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, Some(body), None)
 }
 
 function parseBlock(mutable parser: Parser): Block {
   const startIndex = parser.index
-  const pos = getPos(expect(mutable parser, "{"))
+  const pos = getPos(expect(mutable parser, SYMBOL_LEFT_BRACE))
   skipNewlines(mutable parser)
   let statements: Array<Stmt> = []
-  while (isOk(parser) && !isAt(parser, "}")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
     if (currentToken(parser).kind == TokenKind.TokEof) {
       failHere(mutable parser, "E0029", "unexpected end of file inside a block")
       break
@@ -1731,7 +1835,7 @@ function parseBlock(mutable parser: Parser): Block {
     Arrays.push(mutable statements, parseStmt(mutable parser))
   }
   const end = getPos(currentToken(parser))
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("b", pos), startIndex)
   }
@@ -1751,7 +1855,7 @@ function isMarkedEntries(parser: Parser): bool {
   const index = peekToken(parser, 2)
   const comma = peekToken(parser, 3)
   const marker = peekToken(parser, 4)
-  return isAt(parser, "const") &&
+  return isAt(parser, SYMBOL_KEYWORD_CONST) &&
     pattern.kind == TokenKind.TokPunct &&
     pattern.text == "#[" &&
     index.kind == TokenKind.TokIdent &&
@@ -1765,21 +1869,21 @@ function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt uses alloc {
   // The head is not desugared into a declaration, which would copy the element.
   let indexName = ""
   let indexPos = pos
-  if (accept(mutable parser, "const")) {
-    expect(mutable parser, "#[")
+  if (accept(mutable parser, SYMBOL_KEYWORD_CONST)) {
+    expect(mutable parser, SYMBOL_HASH_BRACKET)
     const indexToken = expectIdent(mutable parser)
     indexName = indexToken.text
     indexPos = getPos(indexToken)
-    expect(mutable parser, ",")
+    expect(mutable parser, SYMBOL_COMMA)
   }
-  expect(mutable parser, "mutable")
+  expect(mutable parser, SYMBOL_KEYWORD_MUTABLE)
   const nameToken = expectIdent(mutable parser)
   if (indexName != "") {
-    expect(mutable parser, "]")
+    expect(mutable parser, SYMBOL_RIGHT_BRACKET)
   }
-  expect(mutable parser, "of")
+  expect(mutable parser, SYMBOL_KEYWORD_OF)
   const iterable = parseExpr(mutable parser)
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   const body = parseBlock(mutable parser)
   skipNewlines(mutable parser)
 
@@ -1800,7 +1904,7 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   const labelToken = advance(mutable parser)
   const labelPos = getPos(labelToken)
   advance(mutable parser)
-  if (!isAt(parser, "for") && !isAt(parser, "while")) {
+  if (!isAt(parser, SYMBOL_KEYWORD_FOR) && !isAt(parser, SYMBOL_KEYWORD_WHILE)) {
     failAt(
       mutable parser,
       labelPos,
@@ -1841,10 +1945,10 @@ function parseCStyleForHead(
     return Stmt.BreakStmt(pos, "")
   }
   let declaredType: Option<TypeExpr> = None
-  if (accept(mutable parser, ":")) {
+  if (accept(mutable parser, SYMBOL_COLON)) {
     declaredType = Some(parseType(mutable parser))
   }
-  expect(mutable parser, "=")
+  expect(mutable parser, SYMBOL_EQUALS)
   const value = parseExpr(mutable parser)
   const varId = newId(mutable parser)
   parser.facts.namePositions[varId] = namePos
@@ -1872,20 +1976,20 @@ function parseStatementExpr(mutable parser: Parser): Expr uses alloc {
 
 function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): Stmt uses alloc {
   parser.forHead = true
-  expect(mutable parser, ";")
+  expect(mutable parser, SYMBOL_SEMICOLON)
   // An empty condition loops forever.
   let condition: Option<Expr> = None
-  if (!isAt(parser, ";")) {
+  if (!isAt(parser, SYMBOL_SEMICOLON)) {
     condition = Some(parseExpr(mutable parser))
   }
-  expect(mutable parser, ";")
+  expect(mutable parser, SYMBOL_SEMICOLON)
   // The step is an assignment or a call.
   let step: Option<Stmt> = None
-  if (!isAt(parser, ")")) {
+  if (!isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const stepToken = currentToken(parser)
     const stepPos = getPos(stepToken)
     const target = parseStatementExpr(mutable parser)
-    if (accept(mutable parser, "=")) {
+    if (accept(mutable parser, SYMBOL_EQUALS)) {
       step = Some(Stmt.AssignStmt(stepPos, target, parseExpr(mutable parser)))
     } else if (parseCompoundTail(mutable parser, stepPos, target) is Some(compound)) {
       step = Some(compound)
@@ -1900,7 +2004,7 @@ function parseCStyleFor(mutable parser: Parser, pos: Pos, init: Option<Stmt>): S
       )
     }
   }
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   parser.forHead = false
   const body = parseBlock(mutable parser)
   skipNewlines(mutable parser)
@@ -1941,7 +2045,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
     )
   }
-  if (isAt(parser, "function")) {
+  if (isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
     failAt(
       mutable parser,
       pos,
@@ -1949,7 +2053,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
     )
   }
-  if (isAt(parser, "const") || isAt(parser, "let")) {
+  if (isAt(parser, SYMBOL_KEYWORD_CONST) || isAt(parser, SYMBOL_KEYWORD_LET)) {
     const isMutable = advance(mutable parser).text == "let"
     const after = peekToken(parser, 1)
     const isConstructor =
@@ -1959,18 +2063,18 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     const namePos = getPos(currentToken(parser))
     let name = ""
     let pattern: Option<Pattern> = None
-    if (isAt(parser, "{") || isAt(parser, "#[") || isConstructor) {
+    if (isAt(parser, SYMBOL_LEFT_BRACE) || isAt(parser, SYMBOL_HASH_BRACKET) || isConstructor) {
       pattern = Some(parsePattern(mutable parser))
     } else {
       name = expectIdent(mutable parser).text
     }
     let declaredType: Option<TypeExpr> = None
-    if (accept(mutable parser, ":")) {
+    if (accept(mutable parser, SYMBOL_COLON)) {
       declaredType = Some(parseType(mutable parser))
     }
-    expect(mutable parser, "=")
+    expect(mutable parser, SYMBOL_EQUALS)
     if (
-      isAt(parser, "yield") &&
+      isAt(parser, SYMBOL_KEYWORD_YIELD) &&
         name != "" &&
         declaredType is None &&
         !(peekToken(parser, 1).kind == TokenKind.TokPunct && peekToken(parser, 1).text == "*")
@@ -1979,7 +2083,11 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       const yieldPos = getPos(currentToken(parser))
       advance(mutable parser)
       const next = currentToken(parser)
-      if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof || isAt(parser, "}")) {
+      if (
+        next.kind == TokenKind.TokNewline ||
+          next.kind == TokenKind.TokEof ||
+          isAt(parser, SYMBOL_RIGHT_BRACE)
+      ) {
         failHere(
           mutable parser,
           "E0046",
@@ -2003,11 +2111,12 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     parser.facts.namePositions[varId] = namePos
     return Stmt.VarStmt(varId, pos, isMutable, name, pattern, declaredType, value)
   }
-  if (isAt(parser, "return")) {
+  if (isAt(parser, SYMBOL_KEYWORD_RETURN)) {
     advance(mutable parser)
     let value: Option<Expr> = None
-    if (currentToken(parser).kind != TokenKind.TokNewline && !isAt(parser, "}")) {
+    if (currentToken(parser).kind != TokenKind.TokNewline && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
       const returned = parseExpr(mutable parser)
+      parser.facts.valueEnds[getExprId(returned)] = getEndPos(parser)
       if (isTernary(parser, returned)) {
         endStatement(mutable parser)
         return convertReturnedTernary(mutable parser, returned)
@@ -2017,28 +2126,28 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     endStatement(mutable parser)
     return Stmt.ReturnStmt(pos, value)
   }
-  if (isAt(parser, "if")) {
+  if (isAt(parser, SYMBOL_KEYWORD_IF)) {
     return parseIf(mutable parser)
   }
-  if (isAt(parser, "while")) {
+  if (isAt(parser, SYMBOL_KEYWORD_WHILE)) {
     advance(mutable parser)
-    expect(mutable parser, "(")
+    expect(mutable parser, SYMBOL_LEFT_PAREN)
     const condition = parseExpr(mutable parser)
-    expect(mutable parser, ")")
+    expect(mutable parser, SYMBOL_RIGHT_PAREN)
     const body = parseBlock(mutable parser)
     skipNewlines(mutable parser)
     return Stmt.WhileStmt(pos, "", condition, body)
   }
-  if (isAt(parser, "for")) {
+  if (isAt(parser, SYMBOL_KEYWORD_FOR)) {
     advance(mutable parser)
-    expect(mutable parser, "(")
-    if (isAt(parser, "mutable") || isMarkedEntries(parser)) {
+    expect(mutable parser, SYMBOL_LEFT_PAREN)
+    if (isAt(parser, SYMBOL_KEYWORD_MUTABLE) || isMarkedEntries(parser)) {
       return parseReferenceFor(mutable parser, pos)
     }
-    if (isAt(parser, ";")) {
+    if (isAt(parser, SYMBOL_SEMICOLON)) {
       return parseCStyleFor(mutable parser, pos, None)
     }
-    if (!isAt(parser, "const") && !isAt(parser, "let")) {
+    if (!isAt(parser, SYMBOL_KEYWORD_CONST) && !isAt(parser, SYMBOL_KEYWORD_LET)) {
       failHere(mutable parser, "E0030", "write `for (const item of items)`")
       return Stmt.BreakStmt(pos, "")
     }
@@ -2059,18 +2168,18 @@ function parseStmtBody(mutable parser: Parser): Stmt {
         (after.text == "(" || after.text == ".")
     let name = ""
     let pattern: Option<Pattern> = None
-    if (isAt(parser, "{") || isAt(parser, "#[") || isConstructor) {
+    if (isAt(parser, SYMBOL_LEFT_BRACE) || isAt(parser, SYMBOL_HASH_BRACKET) || isConstructor) {
       pattern = Some(parsePattern(mutable parser))
     } else {
       name = expectIdent(mutable parser).text
     }
-    if (isAt(parser, "in") || isWord(parser, "in")) {
+    if (isWord(parser, "in")) {
       failHere(mutable parser, "E0031", "use `of`; `for ... in` is not part of the language")
       return Stmt.BreakStmt(pos, "")
     }
-    expect(mutable parser, "of")
+    expect(mutable parser, SYMBOL_KEYWORD_OF)
     const iterable = parseExpr(mutable parser)
-    expect(mutable parser, ")")
+    expect(mutable parser, SYMBOL_RIGHT_PAREN)
     let body = parseBlock(mutable parser)
     skipNewlines(mutable parser)
     if (isMutable || pattern is Some(_)) {
@@ -2101,11 +2210,15 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     parser.facts.namePositions[forId] = headPos
     return Stmt.ForStmt(forId, pos, "", name, iterable, body, None)
   }
-  if (isAt(parser, "yield")) {
+  if (isAt(parser, SYMBOL_KEYWORD_YIELD)) {
     advance(mutable parser)
-    const delegate = accept(mutable parser, "*")
+    const delegate = accept(mutable parser, SYMBOL_STAR)
     const next = currentToken(parser)
-    if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof || isAt(parser, "}")) {
+    if (
+      next.kind == TokenKind.TokNewline ||
+        next.kind == TokenKind.TokEof ||
+        isAt(parser, SYMBOL_RIGHT_BRACE)
+    ) {
       failHere(
         mutable parser,
         "E0046",
@@ -2117,24 +2230,24 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     endStatement(mutable parser)
     return Stmt.YieldStmt(pos, value, delegate, None)
   }
-  if (isAt(parser, "break")) {
+  if (isAt(parser, SYMBOL_KEYWORD_BREAK)) {
     advance(mutable parser)
     const label = parseLoopExitLabel(mutable parser)
     endStatement(mutable parser)
     return Stmt.BreakStmt(pos, label)
   }
-  if (isAt(parser, "continue")) {
+  if (isAt(parser, SYMBOL_KEYWORD_CONTINUE)) {
     advance(mutable parser)
     const label = parseLoopExitLabel(mutable parser)
     endStatement(mutable parser)
     return Stmt.ContinueStmt(pos, label)
   }
-  if (isAt(parser, "{")) {
+  if (isAt(parser, SYMBOL_LEFT_BRACE)) {
     failAt(mutable parser, pos, "E0032", "a block must belong to a statement such as if or while")
     return Stmt.BreakStmt(pos, "")
   }
   const expression = parseStatementExpr(mutable parser)
-  if (accept(mutable parser, "=")) {
+  if (accept(mutable parser, SYMBOL_EQUALS)) {
     const value = parseExpr(mutable parser)
     endStatement(mutable parser)
     return Stmt.AssignStmt(pos, expression, value)
@@ -2161,15 +2274,15 @@ function parseIf(mutable parser: Parser): Stmt {
 }
 
 function parseIfBody(mutable parser: Parser): Stmt {
-  const pos = getPos(expect(mutable parser, "if"))
-  expect(mutable parser, "(")
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_IF))
+  expect(mutable parser, SYMBOL_LEFT_PAREN)
   const condition = parseExpr(mutable parser)
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   const thenBlock = parseBlock(mutable parser)
   const savedIndex = parser.index
   skipNewlines(mutable parser)
-  if (isOk(parser) && accept(mutable parser, "else")) {
-    if (isAt(parser, "if")) {
+  if (isOk(parser) && accept(mutable parser, SYMBOL_KEYWORD_ELSE)) {
+    if (isAt(parser, SYMBOL_KEYWORD_IF)) {
       const rest = parseIf(mutable parser)
       return Stmt.IfStmt(pos, condition, thenBlock, Some(rest))
     }
@@ -2195,16 +2308,18 @@ function parseExprBody(mutable parser: Parser): Expr {
   const start = getPos(currentToken(parser))
   const condition = parseBinary(mutable parser, 0)
   // A ternary is looser than `||` and right-associative. It becomes a block expression holding one if statement whose branches each return one value, so only the chosen branch runs.
-  if (!isAt(parser, "?")) {
+  if (!isAt(parser, SYMBOL_QUESTION)) {
     return condition
   }
   const pos = getPos(advance(mutable parser))
   const thenValue = parseExpr(mutable parser)
-  if (!isAt(parser, ":")) {
+  // Each branch is returned on its own once a returned ternary becomes an if statement.
+  parser.facts.valueEnds[getExprId(thenValue)] = getEndPos(parser)
+  if (!isAt(parser, SYMBOL_COLON)) {
     // A `:` on the next line is a ternary that spans lines.
     const savedIndex = parser.index
     skipNewlines(mutable parser)
-    const spans = isAt(parser, ":")
+    const spans = isAt(parser, SYMBOL_COLON)
     parser.index = savedIndex
     if (spans) {
       failHere(
@@ -2223,6 +2338,7 @@ function parseExprBody(mutable parser: Parser): Expr {
   }
   advance(mutable parser)
   const elseValue = parseExpr(mutable parser)
+  parser.facts.valueEnds[getExprId(elseValue)] = getEndPos(parser)
   const ifStatement = Stmt.IfStmt(
     pos,
     condition,
@@ -2284,7 +2400,7 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
   let left = parseBinary(mutable parser, level + 1)
   while (isOk(parser)) {
     const token = currentToken(parser)
-    if (level == IS_LEVEL && isAt(parser, "is")) {
+    if (level == IS_LEVEL && isAt(parser, SYMBOL_KEYWORD_IS)) {
       advance(mutable parser)
       const pattern = parsePattern(mutable parser)
       left = Expr.IsExpr(newId(mutable parser), getPos(token), left, pattern)
@@ -2296,11 +2412,11 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
     }
     let matched = false
     for (const operator of Arrays.values(BINARY_LEVELS[level])) {
-      if (token.text == operator) {
+      if (token.symbol == operator) {
         matched = true
       }
     }
-    if (token.text == "===" || token.text == "!==") {
+    if (token.symbol == SYMBOL_TRIPLE_EQUAL || token.symbol == SYMBOL_NOT_DOUBLE_EQUAL) {
       const replacement = Str.slice(token.text, 0, 2)
       failAtFix(
         mutable parser,
@@ -2423,7 +2539,7 @@ function parseUnary(mutable parser: Parser): Expr {
     )
     return Expr.IntLit(newId(mutable parser), getPos(token), "0")
   }
-  if (isAt(parser, "-") || isAt(parser, "!") || isAt(parser, "~")) {
+  if (isAt(parser, SYMBOL_MINUS) || isAt(parser, SYMBOL_BANG) || isAt(parser, SYMBOL_TILDE)) {
     advance(mutable parser)
     const operand = parseUnary(mutable parser)
     const unary = Expr.UnaryExpr(newId(mutable parser), getPos(token), token.text, operand)
@@ -2438,34 +2554,34 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
   let expression = first
   while (isOk(parser)) {
     const token = currentToken(parser)
-    if (isAt(parser, ".")) {
+    if (isAt(parser, SYMBOL_DOT)) {
       advance(mutable parser)
       const name = parseMemberName(mutable parser)
       expression = Expr.FieldExpr(newId(mutable parser), getPos(name), expression, name.text)
       noteExpr(mutable parser, startIndex, expression)
-    } else if (isAt(parser, "<") && isCallTypeArgsAhead(parser, expression)) {
+    } else if (isAt(parser, SYMBOL_LESS) && isCallTypeArgsAhead(parser, expression)) {
       // `f<int>(x)`: type arguments of a call.
       const typeArguments = parseLiteralTypeArgs(mutable parser)
-      const openParen = expect(mutable parser, "(")
+      const openParen = expect(mutable parser, SYMBOL_LEFT_PAREN)
       const arguments = parseCallArguments(mutable parser)
       const callId = newId(mutable parser)
       parser.facts.callEnds[callId] = getCallEnd(parser)
       expression = Expr.CallExpr(callId, getPos(openParen), expression, typeArguments, arguments)
       noteExpr(mutable parser, startIndex, expression)
-    } else if (isAt(parser, "(")) {
+    } else if (isAt(parser, SYMBOL_LEFT_PAREN)) {
       advance(mutable parser)
       const arguments = parseCallArguments(mutable parser)
       const callId = newId(mutable parser)
       parser.facts.callEnds[callId] = getCallEnd(parser)
       expression = Expr.CallExpr(callId, getPos(token), expression, [], arguments)
       noteExpr(mutable parser, startIndex, expression)
-    } else if (isAt(parser, "[")) {
+    } else if (isAt(parser, SYMBOL_LEFT_BRACKET)) {
       advance(mutable parser)
       const index = parseExpr(mutable parser)
-      expect(mutable parser, "]")
+      expect(mutable parser, SYMBOL_RIGHT_BRACKET)
       expression = Expr.IndexExpr(newId(mutable parser), getPos(token), expression, index)
       noteExpr(mutable parser, startIndex, expression)
-    } else if (isAt(parser, "<") || isAt(parser, "{")) {
+    } else if (isAt(parser, SYMBOL_LESS) || isAt(parser, SYMBOL_LEFT_BRACE)) {
       // `Name { field: value }` is a struct literal, and
       // `Name<A, B> { ... }` is one with type arguments.
       if (expression is Expr.Ident(_, identPos, identName)) {
@@ -2473,7 +2589,7 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
           return expression
         }
         let typeArguments: Array<TypeExpr> = []
-        if (isAt(parser, "<")) {
+        if (isAt(parser, SYMBOL_LESS)) {
           if (!isLiteralTypeArgsAhead(parser)) {
             return expression
           }
@@ -2497,7 +2613,7 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
 
 function parseCallArguments(mutable parser: Parser): Array<Arg> {
   let arguments: Array<Arg> = []
-  while (isOk(parser) && !isAt(parser, ")")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const start = getPos(currentToken(parser))
     // A name followed by `:` starts a named argument; no expression does.
     let name: Option<string> = None()
@@ -2509,7 +2625,7 @@ function parseCallArguments(mutable parser: Parser): Array<Arg> {
       name = Some(advance(mutable parser).text)
       advance(mutable parser)
     }
-    const isMutable = accept(mutable parser, "mutable")
+    const isMutable = accept(mutable parser, SYMBOL_KEYWORD_MUTABLE)
     const value = parseExpr(mutable parser)
     Arrays.push(mutable arguments, Arg {
       pos: start,
@@ -2517,11 +2633,11 @@ function parseCallArguments(mutable parser: Parser): Array<Arg> {
       isMutable: isMutable,
       value: value,
     })
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   return arguments
 }
 
@@ -2610,7 +2726,7 @@ function isPrimitiveTypeName(text: string): bool {
 
 function parseMemberName(mutable parser: Parser): Token {
   // `from` and `of` are keywords, but `UserId.from(x)` and `Hash.of(x)` need them as member names.
-  if (isAt(parser, "from") || isAt(parser, "of")) {
+  if (isAt(parser, SYMBOL_KEYWORD_FROM) || isAt(parser, SYMBOL_KEYWORD_OF)) {
     return advance(mutable parser)
   }
   return expectIdent(mutable parser)
@@ -2653,16 +2769,16 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
 }
 
 function parseLiteralTypeArgs(mutable parser: Parser): Array<TypeExpr> {
-  expect(mutable parser, "<")
+  expect(mutable parser, SYMBOL_LESS)
   let arguments: Array<TypeExpr> = []
   while (isOk(parser)) {
     // A trailing `>>` is split by parseType, as in a type.
     Arrays.push(mutable arguments, parseType(mutable parser))
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
   }
-  expect(mutable parser, ">")
+  expect(mutable parser, SYMBOL_GREATER)
   return arguments
 }
 
@@ -2675,16 +2791,16 @@ function startsUpper(text: string): bool {
 }
 
 function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<TypeExpr>): Expr {
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
   let keys: Array<Expr> = []
   let values: Array<Expr> = []
-  while (isOk(parser) && !isAt(parser, "}")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
     let key = createDummyExpr()
     // A key that is not a literal is written in brackets.
-    if (accept(mutable parser, "[")) {
+    if (accept(mutable parser, SYMBOL_LEFT_BRACKET)) {
       key = parseExpr(mutable parser)
-      expect(mutable parser, "]")
+      expect(mutable parser, SYMBOL_RIGHT_BRACKET)
     } else {
       key = parseExpr(mutable parser)
       if (isOk(parser) && !isLiteralKey(key)) {
@@ -2697,17 +2813,17 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<Type
         break
       }
     }
-    expect(mutable parser, ":")
+    expect(mutable parser, SYMBOL_COLON)
     Arrays.push(mutable keys, key)
     Arrays.push(mutable values, parseExpr(mutable parser))
     skipNewlines(mutable parser)
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
     skipNewlines(mutable parser)
   }
   skipNewlines(mutable parser)
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return Expr.MapLit(newId(mutable parser), pos, typeArguments, keys, values)
 }
 
@@ -2791,20 +2907,20 @@ function createReturnBlock(value: Expr): Block {
 }
 
 function parseIfExpr(mutable parser: Parser): Expr {
-  const pos = getPos(expect(mutable parser, "if"))
-  expect(mutable parser, "(")
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_IF))
+  expect(mutable parser, SYMBOL_LEFT_PAREN)
   const condition = parseExpr(mutable parser)
-  expect(mutable parser, ")")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
   const thenBranch = parseBlockExpr(mutable parser)
   // The else branch is required; `else if` chains are allowed.
   const savedIndex = parser.index
   skipNewlines(mutable parser)
-  if (isOk(parser) && !accept(mutable parser, "else")) {
+  if (isOk(parser) && !accept(mutable parser, SYMBOL_KEYWORD_ELSE)) {
     parser.index = savedIndex
-    expect(mutable parser, "else")
+    expect(mutable parser, SYMBOL_KEYWORD_ELSE)
   }
   let elseBranch = createDummyExpr()
-  if (isAt(parser, "if")) {
+  if (isAt(parser, SYMBOL_KEYWORD_IF)) {
     elseBranch = parseIfExpr(mutable parser)
   } else {
     elseBranch = parseBlockExpr(mutable parser)
@@ -2830,12 +2946,12 @@ function parseStructLit(
   pos: Pos,
 ): Expr {
   // Without a type name, pos is the `{`; with one, it is the name's.
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
   let fields: Array<FieldInit> = []
   let spread: Option<Expr> = None
-  while (isOk(parser) && !isAt(parser, "}")) {
-    if (isAt(parser, "...")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
+    if (isAt(parser, SYMBOL_ELLIPSIS)) {
       if (spread is Some(_) || Arrays.length(fields) > 0) {
         failHere(
           mutable parser,
@@ -2847,7 +2963,7 @@ function parseStructLit(
       advance(mutable parser)
       spread = Some(parseExpr(mutable parser))
       skipNewlines(mutable parser)
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
       skipNewlines(mutable parser)
@@ -2855,7 +2971,7 @@ function parseStructLit(
     }
     const fieldStart = parser.index
     const name = expectIdent(mutable parser)
-    if (isOk(parser) && !isAt(parser, ":")) {
+    if (isOk(parser) && !isAt(parser, SYMBOL_COLON)) {
       failAt(
         mutable parser,
         getPos(name),
@@ -2864,20 +2980,20 @@ function parseStructLit(
       )
       break
     }
-    expect(mutable parser, ":")
+    expect(mutable parser, SYMBOL_COLON)
     const value = parseExpr(mutable parser)
     Arrays.push(mutable fields, FieldInit { pos: getPos(name), name: name.text, value: value })
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("f", getPos(name)), fieldStart)
     }
     skipNewlines(mutable parser)
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
     skipNewlines(mutable parser)
   }
   skipNewlines(mutable parser)
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return Expr.StructLit(newId(mutable parser), pos, typeName, typeArguments, fields, spread)
 }
 
@@ -2963,7 +3079,7 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
       }
       advance(mutable parser)
       const inner = parseExpr(mutable parser)
-      expect(mutable parser, ")")
+      expect(mutable parser, SYMBOL_RIGHT_PAREN)
       if (parser.collector.enabled && isOk(parser)) {
         parser.collector.parenthesized[getExprId(inner)] = true
       }
@@ -2972,13 +3088,13 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     if (token.text == "[" || token.text == "#[") {
       advance(mutable parser)
       let elements: Array<Expr> = []
-      while (isOk(parser) && !isAt(parser, "]")) {
+      while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACKET)) {
         Arrays.push(mutable elements, parseExpr(mutable parser))
-        if (!accept(mutable parser, ",")) {
+        if (!accept(mutable parser, SYMBOL_COMMA)) {
           break
         }
       }
-      expect(mutable parser, "]")
+      expect(mutable parser, SYMBOL_RIGHT_BRACKET)
       return Expr.ArrayLit(newId(mutable parser), pos, elements, token.text == "#[")
     }
     if (token.text == "{") {
@@ -2988,7 +3104,7 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
       return parseBlockExpr(mutable parser)
     }
   }
-  if (isAt(parser, "?")) {
+  if (isAt(parser, SYMBOL_QUESTION)) {
     failAt(
       mutable parser,
       pos,
@@ -3186,25 +3302,25 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
 }
 
 function parseMatch(mutable parser: Parser): Expr {
-  const pos = getPos(expect(mutable parser, "match"))
-  expect(mutable parser, "(")
+  const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_MATCH))
+  expect(mutable parser, SYMBOL_LEFT_PAREN)
   const subject = parseExpr(mutable parser)
-  expect(mutable parser, ")")
-  expect(mutable parser, "{")
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
   let arms: Array<MatchArm> = []
-  while (isOk(parser) && !isAt(parser, "}")) {
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
     const armPos = getPos(currentToken(parser))
     const armStart = parser.index
     const pattern = parsePattern(mutable parser)
     let guard: Option<Expr> = None
-    if (accept(mutable parser, "if")) {
-      expect(mutable parser, "(")
+    if (accept(mutable parser, SYMBOL_KEYWORD_IF)) {
+      expect(mutable parser, SYMBOL_LEFT_PAREN)
       guard = Some(parseExpr(mutable parser))
-      expect(mutable parser, ")")
+      expect(mutable parser, SYMBOL_RIGHT_PAREN)
     }
-    expect(mutable parser, "=>")
-    if (isAt(parser, "{")) {
+    expect(mutable parser, SYMBOL_ARROW)
+    if (isAt(parser, SYMBOL_LEFT_BRACE)) {
       const block = parseBlock(mutable parser)
       Arrays.push(mutable arms, MatchArm {
         pos: armPos,
@@ -3229,10 +3345,10 @@ function parseMatch(mutable parser: Parser): Expr {
         noteKey(mutable parser, getPosKey("a", armPos), armStart)
       }
     }
-    accept(mutable parser, ",")
+    accept(mutable parser, SYMBOL_COMMA)
     skipNewlines(mutable parser)
   }
-  expect(mutable parser, "}")
+  expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return Expr.MatchExpr(newId(mutable parser), pos, subject, arms)
 }
 
@@ -3281,14 +3397,14 @@ function parseSinglePattern(mutable parser: Parser): Pattern {
 function parsePatternBody(mutable parser: Parser): Pattern {
   const token = currentToken(parser)
   const pos = getPos(token)
-  if (isAt(parser, "{")) {
+  if (isAt(parser, SYMBOL_LEFT_BRACE)) {
     advance(mutable parser)
     skipNewlines(mutable parser)
     let fields: Array<FieldPattern> = []
-    while (isOk(parser) && !isAt(parser, "}")) {
+    while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
       const fieldStart = parser.index
       const name = expectIdent(mutable parser)
-      if (accept(mutable parser, ":")) {
+      if (accept(mutable parser, SYMBOL_COLON)) {
         const subpattern = parsePattern(mutable parser)
         Arrays.push(mutable fields, FieldPattern {
           pos: getPos(name),
@@ -3309,21 +3425,21 @@ function parsePatternBody(mutable parser: Parser): Pattern {
         noteKey(mutable parser, getPosKey("f", getPos(name)), fieldStart)
       }
       skipNewlines(mutable parser)
-      if (!accept(mutable parser, ",")) {
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
       skipNewlines(mutable parser)
     }
     skipNewlines(mutable parser)
-    expect(mutable parser, "}")
+    expect(mutable parser, SYMBOL_RIGHT_BRACE)
     return Pattern.PatStruct(newId(mutable parser), pos, fields)
   }
-  if (isAt(parser, "#[")) {
+  if (isAt(parser, SYMBOL_HASH_BRACKET)) {
     advance(mutable parser)
-    const arguments = parsePatternList(mutable parser, "]")
+    const arguments = parsePatternList(mutable parser, SYMBOL_RIGHT_BRACKET)
     return Pattern.PatTuple(newId(mutable parser), pos, arguments)
   }
-  if (isAt(parser, "-")) {
+  if (isAt(parser, SYMBOL_MINUS)) {
     advance(mutable parser)
     const number = currentToken(parser)
     if (number.kind != TokenKind.TokInt && number.kind != TokenKind.TokFloat) {
@@ -3344,8 +3460,8 @@ function parsePatternBody(mutable parser: Parser): Pattern {
       token.kind == TokenKind.TokFloat ||
       token.kind == TokenKind.TokString ||
       token.kind == TokenKind.TokChar ||
-      isAt(parser, "true") ||
-      isAt(parser, "false")
+      isAt(parser, SYMBOL_KEYWORD_TRUE) ||
+      isAt(parser, SYMBOL_KEYWORD_FALSE)
   ) {
     const literal = parsePrimary(mutable parser)
     return Pattern.PatLit(newId(mutable parser), pos, literal)
@@ -3361,7 +3477,7 @@ function parsePatternBody(mutable parser: Parser): Pattern {
   let enumName = ""
   let name = first.text
   // Enum.Name, or Alias.Enum.Name through a namespace import.
-  while (isOk(parser) && accept(mutable parser, ".")) {
+  while (isOk(parser) && accept(mutable parser, SYMBOL_DOT)) {
     isConstructor = true
     if (enumName != "") {
       enumName = `${enumName}.`
@@ -3369,8 +3485,8 @@ function parsePatternBody(mutable parser: Parser): Pattern {
     enumName = `${enumName}${name}`
     name = expectIdent(mutable parser).text
   }
-  if (accept(mutable parser, "(")) {
-    const arguments = parsePatternList(mutable parser, ")")
+  if (accept(mutable parser, SYMBOL_LEFT_PAREN)) {
+    const arguments = parsePatternList(mutable parser, SYMBOL_RIGHT_PAREN)
     return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, arguments, false)
   }
   if (isConstructor) {
@@ -3379,13 +3495,13 @@ function parsePatternBody(mutable parser: Parser): Pattern {
   return Pattern.PatName(newId(mutable parser), pos, name)
 }
 
-function parsePatternList(mutable parser: Parser, close: string): Array<Pattern> {
+function parsePatternList(mutable parser: Parser, close: int): Array<Pattern> {
   let list: Array<Pattern> = []
   skipNewlines(mutable parser)
   while (isOk(parser) && !isAt(parser, close)) {
     Arrays.push(mutable list, parsePattern(mutable parser))
     skipNewlines(mutable parser)
-    if (!accept(mutable parser, ",")) {
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
     skipNewlines(mutable parser)

@@ -35,7 +35,16 @@ import {
   MatchArm,
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
-import { Fix, createFix, createEdit, moveColumn, buildTemplateEscape } from "narrac/fixes"
+import {
+  Fix,
+  Edit,
+  createFix,
+  createEdit,
+  insertAt,
+  moveColumn,
+  buildTemplateEscape,
+} from "narrac/fixes"
+import { getPosKey } from "narrac/trivia"
 import { Type, Field, typeKey, isInteger, isSizedInteger, isUnsignedInteger } from "narrac/types"
 import {
   isConditional,
@@ -75,6 +84,8 @@ import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
+import { buildConstantHint } from "narrac/stdcopy"
+import { canShareType } from "narrac/sharedresults"
 import {
   useLocal,
   markArgument,
@@ -388,7 +399,7 @@ function bindCallResult(mutable checker: Checker, nodeId: int, found: Type): Typ
 }
 
 export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses alloc {
-  // Reading it into a copy (`const copy = p`) is allowed.
+  // Reading it into a copy (`const saved = p`) is allowed.
   if (value is Expr.Ident(_, pos, name)) {
     const index = findLocal(checker, name)
     if (index >= 0) {
@@ -398,14 +409,14 @@ export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses
           mutable checker,
           pos,
           "E0915",
-          `mutable parameter ${quoteGo(name)} cannot be returned or stored; copy it first with \`const copy = ${name}\``,
+          `mutable parameter ${quoteGo(name)} cannot be returned or stored; copy it first with \`copy(${name})\``,
         )
       } else if (local.binding == BindingKind.Reference) {
         reportError(
           mutable checker,
           pos,
           "E0915",
-          `loop element ${quoteGo(name)} is changed in place, so it cannot be returned or stored; copy it first with \`const copy = ${name}\``,
+          `loop element ${quoteGo(name)} is changed in place, so it cannot be returned or stored; copy it first with \`copy(${name})\``,
         )
       }
     }
@@ -435,9 +446,15 @@ export function expectType(
         }
       }
     }
-    if (expected is Type.TFunc(wantParameters, wantResult, _, wantBinder)) {
-      if (got is Type.TFunc(gotParameters, gotResult, _, _)) {
+    if (expected is Type.TFunc(wantParameters, wantResult, _, wantBinder, wantShared)) {
+      if (got is Type.TFunc(gotParameters, gotResult, _, _, gotShared)) {
         if (wantParameters == gotParameters && wantResult == gotResult) {
+          // A fresh result fits a slot with `from`; a shared one needs the same `from`,
+          // unless the result holds no tracked value.
+          if (gotShared >= 0 && gotShared != wantShared && canShareType(checker, gotResult)) {
+            reportSharedSlot(mutable checker, pos, expected, gotShared)
+            return
+          }
           recordFunctionStore(mutable checker, pos, expected, wantBinder, got)
           return
         }
@@ -454,6 +471,61 @@ export function expectType(
       reportError(mutable checker, pos, "E0119", message)
     }
   }
+}
+
+function reportSharedSlot(
+  mutable checker: Checker,
+  pos: Pos,
+  expected: Type,
+  shared: int,
+) uses alloc {
+  const message = `this function's result shares its parameter ${Int.toString(shared + 1)}, but the expected type ${typeString(checker, expected)} has no matching from; add \`from\` naming that parameter to the expected type`
+  const fixes = buildSharedSlotFix(checker, expected, shared)
+  reportErrorFix(mutable checker, pos, "E0977", fixes, message)
+}
+
+function buildSharedSlotFix(checker: Checker, expected: Type, shared: int): Array<Fix> uses alloc {
+  // The fix edits the expected type when this module writes it once.
+  let found: Array<TypeExpr> = []
+  if (checker.writtenFunctionTypes[typeKey(expected)] is Some(written)) {
+    for (const site of Arrays.values(written)) {
+      if (site.scope == checker.current) {
+        Arrays.push(mutable found, site.type)
+      }
+    }
+  }
+  if (Arrays.length(found) != 1 || shared >= Arrays.length(found[0].arguments)) {
+    return []
+  }
+  const type = found[0]
+  let end = Pos { line: 0, column: 0 }
+  if (type.result is Some(boxed)) {
+    const key = getPosKey("r", boxed.value.pos)
+    if (checker.scopes[checker.current].facts.resultEnds[key] is Some(resultEnd)) {
+      end = resultEnd
+    } else {
+      return []
+    }
+  } else {
+    return []
+  }
+  // An unnamed parameter is named `source`, unless the type already uses that name.
+  let name = ""
+  if (shared < Arrays.length(type.parameterNames)) {
+    name = type.parameterNames[shared]
+  }
+  let edits: Array<Edit> = []
+  if (name == "") {
+    for (const written of Arrays.values(type.parameterNames)) {
+      if (written == "source") {
+        return []
+      }
+    }
+    name = "source"
+    Arrays.push(mutable edits, insertAt(type.arguments[shared].pos, `${name}: `))
+  }
+  Arrays.push(mutable edits, insertAt(end, ` from ${name}`))
+  return [createFix(`add from ${name} to the expected type`, edits)]
 }
 
 function sameGeneratorShape(want: Type, got: Type): bool {
@@ -1656,7 +1728,7 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
       containsOpen(checker, element, parameters) || containsOpen(checker, input, parameters)
     Type.TMap(key, value) =>
       containsOpen(checker, key, parameters) || containsOpen(checker, value, parameters)
-    Type.TFunc(functionParameters, result, _, _) =>
+    Type.TFunc(functionParameters, result, _, _, _) =>
       anyOpen(checker, functionParameters, parameters) || containsOpen(checker, result, parameters)
     Type.TStruct(index) => anyOpen(checker, checker.structs[index].arguments, parameters)
     Type.TEnum(index) => anyOpen(checker, checker.enums[index].arguments, parameters)
@@ -2444,14 +2516,14 @@ export function checkContentsChange(
         mutable checker,
         pos,
         "E0227",
-        `parameter ${name} is read-only; declare it as \`mutable ${plain}\` to change the caller's value, or copy it first with \`const copy = ${plain}\``,
+        `parameter ${name} is read-only; declare it as \`mutable ${plain}\` to change the caller's value, or copy it first with \`copy(${plain})\``,
       )
     }
     return
   }
 
   // A copy: the hint names the value it was copied from.
-  const copyHint = `copy it first with \`const copy = ${plain}\``
+  const copyHint = `copy it first with \`copy(${plain})\``
   let message = ""
   if (local.binding == BindingKind.Loop && local.loopSource != "") {
     const source = local.loopSource
@@ -2527,36 +2599,43 @@ export function checkConstWrite(
   // Reads the syntax only, so it can run before the expression is checked.
   const scope = checker.current
   let current = expression
+  // A write to a part of the constant can go to a copy; a whole reassign needs a local.
+  let whole = true
   while (true) {
     match (current) {
       Expr.Ident(_, _, name) => {
         if (findLocal(checker, name) >= 0 || checker.scopes[scope].consts[name] is None) {
           return false
         }
+        const hint = buildConstantHint(checker, scope, name, name, whole)
         reportError(
           mutable checker,
           pos,
           "E0290",
-          `constant ${quoteGo(name)} cannot be changed; copy it into a local first, as in \`const copy = ${name}\``,
+          `constant ${quoteGo(name)} cannot be changed; copy it into a local first${hint}`,
         )
         return true
       }
       Expr.FieldExpr(_, _, target, name) => {
         if (target is Expr.Ident(_, _, alias)) {
           if (findLocal(checker, alias) < 0 && moduleHasConst(checker, alias, name)) {
+            const moduleScope = findConstantScope(checker, alias)
+            const hint = buildConstantHint(checker, moduleScope, name, `${alias}.${name}`, whole)
             reportError(
               mutable checker,
               pos,
               "E0290",
-              `constant ${quoteGo(name)} cannot be changed; copy it into a local first, as in \`const copy = ${alias}.${name}\``,
+              `constant ${quoteGo(name)} cannot be changed; copy it into a local first${hint}`,
             )
             return true
           }
         }
         current = target
+        whole = false
       }
       Expr.IndexExpr(_, _, target, _) => {
         current = target
+        whole = false
       }
       _ => {
         return false
@@ -2564,6 +2643,13 @@ export function checkConstWrite(
     }
   }
   return false
+}
+
+function findConstantScope(checker: Checker, alias: string): int uses alloc {
+  if (checker.scopes[checker.current].modules[alias] is Some(path)) {
+    return sourceScope(checker, path)
+  }
+  return -1
 }
 
 function moduleHasConst(checker: Checker, alias: string, name: string): bool {
@@ -2629,7 +2715,7 @@ export function checkConstType<W: Walker>(
   if (want is Some(declared)) {
     expectType(mutable checker, getExpressionPos(info.declaration.value), want, found)
     found = declared
-  } else if (found is Type.TFunc(_, _, _, _)) {
+  } else if (found is Type.TFunc(_, _, _, _, _)) {
     // Without a written type the constant has the type of the function it
     // names, which lists no effects. Every use trusts that type, so the
     // function may do only what it lists.

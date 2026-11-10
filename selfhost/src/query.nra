@@ -39,6 +39,7 @@ import {
   usesSuffix,
   findBodySlot,
   errorText,
+  findSharedParameter,
 } from "narrac/check"
 import { Type } from "narrac/types"
 import * as Body from "narrac/body"
@@ -352,15 +353,27 @@ function writeFunctionType(
   declaration: FuncDecl,
   result: Type,
 ): string uses alloc {
-  // Each part from the checker, or as written when it lists effects.
+  // Each part from the checker, or as written when it lists effects. The
+  // parameter a `from` names keeps its name.
+  const shared = findSharedParameter(declaration)
   let parts: Array<string> = []
-  for (const parameter of Arrays.values(declaration.parameters)) {
-    Arrays.push(
-      mutable parts,
-      writeLocalType(checker, checker.paramTypes[parameter.id], parameter.type),
-    )
+  for (const index of Ranges.upTo(Arrays.length(declaration.parameters))) {
+    const parameter = declaration.parameters[index]
+    const written = writeLocalType(checker, checker.paramTypes[parameter.id], parameter.type)
+    if (index == shared) {
+      Arrays.push(mutable parts, `${parameter.name}: ${written}`)
+    } else {
+      Arrays.push(mutable parts, written)
+    }
   }
-  return `(${Str.join(parts, ", ")}) => ${writeLocalType(checker, result, declaration.result)}`
+  let resultText = writeLocalType(checker, result, declaration.result)
+  if (shared >= 0) {
+    const marker = ` from ${declaration.parameters[shared].name}`
+    if (!Str.endsWith(resultText, marker)) {
+      resultText = `${resultText}${marker}`
+    }
+  }
+  return `(${Str.join(parts, ", ")}) => ${resultText}`
 }
 
 function describeCallable(checker: Checker, effects: EffectState, ref: Ref): Option<#[
@@ -405,18 +418,19 @@ function describeCallable(checker: Checker, effects: EffectState, ref: Ref): Opt
   return Some(#[`${writeFunctionType(checker, declaration, result)}${usesSuffix(names)}`, []])
 }
 
-function hasEffects(type: TypeExpr): bool {
-  // The checker's function types do not keep effects, so look in the written type.
-  if (Arrays.length(type.effects) > 0) {
+function needsWrittenType(type: TypeExpr): bool {
+  // The checker's function types do not keep effects or parameter names, so look in the
+  // written type for effects and `from` markers.
+  if (Arrays.length(type.effects) > 0 || type.resultFrom != "") {
     return true
   }
   for (const argument of Arrays.values(type.arguments)) {
-    if (hasEffects(argument)) {
+    if (needsWrittenType(argument)) {
       return true
     }
   }
   if (type.result is Some(boxed)) {
-    return hasEffects(boxed.value)
+    return needsWrittenType(boxed.value)
   }
   return false
 }
@@ -429,7 +443,7 @@ function writeLocalType(
   // Function types keep their `uses` only as written, so use the annotation when it lists
   // effects.
   if (annotation is Some(written)) {
-    if (hasEffects(written)) {
+    if (needsWrittenType(written)) {
       return Signature.writeType(written)
     }
   }

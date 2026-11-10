@@ -20,7 +20,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, Expr, Pattern, FieldPattern } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Checker, Ref, getRef, getLocal, findBodySlot } from "narrac/check"
+import { Checker, Ref, getRef, getLocal, findBodySlot, bindName } from "narrac/check"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -90,7 +90,8 @@ export function bindPatternLocals(mutable checker: Checker, locals: Array<int>) 
   const depth = checker.scopeDepth - 1
   for (const index of Arrays.values(locals)) {
     const name = getLocal(checker, index).name
-    checker.localScopes[depth][name] = index
+    bindName(mutable checker, name, index)
+    checker.bodies[checker.body].locals[index].depth = depth
   }
 }
 
@@ -102,27 +103,32 @@ function narrowKey(local: int): string uses alloc {
 
 export function findNarrowed(checker: Checker, local: int): int uses alloc {
   const key = narrowKey(local)
-  for (let depth = checker.scopeDepth - 1; depth >= 0; depth--) {
-    if (checker.localScopes[depth][key] is Some(variantIndex)) {
-      return variantIndex
-    }
+  if (checker.localNames[key] is Some(variantIndex)) {
+    return variantIndex
   }
   return -1
 }
 
 export function setNarrowed(mutable checker: Checker, local: int, variantIndex: int) uses alloc {
-  const depth = checker.scopeDepth - 1
-  checker.localScopes[depth][narrowKey(local)] = variantIndex
+  bindName(mutable checker, narrowKey(local), variantIndex)
 }
 
 export function endNarrowing(mutable checker: Checker, local: int) uses alloc {
-  // A `let` or `mutable` local is narrowed only until it is assigned, passed as `mutable` to a call, or reached again by a loop that assigns it. A -1 in every scope hides the variant.
+  // A `let` or `mutable` local is narrowed only until it is assigned, passed as `mutable` to a call, or reached again by a loop that assigns it. A -1 hides the variant, also once the scopes that narrowed it close.
   if (local < 0 || !getLocal(checker, local).isMutable) {
     return
   }
   const key = narrowKey(local)
-  for (const depth of Ranges.upTo(checker.scopeDepth)) {
-    checker.localScopes[depth][key] = -1
+  if (checker.localNames[key] is Some(current)) {
+    if (current == -1) {
+      return
+    }
+    checker.localNames[key] = -1
+    for (const index of Ranges.upTo(checker.scopeUndoCount)) {
+      if (checker.scopeUndo[index].name == key) {
+        checker.scopeUndo[index].previous = -1
+      }
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 // Self tail calls become jumps to the function start (Go: emit_call.go
-// findTailCalls, tailJump, returnMatch). A function with such a call owns its
-// parameters; each tail call evaluates its new arguments into owned
+// findTailCalls, tailJump, returnMatch). A function with such a call owns the
+// parameters a jump replaces; each tail call evaluates its new arguments into owned
 // temporaries, releases everything the function holds, assigns the parameters
 // and jumps. The calls are found before the body is emitted and recorded by
 // node id in Emitter.tailCalls, so a call inside a closure never matches.
@@ -16,7 +16,7 @@ import {
   orderArguments,
   findParameterIndexes,
 } from "narrac/check"
-import { functionName, cType } from "narrac/cnames"
+import { cachedFunctionName, cachedCType } from "narrac/cnames"
 import {
   Emitter,
   EmitWalker,
@@ -90,7 +90,7 @@ function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): b
   // mutable parameter must be passed on as it is.
   if (expression is Expr.CallExpr(nodeId, _, _, _, written)) {
     if (callTarget(emitter, nodeId) is Some(target)) {
-      if (functionName(emitter.checker, target) == emitter.owner) {
+      if (cachedFunctionName(emitter.checker, emitter.typeNames, target) == emitter.owner) {
         const arguments = orderArguments(emitter.checker, nodeId, written)
         const parameters = functionDeclaration(emitter.checker, program).parameters
         const types = parameterTypes(emitter.checker, program)
@@ -98,7 +98,7 @@ function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): b
           return false
         }
         for (const index of Ranges.between(0, Arrays.length(parameters))) {
-          if (types[index] is Type.TFunc(_, _, _, _)) {
+          if (types[index] is Type.TFunc(_, _, _, _, _)) {
             return false
           }
           if (parameters[index].isMutable) {
@@ -118,11 +118,19 @@ function noteTailCall(
   emitter: Emitter,
   program: ProgramFunc,
   expression: Expr,
-  mutable found: Array<int>,
+  mutable found: Array<Expr>,
 ) uses alloc {
   if (isSelfCall(emitter, program, expression)) {
-    Arrays.push(mutable found, getExpressionId(expression))
+    Arrays.push(mutable found, expression)
   }
+}
+
+export function collectCallIds(calls: Array<Expr>): Array<int> uses alloc {
+  let ids: Array<int> = []
+  for (const call of Arrays.values(calls)) {
+    Arrays.push(mutable ids, getExpressionId(call))
+  }
+  return ids
 }
 
 export function findTailCalls(
@@ -130,11 +138,11 @@ export function findTailCalls(
   program: ProgramFunc,
   block: Block,
   isVoid: bool,
-): Array<int> uses alloc {
+): Array<Expr> uses alloc {
   // Tail positions are the value of a `return`, an arm of a returned `match`,
   // and the last statement of a void function, also at the end of an `if`
   // branch or a `match` arm that is in tail position.
-  let found: Array<int> = []
+  let found: Array<Expr> = []
   scanBlock(emitter, program, block, isVoid, mutable found)
   return found
 }
@@ -144,7 +152,7 @@ function scanBlock(
   program: ProgramFunc,
   block: Block,
   tail: bool,
-  mutable found: Array<int>,
+  mutable found: Array<Expr>,
 ) uses alloc {
   const last = Arrays.length(block.statements) - 1
   for (const index of Ranges.between(0, last + 1)) {
@@ -157,7 +165,7 @@ function scanStatement(
   program: ProgramFunc,
   statement: Stmt,
   tail: bool,
-  mutable found: Array<int>,
+  mutable found: Array<Expr>,
 ) uses alloc {
   if (statement is Stmt.BlockStmt(block)) {
     scanBlock(emitter, program, block, tail, mutable found)
@@ -234,14 +242,44 @@ export function matchHasTailCall(emitter: Emitter, arms: Array<MatchArm>): bool 
   return false
 }
 
-export function openTailLoop(mutable emitter: Emitter, program: ProgramFunc) uses alloc {
-  // The function owns its parameters, so a jump can replace them.
+function findPassedThrough(
+  emitter: Emitter,
+  program: ProgramFunc,
+  calls: Array<Expr>,
+): Array<bool> uses alloc {
+  // A parameter is passed through when every tail call hands it back as it is.
+  const declaration = functionDeclaration(emitter.checker, program)
+  let passed = Arrays.filled(true, Arrays.length(declaration.parameters))
+  for (const call of Arrays.values(calls)) {
+    if (call is Expr.CallExpr(nodeId, _, _, _, written)) {
+      const arguments = orderArguments(emitter.checker, nodeId, written)
+      for (const index of Ranges.between(0, Arrays.length(arguments))) {
+        if (!passesParameter(emitter, arguments[index].value, index)) {
+          passed[index] = false
+        }
+      }
+    }
+  }
+  return passed
+}
+
+export function openTailLoop(
+  mutable emitter: Emitter,
+  program: ProgramFunc,
+  calls: Array<Expr>,
+) uses alloc {
+  // The function owns the parameters a jump replaces. A counted parameter that
+  // every tail call passes through stays borrowed from the caller.
   const parameters = functionDeclaration(emitter.checker, program).parameters
+  const passed = findPassedThrough(emitter, program, calls)
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     if (!parameters[index].isMutable) {
       const local = readLocal(emitter, index)
+      if (passed[index] && needsRc(emitter, local.localType)) {
+        continue
+      }
       if (isPointerParameter(emitter, index)) {
-        const typeName = cType(emitter.checker, local.localType)
+        const typeName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
         writeLine(mutable emitter, `${typeName} ${localName(local)}_held;`)
       }
       const retainText = retainCode(emitter, local.localType, localRef(emitter, index))
@@ -252,6 +290,21 @@ export function openTailLoop(mutable emitter: Emitter, program: ProgramFunc) use
     }
   }
   writeLine(mutable emitter, "narra_tail:;")
+}
+
+function isBorrowedParameter(emitter: Emitter, index: int): bool {
+  // openTailLoop retains and registers every other counted parameter.
+  if (!needsRc(emitter, readLocal(emitter, index).localType)) {
+    return false
+  }
+  for (const scope of Arrays.values(emitter.scopes)) {
+    for (const owned of Arrays.values(scope.locals)) {
+      if (owned == index) {
+        return false
+      }
+    }
+  }
+  return true
 }
 
 export function withoutLastFrame(frames: Array<Array<TempVar>>): Array<Array<TempVar>> uses alloc {
@@ -282,7 +335,7 @@ export function emitTailJump<W: EmitWalker>(
     let values = Arrays.filled("", Arrays.length(arguments))
     for (const index of Ranges.between(0, Arrays.length(arguments))) {
       const parameter = parameterIndexes[index]
-      if (!parameters[parameter].isMutable) {
+      if (!parameters[parameter].isMutable && !isBorrowedParameter(emitter, parameter)) {
         const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
         let value = consume(mutable emitter, code.text, code.owned, types[parameter])
         if (!needsRc(emitter, types[parameter])) {
@@ -293,7 +346,7 @@ export function emitTailJump<W: EmitWalker>(
     }
     unwindAll(mutable emitter)
     for (const index of Ranges.between(0, Arrays.length(parameters))) {
-      if (!parameters[index].isMutable) {
+      if (!parameters[index].isMutable && !isBorrowedParameter(emitter, index)) {
         const parameterName = localName(readLocal(emitter, index))
         if (isPointerParameter(emitter, index)) {
           // Every new value is in a temporary by now, so no write here changes

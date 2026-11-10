@@ -3,10 +3,11 @@
 // temporaries of their expressions do so here, as in Go, before and after
 // the call into a feature module.
 import * as Int from "std/int"
-import { Pos, Stmt, Block, Expr, Pattern, LoopReference } from "narrac/ast"
+import { Pos, Stmt, Block, Expr, Pattern, LoopReference, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Ref, getExpressionId } from "narrac/check"
-import { cType } from "narrac/cnames"
+import { Ref, BindingKind, getExpressionId } from "narrac/check"
+import { cachedCType } from "narrac/cnames"
+import { isPanicCall } from "narrac/pathends"
 import {
   Emitter,
   EmitWalker,
@@ -472,6 +473,13 @@ function emitWhile<W: EmitWalker>(
   condition: Expr,
   body: Block,
 ) uses alloc {
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+  scanHoistExpression(emitter, mutable scan, condition)
+  scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  const firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
   beginStatement(mutable emitter)
@@ -479,11 +487,13 @@ function emitWhile<W: EmitWalker>(
   const holds = temp(mutable emitter, Type.TBool, code.text)
   endStatement(mutable emitter)
   writeLine(mutable emitter, `if (!${holds}) break;`)
+  emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   emitLoopBody(walker, mutable emitter, label, pos, body)
   const info = leaveLoop(mutable emitter)
   emitter.indent--
   writeLine(mutable emitter, "}")
   emitBreakLabel(mutable emitter, info)
+  restoreHoistedArrays(mutable emitter, outerHoisted)
 }
 
 function emitCFor<W: EmitWalker>(
@@ -501,6 +511,24 @@ function emitCFor<W: EmitWalker>(
   if (init is Some(declaration)) {
     emitStatement(walker, mutable emitter, declaration)
   }
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+  if (condition is Some(scannedCondition)) {
+    scanHoistExpression(emitter, mutable scan, scannedCondition)
+  }
+  if (step is Some(scannedStep)) {
+    scanHoistStatement(emitter, mutable scan, scannedStep)
+  }
+  scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  let firstFlag = ""
+  if (condition is None) {
+    // Without a condition the body always runs.
+    emitHoistedUniques(walker, mutable emitter, hoisted)
+  } else {
+    firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
+  }
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
   if (condition is Some(loopCondition)) {
@@ -509,6 +537,7 @@ function emitCFor<W: EmitWalker>(
     const holds = temp(mutable emitter, Type.TBool, code.text)
     endStatement(mutable emitter)
     writeLine(mutable emitter, `if (!${holds}) break;`)
+    emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   }
   enterLoop(mutable emitter, label, pos)
   markStepLoop(mutable emitter)
@@ -521,6 +550,7 @@ function emitCFor<W: EmitWalker>(
   emitter.indent--
   writeLine(mutable emitter, "}")
   emitBreakLabel(mutable emitter, info)
+  restoreHoistedArrays(mutable emitter, outerHoisted)
   popScope(mutable emitter)
 }
 
@@ -606,6 +636,12 @@ function emitRangeFor<W: EmitWalker>(
   const localIndex = declaredLocal(emitter, nodeId)
   const declaration = declareLocalVariable(mutable emitter, localIndex)
   const variable = localRef(emitter, localIndex)
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+  scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  emitGuardedUniques(walker, mutable emitter, hoisted, `${low} < ${high}`)
   writeLine(
     mutable emitter,
     `for (${declaration} = ${low}; ${variable} < ${high}; ${variable}++) {`,
@@ -616,6 +652,7 @@ function emitRangeFor<W: EmitWalker>(
   emitter.indent--
   writeLine(mutable emitter, "}")
   emitBreakLabel(mutable emitter, info)
+  restoreHoistedArrays(mutable emitter, outerHoisted)
 }
 
 function emitRangeValueFor<W: EmitWalker>(
@@ -632,6 +669,13 @@ function emitRangeValueFor<W: EmitWalker>(
   const localIndex = declaredLocal(emitter, nodeId)
   const declaration = declareLocalVariable(mutable emitter, localIndex)
   const variable = localRef(emitter, localIndex)
+  let scan = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+  scanHoistBlock(emitter, mutable scan, body)
+  scanUnconditionalWrites(emitter, mutable scan, body)
+  const outerHoisted = Arrays.length(emitter.hoistedArrays)
+  const hoisted = chooseHoistedArrays(mutable emitter, scan)
+  const runsAtLeastOnce = `${range}.step > 0 ? ${range}.low < ${range}.high : ${range}.low > ${range}.high`
+  emitGuardedUniques(walker, mutable emitter, hoisted, runsAtLeastOnce)
   writeLine(
     mutable emitter,
     `for (${declaration} = ${range}.low; ${range}.step > 0 ? ${variable} < ${range}.high : ${variable} > ${range}.high; narra_range_advance(&${variable}, ${range}.step, ${range}.high)) {`,
@@ -642,6 +686,7 @@ function emitRangeValueFor<W: EmitWalker>(
   emitter.indent--
   writeLine(mutable emitter, "}")
   emitBreakLabel(mutable emitter, info)
+  restoreHoistedArrays(mutable emitter, outerHoisted)
 }
 
 function emitReferenceFor<W: EmitWalker>(
@@ -686,7 +731,7 @@ function emitReferenceFor<W: EmitWalker>(
       declareLocal(mutable emitter, indexLocal, index)
     }
     const localIndex = declaredLocal(emitter, nodeId)
-    const elementType = `${cType(emitter.checker, element)}*`
+    const elementType = `${cachedCType(emitter.checker, emitter.typeNames, element)}*`
     const elementName = localName(readLocal(emitter, localIndex))
     const declaration = declareVariable(mutable emitter, elementType, elementName)
     writeLine(mutable emitter, `${declaration} = &${array}->items[${index}];`)
@@ -744,7 +789,11 @@ function emitArrayFor<W: EmitWalker>(
       // needs a compound literal.
       let tupleValue = `{.f_0 = ${index}, .f_1 = ${array}->items[${index}]}`
       if (emitter.inGenerator) {
-        const tupleName = cType(emitter.checker, readLocal(emitter, localIndex).localType)
+        const tupleName = cachedCType(
+          emitter.checker,
+          emitter.typeNames,
+          readLocal(emitter, localIndex).localType,
+        )
         tupleValue = `(${tupleName})${tupleValue}`
       }
       declareLocal(mutable emitter, localIndex, tupleValue)
@@ -763,4 +812,377 @@ function emitArrayFor<W: EmitWalker>(
     return
   }
   const _ = reportUnsupported(mutable emitter, "for loop", NODE)
+}
+
+// The index writes of a loop body to local arrays, found before the loop is
+// emitted. The array is made unique once ahead of the loop when nothing in the
+// loop can give it a second owner: it is only indexed or measured, and no
+// closure captures it.
+struct HoistScan {
+  places: Array<Expr>
+  disqualified: Array<int>
+  unconditional: Array<int>
+  exits: int
+}
+
+function findArrayLocal(emitter: Emitter, expression: Expr): int {
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Local(index)) {
+      const localType = readLocal(emitter, index).localType
+      if (localType is Type.TArray(_)) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+function containsLocal(locals: Array<int>, index: int): bool {
+  for (const candidate of Arrays.values(locals)) {
+    if (candidate == index) {
+      return true
+    }
+  }
+  return false
+}
+
+function chooseHoistedArrays(mutable emitter: Emitter, scan: HoistScan): Array<Expr> uses alloc {
+  let chosen: Array<Expr> = []
+  if (emitter.inGenerator) {
+    return chosen
+  }
+  for (const place of Arrays.values(scan.places)) {
+    const index = findArrayLocal(emitter, place)
+    if (!containsLocal(scan.unconditional, index) || !canHoistArray(emitter, scan, index)) {
+      continue
+    }
+    Arrays.push(mutable chosen, place)
+    Arrays.push(mutable emitter.hoistedArrays, index)
+  }
+  return chosen
+}
+
+function emitHoistedUniques<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+) uses alloc {
+  for (const place of Arrays.values(places)) {
+    // The array is made unique through the place of the local, as for a `mutable` argument.
+    const index = findArrayLocal(emitter, place)
+    const arrayType = readLocal(emitter, index).localType
+    const arrayStruct = containerName(emitter, arrayType)
+    const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, place)
+    const pointer = pointerTemp(mutable emitter, arrayType, location)
+    writeLine(mutable emitter, `*${pointer} = ${arrayStruct}_unique(*${pointer});`)
+  }
+}
+
+function emitGuardedUniques<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+  guard: string,
+) uses alloc {
+  if (Arrays.length(places) == 0) {
+    return
+  }
+  // The loop may run zero times, and then nothing writes the array.
+  writeLine(mutable emitter, `if (${guard}) {`)
+  emitter.indent++
+  emitHoistedUniques(walker, mutable emitter, places)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+}
+
+function declareFirstIterationFlag(
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+): string uses alloc {
+  if (Arrays.length(places) == 0) {
+    return ""
+  }
+  emitter.tempCount++
+  const flag = `first${Int.toString(emitter.tempCount)}`
+  writeLine(mutable emitter, `int ${flag} = 1;`)
+  return flag
+}
+
+function emitFirstIterationUniques<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  places: Array<Expr>,
+  flag: string,
+) uses alloc {
+  if (flag == "") {
+    return
+  }
+  // The uniqueness test waits for the first pass through the loop body.
+  writeLine(mutable emitter, `if (${flag}) {`)
+  emitter.indent++
+  writeLine(mutable emitter, `${flag} = 0;`)
+  emitHoistedUniques(walker, mutable emitter, places)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+}
+
+function restoreHoistedArrays(mutable emitter: Emitter, count: int) uses alloc {
+  if (Arrays.length(emitter.hoistedArrays) == count) {
+    return
+  }
+  let kept: Array<int> = []
+  for (let position = 0; position < count; position++) {
+    Arrays.push(mutable kept, emitter.hoistedArrays[position])
+  }
+  emitter.hoistedArrays = kept
+}
+
+function canHoistArray(emitter: Emitter, scan: HoistScan, index: int): bool {
+  if (containsLocal(scan.disqualified, index) || containsLocal(emitter.hoistedArrays, index)) {
+    return false
+  }
+  if (containsLocal(emitter.refCaptures, index)) {
+    return false
+  }
+  // A closure that captures the array could replace it behind the loop's back.
+  for (const closure of Arrays.values(emitter.checker.bodies[emitter.body].closures)) {
+    if (containsLocal(closure.captures, index)) {
+      return false
+    }
+  }
+  const local = readLocal(emitter, index)
+  if (local.binding == BindingKind.Reference) {
+    return false
+  }
+  if (local.param) {
+    return local.isMutable
+  }
+  // The local must be declared before the loop.
+  for (const scope of Arrays.values(emitter.scopes)) {
+    if (containsLocal(scope.locals, index)) {
+      return true
+    }
+  }
+  return false
+}
+
+function scanHoistBlock(emitter: Emitter, mutable scan: HoistScan, block: Block) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    scanHoistStatement(emitter, mutable scan, statement)
+  }
+}
+
+function scanHoistStatement(emitter: Emitter, mutable scan: HoistScan, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => {
+      scanHoistBlock(emitter, mutable scan, block)
+    }
+    Stmt.VarStmt(_, _, _, _, _, _, value) => {
+      scanHoistExpression(emitter, mutable scan, value)
+    }
+    Stmt.AssignStmt(_, target, value) => {
+      noteArrayWrite(emitter, mutable scan, target)
+      scanHoistExpression(emitter, mutable scan, target)
+      scanHoistExpression(emitter, mutable scan, value)
+    }
+    Stmt.CompoundAssignStmt(_, target, _, value) => {
+      noteArrayWrite(emitter, mutable scan, target)
+      scanHoistExpression(emitter, mutable scan, target)
+      scanHoistExpression(emitter, mutable scan, value)
+    }
+    Stmt.ExprStmt(_, expression) => {
+      scanHoistExpression(emitter, mutable scan, expression)
+    }
+    Stmt.ReturnStmt(_, value) => {
+      scan.exits++
+      if (value is Some(returned)) {
+        scanHoistExpression(emitter, mutable scan, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      scanHoistExpression(emitter, mutable scan, condition)
+      scanHoistBlock(emitter, mutable scan, then)
+      if (orElse is Some(otherwise)) {
+        scanHoistStatement(emitter, mutable scan, otherwise)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      scanHoistExpression(emitter, mutable scan, condition)
+      scanHoistBlock(emitter, mutable scan, body)
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        scanHoistStatement(emitter, mutable scan, declaration)
+      }
+      if (condition is Some(loopCondition)) {
+        scanHoistExpression(emitter, mutable scan, loopCondition)
+      }
+      if (step is Some(stepStatement)) {
+        scanHoistStatement(emitter, mutable scan, stepStatement)
+      }
+      scanHoistBlock(emitter, mutable scan, body)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+      scanHoistExpression(emitter, mutable scan, iterable)
+      scanHoistBlock(emitter, mutable scan, body)
+    }
+    Stmt.YieldStmt(_, value, _, _) => {
+      scanHoistExpression(emitter, mutable scan, value)
+    }
+    Stmt.BreakStmt(_, _) => {
+      scan.exits++
+    }
+    Stmt.ContinueStmt(_, _) => {
+      scan.exits++
+    }
+  }
+}
+
+function noteArrayWrite(emitter: Emitter, mutable scan: HoistScan, target: Expr) uses alloc {
+  // The written array is the local indexed at the root of the place.
+  let current = target
+  while (true) {
+    match (current) {
+      Expr.FieldExpr(_, _, inner, _) => {
+        current = inner
+      }
+      Expr.IndexExpr(_, _, inner, _) => {
+        if (findArrayLocal(emitter, inner) >= 0) {
+          Arrays.push(mutable scan.places, inner)
+          return
+        }
+        current = inner
+      }
+      _ => {
+        return
+      }
+    }
+  }
+}
+
+function scanHoistArms(
+  emitter: Emitter,
+  mutable scan: HoistScan,
+  arms: Array<MatchArm>,
+) uses alloc {
+  for (const arm of Arrays.values(arms)) {
+    if (arm.guard is Some(guard)) {
+      scanHoistExpression(emitter, mutable scan, guard)
+    }
+    if (arm.body is Some(armBody)) {
+      scanHoistExpression(emitter, mutable scan, armBody)
+    }
+    if (arm.block is Some(armBlock)) {
+      scanHoistBlock(emitter, mutable scan, armBlock)
+    }
+  }
+}
+
+function scanHoistExpression(
+  emitter: Emitter,
+  mutable scan: HoistScan,
+  expression: Expr,
+) uses alloc {
+  match (expression) {
+    Expr.Ident(_, _, _) => {
+      // Any use of the array other than indexing it or measuring it disqualifies it.
+      const index = findArrayLocal(emitter, expression)
+      if (index >= 0) {
+        Arrays.push(mutable scan.disqualified, index)
+      }
+    }
+    Expr.IndexExpr(_, _, target, index) => {
+      if (findArrayLocal(emitter, target) < 0) {
+        scanHoistExpression(emitter, mutable scan, target)
+      }
+      scanHoistExpression(emitter, mutable scan, index)
+    }
+    Expr.CallExpr(callId, _, callee, _, arguments) => {
+      if (isPanicCall(expression)) {
+        scan.exits++
+      }
+      scanHoistExpression(emitter, mutable scan, callee)
+      let measured = false
+      if (readNodeRef(emitter, callId) is Ref.Builtin(builtin)) {
+        measured = emitter.checker.registry.functions[builtin].name == "Array.length"
+      }
+      for (const argument of Arrays.values(arguments)) {
+        if (!measured || findArrayLocal(emitter, argument.value) < 0) {
+          scanHoistExpression(emitter, mutable scan, argument.value)
+        }
+      }
+    }
+    Expr.FieldExpr(_, _, target, _) => {
+      scanHoistExpression(emitter, mutable scan, target)
+    }
+    Expr.IsExpr(_, _, subject, _) => {
+      scanHoistExpression(emitter, mutable scan, subject)
+    }
+    Expr.TemplateLit(_, _, parts) => {
+      for (const part of Arrays.values(parts)) {
+        scanHoistExpression(emitter, mutable scan, part)
+      }
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      for (const key of Arrays.values(keys)) {
+        scanHoistExpression(emitter, mutable scan, key)
+      }
+      for (const value of Arrays.values(values)) {
+        scanHoistExpression(emitter, mutable scan, value)
+      }
+    }
+    Expr.UnaryExpr(_, _, _, operand) => {
+      scanHoistExpression(emitter, mutable scan, operand)
+    }
+    Expr.BinaryExpr(_, _, _, left, right) => {
+      scanHoistExpression(emitter, mutable scan, left)
+      scanHoistExpression(emitter, mutable scan, right)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        scanHoistExpression(emitter, mutable scan, field.value)
+      }
+      if (spread is Some(base)) {
+        scanHoistExpression(emitter, mutable scan, base)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => {
+      for (const element of Arrays.values(elements)) {
+        scanHoistExpression(emitter, mutable scan, element)
+      }
+    }
+    Expr.MatchExpr(_, _, subject, arms) => {
+      scanHoistExpression(emitter, mutable scan, subject)
+      scanHoistArms(emitter, mutable scan, arms)
+    }
+    Expr.BlockExpr(_, _, block) => {
+      scanHoistBlock(emitter, mutable scan, block)
+    }
+    // Closures are checked through their captures in canHoistArray.
+    _ => {}
+  }
+}
+
+function scanUnconditionalWrites(
+  emitter: Emitter,
+  mutable scan: HoistScan,
+  body: Block,
+) uses alloc {
+  // A write counts when no statement before it, or the statement itself, can leave the body.
+  for (const statement of Arrays.values(body.statements)) {
+    let probe = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+    scanHoistStatement(emitter, mutable probe, statement)
+    if (probe.exits > 0) {
+      return
+    }
+    let written = HoistScan { places: [], disqualified: [], unconditional: [], exits: 0 }
+    if (statement is Stmt.AssignStmt(_, target, _)) {
+      noteArrayWrite(emitter, mutable written, target)
+    } else if (statement is Stmt.CompoundAssignStmt(_, target, _, _)) {
+      noteArrayWrite(emitter, mutable written, target)
+    }
+    for (const place of Arrays.values(written.places)) {
+      Arrays.push(mutable scan.unconditional, findArrayLocal(emitter, place))
+    }
+  }
 }

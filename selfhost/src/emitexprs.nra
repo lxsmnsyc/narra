@@ -23,7 +23,7 @@ import {
   orderArguments,
   findParameterIndexes,
 } from "narrac/check"
-import { cType, typeId, functionName, constGetterName } from "narrac/cnames"
+import { cachedCType, cachedTypeId, cachedFunctionName, cachedDeclName } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -60,6 +60,7 @@ import * as Traits from "narrac/emittraits"
 import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
 import * as Options from "narrac/emitoptions"
+import { emitCopyCall } from "narrac/stdcopy"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -224,7 +225,7 @@ function parseIntegerText(text: string): int uses alloc {
 function typedIntegerCode(emitter: Emitter, nodeId: int, text: string): string uses alloc {
   const type = readNodeType(emitter, nodeId)
   if (isSizedInteger(type)) {
-    return `((${cType(emitter.checker, type)})${integerCode(text)})`
+    return `((${cachedCType(emitter.checker, emitter.typeNames, type)})${integerCode(text)})`
   }
   return integerCode(text)
 }
@@ -272,12 +273,12 @@ function emitTemplate<W: EmitWalker>(
 }
 
 function containerStruct(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
 function constructorValue(emitter: Emitter, enumIndex: int, variant: int): string uses alloc {
-  const enumName = cType(emitter.checker, Type.TEnum(enumIndex))
+  const enumName = cachedCType(emitter.checker, emitter.typeNames, Type.TEnum(enumIndex))
   return `((${enumName}){.tag = ${Int.toString(variant)}})`
 }
 
@@ -369,12 +370,12 @@ function emitUnary<W: EmitWalker>(
       return plain(temp(mutable emitter, Type.TInt, `narra_wrap_neg(${value})`))
     }
     if (isSizedInteger(operandType)) {
-      const cName = cType(emitter.checker, operandType)
+      const cName = cachedCType(emitter.checker, emitter.typeNames, operandType)
       // A negated literal is written whole, so -128 is a valid i8.
       if (operand is Expr.IntLit(_, _, literalText)) {
         return plain(`((${cName})(-${integerCode(literalText)}))`)
       }
-      const suffix = typeId(emitter.checker, operandType)
+      const suffix = cachedTypeId(emitter.checker, emitter.typeNames, operandType)
       return plain(temp(mutable emitter, operandType, `narra_wrap_neg_${suffix}(${value})`))
     }
     return plain(`(-${value})`)
@@ -385,7 +386,7 @@ function emitUnary<W: EmitWalker>(
   if (operator == "~") {
     const operandType = readNodeType(emitter, nodeId)
     if (isSizedInteger(operandType)) {
-      return plain(`((${cType(emitter.checker, operandType)})(~${value}))`)
+      return plain(`((${cachedCType(emitter.checker, emitter.typeNames, operandType)})(~${value}))`)
     }
     return plain(`(~${value})`)
   }
@@ -428,7 +429,7 @@ function isPrimitive(type: Type): bool {
       | Type.TArray(_)
       | Type.TBox(_)
       | Type.TMap(_, _)
-      | Type.TFunc(_, _, _, _) => false
+      | Type.TFunc(_, _, _, _, _) => false
     _ => true
   }
 }
@@ -495,7 +496,7 @@ export function emitArithmetic(
     // A sized integer has its own functions, named with the type.
     let suffix = ""
     if (operandType != Type.TInt) {
-      suffix = `_${typeId(emitter.checker, operandType)}`
+      suffix = `_${cachedTypeId(emitter.checker, emitter.typeNames, operandType)}`
     }
     const checked = checkedFunction(operator)
     if (checked != "") {
@@ -715,7 +716,7 @@ function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value:
     return
   }
   const valueType = readNodeType(emitter, nodeId)
-  if (valueType is Type.TFunc(_, _, _, _)) {
+  if (valueType is Type.TFunc(_, _, _, _, _)) {
     return
   }
   const code = EmitWalker.emitExpression(walker, mutable emitter, value)
@@ -821,7 +822,7 @@ function emitFunctionCall<W: EmitWalker>(
       Arrays.push(mutable texts, text)
     }
   }
-  const callCode = `${functionName(checker, program)}(${Str.join(texts, ", ")})`
+  const callCode = `${cachedFunctionName(checker, emitter.typeNames, program)}(${Str.join(texts, ", ")})`
   if (result == Type.TVoid) {
     return plain(callCode)
   }
@@ -901,6 +902,9 @@ function emitPreludeCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
+  if (name == "copy") {
+    return emitCopyCall(walker, mutable emitter, arguments)
+  }
   const position = where(emitter, pos)
   const value = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value).text
   if (name == "print") {
@@ -1024,7 +1028,7 @@ function emitStructLiteral<W: EmitWalker>(
         Arrays.push(mutable parts, `.f_${declared.name} = ${consumed}`)
       }
     }
-    const structName = cType(emitter.checker, structType)
+    const structName = cachedCType(emitter.checker, emitter.typeNames, structType)
     const built = ownedTemp(
       mutable emitter,
       structType,
@@ -1067,7 +1071,7 @@ function emitArrayLiteral<W: EmitWalker>(
 export function pointerTemp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   emitter.tempCount++
   const name = `t${Int.toString(emitter.tempCount)}`
-  const typeName = `${cType(emitter.checker, type)}*`
+  const typeName = `${cachedCType(emitter.checker, emitter.typeNames, type)}*`
   const declaration = declareVariable(mutable emitter, typeName, name)
   writeLine(mutable emitter, `${declaration} = ${code};`)
   return variableRef(emitter, name)
@@ -1136,6 +1140,11 @@ function indexPointer<W: EmitWalker>(
     const indexTemp = temp(mutable emitter, Type.TInt, indexCode.text)
     const arrayStruct = containerStruct(emitter, arrayType)
     const position = where(emitter, pos)
+    // An array made unique before the loop only needs its bounds checked.
+    if (isHoistedArray(emitter, target)) {
+      writeLine(mutable emitter, `narra_bounds(${indexTemp}, (*${base})->len, ${position});`)
+      return pointerTemp(mutable emitter, element, `&(*${base})->items[${indexTemp}]`)
+    }
     return pointerTemp(
       mutable emitter,
       element,
@@ -1143,6 +1152,19 @@ function indexPointer<W: EmitWalker>(
     )
   }
   return reportUnsupported(mutable emitter, "lvalue", NODE)
+}
+
+function isHoistedArray(emitter: Emitter, target: Expr): bool {
+  if (target is Expr.Ident(nodeId, _, _)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Local(index)) {
+      for (const hoisted of Arrays.values(emitter.hoistedArrays)) {
+        if (hoisted == index) {
+          return true
+        }
+      }
+    }
+  }
+  return false
 }
 
 export function declaredLocal(emitter: Emitter, nodeId: int): int {
@@ -1266,7 +1288,7 @@ export function constRef(mutable emitter: Emitter, constIndex: int): string uses
     return code.text
   }
   const info = checker.consts[constIndex]
-  const getter = constGetterName(info.module, info.name)
+  const getter = cachedDeclName(emitter.typeNames, "g", info.module, info.name)
   const constantType = constType(checker, constIndex)
   return temp(mutable emitter, constantType, `${getter}()`)
 }

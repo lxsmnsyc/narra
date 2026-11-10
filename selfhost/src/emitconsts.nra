@@ -5,14 +5,7 @@ import * as Str from "std/string"
 import { Expr, Stmt, Block, Pos } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, BodyRoot, findBody } from "narrac/check"
-import {
-  cType,
-  functionName,
-  functionSignature,
-  constName,
-  constGetterName,
-  declName,
-} from "narrac/cnames"
+import { cachedCType, cachedFunctionName, functionSignature, cachedDeclName } from "narrac/cnames"
 import {
   Emitter,
   Code,
@@ -87,9 +80,13 @@ export function emitConstPrototypes(mutable emitter: Emitter): string uses alloc
   let builder = Str.builder()
   for (const constIndex of Arrays.values(lazyConstants(emitter))) {
     const info = emitter.checker.consts[constIndex]
-    const typeName = cType(emitter.checker, Exprs.constType(emitter.checker, constIndex))
-    const variable = constName(info.module, info.name)
-    const getter = constGetterName(info.module, info.name)
+    const typeName = cachedCType(
+      emitter.checker,
+      emitter.typeNames,
+      Exprs.constType(emitter.checker, constIndex),
+    )
+    const variable = cachedDeclName(emitter.typeNames, "G", info.module, info.name)
+    const getter = cachedDeclName(emitter.typeNames, "g", info.module, info.name)
     Str.append(
       mutable builder,
       `static ${typeName} ${variable};\nstatic int ${variable}_ready;\nstatic ${typeName} ${getter}(void);\n`,
@@ -131,7 +128,7 @@ export function emitConstBodies(mutable emitter: Emitter): string uses alloc {
   emitter.indent++
   for (let position = Arrays.length(lazy) - 1; position >= 0; position--) {
     const info = emitter.checker.consts[lazy[position]]
-    const variable = constName(info.module, info.name)
+    const variable = cachedDeclName(emitter.typeNames, "G", info.module, info.name)
     const constantType = Exprs.constType(emitter.checker, lazy[position])
     const releaseText = releaseCode(emitter, constantType, variable)
     if (releaseText != "") {
@@ -151,14 +148,13 @@ function emitGetter(mutable emitter: Emitter, constIndex: int) uses alloc {
     const _ = reportUnsupported(mutable emitter, "constant body", NODE)
     return
   }
-  startFunction(mutable emitter, body, declName("f", info.module, "const"))
+  const startName = cachedDeclName(emitter.typeNames, "f", info.module, "const")
+  startFunction(mutable emitter, body, startName)
   const constantType = Exprs.constType(emitter.checker, constIndex)
-  const typeName = cType(emitter.checker, constantType)
-  const variable = constName(info.module, info.name)
-  writeLine(
-    mutable emitter,
-    `static ${typeName} ${constGetterName(info.module, info.name)}(void) {`,
-  )
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, constantType)
+  const variable = cachedDeclName(emitter.typeNames, "G", info.module, info.name)
+  const getter = cachedDeclName(emitter.typeNames, "g", info.module, info.name)
+  writeLine(mutable emitter, `static ${typeName} ${getter}(void) {`)
   emitter.indent++
   writeLine(mutable emitter, `if (!${variable}_ready) {`)
   emitter.indent++
@@ -222,10 +218,10 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   if (body < 0) {
     return `${reportUnsupported(mutable emitter, "function body", NODE)}\n`
   }
-  const owner = functionName(emitter.checker, program)
+  const owner = cachedFunctionName(emitter.checker, emitter.typeNames, program)
   startFunction(mutable emitter, body, owner)
   emitter.resultType = facts.result
-  const signature = functionSignature(emitter.checker, program)
+  const signature = functionSignature(emitter.checker, emitter.typeNames, program)
   if (emitter.checker.bodies[body].root is BodyRoot.RootFunc(generatorDeclaration)) {
     if (generatorDeclaration.generator) {
       if (generatorDeclaration.body is Some(generatorBody)) {
@@ -245,11 +241,12 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   emitter.indent++
   const walker = BodyWalker {}
   if (bodyBlock(emitter.checker, body) is Some(block)) {
-    // A function with a self tail call owns its parameters and has a jump target.
+    // A function with a self tail call owns the parameters a jump replaces and has a jump target.
     emitter.tailProgram = Some(program)
-    emitter.tailCalls = Tail.findTailCalls(emitter, program, block, facts.result == Type.TVoid)
+    const tailCalls = Tail.findTailCalls(emitter, program, block, facts.result == Type.TVoid)
+    emitter.tailCalls = Tail.collectCallIds(tailCalls)
     if (Arrays.length(emitter.tailCalls) > 0) {
-      Tail.openTailLoop(mutable emitter, program)
+      Tail.openTailLoop(mutable emitter, program, tailCalls)
     }
     EmitWalker.emitBlockInScope(walker, mutable emitter, block)
   }
@@ -262,7 +259,7 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
       mutable emitter,
       `narra_panic(${position}, "internal compiler error: function ended without returning a value");`,
     )
-    const resultName = cType(emitter.checker, facts.result)
+    const resultName = cachedCType(emitter.checker, emitter.typeNames, facts.result)
     writeLine(mutable emitter, `return (${resultName}){0};`)
   }
   emitter.indent--
@@ -281,7 +278,8 @@ export function emitTestBody(
   if (found < 0) {
     return `${reportUnsupported(mutable emitter, "test body", NODE)}\n`
   }
-  startFunction(mutable emitter, found, declName("f", module, "test"))
+  const testName = cachedDeclName(emitter.typeNames, "f", module, "test")
+  startFunction(mutable emitter, found, testName)
   writeLine(mutable emitter, `static void test_${Int.toString(number)}(void) {`)
   emitter.indent++
   if (emitter.checker.bodies[found].root is BodyRoot.RootBlock(block)) {

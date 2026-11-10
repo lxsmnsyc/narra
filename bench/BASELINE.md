@@ -2,6 +2,26 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-11, end of batch-5
+
+Run of `bench/run.sh -n 9` at commit cb6cef4b on `feat/batch-5`, same machine and toolchains as the batch-4 runs below. No agent was running. The machine had booted 10 minutes earlier: the load average was 1.99 (1 minute) at the start, with the 5 and 15 minute averages (14.5 and 13.4) still falling from startup indexing, and 2.50 at the end. The Go and Rust times are 2% to 5% lower than in the end-of-batch-4 run, so Narra changes of that size are noise.
+
+The start of batch-5 is the end-of-batch-4 run below: no compiler, runtime or seed change landed between afb1eac3 and the batch-5 base.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.112 | 0.124 | 0.112 | 39088169   |
+| sieve     | 0.132 | 0.140 | 0.129 | 1270607    |
+| matmul    | 0.106 | 0.202 | 0.118 | 3547800000 |
+| strings   | 0.217 | 0.290 | 0.353 | 100000     |
+| interp    | 0.184 | 0.241 | 0.168 | 972838     |
+| particles | 0.067 | 0.074 | 0.092 | 6996184    |
+| compiler  | 0.175 | -     | -     | peak memory 121 MB |
+
+`sieve` (0.265 s to 0.132 s) and `particles` (0.108 s to 0.067 s) come from array-write-cold-paths and loop-unique-hoist. The compiler row emits the batch-5 source, which differs from the batch-4 input; wave 18 (`roadmaps/selfhost/reviews/wave-18.md`) has the same-input instruction counts.
+
 ## 2026-11-10, end of batch-4
 
 Run of `bench/run.sh -n 9` at commit afb1eac3 on `feat/batch-4`, same machine and toolchains as the start-of-batch run below. No agent was running. The load average was 1.99 (1 minute) at the start and 3.57 at the end; the benchmark itself adds about 1.

@@ -338,8 +338,8 @@ export function run(args: Array<string>): int {
   print(Int.toString(Arrays.length(before)))
 
   const hero = Player { name: "Ana", hp: 100 }
-  const copy = hero
-  copy.hp = 50
+  const other = hero
+  other.hp = 50
   print(Int.toString(hero.hp))
   return 0
 }
@@ -352,7 +352,7 @@ export function run(args: Array<string>): int {
 
 A value has no identity apart from its contents, so there is no "same object" test. This is the one place where code that TypeScript accepts compiles in Narra with another meaning, and the compiler cannot warn about it: a change through one name never shows through a copy.
 
-A `for ... of` loop variable, a name bound by a pattern (`found is Some(player)`) and a destructured name hold copies too. Since TypeScript code that changes them expects the original to change, the compiler rejects a change to their fields or elements. For the loop over an array, write `for (mutable player of players)`: then `player.hp = 0` changes `players`, as in TypeScript, and the body cannot use `players` itself ([chapter 9](09-memory-and-mutable.md#heal-the-whole-party)). Elsewhere, write through the source, `players[index].hp = 0`, or copy the value first with `const copy = player`.
+A `for ... of` loop variable, a name bound by a pattern (`found is Some(player)`) and a destructured name hold copies too. Since TypeScript code that changes them expects the original to change, the compiler rejects a change to their fields or elements. For the loop over an array, write `for (mutable player of players)`: then `player.hp = 0` changes `players`, as in TypeScript, and the body cannot use `players` itself ([chapter 9](09-memory-and-mutable.md#heal-the-whole-party)). Elsewhere, write through the source, `players[index].hp = 0`, or copy the value first with `copy(player)`.
 
 ## Missing values
 
@@ -555,15 +555,15 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A call may write type arguments, as in `firstOr<int>([], 0)`, the same as in TypeScript. You rarely need them, because the compiler works them out from the arguments. Write them when no argument says the type, as with `[]`. Write all of them or none. The other way is to annotate the variable that holds the value ([chapter 3](03-functions-and-closures.md#one-function-for-many-types)):
+`firstOr` returns an element of `items`, so it says `from items`, and it returns a copy of `fallback`, because a result can share only the one parameter `from` names ([chapter 9](09-memory-and-mutable.md#return-part-of-a-parameter)). A call may write type arguments, as in `firstOr<int>([], 0)`, the same as in TypeScript. You rarely need them, because the compiler works them out from the arguments. Write them when no argument says the type, as with `[]`. Write all of them or none. The other way is to annotate the variable that holds the value ([chapter 3](03-functions-and-closures.md#one-function-for-many-types)):
 
 ```narra
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 
-function firstOr<T>(items: Array<T>, fallback: T): T {
+function firstOr<T>(items: Array<T>, fallback: T): T from items {
   if (Arrays.length(items) == 0) {
-    return fallback
+    return copy(fallback)
   }
   return items[0]
 }
@@ -993,7 +993,7 @@ Compared with a TypeScript object parameter, a `mutable` parameter:
 Assigning to a field of a plain parameter is an error:
 
 ```narra error
-// error: 8:3: parameter "player" is read-only; declare it as `mutable player` to change the caller's value, or copy it first with `const copy = player`
+// error: 8:3: parameter "player" is read-only; declare it as `mutable player` to change the caller's value, or copy it first with `copy(player)`
 struct Player {
   name: string
   hp: int

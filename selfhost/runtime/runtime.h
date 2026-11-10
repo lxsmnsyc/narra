@@ -27,7 +27,21 @@ static const char* narra_golden_dir = "testdata";
 static jmp_buf* narra_panic_jmp = NULL;
 static char narra_panic_text[256];
 
-static void narra_panic(const char* where, const char* msg) {
+// Failure and copy paths stay out of line so the hot paths inline. The
+// attributes are GNU extensions; other compilers get plain C11.
+#if defined(__GNUC__)
+#define NARRA_COLD __attribute__((cold, noinline))
+#define NARRA_NOINLINE __attribute__((noinline))
+#define NARRA_UNLIKELY(condition) __builtin_expect((condition) != 0, 0)
+#define NARRA_LIKELY(condition) __builtin_expect((condition) != 0, 1)
+#else
+#define NARRA_COLD
+#define NARRA_NOINLINE
+#define NARRA_UNLIKELY(condition) (condition)
+#define NARRA_LIKELY(condition) (condition)
+#endif
+
+_Noreturn NARRA_COLD static void narra_panic(const char* where, const char* msg) {
   fflush(stdout);
   if (narra_panic_jmp) {
     strncpy(narra_panic_text, msg, sizeof narra_panic_text - 1);
@@ -156,6 +170,138 @@ static void narra_free(void* p) {
 #endif
 }
 
+// The debug copy check. With NARRA_CHECK_COPIES set, a debug build counts each
+// copy on write of a shared array, box, map, string builder or generator, and
+// at exit reports the ones that no copy(...) explains, with exit code 103.
+// copy(x) retains x with granting on, so each object the retain reaches gets
+// a credit. A copy on write uses one credit of the object it copies, and the
+// retains of its children during the copy grant each child one. An object's
+// credits end when its count falls back to 1. The credits live in an
+// open-addressing table of plain malloc memory, outside narra_live.
+// Release builds (NARRA_RELEASE) have none of it: the hooks expand to nothing.
+#ifndef NARRA_RELEASE
+typedef struct narra_copy_slot { const void* p; int64_t credits; } narra_copy_slot;
+static bool narra_copy_on = false;
+static bool narra_copy_granting = false;
+static narra_copy_slot* narra_copy_slots = NULL;
+static size_t narra_copy_cap = 0, narra_copy_used = 0;
+static int64_t narra_copy_unexplained[5];
+static const char* const narra_copy_kinds[5] = {"array", "box", "map", "string builder", "generator"};
+
+static size_t narra_copy_home(const void* p) {
+  uint64_t x = (uint64_t)(uintptr_t)p * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(x >> 32) & (narra_copy_cap - 1);
+}
+
+static narra_copy_slot* narra_copy_find(const void* p) {
+  if (narra_copy_used == 0) return NULL;
+  for (size_t i = narra_copy_home(p);; i = (i + 1) & (narra_copy_cap - 1)) {
+    if (narra_copy_slots[i].p == p) return &narra_copy_slots[i];
+    if (!narra_copy_slots[i].p) return NULL;
+  }
+}
+
+static void narra_copy_put(const void* p, int64_t credits) {
+  size_t i = narra_copy_home(p);
+  while (narra_copy_slots[i].p) i = (i + 1) & (narra_copy_cap - 1);
+  narra_copy_slots[i].p = p;
+  narra_copy_slots[i].credits = credits;
+  narra_copy_used++;
+}
+
+static void narra_copy_credit(const void* p) {
+  narra_copy_slot* slot = narra_copy_find(p);
+  if (slot) {
+    slot->credits++;
+    return;
+  }
+  // The table doubles when it would be more than half full.
+  if ((narra_copy_used + 1) * 2 > narra_copy_cap) {
+    narra_copy_slot* old = narra_copy_slots;
+    size_t old_cap = narra_copy_cap;
+    narra_copy_cap = old_cap ? old_cap * 2 : 64;
+    narra_copy_slots = calloc(narra_copy_cap, sizeof(narra_copy_slot));
+    if (!narra_copy_slots) narra_panic("runtime", "out of memory");
+    narra_copy_used = 0;
+    for (size_t i = 0; i < old_cap; i++) {
+      if (old[i].p) narra_copy_put(old[i].p, old[i].credits);
+    }
+    free(old);
+  }
+  narra_copy_put(p, 1);
+}
+
+static void narra_copy_forget(const void* p) {
+  narra_copy_slot* slot = narra_copy_find(p);
+  if (!slot) return;
+  // Later entries of the probe chain move back into the hole when their home
+  // allows it, so every chain stays unbroken.
+  size_t mask = narra_copy_cap - 1;
+  size_t hole = (size_t)(slot - narra_copy_slots);
+  for (size_t i = (hole + 1) & mask; narra_copy_slots[i].p; i = (i + 1) & mask) {
+    size_t home = narra_copy_home(narra_copy_slots[i].p);
+    if (((i - home) & mask) >= ((i - hole) & mask)) {
+      narra_copy_slots[hole] = narra_copy_slots[i];
+      hole = i;
+    }
+  }
+  narra_copy_slots[hole].p = NULL;
+  narra_copy_slots[hole].credits = 0;
+  narra_copy_used--;
+}
+
+static void narra_copy_start(void) { narra_copy_on = getenv("NARRA_CHECK_COPIES") != NULL; }
+
+static void narra_copy_grant(bool on) { narra_copy_granting = on && narra_copy_on; }
+
+static void narra_copy_write(const void* p, int kind) {
+  if (!narra_copy_on) return;
+  narra_copy_slot* slot = narra_copy_find(p);
+  if (slot && slot->credits > 0) {
+    slot->credits--;
+    narra_copy_granting = true;
+    return;
+  }
+  narra_copy_unexplained[kind]++;
+}
+
+static void narra_report_copies(void) {
+  if (!narra_copy_on) return;
+  int64_t total = 0;
+  for (int kind = 0; kind < 5; kind++) total += narra_copy_unexplained[kind];
+  if (total == 0) return;
+  fflush(stdout);
+  fprintf(stderr, "copy check: copies on write that no copy(...) explains:");
+  const char* separator = " ";
+  for (int kind = 0; kind < 5; kind++) {
+    if (narra_copy_unexplained[kind] > 0) {
+      fprintf(stderr, "%s%s %" PRId64, separator, narra_copy_kinds[kind], narra_copy_unexplained[kind]);
+      separator = ", ";
+    }
+  }
+  fprintf(stderr, "\n");
+  _exit(103);
+}
+
+// SHARED follows a retain, DROP comes before a decrement of p->rc, and WRITE and
+// WRITTEN surround the copy that a copy on write makes.
+#define NARRA_COPY_SHARED(p) do { if (narra_copy_granting) narra_copy_credit(p); } while (0)
+#define NARRA_COPY_DROP(p) do { if (narra_copy_used && (p)->rc <= 2) narra_copy_forget(p); } while (0)
+#define NARRA_COPY_WRITE(p, kind) narra_copy_write(p, kind)
+#define NARRA_COPY_WRITTEN() (narra_copy_granting = false)
+#define NARRA_COPY_GRANT(on) narra_copy_grant(on)
+#define NARRA_COPY_START() narra_copy_start()
+#define NARRA_COPY_REPORT() narra_report_copies()
+#else
+#define NARRA_COPY_SHARED(p) ((void)0)
+#define NARRA_COPY_DROP(p) ((void)0)
+#define NARRA_COPY_WRITE(p, kind) ((void)0)
+#define NARRA_COPY_WRITTEN() ((void)0)
+#define NARRA_COPY_GRANT(on) ((void)0)
+#define NARRA_COPY_START() ((void)0)
+#define NARRA_COPY_REPORT() ((void)0)
+#endif
+
 // Dropping a heap value queues the values it holds instead of recursing, so
 // a long list or a deep tree is freed with a worklist, not the C stack. The
 // worklist grows and is reused by later drops; it is never freed. It is not
@@ -229,15 +375,22 @@ typedef struct narra_gen {
   void (*drop)(void* g);
   const void* in; // the input of the resume in progress (coroutines only)
 } narra_gen;
-static void narra_gen_retain(narra_gen* g) { g->rc++; }
+static void narra_gen_retain(narra_gen* g) {
+  g->rc++;
+  NARRA_COPY_SHARED(g);
+}
 static void narra_gen_release(narra_gen* g) {
+  NARRA_COPY_DROP(g);
   if (--g->rc == 0) narra_drop(g, g->drop);
 }
 // narra_gen_next resumes *p. A shared generator is copied first, so the
 // other holders of the value keep their state.
 static bool narra_gen_next(narra_gen** p, void* out) {
   if ((*p)->rc > 1) {
+    NARRA_COPY_WRITE(*p, 4);
     narra_gen* copy = (*p)->clone(*p);
+    NARRA_COPY_WRITTEN();
+    NARRA_COPY_DROP(*p);
     (*p)->rc--;
     *p = copy;
   }
@@ -251,7 +404,10 @@ static bool narra_gen_next(narra_gen** p, void* out) {
 static bool narra_co_panicked = false;
 static int narra_co_next(narra_gen** p, void* out, const void* in, bool guard) {
   if ((*p)->rc > 1) {
+    NARRA_COPY_WRITE(*p, 4);
     narra_gen* copy = (*p)->clone(*p);
+    NARRA_COPY_WRITTEN();
+    NARRA_COPY_DROP(*p);
     (*p)->rc--;
     *p = copy;
   }
@@ -646,10 +802,12 @@ static int64_t narra_truncate(double v, const char* where) {
   return (int64_t)v;
 }
 
-static void narra_bounds(int64_t i, int64_t len, const char* where) {
-  if (i < 0 || i >= len) {
-    char msg[96];
-    snprintf(msg, sizeof msg, "index %" PRId64 " out of range for length %" PRId64, i, len);
-    narra_panic(where, msg);
-  }
+_Noreturn NARRA_COLD static void narra_bounds_fail(int64_t i, int64_t len, const char* where) {
+  char msg[96];
+  snprintf(msg, sizeof msg, "index %" PRId64 " out of range for length %" PRId64, i, len);
+  narra_panic(where, msg);
+}
+
+static inline void narra_bounds(int64_t i, int64_t len, const char* where) {
+  if (NARRA_UNLIKELY((uint64_t)i >= (uint64_t)len)) narra_bounds_fail(i, len, where);
 }

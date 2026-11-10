@@ -67,6 +67,7 @@ export struct EffectState {
   // function stores that name a position (checkFunctionStores).
   valuesAt: Map<int, int> // packPosition of a body and position -> valueLists
   valueLists: Array<Array<Expr>> = []
+  storeBodies: Array<bool> = [] // the bodies that hold a function store, the only ones valuesAt is read for
   sources: Map<int, Expr> // the call a local's value comes from
   arrows: Map<int, Array<Effect>>
   entries: Map<int, bool> // the entry functions
@@ -177,6 +178,12 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     changed: false,
     body: -1,
   }
+  for (const _ of Ranges.between(0, Arrays.length(checker.bodies))) {
+    Arrays.push(mutable state.storeBodies, false)
+  }
+  for (const store of Arrays.values(checker.functionStores)) {
+    state.storeBodies[store.body] = true
+  }
   let scopeIndex: Map<string, int> = Map {}
   for (const scope of Ranges.between(0, Arrays.length(checker.scopes))) {
     scopeIndex[checker.scopes[scope].path] = scope
@@ -278,8 +285,8 @@ function checkFunctionStores(mutable checker: Checker, mutable state: EffectStat
     if (Arrays.length(checker.bodies[store.body].typeArguments) > 0) {
       continue
     }
-    if (store.want is Type.TFunc(wantParameters, wantResult, wantEffects, _)) {
-      if (store.got is Type.TFunc(_, _, gotEffects, _)) {
+    if (store.want is Type.TFunc(wantParameters, wantResult, wantEffects, _, wantShared)) {
+      if (store.got is Type.TFunc(_, _, gotEffects, _, _)) {
         state.body = store.body
         let found = gotEffects
         if (findStoredValue(checker, state, store) is Some(effects)) {
@@ -296,7 +303,7 @@ function checkFunctionStores(mutable checker: Checker, mutable state: EffectStat
           extra = extra || !containsName(wantEffects, name)
         }
         if (extra && !hasErrorAt(checker, store.file, store.pos)) {
-          const gotType = Type.TFunc(wantParameters, wantResult, found, -1)
+          const gotType = Type.TFunc(wantParameters, wantResult, found, -1, wantShared)
           const message = `expected ${describeType(checker, store.want, gotType)}, found ${describeType(checker, gotType, store.want)}`
           reportErrorIn(mutable checker, store.file, store.pos, "E0119", message)
         }
@@ -699,7 +706,7 @@ function findTypeEffects(
 ): Option<Array<Effect>> uses alloc {
   if (
     findNodeType(checker, state.body, getExpressionId(expression)) is Some(
-      Type.TFunc(_, _, effects, binder),
+      Type.TFunc(_, _, effects, binder, _),
     )
   ) {
     let source: Option<Expr> = None
@@ -944,7 +951,8 @@ function walkExpression(
   mutable out: Array<Effect>,
   expression: Expr,
 ) uses alloc {
-  if (state.report) {
+  // Only bodies with a function store read the recorded values
+  if (state.report && state.body >= 0 && state.storeBodies[state.body]) {
     const key = packPosition(state.body, getExpressionPos(expression))
     if (state.valuesAt[key] is Some(slot)) {
       Arrays.push(mutable state.valueLists[slot], expression)
@@ -1110,7 +1118,7 @@ function walkCall(
       // function type does not list.
       if (
         findNodeType(checker, state.body, getExpressionId(callee)) is Some(
-          Type.TFunc(_, Type.TGenerator(_, _, _, _, _), _, _),
+          Type.TFunc(_, Type.TGenerator(_, _, _, _, _), _, _, _),
         )
       ) {
         addEffect(mutable out, "alloc", pos, "")
@@ -1138,7 +1146,7 @@ function addValueBoundEffects(
   // still name the variables of the function that made it.
   if (
     findNodeType(checker, state.body, getExpressionId(callee)) is Some(
-      Type.TFunc(parameters, _, _, _),
+      Type.TFunc(parameters, _, _, _, _),
     )
   ) {
     for (const index of Ranges.between(0, Arrays.length(parameters))) {
@@ -1147,7 +1155,7 @@ function addValueBoundEffects(
       }
       let parameterEffects: Array<string> = []
       let binder = -1
-      if (parameters[index] is Type.TFunc(_, _, functionEffects, functionBinder)) {
+      if (parameters[index] is Type.TFunc(_, _, functionEffects, functionBinder, _)) {
         parameterEffects = functionEffects
         binder = functionBinder
       } else if (parameters[index] is Type.TGenerator(_, generatorNames, generatorBinder, _, _)) {
@@ -1172,7 +1180,7 @@ function addValueBoundEffects(
         ) {
           continue
         }
-        if (parameters[index] is Type.TFunc(_, _, _, _)) {
+        if (parameters[index] is Type.TFunc(_, _, _, _, _)) {
           if (valueEffects(checker, state, arguments[index].value) is Some(set)) {
             for (const passed of Arrays.values(set)) {
               addEffect(mutable out, passed.name, pos, passed.via)

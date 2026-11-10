@@ -43,6 +43,7 @@ import {
   containsTypeParameter,
   checkMutableType,
   isContentsType,
+  findSharedParameter,
 } from "narrac/check"
 import { resolveOpt, substitute } from "narrac/resolve"
 import { HIDDEN_SHAPE, isShapeDerive } from "narrac/deriveshape"
@@ -513,7 +514,7 @@ function containsParam(checker: Checker, type: Type, param: int): bool {
     Type.TArray(element) | Type.TBox(element) => containsParam(checker, element, param)
     Type.TMap(key, value) =>
       containsParam(checker, key, param) || containsParam(checker, value, param)
-    Type.TFunc(parameters, result, _, _) =>
+    Type.TFunc(parameters, result, _, _, _) =>
       anyParam(checker, parameters, param) || containsParam(checker, result, param)
     Type.TStruct(index) => anyParam(checker, checker.structs[index].arguments, param)
     Type.TEnum(index) => anyParam(checker, checker.enums[index].arguments, param)
@@ -805,6 +806,11 @@ function sameSignature(
   if (result != wantResult) {
     return false
   }
+  // A fresh result fits a trait function with `from`, not the other way round.
+  const shared = findSharedParameter(funcDecl)
+  if (shared >= 0 && shared != findSharedParameter(want)) {
+    return false
+  }
   for (const i of Ranges.between(0, Arrays.length(funcDecl.parameters))) {
     const param = funcDecl.parameters[i]
     if (
@@ -845,6 +851,11 @@ function signatureText(
   const result = substitute(mutable checker, traitFunc.result, selfMap)
   if (result != Type.TVoid) {
     text = `${text}: ${typeString(checker, result)}`
+    if (traitFunc.declaration.result is Some(written)) {
+      if (written.resultFrom != "") {
+        text = `${text} from ${written.resultFrom}`
+      }
+    }
   }
   return text
 }
@@ -922,7 +933,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
     Type.TStruct(_) | Type.TEnum(_) => {
       return nominalImplements(mutable checker, type, traitIndex)
     }
-    Type.TFunc(_, _, _, _)
+    Type.TFunc(_, _, _, _, _)
       | Type.TMap(_, _)
       | Type.TRange
       | Type.TGenerator(_, _, _, _, _)
@@ -1000,7 +1011,7 @@ function shapeProblem(mutable checker: Checker, type: Type, traitIndex: int): st
       }
       return shapeProblem(mutable checker, valueType, traitIndex)
     }
-    Type.TFunc(_, _, _, _) => {
+    Type.TFunc(_, _, _, _, _) => {
       return `${text} is a function, which has no Value form`
     }
     Type.TEnum(index) => {
@@ -1224,7 +1235,7 @@ export function containsFunc(
   }
   seen[key] = true
   match (type) {
-    Type.TFunc(_, _, _, _) => {
+    Type.TFunc(_, _, _, _, _) => {
       return true
     }
     Type.TArray(element) | Type.TBox(element) => {
@@ -1281,7 +1292,7 @@ export function mapKeyProblem(
       }
       return ""
     }
-    Type.TFunc(_, _, _, _) => {
+    Type.TFunc(_, _, _, _, _) => {
       return "a function is not hashable"
     }
     Type.TMap(_, _) => {

@@ -1,0 +1,158 @@
+// Loops that write a local array by index. Where the loop only indexes the
+// array, it is made unique once before the loop; where the body can give the
+// array a second owner (another binding, a call, a container, a closure), each
+// write keeps its sharing check. Every case prints the same result either way.
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+struct Cell {
+  value: int
+  step: int
+}
+
+function sum(items: Array<int>): int {
+  let total = 0
+  for (const item of Arrays.values(items)) {
+    total = total + item
+  }
+  return total
+}
+
+function show(items: Array<int>): string {
+  let text = ""
+  for (const item of Arrays.values(items)) {
+    text = `${text}${Int.toString(item)} `
+  }
+  return text
+}
+
+function twice(f: () => void) {
+  f()
+  f()
+}
+
+function fillMutable(mutable items: Array<int>) {
+  let index = 0
+  while (index < Arrays.length(items)) {
+    items[index] = index * 10
+    index++
+  }
+}
+
+// Hoisted: a shared array is copied once before the loop, the original stays.
+function hoistedLoops() {
+  let shared = Arrays.filled(0, 4)
+  const original = shared
+  for (const i of Ranges.upTo(4)) {
+    shared[i] = i + 1
+  }
+  print(`${show(shared)}| ${show(original)}`)
+  let counter = 0
+  while (counter < 4) {
+    shared[counter] = shared[counter] * 2
+    counter++
+  }
+  print(show(shared))
+  for (let index = 0; index < Arrays.length(shared); index++) {
+    shared[index] += 1
+  }
+  print(show(shared))
+  let cells = [Cell { value: 1, step: 2 }, Cell { value: 5, step: 3 }]
+  const kept = cells
+  for (const i of Ranges.upTo(2)) {
+    cells[i].value = cells[i].value + cells[i].step
+  }
+  print(
+    `${Int.toString(cells[0].value)} ${Int.toString(cells[1].value)} ${Int.toString(kept[0].value)} ${Int.toString(kept[1].value)}`,
+  )
+  let grid = [[0, 0], [0, 0]]
+  const oldGrid = grid
+  for (const i of Ranges.upTo(2)) {
+    for (const j of Ranges.upTo(2)) {
+      grid[i][j] = i * 2 + j
+    }
+  }
+  print(`${show(grid[0])}${show(grid[1])}| ${show(oldGrid[0])}${show(oldGrid[1])}`)
+  let viaParameter = Arrays.filled(7, 3)
+  const beforeParameter = viaParameter
+  fillMutable(mutable viaParameter)
+  print(`${show(viaParameter)}| ${show(beforeParameter)}`)
+}
+
+// Not hoisted: the body copies the array into another binding.
+function copiesIntoBinding() {
+  let items = Arrays.filled(0, 4)
+  let snapshots = 0
+  for (const i of Ranges.upTo(4)) {
+    items[i] = i + 1
+    if (i == 1) {
+      const snapshot = items
+      snapshots = sum(snapshot)
+      items[i] = 100
+      print(`snapshot ${show(snapshot)}`)
+    }
+  }
+  print(`${show(items)}${Int.toString(snapshots)}`)
+}
+
+// Not hoisted: the body passes the array on.
+function passesOn() {
+  let items = Arrays.filled(1, 3)
+  let totals = 0
+  for (const i of Ranges.upTo(3)) {
+    items[i] = items[i] + i
+    totals = totals + sum(items)
+  }
+  print(`${show(items)}${Int.toString(totals)}`)
+}
+
+// Not hoisted: the body pushes the array into another container.
+function pushesIntoContainer() {
+  let items = Arrays.filled(0, 3)
+  let history: Array<Array<int>> = []
+  for (const i of Ranges.upTo(3)) {
+    Arrays.push(mutable history, items)
+    items[i] = i + 1
+  }
+  let text = ""
+  for (const past of Arrays.values(history)) {
+    text = `${text}${show(past)}/ `
+  }
+  print(`${text}${show(items)}`)
+}
+
+// Not hoisted: a closure in the loop captures the array and writes it.
+function capturedByClosure() {
+  let items = Arrays.filled(0, 3)
+  for (const i of Ranges.upTo(3)) {
+    items[i] = i + 1
+    twice(() => {
+      items[0] = items[0] + 1
+    })
+  }
+  print(show(items))
+}
+
+// Not hoisted: the loop replaces the array.
+function replacesArray() {
+  let items = Arrays.filled(0, 3)
+  const spare = Arrays.filled(9, 3)
+  for (const i of Ranges.upTo(3)) {
+    items[i] = i + 1
+    if (i == 1) {
+      items = spare
+    }
+  }
+  print(`${show(items)}| ${show(spare)}`)
+}
+
+export function run(args: Array<string>): int {
+  hoistedLoops()
+  copiesIntoBinding()
+  passesOn()
+  pushesIntoContainer()
+  capturedByClosure()
+  replacesArray()
+  return 0
+}

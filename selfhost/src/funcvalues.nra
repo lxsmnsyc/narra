@@ -17,6 +17,7 @@ import {
   setRef,
   anyTypeParameter,
   BindingKind,
+  findSharedParameter,
 } from "narrac/check"
 import { substitute } from "narrac/resolve"
 import { unify } from "narrac/generics"
@@ -112,14 +113,14 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
             mutable checker,
             pos,
             "E0613",
-            `a closure cannot capture mutable parameter ${quoteGo(local.name)} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+            `a closure cannot capture mutable parameter ${quoteGo(local.name)} unless it is passed straight to a function parameter that is not escaping; copy it first with \`copy(${local.name})\``,
           )
         } else if (local.binding == BindingKind.Reference) {
           reportError(
             mutable checker,
             pos,
             "E0613",
-            `a closure cannot capture loop element ${quoteGo(local.name)}, which is changed in place, unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+            `a closure cannot capture loop element ${quoteGo(local.name)}, which is changed in place, unless it is passed straight to a function parameter that is not escaping; copy it first with \`copy(${local.name})\``,
           )
         } else {
           reportError(
@@ -141,11 +142,9 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
 
 function findOutermostCapture(checker: Checker, index: int): int {
   const body = checker.body
-  const name = checker.bodies[body].locals[index].name
   let first = checker.bodies[body].arrowDepth
   while (
-    first > 0 &&
-      !isDeclaredBelow(checker, checker.bodies[body].arrows[first - 1].outerDepth, index, name)
+    first > 0 && !isDeclaredBelow(checker, checker.bodies[body].arrows[first - 1].outerDepth, index)
   ) {
     first--
   }
@@ -169,7 +168,7 @@ export function markChangedCapture(mutable checker: Checker, pos: Pos, index: in
         mutable checker,
         pos,
         "E0951",
-        `a closure cannot change captured ${quoteGo(local.name)} unless it is passed straight to a function parameter that is not escaping; copy it first with \`const copy = ${local.name}\``,
+        `a closure cannot change captured ${quoteGo(local.name)} unless it is passed straight to a function parameter that is not escaping; copy it first with \`copy(${local.name})\``,
       )
       return
     }
@@ -203,12 +202,7 @@ export function isCapturedByArrow(checker: Checker, index: int): bool {
   if (!local.isMutable || depth == 0) {
     return false
   }
-  return !isDeclaredBelow(
-    checker,
-    checker.bodies[body].arrows[depth - 1].outerDepth,
-    index,
-    local.name,
-  )
+  return !isDeclaredBelow(checker, checker.bodies[body].arrows[depth - 1].outerDepth, index)
 }
 
 function addCapture(mutable checker: Checker, closure: int, local: int) uses alloc {
@@ -221,15 +215,8 @@ function addCapture(mutable checker: Checker, closure: int, local: int) uses all
   Arrays.push(mutable checker.bodies[body].closures[closure].captures, local)
 }
 
-function isDeclaredBelow(checker: Checker, stopDepth: int, local: int, name: string): bool {
-  for (let depth = checker.scopeDepth - 1; depth >= stopDepth; depth--) {
-    if (checker.localScopes[depth][name] is Some(found)) {
-      if (found == local) {
-        return true
-      }
-    }
-  }
-  return false
+function isDeclaredBelow(checker: Checker, stopDepth: int, local: int): bool {
+  return checker.bodies[checker.body].locals[local].depth >= stopDepth
 }
 
 export function findModuleFunction(checker: Checker, moduleScope: int, funcDecl: FuncDecl): int {
@@ -280,12 +267,15 @@ export function checkFunctionValue(
     for (const param of Arrays.values(parameters)) {
       Arrays.push(mutable plainTypes, checker.paramTypes[param.id])
     }
-    return internComposite(mutable checker, Type.TFunc(plainTypes, info.result, [], -1))
+    return internComposite(
+      mutable checker,
+      Type.TFunc(plainTypes, info.result, [], -1, findSharedParameter(info.declaration)),
+    )
   }
 
   // A generic one is unified with the expected function type.
   let bindings: Map<int, Type> = Map {}
-  if (want is Some(Type.TFunc(wantParams, wantResult, _, _))) {
+  if (want is Some(Type.TFunc(wantParams, wantResult, _, _, _))) {
     if (Arrays.length(wantParams) == Arrays.length(parameters)) {
       for (const index of Ranges.between(0, Arrays.length(parameters))) {
         unify(
@@ -329,5 +319,8 @@ export function checkFunctionValue(
     Arrays.push(mutable genericTypes, substitute(mutable checker, declared, bindings))
   }
   const result = substitute(mutable checker, info.result, bindings)
-  return internComposite(mutable checker, Type.TFunc(genericTypes, result, [], -1))
+  return internComposite(
+    mutable checker,
+    Type.TFunc(genericTypes, result, [], -1, findSharedParameter(info.declaration)),
+  )
 }

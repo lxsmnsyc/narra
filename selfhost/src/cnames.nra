@@ -127,7 +127,7 @@ export function typeId(checker: Checker, type: Type): string uses alloc {
       typeId(checker, key),
       typeId(checker, valueType),
     ])
-    Type.TFunc(parameters, result, _, _) => functionTypeName(checker, parameters, result)
+    Type.TFunc(parameters, result, _, _, _) => functionTypeName(checker, parameters, result)
     Type.TRange => "Range"
     Type.TGenerator(element, _, _, _, input) => generatorId(checker, element, input)
     _ => "x"
@@ -170,7 +170,7 @@ export function cType(checker: Checker, type: Type): string uses alloc {
     Type.TParam(_) => "void*"
     Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => `${typeId(checker, type)}*`
     Type.TDistinct(index) => cDistinctType(checker, index)
-    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _) => typeId(checker, type)
+    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _, _) => typeId(checker, type)
     Type.TGenerator(_, _, _, _, _) => "narra_gen*"
     _ => "void"
   }
@@ -184,10 +184,19 @@ function isCachedType(type: Type): bool {
       | Type.TArray(_)
       | Type.TBox(_)
       | Type.TMap(_, _)
-      | Type.TFunc(_, _, _, _)
+      | Type.TFunc(_, _, _, _, _)
       | Type.TGenerator(_, _, _, _, _) => true
     _ => false
   }
+}
+
+function storeName(cache: Cells.Cell<Map<string, string>>, key: string, name: string) uses alloc {
+  // Take the map out of the cell, so the write does not copy it.
+  let names = Cells.get(cache)
+  const empty: Map<string, string> = Map {}
+  Cells.set(cache, empty)
+  names[key] = name
+  Cells.set(cache, names)
 }
 
 export function cachedTypeId(
@@ -203,12 +212,55 @@ export function cachedTypeId(
     return name
   }
   const name = typeId(checker, type)
-  // Take the map out of the cell, so the write does not copy it.
-  let names = Cells.get(cache)
-  const empty: Map<string, string> = Map {}
-  Cells.set(cache, empty)
-  names[key] = name
-  Cells.set(cache, names)
+  storeName(cache, key, name)
+  return name
+}
+
+export function cachedModuleHash(
+  cache: Cells.Cell<Map<string, string>>,
+  module: string,
+): string uses alloc {
+  const key = `module|${module}`
+  if (Cells.get(cache)[key] is Some(hash)) {
+    return hash
+  }
+  const hash = moduleHash(module)
+  storeName(cache, key, hash)
+  return hash
+}
+
+export function cachedDeclName(
+  cache: Cells.Cell<Map<string, string>>,
+  kind: string,
+  module: string,
+  name: string,
+): string uses alloc {
+  if (module == "") {
+    return `${kind}_${name}`
+  }
+  return `${kind}_${cachedModuleHash(cache, module)}_${name}`
+}
+
+function buildProgramKey(program: ProgramFunc): string uses alloc {
+  return match (program) {
+    ProgramFunc.PlainFunc(funcIndex) => `plain|${Int.toString(funcIndex)}`
+    ProgramFunc.InstanceFunc(instance) => `instance|${Int.toString(instance)}`
+    ProgramFunc.ImplFunc(block, index) => `impl|${Int.toString(block)}|${Int.toString(index)}`
+  }
+}
+
+export function cachedFunctionName(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  program: ProgramFunc,
+): string uses alloc {
+  const key = buildProgramKey(program)
+  if (Cells.get(cache)[key] is Some(found)) {
+    return found
+  }
+  const names = funcNames(checker, program)
+  const name = cachedDeclName(cache, "f", names.module, names.name)
+  storeName(cache, key, name)
   return name
 }
 
@@ -219,7 +271,11 @@ export function cachedCType(
 ): string uses alloc {
   return match (type) {
     Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => `${cachedTypeId(checker, cache, type)}*`
-    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _) => cachedTypeId(checker, cache, type)
+    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _, _) => cachedTypeId(
+      checker,
+      cache,
+      type,
+    )
     _ => cType(checker, type)
   }
 }
@@ -280,14 +336,6 @@ export function thunkName(owner: string): string uses alloc {
   return `w${Str.sliceFrom(owner, 1)}`
 }
 
-export function constName(module: string, name: string): string uses alloc {
-  return declName("G", module, name)
-}
-
-export function constGetterName(module: string, name: string): string uses alloc {
-  return declName("g", module, name)
-}
-
 // The module and the function name Go gives a function of the program (its
 // FuncDecl.Module and FuncDecl.Name).
 struct FuncNames {
@@ -331,7 +379,11 @@ export function functionName(checker: Checker, program: ProgramFunc): string use
   return declName("f", names.module, names.name)
 }
 
-export function functionSignature(checker: Checker, program: ProgramFunc): string uses alloc {
+export function functionSignature(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  program: ProgramFunc,
+): string uses alloc {
   // The parameter names are the C names of the body's locals, which the checker
   // declares first, in order.
   let parameterTypes: Array<Type> = []
@@ -372,25 +424,31 @@ export function functionSignature(checker: Checker, program: ProgramFunc): strin
     }
     Arrays.push(
       mutable parts,
-      `${parameterCType(checker, parameterTypes[index], declared.parameters[index].isMutable)} ${name}`,
+      `${parameterCType(checker, cache, parameterTypes[index], declared.parameters[index].isMutable)} ${name}`,
     )
   }
   if (Arrays.length(parts) == 0) {
     parts = ["void"]
   }
-  return `static ${cType(checker, result)} ${functionName(checker, program)}(${Str.join(parts, ", ")})`
+  return `static ${cachedCType(checker, cache, result)} ${cachedFunctionName(checker, cache, program)}(${Str.join(parts, ", ")})`
 }
 
-export function parameterCType(checker: Checker, type: Type, isMutable: bool): string uses alloc {
+export function parameterCType(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  type: Type,
+  isMutable: bool,
+): string uses alloc {
   // A mutable parameter points at the caller's place, and a large constant one
   // at a value the caller keeps for the call.
+  const typeName = cachedCType(checker, cache, type)
   if (isMutable) {
-    return `${cType(checker, type)}*`
+    return `${typeName}*`
   }
   if (isPassedByPointer(checker, type)) {
-    return `const ${cType(checker, type)}*`
+    return `const ${typeName}*`
   }
-  return cType(checker, type)
+  return typeName
 }
 
 export function dropDuplicateTypes(checker: Checker): Checker uses alloc {

@@ -1,7 +1,7 @@
 ---
 id: unreachable-arms
 title: "Unreachable match arms are errors"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-6

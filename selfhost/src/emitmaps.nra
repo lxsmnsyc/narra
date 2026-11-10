@@ -165,36 +165,103 @@ export function emitMapPrototypes(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
+const MAP_PLACEHOLDERS = [
+  "M",
+  "K",
+  "V",
+  "EQ",
+  "HASH",
+  "REL_KEY_I",
+  "REL_VAL_I",
+  "RET_KEY_C",
+  "RET_VAL_C",
+  "REL_KEY_ARG",
+  "REL_KEY_E",
+  "REL_VAL_E",
+]
+
+struct MapTemplate {
+  texts: Array<string>
+  slots: Array<int>
+}
+
 export function emitMapFunctions(mutable emitter: Emitter): string uses alloc {
   // This runs before the constants because it registers trait needs; its text
   // goes after the trait functions.
+  const template = splitMapTemplate()
   let builder = Str.builder()
   for (const type of Arrays.values(mapTypes(emitter))) {
-    Str.append(mutable builder, mapFunctions(mutable emitter, type))
+    Str.append(mutable builder, mapFunctions(mutable emitter, template, type))
   }
   return Str.build(builder)
 }
 
-function mapFunctions(mutable emitter: Emitter, type: Type): string uses alloc {
+function splitMapTemplate(): MapTemplate uses alloc {
+  // Even pieces are text and odd pieces sit between two @ marks. A piece that
+  // names no placeholder stays text, marks included.
+  const pieces = Str.split(RUNTIME_MAP_H, "@")
+  let texts: Array<string> = []
+  let slots: Array<int> = []
+  for (const index of Ranges.between(0, Arrays.length(pieces))) {
+    const slot = findPlaceholderSlot(pieces[index])
+    if (index % 2 == 1 && slot >= 0) {
+      Arrays.push(mutable texts, "")
+      Arrays.push(mutable slots, slot)
+    } else if (index % 2 == 1) {
+      Arrays.push(mutable texts, `@${pieces[index]}@`)
+      Arrays.push(mutable slots, 0 - 1)
+    } else {
+      Arrays.push(mutable texts, pieces[index])
+      Arrays.push(mutable slots, 0 - 1)
+    }
+  }
+  return MapTemplate { texts: texts, slots: slots }
+}
+
+function findPlaceholderSlot(name: string): int {
+  for (const index of Ranges.between(0, Arrays.length(MAP_PLACEHOLDERS))) {
+    if (MAP_PLACEHOLDERS[index] == name) {
+      return index
+    }
+  }
+  return 0 - 1
+}
+
+function mapFunctions(
+  mutable emitter: Emitter,
+  template: MapTemplate,
+  type: Type,
+): string uses alloc {
   const keyType = getKeyType(type)
   const valueType = getValueType(type)
   // The key's eq and hash are asked for in this order, as Go does.
   const equalsName = useEq(mutable emitter, keyType)
   const hashName = useHash(mutable emitter, keyType)
-  let text = RUNTIME_MAP_H
-  text = Str.replace(text, "@M@", containerName(emitter, type))
-  text = Str.replace(text, "@K@", cType(emitter.checker, keyType))
-  text = Str.replace(text, "@V@", cType(emitter.checker, valueType))
-  text = Str.replace(text, "@EQ@", equalsName)
-  text = Str.replace(text, "@HASH@", hashName)
-  text = Str.replace(text, "@REL_KEY_I@", releaseCode(emitter, keyType, "m->keys[i]"))
-  text = Str.replace(text, "@REL_VAL_I@", releaseCode(emitter, valueType, "m->vals[i]"))
-  text = Str.replace(text, "@RET_KEY_C@", retainCode(emitter, keyType, "c->keys[i]"))
-  text = Str.replace(text, "@RET_VAL_C@", retainCode(emitter, valueType, "c->vals[i]"))
-  text = Str.replace(text, "@REL_KEY_ARG@", releaseCode(emitter, keyType, "k"))
-  text = Str.replace(text, "@REL_KEY_E@", releaseCode(emitter, keyType, "m->keys[e]"))
-  text = Str.replace(text, "@REL_VAL_E@", releaseCode(emitter, valueType, "m->vals[e]"))
-  return `\n${text}`
+  // The values follow the order of MAP_PLACEHOLDERS.
+  const values = [
+    containerName(emitter, type),
+    cType(emitter.checker, keyType),
+    cType(emitter.checker, valueType),
+    equalsName,
+    hashName,
+    releaseCode(emitter, keyType, "m->keys[i]"),
+    releaseCode(emitter, valueType, "m->vals[i]"),
+    retainCode(emitter, keyType, "c->keys[i]"),
+    retainCode(emitter, valueType, "c->vals[i]"),
+    releaseCode(emitter, keyType, "k"),
+    releaseCode(emitter, keyType, "m->keys[e]"),
+    releaseCode(emitter, valueType, "m->vals[e]"),
+  ]
+  let builder = Str.builder()
+  Str.append(mutable builder, "\n")
+  for (const index of Ranges.between(0, Arrays.length(template.slots))) {
+    if (template.slots[index] >= 0) {
+      Str.append(mutable builder, values[template.slots[index]])
+    } else {
+      Str.append(mutable builder, template.texts[index])
+    }
+  }
+  return Str.build(builder)
 }
 
 export function emitMapLiteral<W: EmitWalker>(

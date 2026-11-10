@@ -1,7 +1,7 @@
 ---
 id: interp-selects
 title: "Spike: the interp slowdown from inline enum payloads"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 191545
 owns:
   - roadmaps/selfhost/nodes/interp-selects/**
 shared: []

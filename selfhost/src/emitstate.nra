@@ -23,7 +23,8 @@ import * as Str from "std/string"
 import { Pos, Expr, Stmt, Block } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, LocalInfo, Ref, ProgramFunc, BindingKind, findBodySlot } from "narrac/check"
-import { cType, opFuncName, typeId } from "narrac/cnames"
+import { cachedCType, cachedTypeId, opFuncName } from "narrac/cnames"
+import * as Cells from "std/cell"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -55,7 +56,7 @@ export struct TraitNeed {
 
 export struct Emitter {
   checker: Checker
-  typeNames: Map<string, string>
+  typeNames: Cells.Cell<Map<string, string>>
   entry: int
   tests: bool
   file: string
@@ -147,7 +148,7 @@ export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter u
   // The checker is shared, not copied.
   return Emitter {
     checker: checker,
-    typeNames: Map {},
+    typeNames: Cells.create(Map {}),
     entry: entry,
     tests: tests,
     file: "",
@@ -333,7 +334,7 @@ export function variableRef(emitter: Emitter, name: string): string uses alloc {
 
 export function declareLocalVariable(mutable emitter: Emitter, localIndex: int): string uses alloc {
   const local = readLocal(emitter, localIndex)
-  const typeName = cType(emitter.checker, local.localType)
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
   return declareVariable(mutable emitter, typeName, localName(local))
 }
 
@@ -393,7 +394,7 @@ function isBoxed(emitter: Emitter, index: int): bool {
 }
 
 export function containerName(emitter: Emitter, type: Type): string uses alloc {
-  const name = cType(emitter.checker, type)
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
   return Str.slice(name, 0, Str.length(name) - 1)
 }
 
@@ -434,14 +435,14 @@ function structOrEnumCode(
   if (!needsRc(emitter, base)) {
     return ""
   }
-  return `${opFuncName(operation, typeId(emitter.checker, base))}(${value});`
+  return `${opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, base))}(${value});`
 }
 
 export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
   // The counter is program-wide: it is never reset per function.
   emitter.tempCount++
   const name = `t${Int.toString(emitter.tempCount)}`
-  const typeName = cType(emitter.checker, type)
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, type)
   const declaration = declareVariable(mutable emitter, typeName, name)
   writeLine(mutable emitter, `${declaration} = ${code};`)
   return variableRef(emitter, name)

@@ -16,7 +16,8 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
-import { Type, plainTypeKey } from "narrac/types"
+import * as Cells from "std/cell"
+import { Type, plainTypeKey, typeKey } from "narrac/types"
 import { Checker, ProgramFunc, findBody, containsTypeParameter } from "narrac/check"
 import { xxh32, hex8, relativeModule, moduleHash } from "narrac/hash"
 
@@ -166,6 +167,54 @@ export function cType(checker: Checker, type: Type): string uses alloc {
     Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _) => typeId(checker, type)
     Type.TGenerator(_, _, _, _, _) => "narra_gen*"
     _ => "void"
+  }
+}
+
+function isCachedType(type: Type): bool {
+  return match (type) {
+    Type.TStruct(_)
+      | Type.TEnum(_)
+      | Type.TDistinct(_)
+      | Type.TArray(_)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TFunc(_, _, _, _)
+      | Type.TGenerator(_, _, _, _, _) => true
+    _ => false
+  }
+}
+
+export function cachedTypeId(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  type: Type,
+): string uses alloc {
+  if (!isCachedType(type)) {
+    return typeId(checker, type)
+  }
+  const key = typeKey(type)
+  if (Cells.get(cache)[key] is Some(name)) {
+    return name
+  }
+  const name = typeId(checker, type)
+  // Take the map out of the cell, so the write does not copy it.
+  let names = Cells.get(cache)
+  const empty: Map<string, string> = Map {}
+  Cells.set(cache, empty)
+  names[key] = name
+  Cells.set(cache, names)
+  return name
+}
+
+export function cachedCType(
+  checker: Checker,
+  cache: Cells.Cell<Map<string, string>>,
+  type: Type,
+): string uses alloc {
+  return match (type) {
+    Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => `${cachedTypeId(checker, cache, type)}*`
+    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _) => cachedTypeId(checker, cache, type)
+    _ => cType(checker, type)
   }
 }
 

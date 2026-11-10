@@ -668,7 +668,7 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 
 Amendment (node compound-assign, 2026-11-09). Rules for compound assignment and `++`/`--`:
 
-- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`.
+- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`. Changed by D92: the wrapping forms `+%= -%= *%=` are removed (E0971); `+= -= *=` wrap.
 - **Statements only.** They have no value and cannot be nested in an expression (E0964). Only the postfix spelling `x++` and `x--` exists; `++x` and `--x` are an error with a hint (E0964), so `--x` no longer parses as a double negation.
 - **Targets.** Every target `=` accepts: a `let`, a field or element of a changeable value (D81), the contents of a `mutable` parameter. A `const` binding and a whole `mutable` parameter are rejected as for `=`.
 - **Types.** The value has the type of the target (E0962). `++` and `--` take an integer of any width (E0963). Overflow, division by zero and shift checks are those of the binary operator.
@@ -775,7 +775,7 @@ Decision: `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types; `
 1. **Literals.** A literal takes the sized integer type its context expects, else `int`, and must fit (E0294). A negative literal under an unsigned type is E0294, not E0296; E0296 is for `-x` on an unsigned value that is not a literal. `-128` is a valid `i8`: a literal directly under unary minus is checked with its sign.
 2. **Context.** An operator's wanted type types the left operand, so `const m: u8 = 1 << 3` works. A literal on the left of a binary operator takes the type of the right operand (`1 + d` with `d: u8`).
 3. **No mixing.** Two integer types that differ, one of them sized, are E0295 for arithmetic, bitwise operators, shifts and comparison, including `==`. The message names `<Target>.from`, `.tryFrom` and `.wrap` of the left type. Bitwise operators and shifts need operands of one integer type. Shift counts have the type of the value.
-4. **Overflow.** Checked at the type's own width with `__builtin_*_overflow` on that C type, panicking in debug builds and wrapping in release builds. `MIN / -1` follows `int`. Division and remainder by zero panic in every build. Shifts by the width or more, or by a negative count, panic.
+4. **Overflow.** Checked at the type's own width with `__builtin_*_overflow` on that C type, panicking in debug builds and wrapping in release builds. `MIN / -1` follows `int`. Division and remainder by zero panic in every build. Shifts by the width or more, or by a negative count, panic. Changed by D92: arithmetic wraps in every build and nothing panics on overflow.
 5. **Runtime.** One macro in `runtime.h` defines the add, sub, mul, neg, div, rem, shift, wrap, `eq`, `cmp`, `hash` and `show` functions of each type, suffixed with the type (`narra_add_u8`). `hash` goes through the `int` hash, so equal values hash alike.
 6. **Printing.** Template string parts stay strings (E0201). A sized value prints through `Show.show(x)`; `U8.toString` comes with sized-conversions.
 
@@ -1032,7 +1032,7 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - Every alternative binds the same names with the same types: `Shape.Circle(r) | Shape.Sphere(r) => ...`.
 - A guard covers the whole or-pattern. When the guard fails for one matching alternative, the next alternative that matches is tried with its own bindings; the arm is taken if any alternative matches with the guard true (Rust semantics).
 - A binding of the whole value keeps its full type; there is no narrowing to the listed constructors, so no union types appear (D73).
-- Exhaustiveness and unreachable-arm checks count each alternative.
+- Exhaustiveness and unreachable-arm checks count each alternative. Unreachable alternatives are reported for constructors and bools, not for integer or string literals.
 - **Only in `match`.** An `is` test and a `const`, `let` or `for ... of` destructuring stay one pattern (E0974): allowing alternatives there only without bindings would make `is` and `match` patterns differ (maintainer).
 - `narrac fmt` keeps short lists on one line and puts one alternative per line, each starting with `|`, when the arm does not fit.
 - Contract patterns (D95) use the same alternatives.

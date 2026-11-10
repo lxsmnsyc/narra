@@ -13,11 +13,11 @@
 // arrow function has a set of its own, added to the enclosing function only
 // when something calls it.
 //
-// Go keys its tables by pointer. Here a function is found by its module and
-// position (functionKey), a local by its body and BodyInfo.locals index, and
-// an arrow by its node id. Only the open body of a function is walked (kind
-// func or impl, no type arguments), as Go walks the declarations and not the
-// instances. The reporting walk also visits the value of each top-level
+// Go keys its tables by pointer. Here a function is found by the index of its
+// module scope and its position (packPosition), a local by its body and
+// BodyInfo.locals index (packLocal), and an arrow by its node id. Only the open
+// body of a function is walked (kind func or impl, no type arguments), as Go
+// walks the declarations and not the instances. The reporting walk also visits the value of each top-level
 // constant, so the function stores in it are checked.
 
 import { Pos, Decl, FuncDecl, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
@@ -35,7 +35,6 @@ import {
   findBodySlot,
   getExpressionId,
   getExpressionPos,
-  generatorKey,
   orderArguments,
 } from "narrac/check"
 import { describeType, generatorUseFails } from "narrac/exprs"
@@ -53,21 +52,24 @@ export struct Effect {
 // A function a call or a name resolves to, with the key of its tables.
 struct Callee {
   declaration: FuncDecl
-  key: string
+  key: int
   // The name an effect error shows after "through".
   label: string
 }
 
 export struct EffectState {
-  bodyIndex: Map<string, int> // functionKey of a func, impl or test body -> Checker.bodies
-  functions: Map<string, Array<Effect>> // body effects of every analysed function
-  locals: Map<string, Array<Effect>> // effects of the function a local holds
+  bodyIndex: Map<int, int> // packPosition of a func, impl or test body -> Checker.bodies
+  functions: Map<int, Array<Effect>> // body effects of every analysed function
+  locals: Map<int, Array<Effect>> // effects of the function a local holds
+  bodyKeys: Array<int> = [] // packPosition of each func, impl and test body, else -1
+  functionKeys: Array<int> = [] // packPosition of each Checker.functions entry
   // The expressions of the reporting walk by body and position, for the
   // function stores that name a position (checkFunctionStores).
-  valuesAt: Map<string, Array<Expr>>
-  sources: Map<string, Expr> // the call a local's value comes from
+  valuesAt: Map<int, int> // packPosition of a body and position -> valueLists
+  valueLists: Array<Array<Expr>> = []
+  sources: Map<int, Expr> // the call a local's value comes from
   arrows: Map<int, Array<Effect>>
-  entries: Map<string, bool> // the entry functions
+  entries: Map<int, bool> // the entry functions
   report: bool
   changed: bool
   body: int // the body being walked
@@ -88,12 +90,26 @@ export struct CallEdge {
 
 const KNOWN_EFFECTS = ["alloc", "io", "unsafe"]
 
-function functionKey(module: string, pos: Pos): string uses alloc {
-  return `${module}|${Int.toString(pos.line)}:${Int.toString(pos.column)}`
+const KEY_STRIDE = 1048576
+
+function packPosition(owner: int, pos: Pos): int {
+  // The owner is a module scope index or a body index; lines and columns stay under KEY_STRIDE.
+  return (owner * KEY_STRIDE + pos.line) * KEY_STRIDE + pos.column
 }
 
-function localKey(bodyIndex: int, localIndex: int): string uses alloc {
-  return `${Int.toString(bodyIndex)}:${Int.toString(localIndex)}`
+function packLocal(bodyIndex: int, localIndex: int): int {
+  return bodyIndex * KEY_STRIDE * KEY_STRIDE + localIndex
+}
+
+function findFunctionKey(scopeIndex: Map<string, int>, module: string, pos: Pos): int {
+  if (scopeIndex[module] is Some(found)) {
+    return packPosition(found, pos)
+  }
+  return packPosition(-1, pos)
+}
+
+function nameGeneratorKey(module: string, pos: Pos): string uses alloc {
+  return `${module}|${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
 function containsName(names: Array<string>, name: string): bool {
@@ -161,26 +177,37 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     changed: false,
     body: -1,
   }
+  let scopeIndex: Map<string, int> = Map {}
+  for (const scope of Ranges.between(0, Arrays.length(checker.scopes))) {
+    scopeIndex[checker.scopes[scope].path] = scope
+  }
+  for (const info of Arrays.values(checker.functions)) {
+    const key = findFunctionKey(scopeIndex, info.module, info.declaration.pos)
+    Arrays.push(mutable state.functionKeys, key)
+  }
   for (const index of Ranges.between(0, Arrays.length(checker.bodies))) {
     const body = checker.bodies[index]
-    if (Arrays.length(body.typeArguments) > 0) {
-      continue
-    }
-    if (body.root is BodyRoot.RootFunc(declaration)) {
-      if (body.kind == "func" || body.kind == "impl") {
-        state.bodyIndex[functionKey(body.module, declaration.pos)] = index
+    let bodyKey = -1
+    if (Arrays.length(body.typeArguments) == 0) {
+      if (body.root is BodyRoot.RootFunc(declaration)) {
+        if (body.kind == "func" || body.kind == "impl") {
+          bodyKey = findFunctionKey(scopeIndex, body.module, declaration.pos)
+        }
+      }
+      if (body.root is BodyRoot.RootBlock(block)) {
+        if (body.kind == "test") {
+          bodyKey = findFunctionKey(scopeIndex, body.module, block.pos)
+        }
       }
     }
-    if (body.root is BodyRoot.RootBlock(block)) {
-      if (body.kind == "test") {
-        state.bodyIndex[functionKey(body.module, block.pos)] = index
-      }
+    if (bodyKey != -1) {
+      state.bodyIndex[bodyKey] = index
     }
+    Arrays.push(mutable state.bodyKeys, bodyKey)
   }
   for (const entry of Arrays.values(checker.entries)) {
     if (entry.funcIndex >= 0) {
-      const declaration = checker.functions[entry.funcIndex].declaration
-      state.entries[functionKey(checker.functions[entry.funcIndex].module, declaration.pos)] = true
+      state.entries[state.functionKeys[entry.funcIndex]] = true
     }
   }
 
@@ -293,8 +320,8 @@ function findStoredValue(
   state: EffectState,
   store: FunctionStore,
 ): Option<Array<string>> uses alloc {
-  if (state.valuesAt[positionKey(store.body, store.pos)] is Some(candidates)) {
-    for (const candidate of Arrays.values(candidates)) {
+  if (state.valuesAt[packPosition(store.body, store.pos)] is Some(slot)) {
+    for (const candidate of Arrays.values(state.valueLists[slot])) {
       if (findNodeType(checker, store.body, getExpressionId(candidate)) is Some(candidateType)) {
         if (candidateType == store.got) {
           if (valueEffects(checker, state, candidate) is Some(set)) {
@@ -305,10 +332,6 @@ function findStoredValue(
     }
   }
   return None
-}
-
-function positionKey(bodyIndex: int, pos: Pos): string uses alloc {
-  return `${Int.toString(bodyIndex)}|${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
 function generatorEffects(
@@ -326,7 +349,7 @@ function generatorEffects(
       return checker.boundGenerators[-2 - origin]
     }
     const declaration = checker.functions[origin].declaration
-    if (state.functions[generatorKey(checker, origin)] is Some(found)) {
+    if (state.functions[state.functionKeys[origin]] is Some(found)) {
       for (const name of Arrays.values(sortEffectNames(found))) {
         if (!containsName(declaration.effectParameters, name)) {
           Arrays.push(mutable names, name)
@@ -399,7 +422,7 @@ function walkTest(
   block: Block,
 ) uses alloc {
   // The effects of a test body are discarded.
-  const key = functionKey(checker.scopes[scope].path, block.pos)
+  const key = packPosition(scope, block.pos)
   if (state.bodyIndex[key] is Some(bodyIndex)) {
     state.body = bodyIndex
     let out: Array<Effect> = []
@@ -413,7 +436,7 @@ function analyseFunction(
   scope: int,
   declaration: FuncDecl,
 ) uses alloc {
-  const key = functionKey(checker.scopes[scope].path, declaration.pos)
+  const key = packPosition(scope, declaration.pos)
   if (declaration.body is None) {
     return
   }
@@ -446,7 +469,10 @@ function analyseFunction(
         Arrays.push(mutable inferred, name)
       }
     }
-    checker.generatorEffects[key] = inferred
+    checker.generatorEffects[nameGeneratorKey(
+      checker.scopes[scope].path,
+      declaration.pos,
+    )] = inferred
   }
   if (!state.report || !declaration.exported || state.entries[key] is Some(_)) {
     return
@@ -593,17 +619,17 @@ function describeFunctionLabel(checker: Checker, index: int): string uses alloc 
   return name
 }
 
-function findCallee(checker: Checker, ref: Ref): Option<Callee> uses alloc {
+function findCallee(checker: Checker, state: EffectState, ref: Ref): Option<Callee> uses alloc {
   return match (ref) {
     Ref.Function(index) => Some(Callee {
       declaration: checker.functions[index].declaration,
-      key: functionKey(checker.functions[index].module, checker.functions[index].declaration.pos),
+      key: state.functionKeys[index],
       label: describeFunctionLabel(checker, index),
     })
     Ref.Implementation(block, index) => Some(Callee {
       declaration: checker.implementations[block].functions[index].declaration,
-      key: functionKey(
-        checker.scopes[checker.implementations[block].scope].path,
+      key: packPosition(
+        checker.implementations[block].scope,
         checker.implementations[block].functions[index].declaration.pos,
       ),
       label: describeImplementation(checker, block, index),
@@ -699,7 +725,7 @@ function bindTypeEffect(
 ): Array<string> uses alloc {
   // An effect name stands for itself, or for the effects bound at the call when it is a variable of the function that made the value.
   if (source is Some(Expr.CallExpr(callId, _, _, _, arguments))) {
-    if (findCallee(checker, findRef(checker, state.body, callId)) is Some(callee)) {
+    if (findCallee(checker, state, findRef(checker, state.body, callId)) is Some(callee)) {
       if (containsName(callee.declaration.effectParameters, name)) {
         const ordered = orderArguments(checker, callId, arguments)
         return findBoundEffects(checker, state, callee.declaration, ordered, name)
@@ -732,7 +758,7 @@ function findLocalSource(
   nodeId: int,
 ): Option<Expr> uses alloc {
   if (findRef(checker, state.body, nodeId) is Ref.Local(localIndex)) {
-    return state.sources[localKey(state.body, localIndex)]
+    return state.sources[packLocal(state.body, localIndex)]
   }
   return None
 }
@@ -745,7 +771,7 @@ function findNamedValue(
 ): Option<Array<Effect>> uses alloc {
   const ref = findRef(checker, bodyIndex, nodeId)
   if (ref is Ref.Local(localIndex)) {
-    return state.locals[localKey(bodyIndex, localIndex)]
+    return state.locals[packLocal(bodyIndex, localIndex)]
   }
   return findFunctionValue(checker, state, bodyIndex, nodeId)
 }
@@ -756,7 +782,7 @@ function findFunctionValue(
   bodyIndex: int,
   nodeId: int,
 ): Option<Array<Effect>> uses alloc {
-  if (findCallee(checker, findRef(checker, bodyIndex, nodeId)) is Some(callee)) {
+  if (findCallee(checker, state, findRef(checker, bodyIndex, nodeId)) is Some(callee)) {
     return Some(concreteEffects(state, callee))
   }
   return None
@@ -787,10 +813,10 @@ function walkStatement(
       const localIndex = findDeclaredLocal(checker, state.body, nodeId)
       if (localIndex >= 0) {
         if (findSourceCall(checker, state, value) is Some(call)) {
-          state.sources[localKey(state.body, localIndex)] = call
+          state.sources[packLocal(state.body, localIndex)] = call
         }
         if (valueEffects(checker, state, value) is Some(set)) {
-          state.locals[localKey(state.body, localIndex)] = set
+          state.locals[packLocal(state.body, localIndex)] = set
         }
       }
     }
@@ -865,7 +891,7 @@ function walkLocalAssignment(
   if (target is Expr.Ident(targetId, _, _)) {
     if (findRef(checker, state.body, targetId) is Ref.Local(localIndex)) {
       if (valueEffects(checker, state, value) is Some(set)) {
-        const key = localKey(state.body, localIndex)
+        const key = packLocal(state.body, localIndex)
         let merged: Array<Effect> = []
         if (state.locals[key] is Some(existing)) {
           merged = existing
@@ -919,13 +945,13 @@ function walkExpression(
   expression: Expr,
 ) uses alloc {
   if (state.report) {
-    const key = positionKey(state.body, getExpressionPos(expression))
-    let known: Array<Expr> = []
-    if (state.valuesAt[key] is Some(existing)) {
-      known = existing
+    const key = packPosition(state.body, getExpressionPos(expression))
+    if (state.valuesAt[key] is Some(slot)) {
+      Arrays.push(mutable state.valueLists[slot], expression)
+    } else {
+      state.valuesAt[key] = Arrays.length(state.valueLists)
+      Arrays.push(mutable state.valueLists, [expression])
     }
-    Arrays.push(mutable known, expression)
-    state.valuesAt[key] = known
   }
   match (expression) {
     Expr.TemplateLit(_, pos, parts) => {
@@ -1041,7 +1067,7 @@ function walkCall(
     walkExpression(mutable checker, mutable state, mutable out, argument.value)
   }
   const ref = findRef(checker, state.body, nodeId)
-  if (findCallee(checker, ref) is Some(found)) {
+  if (findCallee(checker, state, ref) is Some(found)) {
     if (state.report) {
       const edge = CallEdge {
         body: state.body,
@@ -1133,8 +1159,7 @@ function addValueBoundEffects(
       }
       // A variable of the function being walked stays a name: its caller binds it.
       const declaration = checker.functions[binder].declaration
-      const binderKey = functionKey(checker.functions[binder].module, declaration.pos)
-      if (state.bodyIndex[binderKey] is Some(binderBody)) {
+      if (state.bodyIndex[state.functionKeys[binder]] is Some(binderBody)) {
         if (binderBody == state.body) {
           continue
         }
@@ -1336,7 +1361,7 @@ export function findRefEffects(
   state: EffectState,
   ref: Ref,
 ): Option<Array<string>> uses alloc {
-  if (findCallee(checker, ref) is Some(callee)) {
+  if (findCallee(checker, state, ref) is Some(callee)) {
     return Some(sortEffectNames(funcEffects(state, callee)))
   }
   return None
@@ -1372,14 +1397,15 @@ export function findExpressionEffects(
 
 export function dump(checker: Checker, state: EffectState): string uses alloc {
   let builder = Str.builder()
-  for (const body of Arrays.values(checker.bodies)) {
+  for (const index of Ranges.between(0, Arrays.length(checker.bodies))) {
+    const body = checker.bodies[index]
     if (Arrays.length(body.typeArguments) > 0 || (body.kind != "func" && body.kind != "impl")) {
       continue
     }
     if (body.root is BodyRoot.RootFunc(declaration)) {
       const callee = Callee {
         declaration: declaration,
-        key: functionKey(body.module, declaration.pos),
+        key: state.bodyKeys[index],
         label: declaration.name,
       }
       const names = sortEffectNames(funcEffects(state, callee))

@@ -1,7 +1,7 @@
 ---
 id: int-to-string
 title: "Format integers without snprintf"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 60586
 owns:
   - roadmaps/selfhost/nodes/int-to-string/**
 shared:

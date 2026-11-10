@@ -1,7 +1,7 @@
 ---
 id: map-helpers-split
 title: "Map helpers are emitted without Str.replace"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

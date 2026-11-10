@@ -197,41 +197,45 @@ export function reportUnsupported(
 }
 
 export function writeLine(mutable emitter: Emitter, text: string) uses alloc {
-  const padding = Str.repeat("  ", emitter.indent)
-  Str.append(mutable emitter.out, `${padding}${text}\n`)
+  // Append the indent, the text and the newline straight to the output.
+  for (const _level of Ranges.between(0, emitter.indent)) {
+    Str.append(mutable emitter.out, "  ")
+  }
+  Str.append(mutable emitter.out, text)
+  Str.append(mutable emitter.out, "\n")
 }
 
 export function cString(text: string): string uses alloc {
   // Bytes outside printable ASCII and `?` become octal escapes.
   let builder = Str.builder()
   Str.append(mutable builder, "\"")
-  for (const index of Ranges.between(0, Str.length(text))) {
+  const length = Str.length(text)
+  // Start of the run of bytes that copy unchanged.
+  let runStart = 0
+  for (const index of Ranges.between(0, length)) {
     const byte = Str.byteAt(text, index)
-    if (byte == 34 || byte == 92) {
+    const copies = byte >= 32 && byte < 127 && byte != 63 && byte != 34 && byte != 92
+    if (!copies) {
+      if (runStart < index) {
+        Str.append(mutable builder, Str.slice(text, runStart, index))
+      }
+      runStart = index + 1
       Str.append(mutable builder, "\\")
-      Str.appendChar(mutable builder, findByteChar(byte))
-    } else if (byte >= 32 && byte < 127 && byte != 63) {
-      Str.appendChar(mutable builder, findByteChar(byte))
-    } else {
-      const high = byte / 64
-      const middle = (byte / 8) % 8
-      const low = byte % 8
-      Str.append(
-        mutable builder,
-        `\\${Int.toString(high)}${Int.toString(middle)}${Int.toString(low)}`,
-      )
+      if (byte == 34 || byte == 92) {
+        Str.append(mutable builder, Str.slice(text, index, index + 1))
+      } else {
+        Str.append(mutable builder, Int.toString(byte / 64))
+        Str.append(mutable builder, Int.toString((byte / 8) % 8))
+        Str.append(mutable builder, Int.toString(byte % 8))
+      }
     }
+  }
+  if (runStart < length) {
+    Str.append(mutable builder, Str.slice(text, runStart, length))
   }
   Str.append(mutable builder, "\"")
   return Str.build(builder)
 }
-
-function findByteChar(byte: int): char {
-  return Str.charAt(Str.slice(ASCII, byte - 32, byte - 31), 0)
-}
-
-// The printable ASCII characters from space (32) to tilde (126).
-const ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
 export function literal(mutable emitter: Emitter, text: string): string uses alloc {
   emitter.literalCount++

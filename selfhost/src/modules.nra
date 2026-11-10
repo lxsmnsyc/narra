@@ -407,24 +407,41 @@ function loadStdModules(
   return load
 }
 
+export function extensionPath(path: string): string uses alloc {
+  // The Narra part of a builtin std module std/<name> is std/ext/<name>; "" for any other path.
+  if (Str.startsWith(path, "std/") && !Str.startsWith(path, "std/ext/")) {
+    return `std/ext/${Str.sliceFrom(path, 4)}`
+  }
+  return ""
+}
+
 function addStdImports(mutable load: StdLoad, mutable cache: ParseCache, ast: File) uses alloc {
   for (const importDecl of Arrays.values(ast.imports)) {
-    const text = stdSourceFor(importDecl.path)
-    if (text == "" || load.seen[importDecl.path] is Some(_)) {
-      continue
+    addStdModule(mutable load, mutable cache, importDecl.path)
+    // A builtin std module may have a Narra part, std/ext/<name> for std/<name>.
+    const extension = extensionPath(importDecl.path)
+    if (extension != "") {
+      addStdModule(mutable load, mutable cache, extension)
     }
-    load.seen[importDecl.path] = true
-    const file = `std/src/${Str.sliceFrom(importDecl.path, 4)}.nra`
-    const parsed = parseSource(mutable cache, importDecl.path, text, file, false)
-    match (parsed) {
-      Ok(source) => {
-        const module = newModule(importDecl.path, file, source.ast, source.firstId, source.endId)
-        // The imports of a std module come before it.
-        addStdImports(mutable load, mutable cache, source.ast)
-        Arrays.push(mutable load.modules, module)
-      }
-      Err(error) => panic(`std source ${importDecl.path}: ${error.message}`)
+  }
+}
+
+function addStdModule(mutable load: StdLoad, mutable cache: ParseCache, path: string) uses alloc {
+  const text = stdSourceFor(path)
+  if (text == "" || load.seen[path] is Some(_)) {
+    return
+  }
+  load.seen[path] = true
+  const file = `std/src/${Str.replace(Str.sliceFrom(path, 4), "/", "__")}.nra`
+  const parsed = parseSource(mutable cache, path, text, file, false)
+  match (parsed) {
+    Ok(source) => {
+      const module = newModule(path, file, source.ast, source.firstId, source.endId)
+      // The imports of a std module come before it.
+      addStdImports(mutable load, mutable cache, source.ast)
+      Arrays.push(mutable load.modules, module)
     }
+    Err(error) => panic(`std source ${path}: ${error.message}`)
   }
 }
 

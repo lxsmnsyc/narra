@@ -1,7 +1,7 @@
 ---
 id: fast-alloc
 title: "Size-class free lists in narra_alloc"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 123080
 owns:
   - roadmaps/selfhost/nodes/fast-alloc/**
 shared:

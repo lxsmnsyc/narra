@@ -1,7 +1,7 @@
 ---
 id: int-to-string
 title: "Format integers without snprintf"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-4

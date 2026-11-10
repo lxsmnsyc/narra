@@ -54,7 +54,7 @@ struct MapItem {
   type: Type
 }
 
-function mergeSort(items: Array<MapItem>): Array<MapItem> uses alloc {
+function mergeSort(items: Array<MapItem>): Array<MapItem> from items uses alloc {
   const count = Arrays.length(items)
   if (count < 2) {
     return items
@@ -113,11 +113,11 @@ function containerName(emitter: Emitter, type: Type): string uses alloc {
   return substring(name, 0, Str.length(name) - 1)
 }
 
-function getKeyType(type: Type): Type {
+function getKeyType(type: Type): Type from type {
   return match (type) { Type.TMap(keyType, _) => keyType, _ => type }
 }
 
-function getValueType(type: Type): Type {
+function getValueType(type: Type): Type from type {
   return match (type) { Type.TMap(_, valueType) => valueType, _ => type }
 }
 
@@ -272,7 +272,7 @@ export function emitMapLiteral<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.MapLit(nodeId, _, _, keys, values)) {
-    const mapType = readNodeType(emitter, nodeId)
+    const mapType = copy(readNodeType(emitter, nodeId))
     const name = containerName(emitter, mapType)
     const map = ownedTemp(
       mutable emitter,
@@ -313,8 +313,8 @@ export function emitMapGet<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.IndexExpr(nodeId, _, target, index)) {
-    const mapType = readNodeType(emitter, getExpressionId(target))
-    const optionType = readNodeType(emitter, nodeId)
+    const mapType = copy(readNodeType(emitter, getExpressionId(target)))
+    const optionType = copy(readNodeType(emitter, nodeId))
     const name = containerName(emitter, mapType)
     const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
     const map = temp(mutable emitter, mapType, targetCode.text)
@@ -364,7 +364,7 @@ export function emitMapBuiltin<W: EmitWalker>(
   if (expression is Expr.CallExpr(nodeId, _, _, _, arguments)) {
     if (readNodeRef(emitter, nodeId) is Ref.Builtin(builtinIndex)) {
       const name = emitter.checker.registry.functions[builtinIndex].name
-      const mapType = readNodeType(emitter, getExpressionId(arguments[0].value))
+      const mapType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
       if (name == "Map.size") {
         const map = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
         return Code { text: `(${map.text})->len`, owned: false }
@@ -419,7 +419,7 @@ function emitMapUpdate<W: EmitWalker>(
   }
   const current = temp(mutable emitter, valueType, initial)
   const callbackCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[3].value)
-  const callbackType = readNodeType(emitter, getExpressionId(arguments[3].value))
+  const callbackType = copy(readNodeType(emitter, getExpressionId(arguments[3].value)))
   const callback = temp(mutable emitter, callbackType, callbackCode.text)
   const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
   emitter.tempCount++
@@ -458,7 +458,7 @@ function emitMapToArray<W: EmitWalker>(
   mapType: Type,
   entries: bool,
 ): Code uses alloc {
-  const arrayType = readNodeType(emitter, nodeId)
+  const arrayType = copy(readNodeType(emitter, nodeId))
   const elementType = match (arrayType) { Type.TArray(element) => element, _ => arrayType }
   const sourceCode = EmitWalker.emitExpression(walker, mutable emitter, source)
   const map = temp(mutable emitter, mapType, sourceCode.text)
@@ -492,7 +492,7 @@ export function emitMapSet<W: EmitWalker>(
   // The caller wraps the statement.
   if (statement is Stmt.AssignStmt(_, target, value)) {
     if (target is Expr.IndexExpr(_, _, mapTarget, index)) {
-      const mapType = readNodeType(emitter, getExpressionId(mapTarget))
+      const mapType = copy(readNodeType(emitter, getExpressionId(mapTarget)))
       const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
       const consumedValue = consume(
         mutable emitter,
@@ -522,7 +522,7 @@ export function emitMapFor<W: EmitWalker>(
       if (readNodeRef(emitter, callId) is Ref.Builtin(builtinIndex)) {
         const entries = emitter.checker.registry.functions[builtinIndex].name == "Map.entries"
         const source = arguments[0].value
-        const mapType = readNodeType(emitter, getExpressionId(source))
+        const mapType = copy(readNodeType(emitter, getExpressionId(source)))
         const code = EmitWalker.emitExpression(walker, mutable emitter, source)
         const map = consume(mutable emitter, code.text, code.owned, mapType)
         // The loop owns the map until the statement ends.

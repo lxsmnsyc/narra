@@ -66,6 +66,8 @@ struct SharingFacts {
   owner: int
   // The arrow function being walked, or -1.
   arrow: int
+  // The tracked types a value of each type holds, by type key (kept in the checker between bodies).
+  heldTypeSets: Map<string, Map<string, bool>>
 }
 
 export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
@@ -74,21 +76,25 @@ export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl)
     return
   }
   if (funcDecl.body is Some(block)) {
-    let facts = createFacts()
+    let facts = createFacts(checker.heldTypeSets)
+    checker.heldTypeSets = Map {}
     for (const parameter of Arrays.values(funcDecl.parameters)) {
       noteDeclared(checker, mutable facts, parameter.id)
     }
     walkBlock(checker, mutable facts, block)
     checkFunctionReturns(mutable checker, facts, funcDecl)
     checkArrowReturns(mutable checker, facts)
+    checker.heldTypeSets = facts.heldTypeSets
   }
 }
 
 export function checkSharedResultsIn(mutable checker: Checker, block: Block) uses alloc {
   // A test or another body that is not a function: only its arrow functions have results.
-  let facts = createFacts()
+  let facts = createFacts(checker.heldTypeSets)
+  checker.heldTypeSets = Map {}
   walkBlock(checker, mutable facts, block)
   checkArrowReturns(mutable checker, facts)
+  checker.heldTypeSets = facts.heldTypeSets
 }
 
 export function findSharedArgument(
@@ -157,7 +163,9 @@ function findArgument(
   return None
 }
 
-function createFacts(): SharingFacts uses alloc {
+function createFacts(
+  heldTypeSets: Map<string, Map<string, bool>>,
+): SharingFacts from heldTypeSets uses alloc {
   return SharingFacts {
     given: Map {},
     loopSources: Map {},
@@ -167,6 +175,7 @@ function createFacts(): SharingFacts uses alloc {
     returns: [],
     owner: -1,
     arrow: -1,
+    heldTypeSets: heldTypeSets,
   }
 }
 
@@ -423,12 +432,20 @@ function noteMutableArguments(
     if (root < 0) {
       continue
     }
-    const room = collectHeldTypes(checker, getNodeType(checker, getExpressionId(argument.value)))
+    const room = collectHeldTypes(
+      checker,
+      mutable facts,
+      getNodeType(checker, getExpressionId(argument.value)),
+    )
     for (const other of Arrays.values(arguments)) {
       if (other.isMutable) {
         continue
       }
-      const held = collectHeldTypes(checker, getNodeType(checker, getExpressionId(other.value)))
+      const held = collectHeldTypes(
+        checker,
+        mutable facts,
+        getNodeType(checker, getExpressionId(other.value)),
+      )
       if (haveCommonType(room, held)) {
         addGiven(mutable facts, root, other.value)
       }
@@ -438,14 +455,21 @@ function noteMutableArguments(
 
 function collectHeldTypes(
   checker: Checker,
+  mutable facts: SharingFacts,
   type: Option<Type>,
 ): Map<string, bool> from checker uses alloc {
   // The tracked types a value holds, itself included, by type key. An unknown type or a
   // type parameter is "*", which overlaps every set.
   let held: Map<string, bool> = Map {}
   if (type is Some(known)) {
+    // Each type's set is built once and kept.
+    const typeName = typeKey(known)
+    if (facts.heldTypeSets[typeName] is Some(cached)) {
+      return copy(cached)
+    }
     let visited: Map<string, bool> = Map {}
     addHeldTypes(checker, known, mutable held, mutable visited)
+    facts.heldTypeSets[typeName] = copy(held)
   } else {
     held["*"] = true
   }

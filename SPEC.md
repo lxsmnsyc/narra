@@ -1031,7 +1031,6 @@ function lastItem<T>(items: Array<T>): T from items {
 - **Function types.** `from` is part of a function type, like `uses` (section 7), and names one of the type's parameter names: `(grid: Grid) => Array<int> from grid uses alloc`. `from` comes before `uses`. A function with a fresh result fits a slot whose type has `from`; a function with `from` does not fit a slot without the same `from` (E0977), unless the result holds no tracked value. The fix adds the marker to the slot's type, naming the parameter `source` when the type writes no name for it. A type printed by the compiler names the shared parameter `source`: `(source: Grid) => Array<int> from source`.
 - **Trait functions.** An implementation may leave out the `from` its trait function has, but may not add one the trait function lacks.
 - **Generators** are not checked: a generator's result is the generator.
-- A package whose `narra.toml` has `shared-results = "unchecked"` in `[package]` is not checked. The compiler's own package sets it until its functions carry their markers.
 
 <!-- context
 import * as Arrays from "std/array"

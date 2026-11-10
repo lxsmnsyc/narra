@@ -35,7 +35,6 @@ export struct Package {
   search: Array<string>
   nextId: int // the next free node id after all files (one sequence)
   single: bool // loaded from one .nra file, without narra.toml
-  sharedResultsUnchecked: bool = false // see Manifest
 }
 
 function plain(message: string): Array<LoadError> {
@@ -84,7 +83,7 @@ export function loadCached(
   path: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   // Unchanged sources come from cache, and the sources parsed here are added to it.
   if (Fs.listDir(path) is Ok(_)) {
     return loadPackage(path, overrides, mutable cache)
@@ -102,7 +101,7 @@ function parseSource(
   text: string,
   file: string,
   derive: bool,
-): Result<CachedSource, LoadError> uses alloc {
+): Result<CachedSource, LoadError> from cache uses alloc {
   // An unchanged text is taken from cache.
   if (cache.sources[key] is Some(cached)) {
     if (cached.text == text) {
@@ -166,7 +165,7 @@ function loadFile(
   path: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   const read = readSource(path, overrides)
   if (read is Err(message)) {
     return Err(plain(message))
@@ -201,7 +200,7 @@ function loadPackage(
   directory: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(message)) {
     return Err(plain(message))
@@ -277,7 +276,6 @@ function loadPackage(
     search: config.search,
     nextId: cache.nextId,
     single: false,
-    sharedResultsUnchecked: config.sharedResultsUnchecked,
   })
 }
 
@@ -322,7 +320,7 @@ function newModule(
   ast: File,
   firstId: int,
   endId: int,
-): SourceModule uses alloc {
+): SourceModule from ast uses alloc {
   let names: Array<string> = []
   for (const declaration of Arrays.values(ast.declarations)) {
     const name = exportedName(declaration)
@@ -400,7 +398,7 @@ struct StdLoad {
 function loadStdModules(
   modules: Array<SourceModule>,
   mutable cache: ParseCache,
-): StdLoad uses alloc {
+): StdLoad from modules uses alloc {
   let load = StdLoad { modules: [], seen: Map {} }
   for (const module of Arrays.values(modules)) {
     addStdImports(mutable load, mutable cache, module.ast)
@@ -460,14 +458,21 @@ struct Walk {
   errors: Array<LoadError>
 }
 
-function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
+function orderModules(modules: Array<SourceModule>): Ordered from modules uses alloc {
   let index: Map<string, int> = Map {}
   let state: Array<int> = []
   for (const i of Ranges.between(0, Arrays.length(modules))) {
     index[modules[i].path] = i
     Arrays.push(mutable state, 0)
   }
-  let walk = Walk { modules: modules, index: index, state: state, order: [], stack: [], errors: [] }
+  let walk = Walk {
+    modules: copy(modules),
+    index: index,
+    state: state,
+    order: [],
+    stack: [],
+    errors: [],
+  }
   for (const i of Ranges.between(0, Arrays.length(modules))) {
     // Imports of modules outside the package are skipped; the checker reports unknown modules.
     if (walk.state[i] == 0) {
@@ -478,7 +483,7 @@ function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
 }
 
 function visit(mutable walk: Walk, index: int) uses alloc {
-  const module = walk.modules[index]
+  const module = copy(walk.modules[index])
   walk.state[index] = 1
   Arrays.push(mutable walk.stack, module.path)
   for (const importDecl of Arrays.values(module.ast.imports)) {
@@ -524,7 +529,10 @@ function popLast(items: Array<string>): Array<string> uses alloc {
   return out
 }
 
-export function binary(package: Package, name: string): Result<Binary, string> uses alloc {
+export function binary(
+  package: Package,
+  name: string,
+): Result<Binary, string> from package uses alloc {
   if (name != "") {
     for (const candidate of Arrays.values(package.binaries)) {
       if (candidate.name == name) {

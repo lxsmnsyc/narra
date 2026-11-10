@@ -39,7 +39,7 @@ import {
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
-function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl {
+function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl from checker {
   return match (program) {
     ProgramFunc.PlainFunc(funcIndex) => checker.functions[funcIndex].declaration
     ProgramFunc.InstanceFunc(instance) =>
@@ -49,7 +49,10 @@ function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl {
   }
 }
 
-function parameterTypes(checker: Checker, program: ProgramFunc): Array<Type> uses alloc {
+function parameterTypes(
+  checker: Checker,
+  program: ProgramFunc,
+): Array<Type> from checker uses alloc {
   if (program is ProgramFunc.InstanceFunc(instance)) {
     return checker.instanceList[instance].parameters
   }
@@ -139,13 +142,13 @@ export function findTailCalls(
   program: ProgramFunc,
   block: Block,
   isVoid: bool,
-): Array<Expr> uses alloc {
+): Array<Expr> from emitter uses alloc {
   // Tail positions are the value of a `return`, an arm of a returned `match`,
   // and the last statement of a void function, also at the end of an `if`
   // branch or a `match` arm that is in tail position.
   let found: Array<Expr> = []
   scanBlock(emitter, program, block, isVoid, mutable found)
-  return found
+  return copy(found)
 }
 
 function scanBlock(
@@ -225,7 +228,7 @@ export function isTailCall(emitter: Emitter, expression: Expr): bool {
   return false
 }
 
-function tailCallArguments(expression: Expr): Array<Arg> {
+function tailCallArguments(expression: Expr): Array<Arg> from expression {
   if (expression is Expr.CallExpr(_, _, _, _, arguments)) {
     return arguments
   }
@@ -271,11 +274,11 @@ export function openTailLoop(
 ) uses alloc {
   // The function owns the parameters a jump replaces. A counted parameter that
   // every tail call passes through stays borrowed from the caller.
-  const parameters = functionDeclaration(emitter.checker, program).parameters
+  const parameters = copy(functionDeclaration(emitter.checker, program).parameters)
   const passed = findPassedThrough(emitter, program, calls)
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     if (!parameters[index].isMutable) {
-      const local = readLocal(emitter, index)
+      const local = copy(readLocal(emitter, index))
       if (passed[index] && needsRc(emitter, local.localType)) {
         continue
       }
@@ -308,7 +311,9 @@ function isBorrowedParameter(emitter: Emitter, index: int): bool {
   return true
 }
 
-export function withoutLastFrame(frames: Array<Array<TempVar>>): Array<Array<TempVar>> uses alloc {
+export function withoutLastFrame(
+  frames: Array<Array<TempVar>>,
+): Array<Array<TempVar>> from frames uses alloc {
   // unwindAll already released this frame.
   let kept: Array<Array<TempVar>> = []
   for (const index of Ranges.between(0, Arrays.length(frames) - 1)) {
@@ -325,8 +330,8 @@ export function emitTailJump<W: EmitWalker>(
   const arguments = tailCallArguments(call)
   beginStatement(mutable emitter)
   if (emitter.tailProgram is Some(program)) {
-    const parameters = functionDeclaration(emitter.checker, program).parameters
-    const types = parameterTypes(emitter.checker, program)
+    const parameters = copy(functionDeclaration(emitter.checker, program).parameters)
+    const types = copy(parameterTypes(emitter.checker, program))
     // Evaluate in written order; values is in parameter order.
     const parameterIndexes = findParameterIndexes(
       emitter.checker,

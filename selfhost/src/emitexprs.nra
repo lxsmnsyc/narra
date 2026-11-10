@@ -87,7 +87,7 @@ export function emitExpression<W: EmitWalker>(
       if (held.text != "") {
         emitter.heldArguments[expressionId] = plain("")
         emitter.heldPending--
-        return held
+        return copy(held)
       }
     }
   }
@@ -338,7 +338,7 @@ function emitIndexRead<W: EmitWalker>(
   target: Expr,
   index: Expr,
 ): Code uses alloc {
-  const targetType = readNodeType(emitter, getExpressionId(target))
+  const targetType = copy(readNodeType(emitter, getExpressionId(target)))
   if (targetType is Type.TMap(_, _)) {
     return Maps.emitMapGet(walker, mutable emitter, expression)
   }
@@ -463,7 +463,7 @@ function emitBinary<W: EmitWalker>(
   }
 
   // Equality of structs, enums and arrays is the traits module's.
-  const leftType = underlyingType(emitter, readNodeType(emitter, getExpressionId(left)))
+  const leftType = copy(underlyingType(emitter, readNodeType(emitter, getExpressionId(left))))
   if (!isPrimitive(leftType) && (operator == "==" || operator == "!=")) {
     return Traits.emitEquality(walker, mutable emitter, expression)
   }
@@ -713,7 +713,7 @@ function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value:
   if (isStableArgument(emitter, value, nodeId)) {
     return
   }
-  const valueType = readNodeType(emitter, nodeId)
+  const valueType = copy(readNodeType(emitter, nodeId))
   if (valueType is Type.TFunc(_, _, _, _, _)) {
     return
   }
@@ -743,7 +743,7 @@ function emitConstructorCall<W: EmitWalker>(
   arguments: Array<Arg>,
 ): Code uses alloc {
   const enumType = Type.TEnum(enumIndex)
-  const fields = emitter.checker.enums[enumIndex].variants[variant].fields
+  const fields = copy(emitter.checker.enums[enumIndex].variants[variant].fields)
   let parts: Array<string> = []
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
@@ -779,7 +779,7 @@ function emitFunctionCall<W: EmitWalker>(
   program: ProgramFunc,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const checker = emitter.checker
+  const checker = copy(emitter.checker)
   let parameterMutable: Array<bool> = []
   let parameterTypes: Array<Type> = []
   let result = Type.TVoid
@@ -796,7 +796,7 @@ function emitFunctionCall<W: EmitWalker>(
       for (const parameter of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
         Arrays.push(mutable parameterMutable, parameter.isMutable)
       }
-      parameterTypes = checker.instanceList[instance].parameters
+      parameterTypes = copy(checker.instanceList[instance].parameters)
       result = checker.instanceList[instance].result
     }
     ProgramFunc.ImplFunc(block, index) => {
@@ -880,7 +880,7 @@ function emitBuiltinCall<W: EmitWalker>(
   return Std.emitStdCall(walker, mutable emitter, expression)
 }
 
-function callArguments(expression: Expr): Array<Arg> {
+function callArguments(expression: Expr): Array<Arg> from expression {
   if (expression is Expr.CallExpr(_, _, _, _, arguments)) {
     return arguments
   }
@@ -935,7 +935,7 @@ function emitArrayCall<W: EmitWalker>(
     return plain(`(${value})->len`)
   }
   if (name == "Array.push") {
-    const arrayType = readNodeType(emitter, getExpressionId(arguments[0].value))
+    const arrayType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
     if (arrayType is Type.TArray(element)) {
       const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
       const consumed = consume(mutable emitter, code.text, code.owned, element)
@@ -944,7 +944,7 @@ function emitArrayCall<W: EmitWalker>(
     }
   }
   if (name == "Array.withCapacity") {
-    const arrayType = readNodeType(emitter, getExpressionId(expression))
+    const arrayType = copy(readNodeType(emitter, getExpressionId(expression)))
     const capacity = argumentCode(walker, mutable emitter, expression, 0)
     const arrayStruct = containerStruct(emitter, arrayType)
     // The capacity is a hint: a negative one reserves nothing and a huge one is cut to 2^20.
@@ -968,7 +968,7 @@ function emitBoxCall<W: EmitWalker>(
   expression: Expr,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const boxType = readNodeType(emitter, getExpressionId(expression))
+  const boxType = copy(readNodeType(emitter, getExpressionId(expression)))
   if (boxType is Type.TBox(element)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
     const consumed = consume(mutable emitter, code.text, code.owned, element)
@@ -1004,7 +1004,7 @@ function emitStructLiteral<W: EmitWalker>(
   if (spread is Some(_)) {
     return Match.emitSpreadLiteral(walker, mutable emitter, expression)
   }
-  const structType = readNodeType(emitter, nodeId)
+  const structType = copy(readNodeType(emitter, nodeId))
   if (structType is Type.TStruct(structIndex)) {
     let parts: Array<string> = []
     let given: Map<string, bool> = Map {}
@@ -1017,7 +1017,7 @@ function emitStructLiteral<W: EmitWalker>(
       given[field.name] = true
     }
     // The rest take their default, which is emitted inside the default's body.
-    for (const declared of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+    for (const declared of Arrays.values(copy(emitter.checker.structs[structIndex].fields))) {
       if (given[declared.name] is Some(_)) {
         continue
       }
@@ -1056,7 +1056,7 @@ function emitArrayLiteral<W: EmitWalker>(
   if (isTuple) {
     return Match.emitTupleLiteral(walker, mutable emitter, expression)
   }
-  const arrayType = readNodeType(emitter, nodeId)
+  const arrayType = copy(readNodeType(emitter, nodeId))
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)
     const array = ownedTemp(
@@ -1139,7 +1139,7 @@ function indexPointer<W: EmitWalker>(
   target: Expr,
   index: Expr,
 ): string uses alloc {
-  const arrayType = readNodeType(emitter, getExpressionId(target))
+  const arrayType = copy(readNodeType(emitter, getExpressionId(target)))
   if (arrayType is Type.TArray(element)) {
     const base = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
@@ -1284,7 +1284,7 @@ implement EmitWalker for ConstWalker {
 export function constRef(mutable emitter: Emitter, constIndex: int): string uses alloc {
   // The value is borrowed. A static constant re-emits its value here, inside
   // its own body.
-  const checker = emitter.checker
+  const checker = copy(emitter.checker)
   const body = findBody(checker, `const|${Int.toString(constIndex)}`)
   if (body >= 0 && isStaticConstant(emitter, constIndex)) {
     const saved = switchBody(mutable emitter, body)
@@ -1299,7 +1299,7 @@ export function constRef(mutable emitter: Emitter, constIndex: int): string uses
   return temp(mutable emitter, constantType, `${getter}()`)
 }
 
-export function constType(checker: Checker, constIndex: int): Type {
+export function constType(checker: Checker, constIndex: int): Type from checker {
   const info = checker.consts[constIndex]
   if (info.valueType is Some(inferred)) {
     return inferred
@@ -1315,10 +1315,10 @@ function emitArrayFilled<W: EmitWalker>(
   mutable emitter: Emitter,
   expression: Expr,
 ): Code uses alloc {
-  const optionType = readNodeType(emitter, getExpressionId(expression))
+  const optionType = copy(readNodeType(emitter, getExpressionId(expression)))
   const some = StdHelp.findVariant(emitter, optionType, "Some")
   const none = StdHelp.findVariant(emitter, optionType, "None")
-  const arrayType = StdHelp.variantFieldType(emitter, optionType, some)
+  const arrayType = copy(StdHelp.variantFieldType(emitter, optionType, some))
   const value = argumentCode(walker, mutable emitter, expression, 0)
   const count = argumentCode(walker, mutable emitter, expression, 1)
   const arrayStruct = containerStruct(emitter, arrayType)

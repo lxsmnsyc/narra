@@ -31,7 +31,7 @@ name = "app"
 entry = "cli.run"     # module inside the package, then the function; "app/cli.run" also works
 ```
 
-`[link]` (`libraries`, `search`) is read but not used yet. Other tables, such as `[build]`, are skipped. `[dependencies]` is an error. `shared-results = "unchecked"` in `[package]` turns off the `from` check (E0976); `selfhost/narra.toml` sets it until the compiler's functions carry their markers.
+`[link]` (`libraries`, `search`) is read but not used yet. Other tables, such as `[build]`, are skipped. `[dependencies]` is an error.
 
 Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are still live at exit. The program exits with code 102 when any are found.
 

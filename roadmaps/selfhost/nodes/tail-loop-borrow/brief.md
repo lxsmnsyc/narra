@@ -1,7 +1,7 @@
 ---
 id: tail-loop-borrow
 title: "Tail-loop functions borrow the parameters they pass through"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 188539
 owns:
   - roadmaps/selfhost/nodes/tail-loop-borrow/**
 shared:
@@ -45,5 +45,5 @@ depends_on:
 
 ## Acceptance
 
-- [ ] Instructions for `narrac emit selfhost` before and after, 3 runs each, the gain above the spread. A sample with a tail-recursive function that passes a counted parameter unchanged and one that replaces it, clean under AddressSanitizer and the leak check.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] Instructions for `narrac emit selfhost` before and after, 3 runs each, the gain above the spread. A sample with a tail-recursive function that passes a counted parameter unchanged and one that replaces it, clean under AddressSanitizer and the leak check.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.

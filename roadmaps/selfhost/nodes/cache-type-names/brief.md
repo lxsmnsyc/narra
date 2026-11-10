@@ -1,7 +1,7 @@
 ---
 id: cache-type-names
 title: "Cache C type names in the emitter"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 70980
 owns:
   - roadmaps/selfhost/nodes/cache-type-names/**
 shared:

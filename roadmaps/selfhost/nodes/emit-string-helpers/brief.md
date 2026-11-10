@@ -1,7 +1,7 @@
 ---
 id: emit-string-helpers
 title: "Faster cString and writeLine in the emitter"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-4

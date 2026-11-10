@@ -434,7 +434,8 @@ function collectHeldTypes(checker: Checker, type: Option<Type>): Map<string, boo
   // type parameter is "*", which overlaps every set.
   let held: Map<string, bool> = Map {}
   if (type is Some(known)) {
-    addHeldTypes(checker, known, mutable held, 0)
+    let visited: Map<string, bool> = Map {}
+    addHeldTypes(checker, known, mutable held, mutable visited)
   } else {
     held["*"] = true
   }
@@ -445,12 +446,14 @@ function addHeldTypes(
   checker: Checker,
   type: Type,
   mutable held: Map<string, bool>,
-  depth: int,
+  mutable visited: Map<string, bool>,
 ) uses alloc {
+  // Each type is walked once, so a recursive enum costs one visit per type.
   const typeName = typeKey(type)
-  if (depth > 6 || held[typeName] is Some(_)) {
+  if (visited[typeName] is Some(_)) {
     return
   }
+  visited[typeName] = true
   if (isCopyTracked(checker, type)) {
     held[typeName] = true
   }
@@ -462,25 +465,30 @@ function addHeldTypes(
       checker,
       element,
       mutable held,
-      depth + 1,
+      mutable visited,
     )
     Type.TMap(key, value) => {
-      addHeldTypes(checker, key, mutable held, depth + 1)
-      addHeldTypes(checker, value, mutable held, depth + 1)
+      addHeldTypes(checker, key, mutable held, mutable visited)
+      addHeldTypes(checker, value, mutable held, mutable visited)
     }
     Type.TStruct(index) => {
       for (const field of Arrays.values(checker.structs[index].fields)) {
-        addHeldTypes(checker, field.fieldType, mutable held, depth + 1)
+        addHeldTypes(checker, field.fieldType, mutable held, mutable visited)
       }
     }
     Type.TEnum(index) => {
       for (const variant of Arrays.values(checker.enums[index].variants)) {
         for (const field of Arrays.values(variant.fields)) {
-          addHeldTypes(checker, field.fieldType, mutable held, depth + 1)
+          addHeldTypes(checker, field.fieldType, mutable held, mutable visited)
         }
       }
     }
-    Type.TGenerator(element, _, _, _, _) => addHeldTypes(checker, element, mutable held, depth + 1)
+    Type.TGenerator(element, _, _, _, _) => addHeldTypes(
+      checker,
+      element,
+      mutable held,
+      mutable visited,
+    )
     _ => {}
   }
 }
@@ -572,22 +580,30 @@ function isStopLocal(checker: Checker, facts: SharingFacts, owner: int, local: i
   return !isInsideArrow(facts, local, owner)
 }
 
-export function canShareType(checker: Checker, type: Type): bool {
+export function canShareType(checker: Checker, type: Type): bool uses alloc {
   // A value that can hold a tracked value: a tracked type, or an enum with such a payload.
-  return canShareAtDepth(checker, type, 0)
+  let visited: Map<string, bool> = Map {}
+  return canShareVisiting(checker, type, mutable visited)
 }
 
-function canShareAtDepth(checker: Checker, type: Type, depth: int): bool {
+function canShareVisiting(
+  checker: Checker,
+  type: Type,
+  mutable visited: Map<string, bool>,
+): bool uses alloc {
   if (isCopyTracked(checker, type)) {
     return true
   }
-  if (depth > 4) {
-    return false
-  }
+  // An enum already being walked adds nothing new.
   if (type is Type.TEnum(index)) {
+    const typeName = typeKey(type)
+    if (visited[typeName] is Some(_)) {
+      return false
+    }
+    visited[typeName] = true
     for (const variant of Arrays.values(checker.enums[index].variants)) {
       for (const field of Arrays.values(variant.fields)) {
-        if (canShareAtDepth(checker, field.fieldType, depth + 1)) {
+        if (canShareVisiting(checker, field.fieldType, mutable visited)) {
           return true
         }
       }

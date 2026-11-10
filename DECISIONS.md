@@ -417,6 +417,8 @@ Decision: `narra check --report-copies`, `NARRA_TRACE_COPIES=1` and `@unique` le
 - **Reason.** `@unique` turns the fast path into a checked promise in debug builds, at no cost in release builds.
 - **Rejected: making every copy explicit, as Rust's `.clone()`.** Every shared value would need copy calls, which goes against the value model.
 
+Superseded by D94: copies are written as `copy(x)` and a debug build reports the copies on write that no `copy(...)` explains. `--report-copies`, `NARRA_TRACE_COPIES` and `@unique` were never built and are removed.
+
 ## D50. Constant parameters and reads go through pointers
 
 Decision: large constant parameters are passed by pointer, and reads of fields and elements go through pointers without copying (section 11).

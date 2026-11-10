@@ -1,7 +1,7 @@
 ---
 id: lexer-punctuation
 title: "The lexer picks punctuation by first byte"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 82940
 owns:
   - roadmaps/selfhost/nodes/lexer-punctuation/**
 shared:
@@ -45,9 +45,9 @@ depends_on:
 
 ## Acceptance
 
-- [ ] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. The gain must exceed the run-to-run spread, or the node closes as not worth it.
-- [ ] Token streams are unchanged: `narrac` output for the samples and the fmt suite is byte-identical.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. The gain must exceed the run-to-run spread, or the node closes as not worth it.
+- [x] Token streams are unchanged: `narrac` output for the samples and the fmt suite is byte-identical.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
 
 ## Notes for the worker
 

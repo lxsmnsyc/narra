@@ -1,7 +1,7 @@
 ---
 id: tail-loop-borrow
 title: "Tail-loop functions borrow the parameters they pass through"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

@@ -34,7 +34,7 @@ import {
   getLocal,
 } from "narrac/check"
 import { LocalInfo, BindingKind, setBinding } from "narrac/check"
-import { buildQualifyFix, insertAt } from "narrac/fixes"
+import { buildQualifyFix, createEdit, createFix, insertAt } from "narrac/fixes"
 import { resolveType } from "narrac/resolve"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
 import { namesEnum, findEnumName } from "narrac/ctors"
@@ -774,6 +774,19 @@ export function checkMatch<W: Walker>(
     let locals: Array<int> = []
     collectPatternLocals(checker, arm.pattern, mutable locals)
     bindPatternLocals(mutable checker, locals)
+
+    // An arm that no value reaches is an error, guarded or not; an or-pattern reports its alternatives.
+    if (!(arm.pattern is Pattern.PatOr(_, _, _))) {
+      if (!isUseful(checker, rows, [arm.pattern], [subjectType])) {
+        reportErrorFix(
+          mutable checker,
+          arm.pos,
+          "E0983",
+          [createFix("remove the unreachable arm", [createEdit(arm.pos, arm.next, "")])],
+          "this arm is unreachable: the arms before it already match every value it matches",
+        )
+      }
+    }
 
     // Only an arm without a guard counts for exhaustiveness.
     if (arm.guard is Some(guard)) {

@@ -194,6 +194,14 @@ export struct LocalInfo {
   // checker.localCount right after the increment; the C name is v_<name>_<number>
   // (filled by selfhost-emit-program).
   number: int = 0
+  // The depth of the scope that last bound the name.
+  depth: int = 0
+}
+
+// A name bound in a scope and the value it replaced (-1 for none).
+export struct ScopeBinding {
+  name: string
+  previous: int
 }
 
 // What the checker knows about one arrow function of a body (Go's Closure).
@@ -476,8 +484,12 @@ export struct Checker {
   // set by `narrac types`; without it the declaration passes skip field
   // defaults, as `narrac declarations` did before bodies existed. bodies lists
   // the checked bodies in the order their checks start; body is the one
-  // being checked, or -1. localScopes is the stack of block scopes of that
-  // body, each mapping a name to a BodyInfo.locals index. resultType is the
+  // being checked, or -1. localNames maps every name bound in an open block
+  // scope of that body to a BodyInfo.locals index (or -1), and so do the
+  // narrowing keys. scopeUndo holds the first scopeUndoCount bindings made in
+  // the open scopes, each with the value it replaced, and scopeStarts holds
+  // where each scope's bindings begin, so closing a scope restores the names
+  // it replaced. resultType is the
   // result of the function being checked (void outside functions), loops
   // the depth of loops, and inTest is set inside a test body.
   checkingBodies: bool = false
@@ -486,7 +498,10 @@ export struct Checker {
   pendingDefaults: Array<int> = []
   bodies: Array<BodyInfo> = []
   body: int = -1
-  localScopes: Array<Map<string, int>> = []
+  localNames: Map<string, int>
+  scopeUndo: Array<ScopeBinding> = []
+  scopeUndoCount: int = 0
+  scopeStarts: Array<int> = []
   scopeDepth: int = 0
   resultType: Type
   // Set while the result of an arrow function is inferred from its returns
@@ -588,6 +603,7 @@ export function newChecker(ids: int): Checker uses alloc {
     instanceTypes: [],
     concrete: [],
     scopes: [],
+    localNames: Map {},
     current: 0,
     environment: Map {},
     paramTypes: Arrays.filled(Type.TVoid, ids),
@@ -1526,7 +1542,10 @@ export struct FunctionStore {
 // constant checked at its first use) is checked in the middle of it.
 export struct BodyState {
   body: int
-  localScopes: Array<Map<string, int>>
+  localNames: Map<string, int>
+  scopeUndo: Array<ScopeBinding>
+  scopeUndoCount: int
+  scopeStarts: Array<int>
   scopeDepth: int
   resultType: Type
   loops: int
@@ -1571,7 +1590,10 @@ export function startBody(
   // Save the outer body's state and start the new one.
   const saved = BodyState {
     body: checker.body,
-    localScopes: checker.localScopes,
+    localNames: checker.localNames,
+    scopeUndo: checker.scopeUndo,
+    scopeUndoCount: checker.scopeUndoCount,
+    scopeStarts: checker.scopeStarts,
     scopeDepth: checker.scopeDepth,
     resultType: checker.resultType,
     loops: checker.loops,
@@ -1604,7 +1626,10 @@ export function startBody(
   }
   Arrays.push(mutable checker.bodies, info)
   checker.body = Arrays.length(checker.bodies) - 1
-  checker.localScopes = [Map {}]
+  checker.localNames = Map {}
+  checker.scopeUndo = []
+  checker.scopeUndoCount = 0
+  checker.scopeStarts = [0]
   checker.scopeDepth = 1
   checker.resultType = resultType
   checker.loops = 0
@@ -1619,7 +1644,10 @@ export function startBody(
 export function finishBody(mutable checker: Checker, saved: BodyState) uses alloc {
   reportUnusedLocals(mutable checker)
   checker.body = saved.body
-  checker.localScopes = saved.localScopes
+  checker.localNames = saved.localNames
+  checker.scopeUndo = saved.scopeUndo
+  checker.scopeUndoCount = saved.scopeUndoCount
+  checker.scopeStarts = saved.scopeStarts
   checker.scopeDepth = saved.scopeDepth
   checker.resultType = saved.resultType
   checker.loops = saved.loops
@@ -1772,11 +1800,8 @@ export function getRef(checker: Checker, nodeId: int): Ref {
 }
 
 export function findLocal(checker: Checker, name: string): int {
-  // Innermost scope first.
-  for (let depth = checker.scopeDepth - 1; depth >= 0; depth--) {
-    if (checker.localScopes[depth][name] is Some(index)) {
-      return index
-    }
+  if (checker.localNames[name] is Some(index)) {
+    return index
   }
   return -1
 }
@@ -1902,23 +1927,46 @@ export function declareLocal(
   if (slot >= 0) {
     checker.bodies[body].declared[slot] = index
   }
-  const depth = checker.scopeDepth - 1
-  checker.localScopes[depth][name] = index
+  bindName(mutable checker, name, index)
+  checker.bodies[body].locals[index].depth = checker.scopeDepth - 1
   return index
 }
 
-export function pushScope(mutable checker: Checker) uses alloc {
-  // The stack keeps popped slots and empties them on reuse, since std/array has no pop.
-  if (checker.scopeDepth < Arrays.length(checker.localScopes)) {
-    const depth = checker.scopeDepth
-    checker.localScopes[depth] = Map {}
+export function bindName(mutable checker: Checker, name: string, index: int) uses alloc {
+  // Keep the replaced value so that closing the scope restores it.
+  let previous = -1
+  if (checker.localNames[name] is Some(replaced)) {
+    previous = replaced
+  }
+  const binding = ScopeBinding { name: name, previous: previous }
+  if (checker.scopeUndoCount < Arrays.length(checker.scopeUndo)) {
+    checker.scopeUndo[checker.scopeUndoCount] = binding
   } else {
-    Arrays.push(mutable checker.localScopes, Map {})
+    Arrays.push(mutable checker.scopeUndo, binding)
+  }
+  checker.scopeUndoCount++
+  checker.localNames[name] = index
+}
+
+export function pushScope(mutable checker: Checker) uses alloc {
+  // The stack keeps popped slots and overwrites them on reuse, since std/array has no pop.
+  if (checker.scopeDepth < Arrays.length(checker.scopeStarts)) {
+    checker.scopeStarts[checker.scopeDepth] = checker.scopeUndoCount
+  } else {
+    const start = checker.scopeUndoCount
+    Arrays.push(mutable checker.scopeStarts, start)
   }
   checker.scopeDepth++
 }
 
-export function popScope(mutable checker: Checker) {
+export function popScope(mutable checker: Checker) uses alloc {
+  // Give back the names this scope replaced, last binding first.
+  const start = checker.scopeStarts[checker.scopeDepth - 1]
+  while (checker.scopeUndoCount > start) {
+    checker.scopeUndoCount--
+    const binding = checker.scopeUndo[checker.scopeUndoCount]
+    checker.localNames[binding.name] = binding.previous
+  }
   checker.scopeDepth--
 }
 

@@ -1,7 +1,7 @@
 ---
 id: perceus
 title: "Borrow loop items and match bindings, move locals at last use"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: [benchmarks]
 fulfilled_by:
 gate: false
 added:
-spent:
+spent: 412733
 owns:
   - testdata/perceus_*
   - roadmaps/selfhost/nodes/perceus/**

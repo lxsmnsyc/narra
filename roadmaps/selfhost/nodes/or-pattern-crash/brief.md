@@ -1,7 +1,7 @@
 ---
 id: or-pattern-crash
 title: "Compiler crash on an or-pattern that binds inside nested constructors"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-4

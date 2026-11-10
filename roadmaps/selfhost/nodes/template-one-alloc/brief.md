@@ -1,7 +1,7 @@
 ---
 id: template-one-alloc
 title: "Build template literals in one allocation"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-4

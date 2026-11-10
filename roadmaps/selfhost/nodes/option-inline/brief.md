@@ -1,7 +1,7 @@
 ---
 id: option-inline
 title: "Store payloads of non-recursive enums inline"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-4

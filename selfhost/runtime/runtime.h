@@ -431,46 +431,17 @@ static void narra_panic_str(lstr* msg, const char* where) {
   narra_panic(where, msg->data);
 }
 
-// Integer arithmetic. Overflow panics in debug builds and wraps in release
-// builds. Division by zero panics in every build.
-#ifdef NARRA_RELEASE
-#define NARRA_CHECKED 0
-#else
-#define NARRA_CHECKED 1
-#endif
-
-static int64_t narra_add(int64_t a, int64_t b, const char* where) {
-  int64_t r;
-  if (__builtin_add_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow");
-  return r;
-}
-
-static int64_t narra_sub(int64_t a, int64_t b, const char* where) {
-  int64_t r;
-  if (__builtin_sub_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow");
-  return r;
-}
-
-static int64_t narra_mul(int64_t a, int64_t b, const char* where) {
-  int64_t r;
-  if (__builtin_mul_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow");
-  return r;
-}
-
-static int64_t narra_neg(int64_t a, const char* where) {
-  if (a == INT64_MIN) {
-    if (NARRA_CHECKED) narra_panic(where, "integer overflow");
-    return a;
-  }
-  return -a;
-}
+// Integer arithmetic. + - * and unary - wrap at the type's width in every
+// build. Division by zero panics in every build; MIN / -1 gives MIN and
+// MIN % -1 gives 0.
+static int64_t narra_wrap_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
+static int64_t narra_wrap_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
+static int64_t narra_wrap_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
+static int64_t narra_wrap_neg(int64_t a) { return (int64_t)(0 - (uint64_t)a); }
 
 static int64_t narra_div(int64_t a, int64_t b, const char* where) {
   if (b == 0) narra_panic(where, "division by zero");
-  if (a == INT64_MIN && b == -1) {
-    if (NARRA_CHECKED) narra_panic(where, "integer overflow");
-    return a;
-  }
+  if (a == INT64_MIN && b == -1) return a;
   return a / b;
 }
 
@@ -479,10 +450,6 @@ static int64_t narra_rem(int64_t a, int64_t b, const char* where) {
   if (b == -1) return 0;
   return a % b;
 }
-
-static int64_t narra_wrap_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
-static int64_t narra_wrap_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
-static int64_t narra_wrap_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
 
 static int64_t narra_shl(int64_t a, int64_t b, const char* where) {
   if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
@@ -495,36 +462,15 @@ static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
 }
 
 // The sized integers (D82): one set of functions per type, named with the
-// type's suffix (narra_add_u8). They check overflow at the type's own width.
+// type's suffix (narra_wrap_add_u8). They wrap at the type's own width.
 #define NARRA_SIZED(N, T, MIN, SHOW) \
-  static T narra_add_##N(T a, T b, const char* where) { \
-    T r; \
-    if (__builtin_add_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
-    return r; \
-  } \
-  static T narra_sub_##N(T a, T b, const char* where) { \
-    T r; \
-    if (__builtin_sub_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
-    return r; \
-  } \
-  static T narra_mul_##N(T a, T b, const char* where) { \
-    T r; \
-    if (__builtin_mul_overflow(a, b, &r) && NARRA_CHECKED) narra_panic(where, "integer overflow"); \
-    return r; \
-  } \
-  static T narra_neg_##N(T a, const char* where) { \
-    if ((MIN) != 0 && a == (T)(MIN)) { \
-      if (NARRA_CHECKED) narra_panic(where, "integer overflow"); \
-      return a; \
-    } \
-    return (T)(-a); \
-  } \
+  static T narra_wrap_add_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
+  static T narra_wrap_sub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
+  static T narra_wrap_mul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
+  static T narra_wrap_neg_##N(T a) { return (T)(0 - (uint64_t)a); } \
   static T narra_div_##N(T a, T b, const char* where) { \
     if (b == 0) narra_panic(where, "division by zero"); \
-    if ((MIN) != 0 && a == (T)(MIN) && b == (T)-1) { \
-      if (NARRA_CHECKED) narra_panic(where, "integer overflow"); \
-      return a; \
-    } \
+    if ((MIN) != 0 && a == (T)(MIN) && b == (T)-1) return a; \
     return (T)(a / b); \
   } \
   static T narra_rem_##N(T a, T b, const char* where) { \
@@ -532,9 +478,6 @@ static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
     if ((MIN) != 0 && b == (T)-1) return 0; \
     return (T)(a % b); \
   } \
-  static T narra_wrap_add_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
-  static T narra_wrap_sub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
-  static T narra_wrap_mul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
   static T narra_shl_##N(T a, T b, const char* where) { \
     if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
     return (T)((uint64_t)a << b); \
@@ -566,7 +509,7 @@ static void narra_range_advance(int64_t* value, int64_t step, int64_t high) {
   if (__builtin_add_overflow(*value, step, value)) *value = high;
 }
 
-static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_neg(a, where) : a; }
+static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_wrap_neg(a) : a; }
 
 static int64_t narra_truncate(double v, const char* where) {
   if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) {

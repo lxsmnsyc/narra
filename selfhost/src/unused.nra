@@ -36,12 +36,18 @@ export function reportUnusedTopLevel(mutable checker: Checker) uses alloc {
 
 function reportUnusedImports(mutable checker: Checker, scope: int) uses alloc {
   const facts = checker.scopes[scope].facts
-  const lines = Str.split(facts.source, "\n")
+  // The source is split into lines on the first unused import.
+  let lines: Array<string> = []
+  let isSplit = false
   for (const importDecl of Arrays.values(checker.scopes[scope].imports)) {
     // `import * as Alias from "path"`.
     if (importDecl.alias != "") {
       if (!isUnusedName(facts.referenced, importDecl.alias)) {
         continue
+      }
+      if (!isSplit) {
+        lines = Str.split(facts.source, "\n")
+        isSplit = true
       }
       reportErrorFix(
         mutable checker,
@@ -60,6 +66,10 @@ function reportUnusedImports(mutable checker: Checker, scope: int) uses alloc {
       if (isUnusedName(facts.referenced, importDecl.names[index].local)) {
         Arrays.push(mutable unused, index)
       }
+    }
+    if (!isSplit && Arrays.length(unused) > 0) {
+      lines = Str.split(facts.source, "\n")
+      isSplit = true
     }
     const removesAll = Arrays.length(unused) == Arrays.length(importDecl.names)
     for (const index of Arrays.values(unused)) {
@@ -98,7 +108,7 @@ function removeImport(lines: Array<string>, importDecl: ImportDecl): Edit uses a
   // The import ends on the line that holds its path.
   let lastLine = importDecl.pos.line
   while (lastLine < Arrays.length(lines) && !Str.contains(lines[lastLine - 1], quoted)) {
-    lastLine = lastLine + 1
+    lastLine++
   }
   return Edit {
     start: Pos { line: importDecl.pos.line, column: 1 },
@@ -169,7 +179,9 @@ function isOwnBody(checker: Checker, body: BodyInfo, funcIndex: int): bool {
 }
 
 function reportUnusedFunctions(mutable checker: Checker, scope: int, used: Array<bool>) uses alloc {
-  const lines = Str.split(checker.scopes[scope].facts.source, "\n")
+  // The source is split into lines on the first unused function.
+  let lines: Array<string> = []
+  let isSplit = false
   for (const index of Ranges.upTo(Arrays.length(checker.functions))) {
     const info = checker.functions[index]
     if (info.scope != scope || info.declaration.exported || used[index]) {
@@ -177,6 +189,10 @@ function reportUnusedFunctions(mutable checker: Checker, scope: int, used: Array
     }
     if (Str.startsWith(info.name, "_") || info.declaration.body is None) {
       continue
+    }
+    if (!isSplit) {
+      lines = Str.split(checker.scopes[scope].facts.source, "\n")
+      isSplit = true
     }
     const nameUses = findNameUses(lines, info.declaration.pos, info.name)
     let pos = info.declaration.pos
@@ -207,8 +223,7 @@ function findNameUses(lines: Array<string>, start: Pos, name: string): Array<Pos
   let found: Array<Pos> = []
   const nameCharacters = Str.chars(name)
   const nameLength = Arrays.length(nameCharacters)
-  let lineNumber = start.line
-  while (lineNumber <= Arrays.length(lines)) {
+  for (let lineNumber = start.line; lineNumber <= Arrays.length(lines); lineNumber++) {
     const characters = Str.chars(lines[lineNumber - 1])
     const count = Arrays.length(characters)
     let index = 0
@@ -225,12 +240,12 @@ function findNameUses(lines: Array<string>, start: Pos, name: string): Array<Pos
         continue
       }
       if (!isWordCharacter(character)) {
-        index = index + 1
+        index++
         continue
       }
       let end = index
       while (end < count && isWordCharacter(characters[end])) {
-        end = end + 1
+        end++
       }
       const afterDot = index > 0 && characters[index - 1] == '.'
       if (!afterDot && end - index == nameLength && matchesAt(characters, index, nameCharacters)) {
@@ -241,7 +256,6 @@ function findNameUses(lines: Array<string>, start: Pos, name: string): Array<Pos
     if (lineNumber > start.line && count > 0 && characters[0] == '}') {
       break
     }
-    lineNumber = lineNumber + 1
   }
   return found
 }
@@ -251,13 +265,13 @@ function skipQuoted(characters: Array<char>, index: int): int {
   let next = index + 1
   while (next < Arrays.length(characters)) {
     if (characters[next] == '\\') {
-      next = next + 2
+      next += 2
       continue
     }
     if (characters[next] == quote) {
       return next + 1
     }
-    next = next + 1
+    next++
   }
   // No closing quote: the end of the line.
   return Arrays.length(characters)

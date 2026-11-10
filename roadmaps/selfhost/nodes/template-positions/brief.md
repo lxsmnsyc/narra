@@ -1,7 +1,7 @@
 ---
 id: template-positions
 title: "Real positions for tokens inside template interpolations"
-status: todo
+status: done
 priority: should
 type: fix
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 100424
 owns:
   - testdata/template_position*
   - testdata/errors/template_position*

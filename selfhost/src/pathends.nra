@@ -1,0 +1,193 @@
+import * as Arrays from "std/array"
+import { Block, Expr, MatchArm, Stmt } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, reportError, typeString } from "narrac/check"
+
+export function isPanicCall(expression: Expr): bool {
+  if (expression is Expr.CallExpr(_, _, callee, _, _)) {
+    if (callee is Expr.Ident(_, _, name)) {
+      return name == "panic"
+    }
+  }
+  return false
+}
+
+export function checkEveryPathReturns(
+  mutable checker: Checker,
+  block: Block,
+  result: Type,
+  arrow: bool,
+) uses alloc {
+  if (result == Type.TVoid) {
+    return
+  }
+  if (findBlockOpenPath(block) is Some(reason)) {
+    const text = typeString(checker, result)
+    if (arrow) {
+      reportError(
+        mutable checker,
+        block.end,
+        "E0970",
+        `this arrow function must return ${text} on every path, but ${reason}`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        block.end,
+        "E0969",
+        `this function must return ${text} on every path, but ${reason}`,
+      )
+    }
+  }
+}
+
+export function findBlockOpenPath(block: Block): Option<string> uses alloc {
+  // One statement that ends every path ends the block; otherwise the last
+  // statement says which path reaches the closing brace.
+  let reason = "the body is empty"
+  for (const statement of Arrays.values(block.statements)) {
+    const open = findStatementOpenPath(statement)
+    if (open is Some(found)) {
+      reason = found
+    } else {
+      return None
+    }
+  }
+  return Some(reason)
+}
+
+function findStatementOpenPath(statement: Stmt): Option<string> {
+  return match (statement) {
+    Stmt.ReturnStmt(_, _) => None
+    Stmt.BlockStmt(block) => findBlockOpenPath(block)
+    Stmt.IfStmt(_, _, then, orElse) => findIfOpenPath(then, orElse)
+    Stmt.ExprStmt(_, expression) => findExpressionOpenPath(expression)
+    Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body)
+    Stmt.CForStmt(_, label, _, condition, _, body) => findCForOpenPath(label, condition, body)
+    Stmt.ForStmt(_, _, _, _, _, _, _) => Some("a `for` loop can finish without returning")
+    _ => Some("the last statement is not a `return`")
+  }
+}
+
+function findIfOpenPath(then: Block, orElse: Option<Stmt>): Option<string> {
+  if (orElse is Some(other)) {
+    const thenOpen = findBlockOpenPath(then)
+    if (thenOpen is Some(_)) {
+      return thenOpen
+    }
+    return findStatementOpenPath(other)
+  }
+  return Some("the `if` has no `else`, so the path where its condition is false does not return")
+}
+
+function findExpressionOpenPath(expression: Expr): Option<string> {
+  if (isPanicCall(expression)) {
+    return None
+  }
+  if (expression is Expr.MatchExpr(_, _, _, arms)) {
+    return findMatchOpenPath(arms)
+  }
+  return Some("the last statement is not a `return`")
+}
+
+function findMatchOpenPath(arms: Array<MatchArm>): Option<string> {
+  if (Arrays.length(arms) == 0) {
+    return Some("the `match` has no arms")
+  }
+  for (const arm of Arrays.values(arms)) {
+    if (arm.block is Some(armBlock)) {
+      if (findBlockOpenPath(armBlock) is Some(_)) {
+        return Some("a `match` arm does not return")
+      }
+    } else if (arm.body is Some(armBody)) {
+      if (findExpressionOpenPath(armBody) is Some(_)) {
+        return Some("a `match` arm does not return")
+      }
+    } else {
+      return Some("a `match` arm does not return")
+    }
+  }
+  return None
+}
+
+function findWhileOpenPath(label: string, condition: Expr, body: Block): Option<string> {
+  if (condition is Expr.BoolLit(_, _, value)) {
+    if (value) {
+      return findLoopOpenPath(label, body)
+    }
+  }
+  return Some("a `while` loop can finish without returning")
+}
+
+function findCForOpenPath(label: string, condition: Option<Expr>, body: Block): Option<string> {
+  if (condition is Some(loopCondition)) {
+    if (loopCondition is Expr.BoolLit(_, _, value)) {
+      if (value) {
+        return findLoopOpenPath(label, body)
+      }
+    }
+    return Some("a `for` loop can finish without returning")
+  }
+  return findLoopOpenPath(label, body)
+}
+
+function findLoopOpenPath(label: string, body: Block): Option<string> {
+  if (hasLeavingBreak(label, body.statements, false)) {
+    return Some("a `break` leaves the loop without returning")
+  }
+  return None
+}
+
+function hasLeavingBreak(label: string, statements: Array<Stmt>, nested: bool): bool {
+  for (const statement of Arrays.values(statements)) {
+    if (statementHasLeavingBreak(label, statement, nested)) {
+      return true
+    }
+  }
+  return false
+}
+
+function statementHasLeavingBreak(label: string, statement: Stmt, nested: bool): bool {
+  return match (statement) {
+    Stmt.BreakStmt(_, target) => breakLeavesLoop(label, target, nested)
+    Stmt.BlockStmt(block) => hasLeavingBreak(label, block.statements, nested)
+    Stmt.IfStmt(_, _, then, orElse) => ifHasLeavingBreak(label, then, orElse, nested)
+    Stmt.WhileStmt(_, _, _, body)
+      | Stmt.CForStmt(_, _, _, _, _, body)
+      | Stmt.ForStmt(_, _, _, _, _, body, _) => hasLeavingBreak(label, body.statements, true)
+    Stmt.ExprStmt(_, expression) => expressionHasLeavingBreak(label, expression, nested)
+    _ => false
+  }
+}
+
+function breakLeavesLoop(label: string, target: string, nested: bool): bool {
+  // An unlabeled break leaves the loop it is directly inside; a labeled one
+  // leaves the loop that carries the label.
+  if (target == "") {
+    return !nested
+  }
+  return target == label
+}
+
+function ifHasLeavingBreak(label: string, then: Block, orElse: Option<Stmt>, nested: bool): bool {
+  if (hasLeavingBreak(label, then.statements, nested)) {
+    return true
+  }
+  if (orElse is Some(other)) {
+    return statementHasLeavingBreak(label, other, nested)
+  }
+  return false
+}
+
+function expressionHasLeavingBreak(label: string, expression: Expr, nested: bool): bool {
+  if (expression is Expr.MatchExpr(_, _, _, arms)) {
+    for (const arm of Arrays.values(arms)) {
+      if (arm.block is Some(armBlock)) {
+        if (hasLeavingBreak(label, armBlock.statements, nested)) {
+          return true
+        }
+      }
+    }
+  }
+  return false
+}

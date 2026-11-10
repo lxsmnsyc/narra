@@ -100,8 +100,6 @@ export struct Use {
   view: int
   location: Location
   name: string // the function or other body the place is in
-  // Inside a template string: location is the whole template (see querysites.nra).
-  inTemplate: bool
 }
 
 export function runQuery(arguments: Array<string>): int uses io, alloc {
@@ -112,10 +110,10 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
   while (index < Arrays.length(arguments)) {
     if (arguments[index] == "--package" && index + 1 < Arrays.length(arguments)) {
       directory = arguments[index + 1]
-      index = index + 2
+      index += 2
     } else if (arguments[index] == "--json") {
       json = true
-      index = index + 1
+      index++
     } else {
       break
     }
@@ -271,12 +269,14 @@ export function buildViews(
     }
     // Insert in file order.
     Arrays.push(mutable views, view)
-    let index = Arrays.length(views) - 1
-    while (index > 0 && views[index].file < views[index - 1].file) {
+    for (
+      let index = Arrays.length(views) - 1;
+      index > 0 && views[index].file < views[index - 1].file;
+      index--
+    ) {
       const swap = views[index]
       views[index] = views[index - 1]
       views[index - 1] = swap
-      index = index - 1
     }
   }
   return Ok(views)
@@ -288,7 +288,7 @@ function findView(query: Query, path: string): int {
     if (view.path == path) {
       return index
     }
-    index = index + 1
+    index++
   }
   return -1
 }
@@ -321,7 +321,7 @@ function findFunctionIndex(checker: Checker, module: string, pos: Pos): int {
     if (info.module == module && info.declaration.pos == pos) {
       return index
     }
-    index = index + 1
+    index++
   }
   return -1
 }
@@ -332,7 +332,7 @@ function findConstIndex(checker: Checker, module: string, pos: Pos): int {
     if (info.module == module && info.declaration.pos == pos) {
       return index
     }
-    index = index + 1
+    index++
   }
   return -1
 }
@@ -455,17 +455,6 @@ function findLocalAnnotation(
   return None
 }
 
-function isInterpolated(site: Site): bool {
-  if (site.expression is Some(Expr.TemplateLit(_, _, parts))) {
-    for (const part of Arrays.values(parts)) {
-      if (!(part is Expr.StringLit(_, _, _, _))) {
-        return true
-      }
-    }
-  }
-  return false
-}
-
 function describeSite(
   mutable checker: Checker,
   mutable effects: EffectState,
@@ -559,8 +548,7 @@ function describeSite(
         }
       }
     }
-    SiteKind.DeclarationSite => {}
-    SiteKind.LabelSite => {}
+    SiteKind.DeclarationSite | SiteKind.LabelSite => {}
   }
   return None
 }
@@ -640,9 +628,6 @@ function queryType(
       }
       return Ok(`${answer.typeText}\neffects: ${Str.join(answer.effects, ", ")}\n`)
     }
-    TypeAt.InTemplate(_) => {
-      return Err("positions inside template strings are not supported yet")
-    }
     TypeAt.Nothing => {
       return Err(`no expression at ${operand}`)
     }
@@ -656,12 +641,9 @@ export struct TypeAnswer {
   effects: Array<string>
 }
 
-// What findTypeAt finds: an answer, a position inside a template string with
-// `${...}` parts (start is the template's backtick, which answers for the
-// whole template), or nothing.
+// What findTypeAt finds: an answer or nothing.
 export enum TypeAt {
   Found(answer: TypeAnswer)
-  InTemplate(start: Pos)
   Nothing
 }
 
@@ -675,15 +657,10 @@ export function findTypeAt(
   // Without effectsKnown (the effect pass did not run) the effects of expressions are left
   // out.
   // Sites are listed outer first: try the last one that covers the cursor.
-  let index = Arrays.length(view.sites) - 1
-  while (index >= 0) {
+  for (let index = Arrays.length(view.sites) - 1; index >= 0; index--) {
     const site = view.sites[index]
     const covers = !isBefore(cursor, site.start) && isBefore(cursor, site.end)
-    // Nodes inside a template string have no positions of their own.
-    if (covers && !site.inTemplate && isInterpolated(site) && cursor != site.start) {
-      return TypeAt.InTemplate(site.start)
-    }
-    if (covers && !site.inTemplate) {
+    if (covers) {
       const described = describeSite(mutable checker, mutable effects, effectsKnown, view, site)
       if (described is Some(found)) {
         const #[typeText, names] = found
@@ -694,7 +671,6 @@ export function findTypeAt(
         })
       }
     }
-    index = index - 1
   }
   return TypeAt.Nothing
 }
@@ -728,6 +704,9 @@ export function listDeclarations(query: Query): Array<Declared> uses alloc {
         }
         Decl.Distinct(_) => {
           kind = "distinct"
+        }
+        Decl.Alias(_) => {
+          kind = "alias"
         }
         Decl.Trait(_) => {
           kind = "trait"
@@ -902,17 +881,19 @@ function insertUse(mutable places: Array<Use>, use: Use) uses alloc {
   // A second use at the same place (a call's callee and its name) is dropped.
   for (const other of Arrays.values(places)) {
     const samePlace = other.view == use.view && other.location.start == use.location.start
-    if (samePlace && !use.inTemplate && !other.inTemplate) {
+    if (samePlace) {
       return
     }
   }
   Arrays.push(mutable places, use)
-  let index = Arrays.length(places) - 1
-  while (index > 0 && isUseBefore(places[index], places[index - 1])) {
+  for (
+    let index = Arrays.length(places) - 1;
+    index > 0 && isUseBefore(places[index], places[index - 1]);
+    index--
+  ) {
     const swap = places[index]
     places[index] = places[index - 1]
     places[index - 1] = swap
-    index = index - 1
   }
 }
 
@@ -924,24 +905,18 @@ function isUseBefore(left: Use, right: Use): bool {
 function writeUses(query: Query, places: Array<Use>, nameFirst: bool): string uses alloc {
   let parts: Array<string> = []
   for (const use of Arrays.values(places)) {
-    let templateField = ""
-    let templateNote = ""
-    if (use.inTemplate) {
-      templateField = ", \"inTemplate\": true"
-      templateNote = " (in a template string)"
-    }
     if (query.json && nameFirst) {
       Arrays.push(
         mutable parts,
-        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}${templateField}}`,
+        `{"name": ${quoteJson(use.name)}, "location": ${writeLocation(use.location)}}`,
       )
     } else if (query.json) {
       Arrays.push(
         mutable parts,
-        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}${templateField}}`,
+        `{"location": ${writeLocation(use.location)}, "in": ${quoteJson(use.name)}}`,
       )
     } else {
-      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}${templateNote}\n`)
+      Arrays.push(mutable parts, `${writeLocationText(use.location)} ${use.name}\n`)
     }
   }
   if (query.json) {
@@ -999,7 +974,6 @@ function queryParameterRefs(
         view: viewIndex,
         location: siteLocation(view, site),
         name: describeBody(checker, bodyIndex),
-        inTemplate: site.inTemplate,
       })
     }
   }
@@ -1062,7 +1036,6 @@ export function findUses(checker: Checker, query: Query, target: Target): Array<
         view: viewIndex,
         location: siteLocation(view, site),
         name: describeBody(checker, bodyIndex),
-        inTemplate: site.inTemplate,
       })
     }
   }
@@ -1105,11 +1078,9 @@ function queryCallers(
       start: call.pos,
       end: Pos { line: call.pos.line, column: call.pos.column + Str.charCount(functionName) },
     }
-    let inTemplate = false
     for (const site of Arrays.values(query.views[viewIndex].sites)) {
       if (site.kind == SiteKind.CalleeSite && site.nodeId == call.callId) {
         location = siteLocation(query.views[viewIndex], site)
-        inTemplate = site.inTemplate
         break
       }
     }
@@ -1117,7 +1088,6 @@ function queryCallers(
       view: viewIndex,
       location: location,
       name: describeBody(checker, call.body),
-      inTemplate: inTemplate,
     })
   }
   if (query.json) {
@@ -1153,6 +1123,7 @@ function findSignature(checker: Checker, view: ModuleView, declaration: Decl): s
     )
     Decl.Enum(enumDecl) => enumDecl.exported ? `export ${Signature.writeEnum(enumDecl)}` : ""
     Decl.Trait(traitDecl) => traitDecl.exported ? `export ${Signature.writeTrait(traitDecl)}` : ""
+    Decl.Alias(aliasDecl) => aliasDecl.exported ? `export ${Signature.writeAlias(aliasDecl)}` : ""
     Decl.Distinct(distinctDecl) => (
       distinctDecl.exported
         ? `export ${Signature.writeDistinct(distinctDecl)}`
@@ -1268,12 +1239,14 @@ function queryRecursion(
     }
     sortStrings(mutable names)
     Arrays.push(mutable groups, names)
-    let index = Arrays.length(groups) - 1
-    while (index > 0 && groups[index][0] < groups[index - 1][0]) {
+    for (
+      let index = Arrays.length(groups) - 1;
+      index > 0 && groups[index][0] < groups[index - 1][0];
+      index--
+    ) {
       const swap = groups[index]
       groups[index] = groups[index - 1]
       groups[index - 1] = swap
-      index = index - 1
     }
   }
   let parts: Array<string> = []

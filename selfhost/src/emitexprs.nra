@@ -81,7 +81,7 @@ export function emitExpression<W: EmitWalker>(
     if (emitter.heldArguments[expressionId] is Some(held)) {
       if (held.text != "") {
         emitter.heldArguments[expressionId] = plain("")
-        emitter.heldPending = emitter.heldPending - 1
+        emitter.heldPending--
         return held
       }
     }
@@ -110,11 +110,10 @@ export function emitExpression<W: EmitWalker>(
       target,
       index,
     )
-    Expr.UnaryExpr(nodeId, pos, operator, operand) => emitUnary(
+    Expr.UnaryExpr(nodeId, _, operator, operand) => emitUnary(
       walker,
       mutable emitter,
       nodeId,
-      pos,
       operator,
       operand,
     )
@@ -214,7 +213,7 @@ function parseIntegerText(text: string): int uses alloc {
   let wrapped = 0
   for (const index of Ranges.between(0, Str.length(joined))) {
     if (Int.parse(Str.slice(joined, index, index + 1), base) is Ok(digit)) {
-      wrapped = wrapped *% base +% digit
+      wrapped = wrapped * base + digit
     }
   }
   return wrapped
@@ -342,7 +341,6 @@ function emitUnary<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   nodeId: int,
-  pos: Pos,
   operator: string,
   operand: Expr,
 ): Code uses alloc {
@@ -350,8 +348,7 @@ function emitUnary<W: EmitWalker>(
   if (operator == "-") {
     const operandType = readNodeType(emitter, nodeId)
     if (operandType == Type.TInt) {
-      const position = where(emitter, pos)
-      return plain(temp(mutable emitter, Type.TInt, `narra_neg(${value}, ${position})`))
+      return plain(temp(mutable emitter, Type.TInt, `narra_wrap_neg(${value})`))
     }
     if (isSizedInteger(operandType)) {
       const cName = cType(emitter.checker, operandType)
@@ -360,8 +357,7 @@ function emitUnary<W: EmitWalker>(
         return plain(`((${cName})(-${integerCode(literalText)}))`)
       }
       const suffix = typeId(emitter.checker, operandType)
-      const position = where(emitter, pos)
-      return plain(temp(mutable emitter, operandType, `narra_neg_${suffix}(${value}, ${position})`))
+      return plain(temp(mutable emitter, operandType, `narra_wrap_neg_${suffix}(${value})`))
     }
     return plain(`(-${value})`)
   }
@@ -379,15 +375,6 @@ function emitUnary<W: EmitWalker>(
 }
 
 function checkedFunction(operator: string): string {
-  if (operator == "+") {
-    return "narra_add"
-  }
-  if (operator == "-") {
-    return "narra_sub"
-  }
-  if (operator == "*") {
-    return "narra_mul"
-  }
   if (operator == "/") {
     return "narra_div"
   }
@@ -404,13 +391,13 @@ function checkedFunction(operator: string): string {
 }
 
 function wrappingFunction(operator: string): string {
-  if (operator == "+%") {
+  if (operator == "+") {
     return "narra_wrap_add"
   }
-  if (operator == "-%") {
+  if (operator == "-") {
     return "narra_wrap_sub"
   }
-  if (operator == "*%") {
+  if (operator == "*") {
     return "narra_wrap_mul"
   }
   return ""
@@ -418,12 +405,12 @@ function wrappingFunction(operator: string): string {
 
 function isPrimitive(type: Type): bool {
   return match (type) {
-    Type.TStruct(_) => false
-    Type.TEnum(_) => false
-    Type.TArray(_) => false
-    Type.TBox(_) => false
-    Type.TMap(_, _) => false
-    Type.TFunc(_, _, _, _) => false
+    Type.TStruct(_)
+      | Type.TEnum(_)
+      | Type.TArray(_)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TFunc(_, _, _, _) => false
     _ => true
   }
 }
@@ -446,12 +433,12 @@ function emitBinary<W: EmitWalker>(
     } else {
       writeLine(mutable emitter, `if (!${result}) {`)
     }
-    emitter.indent = emitter.indent + 1
+    emitter.indent++
     beginStatement(mutable emitter)
     const rightCode = EmitWalker.emitExpression(walker, mutable emitter, right)
     writeLine(mutable emitter, `${result} = ${rightCode.text};`)
     endStatement(mutable emitter)
-    emitter.indent = emitter.indent - 1
+    emitter.indent--
     writeLine(mutable emitter, "}")
     return plain(result)
   }
@@ -497,9 +484,11 @@ export function emitArithmetic(
       const call = `${checked}${suffix}(${leftText}, ${rightText}, ${position})`
       return plain(temp(mutable emitter, operandType, call))
     }
+    // Overflow wraps at the type's width in every build.
     const wrapping = wrappingFunction(operator)
     if (wrapping != "") {
-      return plain(`${wrapping}${suffix}(${leftText}, ${rightText})`)
+      const call = `${wrapping}${suffix}(${leftText}, ${rightText})`
+      return plain(temp(mutable emitter, operandType, call))
     }
   }
   if (operandType == Type.TF64 && operator == "%") {
@@ -575,12 +564,12 @@ function mayWrite(emitter: Emitter, expression: Expr): bool uses alloc {
   // Block expressions, matches and calls that run a closure can assign; plain
   // reads, operators and calls with side-effect-free arguments cannot.
   return match (expression) {
-    Expr.IntLit(_, _, _) => false
-    Expr.FloatLit(_, _, _) => false
-    Expr.StringLit(_, _, _, _) => false
-    Expr.CharLit(_, _, _) => false
-    Expr.BoolLit(_, _, _) => false
-    Expr.Ident(_, _, _) => false
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _)
+      | Expr.Ident(_, _, _) => false
     Expr.TemplateLit(_, _, parts) => anyMayWrite(emitter, parts)
     Expr.FieldExpr(_, _, target, _) => mayWrite(emitter, target)
     Expr.IsExpr(_, _, subject, _) => mayWrite(emitter, subject)
@@ -707,11 +696,11 @@ function holdReorderedArguments<W: EmitWalker>(
 
 function isStableArgument(emitter: Emitter, value: Expr, nodeId: int): bool {
   return match (value) {
-    Expr.IntLit(_, _, _) => true
-    Expr.FloatLit(_, _, _) => true
-    Expr.StringLit(_, _, _, _) => true
-    Expr.CharLit(_, _, _) => true
-    Expr.BoolLit(_, _, _) => true
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _) => true
     Expr.Ident(_, _, _) => !(readNodeRef(emitter, nodeId) is Ref.Local(_))
     _ => false
   }
@@ -741,7 +730,7 @@ function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value:
     }
   }
   emitter.heldArguments[nodeId] = held
-  emitter.heldPending = emitter.heldPending + 1
+  emitter.heldPending++
 }
 
 function emitConstructorCall<W: EmitWalker>(
@@ -1068,7 +1057,7 @@ function emitArrayLiteral<W: EmitWalker>(
 }
 
 export function pointerTemp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
-  emitter.tempCount = emitter.tempCount + 1
+  emitter.tempCount++
   const name = `t${Int.toString(emitter.tempCount)}`
   const typeName = `${cType(emitter.checker, type)}*`
   const declaration = declareVariable(mutable emitter, typeName, name)
@@ -1165,14 +1154,18 @@ export function declaredLocal(emitter: Emitter, nodeId: int): int {
 function isStaticValue(emitter: Emitter, body: int, value: Expr): bool uses alloc {
   const info = emitter.checker.bodies[body]
   return match (value) {
-    Expr.IntLit(_, _, _) => true
-    Expr.FloatLit(_, _, _) => true
-    Expr.StringLit(_, _, _, _) => true
-    Expr.CharLit(_, _, _) => true
-    Expr.BoolLit(_, _, _) => true
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _) => true
     Expr.TemplateLit(_, _, parts) => Arrays.length(parts) == 0
-    Expr.Ident(nodeId, _, _) => isStaticName(emitter, info.refs, info.first, nodeId)
-    Expr.FieldExpr(nodeId, _, _, _) => isStaticName(emitter, info.refs, info.first, nodeId)
+    Expr.Ident(nodeId, _, _) | Expr.FieldExpr(nodeId, _, _, _) => isStaticName(
+      emitter,
+      info.refs,
+      info.first,
+      nodeId,
+    )
     Expr.UnaryExpr(_, _, _, operand) => isStaticValue(emitter, body, operand)
     Expr.BinaryExpr(_, _, _, left, right) =>
       isStaticValue(emitter, body, left) && isStaticValue(emitter, body, right)

@@ -142,14 +142,14 @@ Write `3.0` instead, or convert with `Float.fromInt`. Every conversion is visibl
 
 You can write long numbers with `_` between the digits, as in `1_000_000`. Hexadecimal and binary numbers start with `0x` and `0b`, as in `0xFF` and `0b101`.
 
-An `int` holds values up to about nine quintillion (9223372036854775807). In a debug build, going past that stops the program with an overflow message. When you want the wrapped result on purpose, as in a hash function, use `+%`, `-%` or `*%`:
+An `int` holds values up to about nine quintillion (9223372036854775807). Going past that wraps around, in every build: the largest value plus 1 is the smallest. Hash functions rely on this. When an overflow would be a bug, `Int.addChecked`, `Int.subChecked` and `Int.mulChecked` return `None` instead of a wrapped number.
 
 ```narra
 import * as Int from "std/int"
 
 export function run(args: Array<string>): int {
   const largest = 9223372036854775807
-  print(Int.toString(largest +% 1))
+  print(Int.toString(largest + 1))
   return 0
 }
 ```

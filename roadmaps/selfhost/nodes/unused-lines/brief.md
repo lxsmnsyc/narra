@@ -1,7 +1,7 @@
 ---
 id: unused-lines
 title: "The unused-names check splits sources only when needed"
-status: todo
+status: done
 priority: should
 type: fix
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 53351
 owns:
   - roadmaps/selfhost/nodes/unused-lines/**
 shared:

@@ -1,7 +1,7 @@
 ---
 id: lsp-navigation-parse
 title: "LSP navigation reuses the parse cache"
-status: todo
+status: done
 priority: should
 type: fix
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 80856
 owns:
   - testdata/lsp/**
   - roadmaps/selfhost/nodes/lsp-navigation-parse/**

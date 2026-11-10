@@ -27,6 +27,7 @@ import {
   formatLexError,
   lex,
   lexWithComments,
+  lexFrom,
   hex,
 } from "narrac/lexer"
 import {
@@ -54,6 +55,7 @@ import {
   FieldDecl,
   StructDecl,
   DistinctDecl,
+  AliasDecl,
   VariantDecl,
   EnumDecl,
   TestDecl,
@@ -147,11 +149,11 @@ const BINARY_LEVELS = [
   ["^"],
   ["&"],
   ["<<", ">>"],
-  ["+", "-", "+%", "-%"],
-  ["*", "/", "%", "*%"],
+  ["+", "-"],
+  ["*", "/", "%"],
 ]
 
-const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "+%", "-%", "*%"]
+const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
 
 // `x is Pattern` binds tighter than == and looser than < and +.
 const IS_LEVEL = 2
@@ -230,12 +232,12 @@ function markTemplateDots(mutable names: Map<string, bool>, text: string) uses a
   let index = 0
   while (index < count) {
     if (!isNameStart(characters[index])) {
-      index = index + 1
+      index++
       continue
     }
     let end = index
     while (end < count && isNameCharacter(characters[end])) {
-      end = end + 1
+      end++
     }
     if (end < count && characters[end] == '.') {
       names[sliceText(characters, index, end)] = true
@@ -263,7 +265,7 @@ function findHeaderLine(source: string): int uses alloc {
     if (index + 1 < Arrays.length(lines) && Str.trim(lines[index + 1]) == "") {
       header = index + 2
     }
-    index = index + 1
+    index++
   }
   return header
 }
@@ -311,6 +313,7 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     namePositions: parser.facts.namePositions,
     shorthandIds: parser.facts.shorthandIds,
     callEnds: parser.facts.callEnds,
+    templateTokenEnds: parser.facts.templateTokenEnds,
     referenced: referenced,
   }
 }
@@ -352,11 +355,11 @@ function collectTemplateNames(mutable names: Map<string, bool>, text: string) us
   let index = 0
   while (index < count) {
     if (raw[index] == '\\') {
-      index = index + 2
+      index += 2
       continue
     }
     if (raw[index] != '$' || index + 1 >= count || raw[index + 1] != '{') {
-      index = index + 1
+      index++
       continue
     }
     // Find the matching `}`.
@@ -373,7 +376,6 @@ function collectTemplateNames(mutable names: Map<string, bool>, text: string) us
 }
 
 function getCallEnd(parser: Parser): Pos {
-  // Inside a template string the tokens carry the template's position, so this is the template's position plus one.
   return moveColumn(getPos(parser.tokens[parser.index - 1]), 1)
 }
 
@@ -383,7 +385,7 @@ function getEndPos(parser: Parser): Pos {
   // Line breaks do not count.
   let index = parser.index - 1
   while (index >= 0 && parser.tokens[index].kind == TokenKind.TokNewline) {
-    index = index - 1
+    index--
   }
   if (index < 0) {
     return createEmptyPos()
@@ -476,7 +478,7 @@ function failFound(mutable parser: Parser, code: string, message: string) {
 
 function newId(mutable parser: Parser): int {
   const nodeId = parser.nextId
-  parser.nextId = parser.nextId + 1
+  parser.nextId++
   return nodeId
 }
 
@@ -587,7 +589,7 @@ function peekToken(parser: Parser, offset: int): Token {
 function advance(mutable parser: Parser): Token {
   const token = parser.tokens[parser.index]
   if (parser.index < Arrays.length(parser.tokens) - 1) {
-    parser.index = parser.index + 1
+    parser.index++
   }
   return token
 }
@@ -758,7 +760,7 @@ function createDummyType(): TypeExpr {
 }
 
 function createDummyBlock(): Block {
-  return Block { pos: createEmptyPos(), statements: [] }
+  return Block { pos: createEmptyPos(), end: createEmptyPos(), statements: [] }
 }
 
 function createDummyPattern(): Pattern {
@@ -858,7 +860,7 @@ function isFieldsOnlyBody(parser: Parser): bool {
   let offset = 3
   while (true) {
     while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
-      offset = offset + 1
+      offset++
     }
     const field = peekToken(parser, offset)
     if (field.kind == TokenKind.TokPunct && field.text == "}") {
@@ -868,7 +870,7 @@ function isFieldsOnlyBody(parser: Parser): bool {
     if (field.kind != TokenKind.TokIdent || colon.kind != TokenKind.TokPunct || colon.text != ":") {
       return false
     }
-    offset = offset + 2
+    offset += 2
     // The type runs to the end of the line.
     while (peekToken(parser, offset).kind != TokenKind.TokNewline) {
       const part = peekToken(parser, offset)
@@ -878,7 +880,7 @@ function isFieldsOnlyBody(parser: Parser): bool {
       if (part.kind == TokenKind.TokPunct && isTypeBreaker(part.text)) {
         return false
       }
-      offset = offset + 1
+      offset++
     }
   }
   return false
@@ -908,6 +910,9 @@ function parseDeclBody(mutable parser: Parser): Decl {
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
     return declaration
+  }
+  if (isWord(parser, "type") && peekToken(parser, 1).kind == TokenKind.TokIdent) {
+    return Decl.Alias(parseAliasDecl(mutable parser, exported))
   }
   if (isAt(parser, "function")) {
     return Decl.Func(parseFuncDecl(mutable parser, exported))
@@ -1305,6 +1310,22 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
   return fields
 }
 
+function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
+  const pos = getPos(advance(mutable parser))
+  const name = expectIdent(mutable parser).text
+  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  expect(mutable parser, "=")
+  const body = parseType(mutable parser)
+  endTypeDecl(mutable parser)
+  return AliasDecl {
+    pos: pos,
+    name: name,
+    typeParameters: typeParameters,
+    exported: exported,
+    body: body,
+  }
+}
+
 function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   const pos = getPos(expect(mutable parser, "struct"))
   const name = expectIdent(mutable parser).text
@@ -1588,9 +1609,9 @@ function isArrowAhead(parser: Parser): bool {
     }
     if (token.kind == TokenKind.TokPunct) {
       if (token.text == "(") {
-        depth = depth + 1
+        depth++
       } else if (token.text == ")") {
-        depth = depth - 1
+        depth--
         if (depth == 0) {
           if (index + 1 >= count || parser.tokens[index + 1].kind != TokenKind.TokPunct) {
             return false
@@ -1603,7 +1624,7 @@ function isArrowAhead(parser: Parser): bool {
         }
       }
     }
-    index = index + 1
+    index++
   }
   return false
 }
@@ -1620,11 +1641,11 @@ function isResultTypeThenArrow(parser: Parser, start: int): bool {
     }
     if (token.kind == TokenKind.TokPunct) {
       if (token.text == "(" || token.text == "[" || token.text == "<") {
-        depth = depth + 1
+        depth++
       } else if (token.text == ")" || token.text == "]" || token.text == ">") {
-        depth = depth - 1
+        depth--
       } else if (token.text == ">>") {
-        depth = depth - 2
+        depth -= 2
       } else if (token.text == "=>" && depth == 0) {
         return true
       } else if (
@@ -1642,7 +1663,7 @@ function isResultTypeThenArrow(parser: Parser, start: int): bool {
         return false
       }
     }
-    index = index + 1
+    index++
   }
   return false
 }
@@ -1709,11 +1730,12 @@ function parseBlock(mutable parser: Parser): Block {
     }
     Arrays.push(mutable statements, parseStmt(mutable parser))
   }
+  const end = getPos(currentToken(parser))
   expect(mutable parser, "}")
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("b", pos), startIndex)
   }
-  return Block { pos: pos, statements: statements }
+  return Block { pos: pos, end: end, statements: statements }
 }
 
 function parseLoopExitLabel(mutable parser: Parser): string {
@@ -2072,7 +2094,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       for (const statement of Arrays.values(body.statements)) {
         Arrays.push(mutable statements, statement)
       }
-      body = Block { pos: body.pos, statements: statements }
+      body = Block { pos: body.pos, end: body.end, statements: statements }
       name = hidden
     }
     const forId = newId(mutable parser)
@@ -2211,7 +2233,7 @@ function parseExprBody(mutable parser: Parser): Expr {
   Arrays.push(mutable parser.ternaryIds, ternaryId)
   // The expression starts at the condition and its block at the `?`, which is
   // how isConditional tells it from a plain block and an `if` value.
-  return Expr.BlockExpr(ternaryId, start, Block { pos: pos, statements: [ifStatement] })
+  return Expr.BlockExpr(ternaryId, start, Block { pos: pos, end: pos, statements: [ifStatement] })
 }
 
 function isTernary(parser: Parser, expression: Expr): bool {
@@ -2246,8 +2268,8 @@ function convertReturnedTernary(mutable parser: Parser, value: Expr): Stmt {
     ) {
       const thenStatement = convertReturnedTernary(mutable parser, getReturnedValue(thenBlock))
       const elseStatement = convertReturnedTernary(mutable parser, getReturnedValue(elseBlock))
-      const newThen = Block { pos: thenBlock.pos, statements: [thenStatement] }
-      const newElse = Block { pos: elseBlock.pos, statements: [elseStatement] }
+      const newThen = Block { pos: thenBlock.pos, end: thenBlock.end, statements: [thenStatement] }
+      const newElse = Block { pos: elseBlock.pos, end: elseBlock.end, statements: [elseStatement] }
       return Stmt.IfStmt(pos, condition, newThen, Some(Stmt.BlockStmt(newElse)))
     }
   }
@@ -2293,6 +2315,10 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
       )
       return left
     }
+    if (isRemovedWrappingOperator(token)) {
+      reportRemovedWrappingOperator(mutable parser, token)
+      return left
+    }
     if (!matched) {
       return left
     }
@@ -2314,6 +2340,39 @@ function parseBinary(mutable parser: Parser, level: int): Expr {
     noteExpr(mutable parser, startIndex, left)
   }
   return left
+}
+
+function isRemovedWrappingOperator(token: Token): bool {
+  return token.kind == TokenKind.TokPunct &&
+    (token.text == "+%" || token.text == "-%" || token.text == "*%")
+}
+
+function reportRemovedWrappingOperator(mutable parser: Parser, token: Token) {
+  // Written as a compound assignment, the operator is quoted with its `=`.
+  const replacement = Str.slice(token.text, 0, 1)
+  const next = peekToken(parser, 1)
+  let removed = token.text
+  let replacementText = replacement
+  if (
+    next.kind == TokenKind.TokPunct &&
+      next.text == "=" &&
+      next.line == token.line &&
+      next.column == token.column + 2
+  ) {
+    removed = `${token.text}=`
+    replacementText = `${replacement}=`
+  }
+  failAtFix(
+    mutable parser,
+    getPos(token),
+    "E0971",
+    [
+      createFix(`write ${replacement}`, [
+        createEdit(getPos(token), moveColumn(getPos(token), 2), replacement),
+      ]),
+    ],
+    `\`${removed}\` is removed; \`${replacementText}\` wraps on overflow`,
+  )
 }
 
 function parseCompoundTail(mutable parser: Parser, pos: Pos, target: Expr): Option<Stmt> {
@@ -2529,12 +2588,12 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
     } else if (token.kind != TokenKind.TokPunct) {
       return false
     } else if (token.text == "<") {
-      depth = depth + 1
+      depth++
     } else if (token.text == ">" || token.text == ">>") {
       if (token.text == ">") {
-        depth = depth - 1
+        depth--
       } else {
-        depth = depth - 2
+        depth -= 2
       }
       if (depth < 0) {
         return false
@@ -2546,7 +2605,7 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
     } else if (token.text != "," && token.text != "." && token.text != "#[" && token.text != "]") {
       return false
     }
-    offset = offset + 1
+    offset++
   }
   return false
 }
@@ -2608,12 +2667,12 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
     } else if (token.kind != TokenKind.TokPunct) {
       return false
     } else if (token.text == "<") {
-      depth = depth + 1
+      depth++
     } else if (token.text == ">" || token.text == ">>") {
       if (token.text == ">") {
-        depth = depth - 1
+        depth--
       } else {
-        depth = depth - 2
+        depth -= 2
       }
       if (depth < 0) {
         return false
@@ -2625,7 +2684,7 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
     } else if (token.text != "," && token.text != "." && token.text != "#[" && token.text != "]") {
       return false
     }
-    offset = offset + 1
+    offset++
   }
   return false
 }
@@ -2691,11 +2750,11 @@ function parseMapLit(mutable parser: Parser, pos: Pos, typeArguments: Array<Type
 
 function isLiteralKey(expression: Expr): bool {
   return match (expression) {
-    Expr.IntLit(_, _, _) => true
-    Expr.FloatLit(_, _, _) => true
-    Expr.StringLit(_, _, _, _) => true
-    Expr.CharLit(_, _, _) => true
-    Expr.BoolLit(_, _, _) => true
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _) => true
     Expr.UnaryExpr(_, _, operator, operand) => operator == "-" && isLiteralKey(operand)
     _ => false
   }
@@ -2703,25 +2762,25 @@ function isLiteralKey(expression: Expr): bool {
 
 function getExpressionPos(expression: Expr): Pos {
   return match (expression) {
-    Expr.IntLit(_, pos, _) => pos
-    Expr.FloatLit(_, pos, _) => pos
-    Expr.StringLit(_, pos, _, _) => pos
-    Expr.CharLit(_, pos, _) => pos
-    Expr.BoolLit(_, pos, _) => pos
-    Expr.TemplateLit(_, pos, _) => pos
-    Expr.Ident(_, pos, _) => pos
-    Expr.FieldExpr(_, pos, _, _) => pos
-    Expr.IsExpr(_, pos, _, _) => pos
-    Expr.IndexExpr(_, pos, _, _) => pos
-    Expr.MapLit(_, pos, _, _, _) => pos
-    Expr.CallExpr(_, pos, _, _, _) => pos
-    Expr.UnaryExpr(_, pos, _, _) => pos
-    Expr.BinaryExpr(_, pos, _, _, _) => pos
-    Expr.StructLit(_, pos, _, _, _, _) => pos
-    Expr.ArrayLit(_, pos, _, _) => pos
-    Expr.MatchExpr(_, pos, _, _) => pos
-    Expr.BlockExpr(_, pos, _) => pos
-    Expr.ArrowExpr(_, pos, _, _, _, _) => pos
+    Expr.IntLit(_, pos, _)
+      | Expr.FloatLit(_, pos, _)
+      | Expr.StringLit(_, pos, _, _)
+      | Expr.CharLit(_, pos, _)
+      | Expr.BoolLit(_, pos, _)
+      | Expr.TemplateLit(_, pos, _)
+      | Expr.Ident(_, pos, _)
+      | Expr.FieldExpr(_, pos, _, _)
+      | Expr.IsExpr(_, pos, _, _)
+      | Expr.IndexExpr(_, pos, _, _)
+      | Expr.MapLit(_, pos, _, _, _)
+      | Expr.CallExpr(_, pos, _, _, _)
+      | Expr.UnaryExpr(_, pos, _, _)
+      | Expr.BinaryExpr(_, pos, _, _, _)
+      | Expr.StructLit(_, pos, _, _, _, _)
+      | Expr.ArrayLit(_, pos, _, _)
+      | Expr.MatchExpr(_, pos, _, _)
+      | Expr.BlockExpr(_, pos, _)
+      | Expr.ArrowExpr(_, pos, _, _, _, _) => pos
   }
 }
 
@@ -2729,7 +2788,7 @@ function isStructLitAhead(parser: Parser): bool {
   // A `{` in value position is a struct literal when it holds `{}`, `{ ...spread }` or `{ name: value }`; any other `{` is a block expression. A label (`name: for`, `name: while`) starts a block.
   let offset = 1
   while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
-    offset = offset + 1
+    offset++
   }
   if (parser.index + offset + 1 >= Arrays.length(parser.tokens)) {
     return false
@@ -2765,7 +2824,7 @@ function parseBlockExpr(mutable parser: Parser): Expr {
 
 function createReturnBlock(value: Expr): Block {
   const pos = getExpressionPos(value)
-  return Block { pos: pos, statements: [Stmt.ReturnStmt(pos, Some(value))] }
+  return Block { pos: pos, end: pos, statements: [Stmt.ReturnStmt(pos, Some(value))] }
 }
 
 function parseIfExpr(mutable parser: Parser): Expr {
@@ -2794,7 +2853,11 @@ function parseIfExpr(mutable parser: Parser): Expr {
     createReturnBlock(thenBranch),
     Some(Stmt.BlockStmt(createReturnBlock(elseBranch))),
   )
-  return Expr.BlockExpr(newId(mutable parser), pos, Block { pos: pos, statements: [ifStatement] })
+  return Expr.BlockExpr(newId(mutable parser), pos, Block {
+    pos: pos,
+    end: pos,
+    statements: [ifStatement],
+  })
 }
 
 function parseStructLit(
@@ -2982,11 +3045,11 @@ function findInterpolationEnd(raw: Array<char>, start: int): int {
   let index = start
   while (index < count && depth > 0) {
     const character = raw[index]
-    index = index + 1
+    index++
     if (character == '{') {
-      depth = depth + 1
+      depth++
     } else if (character == '}') {
-      depth = depth - 1
+      depth--
     } else if (character == '"' || character == '\'') {
       index = findQuoteEnd(raw, index, character)
     } else if (character == '`') {
@@ -3007,12 +3070,12 @@ function findQuoteEnd(raw: Array<char>, start: int, quote: char): int {
   let index = start
   while (index < count) {
     const character = raw[index]
-    index = index + 1
+    index++
     if (character == quote) {
       return index
     }
     if (character == '\\') {
-      index = index + 1
+      index++
     }
   }
   return -1
@@ -3023,12 +3086,12 @@ function findTemplateEnd(raw: Array<char>, start: int): int {
   let index = start
   while (index < count) {
     const character = raw[index]
-    index = index + 1
+    index++
     if (character == '`') {
       return index
     }
     if (character == '\\') {
-      index = index + 1
+      index++
     } else if (character == '$' && index < count && raw[index] == '{') {
       index = findInterpolationEnd(raw, index + 1)
       if (index < 0) {
@@ -3039,8 +3102,22 @@ function findTemplateEnd(raw: Array<char>, start: int): int {
   return -1
 }
 
+function advancePosition(raw: Array<char>, fromIndex: int, toIndex: int, start: Pos): Pos {
+  let line = start.line
+  let column = start.column
+  for (const rawIndex of Ranges.between(fromIndex, toIndex)) {
+    if (raw[rawIndex] == '\n') {
+      line++
+      column = 1
+    } else {
+      column++
+    }
+  }
+  return Pos { line: line, column: column }
+}
+
 function parseTemplate(mutable parser: Parser, token: Token): Expr {
-  // Each expression is lexed and parsed on its own; all its tokens take the template's position (their ends are kept).
+  // Each expression is lexed and parsed on its own, with its tokens placed where they are written.
   const pos = getPos(token)
   const end = Pos { line: token.endLine, column: token.endColumn }
   const raw = Str.chars(token.text)
@@ -3051,30 +3128,22 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
   let index = 0
   // The source position of raw[scanned]; raw starts after the backtick.
   let scanned = 0
-  let line = token.line
-  let column = token.column + 1
+  let cursor = Pos { line: token.line, column: token.column + 1 }
   while (isOk(parser) && index < count) {
     const character = raw[index]
     if (character == '\\') {
       // Find the backslash's own position, since templates span lines.
-      for (const skippedIndex of Ranges.between(scanned, index)) {
-        if (raw[skippedIndex] == '\n') {
-          line = line + 1
-          column = 1
-        } else {
-          column = column + 1
-        }
-      }
+      cursor = advancePosition(raw, scanned, index, cursor)
       scanned = index
       // Decode the escape as a string literal would.
-      const escaped = decodeEscape(raw, index, line, column)
+      const escaped = decodeEscape(raw, index, cursor.line, cursor.column)
       if (escaped is Err(error)) {
         const errorPos = Pos { line: error.line, column: error.column }
         failAt(mutable parser, errorPos, error.code, error.message)
         return createDummyExpr()
       }
       Str.append(mutable text, escaped.value.text)
-      pending = pending + 1
+      pending++
       index = escaped.value.end
       continue
     }
@@ -3093,18 +3162,16 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       for (const sourceIndex of Ranges.between(index + 2, closeIndex - 1)) {
         Str.appendChar(mutable source, raw[sourceIndex])
       }
-      const lexed = lex(Str.build(source))
+      // The expression starts after the `${`.
+      cursor = advancePosition(raw, scanned, index + 2, cursor)
+      scanned = index + 2
+      const lexed = lexFrom(Str.build(source), cursor.line, cursor.column)
       if (lexed is Err(error)) {
         failAt(mutable parser, pos, "E0041", `in template string: ${formatLexError(error)}`)
         return createDummyExpr()
       }
-      // Report errors inside ${...} at the template's position.
-      let inner: Array<Token> = []
-      for (const innerToken of Arrays.values(lexed.value)) {
-        Arrays.push(mutable inner, Token { ...innerToken, line: token.line, column: token.column })
-      }
       let innerParser = Parser {
-        tokens: inner,
+        tokens: lexed.value,
         index: 0,
         nextId: parser.nextId,
         failed: None,
@@ -3117,6 +3184,17 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       }
       const expression = parseExpr(mutable innerParser)
       parser.nextId = innerParser.nextId
+      // Keep where each token ends, for narrac query.
+      for (const innerToken of Arrays.values(lexed.value)) {
+        parser.facts.templateTokenEnds[getPosKey("t", getPos(innerToken))] = Pos {
+          line: innerToken.endLine,
+          column: innerToken.endColumn,
+        }
+      }
+      for (const entry of Maps.entries(innerParser.facts.templateTokenEnds)) {
+        const #[tokenKey, tokenEnd] = entry
+        parser.facts.templateTokenEnds[tokenKey] = tokenEnd
+      }
       for (const entry of Maps.entries(innerParser.facts.callEnds)) {
         const #[callId, callEnd] = entry
         parser.facts.callEnds[callId] = callEnd
@@ -3130,8 +3208,8 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       continue
     }
     Str.appendChar(mutable text, character)
-    pending = pending + 1
-    index = index + 1
+    pending++
+    index++
   }
   if (pending > 0) {
     Arrays.push(mutable parts, Expr.StringLit(newId(mutable parser), pos, Str.build(text), end))
@@ -3193,6 +3271,37 @@ function parseMatch(mutable parser: Parser): Expr {
 // ---- Patterns
 
 function parsePattern(mutable parser: Parser): Pattern {
+  const startIndex = parser.index
+  const pos = getPos(currentToken(parser))
+  const first = parseSinglePattern(mutable parser)
+  if (!isOk(parser) || !isAlternativeAhead(parser)) {
+    return first
+  }
+  let alternatives: Array<Pattern> = [first]
+  while (isOk(parser) && isAlternativeAhead(parser)) {
+    // A bar may start the next line, for a long list of alternatives.
+    skipNewlines(mutable parser)
+    advance(mutable parser)
+    skipNewlines(mutable parser)
+    Arrays.push(mutable alternatives, parseSinglePattern(mutable parser))
+  }
+  const pattern = Pattern.PatOr(newId(mutable parser), pos, alternatives)
+  if (parser.collector.enabled && isOk(parser)) {
+    noteKey(mutable parser, getIdKey(getPatternId(pattern)), startIndex)
+  }
+  return pattern
+}
+
+function isAlternativeAhead(parser: Parser): bool {
+  let offset = 0
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset++
+  }
+  const token = peekToken(parser, offset)
+  return token.kind == TokenKind.TokPunct && token.text == "|"
+}
+
+function parseSinglePattern(mutable parser: Parser): Pattern {
   const startIndex = parser.index
   const pattern = parsePatternBody(mutable parser)
   if (parser.collector.enabled && isOk(parser)) {

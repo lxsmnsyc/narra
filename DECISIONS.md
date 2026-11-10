@@ -668,7 +668,7 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 
 Amendment (node compound-assign, 2026-11-09). Rules for compound assignment and `++`/`--`:
 
-- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`.
+- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`. Changed by D92: the wrapping forms `+%= -%= *%=` are removed (E0971); `+= -= *=` wrap.
 - **Statements only.** They have no value and cannot be nested in an expression (E0964). Only the postfix spelling `x++` and `x--` exists; `++x` and `--x` are an error with a hint (E0964), so `--x` no longer parses as a double negation.
 - **Targets.** Every target `=` accepts: a `let`, a field or element of a changeable value (D81), the contents of a `mutable` parameter. A `const` binding and a whole `mutable` parameter are rejected as for `=`.
 - **Types.** The value has the type of the target (E0962). `++` and `--` take an integer of any width (E0963). Overflow, division by zero and shift checks are those of the binary operator.
@@ -775,7 +775,7 @@ Decision: `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types; `
 1. **Literals.** A literal takes the sized integer type its context expects, else `int`, and must fit (E0294). A negative literal under an unsigned type is E0294, not E0296; E0296 is for `-x` on an unsigned value that is not a literal. `-128` is a valid `i8`: a literal directly under unary minus is checked with its sign.
 2. **Context.** An operator's wanted type types the left operand, so `const m: u8 = 1 << 3` works. A literal on the left of a binary operator takes the type of the right operand (`1 + d` with `d: u8`).
 3. **No mixing.** Two integer types that differ, one of them sized, are E0295 for arithmetic, bitwise operators, shifts and comparison, including `==`. The message names `<Target>.from`, `.tryFrom` and `.wrap` of the left type. Bitwise operators and shifts need operands of one integer type. Shift counts have the type of the value.
-4. **Overflow.** Checked at the type's own width with `__builtin_*_overflow` on that C type, panicking in debug builds and wrapping in release builds. `MIN / -1` follows `int`. Division and remainder by zero panic in every build. Shifts by the width or more, or by a negative count, panic.
+4. **Overflow.** Checked at the type's own width with `__builtin_*_overflow` on that C type, panicking in debug builds and wrapping in release builds. `MIN / -1` follows `int`. Division and remainder by zero panic in every build. Shifts by the width or more, or by a negative count, panic. Changed by D92: arithmetic wraps in every build and nothing panics on overflow.
 5. **Runtime.** One macro in `runtime.h` defines the add, sub, mul, neg, div, rem, shift, wrap, `eq`, `cmp`, `hash` and `show` functions of each type, suffixed with the type (`narra_add_u8`). `hash` goes through the `int` hash, so equal values hash alike.
 6. **Printing.** Template string parts stay strings (E0201). A sized value prints through `Show.show(x)`; `U8.toString` comes with sized-conversions.
 
@@ -920,7 +920,7 @@ Decision: when a function with effect variables is used as a value (`const apply
 
 Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, a failed `assert`, an array index out of range, running out of memory and stack overflow. Everything else that panics today becomes a defined result or a compile error.
 
-- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms are removed. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`.
+- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms are removed. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`. Built (E0971 for a removed operator; `Int.addChecked`, `subChecked`, `mulChecked` and the same in `std/i8` to `std/u64`).
 - **Division and remainder need a divisor proven non-zero.** Integer `/` and `%` compile only when the divisor is a non-zero constant or a name narrowed by a check (`if (count != 0) { total / count }`). Any other divisor is a compile error with a hint to add the check. Float division is unchanged (IEEE: infinity and NaN).
 - **Shift counts must be proven in range.** A constant count must be at least 0 and below the bit width. A variable count must be narrowed first (`if (n >= 0 && n < 64) { x << n }`; an unsigned count needs only the upper bound). Any other count is a compile error.
 - **A function with a result must return on every path.** A path ends at `return`, a call to `panic`, an `if`/`else` whose branches all end, an exhaustive `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. The end of any other path is a compile error. The runtime check stays only as an internal compiler error.
@@ -932,7 +932,7 @@ Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, 
 - **Rejected: a NaN for integers.** It needs a reserved value, a check in every operation, and breaks `==` on `int`.
 - **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
 
-Not built yet.
+Built: wrapping arithmetic and checked functions; the missing-return rule (E0969 for functions, E0970 for arrow functions), with the emitted runtime check now an internal compiler error. Not built yet: division and shift proofs, and the `Result`/`Option` std functions.
 
 ## D93. `Async<T>` is an eager handle on one implicit event loop per thread
 
@@ -1030,11 +1030,11 @@ Not built yet. Dependencies themselves (`[dependencies]`) are not built either (
 Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`, after ReasonML: `Token.Plus | Token.Minus => ...`. Alternatives nest inside a pattern: `Some(1 | 2)`.
 
 - Every alternative binds the same names with the same types: `Shape.Circle(r) | Shape.Sphere(r) => ...`.
-- A guard covers the whole or-pattern.
+- A guard covers the whole or-pattern. When the guard fails for one matching alternative, the next alternative that matches is tried with its own bindings; the arm is taken if any alternative matches with the guard true (Rust semantics).
 - A binding of the whole value keeps its full type; there is no narrowing to the listed constructors, so no union types appear (D73).
-- Exhaustiveness and unreachable-arm checks count each alternative.
-- **Only in `match`.** An `is` test stays one pattern: allowing alternatives there only without bindings would make `is` and `match` patterns differ (maintainer).
+- Exhaustiveness and unreachable-arm checks count each alternative. Unreachable alternatives are reported for constructors and bools, not for integer or string literals.
+- **Only in `match`.** An `is` test and a `const`, `let` or `for ... of` destructuring stay one pattern (E0974): allowing alternatives there only without bindings would make `is` and `match` patterns differ (maintainer).
 - `narrac fmt` keeps short lists on one line and puts one alternative per line, each starting with `|`, when the arm does not fit.
 - Contract patterns (D95) use the same alternatives.
 
-Not built yet.
+Built, except contract patterns (D95), which do not exist yet. E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.

@@ -18,7 +18,7 @@
 import { Pos, File, Decl, FuncDecl, DistinctDecl, FieldDecl, VariantDecl } from "narrac/ast"
 import { parse, quoteGo } from "narrac/parser"
 import { Package, SourceModule } from "narrac/modules"
-import { Type, StructInfo, EnumInfo, DistinctInfo, GenericInfo } from "narrac/types"
+import { Type, StructInfo, EnumInfo, DistinctInfo, AliasInfo, GenericInfo } from "narrac/types"
 import {
   Checker,
   ProgramFunc,
@@ -51,6 +51,7 @@ import {
   resolveVariants,
   buildGeneric,
   resolveSignature,
+  resolveAlias,
 } from "narrac/resolve"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -179,6 +180,23 @@ export function declareModule(mutable checker: Checker, file: File) uses alloc {
         Arrays.push(mutable checker.distincts, info)
         declareType(mutable checker, distinctDecl.pos, distinctDecl.name, type)
       }
+      Decl.Alias(aliasDecl) => {
+        checkTypeName(mutable checker, aliasDecl.pos, aliasDecl.name)
+        const alias = Arrays.length(checker.aliases)
+        const aliasModule = modPath(checker)
+        const aliasScope = checker.current
+        Arrays.push(mutable checker.aliases, AliasInfo {
+          name: aliasDecl.name,
+          module: aliasModule,
+          scope: aliasScope,
+          pos: aliasDecl.pos,
+          typeParameters: aliasDecl.typeParameters,
+          body: aliasDecl.body,
+          state: 0,
+          type: Type.TVoid,
+        })
+        checker.scopes[aliasScope].aliases[aliasDecl.name] = alias
+      }
       Decl.Enum(enumDecl) => {
         checkConstructorNames(mutable checker, enumDecl.name, enumDecl.variants)
         if (Arrays.length(enumDecl.typeParameters) > 0) {
@@ -233,6 +251,11 @@ export function declareModule(mutable checker: Checker, file: File) uses alloc {
         }
       }
       Decl.Distinct(distinctDecl) => resolveDistinct(mutable checker, distinctDecl, type)
+      Decl.Alias(aliasDecl) => {
+        if (checker.scopes[checker.current].aliases[aliasDecl.name] is Some(alias)) {
+          resolveAlias(mutable checker, alias, aliasDecl.pos)
+        }
+      }
       Decl.Func(funcDecl) => declareFunc(mutable checker, funcDecl)
       _ => {}
     }

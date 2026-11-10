@@ -132,7 +132,7 @@ function pushWork(mutable work: Work, document: Doc, node: int) uses alloc {
     Arrays.push(mutable work.documents, document)
     Arrays.push(mutable work.nodes, node)
   }
-  work.count = work.count + 1
+  work.count++
 }
 
 function addChild(mutable arena: Arena, mutable work: Work, document: Doc): int uses alloc {
@@ -146,7 +146,7 @@ function flatten(document: Doc): Arena uses alloc {
   let work = Work { documents: [], nodes: [], count: 0 }
   const _root = addChild(mutable arena, mutable work, document)
   while (work.count > 0) {
-    work.count = work.count - 1
+    work.count--
     const current = work.documents[work.count]
     const node = work.nodes[work.count]
     match (current) {
@@ -248,7 +248,7 @@ function pushCommand(mutable printer: Printer, indent: int, mode: int, node: int
     Arrays.push(mutable printer.commandModes, mode)
     Arrays.push(mutable printer.commandNodes, node)
   }
-  printer.commandCount = printer.commandCount + 1
+  printer.commandCount++
 }
 
 function pushScratch(mutable printer: Printer, mode: int, node: int) uses alloc {
@@ -259,7 +259,7 @@ function pushScratch(mutable printer: Printer, mode: int, node: int) uses alloc 
     Arrays.push(mutable printer.scratchModes, mode)
     Arrays.push(mutable printer.scratchNodes, node)
   }
-  printer.scratchCount = printer.scratchCount + 1
+  printer.scratchCount++
 }
 
 function addSuffix(mutable printer: Printer, indent: int, mode: int, node: int) uses alloc {
@@ -272,7 +272,7 @@ function addSuffix(mutable printer: Printer, indent: int, mode: int, node: int) 
     Arrays.push(mutable printer.suffixModes, mode)
     Arrays.push(mutable printer.suffixNodes, node)
   }
-  printer.suffixCount = printer.suffixCount + 1
+  printer.suffixCount++
 }
 
 function flushSuffixes(mutable printer: Printer) uses alloc {
@@ -313,12 +313,12 @@ function fits(
     let mode = FLAT
     let node = 0
     if (printer.scratchCount > 0) {
-      printer.scratchCount = printer.scratchCount - 1
+      printer.scratchCount--
       mode = printer.scratchModes[printer.scratchCount]
       node = printer.scratchNodes[printer.scratchCount]
     } else if (restIndex > 0) {
       // The rest of the document keeps the modes it was queued with.
-      restIndex = restIndex - 1
+      restIndex--
       mode = printer.commandModes[restIndex]
       node = printer.commandNodes[restIndex]
     } else {
@@ -326,7 +326,7 @@ function fits(
     }
     const kind = arena.kinds[node]
     if (kind == KIND_TEXT) {
-      width = width - Str.charCount(arena.texts[node])
+      width -= Str.charCount(arena.texts[node])
     } else if (kind == KIND_CONCAT) {
       const parts = arena.children[node]
       for (const step of Ranges.between(0, Arrays.length(parts))) {
@@ -354,7 +354,7 @@ function fits(
       if (mode == BREAK) {
         return true
       }
-      width = width - 1
+      width--
     } else if (kind == KIND_SOFT_LINE) {
       if (mode == BREAK) {
         return true
@@ -386,9 +386,9 @@ function writeText(mutable writer: Writer, value: string, options: Options) uses
   const length = Str.length(value)
   let end = length
   while (end > 0 && isBlank(Str.byteAt(value, end - 1))) {
-    end = end - 1
+    end--
   }
-  writer.column = writer.column + Str.charCount(value)
+  writer.column += Str.charCount(value)
   if (end == 0) {
     writer.pending = `${writer.pending}${value}`
     return
@@ -453,7 +453,7 @@ function printDocument(document: Doc, options: Options): string uses alloc {
       flushSuffixes(mutable printer)
       continue
     }
-    printer.commandCount = printer.commandCount - 1
+    printer.commandCount--
     const indent = printer.commandIndents[printer.commandCount]
     const mode = printer.commandModes[printer.commandCount]
     const node = printer.commandNodes[printer.commandCount]
@@ -553,7 +553,7 @@ function openFrame(mutable reader: Reader, line: int, column: int) uses alloc {
     Arrays.push(mutable reader.lines, line)
     Arrays.push(mutable reader.columns, column)
   }
-  reader.depth = reader.depth + 1
+  reader.depth++
 }
 
 function addDocument(mutable reader: Reader, document: Doc) uses alloc {
@@ -609,10 +609,10 @@ function readString(
       } else {
         Str.append(mutable builder, Str.slice(source, offset + 1, offset + 2))
       }
-      offset = offset + 2
+      offset += 2
     } else {
       Str.append(mutable builder, Str.slice(source, offset, offset + 1))
-      offset = offset + 1
+      offset++
     }
   }
   return Err(`${Int.toString(line)}:${Int.toString(column)}: unterminated text`)
@@ -623,7 +623,7 @@ function closeFrame(
   line: int,
   column: int,
 ): Result<Doc, string> uses alloc {
-  reader.depth = reader.depth - 1
+  reader.depth--
   const head = reader.heads[reader.depth]
   const parts = reader.children[reader.depth]
   const id = reader.ids[reader.depth]
@@ -733,19 +733,19 @@ function readDocument(source: string): Result<Doc, string> uses alloc {
     const byte = Str.byteAt(source, offset)
     const column = offset - lineStart + 1
     if (byte == 10) {
-      line = line + 1
-      offset = offset + 1
+      line++
+      offset++
       lineStart = offset
     } else if (byte == 32 || byte == 9 || byte == 13) {
-      offset = offset + 1
+      offset++
     } else if (byte == 59) {
       // A comment runs to the end of the line.
       while (offset < length && Str.byteAt(source, offset) != 10) {
-        offset = offset + 1
+        offset++
       }
     } else if (byte == 40) {
       openFrame(mutable reader, line, column)
-      offset = offset + 1
+      offset++
     } else if (byte == 41) {
       if (reader.depth == 0) {
         return failAt(line, column, "unexpected )")
@@ -755,7 +755,7 @@ function readDocument(source: string): Result<Doc, string> uses alloc {
         return Err(message)
       }
       addDocument(mutable reader, closed.value)
-      offset = offset + 1
+      offset++
     } else if (byte == 34) {
       const read = readString(source, offset, line, column)
       if (read is Err(message)) {
@@ -766,7 +766,7 @@ function readDocument(source: string): Result<Doc, string> uses alloc {
     } else if (isWordByte(byte)) {
       const start = offset
       while (offset < length && isWordByte(Str.byteAt(source, offset))) {
-        offset = offset + 1
+        offset++
       }
       const handled = readWord(mutable reader, Str.slice(source, start, offset), line, column)
       if (handled is Some(message)) {

@@ -5,6 +5,7 @@
 // popScope (check.nra).
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
+import { isPanicCall } from "narrac/pathends"
 import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/fixes"
 import { Type, isInteger } from "narrac/types"
 import {
@@ -82,11 +83,7 @@ export function checkStatement<W: Walker>(
   // read of the local anywhere in the statement may see the new value.
   match (statement) {
     Stmt.VarStmt(_, _, _, _, _, _, value) => endExpressionNarrowing(mutable checker, value)
-    Stmt.AssignStmt(_, target, value) => {
-      endExpressionNarrowing(mutable checker, target)
-      endExpressionNarrowing(mutable checker, value)
-    }
-    Stmt.CompoundAssignStmt(_, target, _, value) => {
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
       endExpressionNarrowing(mutable checker, target)
       endExpressionNarrowing(mutable checker, value)
     }
@@ -278,7 +275,7 @@ function withoutLast(labels: Array<string>): Array<string> uses alloc {
 
 function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc {
   // The label is in scope inside the body only.
-  checker.loops = checker.loops + 1
+  checker.loops++
   if (label == "") {
     return
   }
@@ -294,7 +291,7 @@ function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc
 }
 
 function leaveLoop(mutable checker: Checker, label: string) uses alloc {
-  checker.loops = checker.loops - 1
+  checker.loops--
   if (label != "") {
     checker.labels = withoutLast(checker.labels)
   }
@@ -656,7 +653,7 @@ function checkBlockReturn<W: Walker>(
   value: Option<Expr>,
 ) uses alloc {
   const last = Arrays.length(checker.blocks) - 1
-  checker.blocks[last].returns = checker.blocks[last].returns + 1
+  checker.blocks[last].returns++
   if (value is Some(expression)) {
     checkNoMutableEscape(mutable checker, expression)
     const expected = checker.blocks[last].result
@@ -1267,23 +1264,12 @@ export function diverges(block: Block): bool {
 
 function statementDiverges(statement: Stmt): bool {
   return match (statement) {
-    Stmt.ReturnStmt(_, _) => true
-    Stmt.BreakStmt(_, _) => true
-    Stmt.ContinueStmt(_, _) => true
+    Stmt.ReturnStmt(_, _) | Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => true
     Stmt.ExprStmt(_, expression) => isPanicCall(expression)
     Stmt.IfStmt(_, _, then, orElse) => ifDiverges(then, orElse)
     Stmt.BlockStmt(block) => diverges(block)
     _ => false
   }
-}
-
-function isPanicCall(expression: Expr): bool {
-  if (expression is Expr.CallExpr(_, _, callee, _, _)) {
-    if (callee is Expr.Ident(_, _, name)) {
-      return name == "panic"
-    }
-  }
-  return false
 }
 
 function ifDiverges(then: Block, orElse: Option<Stmt>): bool {
@@ -1487,7 +1473,7 @@ function collectUses(
           chain,
           extendArms(arms, nodeId, 0, false, Arrays.length(chain)),
         )
-        collector.blocked = collector.blocked + 1
+        collector.blocked++
         collectUses(
           checker,
           mutable collector,
@@ -1495,7 +1481,7 @@ function collectUses(
           chain,
           extendArms(arms, nodeId, 1, false, Arrays.length(chain)),
         )
-        collector.blocked = collector.blocked - 1
+        collector.blocked--
       } else {
         collectUses(checker, mutable collector, left, chain, arms)
         collectUses(checker, mutable collector, right, chain, arms)
@@ -1567,7 +1553,7 @@ function collectUses(
         chain,
         extendArms(arms, nodeId, -1, false, Arrays.length(chain)),
       )
-      collector.blocked = collector.blocked + 1
+      collector.blocked++
       for (const i of Ranges.upTo(Arrays.length(matchArms))) {
         const armSteps = extendArms(arms, nodeId, i, true, Arrays.length(chain))
         if (matchArms[i].guard is Some(guard)) {
@@ -1580,7 +1566,7 @@ function collectUses(
           collectBlockUses(checker, mutable collector, armBlock, chain, armSteps)
         }
       }
-      collector.blocked = collector.blocked - 1
+      collector.blocked--
     }
     _ => {}
   }
@@ -1594,14 +1580,14 @@ function collectBlockUses(
   arms: Array<ArmStep>,
 ) uses alloc {
   // The statements run one after the other, so each has a step of its own.
-  collector.blocks = collector.blocks + 1
-  collector.blocked = collector.blocked + 1
+  collector.blocks++
+  collector.blocked++
   const blockNode = -collector.blocks
   for (const i of Ranges.upTo(Arrays.length(block.statements))) {
     const steps = extendArms(arms, blockNode, i, false, Arrays.length(chain))
     collectStatementUses(checker, mutable collector, block.statements[i], chain, steps)
   }
-  collector.blocked = collector.blocked - 1
+  collector.blocked--
 }
 
 function collectStatementUses(
@@ -1620,11 +1606,7 @@ function collectStatementUses(
       chain,
       arms,
     )
-    Stmt.AssignStmt(_, target, value) => {
-      collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, chain, arms)
-      collectUses(checker, mutable collector, value, chain, arms)
-    }
-    Stmt.CompoundAssignStmt(_, target, _, value) => {
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
       collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, chain, arms)
       collectUses(checker, mutable collector, value, chain, arms)
     }
@@ -1636,7 +1618,7 @@ function collectStatementUses(
     }
     Stmt.IfStmt(_, condition, then, orElse) => {
       // The condition is finished before the branches start.
-      collector.blocks = collector.blocks + 1
+      collector.blocks++
       const stepNode = -collector.blocks
       collectUses(
         checker,
@@ -1664,7 +1646,7 @@ function collectStatementUses(
       }
     }
     Stmt.WhileStmt(_, _, condition, body) => {
-      collector.blocks = collector.blocks + 1
+      collector.blocks++
       const stepNode = -collector.blocks
       collectUses(
         checker,
@@ -1685,7 +1667,7 @@ function collectStatementUses(
       if (init is Some(declaration)) {
         collectStatementUses(checker, mutable collector, declaration, chain, arms)
       }
-      collector.blocks = collector.blocks + 1
+      collector.blocks++
       const stepNode = -collector.blocks
       if (condition is Some(loopCondition)) {
         collectUses(
@@ -1708,7 +1690,7 @@ function collectStatementUses(
       }
     }
     Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
-      collector.blocks = collector.blocks + 1
+      collector.blocks++
       const stepNode = -collector.blocks
       collectUses(
         checker,
@@ -1777,8 +1759,7 @@ function inDifferentArms(first: Array<ArmStep>, second: Array<ArmStep>): bool {
 
 function findCallStart(expression: Expr): Pos {
   return match (expression) {
-    Expr.FieldExpr(_, _, target, _) => findCallStart(target)
-    Expr.IndexExpr(_, _, target, _) => findCallStart(target)
+    Expr.FieldExpr(_, _, target, _) | Expr.IndexExpr(_, _, target, _) => findCallStart(target)
     Expr.CallExpr(_, _, callee, _, _) => findCallStart(callee)
     _ => getExpressionPos(expression)
   }
@@ -1786,11 +1767,11 @@ function findCallStart(expression: Expr): Pos {
 
 function findStatementPos(statement: Stmt): Pos {
   return match (statement) {
-    Stmt.VarStmt(_, pos, _, _, _, _, _) => pos
-    Stmt.AssignStmt(pos, _, _) => pos
-    Stmt.CompoundAssignStmt(pos, _, _, _) => pos
-    Stmt.ExprStmt(pos, _) => pos
-    Stmt.ReturnStmt(pos, _) => pos
+    Stmt.VarStmt(_, pos, _, _, _, _, _)
+      | Stmt.AssignStmt(pos, _, _)
+      | Stmt.CompoundAssignStmt(pos, _, _, _)
+      | Stmt.ExprStmt(pos, _)
+      | Stmt.ReturnStmt(pos, _) => pos
     _ => Pos { line: 0, column: 0 }
   }
 }
@@ -1863,10 +1844,8 @@ function buildHoistFix(
     }
   }
   let name = base
-  let number = 2
-  while (findLocal(checker, name) >= 0) {
+  for (let number = 2; findLocal(checker, name) >= 0; number++) {
     name = `${base}${Int.toString(number)}`
-    number = number + 1
   }
   const lineStart = Pos { line: statementPos.line, column: 1 }
   return [
@@ -1892,11 +1871,7 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
       noCalls,
       noArms,
     )
-    Stmt.AssignStmt(_, target, value) => {
-      collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, noCalls, noArms)
-      collectUses(checker, mutable collector, value, noCalls, noArms)
-    }
-    Stmt.CompoundAssignStmt(_, target, _, value) => {
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
       collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, noCalls, noArms)
       collectUses(checker, mutable collector, value, noCalls, noArms)
     }
@@ -1912,11 +1887,7 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
         collectUses(checker, mutable collector, returned, noCalls, noArms)
       }
     }
-    Stmt.IfStmt(_, condition, _, _) => {
-      isFixable = false
-      collectUses(checker, mutable collector, condition, noCalls, noArms)
-    }
-    Stmt.WhileStmt(_, _, condition, _) => {
+    Stmt.IfStmt(_, condition, _, _) | Stmt.WhileStmt(_, _, condition, _) => {
       isFixable = false
       collectUses(checker, mutable collector, condition, noCalls, noArms)
     }

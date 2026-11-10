@@ -168,6 +168,22 @@ export function lex(source: string): Result<Array<Token>, LexError> uses alloc {
   return Ok(lexer.tokens)
 }
 
+export function lexFrom(
+  source: string,
+  line: int,
+  column: int,
+): Result<Array<Token>, LexError> uses alloc {
+  let lexer = createLexer(source, false)
+  // Tokens report positions as if the source started at line:column.
+  lexer.line = line
+  lexer.column = column
+  const failed = runLexer(mutable lexer)
+  if (failed is Some(message)) {
+    return Err(message)
+  }
+  return Ok(lexer.tokens)
+}
+
 export function lexWithComments(source: string): Result<#[
   Array<Token>,
   Array<Comment>,
@@ -192,7 +208,7 @@ function recordComment(mutable lexer: Lexer, first: int, line: int, column: int)
   let ownLine = true
   let back = first
   while (back > 0 && lexer.source[back - 1] != '\n') {
-    back = back - 1
+    back--
     const before = lexer.source[back]
     if (before != ' ' && before != '\t' && before != '\r') {
       ownLine = false
@@ -235,12 +251,12 @@ function peek(lexer: Lexer, offset: int): char {
 
 function advance(mutable lexer: Lexer): char {
   const character = lexer.source[lexer.index]
-  lexer.index = lexer.index + 1
+  lexer.index++
   if (character == '\n') {
-    lexer.line = lexer.line + 1
+    lexer.line++
     lexer.column = 1
   } else {
-    lexer.column = lexer.column + 1
+    lexer.column++
   }
   return character
 }
@@ -266,12 +282,12 @@ function lastEndsStatement(lexer: Lexer): bool {
   }
   const last = lexer.tokens[count - 1]
   return match (last.kind) {
-    TokenKind.TokIdent => true
-    TokenKind.TokInt => true
-    TokenKind.TokFloat => true
-    TokenKind.TokString => true
-    TokenKind.TokChar => true
-    TokenKind.TokTemplate => true
+    TokenKind.TokIdent
+      | TokenKind.TokInt
+      | TokenKind.TokFloat
+      | TokenKind.TokString
+      | TokenKind.TokChar
+      | TokenKind.TokTemplate => true
     TokenKind.TokKeyword =>
       last.text == "return" ||
       last.text == "break" ||
@@ -434,7 +450,7 @@ function lexPunctuation(
         )
       }
       if (punctuation == "(" || punctuation == "[" || punctuation == "#[") {
-        lexer.depth = lexer.depth + 1
+        lexer.depth++
       } else if (punctuation == "{") {
         const outerDepth = lexer.depth
         if (lexer.savedCount < Arrays.length(lexer.savedDepths)) {
@@ -442,16 +458,16 @@ function lexPunctuation(
         } else {
           Arrays.push(mutable lexer.savedDepths, outerDepth)
         }
-        lexer.savedCount = lexer.savedCount + 1
+        lexer.savedCount++
         lexer.depth = 0
       } else if (punctuation == "}") {
         if (lexer.savedCount > 0) {
-          lexer.savedCount = lexer.savedCount - 1
+          lexer.savedCount--
           lexer.depth = lexer.savedDepths[lexer.savedCount]
         }
       } else if (punctuation == ")" || punctuation == "]") {
         if (lexer.depth > 0) {
-          lexer.depth = lexer.depth - 1
+          lexer.depth--
         }
       }
       emit(mutable lexer, TokenKind.TokPunct, punctuation, line, column)
@@ -589,7 +605,7 @@ function lexUnicodeEscape(mutable lexer: Lexer, line: int, column: int): Result<
     if (lexer.index >= getSize(lexer) || !isHexDigit(peek(lexer, 0))) {
       return fail(line, column, "E0007", "invalid \\u escape")
     }
-    value = (value *% 16) +% hexValue(advance(mutable lexer))
+    value = (value * 16) + hexValue(advance(mutable lexer))
   }
   advance(mutable lexer)
   return Ok(Str.fromChar(convertRune(value)))
@@ -686,9 +702,9 @@ function skipInterpolation(mutable lexer: Lexer, line: int, column: int): Option
     const innerColumn = lexer.column
     advance(mutable lexer)
     if (character == '{') {
-      depth = depth + 1
+      depth++
     } else if (character == '}') {
-      depth = depth - 1
+      depth--
     } else if (character == '"' || character == '\'') {
       const failure = skipQuoted(mutable lexer, character, innerLine, innerColumn)
       if (failure is Some(_)) {

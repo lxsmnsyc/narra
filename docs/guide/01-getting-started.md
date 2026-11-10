@@ -79,7 +79,7 @@ narrac build -o hello hello.nra
 ./hello
 ```
 
-This is a debug build. It stops the program with a message when an integer calculation overflows, and running it with `NARRA_CHECK_LEAKS=1` set reports memory that was never freed. Add `-release` for an optimized build, in which integer overflow wraps around instead. In both builds, dividing by zero or reading past the end of an array stops the program with a message.
+This is a debug build. Running it with `NARRA_CHECK_LEAKS=1` set reports memory that was never freed. Add `-release` for an optimized build. In both builds, dividing by zero or reading past the end of an array stops the program with a message.
 
 ## Split the program into files
 

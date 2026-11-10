@@ -1,7 +1,7 @@
 ---
 id: type-aliases
 title: "type and export type aliases"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 160849
 owns:
   - testdata/type_alias*
   - testdata/errors/type_alias*

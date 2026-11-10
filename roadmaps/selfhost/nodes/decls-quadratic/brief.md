@@ -1,7 +1,7 @@
 ---
 id: decls-quadratic
 title: "narrac decls is quadratic in the declarations of a module"
-status: todo
+status: done
 priority: should
 type: fix
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 60000
 owns:
   - testdata/declsdump/perf*
   - roadmaps/selfhost/nodes/decls-quadratic/**

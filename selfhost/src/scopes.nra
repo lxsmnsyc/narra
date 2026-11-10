@@ -37,6 +37,7 @@ export function getDeclarationName(declaration: Decl): string {
     Decl.Struct(declared) => declared.name
     Decl.Enum(declared) => declared.name
     Decl.Distinct(declared) => declared.name
+    Decl.Alias(declared) => declared.name
     Decl.Trait(declared) => declared.name
     // Tests and implement blocks declare no name.
     _ => ""
@@ -50,6 +51,7 @@ function isExported(declaration: Decl): bool {
     Decl.Struct(declared) => declared.exported
     Decl.Enum(declared) => declared.exported
     Decl.Distinct(declared) => declared.exported
+    Decl.Alias(declared) => declared.exported
     Decl.Trait(declared) => declared.exported
     _ => false
   }
@@ -71,6 +73,9 @@ export function checkTypeName(mutable checker: Checker, pos: Pos, name: string) 
     reportError(mutable checker, pos, "E0104", `type ${quoteGo(name)} is declared twice`)
   }
   if (lookupGeneric(checker, name) is Some(_)) {
+    reportError(mutable checker, pos, "E0104", `type ${quoteGo(name)} is declared twice`)
+  }
+  if (checker.scopes[checker.current].aliases[name] is Some(_)) {
     reportError(mutable checker, pos, "E0104", `type ${quoteGo(name)} is declared twice`)
   }
 }
@@ -279,8 +284,8 @@ function importDeclaration(
       }
     }
     Decl.Distinct(_) => importType(mutable checker, pos, scope, name, local)
-    Decl.Struct(_) => importNamedType(mutable checker, pos, scope, name, local)
-    Decl.Enum(_) => importNamedType(mutable checker, pos, scope, name, local)
+    Decl.Alias(_) => importAlias(mutable checker, pos, scope, name, local)
+    Decl.Struct(_) | Decl.Enum(_) => importNamedType(mutable checker, pos, scope, name, local)
     _ => {}
   }
 }
@@ -297,6 +302,25 @@ function importType(
   } else {
     checkTypeName(mutable checker, pos, local)
   }
+}
+
+function importAlias(
+  mutable checker: Checker,
+  pos: Pos,
+  scope: int,
+  name: string,
+  local: string,
+) uses alloc {
+  // A generic alias is shared by index; any other alias is its resolved type.
+  if (checker.scopes[scope].aliases[name] is Some(alias)) {
+    if (Arrays.length(checker.aliases[alias].typeParameters) > 0) {
+      checkTypeName(mutable checker, pos, local)
+      const current = checker.current
+      checker.scopes[current].aliases[local] = alias
+      return
+    }
+  }
+  importType(mutable checker, pos, scope, name, local)
 }
 
 function importNamedType(
@@ -383,6 +407,7 @@ function importConst(mutable checker: Checker, pos: Pos, name: string, index: in
 export function typeNamed(checker: Checker, name: string): bool {
   return lookupType(checker, name) is Some(_) ||
     lookupGeneric(checker, name) is Some(_) ||
+    checker.scopes[checker.current].aliases[name] is Some(_) ||
     lookupTrait(checker, name) >= 0
 }
 

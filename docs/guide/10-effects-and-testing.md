@@ -7,7 +7,7 @@ This chapter writes a small module that converts temperatures, then tests it. On
 Start with a conversion and a function that formats a reading:
 
 ```narra error
-// error: 9:10: Function `describe` uses `alloc` (through `Int.toString`) but its signature does not declare it; write `uses alloc`
+// error: 9:25: Function `describe` uses `alloc` (through `Int.toString`) but its signature does not declare it; write `uses alloc`
 import * as Int from "std/int"
 
 export function toFahrenheit(celsius: int): int {

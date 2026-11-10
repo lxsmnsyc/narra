@@ -11,7 +11,7 @@ import * as Str from "std/string"
 import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { createFix, createEdit, moveColumn } from "narrac/fixes"
-import { Type, Field, Variant, StructInfo, EnumInfo, typeKeys } from "narrac/types"
+import { Type, Field, Variant, StructInfo, EnumInfo, typeKey, typeKeys } from "narrac/types"
 import {
   Checker,
   internComposite,
@@ -24,7 +24,7 @@ import {
   containsTypeParameter,
   checkMutableType,
 } from "narrac/check"
-import { makeEnv, checkPolyRecursion } from "narrac/generics"
+import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -160,12 +160,14 @@ function sortEffects(effects: Array<string>): Array<string> uses alloc {
     }
     // Insert in byte order.
     Arrays.push(mutable sorted, name)
-    let index = Arrays.length(sorted) - 1
-    while (index > 0 && sorted[index] < sorted[index - 1]) {
+    for (
+      let index = Arrays.length(sorted) - 1;
+      index > 0 && sorted[index] < sorted[index - 1];
+      index--
+    ) {
       const swap = sorted[index]
       sorted[index] = sorted[index - 1]
       sorted[index - 1] = swap
-      index = index - 1
     }
   }
   return sorted
@@ -220,6 +222,9 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
   }
   if (Str.contains(typeExpr.name, ".")) {
     return qualifiedType(mutable checker, typeExpr)
+  }
+  if (checker.scopes[checker.current].aliases[typeExpr.name] is Some(alias)) {
+    return useAlias(mutable checker, alias, typeExpr)
   }
   if (typeExpr.name == "Box" && !userType(checker, "Box")) {
     if (argCount != 1) {
@@ -354,9 +359,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
   match (found) {
     Some(declaration) => {
       isType = match (declaration) {
-        Decl.Struct(_) => true
-        Decl.Enum(_) => true
-        Decl.Distinct(_) => true
+        Decl.Struct(_) | Decl.Enum(_) | Decl.Distinct(_) | Decl.Alias(_) => true
         _ => false
       }
     }
@@ -367,6 +370,9 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
     return Type.TVoid
   }
   const argCount = Arrays.length(typeExpr.arguments)
+  if (checker.scopes[scope].aliases[name] is Some(aliasIndex)) {
+    return useAlias(mutable checker, aliasIndex, typeExpr)
+  }
   if (checker.scopes[scope].generics[name] is Some(generic)) {
     if (checker.scopes[scope].types[name] is None) {
       const want = Arrays.length(checker.generics[generic].parameters)
@@ -397,7 +403,90 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type uses 
 }
 
 function userType(checker: Checker, name: string): bool {
-  return lookupGeneric(checker, name) is Some(_) || lookupType(checker, name) is Some(_)
+  return lookupGeneric(checker, name) is Some(_) ||
+    lookupType(checker, name) is Some(_) ||
+    checker.scopes[checker.current].aliases[name] is Some(_)
+}
+
+export function resolveAlias(mutable checker: Checker, alias: int, usePos: Pos): bool uses alloc {
+  // Resolves the body once, in the scope of the alias, to report its errors.
+  const state = checker.aliases[alias].state
+  if (state == 2) {
+    return true
+  }
+  if (state == 3) {
+    return false
+  }
+  if (state == 1) {
+    checker.aliases[alias].state = 3
+    const aliasName = checker.aliases[alias].name
+    reportError(
+      mutable checker,
+      usePos,
+      "E0972",
+      `type alias ${aliasName} refers to itself; a recursive type needs an enum`,
+    )
+    return false
+  }
+  checker.aliases[alias].state = 1
+  const info = checker.aliases[alias]
+  const savedScope = enter(mutable checker, info.scope)
+  const savedEnv = checker.environment
+  const parameters = makeParameters(mutable checker, info.typeParameters)
+  checker.environment = makeEnv(checker, parameters)
+  const body = resolveType(mutable checker, info.body)
+  checker.environment = savedEnv
+  enter(mutable checker, savedScope)
+  if (checker.aliases[alias].state == 1) {
+    checker.aliases[alias].state = 2
+    checker.aliases[alias].type = body
+    if (Arrays.length(info.typeParameters) == 0) {
+      checker.scopes[info.scope].types[info.name] = body
+    }
+  }
+  return checker.aliases[alias].state == 2
+}
+
+function useAlias(mutable checker: Checker, alias: int, typeExpr: TypeExpr): Type uses alloc {
+  if (!resolveAlias(mutable checker, alias, typeExpr.pos)) {
+    return Type.TVoid
+  }
+  const info = checker.aliases[alias]
+  const want = Arrays.length(info.typeParameters)
+  const argCount = Arrays.length(typeExpr.arguments)
+  if (argCount != want) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0973",
+      `type alias ${info.name} takes ${Int.toString(want)} type arguments, found ${Int.toString(argCount)}`,
+    )
+    return Type.TVoid
+  }
+  if (want == 0) {
+    noteAliasUse(mutable checker, info.name, info.type)
+    return info.type
+  }
+  let arguments: Array<Type> = []
+  for (const argument of Arrays.values(typeExpr.arguments)) {
+    Arrays.push(mutable arguments, resolveType(mutable checker, argument))
+  }
+  // The body is resolved again with the arguments in place of the parameters.
+  const savedScope = enter(mutable checker, info.scope)
+  const savedEnv = checker.environment
+  checker.environment = Map {}
+  for (const index of Ranges.between(0, want)) {
+    checker.environment[info.typeParameters[index]] = arguments[index]
+  }
+  const body = resolveType(mutable checker, info.body)
+  checker.environment = savedEnv
+  enter(mutable checker, savedScope)
+  noteAliasUse(mutable checker, info.name, body)
+  return body
+}
+
+function noteAliasUse(mutable checker: Checker, name: string, type: Type) uses alloc {
+  checker.aliasNames[typeKey(type)] = name
 }
 
 function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {

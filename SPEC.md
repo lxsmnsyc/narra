@@ -64,7 +64,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - `@unique` (section 6) can be written on a `const` or a `let`.
 - There are no globals. Assigning to an undeclared name is a compile error.
-- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` `+%=` `-%=` `*%=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Overflow, division by zero and shift checks are those of the binary operator. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
+- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, division by zero and shift checks are those of the binary operator. `+%=`, `-%=` and `*%=` are removed (E0971). On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
 - **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
@@ -73,6 +73,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 - `function name(a: int, b: int): int { ... }` declares a function. A function is private to its module unless declared with `export function` (section 3). A function cannot be declared inside another function (E0930): declare it at module level as a private function and pass the enclosing values as arguments. A nested declaration in TypeScript captures the enclosing locals, and a module-level copy could read a different name where a local shadows it (D74). To keep a helper that captures, bind an arrow function to a `const`.
 - A function with no return type returns nothing.
+- **A function with a result must return on every path.** A path ends at `return`, a call to `panic`, an `if`/`else` whose branches all end, a `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. Any other path that reaches the closing brace is a compile error that names the path (E0969, E0970 for an arrow function with a block body). Generators have no result value and are exempt (D92).
 - **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
 - **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
 - An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Arrays.map(prices, (p) => p * 2)`.
@@ -259,8 +260,7 @@ There are no macros, no operator overloading and no function overloading.
 
 | Operators | Operand types |
 | --- | --- |
-| `+` `-` `*` `/` `%` | Any integer type or any float type. `/` on integers truncates toward zero |
-| `+%` `-%` `*%` | Integer types, wrapping on overflow |
+| `+` `-` `*` `/` `%` | Any integer type or any float type. `/` on integers truncates toward zero. `+` `-` `*` on integers wrap on overflow |
 | `&` `\|` `^` `<<` `>>` | Integer types. `^` is xor |
 | `~` | Integer types, bitwise not |
 | `<` `<=` `>` `>=` | Numbers, `char` and `string` |
@@ -312,7 +312,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
-  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (a negative exponent panics, overflow panics as in any `int` arithmetic); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` panics when `low > high`.
+  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (a negative exponent panics, overflow wraps like `*`; use `Int.mulChecked` to detect it); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` panics when `low > high`.
   - `std/time` has `Instant` and `Duration` (both a count of nanoseconds). `now()` reads the monotonic clock, `elapsed(since)` reads it again, `between(earlier, later)` needs no clock, `unixMillis()` is the wall clock, `sleep(duration)` sleeps. `milliseconds`, `seconds` and `nanoseconds` build a `Duration`, `asMilliseconds` and `asNanoseconds` read it. Reading a clock and sleeping have the `io` effect (section 7).
   - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns an `int` in `[low, high)` without modulo bias and panics when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
   - `std/hash` has `Hash.of(x)`, the `Hashable` hash of any value (it may change between builds), and `fnv1a(text)`, FNV-1a 64 over the UTF-8 bytes of a string as a `u64`, which never changes. `of` is a keyword, and is accepted as a function name and after `.`, like `from`.
@@ -549,6 +549,22 @@ export function length(r: Range): int {
 - **Fields are all public or all private.** There is no per-field visibility.
 - Use an opaque struct when a type has a rule that every value must follow, such as `start <= finish`.
 
+### Type aliases
+
+`type Name = T` gives a type a second name. `export type` exports it.
+
+```
+type Tok = Token
+type Pair<T> = #[T, T]
+export type Token = Text.Token
+```
+
+- **The alias is the same type.** `Tok` and `Token` can be used in place of each other, and when the target is an enum, `Tok.Word(x)` builds a value and `Tok.Word(text)` works in a pattern.
+- **Generic aliases** take type parameters, and every use gives the arguments. A wrong number of arguments is a compile error. Constructors through a generic alias (`Opt.Some(3)` for `type Opt<T> = Option<T>`) are not available yet.
+- **No recursion.** An alias may not refer to itself, directly or through other aliases; recursive types need an enum.
+- **Diagnostics** show a struct, enum or distinct type reached through an alias as `Tok (Token)`.
+- **Nothing reaches the emitted C.**
+
 ### Distinct types
 
 `distinct type` declares a new type with the same representation as an existing one.
@@ -623,6 +639,7 @@ const label = match (status) {
 
 - Each arm is `pattern => expression` or `pattern => { statements }`.
 - Patterns can bind fields, test literals, and add an `if (...)` guard.
+- **Alternatives (D98).** An arm may list patterns joined with `|`: `Token.Plus | Token.Minus => ...`. Alternatives nest inside a pattern: `Some(1 | 2)`. Every alternative binds the same names with the same types (E0967 for different names, E0968 for different types), so `Shape.Circle(r) | Shape.Sphere(r) => r` works. A guard covers the whole list: when it fails for one matching alternative, the next alternative that matches is tried with its own bindings, and the arm is taken if any alternative matches with the guard true (as in Rust). A binding keeps the full type of the value: there is no narrowing to the listed constructors and no union type (D73). Exhaustiveness counts each alternative, and an alternative that the arms and alternatives before it already match is an error (E0974) when it is built from constructors and bools; repeated integer or string literals are not reported. Alternatives are only for `match`; an `is` test and a `const`, `let` or `for ... of` destructuring take one pattern (E0974). `narrac fmt` writes a list on one line when it fits, otherwise one alternative per line, each after the first starting with `|`.
 - **`match` as a value.** In value position (after `=`, as an argument, an operand or a `return` value), `match` produces a value. An arm written `pattern => expression` gives the expression. An arm written `pattern => { ... }` is a block expression (see "Block expressions" in section 2): its value comes from `return v`, a `return` inside it ends the arm and not the function, `break` and `continue` cannot leave it, and every path must end in `return`. All arms have the same type. A `match` in statement position keeps block-statement arms, where `return` leaves the function.
 - `match` on an `Option<T>` uses `Some(v) =>` and `None =>`.
 
@@ -753,12 +770,13 @@ const text = Label.label(price)
 
 ### Numbers
 
-- Integer overflow panics in debug builds and wraps in release builds. `+%`, `-%` and `*%` always wrap.
-- Integer division or remainder by zero panics in every build. `MIN / -1` of a signed type panics in debug builds and gives `MIN` in release builds.
+- **Integer overflow wraps in every build (D92).** `+`, `-`, `*` and unary `-` wrap at the width of the type. The operators `+%`, `-%`, `*%` and their compound forms are removed; using one is E0971, with a fix that writes the plain operator.
+- **Checked arithmetic.** `Int.addChecked(a, b)`, `subChecked` and `mulChecked` return `None` when the result does not fit, and the same functions exist in `std/i8` to `std/u64` (`U8.addChecked(a, b)`).
+- Integer division or remainder by zero panics in every build. `MIN / -1` gives `MIN` and `MIN % -1` gives 0.
 - **Sized integers (D82).** `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types of that width; `i64` is the same type as `int`. All of them implement `Equatable`, `Hashable`, `Ordered` and `Show`, and work as map keys, fields, tuple elements, enum fields and generic arguments. `Array<u8>` stores one byte per element.
 - **Literals take the type the context expects** (an annotation, a parameter, a field, an element, a return type, the other operand, a literal pattern), and `int` when nothing is expected. A literal must fit its type: `const x: u8 = 256` and `const y: u8 = -1` are E0294. `-128` is a valid `i8`.
 - **There is no implicit conversion.** Arithmetic, comparison and bitwise operators need operands of the same type; `u8 + i32` is E0295, and the message names the conversion functions. Unary `-` on an unsigned type is E0296. Shift counts have the type of the value shifted, and a count at or above the width panics.
-- **Overflow is checked at the type's own width:** `u8` `200 + 100` and `i8` `-128 - 1` panic in debug builds and wrap in release builds. `+%`, `-%` and `*%` wrap at the width.
+- **Overflow wraps at the type's own width:** `u8` `200 + 100` is 44 and `i8` `-128 - 1` is 127, in every build.
 - Conversions are explicit functions named after the target type, in one module per type (`I32.from(x)`, `I32.tryFrom(x)`, `I32.wrap(x)`; modules `std/i8` to `std/u64`; `std/int` serves `i64`), and `Float.fromInt(x)`, `Float.truncate(f)`. `from` is for conversions where every value fits, `tryFrom` returns an `Option`, `wrap` keeps the low bits. Each of the seven modules also has `toString(x)` and `parse(text, base)`, and `std/int` has `from`, `tryFrom` and `wrap`. `X.from(v)` takes any integer type whose every value fits `X`; another integer type is E0940 and a value that is not an integer is E0941. `tryFrom` and `wrap` take any integer type. `parse` is `Int.parse` with the range of the type in its error text. A literal argument is an `int`, so `I32.from(5)` is E0940; write `const x: i32 = 5`.
 - **`f32`** is a 32-bit float (C `float`) beside `f64`. A float literal takes `f32` when the context expects it and `f64` otherwise; an integer literal never becomes a float. A literal too large to be finite in `f32` is E0297. `f32` and `f64` do not mix in arithmetic or comparison (E0295). `f32` implements `Equatable`, `Ordered` and `Show` (the shortest text that reads back as the same `f32`) but not `Hashable`, so it is not a map key. `F32.from(v)` takes an `f64` (rounds to nearest) or any integer type, `F32.truncate(v)` gives an `int`, `F32.toString(v)` a string (module `std/f32`), and `Float.from(v)` takes an `f32` (exact) or any integer type. Another argument type is E0941.
 
@@ -808,7 +826,7 @@ export function parsePair(line: string): Option<Pair> uses alloc {
 - **`is` tests a pattern and narrows the type.** After `if (r is Err(e)) { return ... }`, the compiler knows `r` is `Ok`. `r.value` then reads the value. The same narrowing works for `Option<T>` with `None`.
 - **`std/result` helpers.** `import * as Results from "std/result"` adds `Results.map(r, f)`, `Results.mapErr(r, f)`, `Results.andThen(r, f)` (`f` returns a `Result` with the same error type), `Results.withDefault(r, fallback)`, and `Results.ok(r)` and `Results.err(r)`, which return the `Ok` or `Err` value as an `Option`. They work on a value you already hold. They never return from the caller, so they do not replace the visible `if` or `match` on the error path; they transform a result or give it a fallback.
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
-- **Panics abort the program.** `panic("message")`, failed `assert`, out-of-bounds indexing and debug-mode overflow all panic. A panic cannot be caught.
+- **Panics abort the program.** `panic("message")`, failed `assert`, and out-of-bounds indexing all panic. A panic cannot be caught.
 
 <!-- context
 import * as File from "std/fs"

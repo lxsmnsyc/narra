@@ -1,7 +1,7 @@
 ---
 id: missing-return
 title: "Missing return is a compile error"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 118305
 owns:
   - testdata/missing_return*
   - testdata/errors/missing_return*

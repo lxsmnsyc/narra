@@ -9,7 +9,7 @@ sh selfhost/bootstrap.sh out    # writes out/narrac
 
 narrac run testdata/numbers.nra          # build and run
 narrac build -o app file.nra             # build a debug executable
-narrac build -release -o app file.nra    # optimized, integer overflow wraps
+narrac build -release -o app file.nra    # optimized
 narrac test testdata/tests.nra           # run `test` blocks
 narrac emit file.nra                     # print the generated C
 narrac check [--json] file.nra          # report errors; --json prints one object per line
@@ -68,9 +68,9 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 
 - `narrac query [--package DIR] [--json] <command> <operand>`, where the command is `type-of FILE:LINE:COL`, `def NAME`, `refs NAME`, `callers FUNCTION`, `interface MODULE` or `recursion MODULE`. `DIR` defaults to `.`.
 - The package is loaded and checked as `narrac types` does it. Load or check errors print as there (with `--json`: `{"errors": [...]}`, the diagnostic's code; `E0000` for a problem that is not a diagnostic) and the exit code is 1. Any other query error prints `error <message>` (with `--json`: `{"error": ...}` on stdout) and exits 1. A usage error exits 2.
-- `type-of` reports the innermost expression, local name or function or constant name at the position. `type` is the type of the value there, function types with their `uses` list (from the declaration or the annotation; an unannotated local holding a function shows none). `effects` is what evaluating the expression there does: a name has none, a call has the call's. A builtin or constructor name in a call answers for the call, because the checker records nothing for the name. A generic function shows its type parameter names. A position inside a template string with `${...}` parts is an error for now: the parser gives the nodes there the template's position.
+- `type-of` reports the innermost expression, local name or function or constant name at the position. `type` is the type of the value there, function types with their `uses` list (from the declaration or the annotation; an unannotated local holding a function shows none). `effects` is what evaluating the expression there does: a name has none, a call has the call's. A builtin or constructor name in a call answers for the call, because the checker records nothing for the name. A generic function shows its type parameter names.
 - `def` lists every declaration a qualified (`app/text.helper`, `app/text.Shape.Circle`) or bare (`helper`, `Shape.Circle`, `Circle`) name finds. `refs` and `callers` need a name that finds one declaration.
-- `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked. A use inside a template string is reported at the whole template, with `"inTemplate": true`; `callers` does the same.
+- `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked.
 - `callers` and `recursion` read the call graph of the effect pass (`EffectState.calls`). Calls through function values are not edges. A call inside an arrow function belongs to the enclosing function.
 - Only the package's own modules are searched, not std source modules.
 - `selfhost/src/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
@@ -82,9 +82,9 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 
 - Supported: `initialize`, `initialized`, `shutdown`, `exit`, `textDocument/didOpen`, `didChange` (full text only, `change: 1`), `didClose`, `textDocument/formatting`, `hover`, `definition`, `references` and `documentSymbol`. The server sends `textDocument/publishDiagnostics`.
 - Navigation (`selfhost/src/lspnavigation.nra`) loads and checks the package with the open documents' text on each request, and answers from the site index and checker results of `narrac query` (`query.nra` exports `buildViews`, `findTypeAt`, `findUses`, `listDeclarations` and `findTarget`). A document that is not a module of a package that loads gets `null`. A package whose bodies have errors is still answered, but the effect pass does not run, so hover shows no effects of expressions.
-  - Hover: the `type-of` answer in a `narra` code block, with a `uses a, b` line when the expression has effects, and the site's range. Inside a template string with `${...}` parts the whole template answers. No site gives `null`.
-  - Definition: the declaration a name refers to (function, constant, struct, enum, variant, trait, distinct type), also from a type annotation, an import list or `Alias.Name`, and the declaring name of a local or parameter. Implement block functions, trait functions, std names and names inside a template string give `null`.
-  - References: the uses `refs` reports for a function, constant or enum variant, with the declaration first when `context.includeDeclaration` is true. A use inside a template string has the whole template's range. Any other name gives `[]`.
+  - Hover: the `type-of` answer in a `narra` code block, with a `uses a, b` line when the expression has effects, and the site's range. No site gives `null`.
+  - Definition: the declaration a name refers to (function, constant, struct, enum, variant, trait, distinct type), also from a type annotation, an import list or `Alias.Name`, and the declaring name of a local or parameter. Implement block functions, trait functions and std names give `null`.
+  - References: the uses `refs` reports for a function, constant or enum variant, with the declaration first when `context.includeDeclaration` is true. Any other name gives `[]`.
   - Document symbols: the declarations in source order, with kinds Function 12, Constant 14, Struct 23, Enum 10, Interface 11 (trait) and Class 5 (distinct type), struct fields (Field 8) and enum variants (EnumMember 22) as children. `range` runs from the declaration's first token (`export` included) to its last token; `selectionRange` is the name. Tests and implement blocks are not listed.
   - -32602 for a navigation request with no `textDocument.uri`, or (except `documentSymbol`) no `position`.
 - Errors: -32002 before `initialize`, -32601 for an unknown request, -32700 for a body that is not JSON or a header block with no valid `Content-Length` (the server keeps running), -32600 for a message with no `method`, a second `initialize` or a request after `shutdown`, -32602 for a formatting request with no `textDocument.uri`, a URI that is not `file://` or a file that cannot be read.
@@ -143,6 +143,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - Type arguments on map and generic struct literals: `Map<string, int> {}`, `Pair<int, string> { a: 1, b: "x" }` (D68). The checker resolves them like an annotation and reports E0237 when they differ from the expected type. Function types are not accepted inside them.
 - Enums with fields, and `match` as a statement or a value, with guards and `_`.
 - Patterns in `match`, `is` and `const`: nested constructors (`Some(Node(a, 0))`), struct patterns (`{ x: 0.0, y }`), tuple patterns (`#[a, Some(b)]`), literals (`0`, `-1`, `1.5`, `"a"`, `'c'`, `true`), bindings and `_`. `match` works on any value and checks exhaustiveness through nested enums, bools, structs and tuples.
+- Or-patterns (D98) in `match` arms and inside patterns. The first alternative declares the locals; later alternatives resolve on their own, are checked against the first, and then their nodes point at the first one's locals (the locals they created stay unused). The emitter declares the locals before the test and assigns from the first alternative that matches. A pattern in `const`/`let` stays refutable unless one alternative always matches. An unreachable alternative is reported only for alternatives of an or-pattern; a plain arm that earlier arms cover is not reported. Contract patterns (D95) are not built yet.
 - Destructuring: `const { host, port: serverPort } = config` and `const #[q, r] = divmod(a, b)`, nested too.
 - Spread updates: `{ ...s, field: v }` and `Point { ...s, x: 1.0 }`.
 - Tuples: the type `#[int, string]` (in every type position), the literal `#[a, b]`, and `const #[a, b] = t`. Tuples implement the standard traits when their elements do.
@@ -153,7 +154,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - `is` patterns in conditions. `if (x is Some(v))` binds `v` in the branch. After `if (x is None) { return ... }`, `x.value` reads the value. Narrowing works on constants and parameters.
 - Calls whose `Result` is not checked are compile errors.
 - Template strings.
-- Integer overflow checks in debug builds, and division by zero and bounds checks in every build.
+- Integer overflow wraps in every build (D92); division by zero and bounds checks panic in every build.
 - `test` blocks and `assert`. `std/test` (inside test blocks only): `Test.eq`, `Test.ne`, `Test.panics(f)` and `Test.panicsWith(f, message)` and `Test.golden(name, actual)`. A failed assertion panics with the call's position and both values written with `Show`. `narra test` runs each test in its own process, prints `ok - name` or `FAIL - name: message (file:line:col)`, then `N passed, M failed`, and exits 1 on a failure. `-filter text` runs the tests whose name contains the text and `-time` adds the milliseconds of each test. A test that runs past 10 seconds (or `NARRA_TEST_TIMEOUT`) fails with `timed out`. A filter with no match exits 1 (D66).
 - Reference counting for strings, arrays, and structs and enums that hold them.
 - Arrow functions `(x: int): int => x + 1` and `(x) => { ... }`, function types `(x: int) => int`, named functions as values (`apply(double, 1)`, `Alias.f`), calls through function values (`f(x)`, `make()(x)`, `button.onClick(x)`), and captures of constants. A closure passed straight to a non-escaping parameter also captures `let` variables and `mutable` parameters by reference (D77). Parameter types of an arrow function come from the expected type, also through a generic call such as `map(items, (x) => x * 2)`.
@@ -168,11 +169,14 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 
 - Top-level `const` (`export const` too): literals, operators on constants, constructors, structs, arrays, maps, function names and other constants, in any order; cycles are errors. Scalar constants are emitted at each use. Other constants are built on first use (see Differences).
 
+## Type aliases
+
+- `type Name<T> = Body` and `export type`. A non-generic alias is entered in the module's type table as its resolved type, so constructors, patterns and struct literals work through it, also across modules. A generic alias is resolved again at each use with its arguments, so constructors through a generic alias (`Alias.Ctor`) are not available. Self reference and cycles are E0972, a wrong argument count is E0973. Diagnostics print `Alias (Type)` for a struct, enum or distinct type once an alias of it was used anywhere in the package, even where the source wrote the type name.
+
 ## Not supported yet
 
 - `@const` functions and `lazy` values. A top-level constant cannot call a function.
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
-- `export type` aliases (so constructors through an alias are not available either).
 - `Dynamic<Trait>` and `Hash.of`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: trait function calls to user implementations are not followed; `unsafe` has no source yet.

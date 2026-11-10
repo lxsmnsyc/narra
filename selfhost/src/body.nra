@@ -53,6 +53,7 @@ import { resolveOpt } from "narrac/resolve"
 import { dumpTypeString } from "narrac/declsdump"
 import * as Exprs from "narrac/exprs"
 import * as Stmts from "narrac/stmts"
+import { checkEveryPathReturns } from "narrac/pathends"
 import * as Match from "narrac/match"
 import * as Literals from "narrac/literals"
 import * as Calls from "narrac/calls"
@@ -346,7 +347,7 @@ function findStruct(checker: Checker, scope: int, name: string, pos: Pos): int {
     if (info.scope == scope && info.pos == pos && info.generic < 0 && !info.tuple) {
       return index
     }
-    index = index + 1
+    index++
   }
   return -1
 }
@@ -422,7 +423,7 @@ function findFunction(checker: Checker, funcDecl: FuncDecl): int {
     if (info.scope == scope && info.declaration.pos == funcDecl.pos) {
       return index
     }
-    index = index + 1
+    index++
   }
   return -1
 }
@@ -493,6 +494,10 @@ function checkFunctionBody(
   declareParams(mutable checker, funcDecl.parameters, paramTypes)
   if (funcDecl.body is Some(block)) {
     Stmts.checkBlock(mutable checker, walker, block)
+    // An instance of a generic function repeats what its declaration was checked for.
+    if (!funcDecl.generator && Arrays.length(typeArguments) == 0) {
+      checkEveryPathReturns(mutable checker, block, result, false)
+    }
   }
   finishBody(mutable checker, saved)
 }
@@ -502,7 +507,7 @@ function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
   while (checker.pendingNext < Arrays.length(checker.pending)) {
     const instanceIndex = checker.pending[checker.pendingNext]
     const instance = checker.instanceList[instanceIndex]
-    checker.pendingNext = checker.pendingNext + 1
+    checker.pendingNext++
     const saved = enter(mutable checker, instance.scope)
     const funcDecl = checker.functions[instance.funcIndex].declaration
     checkFunctionBody(
@@ -623,7 +628,7 @@ function findImplIndex(checker: Checker, block: int, funcDecl: FuncDecl): int {
     if (implFunc.declaration.pos == funcDecl.pos) {
       return index
     }
-    index = index + 1
+    index++
   }
   return -1
 }
@@ -661,7 +666,7 @@ function checkTest(mutable checker: Checker, walker: BodyWalker, testDecl: TestD
   const module = checker.scopes[checker.current].path
   for (const other of Arrays.values(checker.bodies)) {
     if (other.kind == "test" && other.module == module) {
-      testNumber = testNumber + 1
+      testNumber++
     }
   }
   keyBody(mutable checker, `test|${module}|${Int.toString(testNumber - 1)}`)

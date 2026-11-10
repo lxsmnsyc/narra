@@ -36,8 +36,10 @@ import {
   readNodeRef,
   readLocal,
   retainCode,
+  releaseCode,
   localRef,
   declareLocal,
+  declareLocalVariable,
   declareVariable,
   declareUnset,
   variableRef,
@@ -151,46 +153,169 @@ function collectConditions<W: EmitWalker>(
       }
     }
     Pattern.PatWildcard(_, _) => {}
+    Pattern.PatOr(_, _, alternatives) => {
+      const condition = emitAlternativesCondition(walker, mutable emitter, alternatives, path)
+      if (condition != "true") {
+        Arrays.push(mutable conditions, condition)
+      }
+    }
   }
 }
 
-function bindPattern(mutable emitter: Emitter, pattern: Pattern, path: string) uses alloc {
-  // Each local takes its own reference.
+function emitAlternativesCondition<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  alternatives: Array<Pattern>,
+  path: string,
+): string uses alloc {
+  // One alternative that always matches makes the whole list match.
+  let parts: Array<string> = []
+  for (const alternative of Arrays.values(alternatives)) {
+    const condition = emitPatternCondition(walker, mutable emitter, alternative, path)
+    if (condition == "true") {
+      return "true"
+    }
+    Arrays.push(mutable parts, `(${condition})`)
+  }
+  return `(${Str.join(parts, " || ")})`
+}
+
+function collectBoundLocals(
+  emitter: Emitter,
+  pattern: Pattern,
+  mutable locals: Array<int>,
+) uses alloc {
+  // The first alternative of a list stands for all of them.
+  match (pattern) {
+    Pattern.PatName(nodeId, _, _) => {
+      const localIndex = declaredLocal(emitter, nodeId)
+      if (localIndex >= 0) {
+        Arrays.push(mutable locals, localIndex)
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectBoundLocals(emitter, argument, mutable locals)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        collectBoundLocals(emitter, field.pattern, mutable locals)
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectBoundLocals(emitter, argument, mutable locals)
+      }
+    }
+    Pattern.PatOr(_, _, alternatives) => collectBoundLocals(
+      emitter,
+      alternatives[0],
+      mutable locals,
+    )
+    _ => {}
+  }
+}
+
+function bindAlternatives<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  alternatives: Array<Pattern>,
+  path: string,
+) uses alloc {
+  // Test the alternatives in order and bind from the first one that matches. The last one needs no test, because the pattern already matched.
+  const count = Arrays.length(alternatives)
+  let conditions: Array<string> = []
+  for (const index of Ranges.between(0, count - 1)) {
+    Arrays.push(
+      mutable conditions,
+      emitPatternCondition(walker, mutable emitter, alternatives[index], path),
+    )
+  }
+  for (const index of Ranges.between(0, count)) {
+    if (index == 0) {
+      writeLine(mutable emitter, `if (${conditions[0]}) {`)
+    } else if (index < count - 1) {
+      writeLine(mutable emitter, `} else if (${conditions[index]}) {`)
+    } else {
+      writeLine(mutable emitter, "} else {")
+    }
+    emitter.indent++
+    bindPattern(walker, mutable emitter, alternatives[index], path, true)
+    emitter.indent--
+  }
+  writeLine(mutable emitter, "}")
+}
+
+function bindPattern<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  pattern: Pattern,
+  path: string,
+  assignOnly: bool,
+) uses alloc {
+  // Each local takes its own reference. Inside a list of alternatives the locals are declared once before it, so a binding only assigns.
   match (pattern) {
     Pattern.PatName(nodeId, _, _) => {
       const localIndex = declaredLocal(emitter, nodeId)
       if (localIndex >= 0) {
         const local = readLocal(emitter, localIndex)
-        declareLocal(mutable emitter, localIndex, path)
+        if (assignOnly) {
+          const target = localRef(emitter, localIndex)
+          writeLine(mutable emitter, `${target} = ${path};`)
+        } else {
+          declareLocal(mutable emitter, localIndex, path)
+        }
         const name = localRef(emitter, localIndex)
         const retainText = retainCode(emitter, local.localType, name)
         if (retainText != "") {
           writeLine(mutable emitter, retainText)
         }
-        addLocal(mutable emitter, localIndex)
+        if (!assignOnly) {
+          addLocal(mutable emitter, localIndex)
+        }
       }
     }
     Pattern.PatCtor(nodeId, _, _, _, arguments, _) => {
       if (readNodeRef(emitter, nodeId) is Ref.Constructor(enumIndex, variantIndex)) {
         for (const index of Ranges.between(0, Arrays.length(arguments))) {
           const argumentPath = variantPath(emitter, enumIndex, variantIndex, index, path)
-          bindPattern(mutable emitter, arguments[index], argumentPath)
+          bindPattern(walker, mutable emitter, arguments[index], argumentPath, assignOnly)
         }
       }
     }
     Pattern.PatStruct(_, _, fields) => {
       for (const field of Arrays.values(fields)) {
-        bindPattern(mutable emitter, field.pattern, `${path}.f_${field.name}`)
+        bindPattern(walker, mutable emitter, field.pattern, `${path}.f_${field.name}`, assignOnly)
       }
     }
     Pattern.PatTuple(_, _, arguments) => {
       for (const index of Ranges.between(0, Arrays.length(arguments))) {
         const name = tupleFieldName(emitter, pattern, index)
-        bindPattern(mutable emitter, arguments[index], `${path}.f_${name}`)
+        bindPattern(walker, mutable emitter, arguments[index], `${path}.f_${name}`, assignOnly)
       }
     }
-    Pattern.PatLit(_, _, _) => {}
-    Pattern.PatWildcard(_, _) => {}
+    Pattern.PatOr(_, _, alternatives) => {
+      let locals: Array<int> = []
+      collectBoundLocals(emitter, pattern, mutable locals)
+      if (Arrays.length(locals) > 0) {
+        if (!assignOnly) {
+          for (const localIndex of Arrays.values(locals)) {
+            const declaration = declareLocalVariable(mutable emitter, localIndex)
+            if (!emitter.inGenerator) {
+              writeLine(mutable emitter, `${declaration};`)
+            }
+          }
+        }
+        bindAlternatives(walker, mutable emitter, alternatives, path)
+        if (!assignOnly) {
+          for (const localIndex of Arrays.values(locals)) {
+            addLocal(mutable emitter, localIndex)
+          }
+        }
+      }
+    }
+    Pattern.PatLit(_, _, _) | Pattern.PatWildcard(_, _) => {}
   }
 }
 
@@ -227,7 +352,7 @@ export function emitIfIs<W: EmitWalker>(
     if (condition is Expr.IsExpr(_, _, subject, pattern)) {
       const subjectType = readNodeType(emitter, getExpressionId(subject))
       writeLine(mutable emitter, "{")
-      emitter.indent = emitter.indent + 1
+      emitter.indent++
       pushScope(mutable emitter, false)
       beginStatement(mutable emitter)
       const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
@@ -240,25 +365,25 @@ export function emitIfIs<W: EmitWalker>(
       const holds = temp(mutable emitter, Type.TBool, matchTest)
       endStatement(mutable emitter)
       writeLine(mutable emitter, `if (${holds}) {`)
-      emitter.indent = emitter.indent + 1
+      emitter.indent++
       pushScope(mutable emitter, false)
-      bindPattern(mutable emitter, pattern, held)
+      bindPattern(walker, mutable emitter, pattern, held, false)
       EmitWalker.emitBlockInScope(walker, mutable emitter, then)
       popScope(mutable emitter)
-      emitter.indent = emitter.indent - 1
+      emitter.indent--
       if (orElse is Some(otherwise)) {
         writeLine(mutable emitter, "} else {")
-        emitter.indent = emitter.indent + 1
+        emitter.indent++
         if (otherwise is Stmt.BlockStmt(elseBlock)) {
           EmitWalker.emitBlock(walker, mutable emitter, elseBlock, false)
         } else {
           EmitWalker.emitStatement(walker, mutable emitter, otherwise)
         }
-        emitter.indent = emitter.indent - 1
+        emitter.indent--
       }
       writeLine(mutable emitter, "}")
       popScope(mutable emitter)
-      emitter.indent = emitter.indent - 1
+      emitter.indent--
       writeLine(mutable emitter, "}")
       return
     }
@@ -281,52 +406,158 @@ function emitMatchArms<W: EmitWalker>(
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
   const subjectType = readNodeType(emitter, getExpressionId(subject))
   const held = temp(mutable emitter, subjectType, code.text)
-  emitter.tempCount = emitter.tempCount + 1
+  emitter.tempCount++
   const doneName = `m${Int.toString(emitter.tempCount)}`
   const doneDeclaration = declareVariable(mutable emitter, "bool", doneName)
   const done = variableRef(emitter, doneName)
   writeLine(mutable emitter, `${doneDeclaration} = false;`)
   for (const arm of Arrays.values(arms)) {
     writeLine(mutable emitter, `if (!${done}) {`)
-    emitter.indent = emitter.indent + 1
+    emitter.indent++
+    let armLocals: Array<int> = []
+    collectBoundLocals(emitter, arm.pattern, mutable armLocals)
+    if (arm.pattern is Pattern.PatOr(_, _, armAlternatives)) {
+      if (arm.guard is Some(armGuard)) {
+        if (Arrays.length(armLocals) > 0) {
+          emitGuardedAlternatives(
+            walker,
+            mutable emitter,
+            arm,
+            armAlternatives,
+            armGuard,
+            held,
+            returning,
+            isValue,
+            result,
+            resultType,
+            done,
+          )
+          emitter.indent--
+          writeLine(mutable emitter, "}")
+          continue
+        }
+      }
+    }
     beginStatement(mutable emitter)
     const condition = emitPatternCondition(walker, mutable emitter, arm.pattern, held)
     const holds = temp(mutable emitter, Type.TBool, condition)
     endStatement(mutable emitter)
     writeLine(mutable emitter, `if (${holds}) {`)
-    emitter.indent = emitter.indent + 1
+    emitter.indent++
     pushScope(mutable emitter, false)
-    bindPattern(mutable emitter, arm.pattern, held)
+    bindPattern(walker, mutable emitter, arm.pattern, held, false)
     if (arm.guard is Some(guard)) {
       beginStatement(mutable emitter)
       const guardCode = EmitWalker.emitExpression(walker, mutable emitter, guard)
       const guardHolds = temp(mutable emitter, Type.TBool, guardCode.text)
       endStatement(mutable emitter)
       writeLine(mutable emitter, `if (${guardHolds}) {`)
-      emitter.indent = emitter.indent + 1
+      emitter.indent++
     }
-    writeLine(mutable emitter, `${done} = true;`)
-    if (returning) {
-      if (arm.body is Some(armBody)) {
-        Tail.emitReturnArm(walker, mutable emitter, armBody, resultType)
-      } else if (arm.block is Some(armBlock)) {
-        emitReturnBlockArm(walker, mutable emitter, armBlock, resultType)
-      }
-    } else if (isValue) {
-      emitValueArm(walker, mutable emitter, arm, result, resultType)
-    } else {
-      emitStatementArm(walker, mutable emitter, arm)
-    }
+    emitArmBody(walker, mutable emitter, arm, returning, isValue, result, resultType, done)
     if (arm.guard is Some(_)) {
-      emitter.indent = emitter.indent - 1
+      emitter.indent--
       writeLine(mutable emitter, "}")
     }
     popScope(mutable emitter)
-    emitter.indent = emitter.indent - 1
+    emitter.indent--
     writeLine(mutable emitter, "}")
-    emitter.indent = emitter.indent - 1
+    emitter.indent--
     writeLine(mutable emitter, "}")
   }
+}
+
+function emitArmBody<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arm: MatchArm,
+  returning: bool,
+  isValue: bool,
+  result: string,
+  resultType: Type,
+  done: string,
+) uses alloc {
+  writeLine(mutable emitter, `${done} = true;`)
+  if (returning) {
+    if (arm.body is Some(armBody)) {
+      Tail.emitReturnArm(walker, mutable emitter, armBody, resultType)
+    } else if (arm.block is Some(armBlock)) {
+      emitReturnBlockArm(walker, mutable emitter, armBlock, resultType)
+    }
+  } else if (isValue) {
+    emitValueArm(walker, mutable emitter, arm, result, resultType)
+  } else {
+    emitStatementArm(walker, mutable emitter, arm)
+  }
+}
+
+function emitGuardedAlternatives<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arm: MatchArm,
+  alternatives: Array<Pattern>,
+  guard: Expr,
+  held: string,
+  returning: bool,
+  isValue: bool,
+  result: string,
+  resultType: Type,
+  done: string,
+) uses alloc {
+  // Each alternative that matches binds its own names and runs the guard; the first one whose guard holds selects the arm.
+  let locals: Array<int> = []
+  collectBoundLocals(emitter, arm.pattern, mutable locals)
+  for (const localIndex of Arrays.values(locals)) {
+    const declaration = declareLocalVariable(mutable emitter, localIndex)
+    if (!emitter.inGenerator) {
+      writeLine(mutable emitter, `${declaration};`)
+    }
+  }
+  emitter.tempCount++
+  const selectedName = `m${Int.toString(emitter.tempCount)}`
+  const selectedDeclaration = declareVariable(mutable emitter, "bool", selectedName)
+  const selected = variableRef(emitter, selectedName)
+  writeLine(mutable emitter, `${selectedDeclaration} = false;`)
+  for (const alternative of Arrays.values(alternatives)) {
+    beginStatement(mutable emitter)
+    const condition = emitPatternCondition(walker, mutable emitter, alternative, held)
+    const holds = temp(mutable emitter, Type.TBool, condition)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (!${selected} && ${holds}) {`)
+    emitter.indent++
+    bindPattern(walker, mutable emitter, alternative, held, true)
+    beginStatement(mutable emitter)
+    const guardCode = EmitWalker.emitExpression(walker, mutable emitter, guard)
+    const guardHolds = temp(mutable emitter, Type.TBool, guardCode.text)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (${guardHolds}) {`)
+    emitter.indent++
+    writeLine(mutable emitter, `${selected} = true;`)
+    emitter.indent--
+    writeLine(mutable emitter, "} else {")
+    emitter.indent++
+    for (const localIndex of Arrays.values(locals)) {
+      const local = readLocal(emitter, localIndex)
+      const releaseText = releaseCode(emitter, local.localType, localRef(emitter, localIndex))
+      if (releaseText != "") {
+        writeLine(mutable emitter, releaseText)
+      }
+    }
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+  }
+  writeLine(mutable emitter, `if (${selected}) {`)
+  emitter.indent++
+  pushScope(mutable emitter, false)
+  for (const localIndex of Arrays.values(locals)) {
+    addLocal(mutable emitter, localIndex)
+  }
+  emitArmBody(walker, mutable emitter, arm, returning, isValue, result, resultType, done)
+  popScope(mutable emitter)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
 }
 
 function emitStatementArm<W: EmitWalker>(
@@ -375,7 +606,7 @@ export function emitBlockBody<W: EmitWalker>(
 ): Code uses alloc {
   // Each return stores its value, releases what the block holds and jumps to
   // the label after the block. A match arm written as a block uses this too.
-  emitter.tempCount = emitter.tempCount + 1
+  emitter.tempCount++
   const number = Int.toString(emitter.tempCount)
   const typeName = cType(emitter.checker, resultType)
   const result = declareUnset(mutable emitter, typeName, `r${number}`)
@@ -386,13 +617,13 @@ export function emitBlockBody<W: EmitWalker>(
     scopes: Arrays.length(emitter.scopes),
   }
   writeLine(mutable emitter, "{")
-  emitter.indent = emitter.indent + 1
+  emitter.indent++
   Arrays.push(mutable emitter.blocks, info)
   pushScope(mutable emitter, false)
   EmitWalker.emitBlockInScope(walker, mutable emitter, block)
   popScope(mutable emitter)
   emitter.blocks = withoutLastBlock(emitter.blocks)
-  emitter.indent = emitter.indent - 1
+  emitter.indent--
   writeLine(mutable emitter, "}")
   writeLine(mutable emitter, `${info.label}:;`)
   if (needsRc(emitter, resultType)) {
@@ -466,7 +697,7 @@ export function emitMatchValue<W: EmitWalker>(
 ): Code uses alloc {
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
     const resultType = readNodeType(emitter, nodeId)
-    emitter.tempCount = emitter.tempCount + 1
+    emitter.tempCount++
     const resultName = cType(emitter.checker, resultType)
     const variableName = `r${Int.toString(emitter.tempCount)}`
     const result = declareUnset(mutable emitter, resultName, variableName)
@@ -493,7 +724,7 @@ export function emitDestructure<W: EmitWalker>(
     const code = EmitWalker.emitExpression(walker, mutable emitter, value)
     const patternType = readNodeType(emitter, getPatternId(pattern))
     const held = temp(mutable emitter, patternType, code.text)
-    bindPattern(mutable emitter, pattern, held)
+    bindPattern(walker, mutable emitter, pattern, held, false)
     endStatement(mutable emitter)
     return
   }

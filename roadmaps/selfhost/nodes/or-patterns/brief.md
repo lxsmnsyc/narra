@@ -1,7 +1,7 @@
 ---
 id: or-patterns
 title: "Or-patterns in match arms"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-3
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 162550
 owns:
   - testdata/or_pattern*
   - testdata/errors/or_pattern*

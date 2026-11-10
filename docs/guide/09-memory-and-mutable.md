@@ -314,7 +314,7 @@ Inside such a loop the body cannot use `players` at all, not even to read it: a 
 Now `heal` adds an amount and returns the new hp, and the game logs the change in one line:
 
 ```narra error
-// error: 15:9: "hero" is passed as mutable in one call, so the rest of the expression cannot use it
+// error: 15:25: "hero" is passed as mutable in one call, so the rest of the expression cannot use it
 import * as Int from "std/int"
 
 struct Player {

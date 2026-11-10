@@ -42,6 +42,19 @@ pay 500
 
 An arm can add a condition after its pattern, `if (quantity >= 10)`, called a guard. The arm is taken only when the pattern matches and the guard is true. `match` tries the arms from top to bottom and takes the first that fits. `Add("cups", 12)` goes to the bulk arm, and `Add("tea", 2)` falls past it to the next one.
 
+Several patterns can share one arm. Join them with `|`, and the arm is taken when any of them matches:
+
+```narra fragment
+function isChange(command: Command): bool {
+  return match (command) {
+    Command.Add(_, _) | Command.Remove(_) => true
+    Command.Pay(_) => false
+  }
+}
+```
+
+Every pattern in the list must bind the same names with the same types, because the arm body uses them whichever pattern matched. A guard applies to the whole list. The list can also sit inside a pattern, as in `Some(1 | 2)`. An `is` test takes one pattern only; use `match` when you need alternatives.
+
 Here `match` is a value: the function returns whatever the chosen arm gives, so every arm gives a `string`. A `match` can also stand alone as a statement, as `checkWeight` did in chapter 4. Then each arm can run a block of statements, and a `return` in it returns from the function:
 
 ```narra

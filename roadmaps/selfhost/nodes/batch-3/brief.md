@@ -1,7 +1,7 @@
 ---
 id: batch-3
 title: "Batch 3: the compiler batch"
-status: todo
+status: active
 priority: should
 type: story
 story:
@@ -42,7 +42,9 @@ adopt-new-syntax uses or-patterns and compound assignment in `selfhost/src`. The
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] The inbox entries the fixes answer are removed from `inbox.md`.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] The inbox entries the fixes answer are removed from `inbox.md`.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
+
+All nine children landed (decls-quadratic as not reproduced). One fresh review found three should-fix items (or-pattern guards tried only the first alternative, or-patterns accepted in destructuring, stale powInt text) and four nits, all fixed. Seed regenerated mid-batch, at the end and after the review fixes. Final checks at 9542ff5: scripts/test.sh PASS, linux-check PASS, bootstrap reports the seed current.

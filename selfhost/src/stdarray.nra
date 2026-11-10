@@ -4,8 +4,9 @@ import { Type } from "narrac/types"
 import { Checker, internComposite, typeString, Walker, reportError } from "narrac/check"
 import { findTupleType } from "narrac/resolve"
 import { Pos, Arg } from "narrac/ast"
+import * as Arrays from "std/array"
 import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/exprs"
-import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
 
 export const ARRAY_FUNCS: Array<StdFunc> = [
   StdFunc { name: "Array.entries", module: "std/array", key: "entries", check: "checkArrayLength" },
@@ -25,6 +26,13 @@ export const ARRAY_FUNCS: Array<StdFunc> = [
     effects: ["alloc"],
     check: "checkArrayPush",
   },
+  StdFunc {
+    name: "Array.withCapacity",
+    module: "std/array",
+    key: "withCapacity",
+    effects: ["alloc"],
+    check: "checkArrayWithCapacity",
+  },
   StdFunc { name: "Array.values", module: "std/array", key: "values", check: "checkArrayLength" },
 ]
 
@@ -34,7 +42,7 @@ function checkArrayLength<W: Walker>(
   pos: Pos,
   arguments: Array<Arg>,
   name: string,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
     return Type.TVoid
   }
@@ -103,20 +111,53 @@ function checkArrayFilled<W: Walker>(
   arguments: Array<Arg>,
   name: string,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
     return Type.TVoid
   }
   // The expected array type gives the element a hint.
   let hint: Option<Type> = None
   if (want is Some(wantType)) {
-    if (wantType is Type.TArray(wantElement)) {
-      hint = Some(wantElement)
+    if (wantType is Type.TEnum(enumIndex)) {
+      const wanted = checker.enums[enumIndex]
+      if (wanted.name == "Option" && Arrays.length(wanted.arguments) == 1) {
+        if (wanted.arguments[0] is Type.TArray(wantElement)) {
+          hint = Some(wantElement)
+        }
+      }
     }
   }
   const element = checkExpression(mutable checker, walker, arguments[0].value, hint)
   checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
-  return internComposite(mutable checker, Type.TArray(element))
+  const arrayType = internComposite(mutable checker, Type.TArray(element))
+  return makePreludeEnum(mutable checker, "Option", [arrayType])
+}
+
+function checkArrayWithCapacity<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  checkArgumentAgainst(mutable checker, walker, arguments[0].value, Type.TInt)
+  // Only the expected type tells the element type.
+  if (want is Some(wantType)) {
+    if (wantType is Type.TArray(_)) {
+      return wantType
+    }
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0302",
+    "cannot tell the type of the elements of Array.withCapacity here; add a type annotation",
+  )
+  return Type.TVoid
 }
 
 export function checkArrayCall<W: Walker>(
@@ -127,15 +168,18 @@ export function checkArrayCall<W: Walker>(
   name: string,
   kind: string,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   if (kind == "checkArrayLength") {
-    return checkArrayLength(mutable checker, walker, pos, arguments, name)
+    return copy(checkArrayLength(mutable checker, walker, pos, arguments, name))
   }
   if (kind == "checkArrayPush") {
     return checkArrayPush(mutable checker, walker, pos, arguments, name)
   }
   if (kind == "checkArrayFilled") {
-    return checkArrayFilled(mutable checker, walker, pos, arguments, name, want)
+    return copy(checkArrayFilled(mutable checker, walker, pos, arguments, name, want))
+  }
+  if (kind == "checkArrayWithCapacity") {
+    return checkArrayWithCapacity(mutable checker, walker, pos, arguments, name, want)
   }
   panic(`checkStdCall: no port of the check ${kind} (${name})`)
   return Type.TVoid

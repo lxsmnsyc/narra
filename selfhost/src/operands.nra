@@ -1,0 +1,433 @@
+// Integer divisors and shift counts that the checker proves. A divisor is a
+// non-zero constant or a local that a check narrowed; a shift count is a
+// constant inside the bit width or a local checked against both ends. The
+// facts about a local live in checker.localNames next to the variant
+// narrowing, so they end together (see endNarrowing in patterns.nra).
+import { Expr } from "narrac/ast"
+import { Type, isInteger, isUnsignedInteger } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  getRef,
+  getLocal,
+  bindName,
+  reportError,
+  getExpressionPos,
+} from "narrac/check"
+import { factKey } from "narrac/patterns"
+import { isCapturedByArrow } from "narrac/funcvalues"
+import * as Int from "std/int"
+import * as Math from "std/math"
+import * as Str from "std/string"
+
+const UNBOUNDED_LOW = -9223372036854775807
+const UNBOUNDED_HIGH = 9223372036854775807
+const MAXIMUM_CONSTANT_DEPTH = 8
+
+struct Fact {
+  low: int
+  high: int
+  nonzero: bool
+}
+
+export function splitIntLiteral(text: string): #[int, string] uses alloc {
+  let base = 10
+  let digits = text
+  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
+    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
+      base = 16
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
+    ) {
+      base = 2
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
+    ) {
+      base = 8
+      digits = Str.sliceFrom(text, 2)
+    } else {
+      base = 8
+      digits = Str.sliceFrom(text, 1)
+    }
+  }
+  return #[base, Str.replace(digits, "_", "")]
+}
+
+function parseLiteral(text: string): Option<int> uses alloc {
+  const #[base, digits] = splitIntLiteral(text)
+  if (digits == "") {
+    return Some(0)
+  }
+  if (Int.parse(digits, base) is Ok(value)) {
+    return Some(value)
+  }
+  return None
+}
+
+function findConstant(checker: Checker, expression: Expr, depth: int): Option<int> uses alloc {
+  // A literal, a negated or combined constant, or a top-level constant whose value is one.
+  if (depth > MAXIMUM_CONSTANT_DEPTH) {
+    return None
+  }
+  if (expression is Expr.IntLit(_, _, text)) {
+    return parseLiteral(text)
+  }
+  if (expression is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "-") {
+      if (findConstant(checker, operand, depth + 1) is Some(value)) {
+        return Some(0 - value)
+      }
+    }
+    return None
+  }
+  if (expression is Expr.BinaryExpr(_, _, operator, left, right)) {
+    return combineConstants(checker, operator, left, right, depth)
+  }
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    return findNamedConstant(checker, nodeId, depth)
+  }
+  if (expression is Expr.FieldExpr(nodeId, _, _, _)) {
+    return findNamedConstant(checker, nodeId, depth)
+  }
+  return None
+}
+
+function findNamedConstant(checker: Checker, nodeId: int, depth: int): Option<int> uses alloc {
+  if (getRef(checker, nodeId) is Ref.Const(index)) {
+    return findConstant(checker, checker.consts[index].declaration.value, depth + 1)
+  }
+  return None
+}
+
+function combineConstants(
+  checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+  depth: int,
+): Option<int> uses alloc {
+  if (findConstant(checker, left, depth + 1) is Some(leftValue)) {
+    if (findConstant(checker, right, depth + 1) is Some(rightValue)) {
+      if (operator == "+") {
+        return Some(leftValue + rightValue)
+      }
+      if (operator == "-") {
+        return Some(leftValue - rightValue)
+      }
+      if (operator == "*") {
+        return Some(leftValue * rightValue)
+      }
+      if (operator == "<<" && rightValue >= 0 && rightValue < 63) {
+        return Some(leftValue << rightValue)
+      }
+    }
+  }
+  return None
+}
+
+function wrapConstant(value: int, type: Type): int {
+  // A folded constant takes the value it has in its own type: 65536 * 65536 is 0 as an i32.
+  const width = findBitWidth(type)
+  if (width < 1 || width >= 64) {
+    return value
+  }
+  const modulus = 1 << width
+  let reduced = value & (modulus - 1)
+  if (!isUnsignedInteger(type) && reduced >= modulus / 2) {
+    reduced = reduced - modulus
+  }
+  return reduced
+}
+
+function findTypedConstant(checker: Checker, expression: Expr, type: Type): Option<int> uses alloc {
+  if (findConstant(checker, expression, 0) is Some(value)) {
+    return Some(wrapConstant(value, type))
+  }
+  return None
+}
+
+function findFactLocal(checker: Checker, expression: Expr): int {
+  // Only a plain name carries facts; a field path does not.
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Local(index)) {
+      if (isInteger(getLocal(checker, index).localType)) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+function readFact(checker: Checker, local: int): Fact uses alloc {
+  const key = factKey(local)
+  if (checker.localNames[key] is Some(present)) {
+    if (present == 1) {
+      let low = UNBOUNDED_LOW
+      let high = UNBOUNDED_HIGH
+      let nonzero = false
+      if (checker.localNames[`${key}|low`] is Some(storedLow)) {
+        low = storedLow
+      }
+      if (checker.localNames[`${key}|high`] is Some(storedHigh)) {
+        high = storedHigh
+      }
+      if (checker.localNames[`${key}|nonzero`] is Some(storedNonzero)) {
+        nonzero = storedNonzero == 1
+      }
+      return Fact { low: low, high: high, nonzero: nonzero }
+    }
+  }
+  return Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+}
+
+function writeFact(mutable checker: Checker, local: int, fact: Fact) uses alloc {
+  const key = factKey(local)
+  let nonzero = 0
+  if (fact.nonzero) {
+    nonzero = 1
+  }
+  bindName(mutable checker, `${key}|low`, fact.low)
+  bindName(mutable checker, `${key}|high`, fact.high)
+  bindName(mutable checker, `${key}|nonzero`, nonzero)
+  bindName(mutable checker, key, 1)
+}
+
+export function recordConstantLocal(mutable checker: Checker, local: int, value: Expr) uses alloc {
+  // A `const` local that holds a constant is that constant wherever it is read.
+  const info = getLocal(checker, local)
+  if (info.isMutable || !isInteger(info.localType)) {
+    return
+  }
+  if (findTypedConstant(checker, value, info.localType) is Some(known)) {
+    if (info.localType == Type.TU64 && known < 0) {
+      // A u64 from 2^63 up is negative as an int; it is non-zero and proves no bound.
+      writeFact(mutable checker, local, Fact {
+        low: UNBOUNDED_LOW,
+        high: UNBOUNDED_HIGH,
+        nonzero: true,
+      })
+      return
+    }
+    writeFact(mutable checker, local, Fact { low: known, high: known, nonzero: known != 0 })
+  }
+}
+
+function flipComparison(operator: string): string {
+  // The operator seen from the other operand: `0 < n` is `n > 0`.
+  if (operator == "<") {
+    return ">"
+  }
+  if (operator == "<=") {
+    return ">="
+  }
+  if (operator == ">") {
+    return "<"
+  }
+  if (operator == ">=") {
+    return "<="
+  }
+  return operator
+}
+
+function negateComparison(operator: string): string {
+  if (operator == "<") {
+    return ">="
+  }
+  if (operator == "<=") {
+    return ">"
+  }
+  if (operator == ">") {
+    return "<="
+  }
+  if (operator == ">=") {
+    return "<"
+  }
+  if (operator == "==") {
+    return "!="
+  }
+  return "=="
+}
+
+function isComparisonOperator(operator: string): bool {
+  return (operator == "<" ||
+    operator == "<=" ||
+    operator == ">" ||
+    operator == ">=" ||
+    operator == "==" ||
+    operator == "!=")
+}
+
+export function narrowByCondition(
+  mutable checker: Checker,
+  condition: Expr,
+  holds: bool,
+) uses alloc {
+  // Records what a true (or false) condition says about integer locals.
+  if (condition is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "!") {
+      narrowByCondition(mutable checker, operand, !holds)
+    }
+    return
+  }
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    narrowByBinary(mutable checker, operator, left, right, holds)
+  }
+}
+
+function narrowByBinary(
+  mutable checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+  holds: bool,
+) uses alloc {
+  const isBoth = (operator == "&&" && holds) || (operator == "||" && !holds)
+  if (isBoth) {
+    narrowByCondition(mutable checker, left, holds)
+    narrowByCondition(mutable checker, right, holds)
+    return
+  }
+  if (!isComparisonOperator(operator)) {
+    return
+  }
+  let local = findFactLocal(checker, left)
+  let constantSide = right
+  let comparison = operator
+  if (local < 0) {
+    local = findFactLocal(checker, right)
+    constantSide = left
+    comparison = flipComparison(operator)
+  }
+  if (local < 0) {
+    return
+  }
+  if (findTypedConstant(checker, constantSide, getLocal(checker, local).localType) is Some(bound)) {
+    if (!holds) {
+      comparison = negateComparison(comparison)
+    }
+    refineFact(mutable checker, local, comparison, bound)
+  }
+}
+
+function refineFact(
+  mutable checker: Checker,
+  local: int,
+  comparison: string,
+  bound: int,
+) uses alloc {
+  if (getLocal(checker, local).localType == Type.TU64 && bound < 0) {
+    // The bound is 2^63 or more, which an int cannot order against; it proves nothing.
+    return
+  }
+  let fact = readFact(checker, local)
+  if (comparison == "==") {
+    fact.low = Math.max(fact.low, bound)
+    fact.high = Math.min(fact.high, bound)
+  } else if (comparison == "!=") {
+    if (bound == 0) {
+      fact.nonzero = true
+    }
+  } else if (comparison == "<") {
+    fact.high = Math.min(fact.high, bound - 1)
+  } else if (comparison == "<=") {
+    fact.high = Math.min(fact.high, bound)
+  } else if (comparison == ">") {
+    fact.low = Math.max(fact.low, bound + 1)
+  } else {
+    fact.low = Math.max(fact.low, bound)
+  }
+  writeFact(mutable checker, local, fact)
+}
+
+function isNonzeroFact(fact: Fact): bool {
+  return fact.nonzero || fact.low > 0 || fact.high < 0
+}
+
+function findBitWidth(type: Type): int {
+  return match (type) {
+    Type.TI8 | Type.TU8 => 8
+    Type.TI16 | Type.TU16 => 16
+    Type.TI32 | Type.TU32 => 32
+    _ => 64
+  }
+}
+
+function isProvenDivisor(checker: Checker, divisor: Expr, operandType: Type): bool uses alloc {
+  if (findTypedConstant(checker, divisor, operandType) is Some(value)) {
+    return value != 0
+  }
+  const local = findFactLocal(checker, divisor)
+  if (local < 0 || isCapturedByArrow(checker, local)) {
+    return false
+  }
+  return isNonzeroFact(readFact(checker, local))
+}
+
+function isProvenCount(checker: Checker, count: Expr, operandType: Type): bool uses alloc {
+  const width = findBitWidth(operandType)
+  if (findTypedConstant(checker, count, operandType) is Some(value)) {
+    return value >= 0 && value < width
+  }
+  const local = findFactLocal(checker, count)
+  if (local < 0 || isCapturedByArrow(checker, local)) {
+    return false
+  }
+  const fact = readFact(checker, local)
+  return (fact.low >= 0 || isUnsignedInteger(operandType)) && fact.high < width
+}
+
+function describeOperandHint(
+  checker: Checker,
+  operand: Expr,
+  reason: string,
+  example: string,
+): string uses alloc {
+  if (findConstant(checker, operand, 0) is Some(_)) {
+    return reason
+  }
+  if (operand is Expr.FieldExpr(_, _, _, _) || operand is Expr.IndexExpr(_, _, _, _)) {
+    return "copy it into a local first, then check the local"
+  }
+  if (operand is Expr.Ident(_, _, _)) {
+    return `check the name first, as in \`${example}\``
+  }
+  return "put the value in a local and check the local first"
+}
+
+export function checkDivisor(
+  mutable checker: Checker,
+  divisor: Expr,
+  operandType: Type,
+) uses alloc {
+  if (!isInteger(operandType) || isProvenDivisor(checker, divisor, operandType)) {
+    return
+  }
+  const hint = describeOperandHint(checker, divisor, "this constant is zero", "if (d != 0) { ... }")
+  reportError(
+    mutable checker,
+    getExpressionPos(divisor),
+    "E0979",
+    `the divisor must be a non-zero constant or a name checked against zero first; ${hint}`,
+  )
+}
+
+export function checkShiftCount(
+  mutable checker: Checker,
+  count: Expr,
+  operandType: Type,
+) uses alloc {
+  if (!isInteger(operandType) || isProvenCount(checker, count, operandType)) {
+    return
+  }
+  const width = findBitWidth(operandType)
+  const example = `if (n >= 0 && n < ${Int.toString(width)}) { ... }`
+  const hint = describeOperandHint(checker, count, "this constant is out of range", example)
+  reportError(
+    mutable checker,
+    getExpressionPos(count),
+    "E0980",
+    `the shift count must be a constant from 0 to ${Int.toString(width - 1)} or a name checked against both ends first; ${hint}`,
+  )
+}

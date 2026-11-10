@@ -20,6 +20,7 @@
 // Text output is for people. With --json each command prints one JSON
 // object and a newline. An error prints `error <message>` to stderr (with
 // --json: `{"error": ...}` to stdout) and exits 1; a usage error exits 2.
+import { filledArray, splitString, substring } from "narrac/textops"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -132,7 +133,7 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
     return reportLoadErrors(json, loadErrors)
   }
   const package = loaded.value
-  let checker = Body.checkPackage(package)
+  let checker = copy(Body.checkPackage(package))
   if (Arrays.length(checker.errors) > 0) {
     return reportCheckErrors(json, checker.errors)
   }
@@ -229,7 +230,7 @@ export function buildViews(
   checker: Checker,
   package: Package,
   overrides: Map<string, string>,
-): Result<Array<ModuleView>, string> uses io, alloc {
+): Result<Array<ModuleView>, string> from package uses io, alloc {
   let views: Array<ModuleView> = []
   for (const module of Arrays.values(package.modules)) {
     if (Str.startsWith(module.path, "std/")) {
@@ -313,7 +314,7 @@ function findSiteRef(checker: Checker, view: ModuleView, site: Site): Ref {
 }
 
 export function siteLocation(view: ModuleView, site: Site): Location {
-  return Location { file: view.file, start: site.start, end: site.end }
+  return Location { file: view.file, start: copy(site.start), end: copy(site.end) }
 }
 
 function findFunctionIndex(checker: Checker, module: string, pos: Pos): int {
@@ -410,7 +411,7 @@ function describeCallable(checker: Checker, effects: EffectState, ref: Ref): Opt
   // An exported function shows its declared effects, a private one the inferred ones. Naming a
   // function has no effects of its own.
   if (declaration.exported && !declaration.generator) {
-    names = declaration.effects
+    names = copy(declaration.effects)
     sortStrings(mutable names)
   } else if (Effects.findRefEffects(checker, effects, ref) is Some(found)) {
     names = found
@@ -455,7 +456,7 @@ function findLocalAnnotation(
   view: ModuleView,
   bodyIndex: int,
   localIndex: int,
-): Option<TypeExpr> {
+): Option<TypeExpr> from view {
   const body = checker.bodies[bodyIndex]
   for (const site of Arrays.values(view.sites)) {
     if (site.kind != SiteKind.LocalSite || site.annotation is None) {
@@ -596,7 +597,7 @@ function queryType(
   operand: string,
 ): Result<string, string> uses alloc {
   // FILE:LINE:COL, the file possibly holding colons.
-  const parts = Str.split(operand, ":")
+  const parts = splitString(operand, ":")
   const count = Arrays.length(parts)
   if (count < 3) {
     return Err(`expected FILE:LINE:COL, found "${operand}"`)
@@ -667,7 +668,7 @@ export function findTypeAt(
   effectsKnown: bool,
   view: ModuleView,
   cursor: Pos,
-): TypeAt uses alloc {
+): TypeAt from view uses alloc {
   // Without effectsKnown (the effect pass did not run) the effects of expressions are left
   // out.
   // Sites are listed outer first: try the last one that covers the cursor.
@@ -689,7 +690,7 @@ export function findTypeAt(
   return TypeAt.Nothing
 }
 
-export function listDeclarations(query: Query): Array<Declared> uses alloc {
+export function listDeclarations(query: Query): Array<Declared> from query uses alloc {
   let declared: Array<Declared> = []
   for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
     const view = query.views[viewIndex]
@@ -743,7 +744,7 @@ export function listDeclarations(query: Query): Array<Declared> uses alloc {
   return declared
 }
 
-function findDeclared(query: Query, name: string): Array<Declared> uses alloc {
+function findDeclared(query: Query, name: string): Array<Declared> from query uses alloc {
   // A name is qualified (`app/text.helper`, `app/shape.Shape.Circle`) or bare (`helper`,
   // `Shape.Circle`, `Circle`).
   let matches: Array<Declared> = []
@@ -758,7 +759,10 @@ function findDeclared(query: Query, name: string): Array<Declared> uses alloc {
   return matches
 }
 
-function findOneDeclared(query: Query, name: string): Result<Declared, string> uses alloc {
+function findOneDeclared(
+  query: Query,
+  name: string,
+): Result<Declared, string> from query uses alloc {
   const matches = findDeclared(query, name)
   if (Arrays.length(matches) == 0) {
     return Err(`unknown name "${name}"`)
@@ -1006,10 +1010,10 @@ function queryRefs(
   name: string,
 ): Result<string, string> uses alloc {
   if (Arrays.length(findDeclared(query, name)) == 0) {
-    const parts = Str.split(name, ".")
+    const parts = splitString(name, ".")
     if (Arrays.length(parts) > 1) {
       const parameterName = parts[Arrays.length(parts) - 1]
-      const functionName = Str.slice(name, 0, Str.length(name) - Str.length(parameterName) - 1)
+      const functionName = substring(name, 0, Str.length(name) - Str.length(parameterName) - 1)
       if (Arrays.length(findDeclared(query, functionName)) > 0) {
         return queryParameterRefs(checker, query, functionName, parameterName)
       }
@@ -1032,7 +1036,11 @@ function queryRefs(
   return Ok(writeUses(query, places, false))
 }
 
-export function findUses(checker: Checker, query: Query, target: Target): Array<Use> uses alloc {
+export function findUses(
+  checker: Checker,
+  query: Query,
+  target: Target,
+): Array<Use> from query uses alloc {
   let places: Array<Use> = []
   for (const viewIndex of Ranges.between(0, Arrays.length(query.views))) {
     const view = query.views[viewIndex]
@@ -1191,7 +1199,7 @@ function writePosKey(pos: Pos): string uses alloc {
   return `${Int.toString(pos.line)}:${Int.toString(pos.column)}`
 }
 
-function findCalleeDeclaration(checker: Checker, ref: Ref): #[string, Pos] {
+function findCalleeDeclaration(checker: Checker, ref: Ref): #[string, Pos] from checker {
   return match (ref) {
     Ref.Function(index) => #[
       checker.functions[index].module,
@@ -1232,7 +1240,7 @@ function queryRecursion(
       Arrays.push(mutable nodeNames, describeBody(checker, bodyIndex))
     }
   }
-  let edges: Array<Array<int>> = Arrays.filled([], Arrays.length(nodeNames))
+  let edges: Array<Array<int>> = filledArray([], Arrays.length(nodeNames))
   for (const call of Arrays.values(effects.calls)) {
     if (bodyNodes[call.body] is Some(caller)) {
       const #[module, pos] = findCalleeDeclaration(checker, call.callee)

@@ -1,5 +1,6 @@
 // Helpers shared by the emitters of the std modules (stdstring, stdfs, stdio, ...).
 // emitstd.nra dispatches to the modules, so the helpers live here and not there.
+import { substring } from "narrac/textops"
 import { Type } from "narrac/types"
 import { Pos, Arg } from "narrac/ast"
 import { cachedCType } from "narrac/cnames"
@@ -80,9 +81,32 @@ export function stringOut(mutable emitter: Emitter): string uses alloc {
   return temp(mutable emitter, Type.TStr, "NULL")
 }
 
+export function emitOptionOut<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+  call: string,
+  outType: Type,
+  outInit: string,
+): Code uses alloc {
+  const optionType = copy(readNodeType(emitter, nodeId))
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  let texts: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    Arrays.push(mutable texts, argumentText(walker, mutable emitter, arguments, index))
+  }
+  // The runtime function stores its result through the last argument and says whether it could.
+  const output = temp(mutable emitter, outType, outInit)
+  Arrays.push(mutable texts, `&${output}`)
+  const success = temp(mutable emitter, Type.TBool, `${call}(${Str.join(texts, ", ")})`)
+  return ioEither(mutable emitter, optionType, success, some, [output], none, [])
+}
+
 export function arrayStruct(emitter: Emitter, type: Type): string uses alloc {
   const name = cachedCType(emitter.checker, emitter.typeNames, type)
-  return Str.slice(name, 0, Str.length(name) - 1)
+  return substring(name, 0, Str.length(name) - 1)
 }
 
 export function findVariant(emitter: Emitter, enumType: Type, name: string): int {
@@ -97,7 +121,11 @@ export function findVariant(emitter: Emitter, enumType: Type, name: string): int
   return 0 - 1
 }
 
-export function variantFieldType(emitter: Emitter, enumType: Type, variant: int): Type {
+export function variantFieldType(
+  emitter: Emitter,
+  enumType: Type,
+  variant: int,
+): Type from emitter {
   const baseType = underlyingType(emitter, enumType)
   if (baseType is Type.TEnum(enumIndex)) {
     return emitter.checker.enums[enumIndex].variants[variant].fields[0].fieldType

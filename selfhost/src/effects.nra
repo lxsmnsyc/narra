@@ -36,6 +36,7 @@ import {
   getExpressionId,
   getExpressionPos,
   orderArguments,
+  isHeapEnum,
 } from "narrac/check"
 import { describeType, generatorUseFails } from "narrac/exprs"
 import * as Int from "std/int"
@@ -155,7 +156,7 @@ function sortEffectNames(effects: Array<Effect>): Array<string> uses alloc {
   return sorted
 }
 
-function findEffect(effects: Array<Effect>, name: string): Effect {
+function findEffect(effects: Array<Effect>, name: string): Effect from effects {
   for (const effect of Arrays.values(effects)) {
     if (effect.name == name) {
       return effect
@@ -222,7 +223,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
   let unusedBound: Array<string> = []
   for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
     const saved = enter(mutable checker, scope)
-    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+    for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
       match (declaration) {
         Decl.Func(funcDecl) => {
           if (funcDecl.body is Some(_)) {
@@ -240,7 +241,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
       }
     }
     // A struct declares no effect variables, so `uses E` is unknown in a field type.
-    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+    for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
       if (declaration is Decl.Struct(structDecl)) {
         for (const field of Arrays.values(structDecl.fields)) {
           scanEffects(mutable checker, [], mutable unusedBound, field.type, false)
@@ -270,7 +271,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
 
 function checkGeneratorUses(mutable checker: Checker) uses alloc {
   // These are the generator checks of the body checker (expectGenerator) that waited for the inferred effects of private generators.
-  for (const use of Arrays.values(checker.generatorUses)) {
+  for (const use of Arrays.values(copy(checker.generatorUses))) {
     if (generatorUseFails(checker, use.want, use.got)) {
       const message = `expected ${describeType(checker, use.want, use.got)}, found ${describeType(checker, use.got, use.want)}`
       reportErrorIn(mutable checker, use.file, use.pos, "E0119", message)
@@ -281,7 +282,7 @@ function checkGeneratorUses(mutable checker: Checker) uses alloc {
 function checkFunctionStores(mutable checker: Checker, mutable state: EffectState) uses alloc {
   // The value is the expression at the recorded position when it is a function written there (an arrow, a named function, a local), so what it does counts. Otherwise the effects of its type count.
   const saved = state.body
-  for (const store of Arrays.values(checker.functionStores)) {
+  for (const store of Arrays.values(copy(checker.functionStores))) {
     if (Arrays.length(checker.bodies[store.body].typeArguments) > 0) {
       continue
     }
@@ -345,7 +346,7 @@ function generatorEffects(
   checker: Checker,
   state: EffectState,
   type: Type,
-): Array<string> uses alloc {
+): Array<string> from type uses alloc {
   let names: Array<string> = []
   if (type is Type.TGenerator(_, effects, _, origin, _)) {
     // A private function* has no effects in its type: they are the body effects found so far.
@@ -353,7 +354,7 @@ function generatorEffects(
       return effects
     }
     if (origin < -1) {
-      return checker.boundGenerators[-2 - origin]
+      return copy(checker.boundGenerators[-2 - origin])
     }
     const declaration = checker.functions[origin].declaration
     if (state.functions[state.functionKeys[origin]] is Some(found)) {
@@ -388,7 +389,7 @@ function walkAll(mutable checker: Checker, mutable state: EffectState, report: b
   state.report = report
   for (const scope of Ranges.between(1, Arrays.length(checker.scopes))) {
     const saved = enter(mutable checker, scope)
-    for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+    for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
       match (declaration) {
         Decl.Func(funcDecl) => analyseFunction(mutable checker, mutable state, scope, funcDecl)
         Decl.Impl(implDecl) => {
@@ -532,7 +533,7 @@ function findRef(checker: Checker, bodyIndex: int, nodeId: int): Ref {
   return checker.bodies[bodyIndex].refs[slot]
 }
 
-function findNodeType(checker: Checker, bodyIndex: int, nodeId: int): Option<Type> {
+function findNodeType(checker: Checker, bodyIndex: int, nodeId: int): Option<Type> from checker {
   const slot = findBodySlot(checker.bodies[bodyIndex], nodeId)
   if (slot < 0) {
     return None
@@ -626,7 +627,11 @@ function describeFunctionLabel(checker: Checker, index: int): string uses alloc 
   return name
 }
 
-function findCallee(checker: Checker, state: EffectState, ref: Ref): Option<Callee> uses alloc {
+function findCallee(
+  checker: Checker,
+  state: EffectState,
+  ref: Ref,
+): Option<Callee> from checker uses alloc {
   return match (ref) {
     Ref.Function(index) => Some(Callee {
       declaration: checker.functions[index].declaration,
@@ -645,7 +650,7 @@ function findCallee(checker: Checker, state: EffectState, ref: Ref): Option<Call
   }
 }
 
-function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
+function funcEffects(state: EffectState, callee: Callee): Array<Effect> from state uses alloc {
   const nowhere = Pos { line: 0, column: 0 }
   let set: Array<Effect> = []
   if (state.entries[callee.key] is Some(_)) {
@@ -671,7 +676,7 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> uses all
   return set
 }
 
-function concreteEffects(state: EffectState, callee: Callee): Array<Effect> uses alloc {
+function concreteEffects(state: EffectState, callee: Callee): Array<Effect> from state uses alloc {
   let set: Array<Effect> = []
   for (const effect of Arrays.values(funcEffects(state, callee))) {
     if (!containsName(callee.declaration.effectParameters, effect.name)) {
@@ -685,7 +690,7 @@ function valueEffects(
   checker: Checker,
   state: EffectState,
   expression: Expr,
-): Option<Array<Effect>> uses alloc {
+): Option<Array<Effect>> from state uses alloc {
   const bodyIndex = state.body
   const tracked = match (expression) {
     Expr.ArrowExpr(nodeId, _, _, _, _, _) => state.arrows[nodeId]
@@ -746,24 +751,26 @@ function findSourceCall(
   checker: Checker,
   state: EffectState,
   expression: Expr,
-): Option<Expr> uses alloc {
-  return match (expression) {
-    Expr.CallExpr(_, _, _, _, _) => Some(expression)
-    Expr.IndexExpr(_, _, target, _) | Expr.FieldExpr(_, _, target, _) => findSourceCall(
-      checker,
-      state,
-      target,
-    )
-    Expr.Ident(nodeId, _, _) => findLocalSource(checker, state, nodeId)
-    _ => None
-  }
+): Option<Expr> from expression uses alloc {
+  return copy(
+    match (expression) {
+      Expr.CallExpr(_, _, _, _, _) => Some(expression)
+      Expr.IndexExpr(_, _, target, _) | Expr.FieldExpr(_, _, target, _) => findSourceCall(
+        checker,
+        state,
+        target,
+      )
+      Expr.Ident(nodeId, _, _) => findLocalSource(checker, state, nodeId)
+      _ => None
+    },
+  )
 }
 
 function findLocalSource(
   checker: Checker,
   state: EffectState,
   nodeId: int,
-): Option<Expr> uses alloc {
+): Option<Expr> from state uses alloc {
   if (findRef(checker, state.body, nodeId) is Ref.Local(localIndex)) {
     return state.sources[packLocal(state.body, localIndex)]
   }
@@ -775,7 +782,7 @@ function findNamedValue(
   state: EffectState,
   bodyIndex: int,
   nodeId: int,
-): Option<Array<Effect>> uses alloc {
+): Option<Array<Effect>> from state uses alloc {
   const ref = findRef(checker, bodyIndex, nodeId)
   if (ref is Ref.Local(localIndex)) {
     return state.locals[packLocal(bodyIndex, localIndex)]
@@ -788,7 +795,7 @@ function findFunctionValue(
   state: EffectState,
   bodyIndex: int,
   nodeId: int,
-): Option<Array<Effect>> uses alloc {
+): Option<Array<Effect>> from state uses alloc {
   if (findCallee(checker, state, findRef(checker, bodyIndex, nodeId)) is Some(callee)) {
     return Some(concreteEffects(state, callee))
   }
@@ -901,7 +908,7 @@ function walkLocalAssignment(
         const key = packLocal(state.body, localIndex)
         let merged: Array<Effect> = []
         if (state.locals[key] is Some(existing)) {
-          merged = existing
+          merged = copy(existing)
         } else if (findTypeEffects(checker, state, target) is Some(declared)) {
           merged = declared
         }
@@ -953,12 +960,14 @@ function walkExpression(
 ) uses alloc {
   // Only bodies with a function store read the recorded values
   if (state.report && state.body >= 0 && state.storeBodies[state.body]) {
+    // The list keeps a copy, so the parts walked below stay unshared.
     const key = packPosition(state.body, getExpressionPos(expression))
+    const recorded = copy(expression)
     if (state.valuesAt[key] is Some(slot)) {
-      Arrays.push(mutable state.valueLists[slot], expression)
+      Arrays.push(mutable state.valueLists[slot], recorded)
     } else {
       state.valuesAt[key] = Arrays.length(state.valueLists)
-      Arrays.push(mutable state.valueLists, [expression])
+      Arrays.push(mutable state.valueLists, [recorded])
     }
   }
   match (expression) {
@@ -1076,6 +1085,7 @@ function walkCall(
   }
   const ref = findRef(checker, state.body, nodeId)
   if (findCallee(checker, state, ref) is Some(found)) {
+    const calleeInfo = copy(found)
     if (state.report) {
       const edge = CallEdge {
         body: state.body,
@@ -1087,8 +1097,8 @@ function walkCall(
     }
     // The callee's parameters pair with the arguments in parameter order.
     const ordered = orderArguments(checker, nodeId, arguments)
-    walkUserCall(mutable checker, mutable state, mutable out, pos, found, ordered)
-    bindResultEffects(mutable checker, state, nodeId, found, ordered)
+    walkUserCall(mutable checker, mutable state, mutable out, pos, calleeInfo, ordered)
+    bindResultEffects(mutable checker, state, nodeId, calleeInfo, ordered)
     return
   }
   match (ref) {
@@ -1126,7 +1136,8 @@ function walkCall(
       addValueBoundEffects(mutable checker, state, mutable out, pos, callee, arguments)
     }
     Ref.Constructor(enumIndex, variant) => {
-      if (Arrays.length(arguments) > 0) {
+      // A payload stored inline allocates nothing; only a heap-stored enum does.
+      if (Arrays.length(arguments) > 0 && isHeapEnum(checker, enumIndex)) {
         addEffect(mutable out, "alloc", pos, checker.enums[enumIndex].variants[variant].name)
       }
     }

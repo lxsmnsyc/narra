@@ -2,6 +2,7 @@
 // narra.toml, walk src/, parse each module, order modules by imports and
 // resolve binaries. dump prints the format defined at the top of
 // compiler/internal/narra/pkgdump.go.
+import { splitString, substring } from "narrac/textops"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -34,7 +35,6 @@ export struct Package {
   search: Array<string>
   nextId: int // the next free node id after all files (one sequence)
   single: bool // loaded from one .nra file, without narra.toml
-  sharedResultsUnchecked: bool = false // see Manifest
 }
 
 function plain(message: string): Array<LoadError> {
@@ -83,7 +83,7 @@ export function loadCached(
   path: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   // Unchanged sources come from cache, and the sources parsed here are added to it.
   if (Fs.listDir(path) is Ok(_)) {
     return loadPackage(path, overrides, mutable cache)
@@ -101,7 +101,7 @@ function parseSource(
   text: string,
   file: string,
   derive: bool,
-): Result<CachedSource, LoadError> uses alloc {
+): Result<CachedSource, LoadError> from cache uses alloc {
   // An unchanged text is taken from cache.
   if (cache.sources[key] is Some(cached)) {
     if (cached.text == text) {
@@ -145,12 +145,12 @@ function readSource(
 }
 
 function baseName(path: string): string uses alloc {
-  const parts = Str.split(path, "/")
+  const parts = splitString(path, "/")
   return parts[Arrays.length(parts) - 1]
 }
 
 function dirName(path: string): string uses alloc {
-  const parts = Str.split(path, "/")
+  const parts = splitString(path, "/")
   if (Arrays.length(parts) == 1) {
     return "."
   }
@@ -165,7 +165,7 @@ function loadFile(
   path: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   const read = readSource(path, overrides)
   if (read is Err(message)) {
     return Err(plain(message))
@@ -173,7 +173,7 @@ function loadFile(
   const base = baseName(path)
   let stem = base
   if (Str.endsWith(base, ".nra")) {
-    stem = Str.slice(base, 0, Str.length(base) - 4)
+    stem = substring(base, 0, Str.length(base) - 4)
   }
   const parsed = parseSource(mutable cache, path, read.value, base, true)
   if (parsed is Err(error)) {
@@ -200,7 +200,7 @@ function loadPackage(
   directory: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(message)) {
     return Err(plain(message))
@@ -225,7 +225,7 @@ function loadPackage(
   let errors: Array<LoadError> = []
   let hashes: Map<string, string> = Map {}
   for (const path of Arrays.values(paths)) {
-    const relative = Str.slice(path, 0, Str.length(path) - 4)
+    const relative = substring(path, 0, Str.length(path) - 4)
     const display = `src/${path}`
     const read = readSource(`${directory}/src/${path}`, overrides)
     if (read is Err(message)) {
@@ -276,7 +276,6 @@ function loadPackage(
     search: config.search,
     nextId: cache.nextId,
     single: false,
-    sharedResultsUnchecked: config.sharedResultsUnchecked,
   })
 }
 
@@ -321,7 +320,7 @@ function newModule(
   ast: File,
   firstId: int,
   endId: int,
-): SourceModule uses alloc {
+): SourceModule from ast uses alloc {
   let names: Array<string> = []
   for (const declaration of Arrays.values(ast.declarations)) {
     const name = exportedName(declaration)
@@ -399,7 +398,7 @@ struct StdLoad {
 function loadStdModules(
   modules: Array<SourceModule>,
   mutable cache: ParseCache,
-): StdLoad uses alloc {
+): StdLoad from modules uses alloc {
   let load = StdLoad { modules: [], seen: Map {} }
   for (const module of Arrays.values(modules)) {
     addStdImports(mutable load, mutable cache, module.ast)
@@ -407,24 +406,41 @@ function loadStdModules(
   return load
 }
 
+export function extensionPath(path: string): string uses alloc {
+  // The Narra part of a builtin std module std/<name> is std/ext/<name>; "" for any other path.
+  if (Str.startsWith(path, "std/") && !Str.startsWith(path, "std/ext/")) {
+    return `std/ext/${Str.sliceFrom(path, 4)}`
+  }
+  return ""
+}
+
 function addStdImports(mutable load: StdLoad, mutable cache: ParseCache, ast: File) uses alloc {
   for (const importDecl of Arrays.values(ast.imports)) {
-    const text = stdSourceFor(importDecl.path)
-    if (text == "" || load.seen[importDecl.path] is Some(_)) {
-      continue
+    addStdModule(mutable load, mutable cache, importDecl.path)
+    // A builtin std module may have a Narra part, std/ext/<name> for std/<name>.
+    const extension = extensionPath(importDecl.path)
+    if (extension != "") {
+      addStdModule(mutable load, mutable cache, extension)
     }
-    load.seen[importDecl.path] = true
-    const file = `std/src/${Str.sliceFrom(importDecl.path, 4)}.nra`
-    const parsed = parseSource(mutable cache, importDecl.path, text, file, false)
-    match (parsed) {
-      Ok(source) => {
-        const module = newModule(importDecl.path, file, source.ast, source.firstId, source.endId)
-        // The imports of a std module come before it.
-        addStdImports(mutable load, mutable cache, source.ast)
-        Arrays.push(mutable load.modules, module)
-      }
-      Err(error) => panic(`std source ${importDecl.path}: ${error.message}`)
+  }
+}
+
+function addStdModule(mutable load: StdLoad, mutable cache: ParseCache, path: string) uses alloc {
+  const text = stdSourceFor(path)
+  if (text == "" || load.seen[path] is Some(_)) {
+    return
+  }
+  load.seen[path] = true
+  const file = `std/src/${Str.replace(Str.sliceFrom(path, 4), "/", "__")}.nra`
+  const parsed = parseSource(mutable cache, path, text, file, false)
+  match (parsed) {
+    Ok(source) => {
+      const module = newModule(path, file, source.ast, source.firstId, source.endId)
+      // The imports of a std module come before it.
+      addStdImports(mutable load, mutable cache, source.ast)
+      Arrays.push(mutable load.modules, module)
     }
+    Err(error) => panic(`std source ${path}: ${error.message}`)
   }
 }
 
@@ -442,14 +458,21 @@ struct Walk {
   errors: Array<LoadError>
 }
 
-function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
+function orderModules(modules: Array<SourceModule>): Ordered from modules uses alloc {
   let index: Map<string, int> = Map {}
   let state: Array<int> = []
   for (const i of Ranges.between(0, Arrays.length(modules))) {
     index[modules[i].path] = i
     Arrays.push(mutable state, 0)
   }
-  let walk = Walk { modules: modules, index: index, state: state, order: [], stack: [], errors: [] }
+  let walk = Walk {
+    modules: copy(modules),
+    index: index,
+    state: state,
+    order: [],
+    stack: [],
+    errors: [],
+  }
   for (const i of Ranges.between(0, Arrays.length(modules))) {
     // Imports of modules outside the package are skipped; the checker reports unknown modules.
     if (walk.state[i] == 0) {
@@ -460,7 +483,7 @@ function orderModules(modules: Array<SourceModule>): Ordered uses alloc {
 }
 
 function visit(mutable walk: Walk, index: int) uses alloc {
-  const module = walk.modules[index]
+  const module = copy(walk.modules[index])
   walk.state[index] = 1
   Arrays.push(mutable walk.stack, module.path)
   for (const importDecl of Arrays.values(module.ast.imports)) {
@@ -506,7 +529,10 @@ function popLast(items: Array<string>): Array<string> uses alloc {
   return out
 }
 
-export function binary(package: Package, name: string): Result<Binary, string> uses alloc {
+export function binary(
+  package: Package,
+  name: string,
+): Result<Binary, string> from package uses alloc {
   if (name != "") {
     for (const candidate of Arrays.values(package.binaries)) {
       if (candidate.name == name) {
@@ -543,7 +569,7 @@ export function entryModule(package: Package, entry: string): #[string, string] 
     return #["", entry]
   }
   // Accepts the contract form "cli.run" and the spec form "app/cli.run".
-  const modulePath = Str.slice(entry, 0, last)
+  const modulePath = substring(entry, 0, last)
   const functionName = Str.sliceFrom(entry, last + 1)
   for (const module of Arrays.values(package.modules)) {
     if (module.path == `${package.name}/${modulePath}`) {
@@ -555,7 +581,7 @@ export function entryModule(package: Package, entry: string): #[string, string] 
 }
 
 export function quoteDump(text: string): string uses alloc {
-  const parts = Str.split(Lexer.escapeText(text), "\"")
+  const parts = splitString(Lexer.escapeText(text), "\"")
   return `"${Str.join(parts, "\\\"")}"`
 }
 

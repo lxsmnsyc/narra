@@ -71,7 +71,9 @@ struct FunctionTypeItem {
   type: Type
 }
 
-function sortFunctionTypes(items: Array<FunctionTypeItem>): Array<FunctionTypeItem> uses alloc {
+function sortFunctionTypes(
+  items: Array<FunctionTypeItem>,
+): Array<FunctionTypeItem> from items uses alloc {
   let sorted: Array<FunctionTypeItem> = []
   for (const item of Arrays.values(items)) {
     // Find the first place whose key is greater than the new key.
@@ -250,18 +252,18 @@ function emitArrowParts<W: EmitWalker>(
     hintResult: None,
   }
   if (info.closureIndex[nodeId] is Some(closureIndex)) {
-    closure = info.closures[closureIndex]
+    closure = copy(info.closures[closureIndex])
   } else {
     return Code {
       text: reportUnsupported(mutable emitter, "arrow function without closure facts", NODE),
       owned: false,
     }
   }
-  const functionType = readNodeType(emitter, nodeId)
+  const functionType = copy(readNodeType(emitter, nodeId))
   const functionTypeName = cachedCType(checker, emitter.typeNames, functionType)
   let result = Type.TVoid
   if (functionType is Type.TFunc(_, resultType, _, _, _)) {
-    result = resultType
+    result = copy(resultType)
   }
 
   // Arrows are counted per owner, from 1.
@@ -330,7 +332,7 @@ function emitArrowParts<W: EmitWalker>(
   writeLine(mutable emitter, `${environment}->h.rc = 1;`)
   writeLine(mutable emitter, `${environment}->h.drop = ${dropName};`)
   for (const capture of Arrays.values(closure.captures)) {
-    const local = readLocal(emitter, capture)
+    const local = copy(readLocal(emitter, capture))
     const field = `${environment}->c_${localName(local)}`
     const captureRef = localRef(emitter, capture)
     writeLine(mutable emitter, `${field} = ${captureRef};`)
@@ -430,7 +432,7 @@ function emitClosureFunction<W: EmitWalker>(
   // Captures are read from the environment into borrowed locals with their
   // usual C names. This runs in the middle of another body, so every piece of
   // per-function state of the Emitter is saved and restored.
-  const checker = emitter.checker
+  const checker = copy(emitter.checker)
   const info = checker.bodies[emitter.body]
 
   // The signature: the parameters are locals of the enclosing body.
@@ -456,6 +458,12 @@ function emitClosureFunction<W: EmitWalker>(
   const savedResultType = emitter.resultType
   const savedInGenerator = emitter.inGenerator
   const savedRefCaptures = emitter.refCaptures
+  // The closure body starts with no frames, scopes, loops or blocks of its own.
+  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
+  emitter.frames = []
+  emitter.loopFrames = []
+  emitter.loopInfos = []
+  emitter.blocks = []
   // The closure holds each `let` it captures through a pointer.
   emitter.refCaptures = []
   for (const capture of Arrays.values(closure.captures)) {
@@ -489,11 +497,6 @@ function emitClosureFunction<W: EmitWalker>(
       }
     }
   }
-  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
-  emitter.frames = []
-  emitter.loopFrames = []
-  emitter.loopInfos = []
-  emitter.blocks = []
   EmitWalker.emitBlockInScope(walker, mutable emitter, body)
   unwindAll(mutable emitter)
   if (result != Type.TVoid) {
@@ -530,7 +533,7 @@ export function emitValueCall<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.CallExpr(_, _, callee, _, arguments)) {
-    const functionType = readNodeType(emitter, getExpressionId(callee))
+    const functionType = copy(readNodeType(emitter, getExpressionId(callee)))
     // The call owns a reference to the callee until the statement ends, so
     // an argument that reassigns the variable holding it cannot free the
     // environment before the call. Stack and NULL environments ignore it.
@@ -541,7 +544,7 @@ export function emitValueCall<W: EmitWalker>(
     let parts = [`${holder}.env`]
     let parameterTypes: Array<Type> = []
     if (functionType is Type.TFunc(types, _, _, _, _)) {
-      parameterTypes = types
+      parameterTypes = copy(types)
     }
     for (const index of Ranges.between(0, Arrays.length(arguments))) {
       const argumentCode = EmitWalker.emitExpression(

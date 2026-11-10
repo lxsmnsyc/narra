@@ -38,7 +38,7 @@ import {
 import { Fix, createFix, insertAt } from "narrac/fixes"
 import { collectPatternLocals } from "narrac/patterns"
 import { getPosKey } from "narrac/trivia"
-import { isCopyTracked, isCopyCall } from "narrac/stdcopy"
+import { isCopyTracked, isCopyCall, canShareType } from "narrac/stdcopy"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -66,6 +66,8 @@ struct SharingFacts {
   owner: int
   // The arrow function being walked, or -1.
   arrow: int
+  // The tracked types a value of each type holds, by type key (kept in the checker between bodies).
+  heldTypeSets: Map<string, Map<string, bool>>
 }
 
 export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
@@ -74,24 +76,31 @@ export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl)
     return
   }
   if (funcDecl.body is Some(block)) {
-    let facts = createFacts()
+    let facts = createFacts(checker.heldTypeSets)
+    checker.heldTypeSets = Map {}
     for (const parameter of Arrays.values(funcDecl.parameters)) {
       noteDeclared(checker, mutable facts, parameter.id)
     }
     walkBlock(checker, mutable facts, block)
     checkFunctionReturns(mutable checker, facts, funcDecl)
     checkArrowReturns(mutable checker, facts)
+    checker.heldTypeSets = facts.heldTypeSets
   }
 }
 
 export function checkSharedResultsIn(mutable checker: Checker, block: Block) uses alloc {
   // A test or another body that is not a function: only its arrow functions have results.
-  let facts = createFacts()
+  let facts = createFacts(checker.heldTypeSets)
+  checker.heldTypeSets = Map {}
   walkBlock(checker, mutable facts, block)
   checkArrowReturns(mutable checker, facts)
+  checker.heldTypeSets = facts.heldTypeSets
 }
 
-export function findSharedArgument(checker: Checker, call: Expr): Option<Expr> uses alloc {
+export function findSharedArgument(
+  checker: Checker,
+  call: Expr,
+): Option<Expr> from call uses alloc {
   // The argument the call's result shares, or None for a fresh result. It reads the side
   // tables of the body being checked.
   if (call is Expr.CallExpr(nodeId, _, callee, _, arguments)) {
@@ -135,7 +144,11 @@ export function findSharedArgument(checker: Checker, call: Expr): Option<Expr> u
   return None
 }
 
-function findArgument(arguments: Array<Arg>, parameters: Array<Param>, index: int): Option<Expr> {
+function findArgument(
+  arguments: Array<Arg>,
+  parameters: Array<Param>,
+  index: int,
+): Option<Expr> from arguments {
   // Positional arguments come first; a named one matches the parameter's name.
   for (const position of Ranges.upTo(Arrays.length(arguments))) {
     const argument = arguments[position]
@@ -150,7 +163,9 @@ function findArgument(arguments: Array<Arg>, parameters: Array<Param>, index: in
   return None
 }
 
-function createFacts(): SharingFacts uses alloc {
+function createFacts(
+  heldTypeSets: Map<string, Map<string, bool>>,
+): SharingFacts from heldTypeSets uses alloc {
   return SharingFacts {
     given: Map {},
     loopSources: Map {},
@@ -160,6 +175,7 @@ function createFacts(): SharingFacts uses alloc {
     returns: [],
     owner: -1,
     arrow: -1,
+    heldTypeSets: heldTypeSets,
   }
 }
 
@@ -184,7 +200,7 @@ function noteDeclared(checker: Checker, mutable facts: SharingFacts, nodeId: int
 function addGiven(mutable facts: SharingFacts, local: int, value: Expr) uses alloc {
   let values: Array<Expr> = []
   if (facts.given[local] is Some(known)) {
-    values = known
+    values = copy(known)
   }
   Arrays.push(mutable values, value)
   facts.given[local] = values
@@ -416,12 +432,20 @@ function noteMutableArguments(
     if (root < 0) {
       continue
     }
-    const room = collectHeldTypes(checker, getNodeType(checker, getExpressionId(argument.value)))
+    const room = collectHeldTypes(
+      checker,
+      mutable facts,
+      getNodeType(checker, getExpressionId(argument.value)),
+    )
     for (const other of Arrays.values(arguments)) {
       if (other.isMutable) {
         continue
       }
-      const held = collectHeldTypes(checker, getNodeType(checker, getExpressionId(other.value)))
+      const held = collectHeldTypes(
+        checker,
+        mutable facts,
+        getNodeType(checker, getExpressionId(other.value)),
+      )
       if (haveCommonType(room, held)) {
         addGiven(mutable facts, root, other.value)
       }
@@ -429,13 +453,23 @@ function noteMutableArguments(
   }
 }
 
-function collectHeldTypes(checker: Checker, type: Option<Type>): Map<string, bool> uses alloc {
+function collectHeldTypes(
+  checker: Checker,
+  mutable facts: SharingFacts,
+  type: Option<Type>,
+): Map<string, bool> from checker uses alloc {
   // The tracked types a value holds, itself included, by type key. An unknown type or a
   // type parameter is "*", which overlaps every set.
   let held: Map<string, bool> = Map {}
   if (type is Some(known)) {
+    // Each type's set is built once and kept.
+    const typeName = typeKey(known)
+    if (facts.heldTypeSets[typeName] is Some(cached)) {
+      return copy(cached)
+    }
     let visited: Map<string, bool> = Map {}
     addHeldTypes(checker, known, mutable held, mutable visited)
+    facts.heldTypeSets[typeName] = copy(held)
   } else {
     held["*"] = true
   }
@@ -580,38 +614,6 @@ function isStopLocal(checker: Checker, facts: SharingFacts, owner: int, local: i
   return !isInsideArrow(facts, local, owner)
 }
 
-export function canShareType(checker: Checker, type: Type): bool uses alloc {
-  // A value that can hold a tracked value: a tracked type, or an enum with such a payload.
-  let visited: Map<string, bool> = Map {}
-  return canShareVisiting(checker, type, mutable visited)
-}
-
-function canShareVisiting(
-  checker: Checker,
-  type: Type,
-  mutable visited: Map<string, bool>,
-): bool uses alloc {
-  if (isCopyTracked(checker, type)) {
-    return true
-  }
-  // An enum already visited adds nothing new.
-  if (type is Type.TEnum(index)) {
-    const typeName = typeKey(type)
-    if (visited[typeName] is Some(_)) {
-      return false
-    }
-    visited[typeName] = true
-    for (const variant of Arrays.values(checker.enums[index].variants)) {
-      for (const field of Arrays.values(variant.fields)) {
-        if (canShareVisiting(checker, field.fieldType, mutable visited)) {
-          return true
-        }
-      }
-    }
-  }
-  return false
-}
-
 function addFound(mutable query: SharingQuery, local: int) uses alloc {
   for (const known of Arrays.values(query.found)) {
     if (known == local) {
@@ -750,7 +752,7 @@ function findSharedLocals(
   facts: SharingFacts,
   owner: int,
   value: Expr,
-): Array<int> uses alloc {
+): Array<int> from checker uses alloc {
   let query = SharingQuery { owner: owner, visited: Map {}, blocks: Map {}, found: [] }
   collectShared(checker, facts, mutable query, value)
   return query.found
@@ -769,7 +771,7 @@ function checkFunctionReturns(
     if (site.owner != -1) {
       continue
     }
-    for (const local of Arrays.values(findSharedLocals(checker, facts, -1, site.value))) {
+    for (const local of Arrays.values(copy(findSharedLocals(checker, facts, -1, site.value)))) {
       const index = findParameterPosition(checker, funcDecl.parameters, local)
       if (index < 0 || index == shared || reported[index] is Some(_)) {
         continue
@@ -831,7 +833,9 @@ function checkArrowReturns(mutable checker: Checker, facts: SharingFacts) uses a
   for (const site of Arrays.values(facts.returns)) {
     if (facts.arrows[site.owner] is Some(Expr.ArrowExpr(_, _, parameters, result, _, _))) {
       const shared = findArrowShared(checker, site.owner, result, parameters)
-      for (const local of Arrays.values(findSharedLocals(checker, facts, site.owner, site.value))) {
+      for (const local of Arrays.values(
+        copy(findSharedLocals(checker, facts, site.owner, site.value)),
+      )) {
         const index = findParameterPosition(checker, parameters, local)
         if (index >= 0) {
           if (index == shared) {
@@ -841,6 +845,17 @@ function checkArrowReturns(mutable checker: Checker, facts: SharingFacts) uses a
           // that forbids it; otherwise the value is copied.
           if (result is Some(_) && !expectsFreshResult(checker, site.owner)) {
             reportSharedParameter(mutable checker, result, parameters[index].name, site)
+          } else if (result is None && shared < 0 && !expectsFreshResult(checker, site.owner)) {
+            // No expected type and no written result type: the function type is not
+            // the cause, so point at the result type.
+            const copyFixes = buildCopyFix(checker, site.value)
+            reportErrorFix(
+              mutable checker,
+              findExpressionStart(site.value),
+              "E0976",
+              copyFixes,
+              `the arrow function returns a value that shares its parameter "${parameters[index].name}"; write the result type with \`from ${parameters[index].name}\`, or return a copy with copy(...)`,
+            )
           } else {
             const copyFixes = buildCopyFix(checker, site.value)
             reportErrorFix(
@@ -891,8 +906,14 @@ function expectsFreshResult(checker: Checker, arrowId: int): bool {
   return false
 }
 
-function buildCopyFix(checker: Checker, value: Expr): Array<Fix> uses alloc {
-  // Wraps the returned value in copy(...) when the parser noted where it ends.
+function buildCopyFix(checker: Checker, value: Expr): Array<Fix> from checker uses alloc {
+  // Wraps the returned value in copy(...) when the parser noted where it ends
+  // and copy accepts its type.
+  if (getNodeType(checker, getExpressionId(value)) is Some(valueType)) {
+    if (!canShareType(checker, valueType)) {
+      return []
+    }
+  }
   const scope = checker.scopes[checker.current]
   if (scope.facts.valueEnds[getExpressionId(value)] is Some(end)) {
     const start = findExpressionStart(value)
@@ -901,7 +922,7 @@ function buildCopyFix(checker: Checker, value: Expr): Array<Fix> uses alloc {
   return []
 }
 
-function findExpressionStart(expression: Expr): Pos {
+export function findExpressionStart(expression: Expr): Pos {
   // The first character of the expression: `a.b[0]` starts at `a`.
   if (expression is Expr.FieldExpr(_, _, target, _)) {
     return findExpressionStart(target)

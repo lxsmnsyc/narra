@@ -9,9 +9,9 @@
 // module an import names already has its scope and its table entries. An
 // imported name points at the declaring module's entry: a type is the same
 // Type value, a function, constant, generic or trait the same table index.
-import { Pos, Decl, File, ImportDecl } from "narrac/ast"
+import { Pos, Decl, File, ImportDecl, ImportName } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
-import { Package, entryModule } from "narrac/modules"
+import { Package, entryModule, extensionPath } from "narrac/modules"
 import { Type } from "narrac/types"
 import { Fix, createFix, createEdit, moveColumn } from "narrac/fixes"
 import { moduleList, StdModule } from "narrac/builtins"
@@ -94,10 +94,24 @@ export function declareType(
 export function importModules(mutable checker: Checker, file: File) uses alloc {
   let aliases: Map<string, bool> = Map {}
   for (const importDecl of Arrays.values(file.imports)) {
+    // std/ext/... is the Narra part of a builtin std module; only std modules import it.
+    if (
+      Str.startsWith(importDecl.path, "std/ext/") &&
+        !Str.startsWith(checker.scopes[checker.current].path, "std/")
+    ) {
+      reportError(
+        mutable checker,
+        importDecl.pos,
+        "E0426",
+        `${importDecl.path} is internal to the standard library`,
+      )
+      continue
+    }
     if (importPackageModule(mutable checker, importDecl, mutable aliases)) {
       continue
     }
     if (checker.registry.modules[importDecl.path] is Some(stdModule)) {
+      const moduleFunctions = copy(stdModule.functions)
       // std/internal/... holds the primitives behind source modules; only a
       // std module may import it.
       if (
@@ -120,7 +134,7 @@ export function importModules(mutable checker: Checker, file: File) uses alloc {
       }
       bindAlias(mutable checker, importDecl, mutable aliases)
       for (const name of Arrays.values(importDecl.names)) {
-        if (stdModule.functions[name.name] is Some(index)) {
+        if (moduleFunctions[name.name] is Some(index)) {
           if (checker.scopes[scope].imported[name.local] is Some(previous)) {
             if (previous != index) {
               reportError(
@@ -133,6 +147,8 @@ export function importModules(mutable checker: Checker, file: File) uses alloc {
             }
           }
           checker.scopes[scope].imported[name.local] = index
+        } else if (importExtension(mutable checker, importDecl, name)) {
+          continue
         } else {
           reportError(
             mutable checker,
@@ -154,6 +170,31 @@ export function importModules(mutable checker: Checker, file: File) uses alloc {
   }
 }
 
+function importExtension(
+  mutable checker: Checker,
+  importDecl: ImportDecl,
+  name: ImportName,
+): bool uses alloc {
+  // A name the builtin module lacks may come from its Narra part.
+  const extension = extensionScope(checker, importDecl.path)
+  if (extension < 0) {
+    return false
+  }
+  if (checker.scopes[extension].exports[name.name] is Some(index)) {
+    const declaration = checker.scopes[extension].declarations[index]
+    importDeclaration(
+      mutable checker,
+      importDecl.pos,
+      extension,
+      name.name,
+      name.local,
+      declaration,
+    )
+    return true
+  }
+  return false
+}
+
 function useModule(mutable checker: Checker, path: string) uses alloc {
   // Std modules are recorded once, in first-import order; the emitter writes their
   // runtime C in that order.
@@ -172,6 +213,23 @@ export function sourceScope(checker: Checker, path: string): int {
     }
   }
   return -1
+}
+
+export function extensionScope(checker: Checker, path: string): int uses alloc {
+  // The Narra part of a builtin std module (std/ext/int for std/int), or -1.
+  const extension = extensionPath(path)
+  if (extension != "") {
+    return sourceScope(checker, extension)
+  }
+  return -1
+}
+
+export function memberScope(checker: Checker, path: string): int uses alloc {
+  const scope = sourceScope(checker, path)
+  if (scope >= 0) {
+    return scope
+  }
+  return extensionScope(checker, path)
 }
 
 function bindAlias(
@@ -348,12 +406,12 @@ export function exported(
   pos: Pos,
   scope: int,
   name: string,
-): Option<Decl> uses alloc {
+): Option<Decl> from checker uses alloc {
   if (checker.scopes[scope].exports[name] is Some(index)) {
     return Some(checker.scopes[scope].declarations[index])
   }
   const path = checker.scopes[scope].path
-  for (const declaration of Arrays.values(checker.scopes[scope].declarations)) {
+  for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
     if (getDeclarationName(declaration) == name) {
       reportError(
         mutable checker,
@@ -592,7 +650,7 @@ function buildRenameAliasFix(
   file: File,
   importDecl: ImportDecl,
   suggestion: string,
-): Array<Fix> uses alloc {
+): Array<Fix> from importDecl uses alloc {
   // When the alias is also an enum, `Alias.Ctor(...)` is a constructor and stays: only
   // the uses of an export of a std module are renamed, and a package module gets no
   // fix.
@@ -629,7 +687,7 @@ function buildRenameAliasFix(
       Arrays.push(mutable edits, createEdit(dotUse.pos, moveColumn(dotUse.pos, length), suggestion))
     }
   }
-  return [createFix(`rename the alias to ${suggestion}`, edits)]
+  return copy([createFix(`rename the alias to ${suggestion}`, edits)])
 }
 
 function isDeclaredEnum(checker: Checker, name: string): bool {
@@ -671,8 +729,14 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
   }
   const scope = checker.current
   for (const importDecl of Arrays.values(file.imports)) {
-    const moduleScope = sourceScope(checker, importDecl.path)
+    const packageScope = sourceScope(checker, importDecl.path)
+    const extension = extensionScope(checker, importDecl.path)
     for (const name of Arrays.values(importDecl.names)) {
+      // A name from the Narra part of a builtin module is checked like a package name.
+      let moduleScope = packageScope
+      if (extension >= 0 && checker.scopes[extension].exports[name.name] is Some(_)) {
+        moduleScope = extension
+      }
       const isAlias = checker.scopes[scope].modules[name.local] is Some(_)
       if (moduleScope >= 0) {
         // A type or trait import is itself in the type table, and the

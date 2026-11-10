@@ -2,6 +2,7 @@
 // std/u32 and std/u64. Each has from, tryFrom, wrap, toString and parse. The
 // same three conversions are also rows of std/int (stdint.nra), which calls
 // emitSizedCall for them.
+import { substring } from "narrac/textops"
 import { StdFunc } from "narrac/builtins"
 import { Type, isInteger } from "narrac/types"
 import {
@@ -148,7 +149,7 @@ function findTypeRow(type: Type): SizedRow {
 
 function readPrefix(name: string): string {
   if (Str.indexOf(name, ".") is Some(dot)) {
-    return Str.slice(name, 0, dot)
+    return substring(name, 0, dot)
   }
   return name
 }
@@ -273,7 +274,7 @@ function checkSizedConversion<W: Walker>(
   arguments: Array<Arg>,
   name: string,
   isFrom: bool,
-): Type uses alloc {
+): Type from checker uses alloc {
   const target = findRow(readPrefix(name))
   if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
     return stdType(mutable checker, target.typeText)
@@ -307,7 +308,7 @@ export function checkSizedCall<W: Walker>(
   arguments: Array<Arg>,
   name: string,
   kind: string,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (kind == "checkSizedFrom") {
     return checkSizedConversion(mutable checker, walker, pos, arguments, name, true)
   }
@@ -346,10 +347,10 @@ function emitTryFrom<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const optionType = readNodeType(emitter, nodeId)
+  const optionType = copy(readNodeType(emitter, nodeId))
   const some = findVariant(emitter, optionType, "Some")
   const none = findVariant(emitter, optionType, "None")
-  const sourceType = readNodeType(emitter, getExpressionId(arguments[0].value))
+  const sourceType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
   const sourceText = argumentText(walker, mutable emitter, arguments, 0)
   const value = temp(mutable emitter, sourceType, sourceText)
   const condition = rangeCondition(value, findTypeRow(sourceType), target)
@@ -364,10 +365,10 @@ function emitCheckedArithmetic<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const optionType = readNodeType(emitter, nodeId)
+  const optionType = copy(readNodeType(emitter, nodeId))
   const some = findVariant(emitter, optionType, "Some")
   const none = findVariant(emitter, optionType, "None")
-  const valueType = variantFieldType(emitter, optionType, some)
+  const valueType = copy(variantFieldType(emitter, optionType, some))
   const left = argumentText(walker, mutable emitter, arguments, 0)
   const right = argumentText(walker, mutable emitter, arguments, 1)
   const value = temp(mutable emitter, valueType, "0")
@@ -389,8 +390,10 @@ function emitParse<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const resultType = readNodeType(emitter, nodeId)
-  const numberType = variantFieldType(emitter, resultType, findVariant(emitter, resultType, "Ok"))
+  const resultType = copy(readNodeType(emitter, nodeId))
+  const numberType = copy(
+    variantFieldType(emitter, resultType, findVariant(emitter, resultType, "Ok")),
+  )
   const text = argumentText(walker, mutable emitter, arguments, 0)
   const base = argumentText(walker, mutable emitter, arguments, 1)
   const bits = Int.toString(target.bits)

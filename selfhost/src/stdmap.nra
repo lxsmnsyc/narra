@@ -6,6 +6,7 @@ import { findTupleType } from "narrac/resolve"
 import { Pos, Arg } from "narrac/ast"
 import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/exprs"
 import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+import { checkCallback } from "narrac/stdresult"
 
 export const MAP_FUNCS: Array<StdFunc> = [
   StdFunc {
@@ -29,6 +30,15 @@ export const MAP_FUNCS: Array<StdFunc> = [
     mutables: [true, false],
     effects: ["alloc"],
     check: "checkMapRemove",
+  },
+  StdFunc {
+    name: "Map.update",
+    module: "std/map",
+    key: "update",
+    mutables: [true, false, false, false],
+    effects: ["alloc"],
+    callbacks: [3],
+    check: "checkMapUpdate",
   },
   StdFunc { name: "Map.size", module: "std/map", key: "size", check: "checkMapSize" },
 ]
@@ -95,13 +105,58 @@ function checkMapRemove<W: Walker>(
   return Type.TVoid
 }
 
-function checkMapIter<W: Walker>(
+function checkMapUpdate<W: Walker>(
   mutable checker: Checker,
   walker: W,
   pos: Pos,
   arguments: Array<Arg>,
   name: string,
 ): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 4)) {
+    return Type.TVoid
+  }
+  if (!arguments[0].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0903",
+      "Map.update changes the map; write Map.update(mutable m, key, initial, change)",
+    )
+  }
+  const mapType = checkMapArgument(mutable checker, walker, pos, arguments, name, 0)
+  checkMutableArgument(mutable checker, arguments[0].value)
+  if (mapType is Some(foundMap)) {
+    if (foundMap is Type.TMap(keyType, valueType)) {
+      checkArgumentAgainst(mutable checker, walker, arguments[1].value, keyType)
+      checkArgumentAgainst(mutable checker, walker, arguments[2].value, valueType)
+      // The function takes the current value (or the initial one) and returns the new one.
+      const _ = checkCallback(
+        mutable checker,
+        walker,
+        pos,
+        arguments,
+        name,
+        3,
+        [valueType],
+        Some(valueType),
+      )
+      checkExclusive(mutable checker, arguments, [0])
+      return Type.TVoid
+    }
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  checkExpression(mutable checker, walker, arguments[2].value, None)
+  checkExpression(mutable checker, walker, arguments[3].value, None)
+  return Type.TVoid
+}
+
+function checkMapIter<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type from checker uses alloc {
   if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
     return Type.TVoid
   }
@@ -125,9 +180,12 @@ export function checkMapCall<W: Walker>(
   arguments: Array<Arg>,
   name: string,
   kind: string,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (kind == "checkMapSize") {
     return checkMapSize(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkMapUpdate") {
+    return checkMapUpdate(mutable checker, walker, pos, arguments, name)
   }
   if (kind == "checkMapRemove") {
     return checkMapRemove(mutable checker, walker, pos, arguments, name)

@@ -3,6 +3,7 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
+import { splitString, substring } from "narrac/textops"
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { isPanicCall } from "narrac/pathends"
@@ -57,6 +58,12 @@ import {
   findOtherVariant,
   areArgumentsIrrefutable,
 } from "narrac/patterns"
+import {
+  narrowByCondition,
+  recordConstantLocal,
+  checkDivisor,
+  checkShiftCount,
+} from "narrac/operands"
 import * as Arrays from "std/array"
 import * as Str from "std/string"
 import * as Int from "std/int"
@@ -325,7 +332,10 @@ function checkVariable<W: Walker>(
   // The annotation, when written, is the variable's type.
   let want: Option<Type> = None
   if (type is Some(typeExpression)) {
+    // `typeof name` in the annotation of `name` refers to its own declaration.
+    checker.busy[`typeof|${name}`] = true
     want = Some(resolveType(mutable checker, typeExpression))
+    checker.busy[`typeof|${name}`] = false
   }
   const errorCount = Arrays.length(checker.errors)
   let found = checkExpression(mutable checker, walker, value, want)
@@ -340,6 +350,7 @@ function checkVariable<W: Walker>(
   }
   const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
   setBinding(mutable checker, local, value, BindingKind.Plain)
+  recordConstantLocal(mutable checker, local, value)
 }
 
 function checkAssignment<W: Walker>(
@@ -351,7 +362,7 @@ function checkAssignment<W: Walker>(
   value: Expr,
 ) uses alloc {
   // A write through a constant is reported before the target is checked.
-  if (checkConstWrite(mutable checker, pos, target)) {
+  if (checkConstWrite(mutable checker, pos, target, false)) {
     checkExpression(mutable checker, walker, value, None)
     return
   }
@@ -371,7 +382,7 @@ function checkAssignment<W: Walker>(
       writtenLocal = found
       wasUsed = getLocal(checker, found).used
       // The fix of an unused local renames the assignments too.
-      Arrays.push(mutable checker.bodies[checker.body].locals[found].writes, targetPos)
+      Arrays.push(mutable checker.bodies[checker.body].locals[found].writes, copy(targetPos))
     }
   }
   checker.assigningId = getExpressionId(target)
@@ -380,6 +391,24 @@ function checkAssignment<W: Walker>(
   if (writtenLocal >= 0) {
     const body = checker.body
     checker.bodies[body].locals[writtenLocal].used = wasUsed
+  }
+
+  // A map element has no old value to combine with, so only `=` writes one.
+  if (operator != "=") {
+    if (target is Expr.IndexExpr(_, _, mapTarget, _)) {
+      if (getNodeType(checker, getExpressionId(mapTarget)) is Some(mapType)) {
+        if (mapType is Type.TMap(_, _)) {
+          reportError(
+            mutable checker,
+            pos,
+            "E0226",
+            "only variables, fields and array elements take a compound assignment",
+          )
+          checkExpression(mutable checker, walker, value, None)
+          return
+        }
+      }
+    }
   }
 
   // The root of the target must be a `let` variable.
@@ -463,8 +492,15 @@ function checkCompoundOperand<W: Walker>(
     return
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
-  const arithmetic = Str.slice(operator, 0, Str.length(operator) - 1)
+  const arithmetic = substring(operator, 0, Str.length(operator) - 1)
   const valueText = typeString(checker, valueType)
+  if (valueType == targetType) {
+    if (arithmetic == "/" || arithmetic == "%") {
+      checkDivisor(mutable checker, value, targetType)
+    } else if (arithmetic == "<<" || arithmetic == ">>") {
+      checkShiftCount(mutable checker, value, targetType)
+    }
+  }
   if (valueType != targetType) {
     reportError(
       mutable checker,
@@ -583,7 +619,7 @@ export function checkBlockExpression<W: Walker>(
   walker: W,
   expression: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // The value is the common type of its returns, and every path must end in a return.
   if (expression is Expr.BlockExpr(_, pos, block)) {
     return checkBlockBody(mutable checker, walker, pos, block, want)
@@ -597,7 +633,7 @@ export function checkBlockBody<W: Walker>(
   pos: Pos,
   block: Block,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // A match arm written as a block in value position uses this too.
   const context = BlockContext {
     result: want,
@@ -612,8 +648,8 @@ export function checkBlockBody<W: Walker>(
   checker.labels = []
   checkBlock(mutable checker, walker, block)
   const finished = checker.blocks[Arrays.length(checker.blocks) - 1]
-  checker.loops = context.loops
-  checker.labels = context.labels
+  checker.loops = finished.loops
+  checker.labels = finished.labels
   checker.blocks = withoutLastBlock(checker.blocks)
   if (finished.returns == 0) {
     reportError(
@@ -638,7 +674,7 @@ export function checkBlockBody<W: Walker>(
   return Type.TVoid
 }
 
-function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> uses alloc {
+function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> from blocks uses alloc {
   let kept: Array<BlockContext> = []
   for (const i of Ranges.upTo(Arrays.length(blocks) - 1)) {
     Arrays.push(mutable kept, blocks[i])
@@ -791,6 +827,7 @@ function checkIf<W: Walker>(
   if (variantIndex >= 0) {
     setNarrowed(mutable checker, subject, variantIndex)
   }
+  narrowByCondition(mutable checker, condition, true)
   for (const statement of Arrays.values(then.statements)) {
     checkStatement(mutable checker, walker, statement)
   }
@@ -809,10 +846,14 @@ function checkIf<W: Walker>(
     if (otherVariant >= 0) {
       setNarrowed(mutable checker, subject, otherVariant)
     }
+    narrowByCondition(mutable checker, condition, false)
     checkStatement(mutable checker, walker, other)
     popScope(mutable checker)
-  } else if (otherVariant >= 0 && diverges(then)) {
-    setNarrowed(mutable checker, subject, otherVariant)
+  } else if (diverges(then)) {
+    if (otherVariant >= 0) {
+      setNarrowed(mutable checker, subject, otherVariant)
+    }
+    narrowByCondition(mutable checker, condition, false)
   }
 }
 
@@ -827,7 +868,11 @@ function checkWhile<W: Walker>(
   endLoopNarrowing(mutable checker, Some(condition), body)
   checkCondition(mutable checker, walker, condition)
   enterLoop(mutable checker, pos, label)
+  // The body runs only where the condition held.
+  pushScope(mutable checker)
+  narrowByCondition(mutable checker, condition, true)
   checkBlock(mutable checker, walker, body)
+  popScope(mutable checker)
   leaveLoop(mutable checker, label)
 }
 
@@ -914,7 +959,7 @@ function checkFor<W: Walker>(
     }
     if (Arrays.length(arguments) > 0) {
       if (getNodeType(checker, getExpressionId(arguments[0].value)) is Some(argumentType)) {
-        firstArgument = argumentType
+        firstArgument = copy(argumentType)
       }
     }
   }
@@ -978,8 +1023,9 @@ function checkFor<W: Walker>(
   // Only an array place can be written through by index.
   if (findAssignedLocal(checker, source) >= 0) {
     if (getNodeType(checker, getExpressionId(source)) is Some(Type.TArray(sourceElement))) {
+      const contents = isContentsType(checker, sourceElement)
       checker.bodies[bodyIndex].locals[local].loopSource = describePlace(source)
-      checker.bodies[bodyIndex].locals[local].loopContents = isContentsType(checker, sourceElement)
+      checker.bodies[bodyIndex].locals[local].loopContents = contents
     }
   }
   enterLoop(mutable checker, pos, label)
@@ -1037,9 +1083,9 @@ function checkReferenceFor<W: Walker>(
   let element = Type.TVoid
   const sourceType = getNodeType(checker, getExpressionId(source))
   if (sourceType is Some(Type.TArray(arrayElement))) {
-    element = arrayElement
+    element = copy(arrayElement)
   } else if (sourceType is Some(Type.TMap(_, mapValue))) {
-    element = mapValue
+    element = copy(mapValue)
   }
   let valid = true
   if (marker.indexName != "" && builtin != "Array.entries") {
@@ -1072,7 +1118,7 @@ function checkReferenceFor<W: Walker>(
   // The loop changes the source, so it must be a place a `mutable` argument
   // could name.
   let root = -1
-  if (valid && !checkConstWrite(mutable checker, sourcePos, source)) {
+  if (valid && !checkConstWrite(mutable checker, sourcePos, source, true)) {
     root = findAssignedLocal(checker, source)
     if (root < 0) {
       reportError(
@@ -1119,8 +1165,8 @@ function checkReferenceFor<W: Walker>(
   const local = declareLocal(mutable checker, nodeId, pos, name, element, true, false)
   checker.bodies[bodyIndex].locals[local].binding = BindingKind.Reference
 
-  // The body borrows the source.
-  const outerBorrows = checker.loopBorrows
+  // The body borrows the source. The outer list stays as it is, so the push copies it.
+  const outerBorrows = copy(checker.loopBorrows)
   if (root >= 0) {
     Arrays.push(mutable checker.loopBorrows, LoopBorrow {
       local: root,
@@ -1148,8 +1194,8 @@ function findPlacePath(place: Expr): Array<string> uses alloc {
   }
 }
 
-function appendPath(path: Array<string>, segment: string): Array<string> uses alloc {
-  let longer = path
+function appendPath(path: Array<string>, segment: string): Array<string> from path uses alloc {
+  let longer = copy(path)
   Arrays.push(mutable longer, segment)
   return longer
 }
@@ -1361,7 +1407,7 @@ function extendArms(
   arm: int,
   isMatch: bool,
   calls: int,
-): Array<ArmStep> uses alloc {
+): Array<ArmStep> from arms uses alloc {
   let extended: Array<ArmStep> = []
   for (const step of Arrays.values(arms)) {
     Arrays.push(mutable extended, step)
@@ -1771,7 +1817,7 @@ function findStatementPos(statement: Stmt): Pos {
       | Stmt.AssignStmt(pos, _, _)
       | Stmt.CompoundAssignStmt(pos, _, _, _)
       | Stmt.ExprStmt(pos, _)
-      | Stmt.ReturnStmt(pos, _) => pos
+      | Stmt.ReturnStmt(pos, _) => copy(pos)
     _ => Pos { line: 0, column: 0 }
   }
 }
@@ -1812,7 +1858,7 @@ function buildHoistFix(
     return []
   }
   const statementPos = findStatementPos(statement)
-  const lines = Str.split(scope.facts.source, "\n")
+  const lines = splitString(scope.facts.source, "\n")
   if (
     statementPos.line < 1 ||
       statementPos.line > Arrays.length(lines) ||

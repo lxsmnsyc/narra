@@ -3,6 +3,7 @@
 // of the document with the open documents' text, as checkDocumentPackage
 // does, and answers from the site index and the checker results of narrac
 // query (query.nra, querysites.nra).
+import { splitString } from "narrac/textops"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -147,7 +148,10 @@ export function answerNavigation(
   return Ok(listReferences(navigation, found, includeDeclaration))
 }
 
-function loadNavigation(mutable server: Server, uri: string): Option<Navigation> uses io, alloc {
+function loadNavigation(
+  mutable server: Server,
+  uri: string,
+): Option<Navigation> from server uses io, alloc {
   // A package whose bodies have errors is still answered from what the checker recorded, but
   // without the effect pass, which needs bodies without errors.
   const maybePath = convertUriToPath(uri)
@@ -174,7 +178,7 @@ function loadNavigation(mutable server: Server, uri: string): Option<Navigation>
     return None
   }
   const package = loaded.value
-  let checker = Body.checkPackage(package)
+  let checker = copy(Body.checkPackage(package))
   let effectsKnown = Arrays.length(checker.errors) == 0
   let effects = EffectState {
     bodyIndex: Map {},
@@ -202,7 +206,7 @@ function loadNavigation(mutable server: Server, uri: string): Option<Navigation>
   let view = -1
   for (const index of Ranges.between(0, Arrays.length(query.views))) {
     const filePath = `${package.directory}/${query.views[index].file}`
-    Arrays.push(mutable lines, Str.split(query.views[index].text, "\n"))
+    Arrays.push(mutable lines, splitString(query.views[index].text, "\n"))
     if (openUris[filePath] is Some(open)) {
       Arrays.push(mutable uris, open)
     } else {
@@ -310,8 +314,8 @@ function makeLocation(navigation: Navigation, location: Location): Value uses al
 
 function answerHover(navigation: Navigation, cursor: Pos): Value uses alloc {
   // The effect queries walk expressions with the checker and the pass state.
-  let checker = navigation.checker
-  let effects = navigation.effects
+  let checker = copy(navigation.checker)
+  let effects = copy(navigation.effects)
   const effectsKnown = navigation.effectsKnown
   const view = navigation.query.views[navigation.view]
   const found = findTypeAt(mutable checker, mutable effects, effectsKnown, view, cursor)
@@ -337,7 +341,7 @@ function answerHover(navigation: Navigation, cursor: Pos): Value uses alloc {
   return Value.Null
 }
 
-function findDeclared(navigation: Navigation, qualified: string): Option<Declared> {
+function findDeclared(navigation: Navigation, qualified: string): Option<Declared> from navigation {
   for (const declared of Arrays.values(navigation.declared)) {
     if (declared.qualified == qualified) {
       return Some(declared)
@@ -373,10 +377,14 @@ function describeType(checker: Checker, type: Type): string uses alloc {
   }
 }
 
-function findSiteName(navigation: Navigation, view: ModuleView, site: Site): NameAt uses alloc {
+function findSiteName(
+  navigation: Navigation,
+  view: ModuleView,
+  site: Site,
+): NameAt from navigation uses alloc {
   if (site.kind == SiteKind.DeclarationSite || site.kind == SiteKind.LocalSite) {
     if (site.kind == SiteKind.LocalSite) {
-      return NameAt.LocalName(siteLocation(view, site))
+      return copy(NameAt.LocalName(siteLocation(view, site)))
     }
     for (const declared of Arrays.values(navigation.declared)) {
       const sameView = navigation.query.views[declared.view].path == view.path
@@ -435,7 +443,11 @@ function findTokenIndex(tokens: Array<Token>, pos: Pos): int {
   return low
 }
 
-function findTokenName(navigation: Navigation, view: ModuleView, cursor: Pos): NameAt uses alloc {
+function findTokenName(
+  navigation: Navigation,
+  view: ModuleView,
+  cursor: Pos,
+): NameAt from navigation uses alloc {
   // Types, traits and imported names (`Point` in an annotation or an import list) are looked
   // up in the module's scope; `Text.Point` goes through a namespace import.
   const tokens = view.tokens
@@ -477,7 +489,7 @@ function findTokenName(navigation: Navigation, view: ModuleView, cursor: Pos): N
   return NameAt.NoName
 }
 
-function findNameAt(navigation: Navigation, cursor: Pos): NameAt uses alloc {
+function findNameAt(navigation: Navigation, cursor: Pos): NameAt from navigation uses alloc {
   const view = navigation.query.views[navigation.view]
   for (let index = Arrays.length(view.sites) - 1; index >= 0; index--) {
     const site = view.sites[index]
@@ -515,15 +527,15 @@ function listReferences(
 
 function findDeclarationPos(declaration: Decl): Pos {
   return match (declaration) {
-    Decl.Func(found) => found.pos
-    Decl.Const(found) => found.pos
-    Decl.Struct(found) => found.pos
-    Decl.Enum(found) => found.pos
-    Decl.Distinct(found) => found.pos
-    Decl.Alias(found) => found.pos
-    Decl.Test(found) => found.pos
-    Decl.Trait(found) => found.pos
-    Decl.Impl(found) => found.pos
+    Decl.Func(found) => copy(found.pos)
+    Decl.Const(found) => copy(found.pos)
+    Decl.Struct(found) => copy(found.pos)
+    Decl.Enum(found) => copy(found.pos)
+    Decl.Distinct(found) => copy(found.pos)
+    Decl.Alias(found) => copy(found.pos)
+    Decl.Test(found) => copy(found.pos)
+    Decl.Trait(found) => copy(found.pos)
+    Decl.Impl(found) => copy(found.pos)
   }
 }
 

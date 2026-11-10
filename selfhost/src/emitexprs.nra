@@ -8,6 +8,7 @@
 // is an owned temporary. Rules from Go: evaluate in source order, hand every
 // owned value to consume, and read the emitter's tables before a call that
 // passes `mutable emitter` (Narra rejects both in one call).
+import { substring } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Char from "std/char"
@@ -61,6 +62,7 @@ import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
 import * as Options from "narrac/emitoptions"
 import { emitCopyCall } from "narrac/stdcopy"
+import * as StdHelp from "narrac/stdemithelp"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -85,7 +87,7 @@ export function emitExpression<W: EmitWalker>(
       if (held.text != "") {
         emitter.heldArguments[expressionId] = plain("")
         emitter.heldPending--
-        return held
+        return copy(held)
       }
     }
   }
@@ -120,11 +122,10 @@ export function emitExpression<W: EmitWalker>(
       operator,
       operand,
     )
-    Expr.BinaryExpr(_, pos, operator, left, right) => emitBinary(
+    Expr.BinaryExpr(_, _, operator, left, right) => emitBinary(
       walker,
       mutable emitter,
       expression,
-      pos,
       operator,
       left,
       right,
@@ -215,7 +216,7 @@ function parseIntegerText(text: string): int uses alloc {
   // gives the value back.
   let wrapped = 0
   for (const index of Ranges.between(0, Str.length(joined))) {
-    if (Int.parse(Str.slice(joined, index, index + 1), base) is Ok(digit)) {
+    if (Int.parse(substring(joined, index, index + 1), base) is Ok(digit)) {
       wrapped = wrapped * base + digit
     }
   }
@@ -274,7 +275,7 @@ function emitTemplate<W: EmitWalker>(
 
 function containerStruct(emitter: Emitter, type: Type): string uses alloc {
   const name = cachedCType(emitter.checker, emitter.typeNames, type)
-  return Str.slice(name, 0, Str.length(name) - 1)
+  return substring(name, 0, Str.length(name) - 1)
 }
 
 function constructorValue(emitter: Emitter, enumIndex: int, variant: int): string uses alloc {
@@ -337,7 +338,7 @@ function emitIndexRead<W: EmitWalker>(
   target: Expr,
   index: Expr,
 ): Code uses alloc {
-  const targetType = readNodeType(emitter, getExpressionId(target))
+  const targetType = copy(readNodeType(emitter, getExpressionId(target)))
   if (targetType is Type.TMap(_, _)) {
     return Maps.emitMapGet(walker, mutable emitter, expression)
   }
@@ -438,7 +439,6 @@ function emitBinary<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   expression: Expr,
-  pos: Pos,
   operator: string,
   left: Expr,
   right: Expr,
@@ -463,7 +463,7 @@ function emitBinary<W: EmitWalker>(
   }
 
   // Equality of structs, enums and arrays is the traits module's.
-  const leftType = underlyingType(emitter, readNodeType(emitter, getExpressionId(left)))
+  const leftType = copy(underlyingType(emitter, readNodeType(emitter, getExpressionId(left))))
   if (!isPrimitive(leftType) && (operator == "==" || operator == "!=")) {
     return Traits.emitEquality(walker, mutable emitter, expression)
   }
@@ -480,19 +480,17 @@ function emitBinary<W: EmitWalker>(
     }
     return plain(`(lstr_cmp(${leftText}, ${rightText}) ${operator} 0)`)
   }
-  return emitArithmetic(mutable emitter, pos, operator, leftType, leftText, rightText)
+  return emitArithmetic(mutable emitter, operator, leftType, leftText, rightText)
 }
 
 export function emitArithmetic(
   mutable emitter: Emitter,
-  pos: Pos,
   operator: string,
   operandType: Type,
   leftText: string,
   rightText: string,
 ): Code uses alloc {
   if (isInteger(operandType)) {
-    const position = where(emitter, pos)
     // A sized integer has its own functions, named with the type.
     let suffix = ""
     if (operandType != Type.TInt) {
@@ -500,7 +498,7 @@ export function emitArithmetic(
     }
     const checked = checkedFunction(operator)
     if (checked != "") {
-      const call = `${checked}${suffix}(${leftText}, ${rightText}, ${position})`
+      const call = `${checked}${suffix}(${leftText}, ${rightText})`
       return plain(temp(mutable emitter, operandType, call))
     }
     // Overflow wraps at the type's width in every build.
@@ -715,7 +713,7 @@ function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value:
   if (isStableArgument(emitter, value, nodeId)) {
     return
   }
-  const valueType = readNodeType(emitter, nodeId)
+  const valueType = copy(readNodeType(emitter, nodeId))
   if (valueType is Type.TFunc(_, _, _, _, _)) {
     return
   }
@@ -745,7 +743,7 @@ function emitConstructorCall<W: EmitWalker>(
   arguments: Array<Arg>,
 ): Code uses alloc {
   const enumType = Type.TEnum(enumIndex)
-  const fields = emitter.checker.enums[enumIndex].variants[variant].fields
+  const fields = copy(emitter.checker.enums[enumIndex].variants[variant].fields)
   let parts: Array<string> = []
   for (const index of Ranges.between(0, Arrays.length(arguments))) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
@@ -781,7 +779,7 @@ function emitFunctionCall<W: EmitWalker>(
   program: ProgramFunc,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const checker = emitter.checker
+  const checker = copy(emitter.checker)
   let parameterMutable: Array<bool> = []
   let parameterTypes: Array<Type> = []
   let result = Type.TVoid
@@ -798,7 +796,7 @@ function emitFunctionCall<W: EmitWalker>(
       for (const parameter of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
         Arrays.push(mutable parameterMutable, parameter.isMutable)
       }
-      parameterTypes = checker.instanceList[instance].parameters
+      parameterTypes = copy(checker.instanceList[instance].parameters)
       result = checker.instanceList[instance].result
     }
     ProgramFunc.ImplFunc(block, index) => {
@@ -856,16 +854,21 @@ function emitBuiltinCall<W: EmitWalker>(
       const onlyHigh = temp(mutable emitter, Type.TInt, upperBound.text)
       return plain(`((narra_range){0, ${onlyHigh}, 1})`)
     }
+    if (builtin.name == "Range.stepped") {
+      return StdHelp.emitOptionOut(
+        walker,
+        mutable emitter,
+        getExpressionId(expression),
+        arguments,
+        "narra_range_stepped",
+        Type.TRange,
+        "((narra_range){0})",
+      )
+    }
     const lowerBound = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
     const low = temp(mutable emitter, Type.TInt, lowerBound.text)
     const upperEnd = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
     const high = temp(mutable emitter, Type.TInt, upperEnd.text)
-    if (builtin.name == "Range.stepped") {
-      const stepText = EmitWalker.emitExpression(walker, mutable emitter, arguments[2].value)
-      const step = temp(mutable emitter, Type.TInt, stepText.text)
-      const position = where(emitter, pos)
-      return plain(`narra_range_stepped(${low}, ${high}, ${step}, ${position})`)
-    }
     return plain(`((narra_range){${low}, ${high}, 1})`)
   }
   if (module == "std/map") {
@@ -877,7 +880,7 @@ function emitBuiltinCall<W: EmitWalker>(
   return Std.emitStdCall(walker, mutable emitter, expression)
 }
 
-function callArguments(expression: Expr): Array<Arg> {
+function callArguments(expression: Expr): Array<Arg> from expression {
   if (expression is Expr.CallExpr(_, _, _, _, arguments)) {
     return arguments
   }
@@ -924,7 +927,7 @@ function emitArrayCall<W: EmitWalker>(
   mutable emitter: Emitter,
   expression: Expr,
   name: string,
-  pos: Pos,
+  _pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
   if (name == "Array.length") {
@@ -932,7 +935,7 @@ function emitArrayCall<W: EmitWalker>(
     return plain(`(${value})->len`)
   }
   if (name == "Array.push") {
-    const arrayType = readNodeType(emitter, getExpressionId(arguments[0].value))
+    const arrayType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
     if (arrayType is Type.TArray(element)) {
       const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
       const consumed = consume(mutable emitter, code.text, code.owned, element)
@@ -940,18 +943,21 @@ function emitArrayCall<W: EmitWalker>(
       return plain(`${containerStruct(emitter, arrayType)}_push(${pointer}, ${consumed})`)
     }
   }
-  if (name == "Array.filled") {
-    const arrayType = readNodeType(emitter, getExpressionId(expression))
-    const value = argumentCode(walker, mutable emitter, expression, 0)
-    const count = argumentCode(walker, mutable emitter, expression, 1)
-    const position = where(emitter, pos)
+  if (name == "Array.withCapacity") {
+    const arrayType = copy(readNodeType(emitter, getExpressionId(expression)))
+    const capacity = argumentCode(walker, mutable emitter, expression, 0)
     const arrayStruct = containerStruct(emitter, arrayType)
-    const filled = ownedTemp(
+    // The capacity is a hint: a negative one reserves nothing and a huge one is cut to 2^20.
+    const reserved = temp(mutable emitter, Type.TInt, capacity)
+    const created = ownedTemp(
       mutable emitter,
       arrayType,
-      `${arrayStruct}_filled(${value}, ${count}, ${position})`,
+      `${arrayStruct}_new(${reserved} < 0 ? 0 : (${reserved} > 1048576 ? 1048576 : ${reserved}))`,
     )
-    return Code { text: filled, owned: true }
+    return Code { text: created, owned: true }
+  }
+  if (name == "Array.filled") {
+    return emitArrayFilled(walker, mutable emitter, expression)
   }
   return unsupportedCode(mutable emitter, "array function")
 }
@@ -962,7 +968,7 @@ function emitBoxCall<W: EmitWalker>(
   expression: Expr,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const boxType = readNodeType(emitter, getExpressionId(expression))
+  const boxType = copy(readNodeType(emitter, getExpressionId(expression)))
   if (boxType is Type.TBox(element)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
     const consumed = consume(mutable emitter, code.text, code.owned, element)
@@ -998,7 +1004,7 @@ function emitStructLiteral<W: EmitWalker>(
   if (spread is Some(_)) {
     return Match.emitSpreadLiteral(walker, mutable emitter, expression)
   }
-  const structType = readNodeType(emitter, nodeId)
+  const structType = copy(readNodeType(emitter, nodeId))
   if (structType is Type.TStruct(structIndex)) {
     let parts: Array<string> = []
     let given: Map<string, bool> = Map {}
@@ -1011,7 +1017,7 @@ function emitStructLiteral<W: EmitWalker>(
       given[field.name] = true
     }
     // The rest take their default, which is emitted inside the default's body.
-    for (const declared of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+    for (const declared of Arrays.values(copy(emitter.checker.structs[structIndex].fields))) {
       if (given[declared.name] is Some(_)) {
         continue
       }
@@ -1050,7 +1056,7 @@ function emitArrayLiteral<W: EmitWalker>(
   if (isTuple) {
     return Match.emitTupleLiteral(walker, mutable emitter, expression)
   }
-  const arrayType = readNodeType(emitter, nodeId)
+  const arrayType = copy(readNodeType(emitter, nodeId))
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)
     const array = ownedTemp(
@@ -1133,7 +1139,7 @@ function indexPointer<W: EmitWalker>(
   target: Expr,
   index: Expr,
 ): string uses alloc {
-  const arrayType = readNodeType(emitter, getExpressionId(target))
+  const arrayType = copy(readNodeType(emitter, getExpressionId(target)))
   if (arrayType is Type.TArray(element)) {
     const base = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
@@ -1278,7 +1284,7 @@ implement EmitWalker for ConstWalker {
 export function constRef(mutable emitter: Emitter, constIndex: int): string uses alloc {
   // The value is borrowed. A static constant re-emits its value here, inside
   // its own body.
-  const checker = emitter.checker
+  const checker = copy(emitter.checker)
   const body = findBody(checker, `const|${Int.toString(constIndex)}`)
   if (body >= 0 && isStaticConstant(emitter, constIndex)) {
     const saved = switchBody(mutable emitter, body)
@@ -1293,7 +1299,7 @@ export function constRef(mutable emitter: Emitter, constIndex: int): string uses
   return temp(mutable emitter, constantType, `${getter}()`)
 }
 
-export function constType(checker: Checker, constIndex: int): Type {
+export function constType(checker: Checker, constIndex: int): Type from checker {
   const info = checker.consts[constIndex]
   if (info.valueType is Some(inferred)) {
     return inferred
@@ -1302,4 +1308,32 @@ export function constType(checker: Checker, constIndex: int): Type {
     return declared
   }
   return Type.TVoid
+}
+
+function emitArrayFilled<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+): Code uses alloc {
+  const optionType = copy(readNodeType(emitter, getExpressionId(expression)))
+  const some = StdHelp.findVariant(emitter, optionType, "Some")
+  const none = StdHelp.findVariant(emitter, optionType, "None")
+  const arrayType = copy(StdHelp.variantFieldType(emitter, optionType, some))
+  const value = argumentCode(walker, mutable emitter, expression, 0)
+  const count = argumentCode(walker, mutable emitter, expression, 1)
+  const arrayStruct = containerStruct(emitter, arrayType)
+  // A negative count has no array and the result is None.
+  const filled = temp(mutable emitter, arrayType, "NULL")
+  writeLine(mutable emitter, `if (${count} >= 0) {`)
+  writeLine(mutable emitter, `  ${filled} = ${arrayStruct}_filled(${value}, ${count});`)
+  writeLine(mutable emitter, "}")
+  return StdHelp.ioEither(
+    mutable emitter,
+    optionType,
+    `${filled} != NULL`,
+    some,
+    [filled],
+    none,
+    [],
+  )
 }

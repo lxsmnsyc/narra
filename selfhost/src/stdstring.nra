@@ -8,7 +8,6 @@ import {
   EmitWalker,
   reportUnsupported,
   writeLine,
-  where,
   temp,
   ownedTemp,
   readNodeType,
@@ -24,7 +23,9 @@ import {
   argumentText,
   arrayStruct,
   findVariant,
+  variantFieldType,
   ioEither,
+  emitOptionOut,
 } from "narrac/stdemithelp"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
@@ -160,7 +161,7 @@ export const STRING_FUNCS: Array<StdFunc> = [
     module: "std/string",
     key: "repeat",
     parameters: ["string", "int"],
-    result: "string",
+    result: "Option<string>",
     effects: ["alloc"],
   },
   StdFunc {
@@ -176,7 +177,7 @@ export const STRING_FUNCS: Array<StdFunc> = [
     module: "std/string",
     key: "slice",
     parameters: ["string", "int", "int"],
-    result: "string",
+    result: "Option<string>",
     effects: ["alloc"],
   },
   StdFunc {
@@ -192,7 +193,7 @@ export const STRING_FUNCS: Array<StdFunc> = [
     module: "std/string",
     key: "split",
     parameters: ["string", "string"],
-    result: "Array<string>",
+    result: "Option<Array<string>>",
     effects: ["alloc"],
     check: "fixed",
   },
@@ -214,13 +215,6 @@ export const STRING_FUNCS: Array<StdFunc> = [
 ]
 
 const STRING_FIXED_CALLS: Array<FixedCall> = [
-  FixedCall {
-    name: "Str.slice",
-    call: "narra_str_slice",
-    withPos: true,
-    owned: true,
-    temporary: false,
-  },
   FixedCall {
     name: "Str.sliceFrom",
     call: "narra_str_slice_from",
@@ -319,13 +313,6 @@ const STRING_FIXED_CALLS: Array<FixedCall> = [
     owned: true,
     temporary: false,
   },
-  FixedCall {
-    name: "Str.repeat",
-    call: "lstr_repeat",
-    withPos: true,
-    owned: true,
-    temporary: false,
-  },
 ]
 
 function emitJoin<W: EmitWalker>(
@@ -350,7 +337,7 @@ function emitIndexOf<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const optionType = readNodeType(emitter, nodeId)
+  const optionType = copy(readNodeType(emitter, nodeId))
   const some = findVariant(emitter, optionType, "Some")
   const none = findVariant(emitter, optionType, "None")
   const text = argumentText(walker, mutable emitter, arguments, 0)
@@ -363,27 +350,32 @@ function emitSplit<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   nodeId: int,
-  pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const arrayType = readNodeType(emitter, nodeId)
+  const optionType = copy(readNodeType(emitter, nodeId))
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const arrayType = copy(variantFieldType(emitter, optionType, some))
   const text = argumentText(walker, mutable emitter, arguments, 0)
   const separator = argumentText(walker, mutable emitter, arguments, 1)
   const count = temp(mutable emitter, Type.TInt, "0")
-  const position = where(emitter, pos)
   const pieces = rawTemp(
     mutable emitter,
     "lstr**",
-    `narra_str_split(${text}, ${separator}, &${count}, ${position})`,
+    `narra_str_split(${text}, ${separator}, &${count})`,
   )
   const structName = arrayStruct(emitter, arrayType)
-  const array = ownedTemp(mutable emitter, arrayType, `${structName}_new(${count})`)
+  const array = temp(mutable emitter, arrayType, "NULL")
+  // An empty separator gives no pieces and the result is None.
+  writeLine(mutable emitter, `if (${pieces} != NULL) {`)
+  writeLine(mutable emitter, `  ${array} = ${structName}_new(${count});`)
   writeLine(
     mutable emitter,
-    `for (int64_t i = 0; i < ${count}; i++) ${array}->items[${array}->len++] = ${pieces}[i];`,
+    `  for (int64_t i = 0; i < ${count}; i++) ${array}->items[${array}->len++] = ${pieces}[i];`,
   )
-  writeLine(mutable emitter, `narra_free(${pieces});`)
-  return owned(array)
+  writeLine(mutable emitter, `  narra_free(${pieces});`)
+  writeLine(mutable emitter, "}")
+  return ioEither(mutable emitter, optionType, `${pieces} != NULL`, some, [array], none, [])
 }
 
 function emitChars<W: EmitWalker>(
@@ -392,7 +384,7 @@ function emitChars<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const arrayType = readNodeType(emitter, nodeId)
+  const arrayType = copy(readNodeType(emitter, nodeId))
   const text = argumentText(walker, mutable emitter, arguments, 0)
   const structName = arrayStruct(emitter, arrayType)
   const array = ownedTemp(
@@ -447,7 +439,29 @@ export function emitStringCall<W: EmitWalker>(
     return emitIndexOf(walker, mutable emitter, nodeId, arguments)
   }
   if (name == "Str.split") {
-    return emitSplit(walker, mutable emitter, nodeId, pos, arguments)
+    return emitSplit(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Str.slice") {
+    return emitOptionOut(
+      walker,
+      mutable emitter,
+      nodeId,
+      arguments,
+      "narra_str_slice",
+      Type.TStr,
+      "NULL",
+    )
+  }
+  if (name == "Str.repeat") {
+    return emitOptionOut(
+      walker,
+      mutable emitter,
+      nodeId,
+      arguments,
+      "lstr_repeat",
+      Type.TStr,
+      "NULL",
+    )
   }
   if (name == "Str.chars") {
     return emitChars(walker, mutable emitter, nodeId, arguments)

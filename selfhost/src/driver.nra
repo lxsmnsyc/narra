@@ -28,6 +28,7 @@
 //
 // Exit codes: 0 success, 1 a load, check or C compiler error (or the exit code
 // of the program for run and test), 2 usage.
+import { substring } from "narrac/textops"
 import * as Env from "std/env"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
@@ -45,6 +46,7 @@ import { LoadError } from "narrac/manifest"
 import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { Checker } from "narrac/check"
+import { reportSharedWrites } from "narrac/sharedwrites"
 import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
 import { Fix, applyFix } from "narrac/fixes"
 import { emitProgram } from "narrac/emit"
@@ -193,7 +195,7 @@ function parseOptions(arguments: Array<string>): Result<DriverOptions, string> u
       let value = ""
       if (Str.indexOf(name, "=") is Some(at)) {
         value = Str.sliceFrom(name, at + 1)
-        name = Str.slice(name, 0, at)
+        name = substring(name, 0, at)
         hasValue = true
       }
       if (name == "h" || name == "help") {
@@ -311,7 +313,7 @@ function formatDiagnostics(diagnostics: Array<Diagnostic>): string uses alloc {
   return Str.join(lines, "\n")
 }
 
-function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> uses alloc {
+function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> from errors uses alloc {
   let diagnostics: Array<Diagnostic> = []
   for (const error of Arrays.values(errors)) {
     // A syntax error arrives as one message that starts with `error `.
@@ -336,11 +338,12 @@ function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnosti
   if (loaded is Err(errors)) {
     return Err(convertLoadErrors(errors))
   }
-  let checker = Body.checkPackage(loaded.value)
-  // The effects are checked only when the bodies have no errors.
+  let checker = copy(Body.checkPackage(loaded.value))
+  // The effects are checked only when the bodies have no errors; shared writes always.
   if (Arrays.length(checker.errors) == 0) {
     const _ = Effects.checkEffects(mutable checker)
   }
+  reportSharedWrites(mutable checker)
   if (Arrays.length(checker.errors) > 0) {
     let diagnostics: Array<Diagnostic> = []
     for (const error of Arrays.values(checker.errors)) {
@@ -663,7 +666,7 @@ function findGoldenDirectory(path: string): string uses io, alloc {
 function trimTrailingSlashes(path: string): string {
   let result = path
   while (Str.length(result) > 1 && Str.endsWith(result, "/")) {
-    result = Str.slice(result, 0, Str.length(result) - 1)
+    result = substring(result, 0, Str.length(result) - 1)
   }
   return result
 }
@@ -693,7 +696,7 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
     const #[package, checker] = checked.value
     diagnostics = findMissingEntries(package, checker)
   }
-  // Exit 0: no diagnostics. Exit 1: diagnostics or an unreadable path. Exit 2: usage.
+  // Exit 0: no diagnostics. Exit 1: errors or an unreadable path. Exit 2: usage.
   if (Arrays.length(diagnostics) == 0) {
     return 0
   }
@@ -755,7 +758,8 @@ function runApplyFix(arguments: Array<string>): int uses io, alloc {
   const checked = loadAndCheck(paths[0])
   if (checked is Err(found)) {
     diagnostics = found
-  } else {
+  }
+  if (Arrays.length(diagnostics) == 0) {
     printError("no diagnostics")
     return 1
   }

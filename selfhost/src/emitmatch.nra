@@ -263,7 +263,7 @@ function bindPattern<W: EmitWalker>(
     Pattern.PatName(nodeId, _, _) => {
       const localIndex = declaredLocal(emitter, nodeId)
       if (localIndex >= 0) {
-        const local = readLocal(emitter, localIndex)
+        const local = copy(readLocal(emitter, localIndex))
         if (assignOnly) {
           const target = localRef(emitter, localIndex)
           writeLine(mutable emitter, `${target} = ${path};`)
@@ -393,7 +393,7 @@ export function emitIfIs<W: EmitWalker>(
   // read from it.
   if (statement is Stmt.IfStmt(_, condition, then, orElse)) {
     if (condition is Expr.IsExpr(_, _, subject, pattern)) {
-      const subjectType = readNodeType(emitter, getExpressionId(subject))
+      const subjectType = copy(readNodeType(emitter, getExpressionId(subject)))
       writeLine(mutable emitter, "{")
       emitter.indent++
       pushScope(mutable emitter, false)
@@ -454,7 +454,7 @@ function emitMatchArms<W: EmitWalker>(
   // A value match assigns each arm's value to result; a statement match runs
   // each arm.
   const code = EmitWalker.emitExpression(walker, mutable emitter, subject)
-  const subjectType = readNodeType(emitter, getExpressionId(subject))
+  const subjectType = copy(readNodeType(emitter, getExpressionId(subject)))
   // The bindings borrow from the subject, so the statement holds it: an owned
   // temporary or a read-only local already lives long enough; any other value
   // that an arm binds from is retained until the statement ends.
@@ -580,7 +580,9 @@ function containsOrPattern(pattern: Pattern): bool {
   return false
 }
 
-function combinePatternOptions(options: Array<Array<Pattern>>): Array<Array<Pattern>> uses alloc {
+function combinePatternOptions(
+  options: Array<Array<Pattern>>,
+): Array<Array<Pattern>> from options uses alloc {
   // Every way to pick one pattern from each list, in order.
   let combinations: Array<Array<Pattern>> = [[]]
   for (const choices of Arrays.values(options)) {
@@ -600,7 +602,7 @@ function combinePatternOptions(options: Array<Array<Pattern>>): Array<Array<Patt
   return combinations
 }
 
-function expandOrPatterns(pattern: Pattern): Array<Pattern> uses alloc {
+function expandOrPatterns(pattern: Pattern): Array<Pattern> from pattern uses alloc {
   // The patterns without an or-pattern that together match what this one matches, so a guard can try each.
   let expanded: Array<Pattern> = []
   match (pattern) {
@@ -770,7 +772,7 @@ export function emitBlockBody<W: EmitWalker>(
   }
   writeLine(mutable emitter, "{")
   emitter.indent++
-  Arrays.push(mutable emitter.blocks, info)
+  Arrays.push(mutable emitter.blocks, copy(info))
   pushScope(mutable emitter, false)
   EmitWalker.emitBlockInScope(walker, mutable emitter, block)
   popScope(mutable emitter)
@@ -833,7 +835,7 @@ export function emitReturnMatch<W: EmitWalker>(
   // Each arm returns its own value, so an arm that is a tail call becomes a
   // jump.
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
-    const resultType = readNodeType(emitter, nodeId)
+    const resultType = copy(readNodeType(emitter, nodeId))
     beginStatement(mutable emitter)
     emitMatchArms(walker, mutable emitter, subject, arms, false, true, "", resultType)
     emitter.frames = Tail.withoutLastFrame(emitter.frames)
@@ -848,7 +850,7 @@ export function emitMatchValue<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.MatchExpr(nodeId, _, subject, arms)) {
-    const resultType = readNodeType(emitter, nodeId)
+    const resultType = copy(readNodeType(emitter, nodeId))
     emitter.tempCount++
     const resultName = cachedCType(emitter.checker, emitter.typeNames, resultType)
     const variableName = `r${Int.toString(emitter.tempCount)}`
@@ -891,7 +893,7 @@ export function emitSpreadLiteral<W: EmitWalker>(
   // Given fields are consumed; the others are copied from the spread value and
   // retained, so the result owns every field.
   if (expression is Expr.StructLit(nodeId, _, _, _, fields, Some(spread))) {
-    const structType = readNodeType(emitter, nodeId)
+    const structType = copy(readNodeType(emitter, nodeId))
     if (structType is Type.TStruct(structIndex)) {
       const spreadCode = EmitWalker.emitExpression(walker, mutable emitter, spread)
       const source = temp(mutable emitter, structType, spreadCode.text)
@@ -902,7 +904,7 @@ export function emitSpreadLiteral<W: EmitWalker>(
         given[field.name] = consume(mutable emitter, code.text, code.owned, fieldType)
       }
       let parts: Array<string> = []
-      for (const declared of Arrays.values(emitter.checker.structs[structIndex].fields)) {
+      for (const declared of Arrays.values(copy(emitter.checker.structs[structIndex].fields))) {
         let value = `${source}.f_${declared.name}`
         if (given[declared.name] is Some(givenValue)) {
           value = givenValue
@@ -932,12 +934,12 @@ export function emitTupleLiteral<W: EmitWalker>(
   expression: Expr,
 ): Code uses alloc {
   if (expression is Expr.ArrayLit(nodeId, _, elements, _)) {
-    const tupleType = readNodeType(emitter, nodeId)
+    const tupleType = copy(readNodeType(emitter, nodeId))
     if (tupleType is Type.TStruct(structIndex)) {
       let parts: Array<string> = []
       for (const index of Ranges.between(0, Arrays.length(elements))) {
         const code = EmitWalker.emitExpression(walker, mutable emitter, elements[index])
-        const declared = emitter.checker.structs[structIndex].fields[index]
+        const declared = copy(emitter.checker.structs[structIndex].fields[index])
         const value = consume(mutable emitter, code.text, code.owned, declared.fieldType)
         Arrays.push(mutable parts, `.f_${declared.name} = ${value}`)
       }

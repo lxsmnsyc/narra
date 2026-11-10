@@ -11,6 +11,7 @@
 // declare.nra), never by the number of nodes, because ids have gaps. A
 // dummy node built after a parse error has id -1; parsed files that reach
 // the checker have none, but every write checks the range anyway.
+import { filledArray } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import {
@@ -286,7 +287,7 @@ export trait Walker {
     mutable checker: Checker,
     expression: Expr,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from want uses alloc
   function checkBlock(walker: Self, mutable checker: Checker, block: Block) uses alloc
   // `is` and `match` expressions (narrac/match).
   function checkPatterns(
@@ -294,7 +295,7 @@ export trait Walker {
     mutable checker: Checker,
     expression: Expr,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from want uses alloc
   // Map literals, tuple literals, spread struct literals and Map indexes
   // (narrac/literals).
   function checkMapLiteral(
@@ -302,14 +303,14 @@ export trait Walker {
     mutable checker: Checker,
     expression: Expr,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from want uses alloc
   function checkTuple(
     walker: Self,
     mutable checker: Checker,
     pos: Pos,
     elements: Array<Expr>,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from checker uses alloc
   function checkSpread(
     walker: Self,
     mutable checker: Checker,
@@ -318,7 +319,7 @@ export trait Walker {
     fields: Array<FieldInit>,
     spread: Expr,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from want uses alloc
   function checkMapIndex(
     walker: Self,
     mutable checker: Checker,
@@ -326,7 +327,7 @@ export trait Walker {
     index: Expr,
     mapKey: Type,
     mapValue: Type,
-  ): Type uses alloc
+  ): Type from mapValue uses alloc
   // Calls and constructors (calls.nra, ctors.nra) sit above narrac/exprs,
   // which reaches them through these two. checkConstructorName checks a
   // constructor used as a value (`None`, `Shape.Empty`); enumName is "" for
@@ -339,7 +340,7 @@ export trait Walker {
     callee: Expr,
     arguments: Array<Arg>,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from checker uses alloc
   function checkConstructorName(
     walker: Self,
     mutable checker: Checker,
@@ -348,14 +349,14 @@ export trait Walker {
     enumName: string,
     name: string,
     want: Option<Type>,
-  ): Option<Type> uses alloc
+  ): Option<Type> from checker uses alloc
   // A block in value position (narrac/stmts).
   function checkBlockExpression(
     walker: Self,
     mutable checker: Checker,
     expression: Expr,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from checker uses alloc
   // A match arm written as a block in value position is a block expression.
   function checkBlockBody(
     walker: Self,
@@ -363,14 +364,14 @@ export trait Walker {
     pos: Pos,
     block: Block,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from checker uses alloc
   // Arrow functions (narrac/closures).
   function checkArrow(
     walker: Self,
     mutable checker: Checker,
     expression: Expr,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from checker uses alloc
   // Std functions with a named check (narrac/stdcalls).
   function checkStdCall(
     walker: Self,
@@ -380,7 +381,7 @@ export trait Walker {
     name: string,
     kind: string,
     want: Option<Type>,
-  ): Type uses alloc
+  ): Type from want uses alloc
 }
 
 // An instance of a generic function (Go's pendingFunc with the cloned
@@ -455,6 +456,8 @@ export struct Checker {
   typeTraitIndex: Map<string, int>
   bounds: Map<int, Array<int>>
   busy: Map<string, bool>
+  // The parameters a signature has resolved so far, for `typeof` in a later parameter.
+  signatureNames: Map<string, Type>
   implementations: Array<ImplInfo>
   implFunctions: Map<string, ImplRef>
   mapKeys: Array<MapKeyCheck>
@@ -594,8 +597,8 @@ export struct Checker {
   // The function types written in source modules without `from`, by type key,
   // for the fix that adds `from` to the type a shared result does not fit.
   writtenFunctionTypes: Map<string, Array<WrittenFunctionType>>
-  // Set from the package's `shared-results = "unchecked"`.
-  sharedResultsUnchecked: bool = false
+  // The tracked types a value of each type holds, by type key, for the shared results check.
+  heldTypeSets: Map<string, Map<string, bool>>
 }
 
 // A function type as written, and the scope of the module that writes it.
@@ -622,13 +625,14 @@ export function newChecker(ids: int): Checker uses alloc {
     localNames: Map {},
     current: 0,
     environment: Map {},
-    paramTypes: Arrays.filled(Type.TVoid, ids),
+    paramTypes: filledArray(Type.TVoid, ids),
     localCount: 0,
     traits: [],
     typeTraits: [],
     typeTraitIndex: Map {},
     bounds: Map {},
     busy: Map {},
+    signatureNames: Map {},
     implementations: [],
     implFunctions: Map {},
     mapKeys: [],
@@ -652,6 +656,7 @@ export function newChecker(ids: int): Checker uses alloc {
     composites: Map {},
     bodyKeys: Map {},
     writtenFunctionTypes: Map {},
+    heldTypeSets: Map {},
     generatorEffects: Map {},
     callTypeArguments: Map {},
     argumentOrders: Map {},
@@ -825,7 +830,7 @@ export function enter(mutable checker: Checker, scope: int): int {
   return previous
 }
 
-export function lookupType(checker: Checker, name: string): Option<Type> {
+export function lookupType(checker: Checker, name: string): Option<Type> from checker {
   return checker.scopes[checker.current].types[name]
 }
 
@@ -928,17 +933,20 @@ function generatorName(checker: Checker, element: Type, input: Type): string use
   return `Coroutine<${typeString(checker, input)}, ${typeString(checker, element)}>`
 }
 
-export function generatorEffectList(checker: Checker, type: Type): Array<string> uses alloc {
+export function generatorEffectList(
+  checker: Checker,
+  type: Type,
+): Array<string> from type uses alloc {
   // A private generator has its inferred effects once the effect pass has run.
   if (type is Type.TGenerator(_, effects, _, origin, _)) {
     if (origin == -1) {
       return effects
     }
     if (origin < -1) {
-      return checker.boundGenerators[-2 - origin]
+      return copy(checker.boundGenerators[-2 - origin])
     }
     if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
-      return inferred
+      return copy(inferred)
     }
   }
   return []
@@ -1006,9 +1014,9 @@ export function findFromNamePos(checker: Checker, resultType: TypeExpr): Pos use
   // Where the name after `from` is written, or the result type when it is not known.
   const facts = checker.scopes[checker.current].facts
   if (facts.fromNames[getPosKey("r", resultType.pos)] is Some(namePos)) {
-    return namePos
+    return copy(namePos)
   }
-  return resultType.pos
+  return copy(resultType.pos)
 }
 
 export function findParameterIndex(parameters: Array<Param>, name: string): int {
@@ -1098,11 +1106,11 @@ export function reportTypeError(
   match (type) {
     Type.TStruct(index) => {
       scope = checker.structs[index].scope
-      pos = checker.structs[index].pos
+      pos = copy(checker.structs[index].pos)
     }
     Type.TEnum(index) => {
       scope = checker.enums[index].scope
-      pos = checker.enums[index].pos
+      pos = copy(checker.enums[index].pos)
     }
     _ => {}
   }
@@ -1114,7 +1122,7 @@ export function reportTypeError(
 export function finish(mutable checker: Checker, concrete: Array<Type>) uses alloc {
   // Arrays, boxes, maps and function types are not listed here; the emitter collects
   // them itself.
-  let all = concrete
+  let all = copy(concrete)
   for (const type of Arrays.values(checker.instanceTypes)) {
     if (!containsTypeParameter(checker, type)) {
       Arrays.push(mutable all, type)
@@ -1187,7 +1195,7 @@ export function isPassedByPointer(checker: Checker, type: Type): bool uses alloc
 
 function readStructLayout(checker: Checker, index: int): CLayout uses alloc {
   if (index < Arrays.length(checker.structLayouts)) {
-    return checker.structLayouts[index]
+    return copy(checker.structLayouts[index])
   }
   let layouts: Map<int, CLayout> = Map {}
   return layoutStruct(checker, index, mutable layouts)
@@ -1195,13 +1203,17 @@ function readStructLayout(checker: Checker, index: int): CLayout uses alloc {
 
 function readEnumLayout(checker: Checker, index: int): CLayout uses alloc {
   if (index < Arrays.length(checker.enumLayouts)) {
-    return checker.enumLayouts[index]
+    return copy(checker.enumLayouts[index])
   }
   let layouts: Map<int, CLayout> = Map {}
   return layoutEnum(checker, index, mutable layouts)
 }
 
 function alignUp(offset: int, align: int): int {
+  // Every alignment is at least 1.
+  if (align < 1) {
+    return offset
+  }
   return (offset + align - 1) / align * align
 }
 
@@ -1251,11 +1263,11 @@ function layoutStruct(
   mutable layouts: Map<int, CLayout>,
 ): CLayout uses alloc {
   if (index < Arrays.length(checker.structLayouts)) {
-    return checker.structLayouts[index]
+    return copy(checker.structLayouts[index])
   }
   const key = 0 - 1 - index
   if (layouts[key] is Some(known)) {
-    return known
+    return copy(known)
   }
   // A struct that holds itself meets its own key as one byte; it is an error.
   layouts[key] = CLayout { size: 1, align: 1 }
@@ -1270,7 +1282,7 @@ function layoutEnum(
   mutable layouts: Map<int, CLayout>,
 ): CLayout uses alloc {
   if (index < Arrays.length(checker.enumLayouts)) {
-    return checker.enumLayouts[index]
+    return copy(checker.enumLayouts[index])
   }
   // A tag alone, or a tag and a pointer to the heap payload.
   if (!isBoxedEnum(checker.enums[index])) {
@@ -1280,7 +1292,7 @@ function layoutEnum(
     return CLayout { size: 16, align: 8 }
   }
   if (layouts[index] is Some(known)) {
-    return known
+    return copy(known)
   }
   layouts[index] = CLayout { size: 4, align: 4 }
   // An inline payload is a union of one struct per variant after the tag.
@@ -1643,7 +1655,7 @@ export function startBody(
   root: BodyRoot,
   resultType: Type,
   environment: Map<string, Type>,
-): BodyState uses alloc {
+): BodyState from checker uses alloc {
   // Find the id range of the body's nodes.
   let ids: Array<int> = []
   match (root) {
@@ -1690,9 +1702,9 @@ export function startBody(
     typeArguments: typeArguments,
     root: root,
     first: first,
-    types: Arrays.filled(None, size),
-    refs: Arrays.filled(Ref.Unresolved, size),
-    declared: Arrays.filled(-1, size),
+    types: filledArray(None, size),
+    refs: filledArray(Ref.Unresolved, size),
+    declared: filledArray(-1, size),
     locals: [],
     errorCount: Arrays.length(checker.errors),
     closures: [],
@@ -1743,7 +1755,7 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
   if (checker.body < 0) {
     return
   }
-  const body = checker.bodies[checker.body]
+  const body = copy(checker.bodies[checker.body])
   if (Arrays.length(checker.errors) > body.errorCount) {
     return
   }
@@ -1808,7 +1820,7 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
   }
 }
 
-function buildRenameUnusedFix(local: LocalInfo): Array<Fix> uses alloc {
+function buildRenameUnusedFix(local: LocalInfo): Array<Fix> from local uses alloc {
   // The declaration `{ host }` becomes `{ host: _host }`, because renaming alone would
   // change the field.
   const unused = `_${local.name}`
@@ -1854,7 +1866,7 @@ export function setNodeType(mutable checker: Checker, nodeId: int, nodeType: Typ
   }
 }
 
-export function getNodeType(checker: Checker, nodeId: int): Option<Type> {
+export function getNodeType(checker: Checker, nodeId: int): Option<Type> from checker {
   const slot = findSlot(checker, nodeId)
   if (slot < 0) {
     return None
@@ -1885,7 +1897,7 @@ export function findLocal(checker: Checker, name: string): int {
   return -1
 }
 
-export function getLocal(checker: Checker, index: int): LocalInfo {
+export function getLocal(checker: Checker, index: int): LocalInfo from checker {
   return checker.bodies[checker.body].locals[index]
 }
 
@@ -1907,7 +1919,7 @@ export function setBinding(mutable checker: Checker, local: int, value: Expr, ki
     if (Str.startsWith(name, "__for_")) {
       const hidden = findLocal(checker, name)
       if (hidden >= 0) {
-        const source = checker.bodies[body].locals[hidden]
+        const source = copy(checker.bodies[body].locals[hidden])
         checker.bodies[body].locals[local].binding = BindingKind.Loop
         checker.bodies[body].locals[local].loopSource = source.loopSource
         // A destructured element has no loop form of its own; the hint
@@ -1993,11 +2005,11 @@ export function declareLocal(
     isMutable: isMutable,
     param: param,
     binding: BindingKind.Plain,
-    pos: pos,
+    pos: copy(pos),
     noEscape: false,
     used: false,
     number: checker.localCount,
-    namePos: namePos,
+    namePos: copy(namePos),
     shorthand: checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_),
   }
   Arrays.push(mutable checker.bodies[body].locals, local)
@@ -2069,7 +2081,7 @@ export function orderArguments(
   checker: Checker,
   nodeId: int,
   arguments: Array<Arg>,
-): Array<Arg> uses alloc {
+): Array<Arg> from arguments uses alloc {
   // A call without a recorded order passes the arguments as written.
   if (checker.argumentOrders[nodeId] is Some(order)) {
     let ordered: Array<Arg> = []
@@ -2151,7 +2163,7 @@ export function getExpressionPos(expression: Expr): Pos {
       | Expr.ArrayLit(_, pos, _, _)
       | Expr.MatchExpr(_, pos, _, _)
       | Expr.BlockExpr(_, pos, _)
-      | Expr.ArrowExpr(_, pos, _, _, _, _) => pos
+      | Expr.ArrowExpr(_, pos, _, _, _, _) => copy(pos)
   }
 }
 
@@ -2170,7 +2182,7 @@ export function findBody(checker: Checker, key: string): int {
   return -1
 }
 
-export function internComposite(mutable checker: Checker, type: Type): Type uses alloc {
+export function internComposite(mutable checker: Checker, type: Type): Type from type uses alloc {
   // Types that hold a type parameter are not recorded.
   const key = plainTypeKey(type)
   if (checker.composites[key] is None && !containsTypeParameter(checker, type)) {

@@ -15,8 +15,10 @@ function findSetting(lines: Array<string>, key: string): Option<string> {
   for (const line of lines) {
     const equals = Str.indexOf(line, "=")
     if (equals is Some(position)) {
-      if (Str.trim(Str.slice(line, 0, position)) == key) {
-        return Some(Str.trim(Str.sliceFrom(line, position + 1)))
+      if (Str.slice(line, 0, position) is Some(name)) {
+        if (Str.trim(name) == key) {
+          return Some(Str.trim(Str.sliceFrom(line, position + 1)))
+        }
       }
     }
   }
@@ -271,6 +273,6 @@ Annotating the arrow function's result, as in `(number): Option<int> => None`, f
 
 `Option` and `Result` are for failures that a caller can handle: a missing setting, a bad number, a file that does not exist. Other failures mean the program itself is wrong. Say the reader checks every port when it loads the settings, and a later function still finds a port below 1. That cannot happen unless the code has a bug, and there is nothing sensible to return. Stop the program with `panic("message")`, or state the condition with `assert(port >= 1)`. A panic prints the message and ends the program with exit code 101, and no code can catch it.
 
-Some operations panic on their own. An index past the end of an array panics, and so does a division by zero. Integer overflow does not panic; it wraps. Chapter 10 shows how a test checks that a function panics.
+Some operations panic on their own. An index past the end of an array panics. Integer overflow does not panic; it wraps. Integer division does not panic either: the compiler accepts `total / count` only when `count` is a non-zero constant or a name you checked with `if (count != 0)` first. Chapter 10 shows how a test checks that a function panics.
 
 Next: [7. Traits](07-traits.md).

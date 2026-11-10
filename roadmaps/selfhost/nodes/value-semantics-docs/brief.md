@@ -1,12 +1,12 @@
 ---
 id: value-semantics-docs
 title: "Document visible copies and shared writes"
-status: todo
+status: done
 priority: should
 type: docs
-story:
+story: batch-6
 early: false
-outline: true
+outline: false
 milestone: m12-spec-gaps
 target:
 ship: auto
@@ -19,9 +19,14 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
-owns: []
-shared: []
+spent: 114986
+owns:
+  - roadmaps/selfhost/nodes/value-semantics-docs/**
+shared:
+  - SPEC.md
+  - DECISIONS.md
+  - docs/guide/**
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:
@@ -34,8 +39,15 @@ depends_on:
 
 ## Goal
 
-Rewrite SPEC.md section 6 (values, copies, `copy`, `from`, the debug check), amend D1, D27 and D81 rule 5 text, and the guide chapter on values with the TypeScript comparison. Drop "Not built yet" from D94.
+D94 step 6. Describe the final rule where readers look for it:
 
-## Notes
+- SPEC.md section 6: the shared-write rule, with checked samples for an error and its `copy(...)` fix.
+- DECISIONS.md: D81 rule 5 and D27 updated to point to D94; D94's status line says everything is built.
+- The guide (`docs/guide/`): the memory chapter explains why a write to a shared value is an error and how `copy(...)` fixes it, with a sample the guide suite checks. Follow `docs/guide` rules: no D-numbers and no assumed TypeScript knowledge outside the TypeScript chapter, which gets a short comparison with JavaScript's shared references.
+- shared-write-error edited five guide samples (chapters 2, 4, 8, 9, 11) to compile under the error, but left the prose that says the compiler cannot warn about shared copies. Rewrite that prose.
+- State which index places count as the same (different literal indexes are separate; identifier indexes and map keys match every element), as the D94 amendment does.
 
-Outline, from D94 and `roadmaps/selfhost/debate/value-semantics/debate.md` (step 6 of 6). Refine with the debate's claims named here.
+## Acceptance
+
+- [ ] The samples added to SPEC.md and the guide pass the spec and guide suites.
+- [ ] `sh scripts/test.sh` passes.

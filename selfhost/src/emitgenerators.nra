@@ -28,6 +28,7 @@ import { cachedCType, generatorPart } from "narrac/cnames"
 import {
   Emitter,
   EmitWalker,
+  Code,
   TempVar,
   writeLine,
   consume,
@@ -137,7 +138,7 @@ export function emitGenerator<W: EmitWalker>(
   writeLine(mutable emitter, `  memset(f, 0, sizeof(${frame}));`)
   writeLine(mutable emitter, `  f->h = (narra_gen){1, 0, ${resume}, ${clone}, ${drop}};`)
   for (const index of Ranges.upTo(parameterCount)) {
-    const local = readLocal(emitter, index)
+    const local = copy(readLocal(emitter, index))
     const name = localName(local)
     // The frame copies a large parameter, since the caller's value may be gone
     // when the generator resumes.
@@ -239,9 +240,14 @@ export function emitYield<W: EmitWalker>(
   binding: Option<YieldBinding>,
 ) uses alloc {
   beginStatement(mutable emitter)
-  const valueType = readNodeType(emitter, getExpressionId(value))
+  const valueType = copy(readNodeType(emitter, getExpressionId(value)))
   const code = EmitWalker.emitExpression(walker, mutable emitter, value)
-  const consumed = consume(mutable emitter, code.text, code.owned, valueType)
+  let consumed = ""
+  if (delegate) {
+    consumed = takeOwnCopy(mutable emitter, code, valueType)
+  } else {
+    consumed = consume(mutable emitter, code.text, code.owned, valueType)
+  }
   if (!delegate) {
     // The caller of resume owns the value.
     const elementName = cachedCType(emitter.checker, emitter.typeNames, emitter.generatorElement)
@@ -273,6 +279,19 @@ export function emitYield<W: EmitWalker>(
   endStatement(mutable emitter)
 }
 
+function takeOwnCopy(mutable emitter: Emitter, code: Code, generatorType: Type): string uses alloc {
+  // for ... of and yield* resume their own copy of a generator they do not
+  // own (SPEC section 8). The retain grants credits, so the debug copy check
+  // counts that copy as explained, as for copy(...).
+  if (code.owned) {
+    return consume(mutable emitter, code.text, true, generatorType)
+  }
+  writeLine(mutable emitter, "NARRA_COPY_GRANT(true);")
+  const generator = consume(mutable emitter, code.text, false, generatorType)
+  writeLine(mutable emitter, "NARRA_COPY_GRANT(false);")
+  return generator
+}
+
 export function emitGeneratorFor<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -284,9 +303,9 @@ export function emitGeneratorFor<W: EmitWalker>(
 ) uses alloc {
   // The loop resumes its own copy of the generator until it finishes, and x
   // owns each value it gets. nodeId is the for statement's, which declares x.
-  const generatorType = readNodeType(emitter, getExpressionId(iterable))
+  const generatorType = copy(readNodeType(emitter, getExpressionId(iterable)))
   const code = EmitWalker.emitExpression(walker, mutable emitter, iterable)
-  const generator = consume(mutable emitter, code.text, code.owned, generatorType)
+  const generator = takeOwnCopy(mutable emitter, code, generatorType)
   const top = Arrays.length(emitter.frames) - 1
   Arrays.push(mutable emitter.frames[top], TempVar { name: generator, tempType: generatorType })
   writeLine(mutable emitter, "while (1) {")

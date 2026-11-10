@@ -244,6 +244,7 @@ Decision: a function changes a caller's variable only through a parameter declar
 - **Reason.** It gives generators and collections one explicit form: `Co.resume(mutable g, x)` and `Array.push(mutable xs, v)`.
 - **Rejected: guaranteeing in-place updates for `x = f(x)`.** The fast path would depend on a pattern that is not visible. `y = f(x)` looks almost the same and copies.
 - **Rejected keywords.** `inout` describes the mechanism instead of the meaning. `mut` is an abbreviation. `ref` suggests references that could be stored.
+- **Amended by D94.** Passing a `mutable` argument that another live name shares is a compile error (E0978), not a copy. Write `copy(x)` where the sharing starts.
 - **Cost.** Two ways to produce changed data: a `mutable` parameter or a returned value. The rule is `mutable` to change the caller's data, and a return value to build new data.
 
 ## D28. Scoped threads
@@ -746,7 +747,7 @@ Decision: `mutable` reaches the contents of a value, its fields and elements, an
 2. **Inside the callee.** Through a `mutable` parameter the callee may assign fields and elements at any depth, call the std functions that change contents (`Arrays.push`, `Maps.set`, `Str.append`, `Co.resume`) and pass the value or a part of it on as `mutable`. Assigning the parameter itself (`player = other`, `count += 1`) is a compile error.
 3. **Arguments.** The argument may be a local `const`, a local `let` or a `mutable` parameter that holds a contents type, or a field or element path of one. A literal, a call result, a plain parameter and a top-level constant are compile errors. Pattern, `for ... of` and destructured bindings are the open question below.
 4. **`const`.** A local `const` fixes the name. Its fields and elements can be assigned directly (`hero.hp = 1`, `items[0] = 2`, `b.value = v`), and it can be passed as `mutable`, so `mutable` adds no power that direct code lacks. A local `let` adds reassignment of the name. `@unique` may be written on either.
-5. **Copies stay copies.** `const copy = hero` is a copy (copy on write, as before); changing `hero` afterwards does not change `copy`. A plain parameter is still a read-only copy: its fields cannot be assigned and it cannot be passed as `mutable`.
+5. **Copies stay copies.** `const copy = hero` is a copy (copy on write, as before); changing `hero` afterwards does not change `copy`. A plain parameter is still a read-only copy: its fields cannot be assigned and it cannot be passed as `mutable`. Amended by D94: `const copy = hero` followed by a write to `hero` while `copy` is still used is a compile error (E0978), because the write would copy silently. The copy is written `copy(hero)`.
 
 **Proposed by the spike and decided by the maintainer on 2026-11-07:** rules 6 to 10.
 
@@ -942,7 +943,13 @@ Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, 
 - **Rejected: a NaN for integers.** It needs a reserved value, a check in every operation, and breaks `==` on `int`.
 - **Cost.** Wrapping hides overflow bugs that debug builds reported; checked functions (`Int.addChecked` and the like) return `Option` where it matters. Variable divisors and shift counts need an explicit check.
 
-Built: wrapping arithmetic and checked functions; the missing-return rule (E0969 for functions, E0970 for arrow functions), with the emitted runtime check now an internal compiler error. Not built yet: division and shift proofs, and the `Result`/`Option` std functions.
+Built: wrapping arithmetic and checked functions; the missing-return rule (E0969 for functions, E0970 for arrow functions), with the emitted runtime check now an internal compiler error. Division and shift proofs are built (E0979 for a divisor, E0980 for a shift count); the std functions return `Option` (table in SPEC.md section 5) and `Maps.update(mutable map, key, initial, change)` replaces compound assignment on a Map index, which is a compile error. Std panics that remain: `Str.sliceFrom`, `Str.charAt` and `Str.nextChar` on a bad position, and array indexing.
+
+Amendment (proven-operands, 2026-11-11):
+- **What counts as a check.** The narrowing of `let` and `is` (let-narrowing) carries over: a comparison of a local integer name with a constant (`!= 0`, `> 0`, `< 0`, `>= 0`, `< 64` and the other orders, either side), joined by `&&`, `||` and `!`. A check narrows the `then` branch, the `else` branch with the opposite, the body of a `while`, the right operand of `&&` and `||`, and the rest of the block after an `if` whose `then` branch ends. Constants are literals, negated literals and top-level `const` values built from them with `+`, `-`, `*` and `<<`, and a `const` local set from one.
+- **How a narrowing ends.** Like the variant narrowing: an assignment to the name, a call that passes it as `mutable`, and the start of a loop that does either. A name an arrow function captures by reference is not narrowed there.
+- **Field paths are not narrowed.** `size.count` cannot be proven, because any call could change the field. The message says to copy the field into a local and check the local.
+- **Cost.** Three sites in the compiler (`hash`, `alignUp`, the test runner's shard split) and one in std (`Random.nextInt`) needed an added check; the runtime has no division or shift panic.
 
 ## D93. `Async<T>` is an eager handle on one implicit event loop per thread
 
@@ -981,7 +988,7 @@ Decision (maintainer, 2026-11-09, from the debate `roadmaps/selfhost/debate/valu
 - **Rejected:** immutable arrays and structs with `ref` and a mutable array type (rebinding a shared value still copies silently, so it needs the same analysis on a larger rewrite); inference of shared results across functions; shallow copy tools; `Cells.modify`.
 - **Cost.** About 120 to 220 edits in the compiler and 30 to 50 `from` marks; errors depend on liveness, so a later use can turn an accepted write into an error. About 1.45M tokens over six nodes.
 
-`copy(x)` and the debug copy check: built. `copy` is a prelude function (E0975 for a wrong argument count, `copy(mutable x)` and an argument of a type that is never changed in place, with a fix that removes the call). A local may be named `copy` and hides it, as for `panic`. The check runs in debug builds with `NARRA_CHECK_COPIES` set and exits with code 103; release builds (`-DNARRA_RELEASE`) compile none of it. `@unique`, `--report-copies` and `NARRA_TRACE_COPIES` are gone from SPEC.md. The shared-write rule is not built yet.
+`copy(x)` and the debug copy check: built. `copy` is a prelude function (E0975 for a wrong argument count, `copy(mutable x)` and an argument of a type that is never changed in place, with a fix that removes the call). A local may be named `copy` and hides it, as for `panic`. The check runs in debug builds with `NARRA_CHECK_COPIES` set and exits with code 103; release builds (`-DNARRA_RELEASE`) compile none of it. `@unique`, `--report-copies` and `NARRA_TRACE_COPIES` are gone from SPEC.md. The shared-write rule is built (amendments below), so every part of this decision is built. SPEC.md section 6 describes the final rule (Copies on shared values, Shared writes, Shared results).
 
 Amendment (node from-marker, 2026-11-10). The `from` marker is built (SPEC.md section 6, Shared results), with two answers the debate left open, settled by the maintainer:
 
@@ -989,7 +996,26 @@ Amendment (node from-marker, 2026-11-10). The `from` marker is built (SPEC.md se
 - **Generic results.** `from items` covers the whole parameter and everything reached through it, at any depth, whatever the type arguments are. A result of type `T` taken out of `items: Array<T>` shares `items`. When `T` is a scalar type the marker is still allowed and changes nothing.
 - **How it is checked.** One walk per function body follows each returned value through fields, elements, patterns, loops, locals, `mutable` arguments and calls whose callee has `from`. A value whose type holds no tracked value shares nothing. E0976 reports a returned value that shares a parameter the marker does not name, and a `from` that names no parameter; E0977 reports a function with `from` stored in a slot without the same `from`, unless its result holds no tracked value. A std builtin's result counts as fresh, except that a `for ... of` over a std iterator shares what it walks.
 - **Order.** `from` comes after the result type and before `uses`: `(grid: Grid) => Array<int> from grid uses alloc`.
-- **Rollout.** The compiler's 185 sharing returns cannot carry `from` until the seed reads it, so `shared-results = "unchecked"` in `[package]` of `narra.toml` turns the check off; `selfhost/narra.toml` sets it until shared-write-sweep marks the compiler and removes it.
+- **Rollout.** The compiler's 185 sharing returns cannot carry `from` until the seed reads it, so `shared-results = "unchecked"` in `[package]` of `narra.toml` turned the check off for `selfhost/` while the compiler was marked. The switch was removed on 2026-11-11, once every compiler module carried its marks (node shared-write-sweep-rest); every package is checked.
+
+Amendment (node shared-write-check, 2026-11-11). The shared-write rule is built as warning E0978, which `narrac check` and `apply-fix` report when a package has no errors; build, run and test do not run it. The fix wraps the value that started the sharing in `copy(...)`. Settled for the node:
+
+- **Std builtins** need no `shared` column. Arrays and maps have no reading builtins (`items[i]` and `table[key]` are places), and `for ... of` over a std iterator shares the elements it walks. A std function's `mutable` argument (`Arrays.push`, `Str.append`) changes only the container, so names that share its elements are not hit; the pushed value becomes an element of the container.
+- **Liveness.** One forward walk per body keeps the pairs of places that share a value. Assigning a local or a place whole ends its pairs, so a reassigned local starts fresh. A write that hits a pair warns at the next use of the other side; branches are merged, and a loop body is walked again until its state stops growing. Parameters, captured values inside an arrow function, constants and cells are always live.
+- **Its own walk.** The analysis does not reuse the flow-insensitive walk of `sharedresults.nra`; it calls `findSharedArgument` for `from` results and `isCopyCall` for `copy(...)`.
+- **Loops.** A `for ... of` loop's iterator holds the place it walks while the body runs, so a write that copies that place warns too. Assigning one element keeps the sharing of the other elements, because indexes are not compared. Known limit: reassigning the same index still warns (`let row = grid[0]; grid[0] = [9]; row[0] = 5` while `grid[0]` is used later); shared-write-error decides whether it stays.
+- **Counts at the start of shared-write-sweep:** 198 in `selfhost/src` (34 of them writes inside a loop over the written place), 0 in `std/src`, 3 in `selfhost/tests/src`, 36 in `testdata` (the copy samples that keep a hidden copy on purpose).
+
+Amendment (node shared-write-sweep, 2026-11-11, decided by the orchestrator). `copy(x)` also takes an enum whose payload can hold a tracked value, at any depth: `Option<Array<int>>`, `Result<Team, string>`, a recursive enum with a struct payload. An enum value is never changed in place, but a part taken out of its payload can be, so a function whose result is such an enum may need to copy a second shared parameter, and only `copy` can do that. The copy retains the payload; a write to a part taken out of the copy copies only that part. The debug copy check gives a credit to each counted value inside a heap enum payload that the copy reaches, so those copies on write are explained. An enum whose payloads hold only scalars and strings is still E0975. The E0976 and E0978 fixes offer `copy(...)` for exactly the types `copy` takes.
+
+- **Rejected:** treating enum results as unshared in E0976 and E0978. It is unsound: `match (lookup(table)) { Some(row) => row[0] = 1 }` would copy a shared array without showing it.
+
+Amendment (node shared-write-error, 2026-11-11). E0978 is an error. Every command that checks a package runs it (`build`, `run`, `test`, `emit`, `check`, `apply-fix` and the language server), also when the package has other errors; a write that another error already points at is not reported twice. Warnings are gone from the compiler: nothing else used them. Settled for the node:
+
+- **Indexes.** Two different integer literal indexes are different places: `const first = rows[0]; rows[1][0] = 4` is clean (the reviewer's probe; no copy happens either). Every other index is conflated with every element: an identifier or any other expression (`rows[i]` and `rows[j]`, `rows[i]` and `rows[0]`) and a map key. The same literal index stays one place, and assigning it does not end its sharing, so `let row = grid[0]; grid[0] = [9]; row[0] = 5` still reports while `grid[0]` is used later. Ending it would need a whole-place rule for one element; for identifiers, proof the index did not change. No site in the compiler, std or the samples needs it, and the fix is one edit.
+- **Function values share their captures.** A function value made from an arrow function now pairs with the values it captured, so calling it counts as a use of them: `const read = () => items[0]; let other = items; other[0] = 5; read()` is an error. Before, the pair was dropped because a function type holds no tracked value, and the debug copy check found the hidden copy.
+- **The debug copy check runs on every program sample** (`NARRA_CHECK_COPIES` is set for every program the test runner starts). A `for ... of` or `yield*` over a generator it does not own resumes its own copy, as section 8 says; that copy is explained like a `copy(...)`. The credits that a copy of a heap enum gives the arrays, maps and boxes in its payload end with the copy: the copy marks the payload box it retained, once per copy, and each release takes back the credits of the copies that can no longer hold the box.
+- **Known gap:** a write after the other name's last use is accepted, but the other name still holds the value until its scope ends, so the write copies at run time. `const team = teams[0]; resetTeam(mutable team)` with `teams` unused afterwards copies `team`; the debug copy check reports it. The sample `mutable_for` now takes `copy(teams[0])`.
 
 ## D95. Designs for the parked syntax: async exit, contracts, fixed arrays, build conditions, inline, C interop, dynamic traits
 
@@ -1021,7 +1047,12 @@ export type Handler = typeof handle      // (request: Request) => Response uses 
 - Names only in the first version, not field paths or expressions. A `typeof` that refers to its own declaration is an error.
 - **Rejected: runtime `typeof x === "string"`.** Every type is known at compile time; enums and `match` cover values of several shapes.
 
-Not built yet.
+Built (type-of). Amendments from the build:
+
+- A parameter can be named by the parameters after it in the same signature.
+- A generic function, a function with effect variables and a function with a `mutable` parameter have no function type to write, so `typeof` of one is E0982, like a type or a module.
+- A constant without a written type has its type from its value, which is known only once the constant is checked. `typeof` of it works in bodies and across modules, but not in a declaration of the same module (a signature, field or alias), where it is E0982 and asks for the written type. Lifting this needs the declaration passes to check constants on demand.
+- E0981 and E0982 are the codes; a field path or an expression after `typeof` is the parser's ordinary unexpected-token error.
 
 ## D97. A package lists the module paths it exposes
 

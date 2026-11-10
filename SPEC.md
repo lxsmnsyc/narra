@@ -63,7 +63,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write `for (mutable p of players)` (section 2, Control flow), write through the array, `players[index].hp = 0`, or make a copy first with `copy(p)` (D81, D94). A `mutable` marker exists only in that loop (D85); `x is Some(mutable y)`, `const { mutable a } = s` and a local `mutable name = place` do not.
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - There are no globals. Assigning to an undeclared name is a compile error.
-- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, division by zero and shift checks are those of the binary operator. The wrapping operators `+%=`, `-%=` and `*%=` do not exist. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
+- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, divisor proofs and shift count proofs are those of the binary operator: `x /= d` needs a proven `d`. The wrapping operators `+%=`, `-%=` and `*%=` do not exist. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) is a compile error, since a missing key has no old value (reading `counts[key]` gives an `Option`); write `Maps.update(mutable counts, key, 0, (count) => count + 1)`, which starts from the initial value when the key is missing (D92).
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
 - **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
@@ -161,7 +161,7 @@ for (mutable player of players) {
 ```
 
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
-- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 panics. The loop stops before the value would pass the largest or smallest `int`.
+- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and `Ranges.stepped` returns `None` for a step of 0. The loop stops before the value would pass the largest or smallest `int`.
 
 <!-- context
 import * as Arrays from "std/array"
@@ -259,8 +259,8 @@ There are no macros, no operator overloading and no function overloading.
 
 | Operators | Operand types |
 | --- | --- |
-| `+` `-` `*` `/` `%` | Any integer type or any float type. `/` on integers truncates toward zero. `+` `-` `*` on integers wrap on overflow |
-| `&` `\|` `^` `<<` `>>` | Integer types. `^` is xor |
+| `+` `-` `*` `/` `%` | Any integer type or any float type. `/` on integers truncates toward zero and needs a proven divisor (below). `+` `-` `*` on integers wrap on overflow |
+| `&` `\|` `^` `<<` `>>` | Integer types. `^` is xor. A shift needs a proven count (below) |
 | `~` | Integer types, bitwise not |
 | `<` `<=` `>` `>=` | Numbers, `char` and `string` |
 | `==` `!=` | Types that implement `Equatable`, compared structurally (section 4) |
@@ -270,7 +270,7 @@ There are no macros, no operator overloading and no function overloading.
 - Compound assignment (`+=` and the others) and `x++` / `x--` are statements, not operators, and have no value (section 2, Bindings).
 - There is no length operator. Use `Arrays.length(items)`, `Str.length(s)` and `Maps.size(m)`.
 - There is no power operator. Use `Float.pow(x, y)` or `Int.pow(x, y)`.
-- `Int.floorDiv(a, b)` rounds toward negative infinity.
+- `Int.floorDiv(a, b)` rounds toward negative infinity. It and `Int.divmod(a, b)` (the tuple `#[quotient, remainder]`, truncating like `/` and `%`) return an `Option`, `None` for a zero divisor, so they need no proof. `Int.compare(a, b)` returns an `Ordering`.
 
 ### Differences from TypeScript
 
@@ -309,11 +309,12 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
 - **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
-  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (a negative exponent panics, overflow wraps like `*`; use `Int.mulChecked` to detect it); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` panics when `low > high`.
+  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (`powInt` returns `None` for a negative exponent, overflow wraps like `*`; use `Int.mulChecked` to detect it); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` returns `None` when `low > high`, and `Some(value)` otherwise.
   - `std/time` has `Instant` and `Duration` (both a count of nanoseconds). `now()` reads the monotonic clock, `elapsed(since)` reads it again, `between(earlier, later)` needs no clock, `unixMillis()` is the wall clock, `sleep(duration)` sleeps. `milliseconds`, `seconds` and `nanoseconds` build a `Duration`, `asMilliseconds` and `asNanoseconds` read it. Reading a clock and sleeping have the `io` effect (section 7).
-  - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns an `int` in `[low, high)` without modulo bias and panics when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
+  - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns `Some(n)` with `n` in `[low, high)` without modulo bias, and `None` when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
   - `std/hash` has `Hash.of(x)`, the `Hashable` hash of any value (it may change between builds), and `fnv1a(text)`, FNV-1a 64 over the UTF-8 bytes of a string as a `u64`, which never changes. `of` is a keyword, and is accepted as a function name and after `.`, like `from`.
 - **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
@@ -564,6 +565,42 @@ export type Token = Text.Token
 - **Diagnostics** show a struct, enum or distinct type reached through an alias as `Tok (Token)`.
 - **Nothing reaches the emitted C.**
 
+### typeof
+
+`typeof name` in a type position stands for the type of a value in scope: a `const`, `let`, a parameter, a top-level constant or a function (D96). Its use is to keep a type in step with a value, without writing the type twice.
+
+```ts
+export const table: Map<string, Array<int>> = Map {}
+
+function fill(mutable target: typeof table, key: string) {
+  target[key] = [1]
+}
+```
+
+For a function it is the full function type, with its effects and `from`:
+
+<!-- context
+struct Request {
+  path: string
+}
+struct Response {
+  status: int
+}
+-->
+```ts
+export function handle(request: Request): Response uses io {
+  return Response { status: 200 }
+}
+
+export type Handler = typeof handle // (request: Request) => Response uses io
+```
+
+- **Names only.** A field path or an expression after `typeof` is a parse error. A parameter can be named by the parameters after it in the same signature: `(request: Request, other: typeof request)`.
+- **A name that is not a value is E0982**: a type, a module, a generic function, a function with effect variables or a `mutable` parameter (none has a function type to write).
+- **A `typeof` that refers to its own declaration is E0981**, for example `const count: typeof count = 1` or `function f(handler: typeof f)`.
+- **A constant without a written type** has the type of its value, which is known once the constant has been checked: `typeof` of it works in function bodies, but not in a declaration of the same module (a signature, a field, an alias), where it is E0982 and asks for the written type. A constant of another module is always checked first.
+- **Nothing reaches the emitted C**: the type is replaced by the type it stands for.
+
 ### Distinct types
 
 `distinct type` declares a new type with the same representation as an existing one.
@@ -632,13 +669,13 @@ match (token) {
 const label = match (status) {
   Status.Active => "active"
   Status.Suspended(reason) => `suspended: ${reason}`
-  _ => "other"
 }
 ```
 
 - Each arm is `pattern => expression` or `pattern => { statements }`.
 - Patterns can bind fields, test literals, and add an `if (...)` guard.
-- **Alternatives (D98).** An arm may list patterns joined with `|`: `Token.Plus | Token.Minus => ...`. Alternatives nest inside a pattern: `Some(1 | 2)`. Every alternative binds the same names with the same types (E0967 for different names, E0968 for different types), so `Shape.Circle(r) | Shape.Sphere(r) => r` works. A guard covers the whole list: when it fails for one matching alternative, the next alternative that matches is tried with its own bindings, and the arm is taken if any alternative matches with the guard true (as in Rust). A binding keeps the full type of the value: there is no narrowing to the listed constructors and no union type (D73). Exhaustiveness counts each alternative, and an alternative that the arms and alternatives before it already match is an error (E0974) when it is built from constructors and bools; repeated integer or string literals are not reported. Alternatives are only for `match`; an `is` test and a `const`, `let` or `for ... of` destructuring take one pattern (E0974). `narrac fmt` writes a list on one line when it fits, otherwise one alternative per line, each after the first starting with `|`.
+- **Alternatives (D98).** An arm may list patterns joined with `|`: `Token.Plus | Token.Minus => ...`. Alternatives nest inside a pattern: `Some(1 | 2)`. Every alternative binds the same names with the same types (E0967 for different names, E0968 for different types), so `Shape.Circle(r) | Shape.Sphere(r) => r` works. A guard covers the whole list: when it fails for one matching alternative, the next alternative that matches is tried with its own bindings, and the arm is taken if any alternative matches with the guard true (as in Rust). A binding keeps the full type of the value: there is no narrowing to the listed constructors and no union type (D73). Exhaustiveness counts each alternative, and an alternative that the arms and alternatives before it already match is an error (E0974). Alternatives are only for `match`; an `is` test and a `const`, `let` or `for ... of` destructuring take one pattern (E0974). `narrac fmt` writes a list on one line when it fits, otherwise one alternative per line, each after the first starting with `|`.
+- **Unreachable arms (E0983).** An arm that the unguarded arms before it already match completely is an error: an arm after `_`, a repeated constructor, a repeated literal, or a `_` after arms that cover every constructor. A guarded arm before the same pattern does not cover it. A guarded arm that is already covered is also an error. `narrac apply-fix` removes the arm.
 - **`match` as a value.** In value position (after `=`, as an argument, an operand or a `return` value), `match` produces a value. An arm written `pattern => expression` gives the expression. An arm written `pattern => { ... }` is a block expression (see "Block expressions" in section 2): its value comes from `return v`, a `return` inside it ends the arm and not the function, `break` and `continue` cannot leave it, and every path must end in `return`. All arms have the same type. A `match` in statement position keeps block-statement arms, where `return` leaves the function.
 - `match` on an `Option<T>` uses `Some(v) =>` and `None =>`.
 
@@ -774,25 +811,27 @@ const text = Label.label(price)
 - Integer division or remainder by zero panics in every build. `MIN / -1` gives `MIN` and `MIN % -1` gives 0.
 - **Sized integers (D82).** `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64` are separate types of that width; `i64` is the same type as `int`. All of them implement `Equatable`, `Hashable`, `Ordered` and `Show`, and work as map keys, fields, tuple elements, enum fields and generic arguments. `Array<u8>` stores one byte per element.
 - **Literals take the type the context expects** (an annotation, a parameter, a field, an element, a return type, the other operand, a literal pattern), and `int` when nothing is expected. A literal must fit its type: `const x: u8 = 256` and `const y: u8 = -1` are E0294. `-128` is a valid `i8`.
-- **There is no implicit conversion.** Arithmetic, comparison and bitwise operators need operands of the same type; `u8 + i32` is E0295, and the message names the conversion functions. Unary `-` on an unsigned type is E0296. Shift counts have the type of the value shifted, and a count at or above the width panics.
+- **There is no implicit conversion.** Arithmetic, comparison and bitwise operators need operands of the same type; `u8 + i32` is E0295, and the message names the conversion functions. Unary `-` on an unsigned type is E0296. Shift counts have the type of the value shifted.
+- **Divisors and shift counts are proven (D92).** Integer `/`, `%`, `/=` and `%=` compile only when the divisor is a non-zero constant (a literal, a negated literal, or a top-level `const` whose value is one) or a local integer narrowed by a check in the same function: `!= 0`, `> 0`, `< 0`, `>= 1`, `== 3` and the like, joined by `&&`, or by `||` on the failing side, and negated by `!`. Anything else is E0979, and the message says what to add. A shift count (`<<`, `>>`, `<<=`, `>>=`) must be a constant from 0 to the bit width minus 1 (63 for `int`), or a local checked at both ends (`n >= 0 && n < 64`); an unsigned count needs only the upper bound. Anything else is E0980. Float division is unchanged. The emitted C and the runtime have no division or shift panic: `MIN / -1` is `MIN`, `MIN % -1` is 0.
+- **What a check proves.** A check narrows in the `then` branch of an `if` (the `else` branch gets the opposite), in the body of a `while`, in the right operand of `&&` (`||` gets the opposite), and after an `if` whose `then` branch ends in `return`, `break`, `continue` or a panic. A narrowing ends at an assignment to the name (`n = ...`, `n += 1`, `n++`), at a call that passes the name as `mutable`, and at the start of a loop that does either; a new check narrows again. A name that an arrow function captures by reference is not narrowed inside the arrow function. Only a plain local name narrows: a field or an element (`size.count`, `counts[i]`) and any other expression (`n + 1`, `Arrays.length(items)`) do not, so copy the value into a local first and check the local. A constant is a literal, a negated literal, a top-level `const` whose value is one, or a `const` local that was set from one (`const items = 7`).
 - **Overflow wraps at the type's own width:** `u8` `200 + 100` is 44 and `i8` `-128 - 1` is 127, in every build.
 - Conversions are explicit functions named after the target type, in one module per type (`I32.from(x)`, `I32.tryFrom(x)`, `I32.wrap(x)`; modules `std/i8` to `std/u64`; `std/int` serves `i64`), and `Float.fromInt(x)`, `Float.truncate(f)`. `from` is for conversions where every value fits, `tryFrom` returns an `Option`, `wrap` keeps the low bits. Each of the seven modules also has `toString(x)` and `parse(text, base)`, and `std/int` has `from`, `tryFrom` and `wrap`. `X.from(v)` takes any integer type whose every value fits `X`; another integer type is E0940 and a value that is not an integer is E0941. `tryFrom` and `wrap` take any integer type. `parse` is `Int.parse` with the range of the type in its error text. A literal argument is an `int`, so `I32.from(5)` is E0940; write `const x: i32 = 5`.
-- **`f32`** is a 32-bit float (C `float`) beside `f64`. A float literal takes `f32` when the context expects it and `f64` otherwise; an integer literal never becomes a float. A literal too large to be finite in `f32` is E0297. `f32` and `f64` do not mix in arithmetic or comparison (E0295). `f32` implements `Equatable`, `Ordered` and `Show` (the shortest text that reads back as the same `f32`) but not `Hashable`, so it is not a map key. `F32.from(v)` takes an `f64` (rounds to nearest) or any integer type, `F32.truncate(v)` gives an `int`, `F32.toString(v)` a string (module `std/f32`), and `Float.from(v)` takes an `f32` (exact) or any integer type. Another argument type is E0941.
+- **`f32`** is a 32-bit float (C `float`) beside `f64`. A float literal takes `f32` when the context expects it and `f64` otherwise; an integer literal never becomes a float. A literal too large to be finite in `f32` is E0297. `f32` and `f64` do not mix in arithmetic or comparison (E0295). `f32` implements `Equatable`, `Ordered` and `Show` (the shortest text that reads back as the same `f32`) but not `Hashable`, so it is not a map key. `F32.from(v)` takes an `f64` (rounds to nearest) or any integer type, `F32.truncate(v)` gives an `Option<int>` (`None` for NaN or a value outside `int`), `F32.toString(v)` a string (module `std/f32`), and `Float.from(v)` takes an `f32` (exact) or any integer type. Another argument type is E0941.
 
 ### Strings
 
 - `string` holds valid UTF-8. Functions that build a string from bytes return `Result` and fail on invalid UTF-8.
 - **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is declared as `export opaque distinct type ByteIndex = u64`, so only `std/string` can create one.
 - **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
-- **Slices share memory.** `Str.slice` and `Arrays.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `Str.copy` or `Arrays.copy` to keep a small part of a large buffer without keeping the rest.
-- **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
+- **Slices share memory.** `Str.slice` and `Arrays.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `copy(...)` (section 6, Copies on shared values) to keep a small part of a large buffer without keeping the rest.
+- **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It returns `None` when a position is not on a character boundary, is out of range, or `from` is after `to`, and `Some(text)` otherwise.
 - `Str.length(s)` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
 
 ### Bytes
 
 - `bytes` is an immutable byte sequence with no UTF-8 guarantee. It has the representation of `string`, so `Bytes.fromString(text)` shares the buffer, and `Bytes.toString(data)` shares it too when the bytes are valid UTF-8. Otherwise it returns `Err("invalid UTF-8 at byte N")`, with the offset of the first bad byte.
-- `std/bytes` (alias `Bytes`): `fromString(text): bytes`, `toString(data): Result<string, string>`, `length(data): int`, `at(data, index: int): u8`, `slice(data, start: int, end: int): bytes`, `concat(left, right): bytes`, `fromArray(items: Array<u8>): bytes` and `toArray(data): Array<u8>`. `at` and `slice` panic out of range. `slice` copies the bytes.
+- `std/bytes` (alias `Bytes`): `fromString(text): bytes`, `toString(data): Result<string, string>`, `length(data): int`, `at(data, index: int): Option<u8>`, `slice(data, start: int, end: int): Option<bytes>`, `concat(left, right): bytes`, `fromArray(items: Array<u8>): bytes` and `toArray(data): Array<u8>`. `at` and `slice` return `None` out of range. `slice` copies the bytes.
 - `std/fs` has `readBytes(path): Result<bytes, string>` and `writeBytes(path, data: bytes): Result<int, string>`, which work as `readText` and `writeText` without the UTF-8 check.
 - `bytes` implements `Equatable`, `Hashable`, `Ordered` (bytewise, a prefix first, and `<` works as on strings) and `Show`, which writes hex pairs: `bytes[68 69 0a]`. It works as a map key. It is not a contents type, so a `mutable` parameter cannot have it.
 
@@ -811,8 +850,12 @@ export function parsePair(line: string): Option<Pair> uses alloc {
     return None
   }
   const i = found.value
+  const key = Str.slice(line, 0, i)
+  if (key is None) {
+    return None
+  }
   return Some(Pair {
-    key: Str.trim(Str.slice(line, 0, i)),
+    key: Str.trim(key.value),
     value: Str.trim(Str.sliceFrom(line, Str.nextChar(line, i))),
   })
 }
@@ -826,6 +869,24 @@ export function parsePair(line: string): Option<Pair> uses alloc {
 - **`std/result` helpers.** `import * as Results from "std/result"` adds `Results.map(r, f)`, `Results.mapErr(r, f)`, `Results.andThen(r, f)` (`f` returns a `Result` with the same error type), `Results.withDefault(r, fallback)`, and `Results.ok(r)` and `Results.err(r)`, which return the `Ok` or `Err` value as an `Option`. They work on a value you already hold. They never return from the caller, so they do not replace the visible `if` or `match` on the error path; they transform a result or give it a fallback.
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, and out-of-bounds indexing all panic. A panic cannot be caught.
+- **Std functions that cannot handle their input return `Option` (D92).** None of them panics. Each has one way to fail, so `None` says all there is to say.
+
+| Function | Result | `None` when |
+|---|---|---|
+| `Str.slice(text, from, to)` | `Option<string>` | a position is out of range or inside a character, or `from` is after `to` |
+| `Str.split(text, separator)` | `Option<Array<string>>` | the separator is empty |
+| `Str.repeat(text, count)` | `Option<string>` | `count` is negative |
+| `Bytes.at(data, index)` | `Option<u8>` | `index` is out of range |
+| `Bytes.slice(data, start, end)` | `Option<bytes>` | the range is out of bounds |
+| `Float.truncate(value)`, `F32.truncate(value)` | `Option<int>` | `value` is NaN or outside `int` |
+| `Arrays.filled(value, count)` | `Option<Array<T>>` | `count` is negative |
+| `Ranges.stepped(start, end, step)` | `Option<Range>` | `step` is 0 |
+| `Math.clamp(value, low, high)` | `Option<T>` | `low` is greater than `high` |
+| `Math.powInt(base, exponent)` | `Option<int>` | `exponent` is negative |
+| `Random.nextInt(mutable random, low, high)` | `Option<int>` | `low` is not below `high` |
+
+- **Std panics that remain.** `Str.sliceFrom`, `Str.charAt` and `Str.nextChar` still panic on a position that is out of range or inside a character, and array indexing keeps its panic. They are not yet converted.
+- **`Maps.update(mutable map, key, initial, change)`.** Sets `map[key]` to `change(old)`, where `old` is the current value, or `initial` when the key is missing. `change` is a function from the value type to the value type.
 
 <!-- context
 import * as File from "std/fs"
@@ -877,7 +938,10 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 -->
 ```ts
-let squares: Array<int> = Arrays.filled(0, 1000)
+let squares: Array<int> = []
+if (Arrays.filled(0, 1000) is Some(zeros)) {
+  squares = zeros
+}
 for (const i of Ranges.upTo(1000)) {
   squares[i] = i * i          // the count is 1, so the write is in place
 }
@@ -890,9 +954,9 @@ for (const i of Ranges.upTo(1000)) {
 When an update targets a value whose reference count is greater than 1, the value is copied first. The copy is correct, but it costs time proportional to the value's size, and the source does not show it. `copy(x)` makes the copy visible (D94):
 
 - **`copy(x)`** duplicates a value at any depth. At the call it is one reference count increment, so it costs nothing until a write. A later write to `x` or to the copy then copies only the objects on the written path, once each: after `const other = copy(team)`, `other.scores[1][0] = 30` copies the outer array of `other.scores` and one row, not the other rows.
-- `copy` takes one argument of a type that a write changes in place: a struct (all-scalar ones too), `Array<T>`, `Map<K, V>`, `FixedArray<T, N>`, `Box<T>`, `StringBuilder`, `Generator<T>` or `Coroutine<In, Out>`, a tuple holding one of them, a distinct type over one, or a type parameter. Any other argument (numbers, `bool`, `char`, `string`, `bytes`, enums with `Option` and `Result`, function values) is a compile error whose fix removes the call, and so are a second argument and `copy(mutable x)` (E0975).
+- `copy` takes one argument of a type that a write changes in place: a struct (all-scalar ones too), `Array<T>`, `Map<K, V>`, `FixedArray<T, N>`, `Box<T>`, `StringBuilder`, `Generator<T>` or `Coroutine<In, Out>`, a tuple holding one of them, a distinct type over one, or a type parameter. It also takes an enum whose payload can hold one of them, at any depth (`Option<Array<int>>`, `Result<Team, string>`, a recursive enum with a struct payload). An enum value itself is never changed in place, but a part taken out of its payload can be: the copy retains the payload, and a later write to a part taken out of the copy copies only that part. Any other argument (numbers, `bool`, `char`, `string`, `bytes`, enums whose payloads hold only such values, function values) is a compile error whose fix removes the call, and so are a second argument and `copy(mutable x)` (E0975).
 - `copy` is a prelude function, not a keyword. A local or parameter may be named `copy`, as one may be named `panic`; inside its scope a call `copy(x)` then calls the local. A top-level function named `copy` is never called: the prelude's `copy` is found first.
-- **The debug copy check.** A debug build run with `NARRA_CHECK_COPIES` set counts every copy on write of an array, map, `Box`, `StringBuilder` or generator, and at exit reports the ones that no `copy(...)` explains, with exit code 103, like the leak check (D80): `copy check: copies on write that no copy(...) explains: array 2`. Each `copy(x)` gives the objects it shares one credit, a copy on write uses one credit of the object it copies and gives one to each object the two copies now share, and a credit ends when the object's count falls back to 1. So at most one hidden copy per `copy(...)` call goes unreported. All-scalar structs live inline and never copy on write; the compile-time shared-write rule covers them. Release builds have no credits and no hooks.
+- **The debug copy check.** A debug build run with `NARRA_CHECK_COPIES` set counts every copy on write of an array, map, `Box`, `StringBuilder` or generator, and at exit reports the ones that no `copy(...)` explains, with exit code 103, like the leak check (D80): `copy check: copies on write that no copy(...) explains: array 2`. Each `copy(x)` gives the objects it shares one credit, a copy on write uses one credit of the object it copies and gives one to each object the two copies now share, and a credit ends when the object's count falls back to 1. So at most one hidden copy per `copy(...)` call goes unreported. The copy that `for ... of` and `yield*` make of a generator they do not own (section 8) counts as explained. The credits a copy of a heap enum gives the parts of its payload end when the payload's count falls back to 1. All-scalar structs live inline and never copy on write; the compile-time shared-write rule covers them. Release builds have no credits and no hooks.
 
 <!-- context
 import * as Arrays from "std/array"
@@ -902,6 +966,98 @@ const scores = [[1, 2], [3, 4]]
 let other = copy(scores)
 other[1][0] = 30            // copies the outer array and one row; scores is unchanged
 Arrays.push(mutable other, [5, 6])
+```
+
+A copy of an enum with a tracked payload:
+
+<!-- context
+struct Row {
+  cells: Array<int>
+}
+enum Slot {
+  Empty
+  Filled(row: Row)
+}
+---
+-->
+```ts
+const found: Option<Array<int>> = Some([1, 2])
+const kept = copy(found)
+if (kept is Some(items)) {
+  let list = items
+  list[0] = 9                 // copies this array only; found still holds [1, 2]
+}
+
+const slot = Slot.Filled(Row { cells: [3, 4] })
+const other = copy(slot)
+if (other is Slot.Filled(row)) {
+  let edited = row
+  edited.cells[0] = 5         // copies the cells of this row only
+}
+```
+
+An enum whose payloads hold only scalars and strings has nothing to copy:
+
+<!-- error: E0975 -->
+```ts
+const count: Option<int> = Some(3)
+const same = copy(count)      // E0975: remove the call
+```
+
+### Shared writes
+
+A write to a place is a compile error while another name that is still used shares that place, a place that contains it or a place inside it (E0978, D94). Without the rule the write would copy the value, and the source would not show it. Sharing starts where a value is read into a second name and ends when that name is no longer used:
+
+<!-- context
+struct Bag {
+  items: Array<int>
+  count: int
+}
+---
+-->
+<!-- error: E0978 -->
+```ts
+let bag = Bag { items: [1, 2], count: 0 }
+const items = bag.items
+bag.items[0] = 9              // E0978: items still shares bag.items
+const seen = items[0]
+```
+
+`copy(...)` around the value that started the sharing is the fix (`const items = copy(bag.items)`), and `narrac apply-fix` writes it. The write then copies nothing at the write:
+
+<!-- context
+struct Bag {
+  items: Array<int>
+  count: int
+}
+---
+-->
+```ts
+let bag = Bag { items: [1, 2], count: 0 }
+const items = copy(bag.items)
+bag.items[0] = 9
+const seen = items[0] + bag.items[0]    // 1 + 9
+```
+
+- **What writes.** An assignment to a field or element, `Arrays.push(mutable items, v)` and any other `mutable` argument. Passing `mutable R` writes `R` and everything below it. A non-escaping closure that writes a captured `const` writes it where the closure is passed. All-scalar structs are checked too, though they live inline and a write never copies them.
+- **What shares.** A `const` or `let` initialized from a place, an assignment, a pattern, destructured or `for (const ...)` binding, a struct, array, tuple or map holding the place, the result of a call whose callee has `from` for that argument (above), and a function value made from an arrow function, which shares what it captured: calling it uses those values. A parameter, a top-level constant, a `Cell` and a value read from an identity type count as used for the whole body, so a write to the value they share is an error at once. `copy(x)` shares nothing. Sharing runs in both directions and through chains: after `const b = a; const c = b`, a write to any of the three is checked against the other two.
+- **When it ends.** Assigning a local or a field path (`bag = other`, `bag.items = []`) ends its sharing; assigning an indexed place (`rows[0] = x`) does not. Liveness is checked inside one function body: the error names the later use. A write after the other name's last use is accepted. While a `for ... of` loop other than `for (mutable ...)` runs, its iterator holds the place it walks, so a write to that place in the body is an error; loop over `copy(items)` or write after the loop.
+- **Which index places are the same.** Two different integer literal indexes name different places: `const first = rows[0]; rows[1][0] = 4` is accepted. Every other index may name any element, so an identifier or other expression (`rows[i]` and `rows[j]`, `rows[i]` and `rows[0]`) and a map key match every element and the other indexes. The same literal index is one place, and assigning it does not end its sharing (a known false positive: `let row = grid[0]; grid[0] = [9]; row[0] = 5` is reported while `grid[0]` is used later).
+- **Known gap.** A write after the other name's last use is accepted, but that name holds the value until its scope ends, so the write still copies at run time. The debug copy check (above) reports it.
+- **Known gap: shared elements.** Elements that share one value are not tracked. `Arrays.filled([0, 0], 3)` and `[row, row]` make an array whose elements share one inner array, so a write to `grid[0][0]` through a name that holds it is accepted and copies at run time. The debug copy check reports it.
+- **Where it runs.** Every command that checks a package (`build`, `run`, `test`, `emit`, `check`, `apply-fix` and the language server), also when the package has other errors. A write that another error already points at is reported once.
+
+<!-- context
+struct Row {
+  cells: Array<int>
+}
+---
+-->
+```ts
+let rows = [Row { cells: [1] }, Row { cells: [2] }]
+const first = rows[0]
+rows[1].cells[0] = 4          // accepted: rows[0] and rows[1] are different places
+const seen = first.cells[0] + rows[1].cells[0]
 ```
 
 ### Shared results
@@ -931,7 +1087,6 @@ function lastItem<T>(items: Array<T>): T from items {
 - **Function types.** `from` is part of a function type, like `uses` (section 7), and names one of the type's parameter names: `(grid: Grid) => Array<int> from grid uses alloc`. `from` comes before `uses`. A function with a fresh result fits a slot whose type has `from`; a function with `from` does not fit a slot without the same `from` (E0977), unless the result holds no tracked value. The fix adds the marker to the slot's type, naming the parameter `source` when the type writes no name for it. A type printed by the compiler names the shared parameter `source`: `(source: Grid) => Array<int> from source`.
 - **Trait functions.** An implementation may leave out the `from` its trait function has, but may not add one the trait function lacks.
 - **Generators** are not checked: a generator's result is the generator.
-- A package whose `narra.toml` has `shared-results = "unchecked"` in `[package]` is not checked. The compiler's own package sets it until its functions carry their markers.
 
 <!-- context
 import * as Arrays from "std/array"
@@ -1429,6 +1584,9 @@ extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 import * as Int from "std/int"
 import * as Str from "std/string"
 function divide(a: int, b: int): int {
+  if (b == 0) {
+    panic("division by zero")
+  }
   return a / b
 }
 -->

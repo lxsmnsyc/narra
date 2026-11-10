@@ -1,0 +1,15 @@
+# Log: shared-write-check
+
+- 2026-11-11: started on feat/shared-write-check from feat/batch-6 (7d9b7a66). No shared-write analysis in selfhost/src; no warning severity anywhere in the compiler yet.
+- Warnings are new: `Checker.warnings`, `reportWarningFix` (check.nra). `narrac check` prints them (`file:line:col: warning: ...`, JSON `"severity":"warning"`) only when there are no errors, and exits 0 when it found only warnings. `apply-fix` takes them when there are no errors. build/run/test stay silent.
+- sharedwrites.nra: forward walk with pairs of places and pending writes; branches merged; loops re-walked until stable (max 3 rounds); arrow bodies on their own state.
+- First run on selfhost: 374 warnings. Fixes: shares filtered by the type of each part (strings, ints out); std `mutable` arguments (Arrays.push) write the container only; deep writes reach inside a place only when the shared value is tracked (enum fields out). Now 183.
+- Samples: testdata/errors/shared_write_* (12, `// warning:` first line, exit 0) and testdata/diagnostics/shared_write_fix.nra. errors/habits test runner accept warning-only samples.
+- Cost: running the walk inside every body check made `narrac emit selfhost` 18% more instructions (1.78 G to 2.11 G). Moved it to a pass after checking (`reportSharedWrites`), run only by `check` and `apply-fix`: emit back to 1.75 G (base 1.78 G); `check selfhost` 1.26 G to 1.59 G.
+- My own module had 10 warnings (state saved for branches and loops); now written with copy(...). Final counts: selfhost/src 173, std/src 0 (measured with a build that also walks std modules), selfhost/tests/src 3, testdata 32 (plus the fix sample). Save/restore sites with a `mutable` call between save and reset: 4.
+- DECISIONS.md D94 amendment and compiler/README.md line added.
+- Final full check: sh scripts/test.sh PASS in 96 s, 6082 cases, 0 failed.
+- Review fixes: direct array and map loops give element shares (`for (mutable item of items)` now writes `items[]`); an element assignment keeps the sharing of `[]` places; loop rounds run until stable, bounded by locals + 1; a `for ... of` iterator holds its place while the body runs (new message "which the loop over X still holds"); the advice says when no fix is offered. Samples for_const, for_mutable, loop_held.
+- New counts: selfhost/src 196 (32 loop-held), std/src 0, selfhost/tests/src 3, testdata 36. Full check PASS (6097 cases, 144 s); bootstrap fixed point holds.
+- Second review: one stable site per write (keyed by position and text), so loops settle; check selfhost back to 1.61 G instructions (was 34.7 G). A loop over copy(...) holds nothing. Guard sample shared_write_nested_loops (21 M instructions). Counts unchanged: 196, 0, 3, 36. Full check PASS (239 s, shared machine); bootstrap fixed point holds.
+- Rebased on feat/batch-6 cb2e90ee (code-row conflict in diagnostics.nra: kept all, in code order). Counts: selfhost/src 198 (34 loop-held), std/src 0, selfhost/tests/src 3, testdata 36. check selfhost 1.67 G instructions. Full check on the rebased branch PASS (6231 cases, 276 s, includes the bootstrap job).

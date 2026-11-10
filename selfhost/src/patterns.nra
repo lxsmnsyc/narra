@@ -16,6 +16,7 @@
 // Narrowing is not a field of the local. It is a key in the block scope
 // stack of the body, `narrow|<local index>`, whose value is the variant
 // index: it is saved and restored with pushScope and popScope like a name.
+import { filledArray } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, Expr, Pattern, FieldPattern } from "narrac/ast"
@@ -44,7 +45,7 @@ export function getPatternPos(pattern: Pattern): Pos {
       | Pattern.PatStruct(_, pos, _)
       | Pattern.PatTuple(_, pos, _)
       | Pattern.PatLit(_, pos, _)
-      | Pattern.PatOr(_, pos, _) => pos
+      | Pattern.PatOr(_, pos, _) => copy(pos)
   }
 }
 
@@ -118,7 +119,15 @@ export function endNarrowing(mutable checker: Checker, local: int) uses alloc {
   if (local < 0 || !getLocal(checker, local).isMutable) {
     return
   }
-  const key = narrowKey(local)
+  endKey(mutable checker, narrowKey(local))
+  endKey(mutable checker, factKey(local))
+}
+
+export function factKey(local: int): string uses alloc {
+  return `fact|${Int.toString(local)}`
+}
+
+function endKey(mutable checker: Checker, key: string) uses alloc {
   if (checker.localNames[key] is Some(current)) {
     if (current == -1) {
       return
@@ -262,7 +271,7 @@ function listConstructorTypes(
   checker: Checker,
   type: Type,
   constructorIndex: int,
-): Array<Type> uses alloc {
+): Array<Type> from checker uses alloc {
   let types: Array<Type> = []
   if (type is Type.TEnum(index)) {
     for (const field of Arrays.values(checker.enums[index].variants[constructorIndex].fields)) {
@@ -282,7 +291,7 @@ function specialize(
   type: Type,
   constructorIndex: int,
   count: int,
-): Option<Array<Pattern>> uses alloc {
+): Option<Array<Pattern>> from pattern uses alloc {
   if (isWild(checker, pattern)) {
     return Some(createWildcards(count))
   }
@@ -346,7 +355,9 @@ function hasAlternativeHead(rows: Array<Array<Pattern>>): bool {
   return false
 }
 
-function expandAlternativeHeads(rows: Array<Array<Pattern>>): Array<Array<Pattern>> uses alloc {
+function expandAlternativeHeads(
+  rows: Array<Array<Pattern>>,
+): Array<Array<Pattern>> from rows uses alloc {
   let expanded: Array<Array<Pattern>> = []
   for (const row of Arrays.values(rows)) {
     if (row[0] is Pattern.PatOr(_, _, alternatives)) {
@@ -361,7 +372,7 @@ function expandAlternativeHeads(rows: Array<Array<Pattern>>): Array<Array<Patter
   return expanded
 }
 
-function sliceItems<T>(items: Array<T>, start: int, end: int): Array<T> uses alloc {
+function sliceItems<T>(items: Array<T>, start: int, end: int): Array<T> from items uses alloc {
   let out: Array<T> = []
   for (const index of Ranges.between(start, end)) {
     Arrays.push(mutable out, items[index])
@@ -369,7 +380,7 @@ function sliceItems<T>(items: Array<T>, start: int, end: int): Array<T> uses all
   return out
 }
 
-function joinItems<T>(first: Array<T>, second: Array<T>): Array<T> uses alloc {
+function joinItems<T>(first: Array<T>, second: Array<T>): Array<T> from first uses alloc {
   let out: Array<T> = []
   for (const item of Arrays.values(first)) {
     Arrays.push(mutable out, item)
@@ -377,7 +388,7 @@ function joinItems<T>(first: Array<T>, second: Array<T>): Array<T> uses alloc {
   for (const item of Arrays.values(second)) {
     Arrays.push(mutable out, item)
   }
-  return out
+  return copy(out)
 }
 
 // How many more missing cases findMissingCases may report, shared down its
@@ -397,7 +408,7 @@ export function findMissingCases(
   }
   if (Arrays.length(rows) == 0) {
     budget.remaining--
-    return [Arrays.filled("_", Arrays.length(types))]
+    return [filledArray("_", Arrays.length(types))]
   }
   if (Arrays.length(types) == 0) {
     return []
@@ -506,7 +517,7 @@ function coversEveryConstructor(
   rows: Array<Array<Pattern>>,
   count: int,
 ): bool uses alloc {
-  let seen: Array<bool> = Arrays.filled(false, count)
+  let seen: Array<bool> = filledArray(false, count)
   for (const row of Arrays.values(rows)) {
     const index = findPatternConstructor(checker, row[0])
     if (index >= 0) {
@@ -519,6 +530,36 @@ function coversEveryConstructor(
     }
   }
   return true
+}
+
+function isLiteral(pattern: Pattern): bool {
+  return pattern is Pattern.PatLit(_, _, _)
+}
+
+function getPatternLiteral(pattern: Pattern): Expr from pattern {
+  if (pattern is Pattern.PatLit(_, _, literal)) {
+    return literal
+  }
+  return Expr.BoolLit(0, Pos { line: 0, column: 0 }, false)
+}
+
+function describeLiteral(literal: Expr): string uses alloc {
+  if (literal is Expr.IntLit(_, _, text)) {
+    return `i${text}`
+  }
+  if (literal is Expr.FloatLit(_, _, text)) {
+    return `f${text}`
+  }
+  if (literal is Expr.StringLit(_, _, value, _)) {
+    return `s${value}`
+  }
+  if (literal is Expr.CharLit(_, _, value)) {
+    return `c${value}`
+  }
+  if (literal is Expr.UnaryExpr(_, _, _, operand)) {
+    return `-${describeLiteral(operand)}`
+  }
+  return ""
 }
 
 export function isUseful(
@@ -544,6 +585,21 @@ export function isUseful(
   const count = countConstructors(checker, type)
   const restVector = sliceItems(vector, 1, Arrays.length(vector))
   const restTypes = sliceItems(types, 1, Arrays.length(types))
+  if (count < 0 && isLiteral(vector[0])) {
+    // A literal of an infinite type is covered by a wildcard or by the same literal.
+    const key = describeLiteral(getPatternLiteral(vector[0]))
+    let matching: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(expandedRows)) {
+      if (isWild(checker, row[0])) {
+        Arrays.push(mutable matching, sliceItems(row, 1, Arrays.length(row)))
+      } else if (isLiteral(row[0])) {
+        if (key != "" && describeLiteral(getPatternLiteral(row[0])) == key) {
+          Arrays.push(mutable matching, sliceItems(row, 1, Arrays.length(row)))
+        }
+      }
+    }
+    return isUseful(checker, matching, restVector, restTypes)
+  }
   const selected = findPatternConstructor(checker, vector[0])
   const wildVector = selected < 0 && isWild(checker, vector[0])
   if (

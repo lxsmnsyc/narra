@@ -64,7 +64,7 @@ export function checkArrow<W: Walker>(
   walker: W,
   expression: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // The body is checked as a function of its own whose scope sees the enclosing locals; the ones it uses become captures (useLocal in funcvalues.nra).
   if (expression is Expr.ArrowExpr(nodeId, pos, parameters, resultExpr, bodyExpr, block)) {
     return checkArrowParts(
@@ -92,13 +92,13 @@ function checkArrowParts<W: Walker>(
   bodyExpr: Option<Expr>,
   block: Option<Block>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // The expected parameter and result types: the expected function type
   // wins over the hint of a generic call.
   const closure = findClosure(mutable checker, nodeId)
   const bodyIndex = checker.body
   let hasHint = checker.bodies[bodyIndex].closures[closure].hasHint
-  let hintParameters = checker.bodies[bodyIndex].closures[closure].hintParameters
+  let hintParameters = copy(checker.bodies[bodyIndex].closures[closure].hintParameters)
   let hintResult = checker.bodies[bodyIndex].closures[closure].hintResult
   let expectedShared = -1
   if (want is Some(Type.TFunc(wantParams, wantResult, _, _, wantShared))) {
@@ -159,11 +159,12 @@ function checkArrowParts<W: Walker>(
   const savedInferring = checker.inferring
   const savedGenerator = checker.generator
   const outerDepth = checker.scopeDepth
-  pushArrow(mutable checker, outerDepth, closure)
-  pushScope(mutable checker)
+  // Clear the saved lists before any call changes the checker, so they are not shared.
   checker.loops = 0
   checker.labels = []
   checker.blocks = []
+  pushArrow(mutable checker, outerDepth, closure)
+  pushScope(mutable checker)
   checker.generator = false
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     const param = parameters[index]
@@ -235,13 +236,13 @@ function checkArrowParts<W: Walker>(
     shared = expectedShared
     checker.bodies[bodyIndex].closures[closure].expectsFresh = shared < 0
   }
-  return internComposite(mutable checker, Type.TFunc(paramTypes, finalResult, [], -1, shared))
+  return copy(internComposite(mutable checker, Type.TFunc(paramTypes, finalResult, [], -1, shared)))
 }
 
 function resolveFunctionResult(
   mutable checker: Checker,
   typeExpression: TypeExpr,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (
     typeExpression.name == "void" &&
       Arrays.length(typeExpression.arguments) == 0 &&
@@ -269,7 +270,7 @@ function popArrow(mutable checker: Checker) {
   checker.bodies[body].arrowDepth--
 }
 
-function listReturns(block: Block): Array<Option<Expr>> uses alloc {
+function listReturns(block: Block): Array<Option<Expr>> from block uses alloc {
   let found: Array<Option<Expr>> = []
   walkReturns(mutable found, Stmt.BlockStmt(block))
   return found
@@ -321,14 +322,14 @@ function findBlockResult(block: Block): Option<Type> uses alloc {
   return None
 }
 
-function inferReturns(mutable checker: Checker, block: Block): Type uses alloc {
+function inferReturns(mutable checker: Checker, block: Block): Type from checker uses alloc {
   // The first return decides the type, the others must agree.
   let result: Option<Type> = None
   for (const value of Arrays.values(listReturns(block))) {
     if (value is Some(expression)) {
       const found = getNodeType(checker, getExpressionId(expression))
       if (result is None) {
-        result = found
+        result = copy(found)
       } else {
         if (found is Some(foundType)) {
           expectType(mutable checker, getExpressionPos(expression), result, foundType)
@@ -348,7 +349,7 @@ function learnFromEarlier(
   index: int,
   parameters: Array<Param>,
   bindings: Map<int, Type>,
-): Map<int, Type> uses alloc {
+): Map<int, Type> from checker uses alloc {
   let known: Map<int, Type> = Map {}
   for (const entry of Maps.entries(bindings)) {
     const #[key, bound] = entry
@@ -371,7 +372,7 @@ function hintNone(
   parameters: Array<Param>,
   typeParameters: Array<int>,
   bindings: Map<int, Type>,
-): Option<Type> uses alloc {
+): Option<Type> from checker uses alloc {
   if (arguments[index].value is Expr.Ident(_, _, name)) {
     if (name != "None") {
       return None
@@ -530,7 +531,7 @@ export function checkCallThroughValue<W: Walker>(
   arguments: Array<Arg>,
   funcParams: Array<Type>,
   funcResult: Type,
-): Type uses alloc {
+): Type from funcResult uses alloc {
   // Parameters of a function type are escaping.
   setRef(mutable checker, nodeId, Ref.Value)
   if (Arrays.length(arguments) != Arrays.length(funcParams)) {
@@ -670,7 +671,7 @@ export function checkArrowArgument<W: Walker>(
   argument: Expr,
   hintParameters: Array<Type>,
   hintResult: Option<Type>,
-): Type uses alloc {
+): Type from hintParameters uses alloc {
   // An arrow function gets its environment on the stack and a hint of the parameter types the helper decides; a name may be a non-escaping function parameter. hintResult is None when the callback decides the result.
   const body = checker.body
   match (argument) {
@@ -694,5 +695,5 @@ export function checkArrowArgument<W: Walker>(
   if (hintResult is Some(resultType)) {
     want = Some(Type.TFunc(hintParameters, resultType, [], -1, -1))
   }
-  return checkExpression(mutable checker, walker, argument, want)
+  return copy(checkExpression(mutable checker, walker, argument, want))
 }

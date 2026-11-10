@@ -23,6 +23,7 @@ import {
   stringOut,
   arrayStruct,
   ioResult,
+  emitOptionOut,
 } from "narrac/stdemithelp"
 import * as Arrays from "std/array"
 
@@ -32,7 +33,7 @@ export const BYTES_FUNCS: Array<StdFunc> = [
     module: "std/bytes",
     key: "at",
     parameters: ["bytes", "int"],
-    result: "u8",
+    result: "Option<u8>",
   },
   StdFunc {
     name: "Bytes.concat",
@@ -69,7 +70,7 @@ export const BYTES_FUNCS: Array<StdFunc> = [
     module: "std/bytes",
     key: "slice",
     parameters: ["bytes", "int", "int"],
-    result: "bytes",
+    result: "Option<bytes>",
     effects: ["alloc"],
   },
   StdFunc {
@@ -93,13 +94,6 @@ export const BYTES_FUNCS: Array<StdFunc> = [
 
 const BYTES_FIXED_CALLS: Array<FixedCall> = [
   FixedCall {
-    name: "Bytes.at",
-    call: "narra_bytes_at",
-    withPos: true,
-    owned: false,
-    temporary: true,
-  },
-  FixedCall {
     name: "Bytes.concat",
     call: "lstr_concat",
     withPos: false,
@@ -120,13 +114,6 @@ const BYTES_FIXED_CALLS: Array<FixedCall> = [
     owned: false,
     temporary: false,
   },
-  FixedCall {
-    name: "Bytes.slice",
-    call: "narra_bytes_slice",
-    withPos: true,
-    owned: true,
-    temporary: false,
-  },
 ]
 
 function emitToString<W: EmitWalker>(
@@ -135,7 +122,7 @@ function emitToString<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const resultType = readNodeType(emitter, nodeId)
+  const resultType = copy(readNodeType(emitter, nodeId))
   const data = argumentText(walker, mutable emitter, arguments, 0)
   const output = stringOut(mutable emitter)
   const bad = stringOut(mutable emitter)
@@ -154,7 +141,7 @@ function emitFromArray<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const resultType = readNodeType(emitter, nodeId)
+  const resultType = copy(readNodeType(emitter, nodeId))
   const value = argumentText(walker, mutable emitter, arguments, 0)
   const items = temp(mutable emitter, Type.TArray(Type.TU8), value)
   const callText = `narra_bytes_from_raw(${items}->items, ${items}->len)`
@@ -167,7 +154,7 @@ function emitToArray<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  const arrayType = readNodeType(emitter, nodeId)
+  const arrayType = copy(readNodeType(emitter, nodeId))
   const value = argumentText(walker, mutable emitter, arguments, 0)
   const data = temp(mutable emitter, Type.TBytes, value)
   const structName = arrayStruct(emitter, arrayType)
@@ -192,6 +179,28 @@ export function emitBytesCall<W: EmitWalker>(
     if (fixed.name == name) {
       return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
     }
+  }
+  if (name == "Bytes.at") {
+    return emitOptionOut(
+      walker,
+      mutable emitter,
+      nodeId,
+      arguments,
+      "narra_bytes_at",
+      Type.TU8,
+      "0",
+    )
+  }
+  if (name == "Bytes.slice") {
+    return emitOptionOut(
+      walker,
+      mutable emitter,
+      nodeId,
+      arguments,
+      "narra_bytes_slice",
+      Type.TBytes,
+      "NULL",
+    )
   }
   if (name == "Bytes.toString") {
     return emitToString(walker, mutable emitter, nodeId, arguments)

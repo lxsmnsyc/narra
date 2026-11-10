@@ -17,9 +17,9 @@ struct Tally {
 }
 
 function addWord(mutable tallies: Array<Tally>, word: string) {
-  for (const #[index, tally] of Arrays.entries(tallies)) {
+  for (mutable tally of tallies) {
     if (tally.word == word) {
-      tallies[index].count = tally.count + 1
+      tally.count = tally.count + 1
       return
     }
   }
@@ -28,7 +28,11 @@ function addWord(mutable tallies: Array<Tally>, word: string) {
 
 export function run(args: Array<string>): int {
   let tallies: Array<Tally> = []
-  for (const word of Str.split("the cat saw the dog", " ")) {
+  const split = Str.split("the cat saw the dog", " ")
+  if (split is None) {
+    return 1
+  }
+  for (const word of split.value) {
     addWord(mutable tallies, word)
   }
   for (const tally of tallies) {
@@ -58,7 +62,9 @@ import { toString as intToString } from "std/int"
 export function run(args: Array<string>): int {
   const words = split("the cat saw the dog", " ")
   print(intToString(5))
-  print(words[1])
+  if (words is Some(pieces)) {
+    print(pieces[1])
+  }
   return 0
 }
 ```
@@ -119,16 +125,20 @@ export struct Tally {
 
 export function countWords(text: string): Array<Tally> uses alloc {
   let tallies: Array<Tally> = []
-  for (const word of Str.split(text, " ")) {
+  const split = Str.split(text, " ")
+  if (split is None) {
+    return tallies
+  }
+  for (const word of split.value) {
     addWord(mutable tallies, word)
   }
   return tallies
 }
 
 function addWord(mutable tallies: Array<Tally>, word: string) {
-  for (const #[index, tally] of Arrays.entries(tallies)) {
+  for (mutable tally of tallies) {
     if (tally.word == word) {
-      tallies[index].count = tally.count + 1
+      tally.count = tally.count + 1
       return
     }
   }
@@ -189,7 +199,11 @@ const SEPARATOR = " "
 const STOP_WORDS = ["the", "a"]
 
 export function run(args: Array<string>): int {
-  for (const word of Str.split("the cat saw a dog", SEPARATOR)) {
+  const split = Str.split("the cat saw a dog", SEPARATOR)
+  if (split is None) {
+    return 1
+  }
+  for (const word of split.value) {
     let skip = false
     for (const stop of STOP_WORDS) {
       if (word == stop) {
@@ -240,7 +254,10 @@ export enum Style {
 export function render(tally: Tally, style: Style): string uses alloc {
   return match (style) {
     Style.Numbers => `${tally.word} ${Int.toString(tally.count)}`
-    Style.Bars => `${tally.word} ${Str.repeat("#", tally.count)}`
+    Style.Bars => match (Str.repeat("#", tally.count)) {
+      Some(bars) => `${tally.word} ${bars}`
+      None => tally.word
+    }
   }
 }
 ```

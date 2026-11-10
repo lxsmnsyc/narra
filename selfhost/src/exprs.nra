@@ -21,6 +21,7 @@
 // Results go into the side tables of the current body: the type of
 // every checked expression (setNodeType) and what a name or call resolves to
 // (setRef).
+import { substring } from "narrac/textops"
 import {
   Pos,
   Expr,
@@ -78,14 +79,17 @@ import {
   generatorEffectList,
   BindingKind,
   canChangeContents,
+  pushScope,
+  popScope,
 } from "narrac/check"
 import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
+import { splitIntLiteral, narrowByCondition, checkDivisor, checkShiftCount } from "narrac/operands"
 import { buildConstantHint } from "narrac/stdcopy"
-import { canShareType } from "narrac/sharedresults"
+import { canShareType } from "narrac/stdcopy"
 import {
   useLocal,
   markArgument,
@@ -95,7 +99,7 @@ import {
   markChangedCapture,
   isReferenceCapture,
 } from "narrac/funcvalues"
-import { sourceScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
+import { sourceScope, memberScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -107,7 +111,7 @@ export function checkExpression<W: Walker>(
   walker: W,
   expression: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   if (Arrays.length(checker.loopBorrows) > 0) {
     checkLoopBorrows(mutable checker, expression)
   }
@@ -159,7 +163,7 @@ function checkLoopBorrows(mutable checker: Checker, expression: Expr) uses alloc
   for (let position = Arrays.length(reversed) - 1; position >= 0; position--) {
     Arrays.push(mutable path, reversed[position])
   }
-  for (const borrow of Arrays.values(checker.loopBorrows)) {
+  for (const borrow of Arrays.values(copy(checker.loopBorrows))) {
     if (borrow.local == local && arePathsOverlapping(path, borrow.path)) {
       const used = describePlace(expression)
       reportError(
@@ -192,7 +196,7 @@ function checkExpressionKind<W: Walker>(
   walker: W,
   expression: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   // A literal stores its values, so a mutable parameter cannot be one.
   match (expression) {
     Expr.StructLit(_, _, _, _, fields, _) => {
@@ -215,87 +219,99 @@ function checkExpressionKind<W: Walker>(
     }
     _ => {}
   }
-  return match (expression) {
-    Expr.IntLit(nodeId, pos, text) => checkIntLiteral(mutable checker, nodeId, pos, text, want)
-    Expr.FloatLit(_, pos, text) => checkFloatLiteral(mutable checker, pos, text, want)
-    Expr.StringLit(_, _, _, _) => Type.TStr
-    Expr.CharLit(_, _, _) => Type.TChar
-    Expr.BoolLit(_, _, _) => Type.TBool
-    Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
-    Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name, want)
-    Expr.FieldExpr(nodeId, pos, target, name) => checkField(
-      mutable checker,
-      walker,
-      nodeId,
-      pos,
-      target,
-      name,
-      want,
-    )
-    Expr.IsExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
-    Expr.IndexExpr(nodeId, pos, target, index) => checkIndex(
-      mutable checker,
-      walker,
-      nodeId,
-      pos,
-      target,
-      index,
-    )
-    Expr.MapLit(_, _, _, _, _) => Walker.checkMapLiteral(walker, mutable checker, expression, want)
-    Expr.CallExpr(nodeId, pos, callee, typeArguments, arguments) => checkCallEndingNarrowing(
-      mutable checker,
-      walker,
-      nodeId,
-      pos,
-      callee,
-      typeArguments,
-      arguments,
-      want,
-    )
-    Expr.UnaryExpr(_, pos, operator, operand) => checkUnary(
-      mutable checker,
-      walker,
-      pos,
-      operator,
-      operand,
-      want,
-    )
-    Expr.BinaryExpr(_, pos, operator, left, right) => checkBinary(
-      mutable checker,
-      walker,
-      pos,
-      operator,
-      left,
-      right,
-      want,
-    )
-    Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => checkStructLiteral(
-      mutable checker,
-      walker,
-      pos,
-      typeName,
-      typeArguments,
-      fields,
-      spread,
-      want,
-    )
-    Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(
-      mutable checker,
-      walker,
-      pos,
-      elements,
-      isTuple,
-      want,
-    )
-    Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
-    Expr.BlockExpr(_, _, _) => Walker.checkBlockExpression(
-      walker,
-      mutable checker,
-      expression,
-      want,
-    )
-    Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(walker, mutable checker, expression, want)
-  }
+  return copy(
+    match (expression) {
+      Expr.IntLit(nodeId, pos, text) => checkIntLiteral(mutable checker, nodeId, pos, text, want)
+      Expr.FloatLit(_, pos, text) => checkFloatLiteral(mutable checker, pos, text, want)
+      Expr.StringLit(_, _, _, _) => Type.TStr
+      Expr.CharLit(_, _, _) => Type.TChar
+      Expr.BoolLit(_, _, _) => Type.TBool
+      Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
+      Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name, want)
+      Expr.FieldExpr(nodeId, pos, target, name) => checkField(
+        mutable checker,
+        walker,
+        nodeId,
+        pos,
+        target,
+        name,
+        want,
+      )
+      Expr.IsExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
+      Expr.IndexExpr(nodeId, pos, target, index) => checkIndex(
+        mutable checker,
+        walker,
+        nodeId,
+        pos,
+        target,
+        index,
+      )
+      Expr.MapLit(_, _, _, _, _) => Walker.checkMapLiteral(
+        walker,
+        mutable checker,
+        expression,
+        want,
+      )
+      Expr.CallExpr(nodeId, pos, callee, typeArguments, arguments) => checkCallEndingNarrowing(
+        mutable checker,
+        walker,
+        nodeId,
+        pos,
+        callee,
+        typeArguments,
+        arguments,
+        want,
+      )
+      Expr.UnaryExpr(_, pos, operator, operand) => checkUnary(
+        mutable checker,
+        walker,
+        pos,
+        operator,
+        operand,
+        want,
+      )
+      Expr.BinaryExpr(_, pos, operator, left, right) => checkBinary(
+        mutable checker,
+        walker,
+        pos,
+        operator,
+        left,
+        right,
+        want,
+      )
+      Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => checkStructLiteral(
+        mutable checker,
+        walker,
+        pos,
+        typeName,
+        typeArguments,
+        fields,
+        spread,
+        want,
+      )
+      Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(
+        mutable checker,
+        walker,
+        pos,
+        elements,
+        isTuple,
+        want,
+      )
+      Expr.MatchExpr(_, _, _, _) => Walker.checkPatterns(walker, mutable checker, expression, want)
+      Expr.BlockExpr(_, _, _) => Walker.checkBlockExpression(
+        walker,
+        mutable checker,
+        expression,
+        want,
+      )
+      Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(
+        walker,
+        mutable checker,
+        expression,
+        want,
+      )
+    },
+  )
 }
 
 function checkCallEndingNarrowing<W: Walker>(
@@ -311,7 +327,7 @@ function checkCallEndingNarrowing<W: Walker>(
   // A callee can change what it receives as `mutable`, so the narrowing of those locals
   // ends.
   if (Arrays.length(typeArguments) > 0) {
-    checker.callTypeArguments[nodeId] = typeArguments
+    checker.callTypeArguments[nodeId] = copy(typeArguments)
   }
   const errorsBefore = Arrays.length(checker.errors)
   const checked = Walker.checkCall(walker, mutable checker, nodeId, pos, callee, arguments, want)
@@ -375,7 +391,11 @@ function checkNamedArgumentsTaken(
   }
 }
 
-function bindCallResult(mutable checker: Checker, nodeId: int, found: Type): Type uses alloc {
+function bindCallResult(
+  mutable checker: Checker,
+  nodeId: int,
+  found: Type,
+): Type from found uses alloc {
   // The effect pass replaces each effect variable by the effects of the argument that
   // binds it, so the name never leaves the callee.
   if (found is Type.TGenerator(element, _, binder, _, input)) {
@@ -484,7 +504,11 @@ function reportSharedSlot(
   reportErrorFix(mutable checker, pos, "E0977", fixes, message)
 }
 
-function buildSharedSlotFix(checker: Checker, expected: Type, shared: int): Array<Fix> uses alloc {
+function buildSharedSlotFix(
+  checker: Checker,
+  expected: Type,
+  shared: int,
+): Array<Fix> from checker uses alloc {
   // The fix edits the expected type when this module writes it once.
   let found: Array<TypeExpr> = []
   if (checker.writtenFunctionTypes[typeKey(expected)] is Some(written)) {
@@ -677,7 +701,7 @@ function checkIntLiteral(
   pos: Pos,
   text: string,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   // A sized integer when that is wanted, int otherwise. The literal must fit that type.
   let literalType = Type.TInt
   if (want is Some(wanted)) {
@@ -735,7 +759,7 @@ function f32LiteralFits(text: string): bool uses alloc {
   let mantissa = cleaned
   let exponentText = ""
   if (Str.indexOf(cleaned, "e") is Some(marker)) {
-    mantissa = Str.slice(cleaned, 0, marker)
+    mantissa = substring(cleaned, 0, marker)
     exponentText = Str.sliceFrom(cleaned, marker + 1)
   }
   // The exponent, with its sign.
@@ -762,7 +786,7 @@ function f32LiteralFits(text: string): bool uses alloc {
   let wholePart = mantissa
   let fractionPart = ""
   if (Str.indexOf(mantissa, ".") is Some(point)) {
-    wholePart = Str.slice(mantissa, 0, point)
+    wholePart = substring(mantissa, 0, point)
     fractionPart = Str.sliceFrom(mantissa, point + 1)
   }
   const allDigits = `${wholePart}${fractionPart}`
@@ -778,32 +802,7 @@ function f32LiteralFits(text: string): bool uses alloc {
   while (Str.length(padded) < 17) {
     padded = `${padded}0`
   }
-  return Str.slice(padded, 0, 17) < "34028235677973366"
-}
-
-function splitIntLiteral(text: string): #[int, string] uses alloc {
-  let base = 10
-  let digits = text
-  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
-    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
-      base = 16
-      digits = Str.sliceFrom(text, 2)
-    } else if (
-      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
-    ) {
-      base = 2
-      digits = Str.sliceFrom(text, 2)
-    } else if (
-      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
-    ) {
-      base = 8
-      digits = Str.sliceFrom(text, 2)
-    } else {
-      base = 8
-      digits = Str.sliceFrom(text, 1)
-    }
-  }
-  return #[base, Str.replace(digits, "_", "")]
+  return substring(padded, 0, 17) < "34028235677973366"
 }
 
 function sizedMaximum(type: Type): int {
@@ -975,7 +974,7 @@ function checkName<W: Walker>(
   pos: Pos,
   name: string,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // Resolution order: a local, then a constant, then a function, a constructor and a
   // module alias.
   // A local of the current body.
@@ -1179,14 +1178,14 @@ function checkField<W: Walker>(
   target: Expr,
   name: string,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // Alias.f and Alias.NAME of a package module, constructors and std
   // namespaces are resolved by the syntax first.
   const scope = checker.current
   if (target is Expr.Ident(targetId, _, alias)) {
     if (findLocal(checker, alias) < 0) {
       if (checker.scopes[scope].modules[alias] is Some(path)) {
-        const moduleScope = sourceScope(checker, path)
+        const moduleScope = memberScope(checker, path)
         if (moduleScope >= 0) {
           if (checker.scopes[moduleScope].exports[name] is Some(exportIndex)) {
             if (checker.scopes[moduleScope].declarations[exportIndex] is Decl.Func(funcDecl)) {
@@ -1265,7 +1264,7 @@ function checkField<W: Walker>(
         )
         return Type.TVoid
       }
-      const variant = checker.enums[enumIndex].variants[variantIndex]
+      const variant = copy(checker.enums[enumIndex].variants[variantIndex])
       const fieldIndex = findField(variant.fields, name)
       if (fieldIndex < 0) {
         reportError(mutable checker, pos, "E0206", `${variant.name} has no field ${quoteGo(name)}`)
@@ -1305,7 +1304,7 @@ function buildLengthFix(
   pos: Pos,
   target: Expr,
   targetType: Type,
-): Array<Fix> uses alloc {
+): Array<Fix> from target uses alloc {
   // The target must be a name that touches the dot on one line.
   let targetPos = Pos { line: 0, column: 0 }
   let targetName = ""
@@ -1445,7 +1444,7 @@ function checkUnary<W: Walker>(
   operator: string,
   operand: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   // A literal under - is checked with its sign.
   let negatedLiteral = false
   if (operator == "-") {
@@ -1607,7 +1606,7 @@ function checkBinary<W: Walker>(
   left: Expr,
   right: Expr,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   // The left operand gives the expected type of the right one. A sized
   // integer wanted from the whole expression types the left operand of an
   // integer operator; a literal on the left takes the type of the right.
@@ -1624,7 +1623,15 @@ function checkBinary<W: Walker>(
     leftType = checkExpression(mutable checker, walker, left, Some(rightType))
   } else {
     leftType = checkExpression(mutable checker, walker, left, leftWant)
+    // The right side of && sees the left one true, and the right side of || sees it false.
+    pushScope(mutable checker)
+    if (operator == "&&") {
+      narrowByCondition(mutable checker, left, true)
+    } else if (operator == "||") {
+      narrowByCondition(mutable checker, left, false)
+    }
     rightType = checkExpression(mutable checker, walker, right, Some(leftType))
+    popScope(mutable checker)
   }
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
@@ -1701,6 +1708,9 @@ function checkBinary<W: Walker>(
         )
       }
     }
+    if (operator == "/" || operator == "%") {
+      checkDivisor(mutable checker, right, leftType)
+    }
     return leftType
   }
   if (
@@ -1713,6 +1723,8 @@ function checkBinary<W: Walker>(
         "E0218",
         `${operator} needs two integers, found ${leftText} and ${rightText}`,
       )
+    } else if (operator == "<<" || operator == ">>") {
+      checkShiftCount(mutable checker, right, leftType)
     }
     return leftType
   }
@@ -1763,7 +1775,7 @@ function checkStructLiteral<W: Walker>(
   fields: Array<FieldInit>,
   spread: Option<Expr>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   // `Pair<int, string> { ... }`: the written type arguments give the
   // literal's type. They must agree with the expected type, then stand in
   // for it.
@@ -1814,7 +1826,7 @@ function checkStructLiteral<W: Walker>(
         if (spreadType is Type.TStruct(_) && spreadType != literalType) {
           const message = `the type arguments make ${typeString(checker, literalType)}, but the expected type is ${typeString(checker, spreadType)}`
           reportError(mutable checker, getExpressionPos(spreadExpression), "E0237", message)
-          return literalType
+          return copy(literalType)
         }
       }
     }
@@ -1871,7 +1883,7 @@ function checkStructLiteral<W: Walker>(
   }
 
   // Check each field value against its field, once.
-  const structFields = checker.structs[structIndex].fields
+  const structFields = copy(checker.structs[structIndex].fields)
   let seen: Map<string, bool> = Map {}
   for (const field of Arrays.values(fields)) {
     const fieldIndex = findField(structFields, field.name)
@@ -1928,7 +1940,7 @@ function inferGenericStruct<W: Walker>(
 ): int uses alloc {
   // The expected type gives the type arguments it can, and the field values the rest.
   buildGeneric(mutable checker, generic)
-  const parameters = checker.generics[generic].parameters
+  const parameters = copy(checker.generics[generic].parameters)
   let bindings: Map<int, Type> = Map {}
   if (expected is Some(Type.TStruct(wanted))) {
     if (checker.structs[wanted].generic == generic) {
@@ -1939,7 +1951,7 @@ function inferGenericStruct<W: Walker>(
   }
 
   // Each field value is checked against its field with what is known so far.
-  const template = checker.generics[generic].fields
+  const template = copy(checker.generics[generic].fields)
   for (const field of Arrays.values(fields)) {
     for (const templateField of Arrays.values(template)) {
       if (templateField.name == field.name) {
@@ -1979,7 +1991,7 @@ function checkArrayLiteral<W: Walker>(
   elements: Array<Expr>,
   isTuple: bool,
   want: Option<Type>,
-): Type uses alloc {
+): Type from want uses alloc {
   if (isTuple) {
     return Walker.checkTuple(walker, mutable checker, pos, elements, want)
   }
@@ -2187,8 +2199,8 @@ export function checkBorrowed(mutable checker: Checker, arguments: Array<Arg>) u
     }
     let names: Array<string> = []
     collectAssignedInExpr(arguments[index].value, mutable names)
-    for (const captured of Arrays.values(checker.bodies[body].closures[closure].captures)) {
-      const local = getLocal(checker, captured)
+    for (const captured of Arrays.values(copy(checker.bodies[body].closures[closure].captures))) {
+      const local = copy(getLocal(checker, captured))
       const byReference = local.isMutable || isReferenceCapture(checker, closure, captured)
       if (!byReference || !containsName(names, local.name)) {
         continue
@@ -2229,7 +2241,7 @@ function containsName(names: Array<string>, name: string): bool {
   return false
 }
 
-export function listBlockExpressions(block: Block): Array<Expr> uses alloc {
+export function listBlockExpressions(block: Block): Array<Expr> from block uses alloc {
   // Any statement depth, including the guards, bodies and blocks of match statements.
   // It does not look inside the expressions.
   let found: Array<Expr> = []
@@ -2293,13 +2305,17 @@ function collectExpressionAndArms(expression: Expr, mutable found: Array<Expr>) 
   Arrays.push(mutable found, expression)
   if (expression is Expr.MatchExpr(_, _, _, arms)) {
     for (const arm of Arrays.values(arms)) {
-      if (arm.guard is Some(guard)) {
+      // Read the parts first: the calls below add to found, which holds the arm.
+      const armGuard = arm.guard
+      const armValue = arm.body
+      const armStatements = arm.block
+      if (armGuard is Some(guard)) {
         collectExpressionAndArms(guard, mutable found)
       }
-      if (arm.body is Some(armBody)) {
+      if (armValue is Some(armBody)) {
         collectExpressionAndArms(armBody, mutable found)
       }
-      if (arm.block is Some(armBlock)) {
+      if (armStatements is Some(armBlock)) {
         collectBlockExpressions(armBlock, mutable found)
       }
     }
@@ -2362,10 +2378,10 @@ export function checkBuiltinCall<W: Walker>(
   arguments: Array<Arg>,
   builtin: int,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // A builtin with a named check kind goes to narrac/stdcalls.
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
-  const info = checker.registry.functions[builtin]
+  const info = copy(checker.registry.functions[builtin])
   if (info.check != "" && info.check != "fixed") {
     return Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, want)
   }
@@ -2437,7 +2453,7 @@ export function checkFixedCall<W: Walker>(
   name: string,
   parameters: Array<Type>,
   result: Type,
-): Type uses alloc {
+): Type from result uses alloc {
   // A wrong argument count stops the check after a loose pass over the arguments.
   const argCount = Arrays.length(arguments)
   if (argCount != Arrays.length(parameters)) {
@@ -2471,7 +2487,7 @@ export function checkFixedCall<W: Walker>(
 export function checkMutableArgument(mutable checker: Checker, value: Expr) uses alloc {
   // The argument must name a `let` variable, a field or an element of one.
   const pos = getExpressionPos(value)
-  if (checkConstWrite(mutable checker, pos, value)) {
+  if (checkConstWrite(mutable checker, pos, value, true)) {
     return
   }
   const root = findAssignedLocal(checker, value)
@@ -2595,12 +2611,14 @@ export function checkConstWrite(
   mutable checker: Checker,
   pos: Pos,
   expression: Expr,
+  inPlace: bool,
 ): bool uses alloc {
   // Reads the syntax only, so it can run before the expression is checked.
   const scope = checker.current
   let current = expression
-  // A write to a part of the constant can go to a copy; a whole reassign needs a local.
-  let whole = true
+  // A write to a part of the constant, or a change in place (a `mutable`
+  // argument or loop), can go to a copy; a whole reassign needs a local.
+  let whole = !inPlace
   while (true) {
     match (current) {
       Expr.Ident(_, _, name) => {
@@ -2647,14 +2665,14 @@ export function checkConstWrite(
 
 function findConstantScope(checker: Checker, alias: string): int uses alloc {
   if (checker.scopes[checker.current].modules[alias] is Some(path)) {
-    return sourceScope(checker, path)
+    return memberScope(checker, path)
   }
   return -1
 }
 
 function moduleHasConst(checker: Checker, alias: string, name: string): bool {
   if (checker.scopes[checker.current].modules[alias] is Some(path)) {
-    const moduleScope = sourceScope(checker, path)
+    const moduleScope = memberScope(checker, path)
     if (moduleScope >= 0) {
       for (const declaration of Arrays.values(checker.scopes[moduleScope].declarations)) {
         if (declaration is Decl.Const(constDecl)) {
@@ -2673,10 +2691,10 @@ export function checkConstType<W: Walker>(
   walker: W,
   index: int,
   pos: Pos,
-): Type uses alloc {
+): Type from checker uses alloc {
   // The value is a body of its own module, outside any function; pos is where the
   // the constant is used.
-  const info = checker.consts[index]
+  const info = copy(checker.consts[index])
   if (info.state == CONST_DONE) {
     if (info.valueType is Some(valueType)) {
       return valueType

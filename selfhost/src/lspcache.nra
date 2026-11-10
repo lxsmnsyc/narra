@@ -6,13 +6,16 @@
 // only). The other modules are declared again but their bodies are skipped,
 // and their errors come from the cache.
 //
-// A module's errors come in three phases, in the order the full check reports
+// A module's errors come in four phases, in the order the full check reports
 // them: the check (declarations, defaults, bodies, instances, entries,
-// finish), the unused check (only when the package has no check error) and the
-// effect pass (only when it has no error at all). Each module keeps the errors
-// of its file for the first two; the unused list is known, and the effect pass
-// found nothing, only once a check ran that phase for the module's current
-// text. A module whose list is missing is checked again.
+// finish), the unused check (only when the package has no check error), the
+// effect pass (only when it has no error at all) and the shared writes (every
+// body, always). Each module keeps the errors of its file for the first two
+// and the last; the unused list is known, and the effect pass found nothing,
+// only once a check ran that phase for the module's current text. A module
+// whose list is missing is checked again. The shared writes of a module depend
+// only on its own bodies and the signatures it imports, so they are found
+// again exactly when its bodies are checked again.
 //
 // The check falls back to the whole package when the incremental result could
 // differ from it: the module list changed, an error lies outside every module
@@ -32,6 +35,7 @@ import { TokenKind, lex } from "narrac/lexer"
 import * as Modules from "narrac/modules"
 import { Package, ParseCache, SourceModule } from "narrac/modules"
 import { LoadError } from "narrac/manifest"
+import { reportSharedWrites } from "narrac/sharedwrites"
 
 // What the cache keeps of one module: the module it checked and its errors.
 // A changed source is parsed with new ids, so an equal firstId means an equal
@@ -40,6 +44,7 @@ struct ModuleResult {
   module: SourceModule
   checkErrors: Array<CheckError>
   unusedErrors: Array<CheckError>
+  sharedWriteErrors: Array<CheckError>
   unusedKnown: bool
   effectsKnown: bool // the effect pass ran on it and found no error
 }
@@ -77,7 +82,7 @@ export function loadPackage(
   mutable cache: CheckCache,
   path: string,
   overrides: Map<string, string>,
-): Result<Package, Array<LoadError>> uses io, alloc {
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   // Each changed source takes new ids; when they pass four times the ids the package uses, the
   // cache starts over and the next check is whole.
   if (cache.parses.nextId > 4 * cache.liveIds + 100000) {
@@ -98,7 +103,7 @@ export function loadPackage(
 export function checkLoaded(
   mutable cache: CheckCache,
   package: Package,
-): Array<CheckError> uses io, alloc {
+): Array<CheckError> from cache uses io, alloc {
   // Cached results are reused where they cannot change. Each file's errors come in the order
   // of a whole check.
   if (!cache.full && canReuse(cache, package)) {
@@ -122,7 +127,7 @@ export function checkLoaded(
       }
     }
   }
-  return checkWhole(mutable cache, package)
+  return copy(checkWhole(mutable cache, package))
 }
 
 function canReuse(cache: CheckCache, package: Package): bool {
@@ -142,15 +147,20 @@ function canReuse(cache: CheckCache, package: Package): bool {
   return true
 }
 
-function checkWhole(mutable cache: CheckCache, package: Package): Array<CheckError> uses io, alloc {
+function checkWhole(
+  mutable cache: CheckCache,
+  package: Package,
+): Array<CheckError> from package uses io, alloc {
   const result = Body.checkModules(package, Map {})
-  let checker = result.checker
+  let checker = copy(result.checker)
   const unusedRan = result.unusedStart == 0
   const checkCount = Arrays.length(checker.errors)
   const effectsRan = checkCount == 0
   if (effectsRan) {
     const _effects = Effects.checkEffects(mutable checker)
   }
+  const effectsEnd = Arrays.length(checker.errors)
+  reportSharedWrites(mutable checker)
   const errors = checker.errors
   let moduleFiles: Map<string, bool> = Map {}
   for (const module of Arrays.values(package.modules)) {
@@ -159,7 +169,7 @@ function checkWhole(mutable cache: CheckCache, package: Package): Array<CheckErr
   // Every error must lie in a module file to be kept by module. An effect
   // error stops the effect pass for every module, so the results are reused
   // only when there is none.
-  let attributable = result.queuedErrors == 0 && Arrays.length(errors) == checkCount
+  let attributable = result.queuedErrors == 0 && effectsEnd == checkCount
   for (const error of Arrays.values(errors)) {
     attributable = attributable && moduleFiles[error.file] is Some(_)
   }
@@ -172,6 +182,7 @@ function checkWhole(mutable cache: CheckCache, package: Package): Array<CheckErr
       module: module,
       checkErrors: selectErrors(errors, 0, result.unusedStart, module.file),
       unusedErrors: selectErrors(errors, result.unusedStart, checkCount, module.file),
+      sharedWriteErrors: selectErrors(errors, effectsEnd, Arrays.length(errors), module.file),
       unusedKnown: unusedRan,
       effectsKnown: effectsRan,
     }
@@ -186,7 +197,7 @@ function selectErrors(
   start: int,
   end: int,
   file: string,
-): Array<CheckError> uses alloc {
+): Array<CheckError> from errors uses alloc {
   let selected: Array<CheckError> = []
   for (const index of Ranges.upTo(Arrays.length(errors))) {
     if (index >= start && index < end && errors[index].file == file) {
@@ -200,11 +211,11 @@ function checkChanged(
   mutable cache: CheckCache,
   package: Package,
   extra: Map<string, bool>,
-): Result<Array<CheckError>, Array<string>> uses io, alloc {
+): Result<Array<CheckError>, Array<string>> from cache uses io, alloc {
   // An Err lists the modules to add to extra, the modules checked anyway, and is empty when
   // the whole package must be checked.
   // The changed modules, and those whose signature changed.
-  let dirty = extra
+  let dirty = copy(extra)
   let reach: Array<string> = []
   let results: Array<ModuleResult> = []
   for (const module of Arrays.values(package.modules)) {
@@ -240,7 +251,7 @@ function checkChanged(
   if (result.queuedErrors > 0) {
     return Err([])
   }
-  let checker = result.checker
+  let checker = copy(result.checker)
   let checkCount = 0
   let unusedCount = 0
   for (const index of Ranges.upTo(Arrays.length(checker.errors))) {
@@ -287,7 +298,7 @@ function checkChanged(
   // The effect pass runs when no module has an error; the checker then holds
   // none either (the unused check left out the skipped modules).
   const effectsRun = unusedRuns && unusedCount == 0
-  const errors = checker.errors
+  const errors = copy(checker.errors)
   if (effectsRun) {
     let missing: Array<string> = []
     for (const index of Ranges.upTo(Arrays.length(package.modules))) {
@@ -306,6 +317,11 @@ function checkChanged(
     }
   }
 
+  // Only the checked modules have bodies, so every shared write lies in one of them.
+  const sharedStart = Arrays.length(checker.errors)
+  reportSharedWrites(mutable checker)
+  const sharedErrors = copy(checker.errors)
+
   // Store the results of the checked modules.
   for (const index of Ranges.upTo(Arrays.length(package.modules))) {
     const module = package.modules[index]
@@ -314,6 +330,12 @@ function checkChanged(
         module: module,
         checkErrors: selectErrors(errors, 0, result.unusedStart, module.file),
         unusedErrors: selectErrors(errors, result.unusedStart, Arrays.length(errors), module.file),
+        sharedWriteErrors: selectErrors(
+          sharedErrors,
+          sharedStart,
+          Arrays.length(sharedErrors),
+          module.file,
+        ),
         unusedKnown: unusedRuns,
         effectsKnown: effectsRun,
       }
@@ -336,7 +358,10 @@ function checkChanged(
       appendErrors(mutable merged, moduleResult.unusedErrors)
     }
   }
-  return Ok(merged)
+  for (const moduleResult of Arrays.values(results)) {
+    appendErrors(mutable merged, moduleResult.sharedWriteErrors)
+  }
+  return copy(Ok(merged))
 }
 
 function appendErrors(mutable merged: Array<CheckError>, errors: Array<CheckError>) uses alloc {
@@ -351,7 +376,7 @@ function addImporters(
   reach: Array<string>,
 ) uses alloc {
   let reached: Map<string, bool> = Map {}
-  let queue = reach
+  let queue = copy(reach)
   let next = 0
   while (next < Arrays.length(queue)) {
     const target = queue[next]

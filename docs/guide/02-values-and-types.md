@@ -113,7 +113,9 @@ export function run(args: Array<string>): int {
   print(Int.toString(totalCents % items))
   const average = Float.fromInt(totalCents) / Float.fromInt(items)
   print(Float.toString(average))
-  print(Int.toString(Float.truncate(average * 10.0)))
+  if (Float.truncate(average * 10.0) is Some(tenths)) {
+    print(Int.toString(tenths))
+  }
   return 0
 }
 ```
@@ -125,7 +127,7 @@ export function run(args: Array<string>): int {
 1428
 ```
 
-Narra has two kinds of numbers. An `int` is a whole number, and `/` on two `int` values drops the fraction, so `1000 / 7` is `142`. `%` gives the remainder, `6`. An `f64` is a decimal number, written with a decimal point, such as `2.5` or `10.0`. `Float.fromInt` turns an `int` into an `f64`, and `Float.truncate` turns an `f64` back into an `int` by dropping the fraction.
+Narra has two kinds of numbers. An `int` is a whole number, and `/` on two `int` values drops the fraction, so `1000 / 7` is `142`. `%` gives the remainder, `6`. An `f64` is a decimal number, written with a decimal point, such as `2.5` or `10.0`. `Float.fromInt` turns an `int` into an `f64`, and `Float.truncate` turns an `f64` back into an `int` by dropping the fraction. It returns an `Option<int>`, because a NaN or a number too large for an `int` has no `int` to give: `None`.
 
 The two kinds never mix on their own. Multiplying an `f64` by `3` is an error, because `3` is an `int`:
 
@@ -170,9 +172,12 @@ export function run(args: Array<string>): int {
   const name = "tea"
   const priceText = Int.toString(250)
   const width = 16
-  const dots = Str.repeat(".", width - Str.length(name) - Str.length(priceText))
-  print(`${name}${dots}${priceText}`)
-  print(Str.repeat("=", width))
+  if (Str.repeat(".", width - Str.length(name) - Str.length(priceText)) is Some(dots)) {
+    print(`${name}${dots}${priceText}`)
+  }
+  if (Str.repeat("=", width) is Some(rule)) {
+    print(rule)
+  }
   return 0
 }
 ```
@@ -182,7 +187,7 @@ tea..........250
 ================
 ```
 
-A `string` is text in double quotes. The functions for strings come from `std/string`, imported here as `Str`: `Str.length` counts the bytes of a string, and `Str.repeat` repeats it.
+A `string` is text in double quotes. The functions for strings come from `std/string`, imported here as `Str`: `Str.length` counts the bytes of a string, and `Str.repeat` repeats it. A negative count cannot be repeated, so `Str.repeat` does not return a string. It returns an `Option<string>`: `Some(text)` when it worked, `None` when it did not. `if (... is Some(dots))` runs its block with the text bound to `dots`. The section on maps below explains `Option` fully.
 
 To join strings, put them in a template string, as the line above does. `+` does not join strings, and the compiler points you to templates:
 
@@ -201,11 +206,14 @@ import * as Str from "std/string"
 
 export function run(args: Array<string>): int {
   const line = "  coffee = 320 "
-  const parts = Str.split(line, "=")
-  const name = Str.trim(parts[0])
-  const price = Str.trim(parts[1])
-  print(`[${name}] costs [${price}]`)
-  print(Str.slice(name, 0, 3))
+  if (Str.split(line, "=") is Some(parts)) {
+    const name = Str.trim(parts[0])
+    const price = Str.trim(parts[1])
+    print(`[${name}] costs [${price}]`)
+    if (Str.slice(name, 0, 3) is Some(start)) {
+      print(start)
+    }
+  }
   return 0
 }
 ```
@@ -215,7 +223,7 @@ export function run(args: Array<string>): int {
 cof
 ```
 
-`Str.trim` removes spaces at both ends, and `Str.slice(name, 0, 3)` takes the bytes from position 0 up to, but not including, position 3.
+`Str.trim` removes spaces at both ends, and `Str.slice(name, 0, 3)` takes the bytes from position 0 up to, but not including, position 3. Both `Str.split` and `Str.slice` return an `Option`: `Str.split` gives `None` when the separator is empty, and `Str.slice` gives `None` when a position is outside the string or inside a character.
 
 A string holds UTF-8 text, where a letter such as `é` takes two bytes. So `Str.length` counts bytes, and `Str.charCount` counts characters:
 
@@ -357,7 +365,10 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
 export function run(args: Array<string>): int {
-  let squares = Arrays.filled(0, 4)
+  let squares: Array<int> = []
+  if (Arrays.filled(0, 4) is Some(zeros)) {
+    squares = zeros
+  }
   for (const i of Ranges.upTo(4)) {
     squares[i] = i * i
   }
@@ -375,7 +386,7 @@ export function run(args: Array<string>): int {
 3: 9
 ```
 
-`Arrays.filled(0, 4)` makes an array of four zeros. The `#[position, square]` in the loop takes apart a pair of values. Pairs come at the end of this chapter.
+`Arrays.filled(0, 4)` makes an array of four zeros, as `Some(zeros)`; a negative count gives `None`. The `#[position, square]` in the loop takes apart a pair of values. Pairs come at the end of this chapter.
 
 ### Stop early or skip an element
 
@@ -419,7 +430,7 @@ import * as Arrays from "std/array"
 
 export function run(args: Array<string>): int {
   const prices: Array<int> = [250, 320]
-  const snapshot = prices
+  const snapshot = copy(prices)
   Arrays.push(mutable prices, 400)
   print(Int.toString(Arrays.length(prices)))
   print(Int.toString(Arrays.length(snapshot)))
@@ -432,7 +443,7 @@ export function run(args: Array<string>): int {
 2
 ```
 
-The snapshot keeps two prices. Assigning an array to another name gives that name its own copy, so a change through one name never shows up through another. The copy is cheap: the two names share the elements until one of them changes, and only then are the elements copied.
+The snapshot keeps two prices. `copy(prices)` gives `snapshot` a value of its own, so a change through one name never shows up through the other. The copy is cheap: the two names share the elements until one of them changes, and only then are the elements copied. `const snapshot = prices` without `copy` would make two names for one array, and the compiler would reject the push that follows, because the push would have to copy the array without showing it ([chapter 9](09-memory-and-mutable.md#writing-to-a-shared-value)).
 
 `prices` is a `const`, and it still grows. A `const` fixes the name: `prices` names the same array for the whole function, and its elements can change, through `prices[0] = 200` or `Arrays.push(mutable prices, 400)`. A `let` adds one thing, giving the name a new value with `prices = [...]`:
 

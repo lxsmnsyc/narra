@@ -98,7 +98,7 @@ struct Item {
 
 export function run(args: Array<string>): int {
   const tea = Item { name: "tea", priceCents: 250 }
-  let moreTea = tea
+  let moreTea = copy(tea)
   moreTea.quantity = moreTea.quantity + 1
   print(`${Int.toString(tea.quantity)} then ${Int.toString(moreTea.quantity)}`)
 
@@ -118,7 +118,7 @@ export function run(args: Array<string>): int {
 compared field by field
 ```
 
-A struct behaves like the arrays of chapter 2: `let moreTea = tea` makes a copy, and changing `moreTea` leaves `tea` as it was. You can assign a field only through a `let` name.
+A struct behaves like the arrays of chapter 2: `copy(tea)` makes a value of its own, and changing `moreTea` leaves `tea` as it was. Without `copy`, `let moreTea = tea` would make two names for one struct, and changing `moreTea` while `tea` is still used is a compile error. You can assign a field of a `const` or a `let` name.
 
 Often you want a new value that differs in one or two fields. `{ ...tea, priceCents: 200 }` copies every field of `tea`, then sets the fields listed after it. It is a new value, and `tea` does not change. The last `if` shows that `==` and `!=` compare two structs field by field.
 

@@ -22,6 +22,7 @@
 //
 // The Emitter holds the Checker read-only. Never pass `emitter.checker` as
 // `mutable`: a write would copy every checker table.
+import { substring } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, Expr, Stmt, Block } from "narrac/ast"
@@ -161,7 +162,11 @@ export trait EmitWalker {
   ): string uses alloc
 }
 
-export function newEmitter(checker: Checker, entry: int, tests: bool): Emitter uses alloc {
+export function newEmitter(
+  checker: Checker,
+  entry: int,
+  tests: bool,
+): Emitter from checker uses alloc {
   // The checker is shared, not copied.
   return Emitter {
     checker: checker,
@@ -234,12 +239,12 @@ export function cString(text: string): string uses alloc {
     const copies = byte >= 32 && byte < 127 && byte != 63 && byte != 34 && byte != 92
     if (!copies) {
       if (runStart < index) {
-        Str.append(mutable builder, Str.slice(text, runStart, index))
+        Str.append(mutable builder, substring(text, runStart, index))
       }
       runStart = index + 1
       Str.append(mutable builder, "\\")
       if (byte == 34 || byte == 92) {
-        Str.append(mutable builder, Str.slice(text, index, index + 1))
+        Str.append(mutable builder, substring(text, index, index + 1))
       } else {
         Str.append(mutable builder, Int.toString(byte / 64))
         Str.append(mutable builder, Int.toString((byte / 8) % 8))
@@ -248,7 +253,7 @@ export function cString(text: string): string uses alloc {
     }
   }
   if (runStart < length) {
-    Str.append(mutable builder, Str.slice(text, runStart, length))
+    Str.append(mutable builder, substring(text, runStart, length))
   }
   Str.append(mutable builder, "\"")
   return Str.build(builder)
@@ -268,7 +273,7 @@ export function where(emitter: Emitter, pos: Pos): string uses alloc {
   return cString(`${emitter.file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}`)
 }
 
-export function readNodeType(emitter: Emitter, nodeId: int): Type {
+export function readNodeType(emitter: Emitter, nodeId: int): Type from emitter {
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot >= 0) {
@@ -288,7 +293,7 @@ export function readNodeRef(emitter: Emitter, nodeId: int): Ref {
   return info.refs[slot]
 }
 
-export function readLocal(emitter: Emitter, index: int): LocalInfo {
+export function readLocal(emitter: Emitter, index: int): LocalInfo from emitter {
   return emitter.checker.bodies[emitter.body].locals[index]
 }
 
@@ -380,10 +385,10 @@ export function switchBody(mutable emitter: Emitter, body: int): int {
   return saved
 }
 
-export function underlyingType(emitter: Emitter, type: Type): Type {
+export function underlyingType(emitter: Emitter, type: Type): Type from type {
   if (type is Type.TDistinct(index)) {
     if (emitter.checker.distincts[index].base is Some(base)) {
-      return underlyingType(emitter, base)
+      return copy(underlyingType(emitter, base))
     }
   }
   return type
@@ -409,7 +414,7 @@ export function buildVariantFieldPath(
 
 export function containerName(emitter: Emitter, type: Type): string uses alloc {
   const name = cachedCType(emitter.checker, emitter.typeNames, type)
-  return Str.slice(name, 0, Str.length(name) - 1)
+  return substring(name, 0, Str.length(name) - 1)
 }
 
 export function retainCode(emitter: Emitter, type: Type, value: string): string uses alloc {
@@ -534,7 +539,7 @@ export function endStatement(mutable emitter: Emitter) uses alloc {
   emitter.frames = withoutLast(emitter.frames)
 }
 
-function withoutLast<T>(items: Array<Array<T>>): Array<Array<T>> uses alloc {
+function withoutLast<T>(items: Array<Array<T>>): Array<Array<T>> from items uses alloc {
   let kept: Array<Array<T>> = []
   for (const index of Ranges.between(0, Arrays.length(items) - 1)) {
     Arrays.push(mutable kept, items[index])
@@ -660,7 +665,9 @@ export function unwindBlock(mutable emitter: Emitter, info: BlockInfo) uses allo
   }
 }
 
-export function withoutLastBlock(blocks: Array<BlockInfo>): Array<BlockInfo> uses alloc {
+export function withoutLastBlock(
+  blocks: Array<BlockInfo>,
+): Array<BlockInfo> from blocks uses alloc {
   let kept: Array<BlockInfo> = []
   for (const index of Ranges.upTo(Arrays.length(blocks) - 1)) {
     Arrays.push(mutable kept, blocks[index])
@@ -697,7 +704,7 @@ export function leaveLoop(mutable emitter: Emitter): LoopInfo uses alloc {
   }
   emitter.loopFrames = keptFrames
   emitter.loopInfos = keptInfos
-  return info
+  return copy(info)
 }
 
 export function markStepLoop(mutable emitter: Emitter) {
@@ -710,7 +717,7 @@ export function hasStepLoop(emitter: Emitter): bool {
 
 export function emitStepJump(mutable emitter: Emitter) uses alloc {
   const index = Arrays.length(emitter.loopInfos) - 1
-  const info = emitter.loopInfos[index]
+  const info = copy(emitter.loopInfos[index])
   unwindToLoop(mutable emitter, index)
   emitter.loopInfos[index].continueUsed = true
   writeLine(
@@ -740,7 +747,7 @@ export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses al
 
 export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
   for (let index = Arrays.length(emitter.loopInfos) - 1; index >= 0; index--) {
-    const info = emitter.loopInfos[index]
+    const info = copy(emitter.loopInfos[index])
     if (info.label == label) {
       unwindToLoop(mutable emitter, index)
       const where = `${Int.toString(info.line)}_${Int.toString(info.column)}`
@@ -765,7 +772,7 @@ function unwindToLoop(mutable emitter: Emitter, loopIndex: int) uses alloc {
     releaseTemporaries(mutable emitter, temporaries)
   }
   for (let scope = Arrays.length(emitter.scopes) - 1; scope >= 0; scope--) {
-    const frameScope = emitter.scopes[scope]
+    const frameScope = copy(emitter.scopes[scope])
     releaseLocals(mutable emitter, frameScope)
     if (frameScope.loop) {
       if (remaining == 0) {

@@ -488,11 +488,17 @@ static lstr* lstr_concat_n(int64_t count, lstr** parts) {
   return s;
 }
 
-static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
-  if (n < 0) narra_panic(where, "Str.repeat with a negative count");
-  lstr* s = lstr_new(a->len * n);
+static bool lstr_repeat(lstr* a, int64_t n, lstr** out) {
+  int64_t size;
+  if (n < 0 || __builtin_mul_overflow(a->len, n, &size)) return false;
+  if (a->len == 0) {
+    *out = lstr_new(0);
+    return true;
+  }
+  lstr* s = lstr_new(size);
   for (int64_t i = 0; i < n; i++) memcpy(s->data + i * a->len, a->data, (size_t)a->len);
-  return s;
+  *out = s;
+  return true;
 }
 
 static lstr* lstr_from_digits(uint64_t magnitude, int negative) {
@@ -716,32 +722,29 @@ static void narra_panic_str(lstr* msg, const char* where) {
 }
 
 // Integer arithmetic. + - * and unary - wrap at the type's width in every
-// build. Division by zero panics in every build; MIN / -1 gives MIN and
-// MIN % -1 gives 0.
+// build. The checker proves every divisor is not zero and every shift count is
+// inside the bit width, so the functions below do not test them. MIN / -1 gives
+// MIN and MIN % -1 gives 0.
 static int64_t narra_wrap_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
 static int64_t narra_wrap_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
 static int64_t narra_wrap_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
 static int64_t narra_wrap_neg(int64_t a) { return (int64_t)(0 - (uint64_t)a); }
 
-static int64_t narra_div(int64_t a, int64_t b, const char* where) {
-  if (b == 0) narra_panic(where, "division by zero");
+static int64_t narra_div(int64_t a, int64_t b) {
   if (a == INT64_MIN && b == -1) return a;
   return a / b;
 }
 
-static int64_t narra_rem(int64_t a, int64_t b, const char* where) {
-  if (b == 0) narra_panic(where, "division by zero");
+static int64_t narra_rem(int64_t a, int64_t b) {
   if (b == -1) return 0;
   return a % b;
 }
 
-static int64_t narra_shl(int64_t a, int64_t b, const char* where) {
-  if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
+static int64_t narra_shl(int64_t a, int64_t b) {
   return (int64_t)((uint64_t)a << b);
 }
 
-static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
-  if (b < 0 || b > 63) narra_panic(where, "shift count out of range");
+static int64_t narra_shr(int64_t a, int64_t b) {
   return a >> b;
 }
 
@@ -752,22 +755,18 @@ static int64_t narra_shr(int64_t a, int64_t b, const char* where) {
   static T narra_wrap_sub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
   static T narra_wrap_mul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
   static T narra_wrap_neg_##N(T a) { return (T)(0 - (uint64_t)a); } \
-  static T narra_div_##N(T a, T b, const char* where) { \
-    if (b == 0) narra_panic(where, "division by zero"); \
+  static T narra_div_##N(T a, T b) { \
     if ((MIN) != 0 && a == (T)(MIN) && b == (T)-1) return a; \
     return (T)(a / b); \
   } \
-  static T narra_rem_##N(T a, T b, const char* where) { \
-    if (b == 0) narra_panic(where, "division by zero"); \
+  static T narra_rem_##N(T a, T b) { \
     if ((MIN) != 0 && b == (T)-1) return 0; \
     return (T)(a % b); \
   } \
-  static T narra_shl_##N(T a, T b, const char* where) { \
-    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+  static T narra_shl_##N(T a, T b) { \
     return (T)((uint64_t)a << b); \
   } \
-  static T narra_shr_##N(T a, T b, const char* where) { \
-    if ((uint64_t)b >= sizeof(T) * 8) narra_panic(where, "shift count out of range"); \
+  static T narra_shr_##N(T a, T b) { \
     return (T)(a >> b); \
   } \
   static bool narra_eq_##N(T a, T b) { return a == b; } \
@@ -783,9 +782,10 @@ NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
 
-static narra_range narra_range_stepped(int64_t low, int64_t high, int64_t step, const char* where) {
-  if (step == 0) narra_panic(where, "Ranges.stepped: step is zero");
-  return (narra_range){low, high, step};
+static bool narra_range_stepped(int64_t low, int64_t high, int64_t step, narra_range* out) {
+  if (step == 0) return false;
+  *out = (narra_range){low, high, step};
+  return true;
 }
 
 // Moves a loop variable by the step; a sum past the int range ends the loop.
@@ -795,12 +795,12 @@ static void narra_range_advance(int64_t* value, int64_t step, int64_t high) {
 
 static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_wrap_neg(a) : a; }
 
-static int64_t narra_truncate(double v, const char* where) {
-  if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) {
-    narra_panic(where, "Float.truncate: value out of range");
-  }
-  return (int64_t)v;
+static bool narra_float_truncate(double v, int64_t* out) {
+  if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) return false;
+  *out = (int64_t)v;
+  return true;
 }
+
 
 _Noreturn NARRA_COLD static void narra_bounds_fail(int64_t i, int64_t len, const char* where) {
   char msg[96];

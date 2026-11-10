@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-11, end of batch-6
+
+Run of `bench/run.sh -n 9` at commit d52185b2 on `feat/batch-6`, same machine and toolchains as the batch-5 run below. No agent was running. The load average was 1.93 (1 minute) at the start, with the 5 and 15 minute averages (7.1 and 21.4) still falling after the test runs, and 2.32 at the end. `interp` no longer compiled: its `acc % n` had no proof that `n` is not 0 (proven-operands), and no test suite builds `bench/`. It now calls a `remainder` function that checks the divisor, as Go and Rust do implicitly, and was rerun alone at a load average of 2.29.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.112 | 0.125 | 0.111 | 39088169   |
+| sieve     | 0.128 | 0.138 | 0.163 | 1270607    |
+| matmul    | 0.109 | 0.217 | 0.119 | 3547800000 |
+| strings   | 0.228 | 0.327 | 0.356 | 100000     |
+| interp    | 0.185 | 0.242 | 0.169 | 972838     |
+| particles | 0.073 | 0.074 | 0.093 | 6996184    |
+| compiler  | 0.245 | -     | -     | peak memory 132 MB |
+
+The benchmark programs are within noise of batch-5. The compiler row emits the batch-6 source: 0.175 s to 0.245 s, and 1.74G to 2.47G instructions, mostly the shared-write analysis that now runs in every command (`roadmaps/selfhost/reviews/wave-19.md`). The text helpers' temporary +32% is gone.
+
 ## 2026-11-11, end of batch-5
 
 Run of `bench/run.sh -n 9` at commit cb6cef4b on `feat/batch-5`, same machine and toolchains as the batch-4 runs below. No agent was running. The machine had booted 10 minutes earlier: the load average was 1.99 (1 minute) at the start, with the 5 and 15 minute averages (14.5 and 13.4) still falling from startup indexing, and 2.50 at the end. The Go and Rust times are 2% to 5% lower than in the end-of-batch-4 run, so Narra changes of that size are noise.

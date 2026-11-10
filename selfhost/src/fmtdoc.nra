@@ -25,6 +25,7 @@
 //   (ifbreak-id N broken flat)  IfBreak by group id N
 //   (suffix form)             LineSuffix
 // `;` starts a comment that runs to the end of the line.
+import { repeatString, splitString, substring } from "narrac/textops"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -54,11 +55,11 @@ export function text(value: string): Doc uses alloc {
   return Doc.Text(value)
 }
 
-export function concat(parts: Array<Doc>): Doc uses alloc {
+export function concat(parts: Array<Doc>): Doc from parts uses alloc {
   return Doc.Concat(parts)
 }
 
-export function join(separator: Doc, parts: Array<Doc>): Doc uses alloc {
+export function join(separator: Doc, parts: Array<Doc>): Doc from separator uses alloc {
   let joined: Array<Doc> = []
   for (const index of Ranges.between(0, Arrays.length(parts))) {
     if (index > 0) {
@@ -66,18 +67,18 @@ export function join(separator: Doc, parts: Array<Doc>): Doc uses alloc {
     }
     Arrays.push(mutable joined, parts[index])
   }
-  return Doc.Concat(joined)
+  return copy(Doc.Concat(joined))
 }
 
-export function indent(contents: Doc): Doc uses alloc {
+export function indent(contents: Doc): Doc from contents uses alloc {
   return Doc.Indent(contents)
 }
 
-export function group(contents: Doc): Doc uses alloc {
+export function group(contents: Doc): Doc from contents uses alloc {
   return Doc.Group(contents, -1)
 }
 
-export function groupWithId(contents: Doc, id: int): Doc uses alloc {
+export function groupWithId(contents: Doc, id: int): Doc from contents uses alloc {
   return Doc.Group(contents, id)
 }
 
@@ -394,16 +395,16 @@ function writeText(mutable writer: Writer, value: string, options: Options) uses
     return
   }
   if (writer.atLineStart) {
-    let indentation = Str.repeat(" ", writer.lineIndent * options.tabWidth)
+    let indentation = repeatString(" ", writer.lineIndent * options.tabWidth)
     if (options.useTabs) {
-      indentation = Str.repeat("\t", writer.lineIndent)
+      indentation = repeatString("\t", writer.lineIndent)
     }
     Str.append(mutable writer.builder, indentation)
     writer.atLineStart = false
   }
   const held = writer.pending
   Str.append(mutable writer.builder, held)
-  Str.append(mutable writer.builder, Str.slice(value, 0, end))
+  Str.append(mutable writer.builder, substring(value, 0, end))
   writer.pending = Str.sliceFrom(value, end)
 }
 
@@ -607,11 +608,11 @@ function readString(
       if (escaped == 116) {
         Str.append(mutable builder, "\t")
       } else {
-        Str.append(mutable builder, Str.slice(source, offset + 1, offset + 2))
+        Str.append(mutable builder, substring(source, offset + 1, offset + 2))
       }
       offset += 2
     } else {
-      Str.append(mutable builder, Str.slice(source, offset, offset + 1))
+      Str.append(mutable builder, substring(source, offset, offset + 1))
       offset++
     }
   }
@@ -622,7 +623,7 @@ function closeFrame(
   mutable reader: Reader,
   line: int,
   column: int,
-): Result<Doc, string> uses alloc {
+): Result<Doc, string> from reader uses alloc {
   reader.depth--
   const head = reader.heads[reader.depth]
   const parts = reader.children[reader.depth]
@@ -768,12 +769,12 @@ function readDocument(source: string): Result<Doc, string> uses alloc {
       while (offset < length && isWordByte(Str.byteAt(source, offset))) {
         offset++
       }
-      const handled = readWord(mutable reader, Str.slice(source, start, offset), line, column)
+      const handled = readWord(mutable reader, substring(source, start, offset), line, column)
       if (handled is Some(message)) {
         return Err(message)
       }
     } else {
-      return failAt(line, column, `unexpected character ${Str.slice(source, offset, offset + 1)}`)
+      return failAt(line, column, `unexpected character ${substring(source, offset, offset + 1)}`)
     }
   }
   if (reader.depth > 0) {
@@ -798,9 +799,9 @@ export function runFmtDoc(arguments: Array<string>): int uses io, alloc {
   // Option lines start with @; they become empty lines, so line numbers stay.
   let options = Options { printWidth: 80, tabWidth: 2, useTabs: false }
   let body = Str.builder()
-  for (const sourceLine of Arrays.values(Str.split(read.value, "\n"))) {
+  for (const sourceLine of Arrays.values(splitString(read.value, "\n"))) {
     if (Str.startsWith(sourceLine, "@")) {
-      const words = Str.split(Str.trim(sourceLine), " ")
+      const words = splitString(Str.trim(sourceLine), " ")
       const name = words[0]
       if (name == "@useTabs") {
         options.useTabs = true

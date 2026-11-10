@@ -15,6 +15,7 @@
 //   again from the source text of the type.
 // - Every node handles its own comments (withComments) and parentheses, so the
 //   caller never does. A block is printed by printer.printBlock.
+import { substring } from "narrac/textops"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -72,7 +73,7 @@ function createText(value: string): Document {
   return Document.Text(value)
 }
 
-function createConcat(parts: Array<Document>): Document {
+function createConcat(parts: Array<Document>): Document from parts {
   return Document.Concat(parts)
 }
 
@@ -80,11 +81,11 @@ function createEmpty(): Document {
   return Document.Concat([])
 }
 
-function createGroup(contents: Document): Document {
+function createGroup(contents: Document): Document from contents {
   return Document.Group(contents, -1)
 }
 
-function createIndent(contents: Document): Document {
+function createIndent(contents: Document): Document from contents {
   return Document.Indent(contents)
 }
 
@@ -119,7 +120,7 @@ function getOffset(source: string, position: Pos): int {
 }
 
 function getSourceText(printer: Printer, start: Pos, end: Pos): string uses alloc {
-  return Str.slice(printer.source, getOffset(printer.source, start), getOffset(printer.source, end))
+  return substring(printer.source, getOffset(printer.source, start), getOffset(printer.source, end))
 }
 
 function getBinaryPrecedence(operator: string): int {
@@ -164,7 +165,11 @@ function getPrecedence(expression: Expr): int {
   }
 }
 
-function printWithMinimum(printer: Printer, expression: Expr, minimum: int): Document uses alloc {
+function printWithMinimum(
+  printer: Printer,
+  expression: Expr,
+  minimum: int,
+): Document from printer uses alloc {
   const document = printExpression(printer, expression)
   const dropped = dropsParentheses(printer, expression)
   // Wrap in parentheses when precedence is lower than the position needs and the author did not
@@ -190,14 +195,14 @@ function printWithMinimum(printer: Printer, expression: Expr, minimum: int): Doc
   return document
 }
 
-function getReturnedValue(block: Block): Expr {
+function getReturnedValue(block: Block): Expr from block {
   if (block.statements[0] is Stmt.ReturnStmt(_, Some(value))) {
     return value
   }
   return Expr.BoolLit(-1, block.pos, false)
 }
 
-function printElement(printer: Printer, expression: Expr): Document uses alloc {
+function printElement(printer: Printer, expression: Expr): Document from printer uses alloc {
   if (expression is Expr.BlockExpr(id, _, block)) {
     // Items of a call, array or tuple sit inside brackets, where a conditional may span lines
     // without parentheses.
@@ -230,7 +235,7 @@ function printList(
   blanks: Array<bool>,
   spaced: bool,
   hasComma: bool,
-): Document uses alloc {
+): Document from items uses alloc {
   return printListWith(printer, open, close, items, blanks, spaced, hasComma, false)
 }
 
@@ -243,7 +248,7 @@ function printListWith(
   spaced: bool,
   hasComma: bool,
   forceBreak: bool,
-): Document uses alloc {
+): Document from items uses alloc {
   if (Arrays.length(items) == 0) {
     return createText(`${open}${close}`)
   }
@@ -314,7 +319,10 @@ function printEmptyBraces(
 
 // ---- Expressions
 
-export function printExpression(printer: Printer, expression: Expr): Document uses alloc {
+export function printExpression(
+  printer: Printer,
+  expression: Expr,
+): Document from printer uses alloc {
   const id = getExprId(expression)
   if (isConditional(expression) && hasCommentInParens(printer, expression)) {
     return printKeptParentheses(printer, expression)
@@ -330,7 +338,10 @@ export function printExpression(printer: Printer, expression: Expr): Document us
   return withComments(printer, getIdKey(id), document)
 }
 
-function printKeptParentheses(printer: Printer, expression: Expr): Document uses alloc {
+function printKeptParentheses(
+  printer: Printer,
+  expression: Expr,
+): Document from printer uses alloc {
   // A conditional keeps its parentheses, and so does an operand of a conditional: dropping them
   // would leave a comment after `?` or `:`, which attaches elsewhere when formatted again.
   let body = printExpressionBody(printer, expression, true)
@@ -342,7 +353,7 @@ function printKeptParentheses(printer: Printer, expression: Expr): Document uses
   return printBracketed("(", withComments(printer, getIdKey(getExprId(expression)), body), ")")
 }
 
-function printOperand(printer: Printer, expression: Expr): Document uses alloc {
+function printOperand(printer: Printer, expression: Expr): Document from printer uses alloc {
   if (isParenthesized(printer, getExprId(expression)) && hasCommentInParens(printer, expression)) {
     return printKeptParentheses(printer, expression)
   }
@@ -353,7 +364,7 @@ function printExpressionBody(
   printer: Printer,
   expression: Expr,
   written: bool,
-): Document uses alloc {
+): Document from printer uses alloc {
   return match (expression) {
     Expr.IntLit(id, pos, value) | Expr.FloatLit(id, pos, value) => createText(
       getEndedText(printer, id, pos, value),
@@ -451,12 +462,12 @@ function cutClosingParens(text: string, fallback: string): string uses alloc {
     }
   }
   if (last is Some(token)) {
-    return Str.slice(text, 0, getOffset(text, Pos { line: token.endLine, column: token.endColumn }))
+    return substring(text, 0, getOffset(text, Pos { line: token.endLine, column: token.endColumn }))
   }
   return fallback
 }
 
-function printIndex(printer: Printer, index: Expr): Document uses alloc {
+function printIndex(printer: Printer, index: Expr): Document from printer uses alloc {
   const key = getIdKey(getExprId(index))
   // A comment on the index keeps it inside the brackets, which then break; without one the brackets
   // are plain text.
@@ -466,7 +477,11 @@ function printIndex(printer: Printer, index: Expr): Document uses alloc {
   return createConcat([createText("["), printElement(printer, index), createText("]")])
 }
 
-function printIs(printer: Printer, subject: Expr, pattern: Pattern): Document uses alloc {
+function printIs(
+  printer: Printer,
+  subject: Expr,
+  pattern: Pattern,
+): Document from printer uses alloc {
   const hoisted = hoistTrailingComments(printer, getIdKey(getExprId(subject)))
   const left = printWithMinimum(hoisted.printer, subject, IS_PRECEDENCE)
   // A line comment after the subject cannot stay there, as a line break before `is` would end the
@@ -487,7 +502,11 @@ function printIs(printer: Printer, subject: Expr, pattern: Pattern): Document us
   return createGroup(createConcat(parts))
 }
 
-function printUnary(printer: Printer, operator: string, operand: Expr): Document uses alloc {
+function printUnary(
+  printer: Printer,
+  operator: string,
+  operand: Expr,
+): Document from printer uses alloc {
   // Two minus signs get a space, so `- -x` stays two tokens.
   let separator = ""
   if (operand is Expr.UnaryExpr(operandId, _, operandOperator, _)) {
@@ -512,7 +531,7 @@ function printUnary(printer: Printer, operator: string, operand: Expr): Document
   ])
 }
 
-function printBinary(printer: Printer, expression: Expr): Document uses alloc {
+function printBinary(printer: Printer, expression: Expr): Document from printer uses alloc {
   return printBinaryChain(printer, expression, true)
 }
 
@@ -520,7 +539,7 @@ function printBinaryChain(
   printer: Printer,
   expression: Expr,
   indentRest: bool,
-): Document uses alloc {
+): Document from printer uses alloc {
   // A broken chain breaks after each operator and indents the rest. The chain is walked along the
   // left operands in a loop, so a long chain does not recurse.
   let operators: Array<string> = []
@@ -614,7 +633,7 @@ function getPartsWidth(parts: Array<Document>, limit: int): int {
   return width
 }
 
-function printArguments(printer: Printer, arguments: Array<Arg>): Document uses alloc {
+function printArguments(printer: Printer, arguments: Array<Arg>): Document from printer uses alloc {
   const count = Arrays.length(arguments)
   if (count == 0) {
     return createText("()")
@@ -668,7 +687,7 @@ function printBlockExpression(
   expression: Expr,
   block: Block,
   written: bool,
-): Document uses alloc {
+): Document from printer uses alloc {
   if (isConditional(expression)) {
     return printConditional(printer, block, written, false)
   }
@@ -683,7 +702,7 @@ function printConditional(
   block: Block,
   written: bool,
   bare: bool,
-): Document uses alloc {
+): Document from printer uses alloc {
   let parts: Array<Document> = []
   let current = block
   let walking = true
@@ -746,14 +765,17 @@ function printConditional(
   )
 }
 
-function printConditionOperand(printer: Printer, condition: Expr): Document uses alloc {
+function printConditionOperand(
+  printer: Printer,
+  condition: Expr,
+): Document from printer uses alloc {
   if (isParenthesized(printer, getExprId(condition)) && hasCommentInParens(printer, condition)) {
     return printKeptParentheses(printer, condition)
   }
   return printWithMinimum(printer, condition, 1)
 }
 
-function printIfValue(printer: Printer, block: Block): Document uses alloc {
+function printIfValue(printer: Printer, block: Block): Document from printer uses alloc {
   let parts: Array<Document> = []
   let current = block
   let walking = true
@@ -784,7 +806,7 @@ function printIfValue(printer: Printer, block: Block): Document uses alloc {
   return createConcat(parts)
 }
 
-function printBranch(printer: Printer, branch: Expr): Document uses alloc {
+function printBranch(printer: Printer, branch: Expr): Document from printer uses alloc {
   if (branch is Expr.BlockExpr(_, _, inner)) {
     return printer.printBlock(printer, inner)
   }
@@ -796,7 +818,7 @@ function printArrayLiteral(
   id: int,
   elements: Array<Expr>,
   isTuple: bool,
-): Document uses alloc {
+): Document from printer uses alloc {
   let open = "["
   if (isTuple) {
     open = "#["
@@ -819,7 +841,7 @@ function printStructLiteral(
   typeArguments: Array<TypeExpr>,
   fields: Array<FieldInit>,
   spread: Option<Expr>,
-): Document uses alloc {
+): Document from printer uses alloc {
   let head: Array<Document> = []
   if (typeName != "") {
     Arrays.push(mutable head, createText(typeName))
@@ -873,7 +895,7 @@ function getLiteralPos(expression: Expr): Pos {
       | Expr.StringLit(_, pos, _, _)
       | Expr.CharLit(_, pos, _)
       | Expr.BoolLit(_, pos, _)
-      | Expr.UnaryExpr(_, pos, _, _) => pos
+      | Expr.UnaryExpr(_, pos, _, _) => copy(pos)
     _ => Pos { line: 0, column: 0 }
   }
 }
@@ -913,7 +935,7 @@ function printMapLiteral(
   typeArguments: Array<TypeExpr>,
   keys: Array<Expr>,
   values: Array<Expr>,
-): Document uses alloc {
+): Document from printer uses alloc {
   let head: Array<Document> = [
     createText("Map"),
     printTypeArguments(printer, typeArguments),
@@ -953,7 +975,7 @@ function isCompactBody(expression: Expr): bool {
   }
 }
 
-function printBody(printer: Printer, body: Expr): Document uses alloc {
+function printBody(printer: Printer, body: Expr): Document from printer uses alloc {
   // A comment on the lines before the body moves it below the `=>`.
   const isLed = hasLeading(printer, getIdKey(getExprId(body))) && !isConditional(body)
   if (isCompactBody(body) && !isLed) {
@@ -986,7 +1008,11 @@ function printBody(printer: Printer, body: Expr): Document uses alloc {
   return createConcat(parts)
 }
 
-function printMatch(printer: Printer, subject: Expr, arms: Array<MatchArm>): Document uses alloc {
+function printMatch(
+  printer: Printer,
+  subject: Expr,
+  arms: Array<MatchArm>,
+): Document from printer uses alloc {
   const head = createConcat([
     createText("match "),
     printBracketed("(", printExpression(printer, subject), ")"),
@@ -1042,7 +1068,7 @@ function printArrow(
   result: Option<TypeExpr>,
   body: Option<Expr>,
   block: Option<Block>,
-): Document uses alloc {
+): Document from printer uses alloc {
   let items: Array<Document> = []
   for (const parameter of Arrays.values(parameters)) {
     let parts: Array<Document> = [createText(parameter.name)]
@@ -1086,7 +1112,7 @@ function printArrow(
 
 // ---- Patterns
 
-export function printPattern(printer: Printer, pattern: Pattern): Document uses alloc {
+export function printPattern(printer: Printer, pattern: Pattern): Document from printer uses alloc {
   const id = getPatternId(pattern)
   return withComments(printer, getIdKey(id), printPatternBody(printer, pattern))
 }
@@ -1096,7 +1122,7 @@ function printPatternList(
   open: string,
   close: string,
   patterns: Array<Pattern>,
-): Document uses alloc {
+): Document from printer uses alloc {
   let items: Array<Document> = []
   for (const pattern of Arrays.values(patterns)) {
     Arrays.push(mutable items, printPattern(printer, pattern))
@@ -1104,7 +1130,7 @@ function printPatternList(
   return printList(printer, open, close, items, [], false, true)
 }
 
-function printPatternBody(printer: Printer, pattern: Pattern): Document uses alloc {
+function printPatternBody(printer: Printer, pattern: Pattern): Document from printer uses alloc {
   return match (pattern) {
     Pattern.PatWildcard(_, _) => createText("_")
     Pattern.PatName(_, _, name) => createText(name)
@@ -1122,7 +1148,10 @@ function printPatternBody(printer: Printer, pattern: Pattern): Document uses all
   }
 }
 
-function printAlternatives(printer: Printer, alternatives: Array<Pattern>): Document uses alloc {
+function printAlternatives(
+  printer: Printer,
+  alternatives: Array<Pattern>,
+): Document from printer uses alloc {
   // One line when it fits, otherwise each further alternative on its own line, starting with a bar.
   let rest: Array<Document> = []
   for (const index of Ranges.between(1, Arrays.length(alternatives))) {
@@ -1141,7 +1170,7 @@ function printConstructorPattern(
   name: string,
   arguments: Array<Pattern>,
   bare: bool,
-): Document uses alloc {
+): Document from printer uses alloc {
   let fullName = name
   if (enumName != "") {
     fullName = `${enumName}.${name}`
@@ -1156,7 +1185,7 @@ function printStructPattern(
   printer: Printer,
   id: int,
   fields: Array<FieldPattern>,
-): Document uses alloc {
+): Document from printer uses alloc {
   if (Arrays.length(fields) == 0) {
     return printEmptyBraces(printer, getIdKey(id), "{", "}")
   }
@@ -1203,6 +1232,9 @@ function printTypeBody(printer: Printer, type: TypeExpr): Document uses alloc {
   }
   if (type.isFunc) {
     return printFunctionType(printer, type)
+  }
+  if (type.typeofName != "") {
+    return createText(`typeof ${type.typeofName}`)
   }
   let parts: Array<Document> = [createText(type.name), printTypeArguments(printer, type.arguments)]
   if (Arrays.length(type.effects) > 0) {

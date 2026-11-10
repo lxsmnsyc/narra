@@ -3,8 +3,10 @@
 // counts its result as unshared, and copy on write later copies only the
 // paths a write reaches. Debug builds grant the debug copy check a credit for
 // each object the retain reaches (NARRA_COPY_GRANT in runtime.h).
+import { splitString } from "narrac/textops"
 import { Pos, Expr, Arg } from "narrac/ast"
-import { Type } from "narrac/types"
+import { TokenKind, lex } from "narrac/lexer"
+import { Type, typeKey } from "narrac/types"
 import {
   Checker,
   Walker,
@@ -27,6 +29,7 @@ import {
   writeLine,
   readNodeType,
 } from "narrac/emitstate"
+import { buildCreditCode } from "narrac/emitdecls"
 import * as Arrays from "std/array"
 import * as Char from "std/char"
 import * as Int from "std/int"
@@ -70,7 +73,7 @@ export function checkCopyCall<W: Walker>(
   // An instance of a generic function is checked with concrete type
   // arguments; the generic body was already checked with its parameters.
   if (
-    valueType != Type.TVoid && !isCheckingInstance(checker) && !isCopyTracked(checker, valueType)
+    valueType != Type.TVoid && !isCheckingInstance(checker) && !canShareType(checker, valueType)
   ) {
     const shown = typeString(checker, valueType)
     const fixes = buildRemoveFix(checker, nodeId, calleePos, argument.value)
@@ -128,6 +131,38 @@ function isDistinctTracked(checker: Checker, index: int): bool {
   return false
 }
 
+export function canShareType(checker: Checker, type: Type): bool uses alloc {
+  // A value that can hold a tracked value: a tracked type, or an enum with such a payload.
+  let visited: Map<string, bool> = Map {}
+  return canShareVisiting(checker, type, mutable visited)
+}
+
+function canShareVisiting(
+  checker: Checker,
+  type: Type,
+  mutable visited: Map<string, bool>,
+): bool uses alloc {
+  if (isCopyTracked(checker, type)) {
+    return true
+  }
+  // An enum already visited adds nothing new.
+  if (type is Type.TEnum(index)) {
+    const typeName = typeKey(type)
+    if (visited[typeName] is Some(_)) {
+      return false
+    }
+    visited[typeName] = true
+    for (const variant of Arrays.values(checker.enums[index].variants)) {
+      for (const field of Arrays.values(variant.fields)) {
+        if (canShareVisiting(checker, field.fieldType, mutable visited)) {
+          return true
+        }
+      }
+    }
+  }
+  return false
+}
+
 export function buildConstantHint(
   checker: Checker,
   scope: int,
@@ -147,7 +182,7 @@ export function buildConstantHint(
   return `, as in \`let ${buildLocalName(name)} = ${text}\``
 }
 
-function findConstantType(checker: Checker, scope: int, name: string): Option<Type> {
+function findConstantType(checker: Checker, scope: int, name: string): Option<Type> from checker {
   for (const constant of Arrays.values(checker.consts)) {
     if (constant.scope == scope && constant.name == name) {
       if (constant.declaredType is Some(declared)) {
@@ -160,30 +195,87 @@ function findConstantType(checker: Checker, scope: int, name: string): Option<Ty
 }
 
 function buildLocalName(name: string): string uses alloc {
-  // STARTING_KIT becomes startingKit; a name that is not all capitals gets a suffix.
+  // STARTING_KIT becomes startingKit and MaxValue becomes maxValue; a name
+  // that does not change, or that comes out as a keyword, gets a suffix.
+  let hasLower = false
+  for (const character of Str.chars(name)) {
+    const code = Char.code(character)
+    if (code >= 97 && code <= 122) {
+      hasLower = true
+    }
+  }
+  let local = ""
+  if (hasLower) {
+    local = lowerLeadingCapitals(name)
+  } else {
+    local = buildCamelCase(name)
+  }
+  if (local == "" || local == name) {
+    return `${name}Copy`
+  }
+  if (isKeywordName(local)) {
+    return `${local}Copy`
+  }
+  return local
+}
+
+function lowerLeadingCapitals(name: string): string uses alloc {
+  // A run of capitals at the start is lowercased, except the last one when a
+  // lowercase letter follows it: HTTPServer becomes httpServer.
+  const characters = Str.chars(name)
+  let end = 0
+  while (end < Arrays.length(characters)) {
+    const code = Char.code(characters[end])
+    if (code < 65 || code > 90) {
+      break
+    }
+    end += 1
+  }
+  if (end > 1 && end < Arrays.length(characters)) {
+    end -= 1
+  }
+  let builder = Str.builder()
+  let index = 0
+  for (const character of characters) {
+    const code = Char.code(character)
+    if (index < end && code >= 65 && code <= 90) {
+      if (Char.fromCode(code + 32) is Some(lower)) {
+        Str.append(mutable builder, Str.fromChar(lower))
+      }
+    } else {
+      Str.append(mutable builder, Str.fromChar(character))
+    }
+    index += 1
+  }
+  return Str.build(builder)
+}
+
+function buildCamelCase(name: string): string uses alloc {
+  // STARTING_KIT becomes startingKit.
   let builder = Str.builder()
   let upperNext = false
-  let changed = false
   for (const character of Str.chars(name)) {
     const code = Char.code(character)
     if (character == '_') {
       upperNext = Str.length(Str.build(builder)) > 0
-      changed = true
     } else if (code >= 65 && code <= 90 && !upperNext) {
       if (Char.fromCode(code + 32) is Some(lower)) {
         Str.append(mutable builder, Str.fromChar(lower))
       }
-      changed = true
     } else {
       Str.append(mutable builder, Str.fromChar(character))
       upperNext = false
     }
   }
-  const local = Str.build(builder)
-  if (!changed || local == "") {
-    return `${name}Copy`
+  return Str.build(builder)
+}
+
+function isKeywordName(name: string): bool uses alloc {
+  // The lexer knows the keywords: a name that lexes as one cannot be a local.
+  if (lex(name) is Ok(tokens)) {
+    return Arrays.length(tokens) > 0 && tokens[0].kind == TokenKind.TokKeyword
   }
-  return local
+  return false
 }
 
 export function isCopyCall(checker: Checker, expression: Expr): bool {
@@ -203,7 +295,7 @@ function buildRemoveFix(
   nodeId: int,
   calleePos: Pos,
   value: Expr,
-): Array<Fix> uses alloc {
+): Array<Fix> from calleePos uses alloc {
   // Needs the source text and a call on one line written `copy(` with the `)`
   // right after its argument.
   const scope = checker.scopes[checker.current]
@@ -216,7 +308,7 @@ function buildRemoveFix(
   } else {
     return []
   }
-  const lines = Str.split(scope.facts.source, "\n")
+  const lines = splitString(scope.facts.source, "\n")
   if (calleePos.line != end.line || end.line < 1 || end.line > Arrays.length(lines)) {
     return []
   }
@@ -271,7 +363,7 @@ export function emitCopyCall<W: EmitWalker>(
 ): Code uses alloc {
   // A copy is one retain of the value, made while the debug copy check grants
   // credits. A value without counted parts is copied by C itself.
-  const valueType = readNodeType(emitter, getExpressionId(arguments[0].value))
+  const valueType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
   const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
   if (!needsRc(emitter, valueType)) {
     return code
@@ -280,6 +372,13 @@ export function emitCopyCall<W: EmitWalker>(
   const copied = ownedTemp(mutable emitter, valueType, code.text)
   const retainText = retainCode(emitter, valueType, copied)
   writeLine(mutable emitter, retainText)
+  // The parts a retain does not reach get their credits here, in debug builds.
+  const creditText = buildCreditCode(emitter, valueType, copied)
+  if (creditText != "") {
+    writeLine(mutable emitter, "#ifndef NARRA_RELEASE")
+    writeLine(mutable emitter, `if (narra_copy_on) { ${creditText} }`)
+    writeLine(mutable emitter, "#endif")
+  }
   writeLine(mutable emitter, "NARRA_COPY_GRANT(false);")
   return Code { text: copied, owned: true }
 }

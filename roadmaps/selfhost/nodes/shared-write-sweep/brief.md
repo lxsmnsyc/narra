@@ -1,7 +1,7 @@
 ---
 id: shared-write-sweep
 title: "Fix the shared writes in the checker"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-6

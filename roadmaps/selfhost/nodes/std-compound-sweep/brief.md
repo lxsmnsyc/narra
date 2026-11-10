@@ -1,7 +1,7 @@
 ---
 id: std-compound-sweep
 title: "Compound assignment in std sources"
-status: todo
+status: active
 priority: should
 type: chore
 story: batch-6

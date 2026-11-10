@@ -1,7 +1,7 @@
 ---
 id: quote-on-error
 title: "Quote local names only when reporting E0601"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 47927
 owns:
   - roadmaps/selfhost/nodes/quote-on-error/**
 shared:

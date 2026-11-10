@@ -1,7 +1,7 @@
 ---
 id: finish-facts-lines
 title: "finishFacts without a full split and a second lex"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 63815
 owns:
   - roadmaps/selfhost/nodes/finish-facts-lines/**
 shared:

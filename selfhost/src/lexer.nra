@@ -1,6 +1,7 @@
 // The lexer, ported line by line from compiler/internal/narra/lexer.go.
-// It works on an array of characters, like the Go lexer works on []rune, so
-// columns count characters, not bytes.
+// It reads the source bytes and slices token text out of the source. Columns
+// count characters, not bytes: a continuation byte of a multi-byte character
+// does not move the column.
 import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -37,15 +38,14 @@ export struct Token {
 }
 
 struct Lexer {
-  source: Array<char>
-  index: int
+  source: string
+  index: int // a byte offset into source
   line: int
   column: int
   depth: int // nesting of ( and [, where line breaks never end a statement
   savedDepths: Array<int> // depth outside each open {, where line breaks end statements again
   savedCount: int // how many entries of savedDepths are in use
   tokens: Array<Token>
-  punctuationChars: Array<Array<char>>
   keepComments: bool // lexWithComments: collect the comments the tokens skip
   comments: Array<Comment>
 }
@@ -123,13 +123,42 @@ const PUNCTS = [
   "?",
 ]
 
+// Byte values of the ASCII characters the lexer tests.
+const TAB = 9
+const NEWLINE = 10
+const CARRIAGE_RETURN = 13
+const SPACE = 32
+const DOUBLE_QUOTE = 34
+const DOLLAR = 36
+const SINGLE_QUOTE = 39
+const STAR = 42
+const PLUS = 43
+const MINUS = 45
+const DOT = 46
+const SLASH = 47
+const ZERO = 48
+const NINE = 57
+const UPPER_A = 65
+const UPPER_E = 69
+const UPPER_F = 70
+const UPPER_Z = 90
+const BACKSLASH = 92
+const UNDERSCORE = 95
+const BACKTICK = 96
+const LOWER_A = 97
+const LOWER_B = 98
+const LOWER_E = 101
+const LOWER_F = 102
+const LOWER_O = 111
+const LOWER_U = 117
+const LOWER_X = 120
+const LOWER_Z = 122
+const OPEN_BRACE = 123
+const CLOSE_BRACE = 125
+
 function createLexer(source: string, keepComments: bool): Lexer {
-  let punctuationChars: Array<Array<char>> = []
-  for (const punctuation of Arrays.values(PUNCTS)) {
-    Arrays.push(mutable punctuationChars, Str.chars(punctuation))
-  }
   return Lexer {
-    source: Str.chars(source),
+    source: source,
     index: 0,
     line: 1,
     column: 1,
@@ -137,7 +166,6 @@ function createLexer(source: string, keepComments: bool): Lexer {
     savedDepths: [],
     savedCount: 0,
     tokens: [],
-    punctuationChars: punctuationChars,
     keepComments: keepComments,
     comments: [],
   }
@@ -204,10 +232,10 @@ function recordComment(mutable lexer: Lexer, first: int, line: int, column: int)
   // only whitespace before it on its line?
   let ownLine = true
   let back = first
-  while (back > 0 && lexer.source[back - 1] != '\n') {
+  while (back > 0 && Str.byteAt(lexer.source, back - 1) != NEWLINE) {
     back--
-    const before = lexer.source[back]
-    if (before != ' ' && before != '\t' && before != '\r') {
+    const before = Str.byteAt(lexer.source, back)
+    if (before != SPACE && before != TAB && before != CARRIAGE_RETURN) {
       ownLine = false
     }
   }
@@ -236,26 +264,27 @@ function errorWithFixesAt(
 }
 
 function getSize(lexer: Lexer): int {
-  return Arrays.length(lexer.source)
+  return Str.length(lexer.source)
 }
 
-function peek(lexer: Lexer, offset: int): char {
-  if (lexer.index + offset < Arrays.length(lexer.source)) {
-    return lexer.source[lexer.index + offset]
+function peek(lexer: Lexer, offset: int): int {
+  if (lexer.index + offset < Str.length(lexer.source)) {
+    return Str.byteAt(lexer.source, lexer.index + offset)
   }
-  return '\0'
+  return 0
 }
 
-function advance(mutable lexer: Lexer): char {
-  const character = lexer.source[lexer.index]
+function advance(mutable lexer: Lexer): int {
+  const byte = Str.byteAt(lexer.source, lexer.index)
   lexer.index++
-  if (character == '\n') {
+  if (byte == NEWLINE) {
     lexer.line++
     lexer.column = 1
-  } else {
+  } else if ((byte & 0xC0) != 0x80) {
+    // A continuation byte belongs to the character before it.
     lexer.column++
   }
-  return character
+  return byte
 }
 
 function emit(mutable lexer: Lexer, kind: TokenKind, text: string, line: int, column: int) {
@@ -319,11 +348,7 @@ function endsIncrement(lexer: Lexer): bool {
 }
 
 function readText(lexer: Lexer, first: int, end: int): string {
-  let builder = Str.builder()
-  for (const index of Ranges.between(first, end)) {
-    Str.appendChar(mutable builder, lexer.source[index])
-  }
-  return Str.build(builder)
+  return Str.slice(lexer.source, first, end)
 }
 
 function runLexer(mutable lexer: Lexer): Option<LexError> {
@@ -331,26 +356,26 @@ function runLexer(mutable lexer: Lexer): Option<LexError> {
     const character = peek(lexer, 0)
     const line = lexer.line
     const column = lexer.column
-    if (character == '\n') {
+    if (character == NEWLINE) {
       advance(mutable lexer)
       if (lexer.depth == 0 && lastEndsStatement(lexer)) {
         emit(mutable lexer, TokenKind.TokNewline, "\n", line, column)
       }
-    } else if (character == ' ' || character == '\t' || character == '\r') {
+    } else if (character == SPACE || character == TAB || character == CARRIAGE_RETURN) {
       advance(mutable lexer)
-    } else if (character == '/' && peek(lexer, 1) == '/') {
+    } else if (character == SLASH && peek(lexer, 1) == SLASH) {
       const commentStart = lexer.index
-      while (lexer.index < getSize(lexer) && peek(lexer, 0) != '\n') {
+      while (lexer.index < getSize(lexer) && peek(lexer, 0) != NEWLINE) {
         advance(mutable lexer)
       }
       if (lexer.keepComments) {
         recordComment(mutable lexer, commentStart, line, column)
       }
-    } else if (character == '/' && peek(lexer, 1) == '*') {
+    } else if (character == SLASH && peek(lexer, 1) == STAR) {
       const commentStart = lexer.index
       advance(mutable lexer)
       advance(mutable lexer)
-      while (lexer.index < getSize(lexer) && !(peek(lexer, 0) == '*' && peek(lexer, 1) == '/')) {
+      while (lexer.index < getSize(lexer) && !(peek(lexer, 0) == STAR && peek(lexer, 1) == SLASH)) {
         advance(mutable lexer)
       }
       if (lexer.index >= getSize(lexer)) {
@@ -376,15 +401,15 @@ function runLexer(mutable lexer: Lexer): Option<LexError> {
       }
     } else if (isDigit(character)) {
       lexNumber(mutable lexer, line, column)
-    } else if (character == '"') {
-      const literal = lexQuoted(mutable lexer, '"', line, column)
+    } else if (character == DOUBLE_QUOTE) {
+      const literal = lexQuoted(mutable lexer, DOUBLE_QUOTE, line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
       emit(mutable lexer, TokenKind.TokString, literal.value, line, column)
-    } else if (character == '\'') {
+    } else if (character == SINGLE_QUOTE) {
       const quoteStart = lexer.index
-      const literal = lexQuoted(mutable lexer, '\'', line, column)
+      const literal = lexQuoted(mutable lexer, SINGLE_QUOTE, line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
@@ -403,14 +428,14 @@ function runLexer(mutable lexer: Lexer): Option<LexError> {
         )
       }
       emit(mutable lexer, TokenKind.TokChar, literal.value, line, column)
-    } else if (character == '`') {
+    } else if (character == BACKTICK) {
       const literal = lexTemplate(mutable lexer, line, column)
       if (literal is Err(error)) {
         return Some(error)
       }
       emit(mutable lexer, TokenKind.TokTemplate, literal.value, line, column)
     } else {
-      const failed = lexPunctuation(mutable lexer, character, line, column)
+      const failed = lexPunctuation(mutable lexer, line, column)
       if (failed is Some(_)) {
         return failed
       }
@@ -425,18 +450,13 @@ function runLexer(mutable lexer: Lexer): Option<LexError> {
   return None
 }
 
-function lexPunctuation(
-  mutable lexer: Lexer,
-  character: char,
-  line: int,
-  column: int,
-): Option<LexError> {
-  for (const index of Ranges.upTo(Arrays.length(PUNCTS))) {
-    if (hasPrefix(lexer, lexer.punctuationChars[index])) {
-      const punctuation = PUNCTS[index]
-      for (const _character of Arrays.values(lexer.punctuationChars[index])) {
-        advance(mutable lexer)
-      }
+function lexPunctuation(mutable lexer: Lexer, line: int, column: int): Option<LexError> {
+  for (const punctuation of Arrays.values(PUNCTS)) {
+    if (hasPrefix(lexer, punctuation)) {
+      // Punctuation is ASCII, so each byte is one column.
+      const length = Str.length(punctuation)
+      lexer.index += length
+      lexer.column += length
       if (punctuation == ";" && lexer.depth == 0) {
         return errorWithFixesAt(
           line,
@@ -471,12 +491,13 @@ function lexPunctuation(
       return None
     }
   }
-  return errorAt(line, column, "E0004", `unexpected character ${quoteChar(character)}`)
+  const unexpected = Str.charAt(lexer.source, lexer.index)
+  return errorAt(line, column, "E0004", `unexpected character ${quoteChar(unexpected)}`)
 }
 
-function hasPrefix(lexer: Lexer, prefix: Array<char>): bool {
-  for (const index of Ranges.upTo(Arrays.length(prefix))) {
-    if (peek(lexer, index) != prefix[index]) {
+function hasPrefix(lexer: Lexer, prefix: string): bool {
+  for (const index of Ranges.upTo(Str.length(prefix))) {
+    if (peek(lexer, index) != Str.byteAt(prefix, index)) {
       return false
     }
   }
@@ -489,29 +510,29 @@ function lexNumber(mutable lexer: Lexer, line: int, column: int) {
   const start = lexer.index
   let isFloat = false
   if (
-    peek(lexer, 0) == '0' &&
-      (peek(lexer, 1) == 'x' || peek(lexer, 1) == 'b' || peek(lexer, 1) == 'o')
+    peek(lexer, 0) == ZERO &&
+      (peek(lexer, 1) == LOWER_X || peek(lexer, 1) == LOWER_B || peek(lexer, 1) == LOWER_O)
   ) {
     advance(mutable lexer)
     advance(mutable lexer)
-    while (isHexDigit(peek(lexer, 0)) || peek(lexer, 0) == '_') {
+    while (isHexDigit(peek(lexer, 0)) || peek(lexer, 0) == UNDERSCORE) {
       advance(mutable lexer)
     }
   } else {
-    while (isDigit(peek(lexer, 0)) || peek(lexer, 0) == '_') {
+    while (isDigit(peek(lexer, 0)) || peek(lexer, 0) == UNDERSCORE) {
       advance(mutable lexer)
     }
-    if (peek(lexer, 0) == '.' && isDigit(peek(lexer, 1))) {
+    if (peek(lexer, 0) == DOT && isDigit(peek(lexer, 1))) {
       isFloat = true
       advance(mutable lexer)
-      while (isDigit(peek(lexer, 0)) || peek(lexer, 0) == '_') {
+      while (isDigit(peek(lexer, 0)) || peek(lexer, 0) == UNDERSCORE) {
         advance(mutable lexer)
       }
     }
-    if (peek(lexer, 0) == 'e' || peek(lexer, 0) == 'E') {
+    if (peek(lexer, 0) == LOWER_E || peek(lexer, 0) == UPPER_E) {
       isFloat = true
       advance(mutable lexer)
-      if (peek(lexer, 0) == '+' || peek(lexer, 0) == '-') {
+      if (peek(lexer, 0) == PLUS || peek(lexer, 0) == MINUS) {
         advance(mutable lexer)
       }
       while (isDigit(peek(lexer, 0))) {
@@ -521,20 +542,27 @@ function lexNumber(mutable lexer: Lexer, line: int, column: int) {
   }
 
   // The text without the `_` separators.
-  let builder = Str.builder()
-  for (const index of Ranges.between(start, lexer.index)) {
-    if (lexer.source[index] != '_') {
-      Str.appendChar(mutable builder, lexer.source[index])
-    }
+  let text = readText(lexer, start, lexer.index)
+  if (Str.contains(text, "_")) {
+    text = Str.replace(text, "_", "")
   }
   if (isFloat) {
-    emit(mutable lexer, TokenKind.TokFloat, Str.build(builder), line, column)
+    emit(mutable lexer, TokenKind.TokFloat, text, line, column)
   } else {
-    emit(mutable lexer, TokenKind.TokInt, Str.build(builder), line, column)
+    emit(mutable lexer, TokenKind.TokInt, text, line, column)
   }
 }
 
 function fail(line: int, column: int, code: string, message: string): Result<string, LexError> {
+  return Err(LexError { code: code, line: line, column: column, message: message })
+}
+
+function failEscape(
+  line: int,
+  column: int,
+  code: string,
+  message: string,
+): Result<Escape, LexError> {
   return Err(LexError { code: code, line: line, column: column, message: message })
 }
 
@@ -543,19 +571,31 @@ function lexEscape(mutable lexer: Lexer, line: int, column: int): Result<string,
   if (lexer.index >= getSize(lexer)) {
     return fail(line, column, "E0005", "unterminated escape")
   }
-  const character = advance(mutable lexer)
+  if (peek(lexer, 0) == LOWER_U) {
+    advance(mutable lexer)
+    return lexUnicodeEscape(mutable lexer, line, column)
+  }
+  // The escape letter may start a multi-byte character; read it whole for the message.
+  const character = Str.charAt(lexer.source, lexer.index)
+  advance(mutable lexer)
+  if (decodeSimpleEscape(character) is Some(text)) {
+    return Ok(text)
+  }
+  return fail(line, column, "E0008", `unknown escape \\${Str.fromChar(character)}`)
+}
+
+function decodeSimpleEscape(character: char): Option<string> {
   return match (character) {
-    'n' => Ok("\n")
-    't' => Ok("\t")
-    'r' => Ok("\r")
-    '0' => Ok("\0")
-    '\\' => Ok("\\")
-    '"' => Ok("\"")
-    '\'' => Ok("'")
-    '`' => Ok("`")
-    '$' => Ok("$")
-    'u' => lexUnicodeEscape(mutable lexer, line, column)
-    _ => fail(line, column, "E0008", `unknown escape \\${Str.fromChar(character)}`)
+    'n' => Some("\n")
+    't' => Some("\t")
+    'r' => Some("\r")
+    '0' => Some("\0")
+    '\\' => Some("\\")
+    '"' => Some("\"")
+    '\'' => Some("'")
+    '`' => Some("`")
+    '$' => Some("$")
+    _ => None
   }
 }
 
@@ -572,33 +612,41 @@ export function decodeEscape(
   column: int,
 ): Result<Escape, LexError> uses alloc {
   // Decodes like a string literal, so template strings take the same escapes and report the same errors, at line:column.
-  let lexer = Lexer {
-    source: source,
-    index: index,
-    line: line,
-    column: column,
-    depth: 0,
-    savedDepths: [],
-    savedCount: 0,
-    tokens: [],
-    punctuationChars: [],
-    keepComments: false,
-    comments: [],
+  const size = Arrays.length(source)
+  if (index + 1 >= size) {
+    return failEscape(line, column, "E0005", "unterminated escape")
   }
-  const escaped = lexEscape(mutable lexer, line, column)
-  if (escaped is Err(error)) {
-    return Err(error)
+  const character = source[index + 1]
+  if (character != 'u') {
+    if (decodeSimpleEscape(character) is Some(text)) {
+      return Ok(Escape { text: text, end: index + 2 })
+    }
+    return failEscape(line, column, "E0008", `unknown escape \\${Str.fromChar(character)}`)
   }
-  return Ok(Escape { text: escaped.value, end: lexer.index })
+  // A \u{...} escape.
+  let cursor = index + 2
+  if (cursor >= size || source[cursor] != '{') {
+    return failEscape(line, column, "E0006", "expected { after \\u")
+  }
+  cursor++
+  let value = 0
+  while (cursor >= size || source[cursor] != '}') {
+    if (cursor >= size || !isHexDigit(Char.code(source[cursor]))) {
+      return failEscape(line, column, "E0007", "invalid \\u escape")
+    }
+    value = (value * 16) + hexValue(Char.code(source[cursor]))
+    cursor++
+  }
+  return Ok(Escape { text: Str.fromChar(convertRune(value)), end: cursor + 1 })
 }
 
 function lexUnicodeEscape(mutable lexer: Lexer, line: int, column: int): Result<string, LexError> {
-  if (peek(lexer, 0) != '{') {
+  if (peek(lexer, 0) != OPEN_BRACE) {
     return fail(line, column, "E0006", "expected { after \\u")
   }
   advance(mutable lexer)
   let value = 0
-  while (peek(lexer, 0) != '}') {
+  while (peek(lexer, 0) != CLOSE_BRACE) {
     if (lexer.index >= getSize(lexer) || !isHexDigit(peek(lexer, 0))) {
       return fail(line, column, "E0007", "invalid \\u escape")
     }
@@ -621,29 +669,40 @@ function convertRune(value: int): char {
 
 function lexQuoted(
   mutable lexer: Lexer,
-  quote: char,
+  quote: int,
   line: int,
   column: int,
 ): Result<string, LexError> {
   advance(mutable lexer)
+  // Text between escapes is sliced from the source; the builder is only used once an escape appears.
   let builder = Str.builder()
+  let runStart = lexer.index
+  let hasEscape = false
   while (true) {
-    if (lexer.index >= getSize(lexer) || peek(lexer, 0) == '\n') {
+    if (lexer.index >= getSize(lexer) || peek(lexer, 0) == NEWLINE) {
       return fail(line, column, "E0009", "unterminated literal")
     }
     const character = peek(lexer, 0)
     if (character == quote) {
+      const run = readText(lexer, runStart, lexer.index)
       advance(mutable lexer)
+      if (!hasEscape) {
+        return Ok(run)
+      }
+      Str.append(mutable builder, run)
       return Ok(Str.build(builder))
     }
-    if (character == '\\') {
+    if (character == BACKSLASH) {
+      Str.append(mutable builder, readText(lexer, runStart, lexer.index))
+      hasEscape = true
       const escaped = lexEscape(mutable lexer, line, column)
       if (escaped is Err(error)) {
         return Err(error)
       }
       Str.append(mutable builder, escaped.value)
+      runStart = lexer.index
     } else {
-      Str.appendChar(mutable builder, advance(mutable lexer))
+      advance(mutable lexer)
     }
   }
   return fail(line, column, "E0009", "unreachable")
@@ -666,15 +725,15 @@ function skipTemplateBody(mutable lexer: Lexer, line: int, column: int): Option<
       return errorAt(line, column, "E0010", "unterminated template string")
     }
     const character = peek(lexer, 0)
-    if (character == '\\') {
+    if (character == BACKSLASH) {
       advance(mutable lexer)
       if (lexer.index < getSize(lexer)) {
         advance(mutable lexer)
       }
-    } else if (character == '`') {
+    } else if (character == BACKTICK) {
       advance(mutable lexer)
       return None
-    } else if (character == '$' && peek(lexer, 1) == '{') {
+    } else if (character == DOLLAR && peek(lexer, 1) == OPEN_BRACE) {
       advance(mutable lexer)
       advance(mutable lexer)
       const failure = skipInterpolation(mutable lexer, line, column)
@@ -698,16 +757,16 @@ function skipInterpolation(mutable lexer: Lexer, line: int, column: int): Option
     const innerLine = lexer.line
     const innerColumn = lexer.column
     advance(mutable lexer)
-    if (character == '{') {
+    if (character == OPEN_BRACE) {
       depth++
-    } else if (character == '}') {
+    } else if (character == CLOSE_BRACE) {
       depth--
-    } else if (character == '"' || character == '\'') {
+    } else if (character == DOUBLE_QUOTE || character == SINGLE_QUOTE) {
       const failure = skipQuoted(mutable lexer, character, innerLine, innerColumn)
       if (failure is Some(_)) {
         return failure
       }
-    } else if (character == '`') {
+    } else if (character == BACKTICK) {
       const failure = skipTemplateBody(mutable lexer, innerLine, innerColumn)
       if (failure is Some(_)) {
         return failure
@@ -717,16 +776,16 @@ function skipInterpolation(mutable lexer: Lexer, line: int, column: int): Option
   return None
 }
 
-function skipQuoted(mutable lexer: Lexer, quote: char, line: int, column: int): Option<LexError> {
+function skipQuoted(mutable lexer: Lexer, quote: int, line: int, column: int): Option<LexError> {
   while (true) {
-    if (lexer.index >= getSize(lexer) || peek(lexer, 0) == '\n') {
+    if (lexer.index >= getSize(lexer) || peek(lexer, 0) == NEWLINE) {
       return errorAt(line, column, "E0009", "unterminated literal")
     }
     const character = advance(mutable lexer)
     if (character == quote) {
       return None
     }
-    if (character == '\\' && lexer.index < getSize(lexer) && peek(lexer, 0) != '\n') {
+    if (character == BACKSLASH && lexer.index < getSize(lexer) && peek(lexer, 0) != NEWLINE) {
       advance(mutable lexer)
     }
   }
@@ -766,30 +825,30 @@ function quoteOther(character: char): string {
   return `'${Str.fromChar(character)}'`
 }
 
-function isLetter(character: char): bool {
-  return character == '_' ||
-    (character >= 'a' && character <= 'z') ||
-    (character >= 'A' && character <= 'Z')
+function isLetter(byte: int): bool {
+  return byte == UNDERSCORE ||
+    (byte >= LOWER_A && byte <= LOWER_Z) ||
+    (byte >= UPPER_A && byte <= UPPER_Z)
 }
 
-function isDigit(character: char): bool {
-  return character >= '0' && character <= '9'
+function isDigit(byte: int): bool {
+  return byte >= ZERO && byte <= NINE
 }
 
-function isHexDigit(character: char): bool {
-  return isDigit(character) ||
-    (character >= 'a' && character <= 'f') ||
-    (character >= 'A' && character <= 'F')
+function isHexDigit(byte: int): bool {
+  return isDigit(byte) ||
+    (byte >= LOWER_A && byte <= LOWER_F) ||
+    (byte >= UPPER_A && byte <= UPPER_F)
 }
 
-function hexValue(character: char): int {
-  if (isDigit(character)) {
-    return Char.code(character) - Char.code('0')
+function hexValue(byte: int): int {
+  if (isDigit(byte)) {
+    return byte - ZERO
   }
-  if (character >= 'a' && character <= 'f') {
-    return Char.code(character) - Char.code('a') + 10
+  if (byte >= LOWER_A && byte <= LOWER_F) {
+    return byte - LOWER_A + 10
   }
-  return Char.code(character) - Char.code('A') + 10
+  return byte - UPPER_A + 10
 }
 
 export function getKindName(kind: TokenKind): string {

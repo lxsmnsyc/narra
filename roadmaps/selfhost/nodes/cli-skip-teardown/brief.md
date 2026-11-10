@@ -1,7 +1,7 @@
 ---
 id: cli-skip-teardown
 title: "narrac emit and build skip the final release unless the leak check runs"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 117390
 owns:
   - roadmaps/selfhost/nodes/cli-skip-teardown/**
 shared:
@@ -47,10 +47,10 @@ After `narrac emit` or `narrac build` has written its output, exit without relea
 
 ## Acceptance
 
-- [ ] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. The gain must exceed the run-to-run spread, or the node closes as not worth it.
-- [ ] With `NARRA_CHECK_LEAKS=1`, `narrac emit selfhost` still reports no leaks.
-- [ ] The LSP suite passes and the language server path still releases.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. The gain must exceed the run-to-run spread, or the node closes as not worth it.
+- [x] With `NARRA_CHECK_LEAKS=1`, `narrac emit selfhost` still reports no leaks.
+- [x] The LSP suite passes and the language server path still releases.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
 
 ## Notes for the worker
 

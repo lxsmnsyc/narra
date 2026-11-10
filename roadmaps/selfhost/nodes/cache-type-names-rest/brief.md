@@ -1,7 +1,7 @@
 ---
 id: cache-type-names-rest
 title: "Use the C type name cache at every call site"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-5

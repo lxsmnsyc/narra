@@ -2,7 +2,7 @@
 id: regions
 title: Regions
 status: todo
-priority: later
+priority: should
 type: feature
 outline: true
 milestone: m4-systems
@@ -20,9 +20,9 @@ shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: closures
+  - on: regions-design
     kind: hard
-    why: Region.run takes a closure
+    why: D100 decides the design and splits this node into children
 ---
 
 # Regions
@@ -33,4 +33,4 @@ depends_on:
 
 ## Notes
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+Outline until regions-design writes D100; refine the children from it.

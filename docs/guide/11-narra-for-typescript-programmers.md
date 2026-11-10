@@ -333,12 +333,12 @@ struct Player {
 
 export function run(args: Array<string>): int {
   const scores = [10, 20]
-  const before = scores
+  const before = copy(scores)
   Arrays.push(mutable scores, 30)
   print(Int.toString(Arrays.length(before)))
 
   const hero = Player { name: "Ana", hp: 100 }
-  const other = hero
+  const other = copy(hero)
   other.hp = 50
   print(Int.toString(hero.hp))
   return 0

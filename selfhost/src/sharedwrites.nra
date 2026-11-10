@@ -1,13 +1,13 @@
-// The shared-write check (warning E0978). A write to a place copies it on
+// The shared-write check (error E0978). A write to a place copies it on
 // write while another live name still shares that place or a place that
-// contains it. The warning names the write, the shared place, the name that
+// contains it. The error names the write, the shared place, the name that
 // shares it and that name's next use, and offers to take a copy(...) where
 // the sharing starts.
 //
 // One forward walk over a body keeps, at each point, the pairs of places that
 // share a value, and the writes that hit a pair and wait for a later use of
 // its other side. A place is a local or a constant with the fields after it,
-// and "[]" for any element. Branches are walked from the same state and
+// and "[]" for any element ("[=2]" for the element at a literal index). Branches are walked from the same state and
 // merged; a loop body is walked again until its state stops growing. An
 // arrow function is walked on its own state: its parameters and the locals it
 // captures stay live after it, like the parameters of a function.
@@ -21,7 +21,7 @@ import {
   getRef,
   getNodeType,
   findBodySlot,
-  reportWarningFix,
+  reportErrorFix,
   getExpressionId,
 } from "narrac/check"
 import { Fix, createFix, insertAt } from "narrac/fixes"
@@ -30,6 +30,7 @@ import { isCopyTracked, isCopyCall, canShareType } from "narrac/stdcopy"
 import { findSharedArgument, findExpressionStart } from "narrac/sharedresults"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
+import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
 
@@ -59,7 +60,7 @@ struct SharePair {
   tracked: bool
 }
 
-// A write that hit a pair: it warns at the next use of other.
+// A write that hit a pair: it is reported at the next use of other.
 struct PendingWrite {
   site: int
   hit: Place
@@ -88,7 +89,7 @@ enum LiveReason {
   Loop
 }
 
-struct FoundWarning {
+struct FoundWrite {
   site: int
   hit: Place
   other: Place
@@ -101,8 +102,8 @@ struct WriteWalk {
   sites: Array<WriteSite>
   // The site of each write, by position and text.
   siteIndex: Map<string, int>
-  warned: Map<int, bool>
-  found: Array<FoundWarning>
+  reported: Map<int, bool>
+  found: Array<FoundWrite>
   // The states that leave the innermost loop or `continue` it.
   breakState: FlowState
   continueState: FlowState
@@ -134,15 +135,16 @@ const WRITE_DEEP = 2
 const PAIR_LIMIT = 4000
 
 export function reportSharedWrites(mutable checker: Checker) uses alloc {
-  // Runs once every body is checked, for `narrac check` and `apply-fix`, and
-  // only when the package has no errors. Each body of a source module is
-  // walked with its side tables current; generic instances repeat their
-  // declaration and are skipped.
-  if (Arrays.length(checker.errors) > 0) {
-    return
-  }
+  // Runs once every body is checked, also when other errors were found. Each
+  // body of a source module is walked with its side tables current; generic
+  // instances repeat their declaration and are skipped.
   const savedBody = checker.body
   const savedScope = checker.current
+  // A write that another error already points at is not reported again.
+  let errorPlaces: Map<string, bool> = Map {}
+  for (const error of Arrays.values(checker.errors)) {
+    errorPlaces[makeErrorPlace(error.file, error.pos)] = true
+  }
   for (const index of Ranges.upTo(Arrays.length(checker.bodies))) {
     const kind = checker.bodies[index].kind
     const root = checker.bodies[index].root
@@ -158,13 +160,13 @@ export function reportSharedWrites(mutable checker: Checker) uses alloc {
       checker.current = scope
       if (root is BodyRoot.RootFunc(declaration)) {
         if (kind == "func" || kind == "impl") {
-          walkFunction(mutable checker, declaration)
+          walkFunction(mutable checker, declaration, errorPlaces)
         }
       } else if (root is BodyRoot.RootBlock(block)) {
         if (kind == "test") {
           let walk = createWalk()
           walkBlock(checker, mutable walk, block)
-          reportFound(mutable checker, walk)
+          reportFound(mutable checker, walk, errorPlaces)
         }
       }
     }
@@ -173,14 +175,22 @@ export function reportSharedWrites(mutable checker: Checker) uses alloc {
   checker.current = savedScope
 }
 
-function walkFunction(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
+function makeErrorPlace(file: string, pos: Pos): string uses alloc {
+  return `${file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}`
+}
+
+function walkFunction(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  errorPlaces: Map<string, bool>,
+) uses alloc {
   if (funcDecl.body is Some(block)) {
     let walk = createWalk()
     for (const parameter of Arrays.values(funcDecl.parameters)) {
       noteDeclared(checker, mutable walk, parameter.id)
     }
     walkBlock(checker, mutable walk, block)
-    reportFound(mutable checker, walk)
+    reportFound(mutable checker, walk, errorPlaces)
   }
 }
 
@@ -193,7 +203,7 @@ function createWalk(): WriteWalk uses alloc {
     state: FlowState { pairs: [], pending: [], reachable: true },
     sites: [],
     siteIndex: Map {},
-    warned: Map {},
+    reported: Map {},
     found: [],
     breakState: createDeadState(),
     continueState: createDeadState(),
@@ -212,19 +222,106 @@ function createWalk(): WriteWalk uses alloc {
 
 function isUnder(key: string, base: string): bool uses alloc {
   // key names base or a place inside it.
-  if (!Str.startsWith(key, base)) {
-    return false
-  }
-  const length = Str.length(base)
-  if (Str.length(key) == length) {
-    return true
-  }
-  const next = substring(key, length, length + 1)
-  return next == "." || next == "["
+  return findRest(key, base) is Some(_)
 }
 
 function isStrictlyUnder(key: string, base: string): bool uses alloc {
-  return Str.length(key) != Str.length(base) && isUnder(key, base)
+  if (findRest(key, base) is Some(rest)) {
+    return rest != ""
+  }
+  return false
+}
+
+function findRest(key: string, base: string): Option<string> uses alloc {
+  // The part of key after base, when key names base or a place inside it.
+  if (Str.startsWith(key, base)) {
+    const length = Str.length(base)
+    if (Str.length(key) == length) {
+      return Some("")
+    }
+    const next = substring(key, length, length + 1)
+    if (next == "." || next == "[") {
+      return Some(Str.sliceFrom(key, length))
+    }
+    return None
+  }
+  // Only keys with a literal index can match without being a prefix: "[]"
+  // (any element) matches "[=0]", and "[=0]" never matches "[=1]".
+  if (!Str.contains(key, "[=") && !Str.contains(base, "[=")) {
+    return None
+  }
+  // Walk both keys one bracket at a time: the text before each bracket must
+  // be equal, and the brackets must match.
+  let keyRest = key
+  let baseRest = base
+  while (true) {
+    const baseStart = findText(baseRest, "[")
+    if (baseStart < 0) {
+      return findPlainRest(keyRest, baseRest)
+    }
+    const keyStart = findText(keyRest, "[")
+    if (keyStart != baseStart || !Str.startsWith(keyRest, substring(baseRest, 0, baseStart))) {
+      return None
+    }
+    const keyEnd = findText(keyRest, "]")
+    const baseEnd = findText(baseRest, "]")
+    if (keyEnd < 0 || baseEnd < 0) {
+      return None
+    }
+    const keyPart = substring(keyRest, keyStart, keyEnd + 1)
+    const basePart = substring(baseRest, baseStart, baseEnd + 1)
+    if (!isSamePart(keyPart, basePart)) {
+      return None
+    }
+    keyRest = Str.sliceFrom(keyRest, keyEnd + 1)
+    baseRest = Str.sliceFrom(baseRest, baseEnd + 1)
+  }
+  return None
+}
+
+function findText(text: string, pattern: string): int {
+  return match (Str.indexOf(text, pattern)) { Some(index) => index, None => -1 }
+}
+
+function findPlainRest(key: string, base: string): Option<string> uses alloc {
+  // The rest of key after base, which has no brackets left.
+  if (!Str.startsWith(key, base)) {
+    return None
+  }
+  const rest = Str.sliceFrom(key, Str.length(base))
+  if (rest == "" || Str.startsWith(rest, ".") || Str.startsWith(rest, "[")) {
+    return Some(rest)
+  }
+  return None
+}
+
+function splitPlaceKey(key: string): Array<string> uses alloc {
+  // "L3.items[=0][]" becomes "L3", ".items", "[=0]", "[]".
+  let parts: Array<string> = []
+  let start = 0
+  for (const i of Ranges.between(1, Str.length(key))) {
+    const character = substring(key, i, i + 1)
+    if (character == "." || character == "[") {
+      Arrays.push(mutable parts, substring(key, start, i))
+      start = i
+    }
+  }
+  Arrays.push(mutable parts, Str.sliceFrom(key, start))
+  return parts
+}
+
+function isSamePart(left: string, right: string): bool uses alloc {
+  if (left == right) {
+    return true
+  }
+  // Any element matches an element at a literal index.
+  if (left == "[]") {
+    return Str.startsWith(right, "[")
+  }
+  if (right == "[]") {
+    return Str.startsWith(left, "[")
+  }
+  return false
 }
 
 function overlaps(left: string, right: string): bool uses alloc {
@@ -232,7 +329,27 @@ function overlaps(left: string, right: string): bool uses alloc {
 }
 
 function extendPlace(place: Place, suffix: string): Place uses alloc {
-  return Place { root: place.root, key: `${place.key}${suffix}`, text: `${place.text}${suffix}` }
+  return Place {
+    root: place.root,
+    key: `${place.key}${suffix}`,
+    text: `${place.text}${writeSuffixText(suffix)}`,
+  }
+}
+
+function writeSuffixText(suffix: string): string uses alloc {
+  // "[=0]" in a key reads "[0]" in a message.
+  if (!Str.contains(suffix, "[=")) {
+    return suffix
+  }
+  let text = Str.builder()
+  for (const part of Arrays.values(splitPlaceKey(suffix))) {
+    if (Str.startsWith(part, "[=")) {
+      Str.append(mutable text, `[${Str.sliceFrom(part, 2)}`)
+    } else {
+      Str.append(mutable text, part)
+    }
+  }
+  return Str.build(text)
 }
 
 function createLocalPlace(checker: Checker, local: int): Place uses alloc {
@@ -283,7 +400,7 @@ function findPlace(checker: Checker, walk: WriteWalk, expression: Expr): Option<
       if (findPlace(checker, walk, target) is Some(container)) {
         return Some(Place {
           root: container.root,
-          key: `${container.key}[]`,
+          key: `${container.key}${writeIndexKey(index)}`,
           text: `${container.text}[${writeIndexText(index)}]`,
         })
       }
@@ -293,6 +410,16 @@ function findPlace(checker: Checker, walk: WriteWalk, expression: Expr): Option<
       return None
     }
   }
+}
+
+function writeIndexKey(index: Expr): string uses alloc {
+  // An integer literal names one element; any other index may name any.
+  if (index is Expr.IntLit(_, _, text)) {
+    if (Int.parse(text, 10) is Ok(value)) {
+      return `[=${Int.toString(value)}]`
+    }
+  }
+  return "[]"
 }
 
 function writeIndexText(index: Expr): string uses alloc {
@@ -413,12 +540,14 @@ function addChained(
 ) uses alloc {
   if (isUnder(source.key, side.key)) {
     // The source is inside a place that shares other.
-    const rest = Str.sliceFrom(source.key, Str.length(side.key))
-    pushPair(mutable walk, name, extendPlace(other, rest), origin, tracked)
+    if (findRest(source.key, side.key) is Some(rest)) {
+      pushPair(mutable walk, name, extendPlace(other, rest), origin, tracked)
+    }
   } else if (isStrictlyUnder(side.key, source.key)) {
     // A part of the source shares other.
-    const rest = Str.sliceFrom(side.key, Str.length(source.key))
-    pushPair(mutable walk, extendPlace(name, rest), other, origin, sideTracked)
+    if (findRest(side.key, source.key) is Some(rest)) {
+      pushPair(mutable walk, extendPlace(name, rest), other, origin, sideTracked)
+    }
   }
 }
 
@@ -463,6 +592,15 @@ function declareLocal(mutable walk: WriteWalk, local: int) uses alloc {
   forgetRoot(mutable walk, local)
 }
 
+function canHoldShared(checker: Checker, type: Type): bool uses alloc {
+  // A function value holds what its arrow function captured, so a call of it
+  // uses those values.
+  if (type is Type.TFunc(_, _, _, _, _)) {
+    return true
+  }
+  return canShareType(checker, type)
+}
+
 function bindShares(
   checker: Checker,
   mutable walk: WriteWalk,
@@ -472,7 +610,7 @@ function bindShares(
 ) uses alloc {
   // Only a name whose type can hold a tracked value shares anything.
   const localType = checker.bodies[checker.body].locals[local].localType
-  if (!canShareType(checker, localType)) {
+  if (!canHoldShared(checker, localType)) {
     return
   }
   const name = createLocalPlace(checker, local)
@@ -548,7 +686,7 @@ function addSite(mutable walk: WriteWalk, pos: Pos, text: string): int uses allo
   return index
 }
 
-function warn(
+function recordFound(
   mutable walk: WriteWalk,
   site: int,
   hit: Place,
@@ -556,11 +694,11 @@ function warn(
   reason: LiveReason,
   origin: Option<Expr>,
 ) uses alloc {
-  if (walk.warned[site] is Some(_)) {
+  if (walk.reported[site] is Some(_)) {
     return
   }
-  walk.warned[site] = true
-  Arrays.push(mutable walk.found, FoundWarning {
+  walk.reported[site] = true
+  Arrays.push(mutable walk.found, FoundWrite {
     site: site,
     hit: hit,
     other: other,
@@ -590,14 +728,14 @@ function noteWrite(
   // The iterator of a running loop holds the place it walks.
   for (const held of Arrays.values(copy(walk.loopHeld))) {
     if (isHit(target, mode, true, held)) {
-      warn(mutable walk, site, held, held, LiveReason.Loop, None)
+      recordFound(mutable walk, site, held, held, LiveReason.Loop, None)
     }
   }
 }
 
 function isElementTarget(target: Place, mode: int): bool uses alloc {
   // `items[i] = v` replaces one element: the other elements keep their sharing.
-  return mode == WRITE_ASSIGN && Str.endsWith(target.key, "[]")
+  return mode == WRITE_ASSIGN && Str.endsWith(target.key, "]")
 }
 
 function isHit(target: Place, mode: int, tracked: bool, side: Place): bool uses alloc {
@@ -628,7 +766,7 @@ function checkHit(
   }
   const origin = pair.origin
   if (findLiveReason(checker, walk, other.root) is Some(reason)) {
-    warn(mutable walk, site, side, other, reason, origin)
+    recordFound(mutable walk, site, side, other, reason, origin)
     return
   }
   if (!hasPending(walk.state.pending, site, other.key)) {
@@ -664,7 +802,7 @@ function noteUse(mutable walk: WriteWalk, place: Place, pos: Pos, inside: bool) 
       used = isStrictlyUnder(place.key, write.other.key)
     }
     if (used) {
-      warn(
+      recordFound(
         mutable walk,
         write.site,
         write.hit,
@@ -672,7 +810,7 @@ function noteUse(mutable walk: WriteWalk, place: Place, pos: Pos, inside: bool) 
         LiveReason.LaterUse(pos.line),
         write.origin,
       )
-    } else if (walk.warned[write.site] is None) {
+    } else if (walk.reported[write.site] is None) {
       Arrays.push(mutable kept, write)
     }
   }
@@ -841,7 +979,7 @@ function walkAssign(
     }
     let isTracked = true
     if (getNodeType(checker, getExpressionId(value)) is Some(valueType)) {
-      if (!canShareType(checker, valueType)) {
+      if (!canHoldShared(checker, valueType)) {
         return
       }
       isTracked = isCopyTracked(checker, valueType)
@@ -1052,7 +1190,7 @@ function evaluate(
   const nodeId = getExpressionId(expression)
   const shares = evaluateParts(checker, mutable walk, expression)
   if (getNodeType(checker, nodeId) is Some(type)) {
-    if (!canShareType(checker, type)) {
+    if (!canHoldShared(checker, type)) {
       return []
     }
     // The value itself is what shares a place without a suffix.
@@ -1411,20 +1549,36 @@ function containsLocal(locals: Array<int>, local: int): bool {
 
 // ---- Reporting
 
-function reportFound(mutable checker: Checker, walk: WriteWalk) uses alloc {
-  // In the order of the writes.
-  let bySite: Map<int, FoundWarning> = Map {}
-  for (const warning of Arrays.values(walk.found)) {
-    bySite[warning.site] = warning
+function reportFound(
+  mutable checker: Checker,
+  walk: WriteWalk,
+  errorPlaces: Map<string, bool>,
+) uses alloc {
+  // In the order of the writes; most bodies found none.
+  if (Arrays.length(walk.found) == 0) {
+    return
   }
+  let bySite: Map<int, FoundWrite> = Map {}
+  for (const write of Arrays.values(walk.found)) {
+    bySite[write.site] = write
+  }
+  const file = checker.scopes[checker.current].file
+  const checkPlaces = Maps.size(errorPlaces) > 0
   for (const index of Ranges.upTo(Arrays.length(walk.sites))) {
     if (bySite[index] is Some(found)) {
-      reportWarning(mutable checker, walk.sites[index], found)
+      if (checkPlaces && errorPlaces[makeErrorPlace(file, walk.sites[index].pos)] is Some(_)) {
+        continue
+      }
+      reportSharedWrite(mutable checker, walk.sites[index], found)
     }
   }
 }
 
-function reportWarning(mutable checker: Checker, site: WriteSite, found: FoundWarning) uses alloc {
+function reportSharedWrite(
+  mutable checker: Checker,
+  site: WriteSite,
+  found: FoundWrite,
+) uses alloc {
   const fixes = buildCopyFix(checker, found.origin)
   const start = `${site.text} may change ${found.hit.text}`
   let advice = "; take a copy where it is shared, with copy(...)"
@@ -1432,42 +1586,42 @@ function reportWarning(mutable checker: Checker, site: WriteSite, found: FoundWa
     advice = "; no fix is offered here: copy the value by hand where the sharing starts, or end the sharing before the write"
   }
   match (found.reason) {
-    LiveReason.LaterUse(line) => reportWarningFix(
+    LiveReason.LaterUse(line) => reportErrorFix(
       mutable checker,
       site.pos,
       "E0978",
       fixes,
       `${start}, which ${found.other.text} still uses at line ${Int.toString(line)}${advice}`,
     )
-    LiveReason.Parameter => reportWarningFix(
+    LiveReason.Parameter => reportErrorFix(
       mutable checker,
       site.pos,
       "E0978",
       fixes,
       `${start}, which ${found.other.text} still holds for the caller${advice}`,
     )
-    LiveReason.Captured => reportWarningFix(
+    LiveReason.Captured => reportErrorFix(
       mutable checker,
       site.pos,
       "E0978",
       fixes,
       `${start}, which captured ${found.other.text} still holds${advice}`,
     )
-    LiveReason.Cell => reportWarningFix(
+    LiveReason.Cell => reportErrorFix(
       mutable checker,
       site.pos,
       "E0978",
       fixes,
       `${start}, which the cell ${found.other.text} still holds${advice}`,
     )
-    LiveReason.Constant => reportWarningFix(
+    LiveReason.Constant => reportErrorFix(
       mutable checker,
       site.pos,
       "E0978",
       fixes,
       `${start}, which constant ${found.other.text} still holds${advice}`,
     )
-    LiveReason.Loop => reportWarningFix(
+    LiveReason.Loop => reportErrorFix(
       mutable checker,
       site.pos,
       "E0978",

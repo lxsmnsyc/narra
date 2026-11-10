@@ -98,7 +98,7 @@ struct Item {
 
 export function run(args: Array<string>): int {
   const tea = Item { name: "tea", priceCents: 250 }
-  let moreTea = tea
+  let moreTea = copy(tea)
   moreTea.quantity = moreTea.quantity + 1
   print(`${Int.toString(tea.quantity)} then ${Int.toString(moreTea.quantity)}`)
 

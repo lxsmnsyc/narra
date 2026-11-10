@@ -61,7 +61,6 @@ struct Diagnostic {
   column: int
   message: string
   fixes: Array<Fix> = []
-  warning: bool = false
 }
 
 struct DriverOptions {
@@ -300,14 +299,10 @@ function formatDiagnostic(diagnostic: Diagnostic): string uses alloc {
     return diagnostic.message
   }
   const position = `${Int.toString(diagnostic.line)}:${Int.toString(diagnostic.column)}`
-  let message = diagnostic.message
-  if (diagnostic.warning) {
-    message = `warning: ${message}`
-  }
   if (diagnostic.file == "") {
-    return `${position}: ${message}`
+    return `${position}: ${diagnostic.message}`
   }
-  return `${diagnostic.file}:${position}: ${message}`
+  return `${diagnostic.file}:${position}: ${diagnostic.message}`
 }
 
 function formatDiagnostics(diagnostics: Array<Diagnostic>): string uses alloc {
@@ -344,10 +339,11 @@ function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnosti
     return Err(convertLoadErrors(errors))
   }
   let checker = copy(Body.checkPackage(loaded.value))
-  // The effects are checked only when the bodies have no errors.
+  // The effects are checked only when the bodies have no errors; shared writes always.
   if (Arrays.length(checker.errors) == 0) {
     const _ = Effects.checkEffects(mutable checker)
   }
+  reportSharedWrites(mutable checker)
   if (Arrays.length(checker.errors) > 0) {
     let diagnostics: Array<Diagnostic> = []
     for (const error of Arrays.values(checker.errors)) {
@@ -699,11 +695,8 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
   } else {
     const #[package, checker] = checked.value
     diagnostics = findMissingEntries(package, checker)
-    if (Arrays.length(diagnostics) == 0) {
-      diagnostics = findWarnings(checker)
-    }
   }
-  // Exit 0: no diagnostics, or only warnings. Exit 1: errors or an unreadable path. Exit 2: usage.
+  // Exit 0: no diagnostics. Exit 1: errors or an unreadable path. Exit 2: usage.
   if (Arrays.length(diagnostics) == 0) {
     return 0
   }
@@ -716,36 +709,14 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
       const pos = Pos { line: diagnostic.line, column: diagnostic.column }
       Str.append(
         mutable lines,
-        `${writeDiagnosticJson(diagnostic.file, pos, diagnostic.code, diagnostic.warning, diagnostic.message, diagnostic.fixes)}\n`,
+        `${writeDiagnosticJson(diagnostic.file, pos, diagnostic.code, diagnostic.message, diagnostic.fixes)}\n`,
       )
     }
     writeStandardOutput(Str.build(lines))
   } else {
     printError(formatDiagnostics(diagnostics))
   }
-  if (diagnostics[0].warning) {
-    return 0
-  }
   return 1
-}
-
-function findWarnings(checker: Checker): Array<Diagnostic> uses alloc {
-  // The warning passes run only here, so a build does not pay for them.
-  let warned = copy(checker)
-  reportSharedWrites(mutable warned)
-  let diagnostics: Array<Diagnostic> = []
-  for (const warning of Arrays.values(warned.warnings)) {
-    Arrays.push(mutable diagnostics, Diagnostic {
-      code: warning.code,
-      file: warning.file,
-      line: warning.pos.line,
-      column: warning.pos.column,
-      message: warning.message,
-      fixes: warning.fixes,
-      warning: true,
-    })
-  }
-  return diagnostics
 }
 
 function runApplyFix(arguments: Array<string>): int uses io, alloc {
@@ -787,9 +758,6 @@ function runApplyFix(arguments: Array<string>): int uses io, alloc {
   const checked = loadAndCheck(paths[0])
   if (checked is Err(found)) {
     diagnostics = found
-  } else {
-    const #[_, checker] = checked.value
-    diagnostics = findWarnings(checker)
   }
   if (Arrays.length(diagnostics) == 0) {
     printError("no diagnostics")

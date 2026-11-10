@@ -17,9 +17,9 @@ struct Tally {
 }
 
 function addWord(mutable tallies: Array<Tally>, word: string) {
-  for (const #[index, tally] of Arrays.entries(tallies)) {
+  for (mutable tally of tallies) {
     if (tally.word == word) {
-      tallies[index].count = tally.count + 1
+      tally.count = tally.count + 1
       return
     }
   }
@@ -136,9 +136,9 @@ export function countWords(text: string): Array<Tally> uses alloc {
 }
 
 function addWord(mutable tallies: Array<Tally>, word: string) {
-  for (const #[index, tally] of Arrays.entries(tallies)) {
+  for (mutable tally of tallies) {
     if (tally.word == word) {
-      tallies[index].count = tally.count + 1
+      tally.count = tally.count + 1
       return
     }
   }

@@ -254,10 +254,14 @@ export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
           "credit",
           cachedTypeId(emitter.checker, emitter.typeNames, type),
         )
+        const uncreditName = opFuncName(
+          "uncredit",
+          cachedTypeId(emitter.checker, emitter.typeNames, type),
+        )
         const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
         Str.append(
           mutable builder,
-          `#ifndef NARRA_RELEASE\nstatic void ${creditName}(${parameterType} v);\n#endif\n`,
+          `#ifndef NARRA_RELEASE\nstatic void ${creditName}(${parameterType} v);\nstatic void ${uncreditName}(${parameterType} v);\n#endif\n`,
         )
       }
     }
@@ -317,7 +321,8 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
       }
     }
     Str.append(mutable builder, "  default: break;\n  }\n  narra_free(q);\n}\n")
-    Str.append(mutable builder, creditFunction(emitter, type, enumIndex))
+    Str.append(mutable builder, buildCreditFunction(emitter, type, enumIndex, "credit"))
+    Str.append(mutable builder, buildCreditFunction(emitter, type, enumIndex, "uncredit"))
   }
   for (const operation of Arrays.values(["retain", "release"])) {
     Str.append(mutable builder, `static void ${opFuncName(operation, id)}(${parameterType} v) {\n`)
@@ -337,6 +342,13 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
       if (operation == "retain") {
         Str.append(mutable builder, "  if (v.u) v.u->rc++;\n")
       } else {
+        // In debug builds, the mark counts the copies that retained the box.
+        // After this release at most count - 2 of them can still hold it, so
+        // the credits of the copies past that end here.
+        Str.append(
+          mutable builder,
+          `#ifndef NARRA_RELEASE\n  if (v.u && narra_copy_used) {\n    narra_copy_slot* mark = narra_copy_find(v.u);\n    int64_t live = v.u->rc - 2;\n    if (mark && mark->credits > live) {\n      int64_t ended = mark->credits - live;\n      if (live > 0) mark->credits = live; else narra_copy_forget(v.u);\n      while (ended-- > 0) ${opFuncName("uncredit", id)}(v);\n    }\n  }\n#endif\n`,
+        )
         Str.append(
           mutable builder,
           `  if (v.u && --v.u->rc == 0) narra_drop(v.u, ${opFuncName("drop", id)});\n`,
@@ -348,11 +360,20 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
   return Str.build(builder)
 }
 
-function creditFunction(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {
+function buildCreditFunction(
+  emitter: Emitter,
+  type: Type,
+  enumIndex: int,
+  operation: string,
+): string uses alloc {
   // A copy(...) of a heap enum retains only its payload box, and a payload is
   // never written. The debug copy check gives a credit to each counted value
   // inside the payload instead, so a copy on write of a part taken out of the
-  // copy is explained.
+  // copy is explained. The parts keep a count of one, so their credits never
+  // end on their own: the copy marks the box it retained (buildCreditCode),
+  // and when that box's count falls back to one the "uncredit" function takes
+  // one credit back from each part. Nested payload boxes are walked, not
+  // marked, because the copy did not retain them.
   let builder = Str.builder()
   const id = cachedTypeId(emitter.checker, emitter.typeNames, type)
   const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
@@ -360,15 +381,16 @@ function creditFunction(emitter: Emitter, type: Type, enumIndex: int): string us
   const payload = payloadName(emitter.checker, type)
   Str.append(
     mutable builder,
-    `#ifndef NARRA_RELEASE\nstatic void ${opFuncName("credit", id)}(${parameterType} v) {\n  if (!${enumValue}.u) return;\n  ${payload}* q = ${enumValue}.u;\n  switch (q->tag) {\n`,
+    `#ifndef NARRA_RELEASE\nstatic void ${opFuncName(operation, id)}(${parameterType} v) {\n  if (!${enumValue}.u) return;\n  ${payload}* q = ${enumValue}.u;\n  switch (q->tag) {\n`,
   )
   for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
     let statements: Array<string> = []
     for (const field of Arrays.values(variant.fields)) {
-      const statement = creditPartCode(
+      const statement = buildPartCreditCode(
         emitter,
         field.fieldType,
         `q->${variantName(variant)}.${fieldName(field.name)}`,
+        operation,
       )
       if (statement != "") {
         Arrays.push(mutable statements, statement)
@@ -385,10 +407,11 @@ function creditFunction(emitter: Emitter, type: Type, enumIndex: int): string us
   return Str.build(builder)
 }
 
-export function creditCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+export function buildCreditCode(emitter: Emitter, type: Type, value: string): string uses alloc {
   // The statements that give a credit to each counted value that a retain of
-  // value does not reach: the parts of a heap enum payload. Empty when a
-  // retain reaches every part.
+  // value does not reach: the parts of a heap enum payload. Each payload box
+  // the retain reached is marked, so its release can take the credits back.
+  // Empty when a retain reaches every part.
   const base = underlyingType(emitter, type)
   if (!holdsHeapEnum(emitter, base)) {
     return ""
@@ -396,17 +419,14 @@ export function creditCode(emitter: Emitter, type: Type, value: string): string 
   return match (base) {
     Type.TEnum(enumIndex) => {
       if (isHeapEnum(emitter.checker, enumIndex)) {
-        const name = opFuncName("credit", cachedTypeId(emitter.checker, emitter.typeNames, base))
-        if (isPassedByPointer(emitter.checker, base)) {
-          return `${name}(&(${value}));`
-        }
-        return `${name}(${value});`
+        const call = buildPayloadCall(emitter, base, value, "credit")
+        return `if ((${value}).u) narra_copy_credit((${value}).u); ${call}`
       }
       let cases: Array<string> = []
       for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
         let statements: Array<string> = []
         for (const field of Arrays.values(variant.fields)) {
-          const statement = creditCode(
+          const statement = buildCreditCode(
             emitter,
             field.fieldType,
             `(${value}).u.${variantName(variant)}.${fieldName(field.name)}`,
@@ -427,7 +447,7 @@ export function creditCode(emitter: Emitter, type: Type, value: string): string 
     Type.TStruct(structIndex) => {
       let statements: Array<string> = []
       for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
-        const statement = creditCode(
+        const statement = buildCreditCode(
           emitter,
           field.fieldType,
           `(${value}).${fieldName(field.name)}`,
@@ -442,31 +462,55 @@ export function creditCode(emitter: Emitter, type: Type, value: string): string 
   }
 }
 
-function creditPartCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+function buildPayloadCall(
+  emitter: Emitter,
+  type: Type,
+  value: string,
+  operation: string,
+): string uses alloc {
+  const name = opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, type))
+  if (isPassedByPointer(emitter.checker, type)) {
+    return `${name}(&(${value}));`
+  }
+  return `${name}(${value});`
+}
+
+function buildPartCreditCode(
+  emitter: Emitter,
+  type: Type,
+  value: string,
+  operation: string,
+): string uses alloc {
   // The statements that give a credit to every counted value in a part of a
-  // heap enum payload, which no retain of the copy reaches.
+  // heap enum payload, which no retain of the copy reaches, or with operation
+  // "uncredit" take one of its credits back.
   const base = underlyingType(emitter, type)
+  let partText = `if (${value}) NARRA_COPY_SHARED(${value});`
+  if (operation == "uncredit") {
+    partText = `if (${value}) { narra_copy_slot* slot = narra_copy_find(${value}); if (slot && slot->credits > 1) slot->credits--; else if (slot) narra_copy_forget(${value}); }`
+  }
   return match (base) {
     Type.TArray(_)
       | Type.TBox(_)
       | Type.TMap(_, _)
       | Type.TStringBuilder
-      | Type.TGenerator(_, _, _, _, _) => `if (${value}) NARRA_COPY_SHARED(${value});`
+      | Type.TGenerator(_, _, _, _, _) => partText
     Type.TEnum(enumIndex) => {
       if (!needsRc(emitter, base)) {
         return ""
       }
       if (isHeapEnum(emitter.checker, enumIndex)) {
-        return creditCode(emitter, base, value)
+        return buildPayloadCall(emitter, base, value, operation)
       }
       let cases: Array<string> = []
       for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
         let statements: Array<string> = []
         for (const field of Arrays.values(variant.fields)) {
-          const statement = creditPartCode(
+          const statement = buildPartCreditCode(
             emitter,
             field.fieldType,
             `(${value}).u.${variantName(variant)}.${fieldName(field.name)}`,
+            operation,
           )
           if (statement != "") {
             Arrays.push(mutable statements, statement)
@@ -487,10 +531,11 @@ function creditPartCode(emitter: Emitter, type: Type, value: string): string use
     Type.TStruct(structIndex) => {
       let statements: Array<string> = []
       for (const field of Arrays.values(emitter.checker.structs[structIndex].fields)) {
-        const statement = creditPartCode(
+        const statement = buildPartCreditCode(
           emitter,
           field.fieldType,
           `(${value}).${fieldName(field.name)}`,
+          operation,
         )
         if (statement != "") {
           Arrays.push(mutable statements, statement)

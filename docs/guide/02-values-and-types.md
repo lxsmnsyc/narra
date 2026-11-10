@@ -430,7 +430,7 @@ import * as Arrays from "std/array"
 
 export function run(args: Array<string>): int {
   const prices: Array<int> = [250, 320]
-  const snapshot = prices
+  const snapshot = copy(prices)
   Arrays.push(mutable prices, 400)
   print(Int.toString(Arrays.length(prices)))
   print(Int.toString(Arrays.length(snapshot)))

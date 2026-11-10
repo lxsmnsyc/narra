@@ -158,7 +158,7 @@ Repeating the word at the call means you can tell, without opening `heal`, that 
 Every player starts with the items in a constant, and the hero gets a shield on top. Pushing the shield onto the constant fails. A local `const` fixes only its name, but a top-level constant is fixed at every depth: there are no global variables, and a constant that could change would be one.
 
 ```narra error
-// error: 7:23: constant "STARTING_KIT" cannot be changed; copy it into a local first, as in `let startingKit = STARTING_KIT`
+// error: 7:23: constant "STARTING_KIT" cannot be changed; copy it into a local first with `copy(STARTING_KIT)`
 import * as Arrays from "std/array"
 
 const STARTING_KIT = ["sword"]
@@ -178,7 +178,7 @@ import * as Int from "std/int"
 const STARTING_KIT = ["sword"]
 
 export function run(args: Array<string>): int {
-  const heroKit = STARTING_KIT
+  const heroKit = copy(STARTING_KIT)
   Arrays.push(mutable heroKit, "shield")
   print(Int.toString(Arrays.length(heroKit)))
   print(Int.toString(Arrays.length(STARTING_KIT)))

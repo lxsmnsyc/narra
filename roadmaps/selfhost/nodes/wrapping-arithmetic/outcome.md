@@ -3,10 +3,10 @@
 ## Built
 
 - `+`, `-`, `*` and unary `-` wrap at the type's width in every build (`narra_wrap_*` in `selfhost/runtime/runtime.h`, `emitArithmetic` and `emitUnary` in `selfhost/src/emitexprs.nra`). `MIN / -1` gives `MIN`, `MIN % -1` gives 0.
-- `+%`, `-%`, `*%` and the compound forms are E0971 (parser, `selfhost/src/parser.nra`), with a fix that writes the plain operator. The three are gone from the checker and `fmt` tables.
+- `+%`, `-%`, `*%` and the compound forms do not exist. They are gone from the checker and `fmt` tables.
 - `Int.addChecked`, `subChecked`, `mulChecked` and the same in `std/i8` to `std/u64` return `Option` (`selfhost/src/stdsized.nra`).
 - The 28 uses in `selfhost/src` and `std/src` are plain operators now.
-- Tests: `testdata/wrapping.nra`, `testdata/errors/wrapping_*` (six, fixes checked by the habits suite). The two overflow panic samples are removed.
+- Tests: `testdata/wrapping.nra`, The two overflow panic samples are removed.
 - SPEC.md, D92, compiler/README.md and the guide chapters 1, 2 and 6 updated.
 
 ## Proof
@@ -19,7 +19,8 @@ Not an experiment node.
 
 ## Deviations
 
-- None. D92 stays marked as partly built: the division, shift, missing-return and std `Result` parts are not.
+- The E0971 deprecation path for `+%`, `-%`, `*%` and the compound forms is removed (diagnostic, parser check, fix, lexer tokens, six `wrapping_*` samples). Removed syntax needs no deprecation path (maintainer, 2026-11-10); the source now lexes as `+` then `%`.
+- D92 stays marked as partly built: the division, shift, missing-return and std `Result` parts are not.
 
 ## Stubs left
 
@@ -28,7 +29,6 @@ Not an experiment node.
 ## Gotchas
 
 - A compiler built from this source emits `narra_wrap_neg`, which only the new generated runtime text has. After changing `runtime.h`, rewrite the generated files with the seed-built compiler (`NARRAC=<seed build> sh scripts/test.sh --suite generated --update`) and then bootstrap.
-- The lexer still reads `+%` as one token so the parser can report it. Remove those punctuation rows only when E0971 is retired.
 - `seed/narrac.c` is older than the source (bootstrap prints stage 3); the orchestrator regenerates it for the batch.
 
 ## Proposed learnings

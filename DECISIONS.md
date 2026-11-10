@@ -668,7 +668,7 @@ Decision: Narra has C-style `for (init; cond; step) { ... }`, including `for (;;
 
 Amendment (node compound-assign, 2026-11-09). Rules for compound assignment and `++`/`--`:
 
-- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`. Changed by D92: the wrapping forms `+%= -%= *%=` are removed (E0971); `+= -= *=` wrap.
+- **Meaning.** `x op= e` means `x = x op e` with the target place evaluated once, so `items[next()] += 1` and `items[next()]++` call `next` once. As for `=`, the value is evaluated before the target place. The operators are `+= -= *= /= %= &= |= ^= <<= >>=` and the wrapping forms `+%= -%= *%=`. Changed by D92: the wrapping forms `+%= -%= *%=` do not exist; `+= -= *=` wrap.
 - **Statements only.** They have no value and cannot be nested in an expression (E0964). Only the postfix spelling `x++` and `x--` exists; `++x` and `--x` are an error with a hint (E0964), so `--x` no longer parses as a double negation.
 - **Targets.** Every target `=` accepts: a `let`, a field or element of a changeable value (D81), the contents of a `mutable` parameter. A `const` binding and a whole `mutable` parameter are rejected as for `=`.
 - **Types.** The value has the type of the target (E0962). `++` and `--` take an integer of any width (E0963). Overflow, division by zero and shift checks are those of the binary operator.
@@ -920,7 +920,7 @@ Decision: when a function with effect variables is used as a value (`const apply
 
 Decision (maintainer, 2026-11-09): a Narra program panics only through `panic`, a failed `assert`, an array index out of range, running out of memory and stack overflow. Everything else that panics today becomes a defined result or a compile error.
 
-- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms are removed. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`. Built (E0971 for a removed operator; `Int.addChecked`, `subChecked`, `mulChecked` and the same in `std/i8` to `std/u64`).
+- **Integer overflow wraps in every build.** `+`, `-`, `*` and unary `-` wrap like `+%`, `-%` and `*%`, so those three operators and their compound forms do not exist. `MIN / -1` gives `MIN` and `MIN % -1` gives `0`. Built (`Int.addChecked`, `subChecked`, `mulChecked` and the same in `std/i8` to `std/u64`).
 - **Division and remainder need a divisor proven non-zero.** Integer `/` and `%` compile only when the divisor is a non-zero constant or a name narrowed by a check (`if (count != 0) { total / count }`). Any other divisor is a compile error with a hint to add the check. Float division is unchanged (IEEE: infinity and NaN).
 - **Shift counts must be proven in range.** A constant count must be at least 0 and below the bit width. A variable count must be narrowed first (`if (n >= 0 && n < 64) { x << n }`; an unsigned count needs only the upper bound). Any other count is a compile error.
 - **A function with a result must return on every path.** A path ends at `return`, a call to `panic`, an `if`/`else` whose branches all end, an exhaustive `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. The end of any other path is a compile error. The runtime check stays only as an internal compiler error.

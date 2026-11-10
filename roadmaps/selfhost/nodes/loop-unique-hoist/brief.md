@@ -1,7 +1,7 @@
 ---
 id: loop-unique-hoist
 title: "Make a local array unique once before a loop that writes it by index"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: [benchmarks]
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 258423
 owns:
   - roadmaps/selfhost/nodes/loop-unique-hoist/**
 shared:
@@ -49,11 +49,11 @@ When a `while`, C-style or range `for` body writes `a[i] = ...` or `a[i].field =
 
 ## Acceptance
 
-- [ ] particles and sieve times and instructions before and after, with the particles gain above the spread.
-- [ ] A sample with a `function*` that writes `a[i] = 1` in a loop and yields the sum after each write, resumed once, copied (`let h = g`), then both copies resumed, prints `1 2 3 2 3`.
-- [ ] A sample where the loop body copies the array into another binding, or passes it to a call, keeps the per-write check and prints the same output as on the base.
-- [ ] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. Report the change; no gain is required here.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] particles and sieve times and instructions before and after, with the particles gain above the spread.
+- [x] A sample with a `function*` that writes `a[i] = 1` in a loop and yields the sum after each write, resumed once, copied (`let h = g`), then both copies resumed, prints `1 2 3 2 3`.
+- [x] A sample where the loop body copies the array into another binding, or passes it to a call, keeps the per-write check and prints the same output as on the base.
+- [x] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. Report the change; no gain is required here.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
 
 ## Notes for the worker
 

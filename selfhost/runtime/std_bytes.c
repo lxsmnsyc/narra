@@ -47,17 +47,19 @@ static bool narra_bytes_to_string(lstr* b, lstr** out, lstr** err) {
 
 static int64_t narra_bytes_length(lstr* b) { return b->len; }
 
-static uint8_t narra_bytes_at(lstr* b, int64_t index, const char* where) {
-  if (index < 0 || index >= b->len) narra_panic(where, "Bytes.at index out of range");
-  return (uint8_t)b->data[index];
+static bool narra_bytes_at(lstr* b, int64_t index, uint8_t* out) {
+  if (index < 0 || index >= b->len) return false;
+  *out = (uint8_t)b->data[index];
+  return true;
 }
 
 // Copies bytes start up to but not including end.
-static lstr* narra_bytes_slice(lstr* b, int64_t start, int64_t end, const char* where) {
-  if (start < 0 || end < start || end > b->len) narra_panic(where, "Bytes.slice range out of bounds");
+static bool narra_bytes_slice(lstr* b, int64_t start, int64_t end, lstr** out) {
+  if (start < 0 || end < start || end > b->len) return false;
   lstr* s = lstr_new(end - start);
   memcpy(s->data, b->data + start, (size_t)(end - start));
-  return s;
+  *out = s;
+  return true;
 }
 
 static lstr* narra_bytes_from_raw(const uint8_t* data, int64_t len) {

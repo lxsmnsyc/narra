@@ -262,7 +262,11 @@ function parseNumber(text: string): Option<int> {
 }
 
 function parseCommand(line: string): Option<Command> {
-  const words = Str.split(line, " ")
+  const pieces = Str.split(line, " ")
+  if (pieces is None) {
+    return None
+  }
+  const words = pieces.value
   match (#[words[0], Arrays.length(words)]) {
     #["add", 3] => {
       if (parseNumber(words[2]) is Some(quantity)) {
@@ -463,7 +467,11 @@ function parseNumber(text: string): Option<int> {
 }
 
 function parseCommand(line: string): Option<Command> {
-  const words = Str.split(line, " ")
+  const pieces = Str.split(line, " ")
+  if (pieces is None) {
+    return None
+  }
+  const words = pieces.value
   match (#[words[0], Arrays.length(words)]) {
     #["add", 3] => {
       if (parseNumber(words[2]) is Some(quantity)) {

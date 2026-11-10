@@ -4,8 +4,9 @@ import { Type } from "narrac/types"
 import { Checker, internComposite, typeString, Walker, reportError } from "narrac/check"
 import { findTupleType } from "narrac/resolve"
 import { Pos, Arg } from "narrac/ast"
+import * as Arrays from "std/array"
 import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/exprs"
-import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
 
 export const ARRAY_FUNCS: Array<StdFunc> = [
   StdFunc { name: "Array.entries", module: "std/array", key: "entries", check: "checkArrayLength" },
@@ -117,13 +118,19 @@ function checkArrayFilled<W: Walker>(
   // The expected array type gives the element a hint.
   let hint: Option<Type> = None
   if (want is Some(wantType)) {
-    if (wantType is Type.TArray(wantElement)) {
-      hint = Some(wantElement)
+    if (wantType is Type.TEnum(enumIndex)) {
+      const wanted = checker.enums[enumIndex]
+      if (wanted.name == "Option" && Arrays.length(wanted.arguments) == 1) {
+        if (wanted.arguments[0] is Type.TArray(wantElement)) {
+          hint = Some(wantElement)
+        }
+      }
     }
   }
   const element = checkExpression(mutable checker, walker, arguments[0].value, hint)
   checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
-  return internComposite(mutable checker, Type.TArray(element))
+  const arrayType = internComposite(mutable checker, Type.TArray(element))
+  return makePreludeEnum(mutable checker, "Option", [arrayType])
 }
 
 function checkArrayWithCapacity<W: Walker>(

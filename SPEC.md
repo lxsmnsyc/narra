@@ -63,7 +63,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Bindings that copy part of another value are read-only.** A `match` or `is` pattern binding (`x is Some(v)`), a `for (const p of players)` binding and a destructured binding (`const { a, b } = s`) hold a copy, so their fields and elements cannot be assigned and they cannot be passed as `mutable`. `for (const p of players) { p.hp = 0 }` is a compile error: write `for (mutable p of players)` (section 2, Control flow), write through the array, `players[index].hp = 0`, or make a copy first with `copy(p)` (D81, D94). A `mutable` marker exists only in that loop (D85); `x is Some(mutable y)`, `const { mutable a } = s` and a local `mutable name = place` do not.
 - **Top-level constants never change** (D81). A top-level `const` cannot be changed at any depth (section 10).
 - There are no globals. Assigning to an undeclared name is a compile error.
-- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, divisor proofs and shift count proofs are those of the binary operator: `x /= d` needs a proven `d`. The wrapping operators `+%=`, `-%=` and `*%=` do not exist. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) panics when the key is missing, since the old value is needed (reading `counts[key]` gives an `Option`); write `Maps.set` first for a new key.
+- **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, divisor proofs and shift count proofs are those of the binary operator: `x /= d` needs a proven `d`. The wrapping operators `+%=`, `-%=` and `*%=` do not exist. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) is a compile error, since a missing key has no old value (reading `counts[key]` gives an `Option`); write `Maps.update(mutable counts, key, 0, (count) => count + 1)`, which starts from the initial value when the key is missing (D92).
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
 - **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
@@ -161,7 +161,7 @@ for (mutable player of players) {
 ```
 
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
-- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 panics. The loop stops before the value would pass the largest or smallest `int`.
+- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and `Ranges.stepped` returns `None` for a step of 0. The loop stops before the value would pass the largest or smallest `int`.
 
 <!-- context
 import * as Arrays from "std/array"
@@ -312,9 +312,9 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
-  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (a negative exponent panics, overflow wraps like `*`; use `Int.mulChecked` to detect it); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` panics when `low > high`.
+  - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (`powInt` returns `None` for a negative exponent, overflow wraps like `*`; use `Int.mulChecked` to detect it); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` returns `None` when `low > high`, and `Some(value)` otherwise.
   - `std/time` has `Instant` and `Duration` (both a count of nanoseconds). `now()` reads the monotonic clock, `elapsed(since)` reads it again, `between(earlier, later)` needs no clock, `unixMillis()` is the wall clock, `sleep(duration)` sleeps. `milliseconds`, `seconds` and `nanoseconds` build a `Duration`, `asMilliseconds` and `asNanoseconds` read it. Reading a clock and sleeping have the `io` effect (section 7).
-  - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns an `int` in `[low, high)` without modulo bias and panics when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
+  - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns `Some(n)` with `n` in `[low, high)` without modulo bias, and `None` when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
   - `std/hash` has `Hash.of(x)`, the `Hashable` hash of any value (it may change between builds), and `fnv1a(text)`, FNV-1a 64 over the UTF-8 bytes of a string as a `u64`, which never changes. `of` is a keyword, and is accepted as a function name and after `.`, like `from`.
 - **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
@@ -816,7 +816,7 @@ const text = Label.label(price)
 - **What a check proves.** A check narrows in the `then` branch of an `if` (the `else` branch gets the opposite), in the body of a `while`, in the right operand of `&&` (`||` gets the opposite), and after an `if` whose `then` branch ends in `return`, `break`, `continue` or a panic. A narrowing ends at an assignment to the name (`n = ...`, `n += 1`, `n++`), at a call that passes the name as `mutable`, and at the start of a loop that does either; a new check narrows again. A name that an arrow function captures by reference is not narrowed inside the arrow function. Only a plain local name narrows: a field or an element (`size.count`, `counts[i]`) and any other expression (`n + 1`, `Arrays.length(items)`) do not, so copy the value into a local first and check the local. A constant is a literal, a negated literal, a top-level `const` whose value is one, or a `const` local that was set from one (`const items = 7`).
 - **Overflow wraps at the type's own width:** `u8` `200 + 100` is 44 and `i8` `-128 - 1` is 127, in every build.
 - Conversions are explicit functions named after the target type, in one module per type (`I32.from(x)`, `I32.tryFrom(x)`, `I32.wrap(x)`; modules `std/i8` to `std/u64`; `std/int` serves `i64`), and `Float.fromInt(x)`, `Float.truncate(f)`. `from` is for conversions where every value fits, `tryFrom` returns an `Option`, `wrap` keeps the low bits. Each of the seven modules also has `toString(x)` and `parse(text, base)`, and `std/int` has `from`, `tryFrom` and `wrap`. `X.from(v)` takes any integer type whose every value fits `X`; another integer type is E0940 and a value that is not an integer is E0941. `tryFrom` and `wrap` take any integer type. `parse` is `Int.parse` with the range of the type in its error text. A literal argument is an `int`, so `I32.from(5)` is E0940; write `const x: i32 = 5`.
-- **`f32`** is a 32-bit float (C `float`) beside `f64`. A float literal takes `f32` when the context expects it and `f64` otherwise; an integer literal never becomes a float. A literal too large to be finite in `f32` is E0297. `f32` and `f64` do not mix in arithmetic or comparison (E0295). `f32` implements `Equatable`, `Ordered` and `Show` (the shortest text that reads back as the same `f32`) but not `Hashable`, so it is not a map key. `F32.from(v)` takes an `f64` (rounds to nearest) or any integer type, `F32.truncate(v)` gives an `int`, `F32.toString(v)` a string (module `std/f32`), and `Float.from(v)` takes an `f32` (exact) or any integer type. Another argument type is E0941.
+- **`f32`** is a 32-bit float (C `float`) beside `f64`. A float literal takes `f32` when the context expects it and `f64` otherwise; an integer literal never becomes a float. A literal too large to be finite in `f32` is E0297. `f32` and `f64` do not mix in arithmetic or comparison (E0295). `f32` implements `Equatable`, `Ordered` and `Show` (the shortest text that reads back as the same `f32`) but not `Hashable`, so it is not a map key. `F32.from(v)` takes an `f64` (rounds to nearest) or any integer type, `F32.truncate(v)` gives an `Option<int>` (`None` for NaN or a value outside `int`), `F32.toString(v)` a string (module `std/f32`), and `Float.from(v)` takes an `f32` (exact) or any integer type. Another argument type is E0941.
 
 ### Strings
 
@@ -824,14 +824,14 @@ const text = Label.label(price)
 - **Positions are byte offsets of type `ByteIndex`**, starting at 0. `ByteIndex` is declared as `export opaque distinct type ByteIndex = u64`, so only `std/string` can create one.
 - **Positions come from the string.** `Str.indexOf`, `Str.find` and iterators return `ByteIndex` values that always fall on a character boundary.
 - **Slices share memory.** `Str.slice` and `Arrays.slice` return a view into the original buffer, with no copy. The view keeps the whole buffer alive. Use `copy(...)` (section 6, Copies on shared values) to keep a small part of a large buffer without keeping the rest.
-- **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It panics when a position is not on a character boundary or is out of range.
+- **Slicing checks boundaries.** `Str.slice(s, from, to)` returns bytes `from` up to but not including `to`. It returns `None` when a position is not on a character boundary, is out of range, or `from` is after `to`, and `Some(text)` otherwise.
 - `Str.length(s)` is the byte length as `ByteIndex`. `Str.charCount(s)` counts characters and takes time proportional to the length.
 - Grapheme clusters, case mapping and normalization are in `std/unicode`.
 
 ### Bytes
 
 - `bytes` is an immutable byte sequence with no UTF-8 guarantee. It has the representation of `string`, so `Bytes.fromString(text)` shares the buffer, and `Bytes.toString(data)` shares it too when the bytes are valid UTF-8. Otherwise it returns `Err("invalid UTF-8 at byte N")`, with the offset of the first bad byte.
-- `std/bytes` (alias `Bytes`): `fromString(text): bytes`, `toString(data): Result<string, string>`, `length(data): int`, `at(data, index: int): u8`, `slice(data, start: int, end: int): bytes`, `concat(left, right): bytes`, `fromArray(items: Array<u8>): bytes` and `toArray(data): Array<u8>`. `at` and `slice` panic out of range. `slice` copies the bytes.
+- `std/bytes` (alias `Bytes`): `fromString(text): bytes`, `toString(data): Result<string, string>`, `length(data): int`, `at(data, index: int): Option<u8>`, `slice(data, start: int, end: int): Option<bytes>`, `concat(left, right): bytes`, `fromArray(items: Array<u8>): bytes` and `toArray(data): Array<u8>`. `at` and `slice` return `None` out of range. `slice` copies the bytes.
 - `std/fs` has `readBytes(path): Result<bytes, string>` and `writeBytes(path, data: bytes): Result<int, string>`, which work as `readText` and `writeText` without the UTF-8 check.
 - `bytes` implements `Equatable`, `Hashable`, `Ordered` (bytewise, a prefix first, and `<` works as on strings) and `Show`, which writes hex pairs: `bytes[68 69 0a]`. It works as a map key. It is not a contents type, so a `mutable` parameter cannot have it.
 
@@ -850,8 +850,12 @@ export function parsePair(line: string): Option<Pair> uses alloc {
     return None
   }
   const i = found.value
+  const key = Str.slice(line, 0, i)
+  if (key is None) {
+    return None
+  }
   return Some(Pair {
-    key: Str.trim(Str.slice(line, 0, i)),
+    key: Str.trim(key.value),
     value: Str.trim(Str.sliceFrom(line, Str.nextChar(line, i))),
   })
 }
@@ -865,6 +869,24 @@ export function parsePair(line: string): Option<Pair> uses alloc {
 - **`std/result` helpers.** `import * as Results from "std/result"` adds `Results.map(r, f)`, `Results.mapErr(r, f)`, `Results.andThen(r, f)` (`f` returns a `Result` with the same error type), `Results.withDefault(r, fallback)`, and `Results.ok(r)` and `Results.err(r)`, which return the `Ok` or `Err` value as an `Option`. They work on a value you already hold. They never return from the caller, so they do not replace the visible `if` or `match` on the error path; they transform a result or give it a fallback.
 - **Ignoring a `Result` is a compile error.** Discard one on purpose with `const _ = f()`.
 - **Panics abort the program.** `panic("message")`, failed `assert`, and out-of-bounds indexing all panic. A panic cannot be caught.
+- **Std functions that cannot handle their input return `Option` (D92).** None of them panics. Each has one way to fail, so `None` says all there is to say.
+
+| Function | Result | `None` when |
+|---|---|---|
+| `Str.slice(text, from, to)` | `Option<string>` | a position is out of range or inside a character, or `from` is after `to` |
+| `Str.split(text, separator)` | `Option<Array<string>>` | the separator is empty |
+| `Str.repeat(text, count)` | `Option<string>` | `count` is negative |
+| `Bytes.at(data, index)` | `Option<u8>` | `index` is out of range |
+| `Bytes.slice(data, start, end)` | `Option<bytes>` | the range is out of bounds |
+| `Float.truncate(value)`, `F32.truncate(value)` | `Option<int>` | `value` is NaN or outside `int` |
+| `Arrays.filled(value, count)` | `Option<Array<T>>` | `count` is negative |
+| `Ranges.stepped(start, end, step)` | `Option<Range>` | `step` is 0 |
+| `Math.clamp(value, low, high)` | `Option<T>` | `low` is greater than `high` |
+| `Math.powInt(base, exponent)` | `Option<int>` | `exponent` is negative |
+| `Random.nextInt(mutable random, low, high)` | `Option<int>` | `low` is not below `high` |
+
+- **Std panics that remain.** `Str.sliceFrom`, `Str.charAt` and `Str.nextChar` still panic on a position that is out of range or inside a character, and array indexing keeps its panic. They are not yet converted.
+- **`Maps.update(mutable map, key, initial, change)`.** Sets `map[key]` to `change(old)`, where `old` is the current value, or `initial` when the key is missing. `change` is a function from the value type to the value type.
 
 <!-- context
 import * as File from "std/fs"
@@ -916,7 +938,10 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 -->
 ```ts
-let squares: Array<int> = Arrays.filled(0, 1000)
+let squares: Array<int> = []
+if (Arrays.filled(0, 1000) is Some(zeros)) {
+  squares = zeros
+}
 for (const i of Ranges.upTo(1000)) {
   squares[i] = i * i          // the count is 1, so the write is in place
 }

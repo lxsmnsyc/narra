@@ -161,7 +161,10 @@ export function parseCelsius(text: string): Result<int, string> uses alloc {
   if (!Str.endsWith(text, "C")) {
     return Err(`missing unit: ${text}`)
   }
-  return Int.parse(Str.slice(text, 0, Str.length(text) - 1), 10)
+  if (Str.slice(text, 0, Str.length(text) - 1) is Some(digits)) {
+    return Int.parse(digits, 10)
+  }
+  return Err(`cannot cut the unit: ${text}`)
 }
 
 export function average(readings: Array<int>): int {

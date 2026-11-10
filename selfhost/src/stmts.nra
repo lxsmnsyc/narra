@@ -3,6 +3,7 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
+import { splitString, substring } from "narrac/textops"
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { isPanicCall } from "narrac/pathends"
@@ -392,6 +393,24 @@ function checkAssignment<W: Walker>(
     checker.bodies[body].locals[writtenLocal].used = wasUsed
   }
 
+  // A map element has no old value to combine with, so only `=` writes one.
+  if (operator != "=") {
+    if (target is Expr.IndexExpr(_, _, mapTarget, _)) {
+      if (getNodeType(checker, getExpressionId(mapTarget)) is Some(mapType)) {
+        if (mapType is Type.TMap(_, _)) {
+          reportError(
+            mutable checker,
+            pos,
+            "E0226",
+            "only variables, fields and array elements take a compound assignment",
+          )
+          checkExpression(mutable checker, walker, value, None)
+          return
+        }
+      }
+    }
+  }
+
   // The root of the target must be a `let` variable.
   const root = findAssignedLocal(checker, target)
   if (root < 0) {
@@ -473,7 +492,7 @@ function checkCompoundOperand<W: Walker>(
     return
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
-  const arithmetic = Str.slice(operator, 0, Str.length(operator) - 1)
+  const arithmetic = substring(operator, 0, Str.length(operator) - 1)
   const valueText = typeString(checker, valueType)
   if (valueType == targetType) {
     if (arithmetic == "/" || arithmetic == "%") {
@@ -1838,7 +1857,7 @@ function buildHoistFix(
     return []
   }
   const statementPos = findStatementPos(statement)
-  const lines = Str.split(scope.facts.source, "\n")
+  const lines = splitString(scope.facts.source, "\n")
   if (
     statementPos.line < 1 ||
       statementPos.line > Arrays.length(lines) ||

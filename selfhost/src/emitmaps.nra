@@ -3,12 +3,13 @@
 //
 // The C for one map type is the template RUNTIME_MAP_H with the @...@ names
 // filled in. The key's equality and hash come from emittraits.
+import { splitString, substring } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
-import { Expr, Stmt } from "narrac/ast"
+import { Expr, Stmt, Arg } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Ref, getExpressionId, findBodySlot } from "narrac/check"
 import { cachedTypeId, cachedCType } from "narrac/cnames"
@@ -42,6 +43,7 @@ import {
   variableRef,
 } from "narrac/emitstate"
 import { enumAllocation } from "narrac/emitdecls"
+import { callFunctionValue } from "narrac/emitclosures"
 import { useEq, useHash } from "narrac/emittraits"
 import { RUNTIME_MAP_H } from "narrac/runtimemap"
 
@@ -108,7 +110,7 @@ function mapTypes(emitter: Emitter): Array<Type> uses alloc {
 
 function containerName(emitter: Emitter, type: Type): string uses alloc {
   const name = cachedCType(emitter.checker, emitter.typeNames, type)
-  return Str.slice(name, 0, Str.length(name) - 1)
+  return substring(name, 0, Str.length(name) - 1)
 }
 
 function getKeyType(type: Type): Type {
@@ -199,7 +201,7 @@ export function emitMapFunctions(mutable emitter: Emitter): string uses alloc {
 function splitMapTemplate(): MapTemplate uses alloc {
   // Even pieces are text and odd pieces sit between two @ marks. A piece that
   // names no placeholder stays text, marks included.
-  const pieces = Str.split(RUNTIME_MAP_H, "@")
+  const pieces = splitString(RUNTIME_MAP_H, "@")
   let texts: Array<string> = []
   let slots: Array<int> = []
   for (const index of Ranges.between(0, Arrays.length(pieces))) {
@@ -378,6 +380,9 @@ export function emitMapBuiltin<W: EmitWalker>(
         )
         return Code { text: removed, owned: false }
       }
+      if (name == "Map.update") {
+        return emitMapUpdate(walker, mutable emitter, mapType, arguments)
+      }
       if (name == "Map.keys" || name == "Map.entries") {
         return emitMapToArray(
           walker,
@@ -391,6 +396,44 @@ export function emitMapBuiltin<W: EmitWalker>(
     }
   }
   return Code { text: reportUnsupported(mutable emitter, "map builtin", NODE), owned: false }
+}
+
+function emitMapUpdate<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  mapType: Type,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const keyType = getKeyType(mapType)
+  const valueType = getValueType(mapType)
+  const name = containerName(emitter, mapType)
+  const keyCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+  const key = consume(mutable emitter, keyCode.text, keyCode.owned, keyType)
+  const initialCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[2].value)
+  // A fresh initial value is released with the statement, whether or not it is used.
+  let initial = ""
+  if (initialCode.owned) {
+    initial = ownedTemp(mutable emitter, valueType, initialCode.text)
+  } else {
+    initial = temp(mutable emitter, valueType, initialCode.text)
+  }
+  const current = temp(mutable emitter, valueType, initial)
+  const callbackCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[3].value)
+  const callbackType = readNodeType(emitter, getExpressionId(arguments[3].value))
+  const callback = temp(mutable emitter, callbackType, callbackCode.text)
+  const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  emitter.tempCount++
+  const pointerName = `t${Int.toString(emitter.tempCount)}`
+  const pointerType = `${cachedCType(emitter.checker, emitter.typeNames, mapType)}*`
+  const pointerDeclaration = declareVariable(mutable emitter, pointerType, pointerName)
+  writeLine(mutable emitter, `${pointerDeclaration} = ${location};`)
+  const pointer = variableRef(emitter, pointerName)
+  // A missing key starts from the initial value.
+  const entry = temp(mutable emitter, Type.TInt, `${name}_lookup(*${pointer}, ${key})`)
+  writeLine(mutable emitter, `if (${entry} >= 0) ${current} = (*${pointer})->vals[${entry}];`)
+  const updated = callFunctionValue(mutable emitter, callbackType, callback, [current])
+  // The set takes over the key and the new value and releases the old value.
+  return Code { text: `${name}_set(${pointer}, ${key}, ${updated.text})`, owned: false }
 }
 
 function entryValue(

@@ -488,11 +488,17 @@ static lstr* lstr_concat_n(int64_t count, lstr** parts) {
   return s;
 }
 
-static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
-  if (n < 0) narra_panic(where, "Str.repeat with a negative count");
-  lstr* s = lstr_new(a->len * n);
+static bool lstr_repeat(lstr* a, int64_t n, lstr** out) {
+  int64_t size;
+  if (n < 0 || __builtin_mul_overflow(a->len, n, &size)) return false;
+  if (a->len == 0) {
+    *out = lstr_new(0);
+    return true;
+  }
+  lstr* s = lstr_new(size);
   for (int64_t i = 0; i < n; i++) memcpy(s->data + i * a->len, a->data, (size_t)a->len);
-  return s;
+  *out = s;
+  return true;
 }
 
 static lstr* lstr_from_digits(uint64_t magnitude, int negative) {
@@ -776,9 +782,10 @@ NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
 
-static narra_range narra_range_stepped(int64_t low, int64_t high, int64_t step, const char* where) {
-  if (step == 0) narra_panic(where, "Ranges.stepped: step is zero");
-  return (narra_range){low, high, step};
+static bool narra_range_stepped(int64_t low, int64_t high, int64_t step, narra_range* out) {
+  if (step == 0) return false;
+  *out = (narra_range){low, high, step};
+  return true;
 }
 
 // Moves a loop variable by the step; a sum past the int range ends the loop.
@@ -788,12 +795,12 @@ static void narra_range_advance(int64_t* value, int64_t step, int64_t high) {
 
 static int64_t narra_abs(int64_t a, const char* where) { return a < 0 ? narra_wrap_neg(a) : a; }
 
-static int64_t narra_truncate(double v, const char* where) {
-  if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) {
-    narra_panic(where, "Float.truncate: value out of range");
-  }
-  return (int64_t)v;
+static bool narra_float_truncate(double v, int64_t* out) {
+  if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) return false;
+  *out = (int64_t)v;
+  return true;
 }
+
 
 _Noreturn NARRA_COLD static void narra_bounds_fail(int64_t i, int64_t len, const char* where) {
   char msg[96];

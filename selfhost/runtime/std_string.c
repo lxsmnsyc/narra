@@ -36,15 +36,13 @@ static lstr* narra_str_copy(const char* p, int64_t n) {
   return r;
 }
 
-static lstr* narra_str_slice(lstr* s, int64_t from, int64_t to, const char* where) {
-  narra_str_check_pos(s, from, "Str.slice", where);
-  narra_str_check_pos(s, to, "Str.slice", where);
-  if (from > to) {
-    char buf[160];
-    snprintf(buf, sizeof buf, "Str.slice: start %" PRId64 " is after end %" PRId64, from, to);
-    narra_panic(where, buf);
-  }
-  return narra_str_copy(s->data + from, to - from);
+// Copies from up to but not including to. False when a position is out of range, inside a
+// character, or the start is after the end.
+static bool narra_str_slice(lstr* s, int64_t from, int64_t to, lstr** out) {
+  if (from < 0 || to > s->len || from > to) return false;
+  if (!narra_str_boundary(s, from) || !narra_str_boundary(s, to)) return false;
+  *out = narra_str_copy(s->data + from, to - from);
+  return true;
 }
 
 static lstr* narra_str_slice_from(lstr* s, int64_t from, const char* where) {
@@ -119,9 +117,9 @@ static int64_t narra_str_char_count(lstr* s) {
 }
 
 // Splits s at every occurrence of sep. Returns *n owned strings in an array
-// that the caller frees with narra_free.
-static lstr** narra_str_split(lstr* s, lstr* sep, int64_t* n, const char* where) {
-  if (sep->len == 0) narra_panic(where, "Str.split with an empty separator");
+// that the caller frees with narra_free, or NULL when sep is empty.
+static lstr** narra_str_split(lstr* s, lstr* sep, int64_t* n) {
+  if (sep->len == 0) return NULL;
   int64_t count = 1;
   for (int64_t i = 0; i + sep->len <= s->len;) {
     if (memcmp(s->data + i, sep->data, (size_t)sep->len) == 0) { count++; i += sep->len; } else i++;

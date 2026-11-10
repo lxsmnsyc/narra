@@ -15,8 +15,10 @@ function findSetting(lines: Array<string>, key: string): Option<string> {
   for (const line of lines) {
     const equals = Str.indexOf(line, "=")
     if (equals is Some(position)) {
-      if (Str.trim(Str.slice(line, 0, position)) == key) {
-        return Some(Str.trim(Str.sliceFrom(line, position + 1)))
+      if (Str.slice(line, 0, position) is Some(name)) {
+        if (Str.trim(name) == key) {
+          return Some(Str.trim(Str.sliceFrom(line, position + 1)))
+        }
       }
     }
   }

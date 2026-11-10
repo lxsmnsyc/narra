@@ -61,6 +61,14 @@ function fail<T>(parser: Parser, position: int, reason: string): Result<T, strin
   return Err(`${Int.toString(line)}:${Int.toString(column)}: ${reason}`)
 }
 
+// cutText copies the bytes start to end; the callers pass positions inside the text.
+function cutText(text: string, start: int, end: int): string uses alloc {
+  if (Str.slice(text, start, end) is Some(piece)) {
+    return piece
+  }
+  return ""
+}
+
 function skipSpace(mutable parser: Parser) {
   while (parser.position < parser.length) {
     const byte = Str.byteAt(parser.text, parser.position)
@@ -255,7 +263,7 @@ function parseNumber(mutable parser: Parser): Result<Value, string> uses alloc {
       }
     }
   }
-  const digits = Str.slice(parser.text, start, parser.position)
+  const digits = cutText(parser.text, start, parser.position)
   if (!isFloat) {
     // An integer outside int becomes a Float.
     const whole = Int.parse(digits, 10)
@@ -311,7 +319,7 @@ function parseString(mutable parser: Parser): Result<string, string> uses alloc 
     }
     const byte = Str.byteAt(parser.text, parser.position)
     if (byte == 34) {
-      Str.append(mutable builder, Str.slice(parser.text, runStart, parser.position))
+      Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
       parser.position = parser.position + 1
       return Ok(Str.build(builder))
     }
@@ -322,7 +330,7 @@ function parseString(mutable parser: Parser): Result<string, string> uses alloc 
       parser.position = parser.position + 1
       continue
     }
-    Str.append(mutable builder, Str.slice(parser.text, runStart, parser.position))
+    Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
     parser.position = parser.position + 1
     if (parser.position >= parser.length) {
       return fail(parser, parser.position, "")
@@ -470,9 +478,10 @@ function writeValue(mutable builder: StringBuilder, value: Value) uses alloc {
 // ".0" (Float.toString would write 1e+02 for 100.0); the rest keeps its shortest text.
 function floatText(number: f64): string uses alloc {
   if (number > -1000000000000000.0 && number < 1000000000000000.0) {
-    const whole = Float.truncate(number)
-    if (Float.fromInt(whole) == number) {
-      return `${Int.toString(whole)}.0`
+    if (Float.truncate(number) is Some(whole)) {
+      if (Float.fromInt(whole) == number) {
+        return `${Int.toString(whole)}.0`
+      }
     }
   }
   return Float.toString(number)
@@ -490,12 +499,12 @@ function writeString(mutable builder: StringBuilder, text: string) uses alloc {
       index = index + 1
       continue
     }
-    Str.append(mutable builder, Str.slice(text, runStart, index))
+    Str.append(mutable builder, cutText(text, runStart, index))
     Str.append(mutable builder, escapeByte(byte))
     index = index + 1
     runStart = index
   }
-  Str.append(mutable builder, Str.slice(text, runStart, length))
+  Str.append(mutable builder, cutText(text, runStart, length))
   Str.append(mutable builder, "\"")
 }
 
@@ -523,7 +532,10 @@ function escapeByte(byte: int): string uses alloc {
     return "\\f"
   }
   const hex = Int.toHex(byte)
-  return `\\u${Str.repeat("0", 4 - Str.length(hex))}${hex}`
+  if (Str.repeat("0", 4 - Str.length(hex)) is Some(padding)) {
+    return `\\u${padding}${hex}`
+  }
+  return `\\u${hex}`
 }
 
 // encode writes any value that implements Shape as compact JSON text.

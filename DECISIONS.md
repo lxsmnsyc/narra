@@ -1033,7 +1033,7 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - A guard covers the whole or-pattern. When the guard fails for one matching alternative, the next alternative that matches is tried with its own bindings; the arm is taken if any alternative matches with the guard true (Rust semantics).
 - A binding of the whole value keeps its full type; there is no narrowing to the listed constructors, so no union types appear (D73).
 - Exhaustiveness and unreachable-arm checks count each alternative.
-- **Only in `match`.** An `is` test stays one pattern: allowing alternatives there only without bindings would make `is` and `match` patterns differ (maintainer).
+- **Only in `match`.** An `is` test and a `const`, `let` or `for ... of` destructuring stay one pattern (E0974): allowing alternatives there only without bindings would make `is` and `match` patterns differ (maintainer).
 - `narrac fmt` keeps short lists on one line and puts one alternative per line, each starting with `|`, when the arm does not fit.
 - Contract patterns (D95) use the same alternatives.
 

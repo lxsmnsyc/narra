@@ -1,7 +1,7 @@
 ---
 id: shared-write-error
 title: "Shared writes become errors"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-6
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-09
-spent:
+spent: 447610
 owns:
   - roadmaps/selfhost/nodes/shared-write-error/**
 shared:

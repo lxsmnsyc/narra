@@ -1,7 +1,7 @@
 ---
 id: std-no-panic
 title: "Std functions return Result or Option instead of panicking"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-6

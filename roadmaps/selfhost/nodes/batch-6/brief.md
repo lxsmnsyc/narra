@@ -1,7 +1,7 @@
 ---
 id: batch-6
 title: "Batch 6: shared writes and the D92 proofs"
-status: todo
+status: active
 priority: should
 type: story
 story:

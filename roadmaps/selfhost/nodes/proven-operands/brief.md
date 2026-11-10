@@ -1,7 +1,7 @@
 ---
 id: proven-operands
 title: "Divisors and shift counts proven by narrowing"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-6

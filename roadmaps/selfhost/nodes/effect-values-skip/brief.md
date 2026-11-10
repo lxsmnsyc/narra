@@ -1,7 +1,7 @@
 ---
 id: effect-values-skip
 title: "The effect pass fills valuesAt only for bodies that read it"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-5
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 78700
 owns:
   - roadmaps/selfhost/nodes/effect-values-skip/**
 shared:
@@ -45,9 +45,9 @@ depends_on:
 
 ## Acceptance
 
-- [ ] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. The gain must exceed the run-to-run spread, or the node closes as not worth it.
-- [ ] Effect diagnostics and emitted C are unchanged across the samples and error tests.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] Instructions retired for `narrac emit selfhost` (macOS `/usr/bin/time -l`) before and after on the same commit, run 3 times each side, reported in the outcome. The gain must exceed the run-to-run spread, or the node closes as not worth it.
+- [x] Effect diagnostics and emitted C are unchanged across the samples and error tests.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
 
 ## Notes for the worker
 

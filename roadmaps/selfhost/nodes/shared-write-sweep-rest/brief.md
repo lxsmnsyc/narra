@@ -1,7 +1,7 @@
 ---
 id: shared-write-sweep-rest
 title: "Fix the shared writes in the rest of the compiler and the tests"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-6

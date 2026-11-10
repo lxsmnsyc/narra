@@ -243,16 +243,30 @@ function emitTemplate<W: EmitWalker>(
   if (Arrays.length(parts) == 0) {
     return plain(literal(mutable emitter, ""))
   }
+  // A later part that may assign a variable forces each earlier part into a
+  // temporary now, to keep the written order.
+  let last = -1
+  for (const index of Ranges.between(0, Arrays.length(parts))) {
+    if (mayWrite(emitter, parts[index])) {
+      last = index
+    }
+  }
+  for (const index of Ranges.between(0, last)) {
+    holdArgument(walker, mutable emitter, parts[index])
+  }
   const first = EmitWalker.emitExpression(walker, mutable emitter, parts[0])
-  let accumulated = first.text
-  let owned = first.owned
+  if (Arrays.length(parts) == 1) {
+    return first
+  }
+  // Collect every part, then join them in one runtime call
+  let texts = first.text
   for (const index of Ranges.between(1, Arrays.length(parts))) {
     const next = EmitWalker.emitExpression(walker, mutable emitter, parts[index])
-    const concatenated = `lstr_concat(${accumulated}, ${next.text})`
-    accumulated = ownedTemp(mutable emitter, Type.TStr, concatenated)
-    owned = true
+    texts = `${texts}, ${next.text}`
   }
-  return Code { text: accumulated, owned: owned }
+  const count = Int.toString(Arrays.length(parts))
+  const joined = `lstr_concat_n(${count}, (lstr*[]){${texts}})`
+  return Code { text: ownedTemp(mutable emitter, Type.TStr, joined), owned: true }
 }
 
 function containerStruct(emitter: Emitter, type: Type): string uses alloc {

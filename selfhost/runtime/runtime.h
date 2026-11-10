@@ -319,6 +319,19 @@ static lstr* lstr_concat(lstr* a, lstr* b) {
   return s;
 }
 
+static lstr* lstr_concat_n(int64_t count, lstr** parts) {
+  // Sum the lengths, then copy each part once
+  int64_t total = 0;
+  for (int64_t i = 0; i < count; i++) total += parts[i]->len;
+  lstr* s = lstr_new(total);
+  char* cursor = s->data;
+  for (int64_t i = 0; i < count; i++) {
+    memcpy(cursor, parts[i]->data, (size_t)parts[i]->len);
+    cursor += parts[i]->len;
+  }
+  return s;
+}
+
 static lstr* lstr_repeat(lstr* a, int64_t n, const char* where) {
   if (n < 0) narra_panic(where, "Str.repeat with a negative count");
   lstr* s = lstr_new(a->len * n);

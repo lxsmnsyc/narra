@@ -430,7 +430,7 @@ Amendment (node const-params-pointer, 2026-11-10). Built for parameters; reads o
 - **One convention per type.** The choice depends only on the parameter's type, so direct calls, generic instances, trait implementations, function types, thunks for named functions and arrow functions agree. The generated `retain_*` and `release_*` functions of a large type take a pointer too.
 - **Arguments.** A place (a variable, a field path, a parameter) is passed by address. Any other value (a call result, a literal, a constant) is first stored in a temporary of the caller.
 - **Where the value is copied.** The callee cannot change the value: the caller keeps it for the call, E0319 rejects passing a variable as `mutable` and using it in another argument, and E0614 rejects a closure argument that assigns a variable another argument uses. Three places keep the parameter past the call or change it, and copy it: a generator or coroutine frame copies it when created; a closure environment copies a captured parameter, and the closure reads it through a pointer to that copy; a function with self tail calls stores each new value in a variable of its own (`<name>_held`) after all new arguments are evaluated, and points the parameter at it.
-- **Measured.** `narrac emit selfhost`: 3.10 G to 2.62 G instructions retired (-15.6%).
+- **Measured.** `narrac emit selfhost`: 3.16 G to 2.64 G instructions retired (-16.6%) on the batch-4 branch after option-inline and perceus-reuse.
 
 ## D51. Parameters reached through a function value are escaping
 
@@ -475,7 +475,7 @@ Decision: every C name comes from `compiler/internal/narra/cnames.go`. A declara
 Decision: an enum with at least one fielded variant is `{ tag, payload pointer }` (since D99, only when it reaches itself or its payload is over 32 bytes). The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
 
 - **Reason.** SPEC section 6 asks for this, and recursive enums (an AST) need it.
-- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates. The user accepted this. It made the `interp` benchmark about 2x slower (0.39 s against 0.24 s) through a retain and release of each loop item; since node `perceus`, for-of items and `is`/`match` bindings borrow, and `interp` runs in 0.16 s.
+- **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates (since D99, only for heap enums). The user accepted this. It made the `interp` benchmark about 2x slower (0.39 s against 0.24 s) through a retain and release of each loop item; since node `perceus`, for-of items and `is`/`match` bindings borrow, and `interp` runs in 0.16 s.
 - **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths. Superseded by D99: an enum that does not reach itself and has a payload of up to 32 bytes is stored inline; this decision still holds for the rest.
 - **Limit.** User functions still recurse on the C stack; about 20000 deep overflows under ASan. Not solved here.
 

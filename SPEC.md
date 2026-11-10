@@ -858,7 +858,7 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 ### Values and ownership
 
 - Every value has one or more owners: variables, fields, array slots, closure captures.
-- Boxed values (arrays, maps, strings, closures, `Box<T>` and recursive enums) live on the heap with a reference count. Numbers, `bool`, `char`, structs and enums that do not contain themselves live inline.
+- Boxed values (arrays, maps, strings, closures, `Box<T>` and recursive enums) live on the heap with a reference count. Numbers, `bool`, `char`, structs and enums that do not contain themselves and are at most 32 bytes live inline.
 - A struct that holds boxed fields counts those fields, not itself. Copying the struct increments the count of each boxed field. An inline enum is the same: copying it increments the count of each boxed field of its variant.
 - An enum is stored on the heap when a variant field contains the enum again through structs and enums held by value (an expression tree), or when its largest variant is over 32 bytes. Fields behind an `Array`, `Map`, `Box` or function do not count. `Some(1)`, `Ok(x)` and `Err(e)` of a small type allocate nothing.
 - **`Box<T>`** puts a value on the heap with a reference count. Use it for recursive structs and for large structs that are passed around often.

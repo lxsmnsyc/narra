@@ -1069,4 +1069,6 @@ One run makes 19.6 M allocations (580 MB), 510 K reallocs, 60.2 M retains, 70.3 
 - **Rejected: a region per module parse or per emitted function.** The trees live for the whole compile, and emission writes shared state.
 - **Rejected: never freeing in the compiler (one process-wide region).** 6 times the peak memory on the compiler's own source, and it grows with program size on an 8 GB machine.
 
-Not built yet.
+Size-class allocator: built (node fast-alloc). `narra_alloc` takes blocks of up to 512 bytes, header included, from 32 free lists in steps of 16 bytes, carved from 1 MiB chunks that are never returned to the system. Larger blocks use `malloc`. An 8-byte header holds the class (0 for a `malloc` block), so blocks are 8-byte aligned. `narra_realloc` keeps a small block that still fits, moves it to another class or to `malloc` otherwise, and calls `realloc` on a `malloc` block. AddressSanitizer builds (`-sanitize`) and builds that define `NARRA_PLAIN_MALLOC` keep plain `malloc` and `free`. `narra_live` counts as before. The lists are one global set; making `NARRA_HEAP_LOCAL` `_Thread_local` gives one set per thread. Measured on `narrac emit selfhost` (same machine, median of 9 alternating runs, load average 25 to 46): 9.35 G instructions before, 5.33 G after (43% fewer), user time 1.48 s to 1.12 s, peak memory 133 MB to 150 MB (13% more).
+
+Regions: not built yet.

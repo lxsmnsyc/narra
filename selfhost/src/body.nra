@@ -54,6 +54,7 @@ import { dumpTypeString } from "narrac/declsdump"
 import * as Exprs from "narrac/exprs"
 import * as Stmts from "narrac/stmts"
 import { checkEveryPathReturns } from "narrac/pathends"
+import { checkSharedResults, checkSharedResultsIn } from "narrac/sharedresults"
 import * as Match from "narrac/match"
 import * as Literals from "narrac/literals"
 import * as Calls from "narrac/calls"
@@ -229,6 +230,7 @@ export function checkModules(
     return ModulesCheck { checker: checker, unusedStart: count, queuedErrors: 0 }
   }
   checker.checkingBodies = true
+  checker.sharedResultsUnchecked = package.sharedResultsUnchecked
   recordEntryTargets(mutable checker, package)
   const walker = BodyWalker {}
   let queuedErrors = 0
@@ -498,6 +500,9 @@ function checkFunctionBody(
     if (!funcDecl.generator && Arrays.length(typeArguments) == 0) {
       checkEveryPathReturns(mutable checker, block, result, false)
     }
+    if (Arrays.length(typeArguments) == 0 && !skipsSharedResults(checker)) {
+      checkSharedResults(mutable checker, funcDecl)
+    }
   }
   finishBody(mutable checker, saved)
 }
@@ -673,5 +678,14 @@ function checkTest(mutable checker: Checker, walker: BodyWalker, testDecl: TestD
   checker.inTest = true
   Stmts.checkBlock(mutable checker, walker, testDecl.body)
   checker.inTest = false
+  if (!skipsSharedResults(checker)) {
+    checkSharedResultsIn(mutable checker, testDecl.body)
+  }
   finishBody(mutable checker, saved)
+}
+
+function skipsSharedResults(checker: Checker): bool {
+  // Results are checked for sharing only in a body whose types are all known, and not in a package that turns the check off.
+  return checker.sharedResultsUnchecked ||
+    Arrays.length(checker.errors) > checker.bodies[checker.body].errorCount
 }

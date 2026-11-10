@@ -22,6 +22,9 @@ import {
   lookupType,
   lookupGeneric,
   containsTypeParameter,
+  findSharedParameter,
+  findFromNamePos,
+  WrittenFunctionType,
   checkMutableType,
 } from "narrac/check"
 import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
@@ -82,8 +85,26 @@ export function resolveSignature(
     }
   }
   const result = resolveGeneratorResult(mutable checker, funcDecl, funcIndex, report)
+  if (report) {
+    checkResultFrom(mutable checker, funcDecl)
+  }
   checker.functionIndex = savedIndex
   return Signature { parameters: parameters, result: result }
+}
+
+function checkResultFrom(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
+  // `from` names a parameter of the function.
+  if (funcDecl.result is Some(resultType)) {
+    if (resultType.resultFrom != "" && findSharedParameter(funcDecl) < 0) {
+      const namePos = findFromNamePos(checker, resultType)
+      reportError(
+        mutable checker,
+        namePos,
+        "E0976",
+        `from names ${quoteGo(resultType.resultFrom)}, which is not a parameter of ${funcDecl.name}`,
+      )
+    }
+  }
 }
 
 function resolveGeneratorResult(
@@ -200,6 +221,52 @@ function makeGenerator(
   return Type.TGenerator(element, sorted, findEffectBinder(checker, sorted), -1, input)
 }
 
+function noteWrittenFunctionType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+  resolved: Type,
+) uses alloc {
+  // Each written type is noted once, however often it is resolved.
+  if (!checker.scopes[checker.current].isSource) {
+    return
+  }
+  const key = typeKey(resolved)
+  let written: Array<WrittenFunctionType> = []
+  if (checker.writtenFunctionTypes[key] is Some(known)) {
+    written = known
+  }
+  for (const site of Arrays.values(written)) {
+    if (site.scope == checker.current && site.type.pos == typeExpr.pos) {
+      return
+    }
+  }
+  Arrays.push(mutable written, WrittenFunctionType { scope: checker.current, type: typeExpr })
+  checker.writtenFunctionTypes[key] = written
+}
+
+function findTypeShared(mutable checker: Checker, typeExpr: TypeExpr): int uses alloc {
+  // The `from` of a function type names one of the parameter names it writes.
+  if (typeExpr.result is Some(boxed)) {
+    const name = boxed.value.resultFrom
+    if (name == "") {
+      return -1
+    }
+    for (const index of Ranges.upTo(Arrays.length(typeExpr.parameterNames))) {
+      if (typeExpr.parameterNames[index] == name) {
+        return index
+      }
+    }
+    const namePos = findFromNamePos(checker, boxed.value)
+    reportError(
+      mutable checker,
+      namePos,
+      "E0976",
+      `from names ${quoteGo(name)}, which is not a parameter of this function type; name the parameter, as in \`(${name}: T) => R from ${name}\``,
+    )
+  }
+  return -1
+}
+
 export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
   if (typeExpr.isFunc) {
     let parameters: Array<Type> = []
@@ -209,7 +276,15 @@ export function resolveType(mutable checker: Checker, typeExpr: TypeExpr): Type 
     const resultType = funcResult(mutable checker, typeExpr.result)
     const sorted = sortEffects(typeExpr.effects)
     const binder = findEffectBinder(checker, sorted)
-    return internComposite(mutable checker, Type.TFunc(parameters, resultType, sorted, binder))
+    const shared = findTypeShared(mutable checker, typeExpr)
+    const resolved = internComposite(
+      mutable checker,
+      Type.TFunc(parameters, resultType, sorted, binder, shared),
+    )
+    if (shared < 0) {
+      noteWrittenFunctionType(mutable checker, typeExpr, resolved)
+    }
+    return resolved
   }
   if (typeExpr.isTuple) {
     return tupleType(mutable checker, typeExpr)
@@ -765,13 +840,16 @@ export function substitute(
       const newValue = substitute(mutable checker, value, bindings)
       return internComposite(mutable checker, Type.TMap(newKey, newValue))
     }
-    Type.TFunc(parameters, result, effects, binder) => {
+    Type.TFunc(parameters, result, effects, binder, shared) => {
       if (!containsTypeParameter(checker, type)) {
         return type
       }
       const newParams = substituteAll(mutable checker, parameters, bindings)
       const newResult = substitute(mutable checker, result, bindings)
-      return internComposite(mutable checker, Type.TFunc(newParams, newResult, effects, binder))
+      return internComposite(
+        mutable checker,
+        Type.TFunc(newParams, newResult, effects, binder, shared),
+      )
     }
     Type.TStruct(index) => {
       const info = checker.structs[index]

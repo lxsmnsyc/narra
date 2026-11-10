@@ -223,7 +223,7 @@ When you want different text, leave out `derives` and write `implements Show` wi
 
 To find the cheapest item, a function must compare two items. The standard trait for that is `Ordered`. Its one function, `Ordered.compare(a, b)`, returns an `Ordering`: `Ordering.Less`, `Ordering.Equal` or `Ordering.Greater`. Numbers and strings already implement it.
 
-You could write `derives Ordered`, but a derived order compares the fields in the order they are declared. For `Book` that means by title first, and the shop wants price. So write the implementation yourself, and compare the cents:
+You could write `derives Ordered`, but a derived order compares the fields in the order they are declared. For `Book` that means by title first, and the shop wants price. So write the implementation yourself, and compare the cents. `cheapest` returns one of the items it was given, so its signature says `from items` ([chapter 9](09-memory-and-mutable.md#return-part-of-a-parameter)):
 
 ```narra
 struct Book implements Ordered derives Show {
@@ -237,7 +237,7 @@ implement Ordered for Book {
   }
 }
 
-function cheapest<T: Ordered>(items: Array<T>): Option<T> {
+function cheapest<T: Ordered>(items: Array<T>): Option<T> from items {
   let best: Option<T> = None
   for (const item of items) {
     if (best is Some(current)) {

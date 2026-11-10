@@ -413,6 +413,9 @@ function finishFacts(parser: Parser, source: string): SourceFacts uses alloc {
     callEnds: parser.facts.callEnds,
     templateTokenEnds: parser.facts.templateTokenEnds,
     referenced: referenced,
+    resultEnds: parser.facts.resultEnds,
+    fromNames: parser.facts.fromNames,
+    valueEnds: parser.facts.valueEnds,
   }
 }
 
@@ -1344,7 +1347,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   let result: Option<TypeExpr> = None
   if (accept(mutable parser, SYMBOL_COLON)) {
-    result = Some(parseType(mutable parser))
+    result = Some(parseResultType(mutable parser))
   }
   const effects = parseUsesList(mutable parser)
   return FuncDecl {
@@ -1599,16 +1602,19 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   // Parameter names are optional and ignored.
   const pos = getPos(expect(mutable parser, SYMBOL_LEFT_PAREN))
   let arguments: Array<TypeExpr> = []
+  let names: Array<string> = []
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const colon = peekToken(parser, 1)
+    let name = ""
     if (
       currentToken(parser).kind == TokenKind.TokIdent &&
         colon.kind == TokenKind.TokPunct &&
         colon.text == ":"
     ) {
-      advance(mutable parser)
+      name = advance(mutable parser).text
       advance(mutable parser)
     }
+    Arrays.push(mutable names, name)
     Arrays.push(mutable arguments, parseType(mutable parser))
     if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
@@ -1616,7 +1622,7 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   }
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   expect(mutable parser, SYMBOL_ARROW)
-  const result = parseType(mutable parser)
+  const result = parseResultType(mutable parser)
   const effects = parseUsesList(mutable parser)
   return TypeExpr {
     pos: pos,
@@ -1626,7 +1632,24 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
     result: Some(Boxes.new(result)),
     effects: effects,
     isTuple: false,
+    parameterNames: names,
   }
+}
+
+function parseResultType(mutable parser: Parser): TypeExpr {
+  // A result type may name the parameter it shares: `: Array<T> from items`.
+  const result = parseType(mutable parser)
+  parser.facts.resultEnds[getPosKey("r", result.pos)] = getEndPos(parser)
+  if (!accept(mutable parser, SYMBOL_KEYWORD_FROM)) {
+    return result
+  }
+  if (currentToken(parser).kind != TokenKind.TokIdent) {
+    failFound(mutable parser, "E0976", "`from` needs the name of a parameter")
+    return result
+  }
+  const name = advance(mutable parser)
+  parser.facts.fromNames[getPosKey("r", result.pos)] = getPos(name)
+  return TypeExpr { ...result, resultFrom: name.text }
 }
 
 function parseUsesList(mutable parser: Parser): Array<string> {
@@ -1783,7 +1806,7 @@ function parseArrow(mutable parser: Parser): Expr {
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   let result: Option<TypeExpr> = None
   if (accept(mutable parser, SYMBOL_COLON)) {
-    result = Some(parseType(mutable parser))
+    result = Some(parseResultType(mutable parser))
   }
   expect(mutable parser, SYMBOL_ARROW)
   const savedResult = parser.resultFunction
@@ -1794,6 +1817,7 @@ function parseArrow(mutable parser: Parser): Expr {
     return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, None, Some(block))
   }
   const body = parseExpr(mutable parser)
+  parser.facts.valueEnds[getExprId(body)] = getEndPos(parser)
   parser.resultFunction = savedResult
   return Expr.ArrowExpr(newId(mutable parser), pos, parameters, result, Some(body), None)
 }
@@ -2092,6 +2116,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     let value: Option<Expr> = None
     if (currentToken(parser).kind != TokenKind.TokNewline && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
       const returned = parseExpr(mutable parser)
+      parser.facts.valueEnds[getExprId(returned)] = getEndPos(parser)
       if (isTernary(parser, returned)) {
         endStatement(mutable parser)
         return convertReturnedTernary(mutable parser, returned)
@@ -2288,6 +2313,8 @@ function parseExprBody(mutable parser: Parser): Expr {
   }
   const pos = getPos(advance(mutable parser))
   const thenValue = parseExpr(mutable parser)
+  // Each branch is returned on its own once a returned ternary becomes an if statement.
+  parser.facts.valueEnds[getExprId(thenValue)] = getEndPos(parser)
   if (!isAt(parser, SYMBOL_COLON)) {
     // A `:` on the next line is a ternary that spans lines.
     const savedIndex = parser.index
@@ -2311,6 +2338,7 @@ function parseExprBody(mutable parser: Parser): Expr {
   }
   advance(mutable parser)
   const elseValue = parseExpr(mutable parser)
+  parser.facts.valueEnds[getExprId(elseValue)] = getEndPos(parser)
   const ifStatement = Stmt.IfStmt(
     pos,
     condition,

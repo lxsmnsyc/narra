@@ -904,6 +904,61 @@ other[1][0] = 30            // copies the outer array and one row; scores is unc
 Arrays.push(mutable other, [5, 6])
 ```
 
+### Shared results
+
+A function whose result shares a parameter says so with `from <parameter>` after the result type (D94). Nothing is inferred across functions: a call's result shares one of its arguments only when the callee's signature or function type has `from`, so a caller sees it in the signature.
+
+<!-- context
+import * as Arrays from "std/array"
+struct SortItem {
+  key: int
+}
+-->
+```ts
+function firstItem(items: Array<SortItem>): SortItem from items {
+  return items[0]
+}
+
+function lastItem<T>(items: Array<T>): T from items {
+  return items[Arrays.length(items) - 1]
+}
+```
+
+- **What shares.** A returned value shares a parameter when it is the parameter, a field, element or narrowed payload of it, a local, pattern or `for ... of` binding that took such a value, a struct, array, tuple, map or constructor holding one (a spread `{ ...base }` holds only the fields of `base` it does not write), or the result of a call whose `from` names an argument that shares it. A local also takes the values assigned to it and the values passed beside it when it is a `mutable` argument. A value whose type holds no struct, array, map, `Box`, `StringBuilder`, generator or type parameter (numbers, `bool`, `char`, `string`, `bytes`, enums without such payloads, function values) shares nothing. `copy(x)` is unshared.
+- **The check (E0976).** Returning a value that shares a parameter the marker does not name is an error. Without a marker the fix adds `from <parameter>`; with a marker that names another parameter, the fix wraps the value in `copy(...)`. A `from` that names no parameter is also E0976.
+- **Generic results.** `from items` covers the whole parameter and everything reached through it, at any depth, whatever the type arguments are: a result of type `T` taken out of `items: Array<T>` shares `items`. When `T` is a scalar type the marker is allowed and changes nothing.
+- **Arrow functions.** An arrow function whose result shares one of its own parameters writes `from` after its result type: `(row: Row): Array<int> from row => row.cells`. An arrow function that writes no `from` takes the `from` of its expected function type, as it takes its parameter types, so `(row) => row.cells` fits a `(row: Row) => Array<int> from row` slot. When the expected type has no `from`, or the arrow function writes no result type, a result that shares a parameter is E0976 with a fix that wraps the value in `copy(...)`. `from` names only a parameter, never a capture: an arrow function whose result shares a captured value is E0976, and the fix wraps the value in `copy(...)`.
+- **Function types.** `from` is part of a function type, like `uses` (section 7), and names one of the type's parameter names: `(grid: Grid) => Array<int> from grid uses alloc`. `from` comes before `uses`. A function with a fresh result fits a slot whose type has `from`; a function with `from` does not fit a slot without the same `from` (E0977), unless the result holds no tracked value. The fix adds the marker to the slot's type, naming the parameter `source` when the type writes no name for it. A type printed by the compiler names the shared parameter `source`: `(source: Grid) => Array<int> from source`.
+- **Trait functions.** An implementation may leave out the `from` its trait function has, but may not add one the trait function lacks.
+- **Generators** are not checked: a generator's result is the generator.
+- A package whose `narra.toml` has `shared-results = "unchecked"` in `[package]` is not checked. The compiler's own package sets it until its functions carry their markers.
+
+<!-- context
+import * as Arrays from "std/array"
+struct Grid {
+  rows: Array<Array<int>>
+}
+-->
+```ts
+struct Picker {
+  pick: (grid: Grid) => Array<int> from grid uses alloc
+}
+
+function firstRow(grid: Grid): Array<int> from grid {
+  return grid.rows[0]
+}
+
+function rowSizes(grid: Grid): Array<int> uses alloc {
+  return [Arrays.length(grid.rows)]
+}
+
+function listPickers(): Array<Picker> uses alloc {
+  // A fresh result fits the `from` slot too.
+  const second = (grid: Grid): Array<int> from grid => grid.rows[1]
+  return [Picker { pick: firstRow }, Picker { pick: rowSizes }, Picker { pick: second }]
+}
+```
+
 ### Regions
 
 A region allocates many values from one block and frees them all at once.

@@ -380,7 +380,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A `mutable` parameter reaches the caller's variable only while the call runs, so it cannot be returned or stored in anything that outlives the call. Copy it into a `const` first. The copy is an ordinary value, and you can return it:
+A `mutable` parameter reaches the caller's variable only while the call runs, so it cannot be returned or stored in anything that outlives the call. Copy it into a `const` first with `copy(player)`. The copy is an ordinary value, and you can return it:
 
 ```narra
 import * as Int from "std/int"
@@ -390,7 +390,7 @@ struct Player {
 }
 
 function knockOut(mutable player: Player): Player {
-  const before = player
+  const before = copy(player)
   player.hp = 0
   return before
 }
@@ -406,6 +406,48 @@ export function run(args: Array<string>): int {
 ```text
 7 -> 0
 ```
+
+### Return part of a parameter
+
+The results screen also shows the party's leader. `leader` returns a player that is still stored in the party, so the result and the parameter share one value. The signature says so with `from party` after the result type. Then every caller can see, from the signature alone, that the player it gets back is part of the party it passed. Without `from` the compiler reports the shared result and offers to add it.
+
+`from` names one parameter. A function that may return either of two parameters names one of them and copies the other with `copy(...)`, so the result never shares the unnamed one. A copy costs nothing until one of the two values changes, as described at the start of this chapter.
+
+```narra
+struct Player {
+  name: string
+  hp: int
+}
+
+struct Party {
+  players: Array<Player>
+}
+
+function leader(party: Party): Player from party {
+  return party.players[0]
+}
+
+function healthier(first: Player, second: Player): Player from first {
+  if (second.hp > first.hp) {
+    return copy(second)
+  }
+  return first
+}
+
+export function run(args: Array<string>): int {
+  const party = Party { players: [Player { name: "Ana", hp: 60 }, Player { name: "Bo", hp: 80 }] }
+  print(leader(party).name)
+  print(healthier(party.players[0], party.players[1]).name)
+  return 0
+}
+```
+
+```text
+Ana
+Bo
+```
+
+An arrow function can write `from` too, as in `(party: Party): Player from party => party.players[0]`. One that is passed to a function whose parameter type has no `from` returns a copy instead: `(party) => copy(party.players[0])`.
 
 ## Closures and `let`
 

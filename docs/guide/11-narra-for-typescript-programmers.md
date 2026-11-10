@@ -555,15 +555,15 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A call may write type arguments, as in `firstOr<int>([], 0)`, the same as in TypeScript. You rarely need them, because the compiler works them out from the arguments. Write them when no argument says the type, as with `[]`. Write all of them or none. The other way is to annotate the variable that holds the value ([chapter 3](03-functions-and-closures.md#one-function-for-many-types)):
+`firstOr` returns an element of `items`, so it says `from items`, and it returns a copy of `fallback`, because a result can share only the one parameter `from` names ([chapter 9](09-memory-and-mutable.md#return-part-of-a-parameter)). A call may write type arguments, as in `firstOr<int>([], 0)`, the same as in TypeScript. You rarely need them, because the compiler works them out from the arguments. Write them when no argument says the type, as with `[]`. Write all of them or none. The other way is to annotate the variable that holds the value ([chapter 3](03-functions-and-closures.md#one-function-for-many-types)):
 
 ```narra
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 
-function firstOr<T>(items: Array<T>, fallback: T): T {
+function firstOr<T>(items: Array<T>, fallback: T): T from items {
   if (Arrays.length(items) == 0) {
-    return fallback
+    return copy(fallback)
   }
   return items[0]
 }

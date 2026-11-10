@@ -35,7 +35,16 @@ import {
   MatchArm,
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
-import { Fix, createFix, createEdit, moveColumn, buildTemplateEscape } from "narrac/fixes"
+import {
+  Fix,
+  Edit,
+  createFix,
+  createEdit,
+  insertAt,
+  moveColumn,
+  buildTemplateEscape,
+} from "narrac/fixes"
+import { getPosKey } from "narrac/trivia"
 import { Type, Field, typeKey, isInteger, isSizedInteger, isUnsignedInteger } from "narrac/types"
 import {
   isConditional,
@@ -76,6 +85,7 @@ import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
 import { buildConstantHint } from "narrac/stdcopy"
+import { canShareType } from "narrac/sharedresults"
 import {
   useLocal,
   markArgument,
@@ -436,9 +446,15 @@ export function expectType(
         }
       }
     }
-    if (expected is Type.TFunc(wantParameters, wantResult, _, wantBinder)) {
-      if (got is Type.TFunc(gotParameters, gotResult, _, _)) {
+    if (expected is Type.TFunc(wantParameters, wantResult, _, wantBinder, wantShared)) {
+      if (got is Type.TFunc(gotParameters, gotResult, _, _, gotShared)) {
         if (wantParameters == gotParameters && wantResult == gotResult) {
+          // A fresh result fits a slot with `from`; a shared one needs the same `from`,
+          // unless the result holds no tracked value.
+          if (gotShared >= 0 && gotShared != wantShared && canShareType(checker, gotResult)) {
+            reportSharedSlot(mutable checker, pos, expected, gotShared)
+            return
+          }
           recordFunctionStore(mutable checker, pos, expected, wantBinder, got)
           return
         }
@@ -455,6 +471,61 @@ export function expectType(
       reportError(mutable checker, pos, "E0119", message)
     }
   }
+}
+
+function reportSharedSlot(
+  mutable checker: Checker,
+  pos: Pos,
+  expected: Type,
+  shared: int,
+) uses alloc {
+  const message = `this function's result shares its parameter ${Int.toString(shared + 1)}, but the expected type ${typeString(checker, expected)} has no matching from; add \`from\` naming that parameter to the expected type`
+  const fixes = buildSharedSlotFix(checker, expected, shared)
+  reportErrorFix(mutable checker, pos, "E0977", fixes, message)
+}
+
+function buildSharedSlotFix(checker: Checker, expected: Type, shared: int): Array<Fix> uses alloc {
+  // The fix edits the expected type when this module writes it once.
+  let found: Array<TypeExpr> = []
+  if (checker.writtenFunctionTypes[typeKey(expected)] is Some(written)) {
+    for (const site of Arrays.values(written)) {
+      if (site.scope == checker.current) {
+        Arrays.push(mutable found, site.type)
+      }
+    }
+  }
+  if (Arrays.length(found) != 1 || shared >= Arrays.length(found[0].arguments)) {
+    return []
+  }
+  const type = found[0]
+  let end = Pos { line: 0, column: 0 }
+  if (type.result is Some(boxed)) {
+    const key = getPosKey("r", boxed.value.pos)
+    if (checker.scopes[checker.current].facts.resultEnds[key] is Some(resultEnd)) {
+      end = resultEnd
+    } else {
+      return []
+    }
+  } else {
+    return []
+  }
+  // An unnamed parameter is named `source`, unless the type already uses that name.
+  let name = ""
+  if (shared < Arrays.length(type.parameterNames)) {
+    name = type.parameterNames[shared]
+  }
+  let edits: Array<Edit> = []
+  if (name == "") {
+    for (const written of Arrays.values(type.parameterNames)) {
+      if (written == "source") {
+        return []
+      }
+    }
+    name = "source"
+    Arrays.push(mutable edits, insertAt(type.arguments[shared].pos, `${name}: `))
+  }
+  Arrays.push(mutable edits, insertAt(end, ` from ${name}`))
+  return [createFix(`add from ${name} to the expected type`, edits)]
 }
 
 function sameGeneratorShape(want: Type, got: Type): bool {
@@ -1657,7 +1728,7 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
       containsOpen(checker, element, parameters) || containsOpen(checker, input, parameters)
     Type.TMap(key, value) =>
       containsOpen(checker, key, parameters) || containsOpen(checker, value, parameters)
-    Type.TFunc(functionParameters, result, _, _) =>
+    Type.TFunc(functionParameters, result, _, _, _) =>
       anyOpen(checker, functionParameters, parameters) || containsOpen(checker, result, parameters)
     Type.TStruct(index) => anyOpen(checker, checker.structs[index].arguments, parameters)
     Type.TEnum(index) => anyOpen(checker, checker.enums[index].arguments, parameters)
@@ -2644,7 +2715,7 @@ export function checkConstType<W: Walker>(
   if (want is Some(declared)) {
     expectType(mutable checker, getExpressionPos(info.declaration.value), want, found)
     found = declared
-  } else if (found is Type.TFunc(_, _, _, _)) {
+  } else if (found is Type.TFunc(_, _, _, _, _)) {
     // Without a written type the constant has the type of the function it
     // names, which lists no effects. Every use trusts that type, so the
     // function may do only what it lists.

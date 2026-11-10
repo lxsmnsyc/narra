@@ -35,6 +35,8 @@ import {
   getExpressionId,
   getExpressionPos,
   ArrowContext,
+  findParameterIndex,
+  findFromNamePos,
 } from "narrac/check"
 import { resolveType, substitute } from "narrac/resolve"
 import { unify } from "narrac/generics"
@@ -98,7 +100,9 @@ function checkArrowParts<W: Walker>(
   let hasHint = checker.bodies[bodyIndex].closures[closure].hasHint
   let hintParameters = checker.bodies[bodyIndex].closures[closure].hintParameters
   let hintResult = checker.bodies[bodyIndex].closures[closure].hintResult
-  if (want is Some(Type.TFunc(wantParams, wantResult, _, _))) {
+  let expectedShared = -1
+  if (want is Some(Type.TFunc(wantParams, wantResult, _, _, wantShared))) {
+    expectedShared = wantShared
     hasHint = true
     hintParameters = []
     for (const wantParam of Arrays.values(wantParams)) {
@@ -209,7 +213,29 @@ function checkArrowParts<W: Walker>(
   if (result is Some(known)) {
     finalResult = known
   }
-  return internComposite(mutable checker, Type.TFunc(paramTypes, finalResult, [], -1))
+  // A written `from` names one of the arrow function's own parameters; without
+  // one the arrow takes the `from` of the expected type, as it takes its
+  // parameter types.
+  let shared = -1
+  let writesFrom = false
+  if (resultExpr is Some(resultType)) {
+    writesFrom = resultType.resultFrom != ""
+    shared = findParameterIndex(parameters, resultType.resultFrom)
+    if (writesFrom && shared < 0) {
+      const namePos = findFromNamePos(checker, resultType)
+      reportError(
+        mutable checker,
+        namePos,
+        "E0976",
+        `from names ${quoteGo(resultType.resultFrom)}, which is not a parameter of this arrow function; a from marker can name only a parameter`,
+      )
+    }
+  }
+  if (!writesFrom && hasHint) {
+    shared = expectedShared
+    checker.bodies[bodyIndex].closures[closure].expectsFresh = shared < 0
+  }
+  return internComposite(mutable checker, Type.TFunc(paramTypes, finalResult, [], -1, shared))
 }
 
 function resolveFunctionResult(
@@ -383,7 +409,7 @@ function hintArrow(
   const known = learnFromEarlier(mutable checker, arguments, index, parameters, bindings)
   const declared = checker.paramTypes[parameters[index].id]
   const substituted = substitute(mutable checker, declared, known)
-  if (substituted is Type.TFunc(funcParams, funcResult, _, _)) {
+  if (substituted is Type.TFunc(funcParams, funcResult, _, _, _)) {
     // Keep the parts that no open type parameter touches.
     let hintParameters: Array<Option<Type>> = []
     for (const funcParam of Arrays.values(funcParams)) {
@@ -458,7 +484,7 @@ export function checkValueCall<W: Walker>(
     checker.bodies[body].allowedId = calleeId
   }
   const calleeType = checkExpression(mutable checker, walker, callee, None)
-  if (calleeType is Type.TFunc(funcParams, funcResult, _, _)) {
+  if (calleeType is Type.TFunc(funcParams, funcResult, _, _, _)) {
     return checkCallThroughValue(
       mutable checker,
       walker,
@@ -666,7 +692,7 @@ export function checkArrowArgument<W: Walker>(
   }
   let want: Option<Type> = None
   if (hintResult is Some(resultType)) {
-    want = Some(Type.TFunc(hintParameters, resultType, [], -1))
+    want = Some(Type.TFunc(hintParameters, resultType, [], -1, -1))
   }
   return checkExpression(mutable checker, walker, argument, want)
 }

@@ -18,6 +18,10 @@ export struct Manifest {
   binaries: Array<Binary>
   libraries: Array<string>
   search: Array<string>
+  // `shared-results = "unchecked"` in [package] turns off the check that a
+  // result sharing a parameter is marked with `from`. Only the compiler sets
+  // it, until its own functions carry their markers.
+  sharedResultsUnchecked: bool = false
 }
 
 // An error of the loader. An empty file and line 0 print as a bare message
@@ -53,6 +57,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   let binaries: Array<Binary> = []
   let libraries: Array<string> = []
   let search: Array<string> = []
+  let sharedResultsUnchecked = false
   let table = ""
   let inBinary = false
   let binaryName = ""
@@ -144,6 +149,15 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         ),
       )
     }
+    if (qualifiedKey == "package.shared-results") {
+      if (value is Value.VStr(setting)) {
+        if (setting == "unchecked") {
+          sharedResultsUnchecked = true
+          continue
+        }
+      }
+      return Err(createError(lineNumber, "E0409", `${key}: the only value is "unchecked"`))
+    }
     if (qualifiedKey == "[[binary]].name" || qualifiedKey == "[[binary]].entry") {
       if (value is Value.VStr(stringValue)) {
         if (key == "name") {
@@ -187,7 +201,13 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     seen[binary.name] = true
   }
-  return Ok(Manifest { name: name, binaries: binaries, libraries: libraries, search: search })
+  return Ok(Manifest {
+    name: name,
+    binaries: binaries,
+    libraries: libraries,
+    search: search,
+    sharedResultsUnchecked: sharedResultsUnchecked,
+  })
 }
 
 function isValidPackageName(name: string): bool {

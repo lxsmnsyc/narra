@@ -4,9 +4,9 @@ title: "Std functions return Result or Option instead of panicking"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-6
 early: false
-outline: true
+outline: false
 milestone: m12-spec-gaps
 target:
 ship: auto
@@ -20,8 +20,19 @@ fulfilled_by:
 gate: false
 added: 2026-11-09
 spent:
-owns: []
-shared: []
+owns:
+  - testdata/std_no_panic_*
+  - roadmaps/selfhost/nodes/std-no-panic/**
+shared:
+  - selfhost/src/**
+  - selfhost/runtime/**
+  - std/src/**
+  - selfhost/tests/src/**
+  - testdata/**
+  - docs/guide/**
+  - SPEC.md
+  - DECISIONS.md
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:
@@ -34,8 +45,18 @@ depends_on:
 
 ## Goal
 
-D92: `Str.slice`, `Str.split`, `Str.repeat`, `Bytes.at`, `Bytes.slice`, `Float.truncate`, `Arrays.filled`, `Ranges.stepped`, `Math.clamp`, `Math.powInt` and `Random.nextInt` stop panicking on bad input. Pick `Option` where there is one failure and `Result` where the caller needs the reason; name them in a table in SPEC.md. Remove compound assignment on a Map index target (no special error for the removed form; GOAL.md constraint) and add `Maps.update(mutable map, key, initial, change)`. Update every caller in `selfhost/src` and `std/src`, the guide and the samples.
+Build the std part of D92 (DECISIONS.md):
 
-## Notes
+- `Str.slice`, `Str.split`, `Str.repeat`, `Bytes.at`, `Bytes.slice`, `Float.truncate`, `Arrays.filled`, `Ranges.stepped`, `Math.clamp`, `Math.powInt` and `Random.nextInt` stop panicking on bad input. Use `Option` where there is one failure and `Result` where the caller needs the reason. List each in a table in SPEC.md.
+- Remove compound assignment on a Map index target (`counts[key] += 1`). Per the no-deprecation rule it gets no special error. Add `Maps.update(mutable map, key, initial, change)`.
+- Update every caller in `selfhost/src`, `std/src`, the test runner, the guide and the samples.
+- Drop "Not built yet" for this part of D92.
 
-Outline, from D92 (maintainer, 2026-11-09). `selfhost/src` must follow the new rule in the same node: fix every site it rejects. Update SPEC.md (sections 2, 4 and 6 as needed) and drop "Not built yet" from D92 for this part.
+Some of these are builtins in `selfhost/src/std*.nra`, some are source modules in `std/src`. A builtin whose signature changes needs the seed rule: `selfhost/src` may only call the new form after the seed reads it. If the compiler calls one of them, check whether the seed's builtin table already has the new form; if not, keep the compiler's call sites on the old form, and list them in the outcome for the end-of-batch seed update.
+
+## Acceptance
+
+- [ ] For each function: a program sample of the failure case returning `None` or `Err`, and no panic path left in its code.
+- [ ] `Maps.update` has a sample; a compound assignment on a Map index is a compile error.
+- [ ] The SPEC.md table lists every function with its new result type.
+- [ ] `sh scripts/test.sh` passes.

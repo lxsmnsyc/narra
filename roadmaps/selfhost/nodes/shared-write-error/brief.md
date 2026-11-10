@@ -4,9 +4,9 @@ title: "Shared writes become errors"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-6
 early: false
-outline: true
+outline: false
 milestone: m12-spec-gaps
 target:
 ship: auto
@@ -20,8 +20,15 @@ fulfilled_by:
 gate: false
 added: 2026-11-09
 spent:
-owns: []
-shared: []
+owns:
+  - roadmaps/selfhost/nodes/shared-write-error/**
+shared:
+  - selfhost/src/**
+  - selfhost/tests/src/**
+  - testdata/**
+  - SPEC.md
+  - DECISIONS.md
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:
@@ -34,8 +41,15 @@ depends_on:
 
 ## Goal
 
-Turn the warning into an error, turn on the debug copy check in the test runs, and add an error sample for each D2 form (P20 step 5).
+D94 step 5 (debate settled structure items 1 and 4, P18, O18):
 
-## Notes
+- The shared-write warning (E0978) becomes an error. Keep the fix.
+- Turn the debug copy check on for every program sample: `isCopySample` true for every program, or `COPY_CHECK_ENVIRONMENT` in `Shell.leakCheckEnvironment()` (see `nodes/copy-builtin/outcome.md`). Any report that remains is a hidden copy to fix or explain in the outcome.
+- Error samples for each D2 form with all-scalar structs, which the runtime check cannot see (copy-builtin outcome, Gotchas: borrowed values and inline all-scalar structs).
 
-Outline, from D94 and `roadmaps/selfhost/debate/value-semantics/debate.md` (step 5 of 6). Refine with the debate's claims named here.
+## Acceptance
+
+- [ ] Every shared-write warning sample from shared-write-check is an error sample.
+- [ ] Every program sample runs with the copy check on and reports nothing, or carries a `.copies` file whose line the outcome explains.
+- [ ] One error sample per D2 form with an all-scalar struct.
+- [ ] `sh scripts/test.sh` passes.

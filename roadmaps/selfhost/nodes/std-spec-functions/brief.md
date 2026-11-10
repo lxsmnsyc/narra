@@ -4,45 +4,58 @@ title: "Std functions and constants the spec uses"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-6
 early: false
-outline: true
-milestone: m12-spec-gaps
+outline: false
+milestone: m10-std
 target:
-ship: pr
+ship: auto
 from:
 size: M
 spike: false
 hypothesis:
-verify: 
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
-added: 2026-11-04
+added: 2026-11-09
 spent:
-owns: []
-shared: []
+owns:
+  - testdata/std_spec_*
+  - roadmaps/selfhost/nodes/std-spec-functions/**
+shared:
+  - selfhost/src/std*.nra
+  - selfhost/src/**
+  - std/src/**
+  - selfhost/tests/spec-skip.txt
+  - selfhost/tests/src/**
+  - testdata/**
+  - SPEC.md
+  - compiler/README.md
 reserves: []
 provides: []
 depends_on:
   - on: std-foundation
     kind: hard
-    why: source std modules need the generic mismatch errors, std/internal and the stage 2 tests (std-source gate, 2026-11-05)
-  - on: selfhost-bootstrap
-    kind: hard
-    why: language changes land in the Go compiler and selfhost/ together, after the bootstrap fixed point
-  - on: std-source
-    kind: hard
-    why: std-source decides whether std modules become Narra source; new std functions should follow that decision
+    why: source std modules need the generic mismatch errors, std/internal and the stage 2 tests
 ---
 
 # Std functions and constants the spec uses
 
 ## Goal
 
-F18 except `Arrays.entries`. Missing: `Float.PI` (std modules have no constants yet), `Int.divmod`, `Arrays.map`, `Int.floorDiv`, `Int.compare`, `Str.find`, `Str.copy`, `Arrays.slice`, `Arrays.copy`, `Arrays.withCapacity`, `Int.truncate` (check the spec-fixes outcome: some names may move).
+Finding F18 of the spec-gap audit (`nodes/spec-gap-audit/outcome.md`, findings table), except `Arrays.entries` (built). Check each name against the current tree first; some exist now and some conflict with later decisions:
 
-## Notes
+- Missing on 2026-11-11: `Float.PI` (std modules have no constants yet: add module constants to the checker, or write the constant in a source module as a top-level `const` if top-level-const allows it), `Int.divmod`, `Int.floorDiv`, `Int.compare`, `Str.find`, `Arrays.slice`, `Arrays.withCapacity`.
+- Check before adding: `Arrays.map` (the 3. Modules sample in `selfhost/tests/spec-skip.txt` says std/array has none), `Int.truncate` (exists in std/float and std/f32 as a conversion; the spec may mean something else).
+- Do not add `Str.copy` or `Arrays.copy`: D94 makes `copy(x)` the one copy tool and says `Arrays.copy` stops being one. Change the spec samples that use them to `copy(...)`.
+- Results follow D92: no function added here panics. `Int.divmod` and `Int.floorDiv` take a divisor; decide whether they return `Option` or need a proven divisor like `/` (proven-operands), and record the choice.
 
-- From the spec-gap audit (`roadmaps/selfhost/nodes/spec-gap-audit/outcome.md`): its findings table has the minimal program and the exact error.
-- Outline. Break into a full brief when `plan.py refine` lists it.
+Remove the spec-skip lines these functions unblock (`Float.PI`, `std/array has no map`, `Int.compare`).
+
+## Acceptance
+
+- [ ] Each added function or constant has a program sample.
+- [ ] The three spec-skip lines are gone and the spec suite passes.
+- [ ] SPEC.md has no `Str.copy` or `Arrays.copy`.
+- [ ] `sh scripts/test.sh` passes.

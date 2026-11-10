@@ -1,7 +1,7 @@
 ---
 id: batch-5
 title: "Batch 5: performance follow-ups and value-semantics markers"
-status: active
+status: done
 priority: should
 type: story
 story:
@@ -51,7 +51,7 @@ The performance children change the emitted C. array-write-cold-paths edits the 
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
 - [x] `bench/BASELINE.md` has a row for the start of the batch (the end-of-batch-4 row at afb1eac3 serves: no compiler, runtime or seed change landed between it and the batch-5 base) and one for the end, recorded on an idle machine, including the compiler row.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.

@@ -997,6 +997,14 @@ Amendment (node from-marker, 2026-11-10). The `from` marker is built (SPEC.md se
 - **Order.** `from` comes after the result type and before `uses`: `(grid: Grid) => Array<int> from grid uses alloc`.
 - **Rollout.** The compiler's 185 sharing returns cannot carry `from` until the seed reads it, so `shared-results = "unchecked"` in `[package]` of `narra.toml` turns the check off; `selfhost/narra.toml` sets it until shared-write-sweep marks the compiler and removes it.
 
+Amendment (node shared-write-check, 2026-11-11). The shared-write rule is built as warning E0978, which `narrac check` and `apply-fix` report when a package has no errors; build, run and test do not run it. The fix wraps the value that started the sharing in `copy(...)`. Settled for the node:
+
+- **Std builtins** need no `shared` column. Arrays and maps have no reading builtins (`items[i]` and `table[key]` are places), and `for ... of` over a std iterator shares the elements it walks. A std function's `mutable` argument (`Arrays.push`, `Str.append`) changes only the container, so names that share its elements are not hit; the pushed value becomes an element of the container.
+- **Liveness.** One forward walk per body keeps the pairs of places that share a value. Assigning a local or a place whole ends its pairs, so a reassigned local starts fresh. A write that hits a pair warns at the next use of the other side; branches are merged, and a loop body is walked again until its state stops growing. Parameters, captured values inside an arrow function, constants and cells are always live.
+- **Its own walk.** The analysis does not reuse the flow-insensitive walk of `sharedresults.nra`; it calls `findSharedArgument` for `from` results and `isCopyCall` for `copy(...)`.
+- **Loops.** A `for ... of` loop's iterator holds the place it walks while the body runs, so a write that copies that place warns too. Assigning one element keeps the sharing of the other elements, because indexes are not compared. Known limit: reassigning the same index still warns (`let row = grid[0]; grid[0] = [9]; row[0] = 5` while `grid[0]` is used later); shared-write-error decides whether it stays.
+- **Counts at the start of shared-write-sweep:** 198 in `selfhost/src` (34 of them writes inside a loop over the written place), 0 in `std/src`, 3 in `selfhost/tests/src`, 36 in `testdata` (the copy samples that keep a hidden copy on purpose).
+
 ## D95. Designs for the parked syntax: async exit, contracts, fixed arrays, build conditions, inline, C interop, dynamic traits
 
 Decision (maintainer, 2026-11-09). Each part replaces the matching SPEC.md text when its node is built.

@@ -1,7 +1,7 @@
 ---
 id: lexer-punctuation
 title: "The lexer picks punctuation by first byte"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

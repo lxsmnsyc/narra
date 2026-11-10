@@ -1,7 +1,7 @@
 ---
 id: copy-builtin
 title: "copy(x) and the debug copy check"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

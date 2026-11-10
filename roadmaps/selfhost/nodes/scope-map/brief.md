@@ -1,7 +1,7 @@
 ---
 id: scope-map
 title: "One scope map for locals in the checker"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

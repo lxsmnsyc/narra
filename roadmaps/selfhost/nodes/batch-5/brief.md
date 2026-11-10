@@ -51,6 +51,6 @@ The performance children change the emitted C. array-write-cold-paths edits the 
 ## Acceptance
 
 - [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `bench/BASELINE.md` has a row for the start of the batch and one for the end, recorded on an idle machine, including the compiler row.
+- [ ] `bench/BASELINE.md` has a row for the start of the batch (the end-of-batch-4 row at afb1eac3 serves: no compiler, runtime or seed change landed between it and the batch-5 base) and one for the end, recorded on an idle machine, including the compiler row.
 - [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
 - [ ] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.

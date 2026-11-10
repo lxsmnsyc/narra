@@ -1,7 +1,7 @@
 ---
 id: array-write-cold-paths
 title: "Array writes keep their panic and copy paths out of line"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-5

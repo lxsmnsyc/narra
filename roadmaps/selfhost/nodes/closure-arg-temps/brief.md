@@ -1,7 +1,7 @@
 ---
 id: closure-arg-temps
 title: "Block-bodied arrow arguments do not count as writers"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 57182
 owns:
   - roadmaps/selfhost/nodes/closure-arg-temps/**
 shared:

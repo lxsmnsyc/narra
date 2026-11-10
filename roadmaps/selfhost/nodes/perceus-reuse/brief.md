@@ -1,7 +1,7 @@
 ---
 id: perceus-reuse
 title: "Drop specialization and in-place reuse of unique enum payloads"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-4

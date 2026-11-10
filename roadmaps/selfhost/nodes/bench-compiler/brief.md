@@ -1,7 +1,7 @@
 ---
 id: bench-compiler
 title: "Benchmark the compiler compiling itself"
-status: todo
+status: done
 priority: should
 type: chore
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: [benchmarks]
 fulfilled_by:
 gate: false
 added: 2026-11-10
-spent:
+spent: 60502
 owns:
   - bench/run.sh
   - bench/README.md

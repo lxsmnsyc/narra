@@ -1,7 +1,7 @@
 ---
 id: regions-design
 title: "Spike: how regions skip reference counts and stay safe"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-10
-spent:
+spent: 158293
 owns:
   - roadmaps/selfhost/nodes/regions-design/**
 shared:

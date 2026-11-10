@@ -1,7 +1,7 @@
 ---
 id: typed-calls-and-effects
 title: "Effects of function values"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-4
@@ -16,10 +16,10 @@ spike: false
 hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
-fulfilled_by:
+fulfilled_by: effect-variable-values
 gate: false
 added: 2026-11-04
-spent:
+spent: 71552
 owns:
   - testdata/errors/effects_function_value*
   - testdata/effects_function_value*

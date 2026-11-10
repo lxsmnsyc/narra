@@ -1,7 +1,7 @@
 ---
 id: option-inline
 title: "Store payloads of non-recursive enums inline"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-4
@@ -19,7 +19,7 @@ exclusive: [benchmarks]
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 313948
 owns:
   - testdata/enum_inline_*
   - roadmaps/selfhost/nodes/option-inline/**

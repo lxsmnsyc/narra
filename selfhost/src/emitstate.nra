@@ -15,6 +15,9 @@
 //   - An `is` or `match` binding borrows from the subject. The statement holds
 //     the subject: an owned temporary, a local that cannot be assigned, or
 //     else a retained copy. A destructuring binding owns its part.
+//   - An enum without a heap payload is copied like a struct: its retain and
+//     release count the fields of the variant its tag names. A variant
+//     without fields holds nothing and takes no retain.
 //
 // The Emitter holds the Checker read-only. Never pass `emitter.checker` as
 // `mutable`: a write would copy every checker table.
@@ -22,7 +25,16 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, Expr, Stmt, Block } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Checker, LocalInfo, Ref, ProgramFunc, BindingKind, findBodySlot } from "narrac/check"
+import {
+  Checker,
+  LocalInfo,
+  Ref,
+  ProgramFunc,
+  BindingKind,
+  findBodySlot,
+  isHeapEnum,
+  isCountedType,
+} from "narrac/check"
 import { cachedCType, cachedTypeId, opFuncName } from "narrac/cnames"
 import * as Cells from "std/cell"
 import * as Arrays from "std/array"
@@ -363,38 +375,21 @@ export function underlyingType(emitter: Emitter, type: Type): Type {
 }
 
 export function needsRc(emitter: Emitter, type: Type): bool {
-  return match (type) {
-    Type.TStr
-      | Type.TBytes
-      | Type.TStringBuilder
-      | Type.TArray(_)
-      | Type.TFunc(_, _, _, _)
-      | Type.TBox(_)
-      | Type.TMap(_, _)
-      | Type.TGenerator(_, _, _, _, _) => true
-    Type.TStruct(index) => structNeedsRc(emitter, index)
-    Type.TEnum(index) => isBoxed(emitter, index)
-    Type.TDistinct(_) => needsRc(emitter, underlyingType(emitter, type))
-    _ => false
-  }
+  return isCountedType(emitter.checker, type)
 }
 
-function structNeedsRc(emitter: Emitter, index: int): bool {
-  for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
-    if (needsRc(emitter, field.fieldType)) {
-      return true
-    }
+export function buildVariantFieldPath(
+  emitter: Emitter,
+  enumIndex: int,
+  variantName: string,
+  fieldName: string,
+  value: string,
+): string uses alloc {
+  // u is a pointer to a heap payload, or the union of an inline one.
+  if (isHeapEnum(emitter.checker, enumIndex)) {
+    return `${value}.u->v_${variantName}.f_${fieldName}`
   }
-  return false
-}
-
-function isBoxed(emitter: Emitter, index: int): bool {
-  for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
-    if (Arrays.length(variant.fields) > 0) {
-      return true
-    }
-  }
-  return false
+  return `${value}.u.v_${variantName}.f_${fieldName}`
 }
 
 export function containerName(emitter: Emitter, type: Type): string uses alloc {
@@ -488,6 +483,14 @@ function releaseTemporaries(mutable emitter: Emitter, temporaries: Array<TempVar
   }
 }
 
+function isTagOnly(code: string): bool {
+  // Matches the ((Name){.tag = N}) that constructorValue writes.
+  return Str.startsWith(code, "((") &&
+    Str.endsWith(code, "})") &&
+    Str.contains(code, "){.tag = ") &&
+    !Str.contains(code, ",")
+}
+
 export function consume(
   mutable emitter: Emitter,
   code: string,
@@ -495,6 +498,10 @@ export function consume(
   type: Type,
 ): string uses alloc {
   if (!needsRc(emitter, type)) {
+    return code
+  }
+  if (isTagOnly(code)) {
+    // A variant without fields holds no reference.
     return code
   }
   if (owned) {

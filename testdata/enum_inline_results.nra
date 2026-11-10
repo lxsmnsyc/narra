@@ -1,0 +1,102 @@
+// Results stored inline with counted fields on both sides, an inline enum of
+// the program's own, and closures and arrays that hold copies of them.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+struct Pair derives Show {
+  left: string
+  right: Array<int>
+}
+
+enum Outcome derives Show {
+  Done(pair: Pair, note: string)
+  Failed(reason: string, code: int)
+  Skipped
+}
+
+function parse(text: string): Result<Pair, string> {
+  if (Str.length(text) == 0) {
+    return Err(`${Str.repeat("empty", 1)}!`)
+  }
+  return Ok(Pair { left: Str.repeat(text, 2), right: [Str.length(text), 7] })
+}
+
+function check(text: string): Result<int, string> {
+  // Returns the Err payload or builds a new Ok from the Ok payload.
+  return match (parse(text)) {
+    Ok(pair) => Ok(Str.length(pair.left) + pair.right[1])
+    Err(message) => Err(message)
+  }
+}
+
+function report(result: Result<Pair, string>): string {
+  return match (result) {
+    Ok(pair) => `ok ${pair.left} ${Int.toString(Arrays.length(pair.right))}`
+    Err(message) => `err ${message}`
+  }
+}
+
+function settle(index: int): Outcome {
+  if (index == 0) {
+    return Outcome.Skipped
+  }
+  if (index % 2 == 0) {
+    return Outcome.Failed(Str.repeat("bad", index), index)
+  }
+  return Outcome.Done(Pair { left: Str.repeat("l", index), right: [index] }, Str.repeat("n", 2))
+}
+
+function name(outcome: Outcome): string {
+  return match (outcome) {
+    Outcome.Done(pair, note) => `${pair.left}/${note}`
+    Outcome.Failed(reason, code) if (code > 2) => `big ${reason}`
+    Outcome.Failed(reason, _) => reason
+    Outcome.Skipped => "skipped"
+  }
+}
+
+export function run(args: Array<string>): int {
+  // Both sides hold counted fields; copies outlive the original.
+  let first = parse("ab")
+  let second = parse("")
+  const keep = [first, second, first]
+  first = second
+  second = parse("c")
+  for (const result of keep) {
+    print(report(result))
+  }
+  print(report(first))
+  print(report(second))
+
+  // A match that passes one payload on and builds a new Ok from the other.
+  print(Show.show(check("xyz")))
+  print(Show.show(check("")))
+
+  // An enum of the program's own, copied into a closure and an array.
+  let outcomes: Array<Outcome> = []
+  for (let i = 0; i < 5; i++) {
+    Arrays.push(mutable outcomes, settle(i))
+  }
+  const captured = outcomes[1]
+  const describe = () => name(captured)
+  outcomes = []
+  print(describe())
+  let all = ""
+  for (let i = 0; i < 5; i++) {
+    all = `${all} ${name(settle(i))}`
+  }
+  print(all)
+  print(Show.show(settle(3)))
+
+  // A binding of an inline value whose subject is replaced in the body, and
+  // a destructured struct taken out of an inline payload.
+  let current = settle(1)
+  if (current is Outcome.Done(pair, _)) {
+    current = Outcome.Skipped
+    const { left, right } = pair
+    print(`${left} ${Int.toString(right[0])}`)
+  }
+  print(name(current))
+  return 0
+}

@@ -464,11 +464,11 @@ Decision: every C name comes from `compiler/internal/narra/cnames.go`. A declara
 
 ## D55. Fielded enum variants live on the heap, and `Box<T>` exists
 
-Decision: an enum with at least one fielded variant is `{ tag, payload pointer }`. The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
+Decision: an enum with at least one fielded variant is `{ tag, payload pointer }` (since D99, only when it reaches itself or its payload is over 32 bytes). The payload is counted and shared by copies, and never mutated. Freeing uses an iterative worklist, so deep structures do not overflow the C stack. `Box<T>` is a counted heap cell with a read-only `.value`, for recursive structs (`Box.new(x)`). A user type named `Box` hides the builtin.
 
 - **Reason.** SPEC section 6 asks for this, and recursive enums (an AST) need it.
 - **Cost.** Every `Some(x)`, `Ok(x)` and `Err(e)` allocates. The user accepted this. It made the `interp` benchmark about 2x slower (0.39 s against 0.24 s) through a retain and release of each loop item; since node `perceus`, for-of items and `is`/`match` bindings borrow, and `interp` runs in 0.16 s.
-- **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths.
+- **Rejected: inline payload with a pointer only for recursive fields.** Layout would depend on the type's shape, and the self-hosted compiler would need two code paths. Superseded by D99: an enum that does not reach itself and has a payload of up to 32 bytes is stored inline; this decision still holds for the rest.
 - **Limit.** User functions still recurse on the C stack; about 20000 deep overflows under ASan. Not solved here.
 
 ## D56. Polymorphic recursion is an error
@@ -1038,6 +1038,20 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - Contract patterns (D95) use the same alternatives.
 
 Built, except contract patterns (D95), which do not exist yet. E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.
+
+## D99. Enums that do not reach themselves store their payload inline
+
+Decision (maintainer accepted, 2026-11-10): an enum with a fielded variant is a tagged union held by value, `struct E { int32_t tag; union { ... } u; }`, unless it reaches itself or its payload is over 32 bytes. Those two keep the counted heap payload of D55. This replaces D55's "Rejected: inline payload" line for enums that do not reach themselves.
+
+- **Reaching itself.** A variant field reaches the enum through structs, enums and distinct types held by value. `Array`, `Map`, `Box`, generators and function values are pointers and stop the walk. Two enums that reach each other both stay on the heap. An enum that holds a heap enum (an AST) without reaching itself is inline.
+- **Size limit.** The payload is the largest variant, each field rounded up to 8 bytes. Over 32 bytes (four words) the payload stays on the heap.
+- **Copies.** An inline value is copied like a struct: retain and release switch on the tag and count the fields of that variant. An inline enum with no counted fields has no reference count functions. A variant without fields (`None`) never takes a retain.
+- **Monomorphized.** `Option<T>` and `Result<T, E>` get the layout of each instance. A future layout table (layout-tables) must carry the size of each instance.
+- **Language.** Unchanged. Payloads stay immutable, and constructors with fields still count as `alloc` for effects (D58), so a program's effects do not depend on a layout choice.
+- **Reason.** Instructions retired, base and branch compilers built from `feat/batch-4` 8de99b4, macOS arm64. `narrac emit selfhost`: 3.28 G to 3.08 G (6.0% fewer), user time 0.26 s to 0.24 s, peak memory 130 MB to 125 MB. A loop of 20 M `Option<int>` and `Result<int, string>` returns and matches: 1.77 G to 0.44 G, 0.09 s to 0.02 s. Part of the compiler gain comes from caching which structs and enums hold counted values (`Checker.countedStructs`, `countedEnums`); on e64faa2 the same compiler with every enum on the heap took 3.53 G against 3.67 G for the base and 3.45 G inline.
+- **Cost.** `bench/interp` takes 1.4% more instructions and about 20% more user time (0.15 s to 0.18 s). With the payload in the value, clang turns the `Add` and `Sub` arms of its hot `match` into conditional selects, which lengthens the dependency chain on the accumulator. The other bench programs compile to the same C.
+- **Rejected: no size limit.** The compiler took 3.87 G instructions on e64faa2, 5.6% more than the base: `Option<Emitter>` is 808 bytes and a `Result` of a checker struct 704, and both are copied by value. With the cache, limits of 8, 16, 48 and 64 bytes gave 3.48, 3.46, 3.51 and 3.56 G against 3.45 G at 32.
+- **Rejected: a pointer only for the recursive fields.** It needs a second rule for which fields are pointers, and a recursive enum then allocates for each recursive constructor anyway.
 
 ## D100. Regions are parked, and the allocator comes first
 

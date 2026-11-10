@@ -979,7 +979,7 @@ Decision (maintainer, 2026-11-09, from the debate `roadmaps/selfhost/debate/valu
 - **Rejected:** immutable arrays and structs with `ref` and a mutable array type (rebinding a shared value still copies silently, so it needs the same analysis on a larger rewrite); inference of shared results across functions; shallow copy tools; `Cells.modify`.
 - **Cost.** About 120 to 220 edits in the compiler and 30 to 50 `from` marks; errors depend on liveness, so a later use can turn an accepted write into an error. About 1.45M tokens over six nodes.
 
-Not built yet.
+`copy(x)` and the debug copy check: built. `copy` is a prelude function (E0975 for a wrong argument count, `copy(mutable x)` and an argument of a type that is never changed in place, with a fix that removes the call). A local may be named `copy` and hides it, as for `panic`. The check runs in debug builds with `NARRA_CHECK_COPIES` set and exits with code 103; release builds (`-DNARRA_RELEASE`) compile none of it. `@unique`, `--report-copies` and `NARRA_TRACE_COPIES` are gone from SPEC.md. The `from` marker and the shared-write rule are not built yet.
 
 ## D95. Designs for the parked syntax: async exit, contracts, fixed arrays, build conditions, inline, C interop, dynamic traits
 

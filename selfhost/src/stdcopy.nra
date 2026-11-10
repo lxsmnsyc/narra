@@ -1,0 +1,285 @@
+// The prelude function copy(x): its check, its emitter and the test that later
+// passes use to see a copy. A copy is one retain at the call. The checker
+// counts its result as unshared, and copy on write later copies only the
+// paths a write reaches. Debug builds grant the debug copy check a credit for
+// each object the retain reaches (NARRA_COPY_GRANT in runtime.h).
+import { Pos, Expr, Arg } from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Walker,
+  Ref,
+  setRef,
+  getRef,
+  reportError,
+  reportErrorFix,
+  typeString,
+  getExpressionId,
+} from "narrac/check"
+import { Fix, createFix, createEdit, moveColumn } from "narrac/fixes"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  ownedTemp,
+  retainCode,
+  needsRc,
+  writeLine,
+  readNodeType,
+} from "narrac/emitstate"
+import * as Arrays from "std/array"
+import * as Char from "std/char"
+import * as Int from "std/int"
+import * as Maps from "std/map"
+import * as Str from "std/string"
+
+export function checkCopyCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  calleePos: Pos,
+  arguments: Array<Arg>,
+  builtin: int,
+  want: Option<Type>,
+): Type uses alloc {
+  setRef(mutable checker, nodeId, Ref.Builtin(builtin))
+  const count = Arrays.length(arguments)
+  if (count != 1) {
+    reportError(
+      mutable checker,
+      calleePos,
+      "E0975",
+      `copy takes one argument, found ${Int.toString(count)}`,
+    )
+    for (const argument of Arrays.values(arguments)) {
+      const _ = Walker.checkExpression(walker, mutable checker, argument.value, None)
+    }
+    return Type.TVoid
+  }
+  const argument = arguments[0]
+  if (argument.isMutable) {
+    reportError(
+      mutable checker,
+      argument.pos,
+      "E0975",
+      "copy does not change its argument; remove `mutable`",
+    )
+  }
+  const valueType = Walker.checkExpression(walker, mutable checker, argument.value, want)
+  // A void type follows an error that is already reported.
+  // An instance of a generic function is checked with concrete type
+  // arguments; the generic body was already checked with its parameters.
+  if (
+    valueType != Type.TVoid && !isCheckingInstance(checker) && !isCopyTracked(checker, valueType)
+  ) {
+    const shown = typeString(checker, valueType)
+    const fixes = buildRemoveFix(checker, nodeId, calleePos, argument.value)
+    reportErrorFix(
+      mutable checker,
+      calleePos,
+      "E0975",
+      fixes,
+      `copy of ${shown} copies nothing: a value of this type is never changed in place; remove the call`,
+    )
+  }
+  return valueType
+}
+
+export function isCopyTracked(checker: Checker, type: Type): bool {
+  // Tracked types are the ones a write changes in place: every struct, the
+  // containers, string builders and generators. A tuple counts when one of its
+  // elements does, and a type parameter may stand for any of them.
+  return match (type) {
+    Type.TStruct(index) =>
+      !checker.structs[index].tuple || hasTrackedType(checker, checker.structs[index].arguments)
+    Type.TArray(_)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TStringBuilder
+      | Type.TGenerator(_, _, _, _, _)
+      | Type.TParam(_) => true
+    Type.TDistinct(index) => isDistinctTracked(checker, index)
+    _ => false
+  }
+}
+
+function isCheckingInstance(checker: Checker): bool uses alloc {
+  for (const #[_, bound] of Maps.entries(checker.environment)) {
+    if (!(bound is Type.TParam(_))) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasTrackedType(checker: Checker, types: Array<Type>): bool {
+  for (const type of Arrays.values(types)) {
+    if (isCopyTracked(checker, type)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isDistinctTracked(checker: Checker, index: int): bool {
+  if (checker.distincts[index].base is Some(base)) {
+    return isCopyTracked(checker, base)
+  }
+  return false
+}
+
+export function buildConstantHint(
+  checker: Checker,
+  scope: int,
+  name: string,
+  text: string,
+  whole: bool,
+): string uses alloc {
+  // A part of a constant whose type is changed in place goes to a copy; a
+  // scalar constant or a whole reassign goes to a `let` local.
+  if (!whole) {
+    if (findConstantType(checker, scope, name) is Some(type)) {
+      if (isCopyTracked(checker, type)) {
+        return ` with \`copy(${text})\``
+      }
+    }
+  }
+  return `, as in \`let ${buildLocalName(name)} = ${text}\``
+}
+
+function findConstantType(checker: Checker, scope: int, name: string): Option<Type> {
+  for (const constant of Arrays.values(checker.consts)) {
+    if (constant.scope == scope && constant.name == name) {
+      if (constant.declaredType is Some(declared)) {
+        return Some(declared)
+      }
+      return constant.valueType
+    }
+  }
+  return None
+}
+
+function buildLocalName(name: string): string uses alloc {
+  // STARTING_KIT becomes startingKit; a name that is not all capitals gets a suffix.
+  let builder = Str.builder()
+  let upperNext = false
+  let changed = false
+  for (const character of Str.chars(name)) {
+    const code = Char.code(character)
+    if (character == '_') {
+      upperNext = Str.length(Str.build(builder)) > 0
+      changed = true
+    } else if (code >= 65 && code <= 90 && !upperNext) {
+      if (Char.fromCode(code + 32) is Some(lower)) {
+        Str.append(mutable builder, Str.fromChar(lower))
+      }
+      changed = true
+    } else {
+      Str.append(mutable builder, Str.fromChar(character))
+      upperNext = false
+    }
+  }
+  const local = Str.build(builder)
+  if (!changed || local == "") {
+    return `${name}Copy`
+  }
+  return local
+}
+
+export function isCopyCall(checker: Checker, expression: Expr): bool {
+  // The marker later passes read: a call that resolved to the prelude's copy
+  // gives an unshared value.
+  if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Builtin(index)) {
+      const builtin = checker.registry.functions[index]
+      return builtin.module == "" && builtin.key == "copy"
+    }
+  }
+  return false
+}
+
+function buildRemoveFix(
+  checker: Checker,
+  nodeId: int,
+  calleePos: Pos,
+  value: Expr,
+): Array<Fix> uses alloc {
+  // Needs the source text and a call on one line written `copy(` with the `)`
+  // right after its argument.
+  const scope = checker.scopes[checker.current]
+  if (!scope.isSource || Str.length(scope.facts.source) == 0) {
+    return []
+  }
+  let end = Pos { line: 0, column: 0 }
+  if (scope.facts.callEnds[nodeId] is Some(callEnd)) {
+    end = callEnd
+  } else {
+    return []
+  }
+  const lines = Str.split(scope.facts.source, "\n")
+  if (calleePos.line != end.line || end.line < 1 || end.line > Arrays.length(lines)) {
+    return []
+  }
+  const characters = Str.chars(lines[end.line - 1])
+  const openIndex = calleePos.column + 3
+  const closeIndex = end.column - 2
+  if (openIndex < 0 || closeIndex <= openIndex + 1 || closeIndex >= Arrays.length(characters)) {
+    return []
+  }
+  const before = characters[closeIndex - 1]
+  if (
+    characters[openIndex] != '(' || characters[closeIndex] != ')' || before == ',' || before == ' '
+  ) {
+    return []
+  }
+
+  // A primary argument loses the parentheses; any other keeps them, so
+  // `copy(n + 1) * 2` keeps its meaning.
+  const open = moveColumn(calleePos, 4)
+  if (!isPrimary(value)) {
+    return [createFix("remove the copy call", [createEdit(calleePos, open, "")])]
+  }
+  return [
+    createFix("remove the copy call", [
+      createEdit(calleePos, moveColumn(open, 1), ""),
+      createEdit(moveColumn(end, -1), end, ""),
+    ]),
+  ]
+}
+
+function isPrimary(expression: Expr): bool {
+  return match (expression) {
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _)
+      | Expr.TemplateLit(_, _, _)
+      | Expr.Ident(_, _, _)
+      | Expr.FieldExpr(_, _, _, _)
+      | Expr.IndexExpr(_, _, _, _)
+      | Expr.CallExpr(_, _, _, _, _)
+      | Expr.ArrayLit(_, _, _, _) => true
+    _ => false
+  }
+}
+
+export function emitCopyCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // A copy is one retain of the value, made while the debug copy check grants
+  // credits. A value without counted parts is copied by C itself.
+  const valueType = readNodeType(emitter, getExpressionId(arguments[0].value))
+  const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+  if (!needsRc(emitter, valueType)) {
+    return code
+  }
+  writeLine(mutable emitter, "NARRA_COPY_GRANT(true);")
+  const copied = ownedTemp(mutable emitter, valueType, code.text)
+  const retainText = retainCode(emitter, valueType, copied)
+  writeLine(mutable emitter, retainText)
+  writeLine(mutable emitter, "NARRA_COPY_GRANT(false);")
+  return Code { text: copied, owned: true }
+}

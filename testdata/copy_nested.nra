@@ -1,0 +1,102 @@
+// copy(x) duplicates a value at any depth: a nested write after copy changes
+// only the copy. The debug copy check runs on this sample and must find
+// nothing, because each copy on write comes from a copy(...).
+import * as Arrays from "std/array"
+import * as Boxes from "std/box"
+import * as Co from "std/coroutine"
+import { Step } from "std/coroutine"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+struct Team {
+  name: string
+  scores: Array<Array<int>>
+  counts: Map<string, int>
+}
+
+struct Pos {
+  line: int
+  column: int
+}
+
+function* counter(limit: int): Generator<int> {
+  for (const i of Ranges.upTo(limit)) {
+    yield i
+  }
+}
+
+// A local or parameter may take the name copy; it hides the prelude function.
+function double(copy: int): int {
+  return copy * 2
+}
+
+function showStep(step: Step<int>): string {
+  return match (step) {
+    Step.Yielded(value) => Int.toString(value)
+    Step.Done => "done"
+    Step.Panicked(message) => message
+  }
+}
+
+function showCount(counts: Map<string, int>): string {
+  if (counts["a"] is Some(count)) {
+    return Int.toString(count)
+  }
+  return "none"
+}
+
+function showRows(rows: Array<Array<int>>): string {
+  let parts: Array<string> = []
+  for (const row of rows) {
+    let cells: Array<string> = []
+    for (const cell of row) {
+      Arrays.push(mutable cells, Int.toString(cell))
+    }
+    Arrays.push(mutable parts, Str.join(cells, ","))
+  }
+  return Str.join(parts, " ")
+}
+
+export function run(_args: Array<string>): int {
+  // A struct with nested arrays and a map.
+  const team = Team { name: "red", scores: [[1, 2], [3, 4]], counts: Map { "a": 1 } }
+  let other = copy(team)
+  other.scores[1][0] = 30
+  other.counts["a"] = 5
+  print(`${showRows(team.scores)} | ${showRows(other.scores)}`)
+  print(`${showCount(team.counts)} | ${showCount(other.counts)}`)
+
+  // Arrays of arrays, written twice: the second write copies nothing.
+  const grid = [[0, 0], [0, 0]]
+  let marked = copy(grid)
+  marked[0][0] = 1
+  marked[0][1] = 2
+  print(`${showRows(grid)} | ${showRows(marked)}`)
+
+  // An all-scalar struct is copied by C itself.
+  const start = Pos { line: 1, column: 2 }
+  let moved = copy(start)
+  moved.line = 5
+  print(`${Int.toString(start.line)} | ${Int.toString(moved.line)}`)
+
+  // A box, a string builder and a generator.
+  const box = Boxes.new([1, 2])
+  let boxCopy = copy(box)
+  boxCopy.value[0] = 10
+  print(`${Int.toString(box.value[0])} | ${Int.toString(boxCopy.value[0])}`)
+
+  let builder = Str.builder()
+  Str.append(mutable builder, "ab")
+  let builderCopy = copy(builder)
+  Str.append(mutable builderCopy, "c")
+  print(`${Str.build(builder)} | ${Str.build(builderCopy)}`)
+
+  let numbers = counter(3)
+  print(showStep(Co.resume(mutable numbers)))
+  let numbersCopy = copy(numbers)
+  print(showStep(Co.resume(mutable numbersCopy)))
+  print(showStep(Co.resume(mutable numbers)))
+  print(Int.toString(double(4)))
+  return 0
+}

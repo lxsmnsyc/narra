@@ -35,6 +35,7 @@ static void narra_test_child(const narra_test_case* c, int wfd) {
   // Line buffering keeps the output of a test that crashes.
   setvbuf(stdout, NULL, _IOLBF, 0);
   alarm(narra_test_limit());
+  NARRA_COPY_START();
   c->fn();
   narra_consts_release();
   // A test-only hook, so the leak report can be tested.
@@ -44,6 +45,7 @@ static void narra_test_child(const narra_test_case* c, int wfd) {
     snprintf(buf, sizeof buf, "leaked %lld allocations", (long long)narra_live);
     narra_panic("leak check", buf);
   }
+  NARRA_COPY_REPORT();
   fflush(stdout);
   _exit(0);
 }

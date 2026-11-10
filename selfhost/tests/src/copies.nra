@@ -1,0 +1,96 @@
+// The debug copy check in the programs suite. A sample named copy_*.nra runs
+// with NARRA_CHECK_COPIES set, in both builds. In the debug build a sample
+// with a <name>.copies file must fail the check with exit code 103 and print
+// that report line; any other copy sample must pass it. The release build
+// must pass and its C, preprocessed as a release build, must hold no credit
+// or hook code, while the same C preprocessed as a debug build holds it.
+//
+// To turn the check on for more samples, extend isCopySample (or make it
+// return true for every sample once the shared-write rule is an error).
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+export const COPY_CHECK_ENVIRONMENT = "NARRA_CHECK_COPIES=1"
+
+export function isCopySample(testCase: TestCase): bool uses alloc {
+  return Str.startsWith(Path.basename(testCase.path), "copy_")
+}
+
+export function checkCopyRun(
+  context: Context,
+  testCase: TestCase,
+  result: CommandResult,
+  want: string,
+): Result<bool, string> uses io, alloc {
+  const reportPath = Files.replaceSuffix(testCase.path, ".nra", ".copies")
+  if (testCase.variant == "debug" && Fs.exists(reportPath)) {
+    const report = Common.readExpected(reportPath)
+    if (report is Err(message)) {
+      return Err(message)
+    }
+    const line = Str.trim(report.value)
+    if (result.code != 103 || !Str.contains(result.errorOutput, line)) {
+      return Err(
+        `want the copy report "${line}" and exit code 103, got ${Common.describeRun(result)}`,
+      )
+    }
+    return Common.compareText("stdout", want, result.output)
+  }
+  const ran = Common.expectRun(result, 0, want)
+  if (ran is Err(message)) {
+    return Err(message)
+  }
+  if (testCase.variant == "release") {
+    return checkReleaseHasNoHooks(context, testCase)
+  }
+  return Ok(true)
+}
+
+function checkReleaseHasNoHooks(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const outcome = compareBuilds(context, testCase, made.value)
+  Shell.removeTree(made.value)
+  return outcome
+}
+
+function compareBuilds(
+  context: Context,
+  testCase: TestCase,
+  work: string,
+): Result<bool, string> uses io, alloc {
+  const cPath = Path.join(work, "out.c")
+  const binary = Path.join(work, "out")
+  const built = Common.runNarrac(context, [
+    "build",
+    "-release",
+    "-emit-c",
+    cPath,
+    "-o",
+    binary,
+    testCase.path,
+  ])
+  if (built.code != 0) {
+    return Err(`the release build failed: ${Common.describeRun(built)}`)
+  }
+  // The same C, preprocessed as a release build and as a debug build.
+  const script = "cc=${CC:-cc}; \"$cc\" -E -std=c11 -w -DNARRA_RELEASE \"$1\" > \"$1.release\" && \"$cc\" -E -std=c11 -w \"$1\" > \"$1.debug\" && grep -q narra_copy \"$1.debug\" && ! grep -q narra_copy \"$1.release\""
+  const compared = Shell.runScript(script, [cPath])
+  if (compared.code != 0) {
+    return Err(
+      `the release build's C must have no copy check code and the debug build's must have it: ${Common.describeRun(compared)}`,
+    )
+  }
+  return Ok(true)
+}

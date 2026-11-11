@@ -1,7 +1,7 @@
 ---
 id: build-targets
 title: "@target declarations and check --all-targets"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 415094
 owns:
   - roadmaps/selfhost/nodes/build-targets/**
 shared:

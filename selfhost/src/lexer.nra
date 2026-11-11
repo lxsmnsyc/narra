@@ -489,11 +489,26 @@ function readText(lexer: Lexer, first: int, end: int): string {
   return substring(lexer.source, first, end)
 }
 
+// The effect pass packs a line and a column into 20 bits each (KEY_STRIDE there).
+export const POSITION_LIMIT = 1048576
+
 function runLexer(mutable lexer: Lexer): Option<LexError> {
   while (lexer.index < getSize(lexer)) {
     const character = peek(lexer, 0)
     const line = lexer.line
     const column = lexer.column
+    // A token past the limit would share a packed position with another one.
+    const isPastLimit = line >= POSITION_LIMIT || column >= POSITION_LIMIT
+    const isBlank =
+      character == NEWLINE || character == SPACE || character == TAB || character == CARRIAGE_RETURN
+    if (isPastLimit && !isBlank) {
+      return errorAt(
+        line,
+        column,
+        "E1004",
+        `a source line or column must be below ${Int.toString(POSITION_LIMIT)}; split the file or the line`,
+      )
+    }
     if (character == NEWLINE) {
       advance(mutable lexer)
       if (lexer.depth == 0 && lastEndsStatement(lexer)) {

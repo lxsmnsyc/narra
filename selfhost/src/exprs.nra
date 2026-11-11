@@ -58,6 +58,7 @@ import {
   CONST_BUSY,
   CONST_DONE,
   reportError,
+  hasErrorAt,
   reportErrorFix,
   buildImportFix,
   enter,
@@ -82,7 +83,13 @@ import {
   pushScope,
   popScope,
 } from "narrac/check"
-import { resolveType, instantiate, substitute, buildGeneric } from "narrac/resolve"
+import {
+  resolveType,
+  instantiate,
+  substitute,
+  buildGeneric,
+  enterTypeofChain,
+} from "narrac/resolve"
 import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
@@ -495,6 +502,10 @@ export function expectType(
       }
     }
     if (expected != got) {
+      // A void from an expression that already reported at this position is its failure.
+      if (got == Type.TVoid && hasErrorAt(checker, pos)) {
+        return
+      }
       const message = `expected ${describeType(checker, expected, got)}, found ${describeType(checker, got, expected)}`
       reportError(mutable checker, pos, "E0119", message)
     }
@@ -2763,7 +2774,10 @@ export function checkConstType<W: Walker>(
   keyBody(mutable checker, `const|${Int.toString(index)}`)
   let want: Option<Type> = None
   if (info.declaration.type is Some(typeExpression)) {
+    // `typeof` of a constant being checked is a cycle through the names resolved since.
+    const savedChain = enterTypeofChain(mutable checker, info.name)
     want = Some(resolveType(mutable checker, typeExpression))
+    checker.typeofChain = savedChain
   }
   const errorCount = Arrays.length(checker.errors)
   let found = checkExpression(mutable checker, walker, info.declaration.value, want)

@@ -1,7 +1,7 @@
 ---
 id: fmt-block-hug
 title: "narrac fmt hugs a block expression in the last argument and as an operand"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-9

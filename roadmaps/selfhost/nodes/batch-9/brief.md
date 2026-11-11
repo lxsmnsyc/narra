@@ -50,6 +50,10 @@ Children:
 - guide-multifile-samples: the guide suite compiles multi-file package samples (chapters 1, 4, 8).
 - seed-switch, after every other child: after a mid-batch seed update, the compiler uses process-exit (in place of `skipTeardown`) and host-target-builtin (in place of running `uname`).
 
+Scope changes during the batch:
+
+- hidden-copy-fix (2026-11-12): narrowed to the copies in `loadFile` and `loadPackage`. A debug-built compiler still exits 103 because of hidden copies in the checker and emitter; that work moved to the inbox. The `NARRA_COPY_GRANT` item was stale and needed no change.
+
 ## Order and shared files
 
 - Wave 1, four workers at a time (8 GB machine): test-runner-fixes, process-exit, host-target-builtin, ptr-cast. Then, as slots free: process-signals, hidden-copy-fix, diagnostics-polish, guide-multifile-samples, and fmt-block-hug last (it reformats sources the others edit, so it rebases onto them and reruns `narrac fmt`).

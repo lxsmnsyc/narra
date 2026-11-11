@@ -1,7 +1,7 @@
 ---
 id: hidden-copy-fix
 title: "The hidden copy in loadFile under the debug copy check"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 159000
 owns:
   - roadmaps/selfhost/nodes/hidden-copy-fix/**
 shared:

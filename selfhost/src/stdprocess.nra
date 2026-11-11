@@ -25,6 +25,15 @@ export const PROCESS_FUNCS: Array<StdFunc> = [
     effects: ["io", "alloc"],
     check: "fixed",
   },
+  StdFunc {
+    name: "Process.exit",
+    module: "std/process",
+    key: "exit",
+    parameters: ["int"],
+    result: "void",
+    effects: ["io"],
+    check: "fixed",
+  },
 ]
 
 function emitProcessRun<W: EmitWalker>(
@@ -51,6 +60,16 @@ function emitProcessRun<W: EmitWalker>(
   return ioResult(mutable emitter, resultType, success, value, bad)
 }
 
+function emitProcessExit<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const code = argumentText(walker, mutable emitter, arguments, 0)
+  // Flush pending output, then leave without releasing live values or running the leak check.
+  return plain(`(fflush(NULL), _exit((int)(${code})))`)
+}
+
 export function emitProcessCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -60,6 +79,9 @@ export function emitProcessCall<W: EmitWalker>(
 ): Code uses alloc {
   if (name == "Process.run") {
     return emitProcessRun(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Process.exit") {
+    return emitProcessExit(walker, mutable emitter, arguments)
   }
   // An unknown name is a compiler bug, not a missing feature.
   return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))

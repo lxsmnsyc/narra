@@ -106,6 +106,8 @@ The same goes for the other prelude types. Their modules are imported as `Arrays
 
 The other standard modules are `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/process`, `std/string` and `std/test`. Importing a path that does not exist is an error that lists them all.
 
+`Process.exit(code)` in `std/process` ends the program at once with that exit code. It flushes the output printed so far, has the `io` effect, and does not run the code after it.
+
 ## Splitting a program into files
 
 When the counter grows, you want the counting in one file and the command-line code in another. Chapter 1 split a program into a package: a folder with a `narra.toml` and a `src/` folder. Do the same here, with the files `src/cli.nra` and `src/count.nra`. In `narra.toml`, name the package `words`, and give it a `[[binary]]` with `name = "words"` and `entry = "cli.run"`.

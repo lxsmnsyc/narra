@@ -1,7 +1,7 @@
 ---
 id: contracts
 title: "Contracts: requires, proven at compile time"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-7

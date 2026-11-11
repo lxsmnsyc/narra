@@ -1,7 +1,7 @@
 ---
 id: batch-7
 title: "Batch 7: compiler cost, smaller C output, contracts and build conditions"
-status: todo
+status: active
 priority: should
 type: story
 story: 

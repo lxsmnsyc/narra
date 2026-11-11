@@ -1,7 +1,7 @@
 ---
 id: place-ids
 title: "The shared-write analysis keys places by integer ids"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-7

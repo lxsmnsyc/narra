@@ -1,7 +1,7 @@
 ---
 id: build-conditions
 title: "Build conditions: std/build constants and one emitted branch"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-7

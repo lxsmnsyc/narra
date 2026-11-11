@@ -1,7 +1,7 @@
 ---
 id: copy-check-macros
 title: "The debug copy check emits one line per site"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-7

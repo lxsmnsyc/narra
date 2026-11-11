@@ -2,10 +2,12 @@
 // function of a package, one line each, sorted by file, line and column:
 //   src/x.nra:12:3: unsafe block in function name
 //   src/x.nra:4:1: @trusted function name
+//   src/x.nra:9:3: @trusted function name in implement Trait for Type
 // The command reads the parsed files only; it does not check the package.
 import * as Modules from "narrac/modules"
 import { Package } from "narrac/modules"
 import { Decl, FuncDecl, Block, Stmt, Expr, MatchArm, findAttribute } from "narrac/ast"
+import { writeType } from "narrac/querysignature"
 import * as Int from "std/int"
 import * as Fs from "std/fs"
 import * as Str from "std/string"
@@ -57,7 +59,7 @@ function collectAuditEntries(package: Package): Array<AuditEntry> uses alloc {
     }
     for (const declaration of Arrays.values(module.ast.declarations)) {
       match (declaration) {
-        Decl.Func(funcDecl) => auditFunction(mutable entries, module.file, funcDecl)
+        Decl.Func(funcDecl) => auditFunction(mutable entries, module.file, funcDecl, "")
         Decl.Test(testDecl) => auditBlock(
           mutable entries,
           module.file,
@@ -65,13 +67,15 @@ function collectAuditEntries(package: Package): Array<AuditEntry> uses alloc {
           testDecl.body,
         )
         Decl.Trait(traitDecl) => {
+          const place = ` in trait ${traitDecl.name}`
           for (const funcDecl of Arrays.values(traitDecl.functions)) {
-            auditFunction(mutable entries, module.file, funcDecl)
+            auditFunction(mutable entries, module.file, funcDecl, place)
           }
         }
         Decl.Impl(implDecl) => {
+          const place = ` in implement ${writeType(implDecl.traitType)} for ${writeType(implDecl.type)}`
           for (const funcDecl of Arrays.values(implDecl.functions)) {
-            auditFunction(mutable entries, module.file, funcDecl)
+            auditFunction(mutable entries, module.file, funcDecl, place)
           }
         }
         Decl.Const(_) | Decl.Struct(_) | Decl.Enum(_) | Decl.Distinct(_) | Decl.Alias(_) => {}
@@ -113,17 +117,20 @@ function auditFunction(
   mutable entries: Array<AuditEntry>,
   file: string,
   funcDecl: FuncDecl,
+  place: string,
 ) uses alloc {
+  // A trait or implement member is named with its trait or implementation.
+  const name = `${funcDecl.name}${place}`
   if (findAttribute(funcDecl, "trusted") is Some(attribute)) {
     Arrays.push(mutable entries, AuditEntry {
       file: file,
       line: attribute.pos.line,
       column: attribute.pos.column,
-      text: `@trusted function ${funcDecl.name}`,
+      text: `@trusted function ${name}`,
     })
   }
   if (funcDecl.body is Some(body)) {
-    auditBlock(mutable entries, file, `function ${funcDecl.name}`, body)
+    auditBlock(mutable entries, file, `function ${name}`, body)
   }
 }
 

@@ -1,7 +1,7 @@
 ---
 id: build-conditions
 title: "Build conditions: std/build constants and one emitted branch"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added:
-spent:
+spent: 318604
 owns:
   - roadmaps/selfhost/nodes/build-conditions/**
 shared:

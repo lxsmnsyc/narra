@@ -50,3 +50,5 @@
 ## Size
 
 - Estimated M, actual M/L. The caller-side seeding and the switch cases in files outside the node made it larger than M.
+
+Landed on feat/batch-7 as 50c61d79.

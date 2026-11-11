@@ -1,7 +1,7 @@
 ---
 id: contracts-ensures
 title: "Contracts: ensures as an output pattern"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 660608
 owns:
   - roadmaps/selfhost/nodes/contracts-ensures/**
 shared:

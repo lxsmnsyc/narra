@@ -261,7 +261,7 @@ export function emitRcFunctions(mutable emitter: Emitter): string uses alloc {
         const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
         Str.append(
           mutable builder,
-          `#ifndef NARRA_RELEASE\nstatic void ${creditName}(${parameterType} v);\nstatic void ${uncreditName}(${parameterType} v);\n#endif\n`,
+          `NARRA_COPY_ONLY(static void ${creditName}(${parameterType} v); static void ${uncreditName}(${parameterType} v);)\n`,
         )
       }
     }
@@ -345,10 +345,7 @@ function typeRcFunctions(emitter: Emitter, type: Type): string uses alloc {
         // In debug builds, the mark counts the copies that retained the box.
         // After this release at most count - 2 of them can still hold it, so
         // the credits of the copies past that end here.
-        Str.append(
-          mutable builder,
-          `#ifndef NARRA_RELEASE\n  if (v.u && narra_copy_used) {\n    narra_copy_slot* mark = narra_copy_find(v.u);\n    int64_t live = v.u->rc - 2;\n    if (mark && mark->credits > live) {\n      int64_t ended = mark->credits - live;\n      if (live > 0) mark->credits = live; else narra_copy_forget(v.u);\n      while (ended-- > 0) ${opFuncName("uncredit", id)}(v);\n    }\n  }\n#endif\n`,
-        )
+        Str.append(mutable builder, `  NARRA_COPY_ENDED(v, ${opFuncName("uncredit", id)});\n`)
         Str.append(
           mutable builder,
           `  if (v.u && --v.u->rc == 0) narra_drop(v.u, ${opFuncName("drop", id)});\n`,
@@ -381,7 +378,7 @@ function buildCreditFunction(
   const payload = payloadName(emitter.checker, type)
   Str.append(
     mutable builder,
-    `#ifndef NARRA_RELEASE\nstatic void ${opFuncName(operation, id)}(${parameterType} v) {\n  if (!${enumValue}.u) return;\n  ${payload}* q = ${enumValue}.u;\n  switch (q->tag) {\n`,
+    `NARRA_COPY_ONLY(\nstatic void ${opFuncName(operation, id)}(${parameterType} v) {\n  if (!${enumValue}.u) return;\n  ${payload}* q = ${enumValue}.u;\n  switch (q->tag) {\n`,
   )
   for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
     let statements: Array<string> = []
@@ -403,7 +400,7 @@ function buildCreditFunction(
       )
     }
   }
-  Str.append(mutable builder, "  default: break;\n  }\n}\n#endif\n")
+  Str.append(mutable builder, "  default: break;\n  }\n}\n)\n")
   return Str.build(builder)
 }
 

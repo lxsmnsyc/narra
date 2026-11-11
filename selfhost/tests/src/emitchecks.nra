@@ -18,8 +18,14 @@
 //   build-conditions/unsupported-host   with NARRA_HOST_TARGET naming no
 //                      supported target, a program importing std/build fails
 //                      with one error per module
+//   tree-shake/unreached   the C of testdata/tree_shake.nra has no unreached
+//                      function, generic instance, trait implementation or
+//                      constant
+//   tree-shake/std-source   the C of bench/fib/fib.nra has none of the
+//                      std/int functions written in Narra, which it never calls
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
+import * as Int from "std/int"
 import * as Path from "std/path"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
@@ -65,6 +71,12 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(context.testdata, "build_os.nra"),
       "unsupported-host",
     ),
+    makeCase("tree-shake/unreached", Path.join(context.testdata, "tree_shake.nra"), "unreached"),
+    makeCase(
+      "tree-shake/std-source",
+      Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
+      "std-source",
+    ),
   ]
 }
 
@@ -96,6 +108,12 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "unsupported-host") {
     return checkUnsupportedHost(context, testCase.path)
+  }
+  if (testCase.variant == "unreached") {
+    return checkUnreached(context, testCase.path)
+  }
+  if (testCase.variant == "std-source") {
+    return checkStdSourceShaken(context, testCase.path)
   }
   if (testCase.variant == "xxh32") {
     return checkHashVectors(context)
@@ -185,6 +203,55 @@ function checkOneBranch(context: Context, source: string): Result<bool, string> 
   for (const text of Arrays.values(branches)) {
     if (Str.contains(result.output, text) != (text == kept)) {
       return Err(`the emitted C should hold only "${kept}"; "${text}" is wrong`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkUnreached(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // Names of the reached declarations must be in the C, the unreached ones must not.
+  const reached = ["reachedHelper", "Shown_Show_show_", "usedNames"]
+  for (const name of Arrays.values(reached)) {
+    if (!Str.contains(result.output, name)) {
+      return Err(`the emitted C should hold "${name}"`)
+    }
+  }
+  const unreached = ["unreachedHelper", "Hidden_Show_show_", "unreachedNames"]
+  for (const name of Arrays.values(unreached)) {
+    if (Str.contains(result.output, name)) {
+      return Err(`the emitted C should not hold "${name}"`)
+    }
+  }
+  // pick has an int and a string instance; only the int one is reached.
+  let definitions = 0
+  for (const line of Arrays.values(splitString(result.output, "\n"))) {
+    if (
+      Str.startsWith(line, "static ") && Str.contains(line, "_pick_") && Str.endsWith(line, "{")
+    ) {
+      definitions++
+    }
+  }
+  if (definitions != 1) {
+    return Err(`want one definition of an instance of pick, got ${Int.toString(definitions)}`)
+  }
+  return Ok(true)
+}
+
+function checkStdSourceShaken(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  for (const name of Arrays.values(["_compare(", "_divmod(", "_floorDiv("])) {
+    if (Str.contains(result.output, name)) {
+      return Err(`the emitted C should not hold "${name}"`)
     }
   }
   return Ok(true)

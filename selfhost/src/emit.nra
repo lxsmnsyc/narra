@@ -6,15 +6,22 @@
 // types (selfhost-emit-program), so the comment table, the typedef lines and
 // the function prototypes are real. The stubs of the other nodes still write
 // their marker lines.
+//
+// Only the functions and lazy constants the program reaches are emitted. The
+// roots are the entry function, or every test block in a test build. Each body
+// notes the C names it calls (noteReference), and emitReachableBodies emits the
+// named declarations until no new name appears. The text keeps the checker's
+// order, filtered.
 import { substring } from "narrac/textops"
 import * as Str from "std/string"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, typeString, containsTypeParameter } from "narrac/check"
-import { Emitter, newEmitter } from "narrac/emitstate"
+import { Emitter, newEmitter, noteReference } from "narrac/emitstate"
 import {
   cachedTypeId,
   cachedCType,
   cachedFunctionName,
+  cachedDeclName,
   functionSignature,
   dropDuplicateTypes,
 } from "narrac/cnames"
@@ -79,36 +86,141 @@ export function emitProgram(
   // The map functions call the key's eq and hash, so their text goes after the trait functions.
   const mapFunctions = EmitMaps.emitMapFunctions(mutable emitter)
 
+  // Bodies first: the prototypes list only what the bodies reach.
+  const reachable = emitReachableBodies(mutable emitter)
+  const constantRelease = Consts.emitConstRelease(mutable emitter, reachable.constants)
+
   // Constants and function prototypes.
   Str.append(mutable builder, "\n// Constants\n")
-  Str.append(mutable builder, Consts.emitConstPrototypes(mutable emitter))
+  Str.append(mutable builder, Consts.emitConstPrototypes(mutable emitter, reachable.constants))
   Str.append(mutable builder, "\n// Functions\n")
-  Str.append(mutable builder, emitPrototypes(mutable emitter))
-
-  // Bodies.
-  let bodies = Str.builder()
-  Str.append(mutable bodies, Consts.emitConstBodies(mutable emitter))
-  for (const program of Arrays.values(checker.programFunctions)) {
-    Str.append(mutable bodies, Consts.emitFunction(mutable emitter, program))
-  }
-  if (tests) {
-    emitTestBodies(mutable emitter, mutable bodies)
-  }
+  Str.append(mutable builder, emitPrototypes(mutable emitter, reachable.functions))
 
   // String literals, then the text that depends on what the bodies used.
   Str.append(mutable builder, "\n// String literals\n")
   Str.append(mutable builder, Str.build(emitter.literals))
-  Str.append(mutable builder, Traits.emitTraitFunctions(mutable emitter))
+  Str.append(mutable builder, reachable.traitText)
   Str.append(mutable builder, mapFunctions)
   Str.append(mutable builder, Closures.emitClosureFunctions(mutable emitter))
   Str.append(mutable builder, "\n")
-  Str.append(mutable builder, Str.build(bodies))
+  // The body texts go straight into the C text, with no second copy.
+  for (const text of Arrays.values(reachable.getterTexts)) {
+    Str.append(mutable builder, text)
+  }
+  Str.append(mutable builder, constantRelease)
+  for (const text of Arrays.values(reachable.functionTexts)) {
+    Str.append(mutable builder, text)
+  }
+  Str.append(mutable builder, reachable.testText)
   if (tests) {
     Str.append(mutable builder, Options.emitTestMain(mutable emitter))
   } else {
     Str.append(mutable builder, emitMain(mutable emitter))
   }
   return EmitResult { text: Str.build(builder), unsupported: emitter.unsupported }
+}
+
+// The declarations a program reaches and their emitted text. functions and
+// functionTexts follow Checker.programFunctions; an unreached function has
+// false and "". constants lists the reached lazy constants (Checker.consts
+// indexes) in lazyConstants order, and getterTexts their getters.
+export struct ReachableBodies {
+  functions: Array<bool>
+  functionTexts: Array<string>
+  constants: Array<int>
+  getterTexts: Array<string>
+  testText: string
+  traitText: string
+}
+
+function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses alloc {
+  const checker = copy(emitter.checker)
+  const programs = checker.programFunctions
+
+  // Map each C name to its function or lazy constant.
+  let functionPositions: Map<string, int> = Map {}
+  let functions: Array<bool> = []
+  let functionTexts: Array<string> = []
+  for (const position of Ranges.between(0, Arrays.length(programs))) {
+    const name = cachedFunctionName(checker, emitter.typeNames, programs[position])
+    functionPositions[name] = position
+    Arrays.push(mutable functions, false)
+    Arrays.push(mutable functionTexts, "")
+  }
+  const lazy = Consts.lazyConstants(emitter)
+  let constantPositions: Map<string, int> = Map {}
+  let constantsReached: Array<bool> = []
+  let getterTexts: Array<string> = []
+  for (const position of Ranges.between(0, Arrays.length(lazy))) {
+    const info = checker.consts[lazy[position]]
+    constantPositions[cachedDeclName(emitter.typeNames, "g", info.module, info.name)] = position
+    Arrays.push(mutable constantsReached, false)
+    Arrays.push(mutable getterTexts, "")
+  }
+
+  // The roots: the test blocks, or the entry function that main calls.
+  let testBodies = Str.builder()
+  if (emitter.tests) {
+    emitTestBodies(mutable emitter, mutable testBodies)
+  } else {
+    const entryName = cachedFunctionName(
+      checker,
+      emitter.typeNames,
+      ProgramFunc.PlainFunc(emitter.entry),
+    )
+    noteReference(mutable emitter, entryName)
+  }
+
+  // Emit each newly named declaration. The trait functions can name user
+  // implementations, so they are written again until those name no new body.
+  let cursor = 0
+  let traitText = ""
+  let traitsWritten = false
+  let settled = false
+  while (!settled) {
+    let emittedBody = false
+    while (cursor < Arrays.length(emitter.references)) {
+      const name = emitter.references[cursor]
+      cursor++
+      if (functionPositions[name] is Some(position)) {
+        if (!functions[position]) {
+          functions[position] = true
+          functionTexts[position] = Consts.emitFunction(mutable emitter, programs[position])
+          emittedBody = true
+        }
+      } else if (constantPositions[name] is Some(constantPosition)) {
+        if (!constantsReached[constantPosition]) {
+          constantsReached[constantPosition] = true
+          getterTexts[constantPosition] = Consts.emitGetter(mutable emitter, lazy[constantPosition])
+          emittedBody = true
+        }
+      }
+    }
+    if (traitsWritten && !emittedBody) {
+      settled = true
+    } else {
+      traitText = Traits.emitTraitFunctions(mutable emitter)
+      traitsWritten = true
+    }
+  }
+
+  // Keep the reached constants in their order.
+  let constants: Array<int> = []
+  let reachedGetters: Array<string> = []
+  for (const position of Ranges.between(0, Arrays.length(lazy))) {
+    if (constantsReached[position]) {
+      Arrays.push(mutable constants, lazy[position])
+      Arrays.push(mutable reachedGetters, getterTexts[position])
+    }
+  }
+  return ReachableBodies {
+    functions: functions,
+    functionTexts: functionTexts,
+    constants: constants,
+    getterTexts: reachedGetters,
+    testText: Str.build(testBodies),
+    traitText: traitText,
+  }
 }
 
 function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder) uses alloc {
@@ -131,13 +243,16 @@ function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder)
   }
 }
 
-function emitPrototypes(mutable emitter: Emitter): string uses alloc {
+function emitPrototypes(mutable emitter: Emitter, reached: Array<bool>): string uses alloc {
   let builder = Str.builder()
-  for (const program of Arrays.values(emitter.checker.programFunctions)) {
-    Str.append(
-      mutable builder,
-      `${functionSignature(emitter.checker, emitter.typeNames, program)};\n`,
-    )
+  const programs = emitter.checker.programFunctions
+  for (const position of Ranges.between(0, Arrays.length(programs))) {
+    if (reached[position]) {
+      Str.append(
+        mutable builder,
+        `${functionSignature(emitter.checker, emitter.typeNames, programs[position])};\n`,
+      )
+    }
   }
   return Str.build(builder)
 }

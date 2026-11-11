@@ -1,7 +1,7 @@
 ---
 id: diagnostics-polish
 title: "Diagnostics: typeof cycles, E0982, a narrowing cascade, long lines"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-9

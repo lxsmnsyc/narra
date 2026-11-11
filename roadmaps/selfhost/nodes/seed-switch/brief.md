@@ -46,6 +46,15 @@ depends_on:
   - on: ptr-cast
     kind: hard
     why: its std functions ride the same mid-batch seed update
+  - on: hidden-copy-fix
+    kind: hard
+    why: its source fix rides the same mid-batch seed update
+  - on: fmt-block-hug
+    kind: hard
+    why: its reformatted sources ride the same mid-batch seed update
+  - on: diagnostics-polish
+    kind: hard
+    why: its checker changes ride the same mid-batch seed update
 ---
 
 # The compiler uses Process.exit and the host-target builtin

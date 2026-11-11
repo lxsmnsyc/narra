@@ -22,9 +22,11 @@ added: 2026-11-11
 spent:
 owns:
   - roadmaps/selfhost/nodes/test-runner-fixes/**
-  - selfhost/tests/**
+  - selfhost/tests/src/main.nra
+  - selfhost/tests/src/textops.nra
   - scripts/test.sh
 shared:
+  - selfhost/tests/**
   - testdata/**
   - std/src/json.nra
   - selfhost/src/stdtext.nra

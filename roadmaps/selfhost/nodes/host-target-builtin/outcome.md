@@ -39,3 +39,5 @@
 
 - `selfhost/runtime/std_host.c` and `selfhost/src/runtimestdhost.nra` are new files outside the brief's owned paths (the brief listed `std_build.c`).
 - An x32 ABI build (`__x86_64__` with `__ILP32__`) reports Linux X86_64. Out of scope.
+
+Landed on feat/batch-9 as a741d03e.

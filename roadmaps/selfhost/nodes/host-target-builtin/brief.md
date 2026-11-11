@@ -1,7 +1,7 @@
 ---
 id: host-target-builtin
 title: "A builtin that returns the host target from compiler macros"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 239000
 owns:
   - roadmaps/selfhost/nodes/host-target-builtin/**
 shared:

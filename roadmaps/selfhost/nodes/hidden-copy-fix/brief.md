@@ -1,7 +1,7 @@
 ---
 id: hidden-copy-fix
 title: "The hidden copy in loadFile under the debug copy check"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-9

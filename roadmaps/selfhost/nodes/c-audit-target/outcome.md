@@ -35,3 +35,5 @@
 ## Size
 
 - Estimated S, actual S.
+
+Landed on feat/batch-8 as c8b0889e (reviewed inline by the orchestrator; the sample function was renamed to computeAbsolute).

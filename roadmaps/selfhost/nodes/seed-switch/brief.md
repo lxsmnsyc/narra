@@ -1,7 +1,7 @@
 ---
 id: seed-switch
 title: "The compiler uses Process.exit and the host-target builtin"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-9

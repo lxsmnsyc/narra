@@ -1582,7 +1582,7 @@ export enum Color {
 
 - **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
 - **C strings.** `std/cstring` provides `CString`, a string with no zero byte, written with `import * as CStrings from "std/cstring"` and `import { CString } from "std/cstring"`. `CStrings.from(text): Option<CString>` is `None` when the text holds a zero byte. `CStrings.pointer(value): Ptr<u8>` is the address of its zero-terminated bytes for a C function that takes `const char*`; it is valid while the CString is alive and must not be written through. `CStrings.toString(value): string` gives the text back, and `CStrings.read(pointer): Result<string, string>` (`uses alloc, unsafe`) copies a zero-terminated string a C function returned, with `Err` for invalid UTF-8.
-- `narra audit` lists every `unsafe` block and `@trusted` function in a package.
+- `narra audit [path]` lists every `unsafe` block and `@trusted` function in a package, one line each, sorted by file, line and column: `src/x.nra:12:3: unsafe block in function name` and `src/x.nra:4:1: @trusted function name`. A block in a test reads `in test name`. It reads the source only and exits 0; a package that does not load is an error.
 
 ## 10. Top-level declarations
 
@@ -1689,9 +1689,11 @@ export function opener(): string {
   So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
 - **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
-- The C interop form, `@target` before an `extern { } from` block so that its C functions exist and its library is linked only when building for its target, waits for node c-audit-target. It applies to every member of the block, since a block names one library:
+- **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
 ```ts
+import { Os } from "std/build"
+
 @target(os = Os.Windows)
 extern {
   function GetTickCount64(): u64

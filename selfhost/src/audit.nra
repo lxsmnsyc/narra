@@ -1,0 +1,291 @@
+// `narrac audit [path]`: lists every `unsafe` block and every `@trusted`
+// function of a package, one line each, sorted by file, line and column:
+//   src/x.nra:12:3: unsafe block in function name
+//   src/x.nra:4:1: @trusted function name
+// The command reads the parsed files only; it does not check the package.
+import * as Modules from "narrac/modules"
+import { Package } from "narrac/modules"
+import { Decl, FuncDecl, Block, Stmt, Expr, MatchArm, findAttribute } from "narrac/ast"
+import * as Int from "std/int"
+import * as Fs from "std/fs"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+struct AuditEntry {
+  file: string
+  line: int
+  column: int
+  text: string
+}
+
+export function runAudit(arguments: Array<string>): int uses io, alloc {
+  if (Arrays.length(arguments) > 3) {
+    const _ = Fs.writeText("/dev/stderr", "usage: narrac audit [path]\n")
+    return 2
+  }
+  let directory = "."
+  if (Arrays.length(arguments) == 3) {
+    directory = arguments[2]
+  }
+  // Load the package as the other commands do.
+  const loaded = Modules.load(directory)
+  if (loaded is Err(loadErrors)) {
+    const _ = Fs.writeText("/dev/stderr", Modules.errorText(loadErrors))
+    return 1
+  }
+  const entries = collectAuditEntries(loaded.value)
+  let builder = Str.builder()
+  for (const entry of Arrays.values(entries)) {
+    Str.append(
+      mutable builder,
+      `${entry.file}:${Int.toString(entry.line)}:${Int.toString(entry.column)}: ${entry.text}\n`,
+    )
+  }
+  const written = Fs.writeText("/dev/stdout", Str.build(builder))
+  if (written is Err(message)) {
+    const _ = Fs.writeText("/dev/stderr", `error ${message}\n`)
+    return 1
+  }
+  return 0
+}
+
+function collectAuditEntries(package: Package): Array<AuditEntry> uses alloc {
+  let entries: Array<AuditEntry> = []
+  for (const module of Arrays.values(package.modules)) {
+    if (Str.startsWith(module.path, "std/")) {
+      continue
+    }
+    for (const declaration of Arrays.values(module.ast.declarations)) {
+      match (declaration) {
+        Decl.Func(funcDecl) => auditFunction(mutable entries, module.file, funcDecl)
+        Decl.Test(testDecl) => auditBlock(
+          mutable entries,
+          module.file,
+          `test ${testDecl.name}`,
+          testDecl.body,
+        )
+        Decl.Trait(traitDecl) => {
+          for (const funcDecl of Arrays.values(traitDecl.functions)) {
+            auditFunction(mutable entries, module.file, funcDecl)
+          }
+        }
+        Decl.Impl(implDecl) => {
+          for (const funcDecl of Arrays.values(implDecl.functions)) {
+            auditFunction(mutable entries, module.file, funcDecl)
+          }
+        }
+        Decl.Const(_) | Decl.Struct(_) | Decl.Enum(_) | Decl.Distinct(_) | Decl.Alias(_) => {}
+      }
+    }
+  }
+  return sortAuditEntries(entries)
+}
+
+function sortAuditEntries(entries: Array<AuditEntry>): Array<AuditEntry> uses alloc {
+  let sorted: Array<AuditEntry> = []
+  for (const entry of Arrays.values(entries)) {
+    Arrays.push(mutable sorted, copy(entry))
+    // Insert in order: file, then line, then column.
+    for (
+      let index = Arrays.length(sorted) - 1;
+      index > 0 && isAuditEntryBefore(sorted[index], sorted[index - 1]);
+      index--
+    ) {
+      const swap = copy(sorted[index])
+      sorted[index] = copy(sorted[index - 1])
+      sorted[index - 1] = swap
+    }
+  }
+  return sorted
+}
+
+function isAuditEntryBefore(left: AuditEntry, right: AuditEntry): bool {
+  if (left.file != right.file) {
+    return left.file < right.file
+  }
+  if (left.line != right.line) {
+    return left.line < right.line
+  }
+  return left.column < right.column
+}
+
+function auditFunction(
+  mutable entries: Array<AuditEntry>,
+  file: string,
+  funcDecl: FuncDecl,
+) uses alloc {
+  if (findAttribute(funcDecl, "trusted") is Some(attribute)) {
+    Arrays.push(mutable entries, AuditEntry {
+      file: file,
+      line: attribute.pos.line,
+      column: attribute.pos.column,
+      text: `@trusted function ${funcDecl.name}`,
+    })
+  }
+  if (funcDecl.body is Some(body)) {
+    auditBlock(mutable entries, file, `function ${funcDecl.name}`, body)
+  }
+}
+
+function auditBlock(
+  mutable entries: Array<AuditEntry>,
+  file: string,
+  owner: string,
+  block: Block,
+) uses alloc {
+  // An unsafe block is reported at its `unsafe` keyword.
+  if (block.isUnsafe) {
+    if (block.keywordPos is Some(keyword)) {
+      Arrays.push(mutable entries, AuditEntry {
+        file: file,
+        line: keyword.line,
+        column: keyword.column,
+        text: `unsafe block in ${owner}`,
+      })
+    }
+  }
+  for (const statement of Arrays.values(block.statements)) {
+    auditStatement(mutable entries, file, owner, statement)
+  }
+}
+
+function auditStatement(
+  mutable entries: Array<AuditEntry>,
+  file: string,
+  owner: string,
+  statement: Stmt,
+) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => auditBlock(mutable entries, file, owner, block)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => auditExpression(mutable entries, file, owner, value)
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      auditExpression(mutable entries, file, owner, target)
+      auditExpression(mutable entries, file, owner, value)
+    }
+    Stmt.ExprStmt(_, expression) => auditExpression(mutable entries, file, owner, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        auditExpression(mutable entries, file, owner, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, thenBlock, orElse) => {
+      auditExpression(mutable entries, file, owner, condition)
+      auditBlock(mutable entries, file, owner, thenBlock)
+      if (orElse is Some(elseStatement)) {
+        auditStatement(mutable entries, file, owner, elseStatement)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      auditExpression(mutable entries, file, owner, condition)
+      auditBlock(mutable entries, file, owner, body)
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        auditStatement(mutable entries, file, owner, declaration)
+      }
+      if (condition is Some(loopCondition)) {
+        auditExpression(mutable entries, file, owner, loopCondition)
+      }
+      if (step is Some(stepStatement)) {
+        auditStatement(mutable entries, file, owner, stepStatement)
+      }
+      auditBlock(mutable entries, file, owner, body)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+      auditExpression(mutable entries, file, owner, iterable)
+      auditBlock(mutable entries, file, owner, body)
+    }
+    Stmt.YieldStmt(_, value, _, _) => auditExpression(mutable entries, file, owner, value)
+    Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => {}
+  }
+}
+
+function auditExpression(
+  mutable entries: Array<AuditEntry>,
+  file: string,
+  owner: string,
+  expression: Expr,
+) uses alloc {
+  match (expression) {
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _)
+      | Expr.Ident(_, _, _) => {}
+    Expr.TemplateLit(_, _, parts) => auditExpressions(mutable entries, file, owner, parts)
+    Expr.FieldExpr(_, _, target, _) => auditExpression(mutable entries, file, owner, target)
+    Expr.IsExpr(_, _, subject, _) => auditExpression(mutable entries, file, owner, subject)
+    Expr.IndexExpr(_, _, target, index) => {
+      auditExpression(mutable entries, file, owner, target)
+      auditExpression(mutable entries, file, owner, index)
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      auditExpressions(mutable entries, file, owner, keys)
+      auditExpressions(mutable entries, file, owner, values)
+    }
+    Expr.CallExpr(_, _, callee, _, arguments) => {
+      auditExpression(mutable entries, file, owner, callee)
+      for (const argument of Arrays.values(arguments)) {
+        auditExpression(mutable entries, file, owner, argument.value)
+      }
+    }
+    Expr.UnaryExpr(_, _, _, operand) => auditExpression(mutable entries, file, owner, operand)
+    Expr.BinaryExpr(_, _, _, left, right) => {
+      auditExpression(mutable entries, file, owner, left)
+      auditExpression(mutable entries, file, owner, right)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        auditExpression(mutable entries, file, owner, field.value)
+      }
+      if (spread is Some(spreadValue)) {
+        auditExpression(mutable entries, file, owner, spreadValue)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => auditExpressions(mutable entries, file, owner, elements)
+    Expr.MatchExpr(_, _, subject, arms) => {
+      auditExpression(mutable entries, file, owner, subject)
+      for (const arm of Arrays.values(arms)) {
+        auditArm(mutable entries, file, owner, arm)
+      }
+    }
+    Expr.BlockExpr(_, _, block) => auditBlock(mutable entries, file, owner, block)
+    Expr.ArrowExpr(_, _, _, _, body, block) => {
+      if (body is Some(bodyExpression)) {
+        auditExpression(mutable entries, file, owner, bodyExpression)
+      }
+      if (block is Some(bodyBlock)) {
+        auditBlock(mutable entries, file, owner, bodyBlock)
+      }
+    }
+  }
+}
+
+function auditExpressions(
+  mutable entries: Array<AuditEntry>,
+  file: string,
+  owner: string,
+  expressions: Array<Expr>,
+) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    auditExpression(mutable entries, file, owner, expression)
+  }
+}
+
+function auditArm(
+  mutable entries: Array<AuditEntry>,
+  file: string,
+  owner: string,
+  arm: MatchArm,
+) uses alloc {
+  if (arm.guard is Some(guard)) {
+    auditExpression(mutable entries, file, owner, guard)
+  }
+  if (arm.body is Some(body)) {
+    auditExpression(mutable entries, file, owner, body)
+  }
+  if (arm.block is Some(block)) {
+    auditBlock(mutable entries, file, owner, block)
+  }
+}

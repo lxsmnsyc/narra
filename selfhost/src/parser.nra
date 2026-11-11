@@ -867,13 +867,21 @@ function parseFile(mutable parser: Parser): File {
   }
   while (isOk(parser) && currentToken(parser).kind != TokenKind.TokEof) {
     parser.typeNames = []
+    // Attributes stand before a function or an extern block.
+    const startIndex = parser.index
+    const attributes = parseAttributeList(mutable parser)
     if (isExternBlockStart(parser)) {
       // The members of an extern block are top-level functions of their own.
-      for (const member of Arrays.values(parseExternBlock(mutable parser))) {
+      for (const member of Arrays.values(
+        parseExternBlock(mutable parser, attributes, startIndex),
+      )) {
         Arrays.push(mutable declarations, Decl.Func(member))
       }
     } else {
-      Arrays.push(mutable declarations, parseDecl(mutable parser))
+      Arrays.push(
+        mutable declarations,
+        parseDeclWithAttributes(mutable parser, attributes, startIndex),
+      )
     }
     skipNewlines(mutable parser)
   }
@@ -991,13 +999,15 @@ function isTypeBreaker(text: string): bool {
     text == "="
 }
 
-function parseDecl(mutable parser: Parser): Decl {
+function parseDeclWithAttributes(
+  mutable parser: Parser,
+  attributes: Array<Attribute>,
+  startIndex: int,
+): Decl {
   // Attributes stand on their own lines before a function. The trivia record of
   // the declaration starts at the first `@` and each attribute has its own
   // record that runs up to the next token, so the comments after an attribute,
   // on its line or on lines of their own, are that attribute's.
-  const startIndex = parser.index
-  const attributes = parseAttributeList(mutable parser)
   const body = parseDeclBody(mutable parser)
   const declaration = addAttributes(mutable parser, body, attributes)
   if (parser.collector.enabled) {
@@ -1080,8 +1090,24 @@ function isExternBlockStart(parser: Parser): bool {
   return isWord(parser, "extern") && next.kind == TokenKind.TokPunct && next.text == "{"
 }
 
-function parseExternBlock(mutable parser: Parser): Array<FuncDecl> {
-  const startIndex = parser.index
+function parseExternBlock(
+  mutable parser: Parser,
+  attributes: Array<Attribute>,
+  startIndex: int,
+): Array<FuncDecl> {
+  // Only @target is written before a block; it applies to every member.
+  let targets: Array<Attribute> = []
+  for (const attribute of Arrays.values(attributes)) {
+    if (isOk(parser) && attribute.name != "target") {
+      failAt(
+        mutable parser,
+        attribute.pos,
+        "E1000",
+        `@${attribute.name} is not written before an extern block; only @target is`,
+      )
+    }
+    Arrays.push(mutable targets, copy(attribute))
+  }
   const pos = getPos(advance(mutable parser))
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
@@ -1121,10 +1147,20 @@ function parseExternBlock(mutable parser: Parser): Array<FuncDecl> {
     end: end,
     library: libraryToken.text,
     libraryPos: getPos(libraryToken),
+    attributes: targets,
   }
   let linked: Array<FuncDecl> = []
   for (const member of Arrays.values(members)) {
-    Arrays.push(mutable linked, FuncDecl { ...member, externBlock: Some(copy(block)) })
+    // The member carries the block's @target, so the checks of a @target function apply to it.
+    let memberAttributes: Array<Attribute> = copy(targets)
+    for (const written of Arrays.values(member.attributes)) {
+      Arrays.push(mutable memberAttributes, copy(written))
+    }
+    Arrays.push(mutable linked, FuncDecl {
+      ...member,
+      attributes: memberAttributes,
+      externBlock: Some(copy(block)),
+    })
   }
   return linked
 }

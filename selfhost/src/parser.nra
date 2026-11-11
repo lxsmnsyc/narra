@@ -128,8 +128,8 @@ import {
   VariantDecl,
   EnumDecl,
   TestDecl,
-  TargetAttribute,
-  TargetArgument,
+  Attribute,
+  AttributeArgument,
   TraitDecl,
   ImplDecl,
   Decl,
@@ -982,52 +982,69 @@ function isTypeBreaker(text: string): bool {
 }
 
 function parseDecl(mutable parser: Parser): Decl {
-  // `@target(...)` stands on its own line before a function. Its trivia record
-  // runs up to the declaration keyword, so the comments after it, on its line
-  // or on lines of their own, are the attribute's.
+  // Attributes stand on their own lines before a function. The trivia record of
+  // the declaration starts at the first `@` and each attribute has its own
+  // record that runs up to the next token, so the comments after an attribute,
+  // on its line or on lines of their own, are that attribute's.
   const startIndex = parser.index
-  let attribute: Option<TargetAttribute> = None
-  if (isAt(parser, SYMBOL_AT)) {
-    const written = parseTargetAttribute(mutable parser)
+  let attributes: Array<Attribute> = []
+  while (isOk(parser) && isAt(parser, SYMBOL_AT)) {
+    const written = parseAttribute(mutable parser)
     skipNewlines(mutable parser)
     if (parser.collector.enabled && isOk(parser)) {
       const key = getPosKey("@", written.pos)
       const end = getPos(currentToken(parser))
       noteNode(mutable parser.collector, key, written.pos, end)
     }
-    attribute = Some(written)
+    if (isOk(parser) && hasAttribute(attributes, written.name)) {
+      failAt(
+        mutable parser,
+        written.pos,
+        "E0990",
+        `\`@${written.name}\` is written once, before a function declaration`,
+      )
+    }
+    Arrays.push(mutable attributes, written)
   }
   const body = parseDeclBody(mutable parser)
-  const declaration = addTargetAttribute(mutable parser, body, attribute)
+  const declaration = addAttributes(mutable parser, body, attributes)
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
   }
   return declaration
 }
 
-function addTargetAttribute(
+function hasAttribute(attributes: Array<Attribute>, name: string): bool {
+  for (const attribute of Arrays.values(attributes)) {
+    if (attribute.name == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function addAttributes(
   mutable parser: Parser,
   declaration: Decl,
-  attribute: Option<TargetAttribute>,
+  attributes: Array<Attribute>,
 ): Decl from declaration uses alloc {
-  if (attribute is Some(written)) {
-    if (declaration is Decl.Func(funcDecl)) {
-      return Decl.Func(FuncDecl { ...funcDecl, target: Some(copy(written)) })
-    }
-    failAt(
-      mutable parser,
-      written.pos,
-      "E0990",
-      "`@target` is written once, before a function declaration",
-    )
+  if (Arrays.length(attributes) == 0) {
+    return declaration
   }
+  if (declaration is Decl.Func(funcDecl)) {
+    return Decl.Func(FuncDecl { ...funcDecl, attributes: copy(attributes) })
+  }
+  const first = attributes[0]
+  failAt(
+    mutable parser,
+    first.pos,
+    "E0990",
+    `\`@${first.name}\` is written once, before a function declaration`,
+  )
   return declaration
 }
 
 function parseDeclBody(mutable parser: Parser): Decl {
-  if (isAt(parser, SYMBOL_AT)) {
-    failHere(mutable parser, "E0990", "`@target` is written once, before a function declaration")
-  }
   const exported = accept(mutable parser, SYMBOL_KEYWORD_EXPORT)
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
@@ -1110,19 +1127,53 @@ function parseDeclBody(mutable parser: Parser): Decl {
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
 }
 
-function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
+struct AttributeRow {
+  name: string
+  takesArguments: bool
+}
+
+const KNOWN_ATTRIBUTES: Array<AttributeRow> = [
+  AttributeRow { name: "target", takesArguments: true },
+]
+
+function findAttributeRow(name: string): Option<AttributeRow> {
+  for (const row of Arrays.values(KNOWN_ATTRIBUTES)) {
+    if (row.name == name) {
+      return Some(row)
+    }
+  }
+  return None
+}
+
+function describeKnownAttributes(): string uses alloc {
+  let names: Array<string> = []
+  for (const row of Arrays.values(KNOWN_ATTRIBUTES)) {
+    Arrays.push(mutable names, `@${row.name}`)
+  }
+  return Str.join(names, ", ")
+}
+
+function parseAttribute(mutable parser: Parser): Attribute uses alloc {
   const pos = getPos(expect(mutable parser, SYMBOL_AT))
   const nameToken = expectIdent(mutable parser)
-  if (isOk(parser) && nameToken.text != "target") {
-    failAt(
-      mutable parser,
-      getPos(nameToken),
-      "E0990",
-      `unknown attribute @${nameToken.text}; the only attribute is @target`,
-    )
+  let takesArguments = false
+  if (isOk(parser)) {
+    if (findAttributeRow(nameToken.text) is Some(row)) {
+      takesArguments = row.takesArguments
+    } else {
+      failAt(
+        mutable parser,
+        getPos(nameToken),
+        "E0990",
+        `unknown attribute @${nameToken.text}; the known attributes are ${describeKnownAttributes()}`,
+      )
+    }
+  }
+  let arguments: Array<AttributeArgument> = []
+  if (!takesArguments) {
+    return Attribute { pos: pos, name: nameToken.text, hasParentheses: false, arguments: arguments }
   }
   expect(mutable parser, SYMBOL_LEFT_PAREN)
-  let arguments: Array<TargetArgument> = []
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const argumentToken = expectIdent(mutable parser)
     expect(mutable parser, SYMBOL_EQUALS)
@@ -1143,11 +1194,11 @@ function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
         mutable parser,
         typePos,
         "E0990",
-        `@target ${argumentToken.text} takes a variant such as Os.Windows`,
+        `@${nameToken.text} ${argumentToken.text} takes a variant such as Os.Windows`,
       )
     }
     if (isOk(parser)) {
-      Arrays.push(mutable arguments, TargetArgument {
+      Arrays.push(mutable arguments, AttributeArgument {
         pos: getPos(argumentToken),
         name: argumentToken.text,
         typeName: typeName,
@@ -1160,7 +1211,7 @@ function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
     }
   }
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
-  return TargetAttribute { pos: pos, arguments: arguments }
+  return Attribute { pos: pos, name: nameToken.text, hasParentheses: true, arguments: arguments }
 }
 
 function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<Decl> {

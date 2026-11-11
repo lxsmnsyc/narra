@@ -40,6 +40,7 @@ import {
   TypeExpr,
   Param,
   FuncDecl,
+  Attribute,
   ConstDecl,
   FieldDecl,
   StructDecl,
@@ -553,7 +554,7 @@ function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
 function printDeclaration(printer: Printer, declaration: Decl): Doc from printer uses alloc {
   return match (declaration) {
     Decl.Func(inner) => Docs.concat([
-      printTargetAttribute(printer, inner),
+      printAttributes(printer, inner),
       printFunction(printer, inner),
     ])
     Decl.Const(inner) => printConst(printer, inner)
@@ -570,28 +571,37 @@ function printDeclaration(printer: Printer, declaration: Decl): Doc from printer
   }
 }
 
-function printTargetAttribute(printer: Printer, declaration: FuncDecl): Doc uses alloc {
-  // The attribute takes a line of its own above the function.
-  if (declaration.target is Some(attribute)) {
+function printAttributes(printer: Printer, declaration: FuncDecl): Doc uses alloc {
+  // Each attribute takes a line of its own above the function.
+  let lines: Array<Doc> = []
+  for (const attribute of Arrays.values(declaration.attributes)) {
+    Arrays.push(mutable lines, printAttribute(printer, attribute))
+  }
+  return Docs.concat(lines)
+}
+
+function printAttribute(printer: Printer, attribute: Attribute): Doc uses alloc {
+  let written = `@${attribute.name}`
+  if (attribute.hasParentheses) {
     let names: Array<string> = []
     for (const argument of Arrays.values(attribute.arguments)) {
       Arrays.push(mutable names, `${argument.name} = ${argument.typeName}.${argument.variant}`)
     }
-    let parts: Array<Doc> = [text(`@target(${Str.join(names, ", ")})`)]
-    // Its comments follow it: the first stays on its line unless it was written on a line of its own.
-    const anchor = getPosKey("@", attribute.pos)
-    if (hasDangling(printer, anchor)) {
-      if (isFirstDanglingOnOwnLine(printer, anchor)) {
-        Arrays.push(mutable parts, Doc.HardLine)
-      } else {
-        Arrays.push(mutable parts, text(" "))
-      }
-      Arrays.push(mutable parts, printDangling(printer, anchor))
-    }
-    Arrays.push(mutable parts, Doc.HardLine)
-    return Docs.concat(parts)
+    written = `${written}(${Str.join(names, ", ")})`
   }
-  return empty()
+  let parts: Array<Doc> = [text(written)]
+  // Its comments follow it: the first stays on its line unless it was written on a line of its own.
+  const anchor = getPosKey("@", attribute.pos)
+  if (hasDangling(printer, anchor)) {
+    if (isFirstDanglingOnOwnLine(printer, anchor)) {
+      Arrays.push(mutable parts, Doc.HardLine)
+    } else {
+      Arrays.push(mutable parts, text(" "))
+    }
+    Arrays.push(mutable parts, printDangling(printer, anchor))
+  }
+  Arrays.push(mutable parts, Doc.HardLine)
+  return Docs.concat(parts)
 }
 
 function isFirstDanglingOnOwnLine(printer: Printer, anchor: string): bool {

@@ -10,6 +10,9 @@
 //                      the C names of the types the program already had
 //   proven-operands/no-panic-path   the C of a program with proven divisors and
 //                      shift counts has no division or shift panic
+//   endless-loop/return-type   the C of testdata/endless_loop_returns.nra, whose
+//                      functions end in an endless loop, compiles with
+//                      -Werror=return-type
 //   build-conditions/one-branch   the C of testdata/build_os.nra holds the
 //                      host's branch of an if on Build.os and no other
 //   build-conditions/unsupported-host   with NARRA_HOST_TARGET naming no
@@ -48,6 +51,11 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       "no-panic-path",
     ),
     makeCase(
+      "endless-loop/return-type",
+      Path.join(context.testdata, "endless_loop_returns.nra"),
+      "endless-loop",
+    ),
+    makeCase(
       "build-conditions/one-branch",
       Path.join(context.testdata, "build_os.nra"),
       "one-branch",
@@ -79,6 +87,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "no-panic-path") {
     return checkNoOperandPanic(context, testCase.path)
+  }
+  if (testCase.variant == "endless-loop") {
+    return checkEndlessLoop(context, testCase.path)
   }
   if (testCase.variant == "one-branch") {
     return checkOneBranch(context, testCase.path)
@@ -130,6 +141,34 @@ function checkNoOperandPanic(
     return Err("the emitted C has no division or shift to check")
   }
   return Ok(true)
+}
+
+function checkEndlessLoop(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const target = Path.join(scratch.work, "endless.c")
+  let outcome: Result<bool, string> = Ok(true)
+  const written = Scratch.writeFile(target, result.output)
+  if (written is Err(message)) {
+    outcome = Err(message)
+  } else {
+    const compiled = Shell.runScript(
+      "cc -std=c11 -Wreturn-type -Werror=return-type -fsyntax-only \"$1\"",
+      [target],
+    )
+    if (compiled.code != 0) {
+      outcome = Err(`cc rejects the C: ${Common.describeRun(compiled)}`)
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
 }
 
 function checkOneBranch(context: Context, source: string): Result<bool, string> uses io, alloc {

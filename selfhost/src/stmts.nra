@@ -661,7 +661,7 @@ export function checkBlockBody<W: Walker>(
     )
     return Type.TVoid
   }
-  if (!endsInReturn(block)) {
+  if (!endsInReturn(checker, checker.body, block)) {
     reportError(
       mutable checker,
       pos,
@@ -735,43 +735,46 @@ function checkBlockReturn<W: Walker>(
   }
 }
 
-function endsInReturn(block: Block): bool {
+function endsInReturn(checker: Checker, bodyIndex: int, block: Block): bool {
   const count = Arrays.length(block.statements)
   if (count == 0) {
     return false
   }
-  return statementEndsInReturn(block.statements[count - 1])
+  return statementEndsInReturn(checker, bodyIndex, block.statements[count - 1])
 }
 
-function statementEndsInReturn(statement: Stmt): bool {
+function statementEndsInReturn(checker: Checker, bodyIndex: int, statement: Stmt): bool {
   return match (statement) {
     Stmt.ReturnStmt(_, _) => true
-    Stmt.BlockStmt(block) => endsInReturn(block)
-    Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(then, orElse)
-    Stmt.ExprStmt(_, expression) => isPanicCall(expression) || matchEndsInReturn(expression)
+    Stmt.BlockStmt(block) => endsInReturn(checker, bodyIndex, block)
+    Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(checker, bodyIndex, then, orElse)
+    Stmt.ExprStmt(_, expression) =>
+      isPanicCall(checker, bodyIndex, expression) ||
+      matchEndsInReturn(checker, bodyIndex, expression)
     _ => false
   }
 }
 
-function ifEndsInReturn(then: Block, orElse: Option<Stmt>): bool {
+function ifEndsInReturn(checker: Checker, bodyIndex: int, then: Block, orElse: Option<Stmt>): bool {
   if (orElse is Some(other)) {
-    return endsInReturn(then) && statementEndsInReturn(other)
+    return endsInReturn(checker, bodyIndex, then) &&
+      statementEndsInReturn(checker, bodyIndex, other)
   }
   return false
 }
 
-function matchEndsInReturn(expression: Expr): bool {
+function matchEndsInReturn(checker: Checker, bodyIndex: int, expression: Expr): bool {
   if (expression is Expr.MatchExpr(_, _, _, arms)) {
     if (Arrays.length(arms) == 0) {
       return false
     }
     for (const arm of Arrays.values(arms)) {
       if (arm.block is Some(armBlock)) {
-        if (!endsInReturn(armBlock)) {
+        if (!endsInReturn(checker, bodyIndex, armBlock)) {
           return false
         }
       } else if (arm.body is Some(armBody)) {
-        if (!isPanicCall(armBody)) {
+        if (!isPanicCall(checker, bodyIndex, armBody)) {
           return false
         }
       } else {
@@ -851,7 +854,7 @@ function checkIf<W: Walker>(
     narrowByCondition(mutable checker, condition, false)
     checkStatement(mutable checker, walker, other)
     popScope(mutable checker)
-  } else if (diverges(then)) {
+  } else if (diverges(checker, checker.body, then)) {
     if (otherVariant >= 0) {
       setNarrowed(mutable checker, subject, otherVariant)
     }
@@ -1302,27 +1305,27 @@ export function isResult(checker: Checker, valueType: Type): bool {
   return false
 }
 
-export function diverges(block: Block): bool {
+export function diverges(checker: Checker, bodyIndex: int, block: Block): bool {
   const count = Arrays.length(block.statements)
   if (count == 0) {
     return false
   }
-  return statementDiverges(block.statements[count - 1])
+  return statementDiverges(checker, bodyIndex, block.statements[count - 1])
 }
 
-function statementDiverges(statement: Stmt): bool {
+function statementDiverges(checker: Checker, bodyIndex: int, statement: Stmt): bool {
   return match (statement) {
     Stmt.ReturnStmt(_, _) | Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => true
-    Stmt.ExprStmt(_, expression) => isPanicCall(expression)
-    Stmt.IfStmt(_, _, then, orElse) => ifDiverges(then, orElse)
-    Stmt.BlockStmt(block) => diverges(block)
+    Stmt.ExprStmt(_, expression) => isPanicCall(checker, bodyIndex, expression)
+    Stmt.IfStmt(_, _, then, orElse) => ifDiverges(checker, bodyIndex, then, orElse)
+    Stmt.BlockStmt(block) => diverges(checker, bodyIndex, block)
     _ => false
   }
 }
 
-function ifDiverges(then: Block, orElse: Option<Stmt>): bool {
+function ifDiverges(checker: Checker, bodyIndex: int, then: Block, orElse: Option<Stmt>): bool {
   if (orElse is Some(other)) {
-    return diverges(then) && statementDiverges(other)
+    return diverges(checker, bodyIndex, then) && statementDiverges(checker, bodyIndex, other)
   }
   return false
 }

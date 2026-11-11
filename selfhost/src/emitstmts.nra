@@ -445,6 +445,13 @@ function emitLoopBody<W: EmitWalker>(
   emitContinueLabel(mutable emitter)
 }
 
+function isLiteralTrue(condition: Expr): bool {
+  if (condition is Expr.BoolLit(_, _, value)) {
+    return value
+  }
+  return false
+}
+
 function emitWhile<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -462,11 +469,14 @@ function emitWhile<W: EmitWalker>(
   const firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
-  beginStatement(mutable emitter)
-  const code = EmitWalker.emitExpression(walker, mutable emitter, condition)
-  const holds = temp(mutable emitter, Type.TBool, code.text)
-  endStatement(mutable emitter)
-  writeLine(mutable emitter, `if (!${holds}) break;`)
+  // A condition that is the literal `true` gets no test, so the C compiler sees an endless loop.
+  if (!isLiteralTrue(condition)) {
+    beginStatement(mutable emitter)
+    const code = EmitWalker.emitExpression(walker, mutable emitter, condition)
+    const holds = temp(mutable emitter, Type.TBool, code.text)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (!${holds}) break;`)
+  }
   emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   emitLoopBody(walker, mutable emitter, label, pos, body)
   const info = leaveLoop(mutable emitter)
@@ -512,11 +522,13 @@ function emitCFor<W: EmitWalker>(
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
   if (condition is Some(loopCondition)) {
-    beginStatement(mutable emitter)
-    const code = EmitWalker.emitExpression(walker, mutable emitter, loopCondition)
-    const holds = temp(mutable emitter, Type.TBool, code.text)
-    endStatement(mutable emitter)
-    writeLine(mutable emitter, `if (!${holds}) break;`)
+    if (!isLiteralTrue(loopCondition)) {
+      beginStatement(mutable emitter)
+      const code = EmitWalker.emitExpression(walker, mutable emitter, loopCondition)
+      const holds = temp(mutable emitter, Type.TBool, code.text)
+      endStatement(mutable emitter)
+      writeLine(mutable emitter, `if (!${holds}) break;`)
+    }
     emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   }
   enterLoop(mutable emitter, label, pos)
@@ -1081,7 +1093,7 @@ function scanHoistExpression(
       scanHoistExpression(emitter, mutable scan, index)
     }
     Expr.CallExpr(callId, _, callee, _, arguments) => {
-      if (isPanicCall(expression)) {
+      if (isPanicCall(emitter.checker, emitter.body, expression)) {
         scan.exits++
       }
       scanHoistExpression(emitter, mutable scan, callee)

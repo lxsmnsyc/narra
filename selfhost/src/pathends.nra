@@ -1,12 +1,17 @@
 import * as Arrays from "std/array"
 import { Block, Expr, MatchArm, Stmt } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Checker, reportError, typeString } from "narrac/check"
+import { Checker, Ref, findBodySlot, reportError, typeString } from "narrac/check"
 
-export function isPanicCall(expression: Expr): bool {
-  if (expression is Expr.CallExpr(_, _, callee, _, _)) {
-    if (callee is Expr.Ident(_, _, name)) {
-      return name == "panic"
+export function isPanicCall(checker: Checker, bodyIndex: int, expression: Expr): bool {
+  // A local or parameter named `panic` shadows the prelude function.
+  if (expression is Expr.CallExpr(callId, _, _, _, _)) {
+    const info = checker.bodies[bodyIndex]
+    const slot = findBodySlot(info, callId)
+    if (slot >= 0) {
+      if (info.refs[slot] is Ref.Builtin(index)) {
+        return checker.registry.functions[index].name == "panic"
+      }
     }
   }
   return false
@@ -21,7 +26,7 @@ export function checkEveryPathReturns(
   if (result == Type.TVoid) {
     return
   }
-  if (findBlockOpenPath(block) is Some(reason)) {
+  if (findBlockOpenPath(checker, checker.body, block) is Some(reason)) {
     const text = typeString(checker, result)
     if (arrow) {
       reportError(
@@ -41,12 +46,60 @@ export function checkEveryPathReturns(
   }
 }
 
-export function findBlockOpenPath(block: Block): Option<string> uses alloc {
+export function hasReachableEnd(checker: Checker, bodyIndex: int, block: Block): bool uses alloc {
+  // A `match` does not count as ending the body, nor does a `return` of one: the
+  // C it becomes is a chain of tests that the C compiler cannot see to be exhaustive.
+  for (const statement of Arrays.values(block.statements)) {
+    if (isStatementEnding(checker, bodyIndex, statement)) {
+      return false
+    }
+  }
+  return true
+}
+
+function isStatementEnding(checker: Checker, bodyIndex: int, statement: Stmt): bool uses alloc {
+  return match (statement) {
+    Stmt.ReturnStmt(_, value) => !isMatchValue(value)
+    Stmt.BlockStmt(block) => !hasReachableEnd(checker, bodyIndex, block)
+    Stmt.IfStmt(_, _, then, orElse) => isIfEnding(checker, bodyIndex, then, orElse)
+    Stmt.ExprStmt(_, expression) => isPanicCall(checker, bodyIndex, expression)
+    Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body) is None
+    Stmt.CForStmt(_, label, _, condition, _, body) =>
+      findCForOpenPath(label, condition, body) is None
+    _ => false
+  }
+}
+
+function isMatchValue(value: Option<Expr>): bool {
+  if (value is Some(expression)) {
+    return expression is Expr.MatchExpr(_, _, _, _)
+  }
+  return false
+}
+
+function isIfEnding(
+  checker: Checker,
+  bodyIndex: int,
+  then: Block,
+  orElse: Option<Stmt>,
+): bool uses alloc {
+  if (orElse is Some(other)) {
+    return !hasReachableEnd(checker, bodyIndex, then) &&
+      isStatementEnding(checker, bodyIndex, other)
+  }
+  return false
+}
+
+export function findBlockOpenPath(
+  checker: Checker,
+  bodyIndex: int,
+  block: Block,
+): Option<string> uses alloc {
   // One statement that ends every path ends the block; otherwise the last
   // statement says which path reaches the closing brace.
   let reason = "the body is empty"
   for (const statement of Arrays.values(block.statements)) {
-    const open = findStatementOpenPath(statement)
+    const open = findStatementOpenPath(checker, bodyIndex, statement)
     if (open is Some(found)) {
       reason = found
     } else {
@@ -56,12 +109,12 @@ export function findBlockOpenPath(block: Block): Option<string> uses alloc {
   return Some(reason)
 }
 
-function findStatementOpenPath(statement: Stmt): Option<string> {
+function findStatementOpenPath(checker: Checker, bodyIndex: int, statement: Stmt): Option<string> {
   return match (statement) {
     Stmt.ReturnStmt(_, _) => None
-    Stmt.BlockStmt(block) => findBlockOpenPath(block)
-    Stmt.IfStmt(_, _, then, orElse) => findIfOpenPath(then, orElse)
-    Stmt.ExprStmt(_, expression) => findExpressionOpenPath(expression)
+    Stmt.BlockStmt(block) => findBlockOpenPath(checker, bodyIndex, block)
+    Stmt.IfStmt(_, _, then, orElse) => findIfOpenPath(checker, bodyIndex, then, orElse)
+    Stmt.ExprStmt(_, expression) => findExpressionOpenPath(checker, bodyIndex, expression)
     Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body)
     Stmt.CForStmt(_, label, _, condition, _, body) => findCForOpenPath(label, condition, body)
     Stmt.ForStmt(_, _, _, _, _, _, _) => Some("a `for` loop can finish without returning")
@@ -69,38 +122,51 @@ function findStatementOpenPath(statement: Stmt): Option<string> {
   }
 }
 
-function findIfOpenPath(then: Block, orElse: Option<Stmt>): Option<string> {
+function findIfOpenPath(
+  checker: Checker,
+  bodyIndex: int,
+  then: Block,
+  orElse: Option<Stmt>,
+): Option<string> {
   if (orElse is Some(other)) {
-    const thenOpen = findBlockOpenPath(then)
+    const thenOpen = findBlockOpenPath(checker, bodyIndex, then)
     if (thenOpen is Some(_)) {
       return thenOpen
     }
-    return findStatementOpenPath(other)
+    return findStatementOpenPath(checker, bodyIndex, other)
   }
   return Some("the `if` has no `else`, so the path where its condition is false does not return")
 }
 
-function findExpressionOpenPath(expression: Expr): Option<string> {
-  if (isPanicCall(expression)) {
+function findExpressionOpenPath(
+  checker: Checker,
+  bodyIndex: int,
+  expression: Expr,
+): Option<string> {
+  if (isPanicCall(checker, bodyIndex, expression)) {
     return None
   }
   if (expression is Expr.MatchExpr(_, _, _, arms)) {
-    return findMatchOpenPath(arms)
+    return findMatchOpenPath(checker, bodyIndex, arms)
   }
   return Some("the last statement is not a `return`")
 }
 
-function findMatchOpenPath(arms: Array<MatchArm>): Option<string> {
+function findMatchOpenPath(
+  checker: Checker,
+  bodyIndex: int,
+  arms: Array<MatchArm>,
+): Option<string> {
   if (Arrays.length(arms) == 0) {
     return Some("the `match` has no arms")
   }
   for (const arm of Arrays.values(arms)) {
     if (arm.block is Some(armBlock)) {
-      if (findBlockOpenPath(armBlock) is Some(_)) {
+      if (findBlockOpenPath(checker, bodyIndex, armBlock) is Some(_)) {
         return Some("a `match` arm does not return")
       }
     } else if (arm.body is Some(armBody)) {
-      if (findExpressionOpenPath(armBody) is Some(_)) {
+      if (findExpressionOpenPath(checker, bodyIndex, armBody) is Some(_)) {
         return Some("a `match` arm does not return")
       }
     } else {

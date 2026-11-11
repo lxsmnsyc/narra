@@ -729,7 +729,7 @@ static void narra_assert(bool ok, const char* where) {
   if (!ok) narra_panic(where, "assertion failed");
 }
 
-static void narra_panic_str(lstr* msg, const char* where) {
+_Noreturn static void narra_panic_str(lstr* msg, const char* where) {
   narra_panic(where, msg->data);
 }
 

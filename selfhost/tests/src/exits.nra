@@ -9,6 +9,7 @@ import * as Int from "std/int"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   let cases: Array<TestCase> = []
@@ -21,10 +22,51 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       variant: "debug",
     })
   }
+  // The signal cases: a SIGTERM sent to narrac must stop every process it started.
+  Arrays.push(mutable cases, TestCase {
+    suite: "exits",
+    name: "signal_forwarding_run",
+    path: Path.join(context.testdata, "signals"),
+    variant: "signal-run",
+  })
+  Arrays.push(mutable cases, TestCase {
+    suite: "exits",
+    name: "signal_forwarding_test",
+    path: Path.join(context.testdata, "signals"),
+    variant: "signal-test",
+  })
   return cases
 }
 
+function runSignalCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const folder = Shell.makeTempDirectory()
+  if (folder is Err(message)) {
+    return Err(message)
+  }
+  const marker = Path.join(folder.value, "started")
+  const mode = testCase.variant == "signal-test" ? "test" : "run"
+  const sample = testCase.variant == "signal-test" ? "spin_test.nra" : "spin_until_killed.nra"
+  const result = Shell.runScript(
+    "sh \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"",
+    [
+      Path.join(testCase.path, "forward.sh"),
+      mode,
+      context.narrac,
+      Path.join(testCase.path, sample),
+      marker,
+    ],
+  )
+  Shell.removeTree(folder.value)
+  if (result.code != 0) {
+    return Err(Str.trim(result.output))
+  }
+  return Ok(true)
+}
+
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (Str.startsWith(testCase.variant, "signal")) {
+    return runSignalCase(context, testCase)
+  }
   const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".out"))
   if (want is Err(message)) {
     return Err(message)

@@ -122,6 +122,24 @@ static int narra_proc_pipe(int* fds) {
   return 0;
 }
 
+static volatile sig_atomic_t narra_proc_child = 0;
+
+static void narra_proc_forward(int signal_number) {
+  pid_t child = (pid_t)narra_proc_child;
+  if (child > 0) kill(child, signal_number);
+}
+
+static const int narra_proc_forwarded[3] = {SIGTERM, SIGINT, SIGHUP};
+
+// Clears the child slot with the signals still blocked, restores the old
+// handlers, then restores the old mask, so no signal reaches a reaped pid.
+static void narra_proc_detach(const sigset_t* forwarded_set, const sigset_t* saved_mask, struct sigaction* saved_actions) {
+  sigprocmask(SIG_BLOCK, forwarded_set, NULL);
+  narra_proc_child = 0;
+  for (int i = 0; i < 3; i++) sigaction(narra_proc_forwarded[i], &saved_actions[i], NULL);
+  sigprocmask(SIG_SETMASK, saved_mask, NULL);
+}
+
 // Runs cmd (found through PATH) with argv[0..argc) as its arguments and its
 // standard input closed. Returns false with *err set when the process cannot
 // start. The exit code of a process killed by a signal is 128 plus the signal.
@@ -144,15 +162,38 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
     return false;
   }
   fflush(NULL);
+  // Termination signals that arrive while the child runs are passed on to it,
+  // so killing the parent does not orphan the child. The child stays in the
+  // foreground process group, so Ctrl-C in a terminal still reaches it. The
+  // signals are blocked from before the fork until the child pid is recorded.
+  sigset_t forwarded_set, saved_mask;
+  sigemptyset(&forwarded_set);
+  for (int i = 0; i < 3; i++) sigaddset(&forwarded_set, narra_proc_forwarded[i]);
+  sigprocmask(SIG_BLOCK, &forwarded_set, &saved_mask);
+  struct sigaction forward_action, saved_actions[3];
+  memset(&forward_action, 0, sizeof forward_action);
+  forward_action.sa_handler = narra_proc_forward;
+  sigemptyset(&forward_action.sa_mask);
+  for (int i = 0; i < 3; i++) {
+    // A signal that was ignored on entry (a background job, nohup) stays ignored.
+    sigaction(narra_proc_forwarded[i], NULL, &saved_actions[i]);
+    if (saved_actions[i].sa_handler != SIG_IGN) sigaction(narra_proc_forwarded[i], &forward_action, NULL);
+  }
   pid_t pid = fork();
+  int fork_errno = errno;
+  if (pid > 0) narra_proc_child = (sig_atomic_t)pid;
+  if (pid != 0) sigprocmask(SIG_SETMASK, &saved_mask, NULL);
   if (pid < 0) {
-    *err = narra_io_fail(cmd->data, cmd->len, strerror(errno));
+    narra_proc_detach(&forwarded_set, &saved_mask, saved_actions);
+    *err = narra_io_fail(cmd->data, cmd->len, strerror(fork_errno));
     narra_proc_close(po); narra_proc_close(pe); narra_proc_close(px);
     free(vec);
     return false;
   }
   if (pid == 0) {
     int e;
+    for (int i = 0; i < 3; i++) sigaction(narra_proc_forwarded[i], &saved_actions[i], NULL);
+    sigprocmask(SIG_SETMASK, &saved_mask, NULL);
     int in = open("/dev/null", O_RDONLY);
     if (in < 0) goto child_fail;
     if (in != 0) {
@@ -179,6 +220,7 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   if (got == (ssize_t)sizeof child_errno) {
     close(po[0]); close(pe[0]);
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    narra_proc_detach(&forwarded_set, &saved_mask, saved_actions);
     *err = narra_io_fail(cmd->data, cmd->len, strerror(child_errno));
     return false;
   }
@@ -202,6 +244,7 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   if (fds[0].fd >= 0) close(fds[0].fd);
   if (fds[1].fd >= 0) close(fds[1].fd);
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  narra_proc_detach(&forwarded_set, &saved_mask, saved_actions);
   *code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
   *out = narra_io_lossy(bo.p ? bo.p : "", bo.len);
   *errout = narra_io_lossy(be.p ? be.p : "", be.len);

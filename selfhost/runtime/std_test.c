@@ -17,10 +17,65 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+// While a child runs, SIGTERM, SIGINT and SIGHUP are passed on to it, so
+// killing this process does not orphan the child. The signals are blocked from
+// before the fork until the child pid is stored.
+static volatile sig_atomic_t narra_panics_child = 0;
+static volatile sig_atomic_t narra_panics_caught = 0;
+static const int narra_panics_signals[3] = {SIGTERM, SIGINT, SIGHUP};
+
+typedef struct narra_panics_guard {
+  sigset_t mask;
+  struct sigaction actions[3];
+} narra_panics_guard;
+
+static void narra_panics_forward(int signal_number) {
+  narra_panics_caught = signal_number;
+  pid_t child = (pid_t)narra_panics_child;
+  if (child > 0) kill(child, signal_number);
+}
+
+static void narra_panics_begin(narra_panics_guard* guard) {
+  sigset_t set;
+  sigemptyset(&set);
+  for (int i = 0; i < 3; i++) sigaddset(&set, narra_panics_signals[i]);
+  sigprocmask(SIG_BLOCK, &set, &guard->mask);
+  struct sigaction action;
+  memset(&action, 0, sizeof action);
+  action.sa_handler = narra_panics_forward;
+  sigemptyset(&action.sa_mask);
+  for (int i = 0; i < 3; i++) {
+    // A signal that was ignored on entry (a background job, nohup) stays ignored.
+    sigaction(narra_panics_signals[i], NULL, &guard->actions[i]);
+    if (guard->actions[i].sa_handler != SIG_IGN) sigaction(narra_panics_signals[i], &action, NULL);
+  }
+}
+
+static void narra_panics_restore_child(narra_panics_guard* guard) {
+  for (int i = 0; i < 3; i++) sigaction(narra_panics_signals[i], &guard->actions[i], NULL);
+  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
+static void narra_panics_attach(narra_panics_guard* guard, pid_t pid) {
+  narra_panics_child = (sig_atomic_t)pid;
+  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
+static void narra_panics_detach(narra_panics_guard* guard) {
+  sigset_t set;
+  sigemptyset(&set);
+  for (int i = 0; i < 3; i++) sigaddset(&set, narra_panics_signals[i]);
+  sigprocmask(SIG_BLOCK, &set, NULL);
+  narra_panics_child = 0;
+  for (int i = 0; i < 3; i++) sigaction(narra_panics_signals[i], &guard->actions[i], NULL);
+  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
 typedef struct narra_test_proc {
   pid_t pid;
   int fd;
   unsigned timeout;
+  narra_panics_guard guard;
 } narra_test_proc;
 
 static unsigned narra_test_timeout(void) {
@@ -51,15 +106,21 @@ static bool narra_test_fork(narra_test_proc* t, const char* where) {
   fflush(stderr);
   t->timeout = narra_test_timeout();
   if (pipe(fds) != 0) narra_panic(where, "Test.panics: cannot create a pipe");
+  narra_panics_begin(&t->guard);
   pid_t pid = fork();
-  if (pid < 0) narra_panic(where, "Test.panics: cannot fork");
+  if (pid < 0) {
+    narra_panics_detach(&t->guard);
+    narra_panic(where, "Test.panics: cannot fork");
+  }
   if (pid == 0) {
+    narra_panics_restore_child(&t->guard);
     close(fds[0]);
     narra_panic_fd = fds[1];
     narra_panic_pos = 0;
     alarm(t->timeout);
     return true;
   }
+  narra_panics_attach(&t->guard, pid);
   close(fds[1]);
   t->pid = pid;
   t->fd = fds[0];
@@ -96,6 +157,12 @@ static void narra_test_expect(narra_test_proc* t, lstr* want, const char* where)
   int status = 0;
   while (waitpid(t->pid, &status, 0) < 0) {
     if (errno != EINTR) narra_panic(where, "Test.panics: cannot wait for the child process");
+  }
+  narra_panics_detach(&t->guard);
+  if (narra_panics_caught) {
+    free(msg);
+    fflush(stdout);
+    _exit(128 + narra_panics_caught);
   }
   char buf[160];
   const char* fail = NULL;

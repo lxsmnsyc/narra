@@ -78,6 +78,55 @@ no discount yet
 
 The same goes for a parameter: if a function has to take a value it does not need, write the parameter as `_scale` instead of `scale`. A `let` that is only assigned and never read counts as unused too. The `args` of `run` is the one name you may leave unused, because the signature of `run` is fixed. The rule reaches the top of a file as well: an import you never use and a function without `export` that nothing calls are errors too, and the same `_` prefix marks them as unused on purpose.
 
+### Conditions a caller must meet
+
+Some functions only make sense for some inputs. A `requires` line between the signature and the body states the condition, and the compiler makes every caller prove it:
+
+```narra
+import * as Int from "std/int"
+
+function splitEvenly(totalCents: int, people: int): int
+  requires people > 0
+{
+  return totalCents / people
+}
+
+export function run(args: Array<string>): int {
+  print(Int.toString(splitEvenly(1000, 4)))
+  const guests = 3
+  if (guests > 0) {
+    print(Int.toString(splitEvenly(900, guests)))
+  }
+  return 0
+}
+```
+
+```text
+250
+300
+```
+
+Inside the body, `people > 0` is known, so the division needs no check of its own. A caller proves the condition with a constant, or with a name it checked first, as `guests` is checked above. A call the compiler cannot prove is an error:
+
+```narra error
+// error: 9:29: this argument is not proven to meet `requires people > 0` of splitEvenly; pass a constant, or a name checked first with an `if`
+function splitEvenly(totalCents: int, people: int): int
+  requires people > 0
+{
+  return totalCents / people
+}
+
+function perPerson(total: int, people: int): int {
+  return splitEvenly(total, people)
+}
+
+export function run(args: Array<string>): int {
+  return perPerson(10, 2)
+}
+```
+
+A condition compares one integer parameter with a constant: `==`, `!=`, `<`, `<=`, `>` or `>=`, and several of them joined by `&&` or written on more `requires` lines. A function with `requires` cannot be passed around as a value, because a call through the value could not be checked.
+
 ## A function that calls itself
 
 The shop gives change in coins of 50, 25, 10 and 5 cents. In how many different ways can it pay out 100 cents?

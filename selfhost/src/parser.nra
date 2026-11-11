@@ -1310,6 +1310,7 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
 
 function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   const header = parseFuncHeader(mutable parser, exported)
+  const conditions = parseRequiresLines(mutable parser)
   const savedResult = parser.resultFunction
   parser.resultFunction = false
   if (header.result is Some(resultType)) {
@@ -1317,7 +1318,41 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   }
   const body = parseBlock(mutable parser)
   parser.resultFunction = savedResult
-  return FuncDecl { ...header, body: Some(body) }
+  return FuncDecl { ...header, requires: conditions, body: Some(body) }
+}
+
+function parseRequiresLines(mutable parser: Parser): Array<Expr> {
+  let conditions: Array<Expr> = []
+  while (isOk(parser) && isRequiresLine(parser)) {
+    skipNewlines(mutable parser)
+    const lineStart = parser.index
+    advance(mutable parser)
+    const condition = parseExpr(mutable parser)
+    // The line is a node of its own, so the comments above it stay above it.
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, `q${Int.toString(getExprId(condition))}`, lineStart)
+    }
+    Arrays.push(mutable conditions, condition)
+  }
+  // The body starts on the line after the last condition.
+  if (Arrays.length(conditions) > 0) {
+    skipNewlines(mutable parser)
+  }
+  return conditions
+}
+
+function isRequiresLine(parser: Parser): bool {
+  // `requires` is not a keyword; it counts only at the start of a line after the
+  // signature. A signature that ends in `>` is followed by no line break token.
+  let offset = 0
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset++
+  }
+  const token = peekToken(parser, offset)
+  if (token.kind != TokenKind.TokIdent || token.text != "requires" || parser.index < 1) {
+    return false
+  }
+  return offset > 0 || token.line > parser.tokens[parser.index - 1].endLine
 }
 
 function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {

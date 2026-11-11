@@ -596,7 +596,7 @@ export type Handler = typeof handle // (request: Request) => Response uses io
 ```
 
 - **Names only.** A field path or an expression after `typeof` is a parse error. A parameter can be named by the parameters after it in the same signature: `(request: Request, other: typeof request)`.
-- **A name that is not a value is E0982**: a type, a module, a generic function, a function with effect variables or a `mutable` parameter (none has a function type to write).
+- **A name that is not a value is E0982**: a type, a module, a generic function, a function with effect variables, a `mutable` parameter or `requires` lines (none has a function type to write).
 - **A `typeof` that refers to its own declaration is E0981**, for example `const count: typeof count = 1` or `function f(handler: typeof f)`.
 - **A constant without a written type** has the type of its value, which is known once the constant has been checked: `typeof` of it works in function bodies, but not in a declaration of the same module (a signature, a field, an alias), where it is E0982 and asks for the written type. A constant of another module is always checked first.
 - **Nothing reaches the emitted C**: the type is replaced by the type it stands for.
@@ -1607,16 +1607,29 @@ test "parse" {
 }
 ```
 
-- **Contracts.** `requires` and `ensures` lines between a function's signature and its body are checked in debug builds and removed in release builds. `ensures` refers to the return value as `result`.
+- **Contracts.** `requires` lines between a function's signature and its body state what each caller must prove (D95). They are proven at compile time; nothing is checked at run time.
 
 ```ts
-export function sqrt(x: f64): f64
-  requires x >= 0.0
-  ensures result >= 0.0
+export function pick(index: int, count: int): int
+  requires index >= 0 && index < 64
+  requires count != 0
 {
-  return Float.sqrt(x)
+  return index % count // count != 0 is known here
+}
+
+function pickChecked(n: int): int {
+  if (n >= 0 && n < 64) {
+    return pick(n, 8)     // a name the `if` checked proves the condition
+  }
+  return pick(3, 8)       // so do constants
 }
 ```
+
+- **A condition compares an integer parameter with an integer constant,** joined by `&&`: `==`, `!=`, `<`, `<=`, `>`, `>=`, with the parameter on either side. Constants are what division proofs accept (section 6): literals and top-level `const` values built from them. Any other condition is E0984: a float or other non-integer parameter, a field path, a call, `||`, or two parameters compared. Floats and field paths are a later extension.
+- **Each call proves every condition** from the argument for that parameter: an integer constant, or a name narrowed by a check (`if`, `while`, an early return), as for a divisor. A name with no check proves nothing, not even a bound at the end of the int range. The caller's own `requires` count, so `requires count > 0` lets the body pass `count` on to another function with `requires count != 0`. An unproven argument is E0985.
+- **In the body each condition is a known fact** about its parameter, until the parameter is assigned: a body with `requires divisor != 0` may divide by `divisor`.
+- **A function with `requires` cannot be used as a value** (E0986), and `typeof` of it is E0982: a function type carries no condition, so a call through the value could pass an unproven argument. Functions of an `implement` block cannot have `requires` (E0984), since a call through the trait proves nothing.
+- **`ensures`** is not built yet. D95 describes it: a pattern the result must match, such as `ensures >= 0`.
 
 ## 14. Tooling for agents
 

@@ -1,0 +1,482 @@
+// `requires` lines, proven at compile time. A condition compares an integer
+// parameter with an integer constant, joined by `&&`. The function body starts
+// with each condition as a fact about its parameter (operands.nra), and each
+// call records what it knows about its arguments; after every body those
+// facts must prove the callee's conditions. The conditions themselves are read
+// after each module's declarations, from names and constants alone.
+import { Expr, FuncDecl, Arg, File, Decl } from "narrac/ast"
+import { Type, isInteger } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  Walker,
+  Requirement,
+  ContractCall,
+  ContractArgument,
+  getRef,
+  getLocal,
+  findLocal,
+  reportError,
+  reportErrorIn,
+  getExpressionPos,
+} from "narrac/check"
+import { checkExpression, expectType } from "narrac/exprs"
+import { findModuleFunction } from "narrac/funcvalues"
+import {
+  Fact,
+  findTypedConstant,
+  parseLiteral,
+  wrapConstant,
+  findOperandFact,
+  flipComparison,
+  isComparisonOperator,
+  isComparisonProven,
+  refineFact,
+} from "narrac/operands"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const MAXIMUM_CONSTANT_DEPTH = 8
+
+export function collectModuleRequirements(mutable checker: Checker, file: File) uses alloc {
+  // Read before any body, from names and constants alone, so a call can be proven
+  // against a function whose body was not checked in this run.
+  const scope = checker.current
+  for (const declaration of Arrays.values(file.declarations)) {
+    if (declaration is Decl.Func(funcDecl)) {
+      if (Arrays.length(funcDecl.requires) > 0) {
+        const funcIndex = findModuleFunction(checker, scope, funcDecl)
+        if (funcIndex >= 0) {
+          let requirements: Array<Requirement> = []
+          for (const condition of Arrays.values(funcDecl.requires)) {
+            collectRequirements(
+              mutable checker,
+              scope,
+              funcDecl,
+              condition,
+              mutable requirements,
+              false,
+            )
+          }
+          checker.requirements[funcIndex] = requirements
+        }
+      }
+    }
+  }
+}
+
+export function checkRequires<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+  isInstance: bool,
+) uses alloc {
+  if (Arrays.length(funcDecl.requires) == 0) {
+    return
+  }
+  // A function of an implement block is called through its trait, which carries no condition.
+  if (funcIndex < 0) {
+    if (!isInstance) {
+      reportError(
+        mutable checker,
+        getExpressionPos(funcDecl.requires[0]),
+        "E0984",
+        "requires is not allowed on a function of an implement block; a call through the trait cannot prove it",
+      )
+    }
+    return
+  }
+
+  // The declaration's own check type-checks the conditions and reports the unsupported ones.
+  if (!isInstance) {
+    const scope = checker.current
+    for (const condition of Arrays.values(funcDecl.requires)) {
+      const errorsBefore = Arrays.length(checker.errors)
+      const conditionType = checkExpression(mutable checker, walker, condition, Some(Type.TBool))
+      expectType(mutable checker, getExpressionPos(condition), Some(Type.TBool), conditionType)
+      if (Arrays.length(checker.errors) == errorsBefore) {
+        let reported: Array<Requirement> = []
+        collectRequirements(mutable checker, scope, funcDecl, condition, mutable reported, true)
+      }
+    }
+  }
+
+  // Each condition is a fact about its parameter at the start of the body.
+  if (checker.requirements[funcIndex] is Some(known)) {
+    for (const requirement of Arrays.values(known)) {
+      const local = findLocal(checker, funcDecl.parameters[requirement.parameter].name)
+      if (local >= 0) {
+        refineFact(mutable checker, local, requirement.comparison, requirement.bound)
+      }
+    }
+  }
+}
+
+function collectRequirements(
+  mutable checker: Checker,
+  scope: int,
+  funcDecl: FuncDecl,
+  condition: Expr,
+  mutable requirements: Array<Requirement>,
+  report: bool,
+) uses alloc {
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (operator == "&&") {
+      collectRequirements(mutable checker, scope, funcDecl, left, mutable requirements, report)
+      collectRequirements(mutable checker, scope, funcDecl, right, mutable requirements, report)
+      return
+    }
+    if (isComparisonOperator(operator)) {
+      if (findRequirement(checker, scope, funcDecl, operator, left, right) is Some(requirement)) {
+        Arrays.push(mutable requirements, requirement)
+        return
+      }
+    }
+  }
+  if (report) {
+    let detail = describeUnsupported(checker, condition)
+    if (condition is Expr.BinaryExpr(_, _, _, left, right)) {
+      if (isWrappedBound(checker, scope, funcDecl, left, right)) {
+        detail = "the bound does not fit the parameter's type"
+      }
+    }
+    reportError(
+      mutable checker,
+      getExpressionPos(condition),
+      "E0984",
+      `requires compares an integer parameter with an integer constant, joined by &&; ${detail}`,
+    )
+  }
+}
+
+function findRequirement(
+  checker: Checker,
+  scope: int,
+  funcDecl: FuncDecl,
+  operator: string,
+  left: Expr,
+  right: Expr,
+): Option<Requirement> uses alloc {
+  // The parameter may be on either side: `0 < count` is `count > 0`.
+  let parameter = findParameterIndex(funcDecl, left)
+  let constantSide = right
+  let comparison = operator
+  if (parameter < 0) {
+    parameter = findParameterIndex(funcDecl, right)
+    constantSide = left
+    comparison = flipComparison(operator)
+  }
+  if (parameter < 0 || findParameterIndex(funcDecl, constantSide) >= 0) {
+    return None
+  }
+  const type = checker.paramTypes[funcDecl.parameters[parameter].id]
+  if (!isInteger(type)) {
+    return None
+  }
+  const parameterNames = collectParameterNames(funcDecl)
+  if (foldConstant(checker, scope, parameterNames, constantSide, 0) is Some(value)) {
+    // A bound that does not fit the parameter's type would change the condition; a u64
+    // bound from 2^63 up is negative as an int, and the facts cannot order it.
+    const bound = wrapConstant(value, type)
+    if (bound != value || (type == Type.TU64 && bound < 0)) {
+      return None
+    }
+    return Some(Requirement {
+      parameter: parameter,
+      comparison: comparison,
+      bound: bound,
+      boundText: describeBound(constantSide, bound),
+    })
+  }
+  return None
+}
+
+function hasName(names: Array<string>, name: string): bool {
+  for (const candidate of Arrays.values(names)) {
+    if (candidate == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function collectParameterNames(funcDecl: FuncDecl): Array<string> uses alloc {
+  let names: Array<string> = []
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    Arrays.push(mutable names, parameter.name)
+  }
+  return names
+}
+
+function isWrappedBound(
+  checker: Checker,
+  scope: int,
+  funcDecl: FuncDecl,
+  left: Expr,
+  right: Expr,
+): bool uses alloc {
+  // A parameter compared with a constant that its type cannot hold.
+  let parameter = findParameterIndex(funcDecl, left)
+  let constantSide = right
+  if (parameter < 0) {
+    parameter = findParameterIndex(funcDecl, right)
+    constantSide = left
+  }
+  if (parameter < 0) {
+    return false
+  }
+  const type = checker.paramTypes[funcDecl.parameters[parameter].id]
+  const parameterNames = collectParameterNames(funcDecl)
+  if (isInteger(type)) {
+    if (foldConstant(checker, scope, parameterNames, constantSide, 0) is Some(value)) {
+      return wrapConstant(value, type) != value
+    }
+  }
+  return false
+}
+
+function findParameterIndex(funcDecl: FuncDecl, expression: Expr): int {
+  if (expression is Expr.Ident(_, _, name)) {
+    for (const index of Ranges.between(0, Arrays.length(funcDecl.parameters))) {
+      if (funcDecl.parameters[index].name == name) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+function foldConstant(
+  checker: Checker,
+  scope: int,
+  parameterNames: Array<string>,
+  expression: Expr,
+  depth: int,
+): Option<int> uses alloc {
+  // The constants division proofs accept: literals, `-`, `+`, `*`, `<<` and top-level
+  // constants. A name that is a parameter is the parameter, not a constant of the module.
+  if (depth > MAXIMUM_CONSTANT_DEPTH) {
+    return None
+  }
+  if (expression is Expr.IntLit(_, _, text)) {
+    return parseLiteral(text)
+  }
+  if (expression is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "-") {
+      if (foldConstant(checker, scope, parameterNames, operand, depth + 1) is Some(value)) {
+        return Some(0 - value)
+      }
+    }
+    return None
+  }
+  if (expression is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (foldConstant(checker, scope, parameterNames, left, depth + 1) is Some(leftValue)) {
+      if (foldConstant(checker, scope, parameterNames, right, depth + 1) is Some(rightValue)) {
+        return combineConstants(operator, leftValue, rightValue)
+      }
+    }
+    return None
+  }
+  if (expression is Expr.Ident(_, _, name)) {
+    if (hasName(parameterNames, name)) {
+      return None
+    }
+    if (checker.scopes[scope].consts[name] is Some(constIndex)) {
+      return foldNamedConstant(checker, constIndex, depth)
+    }
+    return None
+  }
+  if (expression is Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name)) {
+    // `Limits.MAX`: an exported constant of an imported module.
+    if (hasName(parameterNames, alias)) {
+      return None
+    }
+    if (checker.scopes[scope].modules[alias] is Some(path)) {
+      if (checker.scopeIndex[path] is Some(moduleScope)) {
+        if (checker.scopes[moduleScope].consts[name] is Some(constIndex)) {
+          const info = checker.consts[constIndex]
+          if (info.scope == moduleScope && info.declaration.exported) {
+            return foldNamedConstant(checker, constIndex, depth)
+          }
+        }
+      }
+    }
+  }
+  return None
+}
+
+function foldNamedConstant(checker: Checker, constIndex: int, depth: int): Option<int> uses alloc {
+  const info = checker.consts[constIndex]
+  return foldConstant(checker, info.scope, [], info.declaration.value, depth + 1)
+}
+
+function combineConstants(operator: string, leftValue: int, rightValue: int): Option<int> {
+  if (operator == "+") {
+    return Some(leftValue + rightValue)
+  }
+  if (operator == "-") {
+    return Some(leftValue - rightValue)
+  }
+  if (operator == "*") {
+    return Some(leftValue * rightValue)
+  }
+  if (operator == "<<" && rightValue >= 0 && rightValue < 63) {
+    return Some(leftValue << rightValue)
+  }
+  return None
+}
+
+function describeBound(expression: Expr, bound: int): string uses alloc {
+  if (expression is Expr.Ident(_, _, name)) {
+    return name
+  }
+  if (expression is Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name)) {
+    return `${alias}.${name}`
+  }
+  return Int.toString(bound)
+}
+
+function describeUnsupported(checker: Checker, condition: Expr): string uses alloc {
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (operator == "||") {
+      return "`||` is not supported"
+    }
+    if (isComparisonOperator(operator)) {
+      return describeOperands(checker, left, right)
+    }
+  }
+  return "write a comparison such as `count >= 0`"
+}
+
+function describeOperands(checker: Checker, left: Expr, right: Expr): string uses alloc {
+  // Name the first operand that cannot take part.
+  for (const operand of [left, right]) {
+    if (operand is Expr.CallExpr(_, _, _, _, _)) {
+      return "a call is not supported"
+    }
+    if (operand is Expr.IndexExpr(_, _, _, _)) {
+      return "an index is not supported"
+    }
+    if (operand is Expr.FieldExpr(_, _, _, _)) {
+      if (findTypedConstant(checker, operand, Type.TInt) is None) {
+        return "a field path is not supported"
+      }
+    }
+    if (operand is Expr.Ident(nodeId, _, _)) {
+      if (getRef(checker, nodeId) is Ref.Local(local)) {
+        if (!isInteger(getLocal(checker, local).localType)) {
+          return "only integer parameters are supported; floats and other types are not yet"
+        }
+      }
+    }
+  }
+  return "compare one integer parameter with a constant, as in `count >= 0`"
+}
+
+export function recordContractCall(
+  mutable checker: Checker,
+  funcIndex: int,
+  arguments: Array<Arg>,
+) uses alloc {
+  // An instance of a generic function repeats the calls its declaration recorded.
+  if (Arrays.length(checker.functions[funcIndex].declaration.requires) == 0 || checker.body < 0) {
+    return
+  }
+  if (Arrays.length(checker.bodies[checker.body].typeArguments) > 0) {
+    return
+  }
+  const parameters = checker.functions[funcIndex].declaration.parameters
+  let facts: Array<ContractArgument> = []
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    if (index < Arrays.length(parameters)) {
+      const value = arguments[index].value
+      const type = checker.paramTypes[parameters[index].id]
+      const fact = findOperandFact(checker, value, type)
+      // A constant gets a message that names its value.
+      let constant = false
+      let constantValue = 0
+      if (isInteger(type)) {
+        if (findTypedConstant(checker, value, type) is Some(found)) {
+          constant = type != Type.TU64 || found >= 0
+          constantValue = found
+        }
+      }
+      Arrays.push(mutable facts, ContractArgument {
+        pos: getExpressionPos(value),
+        low: fact.low,
+        high: fact.high,
+        nonzero: fact.nonzero,
+        constant: constant,
+        value: constantValue,
+      })
+    }
+  }
+  const file = checker.scopes[checker.current].file
+  Arrays.push(mutable checker.contractCalls, ContractCall {
+    file: file,
+    funcIndex: funcIndex,
+    arguments: facts,
+  })
+}
+
+export function checkContractCalls(mutable checker: Checker) uses alloc {
+  // Every body is checked, so every call is in the list.
+  const calls = copy(checker.contractCalls)
+  for (const call of Arrays.values(calls)) {
+    if (checker.requirements[call.funcIndex] is Some(found)) {
+      const requirements = copy(found)
+      for (const parameter of Ranges.between(0, Arrays.length(call.arguments))) {
+        proveArgument(mutable checker, call, parameter, requirements)
+      }
+    }
+  }
+}
+
+function proveArgument(
+  mutable checker: Checker,
+  call: ContractCall,
+  parameter: int,
+  requirements: Array<Requirement>,
+) uses alloc {
+  // One error per argument, naming each condition it does not meet.
+  const argument = call.arguments[parameter]
+  const fact = Fact { low: argument.low, high: argument.high, nonzero: argument.nonzero }
+  const info = checker.functions[call.funcIndex]
+  const parameterName = info.declaration.parameters[parameter].name
+  let failed: Array<string> = []
+  for (const requirement of Arrays.values(requirements)) {
+    if (
+      requirement.parameter == parameter &&
+        !isComparisonProven(fact, requirement.comparison, requirement.bound)
+    ) {
+      Arrays.push(
+        mutable failed,
+        `${parameterName} ${requirement.comparison} ${requirement.boundText}`,
+      )
+    }
+  }
+  if (Arrays.length(failed) == 0) {
+    return
+  }
+  const condition = Str.join(failed, " && ")
+  if (argument.constant) {
+    reportErrorIn(
+      mutable checker,
+      call.file,
+      argument.pos,
+      "E0985",
+      `${Int.toString(argument.value)} does not satisfy \`requires ${condition}\` of ${info.name}`,
+    )
+    return
+  }
+  reportErrorIn(
+    mutable checker,
+    call.file,
+    argument.pos,
+    "E0985",
+    `this argument is not proven to meet \`requires ${condition}\` of ${info.name}; pass a constant, or a name checked first with an \`if\``,
+  )
+}

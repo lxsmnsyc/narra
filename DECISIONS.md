@@ -1030,6 +1030,16 @@ Decision (maintainer, 2026-11-09). Each part replaces the matching SPEC.md text 
 - **Dynamic traits.** `Dynamic<Trait>` and `Dynamic.of(value)`; calls name the trait (`Drawable.draw(item, mutable canvas)`). Only traits whose functions take `Self` first and never return `Self`. No `==` on a `Dynamic`, one trait only, no downcast in the first version (`Dynamic.as<T>(d): Option<T>` would be sound, since it compares the stored type, but encourages type switches).
 - **Reason.** Each design keeps the syntax TypeScript-like, adds no hidden calls (D12) and no panics outside `unsafe` and array indexing (D92).
 
+Built: `requires` (node contracts, 2026-11-11). Amendments from the build:
+
+- **Conditions are integer comparisons.** A condition compares one integer parameter with an integer constant (the constants the D92 division proofs accept), joined by `&&`, because the prover keeps facts only for integer names. A float parameter, a field path, a call, `||` or two parameters compared is E0984. Floats and fields are a later extension.
+- **Calls prove each condition from the argument**: a constant, or a name with a narrowed fact, including the caller's own `requires`. An unproven argument is E0985. In the body the conditions are facts about the parameters, so `requires d != 0` lets the body divide by `d`.
+- **No function values.** A function with `requires` cannot be used as a value (E0986) and `typeof` of it is E0982 (maintainer, 2026-11-11): a function type carries no condition, so a call through the value could pass an unproven argument, while the body relies on it with no runtime check left. Carrying conditions in function types is a later design. `ensures` has no such problem: dropping a known fact about a result is safe.
+- **No `requires` on functions of an `implement` block** (E0984): they are called through the trait.
+- **The ends of the int range are not facts.** A name with no check proves no bound, even `value >= -9223372036854775807`. A u64 constant from 2^63 up (a literal such as `18446744073709551615`, also as a divisor) counts as above every bound.
+
+`ensures` and the other parts are not built yet.
+
 Build conditions are built (batch-7, node build-conditions), except `@target` and `--all-targets` (node build-targets). The host is the target: `Build.os` and `Build.arch` come from `/usr/bin/uname -s -m`, read once per compiler process and only for a package that imports `std/build`, through one target table (`selfhost/src/buildtarget.nra`); `NARRA_HOST_TARGET=<os>-<arch>` overrides it (fix of the fresh review: a `uname` searched on `PATH` could hang or vary), and `Build.debug` is false under `-release`. The effects of every branch count toward the function's effects, the dropped branches included, so a function has the same signature on every target (orchestrator, 2026-11-11). Besides `==`, `!=`, `!`, `&&` and `||`, an `is` test of a variant without fields folds too, since it tests only the constants. A host with no row in the table is E0989 at the import of `std/build`. The other parts are not built yet.
 
 ## D96. `typeof` in type positions

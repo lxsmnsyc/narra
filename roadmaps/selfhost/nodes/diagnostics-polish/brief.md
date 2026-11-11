@@ -1,7 +1,7 @@
 ---
 id: diagnostics-polish
 title: "Diagnostics: typeof cycles, E0982, a narrowing cascade, long lines"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 395000
 owns:
   - roadmaps/selfhost/nodes/diagnostics-polish/**
 shared:

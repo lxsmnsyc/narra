@@ -29,7 +29,7 @@ shared:
   - selfhost/src/effects.nra
   - testdata/**
   - SPEC.md
-reserves: []
+reserves: [diag E1003, diag E1004]
 provides: []
 depends_on: []
 ---

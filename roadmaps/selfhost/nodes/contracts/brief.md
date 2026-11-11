@@ -1,7 +1,7 @@
 ---
 id: contracts
 title: "Contracts: requires, proven at compile time"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 492846
 owns:
   - roadmaps/selfhost/nodes/contracts/**
 shared:

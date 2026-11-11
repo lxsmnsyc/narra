@@ -1,7 +1,7 @@
 ---
 id: contracts-ensures
 title: "Contracts: ensures as an output pattern"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-7

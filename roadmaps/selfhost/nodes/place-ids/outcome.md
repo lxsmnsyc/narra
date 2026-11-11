@@ -63,3 +63,5 @@ All in `selfhost/src/sharedwrites.nra`; no other source file changed.
 - Estimated M, actual L: the id change alone gave -0.14G; reaching -0.35G needed nine more steps, and the shared scratchpad cost several wrong measurements.
 
 - Review fix (orchestrator, after the worker stopped): the text of a constant is no longer cached per constant root (`constantTexts`), so two import aliases of one constant keep their own names in E0978 messages. Sample: `testdata/packages/errors/shared_write_aliased_constant`.
+
+Landed on feat/batch-7 as 82bf110c.

@@ -1,7 +1,7 @@
 ---
 id: guide-multifile-samples
 title: "The guide test compiles multi-file package samples"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-9

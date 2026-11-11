@@ -14,6 +14,7 @@
 import { filledArray } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
+import * as Math from "std/math"
 import {
   Pos,
   FuncDecl,
@@ -51,6 +52,7 @@ import {
   plainTypeKey,
   isBoxedEnum,
   isInteger,
+  findFixedLength,
 } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
 import {
@@ -1003,6 +1005,10 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     ) => `${generatorName(checker, element, input)}${usesSuffix(generatorEffectList(checker, type))}`
     Type.TModule(path) => `module ${path}`
     Type.TConst(value) => Int.toString(value)
+    Type.TFixedArray(
+      element,
+      length,
+    ) => `FixedArray<${typeString(checker, element)}, ${typeString(checker, length)}>`
   }
 }
 
@@ -1159,6 +1165,8 @@ export function containsTypeParameter(checker: Checker, type: Type): bool {
       checker,
       element,
     )
+    Type.TFixedArray(element, length) =>
+      containsTypeParameter(checker, element) || containsTypeParameter(checker, length)
     Type.TGenerator(element, _, _, _, input) =>
       containsTypeParameter(checker, element) || containsTypeParameter(checker, input)
     Type.TMap(key, value) =>
@@ -1211,6 +1219,12 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
       Arrays.push(mutable all, type)
     }
   }
+  // A FixedArray is a C struct of its own, defined after its element type.
+  for (const #[_, composite] of Maps.entries(checker.composites)) {
+    if (composite is Type.TFixedArray(_, _) && !containsTypeParameter(checker, composite)) {
+      Arrays.push(mutable all, composite)
+    }
+  }
   // Layouts first: the order depends on which enums keep a heap payload.
   let memo = LayoutMemo { heapEnums: Map {}, sizes: Map {} }
   let heapEnums: Array<bool> = []
@@ -1248,6 +1262,7 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
   }
   checker.structLayouts = structLayouts
   checker.enumLayouts = enumLayouts
+  reportLargeFixedArrays(mutable checker)
 }
 
 // The size and alignment in bytes of a value in the emitted C.
@@ -1272,8 +1287,67 @@ export function isPassedByPointer(checker: Checker, type: Type): bool uses alloc
     }
     return false
   }
+  if (type is Type.TFixedArray(_, _)) {
+    let layouts: Map<int, CLayout> = Map {}
+    return layoutValue(checker, type, mutable layouts).size > POINTER_PARAMETER_LIMIT
+  }
   // A range is three ints.
   return type == Type.TRange
+}
+
+// The most bytes one FixedArray value may take, so a local stays well inside a thread's
+// stack and C accepts the array.
+export const FIXED_ARRAY_SIZE_LIMIT = 1048576
+// Sizes stop growing here, far above the limit, so they never overflow an int.
+const SATURATED_SIZE = 1099511627776
+
+function multiplySaturated(size: int, count: int): int {
+  if (size > 0 && count > SATURATED_SIZE / size) {
+    return SATURATED_SIZE
+  }
+  return Math.min(size * count, SATURATED_SIZE)
+}
+
+export function findFixedArraySize(checker: Checker, type: Type): int uses alloc {
+  // The bytes of a FixedArray value, stopped at a size far above the limit.
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutValue(checker, type, mutable layouts).size
+}
+
+function reportLargeFixedArrays(mutable checker: Checker) uses alloc {
+  // Generic instances and struct fields that name a later struct are measured only here,
+  // once every layout is known; each is reported at the struct that holds it.
+  let reported: Map<string, bool> = Map {}
+  for (const type of Arrays.values(copy(checker.order))) {
+    if (
+      !(type is Type.TFixedArray(_, _)) ||
+        findFixedArraySize(checker, type) <= FIXED_ARRAY_SIZE_LIMIT
+    ) {
+      continue
+    }
+    const shown = typeString(checker, type)
+    let holder = type
+    for (const owner of Arrays.values(copy(checker.order))) {
+      if (owner is Type.TStruct(structIndex)) {
+        for (const field of Arrays.values(checker.structs[structIndex].fields)) {
+          if (field.fieldType == type) {
+            holder = copy(owner)
+          }
+        }
+      }
+    }
+    const key = typeKey(holder)
+    if (reported[key] is Some(_)) {
+      continue
+    }
+    reported[key] = true
+    reportTypeError(
+      mutable checker,
+      holder,
+      "E0995",
+      `${shown} takes more than ${Int.toString(FIXED_ARRAY_SIZE_LIMIT)} bytes, the limit for a FixedArray; use an Array`,
+    )
+  }
 }
 
 function readStructLayout(checker: Checker, index: int): CLayout uses alloc {
@@ -1314,6 +1388,14 @@ function layoutValue(
     Type.TStruct(index) => layoutStruct(checker, index, mutable layouts)
     Type.TEnum(index) => layoutEnum(checker, index, mutable layouts)
     Type.TDistinct(index) => layoutDistinct(checker, index, mutable layouts)
+    Type.TFixedArray(element, _) => {
+      // The items of a FixedArray are packed; an empty one keeps one item.
+      const itemLayout = layoutValue(checker, element, mutable layouts)
+      return CLayout {
+        size: multiplySaturated(itemLayout.size, Math.max(findFixedLength(type), 1)),
+        align: itemLayout.align,
+      }
+    }
     _ => CLayout { size: 8, align: 8 }
   }
 }
@@ -1429,6 +1511,7 @@ export function isCountedType(checker: Checker, type: Type): bool {
     Type.TStruct(index) => isCountedStruct(checker, index)
     Type.TEnum(index) => isCountedEnum(checker, index)
     Type.TDistinct(index) => isCountedDistinct(checker, index)
+    Type.TFixedArray(element, _) => isCountedType(checker, element)
     _ => false
   }
 }
@@ -1555,6 +1638,10 @@ function reachesEnum(
         return reachesEnum(checker, base, target, mutable visited)
       }
     }
+    // The items of a FixedArray are stored in place, like fields.
+    Type.TFixedArray(element, _) => {
+      return reachesEnum(checker, element, target, mutable visited)
+    }
     _ => {}
   }
   return false
@@ -1589,6 +1676,10 @@ function measureValue(checker: Checker, type: Type, mutable memo: LayoutMemo): i
     Type.TStruct(index) => measureStruct(checker, index, mutable memo)
     Type.TEnum(index) => measureEnum(checker, index, mutable memo)
     Type.TDistinct(index) => measureDistinct(checker, index, mutable memo)
+    Type.TFixedArray(element, _) => multiplySaturated(
+      roundUp(measureValue(checker, element, mutable memo)),
+      Math.max(findFixedLength(type), 1),
+    )
     _ => 8
   }
 }
@@ -1650,6 +1741,12 @@ function visitOrder(
           Arrays.push(mutable fields, field)
         }
       }
+    }
+    // The element type of a FixedArray is defined before it, as a field type is.
+    Type.TFixedArray(element, _) => {
+      fields = [
+        Field { name: "items", fieldType: element, default: None, pos: Pos { line: 0, column: 0 } },
+      ]
     }
     _ => {
       return
@@ -2021,6 +2118,7 @@ export function isContentsType(checker: Checker, type: Type): bool {
   return match (type) {
     Type.TStruct(index) => !checker.structs[index].tuple
     Type.TArray(_)
+      | Type.TFixedArray(_, _)
       | Type.TMap(_, _)
       | Type.TBox(_)
       | Type.TStringBuilder

@@ -1069,6 +1069,13 @@ Unsafe code (batch-8, node unsafe-ptr, 2026-11-11), C interop step 1 part 1. Ame
 - **`Ptr.alloc` and `Ptr.null` take `T` from the expected type**, like `Arrays.withCapacity`.
 - **Generators and traits cannot hide `unsafe`** (fresh review). A `for` loop or `yield*` over a generator whose body has `unsafe` is E0996 outside a block. An implementation may use `unsafe` only when its trait function declares it (E0800), since a call through a bound sees only the trait's effects; `@trusted` is allowed on implement block members to wrap unsafe code. The same subset rule for `alloc` and `io` is not enforced: implementations of pure trait functions allocate in existing samples and the guide.
 
+Fixed arrays (batch-8, node fixed-arrays, 2026-11-11). Amendments from the build:
+
+- **An index is proven at both ends.** `if (i < 4)` alone proves nothing, because `i` may be negative; the check is `i >= 0 && i < 4`. A C-style for loop proves its counter: `for (let i = 0; i < N; i++)` gives `i >= 0` when nothing in the loop assigns `i` and the condition bounds `i` with `<` (or with a constant bound the step cannot pass), so the step never wraps to a negative value. `Ranges.upTo(n)` and `Ranges.between(a, b)` give their bounds from what is known about `n`, `a` and `b`. Only a plain `int` name carries a proof; `values[i + 1]` is E0994.
+- **The length is never negative** (E0995), and an empty `FixedArray<T, 0>` has no valid index. One value takes at most 1 MiB (E0995): a larger local can overflow a default thread stack, and C rejects arrays past a size of its own (fresh review, 2026-11-11).
+- **Literals give every element**, and only an expected `FixedArray` type makes one; a literal argument does not tell a generic call its length (write `sum<2>(...)`), and a generic body with an open `N` cannot build one.
+- **`FixedArrays.get` and `FixedArrays.length`** live in `std/fixedarray`, written in Narra; `get` proves its own index per instance.
+
 ## D96. `typeof` in type positions
 
 Decision (maintainer, 2026-11-09): `typeof name` in a type annotation stands for the declared or inferred type of a value in scope: a `const`, `let`, parameter, top-level constant or function. For a function it is the full function type, with effects (D86) and `from` (D94).

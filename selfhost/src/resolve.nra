@@ -31,10 +31,17 @@ import {
   CONST_BUSY,
   WrittenFunctionType,
   checkMutableType,
+  typeString,
+  findFixedArraySize,
+  FIXED_ARRAY_SIZE_LIMIT,
 } from "narrac/check"
 import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
-import { rejectConstantType, resolveConstantArgument } from "narrac/constgenerics"
+import {
+  rejectConstantType,
+  resolveConstantArgument,
+  findConstantParameter,
+} from "narrac/constgenerics"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -553,6 +560,34 @@ export function resolveType(
     const element = resolveType(mutable checker, typeExpr.arguments[1])
     return makeGenerator(checker, element, input, typeExpr.effects)
   }
+  if (typeExpr.name == "FixedArray" && !userType(checker, "FixedArray")) {
+    if (argCount != 2) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0995",
+        "FixedArray takes an element type and a length, as in FixedArray<int, 4>",
+      )
+      return Type.TVoid
+    }
+    const element = resolveType(mutable checker, typeExpr.arguments[0])
+    const length = resolveFixedLength(mutable checker, typeExpr.arguments[1])
+    if (element == Type.TVoid || length == Type.TVoid) {
+      return Type.TVoid
+    }
+    const fixedType = Type.TFixedArray(element, length)
+    if (findFixedArraySize(checker, fixedType) > FIXED_ARRAY_SIZE_LIMIT) {
+      const shown = typeString(checker, fixedType)
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0995",
+        `${shown} takes more than ${Int.toString(FIXED_ARRAY_SIZE_LIMIT)} bytes, the limit for a FixedArray; use an Array`,
+      )
+      return Type.TVoid
+    }
+    return internComposite(mutable checker, fixedType)
+  }
   if (typeExpr.name == "Array") {
     if (argCount != 1) {
       reportError(mutable checker, typeExpr.pos, "E0112", "Array takes one type argument")
@@ -1048,6 +1083,99 @@ function fillInstance(mutable checker: Checker, generic: int, instance: Type) us
   Arrays.push(mutable checker.instanceTypes, instance)
 }
 
+function resolveFixedLength(
+  mutable checker: Checker,
+  argument: TypeExpr,
+): Type from checker uses alloc {
+  // The length is an integer literal or a constant parameter in scope, and never negative.
+  if (argument.isConstant) {
+    let digits = argument.name
+    let negative = false
+    if (Str.startsWith(digits, "-")) {
+      negative = true
+      digits = Str.sliceFrom(digits, 1)
+    }
+    if (parseLengthText(digits) is Some(value)) {
+      if (negative && value != 0) {
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E0995",
+          `the length of a FixedArray cannot be negative, found ${argument.name}`,
+        )
+        return Type.TVoid
+      }
+      if (value >= 0) {
+        return Type.TConst(value)
+      }
+    }
+    reportError(
+      mutable checker,
+      argument.pos,
+      "E0995",
+      `the length ${argument.name} of a FixedArray does not fit an int`,
+    )
+    return Type.TVoid
+  }
+  const isName =
+    Arrays.length(argument.arguments) == 0 &&
+      !argument.isFunc &&
+      !argument.isTuple &&
+      argument.typeofName == "" &&
+      argument.name != ""
+  if (isName) {
+    if (findConstantParameter(checker, argument.name) is Some(bound)) {
+      if (bound is Type.TConst(value)) {
+        if (value < 0) {
+          reportError(
+            mutable checker,
+            argument.pos,
+            "E0995",
+            `the length of a FixedArray cannot be negative, found ${argument.name} = ${Int.toString(value)}`,
+          )
+          return Type.TVoid
+        }
+      }
+      return bound
+    }
+  }
+  let found = "a type"
+  if (isName) {
+    found = `\`${argument.name}\``
+  }
+  reportError(
+    mutable checker,
+    argument.pos,
+    "E0995",
+    `the length of a FixedArray is an integer literal or a constant parameter, found ${found}`,
+  )
+  return Type.TVoid
+}
+
+function parseLengthText(text: string): Option<int> uses alloc {
+  // A literal as the lexer read it, without its sign: a base prefix, underscores and a
+  // leading zero for octal.
+  let digits = Str.replace(text, "_", "")
+  let base = 10
+  if (Str.startsWith(digits, "0x") || Str.startsWith(digits, "0X")) {
+    base = 16
+  } else if (Str.startsWith(digits, "0b") || Str.startsWith(digits, "0B")) {
+    base = 2
+  } else if (Str.startsWith(digits, "0o") || Str.startsWith(digits, "0O")) {
+    base = 8
+  }
+  if (base != 10) {
+    digits = Str.sliceFrom(digits, 2)
+  } else if (Str.length(digits) >= 2 && Str.startsWith(digits, "0")) {
+    base = 8
+    digits = Str.sliceFrom(digits, 1)
+  }
+  if (Int.parse(digits, base) is Ok(value)) {
+    return Some(value)
+  }
+  return None
+}
+
 export function substitute(
   mutable checker: Checker,
   type: Type,
@@ -1071,6 +1199,11 @@ export function substitute(
     Type.TPtr(element) => {
       const newElement = substitute(mutable checker, element, bindings)
       return internComposite(mutable checker, Type.TPtr(newElement))
+    }
+    Type.TFixedArray(element, length) => {
+      const newElement = substitute(mutable checker, element, bindings)
+      const newLength = substitute(mutable checker, length, bindings)
+      return internComposite(mutable checker, Type.TFixedArray(newElement, newLength))
     }
     Type.TGenerator(element, effects, binder, origin, input) => {
       if (!containsTypeParameter(checker, element) && !containsTypeParameter(checker, input)) {

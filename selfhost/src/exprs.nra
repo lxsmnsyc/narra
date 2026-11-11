@@ -112,6 +112,7 @@ import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { checkConstantName, describeUnknownParameter } from "narrac/constgenerics"
+import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
 
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
@@ -1444,6 +1445,12 @@ function checkIndex<W: Walker>(
   if (targetType is Type.TArray(element)) {
     return element
   }
+  if (targetType is Type.TFixedArray(fixedElement, _)) {
+    if (indexType == Type.TInt) {
+      checkFixedIndex(mutable checker, targetType, index)
+    }
+    return fixedElement
+  }
   const text = typeString(checker, targetType)
   reportError(mutable checker, pos, "E0210", `only arrays can be indexed, found ${text}`)
   return Type.TVoid
@@ -1752,6 +1759,8 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
       element,
       parameters,
     )
+    Type.TFixedArray(element, length) =>
+      containsOpen(checker, element, parameters) || containsOpen(checker, length, parameters)
     Type.TGenerator(element, _, _, _, input) =>
       containsOpen(checker, element, parameters) || containsOpen(checker, input, parameters)
     Type.TMap(key, value) =>
@@ -2011,6 +2020,17 @@ function checkArrayLiteral<W: Walker>(
 ): Type from want uses alloc {
   if (isTuple) {
     return Walker.checkTuple(walker, mutable checker, pos, elements, want)
+  }
+  // An expected FixedArray type makes the literal one, with every element given.
+  if (want is Some(Type.TFixedArray(fixedElement, _))) {
+    for (const element of Arrays.values(elements)) {
+      const found = checkExpression(mutable checker, walker, element, Some(fixedElement))
+      expectType(mutable checker, getExpressionPos(element), Some(fixedElement), found)
+    }
+    if (want is Some(fixedType)) {
+      reportLiteralLength(mutable checker, pos, fixedType, Arrays.length(elements))
+      return fixedType
+    }
   }
   // The expected type gives the element type, or else the first element.
   let elementType: Option<Type> = None

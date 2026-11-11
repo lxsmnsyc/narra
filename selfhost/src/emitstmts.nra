@@ -52,6 +52,7 @@ import * as Generators from "narrac/emitgenerators"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
 import * as Tail from "narrac/emittail"
+import * as Fixed from "narrac/emitfixed"
 import * as Arrays from "std/array"
 import * as Str from "std/string"
 
@@ -589,7 +590,10 @@ function emitFor<W: EmitWalker>(
       name == "Array.entries",
       true,
     )
-  } else if (readNodeType(emitter, getExpressionId(iterable)) is Type.TArray(_)) {
+  } else if (
+    readNodeType(emitter, getExpressionId(iterable)) is Type.TArray(_) ||
+      readNodeType(emitter, getExpressionId(iterable)) is Type.TFixedArray(_, _)
+  ) {
     emitArrayFor(walker, mutable emitter, nodeId, pos, label, iterable, body, false, false)
   } else if (readNodeType(emitter, getExpressionId(iterable)) is Type.TGenerator(_, _, _, _, _)) {
     Generators.emitGeneratorFor(walker, mutable emitter, nodeId, pos, label, iterable, body)
@@ -760,9 +764,13 @@ function emitArrayFor<W: EmitWalker>(
     }
   }
   const arrayType = copy(readNodeType(emitter, getExpressionId(source)))
-  if (arrayType is Type.TArray(_)) {
+  if (arrayType is Type.TArray(_) || arrayType is Type.TFixedArray(_, _)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, source)
-    const array = consume(mutable emitter, code.text, code.owned, arrayType)
+    // A FixedArray is copied here, so writes in the body leave the items the loop reads alone.
+    let array = consume(mutable emitter, code.text, code.owned, arrayType)
+    if (arrayType is Type.TFixedArray(_, _) && array == code.text && !code.owned) {
+      array = temp(mutable emitter, arrayType, code.text)
+    }
     // The loop owns the array until the statement ends.
     const top = Arrays.length(emitter.frames) - 1
     Arrays.push(mutable emitter.frames[top], TempVar { name: array, tempType: arrayType })
@@ -772,7 +780,7 @@ function emitArrayFor<W: EmitWalker>(
     const index = variableRef(emitter, indexName)
     writeLine(
       mutable emitter,
-      `for (${indexDeclaration} = 0; ${index} < ${array}->len; ${index}++) {`,
+      `for (${indexDeclaration} = 0; ${index} < ${Fixed.buildFixedLengthText(arrayType, array)}; ${index}++) {`,
     )
     emitter.indent++
     enterLoop(mutable emitter, label, pos)
@@ -792,7 +800,7 @@ function emitArrayFor<W: EmitWalker>(
       }
       declareLocal(mutable emitter, localIndex, tupleValue)
     } else {
-      declareLocal(mutable emitter, localIndex, `${array}->items[${index}]`)
+      declareLocal(mutable emitter, localIndex, Fixed.buildFixedItemText(arrayType, array, index))
     }
     // The item is borrowed from the array the loop holds: it is read-only, and
     // a write to the source array copies it first, so no retain or release.

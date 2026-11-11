@@ -72,6 +72,7 @@ import {
   checkDivisor,
   checkShiftCount,
 } from "narrac/operands"
+import { seedRangeFacts, seedCounterFact } from "narrac/fixedarrays"
 import * as Arrays from "std/array"
 import * as Str from "std/string"
 import * as Int from "std/int"
@@ -926,6 +927,12 @@ function checkCFor<W: Walker>(
     const stepLocal = findLocal(checker, name)
     endNarrowing(mutable checker, stepLocal)
   }
+  let assignedNames: Array<string> = []
+  if (condition is Some(testedCondition)) {
+    collectAssignedInExpr(testedCondition, mutable assignedNames)
+  }
+  collectAssignedInBlock(body, mutable assignedNames)
+  seedCounterFact(mutable checker, init, condition, step, assignedNames)
   if (condition is Some(loopCondition)) {
     const found = checkExpression(mutable checker, walker, loopCondition, Some(Type.TBool))
     if (found != Type.TBool) {
@@ -939,7 +946,14 @@ function checkCFor<W: Walker>(
     }
   }
   enterLoop(mutable checker, pos, label)
+  // The body runs only where the condition held. Names the body or the step assign
+  // lost their facts above, and an assignment in the body ends them again.
+  pushScope(mutable checker)
+  if (condition is Some(heldCondition)) {
+    narrowByCondition(mutable checker, heldCondition, true)
+  }
   checkBlock(mutable checker, walker, body)
+  popScope(mutable checker)
   leaveLoop(mutable checker, label)
   // The step runs after the body, so narrowing from the body does not hold.
   for (const name of Arrays.values(stepNames)) {
@@ -1021,6 +1035,8 @@ function checkFor<W: Walker>(
   } else if (iterableType is Type.TArray(arrayElement)) {
     // An array value, as with Array.values.
     element = arrayElement
+  } else if (iterableType is Type.TFixedArray(fixedElement, _)) {
+    element = fixedElement
   } else {
     const text = typeString(checker, iterableType)
     reportError(
@@ -1038,6 +1054,13 @@ function checkFor<W: Walker>(
   const bodyIndex = checker.body
   checker.bodies[bodyIndex].locals[local].binding = BindingKind.Loop
   seedLoopFacts(mutable checker, local, iterable)
+  if (iterable is Expr.CallExpr(_, _, _, _, rangeArguments)) {
+    let rangeValues: Array<Expr> = []
+    for (const argument of Arrays.values(rangeArguments)) {
+      Arrays.push(mutable rangeValues, argument.value)
+    }
+    seedRangeFacts(mutable checker, local, builtin, rangeValues)
+  }
   let source = iterable
   if (builtin == "Array.values" || builtin == "Array.entries") {
     if (iterable is Expr.CallExpr(_, _, _, _, sourceArguments)) {

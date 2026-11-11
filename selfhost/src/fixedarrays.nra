@@ -1,0 +1,289 @@
+// FixedArray<T, N>: N elements stored inline, like the fields of a struct.
+//
+// Indexing a FixedArray has no runtime check, so the checker proves every index.
+// A constant index is compared with N here. Any other index must be a plain
+// integer name whose facts (operands.nra: `if` and `while` conditions, the
+// condition of a C-style for loop, the range of a for ... of loop) put it in
+// [0, N - 1]. In a generic declaration N is open, so the proof waits for the
+// instances, where N is a constant.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import { Expr, Pos, Stmt } from "narrac/ast"
+import { Type, findFixedLength, typeKeys } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  getRef,
+  reportError,
+  getExpressionPos,
+  typeString,
+  getLocal,
+  findLocal,
+} from "narrac/check"
+import {
+  Fact,
+  findTypedConstant,
+  findOperandFact,
+  isComparisonProven,
+  isUnboundedEnd,
+  narrowFact,
+  flipComparison,
+} from "narrac/operands"
+
+export function checkFixedIndex(mutable checker: Checker, arrayType: Type, index: Expr) uses alloc {
+  // An open length is proven in each instance, where it is a constant.
+  const length = findFixedLength(arrayType)
+  if (length < 0) {
+    return
+  }
+  const shown = typeString(checker, arrayType)
+  const pos = getExpressionPos(index)
+  const highest = length - 1
+  // A constant, or a name whose facts pin it to one value, is compared with N directly.
+  let known: Option<int> = findTypedConstant(checker, index, Type.TInt)
+  if (known is None) {
+    const pinned = findOperandFact(checker, index, Type.TInt)
+    if (pinned.low == pinned.high && !isUnboundedEnd(pinned.low)) {
+      known = Some(pinned.low)
+    }
+  }
+  if (known is Some(value)) {
+    if (value < 0 || value > highest) {
+      const instance = describeInstance(checker)
+      reportError(
+        mutable checker,
+        pos,
+        "E0994",
+        `index ${Int.toString(value)} is out of range for ${shown}, whose indexes are ${describeRange(length)}${instance}`,
+      )
+    }
+    return
+  }
+  const fact = findOperandFact(checker, index, Type.TInt)
+  if (isComparisonProven(fact, ">=", 0) && isComparisonProven(fact, "<", length)) {
+    return
+  }
+  const hint = describeIndexHint(checker, index, fact, length)
+  const instance = describeInstance(checker)
+  reportError(
+    mutable checker,
+    pos,
+    "E0994",
+    `the index of ${shown} must be proven to be ${describeRange(length)}; ${hint}${instance}`,
+  )
+}
+
+function describeRange(length: int): string uses alloc {
+  if (length == 0) {
+    return "none, since it has no elements"
+  }
+  return `0 to ${Int.toString(length - 1)}`
+}
+
+function describeIndexHint(
+  checker: Checker,
+  index: Expr,
+  fact: Fact,
+  length: int,
+): string uses alloc {
+  const example = `if (i >= 0 && i < ${Int.toString(length)}) { ... }`
+  if (index is Expr.Ident(nodeId, _, name)) {
+    if (getRef(checker, nodeId) is Ref.Local(_)) {
+      let missing = "check it against both ends first"
+      if (isComparisonProven(fact, ">=", 0)) {
+        missing = `check it against ${Int.toString(length)} first`
+      } else if (isComparisonProven(fact, "<", length)) {
+        missing = "check that it is not negative first"
+      }
+      return `${missing}, as in \`if (${name} >= 0 && ${name} < ${Int.toString(length)}) { ... }\`, or read it with FixedArrays.get`
+    }
+  }
+  return `put the index in a local and check it first, as in \`${example}\`, or read it with FixedArrays.get`
+}
+
+function describeInstance(checker: Checker): string uses alloc {
+  // In a generic instance body: which instance, and the call that made it.
+  if (checker.body < 0 || checker.body >= Arrays.length(checker.bodies)) {
+    return ""
+  }
+  const body = checker.bodies[checker.body]
+  if (Arrays.length(body.typeArguments) == 0) {
+    return ""
+  }
+  let arguments: Array<string> = []
+  for (const argument of Arrays.values(body.typeArguments)) {
+    Arrays.push(mutable arguments, typeString(checker, argument))
+  }
+  let text = `; in ${body.name}<${Str.join(arguments, ", ")}>`
+  const key = `${Int.toString(checker.functionIndex)}|${typeKeys(body.typeArguments)}`
+  if (checker.instanceCalls[key] is Some(call)) {
+    text = `${text}, called at ${call}`
+  }
+  return text
+}
+
+export function reportLiteralLength(
+  mutable checker: Checker,
+  pos: Pos,
+  arrayType: Type,
+  count: int,
+) uses alloc {
+  // A literal gives every element, so its length is the FixedArray's length.
+  const length = findFixedLength(arrayType)
+  const shown = typeString(checker, arrayType)
+  if (length < 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0995",
+      `a literal cannot build ${shown}: its length is a constant parameter, which the generic declaration does not know`,
+    )
+    return
+  }
+  if (length != count) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0995",
+      `${shown} needs ${Int.toString(length)} elements, found ${Int.toString(count)}`,
+    )
+  }
+}
+
+export function seedRangeFacts(
+  mutable checker: Checker,
+  local: int,
+  builtin: string,
+  arguments: Array<Expr>,
+) uses alloc {
+  // `for (const i of Ranges.upTo(n))` gives 0 <= i < n, and `Ranges.between(a, b)`
+  // gives a <= i < b, from what is known about n, a and b when the loop starts.
+  if (!(getLocal(checker, local).localType == Type.TInt)) {
+    return
+  }
+  let low = Fact { low: 0, high: 0, nonzero: false }
+  let high = Fact { low: 0, high: 0, nonzero: false }
+  if (builtin == "Range.upTo" && Arrays.length(arguments) == 1) {
+    high = findOperandFact(checker, arguments[0], Type.TInt)
+  } else if (builtin == "Range.between" && Arrays.length(arguments) == 2) {
+    low = findOperandFact(checker, arguments[0], Type.TInt)
+    high = findOperandFact(checker, arguments[1], Type.TInt)
+  } else {
+    return
+  }
+  // The unbounded ends stand for no fact, so they give none.
+  let fact = Fact { low: low.low, high: high.high, nonzero: false }
+  if (!isUnboundedEnd(high.high)) {
+    fact.high = high.high - 1
+  }
+  narrowFact(mutable checker, local, fact)
+}
+
+export function seedCounterFact(
+  mutable checker: Checker,
+  init: Option<Stmt>,
+  condition: Option<Expr>,
+  step: Option<Stmt>,
+  assigned: Array<string>,
+) uses alloc {
+  // `for (let i = 0; i < n; i++)`: i only grows from its start while the body
+  // leaves it alone, so i >= 0 holds in the body. The bound in the condition keeps
+  // the step from wrapping past the largest int to a negative value.
+  let name = ""
+  let start: Option<int> = None
+  if (init is Some(Stmt.VarStmt(_, _, true, declaredName, None, _, value))) {
+    name = declaredName
+    start = findTypedConstant(checker, value, Type.TInt)
+  }
+  if (name == "") {
+    return
+  }
+  const local = findLocal(checker, name)
+  if (local < 0 || getLocal(checker, local).localType != Type.TInt) {
+    return
+  }
+  for (const other of Arrays.values(assigned)) {
+    if (other == name) {
+      return
+    }
+  }
+  const increment = findIncrement(checker, step, name)
+  if (increment < 0) {
+    return
+  }
+  if (condition is Some(loopCondition)) {
+    if (start is Some(low)) {
+      if (isBoundedBelowLargest(checker, loopCondition, name, increment)) {
+        narrowFact(mutable checker, local, Fact { low: low, high: LARGEST_INT, nonzero: false })
+      }
+    }
+  }
+}
+
+const LARGEST_INT = 9223372036854775807
+
+function findIncrement(checker: Checker, step: Option<Stmt>, name: string): int uses alloc {
+  // The amount `i++` or `i += c` adds, or -1 for any other step.
+  if (step is Some(Stmt.CompoundAssignStmt(_, Expr.Ident(_, _, stepName), operator, value))) {
+    if (stepName != name) {
+      return -1
+    }
+    if (operator == "++") {
+      return 1
+    }
+    if (operator == "+=") {
+      if (findTypedConstant(checker, value, Type.TInt) is Some(amount)) {
+        if (amount >= 0) {
+          return amount
+        }
+      }
+    }
+  }
+  return -1
+}
+
+function isBoundedBelowLargest(
+  checker: Checker,
+  condition: Expr,
+  name: string,
+  increment: int,
+): bool uses alloc {
+  // One `&&` part of the condition must be `i < bound` or `i <= bound` with
+  // bound + increment within the int range, so the step never wraps.
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (operator == "&&") {
+      return isBoundedBelowLargest(checker, left, name, increment) ||
+        isBoundedBelowLargest(checker, right, name, increment)
+    }
+    let comparison = operator
+    let bound = right
+    if (!isNamed(left, name)) {
+      if (!isNamed(right, name)) {
+        return false
+      }
+      comparison = flipComparison(operator)
+      bound = left
+    }
+    if (comparison != "<" && comparison != "<=") {
+      return false
+    }
+    // The largest value i has in the body; the step adds increment to it.
+    if (findTypedConstant(checker, bound, Type.TInt) is Some(value)) {
+      let highest = value
+      if (comparison == "<") {
+        highest = value - 1
+      }
+      return highest <= LARGEST_INT - increment
+    }
+    return comparison == "<" && increment <= 1
+  }
+  return false
+}
+
+function isNamed(expression: Expr, name: string): bool {
+  if (expression is Expr.Ident(_, _, found)) {
+    return found == name
+  }
+  return false
+}

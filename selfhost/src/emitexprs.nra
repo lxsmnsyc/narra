@@ -63,6 +63,7 @@ import * as Traits from "narrac/emittraits"
 import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
 import * as Options from "narrac/emitoptions"
+import * as Fixed from "narrac/emitfixed"
 import { emitCopyCall } from "narrac/stdcopy"
 import * as StdHelp from "narrac/stdemithelp"
 import * as Arrays from "std/array"
@@ -353,6 +354,9 @@ function emitIndexRead<W: EmitWalker>(
   if (targetType is Type.TMap(_, _)) {
     return Maps.emitMapGet(walker, mutable emitter, expression)
   }
+  if (targetType is Type.TFixedArray(_, _)) {
+    return Fixed.emitFixedRead(walker, mutable emitter, target, index)
+  }
   if (targetType is Type.TArray(element)) {
     const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
@@ -440,6 +444,7 @@ function isPrimitive(type: Type): bool {
     Type.TStruct(_)
       | Type.TEnum(_)
       | Type.TArray(_)
+      | Type.TFixedArray(_, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
       | Type.TFunc(_, _, _, _, _) => false
@@ -1074,6 +1079,9 @@ function emitArrayLiteral<W: EmitWalker>(
     return Match.emitTupleLiteral(walker, mutable emitter, expression)
   }
   const arrayType = copy(readNodeType(emitter, nodeId))
+  if (arrayType is Type.TFixedArray(_, _)) {
+    return Fixed.emitFixedLiteral(walker, mutable emitter, nodeId, elements)
+  }
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)
     const newHelper = useHelper(emitter, arrayStruct, "new")
@@ -1159,6 +1167,16 @@ function indexPointer<W: EmitWalker>(
   index: Expr,
 ): string uses alloc {
   const arrayType = copy(readNodeType(emitter, getExpressionId(target)))
+  if (arrayType is Type.TFixedArray(fixedElement, _)) {
+    const fixedBase = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
+    const fixedIndex = EmitWalker.emitExpression(walker, mutable emitter, index)
+    const fixedIndexTemp = temp(mutable emitter, Type.TInt, fixedIndex.text)
+    return pointerTemp(
+      mutable emitter,
+      fixedElement,
+      Fixed.buildFixedPointer(fixedBase, fixedIndexTemp),
+    )
+  }
   if (arrayType is Type.TArray(element)) {
     const base = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)

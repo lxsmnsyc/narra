@@ -377,7 +377,32 @@ export enum Token {
 ```
 
 - **Arrays.** `Array<T>` is a growable, contiguous array on the heap. Elements are stored directly: an `Array<int>` holds raw 8-byte integers. Indexes start at 0. `items[i]` is bounds checked and panics when out of range.
-- **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
+- **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `N` is an integer literal or a constant type parameter, and never negative (E0995). One `FixedArray` value takes at most 1 MiB (1048576 bytes), so a local fits well inside a thread's stack; a larger one is E0995, and an `Array` holds more. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`, and gives all `N` elements. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
+- **Fixed-size array indexes are proven.** Indexing a `FixedArray` never panics and has no runtime check. A constant index must be from 0 to `N - 1`, and any other index must be a name that a check proves to be in that range (E0994): an `if` or `while` condition such as `i >= 0 && i < N`, the condition of `for (let i = 0; i < N; i++)` when nothing in the loop assigns `i`, or `for (const i of Ranges.upTo(N))`. An assignment to the name ends the proof. In a generic body the proof is made in each instance, where `N` is a constant. `FixedArrays.get(values, i)` (`std/fixedarray`) returns an `Option<T>` for any index, and `FixedArrays.length(values)` returns `N`. `for (const v of values)` reads a copy of the elements. Equality, hashing, ordering and `Show` follow the element type, as for `Array`.
+
+```ts
+import * as FixedArrays from "std/fixedarray"
+
+function sum<const N: int>(values: FixedArray<f64, N>): f64 {
+  let total = 0.0
+  for (let i = 0; i < N; i++) {
+    total += values[i]
+  }
+  return total
+}
+
+function at(values: FixedArray<f64, 4>, index: int): f64 {
+  if (index >= 0 && index < 4) {
+    return values[index]
+  }
+  return 0.0
+}
+
+function last(values: FixedArray<f64, 4>): Option<f64> {
+  return FixedArrays.get(values, FixedArrays.length(values) - 1)
+}
+```
+
 - **Vector types.** `std/simd` provides fixed-width vectors such as `F32x4`, `F64x2` and `I32x8`. Their operators work lane by lane and compile to the target's vector instructions.
 - **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.

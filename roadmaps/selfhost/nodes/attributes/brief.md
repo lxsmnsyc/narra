@@ -1,7 +1,7 @@
 ---
 id: attributes
 title: "General declaration attributes"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 83752
 owns:
   - roadmaps/selfhost/nodes/attributes/**
 shared:

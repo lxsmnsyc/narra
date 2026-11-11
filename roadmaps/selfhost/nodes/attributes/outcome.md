@@ -35,3 +35,5 @@
 ## Size
 
 - Estimated S, actual S.
+
+Landed on feat/batch-8 as ea7a0f41 (reviewed inline by the orchestrator: a behavior-preserving refactor).

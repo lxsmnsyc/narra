@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-11, end of batch-7
+
+Run of `bench/run.sh -n 9` at commit 7706132c on `feat/batch-7`, same machine and toolchains as the batch-6 run below. No agent was running. The load average was 1.84 (1 minute) at the start, with the 5 and 15 minute averages (3.45 and 4.83) still falling after the batch's test runs, and 1.89 at the end.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.111 | 0.124 | 0.112 | 39088169   |
+| sieve     | 0.134 | 0.144 | 0.133 | 1270607    |
+| matmul    | 0.106 | 0.203 | 0.118 | 3547800000 |
+| strings   | 0.213 | 0.297 | 0.355 | 100000     |
+| interp    | 0.185 | 0.242 | 0.169 | 972838     |
+| particles | 0.068 | 0.074 | 0.093 | 6996184    |
+| compiler  | 0.235 | -     | -     | peak memory 130 MB |
+
+The benchmark programs are within noise of batch-6. Instructions retired by `narrac emit` (median of 5, measured right after the run): the batch-7 compiler on its own source 2.18G (batch-6: 2.47G on its source); on the same input, the batch-6 source, 2.44G with the batch-6 compiler and 2.05G with the batch-7 compiler (-16%). The source grew 7.6% (56,903 to 61,201 lines) with contracts, ensures, build conditions and `@target`, which costs about 0.13G. The seed shrank from 186,158 to 177,598 lines (release, preprocessed: 180,497 to 173,624).
+
 ## 2026-11-11, end of batch-6
 
 Run of `bench/run.sh -n 9` at commit d52185b2 on `feat/batch-6`, same machine and toolchains as the batch-5 run below. No agent was running. The load average was 1.93 (1 minute) at the start, with the 5 and 15 minute averages (7.1 and 21.4) still falling after the test runs, and 2.32 at the end. `interp` no longer compiled: its `acc % n` had no proof that `n` is not 0 (proven-operands), and no test suite builds `bench/`. It now calls a `remainder` function that checks the divisor, as Go and Rust do implicitly, and was rerun alone at a load average of 2.29.

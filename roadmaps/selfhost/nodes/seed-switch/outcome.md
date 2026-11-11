@@ -47,3 +47,5 @@ Instructions retired by `narrac emit selfhost` (`/usr/bin/time -l`, median of 5,
 ## Size
 
 - Estimated S, actual S.
+
+Landed on feat/batch-9 as four commits, 54141070 to 14fbe1fb. Review notes: the exit saves 0.05G against the 2.427G same-source baseline here; `log.md` measures 0.07G against a different binary (2.382G). Two optional nits left for later: `driver.nra` returns 1 with a full release when `startProgram` fails after a build, and `buildtarget.nra` compares the host target by text.

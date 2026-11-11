@@ -1,7 +1,7 @@
 ---
 id: seed-switch
 title: "The compiler uses Process.exit and the host-target builtin"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 177000
 owns:
   - roadmaps/selfhost/nodes/seed-switch/**
   - selfhost/src/emitter.nra

@@ -1,7 +1,7 @@
 ---
 id: fmt-block-hug
 title: "narrac fmt hugs a block expression in the last argument and as an operand"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 482000
 owns:
   - roadmaps/selfhost/nodes/fmt-block-hug/**
   - selfhost/src/fmtexprs.nra

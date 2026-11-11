@@ -15,7 +15,7 @@ Script: `python3 <skill>/scripts/plan.py <root> context <id>` lists the files to
 
 Project rules:
 
-- Run `sh scripts/test.sh` before finishing (1 to 3 minutes; it builds narrac from `seed/narrac.c` with `cc` only). Every sample program must stay clean under AddressSanitizer and the leak check. While working, run only the suites you touch: `NARRAC=<built narrac> sh scripts/test.sh --suite <suite>`.
+- Run `sh scripts/test.sh` before finishing (1 to 3 minutes; it builds narrac from `seed/narrac.c` with `cc` only). Every sample program must stay clean under AddressSanitizer and the leak check. While working, run only the suites you touch: `NARRAC=<built narrac> sh scripts/test.sh --suite <suite>`. Read the case total on the final line (`PASS, N cases`), not a shard line; a shard with no case of the suite prints `0 passed`.
 - Format edited `.nra` files with `narrac fmt` (see `selfhost/CLAUDE.md`); the `sources` suite checks it.
 - Seed rule: `selfhost/src` may use only features the committed seed compiles. Do not regenerate the seed unless your brief says so; the orchestrator does it once per batch.
 - Follow `SPEC.md`. Record any difference in `compiler/README.md`.

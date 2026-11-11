@@ -1,7 +1,7 @@
 ---
 id: ptr-cast
 title: "Ptr.cast and Ptr.element in std/ptr"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-9

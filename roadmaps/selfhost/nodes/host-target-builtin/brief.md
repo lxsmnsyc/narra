@@ -1,7 +1,7 @@
 ---
 id: host-target-builtin
 title: "A builtin that returns the host target from compiler macros"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-9

@@ -1,7 +1,7 @@
 ---
 id: test-runner-fixes
 title: "Test runner: empty suite filters fail, unique temp folders, dead code"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-9

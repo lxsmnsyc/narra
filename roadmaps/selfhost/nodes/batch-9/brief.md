@@ -1,7 +1,7 @@
 ---
 id: batch-9
 title: "Batch 9: debt the fresh seed unblocks"
-status: todo
+status: active
 priority: should
 type: story
 story: 

@@ -1,7 +1,7 @@
 ---
 id: process-exit
 title: "A std function that ends the process with an exit code"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-9

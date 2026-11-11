@@ -34,6 +34,7 @@ import {
   SYMBOL_AMPERSAND,
   SYMBOL_AND,
   SYMBOL_ARROW,
+  SYMBOL_AT,
   SYMBOL_BANG,
   SYMBOL_CARET,
   SYMBOL_COLON,
@@ -127,6 +128,8 @@ import {
   VariantDecl,
   EnumDecl,
   TestDecl,
+  TargetAttribute,
+  TargetArgument,
   TraitDecl,
   ImplDecl,
   Decl,
@@ -977,15 +980,52 @@ function isTypeBreaker(text: string): bool {
 }
 
 function parseDecl(mutable parser: Parser): Decl {
+  // `@target(...)` stands on its own line before a function. Its trivia record
+  // runs up to the declaration keyword, so the comments after it, on its line
+  // or on lines of their own, are the attribute's.
   const startIndex = parser.index
-  const declaration = parseDeclBody(mutable parser)
+  let attribute: Option<TargetAttribute> = None
+  if (isAt(parser, SYMBOL_AT)) {
+    const written = parseTargetAttribute(mutable parser)
+    skipNewlines(mutable parser)
+    if (parser.collector.enabled && isOk(parser)) {
+      const key = getPosKey("@", written.pos)
+      const end = getPos(currentToken(parser))
+      noteNode(mutable parser.collector, key, written.pos, end)
+    }
+    attribute = Some(written)
+  }
+  const body = parseDeclBody(mutable parser)
+  const declaration = addTargetAttribute(mutable parser, body, attribute)
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
   }
   return declaration
 }
 
+function addTargetAttribute(
+  mutable parser: Parser,
+  declaration: Decl,
+  attribute: Option<TargetAttribute>,
+): Decl from declaration uses alloc {
+  if (attribute is Some(written)) {
+    if (declaration is Decl.Func(funcDecl)) {
+      return Decl.Func(FuncDecl { ...funcDecl, target: Some(copy(written)) })
+    }
+    failAt(
+      mutable parser,
+      written.pos,
+      "E0990",
+      "`@target` is written once, before a function declaration",
+    )
+  }
+  return declaration
+}
+
 function parseDeclBody(mutable parser: Parser): Decl {
+  if (isAt(parser, SYMBOL_AT)) {
+    failHere(mutable parser, "E0990", "`@target` is written once, before a function declaration")
+  }
   const exported = accept(mutable parser, SYMBOL_KEYWORD_EXPORT)
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
@@ -1066,6 +1106,59 @@ function parseDeclBody(mutable parser: Parser): Decl {
     `expected a declaration, found ${describeToken(token)}`,
   )
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
+}
+
+function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
+  const pos = getPos(expect(mutable parser, SYMBOL_AT))
+  const nameToken = expectIdent(mutable parser)
+  if (isOk(parser) && nameToken.text != "target") {
+    failAt(
+      mutable parser,
+      getPos(nameToken),
+      "E0990",
+      `unknown attribute @${nameToken.text}; the only attribute is @target`,
+    )
+  }
+  expect(mutable parser, SYMBOL_LEFT_PAREN)
+  let arguments: Array<TargetArgument> = []
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
+    const argumentToken = expectIdent(mutable parser)
+    expect(mutable parser, SYMBOL_EQUALS)
+    // The value is a dotted name: the enum, then the variant after the last dot.
+    const typePos = getPos(currentToken(parser))
+    let typeName = ""
+    let variant = expectIdent(mutable parser).text
+    while (isOk(parser) && accept(mutable parser, SYMBOL_DOT)) {
+      if (typeName == "") {
+        typeName = variant
+      } else {
+        typeName = `${typeName}.${variant}`
+      }
+      variant = expectIdent(mutable parser).text
+    }
+    if (isOk(parser) && typeName == "") {
+      failAt(
+        mutable parser,
+        typePos,
+        "E0990",
+        `@target ${argumentToken.text} takes a variant such as Os.Windows`,
+      )
+    }
+    if (isOk(parser)) {
+      Arrays.push(mutable arguments, TargetArgument {
+        pos: getPos(argumentToken),
+        name: argumentToken.text,
+        typeName: typeName,
+        typePos: typePos,
+        variant: variant,
+      })
+    }
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
+      break
+    }
+  }
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
+  return TargetAttribute { pos: pos, arguments: arguments }
 }
 
 function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<Decl> {

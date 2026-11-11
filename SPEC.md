@@ -1559,15 +1559,46 @@ export function configDir(): string uses io, alloc {
 - **`narra emit` writes the C of a debug build.** The C of a release build comes from `narra build -release -emit-c file.c`.
 - **An `if` that tests only these constants is resolved at compile time.** The output contains no runtime check, only the matching branch, or nothing when no branch matches. The condition may combine the constants with `==`, `!=`, `is` (a variant without fields), `!`, `&&` and `||`, and each `else if` of a chain is resolved on its own. A condition that mixes the constants with any other value, or a `match` on them, is an ordinary runtime test.
 - **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed. The effects of every branch count toward the function's effects, the dropped ones included, so a function has the same signature on every target.
-- **`@target(os = Os.Windows)`** on a declaration makes it exist only on that target. Calling it outside a branch that guarantees that target is a compile error.
+- **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Only Narra functions take `@target` for now; other declarations do not.
+
+```ts
+import * as Build from "std/build"
+import { Os } from "std/build"
+
+@target(os = Os.MacOS)
+function macOpener(): string {
+  return "open"
+}
+
+@target(os = Os.Linux)
+function linuxOpener(): string {
+  return "xdg-open"
+}
+
+export function opener(): string {
+  if (Build.os == Os.MacOS) {
+    return macOpener()
+  } else if (Build.os == Os.Linux) {
+    return linuxOpener()
+  }
+  return "start"
+}
+```
+
+- **A use outside a branch that guarantees the target is a compile error.** On each target, a call to a `@target` function, or its use as a function value, is an error where the function does not exist, unless that target does not compile the use. A target does not compile:
+  - a branch that a build condition (above) drops on it, such as the then branch of `if (Build.os == Os.Windows)` on Linux, or the rest of an `else if` chain after the branch it keeps;
+  - the body of a `@target` function whose target it is not.
+
+  So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
+- **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
+- **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
+- The C interop form, `@target` on an `extern` function so that a C function is linked only when building for its target, waits for C interop:
 
 ```ts
 @target(os = Os.Windows)
 extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 ```
 
-- A `@target` C function is linked only when building for its target.
-- `narra check --all-targets` type-checks the package for every supported target.
 - There are no per-platform file names and no preprocessor.
 
 ## 13. Tests and contracts

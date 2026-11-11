@@ -3,15 +3,29 @@
 // constants of std/build from it and records which branch each such `if`
 // keeps (Checker.foldedConditions), and the emitter writes only that branch.
 import * as Arrays from "std/array"
-import { Expr, Pattern, Decl } from "narrac/ast"
+import { Expr, Pattern, Decl, Block, Stmt, Pos, FuncDecl, TypeExpr } from "narrac/ast"
 import { Type } from "narrac/types"
-import { Checker, Ref, getRef, getNodeType, getExpressionId, reportErrorIn } from "narrac/check"
+import {
+  Checker,
+  Ref,
+  getRef,
+  getNodeType,
+  getExpressionId,
+  reportError,
+  reportErrorIn,
+} from "narrac/check"
+import { resolveType } from "narrac/resolve"
 import { SourceModule, Package } from "narrac/modules"
 import {
   BuildTarget,
+  TargetRequirement,
+  DroppedRange,
   createUnknownTarget,
   detectHostTarget,
   describeTargets,
+  isTargetMet,
+  describeRequirement,
+  describeTarget,
 } from "narrac/buildtarget"
 
 const BUILD_MODULE = "std/build"
@@ -93,7 +107,12 @@ export function applyBuildTarget(
   return prepared
 }
 
-export function recordBuildCondition(mutable checker: Checker, condition: Expr) uses alloc {
+export function recordBuildCondition(
+  mutable checker: Checker,
+  condition: Expr,
+  then: Block,
+  orElse: Option<Stmt>,
+) uses alloc {
   // Without a target nothing is decided, and the `if` stays a runtime test.
   if (checker.buildTarget.os == "") {
     return
@@ -101,8 +120,198 @@ export function recordBuildCondition(mutable checker: Checker, condition: Expr) 
   if (evaluateCondition(checker, condition) is Some(value)) {
     if (value.isFlag && value.constant) {
       checker.foldedConditions[getExpressionId(condition)] = value.flag
+      // The dropped branch may use `@target` functions of other targets.
+      if (!value.flag) {
+        addDroppedRange(mutable checker, then.pos, then.end)
+      } else if (orElse is Some(dropped)) {
+        addDroppedRange(mutable checker, findStatementStart(dropped), findStatementEnd(dropped))
+      }
     }
   }
+}
+
+function addDroppedRange(mutable checker: Checker, start: Pos, end: Pos) uses alloc {
+  const range = DroppedRange { scope: checker.current, start: start, end: end }
+  Arrays.push(mutable checker.droppedRanges, range)
+}
+
+function findStatementStart(statement: Stmt): Pos from statement {
+  return match (statement) {
+    Stmt.BlockStmt(block) => block.pos
+    Stmt.IfStmt(pos, _, _, _) => pos
+    _ => Pos { line: 0, column: 0 }
+  }
+}
+
+function findStatementEnd(statement: Stmt): Pos from statement {
+  // An else branch is a block or another `if`; its end is that of the last block.
+  let current = statement
+  while (true) {
+    match (current) {
+      Stmt.BlockStmt(block) => {
+        return block.end
+      }
+      Stmt.IfStmt(_, _, then, orElse) => {
+        if (orElse is Some(next)) {
+          current = next
+        } else {
+          return then.end
+        }
+      }
+      _ => {
+        return Pos { line: 0, column: 0 }
+      }
+    }
+  }
+}
+
+export function resolveFunctionTarget(
+  mutable checker: Checker,
+  funcIndex: int,
+  funcDecl: FuncDecl,
+) uses alloc {
+  // Each argument names a variant of std/build's Os (os) or Arch (arch), once.
+  if (funcDecl.target is Some(attribute)) {
+    let requirement = TargetRequirement { os: "", arch: "" }
+    let valid = true
+    if (Arrays.length(attribute.arguments) == 0) {
+      reportError(
+        mutable checker,
+        attribute.pos,
+        "E0990",
+        "@target needs os, arch or both, such as @target(os = Os.Windows)",
+      )
+      valid = false
+    }
+    for (const argument of Arrays.values(attribute.arguments)) {
+      let enumName = ""
+      let seen = ""
+      if (argument.name == "os") {
+        enumName = "Os"
+        seen = requirement.os
+      } else if (argument.name == "arch") {
+        enumName = "Arch"
+        seen = requirement.arch
+      } else {
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E0990",
+          `@target takes os and arch, not ${argument.name}`,
+        )
+        valid = false
+        continue
+      }
+      if (seen != "") {
+        reportError(mutable checker, argument.pos, "E0990", `@target names ${argument.name} twice`)
+        valid = false
+        continue
+      }
+      const variant = findBuildVariant(
+        mutable checker,
+        argument.typePos,
+        argument.typeName,
+        enumName,
+        argument.variant,
+      )
+      if (variant == "") {
+        valid = false
+      } else if (argument.name == "os") {
+        requirement.os = variant
+      } else {
+        requirement.arch = variant
+      }
+    }
+    if (valid) {
+      checker.functionTargets[funcIndex] = requirement
+    }
+  }
+}
+
+function findBuildVariant(
+  mutable checker: Checker,
+  pos: Pos,
+  typeName: string,
+  enumName: string,
+  variant: string,
+): string uses alloc {
+  const written = TypeExpr {
+    pos: pos,
+    name: typeName,
+    arguments: [],
+    isFunc: false,
+    result: None,
+    effects: [],
+    isTuple: false,
+  }
+  const resolved = resolveType(mutable checker, written)
+  if (resolved is Type.TVoid) {
+    // resolveType has reported the unknown name.
+    return ""
+  }
+  if (resolved is Type.TEnum(enumIndex)) {
+    const info = checker.enums[enumIndex]
+    if (info.module == BUILD_MODULE && info.name == enumName) {
+      for (const known of Arrays.values(info.variants)) {
+        if (known.name == variant) {
+          return variant
+        }
+      }
+      reportError(
+        mutable checker,
+        pos,
+        "E0990",
+        `${enumName} of std/build has no variant ${variant}`,
+      )
+      return ""
+    }
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0990",
+    `@target takes ${enumName} from std/build here, not ${typeName}`,
+  )
+  return ""
+}
+
+export function checkTargetUse(mutable checker: Checker, pos: Pos, funcIndex: int) uses alloc {
+  // A use is fine on a target the function exists on, in a branch this target
+  // drops, and in a `@target` function this target does not have.
+  const target = checker.buildTarget
+  if (target.os == "") {
+    return
+  }
+  if (checker.functionTargets[funcIndex] is Some(requirement)) {
+    if (isTargetMet(requirement, target)) {
+      return
+    }
+    if (checker.functionIndex >= 0) {
+      if (checker.functionTargets[checker.functionIndex] is Some(own)) {
+        if (!isTargetMet(own, target)) {
+          return
+        }
+      }
+    }
+    for (const range of Arrays.values(checker.droppedRanges)) {
+      if (range.scope == checker.current && isWithin(pos, range.start, range.end)) {
+        return
+      }
+    }
+    const name = checker.functions[funcIndex].name
+    reportError(
+      mutable checker,
+      pos,
+      "E0991",
+      `${name} exists only on @target(${describeRequirement(requirement)}), but this use is compiled for ${describeTarget(target)}; use it inside an if on Build.os or Build.arch that keeps it only on that target`,
+    )
+  }
+}
+
+function isWithin(pos: Pos, start: Pos, end: Pos): bool {
+  const afterStart = pos.line > start.line || (pos.line == start.line && pos.column >= start.column)
+  const beforeEnd = pos.line < end.line || (pos.line == end.line && pos.column <= end.column)
+  return afterStart && beforeEnd
 }
 
 function evaluateCondition(checker: Checker, expression: Expr): Option<BuildValue> {

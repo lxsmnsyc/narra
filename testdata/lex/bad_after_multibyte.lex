@@ -1,1 +1,1 @@
-error 1:21: unexpected character '@'
+error 1:21: unexpected character '$'

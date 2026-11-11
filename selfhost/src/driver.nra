@@ -4,7 +4,7 @@
 //   narrac build [flags] file.nra|dir
 //   narrac run [flags] file.nra|dir [args...]
 //   narrac test [flags] file.nra|dir [args...]
-//   narrac check [--json] file.nra|dir
+//   narrac check [--json] [--all-targets] file.nra|dir
 //   narrac explain CODE
 //
 // Flags of build, run and test (-name, --name, -name=value, -name value; the
@@ -46,7 +46,8 @@ import { LoadError } from "narrac/manifest"
 import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { Checker } from "narrac/check"
-import { chooseTarget } from "narrac/buildconditions"
+import { chooseTarget, importsBuildModule } from "narrac/buildconditions"
+import { BuildTarget, listTargets, describeTarget } from "narrac/buildtarget"
 import { reportSharedWrites } from "narrac/sharedwrites"
 import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
 import { Fix, applyFix } from "narrac/fixes"
@@ -126,7 +127,8 @@ function usageText(): string {
     "  narrac build [-release] [-sanitize] [-bin name] [-o output] [-emit-c file.c] file.nra|dir",
     "  narrac run [-release] [-sanitize] [-bin name] [-stdin file] file.nra|dir [args...]",
     "  narrac test [-filter text] [-time] [-release] [-sanitize] [-stdin file] file.nra|dir",
-    "  narrac check [--json] file.nra|dir        report errors",
+    "  narrac check [--json] [--all-targets] file.nra|dir",
+    "                                            report errors, on every target with --all-targets",
     "  narrac explain CODE                       explain a diagnostic code",
     "",
     "A dir is a package: a directory with narra.toml and src/. Without -bin,",
@@ -342,8 +344,14 @@ function loadAndCheck(path: string, release: bool): Result<#[
   if (loaded is Err(errors)) {
     return Err(convertLoadErrors(errors))
   }
-  const target = chooseTarget(loaded.value, release)
-  let checker = copy(Body.checkPackageFor(loaded.value, target))
+  return checkForTarget(loaded.value, chooseTarget(loaded.value, release))
+}
+
+function checkForTarget(package: Package, target: BuildTarget): Result<#[
+  Package,
+  Checker,
+], Array<Diagnostic>> from package uses alloc {
+  let checker = copy(Body.checkPackageFor(package, target))
   // The effects are checked only when the bodies have no errors; shared writes always.
   if (Arrays.length(checker.errors) == 0) {
     const _ = Effects.checkEffects(mutable checker)
@@ -363,7 +371,156 @@ function loadAndCheck(path: string, release: bool): Result<#[
     }
     return Err(diagnostics)
   }
-  return Ok(#[loaded.value, checker])
+  return Ok(#[package, checker])
+}
+
+function checkEveryTarget(path: string): Array<Diagnostic> uses io, alloc {
+  const loaded = Modules.load(path)
+  if (loaded is Err(errors)) {
+    return convertLoadErrors(errors)
+  }
+  const package = loaded.value
+  // Without std/build the package is the same on every target; with it, each
+  // row of the table is checked as a debug and as a release build.
+  let targets = [chooseTarget(package, false)]
+  if (importsBuildModule(package)) {
+    targets = listTargets(true)
+    for (const target of Arrays.values(listTargets(false))) {
+      Arrays.push(mutable targets, target)
+    }
+  }
+  // A diagnostic found on several targets is reported once. An E0991 names the
+  // target, so its key leaves the name out and the message gets every target it fails on.
+  let diagnostics: Array<Diagnostic> = []
+  let seen: Map<string, bool> = Map {}
+  let runs: Map<string, Array<TargetRun>> = Map {}
+  let firstNames: Array<string> = []
+  let useKeys: Array<string> = []
+  for (const target of Arrays.values(targets)) {
+    let found: Array<Diagnostic> = []
+    const checked = checkForTarget(package, target)
+    if (checked is Err(errors)) {
+      found = errors
+    } else {
+      const #[_, checker] = checked.value
+      found = findMissingEntries(package, checker)
+    }
+    const targetName = describeTarget(target)
+    for (const diagnostic of Arrays.values(found)) {
+      let message = diagnostic.message
+      if (diagnostic.code == "E0991") {
+        message = Str.replace(message, `compiled for ${targetName};`, "compiled for ;")
+      }
+      const key = `${diagnostic.file}:${Int.toString(diagnostic.line)}:${Int.toString(diagnostic.column)}:${diagnostic.code}:${message}`
+      if (seen[key] is None) {
+        seen[key] = true
+        Arrays.push(mutable diagnostics, diagnostic)
+        Arrays.push(mutable firstNames, targetName)
+        Arrays.push(mutable useKeys, key)
+        runs[key] = []
+      }
+      if (diagnostic.code == "E0991") {
+        let targetRuns: Array<TargetRun> = []
+        if (runs[key] is Some(earlier)) {
+          targetRuns = copy(earlier)
+        }
+        Arrays.push(mutable targetRuns, TargetRun { name: targetName, debug: target.debug })
+        runs[key] = targetRuns
+      }
+    }
+  }
+  // Each E0991 lists its targets, then the diagnostics go in source order.
+  for (const index of Ranges.between(0, Arrays.length(diagnostics))) {
+    if (diagnostics[index].code == "E0991") {
+      if (runs[useKeys[index]] is Some(targetRuns)) {
+        diagnostics[index].message = Str.replace(
+          diagnostics[index].message,
+          `compiled for ${firstNames[index]};`,
+          `compiled for ${describeTargetRuns(targetRuns)};`,
+        )
+      }
+    }
+  }
+  return sortDiagnostics(diagnostics)
+}
+
+// One target an E0991 was found on, for its message.
+struct TargetRun {
+  name: string
+  debug: bool
+}
+
+function describeTargetRuns(targetRuns: Array<TargetRun>): string uses alloc {
+  // A target found in both builds is named plainly; in one only, with that build.
+  let names: Array<string> = []
+  for (const run of Arrays.values(targetRuns)) {
+    let known = false
+    for (const name of Arrays.values(names)) {
+      if (name == run.name) {
+        known = true
+      }
+    }
+    if (!known) {
+      Arrays.push(mutable names, run.name)
+    }
+  }
+  let parts: Array<string> = []
+  for (const name of Arrays.values(names)) {
+    let inDebug = false
+    let inRelease = false
+    for (const run of Arrays.values(targetRuns)) {
+      if (run.name == name) {
+        if (run.debug) {
+          inDebug = true
+        } else {
+          inRelease = true
+        }
+      }
+    }
+    if (inDebug && inRelease) {
+      Arrays.push(mutable parts, name)
+    } else if (inDebug) {
+      Arrays.push(mutable parts, `${name} (debug)`)
+    } else {
+      Arrays.push(mutable parts, `${name} (release)`)
+    }
+  }
+  return Str.join(parts, ", ")
+}
+
+function sortDiagnostics(
+  diagnostics: Array<Diagnostic>,
+): Array<Diagnostic> from diagnostics uses alloc {
+  // An insertion sort by file, line and column keeps equal positions in report order.
+  let sorted: Array<Diagnostic> = []
+  for (const diagnostic of Arrays.values(diagnostics)) {
+    let position = Arrays.length(sorted)
+    while (position > 0 && isDiagnosticBefore(diagnostic, sorted[position - 1])) {
+      position--
+    }
+    let next: Array<Diagnostic> = []
+    for (const index of Ranges.between(0, Arrays.length(sorted))) {
+      if (index == position) {
+        Arrays.push(mutable next, diagnostic)
+      }
+      Arrays.push(mutable next, sorted[index])
+    }
+    if (position == Arrays.length(sorted)) {
+      Arrays.push(mutable next, diagnostic)
+    }
+    sorted = next
+  }
+  return sorted
+}
+
+function isDiagnosticBefore(left: Diagnostic, right: Diagnostic): bool {
+  if (left.file != right.file) {
+    return left.file < right.file
+  }
+  if (left.line != right.line) {
+    return left.line < right.line
+  }
+  return left.column < right.column
 }
 
 function compileToC(
@@ -681,26 +838,33 @@ function trimTrailingSlashes(path: string): string {
 
 function runCheck(arguments: Array<string>): int uses io, alloc {
   let asJson = false
+  let allTargets = false
   let paths: Array<string> = []
   for (const index of Ranges.between(2, Arrays.length(arguments))) {
     const argument = arguments[index]
     if (argument == "--json" || argument == "-json") {
       asJson = true
+    } else if (argument == "--all-targets" || argument == "-all-targets") {
+      allTargets = true
     } else {
       Arrays.push(mutable paths, argument)
     }
   }
   if (Arrays.length(paths) != 1 || Str.startsWith(paths[0], "-")) {
-    printError("usage: narrac check [--json] file.nra|dir")
+    printError("usage: narrac check [--json] [--all-targets] file.nra|dir")
     return 2
   }
   let diagnostics: Array<Diagnostic> = []
-  const checked = loadAndCheck(paths[0], false)
-  if (checked is Err(found)) {
-    diagnostics = found
+  if (allTargets) {
+    diagnostics = checkEveryTarget(paths[0])
   } else {
-    const #[package, checker] = checked.value
-    diagnostics = findMissingEntries(package, checker)
+    const checked = loadAndCheck(paths[0], false)
+    if (checked is Err(found)) {
+      diagnostics = found
+    } else {
+      const #[package, checker] = checked.value
+      diagnostics = findMissingEntries(package, checker)
+    }
   }
   // Exit 0: no diagnostics. Exit 1: errors or an unreadable path. Exit 2: usage.
   if (Arrays.length(diagnostics) == 0) {

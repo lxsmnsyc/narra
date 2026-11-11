@@ -23,6 +23,13 @@
 //                      constant
 //   tree-shake/std-source   the C of bench/fib/fib.nra has none of the
 //                      std/int functions written in Narra, which it never calls
+//   build-targets/outside-branch   `narrac check --all-targets` reports a use
+//                      of a `@target` function outside a guaranteeing branch
+//                      once per target it fails on
+//   build-targets/other-target   a use that passes `narrac check` on a
+//                      Linux-X86_64 host fails `check --all-targets` on Linux-Arm64
+//   build-targets/release-only   a use kept only when Build.debug is false
+//                      fails `check --all-targets` in the release builds
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
@@ -37,6 +44,7 @@ import { readHostSystem } from "testrunner/programs"
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   const emitErrors = Path.join(context.testdata, "emit-errors")
   const cnames = Path.join(context.testdata, "cnames")
+  const buildTargets = Path.join(context.testdata, "build-targets")
   return [
     makeCase("emit-errors/noentry", Path.join(emitErrors, "noentry.nra"), "noentry"),
     makeCase(
@@ -77,6 +85,21 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
       "std-source",
     ),
+    makeCase(
+      "build-targets/outside-branch",
+      Path.join(buildTargets, "outside_branch.nra"),
+      "outside-branch",
+    ),
+    makeCase(
+      "build-targets/other-target",
+      Path.join(buildTargets, "other_target.nra"),
+      "other-target",
+    ),
+    makeCase(
+      "build-targets/release-only",
+      Path.join(buildTargets, "release_only.nra"),
+      "release-only",
+    ),
   ]
 }
 
@@ -114,6 +137,15 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "std-source") {
     return checkStdSourceShaken(context, testCase.path)
+  }
+  if (testCase.variant == "outside-branch") {
+    return checkAllTargets(context, testCase.path, "outside_branch.err", false)
+  }
+  if (testCase.variant == "other-target") {
+    return checkAllTargets(context, testCase.path, "other_target.err", true)
+  }
+  if (testCase.variant == "release-only") {
+    return checkAllTargets(context, testCase.path, "release_only.err", false)
   }
   if (testCase.variant == "xxh32") {
     return checkHashVectors(context)
@@ -275,6 +307,27 @@ function checkUnsupportedHost(
     return Err(`want exit code 1 and "${want}" once, got ${Common.describeRun(result)}`)
   }
   return Ok(true)
+}
+
+function checkAllTargets(
+  context: Context,
+  source: string,
+  goldenName: string,
+  passesOnHost: bool,
+): Result<bool, string> uses io, alloc {
+  // The error must be on a target other than the host's.
+  if (passesOnHost) {
+    const host = Common.runNarracWith(
+      context,
+      "",
+      ["NARRA_HOST_TARGET=Linux-X86_64"],
+      ["check", source],
+    )
+    if (host.code != 0) {
+      return Err(`want no error for Linux-X86_64, got ${Common.describeRun(host)}`)
+    }
+  }
+  return expectEmitError(context, ["check", "--all-targets", source], source, goldenName)
 }
 
 function emitIn(context: Context, folder: string): Result<string, string> uses io, alloc {

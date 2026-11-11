@@ -71,7 +71,7 @@ copy-check-macros edits runtime text in `selfhost/src/runtime*.nra`, and contrac
 ## Acceptance
 
 - [x] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch. (test.sh passes; the Linux check did not run, Docker was not running.)
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
 - [x] The seed is regenerated at the end and `sh selfhost/bootstrap.sh` reports it current.
 - [ ] `narrac emit selfhost` instructions on the end-of-batch source are at or below 2.1G (missed: 2.18G; 2.05G on the batch-6 source, see wave-20), and the release-stripped seed (`unifdef -DNARRA_RELEASE seed/narrac.c | wc -l`) is smaller than at the start of the batch even with the new features.
 - [x] A fresh review of the whole story branch, before the pull request.

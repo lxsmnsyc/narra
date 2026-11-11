@@ -24,9 +24,9 @@ Whole batch: compiler 2.47G to 2.18G on its own source, and 2.44G to 2.05G on th
 
 No defects where the children interact (17 probes: contracts in dropped branches, `@target` through generics, tree shaking with folded branches, trailers next to folded returns, the shared-write and `from` checks in dropped code, copy-check helpers). Three stale texts in `compiler/README.md` and D95 were fixed.
 
-## Not done
+## Checks
 
-- The Linux check did not run: Docker was not running on the machine. The Linux golden for `build_os` is untested.
+- `sh scripts/test.sh` passes on the story branch, and `sh scripts/linux-check.sh` passes (Debian, gcc, sanitizers: 6,677 cases, 158 s), including the Linux golden of `build_os`.
 
 ## Process lessons
 

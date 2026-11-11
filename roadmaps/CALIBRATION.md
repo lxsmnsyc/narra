@@ -86,3 +86,13 @@ Notes:
 | selfhost | unsafe-ptr | M | L | 3 | 469k tokens. Effect escapes through generators and trait implementations closed for unsafe. |
 | selfhost | c-interop | M | L | 2 | 462k tokens. Assembler-label prototypes; prefix-helper name clash closed. |
 | selfhost | c-audit-target | S | S | 1 | 142k tokens. Reviewed inline; sample renamed. |
+| selfhost | test-runner-fixes | M | M | 1 | 253k tokens. The 0-case PASS was a misread shard line; the fix is the case total on the final line. |
+| selfhost | process-exit | M | M | 1 | 246k tokens. Clean review. |
+| selfhost | host-target-builtin | M | M | 1 | 239k tokens. Clean review; Linux check passed. |
+| selfhost | ptr-cast | M | M+ | 2 | 482k tokens. Review: fmt comment fix needed a trivia move in fmtprinter, outside owned paths. |
+| selfhost | hidden-copy-fix | M | S | 1 | 159k tokens. Narrowed to loadFile and loadPackage; checker and emitter copies moved to the inbox. |
+| selfhost | process-signals | M | L | 2 | 466k tokens. Review: `narrac test` has its own forks (runner, Test.panics) that needed the same forwarding. |
+| selfhost | diagnostics-polish | M | M+ | 2 | 395k tokens. Review: per-file cascade check, constant cycles. |
+| selfhost | guide-multifile-samples | M | M | 2 | 243k tokens. Review: extractor case for `narra file`. |
+| selfhost | fmt-block-hug | M | M+ | 2 | 482k tokens. Operand hug dropped after comparing with oxfmt 0.66.0. |
+| selfhost | seed-switch | S | S | 1 | 177k tokens. Two seed updates; -1.3% instructions, close to noise. |

@@ -1,7 +1,7 @@
 ---
 id: test-runner-fixes
 title: "Test runner: empty suite filters fail, unique temp folders, dead code"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 253000
 owns:
   - roadmaps/selfhost/nodes/test-runner-fixes/**
   - selfhost/tests/src/main.nra

@@ -36,3 +36,5 @@
 ## Size
 
 - Estimated M, actual S.
+
+Landed on feat/batch-9 as d9575822.

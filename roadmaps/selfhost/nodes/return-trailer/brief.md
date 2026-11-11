@@ -1,7 +1,7 @@
 ---
 id: return-trailer
 title: "No unreachable trailer after a function's final return"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-7

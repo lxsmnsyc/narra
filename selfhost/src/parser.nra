@@ -34,6 +34,7 @@ import {
   SYMBOL_AMPERSAND,
   SYMBOL_AND,
   SYMBOL_ARROW,
+  SYMBOL_AT,
   SYMBOL_BANG,
   SYMBOL_CARET,
   SYMBOL_COLON,
@@ -127,6 +128,8 @@ import {
   VariantDecl,
   EnumDecl,
   TestDecl,
+  TargetAttribute,
+  TargetArgument,
   TraitDecl,
   ImplDecl,
   Decl,
@@ -193,6 +196,8 @@ struct Parser {
   statementStart: int
   // Set between the parentheses of a C-style for, the one place a `;` belongs.
   forHead: bool = false
+  // Set while an `ensures` pattern is parsed, the one place a comparison pattern belongs.
+  contractPattern: bool = false
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -977,15 +982,52 @@ function isTypeBreaker(text: string): bool {
 }
 
 function parseDecl(mutable parser: Parser): Decl {
+  // `@target(...)` stands on its own line before a function. Its trivia record
+  // runs up to the declaration keyword, so the comments after it, on its line
+  // or on lines of their own, are the attribute's.
   const startIndex = parser.index
-  const declaration = parseDeclBody(mutable parser)
+  let attribute: Option<TargetAttribute> = None
+  if (isAt(parser, SYMBOL_AT)) {
+    const written = parseTargetAttribute(mutable parser)
+    skipNewlines(mutable parser)
+    if (parser.collector.enabled && isOk(parser)) {
+      const key = getPosKey("@", written.pos)
+      const end = getPos(currentToken(parser))
+      noteNode(mutable parser.collector, key, written.pos, end)
+    }
+    attribute = Some(written)
+  }
+  const body = parseDeclBody(mutable parser)
+  const declaration = addTargetAttribute(mutable parser, body, attribute)
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
   }
   return declaration
 }
 
+function addTargetAttribute(
+  mutable parser: Parser,
+  declaration: Decl,
+  attribute: Option<TargetAttribute>,
+): Decl from declaration uses alloc {
+  if (attribute is Some(written)) {
+    if (declaration is Decl.Func(funcDecl)) {
+      return Decl.Func(FuncDecl { ...funcDecl, target: Some(copy(written)) })
+    }
+    failAt(
+      mutable parser,
+      written.pos,
+      "E0990",
+      "`@target` is written once, before a function declaration",
+    )
+  }
+  return declaration
+}
+
 function parseDeclBody(mutable parser: Parser): Decl {
+  if (isAt(parser, SYMBOL_AT)) {
+    failHere(mutable parser, "E0990", "`@target` is written once, before a function declaration")
+  }
   const exported = accept(mutable parser, SYMBOL_KEYWORD_EXPORT)
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
@@ -1066,6 +1108,59 @@ function parseDeclBody(mutable parser: Parser): Decl {
     `expected a declaration, found ${describeToken(token)}`,
   )
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
+}
+
+function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
+  const pos = getPos(expect(mutable parser, SYMBOL_AT))
+  const nameToken = expectIdent(mutable parser)
+  if (isOk(parser) && nameToken.text != "target") {
+    failAt(
+      mutable parser,
+      getPos(nameToken),
+      "E0990",
+      `unknown attribute @${nameToken.text}; the only attribute is @target`,
+    )
+  }
+  expect(mutable parser, SYMBOL_LEFT_PAREN)
+  let arguments: Array<TargetArgument> = []
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
+    const argumentToken = expectIdent(mutable parser)
+    expect(mutable parser, SYMBOL_EQUALS)
+    // The value is a dotted name: the enum, then the variant after the last dot.
+    const typePos = getPos(currentToken(parser))
+    let typeName = ""
+    let variant = expectIdent(mutable parser).text
+    while (isOk(parser) && accept(mutable parser, SYMBOL_DOT)) {
+      if (typeName == "") {
+        typeName = variant
+      } else {
+        typeName = `${typeName}.${variant}`
+      }
+      variant = expectIdent(mutable parser).text
+    }
+    if (isOk(parser) && typeName == "") {
+      failAt(
+        mutable parser,
+        typePos,
+        "E0990",
+        `@target ${argumentToken.text} takes a variant such as Os.Windows`,
+      )
+    }
+    if (isOk(parser)) {
+      Arrays.push(mutable arguments, TargetArgument {
+        pos: getPos(argumentToken),
+        name: argumentToken.text,
+        typeName: typeName,
+        typePos: typePos,
+        variant: variant,
+      })
+    }
+    if (!accept(mutable parser, SYMBOL_COMMA)) {
+      break
+    }
+  }
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
+  return TargetAttribute { pos: pos, arguments: arguments }
 }
 
 function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<Decl> {
@@ -1310,6 +1405,12 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
 
 function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   const header = parseFuncHeader(mutable parser, exported)
+  const conditions = parseRequiresLines(mutable parser)
+  const results = parseEnsuresLines(mutable parser)
+  // The body starts on the line after the last condition or pattern.
+  if (Arrays.length(conditions) > 0 || Arrays.length(results) > 0) {
+    skipNewlines(mutable parser)
+  }
   const savedResult = parser.resultFunction
   parser.resultFunction = false
   if (header.result is Some(resultType)) {
@@ -1317,7 +1418,55 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   }
   const body = parseBlock(mutable parser)
   parser.resultFunction = savedResult
-  return FuncDecl { ...header, body: Some(body) }
+  return FuncDecl { ...header, requires: conditions, ensures: results, body: Some(body) }
+}
+
+function parseRequiresLines(mutable parser: Parser): Array<Expr> {
+  let conditions: Array<Expr> = []
+  while (isOk(parser) && isContractLine(parser, "requires")) {
+    skipNewlines(mutable parser)
+    const lineStart = parser.index
+    advance(mutable parser)
+    const condition = parseExpr(mutable parser)
+    // The line is a node of its own, so the comments above it stay above it.
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, `q${Int.toString(getExprId(condition))}`, lineStart)
+    }
+    Arrays.push(mutable conditions, condition)
+  }
+  return conditions
+}
+
+function parseEnsuresLines(mutable parser: Parser): Array<Pattern> {
+  let patterns: Array<Pattern> = []
+  while (isOk(parser) && isContractLine(parser, "ensures")) {
+    skipNewlines(mutable parser)
+    const lineStart = parser.index
+    advance(mutable parser)
+    parser.contractPattern = true
+    const pattern = parsePattern(mutable parser)
+    parser.contractPattern = false
+    // The line is a node of its own, so the comments above it stay above it.
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, `n${Int.toString(getPatternId(pattern))}`, lineStart)
+    }
+    Arrays.push(mutable patterns, pattern)
+  }
+  return patterns
+}
+
+function isContractLine(parser: Parser, word: string): bool {
+  // `requires` and `ensures` are not keywords; they count only at the start of a line
+  // after the signature. A signature that ends in `>` is followed by no line break token.
+  let offset = 0
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset++
+  }
+  const token = peekToken(parser, offset)
+  if (token.kind != TokenKind.TokIdent || token.text != word || parser.index < 1) {
+    return false
+  }
+  return offset > 0 || token.line > parser.tokens[parser.index - 1].endLine
 }
 
 function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
@@ -1554,6 +1703,22 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
     const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
     const header = parseFuncHeader(mutable parser, false)
+    if (isContractLine(parser, "requires")) {
+      skipNewlines(mutable parser)
+      failHere(
+        mutable parser,
+        "E0984",
+        "requires needs a function body; a trait function has none, so state it on the implementations",
+      )
+    }
+    if (isContractLine(parser, "ensures")) {
+      skipNewlines(mutable parser)
+      failHere(
+        mutable parser,
+        "E0987",
+        "ensures needs a function body; a trait function has none, so state it on the implementations",
+      )
+    }
     if (isAt(parser, SYMBOL_LEFT_BRACE)) {
       failHere(
         mutable parser,
@@ -3430,6 +3595,15 @@ function parseSinglePattern(mutable parser: Parser): Pattern {
 function parsePatternBody(mutable parser: Parser): Pattern {
   const token = currentToken(parser)
   const pos = getPos(token)
+  if (parser.contractPattern && isComparisonToken(token)) {
+    // `>= 0`: the bound is a constant, which the checker folds.
+    advance(mutable parser)
+    const savedContract = parser.contractPattern
+    parser.contractPattern = false
+    const bound = parseUnary(mutable parser)
+    parser.contractPattern = savedContract
+    return Pattern.PatCompare(newId(mutable parser), pos, token.text, bound)
+  }
   if (isAt(parser, SYMBOL_LEFT_BRACE)) {
     advance(mutable parser)
     skipNewlines(mutable parser)
@@ -3526,6 +3700,15 @@ function parsePatternBody(mutable parser: Parser): Pattern {
     return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, [], true)
   }
   return Pattern.PatName(newId(mutable parser), pos, name)
+}
+
+function isComparisonToken(token: Token): bool {
+  return (token.kind == TokenKind.TokPunct &&
+    (token.text == "<" ||
+      token.text == "<=" ||
+      token.text == ">" ||
+      token.text == ">=" ||
+      token.text == "!="))
 }
 
 function parsePatternList(mutable parser: Parser, close: int): Array<Pattern> {

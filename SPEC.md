@@ -308,7 +308,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -596,7 +596,7 @@ export type Handler = typeof handle // (request: Request) => Response uses io
 ```
 
 - **Names only.** A field path or an expression after `typeof` is a parse error. A parameter can be named by the parameters after it in the same signature: `(request: Request, other: typeof request)`.
-- **A name that is not a value is E0982**: a type, a module, a generic function, a function with effect variables or a `mutable` parameter (none has a function type to write).
+- **A name that is not a value is E0982**: a type, a module, a generic function, a function with effect variables, a `mutable` parameter or `requires` lines (none has a function type to write).
 - **A `typeof` that refers to its own declaration is E0981**, for example `const count: typeof count = 1` or `function f(handler: typeof f)`.
 - **A constant without a written type** has the type of its value, which is known once the constant has been checked: `typeof` of it works in function bodies, but not in a declaration of the same module (a signature, a field, an alias), where it is E0982 and asks for the written type. A constant of another module is always checked first.
 - **Nothing reaches the emitted C**: the type is replaced by the type it stands for.
@@ -1538,29 +1538,67 @@ Code that differs by platform branches on constants from `std/build`. The compil
 
 ```ts
 import * as Build from "std/build"
+import { Os } from "std/build"
+import * as Env from "std/env"
+import * as Options from "std/option"
 
-export function configDir(): string uses io {
+export function configDir(): string uses io, alloc {
+  const home = Options.withDefault(Env.get("HOME"), "")
   if (Build.os == Os.Windows) {
-    return Env.get("APPDATA")
+    return Options.withDefault(Env.get("APPDATA"), home)
   } else if (Build.os == Os.MacOS) {
-    return `${Env.home()}/Library/Application Support`
+    return `${home}/Library/Application Support`
   } else {
-    return `${Env.home()}/.config`
+    return `${home}/.config`
   }
 }
 ```
 
-- **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. An `if` that tests only these constants is resolved at compile time. The output contains no runtime check.
-- **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed.
-- **`@target(os = Os.Windows)`** on a declaration makes it exist only on that target. Calling it outside a branch that guarantees that target is a compile error.
+- **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. `std/build` also exports their types, the enums `Os` (`MacOS`, `Linux`, `Windows`) and `Arch` (`Arm64`, `X86_64`). `Build.debug` is `false` in a `-release` build and `true` otherwise.
+- **The host is the target.** The compiler takes `Build.os` and `Build.arch` from the machine it runs on, read once per compiler process from `/usr/bin/uname -s -m` (not from `PATH`), and only when the package imports `std/build`. The supported targets are `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64` and `Linux-Arm64`. The environment variable `NARRA_HOST_TARGET`, when set, names the target as `<os>-<arch>` in place of `uname`; it is the only input besides the host that sets the target. A host, or a `NARRA_HOST_TARGET`, with no supported target is a compile error at the module's import of `std/build`, and so is a `uname` that cannot run.
+- **`narra emit` writes the C of a debug build.** The C of a release build comes from `narra build -release -emit-c file.c`.
+- **An `if` that tests only these constants is resolved at compile time.** The output contains no runtime check, only the matching branch, or nothing when no branch matches. The condition may combine the constants with `==`, `!=`, `is` (a variant without fields), `!`, `&&` and `||`, and each `else if` of a chain is resolved on its own. A condition that mixes the constants with any other value, or a `match` on them, is an ordinary runtime test.
+- **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed. The effects of every branch count toward the function's effects, the dropped ones included, so a function has the same signature on every target.
+- **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Only Narra functions take `@target` for now; other declarations do not.
+
+```ts
+import * as Build from "std/build"
+import { Os } from "std/build"
+
+@target(os = Os.MacOS)
+function macOpener(): string {
+  return "open"
+}
+
+@target(os = Os.Linux)
+function linuxOpener(): string {
+  return "xdg-open"
+}
+
+export function opener(): string {
+  if (Build.os == Os.MacOS) {
+    return macOpener()
+  } else if (Build.os == Os.Linux) {
+    return linuxOpener()
+  }
+  return "start"
+}
+```
+
+- **A use outside a branch that guarantees the target is a compile error.** On each target, a call to a `@target` function, or its use as a function value, is an error where the function does not exist, unless that target does not compile the use. A target does not compile:
+  - a branch that a build condition (above) drops on it, such as the then branch of `if (Build.os == Os.Windows)` on Linux, or the rest of an `else if` chain after the branch it keeps;
+  - the body of a `@target` function whose target it is not.
+
+  So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
+- **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
+- **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
+- The C interop form, `@target` on an `extern` function so that a C function is linked only when building for its target, waits for C interop:
 
 ```ts
 @target(os = Os.Windows)
 extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
 ```
 
-- A `@target` C function is linked only when building for its target.
-- `narra check --all-targets` type-checks the package for every supported target.
 - There are no per-platform file names and no preprocessor.
 
 ## 13. Tests and contracts
@@ -1600,16 +1638,63 @@ test "parse" {
 }
 ```
 
-- **Contracts.** `requires` and `ensures` lines between a function's signature and its body are checked in debug builds and removed in release builds. `ensures` refers to the return value as `result`.
+- **Contracts.** `requires` lines between a function's signature and its body state what each caller must prove (D95). They are proven at compile time; nothing is checked at run time.
 
 ```ts
-export function sqrt(x: f64): f64
-  requires x >= 0.0
-  ensures result >= 0.0
+export function pick(index: int, count: int): int
+  requires index >= 0 && index < 64
+  requires count != 0
 {
-  return Float.sqrt(x)
+  return index % count // count != 0 is known here
+}
+
+function pickChecked(n: int): int {
+  if (n >= 0 && n < 64) {
+    return pick(n, 8)     // a name the `if` checked proves the condition
+  }
+  return pick(3, 8)       // so do constants
 }
 ```
+
+- **A condition compares an integer parameter with an integer constant,** joined by `&&`: `==`, `!=`, `<`, `<=`, `>`, `>=`, with the parameter on either side. Constants are what division proofs accept (section 6): literals and top-level `const` values built from them. Any other condition is E0984: a float or other non-integer parameter, a field path, a call, `||`, or two parameters compared. Floats and field paths are a later extension.
+- **Each call proves every condition** from the argument for that parameter: an integer constant, or a name narrowed by a check (`if`, `while`, an early return), as for a divisor. A name with no check proves nothing, not even a bound at the end of the int range. The caller's own `requires` count, so `requires count > 0` lets the body pass `count` on to another function with `requires count != 0`. An unproven argument is E0985.
+- **In the body each condition is a known fact** about its parameter, until the parameter is assigned: a body with `requires divisor != 0` may divide by `divisor`.
+- **A function with `requires` cannot be used as a value** (E0986), and `typeof` of it is E0982: a function type carries no condition, so a call through the value could pass an unproven argument. Functions of an `implement` block cannot have `requires` (E0984), since a call through the trait proves nothing.
+- **`ensures` lines** follow the `requires` lines. Each is a pattern every result must match, with no named subject. Every `return` value is proven against each line; in a generator, every `yield` value, and `yield*` is E0988.
+
+```ts
+import * as Arrays from "std/array"
+
+function findIndex(items: Array<int>, wanted: int): Option<int>
+  ensures Some(>= 0) | None
+{
+  let index = 0
+  while (index < Arrays.length(items)) {
+    if (items[index] == wanted && index >= 0) {
+      return Some(index)   // index >= 0 is known here
+    }
+    index++
+  }
+  return None
+}
+
+function slot(index: int): int
+  requires index >= 0
+{
+  return index * 2
+}
+
+function firstSlot(items: Array<int>): int {
+  if (findIndex(items, 7) is Some(index)) {
+    return slot(index)       // the caller knows index >= 0
+  }
+  return 0
+}
+```
+
+- **The patterns are the patterns of `match`** (section 5), alternatives included, plus comparison patterns `< c`, `<= c`, `> c`, `>= c` and `!= c`, which are allowed only in `ensures`: `ensures >= 0`, `ensures Ok(> 0) | Err(_)`, `ensures #[>= 0, _]`, `ensures { width: > 0 }`, `ensures "GET" | "POST"`, `ensures != 0`. A comparison needs an integer place and a bound that is an integer constant fitting its type (E0987). The prover orders integers as `int`, so a u64 bound or literal pattern from 2^63 up is E0987 too, and so is a literal pattern `9223372036854775807` or `-9223372036854775807`: the ends of the int range stand for "no fact". An `ensures` pattern binds no names, and a function that returns nothing has no `ensures` (E0987).
+- **A value is proven** when it is written to match: a constructor, tuple or struct literal written in place whose parts are proven (a struct field must be written, not taken from a spread or a default), a literal written the same, an integer constant, or an integer name narrowed by a check. Anything else is E0988, including a call: `return g(x)` is not proven from g's own `ensures`; bind it first.
+- **A caller learns the pattern** as facts about integer names, the same facts a check gives: `const n = f()` (and `let n = f()` until it is assigned), the names bound by `f() is P`, by `match (f())` arms and by a destructuring of `f()`, the same for a `const r = f()` whose type has no contents that change in place, and the name of `for (const n of g())` for a generator `g`. A name bound by `Some(n)` learns what every alternative that can be `Some` says about its place. `!= 0` makes the name non-zero, so it can be a divisor; `!= c` for another `c` gives no fact.
 
 ## 14. Tooling for agents
 

@@ -3,6 +3,13 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
+import {
+  proveResult,
+  rejectDelegatedResults,
+  seedResultLocal,
+  seedPatternFacts,
+  seedLoopFacts,
+} from "narrac/contracts"
 import { splitString, substring } from "narrac/textops"
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
@@ -48,6 +55,7 @@ import {
   collectAssignedInStatement,
 } from "narrac/exprs"
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
+import { recordBuildCondition } from "narrac/buildconditions"
 import {
   getPatternId,
   collectPatternLocals,
@@ -351,6 +359,7 @@ function checkVariable<W: Walker>(
   const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
   setBinding(mutable checker, local, value, BindingKind.Plain)
   recordConstantLocal(mutable checker, local, value)
+  seedResultLocal(mutable checker, local, value)
 }
 
 function checkAssignment<W: Walker>(
@@ -602,12 +611,19 @@ function checkReturn<W: Walker>(
   const want = checker.resultType
   if (value is Some(expression)) {
     checkNoMutableEscape(mutable checker, expression)
+    const errorsBefore = Arrays.length(checker.errors)
     const found = checkExpression(mutable checker, walker, expression, Some(want))
     if (want == Type.TVoid) {
       reportError(mutable checker, pos, "E0231", "this function returns nothing")
       return
     }
     expectType(mutable checker, getExpressionPos(expression), Some(want), found)
+    // The function's `ensures` patterns hold for the value; an arrow's return is its own.
+    if (
+      Arrays.length(checker.errors) == errorsBefore && checker.bodies[checker.body].arrowDepth == 0
+    ) {
+      proveResult(mutable checker, expression)
+    }
   } else if (want != Type.TVoid) {
     const text = typeString(checker, want)
     reportError(mutable checker, pos, "E0230", `this function must return a ${text}`)
@@ -660,7 +676,7 @@ export function checkBlockBody<W: Walker>(
     )
     return Type.TVoid
   }
-  if (!endsInReturn(block)) {
+  if (!endsInReturn(checker, checker.body, block)) {
     reportError(
       mutable checker,
       pos,
@@ -734,43 +750,46 @@ function checkBlockReturn<W: Walker>(
   }
 }
 
-function endsInReturn(block: Block): bool {
+function endsInReturn(checker: Checker, bodyIndex: int, block: Block): bool {
   const count = Arrays.length(block.statements)
   if (count == 0) {
     return false
   }
-  return statementEndsInReturn(block.statements[count - 1])
+  return statementEndsInReturn(checker, bodyIndex, block.statements[count - 1])
 }
 
-function statementEndsInReturn(statement: Stmt): bool {
+function statementEndsInReturn(checker: Checker, bodyIndex: int, statement: Stmt): bool {
   return match (statement) {
     Stmt.ReturnStmt(_, _) => true
-    Stmt.BlockStmt(block) => endsInReturn(block)
-    Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(then, orElse)
-    Stmt.ExprStmt(_, expression) => isPanicCall(expression) || matchEndsInReturn(expression)
+    Stmt.BlockStmt(block) => endsInReturn(checker, bodyIndex, block)
+    Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(checker, bodyIndex, then, orElse)
+    Stmt.ExprStmt(_, expression) =>
+      isPanicCall(checker, bodyIndex, expression) ||
+      matchEndsInReturn(checker, bodyIndex, expression)
     _ => false
   }
 }
 
-function ifEndsInReturn(then: Block, orElse: Option<Stmt>): bool {
+function ifEndsInReturn(checker: Checker, bodyIndex: int, then: Block, orElse: Option<Stmt>): bool {
   if (orElse is Some(other)) {
-    return endsInReturn(then) && statementEndsInReturn(other)
+    return endsInReturn(checker, bodyIndex, then) &&
+      statementEndsInReturn(checker, bodyIndex, other)
   }
   return false
 }
 
-function matchEndsInReturn(expression: Expr): bool {
+function matchEndsInReturn(checker: Checker, bodyIndex: int, expression: Expr): bool {
   if (expression is Expr.MatchExpr(_, _, _, arms)) {
     if (Arrays.length(arms) == 0) {
       return false
     }
     for (const arm of Arrays.values(arms)) {
       if (arm.block is Some(armBlock)) {
-        if (!endsInReturn(armBlock)) {
+        if (!endsInReturn(checker, bodyIndex, armBlock)) {
           return false
         }
       } else if (arm.body is Some(armBody)) {
-        if (!isPanicCall(armBody)) {
+        if (!isPanicCall(checker, bodyIndex, armBody)) {
           return false
         }
       } else {
@@ -793,8 +812,10 @@ function checkIf<W: Walker>(
   // the subject in the branches when it is a `const` local.
   // The whole condition may be an `is` test, the only place that binds.
   let testPattern: Option<Pattern> = None
+  let testedValue: Option<Expr> = None
   let subject = -1
   if (condition is Expr.IsExpr(testId, testPos, testSubject, pattern)) {
+    testedValue = Some(testSubject)
     const found = checkIs(mutable checker, walker, testPos, testSubject, pattern, true)
     setNodeType(mutable checker, testId, found)
     expectType(mutable checker, testPos, Some(Type.TBool), found)
@@ -803,6 +824,7 @@ function checkIf<W: Walker>(
   } else {
     checkCondition(mutable checker, walker, condition)
   }
+  recordBuildCondition(mutable checker, condition, then, orElse)
 
   // The variant the test names, when its pattern is a constructor or name.
   let enumIndex = -1
@@ -823,6 +845,9 @@ function checkIf<W: Walker>(
     let locals: Array<int> = []
     collectPatternLocals(checker, boundPattern, mutable locals)
     bindPatternLocals(mutable checker, locals)
+    if (testedValue is Some(testedSubject)) {
+      seedPatternFacts(mutable checker, testedSubject, boundPattern)
+    }
   }
   if (variantIndex >= 0) {
     setNarrowed(mutable checker, subject, variantIndex)
@@ -849,7 +874,7 @@ function checkIf<W: Walker>(
     narrowByCondition(mutable checker, condition, false)
     checkStatement(mutable checker, walker, other)
     popScope(mutable checker)
-  } else if (diverges(then)) {
+  } else if (diverges(checker, checker.body, then)) {
     if (otherVariant >= 0) {
       setNarrowed(mutable checker, subject, otherVariant)
     }
@@ -1012,6 +1037,7 @@ function checkFor<W: Walker>(
   const local = declareLocal(mutable checker, nodeId, pos, name, element, false, false)
   const bodyIndex = checker.body
   checker.bodies[bodyIndex].locals[local].binding = BindingKind.Loop
+  seedLoopFacts(mutable checker, local, iterable)
   let source = iterable
   if (builtin == "Array.values" || builtin == "Array.entries") {
     if (iterable is Expr.CallExpr(_, _, _, _, sourceArguments)) {
@@ -1255,11 +1281,16 @@ function checkYield<W: Walker>(
       return
     }
     if (!delegate) {
+      const errorsBefore = Arrays.length(checker.errors)
       const found = checkExpression(mutable checker, walker, value, Some(element))
       expectType(mutable checker, getExpressionPos(value), Some(element), found)
+      if (Arrays.length(checker.errors) == errorsBefore) {
+        proveResult(mutable checker, value)
+      }
       declareYieldInput(mutable checker, binding, input)
       return
     }
+    rejectDelegatedResults(mutable checker, pos)
     const found = checkExpression(mutable checker, walker, value, None)
     let matches = false
     if (found is Type.TGenerator(otherElement, _, _, _, _)) {
@@ -1300,27 +1331,27 @@ export function isResult(checker: Checker, valueType: Type): bool {
   return false
 }
 
-export function diverges(block: Block): bool {
+export function diverges(checker: Checker, bodyIndex: int, block: Block): bool {
   const count = Arrays.length(block.statements)
   if (count == 0) {
     return false
   }
-  return statementDiverges(block.statements[count - 1])
+  return statementDiverges(checker, bodyIndex, block.statements[count - 1])
 }
 
-function statementDiverges(statement: Stmt): bool {
+function statementDiverges(checker: Checker, bodyIndex: int, statement: Stmt): bool {
   return match (statement) {
     Stmt.ReturnStmt(_, _) | Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => true
-    Stmt.ExprStmt(_, expression) => isPanicCall(expression)
-    Stmt.IfStmt(_, _, then, orElse) => ifDiverges(then, orElse)
-    Stmt.BlockStmt(block) => diverges(block)
+    Stmt.ExprStmt(_, expression) => isPanicCall(checker, bodyIndex, expression)
+    Stmt.IfStmt(_, _, then, orElse) => ifDiverges(checker, bodyIndex, then, orElse)
+    Stmt.BlockStmt(block) => diverges(checker, bodyIndex, block)
     _ => false
   }
 }
 
-function ifDiverges(then: Block, orElse: Option<Stmt>): bool {
+function ifDiverges(checker: Checker, bodyIndex: int, then: Block, orElse: Option<Stmt>): bool {
   if (orElse is Some(other)) {
-    return diverges(then) && statementDiverges(other)
+    return diverges(checker, bodyIndex, then) && statementDiverges(checker, bodyIndex, other)
   }
   return false
 }

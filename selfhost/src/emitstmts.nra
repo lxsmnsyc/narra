@@ -45,6 +45,7 @@ import {
   localName,
   containerName,
   underlyingType,
+  useHelper,
 } from "narrac/emitstate"
 import { pointerTemp, declaredLocal, emitArithmetic } from "narrac/emitexprs"
 import * as Generators from "narrac/emitgenerators"
@@ -375,6 +376,11 @@ function emitIf<W: EmitWalker>(
   then: Block,
   orElse: Option<Stmt>,
 ) uses alloc {
+  // A condition decided by the build target keeps one branch and no test.
+  if (emitter.checker.foldedConditions[getExpressionId(condition)] is Some(holds)) {
+    emitKeptBranch(walker, mutable emitter, holds, then, orElse)
+    return
+  }
   if (condition is Expr.IsExpr(_, _, _, _)) {
     Match.emitIfIs(walker, mutable emitter, statement)
     return
@@ -400,6 +406,34 @@ function emitIf<W: EmitWalker>(
   writeLine(mutable emitter, "}")
 }
 
+function emitKeptBranch<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  holds: bool,
+  then: Block,
+  orElse: Option<Stmt>,
+) uses alloc {
+  if (holds) {
+    writeLine(mutable emitter, "{")
+    emitter.indent++
+    emitBlock(walker, mutable emitter, then, false)
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+    return
+  }
+  if (orElse is Some(otherwise)) {
+    writeLine(mutable emitter, "{")
+    emitter.indent++
+    if (otherwise is Stmt.BlockStmt(elseBlock)) {
+      emitBlock(walker, mutable emitter, elseBlock, false)
+    } else {
+      emitStatement(walker, mutable emitter, otherwise)
+    }
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+  }
+}
+
 function emitLoopBody<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -410,6 +444,13 @@ function emitLoopBody<W: EmitWalker>(
   enterLoop(mutable emitter, label, pos)
   emitBlock(walker, mutable emitter, body, true)
   emitContinueLabel(mutable emitter)
+}
+
+function isLiteralTrue(condition: Expr): bool {
+  if (condition is Expr.BoolLit(_, _, value)) {
+    return value
+  }
+  return false
 }
 
 function emitWhile<W: EmitWalker>(
@@ -429,11 +470,14 @@ function emitWhile<W: EmitWalker>(
   const firstFlag = declareFirstIterationFlag(mutable emitter, hoisted)
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
-  beginStatement(mutable emitter)
-  const code = EmitWalker.emitExpression(walker, mutable emitter, condition)
-  const holds = temp(mutable emitter, Type.TBool, code.text)
-  endStatement(mutable emitter)
-  writeLine(mutable emitter, `if (!${holds}) break;`)
+  // A condition that is the literal `true` gets no test, so the C compiler sees an endless loop.
+  if (!isLiteralTrue(condition)) {
+    beginStatement(mutable emitter)
+    const code = EmitWalker.emitExpression(walker, mutable emitter, condition)
+    const holds = temp(mutable emitter, Type.TBool, code.text)
+    endStatement(mutable emitter)
+    writeLine(mutable emitter, `if (!${holds}) break;`)
+  }
   emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   emitLoopBody(walker, mutable emitter, label, pos, body)
   const info = leaveLoop(mutable emitter)
@@ -479,11 +523,13 @@ function emitCFor<W: EmitWalker>(
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
   if (condition is Some(loopCondition)) {
-    beginStatement(mutable emitter)
-    const code = EmitWalker.emitExpression(walker, mutable emitter, loopCondition)
-    const holds = temp(mutable emitter, Type.TBool, code.text)
-    endStatement(mutable emitter)
-    writeLine(mutable emitter, `if (!${holds}) break;`)
+    if (!isLiteralTrue(loopCondition)) {
+      beginStatement(mutable emitter)
+      const code = EmitWalker.emitExpression(walker, mutable emitter, loopCondition)
+      const holds = temp(mutable emitter, Type.TBool, code.text)
+      endStatement(mutable emitter)
+      writeLine(mutable emitter, `if (!${holds}) break;`)
+    }
     emitFirstIterationUniques(walker, mutable emitter, hoisted, firstFlag)
   }
   enterLoop(mutable emitter, label, pos)
@@ -660,7 +706,8 @@ function emitReferenceFor<W: EmitWalker>(
     const arrayStruct = containerName(emitter, arrayType)
     const place = EmitWalker.emitLvaluePointer(walker, mutable emitter, source)
     const pointer = pointerTemp(mutable emitter, arrayType, place)
-    writeLine(mutable emitter, `*${pointer} = ${arrayStruct}_unique(*${pointer});`)
+    const uniqueHelper = useHelper(emitter, arrayStruct, "unique")
+    writeLine(mutable emitter, `*${pointer} = ${uniqueHelper}(*${pointer});`)
     const array = temp(mutable emitter, arrayType, `*${pointer}`)
     emitter.tempCount++
     const indexName = `i${Int.toString(emitter.tempCount)}`
@@ -824,7 +871,8 @@ function emitHoistedUniques<W: EmitWalker>(
     const arrayStruct = containerName(emitter, arrayType)
     const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, place)
     const pointer = pointerTemp(mutable emitter, arrayType, location)
-    writeLine(mutable emitter, `*${pointer} = ${arrayStruct}_unique(*${pointer});`)
+    const uniqueHelper = useHelper(emitter, arrayStruct, "unique")
+    writeLine(mutable emitter, `*${pointer} = ${uniqueHelper}(*${pointer});`)
   }
 }
 
@@ -1048,7 +1096,7 @@ function scanHoistExpression(
       scanHoistExpression(emitter, mutable scan, index)
     }
     Expr.CallExpr(callId, _, callee, _, arguments) => {
-      if (isPanicCall(expression)) {
+      if (isPanicCall(emitter.checker, emitter.body, expression)) {
         scan.exits++
       }
       scanHoistExpression(emitter, mutable scan, callee)

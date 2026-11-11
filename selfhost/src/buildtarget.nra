@@ -1,0 +1,142 @@
+// The target a program is built for: the values of Build.os, Build.arch and
+// Build.debug (std/build). TARGETS is the one table of supported targets;
+// cross-targets adds rows and columns to it.
+import * as Arrays from "std/array"
+import * as Env from "std/env"
+import * as Int from "std/int"
+import * as Process from "std/process"
+import * as Str from "std/string"
+import { Pos } from "narrac/ast"
+
+// os and arch are variant names of the Os and Arch enums of std/build. An
+// empty os means no target was chosen: the package does not import std/build,
+// the host has no row in TARGETS (unsupportedHost then names it), or the host
+// could not be read (hostError then says why).
+export struct BuildTarget {
+  os: string
+  arch: string
+  debug: bool
+  unsupportedHost: string
+  hostError: string = ""
+}
+
+// One supported target, and the `uname -s` and `uname -m` of a host that is it.
+export struct TargetRow {
+  os: string
+  arch: string
+  system: string
+  machine: string
+}
+
+export const TARGETS: Array<TargetRow> = [
+  TargetRow { os: "MacOS", arch: "Arm64", system: "Darwin", machine: "arm64" },
+  TargetRow { os: "MacOS", arch: "X86_64", system: "Darwin", machine: "x86_64" },
+  TargetRow { os: "Linux", arch: "X86_64", system: "Linux", machine: "x86_64" },
+  TargetRow { os: "Linux", arch: "Arm64", system: "Linux", machine: "aarch64" },
+]
+
+// What a `@target` function needs: the variant names its attribute gives,
+// "" for os or arch when it does not name one.
+export struct TargetRequirement {
+  os: string
+  arch: string
+}
+
+// The source of a branch the target drops, in the module of scope (Checker.scopes),
+// from start to end inclusive.
+export struct DroppedRange {
+  scope: int
+  start: Pos
+  end: Pos
+}
+
+// The environment variable that names the host target as `<os>-<arch>`
+// (`Linux-X86_64`), in place of asking uname.
+const HOST_OVERRIDE = "NARRA_HOST_TARGET"
+
+const UNAME_PATH = "/usr/bin/uname"
+
+export function createUnknownTarget(debug: bool): BuildTarget {
+  return BuildTarget { os: "", arch: "", debug: debug, unsupportedHost: "" }
+}
+
+export function detectHostTarget(debug: bool): BuildTarget uses io, alloc {
+  // An override names a row by its os and arch.
+  if (Env.get(HOST_OVERRIDE) is Some(named)) {
+    for (const row of Arrays.values(TARGETS)) {
+      if (named == `${row.os}-${row.arch}`) {
+        return createTarget(row, debug)
+      }
+    }
+    return BuildTarget { os: "", arch: "", debug: debug, unsupportedHost: named }
+  }
+  // uname prints the system and the machine on one line: "Darwin arm64".
+  const ran = Process.run(UNAME_PATH, ["-s", "-m"])
+  if (ran is Err(message)) {
+    return createFailedTarget(debug, message)
+  }
+  const #[code, output, errorOutput] = ran.value
+  if (code != 0) {
+    return createFailedTarget(
+      debug,
+      `${UNAME_PATH} exited with status ${Int.toString(code)}: ${Str.trim(errorOutput)}`,
+    )
+  }
+  const host = Str.trim(output)
+  for (const row of Arrays.values(TARGETS)) {
+    if (host == `${row.system} ${row.machine}`) {
+      return createTarget(row, debug)
+    }
+  }
+  return BuildTarget { os: "", arch: "", debug: debug, unsupportedHost: host }
+}
+
+export function describeTargets(): string uses alloc {
+  let names: Array<string> = []
+  for (const row of Arrays.values(TARGETS)) {
+    Arrays.push(mutable names, `${row.os}-${row.arch}`)
+  }
+  return Str.join(names, ", ")
+}
+
+export function listTargets(debug: bool): Array<BuildTarget> uses alloc {
+  let targets: Array<BuildTarget> = []
+  for (const row of Arrays.values(TARGETS)) {
+    Arrays.push(mutable targets, createTarget(row, debug))
+  }
+  return targets
+}
+
+export function describeTarget(target: BuildTarget): string uses alloc {
+  return `${target.os}-${target.arch}`
+}
+
+export function isTargetMet(requirement: TargetRequirement, target: BuildTarget): bool {
+  return (requirement.os == "" || requirement.os == target.os) &&
+    (requirement.arch == "" || requirement.arch == target.arch)
+}
+
+export function describeRequirement(requirement: TargetRequirement): string uses alloc {
+  let parts: Array<string> = []
+  if (requirement.os != "") {
+    Arrays.push(mutable parts, `os = Os.${requirement.os}`)
+  }
+  if (requirement.arch != "") {
+    Arrays.push(mutable parts, `arch = Arch.${requirement.arch}`)
+  }
+  return Str.join(parts, ", ")
+}
+
+function createTarget(row: TargetRow, debug: bool): BuildTarget uses alloc {
+  return BuildTarget { os: row.os, arch: row.arch, debug: debug, unsupportedHost: "" }
+}
+
+function createFailedTarget(debug: bool, reason: string): BuildTarget {
+  return BuildTarget {
+    os: "",
+    arch: "",
+    debug: debug,
+    unsupportedHost: "",
+    hostError: reason,
+  }
+}

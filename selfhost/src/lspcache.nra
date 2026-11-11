@@ -28,6 +28,8 @@ import * as Io from "std/io"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
 import { Decl } from "narrac/ast"
+import { importsBuildModule } from "narrac/buildconditions"
+import { BuildTarget, createUnknownTarget, detectHostTarget } from "narrac/buildtarget"
 import * as Body from "narrac/body"
 import { CheckError } from "narrac/check"
 import * as Effects from "narrac/effects"
@@ -63,6 +65,8 @@ export struct CheckCache {
   valid: bool
   full: bool
   trace: bool
+  // The host target, read once per server process.
+  hostTarget: Option<BuildTarget> = None
 }
 
 export function createCheckCache(): CheckCache uses alloc {
@@ -147,11 +151,28 @@ function canReuse(cache: CheckCache, package: Package): bool {
   return true
 }
 
+function chooseServerTarget(
+  mutable cache: CheckCache,
+  package: Package,
+): BuildTarget uses io, alloc {
+  // The language server checks for the host, in debug mode.
+  if (!importsBuildModule(package)) {
+    return createUnknownTarget(true)
+  }
+  if (cache.hostTarget is Some(known)) {
+    return copy(known)
+  }
+  const detected = detectHostTarget(true)
+  cache.hostTarget = Some(copy(detected))
+  return detected
+}
+
 function checkWhole(
   mutable cache: CheckCache,
   package: Package,
 ): Array<CheckError> from package uses io, alloc {
-  const result = Body.checkModules(package, Map {})
+  const target = chooseServerTarget(mutable cache, package)
+  const result = Body.checkModules(package, Map {}, target)
   let checker = copy(result.checker)
   const unusedRan = result.unusedStart == 0
   const checkCount = Arrays.length(checker.errors)
@@ -214,6 +235,7 @@ function checkChanged(
 ): Result<Array<CheckError>, Array<string>> from cache uses io, alloc {
   // An Err lists the modules to add to extra, the modules checked anyway, and is empty when
   // the whole package must be checked.
+  const target = chooseServerTarget(mutable cache, package)
   // The changed modules, and those whose signature changed.
   let dirty = copy(extra)
   let reach: Array<string> = []
@@ -247,7 +269,7 @@ function checkChanged(
       skipped[module.path] = true
     }
   }
-  const result = Body.checkModules(package, skipped)
+  const result = Body.checkModules(package, skipped, target)
   if (result.queuedErrors > 0) {
     return Err([])
   }

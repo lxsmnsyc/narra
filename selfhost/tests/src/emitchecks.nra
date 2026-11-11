@@ -10,18 +10,43 @@
 //                      the C names of the types the program already had
 //   proven-operands/no-panic-path   the C of a program with proven divisors and
 //                      shift counts has no division or shift panic
+//   endless-loop/return-type   the C of testdata/endless_loop_returns.nra, whose
+//                      functions end in an endless loop, compiles with
+//                      -Werror=return-type
+//   build-conditions/one-branch   the C of testdata/build_os.nra holds the
+//                      host's branch of an if on Build.os and no other
+//   build-conditions/unsupported-host   with NARRA_HOST_TARGET naming no
+//                      supported target, a program importing std/build fails
+//                      with one error per module
+//   tree-shake/unreached   the C of testdata/tree_shake.nra has no unreached
+//                      function, generic instance, trait implementation or
+//                      constant
+//   tree-shake/std-source   the C of bench/fib/fib.nra has none of the
+//                      std/int functions written in Narra, which it never calls
+//   tree-shake/unused-types   the C of bench/fib/fib.nra has no type that only
+//                      unreached code uses, and no array function it never calls
+//   build-targets/outside-branch   `narrac check --all-targets` reports a use
+//                      of a `@target` function outside a guaranteeing branch
+//                      once per target it fails on
+//   build-targets/other-target   a use that passes `narrac check` on a
+//                      Linux-X86_64 host fails `check --all-targets` on Linux-Arm64
+//   build-targets/release-only   a use kept only when Build.debug is false
+//                      fails `check --all-targets` in the release builds
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
+import * as Int from "std/int"
 import * as Path from "std/path"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Scratch from "testrunner/scratch"
 import * as Shell from "testrunner/shell"
+import { readHostSystem } from "testrunner/programs"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   const emitErrors = Path.join(context.testdata, "emit-errors")
   const cnames = Path.join(context.testdata, "cnames")
+  const buildTargets = Path.join(context.testdata, "build-targets")
   return [
     makeCase("emit-errors/noentry", Path.join(emitErrors, "noentry.nra"), "noentry"),
     makeCase(
@@ -40,6 +65,47 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       "proven-operands/no-panic-path",
       Path.join(context.testdata, "proven_operands.nra"),
       "no-panic-path",
+    ),
+    makeCase(
+      "endless-loop/return-type",
+      Path.join(context.testdata, "endless_loop_returns.nra"),
+      "endless-loop",
+    ),
+    makeCase(
+      "build-conditions/one-branch",
+      Path.join(context.testdata, "build_os.nra"),
+      "one-branch",
+    ),
+    makeCase(
+      "build-conditions/unsupported-host",
+      Path.join(context.testdata, "build_os.nra"),
+      "unsupported-host",
+    ),
+    makeCase("tree-shake/unreached", Path.join(context.testdata, "tree_shake.nra"), "unreached"),
+    makeCase(
+      "tree-shake/std-source",
+      Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
+      "std-source",
+    ),
+    makeCase(
+      "tree-shake/unused-types",
+      Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
+      "unused-types",
+    ),
+    makeCase(
+      "build-targets/outside-branch",
+      Path.join(buildTargets, "outside_branch.nra"),
+      "outside-branch",
+    ),
+    makeCase(
+      "build-targets/other-target",
+      Path.join(buildTargets, "other_target.nra"),
+      "other-target",
+    ),
+    makeCase(
+      "build-targets/release-only",
+      Path.join(buildTargets, "release_only.nra"),
+      "release-only",
     ),
   ]
 }
@@ -63,6 +129,33 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "no-panic-path") {
     return checkNoOperandPanic(context, testCase.path)
+  }
+  if (testCase.variant == "endless-loop") {
+    return checkEndlessLoop(context, testCase.path)
+  }
+  if (testCase.variant == "one-branch") {
+    return checkOneBranch(context, testCase.path)
+  }
+  if (testCase.variant == "unsupported-host") {
+    return checkUnsupportedHost(context, testCase.path)
+  }
+  if (testCase.variant == "unreached") {
+    return checkUnreached(context, testCase.path)
+  }
+  if (testCase.variant == "std-source") {
+    return checkStdSourceShaken(context, testCase.path)
+  }
+  if (testCase.variant == "unused-types") {
+    return checkUnusedTypesShaken(context, testCase.path)
+  }
+  if (testCase.variant == "outside-branch") {
+    return checkAllTargets(context, testCase.path, "outside_branch.err", false)
+  }
+  if (testCase.variant == "other-target") {
+    return checkAllTargets(context, testCase.path, "other_target.err", true)
+  }
+  if (testCase.variant == "release-only") {
+    return checkAllTargets(context, testCase.path, "release_only.err", false)
   }
   if (testCase.variant == "xxh32") {
     return checkHashVectors(context)
@@ -108,6 +201,173 @@ function checkNoOperandPanic(
     return Err("the emitted C has no division or shift to check")
   }
   return Ok(true)
+}
+
+function checkEndlessLoop(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const target = Path.join(scratch.work, "endless.c")
+  let outcome: Result<bool, string> = Ok(true)
+  const written = Scratch.writeFile(target, result.output)
+  if (written is Err(message)) {
+    outcome = Err(message)
+  } else {
+    const compiled = Shell.runScript(
+      "cc -std=c11 -Wreturn-type -Werror=return-type -fsyntax-only \"$1\"",
+      [target],
+    )
+    if (compiled.code != 0) {
+      outcome = Err(`cc rejects the C: ${Common.describeRun(compiled)}`)
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function checkOneBranch(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // Each branch returns its own string; only the host's may reach the C.
+  let kept = "kept the Linux branch"
+  if (readHostSystem() == "darwin") {
+    kept = "kept the macOS branch"
+  }
+  const branches = ["kept the macOS branch", "kept the Linux branch", "kept the Windows branch"]
+  for (const text of Arrays.values(branches)) {
+    if (Str.contains(result.output, text) != (text == kept)) {
+      return Err(`the emitted C should hold only "${kept}"; "${text}" is wrong`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkUnreached(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // Names of the reached declarations must be in the C, the unreached ones must not.
+  const reached = ["reachedHelper", "Shown_Show_show_", "usedNames"]
+  for (const name of Arrays.values(reached)) {
+    if (!Str.contains(result.output, name)) {
+      return Err(`the emitted C should hold "${name}"`)
+    }
+  }
+  const unreached = ["unreachedHelper", "Hidden_Show_show_", "unreachedNames"]
+  for (const name of Arrays.values(unreached)) {
+    if (Str.contains(result.output, name)) {
+      return Err(`the emitted C should not hold "${name}"`)
+    }
+  }
+  // pick has an int and a string instance; only the int one is reached.
+  let definitions = 0
+  for (const line of Arrays.values(splitString(result.output, "\n"))) {
+    if (
+      Str.startsWith(line, "static ") && Str.contains(line, "_pick_") && Str.endsWith(line, "{")
+    ) {
+      definitions++
+    }
+  }
+  if (definitions != 1) {
+    return Err(`want one definition of an instance of pick, got ${Int.toString(definitions)}`)
+  }
+  return Ok(true)
+}
+
+function checkStdSourceShaken(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  for (const name of Arrays.values(["_compare(", "_divmod(", "_floorDiv("])) {
+    if (Str.contains(result.output, name)) {
+      return Err(`the emitted C should not hold "${name}"`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkUnusedTypesShaken(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  // fib reaches Array<string> (the arguments) through main only, by _new and
+  // _release. Option<int> and #[int, int] come from std/int functions it never
+  // calls.
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  for (const text of Arrays.values([
+    "= Option<int> */",
+    "= #[int, int] */",
+    "_get(",
+    "_push(",
+    "_filled(",
+  ])) {
+    if (Str.contains(result.output, text)) {
+      return Err(`the emitted C should not hold "${text}"`)
+    }
+  }
+  for (const text of Arrays.values(["= Array<string> */", "_new(int64_t cap)", "_release("])) {
+    if (!Str.contains(result.output, text)) {
+      return Err(`the emitted C should hold "${text}"`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkUnsupportedHost(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  // NARRA_HOST_TARGET names a host with no target. The sample imports std/build
+  // twice, and the error comes once for the module.
+  const result = Common.runNarracWith(
+    context,
+    "",
+    ["NARRA_HOST_TARGET=Plan9-mips"],
+    ["check", source],
+  )
+  const want = "std/build has no target for this host (Plan9-mips)"
+  const count = Arrays.length(splitString(result.errorOutput, want)) - 1
+  if (result.code != 1 || count != 1) {
+    return Err(`want exit code 1 and "${want}" once, got ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+function checkAllTargets(
+  context: Context,
+  source: string,
+  goldenName: string,
+  passesOnHost: bool,
+): Result<bool, string> uses io, alloc {
+  // The error must be on a target other than the host's.
+  if (passesOnHost) {
+    const host = Common.runNarracWith(
+      context,
+      "",
+      ["NARRA_HOST_TARGET=Linux-X86_64"],
+      ["check", source],
+    )
+    if (host.code != 0) {
+      return Err(`want no error for Linux-X86_64, got ${Common.describeRun(host)}`)
+    }
+  }
+  return expectEmitError(context, ["check", "--all-targets", source], source, goldenName)
 }
 
 function emitIn(context: Context, folder: string): Result<string, string> uses io, alloc {

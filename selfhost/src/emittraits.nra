@@ -2,8 +2,9 @@
 // equality, ported from emit_traits.go by selfhost-emit-traits.
 //
 // useEq, useHash, useCmp and useShow register the need for a function and
-// return its C name. emitTraitFunctions writes every needed function; the
-// definitions can register more needs, so it loops by index as Go does.
+// return its C name. emitTraitFunctions writes every needed function not
+// written yet; the definitions can register more needs, so it loops by index
+// as Go does. buildTraitText joins what it wrote.
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -23,6 +24,7 @@ import {
   ownedTemp,
   cString,
   buildVariantFieldPath,
+  noteReference,
 } from "narrac/emitstate"
 
 function traitMember(operation: string): string {
@@ -191,23 +193,32 @@ export function emitTraitCall<W: EmitWalker>(
   return Code { text: "0", owned: false }
 }
 
-export function emitTraitFunctions(mutable emitter: Emitter): string uses alloc {
+export function emitTraitFunctions(mutable emitter: Emitter): bool uses alloc {
   // Definitions can use more functions, so the list grows while this runs.
-  if (Arrays.length(emitter.traitNeeds) == 0) {
-    return ""
+  let wrote = false
+  while (Arrays.length(emitter.traitPrototypes) < Arrays.length(emitter.traitNeeds)) {
+    const need = emitter.traitNeeds[Arrays.length(emitter.traitPrototypes)]
+    let definition = Str.builder()
+    const prototype = writeDefinition(mutable emitter, mutable definition, need)
+    Arrays.push(mutable emitter.traitPrototypes, prototype)
+    Arrays.push(mutable emitter.traitDefinitions, Str.build(definition))
+    wrote = true
   }
-  let prototypes: Array<string> = []
-  let definitions = Str.builder()
-  for (let index = 0; index < Arrays.length(emitter.traitNeeds); index++) {
-    const need = emitter.traitNeeds[index]
-    Arrays.push(mutable prototypes, writeDefinition(mutable emitter, mutable definitions, need))
+  return wrote
+}
+
+export function buildTraitText(emitter: Emitter): string uses alloc {
+  if (Arrays.length(emitter.traitPrototypes) == 0) {
+    return ""
   }
   let builder = Str.builder()
   Str.append(mutable builder, "\n// Trait functions\n")
-  for (const prototype of Arrays.values(prototypes)) {
+  for (const prototype of Arrays.values(emitter.traitPrototypes)) {
     Str.append(mutable builder, `${prototype};\n`)
   }
-  Str.append(mutable builder, Str.build(definitions))
+  for (const definition of Arrays.values(emitter.traitDefinitions)) {
+    Str.append(mutable builder, definition)
+  }
   return Str.build(builder)
 }
 
@@ -242,6 +253,7 @@ function writeDefinition(
       emitter.typeNames,
       ProgramFunc.ImplFunc(implementation.block, implementation.index),
     )
+    noteReference(mutable emitter, call)
     // The implementation takes a large value by pointer.
     let pointer = ""
     if (isPassedByPointer(emitter.checker, need.needType)) {

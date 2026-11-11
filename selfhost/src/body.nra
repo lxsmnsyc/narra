@@ -24,9 +24,12 @@ import {
   Param,
   Arg,
   FieldInit,
+  Pattern,
 } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
+import { BuildTarget, createUnknownTarget } from "narrac/buildtarget"
+import { applyBuildTarget, reportUnsupportedHost } from "narrac/buildconditions"
 import { Type, Field } from "narrac/types"
 import {
   Checker,
@@ -58,6 +61,12 @@ import { checkSharedResults, checkSharedResultsIn } from "narrac/sharedresults"
 import * as Match from "narrac/match"
 import * as Literals from "narrac/literals"
 import * as Calls from "narrac/calls"
+import {
+  checkRequires,
+  checkEnsures,
+  checkContractCalls,
+  collectModuleRequirements,
+} from "narrac/contracts"
 import * as Ctors from "narrac/ctors"
 import * as Closures from "narrac/closures"
 import * as StdCalls from "narrac/stdcalls"
@@ -80,6 +89,15 @@ implement Walker for BodyWalker {
 
   function checkBlock(walker: BodyWalker, mutable checker: Checker, block: Block) uses alloc {
     Stmts.checkBlock(mutable checker, walker, block)
+  }
+
+  function resolvePattern(
+    walker: BodyWalker,
+    mutable checker: Checker,
+    pattern: Pattern,
+    valueType: Type,
+  ) uses alloc {
+    Match.resolvePattern(mutable checker, walker, pattern, valueType)
   }
 
   function checkPatterns(
@@ -207,7 +225,14 @@ implement Walker for BodyWalker {
 }
 
 export function checkPackage(package: Package): Checker from package uses alloc {
-  return checkModules(package, Map {}).checker
+  return checkModules(package, Map {}, createUnknownTarget(true)).checker
+}
+
+export function checkPackageFor(
+  package: Package,
+  target: BuildTarget,
+): Checker from package uses alloc {
+  return checkModules(package, Map {}, target).checker
 }
 
 // The result of checkModules. The errors before unusedStart come from the
@@ -223,8 +248,11 @@ export struct ModulesCheck {
 export function checkModules(
   package: Package,
   skipped: Map<string, bool>,
+  target: BuildTarget,
 ): ModulesCheck from package uses alloc {
   let checker = newPackageChecker(package)
+  checker.buildTarget = copy(target)
+  reportUnsupportedHost(mutable checker, package)
   if (Arrays.length(checker.errors) > 0 && Arrays.length(checker.scopes) == 0) {
     const count = Arrays.length(checker.errors)
     return ModulesCheck { checker: checker, unusedStart: count, queuedErrors: 0 }
@@ -235,8 +263,10 @@ export function checkModules(
   let queuedErrors = 0
 
   // Each module: declarations, field defaults, bodies.
-  for (const module of Arrays.values(package.modules)) {
+  for (const sourceModule of Arrays.values(package.modules)) {
+    const module = applyBuildTarget(sourceModule, target)
     declareSourceModule(mutable checker, module)
+    collectModuleRequirements(mutable checker, module.ast)
     const beforeDefaults = Arrays.length(checker.errors)
     checkQueuedDefaults(mutable checker, walker)
     queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforeDefaults
@@ -251,6 +281,7 @@ export function checkModules(
   const beforePending = Arrays.length(checker.errors)
   checkPending(mutable checker, walker)
   queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforePending
+  checkContractCalls(mutable checker)
   flushMapKeys(mutable checker)
   checkEntries(mutable checker, package)
   const concrete = checker.concrete
@@ -501,6 +532,8 @@ function checkFunctionBody(
     keyBody(mutable checker, key)
   }
   declareParams(mutable checker, funcDecl.parameters, paramTypes)
+  checkRequires(mutable checker, walker, funcDecl, funcIndex, Arrays.length(typeArguments) > 0)
+  checkEnsures(mutable checker, walker, funcDecl, Arrays.length(typeArguments) > 0)
   if (funcDecl.body is Some(block)) {
     Stmts.checkBlock(mutable checker, walker, block)
     // An instance of a generic function repeats what its declaration was checked for.

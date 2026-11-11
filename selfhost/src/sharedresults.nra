@@ -50,9 +50,18 @@ struct ReturnSite {
   value: Expr
 }
 
+// One value a local was given, linked to the next value given to the same local.
+struct GivenValue {
+  value: Expr
+  next: int
+}
+
 struct SharingFacts {
-  // The values each local of the body was given, by BodyInfo.locals index.
-  given: Map<int, Array<Expr>>
+  // The values each local of the body was given, as lists linked through givens, by
+  // BodyInfo.locals index: the first and the last entry of each local.
+  givenFirst: Map<int, int>
+  givenLast: Map<int, int>
+  givens: Array<GivenValue>
   // The iterable of each `for ... of` local; the loop's elements share it.
   loopSources: Map<int, Expr>
   // The arrow function each local is declared in, or -1 for the function.
@@ -75,6 +84,15 @@ export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl)
   if (funcDecl.generator) {
     return
   }
+  // Without arrow functions, only a parameter can be shared, and only into a result that can
+  // hold it. This holds because the check runs only on bodies without errors, so a returned
+  // value has the result's type.
+  if (
+    !hasArrows(checker) &&
+      (!canShareType(checker, checker.resultType) || !hasSharingParameter(checker, funcDecl))
+  ) {
+    return
+  }
   if (funcDecl.body is Some(block)) {
     let facts = createFacts(checker.heldTypeSets)
     checker.heldTypeSets = Map {}
@@ -90,11 +108,28 @@ export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl)
 
 export function checkSharedResultsIn(mutable checker: Checker, block: Block) uses alloc {
   // A test or another body that is not a function: only its arrow functions have results.
+  if (!hasArrows(checker)) {
+    return
+  }
   let facts = createFacts(checker.heldTypeSets)
   checker.heldTypeSets = Map {}
   walkBlock(checker, mutable facts, block)
   checkArrowReturns(mutable checker, facts)
   checker.heldTypeSets = facts.heldTypeSets
+}
+
+function hasSharingParameter(checker: Checker, funcDecl: FuncDecl): bool uses alloc {
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    const local = findDeclared(checker, parameter.id)
+    if (local >= 0 && canShareType(checker, checker.bodies[checker.body].locals[local].localType)) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasArrows(checker: Checker): bool {
+  return Arrays.length(checker.bodies[checker.body].closures) > 0
 }
 
 export function findSharedArgument(
@@ -167,7 +202,9 @@ function createFacts(
   heldTypeSets: Map<string, Map<string, bool>>,
 ): SharingFacts from heldTypeSets uses alloc {
   return SharingFacts {
-    given: Map {},
+    givenFirst: Map {},
+    givenLast: Map {},
+    givens: [],
     loopSources: Map {},
     localArrows: Map {},
     arrowParents: Map {},
@@ -198,12 +235,14 @@ function noteDeclared(checker: Checker, mutable facts: SharingFacts, nodeId: int
 }
 
 function addGiven(mutable facts: SharingFacts, local: int, value: Expr) uses alloc {
-  let values: Array<Expr> = []
-  if (facts.given[local] is Some(known)) {
-    values = copy(known)
+  const index = Arrays.length(facts.givens)
+  Arrays.push(mutable facts.givens, GivenValue { value: value, next: -1 })
+  if (facts.givenLast[local] is Some(last)) {
+    facts.givens[last].next = index
+  } else {
+    facts.givenFirst[local] = index
   }
-  Arrays.push(mutable values, value)
-  facts.given[local] = values
+  facts.givenLast[local] = index
 }
 
 function bindPattern(
@@ -432,48 +471,81 @@ function noteMutableArguments(
     if (root < 0) {
       continue
     }
-    const room = collectHeldTypes(
-      checker,
-      mutable facts,
-      getNodeType(checker, getExpressionId(argument.value)),
-    )
+    const roomType = getNodeType(checker, getExpressionId(argument.value))
+    if (!canHoldTracked(roomType)) {
+      continue
+    }
+    const roomKey = findHeldKey(checker, mutable facts, roomType)
     for (const other of Arrays.values(arguments)) {
       if (other.isMutable) {
         continue
       }
-      const held = collectHeldTypes(
-        checker,
-        mutable facts,
-        getNodeType(checker, getExpressionId(other.value)),
-      )
-      if (haveCommonType(room, held)) {
+      const otherType = getNodeType(checker, getExpressionId(other.value))
+      if (!canHoldTracked(otherType)) {
+        continue
+      }
+      const otherKey = findHeldKey(checker, mutable facts, otherType)
+      if (haveCommonHeldTypes(facts, roomKey, otherKey)) {
         addGiven(mutable facts, root, other.value)
       }
     }
   }
 }
 
-function collectHeldTypes(
+function canHoldTracked(type: Option<Type>): bool {
+  // A scalar type holds no tracked type, so it overlaps no set.
+  if (type is Some(known)) {
+    return match (known) {
+      Type.TStruct(_)
+        | Type.TEnum(_)
+        | Type.TDistinct(_)
+        | Type.TParam(_)
+        | Type.TArray(_)
+        | Type.TBox(_)
+        | Type.TMap(_, _)
+        | Type.TStringBuilder
+        | Type.TGenerator(_, _, _, _, _) => true
+      _ => false
+    }
+  }
+  return true
+}
+
+function findHeldKey(
   checker: Checker,
   mutable facts: SharingFacts,
   type: Option<Type>,
-): Map<string, bool> from checker uses alloc {
-  // The tracked types a value holds, itself included, by type key. An unknown type or a
-  // type parameter is "*", which overlaps every set.
-  let held: Map<string, bool> = Map {}
+): string uses alloc {
+  // The key of the tracked types a value holds, itself included. An unknown type or a type
+  // parameter is "*", which overlaps every set. Each type's set is built once and kept.
   if (type is Some(known)) {
-    // Each type's set is built once and kept.
     const typeName = typeKey(known)
-    if (facts.heldTypeSets[typeName] is Some(cached)) {
-      return copy(cached)
+    if (facts.heldTypeSets[typeName] is Some(_)) {
+      return typeName
     }
+    let held: Map<string, bool> = Map {}
     let visited: Map<string, bool> = Map {}
     addHeldTypes(checker, known, mutable held, mutable visited)
-    facts.heldTypeSets[typeName] = copy(held)
-  } else {
-    held["*"] = true
+    facts.heldTypeSets[typeName] = held
+    return typeName
   }
-  return held
+  if (facts.heldTypeSets["*"] is None) {
+    facts.heldTypeSets["*"] = Map { "*": true }
+  }
+  return "*"
+}
+
+function haveCommonHeldTypes(
+  facts: SharingFacts,
+  roomKey: string,
+  otherKey: string,
+): bool uses alloc {
+  if (facts.heldTypeSets[roomKey] is Some(room)) {
+    if (facts.heldTypeSets[otherKey] is Some(held)) {
+      return haveCommonType(room, held)
+    }
+  }
+  return false
 }
 
 function addHeldTypes(
@@ -718,9 +790,11 @@ function followLocal(
     return
   }
   query.visited[local] = true
-  if (facts.given[local] is Some(values)) {
-    for (const value of Arrays.values(values)) {
-      collectShared(checker, facts, mutable query, value)
+  if (facts.givenFirst[local] is Some(first)) {
+    let index = first
+    while (index >= 0) {
+      collectShared(checker, facts, mutable query, facts.givens[index].value)
+      index = facts.givens[index].next
     }
   }
   if (facts.loopSources[local] is Some(iterable)) {

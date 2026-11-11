@@ -14,6 +14,7 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { Pos, Expr, Stmt, Block, Param } from "narrac/ast"
 import { Type } from "narrac/types"
+import { hasReachableEnd } from "narrac/pathends"
 import { ProgramFunc, ClosureInfo, Ref, getExpressionId } from "narrac/check"
 import {
   cachedCType,
@@ -46,6 +47,7 @@ import {
   unwindAll,
   retainCode,
   releaseCode,
+  noteReference,
 } from "narrac/emitstate"
 
 const NODE = "selfhost-emit-closures"
@@ -118,8 +120,16 @@ function listFunctionTypes(emitter: Emitter): Array<Type> uses alloc {
   return types
 }
 
-export function emitFuncTypeDefinitions(mutable emitter: Emitter): string uses alloc {
-  const types = listFunctionTypes(emitter)
+export function emitFuncTypeDefinitions(
+  emitter: Emitter,
+  used: Map<string, bool>,
+): string uses alloc {
+  let types: Array<Type> = []
+  for (const type of Arrays.values(listFunctionTypes(emitter))) {
+    if (used[cachedTypeId(emitter.checker, emitter.typeNames, type)] is Some(_)) {
+      Arrays.push(mutable types, type)
+    }
+  }
   if (Arrays.length(types) == 0) {
     return ""
   }
@@ -218,6 +228,7 @@ export function emitFuncValue<W: EmitWalker>(
     )
   }
   const functionType = cachedCType(checker, emitter.typeNames, readNodeType(emitter, nodeId))
+  noteReference(mutable emitter, functionText)
   return Code { text: `((${functionType}){.fn = ${name}, .env = NULL})`, owned: false }
 }
 
@@ -499,7 +510,7 @@ function emitClosureFunction<W: EmitWalker>(
   }
   EmitWalker.emitBlockInScope(walker, mutable emitter, body)
   unwindAll(mutable emitter)
-  if (result != Type.TVoid) {
+  if (result != Type.TVoid && hasReachableEnd(emitter.checker, emitter.body, body)) {
     const position = where(emitter, pos)
     writeLine(
       mutable emitter,

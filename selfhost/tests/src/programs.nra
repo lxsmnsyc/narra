@@ -5,9 +5,13 @@
 // std_test*, coroutine_tests*) go through `narrac test`. A .in file is the
 // program's stdin. The stage2 folder holds samples for std modules written in
 // Narra, and runs in debug mode only. Every sample runs with the debug copy
-// check on (testrunner/copies).
+// check on (testrunner/copies). A sample whose output depends on the build has
+// <name>.release.out for the release run, and one whose output depends on the
+// host has <name>.<system>.out instead of <name>.out (darwin or linux, from
+// `uname -s`).
 import * as Fs from "std/fs"
 import * as Path from "std/path"
+import * as Process from "std/process"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Common from "testrunner/context"
@@ -44,7 +48,7 @@ function addCases(
 }
 
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
-  const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".out"))
+  const want = Common.readExpected(findExpectedPath(testCase))
   if (want is Err(message)) {
     return Err(message)
   }
@@ -71,4 +75,32 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   Arrays.push(mutable arguments, testCase.path)
   const result = Common.runNarrac(context, arguments)
   return Copies.checkCopyRun(context, testCase, result, want.value)
+}
+
+function findExpectedPath(testCase: TestCase): string uses io, alloc {
+  const stem = Files.replaceSuffix(testCase.path, ".nra", "")
+  const release = `${stem}.release.out`
+  if (testCase.variant == "release" && Fs.exists(release)) {
+    return release
+  }
+  const plain = `${stem}.out`
+  if (Fs.exists(plain)) {
+    return plain
+  }
+  return `${stem}.${readHostSystem()}.out`
+}
+
+export function readHostSystem(): string uses io, alloc {
+  const ran = Process.run("uname", ["-s"])
+  if (ran is Ok(#[code, output, _])) {
+    // The golden names are in lower case.
+    const system = Str.trim(output)
+    if (code == 0 && system == "Darwin") {
+      return "darwin"
+    }
+    if (code == 0 && system == "Linux") {
+      return "linux"
+    }
+  }
+  return "unknown"
 }

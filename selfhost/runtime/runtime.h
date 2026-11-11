@@ -285,11 +285,19 @@ static void narra_report_copies(void) {
 
 // SHARED follows a retain, DROP comes before a decrement of p->rc, and WRITE and
 // WRITTEN surround the copy that a copy on write makes.
+// ONLY holds code that exists for the check, CREDIT gives credits at a copy(...),
+// GRANTED runs a retain with granting on, and ENDED takes back the credits of
+// copies that can no longer hold a heap enum payload. All expand to nothing, or
+// to the plain retain, under NARRA_RELEASE.
 #define NARRA_COPY_SHARED(p) do { if (narra_copy_granting) narra_copy_credit(p); } while (0)
 #define NARRA_COPY_DROP(p) do { if (narra_copy_used && (p)->rc <= 2) narra_copy_forget(p); } while (0)
 #define NARRA_COPY_WRITE(p, kind) narra_copy_write(p, kind)
 #define NARRA_COPY_WRITTEN() (narra_copy_granting = false)
 #define NARRA_COPY_GRANT(on) narra_copy_grant(on)
+#define NARRA_COPY_ONLY(...) __VA_ARGS__
+#define NARRA_COPY_CREDIT(...) if (!narra_copy_on) {} else { __VA_ARGS__ }
+#define NARRA_COPY_GRANTED(...) do { narra_copy_grant(true); __VA_ARGS__ narra_copy_grant(false); } while (0)
+#define NARRA_COPY_ENDED(v, uncredit) do { if ((v).u && narra_copy_used) { narra_copy_slot* mark = narra_copy_find((v).u); int64_t live = (v).u->rc - 2; if (mark && mark->credits > live) { int64_t ended = mark->credits - live; if (live > 0) mark->credits = live; else narra_copy_forget((v).u); while (ended-- > 0) uncredit(v); } } } while (0)
 #define NARRA_COPY_START() narra_copy_start()
 #define NARRA_COPY_REPORT() narra_report_copies()
 #else
@@ -298,6 +306,10 @@ static void narra_report_copies(void) {
 #define NARRA_COPY_WRITE(p, kind) ((void)0)
 #define NARRA_COPY_WRITTEN() ((void)0)
 #define NARRA_COPY_GRANT(on) ((void)0)
+#define NARRA_COPY_ONLY(...)
+#define NARRA_COPY_CREDIT(...)
+#define NARRA_COPY_GRANTED(...) do { __VA_ARGS__ } while (0)
+#define NARRA_COPY_ENDED(v, uncredit) ((void)0)
 #define NARRA_COPY_START() ((void)0)
 #define NARRA_COPY_REPORT() ((void)0)
 #endif
@@ -717,7 +729,7 @@ static void narra_assert(bool ok, const char* where) {
   if (!ok) narra_panic(where, "assertion failed");
 }
 
-static void narra_panic_str(lstr* msg, const char* where) {
+_Noreturn static void narra_panic_str(lstr* msg, const char* where) {
   narra_panic(where, msg->data);
 }
 

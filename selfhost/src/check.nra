@@ -26,6 +26,7 @@ import {
   Arg,
   FieldInit,
   TypeExpr,
+  Pattern,
   SourceFacts,
   createEmptyFacts,
 } from "narrac/ast"
@@ -51,6 +52,12 @@ import {
   isInteger,
 } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
+import {
+  BuildTarget,
+  TargetRequirement,
+  DroppedRange,
+  createUnknownTarget,
+} from "narrac/buildtarget"
 import { collectFuncIds, collectBlockIds, collectExpressionIds } from "narrac/idcheck"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
@@ -289,6 +296,13 @@ export trait Walker {
     want: Option<Type>,
   ): Type from want uses alloc
   function checkBlock(walker: Self, mutable checker: Checker, block: Block) uses alloc
+  // Resolves a pattern against the type of the value it matches (narrac/match).
+  function resolvePattern(
+    walker: Self,
+    mutable checker: Checker,
+    pattern: Pattern,
+    valueType: Type,
+  ) uses alloc
   // `is` and `match` expressions (narrac/match).
   function checkPatterns(
     walker: Self,
@@ -599,6 +613,55 @@ export struct Checker {
   writtenFunctionTypes: Map<string, Array<WrittenFunctionType>>
   // The tracked types a value of each type holds, by type key, for the shared results check.
   heldTypeSets: Map<string, Map<string, bool>>
+  // The target of this build (std/build), and the `if` conditions it decides: the
+  // condition's expression id to the branch kept, true for the then branch.
+  buildTarget: BuildTarget
+  foldedConditions: Map<int, bool>
+  // The `requires` conditions of each function by Checker.functions index, and
+  // the calls to such functions, proven after every body (contracts.nra).
+  requirements: Map<int, Array<Requirement>>
+  contractCalls: Array<ContractCall> = []
+  // The `@target` of each function that has one, by Checker.functions index,
+  // and the source of the branches this target drops.
+  functionTargets: Map<int, TargetRequirement>
+  droppedRanges: Array<DroppedRange> = []
+  // The `ensures` patterns of each function by Checker.functions index, read with
+  // the requirements, and those of the body being proven, by body index.
+  resultContracts: Map<int, ResultContract>
+  bodyContracts: Map<int, ResultContract>
+}
+
+// The `ensures` patterns of one function, and the folded bound of each comparison
+// pattern in them, by pattern id.
+export struct ResultContract {
+  patterns: Array<Pattern>
+  bounds: Map<int, int>
+}
+
+// One `requires` comparison: parameter `parameter` compared with `bound`,
+// which the source writes as boundText (a number or a constant's name).
+export struct Requirement {
+  parameter: int
+  comparison: string
+  bound: int
+  boundText: string
+}
+
+// What a call proved about each argument when it was checked.
+export struct ContractCall {
+  file: string
+  funcIndex: int
+  arguments: Array<ContractArgument>
+}
+
+// constant is set when the argument is the integer constant value.
+export struct ContractArgument {
+  pos: Pos
+  low: int
+  high: int
+  nonzero: bool
+  constant: bool
+  value: int
 }
 
 // A function type as written, and the scope of the module that writes it.
@@ -657,9 +720,15 @@ export function newChecker(ids: int): Checker uses alloc {
     bodyKeys: Map {},
     writtenFunctionTypes: Map {},
     heldTypeSets: Map {},
+    buildTarget: createUnknownTarget(true),
+    foldedConditions: Map {},
+    functionTargets: Map {},
     generatorEffects: Map {},
     callTypeArguments: Map {},
     argumentOrders: Map {},
+    requirements: Map {},
+    resultContracts: Map {},
+    bodyContracts: Map {},
   }
 }
 

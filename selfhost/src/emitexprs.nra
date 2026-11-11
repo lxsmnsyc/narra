@@ -53,6 +53,8 @@ import {
   declareVariable,
   variableRef,
   buildVariantFieldPath,
+  noteReference,
+  useHelper,
 } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
@@ -347,10 +349,11 @@ function emitIndexRead<W: EmitWalker>(
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
     const arrayStruct = containerStruct(emitter, targetType)
     const position = where(emitter, pos)
+    const getHelper = useHelper(emitter, arrayStruct, "get")
     const read = temp(
       mutable emitter,
       element,
-      `${arrayStruct}_get(${targetCode.text}, ${indexCode.text}, ${position})`,
+      `${getHelper}(${targetCode.text}, ${indexCode.text}, ${position})`,
     )
     return plain(read)
   }
@@ -820,7 +823,9 @@ function emitFunctionCall<W: EmitWalker>(
       Arrays.push(mutable texts, text)
     }
   }
-  const callCode = `${cachedFunctionName(checker, emitter.typeNames, program)}(${Str.join(texts, ", ")})`
+  const calleeName = cachedFunctionName(checker, emitter.typeNames, program)
+  noteReference(mutable emitter, calleeName)
+  const callCode = `${calleeName}(${Str.join(texts, ", ")})`
   if (result == Type.TVoid) {
     return plain(callCode)
   }
@@ -940,7 +945,8 @@ function emitArrayCall<W: EmitWalker>(
       const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
       const consumed = consume(mutable emitter, code.text, code.owned, element)
       const pointer = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
-      return plain(`${containerStruct(emitter, arrayType)}_push(${pointer}, ${consumed})`)
+      const pushHelper = useHelper(emitter, containerStruct(emitter, arrayType), "push")
+      return plain(`${pushHelper}(${pointer}, ${consumed})`)
     }
   }
   if (name == "Array.withCapacity") {
@@ -949,10 +955,11 @@ function emitArrayCall<W: EmitWalker>(
     const arrayStruct = containerStruct(emitter, arrayType)
     // The capacity is a hint: a negative one reserves nothing and a huge one is cut to 2^20.
     const reserved = temp(mutable emitter, Type.TInt, capacity)
+    const newHelper = useHelper(emitter, arrayStruct, "new")
     const created = ownedTemp(
       mutable emitter,
       arrayType,
-      `${arrayStruct}_new(${reserved} < 0 ? 0 : (${reserved} > 1048576 ? 1048576 : ${reserved}))`,
+      `${newHelper}(${reserved} < 0 ? 0 : (${reserved} > 1048576 ? 1048576 : ${reserved}))`,
     )
     return Code { text: created, owned: true }
   }
@@ -973,7 +980,8 @@ function emitBoxCall<W: EmitWalker>(
     const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
     const consumed = consume(mutable emitter, code.text, code.owned, element)
     const boxStruct = containerStruct(emitter, boxType)
-    const created = ownedTemp(mutable emitter, boxType, `${boxStruct}_new(${consumed})`)
+    const newHelper = useHelper(emitter, boxStruct, "new")
+    const created = ownedTemp(mutable emitter, boxType, `${newHelper}(${consumed})`)
     return Code { text: created, owned: true }
   }
   return unsupportedCode(mutable emitter, "box function")
@@ -1059,10 +1067,11 @@ function emitArrayLiteral<W: EmitWalker>(
   const arrayType = copy(readNodeType(emitter, nodeId))
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)
+    const newHelper = useHelper(emitter, arrayStruct, "new")
     const array = ownedTemp(
       mutable emitter,
       arrayType,
-      `${arrayStruct}_new(${Int.toString(Arrays.length(elements))})`,
+      `${newHelper}(${Int.toString(Arrays.length(elements))})`,
     )
     for (const item of Arrays.values(elements)) {
       const code = EmitWalker.emitExpression(walker, mutable emitter, item)
@@ -1127,7 +1136,8 @@ function fieldPointer<W: EmitWalker>(
   // Writing through a box copies a shared cell first.
   if (targetType is Type.TBox(element)) {
     const boxStruct = containerStruct(emitter, targetType)
-    return pointerTemp(mutable emitter, element, `${boxStruct}_at(${base})`)
+    const atHelper = useHelper(emitter, boxStruct, "at")
+    return pointerTemp(mutable emitter, element, `${atHelper}(${base})`)
   }
   return `&(${base})->f_${name}`
 }
@@ -1151,11 +1161,8 @@ function indexPointer<W: EmitWalker>(
       writeLine(mutable emitter, `narra_bounds(${indexTemp}, (*${base})->len, ${position});`)
       return pointerTemp(mutable emitter, element, `&(*${base})->items[${indexTemp}]`)
     }
-    return pointerTemp(
-      mutable emitter,
-      element,
-      `${arrayStruct}_at(${base}, ${indexTemp}, ${position})`,
-    )
+    const atHelper = useHelper(emitter, arrayStruct, "at")
+    return pointerTemp(mutable emitter, element, `${atHelper}(${base}, ${indexTemp}, ${position})`)
   }
   return reportUnsupported(mutable emitter, "lvalue", NODE)
 }
@@ -1295,6 +1302,7 @@ export function constRef(mutable emitter: Emitter, constIndex: int): string uses
   }
   const info = checker.consts[constIndex]
   const getter = cachedDeclName(emitter.typeNames, "g", info.module, info.name)
+  noteReference(mutable emitter, getter)
   const constantType = constType(checker, constIndex)
   return temp(mutable emitter, constantType, `${getter}()`)
 }
@@ -1325,7 +1333,8 @@ function emitArrayFilled<W: EmitWalker>(
   // A negative count has no array and the result is None.
   const filled = temp(mutable emitter, arrayType, "NULL")
   writeLine(mutable emitter, `if (${count} >= 0) {`)
-  writeLine(mutable emitter, `  ${filled} = ${arrayStruct}_filled(${value}, ${count});`)
+  const filledHelper = useHelper(emitter, arrayStruct, "filled")
+  writeLine(mutable emitter, `  ${filled} = ${filledHelper}(${value}, ${count});`)
   writeLine(mutable emitter, "}")
   return StdHelp.ioEither(
     mutable emitter,

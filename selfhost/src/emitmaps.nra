@@ -41,6 +41,7 @@ import {
   declareVariable,
   declareUnset,
   variableRef,
+  useHelper,
 } from "narrac/emitstate"
 import { enumAllocation } from "narrac/emitdecls"
 import { callFunctionValue } from "narrac/emitclosures"
@@ -90,7 +91,7 @@ function mergeSort(items: Array<MapItem>): Array<MapItem> from items uses alloc 
   return merged
 }
 
-function mapTypes(emitter: Emitter): Array<Type> uses alloc {
+export function listMapTypes(emitter: Emitter): Array<Type> uses alloc {
   // Go's order (Program.Maps): sorted by "<key id>|<value id>", without types
   // that hold a type parameter.
   let items: Array<MapItem> = []
@@ -121,18 +122,23 @@ function getValueType(type: Type): Type from type {
   return match (type) { Type.TMap(_, valueType) => valueType, _ => type }
 }
 
-export function emitMapTypedefs(mutable emitter: Emitter): string uses alloc {
+export function emitMapTypedefs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
   let builder = Str.builder()
-  for (const type of Arrays.values(mapTypes(emitter))) {
+  for (const type of Arrays.values(listMapTypes(emitter))) {
     const name = containerName(emitter, type)
-    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+    if (used[name] is Some(_)) {
+      Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+    }
   }
   return Str.build(builder)
 }
 
-export function emitMapStructs(mutable emitter: Emitter): string uses alloc {
+export function emitMapStructs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
   let builder = Str.builder()
-  for (const type of Arrays.values(mapTypes(emitter))) {
+  for (const type of Arrays.values(listMapTypes(emitter))) {
+    if (used[containerName(emitter, type)] is None) {
+      continue
+    }
     const keyName = cachedCType(emitter.checker, emitter.typeNames, getKeyType(type))
     const valueName = cachedCType(emitter.checker, emitter.typeNames, getValueType(type))
     Str.append(
@@ -143,12 +149,18 @@ export function emitMapStructs(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-export function emitMapPrototypes(mutable emitter: Emitter): string uses alloc {
+export function emitMapPrototypes(
+  emitter: Emitter,
+  functionTexts: Map<string, string>,
+): string uses alloc {
   // These declarations are what the reference-counting functions of other types
-  // call.
+  // call. functionTexts holds the functions of the maps the program names.
   let builder = Str.builder()
-  for (const type of Arrays.values(mapTypes(emitter))) {
+  for (const type of Arrays.values(listMapTypes(emitter))) {
     const name = containerName(emitter, type)
+    if (functionTexts[name] is None) {
+      continue
+    }
     const keyName = cachedCType(emitter.checker, emitter.typeNames, getKeyType(type))
     const valueName = cachedCType(emitter.checker, emitter.typeNames, getValueType(type))
     Str.append(
@@ -182,23 +194,25 @@ const MAP_PLACEHOLDERS = [
   "REL_VAL_E",
 ]
 
-struct MapTemplate {
+export struct MapTemplate {
   texts: Array<string>
   slots: Array<int>
 }
 
-export function emitMapFunctions(mutable emitter: Emitter): string uses alloc {
-  // This runs before the constants because it registers trait needs; its text
-  // goes after the trait functions.
-  const template = splitMapTemplate()
+export function emitMapFunctions(
+  emitter: Emitter,
+  functionTexts: Map<string, string>,
+): string uses alloc {
   let builder = Str.builder()
-  for (const type of Arrays.values(mapTypes(emitter))) {
-    Str.append(mutable builder, mapFunctions(mutable emitter, template, type))
+  for (const type of Arrays.values(listMapTypes(emitter))) {
+    if (functionTexts[containerName(emitter, type)] is Some(text)) {
+      Str.append(mutable builder, text)
+    }
   }
   return Str.build(builder)
 }
 
-function splitMapTemplate(): MapTemplate uses alloc {
+export function splitMapTemplate(): MapTemplate uses alloc {
   // Even pieces are text and odd pieces sit between two @ marks. A piece that
   // names no placeholder stays text, marks included.
   const pieces = splitString(RUNTIME_MAP_H, "@")
@@ -229,7 +243,7 @@ function findPlaceholderSlot(name: string): int {
   return 0 - 1
 }
 
-function mapFunctions(
+export function emitMapFunction(
   mutable emitter: Emitter,
   template: MapTemplate,
   type: Type,
@@ -463,7 +477,8 @@ function emitMapToArray<W: EmitWalker>(
   const sourceCode = EmitWalker.emitExpression(walker, mutable emitter, source)
   const map = temp(mutable emitter, mapType, sourceCode.text)
   const arrayName = containerName(emitter, arrayType)
-  const array = ownedTemp(mutable emitter, arrayType, `${arrayName}_new(${map}->len)`)
+  const newHelper = useHelper(emitter, arrayName, "new")
+  const array = ownedTemp(mutable emitter, arrayType, `${newHelper}(${map}->len)`)
   emitter.tempCount++
   const position = `i${Int.toString(emitter.tempCount)}`
   writeLine(

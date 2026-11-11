@@ -1,0 +1,30 @@
+# Log: place-ids
+
+## Baseline (feat/batch-7, 7f0e0534)
+
+- Build: `sh selfhost/bootstrap.sh <dir>` (fixed point, seed current); profile build `cc -O2 -g -DNARRA_RELEASE -std=c11 -w -o narrac_g <dir>/stage2.c -lm`.
+- `/usr/bin/time -l narrac emit selfhost`, 3 runs: 2,441,265,990 / 2,441,776,326 / 2,470,488,844 instructions; median 2,441,776,326; peak 134.8 to 135.3 MB (median 135,201,272).
+- `/usr/bin/time -l narrac check selfhost`, 3 runs: median 1,933,205,959; peak 94.2 MB.
+- `sample narrac_g 2 1 -wait -mayDie -file out.txt` started before each of 6 runs of `emit selfhost`: 1041 samples under `main`, 275 under `reportSharedWrites` (26%). Self time (all frames): memmove 130, memcmp 61, walkExpression 55, findRest 44, readNodeRef 43, hasPair 14. Reproduced.
+- Diagnostics saved before any change: `check --json` of every `testdata/*.nra` and `testdata/errors/*.nra` (669 inputs, 36 E0978 lines), plus `check selfhost`, `check selfhost/tests` and `std` (std has no narra.toml, so it errors the same on both).
+- The analysis alone: a build with `reportSharedWrites` returning at once emits selfhost in 1.99G, so the analysis was about 0.45G of 2.44G (0.49G on the branch source).
+
+## Work
+
+- Step 1: `PlaceTable` in the walk interns places (root, parent id, part id, depth) and parts (kind: field, any element, literal index; message text). `isUnder` climbs parent ids and compares part ids, no strings. `FlowState.pairKeys` (a set keyed by the two ids, smaller first) replaces the `hasPair` scan. `forgetRoot` compares roots. Diagnostics identical. emit selfhost 2.30G (-0.14G); base binary on the branch source 2.49G.
+- Profile after step 1: the time under `reportSharedWrites` is spread out: allocation in `evaluate` (arrays per expression), map writes rebuilding `pairKeys`, `createWalk`, `addSite` keys.
+- Step 2: `evaluate` returns at once when the parts share nothing (skips the type queries); dropped pairs remove their key from `pairKeys` instead of rebuilding it; `addPair` and `noteWrite` skip pairs with no side on the source's or target's root. emit selfhost 2.21G, peak 135.3 MB (load on the machine; instruction counts hold).
+- The machine runs about 4 test suites of other workers (load 30 to 50), so `sample` with `-wait` misses runs. Better: a profile-only build whose emit runs `reportSharedWrites` 20 times (`-O2 -fno-inline -g`), sampled by pid for 8 to 25 s. Instruction counts move by up to 0.05G between runs; base and branch are measured interleaved (`compare.sh`), 5 runs each, on the same source.
+- Step 3 (measured 2.26G against base 2.49G on the same source): `evaluate` keeps the shares when they are already marked; write sites keyed by line and column, not a built string.
+- A cache of `canShareType` per enum kept across bodies (one walk reset per body) cost +0.2G (2.49G): something copied per write that I did not find. A walk per body with a per-body cache measures 2.28G; kept that.
+- `evaluateCall` returns no shares at once when the call's type cannot hold any (skips `findSharedArgument`, 4.7% of the analysis); an identifier's ref is looked up once.
+- Profile then: every scan over the pairs (addPair, noteWrite, forgetRoot, merges, copies) retains and releases the strings and the `Expr` in each pair. Step 4: `Place` is all integers (root, id, text id); message texts are interned chains of pieces (`writeText` joins them at report time); a pair's origin is an index into `WriteWalk.origins`; a write site keeps its kind and place text and is written out only when reported (`writeSiteText`).
+- Found that another worker writes into the same scratchpad folder (`scratchpad/new`, `measure.sh`): some numbers above may come from its binary (the unexplained +0.2G among them). From here on everything lives in `scratchpad/place-ids-work/`; the base compiler is rebuilt there from `feat/batch-7:seed/narrac.c` (the seed is current at the base), and the base diagnostics saved again (identical to the first set).
+- Step 5: `PartTable` (parts, pieces, enum share answers) does not depend on the body, so one table lives through the whole run; each body's walk takes it over (the caller holds a fresh empty table meanwhile, so the walk's copy is the only one) and gives it back.
+- Clean measurement after step 5, interleaved, 5 runs each, on the branch source: base median 2,453,994,701, branch median 2,142,272,387 (-0.31G); peak 135.8 MB base, 135.5 MB branch. Diagnostics identical.
+- Step 6: one walk for the whole run, reset per body (`startBody`; tables the body left empty are kept); the texts 0 to localCount - 1 are the locals' names (no hashing of names); constant texts cached; `isCopyCall` only for builtin refs. -0.33G.
+- Step 7: `noteUse` and `forgetRoot` rebuild the pending list only when something changes. -0.34G (load moves base between 2.45G and 2.56G).
+- Profile (17k samples, quiet moment): `reportSharedWrites` itself looked up `checker.scopeIndex[module]` (string-keyed) for every body, 4.4% of the analysis; `addSite` 2.4%; resets in `startBody` 4.4%. Step 8: scope looked up only for walked bodies and kept while the module stays the same; one integer site key; rebuilt arrays sized up front. -0.35G.
+- Step 9: `evaluateCall` keeps argument shares only when the result or a std `mutable` argument can take them, and no `written` array. Step 10: `canWriteInBlock` skips bodies with no write that can hit a pair (no field or element assignment, `mutable` argument, arrow function or `for (mutable ...)`); it descends where the walk descends. -0.36G.
+- Step 11: `evaluateIgnored` for values nobody keeps (conditions, statements, indexes, arguments of calls whose result shares nothing, operands of comparisons and arithmetic): a place read is only a use, no share array and no type queries. Base 2,508,607,686 vs branch 2,124,179,362 (-0.38G), peak 139.1 MB vs 138.3 MB. Diagnostics identical.
+- Final: emit selfhost base 2,522,357,620 vs branch 2,150,927,787 (-0.371G); check selfhost 2,029,668,902 vs 1,652,296,591 (-0.377G); peak (9 runs) 139.2 MB vs 138.8 MB footprint. `sh scripts/test.sh`: PASS in 360 s, 0 failed.

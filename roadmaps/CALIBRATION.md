@@ -69,3 +69,14 @@ Notes:
 | selfhost | query-cli | L | L | 3 | 528k tokens (worker 353k, review 175k). Rounds 2 and 3: template positions, function-type effects, one rule for `effects`, stream checks, then contract wording. |
 | selfhost | guide-basics | M | L | 4 | 529k tokens. Sonnet draft, two maintainer-direction rewrites (standalone, tutorial voice), then an Opus rewrite and review; the briefs set the wrong audience. |
 | selfhost | guide-advanced | M | L | 3 | 514k tokens. Sonnet draft replaced by an Opus rewrite; two Opus review rounds, mostly reteaching chapters 1 to 5. |
+| selfhost | place-ids | M | M+ | 2 | 620k tokens. -0.37G. Worker stopped after its report; the orchestrator fixed the review's alias message. 32,538 differential inputs. |
+| selfhost | shared-results-walk | S | S | 1 | 185k tokens. 3.8% to 1.3%. 4,391 differential inputs, identical. |
+| selfhost | return-trailer | S | M | 3 | 372k tokens. Review found a silent fall-off through a shadowed `panic`, and a narrowing bug on main from the same name-only test. |
+| selfhost | copy-check-macros | M | S+ | 2 | 191k tokens. Clean review, two macro-hygiene nits. |
+| selfhost | tree-shake | M | M | 2 | 328k tokens. Clean review; rebase round cut peak memory below base. |
+| selfhost | tree-shake-types | M | M | 1 | 399k tokens. Clean review, 228 probes. First version +2.5% instructions, incremental trait pass brought it to +1.6%. |
+| selfhost | contracts | M | L | 4 | 493k tokens. Three review rounds on soundness (sentinel bounds, shadowing, wrapped bounds). |
+| selfhost | contracts-ensures | M | L | 4 | 661k tokens. `!=` added mid-node by the maintainer. No false fact found. |
+| selfhost | build-conditions | M | M+ | 2 | 319k tokens. Review: a hanging `uname` hung the compiler and LSP. |
+| selfhost | build-targets | M | M+ | 3 | 415k tokens. Review: fmt lost comments around `@target`; `--all-targets` checked debug only. |
+| selfhost | bench-check-suite | S | S | 1 | 80k tokens. Reviewed inline by the orchestrator (41 lines). |

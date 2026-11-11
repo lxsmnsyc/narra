@@ -1,0 +1,12 @@
+# Log: build-targets
+
+- 2026-11-11: started on feat/build-targets from feat/batch-7 (1a8a90c0). No `@` syntax exists yet (lexer reports `@` as E0004), so nothing is fulfilled.
+- Design: `@target(os = Os.X, arch = Arch.Y)` on top-level functions only. Per target: a use of a targeted function is E0991 unless the target matches, the use is in a branch the target drops (folded build condition), or the enclosing function's own `@target` does not match. Over all targets this is "outside a branch that guarantees the target". E0990 for a malformed attribute.
+- Lexer: `@` is punctuation (SYMBOL_AT = 49, the free id). The two lex samples that used `@` as the unexpected character now use `$`.
+- Parser: parseDecl reads `@target(...)` before the declaration and starts the declaration's trivia record after it, so a comment between the attribute and `function` becomes a leading comment of the declaration (fmt moves it above the attribute; nothing is lost). AST: `FuncDecl.target: Option<TargetAttribute> = None`.
+- Checker: no position is available in setRef, so the use check sits at the top of checkFunctionCall (calls.nra) and checkFunctionValue (funcvalues.nra); recordBuildCondition now takes the branches (one-line change in stmts.nra) to record dropped source ranges. Files outside `shared:`: calls.nra, funcvalues.nra, stmts.nra, selfhost/tests/src/emitchecks.nra.
+- Errors suite goldens are host-specific for E0991 (the message names the target), so the E0991 samples live in testdata/build-targets/ and run in the emit suite with `check --all-targets` (output is the same on every host).
+- A stage 1 compiler built by the seed trips NARRA_CHECK_COPIES in loadFile (modules.nra, not this node's code): the seed is older than the source mid-batch. Test with a stage 2 compiler, as test.sh does.
+- Targeted suites pass with a stage 2 release build; full `sh scripts/test.sh` PASS (217 s). Outcome written.
+- Rebased onto feat/batch-7 (contracts landed); conflicts in check.nra fields and D95 text resolved keeping both; spec-skip extern reason names c-interop. Suites and `sh scripts/test.sh` pass (478 s).
+- Fresh review fixes: attribute trivia record up to the declaration keyword, its comments printed by printTargetAttribute; --all-targets runs debug and release; one E0991 per use with all failing targets; sorted output; findStatementEnd loses its unreachable return (the `_` arms are required for exhaustiveness).

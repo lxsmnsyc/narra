@@ -4,6 +4,7 @@
 // facts about a local live in checker.localNames next to the variant
 // narrowing, so they end together (see endNarrowing in patterns.nra).
 import { Expr } from "narrac/ast"
+import { substring } from "narrac/textops"
 import { Type, isInteger, isUnsignedInteger } from "narrac/types"
 import {
   Checker,
@@ -24,7 +25,7 @@ const UNBOUNDED_LOW = -9223372036854775807
 const UNBOUNDED_HIGH = 9223372036854775807
 const MAXIMUM_CONSTANT_DEPTH = 8
 
-struct Fact {
+export struct Fact {
   low: int
   high: int
   nonzero: bool
@@ -55,13 +56,23 @@ export function splitIntLiteral(text: string): #[int, string] uses alloc {
   return #[base, Str.replace(digits, "_", "")]
 }
 
-function parseLiteral(text: string): Option<int> uses alloc {
+export function parseLiteral(text: string): Option<int> uses alloc {
   const #[base, digits] = splitIntLiteral(text)
   if (digits == "") {
     return Some(0)
   }
   if (Int.parse(digits, base) is Ok(value)) {
     return Some(value)
+  }
+  // A u64 literal from 2^63 up does not fit an int, but its bits do: the last
+  // digit is added to the rest with wrapping arithmetic.
+  const length = Str.length(digits)
+  if (length >= 2) {
+    if (Int.parse(substring(digits, 0, length - 1), base) is Ok(rest)) {
+      if (Int.parse(Str.sliceFrom(digits, length - 1), base) is Ok(last)) {
+        return Some(rest * base + last)
+      }
+    }
   }
   return None
 }
@@ -127,7 +138,7 @@ function combineConstants(
   return None
 }
 
-function wrapConstant(value: int, type: Type): int {
+export function wrapConstant(value: int, type: Type): int {
   // A folded constant takes the value it has in its own type: 65536 * 65536 is 0 as an i32.
   const width = findBitWidth(type)
   if (width < 1 || width >= 64) {
@@ -141,14 +152,18 @@ function wrapConstant(value: int, type: Type): int {
   return reduced
 }
 
-function findTypedConstant(checker: Checker, expression: Expr, type: Type): Option<int> uses alloc {
+export function findTypedConstant(
+  checker: Checker,
+  expression: Expr,
+  type: Type,
+): Option<int> uses alloc {
   if (findConstant(checker, expression, 0) is Some(value)) {
     return Some(wrapConstant(value, type))
   }
   return None
 }
 
-function findFactLocal(checker: Checker, expression: Expr): int {
+export function findFactLocal(checker: Checker, expression: Expr): int {
   // Only a plain name carries facts; a field path does not.
   if (expression is Expr.Ident(nodeId, _, _)) {
     if (getRef(checker, nodeId) is Ref.Local(index)) {
@@ -214,7 +229,7 @@ export function recordConstantLocal(mutable checker: Checker, local: int, value:
   }
 }
 
-function flipComparison(operator: string): string {
+export function flipComparison(operator: string): string {
   // The operator seen from the other operand: `0 < n` is `n > 0`.
   if (operator == "<") {
     return ">"
@@ -250,7 +265,7 @@ function negateComparison(operator: string): string {
   return "=="
 }
 
-function isComparisonOperator(operator: string): bool {
+export function isComparisonOperator(operator: string): bool {
   return (operator == "<" ||
     operator == "<=" ||
     operator == ">" ||
@@ -311,7 +326,7 @@ function narrowByBinary(
   }
 }
 
-function refineFact(
+export function refineFact(
   mutable checker: Checker,
   local: int,
   comparison: string,
@@ -321,28 +336,126 @@ function refineFact(
     // The bound is 2^63 or more, which an int cannot order against; it proves nothing.
     return
   }
-  let fact = readFact(checker, local)
+  const refined = refineBounds(readFact(checker, local), comparison, bound)
+  writeFact(mutable checker, local, refined)
+}
+
+export function refineBounds(fact: Fact, comparison: string, bound: int): Fact {
+  // What a comparison that holds adds to the fact. `> max` and `< min` hold for no
+  // value; they add nothing rather than wrap.
+  let refined = copy(fact)
   if (comparison == "==") {
-    fact.low = Math.max(fact.low, bound)
-    fact.high = Math.min(fact.high, bound)
+    refined.low = Math.max(fact.low, bound)
+    refined.high = Math.min(fact.high, bound)
   } else if (comparison == "!=") {
     if (bound == 0) {
-      fact.nonzero = true
+      refined.nonzero = true
     }
   } else if (comparison == "<") {
-    fact.high = Math.min(fact.high, bound - 1)
+    if (bound > UNBOUNDED_LOW - 1) {
+      refined.high = Math.min(fact.high, bound - 1)
+    }
   } else if (comparison == "<=") {
-    fact.high = Math.min(fact.high, bound)
+    refined.high = Math.min(fact.high, bound)
   } else if (comparison == ">") {
-    fact.low = Math.max(fact.low, bound + 1)
+    if (bound < UNBOUNDED_HIGH) {
+      refined.low = Math.max(fact.low, bound + 1)
+    }
   } else {
-    fact.low = Math.max(fact.low, bound)
+    refined.low = Math.max(fact.low, bound)
   }
-  writeFact(mutable checker, local, fact)
+  return refined
+}
+
+export function isUnboundedEnd(value: int): bool {
+  return value == UNBOUNDED_LOW || value == UNBOUNDED_HIGH
+}
+
+export function createUnknownFact(): Fact {
+  return Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+}
+
+export function joinFacts(left: Fact, right: Fact): Fact {
+  // What holds for a value that meets one of the two facts.
+  return Fact {
+    low: Math.min(left.low, right.low),
+    high: Math.max(left.high, right.high),
+    nonzero: isNonzeroFact(left) && isNonzeroFact(right),
+  }
+}
+
+export function narrowFact(mutable checker: Checker, local: int, fact: Fact) uses alloc {
+  // Adds a fact to what is known about an integer local.
+  const info = getLocal(checker, local)
+  if (!isInteger(info.localType)) {
+    return
+  }
+  let added = copy(fact)
+  if (info.localType == Type.TU64) {
+    // A u64 end from 2^63 up is negative as an int and cannot be ordered, so such an
+    // end is no bound; whether the value is zero is still known.
+    if (added.low < 0) {
+      added.low = UNBOUNDED_LOW
+    }
+    if (added.high < 0) {
+      added.high = UNBOUNDED_HIGH
+    }
+  }
+  const known = readFact(checker, local)
+  writeFact(mutable checker, local, Fact {
+    low: Math.max(known.low, added.low),
+    high: Math.min(known.high, added.high),
+    nonzero: known.nonzero || added.nonzero,
+  })
 }
 
 function isNonzeroFact(fact: Fact): bool {
   return fact.nonzero || fact.low > 0 || fact.high < 0
+}
+
+export function findOperandFact(checker: Checker, operand: Expr, type: Type): Fact uses alloc {
+  const unknown = Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+  if (!isInteger(type)) {
+    return unknown
+  }
+  // A constant is its own bounds. A u64 from 2^63 up is negative as an int:
+  // it is above every bound an int can hold, so its low end is the largest int.
+  if (findTypedConstant(checker, operand, type) is Some(value)) {
+    if (type == Type.TU64 && value < 0) {
+      return Fact { low: UNBOUNDED_HIGH, high: UNBOUNDED_HIGH, nonzero: true }
+    }
+    return Fact { low: value, high: value, nonzero: value != 0 }
+  }
+  // A name has the facts its checks recorded.
+  const local = findFactLocal(checker, operand)
+  if (local < 0 || isCapturedByArrow(checker, local)) {
+    return unknown
+  }
+  return readFact(checker, local)
+}
+
+export function isComparisonProven(fact: Fact, comparison: string, bound: int): bool {
+  // The unbounded ends stand for "no fact", so they prove nothing, even when they equal the bound.
+  const hasLow = fact.low != UNBOUNDED_LOW
+  const hasHigh = fact.high != UNBOUNDED_HIGH
+  if (comparison == ">=") {
+    return hasLow && fact.low >= bound
+  }
+  if (comparison == ">") {
+    return hasLow && fact.low > bound
+  }
+  if (comparison == "<=") {
+    return hasHigh && fact.high <= bound
+  }
+  if (comparison == "<") {
+    return hasHigh && fact.high < bound
+  }
+  if (comparison == "==") {
+    return hasLow && hasHigh && fact.low == bound && fact.high == bound
+  }
+  return ((bound == 0 && isNonzeroFact(fact)) ||
+    (hasLow && fact.low > bound) ||
+    (hasHigh && fact.high < bound))
 }
 
 function findBitWidth(type: Type): int {

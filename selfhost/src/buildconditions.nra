@@ -1,0 +1,444 @@
+// Build conditions: the constants of std/build and the `if` statements that
+// test only them. The driver chooses the target, the checker sets the
+// constants of std/build from it and records which branch each such `if`
+// keeps (Checker.foldedConditions), and the emitter writes only that branch.
+import * as Arrays from "std/array"
+import { Expr, Pattern, Decl, Block, Stmt, Pos, FuncDecl, TypeExpr } from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  getRef,
+  getNodeType,
+  getExpressionId,
+  reportError,
+  reportErrorIn,
+} from "narrac/check"
+import { resolveType } from "narrac/resolve"
+import { SourceModule, Package } from "narrac/modules"
+import {
+  BuildTarget,
+  TargetRequirement,
+  DroppedRange,
+  createUnknownTarget,
+  detectHostTarget,
+  describeTargets,
+  isTargetMet,
+  describeRequirement,
+  describeTarget,
+} from "narrac/buildtarget"
+
+const BUILD_MODULE = "std/build"
+
+// The value of a condition made of build constants: a bool (isFlag) or a
+// variant of Os or Arch. constant is false while no part reads a constant of
+// std/build, so `Os.MacOS == Os.Linux` alone decides nothing.
+struct BuildValue {
+  isFlag: bool
+  flag: bool
+  enumIndex: int
+  variant: string
+  constant: bool
+}
+
+export function chooseTarget(package: Package, release: bool): BuildTarget uses io, alloc {
+  // Only a package that imports std/build needs the host.
+  if (importsBuildModule(package)) {
+    return detectHostTarget(!release)
+  }
+  return createUnknownTarget(!release)
+}
+
+export function importsBuildModule(package: Package): bool {
+  for (const module of Arrays.values(package.modules)) {
+    if (module.path == BUILD_MODULE) {
+      return true
+    }
+  }
+  return false
+}
+
+export function reportUnsupportedHost(mutable checker: Checker, package: Package) uses alloc {
+  const host = checker.buildTarget.unsupportedHost
+  const hostError = checker.buildTarget.hostError
+  if (host == "" && hostError == "") {
+    return
+  }
+  let message = `could not determine the host: ${hostError}`
+  if (host != "") {
+    message = `std/build has no target for this host (${host}); the supported targets are ${describeTargets()}`
+  }
+  // Once per module, at its first import of std/build.
+  for (const module of Arrays.values(package.modules)) {
+    for (const importDecl of Arrays.values(module.ast.imports)) {
+      if (importDecl.path == BUILD_MODULE) {
+        reportErrorIn(mutable checker, module.file, importDecl.pos, "E0989", message)
+        break
+      }
+    }
+  }
+}
+
+export function applyBuildTarget(
+  module: SourceModule,
+  target: BuildTarget,
+): SourceModule from module uses alloc {
+  // The constants of std/build are written with stand-in values; the target's replace them.
+  if (module.path != BUILD_MODULE || target.os == "") {
+    return module
+  }
+  let prepared = copy(module)
+  const count = Arrays.length(module.ast.declarations)
+  for (let index = 0; index < count; index++) {
+    if (module.ast.declarations[index] is Decl.Const(constDecl)) {
+      let updated = copy(constDecl)
+      if (constDecl.value is Expr.FieldExpr(id, pos, enumName, _)) {
+        if (constDecl.name == "os") {
+          updated.value = Expr.FieldExpr(id, pos, enumName, target.os)
+        } else if (constDecl.name == "arch") {
+          updated.value = Expr.FieldExpr(id, pos, enumName, target.arch)
+        }
+      } else if (constDecl.value is Expr.BoolLit(id, pos, _)) {
+        updated.value = Expr.BoolLit(id, pos, target.debug)
+      }
+      prepared.ast.declarations[index] = Decl.Const(updated)
+    }
+  }
+  return prepared
+}
+
+export function recordBuildCondition(
+  mutable checker: Checker,
+  condition: Expr,
+  then: Block,
+  orElse: Option<Stmt>,
+) uses alloc {
+  // Without a target nothing is decided, and the `if` stays a runtime test.
+  if (checker.buildTarget.os == "") {
+    return
+  }
+  if (evaluateCondition(checker, condition) is Some(value)) {
+    if (value.isFlag && value.constant) {
+      checker.foldedConditions[getExpressionId(condition)] = value.flag
+      // The dropped branch may use `@target` functions of other targets.
+      if (!value.flag) {
+        addDroppedRange(mutable checker, then.pos, then.end)
+      } else if (orElse is Some(dropped)) {
+        addDroppedRange(mutable checker, findStatementStart(dropped), findStatementEnd(dropped))
+      }
+    }
+  }
+}
+
+function addDroppedRange(mutable checker: Checker, start: Pos, end: Pos) uses alloc {
+  const range = DroppedRange { scope: checker.current, start: start, end: end }
+  Arrays.push(mutable checker.droppedRanges, range)
+}
+
+function findStatementStart(statement: Stmt): Pos from statement {
+  return match (statement) {
+    Stmt.BlockStmt(block) => block.pos
+    Stmt.IfStmt(pos, _, _, _) => pos
+    _ => Pos { line: 0, column: 0 }
+  }
+}
+
+function findStatementEnd(statement: Stmt): Pos from statement {
+  // An else branch is a block or another `if`; its end is that of the last block.
+  let current = statement
+  while (true) {
+    match (current) {
+      Stmt.BlockStmt(block) => {
+        return block.end
+      }
+      Stmt.IfStmt(_, _, then, orElse) => {
+        if (orElse is Some(next)) {
+          current = next
+        } else {
+          return then.end
+        }
+      }
+      _ => {
+        return Pos { line: 0, column: 0 }
+      }
+    }
+  }
+}
+
+export function resolveFunctionTarget(
+  mutable checker: Checker,
+  funcIndex: int,
+  funcDecl: FuncDecl,
+) uses alloc {
+  // Each argument names a variant of std/build's Os (os) or Arch (arch), once.
+  if (funcDecl.target is Some(attribute)) {
+    let requirement = TargetRequirement { os: "", arch: "" }
+    let valid = true
+    if (Arrays.length(attribute.arguments) == 0) {
+      reportError(
+        mutable checker,
+        attribute.pos,
+        "E0990",
+        "@target needs os, arch or both, such as @target(os = Os.Windows)",
+      )
+      valid = false
+    }
+    for (const argument of Arrays.values(attribute.arguments)) {
+      let enumName = ""
+      let seen = ""
+      if (argument.name == "os") {
+        enumName = "Os"
+        seen = requirement.os
+      } else if (argument.name == "arch") {
+        enumName = "Arch"
+        seen = requirement.arch
+      } else {
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E0990",
+          `@target takes os and arch, not ${argument.name}`,
+        )
+        valid = false
+        continue
+      }
+      if (seen != "") {
+        reportError(mutable checker, argument.pos, "E0990", `@target names ${argument.name} twice`)
+        valid = false
+        continue
+      }
+      const variant = findBuildVariant(
+        mutable checker,
+        argument.typePos,
+        argument.typeName,
+        enumName,
+        argument.variant,
+      )
+      if (variant == "") {
+        valid = false
+      } else if (argument.name == "os") {
+        requirement.os = variant
+      } else {
+        requirement.arch = variant
+      }
+    }
+    if (valid) {
+      checker.functionTargets[funcIndex] = requirement
+    }
+  }
+}
+
+function findBuildVariant(
+  mutable checker: Checker,
+  pos: Pos,
+  typeName: string,
+  enumName: string,
+  variant: string,
+): string uses alloc {
+  const written = TypeExpr {
+    pos: pos,
+    name: typeName,
+    arguments: [],
+    isFunc: false,
+    result: None,
+    effects: [],
+    isTuple: false,
+  }
+  const resolved = resolveType(mutable checker, written)
+  if (resolved is Type.TVoid) {
+    // resolveType has reported the unknown name.
+    return ""
+  }
+  if (resolved is Type.TEnum(enumIndex)) {
+    const info = checker.enums[enumIndex]
+    if (info.module == BUILD_MODULE && info.name == enumName) {
+      for (const known of Arrays.values(info.variants)) {
+        if (known.name == variant) {
+          return variant
+        }
+      }
+      reportError(
+        mutable checker,
+        pos,
+        "E0990",
+        `${enumName} of std/build has no variant ${variant}`,
+      )
+      return ""
+    }
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0990",
+    `@target takes ${enumName} from std/build here, not ${typeName}`,
+  )
+  return ""
+}
+
+export function checkTargetUse(mutable checker: Checker, pos: Pos, funcIndex: int) uses alloc {
+  // A use is fine on a target the function exists on, in a branch this target
+  // drops, and in a `@target` function this target does not have.
+  const target = checker.buildTarget
+  if (target.os == "") {
+    return
+  }
+  if (checker.functionTargets[funcIndex] is Some(requirement)) {
+    if (isTargetMet(requirement, target)) {
+      return
+    }
+    if (checker.functionIndex >= 0) {
+      if (checker.functionTargets[checker.functionIndex] is Some(own)) {
+        if (!isTargetMet(own, target)) {
+          return
+        }
+      }
+    }
+    for (const range of Arrays.values(checker.droppedRanges)) {
+      if (range.scope == checker.current && isWithin(pos, range.start, range.end)) {
+        return
+      }
+    }
+    const name = checker.functions[funcIndex].name
+    reportError(
+      mutable checker,
+      pos,
+      "E0991",
+      `${name} exists only on @target(${describeRequirement(requirement)}), but this use is compiled for ${describeTarget(target)}; use it inside an if on Build.os or Build.arch that keeps it only on that target`,
+    )
+  }
+}
+
+function isWithin(pos: Pos, start: Pos, end: Pos): bool {
+  const afterStart = pos.line > start.line || (pos.line == start.line && pos.column >= start.column)
+  const beforeEnd = pos.line < end.line || (pos.line == end.line && pos.column <= end.column)
+  return afterStart && beforeEnd
+}
+
+function evaluateCondition(checker: Checker, expression: Expr): Option<BuildValue> {
+  return match (expression) {
+    Expr.Ident(id, _, _) | Expr.FieldExpr(id, _, _, _) => readBuildName(checker, id)
+    Expr.UnaryExpr(_, _, operator, operand) => {
+      if (operator != "!") {
+        return None
+      }
+      if (evaluateCondition(checker, operand) is Some(value)) {
+        if (value.isFlag) {
+          return Some(createFlag(!value.flag, value.constant))
+        }
+      }
+      return None
+    }
+    Expr.BinaryExpr(_, _, operator, left, right) => evaluateBinary(checker, operator, left, right)
+    Expr.IsExpr(_, _, subject, pattern) => evaluateIs(checker, subject, pattern)
+    _ => None
+  }
+}
+
+function evaluateBinary(
+  checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+): Option<BuildValue> {
+  const leftValue = evaluateCondition(checker, left)
+  const rightValue = evaluateCondition(checker, right)
+  if (leftValue is Some(first)) {
+    if (rightValue is Some(second)) {
+      const constant = first.constant || second.constant
+      // && and || join two bools; == and != compare two variants of one enum.
+      if (first.isFlag && second.isFlag) {
+        if (operator == "&&") {
+          return Some(createFlag(first.flag && second.flag, constant))
+        }
+        if (operator == "||") {
+          return Some(createFlag(first.flag || second.flag, constant))
+        }
+        return None
+      }
+      if (first.isFlag || second.isFlag || first.enumIndex != second.enumIndex) {
+        return None
+      }
+      if (operator == "==") {
+        return Some(createFlag(first.variant == second.variant, constant))
+      }
+      if (operator == "!=") {
+        return Some(createFlag(first.variant != second.variant, constant))
+      }
+    }
+  }
+  return None
+}
+
+function evaluateIs(checker: Checker, subject: Expr, pattern: Pattern): Option<BuildValue> {
+  // Only a variant without fields, such as `Build.os is Os.MacOS`.
+  if (evaluateCondition(checker, subject) is Some(value)) {
+    if (value.isFlag) {
+      return None
+    }
+    if (pattern is Pattern.PatCtor(patternId, _, _, _, arguments, _)) {
+      if (Arrays.length(arguments) > 0) {
+        return None
+      }
+      if (getRef(checker, patternId) is Ref.Constructor(enumIndex, variantIndex)) {
+        if (enumIndex == value.enumIndex) {
+          const variant = checker.enums[enumIndex].variants[variantIndex].name
+          return Some(createFlag(variant == value.variant, value.constant))
+        }
+      }
+    }
+  }
+  return None
+}
+
+function readBuildName(checker: Checker, id: int): Option<BuildValue> {
+  match (getRef(checker, id)) {
+    Ref.Const(index) => {
+      if (checker.consts[index].module != BUILD_MODULE) {
+        return None
+      }
+      const name = checker.consts[index].name
+      if (name == "debug") {
+        return Some(createFlag(checker.buildTarget.debug, true))
+      }
+      if (getNodeType(checker, id) is Some(Type.TEnum(enumIndex))) {
+        if (name == "os") {
+          return Some(createVariant(enumIndex, checker.buildTarget.os, true))
+        }
+        if (name == "arch") {
+          return Some(createVariant(enumIndex, checker.buildTarget.arch, true))
+        }
+      }
+      return None
+    }
+    Ref.Constructor(enumIndex, variantIndex) => {
+      if (checker.enums[enumIndex].module != BUILD_MODULE) {
+        return None
+      }
+      const variant = checker.enums[enumIndex].variants[variantIndex].name
+      return Some(createVariant(enumIndex, variant, false))
+    }
+    _ => {
+      return None
+    }
+  }
+}
+
+function createFlag(flag: bool, constant: bool): BuildValue {
+  return BuildValue {
+    isFlag: true,
+    flag: flag,
+    enumIndex: -1,
+    variant: "",
+    constant: constant,
+  }
+}
+
+function createVariant(enumIndex: int, variant: string, constant: bool): BuildValue {
+  return BuildValue {
+    isFlag: false,
+    flag: false,
+    enumIndex: enumIndex,
+    variant: variant,
+    constant: constant,
+  }
+}

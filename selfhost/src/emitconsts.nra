@@ -4,6 +4,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import { Expr, Stmt, Block, Pos } from "narrac/ast"
 import { Type } from "narrac/types"
+import { hasReachableEnd } from "narrac/pathends"
 import { Checker, ProgramFunc, BodyRoot, findBody } from "narrac/check"
 import { cachedCType, cachedFunctionName, functionSignature, cachedDeclName } from "narrac/cnames"
 import {
@@ -66,7 +67,7 @@ implement EmitWalker for BodyWalker {
   }
 }
 
-function lazyConstants(emitter: Emitter): Array<int> uses alloc {
+export function lazyConstants(emitter: Emitter): Array<int> uses alloc {
   let lazy: Array<int> = []
   for (const constIndex of Arrays.values(emitter.checker.programConsts)) {
     if (!Exprs.isStaticConstant(emitter, constIndex)) {
@@ -76,9 +77,12 @@ function lazyConstants(emitter: Emitter): Array<int> uses alloc {
   return lazy
 }
 
-export function emitConstPrototypes(mutable emitter: Emitter): string uses alloc {
+export function emitConstPrototypes(
+  mutable emitter: Emitter,
+  constants: Array<int>,
+): string uses alloc {
   let builder = Str.builder()
-  for (const constIndex of Arrays.values(lazyConstants(emitter))) {
+  for (const constIndex of Arrays.values(constants)) {
     const info = emitter.checker.consts[constIndex]
     const typeName = cachedCType(
       emitter.checker,
@@ -119,11 +123,7 @@ function moduleFile(checker: Checker, module: string): string {
   return ""
 }
 
-export function emitConstBodies(mutable emitter: Emitter): string uses alloc {
-  const lazy = lazyConstants(emitter)
-  for (const constIndex of Arrays.values(lazy)) {
-    emitGetter(mutable emitter, constIndex)
-  }
+export function emitConstRelease(mutable emitter: Emitter, lazy: Array<int>): string uses alloc {
   writeLine(mutable emitter, "static void narra_consts_release(void) {")
   emitter.indent++
   for (let position = Arrays.length(lazy) - 1; position >= 0; position--) {
@@ -141,12 +141,12 @@ export function emitConstBodies(mutable emitter: Emitter): string uses alloc {
   return takeOutput(mutable emitter)
 }
 
-function emitGetter(mutable emitter: Emitter, constIndex: int) uses alloc {
+export function emitGetter(mutable emitter: Emitter, constIndex: int): string uses alloc {
   const info = copy(emitter.checker.consts[constIndex])
   const body = findBody(emitter.checker, `const|${Int.toString(constIndex)}`)
   if (body < 0) {
     const _ = reportUnsupported(mutable emitter, "constant body", NODE)
-    return
+    return ""
   }
   const startName = cachedDeclName(emitter.typeNames, "f", info.module, "const")
   startFunction(mutable emitter, body, startName)
@@ -170,6 +170,7 @@ function emitGetter(mutable emitter: Emitter, constIndex: int) uses alloc {
   emitter.indent--
   writeLine(mutable emitter, "}")
   writeLine(mutable emitter, "")
+  return takeOutput(mutable emitter)
 }
 
 // FunctionFacts is what the emitter reads about one function of Go's Program.Funcs.
@@ -243,7 +244,9 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   writeLine(mutable emitter, `${signature} {`)
   emitter.indent++
   const walker = BodyWalker {}
+  let endReachable = true
   if (copy(bodyBlock(emitter.checker, body)) is Some(block)) {
+    endReachable = hasReachableEnd(emitter.checker, emitter.body, block)
     // A function with a self tail call owns the parameters a jump replaces and has a jump target.
     emitter.tailProgram = Some(program)
     const tailCalls = copy(Tail.findTailCalls(emitter, program, block, facts.result == Type.TVoid))
@@ -256,7 +259,7 @@ export function emitFunction(mutable emitter: Emitter, program: ProgramFunc): st
   emitter.tailProgram = None
   emitter.tailCalls = []
   unwindAll(mutable emitter)
-  if (facts.result != Type.TVoid) {
+  if (facts.result != Type.TVoid && endReachable) {
     const position = where(emitter, facts.pos)
     writeLine(
       mutable emitter,

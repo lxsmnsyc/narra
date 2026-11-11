@@ -38,6 +38,7 @@ import { buildQualifyFix, createEdit, createFix, insertAt } from "narrac/fixes"
 import { resolveType } from "narrac/resolve"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
 import { namesEnum, findEnumName } from "narrac/ctors"
+import { seedPatternFacts } from "narrac/contracts"
 import {
   getPatternId,
   getPatternPos,
@@ -175,6 +176,18 @@ function resolveNode<W: Walker>(
       valueType,
       mutable seen,
     )
+    Pattern.PatCompare(_, pos, operator, _) => {
+      // The prover keeps facts for integers only.
+      if (!isInteger(valueType)) {
+        const found = typeString(checker, valueType)
+        reportError(
+          mutable checker,
+          pos,
+          "E0987",
+          `the comparison pattern \`${operator}\` needs an integer value, found ${found}`,
+        )
+      }
+    }
   }
 }
 
@@ -774,6 +787,7 @@ export function checkMatch<W: Walker>(
     let locals: Array<int> = []
     collectPatternLocals(checker, arm.pattern, mutable locals)
     bindPatternLocals(mutable checker, locals)
+    seedPatternFacts(mutable checker, subject, arm.pattern)
 
     // An arm that no value reaches is an error, guarded or not; an or-pattern reports its alternatives.
     if (!(arm.pattern is Pattern.PatOr(_, _, _))) {
@@ -893,4 +907,5 @@ export function checkDestructure<W: Walker>(
     setBinding(mutable checker, index, value, BindingKind.Destructured)
   }
   bindPatternLocals(mutable checker, locals)
+  seedPatternFacts(mutable checker, value, pattern)
 }

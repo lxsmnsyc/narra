@@ -25,6 +25,7 @@ import * as Parser from "narrac/parser"
 import {
   Trivia,
   CommentKind,
+  Placement,
   getPosKey,
   getIdKey,
   getDeclPos,
@@ -551,7 +552,10 @@ function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
 
 function printDeclaration(printer: Printer, declaration: Decl): Doc from printer uses alloc {
   return match (declaration) {
-    Decl.Func(inner) => printFunction(printer, inner)
+    Decl.Func(inner) => Docs.concat([
+      printTargetAttribute(printer, inner),
+      printFunction(printer, inner),
+    ])
     Decl.Const(inner) => printConst(printer, inner)
     Decl.Struct(inner) => printStruct(printer, inner)
     Decl.Enum(inner) => printEnum(printer, inner)
@@ -564,6 +568,41 @@ function printDeclaration(printer: Printer, declaration: Decl): Doc from printer
     Decl.Trait(inner) => printTrait(printer, inner)
     Decl.Impl(inner) => printImpl(printer, inner)
   }
+}
+
+function printTargetAttribute(printer: Printer, declaration: FuncDecl): Doc uses alloc {
+  // The attribute takes a line of its own above the function.
+  if (declaration.target is Some(attribute)) {
+    let names: Array<string> = []
+    for (const argument of Arrays.values(attribute.arguments)) {
+      Arrays.push(mutable names, `${argument.name} = ${argument.typeName}.${argument.variant}`)
+    }
+    let parts: Array<Doc> = [text(`@target(${Str.join(names, ", ")})`)]
+    // Its comments follow it: the first stays on its line unless it was written on a line of its own.
+    const anchor = getPosKey("@", attribute.pos)
+    if (hasDangling(printer, anchor)) {
+      if (isFirstDanglingOnOwnLine(printer, anchor)) {
+        Arrays.push(mutable parts, Doc.HardLine)
+      } else {
+        Arrays.push(mutable parts, text(" "))
+      }
+      Arrays.push(mutable parts, printDangling(printer, anchor))
+    }
+    Arrays.push(mutable parts, Doc.HardLine)
+    return Docs.concat(parts)
+  }
+  return empty()
+}
+
+function isFirstDanglingOnOwnLine(printer: Printer, anchor: string): bool {
+  if (printer.trivia.attached[anchor] is Some(attachedList)) {
+    for (const attached of Arrays.values(attachedList)) {
+      if (attached.placement is Placement.Dangling) {
+        return printer.trivia.comments[attached.comment].ownLine
+      }
+    }
+  }
+  return false
 }
 
 function getExportPrefix(exported: bool): string {
@@ -701,8 +740,43 @@ function printFunction(printer: Printer, declaration: FuncDecl): Doc from printe
   if (Arrays.length(declaration.effects) > 0) {
     Arrays.push(mutable parts, text(` uses ${Str.join(declaration.effects, ", ")}`))
   }
+  // Each `requires` line is indented under the signature, and the body opens on its own line.
+  for (const condition of Arrays.values(declaration.requires)) {
+    Arrays.push(
+      mutable parts,
+      Docs.indent(
+        Docs.concat([
+          Doc.HardLine,
+          withComments(
+            printer,
+            `q${Int.toString(getExprId(condition))}`,
+            Docs.concat([text("requires "), printer.printExpression(printer, condition)]),
+          ),
+        ]),
+      ),
+    )
+  }
+  for (const pattern of Arrays.values(declaration.ensures)) {
+    Arrays.push(
+      mutable parts,
+      Docs.indent(
+        Docs.concat([
+          Doc.HardLine,
+          withComments(
+            printer,
+            `n${Int.toString(getPatternId(pattern))}`,
+            Docs.concat([text("ensures "), printer.printPattern(printer, pattern)]),
+          ),
+        ]),
+      ),
+    )
+  }
   if (declaration.body is Some(body)) {
-    Arrays.push(mutable parts, text(" "))
+    if (Arrays.length(declaration.requires) > 0 || Arrays.length(declaration.ensures) > 0) {
+      Arrays.push(mutable parts, Doc.HardLine)
+    } else {
+      Arrays.push(mutable parts, text(" "))
+    }
     Arrays.push(mutable parts, printer.printBlock(printer, body))
   }
   return Docs.concat(parts)

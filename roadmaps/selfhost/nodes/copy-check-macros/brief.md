@@ -1,7 +1,7 @@
 ---
 id: copy-check-macros
 title: "The debug copy check emits one line per site"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 190646
 owns:
   - roadmaps/selfhost/nodes/copy-check-macros/**
 shared:

@@ -49,3 +49,5 @@ Sizes of `narrac emit selfhost` (lines / bytes):
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-7 as d853fe0d.

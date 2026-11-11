@@ -1,7 +1,7 @@
 ---
 id: c-interop
 title: "C interop: extern blocks, CString and linking"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 461803
 owns:
   - roadmaps/selfhost/nodes/c-interop/**
   - selfhost/src/externs.nra

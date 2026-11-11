@@ -65,3 +65,5 @@
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-8 as 19772f8e.

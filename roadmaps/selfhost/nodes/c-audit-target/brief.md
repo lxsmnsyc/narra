@@ -1,7 +1,7 @@
 ---
 id: c-audit-target
 title: "narra audit and @target on extern functions"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-8

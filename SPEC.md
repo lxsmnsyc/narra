@@ -308,7 +308,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -1483,8 +1483,36 @@ export function run(args: Array<string>): int {        // entry function set in 
 
 ## 9. Unsafe code and C interop
 
-- **`unsafe { ... }`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
+- **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression; assign to a `let` declared before it. Code inside `unsafe` may crash; it is the stated exception to D92.
+- **The `unsafe` effect.** A function that holds an `unsafe` block has the `unsafe` effect: an exported one writes `uses unsafe` (E0800), a private one is inferred, and every caller needs an `unsafe` block of its own. A function value whose type lists `uses unsafe` is called the same way.
+- **Generators and traits.** Running a generator runs its body, so a `for` loop or `yield*` over a generator whose body has the `unsafe` effect needs an `unsafe` block (E0996). A call through a trait has the effects the trait function declares, so an implementation may use `unsafe` only when its trait function declares `uses unsafe` (E0800); otherwise it wraps the unsafe code with `@trusted`, the one attribute allowed on an implement block member.
+- **`@trusted`** on a function states that its `unsafe` blocks were checked by hand. It stops the effect there: the function does not have `unsafe`, so callers need no block and an exported one does not declare it. `@trusted` on a function with no `unsafe` block, or on one that writes `uses unsafe`, is E0997.
+- **`Ptr<T>`** is a raw pointer, a plain value with no reference count, compiled to the C pointer `T*`. The type is visible in a module that imports `std/ptr` (`import * as Ptr from "std/ptr"`), and it is written `Ptr<T>` whatever the alias: with `import * as P from "std/ptr"` the functions are `P.read` and the type is still `Ptr<int>`; `P.Ptr<int>` is an error. `T` is a number type, `bool`, `char`, another `Ptr`, or a struct whose fields are all such values (tuples count as structs). Strings, `bytes`, arrays, maps, boxes, enums, function values, generators, opaque structs and type parameters are E0998, because a pointer to them would bypass reference counting.
+- **Pointer values are ordinary data.** A `Ptr` can be stored in a struct, an array or a tuple, copied, passed to and returned from any function, `@trusted` or not, and held across calls. Copying one copies the address. A `Ptr` is not `Equatable`, `Hashable` or printable: `==` and `!=` on it are compile errors, it cannot be a `Map` key, and a struct that holds one cannot derive those traits. Test for null with `Ptr.isNull`.
+- **std/ptr.** `Ptr.alloc(count: int): Ptr<T>` allocates `count` zeroed elements (`uses alloc`); `Ptr.free(pointer)` frees what `Ptr.alloc` returned and does nothing for a null pointer; `Ptr.read(pointer): T` and `Ptr.write(pointer, value: T)` read and write one element; `Ptr.offset(pointer, count: int): Ptr<T>` moves by `count` elements. These five have the `unsafe` effect. `Ptr.null(): Ptr<T>` and `Ptr.isNull(pointer): bool` touch no memory and are safe. `Ptr.alloc` and `Ptr.null` take `T` from the expected type (`const items: Ptr<int> = Ptr.alloc(4)`). There is no `Ptr<void>`, since `void` is not a type that can be written; `Ptr<u8>` stands for C's `void*`. Nothing is checked at run time: a read past the allocation, a use after `Ptr.free` or a double free is undefined behavior. Memory from `Ptr.alloc` counts toward the debug leak check (section 13) until it is freed.
+
+```ts
+import * as Ptr from "std/ptr"
+
+@trusted
+function sumSquares(count: int): int uses alloc {
+  let total = 0
+  unsafe {
+    const items: Ptr<int> = Ptr.alloc(count)
+    for (let i = 0; i < count; i++) {
+      Ptr.write(Ptr.offset(items, i), i * i)
+    }
+    for (let i = 0; i < count; i++) {
+      total += Ptr.read(Ptr.offset(items, i))
+    }
+    Ptr.free(items)
+  }
+  return total
+}
+```
+
 - **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
+- **Not built yet** (C interop step 2, node c-abi-export): `@layout(C)`, `@layout(u8)` and C-callable functions, written below under their earlier names.
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Red = 1` in an enum without `@repr` is a compile error whose fix adds `@repr(i32)` (D73). `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
 

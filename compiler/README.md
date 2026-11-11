@@ -179,6 +179,14 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 
 - Top-level `const` (`export const` too): literals, operators on constants, constructors, structs, arrays, maps, function names and other constants, in any order; cycles are errors. Scalar constants are emitted at each use. Other constants are built on first use (see Differences).
 
+## Unsafe code
+
+- `unsafe { ... }` is a `Block` with `isUnsafe` set, parsed as a statement when the identifier `unsafe` is followed by `{` (`parseStmtBody`), so `unsafe` stays an effect name. fmt prints `unsafe ` before the block; astdump adds the `unsafe` flag to the `block` line.
+- `Ptr<T>` is `Type.TPtr(element)` (key `R(...)`, C type `T*`), resolved in `resolveType` when the module imports `std/ptr` (`importsPointers`, `selfhost/src/unsafecode.nra`). The element is checked once every struct has its fields (`flushPointerElements`, run from `flushMapKeys`): E0998 unless it is a number, `bool`, `char`, a `Ptr` or a struct of those.
+- `std/ptr` (`selfhost/src/stdptr.nra`, emitters in `emitpointers.nra`): `alloc`, `free`, `read`, `write` and `offset` have the `unsafe` effect; `null` and `isNull` are safe. `Ptr.alloc` uses `narra_alloc` and zeroes the memory, so the leak check counts it.
+- The effect pass (`effects.nra`) collects each call's own effects apart and reports E0996 for a call with `unsafe` outside an `unsafe` block (`EffectState.unsafeDepth`). `@trusted` (`KNOWN_ATTRIBUTES` row, no arguments) drops `unsafe` from the function's inferred set; `checkTrusted` reports E0997 for `@trusted` without an `unsafe` block or with `uses unsafe`. `@trusted` is the one attribute allowed on an implement block member (`parseAttributeList` in `parseImplDecl`).
+- A `for` loop or `yield*` over a generator whose body has `unsafe` is E0996 outside an `unsafe` block (`walkGeneratorRun`). An implement block member may use `unsafe` only when its trait function declares it (E0800, `checkImplementationEffects`), and a `Trait.f(value)` call on a type parameter has the effects the trait function declares (`addTraitCallEffects`).
+
 ## Type aliases
 
 - `type Name<T> = Body` and `export type`. A non-generic alias is entered in the module's type table as its resolved type, so constructors, patterns and struct literals work through it, also across modules. A generic alias is resolved again at each use with its arguments, so constructors through a generic alias (`Alias.Ctor`) are not available. Self reference and cycles are E0972, a wrong argument count is E0973. Diagnostics print `Alias (Type)` for a struct, enum or distinct type once an alias of it was used anywhere in the package, even where the source wrote the type name.
@@ -193,11 +201,11 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - `Dynamic<Trait>` and `Hash.of`.
 - Defaults for generic struct fields whose type uses a type parameter.
-- Effects: trait function calls to user implementations are not followed; `unsafe` has no source yet.
+- Effects: trait function calls to user implementations are not followed, and an implementation may use effects its trait function does not declare, except `unsafe` (E0800). Implementations of pure trait functions such as `Show.show` allocate in existing programs and in the guide; enforcing the subset rule for `alloc` and `io` waits for a decision.
 - `@inline` (node inline), `async` arrow functions, and standard functions (`Int.toString`) as values.
 - Reading a tuple element by index.
 - Async functions, threads and channels.
-- `unsafe` and `extern`.
+- `extern` blocks, `CString` and `narra audit` (node c-interop); `@layout` and C-callable functions (node c-abi-export).
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.
 
 ## Differences from the spec

@@ -989,6 +989,16 @@ function parseDecl(mutable parser: Parser): Decl {
   // record that runs up to the next token, so the comments after an attribute,
   // on its line or on lines of their own, are that attribute's.
   const startIndex = parser.index
+  const attributes = parseAttributeList(mutable parser)
+  const body = parseDeclBody(mutable parser)
+  const declaration = addAttributes(mutable parser, body, attributes)
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
+  }
+  return declaration
+}
+
+function parseAttributeList(mutable parser: Parser): Array<Attribute> uses alloc {
   let attributes: Array<Attribute> = []
   while (isOk(parser) && isAt(parser, SYMBOL_AT)) {
     const written = parseAttribute(mutable parser)
@@ -1008,12 +1018,7 @@ function parseDecl(mutable parser: Parser): Decl {
     }
     Arrays.push(mutable attributes, written)
   }
-  const body = parseDeclBody(mutable parser)
-  const declaration = addAttributes(mutable parser, body, attributes)
-  if (parser.collector.enabled) {
-    noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
-  }
-  return declaration
+  return attributes
 }
 
 function hasAttribute(attributes: Array<Attribute>, name: string): bool {
@@ -1136,6 +1141,7 @@ struct AttributeRow {
 
 const KNOWN_ATTRIBUTES: Array<AttributeRow> = [
   AttributeRow { name: "target", takesArguments: true },
+  AttributeRow { name: "trusted", takesArguments: false },
 ]
 
 function findAttributeRow(name: string): Option<AttributeRow> {
@@ -1898,6 +1904,19 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
   skipNewlines(mutable parser)
   let functions: Array<FuncDecl> = []
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
+    // A member may be @trusted, to wrap unsafe code.
+    const functionStart = parser.index
+    const attributes = parseAttributeList(mutable parser)
+    for (const attribute of Arrays.values(attributes)) {
+      if (isOk(parser) && attribute.name != "trusted") {
+        failAt(
+          mutable parser,
+          attribute.pos,
+          "E0990",
+          `\`@${attribute.name}\` is not allowed in an implement block; only @trusted is`,
+        )
+      }
+    }
     if (isAt(parser, SYMBOL_KEYWORD_EXPORT)) {
       failHere(mutable parser, "E0026", "functions in an implement block cannot be exported")
       break
@@ -1906,9 +1925,9 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
       failFound(mutable parser, "E0027", `an implement block has functions only`)
       break
     }
-    const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
-    const implFunction = parseFuncDecl(mutable parser, false)
+    const parsedFunction = parseFuncDecl(mutable parser, false)
+    const implFunction = FuncDecl { ...parsedFunction, attributes: attributes }
     Arrays.push(mutable functions, implFunction)
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("d", implFunction.pos), functionStart)
@@ -2369,6 +2388,18 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       "E0930",
       "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
     )
+  }
+  if (
+    token.kind == TokenKind.TokIdent &&
+      token.text == "unsafe" &&
+      following.kind == TokenKind.TokPunct &&
+      following.text == "{"
+  ) {
+    // `unsafe` is a keyword only before a block, so it stays an effect name.
+    advance(mutable parser)
+    const block = parseBlock(mutable parser)
+    skipNewlines(mutable parser)
+    return Stmt.BlockStmt(Block { ...block, isUnsafe: true, keywordPos: Some(pos) })
   }
   if (isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
     failAt(

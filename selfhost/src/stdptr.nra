@@ -1,0 +1,248 @@
+// The registry rows and checks of std/ptr. Every function that reads, writes,
+// moves or frees a pointer has the unsafe effect, so a call needs an `unsafe { }`
+// block (effects.nra); Ptr.null and Ptr.isNull touch no memory and are safe. The emitters are
+// in emitpointers.nra and the Ptr<T> type rules in unsafecode.nra.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Walker,
+  internComposite,
+  reportError,
+  typeString,
+  getExpressionPos,
+} from "narrac/check"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression } from "narrac/exprs"
+import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+
+export const POINTER_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Ptr.alloc",
+    module: "std/ptr",
+    key: "alloc",
+    effects: ["alloc", "unsafe"],
+    check: "checkPtrAlloc",
+  },
+  StdFunc {
+    name: "Ptr.free",
+    module: "std/ptr",
+    key: "free",
+    effects: ["unsafe"],
+    check: "checkPtrFree",
+  },
+  StdFunc {
+    name: "Ptr.isNull",
+    module: "std/ptr",
+    key: "isNull",
+    check: "checkPtrIsNull",
+  },
+  StdFunc { name: "Ptr.null", module: "std/ptr", key: "null", check: "checkPtrNull" },
+  StdFunc {
+    name: "Ptr.offset",
+    module: "std/ptr",
+    key: "offset",
+    effects: ["unsafe"],
+    check: "checkPtrOffset",
+  },
+  StdFunc {
+    name: "Ptr.read",
+    module: "std/ptr",
+    key: "read",
+    effects: ["unsafe"],
+    check: "checkPtrRead",
+  },
+  StdFunc {
+    name: "Ptr.write",
+    module: "std/ptr",
+    key: "write",
+    effects: ["unsafe"],
+    check: "checkPtrWrite",
+  },
+]
+
+function checkPointerArgument<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  argument: Arg,
+  name: string,
+): Option<Type> uses alloc {
+  // The element type of a pointer argument, or None after an error.
+  const found = checkExpression(mutable checker, walker, argument.value, None)
+  if (found is Type.TPtr(element)) {
+    return Some(element)
+  }
+  if (found != Type.TVoid) {
+    const foundName = typeString(checker, found)
+    reportError(
+      mutable checker,
+      getExpressionPos(argument.value),
+      "E0998",
+      `${name} takes a Ptr, found ${foundName}`,
+    )
+  }
+  return None
+}
+
+function reportMissingElement(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  example: string,
+) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E0998",
+    `${name} takes its element type from where the result goes, as in \`${example}\``,
+  )
+}
+
+function checkPtrAlloc<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  checkArgumentAgainst(mutable checker, walker, arguments[0].value, Type.TInt)
+  if (want is Some(Type.TPtr(element))) {
+    return internComposite(mutable checker, Type.TPtr(element))
+  }
+  reportMissingElement(mutable checker, pos, name, "const items: Ptr<int> = Ptr.alloc(4)")
+  return Type.TVoid
+}
+
+function checkPtrNull<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 0)) {
+    return Type.TVoid
+  }
+  if (want is Some(Type.TPtr(element))) {
+    return internComposite(mutable checker, Type.TPtr(element))
+  }
+  reportMissingElement(mutable checker, pos, name, "const none: Ptr<int> = Ptr.null()")
+  return Type.TVoid
+}
+
+function checkPtrFree<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    checkPointerArgument(mutable checker, walker, arguments[0], name)
+  }
+  return Type.TVoid
+}
+
+function checkPtrIsNull<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    checkPointerArgument(mutable checker, walker, arguments[0], name)
+  }
+  return Type.TBool
+}
+
+function checkPtrRead<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (checkPointerArgument(mutable checker, walker, arguments[0], name) is Some(element)) {
+    return element
+  }
+  return Type.TVoid
+}
+
+function checkPtrWrite<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (checkPointerArgument(mutable checker, walker, arguments[0], name) is Some(element)) {
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, element)
+    return Type.TVoid
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  return Type.TVoid
+}
+
+function checkPtrOffset<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = checkPointerArgument(mutable checker, walker, arguments[0], name)
+  checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+  if (found is Some(element)) {
+    return internComposite(mutable checker, Type.TPtr(element))
+  }
+  return Type.TVoid
+}
+
+export function checkPointerCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (kind == "checkPtrAlloc") {
+    return checkPtrAlloc(mutable checker, walker, pos, arguments, name, want)
+  }
+  if (kind == "checkPtrNull") {
+    return checkPtrNull(mutable checker, walker, pos, arguments, name, want)
+  }
+  if (kind == "checkPtrFree") {
+    return checkPtrFree(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkPtrIsNull") {
+    return checkPtrIsNull(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkPtrRead") {
+    return checkPtrRead(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkPtrWrite") {
+    return checkPtrWrite(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkPtrOffset") {
+    return checkPtrOffset(mutable checker, walker, pos, arguments, name)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+  return Type.TVoid
+}

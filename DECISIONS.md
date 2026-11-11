@@ -1059,6 +1059,16 @@ Constant type parameters (batch-8, node const-generics, 2026-11-11), the first p
 - **An argument is an integer literal (`-3` included) or a constant parameter in scope.** A local, a top-level constant or a type in a constant slot, and a literal or constant parameter in a type slot, are E0993. Arithmetic in a type argument (`Vector<N + 1>`) is E0992 in the parser. In a call, `f<3>(x)` reads as type arguments because an integer between the brackets counts like a type name.
 - **The generic declaration defers proofs on `N`.** It is checked once with `N` open, so a divisor or shift count that is `N` is proven in each instance, where `N` is a constant; `f<0>` dividing by `N` is E0979 at the division.
 
+Unsafe code (batch-8, node unsafe-ptr, 2026-11-11), C interop step 1 part 1. Amendments from the build:
+
+- **`unsafe { }` is a statement.** `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression.
+- **What needs a block is a call with the `unsafe` effect**: the std/ptr functions that read, write, move or free (`alloc`, `free`, `read`, `write`, `offset`) and any function with the effect, so the effect pass checks both with one rule (E0996). `Ptr.null` and `Ptr.isNull` touch no memory and are safe.
+- **What a `Ptr<T>` may point at**: numbers, `bool`, `char`, `Ptr` and structs whose fields are all such values. Anything that holds a reference count, an enum, an opaque struct and a type parameter are E0998, because the pointer would bypass reference counting. Generic code over pointers waits for a bound that says "no counted fields".
+- **A `Ptr` is plain data**: it can be stored in structs and arrays and passed across any function, `@trusted` or not. It is not `Equatable`, `Hashable` or printable; `Ptr.isNull` tests for null.
+- **`@trusted` without an `unsafe` block is an error, not a warning** (E0997), and so is `@trusted` with `uses unsafe`: Narra has no warnings outside lint, and a trusted function that trusts nothing hides a mistake.
+- **`Ptr.alloc` and `Ptr.null` take `T` from the expected type**, like `Arrays.withCapacity`.
+- **Generators and traits cannot hide `unsafe`** (fresh review). A `for` loop or `yield*` over a generator whose body has `unsafe` is E0996 outside a block. An implementation may use `unsafe` only when its trait function declares it (E0800), since a call through a bound sees only the trait's effects; `@trusted` is allowed on implement block members to wrap unsafe code. The same subset rule for `alloc` and `io` is not enforced: implementations of pure trait functions allocate in existing samples and the guide.
+
 ## D96. `typeof` in type positions
 
 Decision (maintainer, 2026-11-09): `typeof name` in a type annotation stands for the declared or inferred type of a value in scope: a `const`, `let`, parameter, top-level constant or function. For a function it is the full function type, with effects (D86) and `from` (D94).

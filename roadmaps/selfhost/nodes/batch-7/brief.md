@@ -1,7 +1,7 @@
 ---
 id: batch-7
 title: "Batch 7: compiler cost, smaller C output, contracts and build conditions"
-status: active
+status: done
 priority: should
 type: story
 story: 
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-11
-spent:
+spent: 195109
 owns:
   - roadmaps/selfhost/nodes/batch-7/**
 shared:

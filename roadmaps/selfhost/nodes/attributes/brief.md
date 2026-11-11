@@ -1,7 +1,7 @@
 ---
 id: attributes
 title: "General declaration attributes"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-8

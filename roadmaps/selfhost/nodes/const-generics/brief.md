@@ -1,7 +1,7 @@
 ---
 id: const-generics
 title: "Constant type parameters: const N: int"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-8

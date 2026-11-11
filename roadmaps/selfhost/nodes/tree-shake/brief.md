@@ -1,7 +1,7 @@
 ---
 id: tree-shake
 title: "Tree shaking: emit only reachable declarations"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-7

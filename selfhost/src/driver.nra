@@ -46,6 +46,7 @@ import { LoadError } from "narrac/manifest"
 import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { Checker } from "narrac/check"
+import { chooseTarget } from "narrac/buildconditions"
 import { reportSharedWrites } from "narrac/sharedwrites"
 import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
 import { Fix, applyFix } from "narrac/fixes"
@@ -333,12 +334,16 @@ function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> from err
   return diagnostics
 }
 
-function loadAndCheck(path: string): Result<#[Package, Checker], Array<Diagnostic>> uses io, alloc {
+function loadAndCheck(path: string, release: bool): Result<#[
+  Package,
+  Checker,
+], Array<Diagnostic>> uses io, alloc {
   const loaded = Modules.load(path)
   if (loaded is Err(errors)) {
     return Err(convertLoadErrors(errors))
   }
-  let checker = copy(Body.checkPackage(loaded.value))
+  const target = chooseTarget(loaded.value, release)
+  let checker = copy(Body.checkPackageFor(loaded.value, target))
   // The effects are checked only when the bodies have no errors; shared writes always.
   if (Arrays.length(checker.errors) == 0) {
     const _ = Effects.checkEffects(mutable checker)
@@ -365,8 +370,9 @@ function compileToC(
   path: string,
   binaryName: string,
   tests: bool,
+  release: bool,
 ): Result<string, string> uses io, alloc {
-  const checked = loadAndCheck(path)
+  const checked = loadAndCheck(path, release)
   if (checked is Err(diagnostics)) {
     return Err(formatDiagnostics(diagnostics))
   }
@@ -449,7 +455,7 @@ function buildExecutable(
   tests: bool,
   output: string,
 ): Result<bool, string> uses io, alloc {
-  const compiled = compileToC(options.path, binaryName, tests)
+  const compiled = compileToC(options.path, binaryName, tests, options.release)
   if (compiled is Err(message)) {
     return Err(message)
   }
@@ -689,7 +695,7 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
     return 2
   }
   let diagnostics: Array<Diagnostic> = []
-  const checked = loadAndCheck(paths[0])
+  const checked = loadAndCheck(paths[0], false)
   if (checked is Err(found)) {
     diagnostics = found
   } else {
@@ -755,7 +761,7 @@ function runApplyFix(arguments: Array<string>): int uses io, alloc {
     return 2
   }
   let diagnostics: Array<Diagnostic> = []
-  const checked = loadAndCheck(paths[0])
+  const checked = loadAndCheck(paths[0], false)
   if (checked is Err(found)) {
     diagnostics = found
   }

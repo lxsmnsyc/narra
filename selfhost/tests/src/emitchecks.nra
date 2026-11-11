@@ -10,6 +10,11 @@
 //                      the C names of the types the program already had
 //   proven-operands/no-panic-path   the C of a program with proven divisors and
 //                      shift counts has no division or shift panic
+//   build-conditions/one-branch   the C of testdata/build_os.nra holds the
+//                      host's branch of an if on Build.os and no other
+//   build-conditions/unsupported-host   with NARRA_HOST_TARGET naming no
+//                      supported target, a program importing std/build fails
+//                      with one error per module
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
 import * as Path from "std/path"
@@ -18,6 +23,7 @@ import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Scratch from "testrunner/scratch"
 import * as Shell from "testrunner/shell"
+import { readHostSystem } from "testrunner/programs"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   const emitErrors = Path.join(context.testdata, "emit-errors")
@@ -41,6 +47,16 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(context.testdata, "proven_operands.nra"),
       "no-panic-path",
     ),
+    makeCase(
+      "build-conditions/one-branch",
+      Path.join(context.testdata, "build_os.nra"),
+      "one-branch",
+    ),
+    makeCase(
+      "build-conditions/unsupported-host",
+      Path.join(context.testdata, "build_os.nra"),
+      "unsupported-host",
+    ),
   ]
 }
 
@@ -63,6 +79,12 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "no-panic-path") {
     return checkNoOperandPanic(context, testCase.path)
+  }
+  if (testCase.variant == "one-branch") {
+    return checkOneBranch(context, testCase.path)
+  }
+  if (testCase.variant == "unsupported-host") {
+    return checkUnsupportedHost(context, testCase.path)
   }
   if (testCase.variant == "xxh32") {
     return checkHashVectors(context)
@@ -106,6 +128,45 @@ function checkNoOperandPanic(
   }
   if (!Str.contains(result.output, "narra_div(") || !Str.contains(result.output, "narra_shl(")) {
     return Err("the emitted C has no division or shift to check")
+  }
+  return Ok(true)
+}
+
+function checkOneBranch(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // Each branch returns its own string; only the host's may reach the C.
+  let kept = "kept the Linux branch"
+  if (readHostSystem() == "darwin") {
+    kept = "kept the macOS branch"
+  }
+  const branches = ["kept the macOS branch", "kept the Linux branch", "kept the Windows branch"]
+  for (const text of Arrays.values(branches)) {
+    if (Str.contains(result.output, text) != (text == kept)) {
+      return Err(`the emitted C should hold only "${kept}"; "${text}" is wrong`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkUnsupportedHost(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  // NARRA_HOST_TARGET names a host with no target. The sample imports std/build
+  // twice, and the error comes once for the module.
+  const result = Common.runNarracWith(
+    context,
+    "",
+    ["NARRA_HOST_TARGET=Plan9-mips"],
+    ["check", source],
+  )
+  const want = "std/build has no target for this host (Plan9-mips)"
+  const count = Arrays.length(splitString(result.errorOutput, want)) - 1
+  if (result.code != 1 || count != 1) {
+    return Err(`want exit code 1 and "${want}" once, got ${Common.describeRun(result)}`)
   }
   return Ok(true)
 }

@@ -27,6 +27,8 @@ import {
 } from "narrac/ast"
 import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
+import { BuildTarget, createUnknownTarget } from "narrac/buildtarget"
+import { applyBuildTarget, reportUnsupportedHost } from "narrac/buildconditions"
 import { Type, Field } from "narrac/types"
 import {
   Checker,
@@ -207,7 +209,14 @@ implement Walker for BodyWalker {
 }
 
 export function checkPackage(package: Package): Checker from package uses alloc {
-  return checkModules(package, Map {}).checker
+  return checkModules(package, Map {}, createUnknownTarget(true)).checker
+}
+
+export function checkPackageFor(
+  package: Package,
+  target: BuildTarget,
+): Checker from package uses alloc {
+  return checkModules(package, Map {}, target).checker
 }
 
 // The result of checkModules. The errors before unusedStart come from the
@@ -223,8 +232,11 @@ export struct ModulesCheck {
 export function checkModules(
   package: Package,
   skipped: Map<string, bool>,
+  target: BuildTarget,
 ): ModulesCheck from package uses alloc {
   let checker = newPackageChecker(package)
+  checker.buildTarget = copy(target)
+  reportUnsupportedHost(mutable checker, package)
   if (Arrays.length(checker.errors) > 0 && Arrays.length(checker.scopes) == 0) {
     const count = Arrays.length(checker.errors)
     return ModulesCheck { checker: checker, unusedStart: count, queuedErrors: 0 }
@@ -235,7 +247,8 @@ export function checkModules(
   let queuedErrors = 0
 
   // Each module: declarations, field defaults, bodies.
-  for (const module of Arrays.values(package.modules)) {
+  for (const sourceModule of Arrays.values(package.modules)) {
+    const module = applyBuildTarget(sourceModule, target)
     declareSourceModule(mutable checker, module)
     const beforeDefaults = Arrays.length(checker.errors)
     checkQueuedDefaults(mutable checker, walker)

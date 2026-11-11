@@ -1030,7 +1030,7 @@ Decision (maintainer, 2026-11-09). Each part replaces the matching SPEC.md text 
 - **Dynamic traits.** `Dynamic<Trait>` and `Dynamic.of(value)`; calls name the trait (`Drawable.draw(item, mutable canvas)`). Only traits whose functions take `Self` first and never return `Self`. No `==` on a `Dynamic`, one trait only, no downcast in the first version (`Dynamic.as<T>(d): Option<T>` would be sound, since it compares the stored type, but encourages type switches).
 - **Reason.** Each design keeps the syntax TypeScript-like, adds no hidden calls (D12) and no panics outside `unsafe` and array indexing (D92).
 
-Not built yet.
+Build conditions are built (batch-7, node build-conditions), except `@target` and `--all-targets` (node build-targets). The host is the target: `Build.os` and `Build.arch` come from `/usr/bin/uname -s -m`, read once per compiler process and only for a package that imports `std/build`, through one target table (`selfhost/src/buildtarget.nra`); `NARRA_HOST_TARGET=<os>-<arch>` overrides it (fix of the fresh review: a `uname` searched on `PATH` could hang or vary), and `Build.debug` is false under `-release`. The effects of every branch count toward the function's effects, the dropped branches included, so a function has the same signature on every target (orchestrator, 2026-11-11). Besides `==`, `!=`, `!`, `&&` and `||`, an `is` test of a variant without fields folds too, since it tests only the constants. A host with no row in the table is E0989 at the import of `std/build`. The other parts are not built yet.
 
 ## D96. `typeof` in type positions
 

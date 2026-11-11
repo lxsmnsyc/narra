@@ -1,7 +1,7 @@
 ---
 id: shared-results-walk
 title: "A cheaper walk for the from check"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-7

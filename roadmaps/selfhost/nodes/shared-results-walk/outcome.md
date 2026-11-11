@@ -28,3 +28,5 @@ All in `selfhost/src/sharedresults.nra`; no other file changed.
 ## Stubs left
 
 - About 0.028G (1.3%) of the walk remains, mostly the walk of bodies that can report and `noteMutableArguments`. It is under the 2% line, so no further change.
+
+Landed on feat/batch-7 as 9c2733aa.

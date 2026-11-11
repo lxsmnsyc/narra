@@ -1,7 +1,7 @@
 ---
 id: shared-results-walk
 title: "A cheaper walk for the from check"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 184804
 owns:
   - roadmaps/selfhost/nodes/shared-results-walk/**
 shared:

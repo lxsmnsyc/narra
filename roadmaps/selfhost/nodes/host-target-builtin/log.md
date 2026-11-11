@@ -1,0 +1,3 @@
+- Added std/internal/host (Host.os, Host.arch; selfhost/runtime/std_host.c) and Build.hostTarget in std/src/build.nra returning Option<Target>.
+- Rows and emitter in stdbuild.nra; dispatch in emitstd.nra and runtimetext.nra; generated files rewritten.
+- Sample testdata/build_host_target.nra compares against uname -s -m at run time.

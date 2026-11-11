@@ -64,7 +64,7 @@ depends_on:
 Run by the orchestrator after every other child has landed: `sh scripts/seed-update.sh`, then
 
 - replace `skipTeardown` and the `Retained` cycle in `selfhost/src/emitter.nra` (callers in `emitter.nra` and `driver.nra`) with the std exit function from process-exit, keeping the leak check's full release under `NARRA_CHECK_LEAKS`. If it is safe, also skip the Emitter release inside `emitProgram` (`emit.nra`), which the cli-skip-teardown profile put at part of a 6.3% estimate;
-- replace the `uname` call in `selfhost/src/buildtarget.nra` with the host-target builtin, keeping `NARRA_HOST` (or the existing override) for tests;
+- replace the `uname` call in `selfhost/src/buildtarget.nra` with the host-target builtin, keeping `NARRA_HOST` (or the existing override) for tests; the builtin is `Build.hostTarget(): Option<Target>` (see host-target-builtin's outcome). When it returns None, the compiler can no longer name the host from the uname text in its unsupported-host error; report "no supported target for this C compiler" instead;
 
 then `sh scripts/seed-update.sh` again.
 

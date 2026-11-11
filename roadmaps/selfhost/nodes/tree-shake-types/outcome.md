@@ -57,3 +57,5 @@ Base: feat/batch-7 at db7a3871, compiler from `sh selfhost/bootstrap.sh` in a cl
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-7 as 687c788b.

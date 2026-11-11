@@ -1,7 +1,7 @@
 ---
 id: tree-shake-types
 title: "Tree shaking: types, helpers and runtime sections"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 399109
 owns:
   - roadmaps/selfhost/nodes/tree-shake-types/**
 shared:

@@ -47,7 +47,7 @@ The prover keeps one interval of facts per integer name (the D92 division proofs
 2. Comparisons between two parameters (`requires low <= high`): a relation fact between names, how the body uses it (for example `high - low` cannot be negative), and how a caller proves it.
 3. `!` in `requires`: allowed as negation of a comparison only, or not at all (it is always rewritable).
 4. `&&` inside an `ensures` pattern (`Some(>= 0 && < 64)`), or a range pattern form, against keeping several lines.
-5. Field paths and floats, which D95 already calls a later extension: in or out of this step.
+Out of scope (maintainer, 2026-11-11): field paths and floats in conditions and facts. Bind a field to a local first (`const value = foo.value`), which proves today.
 
 For each: the syntax, the facts kept, the errors (codes from the diagnostics table at build time), the effect on proof cost (`narrac emit selfhost` instructions), and samples. Prefer the smallest set that keeps facts as intervals unless a real program in `selfhost/src` or `std/src` needs more; count how many existing checks would use each form.
 

@@ -1660,7 +1660,41 @@ function pickChecked(n: int): int {
 - **Each call proves every condition** from the argument for that parameter: an integer constant, or a name narrowed by a check (`if`, `while`, an early return), as for a divisor. A name with no check proves nothing, not even a bound at the end of the int range. The caller's own `requires` count, so `requires count > 0` lets the body pass `count` on to another function with `requires count != 0`. An unproven argument is E0985.
 - **In the body each condition is a known fact** about its parameter, until the parameter is assigned: a body with `requires divisor != 0` may divide by `divisor`.
 - **A function with `requires` cannot be used as a value** (E0986), and `typeof` of it is E0982: a function type carries no condition, so a call through the value could pass an unproven argument. Functions of an `implement` block cannot have `requires` (E0984), since a call through the trait proves nothing.
-- **`ensures`** is not built yet. D95 describes it: a pattern the result must match, such as `ensures >= 0`.
+- **`ensures` lines** follow the `requires` lines. Each is a pattern every result must match, with no named subject. Every `return` value is proven against each line; in a generator, every `yield` value, and `yield*` is E0988.
+
+```ts
+import * as Arrays from "std/array"
+
+function findIndex(items: Array<int>, wanted: int): Option<int>
+  ensures Some(>= 0) | None
+{
+  let index = 0
+  while (index < Arrays.length(items)) {
+    if (items[index] == wanted && index >= 0) {
+      return Some(index)   // index >= 0 is known here
+    }
+    index++
+  }
+  return None
+}
+
+function slot(index: int): int
+  requires index >= 0
+{
+  return index * 2
+}
+
+function firstSlot(items: Array<int>): int {
+  if (findIndex(items, 7) is Some(index)) {
+    return slot(index)       // the caller knows index >= 0
+  }
+  return 0
+}
+```
+
+- **The patterns are the patterns of `match`** (section 5), alternatives included, plus comparison patterns `< c`, `<= c`, `> c`, `>= c` and `!= c`, which are allowed only in `ensures`: `ensures >= 0`, `ensures Ok(> 0) | Err(_)`, `ensures #[>= 0, _]`, `ensures { width: > 0 }`, `ensures "GET" | "POST"`, `ensures != 0`. A comparison needs an integer place and a bound that is an integer constant fitting its type (E0987). The prover orders integers as `int`, so a u64 bound or literal pattern from 2^63 up is E0987 too, and so is a literal pattern `9223372036854775807` or `-9223372036854775807`: the ends of the int range stand for "no fact". An `ensures` pattern binds no names, and a function that returns nothing has no `ensures` (E0987).
+- **A value is proven** when it is written to match: a constructor, tuple or struct literal written in place whose parts are proven (a struct field must be written, not taken from a spread or a default), a literal written the same, an integer constant, or an integer name narrowed by a check. Anything else is E0988, including a call: `return g(x)` is not proven from g's own `ensures`; bind it first.
+- **A caller learns the pattern** as facts about integer names, the same facts a check gives: `const n = f()` (and `let n = f()` until it is assigned), the names bound by `f() is P`, by `match (f())` arms and by a destructuring of `f()`, the same for a `const r = f()` whose type has no contents that change in place, and the name of `for (const n of g())` for a generator `g`. A name bound by `Some(n)` learns what every alternative that can be `Some` says about its place. `!= 0` makes the name non-zero, so it can be a divisor; `!= c` for another `c` gives no fact.
 
 ## 14. Tooling for agents
 

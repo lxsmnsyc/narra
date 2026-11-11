@@ -336,24 +336,77 @@ export function refineFact(
     // The bound is 2^63 or more, which an int cannot order against; it proves nothing.
     return
   }
-  let fact = readFact(checker, local)
+  const refined = refineBounds(readFact(checker, local), comparison, bound)
+  writeFact(mutable checker, local, refined)
+}
+
+export function refineBounds(fact: Fact, comparison: string, bound: int): Fact {
+  // What a comparison that holds adds to the fact. `> max` and `< min` hold for no
+  // value; they add nothing rather than wrap.
+  let refined = copy(fact)
   if (comparison == "==") {
-    fact.low = Math.max(fact.low, bound)
-    fact.high = Math.min(fact.high, bound)
+    refined.low = Math.max(fact.low, bound)
+    refined.high = Math.min(fact.high, bound)
   } else if (comparison == "!=") {
     if (bound == 0) {
-      fact.nonzero = true
+      refined.nonzero = true
     }
   } else if (comparison == "<") {
-    fact.high = Math.min(fact.high, bound - 1)
+    if (bound > UNBOUNDED_LOW - 1) {
+      refined.high = Math.min(fact.high, bound - 1)
+    }
   } else if (comparison == "<=") {
-    fact.high = Math.min(fact.high, bound)
+    refined.high = Math.min(fact.high, bound)
   } else if (comparison == ">") {
-    fact.low = Math.max(fact.low, bound + 1)
+    if (bound < UNBOUNDED_HIGH) {
+      refined.low = Math.max(fact.low, bound + 1)
+    }
   } else {
-    fact.low = Math.max(fact.low, bound)
+    refined.low = Math.max(fact.low, bound)
   }
-  writeFact(mutable checker, local, fact)
+  return refined
+}
+
+export function isUnboundedEnd(value: int): bool {
+  return value == UNBOUNDED_LOW || value == UNBOUNDED_HIGH
+}
+
+export function createUnknownFact(): Fact {
+  return Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+}
+
+export function joinFacts(left: Fact, right: Fact): Fact {
+  // What holds for a value that meets one of the two facts.
+  return Fact {
+    low: Math.min(left.low, right.low),
+    high: Math.max(left.high, right.high),
+    nonzero: isNonzeroFact(left) && isNonzeroFact(right),
+  }
+}
+
+export function narrowFact(mutable checker: Checker, local: int, fact: Fact) uses alloc {
+  // Adds a fact to what is known about an integer local.
+  const info = getLocal(checker, local)
+  if (!isInteger(info.localType)) {
+    return
+  }
+  let added = copy(fact)
+  if (info.localType == Type.TU64) {
+    // A u64 end from 2^63 up is negative as an int and cannot be ordered, so such an
+    // end is no bound; whether the value is zero is still known.
+    if (added.low < 0) {
+      added.low = UNBOUNDED_LOW
+    }
+    if (added.high < 0) {
+      added.high = UNBOUNDED_HIGH
+    }
+  }
+  const known = readFact(checker, local)
+  writeFact(mutable checker, local, Fact {
+    low: Math.max(known.low, added.low),
+    high: Math.min(known.high, added.high),
+    nonzero: known.nonzero || added.nonzero,
+  })
 }
 
 function isNonzeroFact(fact: Fact): bool {

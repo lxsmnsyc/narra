@@ -3,6 +3,13 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
+import {
+  proveResult,
+  rejectDelegatedResults,
+  seedResultLocal,
+  seedPatternFacts,
+  seedLoopFacts,
+} from "narrac/contracts"
 import { splitString, substring } from "narrac/textops"
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
@@ -352,6 +359,7 @@ function checkVariable<W: Walker>(
   const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
   setBinding(mutable checker, local, value, BindingKind.Plain)
   recordConstantLocal(mutable checker, local, value)
+  seedResultLocal(mutable checker, local, value)
 }
 
 function checkAssignment<W: Walker>(
@@ -603,12 +611,19 @@ function checkReturn<W: Walker>(
   const want = checker.resultType
   if (value is Some(expression)) {
     checkNoMutableEscape(mutable checker, expression)
+    const errorsBefore = Arrays.length(checker.errors)
     const found = checkExpression(mutable checker, walker, expression, Some(want))
     if (want == Type.TVoid) {
       reportError(mutable checker, pos, "E0231", "this function returns nothing")
       return
     }
     expectType(mutable checker, getExpressionPos(expression), Some(want), found)
+    // The function's `ensures` patterns hold for the value; an arrow's return is its own.
+    if (
+      Arrays.length(checker.errors) == errorsBefore && checker.bodies[checker.body].arrowDepth == 0
+    ) {
+      proveResult(mutable checker, expression)
+    }
   } else if (want != Type.TVoid) {
     const text = typeString(checker, want)
     reportError(mutable checker, pos, "E0230", `this function must return a ${text}`)
@@ -797,8 +812,10 @@ function checkIf<W: Walker>(
   // the subject in the branches when it is a `const` local.
   // The whole condition may be an `is` test, the only place that binds.
   let testPattern: Option<Pattern> = None
+  let testedValue: Option<Expr> = None
   let subject = -1
   if (condition is Expr.IsExpr(testId, testPos, testSubject, pattern)) {
+    testedValue = Some(testSubject)
     const found = checkIs(mutable checker, walker, testPos, testSubject, pattern, true)
     setNodeType(mutable checker, testId, found)
     expectType(mutable checker, testPos, Some(Type.TBool), found)
@@ -828,6 +845,9 @@ function checkIf<W: Walker>(
     let locals: Array<int> = []
     collectPatternLocals(checker, boundPattern, mutable locals)
     bindPatternLocals(mutable checker, locals)
+    if (testedValue is Some(testedSubject)) {
+      seedPatternFacts(mutable checker, testedSubject, boundPattern)
+    }
   }
   if (variantIndex >= 0) {
     setNarrowed(mutable checker, subject, variantIndex)
@@ -1017,6 +1037,7 @@ function checkFor<W: Walker>(
   const local = declareLocal(mutable checker, nodeId, pos, name, element, false, false)
   const bodyIndex = checker.body
   checker.bodies[bodyIndex].locals[local].binding = BindingKind.Loop
+  seedLoopFacts(mutable checker, local, iterable)
   let source = iterable
   if (builtin == "Array.values" || builtin == "Array.entries") {
     if (iterable is Expr.CallExpr(_, _, _, _, sourceArguments)) {
@@ -1260,11 +1281,16 @@ function checkYield<W: Walker>(
       return
     }
     if (!delegate) {
+      const errorsBefore = Arrays.length(checker.errors)
       const found = checkExpression(mutable checker, walker, value, Some(element))
       expectType(mutable checker, getExpressionPos(value), Some(element), found)
+      if (Arrays.length(checker.errors) == errorsBefore) {
+        proveResult(mutable checker, value)
+      }
       declareYieldInput(mutable checker, binding, input)
       return
     }
+    rejectDelegatedResults(mutable checker, pos)
     const found = checkExpression(mutable checker, walker, value, None)
     let matches = false
     if (found is Type.TGenerator(otherElement, _, _, _, _)) {

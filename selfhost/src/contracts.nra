@@ -1,10 +1,16 @@
-// `requires` lines, proven at compile time. A condition compares an integer
-// parameter with an integer constant, joined by `&&`. The function body starts
-// with each condition as a fact about its parameter (operands.nra), and each
+// `requires` and `ensures` lines, proven at compile time. A condition compares an
+// integer parameter with an integer constant, joined by `&&`. The function body
+// starts with each condition as a fact about its parameter (operands.nra), and each
 // call records what it knows about its arguments; after every body those
 // facts must prove the callee's conditions. The conditions themselves are read
 // after each module's declarations, from names and constants alone.
-import { Expr, FuncDecl, Arg, File, Decl } from "narrac/ast"
+//
+// An `ensures` line is a pattern every result must match: each `return` value (each
+// `yield` value of a generator) is proven against it where it is checked, from its
+// constructors, literals and integer facts. A caller learns the pattern as facts
+// about the integer locals that receive parts of the result: `const n = f()`, the
+// bindings of `f() is P` and of `match` arms, and `r is P` for a `const r = f()`.
+import { Expr, FuncDecl, Arg, File, Decl, Pattern, FieldPattern, Pos } from "narrac/ast"
 import { Type, isInteger } from "narrac/types"
 import {
   Checker,
@@ -13,15 +19,22 @@ import {
   Requirement,
   ContractCall,
   ContractArgument,
+  ResultContract,
   getRef,
   getLocal,
+  getNodeType,
   findLocal,
+  findBodySlot,
+  bindName,
+  isContentsType,
+  typeString,
   reportError,
   reportErrorIn,
   getExpressionPos,
 } from "narrac/check"
-import { checkExpression, expectType } from "narrac/exprs"
+import { checkExpression, expectType, startsUpper } from "narrac/exprs"
 import { findModuleFunction } from "narrac/funcvalues"
+import { getPatternPos, collectPatternLocals } from "narrac/patterns"
 import {
   Fact,
   findTypedConstant,
@@ -32,6 +45,11 @@ import {
   isComparisonOperator,
   isComparisonProven,
   refineFact,
+  refineBounds,
+  createUnknownFact,
+  joinFacts,
+  narrowFact,
+  isUnboundedEnd,
 } from "narrac/operands"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -46,6 +64,12 @@ export function collectModuleRequirements(mutable checker: Checker, file: File) 
   const scope = checker.current
   for (const declaration of Arrays.values(file.declarations)) {
     if (declaration is Decl.Func(funcDecl)) {
+      if (Arrays.length(funcDecl.ensures) > 0) {
+        const funcIndex = findModuleFunction(checker, scope, funcDecl)
+        if (funcIndex >= 0) {
+          checker.resultContracts[funcIndex] = collectResultContract(checker, scope, funcDecl)
+        }
+      }
       if (Arrays.length(funcDecl.requires) > 0) {
         const funcIndex = findModuleFunction(checker, scope, funcDecl)
         if (funcIndex >= 0) {
@@ -479,4 +503,844 @@ function proveArgument(
     "E0985",
     `this argument is not proven to meet \`requires ${condition}\` of ${info.name}; pass a constant, or a name checked first with an \`if\``,
   )
+}
+
+function collectResultContract(
+  checker: Checker,
+  scope: int,
+  funcDecl: FuncDecl,
+): ResultContract uses alloc {
+  // The bound of each comparison is folded once, from names and constants alone.
+  const parameterNames = collectParameterNames(funcDecl)
+  let bounds: Map<int, int> = Map {}
+  for (const pattern of Arrays.values(funcDecl.ensures)) {
+    collectBounds(checker, scope, parameterNames, pattern, mutable bounds)
+  }
+  return ResultContract { patterns: copy(funcDecl.ensures), bounds: copy(bounds) }
+}
+
+function collectBounds(
+  checker: Checker,
+  scope: int,
+  parameterNames: Array<string>,
+  pattern: Pattern,
+  mutable bounds: Map<int, int>,
+) uses alloc {
+  match (pattern) {
+    Pattern.PatCompare(nodeId, _, _, bound) => {
+      if (foldConstant(checker, scope, parameterNames, bound, 0) is Some(value)) {
+        bounds[nodeId] = value
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectBounds(checker, scope, parameterNames, argument, mutable bounds)
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectBounds(checker, scope, parameterNames, argument, mutable bounds)
+      }
+    }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        collectBounds(checker, scope, parameterNames, alternative, mutable bounds)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        collectBounds(checker, scope, parameterNames, field.pattern, mutable bounds)
+      }
+    }
+    _ => {}
+  }
+}
+
+export function checkEnsures<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  funcDecl: FuncDecl,
+  isInstance: bool,
+) uses alloc {
+  // A stale contract must never prove a return of another body.
+  if (checker.bodyContracts[checker.body] is Some(_)) {
+    checker.bodyContracts[checker.body] = ResultContract { patterns: [], bounds: Map {} }
+  }
+  // An instance of a generic function repeats what its declaration proved.
+  if (Arrays.length(funcDecl.ensures) == 0 || isInstance) {
+    return
+  }
+  const first = getPatternPos(funcDecl.ensures[0])
+  let valueType = checker.resultType
+  if (funcDecl.generator) {
+    // A generator's patterns hold for each value it yields.
+    if (checker.resultType is Type.TGenerator(element, _, _, _, _)) {
+      valueType = element
+    }
+  }
+  if (valueType == Type.TVoid) {
+    reportError(
+      mutable checker,
+      first,
+      "E0987",
+      "ensures describes the result, and this function returns nothing",
+    )
+    return
+  }
+  const errorsBefore = Arrays.length(checker.errors)
+  const contract = collectResultContract(checker, checker.current, funcDecl)
+  for (const pattern of Arrays.values(funcDecl.ensures)) {
+    checkEnsuresPattern(mutable checker, walker, pattern, valueType, contract.bounds)
+  }
+  // A pattern that failed proves nothing; its errors are enough.
+  if (Arrays.length(checker.errors) == errorsBefore) {
+    checker.bodyContracts[checker.body] = contract
+  }
+}
+
+function checkEnsuresPattern<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pattern: Pattern,
+  valueType: Type,
+  bounds: Map<int, int>,
+) uses alloc {
+  const errorsBefore = Arrays.length(checker.errors)
+  Walker.resolvePattern(walker, mutable checker, pattern, valueType)
+  if (Arrays.length(checker.errors) > errorsBefore) {
+    return
+  }
+  // The pattern describes the result; a name would bind nothing a caller can read.
+  let locals: Array<int> = []
+  collectPatternLocals(checker, pattern, mutable locals)
+  if (Arrays.length(locals) > 0) {
+    for (const local of Arrays.values(locals)) {
+      checker.bodies[checker.body].locals[local].used = true
+    }
+    const first = getLocal(checker, locals[0])
+    reportError(
+      mutable checker,
+      first.pos,
+      "E0987",
+      `an ensures pattern binds no names, found ${first.name}; write \`_\` for any value`,
+    )
+    return
+  }
+  checkComparisonBounds(mutable checker, pattern, bounds)
+}
+
+function checkComparisonBounds(
+  mutable checker: Checker,
+  pattern: Pattern,
+  bounds: Map<int, int>,
+) uses alloc {
+  match (pattern) {
+    Pattern.PatCompare(nodeId, pos, operator, _) => {
+      const type = findPatternType(checker, nodeId)
+      if (bounds[nodeId] is Some(bound)) {
+        if (!isFittingBound(bound, type)) {
+          const text = typeString(checker, type)
+          reportError(
+            mutable checker,
+            pos,
+            "E0987",
+            `the bound of \`${operator}\` does not fit the type ${text}`,
+          )
+        }
+      } else {
+        reportError(
+          mutable checker,
+          pos,
+          "E0987",
+          `the bound of \`${operator}\` must be an integer constant: a literal or a top-level const`,
+        )
+      }
+    }
+    Pattern.PatLit(nodeId, pos, literal) => {
+      // A u64 literal from 2^63 up is negative as an int, and the ends of the int range
+      // stand for "no fact"; no fact can prove such a literal.
+      const type = findPatternType(checker, nodeId)
+      if (isInteger(type)) {
+        if (findLiteralValue(literal) is Some(value)) {
+          if (!isFittingBound(value, type) || isUnboundedEnd(value)) {
+            const text = describeLiteral(literal)
+            const typeText = typeString(checker, type)
+            reportError(
+              mutable checker,
+              pos,
+              "E0987",
+              `the literal ${text} cannot be proven for type ${typeText}; the prover keeps integers as int and cannot prove 2^63 - 1, -(2^63 - 1) or a u64 from 2^63 up`,
+            )
+          }
+        }
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
+        checkComparisonBounds(mutable checker, argument, bounds)
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        checkComparisonBounds(mutable checker, argument, bounds)
+      }
+    }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        checkComparisonBounds(mutable checker, alternative, bounds)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        checkComparisonBounds(mutable checker, field.pattern, bounds)
+      }
+    }
+    _ => {}
+  }
+}
+
+function findPatternType(checker: Checker, nodeId: int): Type uses alloc {
+  if (getNodeType(checker, nodeId) is Some(type)) {
+    return copy(type)
+  }
+  return Type.TVoid
+}
+
+function isFittingBound(bound: int, type: Type): bool {
+  // A u64 bound from 2^63 up is negative as an int, and the facts cannot order it.
+  return isInteger(type) && wrapConstant(bound, type) == bound && !(type == Type.TU64 && bound < 0)
+}
+
+export function proveResult(mutable checker: Checker, value: Expr) uses alloc {
+  // Each `return value` of the function body, and each `yield value` of a generator.
+  if (checker.bodyContracts[checker.body] is Some(found)) {
+    const contract = copy(found)
+    for (const pattern of Arrays.values(contract.patterns)) {
+      if (!isValueProven(checker, value, pattern, contract.bounds)) {
+        const text = describePattern(pattern, contract.bounds)
+        reportError(
+          mutable checker,
+          getExpressionPos(value),
+          "E0988",
+          `this value is not proven to match \`ensures ${text}\`; write a constant, a constructor, or a name checked first with an \`if\``,
+        )
+      }
+    }
+  }
+}
+
+export function rejectDelegatedResults(mutable checker: Checker, pos: Pos) uses alloc {
+  // The values of another generator are not known here.
+  if (checker.bodyContracts[checker.body] is Some(found)) {
+    if (Arrays.length(found.patterns) > 0) {
+      const text = describePattern(found.patterns[0], found.bounds)
+      reportError(
+        mutable checker,
+        pos,
+        "E0988",
+        `the values of yield* are not proven to match \`ensures ${text}\`; yield each value after a check`,
+      )
+    }
+  }
+}
+
+function isValueProven(
+  checker: Checker,
+  value: Expr,
+  pattern: Pattern,
+  bounds: Map<int, int>,
+): bool uses alloc {
+  return match (pattern) {
+    Pattern.PatWildcard(_, _) => true
+    Pattern.PatOr(_, _, alternatives) => isAnyProven(checker, value, alternatives, bounds)
+    // Bindings are rejected, so a name is a constructor without fields.
+    Pattern.PatName(nodeId, _, _) => isConstructorValue(checker, value, nodeId, [], true, bounds)
+    Pattern.PatCtor(nodeId, _, _, _, arguments, bare) => isConstructorValue(
+      checker,
+      value,
+      nodeId,
+      arguments,
+      bare,
+      bounds,
+    )
+    Pattern.PatStruct(_, _, fields) => isStructProven(checker, value, fields, bounds)
+    Pattern.PatTuple(_, _, arguments) => isTupleProven(checker, value, arguments, bounds)
+    Pattern.PatLit(nodeId, _, literal) => isLiteralProven(checker, value, nodeId, literal)
+    Pattern.PatCompare(nodeId, _, operator, _) => isComparisonValue(
+      checker,
+      value,
+      nodeId,
+      operator,
+      bounds,
+    )
+  }
+}
+
+function isAnyProven(
+  checker: Checker,
+  value: Expr,
+  alternatives: Array<Pattern>,
+  bounds: Map<int, int>,
+): bool uses alloc {
+  for (const alternative of Arrays.values(alternatives)) {
+    if (isValueProven(checker, value, alternative, bounds)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isConstructorValue(
+  checker: Checker,
+  value: Expr,
+  patternId: int,
+  arguments: Array<Pattern>,
+  bare: bool,
+  bounds: Map<int, int>,
+): bool uses alloc {
+  // The value is written as the same constructor, and each field matches its pattern.
+  if (getRef(checker, patternId) is Ref.Constructor(enumIndex, variant)) {
+    if (value is Expr.CallExpr(callId, _, _, _, callArguments)) {
+      if (!isSameConstructor(checker, callId, enumIndex, variant)) {
+        return false
+      }
+      if (bare) {
+        return true
+      }
+      if (Arrays.length(callArguments) != Arrays.length(arguments)) {
+        return false
+      }
+      for (const index of Ranges.between(0, Arrays.length(arguments))) {
+        // A named field may be written in another order; it proves nothing.
+        if (callArguments[index].name is Some(_)) {
+          return false
+        }
+        if (!isValueProven(checker, callArguments[index].value, arguments[index], bounds)) {
+          return false
+        }
+      }
+      return true
+    }
+    if (value is Expr.Ident(valueId, _, _)) {
+      return Arrays.length(arguments) == 0 &&
+        isSameConstructor(checker, valueId, enumIndex, variant)
+    }
+    if (value is Expr.FieldExpr(valueId, _, _, _)) {
+      return Arrays.length(arguments) == 0 &&
+        isSameConstructor(checker, valueId, enumIndex, variant)
+    }
+  }
+  return false
+}
+
+function isSameConstructor(checker: Checker, nodeId: int, enumIndex: int, variant: int): bool {
+  if (getRef(checker, nodeId) is Ref.Constructor(valueEnum, valueVariant)) {
+    return valueEnum == enumIndex && valueVariant == variant
+  }
+  return false
+}
+
+function isStructProven(
+  checker: Checker,
+  value: Expr,
+  fields: Array<FieldPattern>,
+  bounds: Map<int, int>,
+): bool uses alloc {
+  // Each field the pattern names is written in the literal, not taken from a spread or a default.
+  if (value is Expr.StructLit(_, _, _, _, initializers, _)) {
+    for (const field of Arrays.values(fields)) {
+      let proven = false
+      for (const initializer of Arrays.values(initializers)) {
+        if (initializer.name == field.name) {
+          proven = isValueProven(checker, initializer.value, field.pattern, bounds)
+        }
+      }
+      if (!proven) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function isTupleProven(
+  checker: Checker,
+  value: Expr,
+  arguments: Array<Pattern>,
+  bounds: Map<int, int>,
+): bool uses alloc {
+  if (value is Expr.ArrayLit(_, _, elements, isTuple)) {
+    if (!isTuple || Arrays.length(elements) != Arrays.length(arguments)) {
+      return false
+    }
+    for (const index of Ranges.between(0, Arrays.length(arguments))) {
+      if (!isValueProven(checker, elements[index], arguments[index], bounds)) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function isLiteralProven(
+  checker: Checker,
+  value: Expr,
+  patternId: int,
+  literal: Expr,
+): bool uses alloc {
+  // An integer is proven from its facts; any other literal must be written the same.
+  const type = findPatternType(checker, patternId)
+  if (isInteger(type)) {
+    if (findLiteralValue(literal) is Some(expected)) {
+      if (isFittingBound(expected, type)) {
+        return isComparisonProven(findOperandFact(checker, value, type), "==", expected)
+      }
+    }
+    return false
+  }
+  return isSameLiteral(value, literal)
+}
+
+function findLiteralValue(literal: Expr): Option<int> uses alloc {
+  if (literal is Expr.IntLit(_, _, text)) {
+    return parseLiteral(text)
+  }
+  if (literal is Expr.UnaryExpr(_, _, operator, Expr.IntLit(_, _, text))) {
+    if (operator == "-") {
+      if (parseLiteral(text) is Some(value)) {
+        return Some(0 - value)
+      }
+    }
+  }
+  return None
+}
+
+function isSameLiteral(value: Expr, literal: Expr): bool {
+  if (value is Expr.StringLit(_, _, written, _)) {
+    if (literal is Expr.StringLit(_, _, expected, _)) {
+      return written == expected
+    }
+  }
+  if (value is Expr.CharLit(_, _, written)) {
+    if (literal is Expr.CharLit(_, _, expected)) {
+      return written == expected
+    }
+  }
+  if (value is Expr.BoolLit(_, _, written)) {
+    if (literal is Expr.BoolLit(_, _, expected)) {
+      return written == expected
+    }
+  }
+  if (value is Expr.FloatLit(_, _, written)) {
+    if (literal is Expr.FloatLit(_, _, expected)) {
+      return written == expected
+    }
+  }
+  if (value is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (literal is Expr.UnaryExpr(_, _, expectedOperator, expected)) {
+      return operator == "-" && expectedOperator == "-" && isSameLiteral(operand, expected)
+    }
+  }
+  return false
+}
+
+function isComparisonValue(
+  checker: Checker,
+  value: Expr,
+  patternId: int,
+  operator: string,
+  bounds: Map<int, int>,
+): bool uses alloc {
+  const type = findPatternType(checker, patternId)
+  if (bounds[patternId] is Some(bound)) {
+    if (isFittingBound(bound, type)) {
+      return isComparisonProven(findOperandFact(checker, value, type), operator, bound)
+    }
+  }
+  return false
+}
+
+function describePattern(pattern: Pattern, bounds: Map<int, int>): string uses alloc {
+  return match (pattern) {
+    Pattern.PatWildcard(_, _) => "_"
+    Pattern.PatName(_, _, name) => name
+    Pattern.PatCtor(_, _, enumName, name, arguments, bare) => describeConstructor(
+      enumName,
+      name,
+      arguments,
+      bare,
+      bounds,
+    )
+    Pattern.PatStruct(_, _, fields) => describeStruct(fields, bounds)
+    Pattern.PatTuple(_, _, arguments) => `#[${describePatterns(arguments, ", ", bounds)}]`
+    Pattern.PatLit(_, _, literal) => describeLiteral(literal)
+    Pattern.PatOr(_, _, alternatives) => describePatterns(alternatives, " | ", bounds)
+    Pattern.PatCompare(nodeId, _, operator, bound) => describeComparison(
+      nodeId,
+      operator,
+      bound,
+      bounds,
+    )
+  }
+}
+
+function describePatterns(
+  patterns: Array<Pattern>,
+  separator: string,
+  bounds: Map<int, int>,
+): string uses alloc {
+  let parts: Array<string> = []
+  for (const pattern of Arrays.values(patterns)) {
+    Arrays.push(mutable parts, describePattern(pattern, bounds))
+  }
+  return Str.join(parts, separator)
+}
+
+function describeConstructor(
+  enumName: string,
+  name: string,
+  arguments: Array<Pattern>,
+  bare: bool,
+  bounds: Map<int, int>,
+): string uses alloc {
+  let text = name
+  if (enumName != "") {
+    text = `${enumName}.${name}`
+  }
+  if (bare) {
+    return text
+  }
+  return `${text}(${describePatterns(arguments, ", ", bounds)})`
+}
+
+function describeStruct(fields: Array<FieldPattern>, bounds: Map<int, int>): string uses alloc {
+  let parts: Array<string> = []
+  for (const field of Arrays.values(fields)) {
+    Arrays.push(mutable parts, `${field.name}: ${describePattern(field.pattern, bounds)}`)
+  }
+  return `{ ${Str.join(parts, ", ")} }`
+}
+
+function describeLiteral(literal: Expr): string uses alloc {
+  if (literal is Expr.IntLit(_, _, text)) {
+    return text
+  }
+  if (literal is Expr.FloatLit(_, _, text)) {
+    return text
+  }
+  if (literal is Expr.StringLit(_, _, value, _)) {
+    return `"${value}"`
+  }
+  if (literal is Expr.CharLit(_, _, value)) {
+    return `'${value}'`
+  }
+  if (literal is Expr.BoolLit(_, _, value)) {
+    if (value) {
+      return "true"
+    }
+    return "false"
+  }
+  if (literal is Expr.UnaryExpr(_, _, _, operand)) {
+    return `-${describeLiteral(operand)}`
+  }
+  return "a literal"
+}
+
+function describeComparison(
+  nodeId: int,
+  operator: string,
+  bound: Expr,
+  bounds: Map<int, int>,
+): string uses alloc {
+  if (bounds[nodeId] is Some(value)) {
+    return `${operator} ${describeBound(bound, value)}`
+  }
+  return operator
+}
+
+// ---- Facts a caller learns from `ensures`
+
+function findResultFunction(checker: Checker, value: Expr): int uses alloc {
+  // A call of a function with `ensures`, or a `const` local that holds the result of one.
+  if (value is Expr.CallExpr(callId, _, _, _, _)) {
+    if (getRef(checker, callId) is Ref.Function(funcIndex)) {
+      if (checker.resultContracts[funcIndex] is Some(_)) {
+        // A generator's patterns are about its values, not about the generator.
+        if (!checker.functions[funcIndex].declaration.generator) {
+          return funcIndex
+        }
+      }
+    }
+    return -1
+  }
+  if (value is Expr.Ident(nodeId, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Local(local)) {
+      if (checker.localNames[createHolderKey(local)] is Some(funcIndex)) {
+        return funcIndex
+      }
+    }
+  }
+  return -1
+}
+
+function createHolderKey(local: int): string uses alloc {
+  return `holds|${Int.toString(local)}`
+}
+
+export function seedResultLocal(mutable checker: Checker, local: int, value: Expr) uses alloc {
+  // `const n = f()`: n starts with the facts of f's patterns.
+  const funcIndex = findResultFunction(checker, value)
+  if (funcIndex < 0) {
+    return
+  }
+  if (checker.resultContracts[funcIndex] is Some(found)) {
+    const contract = copy(found)
+    const info = copy(getLocal(checker, local))
+    seedWholeValue(mutable checker, local, contract)
+    // A `const` whose contents cannot change in place keeps the result, so a later
+    // `r is P` learns the same patterns.
+    if (!info.isMutable && !isContentsType(checker, info.localType)) {
+      bindName(mutable checker, createHolderKey(local), funcIndex)
+    }
+  }
+}
+
+export function seedLoopFacts(mutable checker: Checker, local: int, iterable: Expr) uses alloc {
+  // `for (const n of g())`: each value of a generator with `ensures` matches its patterns.
+  if (iterable is Expr.CallExpr(callId, _, _, _, _)) {
+    if (getRef(checker, callId) is Ref.Function(funcIndex)) {
+      if (checker.functions[funcIndex].declaration.generator) {
+        if (checker.resultContracts[funcIndex] is Some(found)) {
+          seedWholeValue(mutable checker, local, copy(found))
+        }
+      }
+    }
+  }
+}
+
+function seedWholeValue(mutable checker: Checker, local: int, contract: ResultContract) uses alloc {
+  const type = getLocal(checker, local).localType
+  if (!isInteger(type)) {
+    return
+  }
+  for (const pattern of Arrays.values(contract.patterns)) {
+    if (findAlternativesFact([pattern], type, contract.bounds) is Some(fact)) {
+      narrowFact(mutable checker, local, fact)
+    }
+  }
+}
+
+export function seedPatternFacts(
+  mutable checker: Checker,
+  subject: Expr,
+  pattern: Pattern,
+) uses alloc {
+  // `f() is Some(n)`, a `match` arm or a destructuring: each name the pattern binds learns
+  // what holds at its place in every alternative of f's patterns that the value can match.
+  const funcIndex = findResultFunction(checker, subject)
+  if (funcIndex < 0) {
+    return
+  }
+  if (checker.resultContracts[funcIndex] is Some(found)) {
+    const contract = copy(found)
+    for (const resultPattern of Arrays.values(contract.patterns)) {
+      seedPattern(mutable checker, pattern, [resultPattern], contract.bounds)
+    }
+  }
+}
+
+function seedPattern(
+  mutable checker: Checker,
+  pattern: Pattern,
+  alternatives: Array<Pattern>,
+  bounds: Map<int, int>,
+) uses alloc {
+  let flat: Array<Pattern> = []
+  flattenAlternatives(alternatives, mutable flat)
+  match (pattern) {
+    Pattern.PatName(nodeId, _, _) => {
+      const local = findDeclaredLocal(checker, nodeId)
+      if (local >= 0) {
+        const type = getLocal(checker, local).localType
+        if (isInteger(type)) {
+          if (findAlternativesFact(flat, type, bounds) is Some(fact)) {
+            narrowFact(mutable checker, local, fact)
+          }
+        }
+      }
+    }
+    Pattern.PatCtor(_, pos, _, name, arguments, _) => {
+      seedConstructor(mutable checker, pos, name, arguments, flat, bounds)
+    }
+    Pattern.PatTuple(_, pos, arguments) => {
+      let parts = createPartLists(Arrays.length(arguments))
+      for (const alternative of Arrays.values(flat)) {
+        if (alternative is Pattern.PatTuple(_, _, otherArguments)) {
+          if (Arrays.length(otherArguments) == Arrays.length(arguments)) {
+            addParts(mutable parts, otherArguments)
+          } else {
+            addUnknownParts(mutable parts, pos)
+          }
+        } else {
+          addUnknownParts(mutable parts, pos)
+        }
+      }
+      for (const index of Ranges.between(0, Arrays.length(arguments))) {
+        seedPattern(mutable checker, arguments[index], parts[index], bounds)
+      }
+    }
+    Pattern.PatStruct(_, pos, fields) => {
+      for (const field of Arrays.values(fields)) {
+        let parts: Array<Pattern> = []
+        for (const alternative of Arrays.values(flat)) {
+          Arrays.push(mutable parts, findFieldPattern(alternative, field.name, pos))
+        }
+        seedPattern(mutable checker, field.pattern, parts, bounds)
+      }
+    }
+    // An or-pattern's alternatives share their locals, and the rest bind nothing.
+    _ => {}
+  }
+}
+
+function seedConstructor(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  arguments: Array<Pattern>,
+  alternatives: Array<Pattern>,
+  bounds: Map<int, int>,
+) uses alloc {
+  // An alternative of another constructor cannot be the value here; one that does not
+  // name a constructor says nothing about the fields.
+  let parts = createPartLists(Arrays.length(arguments))
+  let compatible = 0
+  for (const alternative of Arrays.values(alternatives)) {
+    if (alternative is Pattern.PatCtor(_, _, _, otherName, otherArguments, otherBare)) {
+      if (otherName == name) {
+        compatible++
+        if (!otherBare && Arrays.length(otherArguments) == Arrays.length(arguments)) {
+          addParts(mutable parts, otherArguments)
+        } else {
+          addUnknownParts(mutable parts, pos)
+        }
+      }
+    } else if (alternative is Pattern.PatName(_, _, otherName)) {
+      if (!startsUpper(otherName) || otherName == name) {
+        compatible++
+        addUnknownParts(mutable parts, pos)
+      }
+    } else {
+      compatible++
+      addUnknownParts(mutable parts, pos)
+    }
+  }
+  if (compatible == 0) {
+    return
+  }
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    seedPattern(mutable checker, arguments[index], parts[index], bounds)
+  }
+}
+
+function flattenAlternatives(patterns: Array<Pattern>, mutable flat: Array<Pattern>) uses alloc {
+  for (const pattern of Arrays.values(patterns)) {
+    if (pattern is Pattern.PatOr(_, _, alternatives)) {
+      flattenAlternatives(alternatives, mutable flat)
+    } else {
+      Arrays.push(mutable flat, pattern)
+    }
+  }
+}
+
+function createPartLists(count: int): Array<Array<Pattern>> uses alloc {
+  let parts: Array<Array<Pattern>> = []
+  for (const _ of Ranges.upTo(count)) {
+    Arrays.push(mutable parts, [])
+  }
+  return parts
+}
+
+function addParts(mutable parts: Array<Array<Pattern>>, patterns: Array<Pattern>) uses alloc {
+  for (const index of Ranges.between(0, Arrays.length(parts))) {
+    Arrays.push(mutable parts[index], patterns[index])
+  }
+}
+
+function addUnknownParts(mutable parts: Array<Array<Pattern>>, pos: Pos) uses alloc {
+  // An alternative that says nothing about the parts stands for any value there.
+  for (const index of Ranges.between(0, Arrays.length(parts))) {
+    Arrays.push(mutable parts[index], Pattern.PatWildcard(-1, pos))
+  }
+}
+
+function findFieldPattern(alternative: Pattern, name: string, pos: Pos): Pattern uses alloc {
+  if (alternative is Pattern.PatStruct(_, _, fields)) {
+    for (const field of Arrays.values(fields)) {
+      if (field.name == name) {
+        return copy(field.pattern)
+      }
+    }
+  }
+  return Pattern.PatWildcard(-1, copy(pos))
+}
+
+function findDeclaredLocal(checker: Checker, nodeId: int): int {
+  const body = checker.bodies[checker.body]
+  const slot = findBodySlot(body, nodeId)
+  if (slot >= 0) {
+    return body.declared[slot]
+  }
+  return -1
+}
+
+function findAlternativesFact(
+  alternatives: Array<Pattern>,
+  type: Type,
+  bounds: Map<int, int>,
+): Option<Fact> uses alloc {
+  // What holds for a value that matches one of the alternatives; nothing when one of them says nothing.
+  let flat: Array<Pattern> = []
+  flattenAlternatives(alternatives, mutable flat)
+  if (Arrays.length(flat) == 0) {
+    return None
+  }
+  let joined = createUnknownFact()
+  for (const index of Ranges.between(0, Arrays.length(flat))) {
+    if (findPatternFact(flat[index], type, bounds) is Some(fact)) {
+      if (index == 0) {
+        joined = fact
+      } else {
+        joined = joinFacts(joined, fact)
+      }
+    } else {
+      return None
+    }
+  }
+  return Some(joined)
+}
+
+function findPatternFact(
+  pattern: Pattern,
+  type: Type,
+  bounds: Map<int, int>,
+): Option<Fact> uses alloc {
+  if (pattern is Pattern.PatCompare(nodeId, _, operator, _)) {
+    if (bounds[nodeId] is Some(bound)) {
+      if (isFittingBound(bound, type)) {
+        return Some(refineBounds(createUnknownFact(), operator, bound))
+      }
+    }
+    return None
+  }
+  if (pattern is Pattern.PatLit(_, _, literal)) {
+    if (findLiteralValue(literal) is Some(value)) {
+      if (isFittingBound(value, type)) {
+        return Some(Fact { low: value, high: value, nonzero: value != 0 })
+      }
+    }
+  }
+  return None
 }

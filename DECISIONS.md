@@ -1038,7 +1038,15 @@ Built: `requires` (node contracts, 2026-11-11). Amendments from the build:
 - **No `requires` on functions of an `implement` block** (E0984): they are called through the trait.
 - **The ends of the int range are not facts.** A name with no check proves no bound, even `value >= -9223372036854775807`. A u64 constant from 2^63 up (a literal such as `18446744073709551615`, also as a divisor) counts as above every bound.
 
-`ensures` and the other parts are not built yet.
+`ensures` (node contracts-ensures, 2026-11-11). Amendments from the build:
+
+- **Comparison patterns are integer-only and live in `ensures` only.** `< c`, `<= c`, `> c`, `>= c`, `!= c` with a constant bound that fits the place's type; a non-integer place, a bound that is not a constant or does not fit, a pattern that binds a name, or `ensures` on a function that returns nothing is E0987. `!=` was added by the maintainer (2026-11-11): a return is proven by a constant other than the bound or a fact that excludes it (for `!= 0` the non-zero flag or a range without 0), never from the unbounded ends; a caller learns non-zero from `!= 0` and nothing from another `!= c`. A comparison in `match` or `is` is a parse error.
+- **A struct pattern is written `{ width: > 0 }`**, as in `match`; patterns carry no type name.
+- **Returns are proven where they are written**, from the shape of the value: constructors, tuples and struct literals in place, literals written the same, and integer facts. A call is not proven from the callee's `ensures` (no pattern implication); a `yield*` in a generator with `ensures` is unproven. Unproven is E0988.
+- **Callers learn facts about integer names only**, as the prover stores facts per local: `const n = f()`, `let n = f()` until assigned, pattern bindings of `f()` in `if`, `match` and destructuring, the same for a `const r = f()` whose type cannot change in place (not a struct, array, map, box or generator, which a `mutable` argument could change), and `for (const n of g())` for a generator. An or-pattern in the caller's pattern learns nothing.
+- **Generic functions and `implement` members** may have `ensures`; the declaration's body is proven, and an `implement` member gives callers no facts (a call through the trait carries none). An async function has no `ensures` yet, since Narra has no async functions.
+
+The other parts are not built yet.
 
 Build conditions are built (batch-7, node build-conditions), except `@target` and `--all-targets` (node build-targets). The host is the target: `Build.os` and `Build.arch` come from `/usr/bin/uname -s -m`, read once per compiler process and only for a package that imports `std/build`, through one target table (`selfhost/src/buildtarget.nra`); `NARRA_HOST_TARGET=<os>-<arch>` overrides it (fix of the fresh review: a `uname` searched on `PATH` could hang or vary), and `Build.debug` is false under `-release`. The effects of every branch count toward the function's effects, the dropped branches included, so a function has the same signature on every target (orchestrator, 2026-11-11). Besides `==`, `!=`, `!`, `&&` and `||`, an `is` test of a variant without fields folds too, since it tests only the constants. A host with no row in the table is E0989 at the import of `std/build`.
 
@@ -1098,7 +1106,7 @@ Decision (maintainer, 2026-11-09): a `match` arm may list alternatives with `|`,
 - `narrac fmt` keeps short lists on one line and puts one alternative per line, each starting with `|`, when the arm does not fit.
 - Contract patterns (D95) use the same alternatives.
 
-Built, except contract patterns (D95), which do not exist yet. E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.
+Built. Contract patterns (D95 `ensures`) use the same alternatives (node contracts-ensures). E0967 and E0968 are alternatives that bind different names or types, E0974 reports an unreachable alternative and alternatives in `is`.
 
 ## D99. Enums that do not reach themselves store their payload inline
 

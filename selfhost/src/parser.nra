@@ -196,6 +196,8 @@ struct Parser {
   statementStart: int
   // Set between the parentheses of a C-style for, the one place a `;` belongs.
   forHead: bool = false
+  // Set while an `ensures` pattern is parsed, the one place a comparison pattern belongs.
+  contractPattern: bool = false
 }
 
 // The type parameters of `<A, B: Show & Ordered, effect E>`.
@@ -1404,6 +1406,11 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
 function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   const header = parseFuncHeader(mutable parser, exported)
   const conditions = parseRequiresLines(mutable parser)
+  const results = parseEnsuresLines(mutable parser)
+  // The body starts on the line after the last condition or pattern.
+  if (Arrays.length(conditions) > 0 || Arrays.length(results) > 0) {
+    skipNewlines(mutable parser)
+  }
   const savedResult = parser.resultFunction
   parser.resultFunction = false
   if (header.result is Some(resultType)) {
@@ -1411,12 +1418,12 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   }
   const body = parseBlock(mutable parser)
   parser.resultFunction = savedResult
-  return FuncDecl { ...header, requires: conditions, body: Some(body) }
+  return FuncDecl { ...header, requires: conditions, ensures: results, body: Some(body) }
 }
 
 function parseRequiresLines(mutable parser: Parser): Array<Expr> {
   let conditions: Array<Expr> = []
-  while (isOk(parser) && isRequiresLine(parser)) {
+  while (isOk(parser) && isContractLine(parser, "requires")) {
     skipNewlines(mutable parser)
     const lineStart = parser.index
     advance(mutable parser)
@@ -1427,22 +1434,36 @@ function parseRequiresLines(mutable parser: Parser): Array<Expr> {
     }
     Arrays.push(mutable conditions, condition)
   }
-  // The body starts on the line after the last condition.
-  if (Arrays.length(conditions) > 0) {
-    skipNewlines(mutable parser)
-  }
   return conditions
 }
 
-function isRequiresLine(parser: Parser): bool {
-  // `requires` is not a keyword; it counts only at the start of a line after the
-  // signature. A signature that ends in `>` is followed by no line break token.
+function parseEnsuresLines(mutable parser: Parser): Array<Pattern> {
+  let patterns: Array<Pattern> = []
+  while (isOk(parser) && isContractLine(parser, "ensures")) {
+    skipNewlines(mutable parser)
+    const lineStart = parser.index
+    advance(mutable parser)
+    parser.contractPattern = true
+    const pattern = parsePattern(mutable parser)
+    parser.contractPattern = false
+    // The line is a node of its own, so the comments above it stay above it.
+    if (parser.collector.enabled) {
+      noteKey(mutable parser, `n${Int.toString(getPatternId(pattern))}`, lineStart)
+    }
+    Arrays.push(mutable patterns, pattern)
+  }
+  return patterns
+}
+
+function isContractLine(parser: Parser, word: string): bool {
+  // `requires` and `ensures` are not keywords; they count only at the start of a line
+  // after the signature. A signature that ends in `>` is followed by no line break token.
   let offset = 0
   while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
     offset++
   }
   const token = peekToken(parser, offset)
-  if (token.kind != TokenKind.TokIdent || token.text != "requires" || parser.index < 1) {
+  if (token.kind != TokenKind.TokIdent || token.text != word || parser.index < 1) {
     return false
   }
   return offset > 0 || token.line > parser.tokens[parser.index - 1].endLine
@@ -1682,6 +1703,22 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
     const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
     const header = parseFuncHeader(mutable parser, false)
+    if (isContractLine(parser, "requires")) {
+      skipNewlines(mutable parser)
+      failHere(
+        mutable parser,
+        "E0984",
+        "requires needs a function body; a trait function has none, so state it on the implementations",
+      )
+    }
+    if (isContractLine(parser, "ensures")) {
+      skipNewlines(mutable parser)
+      failHere(
+        mutable parser,
+        "E0987",
+        "ensures needs a function body; a trait function has none, so state it on the implementations",
+      )
+    }
     if (isAt(parser, SYMBOL_LEFT_BRACE)) {
       failHere(
         mutable parser,
@@ -3558,6 +3595,15 @@ function parseSinglePattern(mutable parser: Parser): Pattern {
 function parsePatternBody(mutable parser: Parser): Pattern {
   const token = currentToken(parser)
   const pos = getPos(token)
+  if (parser.contractPattern && isComparisonToken(token)) {
+    // `>= 0`: the bound is a constant, which the checker folds.
+    advance(mutable parser)
+    const savedContract = parser.contractPattern
+    parser.contractPattern = false
+    const bound = parseUnary(mutable parser)
+    parser.contractPattern = savedContract
+    return Pattern.PatCompare(newId(mutable parser), pos, token.text, bound)
+  }
   if (isAt(parser, SYMBOL_LEFT_BRACE)) {
     advance(mutable parser)
     skipNewlines(mutable parser)
@@ -3654,6 +3700,15 @@ function parsePatternBody(mutable parser: Parser): Pattern {
     return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, [], true)
   }
   return Pattern.PatName(newId(mutable parser), pos, name)
+}
+
+function isComparisonToken(token: Token): bool {
+  return (token.kind == TokenKind.TokPunct &&
+    (token.text == "<" ||
+      token.text == "<=" ||
+      token.text == ">" ||
+      token.text == ">=" ||
+      token.text == "!="))
 }
 
 function parsePatternList(mutable parser: Parser, close: int): Array<Pattern> {

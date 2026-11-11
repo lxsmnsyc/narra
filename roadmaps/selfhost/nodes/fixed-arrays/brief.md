@@ -1,7 +1,7 @@
 ---
 id: fixed-arrays
 title: "Fixed arrays: FixedArray<T, N> with proven indexes"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-8

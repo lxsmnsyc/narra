@@ -1,7 +1,7 @@
 ---
 id: unsafe-ptr
 title: "Unsafe code: unsafe blocks, Ptr<T> and @trusted"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-8

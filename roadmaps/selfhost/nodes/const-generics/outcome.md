@@ -62,3 +62,5 @@ Not exhaustive (they have `_`), but a composite needs a case: `cnames.nra isCach
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-8 as 252ebcf0.

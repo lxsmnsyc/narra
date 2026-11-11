@@ -17,6 +17,7 @@ import {
 } from "narrac/check"
 import { factKey } from "narrac/patterns"
 import { isCapturedByArrow } from "narrac/funcvalues"
+import { findConstantValue, isOpenConstant, describeConstantOperand } from "narrac/constgenerics"
 import * as Int from "std/int"
 import * as Math from "std/math"
 import * as Str from "std/string"
@@ -106,6 +107,10 @@ function findConstant(checker: Checker, expression: Expr, depth: int): Option<in
 }
 
 function findNamedConstant(checker: Checker, nodeId: int, depth: int): Option<int> uses alloc {
+  // A constant type parameter has its instance's value.
+  if (findConstantValue(checker, nodeId) is Some(value)) {
+    return Some(value)
+  }
   if (getRef(checker, nodeId) is Ref.Const(index)) {
     return findConstant(checker, checker.consts[index].declaration.value, depth + 1)
   }
@@ -514,15 +519,20 @@ export function checkDivisor(
   divisor: Expr,
   operandType: Type,
 ) uses alloc {
+  // An open constant parameter is checked in each instance, where it has a value.
+  if (isOpenConstant(checker, divisor)) {
+    return
+  }
   if (!isInteger(operandType) || isProvenDivisor(checker, divisor, operandType)) {
     return
   }
   const hint = describeOperandHint(checker, divisor, "this constant is zero", "if (d != 0) { ... }")
+  const instance = describeConstantOperand(checker, divisor)
   reportError(
     mutable checker,
     getExpressionPos(divisor),
     "E0979",
-    `the divisor must be a non-zero constant or a name checked against zero first; ${hint}`,
+    `the divisor must be a non-zero constant or a name checked against zero first; ${hint}${instance}`,
   )
 }
 
@@ -531,16 +541,20 @@ export function checkShiftCount(
   count: Expr,
   operandType: Type,
 ) uses alloc {
+  if (isOpenConstant(checker, count)) {
+    return
+  }
   if (!isInteger(operandType) || isProvenCount(checker, count, operandType)) {
     return
   }
   const width = findBitWidth(operandType)
   const example = `if (n >= 0 && n < ${Int.toString(width)}) { ... }`
   const hint = describeOperandHint(checker, count, "this constant is out of range", example)
+  const instance = describeConstantOperand(checker, count)
   reportError(
     mutable checker,
     getExpressionPos(count),
     "E0980",
-    `the shift count must be a constant from 0 to ${Int.toString(width - 1)} or a name checked against both ends first; ${hint}`,
+    `the shift count must be a constant from 0 to ${Int.toString(width - 1)} or a name checked against both ends first; ${hint}${instance}`,
   )
 }

@@ -1052,6 +1052,13 @@ Build conditions are built (batch-7, node build-conditions), except `@target` an
 
 Status of D95 after batch-7: built are `requires`, `ensures`, build conditions, and `@target` with `--all-targets`. Not built yet: async exit and `Async.idle`, fixed arrays, `@inline`, C interop (including `@target` on `extern` functions) and dynamic traits.
 
+Constant type parameters (batch-8, node const-generics, 2026-11-11), the first part of fixed arrays. Amendments from the build:
+
+- **The kind is `int` only.** `const N: u8` and the other sized kinds are E0992 for now; they can come later without a syntax change.
+- **Functions and structs only.** Enums and type aliases take no constant parameter (E0992).
+- **An argument is an integer literal (`-3` included) or a constant parameter in scope.** A local, a top-level constant or a type in a constant slot, and a literal or constant parameter in a type slot, are E0993. Arithmetic in a type argument (`Vector<N + 1>`) is E0992 in the parser. In a call, `f<3>(x)` reads as type arguments because an integer between the brackets counts like a type name.
+- **The generic declaration defers proofs on `N`.** It is checked once with `N` open, so a divisor or shift count that is `N` is proven in each instance, where `N` is a constant; `f<0>` dividing by `N` is E0979 at the division.
+
 ## D96. `typeof` in type positions
 
 Decision (maintainer, 2026-11-09): `typeof name` in a type annotation stands for the declared or inferred type of a value in scope: a `const`, `let`, parameter, top-level constant or function. For a function it is the full function type, with effects (D86) and `from` (D94).

@@ -687,7 +687,8 @@ const label = match (status) {
 - **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
-- **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
+- **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. An integer literal (`3`, `-1`) between the brackets is a constant type argument, whatever the name before `<`, as in TypeScript: `both(a < 3, 4 > (c))` is the call `a<3, 4>(c)`, so write the comparison in parentheses, `both((a < 3), 4 > (c))`. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
+- **Constant type parameters.** `const N: int` in the type parameters of a function or a struct stands for an integer, not a type: `function repeat<const N: int>(text: string): string`, `struct Vector<const N: int> { ... }`. Its argument is an integer literal (`repeat<3>("ab")`, `Vector<-1>`) or a constant parameter in scope (`Vector<N>`). A call infers it from the argument types or the expected type like a type parameter (`const plane: Vector<2> = zeros()`); one that only the body uses must be written. A type argument never computes: `Vector<N + 1>` is a compile error, and so are a local, a top-level constant or a type where a constant belongs, and a constant where a type belongs (`value: N`). In the body `N` is an `int` value, known in each instance: `total / N` needs no check, and an instance with `N` equal to 0 is the usual divisor error, which names the instance and its call. A local or parameter named like a constant parameter is a shadowing error. A constant parameter does not satisfy a `requires` condition yet: a call that passes `N` to a function with `requires` is E0985. Each value is its own instance, so `repeat<2>` and `repeat<3>` are two functions and `Vector<2>` and `Vector<3>` two types. The kind is `int` only for now; the sized integer kinds (`const N: u8`) may come later. Enums and type aliases take no constant parameters.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 <!-- context
@@ -701,6 +702,20 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
     }
   }
   return false
+}
+```
+
+```ts
+struct Vector<const N: int> {
+  values: Array<f64>
+}
+
+function dimension<const N: int>(_vector: Vector<N>): int {
+  return N
+}
+
+function share<const N: int>(total: int): int {
+  return total / N
 }
 ```
 

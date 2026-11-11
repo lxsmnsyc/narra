@@ -33,6 +33,7 @@ import {
 } from "narrac/check"
 import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
+import { rejectConstantType, resolveConstantArgument } from "narrac/constgenerics"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -493,6 +494,9 @@ export function resolveType(
   if (typeExpr.isTuple) {
     return tupleType(mutable checker, typeExpr)
   }
+  if (rejectConstantType(mutable checker, typeExpr)) {
+    return Type.TVoid
+  }
   const argCount = Arrays.length(typeExpr.arguments)
   if (checker.environment[typeExpr.name] is Some(paramType)) {
     if (argCount == 0) {
@@ -584,10 +588,8 @@ export function resolveType(
       )
       return Type.TVoid
     }
-    let arguments: Array<Type> = []
-    for (const argument of Arrays.values(typeExpr.arguments)) {
-      Arrays.push(mutable arguments, resolveType(mutable checker, argument))
-    }
+    const parameters = checker.generics[generic].parameters
+    const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
     return instantiate(mutable checker, generic, arguments)
   }
   const named = lookupType(checker, typeExpr.name)
@@ -612,6 +614,26 @@ export function resolveType(
   }
   reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
   return Type.TVoid
+}
+
+export function resolveTypeArguments(
+  mutable checker: Checker,
+  written: Array<TypeExpr>,
+  parameters: Array<int>,
+): Array<Type> from checker uses alloc {
+  // Each argument is resolved for its parameter: a constant parameter takes a constant.
+  let arguments: Array<Type> = []
+  for (const index of Ranges.between(0, Arrays.length(written))) {
+    if (index < Arrays.length(parameters) && checker.parameters[parameters[index]].isConstant) {
+      Arrays.push(
+        mutable arguments,
+        resolveConstantArgument(mutable checker, written[index], parameters[index]),
+      )
+    } else {
+      Arrays.push(mutable arguments, resolveType(mutable checker, written[index]))
+    }
+  }
+  return arguments
 }
 
 function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
@@ -664,10 +686,8 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from 
         )
         return Type.TVoid
       }
-      let arguments: Array<Type> = []
-      for (const argument of Arrays.values(typeExpr.arguments)) {
-        Arrays.push(mutable arguments, resolveType(mutable checker, argument))
-      }
+      const parameters = checker.generics[generic].parameters
+      const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
       return instantiate(mutable checker, generic, arguments)
     }
   }

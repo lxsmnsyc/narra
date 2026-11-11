@@ -200,11 +200,13 @@ struct Parser {
   contractPattern: bool = false
 }
 
-// The type parameters of `<A, B: Show & Ordered, effect E>`.
+// The type parameters of `<A, B: Show & Ordered, effect E, const N: int>`.
+// constants names the `const` ones, which names holds too.
 struct TypeParams {
   names: Array<string>
   bounds: Array<Array<TypeExpr>>
   effects: Array<string>
+  constants: Array<string>
 }
 
 struct TraitLists {
@@ -1306,6 +1308,9 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
       typeofName: valueName,
     }
   }
+  if (isConstantTypeAhead(parser)) {
+    return parseConstantType(mutable parser)
+  }
   const token = expectIdent(mutable parser)
   if (!isOk(parser)) {
     return createDummyType()
@@ -1328,6 +1333,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   if (accept(mutable parser, SYMBOL_LESS)) {
     while (isOk(parser)) {
       Arrays.push(mutable arguments, parseType(mutable parser))
+      rejectTypeArithmetic(mutable parser)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
@@ -1373,11 +1379,34 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
   let names: Array<string> = []
   let bounds: Array<Array<TypeExpr>> = []
   let effects: Array<string> = []
+  let constants: Array<string> = []
   if (!accept(mutable parser, SYMBOL_LESS)) {
-    return TypeParams { names: names, bounds: bounds, effects: effects }
+    return TypeParams { names: names, bounds: bounds, effects: effects, constants: constants }
   }
   while (isOk(parser) && !isAt(parser, SYMBOL_GREATER)) {
     const token = currentToken(parser)
+    if (accept(mutable parser, SYMBOL_KEYWORD_CONST)) {
+      // `const N: int` is a constant parameter; it also counts as a type name for the lookaheads.
+      const constantName = expectIdent(mutable parser).text
+      expect(mutable parser, SYMBOL_COLON)
+      const kind = expectIdent(mutable parser)
+      if (isOk(parser) && kind.text != "int") {
+        failAt(
+          mutable parser,
+          getPos(kind),
+          "E0992",
+          `a constant type parameter must have type int, found ${kind.text}`,
+        )
+      }
+      Arrays.push(mutable names, constantName)
+      Arrays.push(mutable constants, constantName)
+      Arrays.push(mutable parser.typeNames, constantName)
+      Arrays.push(mutable bounds, [])
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
+        break
+      }
+      continue
+    }
     if (
       token.kind == TokenKind.TokIdent &&
         token.text == "effect" &&
@@ -1409,7 +1438,54 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
     }
   }
   expect(mutable parser, SYMBOL_GREATER)
-  return TypeParams { names: names, bounds: bounds, effects: effects }
+  return TypeParams { names: names, bounds: bounds, effects: effects, constants: constants }
+}
+
+function isConstantTypeAhead(parser: Parser): bool {
+  // `3` or `-3` where a type is written: a constant type argument.
+  if (currentToken(parser).kind == TokenKind.TokInt) {
+    return true
+  }
+  return isAt(parser, SYMBOL_MINUS) && peekToken(parser, 1).kind == TokenKind.TokInt
+}
+
+function parseConstantType(mutable parser: Parser): TypeExpr {
+  const pos = getPos(currentToken(parser))
+  let sign = ""
+  if (accept(mutable parser, SYMBOL_MINUS)) {
+    sign = "-"
+  }
+  const literal = advance(mutable parser)
+  return TypeExpr {
+    pos: pos,
+    name: `${sign}${literal.text}`,
+    arguments: [],
+    isFunc: false,
+    result: None,
+    effects: [],
+    isTuple: false,
+    isConstant: true,
+  }
+}
+
+function rejectTypeArithmetic(mutable parser: Parser) {
+  // A type argument is a type, a literal or a constant parameter; it never computes.
+  if (
+    isOk(parser) &&
+      (isAt(parser, SYMBOL_PLUS) ||
+        isAt(parser, SYMBOL_MINUS) ||
+        isAt(parser, SYMBOL_STAR) ||
+        isAt(parser, SYMBOL_SLASH) ||
+        isAt(parser, SYMBOL_PERCENT))
+  ) {
+    const operator = currentToken(parser)
+    failAt(
+      mutable parser,
+      getPos(operator),
+      "E0992",
+      `a type argument cannot compute with \`${operator.text}\`; write an integer literal or a constant parameter`,
+    )
+  }
 }
 
 function createNamedType(token: Token): TypeExpr {
@@ -1424,9 +1500,17 @@ function createNamedType(token: Token): TypeExpr {
   }
 }
 
-function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
+function parseTypeParamsNoBounds(mutable parser: Parser, allowConstants: bool): TypeParams {
   const pos = getPos(currentToken(parser))
   const typeParameters = parseTypeParams(mutable parser)
+  if (!allowConstants && Arrays.length(typeParameters.constants) > 0) {
+    failAt(
+      mutable parser,
+      pos,
+      "E0992",
+      "constant type parameters are allowed only on functions and structs",
+    )
+  }
   // Struct and enum type parameters cannot have constraints in this compiler.
   for (const traitBounds of Arrays.values(typeParameters.bounds)) {
     if (Arrays.length(traitBounds) > 0) {
@@ -1438,7 +1522,7 @@ function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
       )
     }
   }
-  return typeParameters.names
+  return typeParameters
 }
 
 function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
@@ -1580,6 +1664,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     result: result,
     effects: effects,
     effectParameters: typeParameters.effects,
+    constantParameters: typeParameters.constants,
     body: None,
   }
 }
@@ -1615,7 +1700,7 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
 function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
   const pos = getPos(advance(mutable parser))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser, false).names
   expect(mutable parser, SYMBOL_EQUALS)
   const body = parseType(mutable parser)
   endTypeDecl(mutable parser)
@@ -1631,7 +1716,7 @@ function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
 function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_STRUCT))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser, true)
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   const fields = parseFieldList(mutable parser)
@@ -1639,7 +1724,8 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   return StructDecl {
     pos: pos,
     name: name,
-    typeParameters: typeParameters,
+    typeParameters: typeParameters.names,
+    constantParameters: typeParameters.constants,
     exported: exported,
     implementations: traitLists.implementations,
     derived: traitLists.derived,
@@ -1651,7 +1737,7 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
 function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_ENUM))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser, false).names
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
@@ -2905,6 +2991,10 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
       if (!isTypeNameAhead(parser, token.text) && !isQualifier) {
         return false
       }
+    } else if (isConstantArgumentToken(parser, offset)) {
+      if (depth == 0) {
+        return false
+      }
     } else if (token.kind != TokenKind.TokPunct) {
       return false
     } else if (token.text == "<") {
@@ -2928,6 +3018,17 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
     offset++
   }
   return false
+}
+
+function isConstantArgumentToken(parser: Parser, offset: int): bool {
+  // An integer, or `-` before one, may stand between type argument brackets: `f<3>(x)`.
+  const token = peekToken(parser, offset)
+  if (token.kind == TokenKind.TokInt) {
+    return true
+  }
+  return token.kind == TokenKind.TokPunct &&
+    token.text == "-" &&
+    peekToken(parser, offset + 1).kind == TokenKind.TokInt
 }
 
 function isTypeNameAhead(parser: Parser, name: string): bool {
@@ -2984,6 +3085,10 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
       if (depth == 0) {
         return false
       }
+    } else if (isConstantArgumentToken(parser, offset)) {
+      if (depth == 0) {
+        return false
+      }
     } else if (token.kind != TokenKind.TokPunct) {
       return false
     } else if (token.text == "<") {
@@ -3015,6 +3120,7 @@ function parseLiteralTypeArgs(mutable parser: Parser): Array<TypeExpr> {
   while (isOk(parser)) {
     // A trailing `>>` is split by parseType, as in a type.
     Arrays.push(mutable arguments, parseType(mutable parser))
+    rejectTypeArithmetic(mutable parser)
     if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }

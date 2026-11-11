@@ -32,7 +32,8 @@ import {
   anyTypeParameter,
   hasNamedArgument,
 } from "narrac/check"
-import { substitute, resolveType } from "narrac/resolve"
+import { substitute, resolveTypeArguments } from "narrac/resolve"
+import { describeUnknownParameter, noteInstanceCall } from "narrac/constgenerics"
 import { unify } from "narrac/generics"
 import { shapeFunctionName } from "narrac/deriveshape"
 import { checkTargetUse } from "narrac/buildconditions"
@@ -819,7 +820,7 @@ function checkGenericCall<W: Walker>(
           nodeId,
           pos,
           info.name,
-          Arrays.length(typeParameters),
+          typeParameters,
           arguments,
         ) is Some(given)
       ) {
@@ -889,7 +890,7 @@ function checkGenericCall<W: Walker>(
       }
       return copy(partial)
     } else {
-      const message = `cannot tell type parameter ${checker.parameters[param].name} of ${info.name} here; add a type annotation`
+      const message = describeUnknownParameter(checker, param, info.name, "call")
       reportError(mutable checker, pos, "E0220", message)
       return Type.TVoid
     }
@@ -919,6 +920,8 @@ function checkGenericCall<W: Walker>(
   const result = substitute(mutable checker, info.result, bindings)
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
   if (boundsHold && !anyTypeParameter(checker, typeArguments)) {
+    const file = checker.scopes[checker.current].file
+    noteInstanceCall(mutable checker, funcIndex, typeArguments, file, pos.line, pos.column)
     const instance = addFuncInstance(mutable checker, funcIndex, typeArguments)
     // The emitter finds the instance of this call through the body.
     checker.bodies[checker.body].instanceRefs[nodeId] = instance
@@ -979,7 +982,7 @@ function checkTraitCall<W: Walker>(
           nodeId,
           pos,
           `${traitName}.${name}`,
-          1,
+          self,
           arguments,
         ) is Some(given)
       ) {
@@ -1196,7 +1199,7 @@ function takeTypeArguments<W: Walker>(
   nodeId: int,
   pos: Pos,
   name: string,
-  count: int,
+  parameters: Array<int>,
   arguments: Array<Arg>,
 ): Option<Array<Type>> from checker uses alloc {
   // Marks the arguments used. The result is None after reporting a wrong count.
@@ -1205,6 +1208,7 @@ function takeTypeArguments<W: Walker>(
     written = pending
   }
   checker.callTypeArguments[nodeId] = []
+  const count = Arrays.length(parameters)
   if (Arrays.length(written) != count) {
     const found = Int.toString(Arrays.length(written))
     reportError(
@@ -1216,11 +1220,7 @@ function takeTypeArguments<W: Walker>(
     checkArgumentsLoosely(mutable checker, walker, arguments)
     return None
   }
-  let types: Array<Type> = []
-  for (const typeExpression of Arrays.values(written)) {
-    Arrays.push(mutable types, resolveType(mutable checker, typeExpression))
-  }
-  return Some(types)
+  return Some(resolveTypeArguments(mutable checker, written, parameters))
 }
 
 function checkDistinctCall<W: Walker>(

@@ -1,0 +1,239 @@
+// Constant type parameters: `const N: int` on functions and structs.
+//
+// A constant parameter is a type parameter (ParamInfo.isConstant) that stands
+// for an integer. An instance binds it to Type.TConst(value), so the value is
+// part of the instance key (types.nra buildKey) and of the hashed C name
+// (cnames.nra typeId): Vector<3> and Vector<4> are two types, and repeat<3>
+// and repeat<4> two functions. In a body the name is an int value
+// (Ref.ConstantParameter): a known constant in each instance, which the
+// prover in operands.nra reads, and open in the generic declaration, where
+// the checks that need its value wait for the instances.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import { Expr, TypeExpr } from "narrac/ast"
+import { Type, typeKeys } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  setRef,
+  getRef,
+  reportError,
+  isConstantParameter,
+  typeString,
+} from "narrac/check"
+
+export function markConstantParameters(
+  mutable checker: Checker,
+  parameters: Array<int>,
+  constants: Array<string>,
+) uses alloc {
+  for (const parameter of Arrays.values(parameters)) {
+    for (const constant of Arrays.values(constants)) {
+      if (checker.parameters[parameter].name == constant) {
+        checker.parameters[parameter].isConstant = true
+      }
+    }
+  }
+}
+
+export function findConstantParameter(
+  checker: Checker,
+  name: string,
+): Option<Type> from checker uses alloc {
+  if (checker.environment[name] is Some(bound)) {
+    if (isConstantParameter(checker, bound)) {
+      return Some(bound)
+    }
+  }
+  return None
+}
+
+export function checkConstantName(
+  mutable checker: Checker,
+  nodeId: int,
+  name: string,
+): bool uses alloc {
+  // The name of a constant parameter in a body is an int value.
+  if (findConstantParameter(checker, name) is Some(parameter)) {
+    if (parameter is Type.TConst(value)) {
+      setRef(mutable checker, nodeId, Ref.ConstantParameter(value, false))
+    } else {
+      setRef(mutable checker, nodeId, Ref.ConstantParameter(0, true))
+    }
+    return true
+  }
+  return false
+}
+
+export function findConstantValue(checker: Checker, nodeId: int): Option<int> {
+  if (getRef(checker, nodeId) is Ref.ConstantParameter(value, false)) {
+    return Some(value)
+  }
+  return None
+}
+
+export function isOpenConstant(checker: Checker, expression: Expr): bool {
+  // The name of a constant parameter in the generic declaration, whose value
+  // only the instances know.
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    return getRef(checker, nodeId) is Ref.ConstantParameter(_, true)
+  }
+  return false
+}
+
+export function rejectConstantType(mutable checker: Checker, typeExpr: TypeExpr): bool uses alloc {
+  // A literal or a constant parameter written where a type belongs.
+  if (typeExpr.isConstant) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0993",
+      `${typeExpr.name} is a constant, not a type; only a constant type parameter takes it`,
+    )
+    return true
+  }
+  if (Arrays.length(typeExpr.arguments) > 0 || typeExpr.isFunc || typeExpr.isTuple) {
+    return false
+  }
+  if (typeExpr.name != "" && findConstantParameter(checker, typeExpr.name) is Some(_)) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0993",
+      `${typeExpr.name} is a constant type parameter, not a type`,
+    )
+    return true
+  }
+  return false
+}
+
+export function resolveConstantArgument(
+  mutable checker: Checker,
+  argument: TypeExpr,
+  parameter: int,
+): Type from checker uses alloc {
+  // The argument of a constant parameter is an integer literal or a constant
+  // parameter in scope; the value is never computed.
+  const parameterName = checker.parameters[parameter].name
+  if (argument.isConstant) {
+    if (parseConstantText(argument.name) is Some(value)) {
+      return Type.TConst(value)
+    }
+    reportError(
+      mutable checker,
+      argument.pos,
+      "E0993",
+      `the constant ${argument.name} for ${parameterName} does not fit an int`,
+    )
+    return Type.TVoid
+  }
+  const isName =
+    Arrays.length(argument.arguments) == 0 &&
+      !argument.isFunc &&
+      !argument.isTuple &&
+      argument.typeofName == ""
+  if (isName) {
+    if (findConstantParameter(checker, argument.name) is Some(bound)) {
+      return bound
+    }
+  }
+  let found = "a type"
+  if (isName && argument.name != "") {
+    found = `\`${argument.name}\``
+  }
+  reportError(
+    mutable checker,
+    argument.pos,
+    "E0993",
+    `constant parameter ${parameterName} takes an integer literal or a constant parameter, found ${found}`,
+  )
+  return Type.TVoid
+}
+
+export function noteInstanceCall(
+  mutable checker: Checker,
+  funcIndex: int,
+  typeArguments: Array<Type>,
+  file: string,
+  line: int,
+  column: int,
+) uses alloc {
+  const key = `${Int.toString(funcIndex)}|${typeKeys(typeArguments)}`
+  if (checker.instanceCalls[key] is None) {
+    checker.instanceCalls[key] = `${file}:${Int.toString(line)}:${Int.toString(column)}`
+  }
+}
+
+export function describeConstantOperand(checker: Checker, operand: Expr): string uses alloc {
+  // For an operand that is a constant parameter in an instance: its value, the
+  // instance and the call that made it, as "; N is 0 in share<0>, called at main.nra:7:39".
+  if (operand is Expr.Ident(nodeId, _, name)) {
+    if (findConstantValue(checker, nodeId) is Some(value)) {
+      const body = checker.bodies[checker.body]
+      let arguments: Array<string> = []
+      for (const argument of Arrays.values(body.typeArguments)) {
+        Arrays.push(mutable arguments, typeString(checker, argument))
+      }
+      let text = `; ${name} is ${Int.toString(value)} in ${body.name}<${Str.join(arguments, ", ")}>`
+      const key = `${Int.toString(checker.functionIndex)}|${typeKeys(body.typeArguments)}`
+      if (checker.instanceCalls[key] is Some(call)) {
+        text = `${text}, called at ${call}`
+      }
+      return text
+    }
+  }
+  return ""
+}
+
+export function describeUnknownParameter(
+  checker: Checker,
+  parameter: int,
+  owner: string,
+  usage: string,
+): string uses alloc {
+  // The E0220 text; usage is "call", "literal" or "value".
+  const name = checker.parameters[parameter].name
+  if (!checker.parameters[parameter].isConstant) {
+    return `cannot tell type parameter ${name} of ${owner} here; add a type annotation`
+  }
+  if (usage == "literal") {
+    return `cannot tell constant parameter ${name} of ${owner} here; write it, as in ${owner}<3> { ... }`
+  }
+  if (usage == "value") {
+    return `cannot tell constant parameter ${name} of ${owner} here; a function with a constant parameter cannot be a value`
+  }
+  return `cannot tell constant parameter ${name} of ${owner} here; write it, as in ${owner}<3>(...)`
+}
+
+function parseConstantText(text: string): Option<int> uses alloc {
+  // The literal as the lexer read it: an optional sign, a base prefix and underscores.
+  let digits = Str.replace(text, "_", "")
+  let negative = false
+  if (Str.startsWith(digits, "-")) {
+    negative = true
+    digits = Str.sliceFrom(digits, 1)
+  }
+  let base = 10
+  if (Str.startsWith(digits, "0x") || Str.startsWith(digits, "0X")) {
+    base = 16
+  } else if (Str.startsWith(digits, "0b") || Str.startsWith(digits, "0B")) {
+    base = 2
+  } else if (Str.startsWith(digits, "0o") || Str.startsWith(digits, "0O")) {
+    base = 8
+  }
+  if (base != 10) {
+    digits = Str.sliceFrom(digits, 2)
+  } else if (Str.length(digits) >= 2 && Str.startsWith(digits, "0")) {
+    // A leading zero reads the rest as octal, as operands.nra does.
+    base = 8
+    digits = Str.sliceFrom(digits, 1)
+  }
+  if (negative) {
+    digits = `-${digits}`
+  }
+  if (Int.parse(digits, base) is Ok(value)) {
+    return Some(value)
+  }
+  return None
+}

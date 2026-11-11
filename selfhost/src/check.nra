@@ -147,6 +147,9 @@ export enum Ref {
   Distinct(index: int) // Checker.distincts: T.from or T.toInt
   // Added by selfhost-check-closures: a call through a function value.
   Value
+  // A constant type parameter used as a value: its value in an instance, or
+  // open in the generic declaration, where the value is not known (constgenerics.nra).
+  ConstantParameter(value: int, open: bool)
 }
 
 // One function of Go's Program.Funcs, in the order Go lists them (contracts/emitter.md).
@@ -595,6 +598,9 @@ export struct Checker {
   // it from pendingNext after every module's bodies.
   instanceList: Array<FuncInstance> = []
   funcInstances: Map<string, int>
+  // The first call of each generic function instance, "file:line:column", by
+  // its Checker.funcInstances key; errors only an instance has name it.
+  instanceCalls: Map<string, string>
   pending: Array<int> = []
   pendingNext: int = 0
   // Facts for the emitter (contracts/emitter.md, filled by selfhost-emit-program).
@@ -716,6 +722,7 @@ export function newChecker(ids: int): Checker uses alloc {
     entryTargets: [],
     resultType: Type.TVoid,
     funcInstances: Map {},
+    instanceCalls: Map {},
     composites: Map {},
     bodyKeys: Map {},
     writtenFunctionTypes: Map {},
@@ -992,6 +999,7 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
       input,
     ) => `${generatorName(checker, element, input)}${usesSuffix(generatorEffectList(checker, type))}`
     Type.TModule(path) => `module ${path}`
+    Type.TConst(value) => Int.toString(value)
   }
 }
 
@@ -2041,6 +2049,26 @@ export function checkMutableType(
   )
 }
 
+export function isConstantParameter(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TConst(_) => true
+    Type.TParam(index) => checker.parameters[index].isConstant
+    _ => false
+  }
+}
+
+export function isNameTaken(checker: Checker, name: string): bool uses alloc {
+  // A local of the body, or a constant type parameter of the function, which a
+  // local would hide.
+  if (findLocal(checker, name) >= 0) {
+    return true
+  }
+  if (checker.environment[name] is Some(bound)) {
+    return isConstantParameter(checker, bound)
+  }
+  return false
+}
+
 export function declareLocal(
   mutable checker: Checker,
   nodeId: int,
@@ -2051,7 +2079,7 @@ export function declareLocal(
   param: bool,
 ): int uses alloc {
   // Shadowing is an error, except for `_`.
-  if (name != "_" && findLocal(checker, name) >= 0) {
+  if (name != "_" && isNameTaken(checker, name)) {
     reportError(
       mutable checker,
       pos,

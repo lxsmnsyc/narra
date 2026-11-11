@@ -1,7 +1,7 @@
 ---
 id: tree-shake-types
 title: "Tree shaking: types, helpers and runtime sections"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-7

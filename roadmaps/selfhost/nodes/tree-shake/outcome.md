@@ -56,3 +56,5 @@ Where the reachable set lives, for tree-shake-types: `ReachableBodies` (exported
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-7 as cc31389d.

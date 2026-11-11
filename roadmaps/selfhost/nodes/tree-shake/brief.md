@@ -1,7 +1,7 @@
 ---
 id: tree-shake
 title: "Tree shaking: emit only reachable declarations"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 327830
 owns:
   - roadmaps/selfhost/nodes/tree-shake/**
 shared:

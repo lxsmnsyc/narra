@@ -1,7 +1,7 @@
 ---
 id: process-exit
 title: "A std function that ends the process with an exit code"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 246000
 owns:
   - roadmaps/selfhost/nodes/process-exit/**
   - selfhost/src/stdprocess.nra

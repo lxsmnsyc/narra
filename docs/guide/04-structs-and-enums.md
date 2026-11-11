@@ -382,7 +382,7 @@ export function run(args: Array<string>): int {
 
 Some structs have a rule their fields must follow. A time span, for example, must not end before it starts. If any code could build one with `Span { start: 5, end: 1 }`, nothing would enforce the rule. Mark the struct `opaque` when you export it, and code outside its module can no longer build it or read its fields. It must go through the functions the module exports. A program cannot show this in a single file, so here is the module, `src/span.nra`:
 
-```narra fragment
+```narra file timeline src/span.nra
 export opaque struct Span {
   start: int
   end: int
@@ -404,7 +404,7 @@ export function spanLength(span: Span): int {
 
 Another module, here `src/main.nra` of a package named `timeline`, imports the functions and goes through them:
 
-```narra fragment
+```narra file timeline src/main.nra
 import * as Int from "std/int"
 import { makeSpan, spanLength } from "timeline/span"
 
@@ -419,6 +419,11 @@ export function run(args: Array<string>): int {
   }
   return 0
 }
+```
+
+```text
+7
+the span ends before it starts
 ```
 
 It prints `7`, then `the span ends before it starts`. Writing `Span { start: 5, end: 1 }` or `span.start` in `main.nra` is an error. The message says that `Span` is an opaque struct of module `"timeline/span"`, and to use that module's functions. Every `Span` comes from `makeSpan`, so every `Span` follows the rule.

@@ -95,7 +95,7 @@ shop/
 
 `narra.toml` names the package and says which function starts the program:
 
-```toml
+```narra file shop narra.toml
 [package]
 name = "shop"
 
@@ -106,7 +106,7 @@ entry = "main.run"
 
 `entry = "main.run"` means the function `run` in `src/main.nra`. Each file in `src` is a module, named after the package and the file: `src/prices.nra` is the module `"shop/prices"`. Put a function in it and export it:
 
-```narra fragment
+```narra file shop src/prices.nra
 export function withTax(cents: int): int {
   return cents + cents / 10
 }
@@ -114,7 +114,7 @@ export function withTax(cents: int): int {
 
 Then `src/main.nra` imports that function by name:
 
-```narra fragment
+```narra file shop src/main.nra
 import * as Int from "std/int"
 import { withTax } from "shop/prices"
 
@@ -122,6 +122,10 @@ export function run(args: Array<string>): int {
   print(Int.toString(withTax(200)))
   return 0
 }
+```
+
+```text
+220
 ```
 
 From inside the `shop` folder, `narrac run .` builds and runs the package and prints `220`. `narrac build .` writes the executable `shop`, named after the `[[binary]]`. Chapter 8 covers modules and imports in full.

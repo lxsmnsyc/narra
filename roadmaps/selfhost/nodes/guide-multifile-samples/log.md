@@ -1,0 +1,2 @@
+- guide.nra gets 'narra file PACKAGE PATH' blocks; ch1 (shop), ch4 (timeline), ch8 (words, two run points) converted; change request written
+- review fixes: extractor covers narra file, one array, docs wording

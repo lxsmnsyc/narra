@@ -6,6 +6,13 @@
 //   narra error     must not compile; its first line is `// error: TEXT` and
 //                   `narrac check` must report TEXT.
 //   narra fragment  is not run.
+//   narra file PACKAGE PATH
+//                   is one file of a multi-file package. Blocks with the same
+//                   PACKAGE in a chapter add up, and a later block with the
+//                   same PATH replaces the earlier one. A file block that the
+//                   `text` block follows builds the package so far and runs it
+//                   like a program. A package without a narra.toml file block
+//                   gets one whose entry is main.run.
 // Any other info string that starts with `narra` in any case is a typo and
 // fails. The `extractor` case checks the fence parser on a text with typos and
 // on an unclosed fence.
@@ -30,6 +37,13 @@ struct Fence {
   body: string
 }
 
+// One file of a multi-file package sample, with its path inside the package.
+struct PackageFile {
+  package: string
+  path: string
+  code: string
+}
+
 // A narra block of a chapter. want is the stdout from the `text` block that
 // directly follows a narra block; hasWant is false when there is none.
 struct Sample {
@@ -39,6 +53,8 @@ struct Sample {
   code: string
   want: string
   hasWant: bool
+  package: string
+  files: Array<PackageFile>
 }
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
@@ -80,7 +96,7 @@ function addSampleCases(
   sample: Sample,
 ) uses alloc {
   const label = `${file}:${Int.toString(sample.line)}`
-  if (sample.kind == "narra") {
+  if (sample.kind == "narra" || sample.kind == "narra file") {
     for (const mode of Arrays.values(["debug", "release"])) {
       Arrays.push(mutable cases, TestCase {
         suite: "guide",
@@ -149,16 +165,28 @@ function runSample(
   variant: string,
 ): Result<bool, string> uses io, alloc {
   if (sample.kind == "invalid") {
-    return Err(`the info string "${sample.info}" is not narra, narra error or narra fragment`)
+    return Err(
+      `the info string "${sample.info}" is not narra, narra error, narra fragment or narra file`,
+    )
   }
   if (sample.kind == "narra fragment") {
     return Ok(true)
+  }
+  if (sample.kind == "dangling") {
+    return Err(
+      `the files of package ${sample.package} need a text block with the output right after the last one`,
+    )
   }
   const made = Scratch.makeScratch()
   if (made is Err(message)) {
     return Err(message)
   }
   const scratch = made.value
+  if (sample.kind == "narra file") {
+    const packageOutcome = runPackageSample(context, sample, scratch.work, variant)
+    Scratch.removeScratch(scratch)
+    return packageOutcome
+  }
   const path = Path.join(scratch.work, "sample.nra")
   let outcome: Result<bool, string> = Ok(true)
   const written = Scratch.writeFile(path, sample.code)
@@ -171,6 +199,41 @@ function runSample(
   }
   Scratch.removeScratch(scratch)
   return outcome
+}
+
+function runPackageSample(
+  context: Context,
+  sample: Sample,
+  work: string,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  const folder = Path.join(work, sample.package)
+  let hasManifest = false
+  // Step 1: write every file of the package under its own folder.
+  for (const file of Arrays.values(sample.files)) {
+    if (file.path == "narra.toml") {
+      hasManifest = true
+    }
+    const written = Scratch.writeFile(Path.join(folder, file.path), file.code)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+  }
+  // Step 2: a package without a manifest block starts at main.run.
+  if (!hasManifest) {
+    const manifest = `[package]\nname = "${sample.package}"\n\n[[binary]]\nname = "${sample.package}"\nentry = "main.run"\n`
+    const written = Scratch.writeFile(Path.join(folder, "narra.toml"), manifest)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+  }
+  // Step 3: build and run the package folder in the sample's mode.
+  let flag = "-sanitize"
+  if (variant == "release") {
+    flag = "-release"
+  }
+  const result = Common.runNarrac(context, ["run", flag, folder])
+  return Common.expectRun(result, 0, sample.want)
 }
 
 function runErrorSample(
@@ -273,10 +336,21 @@ function extractSamples(text: string): Result<Array<Sample>, string> uses alloc 
   const fences = read.value
   const lines = splitString(text, "\n")
   let samples: Array<Sample> = []
+  // The files of the packages seen so far, with the package of each, and the
+  // packages that have files since their last run point.
+  let accumulated: Array<PackageFile> = []
+  let pending: Array<Sample> = []
   for (const index of Ranges.between(0, Arrays.length(fences))) {
     const fence = fences[index]
     let kind = fence.info
-    if (kind != "narra" && kind != "narra error" && kind != "narra fragment") {
+    const parts = splitString(fence.info, " ")
+    let package = ""
+    let filePath = ""
+    if (Arrays.length(parts) == 4 && parts[0] == "narra" && parts[1] == "file") {
+      kind = "narra file"
+      package = parts[2]
+      filePath = parts[3]
+    } else if (kind != "narra" && kind != "narra error" && kind != "narra fragment") {
       if (!startsWithNarra(kind)) {
         continue
       }
@@ -286,7 +360,9 @@ function extractSamples(text: string): Result<Array<Sample>, string> uses alloc 
     let want = ""
     let hasWant = false
     if (
-      fence.info == "narra" && index + 1 < Arrays.length(fences) && fences[index + 1].info == "text"
+      (fence.info == "narra" || kind == "narra file") &&
+        index + 1 < Arrays.length(fences) &&
+        fences[index + 1].info == "text"
     ) {
       // Only blank lines may sit between the two blocks.
       const next = fences[index + 1]
@@ -299,6 +375,50 @@ function extractSamples(text: string): Result<Array<Sample>, string> uses alloc 
         hasWant = true
       }
     }
+    let files: Array<PackageFile> = []
+    if (kind == "narra file") {
+      // The file replaces an earlier block of the same package and path.
+      let replaced = false
+      for (const position of Ranges.between(0, Arrays.length(accumulated))) {
+        if (accumulated[position].package == package && accumulated[position].path == filePath) {
+          accumulated[position] = PackageFile { package: package, path: filePath, code: fence.body }
+          replaced = true
+        }
+      }
+      if (!replaced) {
+        Arrays.push(mutable accumulated, PackageFile {
+          package: package,
+          path: filePath,
+          code: fence.body,
+        })
+      }
+      for (const position of Ranges.between(0, Arrays.length(accumulated))) {
+        if (accumulated[position].package == package) {
+          Arrays.push(mutable files, accumulated[position])
+        }
+      }
+      // A file block without output is not a sample until the package is run.
+      let kept: Array<Sample> = []
+      for (const waiting of Arrays.values(pending)) {
+        if (waiting.package != package) {
+          Arrays.push(mutable kept, waiting)
+        }
+      }
+      pending = kept
+      if (!hasWant) {
+        Arrays.push(mutable pending, Sample {
+          line: fence.line,
+          kind: "dangling",
+          info: fence.info,
+          code: "",
+          want: "",
+          hasWant: false,
+          package: package,
+          files: [],
+        })
+        continue
+      }
+    }
     Arrays.push(mutable samples, Sample {
       line: fence.line,
       kind: kind,
@@ -306,7 +426,12 @@ function extractSamples(text: string): Result<Array<Sample>, string> uses alloc 
       code: fence.body,
       want: want,
       hasWant: hasWant,
+      package: package,
+      files: files,
     })
+  }
+  for (const waiting of Arrays.values(pending)) {
+    Arrays.push(mutable samples, waiting)
   }
   return Ok(samples)
 }
@@ -331,6 +456,45 @@ function checkExtractor(): Result<bool, string> uses alloc {
   }
   if (!Str.contains(open.error, "line 3")) {
     return Err(`want an unclosed fence error for line 3, got ${open.error}`)
+  }
+  return checkPackageExtractor()
+}
+
+function checkPackageExtractor(): Result<bool, string> uses alloc {
+  const first = "```narra file one x.nra\nA\n```\n\n```text\na\n```\n\n"
+  const second = "```narra file two x.nra\nB\n```\n\n```text\nb\n```\n\n"
+  const third = "```narra file one x.nra\nC\n```\n\n```text\nc\n```\n\n"
+  const last = "```narra file one y.nra\nD\n```\n\n```narra file x\nE\n```\n"
+  const text = `${first}${second}${third}${last}`
+  const extracted = extractSamples(text)
+  if (extracted is Err(message)) {
+    return Err(message)
+  }
+  const samples = extracted.value
+  if (Arrays.length(samples) != 5) {
+    return Err(`want 5 package samples, got ${Int.toString(Arrays.length(samples))}`)
+  }
+  const wantKinds = ["narra file", "narra file", "narra file", "invalid", "dangling"]
+  for (const index of Ranges.between(0, 5)) {
+    if (samples[index].kind != wantKinds[index]) {
+      return Err(
+        `package sample ${Int.toString(index)}: want kind ${wantKinds[index]}, got ${samples[index].kind}`,
+      )
+    }
+  }
+  // Each run point holds one file: packages stay apart and a replaced path
+  // changes only the later run points.
+  const wantPackages = ["one", "two", "one"]
+  const wantCodes = ["A\n", "B\n", "C\n"]
+  for (const index of Ranges.between(0, 3)) {
+    const files = samples[index].files
+    if (
+      Arrays.length(files) != 1 ||
+        files[0].package != wantPackages[index] ||
+        files[0].code != wantCodes[index]
+    ) {
+      return Err(`package sample ${Int.toString(index)}: wrong files`)
+    }
   }
   return Ok(true)
 }

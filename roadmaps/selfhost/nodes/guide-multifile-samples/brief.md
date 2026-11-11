@@ -1,7 +1,7 @@
 ---
 id: guide-multifile-samples
 title: "The guide test compiles multi-file package samples"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 243000
 owns:
   - roadmaps/selfhost/nodes/guide-multifile-samples/**
   - selfhost/tests/src/guide.nra

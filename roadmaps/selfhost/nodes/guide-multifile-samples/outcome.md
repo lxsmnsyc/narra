@@ -37,3 +37,5 @@
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-9 as 2107dd53, with guide-samples contract v2.

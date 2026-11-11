@@ -1,7 +1,7 @@
 ---
 id: return-trailer
 title: "No unreachable trailer after a function's final return"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 371753
 owns:
   - roadmaps/selfhost/nodes/return-trailer/**
 shared:

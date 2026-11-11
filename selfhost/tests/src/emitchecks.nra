@@ -23,6 +23,8 @@
 //                      constant
 //   tree-shake/std-source   the C of bench/fib/fib.nra has none of the
 //                      std/int functions written in Narra, which it never calls
+//   tree-shake/unused-types   the C of bench/fib/fib.nra has no type that only
+//                      unreached code uses, and no array function it never calls
 //   build-targets/outside-branch   `narrac check --all-targets` reports a use
 //                      of a `@target` function outside a guaranteeing branch
 //                      once per target it fails on
@@ -86,6 +88,11 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       "std-source",
     ),
     makeCase(
+      "tree-shake/unused-types",
+      Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
+      "unused-types",
+    ),
+    makeCase(
       "build-targets/outside-branch",
       Path.join(buildTargets, "outside_branch.nra"),
       "outside-branch",
@@ -137,6 +144,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "std-source") {
     return checkStdSourceShaken(context, testCase.path)
+  }
+  if (testCase.variant == "unused-types") {
+    return checkUnusedTypesShaken(context, testCase.path)
   }
   if (testCase.variant == "outside-branch") {
     return checkAllTargets(context, testCase.path, "outside_branch.err", false)
@@ -284,6 +294,36 @@ function checkStdSourceShaken(
   for (const name of Arrays.values(["_compare(", "_divmod(", "_floorDiv("])) {
     if (Str.contains(result.output, name)) {
       return Err(`the emitted C should not hold "${name}"`)
+    }
+  }
+  return Ok(true)
+}
+
+function checkUnusedTypesShaken(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  // fib reaches Array<string> (the arguments) through main only, by _new and
+  // _release. Option<int> and #[int, int] come from std/int functions it never
+  // calls.
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  for (const text of Arrays.values([
+    "= Option<int> */",
+    "= #[int, int] */",
+    "_get(",
+    "_push(",
+    "_filled(",
+  ])) {
+    if (Str.contains(result.output, text)) {
+      return Err(`the emitted C should not hold "${text}"`)
+    }
+  }
+  for (const text of Arrays.values(["= Array<string> */", "_new(int64_t cap)", "_release("])) {
+    if (!Str.contains(result.output, text)) {
+      return Err(`the emitted C should hold "${text}"`)
     }
   }
   return Ok(true)

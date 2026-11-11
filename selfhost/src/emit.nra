@@ -12,12 +12,20 @@
 // notes the C names it calls (noteReference), and emitReachableBodies emits the
 // named declarations until no new name appears. The text keeps the checker's
 // order, filtered.
+//
+// The same goes for what the bodies use. Emitted code notes the reference
+// counting and container functions it calls and the std modules whose runtime
+// it calls (noteHelper), and the name cache (typeNames) holds every type it
+// named. The type sections write the named types and the types their
+// definitions hold; the helper, map and trait functions are written only when
+// named, and a std runtime section only when called.
 import { substring } from "narrac/textops"
 import * as Str from "std/string"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, typeString, containsTypeParameter } from "narrac/check"
-import { Emitter, newEmitter, noteReference } from "narrac/emitstate"
+import { Emitter, newEmitter, noteReference, underlyingType, useHelper } from "narrac/emitstate"
 import {
+  typeId,
   cachedTypeId,
   cachedCType,
   cachedFunctionName,
@@ -36,6 +44,7 @@ import * as Options from "narrac/emitoptions"
 import * as Consts from "narrac/emitconsts"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Cells from "std/cell"
 
 // The result of emitting a program: the C text, which has a marker line for
 // each unsupported construct, and the distinct constructs in first-seen order.
@@ -55,59 +64,71 @@ export function emitProgram(
   let emitter = copy(newEmitter(checker, entry, tests))
   let builder = Str.builder()
 
-  // Preamble: the runtime, then the runtime of each std module in use. std/test
-  // is called only from test blocks, which a non-test build drops.
+  // The main function names the helpers of the argument array, so it is
+  // written before the helpers are.
+  let mainText = ""
+  if (!tests) {
+    mainText = emitMain(mutable emitter)
+  }
+
+  // Bodies first: every later section lists only what the bodies reach.
+  const reachable = emitReachableBodies(mutable emitter)
+  const constantPrototypes = Consts.emitConstPrototypes(mutable emitter, reachable.constants)
+  const functionPrototypes = emitPrototypes(mutable emitter, reachable.functions)
+  const closureText = Closures.emitClosureFunctions(mutable emitter)
+  const used = collectUsedTypes(emitter)
+
+  // Preamble: the runtime, then the runtime of each std module that reached
+  // code calls. std/test is called only from test blocks, which a non-test
+  // build drops.
   Str.append(mutable builder, RUNTIME_H)
+  const helperNotes = Cells.get(emitter.helpers).seen
   for (const path of Arrays.values(checker.used)) {
     const runtime = runtimeFor(path)
-    if (runtime != "" && (tests || path != "std/test")) {
+    const called = helperNotes[path] is Some(_) || (tests && path == "std/test")
+    if (runtime != "" && called) {
       Str.append(mutable builder, `\n${runtime}`)
     }
   }
 
   // Types.
   Str.append(mutable builder, "\n// Types\n")
-  Str.append(mutable builder, emitCommentTable(mutable emitter))
-  Str.append(mutable builder, emitArrayTypedefs(mutable emitter))
-  Str.append(mutable builder, EmitMaps.emitMapTypedefs(mutable emitter))
-  Str.append(mutable builder, emitTypeTypedefs(mutable emitter))
-  Str.append(mutable builder, Decls.emitHeapTypedefs(mutable emitter))
-  Str.append(mutable builder, Closures.emitFuncTypeDefinitions(mutable emitter))
-  Str.append(mutable builder, Decls.emitTypeDefinitions(mutable emitter))
-  Str.append(mutable builder, emitArrayStructs(mutable emitter))
-  Str.append(mutable builder, EmitMaps.emitMapStructs(mutable emitter))
-  Str.append(mutable builder, Decls.emitHeapDefinitions(mutable emitter))
+  Str.append(mutable builder, emitCommentTable(mutable emitter, used))
+  Str.append(mutable builder, emitArrayTypedefs(emitter, used))
+  Str.append(mutable builder, EmitMaps.emitMapTypedefs(emitter, used))
+  Str.append(mutable builder, emitTypeTypedefs(emitter, used))
+  Str.append(mutable builder, Decls.emitHeapTypedefs(emitter, used))
+  Str.append(mutable builder, Closures.emitFuncTypeDefinitions(emitter, used))
+  Str.append(mutable builder, Decls.emitTypeDefinitions(emitter, used))
+  Str.append(mutable builder, emitArrayStructs(emitter, used))
+  Str.append(mutable builder, EmitMaps.emitMapStructs(emitter, used))
+  Str.append(mutable builder, Decls.emitHeapDefinitions(emitter, used))
 
   // Reference counting.
   Str.append(mutable builder, "\n// Reference counting\n")
-  Str.append(mutable builder, Decls.emitBoxPrototypes(mutable emitter))
-  Str.append(mutable builder, EmitMaps.emitMapPrototypes(mutable emitter))
-  Str.append(mutable builder, Decls.emitRcFunctions(mutable emitter))
-  // The map functions call the key's eq and hash, so their text goes after the trait functions.
-  const mapFunctions = EmitMaps.emitMapFunctions(mutable emitter)
-
-  // Bodies first: the prototypes list only what the bodies reach.
-  const reachable = emitReachableBodies(mutable emitter)
-  const constantRelease = Consts.emitConstRelease(mutable emitter, reachable.constants)
+  Str.append(mutable builder, Decls.emitBoxPrototypes(emitter, reachable.helperTexts))
+  Str.append(mutable builder, EmitMaps.emitMapPrototypes(emitter, reachable.mapTexts))
+  Str.append(mutable builder, Decls.emitRcFunctions(emitter, reachable.helperTexts))
 
   // Constants and function prototypes.
   Str.append(mutable builder, "\n// Constants\n")
-  Str.append(mutable builder, Consts.emitConstPrototypes(mutable emitter, reachable.constants))
+  Str.append(mutable builder, constantPrototypes)
   Str.append(mutable builder, "\n// Functions\n")
-  Str.append(mutable builder, emitPrototypes(mutable emitter, reachable.functions))
+  Str.append(mutable builder, functionPrototypes)
 
   // String literals, then the text that depends on what the bodies used.
   Str.append(mutable builder, "\n// String literals\n")
   Str.append(mutable builder, Str.build(emitter.literals))
   Str.append(mutable builder, reachable.traitText)
-  Str.append(mutable builder, mapFunctions)
-  Str.append(mutable builder, Closures.emitClosureFunctions(mutable emitter))
+  // The map functions call the key's eq and hash, so their text goes after the trait functions.
+  Str.append(mutable builder, EmitMaps.emitMapFunctions(emitter, reachable.mapTexts))
+  Str.append(mutable builder, closureText)
   Str.append(mutable builder, "\n")
   // The body texts go straight into the C text, with no second copy.
   for (const text of Arrays.values(reachable.getterTexts)) {
     Str.append(mutable builder, text)
   }
-  Str.append(mutable builder, constantRelease)
+  Str.append(mutable builder, reachable.constantRelease)
   for (const text of Arrays.values(reachable.functionTexts)) {
     Str.append(mutable builder, text)
   }
@@ -115,7 +136,7 @@ export function emitProgram(
   if (tests) {
     Str.append(mutable builder, Options.emitTestMain(mutable emitter))
   } else {
-    Str.append(mutable builder, emitMain(mutable emitter))
+    Str.append(mutable builder, mainText)
   }
   return EmitResult { text: Str.build(builder), unsupported: emitter.unsupported }
 }
@@ -124,13 +145,26 @@ export function emitProgram(
 // functionTexts follow Checker.programFunctions; an unreached function has
 // false and "". constants lists the reached lazy constants (Checker.consts
 // indexes) in lazyConstants order, and getterTexts their getters.
+// helperTexts holds the reference counting functions the emitted code names,
+// by C name, and mapTexts the functions of each map type it names, by the
+// map's C name.
 export struct ReachableBodies {
   functions: Array<bool>
   functionTexts: Array<string>
   constants: Array<int>
   getterTexts: Array<string>
+  constantRelease: string
   testText: string
   traitText: string
+  helperTexts: Map<string, string>
+  mapTexts: Map<string, string>
+}
+
+// A map type with its C name, which comes from typeId so that listing the
+// maps does not mark them as named.
+struct MapCandidate {
+  name: string
+  type: Type
 }
 
 function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses alloc {
@@ -158,6 +192,23 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
     Arrays.push(mutable getterTexts, "")
   }
 
+  // The helpers and map functions that emitted code can name.
+  const helperSlots = Decls.indexHelpers(emitter)
+  let helperTexts: Map<string, string> = Map {}
+  let helperCursor = 0
+  let mapCandidates: Array<MapCandidate> = []
+  for (const entry of Maps.entries(checker.composites)) {
+    const #[_, composite] = entry
+    if (composite is Type.TMap(_, _)) {
+      Arrays.push(mutable mapCandidates, MapCandidate {
+        name: typeId(checker, composite),
+        type: composite,
+      })
+    }
+  }
+  const mapTemplate = EmitMaps.splitMapTemplate()
+  let mapTexts: Map<string, string> = Map {}
+
   // The roots: the test blocks, or the entry function that main calls.
   let testBodies = Str.builder()
   if (emitter.tests) {
@@ -171,14 +222,16 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
     noteReference(mutable emitter, entryName)
   }
 
-  // Emit each newly named declaration. The trait functions can name user
-  // implementations, so they are written again until those name no new body.
+  // Emit each newly named declaration, helper, map type and trait function
+  // until a round names nothing new. Trait functions can name user
+  // implementations, and map functions need the key's eq and hash.
   let cursor = 0
-  let traitText = ""
-  let traitsWritten = false
+  let constantRelease = ""
+  let firstRound = true
   let settled = false
   while (!settled) {
     let emittedBody = false
+    let emittedGetter = false
     while (cursor < Arrays.length(emitter.references)) {
       const name = emitter.references[cursor]
       cursor++
@@ -193,34 +246,155 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
           constantsReached[constantPosition] = true
           getterTexts[constantPosition] = Consts.emitGetter(mutable emitter, lazy[constantPosition])
           emittedBody = true
+          emittedGetter = true
         }
       }
     }
-    if (traitsWritten && !emittedBody) {
-      settled = true
-    } else {
-      traitText = Traits.emitTraitFunctions(mutable emitter)
-      traitsWritten = true
+    // The release function names the release helpers of the constants.
+    if (emittedGetter || firstRound) {
+      constantRelease = Consts.emitConstRelease(
+        mutable emitter,
+        collectReachedConstants(lazy, constantsReached),
+      )
+      firstRound = false
     }
+    let emittedHelper = false
+    while (helperCursor < Arrays.length(Cells.get(emitter.helpers).names)) {
+      const name = Cells.get(emitter.helpers).names[helperCursor]
+      helperCursor++
+      if (helperSlots[name] is Some(slot)) {
+        helperTexts[name] = Decls.emitHelper(emitter, slot)
+        emittedHelper = true
+      }
+    }
+    let emittedMap = false
+    if (Arrays.length(mapCandidates) > Maps.size(mapTexts)) {
+      const named = collectNamedTypes(emitter)
+      for (const candidate of Arrays.values(mapCandidates)) {
+        if (mapTexts[candidate.name] is None && named[candidate.name] is Some(_)) {
+          mapTexts[candidate.name] = EmitMaps.emitMapFunction(
+            mutable emitter,
+            mapTemplate,
+            candidate.type,
+          )
+          emittedMap = true
+        }
+      }
+    }
+    const emittedTraits = Traits.emitTraitFunctions(mutable emitter)
+    settled = !emittedBody && !emittedHelper && !emittedMap && !emittedTraits
   }
 
   // Keep the reached constants in their order.
-  let constants: Array<int> = []
   let reachedGetters: Array<string> = []
   for (const position of Ranges.between(0, Arrays.length(lazy))) {
     if (constantsReached[position]) {
-      Arrays.push(mutable constants, lazy[position])
       Arrays.push(mutable reachedGetters, getterTexts[position])
     }
   }
   return ReachableBodies {
     functions: functions,
     functionTexts: functionTexts,
-    constants: constants,
+    constants: collectReachedConstants(lazy, constantsReached),
     getterTexts: reachedGetters,
+    constantRelease: constantRelease,
     testText: Str.build(testBodies),
-    traitText: traitText,
+    traitText: Traits.buildTraitText(emitter),
+    helperTexts: helperTexts,
+    mapTexts: mapTexts,
   }
+}
+
+function collectReachedConstants(lazy: Array<int>, reached: Array<bool>): Array<int> uses alloc {
+  let constants: Array<int> = []
+  for (const position of Ranges.between(0, Arrays.length(lazy))) {
+    if (reached[position]) {
+      Arrays.push(mutable constants, lazy[position])
+    }
+  }
+  return constants
+}
+
+function collectNamedTypes(emitter: Emitter): Map<string, bool> uses alloc {
+  // The C names in the name cache: every type that emitted code has named.
+  let named: Map<string, bool> = Map {}
+  for (const entry of Maps.entries(Cells.get(emitter.typeNames))) {
+    const #[_, name] = entry
+    named[name] = true
+  }
+  return named
+}
+
+function collectUsedTypes(emitter: Emitter): Map<string, bool> uses alloc {
+  // The named types, closed over the types their C definitions hold.
+  let used = collectNamedTypes(emitter)
+  let pending: Array<Type> = []
+  for (const type of Arrays.values(emitter.checker.order)) {
+    Arrays.push(mutable pending, type)
+  }
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (!containsTypeParameter(emitter.checker, composite)) {
+      Arrays.push(mutable pending, composite)
+    }
+  }
+  // Each pass adds the parts of the used types; it stops when one adds none.
+  let changed = true
+  while (changed) {
+    changed = false
+    let waiting: Array<Type> = []
+    for (const type of Arrays.values(pending)) {
+      if (used[cachedTypeId(emitter.checker, emitter.typeNames, type)] is Some(_)) {
+        for (const part of Arrays.values(listTypeParts(emitter, type))) {
+          const partName = cachedTypeId(emitter.checker, emitter.typeNames, part)
+          if (used[partName] is None) {
+            used[partName] = true
+            changed = true
+          }
+        }
+      } else {
+        Arrays.push(mutable waiting, type)
+      }
+    }
+    pending = waiting
+  }
+  return used
+}
+
+function listTypeParts(emitter: Emitter, type: Type): Array<Type> uses alloc {
+  // The types a C definition holds, with distinct types replaced by their base.
+  let parts: Array<Type> = []
+  match (type) {
+    Type.TStruct(index) => {
+      for (const field of Arrays.values(emitter.checker.structs[index].fields)) {
+        Arrays.push(mutable parts, field.fieldType)
+      }
+    }
+    Type.TEnum(index) => {
+      for (const variant of Arrays.values(emitter.checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          Arrays.push(mutable parts, field.fieldType)
+        }
+      }
+    }
+    Type.TArray(element) | Type.TBox(element) => Arrays.push(mutable parts, element)
+    Type.TMap(key, valueType) => {
+      Arrays.push(mutable parts, key)
+      Arrays.push(mutable parts, valueType)
+    }
+    Type.TFunc(parameters, result, _, _, _) => {
+      for (const parameter of Arrays.values(parameters)) {
+        Arrays.push(mutable parts, parameter)
+      }
+      Arrays.push(mutable parts, result)
+    }
+    _ => {}
+  }
+  let bases: Array<Type> = []
+  for (const part of Arrays.values(parts)) {
+    Arrays.push(mutable bases, copy(underlyingType(emitter, part)))
+  }
+  return bases
 }
 
 function emitTestBodies(mutable emitter: Emitter, mutable bodies: StringBuilder) uses alloc {
@@ -334,27 +508,34 @@ function arrayName(emitter: Emitter, type: Type): string uses alloc {
   return substring(name, 0, Str.length(name) - 1)
 }
 
-function emitArrayTypedefs(mutable emitter: Emitter): string uses alloc {
+function emitArrayTypedefs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
     const name = arrayName(emitter, type)
-    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+    if (used[name] is Some(_)) {
+      Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+    }
   }
   return Str.build(builder)
 }
 
-function emitTypeTypedefs(mutable emitter: Emitter): string uses alloc {
+function emitTypeTypedefs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(emitter.checker.order)) {
     const name = cachedCType(emitter.checker, emitter.typeNames, type)
-    Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+    if (used[name] is Some(_)) {
+      Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
+    }
   }
   return Str.build(builder)
 }
 
-function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
+function emitArrayStructs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
+    if (used[arrayName(emitter, type)] is None) {
+      continue
+    }
     if (type is Type.TArray(element)) {
       Str.append(
         mutable builder,
@@ -365,23 +546,19 @@ function emitArrayStructs(mutable emitter: Emitter): string uses alloc {
   return Str.build(builder)
 }
 
-function emitCommentTable(mutable emitter: Emitter): string uses alloc {
+function emitCommentTable(mutable emitter: Emitter, used: Map<string, bool>): string uses alloc {
   let items: Array<SortItem> = []
   for (const type of Arrays.values(emitter.checker.order)) {
-    if (isInterned(emitter, type)) {
-      Arrays.push(mutable items, SortItem {
-        key: cachedTypeId(emitter.checker, emitter.typeNames, type),
-        type: type,
-      })
+    const key = cachedTypeId(emitter.checker, emitter.typeNames, type)
+    if (isInterned(emitter, type) && used[key] is Some(_)) {
+      Arrays.push(mutable items, SortItem { key: key, type: type })
     }
   }
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
-    if (!containsTypeParameter(emitter.checker, composite)) {
-      Arrays.push(mutable items, SortItem {
-        key: cachedTypeId(emitter.checker, emitter.typeNames, composite),
-        type: composite,
-      })
+    const key = cachedTypeId(emitter.checker, emitter.typeNames, composite)
+    if (!containsTypeParameter(emitter.checker, composite) && used[key] is Some(_)) {
+      Arrays.push(mutable items, SortItem { key: key, type: composite })
     }
   }
   // The table names C types, which do not carry effects.
@@ -411,17 +588,16 @@ function emitMain(mutable emitter: Emitter): string uses alloc {
     emitter.typeNames,
     ProgramFunc.PlainFunc(emitter.entry),
   )
+  const newHelper = useHelper(emitter, arrayType, "new")
+  const releaseHelper = useHelper(emitter, arrayType, "release")
   let builder = Str.builder()
   Str.append(mutable builder, "\nint main(int argc, char** argv) {\n  NARRA_COPY_START();\n")
-  Str.append(mutable builder, `  ${arrayType}* args = ${arrayType}_new(argc);\n`)
+  Str.append(mutable builder, `  ${arrayType}* args = ${newHelper}(argc);\n`)
   Str.append(
     mutable builder,
     "  for (int i = 0; i < argc; i++) {\n    args->items[args->len++] = lstr_from_cstr(argv[i]);\n  }\n",
   )
-  Str.append(
-    mutable builder,
-    `  int64_t code = ${entryName}(args);\n  ${arrayType}_release(args);\n`,
-  )
+  Str.append(mutable builder, `  int64_t code = ${entryName}(args);\n  ${releaseHelper}(args);\n`)
   Str.append(
     mutable builder,
     "  fflush(stdout);\n  narra_consts_release();\n  NARRA_COPY_REPORT();\n  narra_report_leaks();\n  return (int)code;\n}\n",

@@ -3,9 +3,17 @@
 // The owner is selfhost-emit-std.
 import { Pos, Expr, Arg } from "narrac/ast"
 import { Ref } from "narrac/check"
-import { Emitter, Code, EmitWalker, reportUnsupported, readNodeRef } from "narrac/emitstate"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  readNodeRef,
+  noteHelper,
+} from "narrac/emitstate"
 import { NODE, plain } from "narrac/stdemithelp"
 import * as Str from "std/string"
+import * as Arrays from "std/array"
 import { emitIntCall } from "narrac/stdint"
 import { emitSizedCall, isSizedName } from "narrac/stdsized"
 import { emitF32Call, isF32Name } from "narrac/stdf32"
@@ -43,6 +51,11 @@ function emitNamedCall<W: EmitWalker>(
   pos: Pos,
   arguments: Array<Arg>,
 ): Code uses alloc {
+  // The C runtime section of the module stays in the program.
+  const runtimeModule = findRuntimeModule(name)
+  if (runtimeModule != "") {
+    noteHelper(emitter, runtimeModule)
+  }
   // A call goes to the module its name starts with (Str.slice goes to
   // stdstring). A new std module adds one case here.
   if (isF32Name(name)) {
@@ -104,4 +117,31 @@ function emitNamedCall<W: EmitWalker>(
   }
   // An unknown name is a compiler bug, not a missing feature.
   return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}
+
+const RUNTIME_PREFIXES = [
+  #["Str.", "std/string"],
+  #["Int.", "std/int"],
+  #["Env.", "std/env"],
+  #["Fs.", "std/fs"],
+  #["Io.", "std/io"],
+  #["Process.", "std/process"],
+  #["Bytes.", "std/bytes"],
+  #["Path.", "std/path"],
+  #["Clock.", "std/internal/clock"],
+  #["Entropy.", "std/internal/entropy"],
+]
+
+function findRuntimeModule(name: string): string uses alloc {
+  // Sized integers parse with the std/int runtime.
+  if (isSizedName(name)) {
+    return "std/int"
+  }
+  for (const entry of Arrays.values(RUNTIME_PREFIXES)) {
+    const #[prefix, module] = entry
+    if (Str.startsWith(name, prefix)) {
+      return module
+    }
+  }
+  return ""
 }

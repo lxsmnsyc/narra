@@ -69,9 +69,17 @@ export struct TraitNeed {
   name: string
 }
 
+// The helper functions and std runtime sections the emitted code names, in
+// note order. A cell, so code that holds the Emitter read-only can note.
+export struct HelperNotes {
+  seen: Map<string, bool>
+  names: Array<string>
+}
+
 export struct Emitter {
   checker: Checker
   typeNames: Cells.Cell<Map<string, string>>
+  helpers: Cells.Cell<HelperNotes>
   entry: int
   tests: bool
   file: string
@@ -87,6 +95,10 @@ export struct Emitter {
   scopes: Array<ScopeFrame>
   loopFrames: Array<int>
   traitNeeds: Array<TraitNeed>
+  // The prototype and definition of each trait function written so far,
+  // parallel to the start of traitNeeds.
+  traitPrototypes: Array<string> = []
+  traitDefinitions: Array<string> = []
   traitSeen: Map<string, bool>
   closureCounts: Map<string, int>
   thunks: Map<string, bool>
@@ -174,6 +186,7 @@ export function newEmitter(
   return Emitter {
     checker: checker,
     typeNames: Cells.create(Map {}),
+    helpers: Cells.create(HelperNotes { seen: Map {}, names: [] }),
     entry: entry,
     tests: tests,
     file: "",
@@ -204,6 +217,28 @@ export function newEmitter(
 
 export function noteReference(mutable emitter: Emitter, name: string) uses alloc {
   Arrays.push(mutable emitter.references, name)
+}
+
+export function noteHelper(emitter: Emitter, name: string) uses alloc {
+  if (Cells.get(emitter.helpers).seen[name] is Some(_)) {
+    return
+  }
+  // Take the notes out of the cell, so the write does not copy them.
+  let notes = copy(Cells.get(emitter.helpers))
+  Cells.set(emitter.helpers, HelperNotes { seen: Map {}, names: [] })
+  notes.seen[name] = true
+  Arrays.push(mutable notes.names, name)
+  Cells.set(emitter.helpers, notes)
+}
+
+export function useHelper(
+  emitter: Emitter,
+  container: string,
+  operation: string,
+): string uses alloc {
+  const name = `${container}_${operation}`
+  noteHelper(emitter, name)
+  return name
 }
 
 export function reportUnsupported(
@@ -441,10 +476,15 @@ function refCountCode(
   const base = underlyingType(emitter, type)
   return match (base) {
     Type.TStr | Type.TBytes => `lstr_${operation}(${value});`
-    Type.TStringBuilder => `narra_sb_${operation}(${value});`
-    Type.TArray(_)
-      | Type.TBox(_)
-      | Type.TMap(_, _) => `${containerName(emitter, base)}_${operation}(${value});`
+    Type.TStringBuilder => {
+      noteHelper(emitter, "std/string")
+      return `narra_sb_${operation}(${value});`
+    }
+    Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => {
+      const name = `${containerName(emitter, base)}_${operation}`
+      noteHelper(emitter, name)
+      return `${name}(${value});`
+    }
     Type.TFunc(_, _, _, _, _) => `narra_env_${operation}((${value}).env);`
     Type.TGenerator(_, _, _, _, _) => `narra_gen_${operation}(${value});`
     Type.TStruct(_) | Type.TEnum(_) => structOrEnumCode(emitter, operation, base, value)
@@ -462,6 +502,7 @@ function structOrEnumCode(
     return ""
   }
   const name = opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, base))
+  noteHelper(emitter, name)
   // A large value is passed by pointer, as to any function.
   if (isPassedByPointer(emitter.checker, base)) {
     return `${name}(&(${value}));`

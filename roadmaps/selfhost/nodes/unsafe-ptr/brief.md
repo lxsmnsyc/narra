@@ -1,7 +1,7 @@
 ---
 id: unsafe-ptr
 title: "Unsafe code: unsafe blocks, Ptr<T> and @trusted"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 581821
 owns:
   - roadmaps/selfhost/nodes/unsafe-ptr/**
   - selfhost/src/unsafecode.nra

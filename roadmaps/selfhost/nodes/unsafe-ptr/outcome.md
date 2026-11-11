@@ -69,3 +69,5 @@ Fixes from the fresh review (second commit):
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-8 as 90204ffc.

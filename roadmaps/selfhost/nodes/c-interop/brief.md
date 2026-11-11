@@ -1,7 +1,7 @@
 ---
 id: c-interop
 title: "C interop: extern blocks, CString and linking"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-8

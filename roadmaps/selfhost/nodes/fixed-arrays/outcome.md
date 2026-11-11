@@ -68,3 +68,5 @@ Each is an error sample unless marked accepted:
 ## Size
 
 - Estimated M, actual M to L: the type touches about 25 files, most with one case.
+
+Landed on feat/batch-8 as c455b865 (fix: narrowing ends for names assigned in the rest of a condition, a bug on main) and d5752cf1 (the feature).

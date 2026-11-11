@@ -87,7 +87,13 @@ import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
-import { splitIntLiteral, narrowByCondition, checkDivisor, checkShiftCount } from "narrac/operands"
+import {
+  splitIntLiteral,
+  narrowByCondition,
+  checkDivisor,
+  checkShiftCount,
+  collectAssignedInExpr,
+} from "narrac/operands"
 import { buildConstantHint } from "narrac/stdcopy"
 import { canShareType } from "narrac/stdcopy"
 import {
@@ -2960,138 +2966,4 @@ function allConstant(checker: Checker, elements: Array<Expr>): bool {
     }
   }
   return true
-}
-
-export function findRootName(expression: Expr): string {
-  return match (expression) {
-    Expr.Ident(_, _, name) => name
-    Expr.FieldExpr(_, _, target, _) | Expr.IndexExpr(_, _, target, _) => findRootName(target)
-    _ => ""
-  }
-}
-
-export function collectAssignedInBlock(block: Block, mutable names: Array<string>) uses alloc {
-  for (const statement of Arrays.values(block.statements)) {
-    collectAssignedInStatement(statement, mutable names)
-  }
-}
-
-export function collectAssignedInStatement(
-  statement: Stmt,
-  mutable names: Array<string>,
-) uses alloc {
-  match (statement) {
-    Stmt.BlockStmt(block) => collectAssignedInBlock(block, mutable names)
-    Stmt.VarStmt(_, _, _, _, _, _, value) => collectAssignedInExpr(value, mutable names)
-    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
-      Arrays.push(mutable names, findRootName(target))
-      collectAssignedInExpr(target, mutable names)
-      collectAssignedInExpr(value, mutable names)
-    }
-    Stmt.ExprStmt(_, expression) => collectAssignedInExpr(expression, mutable names)
-    Stmt.ReturnStmt(_, value) => {
-      if (value is Some(returned)) {
-        collectAssignedInExpr(returned, mutable names)
-      }
-    }
-    Stmt.IfStmt(_, condition, then, orElse) => {
-      collectAssignedInExpr(condition, mutable names)
-      collectAssignedInBlock(then, mutable names)
-      if (orElse is Some(other)) {
-        collectAssignedInStatement(other, mutable names)
-      }
-    }
-    Stmt.WhileStmt(_, _, condition, body) => {
-      collectAssignedInExpr(condition, mutable names)
-      collectAssignedInBlock(body, mutable names)
-    }
-    Stmt.CForStmt(_, _, init, condition, step, body) => {
-      if (init is Some(declaration)) {
-        collectAssignedInStatement(declaration, mutable names)
-      }
-      if (condition is Some(loopCondition)) {
-        collectAssignedInExpr(loopCondition, mutable names)
-      }
-      if (step is Some(stepStatement)) {
-        collectAssignedInStatement(stepStatement, mutable names)
-      }
-      collectAssignedInBlock(body, mutable names)
-    }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
-      collectAssignedInExpr(iterable, mutable names)
-      collectAssignedInBlock(body, mutable names)
-    }
-    Stmt.YieldStmt(_, value, _, _) => collectAssignedInExpr(value, mutable names)
-    _ => {}
-  }
-}
-
-function collectAssignedInExprs(expressions: Array<Expr>, mutable names: Array<string>) uses alloc {
-  for (const expression of Arrays.values(expressions)) {
-    collectAssignedInExpr(expression, mutable names)
-  }
-}
-
-export function collectAssignedInExpr(expression: Expr, mutable names: Array<string>) uses alloc {
-  match (expression) {
-    Expr.TemplateLit(_, _, parts) => collectAssignedInExprs(parts, mutable names)
-    Expr.FieldExpr(_, _, target, _) => collectAssignedInExpr(target, mutable names)
-    Expr.IsExpr(_, _, subject, _) => collectAssignedInExpr(subject, mutable names)
-    Expr.IndexExpr(_, _, target, index) => {
-      collectAssignedInExpr(target, mutable names)
-      collectAssignedInExpr(index, mutable names)
-    }
-    Expr.MapLit(_, _, _, keys, values) => {
-      collectAssignedInExprs(keys, mutable names)
-      collectAssignedInExprs(values, mutable names)
-    }
-    Expr.UnaryExpr(_, _, _, operand) => collectAssignedInExpr(operand, mutable names)
-    Expr.BinaryExpr(_, _, _, left, right) => {
-      collectAssignedInExpr(left, mutable names)
-      collectAssignedInExpr(right, mutable names)
-    }
-    Expr.StructLit(_, _, _, _, fields, spread) => {
-      for (const field of Arrays.values(fields)) {
-        collectAssignedInExpr(field.value, mutable names)
-      }
-      if (spread is Some(source)) {
-        collectAssignedInExpr(source, mutable names)
-      }
-    }
-    Expr.ArrayLit(_, _, elements, _) => collectAssignedInExprs(elements, mutable names)
-    Expr.BlockExpr(_, _, block) => collectAssignedInBlock(block, mutable names)
-    Expr.ArrowExpr(_, _, _, _, bodyExpr, block) => {
-      // A closure passed to a call may assign what it captures.
-      if (bodyExpr is Some(arrowBody)) {
-        collectAssignedInExpr(arrowBody, mutable names)
-      }
-      if (block is Some(arrowBlock)) {
-        collectAssignedInBlock(arrowBlock, mutable names)
-      }
-    }
-    Expr.MatchExpr(_, _, subject, arms) => {
-      collectAssignedInExpr(subject, mutable names)
-      for (const arm of Arrays.values(arms)) {
-        if (arm.guard is Some(guard)) {
-          collectAssignedInExpr(guard, mutable names)
-        }
-        if (arm.body is Some(armBody)) {
-          collectAssignedInExpr(armBody, mutable names)
-        }
-        if (arm.block is Some(armBlock)) {
-          collectAssignedInBlock(armBlock, mutable names)
-        }
-      }
-    }
-    Expr.CallExpr(_, _, callee, _, arguments) => {
-      collectAssignedInExpr(callee, mutable names)
-      for (const argument of Arrays.values(arguments)) {
-        if (argument.isMutable) {
-          Arrays.push(mutable names, findRootName(argument.value))
-        }
-        collectAssignedInExpr(argument.value, mutable names)
-      }
-    }
-    _ => {}
-  }
 }

@@ -1,7 +1,7 @@
 ---
 id: ptr-cast
 title: "Ptr.cast and Ptr.element in std/ptr"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-9
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 482000
 owns:
   - roadmaps/selfhost/nodes/ptr-cast/**
   - selfhost/src/stdptr.nra

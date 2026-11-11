@@ -36,6 +36,7 @@ import {
 import { RUNTIME_H } from "narrac/runtimecore"
 import { runtimeFor } from "narrac/runtimetext"
 import * as Decls from "narrac/emitdecls"
+import * as Externs from "narrac/emitexterns"
 import * as EmitMaps from "narrac/emitmaps"
 import * as Maps from "std/map"
 import * as Closures from "narrac/emitclosures"
@@ -48,9 +49,11 @@ import * as Cells from "std/cell"
 
 // The result of emitting a program: the C text, which has a marker line for
 // each unsupported construct, and the distinct constructs in first-seen order.
+// libraries are the C libraries of the extern blocks that reached code calls.
 export struct EmitResult {
   text: string
   unsupported: Array<string>
+  libraries: Array<string> = []
 }
 
 export function emitProgram(
@@ -138,7 +141,11 @@ export function emitProgram(
   } else {
     Str.append(mutable builder, mainText)
   }
-  return EmitResult { text: Str.build(builder), unsupported: emitter.unsupported }
+  return EmitResult {
+    text: Str.build(builder),
+    unsupported: emitter.unsupported,
+    libraries: Externs.collectLibraries(checker, reachable.functions),
+  }
 }
 
 // The declarations a program reaches and their emitted text. functions and
@@ -236,9 +243,12 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
       const name = emitter.references[cursor]
       cursor++
       if (functionPositions[name] is Some(position)) {
+        // A C function of an extern block has a prototype and no body.
         if (!functions[position]) {
           functions[position] = true
-          functionTexts[position] = Consts.emitFunction(mutable emitter, programs[position])
+          if (!Externs.isExternProgram(checker, programs[position])) {
+            functionTexts[position] = Consts.emitFunction(mutable emitter, programs[position])
+          }
           emittedBody = true
         }
       } else if (constantPositions[name] is Some(constantPosition)) {
@@ -424,13 +434,14 @@ function emitPrototypes(mutable emitter: Emitter, reached: Array<bool>): string 
   let builder = Str.builder()
   const programs = emitter.checker.programFunctions
   for (const position of Ranges.between(0, Arrays.length(programs))) {
-    if (reached[position]) {
+    if (reached[position] && !Externs.isExternProgram(emitter.checker, programs[position])) {
       Str.append(
         mutable builder,
         `${functionSignature(emitter.checker, emitter.typeNames, programs[position])};\n`,
       )
     }
   }
+  Str.append(mutable builder, Externs.emitExternPrototypes(emitter, reached))
   return Str.build(builder)
 }
 

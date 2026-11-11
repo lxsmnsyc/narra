@@ -523,12 +523,20 @@ function isDiagnosticBefore(left: Diagnostic, right: Diagnostic): bool {
   return left.column < right.column
 }
 
+// The C text of a program, the libraries its reached extern blocks name, and the
+// `[link] search` directories of its package.
+struct CompiledProgram {
+  text: string
+  libraries: Array<string>
+  search: Array<string>
+}
+
 function compileToC(
   path: string,
   binaryName: string,
   tests: bool,
   release: bool,
-): Result<string, string> uses io, alloc {
+): Result<CompiledProgram, string> uses io, alloc {
   const checked = loadAndCheck(path, release)
   if (checked is Err(diagnostics)) {
     return Err(formatDiagnostics(diagnostics))
@@ -552,7 +560,24 @@ function compileToC(
     }
     return Err(Str.join(lines, "\n"))
   }
-  return Ok(result.text)
+  return Ok(CompiledProgram {
+    text: result.text,
+    libraries: result.libraries,
+    search: findSearchDirectories(package),
+  })
+}
+
+function findSearchDirectories(package: Package): Array<string> uses alloc {
+  // A relative directory is relative to the package, not to where narrac runs.
+  let directories: Array<string> = []
+  for (const directory of Arrays.values(package.search)) {
+    if (Str.startsWith(directory, "/")) {
+      Arrays.push(mutable directories, directory)
+    } else {
+      Arrays.push(mutable directories, Path.join(package.directory, directory))
+    }
+  }
+  return directories
 }
 
 // --- the C compiler ---------------------------------------------------------
@@ -584,6 +609,7 @@ function cCompilerArguments(
   options: DriverOptions,
   cPath: string,
   output: string,
+  compiled: CompiledProgram,
 ): Array<string> uses alloc {
   let arguments: Array<string> = []
   if (options.release) {
@@ -601,7 +627,16 @@ function cCompilerArguments(
   }
   Arrays.push(mutable arguments, "-o")
   Arrays.push(mutable arguments, output)
+  for (const directory of Arrays.values(compiled.search)) {
+    Arrays.push(mutable arguments, `-L${directory}`)
+  }
   Arrays.push(mutable arguments, cPath)
+  // The libraries go after the C file that uses them; libm is always linked.
+  for (const library of Arrays.values(compiled.libraries)) {
+    if (library != "m") {
+      Arrays.push(mutable arguments, `-l${library}`)
+    }
+  }
   Arrays.push(mutable arguments, "-lm")
   return arguments
 }
@@ -625,12 +660,15 @@ function buildExecutable(
   if (options.emitC != "") {
     cPath = options.emitC
   }
-  const written = Fs.writeText(cPath, compiled.value)
+  const written = Fs.writeText(cPath, compiled.value.text)
   if (written is Err(message)) {
     removeTempDirectory(directory.value, options.emitC == "")
     return Err(message)
   }
-  const ran = Process.run(cCompilerName(), cCompilerArguments(options, cPath, output))
+  const ran = Process.run(
+    cCompilerName(),
+    cCompilerArguments(options, cPath, output, compiled.value),
+  )
   removeTempDirectory(directory.value, options.emitC == "")
   if (ran is Err(message)) {
     return Err(message)

@@ -1,0 +1,90 @@
+// The emitters of extern blocks and std/internal/cstring. A C function of an
+// extern block keeps its generated C name, so calls and function values are
+// written like any call; its prototype binds that name to the C symbol with an
+// assembler label, so it never clashes with a header that declares the same
+// function with other C types. The checks are in externs.nra.
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Type } from "narrac/types"
+import { Arg } from "narrac/ast"
+import { Checker, ProgramFunc } from "narrac/check"
+import { functionSignature } from "narrac/cnames"
+import { Emitter, Code, EmitWalker, reportUnsupported, ownedTemp } from "narrac/emitstate"
+import { NODE, plain, owned, argumentText } from "narrac/stdemithelp"
+import { findExternBlock, findExternName } from "narrac/externs"
+
+// The C symbol of a name: macOS puts `_` in front of every symbol, Linux nothing.
+const SYMBOL_MACROS = "#define NARRA_C_STRING_(x) #x\n#define NARRA_C_STRING(x) NARRA_C_STRING_(x)\n#define NARRA_C_SYMBOL(name) NARRA_C_STRING(__USER_LABEL_PREFIX__) name\n"
+
+const STATIC_PREFIX = "static "
+
+export function isExternProgram(checker: Checker, program: ProgramFunc): bool {
+  return findExternBlock(checker, program) is Some(_)
+}
+
+export function emitExternPrototypes(emitter: Emitter, reached: Array<bool>): string uses alloc {
+  // The prototypes of the reached C functions, after the macros they use.
+  let builder = Str.builder()
+  const programs = emitter.checker.programFunctions
+  for (const position of Ranges.between(0, Arrays.length(programs))) {
+    const program = programs[position]
+    if (!reached[position] || !isExternProgram(emitter.checker, program)) {
+      continue
+    }
+    if (program is ProgramFunc.PlainFunc(funcIndex)) {
+      const symbol = findExternName(emitter.checker.functions[funcIndex].declaration)
+      // The prototype is the function's signature with `extern` for `static`.
+      let signature = functionSignature(emitter.checker, emitter.typeNames, program)
+      if (Str.startsWith(signature, STATIC_PREFIX)) {
+        signature = Str.sliceFrom(signature, Str.length(STATIC_PREFIX))
+      }
+      Str.append(mutable builder, `extern ${signature} __asm__(NARRA_C_SYMBOL("${symbol}"));\n`)
+    }
+  }
+  const text = Str.build(builder)
+  if (text == "") {
+    return ""
+  }
+  return `${SYMBOL_MACROS}${text}`
+}
+
+export function collectLibraries(checker: Checker, reached: Array<bool>): Array<string> uses alloc {
+  // The libraries of the blocks whose functions the program reaches, in program
+  // order; libc ("c") needs no -l.
+  let libraries: Array<string> = []
+  const programs = checker.programFunctions
+  for (const position of Ranges.between(0, Arrays.length(programs))) {
+    if (!reached[position]) {
+      continue
+    }
+    if (findExternBlock(checker, programs[position]) is Some(block)) {
+      let known = block.library == "c"
+      for (const library of Arrays.values(libraries)) {
+        known = known || library == block.library
+      }
+      if (!known) {
+        Arrays.push(mutable libraries, block.library)
+      }
+    }
+  }
+  return libraries
+}
+
+export function emitCStringCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "CText.pointer") {
+    return plain(`((uint8_t*)(${argumentText(walker, mutable emitter, arguments, 0)})->data)`)
+  }
+  if (name == "CText.read") {
+    const pointer = argumentText(walker, mutable emitter, arguments, 0)
+    return owned(
+      ownedTemp(mutable emitter, Type.TBytes, `lstr_from_cstr((const char*)(${pointer}))`),
+    )
+  }
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

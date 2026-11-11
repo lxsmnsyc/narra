@@ -308,7 +308,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -1536,7 +1536,37 @@ function sumSquares(count: int): int uses alloc {
 }
 ```
 
-- **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
+- **`extern { ... } from "library"`** declares C functions, like an import names a module. The block stands at the top level and holds one or more function signatures, each on its own line, with no type parameters, no `uses` and no body (E1000). `from` names the library as `cc` takes it after `-l` (letters, digits, `_`, `.`, `+` and `-`, not starting with `-`): `"m"` for libm, `"z"` for zlib; `"c"` is libc and needs no `-l`. A member may be written `export`, and is then called from other modules like any exported function.
+
+```ts
+import * as Float from "std/float"
+
+extern {
+  @extern("abs")
+  function absolute(value: i32): i32
+} from "c"
+
+extern {
+  function cbrt(value: f64): f64
+} from "m"
+
+@trusted
+export function cubeRootOfMagnitude(value: i32): f64 {
+  let result = 0.0
+  unsafe {
+    result = cbrt(Float.from(absolute(value)))
+  }
+  return result
+}
+```
+
+- **Every member has the `unsafe` effect**, so all the rules above apply: a call needs an `unsafe` block (E0996) or a `@trusted` wrapper, a private function that calls one inside a block gets the effect, a generator whose body calls one needs a block where it runs, an implementation may call one only when its trait function declares `uses unsafe`, and a function value of a member has the type `(...) => T uses unsafe`. A member's parameters are never "unused".
+- **Types.** Parameters and results are the number types, `bool` and `Ptr<T>`, and a member may return nothing (E1002). In C, `int` is `int64_t`, the sized integers are `int8_t` to `uint64_t`, `f64` is `double`, `f32` is `float`, `bool` is `bool` and `Ptr<T>` is `T*`. So C's `long` is `int` on both supported platforms, C's `int` is `i32`, `size_t` is `u64`, and `char*`, `const char*` and `void*` are `Ptr<u8>`. Nothing checks that the Narra signature matches the C function: a wrong one is undefined behavior, which is why a call is unsafe. A `mutable` parameter is E1002. A C function that returns `int` as a truth value (`isalpha` and the other `ctype.h` predicates) is declared with `i32`, not `bool`: a `bool` result reads only the low byte, and glibc returns values such as 1024.
+- **Variadic C functions cannot be declared.** There is no syntax for `...`, and a fixed prototype for one (`printf(format: Ptr<u8>, value: int): i32`) is undefined behavior: variadic arguments are passed differently from fixed ones on some platforms (macOS arm64 puts them on the stack), so the C function reads garbage. Call them through a C-side wrapper with a fixed signature, which waits for C-callable functions and C sources in a package (node c-abi-export).
+- **C names.** A member links to the C function with its own name, or with the name `@extern("name")` gives (the only attribute a member takes, written on the line before it). The C name must be a C identifier and must not be one the compiler writes (E1001): `main`, a name starting with `narra_` or `lstr_`, a string literal name (`L` and digits), a name with a module hash (`f_3fa9c1e7_show`), or the generated name of a function or type of the program, alone, followed by `_` and more, or after a word and `_` (the reference counting and trait helpers, such as `release_E_Option_e088c655` and `eq_S_Tuple2_…`). `@extern` on a function with a body is E1000 for now; C-callable Narra functions are step 2 below.
+- **How a member's C prototype is written.** The C code keeps calling the member by its generated, hashed name, and declares it once as `extern <result> <generated name>(<parameters>) __asm__("<symbol>")`, with the C types above and the C name as the symbol (with the platform's symbol prefix, `_` on macOS). Because the C identifier is not the C name, the prototype never meets a declaration of the same function in the headers the runtime includes (`string.h`, `stdlib.h`, `math.h` and others): declaring `strlen` with `Ptr<u8>` and `u64` while `string.h` declares `size_t strlen(const char*)`, or `sqrt` twice, compiles with no conflict, and both declarations name the same symbol. Only the prototypes of reached members are written.
+- **Linking.** `narrac build` and `narrac run` pass `-l<library>` to `cc` for every library whose block has a member that reached code calls (tree shaking, section 11), after the C file and in declaration order; `-lm` is always passed. A block whose members are never reached, for example because they are called only in a branch a build condition drops, links nothing, so its library need not exist on that target. `[link] search` in `narra.toml` adds `-L<directory>` (section 15).
+- **Memory from C.** Memory a C function allocates goes back through the C library's own function (an extern `free`), never through `Ptr.free`, which frees only what `Ptr.alloc` returned.
 - **Not built yet** (C interop step 2, node c-abi-export): `@layout(C)`, `@layout(u8)` and C-callable functions, written below under their earlier names.
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Red = 1` in an enum without `@repr` is a compile error whose fix adds `@repr(i32)` (D73). `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
@@ -1551,8 +1581,7 @@ export enum Color {
 ```
 
 - **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
-- **C strings.** `std/ffi` provides `CString`. `CString.from(s)` copies a string with a terminating zero byte, and `CString.toString(p)` copies back and returns `Result` on invalid UTF-8.
-- **Linking.** A `[link]` table in `narra.toml` lists C libraries and search paths (section 15).
+- **C strings.** `std/cstring` provides `CString`, a string with no zero byte, written with `import * as CStrings from "std/cstring"` and `import { CString } from "std/cstring"`. `CStrings.from(text): Option<CString>` is `None` when the text holds a zero byte. `CStrings.pointer(value): Ptr<u8>` is the address of its zero-terminated bytes for a C function that takes `const char*`; it is valid while the CString is alive and must not be written through. `CStrings.toString(value): string` gives the text back, and `CStrings.read(pointer): Result<string, string>` (`uses alloc, unsafe`) copies a zero-terminated string a C function returned, with `Err` for invalid UTF-8.
 - `narra audit` lists every `unsafe` block and `@trusted` function in a package.
 
 ## 10. Top-level declarations
@@ -1660,11 +1689,13 @@ export function opener(): string {
   So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
 - **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
-- The C interop form, `@target` on an `extern` function so that a C function is linked only when building for its target, waits for C interop:
+- The C interop form, `@target` before an `extern { } from` block so that its C functions exist and its library is linked only when building for its target, waits for node c-audit-target. It applies to every member of the block, since a block names one library:
 
 ```ts
 @target(os = Os.Windows)
-extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
+extern {
+  function GetTickCount64(): u64
+} from "kernel32"
 ```
 
 - There are no per-platform file names and no preprocessor.
@@ -1835,7 +1866,6 @@ name = "app"
 entry = "app/cli.run"
 
 [link]
-libraries = ["sqlite3"]
 search = ["/opt/homebrew/lib"]
 
 [build]
@@ -1844,7 +1874,7 @@ generics = "compact"    # optional: layout tables everywhere, for smaller binari
 
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect, and it is not `async`.
-- **`[link]`** lists C libraries to link and directories to search.
+- **`[link]`** has one key, `search`: directories `cc` searches for libraries (`-L`), relative to the package directory unless absolute. The libraries come from the `from` of extern blocks (section 9); any other key in `[link]` is E1000.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
 - **`narra.lock`** records the commit hash and content hash of every dependency. `narra build` fails when a fetched dependency does not match its hash.

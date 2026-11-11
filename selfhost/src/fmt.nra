@@ -40,6 +40,7 @@ import {
   TypeExpr,
   Param,
   FuncDecl,
+  ExternBlock,
   Attribute,
   ConstDecl,
   FieldDecl,
@@ -491,13 +492,36 @@ function printFile(printer: Printer, file: File): Doc from printer uses alloc {
     Arrays.push(mutable keys, key)
     Arrays.push(mutable documents, withComments(printer, key, printImport(printer, importDecl)))
   }
-  for (const declaration of Arrays.values(file.declarations)) {
+  let index = 0
+  const count = Arrays.length(file.declarations)
+  while (index < count) {
+    const declaration = file.declarations[index]
+    // The members of an extern block follow each other and print as one block.
+    if (declaration is Decl.Func(funcDecl)) {
+      if (funcDecl.externBlock is Some(block)) {
+        let members: Array<FuncDecl> = []
+        while (index < count && isMemberOf(file.declarations[index], block)) {
+          if (file.declarations[index] is Decl.Func(member)) {
+            Arrays.push(mutable members, member)
+          }
+          index++
+        }
+        const blockKey = getPosKey("x", block.pos)
+        Arrays.push(mutable keys, blockKey)
+        Arrays.push(
+          mutable documents,
+          withComments(printer, blockKey, printExternBlock(printer, block, members)),
+        )
+        continue
+      }
+    }
     const key = getPosKey("d", getDeclPos(declaration))
     Arrays.push(mutable keys, key)
     Arrays.push(
       mutable documents,
       withComments(printer, key, printDeclaration(printer, declaration)),
     )
+    index++
   }
   if (Arrays.length(documents) == 0) {
     if (hasDangling(printer, "file")) {
@@ -506,6 +530,32 @@ function printFile(printer: Printer, file: File): Doc from printer uses alloc {
     return empty()
   }
   return Docs.concat([joinItems(printer, keys, documents), Doc.HardLine])
+}
+
+function isMemberOf(declaration: Decl, block: ExternBlock): bool {
+  if (declaration is Decl.Func(funcDecl)) {
+    if (funcDecl.externBlock is Some(found)) {
+      return found.pos == block.pos
+    }
+  }
+  return false
+}
+
+function printExternBlock(
+  printer: Printer,
+  block: ExternBlock,
+  members: Array<FuncDecl>,
+): Doc from printer uses alloc {
+  // A member's unsafe effect is implied by the block, so it is not written.
+  let written: Array<FuncDecl> = []
+  for (const member of Arrays.values(members)) {
+    Arrays.push(mutable written, FuncDecl { ...member, effects: [] })
+  }
+  return Docs.concat([
+    text("extern "),
+    printMembers(printer, getPosKey("x", block.pos), written),
+    text(` from ${quoteString(block.library)}`),
+  ])
 }
 
 function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
@@ -585,7 +635,11 @@ function printAttribute(printer: Printer, attribute: Attribute): Doc uses alloc 
   if (attribute.hasParentheses) {
     let names: Array<string> = []
     for (const argument of Arrays.values(attribute.arguments)) {
-      Arrays.push(mutable names, `${argument.name} = ${argument.typeName}.${argument.variant}`)
+      if (argument.text is Some(argumentText)) {
+        Arrays.push(mutable names, quoteString(argumentText))
+      } else {
+        Arrays.push(mutable names, `${argument.name} = ${argument.typeName}.${argument.variant}`)
+      }
     }
     written = `${written}(${Str.join(names, ", ")})`
   }

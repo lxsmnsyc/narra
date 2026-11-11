@@ -1076,6 +1076,16 @@ Fixed arrays (batch-8, node fixed-arrays, 2026-11-11). Amendments from the build
 - **Literals give every element**, and only an expected `FixedArray` type makes one; a literal argument does not tell a generic call its length (write `sum<2>(...)`), and a generic body with an open `N` cannot build one.
 - **`FixedArrays.get` and `FixedArrays.length`** live in `std/fixedarray`, written in Narra; `get` proves its own index per instance.
 
+C interop blocks (batch-8, node c-interop, 2026-11-11), C interop step 1 part 2. Amendments from the build:
+
+- **Members are signatures only.** No type parameters, no `uses` (the effect is always `unsafe`), no body, one per line; `@extern("name")` is the only attribute a member takes. A member may be `export`. An empty block is an error.
+- **Types are numbers, `bool` and `Ptr<T>`** (E1002), and a member may return nothing. `mutable` parameters are rejected.
+- **C prototypes use assembler labels.** The C code calls a member by its generated name and declares it `extern T name(...) __asm__("symbol")`, so a header declaring the same function with other C types (`size_t strlen(const char*)` against `strlen(text: Ptr<u8>): u64`) never conflicts. `__asm__` labels are a GNU extension that clang and gcc both accept under `-std=c11`.
+- **Reserved C names** (E1001): `main`, `narra_` and `lstr_` names, string literal names, names with a module hash, and the program's generated function and type names with their helper suffixes.
+- **Only reached blocks link.** A library is passed to `cc` only when reached code calls a member of its block, so a block used only in a branch a build condition drops needs no library on that target. `"c"` passes nothing and `-lm` is always passed.
+- **`CString` lives in `std/cstring`**, imported as `CStrings` beside the type, since a module alias cannot share a type's name: `CStrings.from`, `CStrings.pointer`, `CStrings.toString` and `CStrings.read` (copies a C string back, `Err` on invalid UTF-8).
+- **`[link]` keeps only `search`**, passed as `-L` relative to the package; any other key is E1000.
+
 ## D96. `typeof` in type positions
 
 Decision (maintainer, 2026-11-09): `typeof name` in a type annotation stands for the declared or inferred type of a value in scope: a `const`, `let`, parameter, top-level constant or function. For a function it is the full function type, with effects (D86) and `from` (D94).

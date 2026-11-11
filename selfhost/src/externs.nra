@@ -1,0 +1,275 @@
+// C functions declared in `extern { ... } from "library"` blocks, and the
+// registry rows of std/cstring. The parser turns each member of a block into a
+// top-level FuncDecl with `externBlock` set and the `unsafe` effect, so name
+// lookup, calls and the effect pass treat it like any function. This module
+// checks what only a C function needs: C-compatible parameter and result types
+// (E1002) and a C name that cannot clash with a name the compiler writes
+// (E1001). The emitter side is emitexterns.nra.
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { StdFunc } from "narrac/builtins"
+import { FuncDecl, ExternBlock } from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  ProgramFunc,
+  enter,
+  reportError,
+  typeString,
+  containsTypeParameter,
+} from "narrac/check"
+import { functionName, typeId } from "narrac/cnames"
+
+export const CSTRING_FUNCS: Array<StdFunc> = [
+  // std/cstring is Narra source (std/src/cstring.nra): a module row with no function.
+  StdFunc { name: "std/cstring", module: "std/cstring", key: "", check: "source" },
+  // The bytes of a string are zero-terminated, so their address is a C string.
+  StdFunc {
+    name: "CText.pointer",
+    module: "std/internal/cstring",
+    key: "pointer",
+    parameters: ["string"],
+    result: "Ptr<u8>",
+  },
+  // Copies the bytes before the first zero byte.
+  StdFunc {
+    name: "CText.read",
+    module: "std/internal/cstring",
+    key: "read",
+    parameters: ["Ptr<u8>"],
+    result: "bytes",
+    effects: ["alloc", "unsafe"],
+  },
+]
+
+// Prefixes of the names the C runtime defines.
+const RUNTIME_PREFIXES = ["narra_", "lstr_"]
+
+export function findExternBlock(
+  checker: Checker,
+  program: ProgramFunc,
+): Option<ExternBlock> from checker {
+  if (program is ProgramFunc.PlainFunc(funcIndex)) {
+    return checker.functions[funcIndex].declaration.externBlock
+  }
+  return None
+}
+
+export function findExternName(declaration: FuncDecl): string {
+  // `@extern("name")` gives the C name; otherwise it is the Narra name.
+  for (const attribute of Arrays.values(declaration.attributes)) {
+    if (attribute.name == "extern") {
+      for (const argument of Arrays.values(attribute.arguments)) {
+        if (argument.text is Some(written)) {
+          return written
+        }
+      }
+    }
+  }
+  return declaration.name
+}
+
+export function checkExternFunctions(mutable checker: Checker) uses alloc {
+  let generatedNames: Option<Array<string>> = None
+  for (const index of Ranges.between(0, Arrays.length(checker.functions))) {
+    const info = copy(checker.functions[index])
+    if (info.declaration.externBlock is None) {
+      continue
+    }
+    const saved = enter(mutable checker, info.scope)
+    checkExternTypes(mutable checker, info.declaration, info.result)
+    // The table of generated names is built once, for the first block member.
+    if (generatedNames is None) {
+      generatedNames = Some(collectGeneratedNames(checker))
+    }
+    if (generatedNames is Some(names)) {
+      checkExternName(mutable checker, info.declaration, names)
+    }
+    enter(mutable checker, saved)
+  }
+}
+
+function checkExternTypes(
+  mutable checker: Checker,
+  declaration: FuncDecl,
+  result: Type,
+) uses alloc {
+  for (const param of Arrays.values(declaration.parameters)) {
+    const paramType = checker.paramTypes[param.id]
+    if (param.isMutable || !isCType(paramType)) {
+      const typeText = describeParameter(checker, paramType, param.isMutable)
+      reportError(
+        mutable checker,
+        param.pos,
+        "E1002",
+        `${param.name} of C function ${declaration.name} has type ${typeText}; a C function takes numbers, bool and Ptr<T>`,
+      )
+    }
+  }
+  if (result != Type.TVoid && !isCType(result)) {
+    const resultText = typeString(checker, result)
+    reportError(
+      mutable checker,
+      declaration.pos,
+      "E1002",
+      `C function ${declaration.name} returns ${resultText}; a C function returns numbers, bool, Ptr<T> or nothing`,
+    )
+  }
+}
+
+function describeParameter(checker: Checker, type: Type, isMutable: bool): string uses alloc {
+  if (isMutable) {
+    return `mutable ${typeString(checker, type)}`
+  }
+  return typeString(checker, type)
+}
+
+function isCType(type: Type): bool {
+  return match (type) {
+    Type.TInt
+      | Type.TI8
+      | Type.TI16
+      | Type.TI32
+      | Type.TU8
+      | Type.TU16
+      | Type.TU32
+      | Type.TU64
+      | Type.TF64
+      | Type.TF32
+      | Type.TBool
+      | Type.TPtr(_) => true
+    _ => false
+  }
+}
+
+function collectGeneratedNames(checker: Checker): Array<string> uses alloc {
+  // The C names of every function and type of the program; helpers add a suffix to a type's name.
+  let names: Array<string> = []
+  for (const program of Arrays.values(checker.programFunctions)) {
+    if (findExternBlock(checker, program) is None) {
+      Arrays.push(mutable names, functionName(checker, program))
+    }
+  }
+  for (const type of Arrays.values(checker.order)) {
+    Arrays.push(mutable names, typeId(checker, type))
+  }
+  for (const entry of Maps.entries(checker.composites)) {
+    const #[_, type] = entry
+    if (!containsTypeParameter(checker, type)) {
+      Arrays.push(mutable names, typeId(checker, type))
+    }
+  }
+  return names
+}
+
+function checkExternName(
+  mutable checker: Checker,
+  declaration: FuncDecl,
+  generatedNames: Array<string>,
+) uses alloc {
+  const name = findExternName(declaration)
+  let pos = declaration.pos
+  for (const attribute of Arrays.values(declaration.attributes)) {
+    if (attribute.name == "extern") {
+      pos = attribute.pos
+    }
+  }
+  if (!isCIdentifier(name)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1001",
+      `"${name}" is not a C name; a C name is letters, digits and _, not starting with a digit`,
+    )
+    return
+  }
+  const clash = findNameClash(name, generatedNames)
+  if (clash != "") {
+    reportError(
+      mutable checker,
+      pos,
+      "E1001",
+      `the C name ${name} clashes with ${clash} that the compiler writes; give the function another name with @extern`,
+    )
+  }
+}
+
+function findNameClash(name: string, generatedNames: Array<string>): string uses alloc {
+  // The text that names what the C name clashes with, or "".
+  if (name == "main") {
+    return "the program's main function"
+  }
+  for (const prefix of Arrays.values(RUNTIME_PREFIXES)) {
+    if (Str.startsWith(name, prefix)) {
+      return `the runtime's ${prefix} names`
+    }
+  }
+  if (isLiteralName(name)) {
+    return "the name of a string literal"
+  }
+  if (hasModuleHash(name)) {
+    return "the name of a declaration"
+  }
+  // Helpers put an operation before a type's name (release_E_Option_e088c655, eq_S_Point) or a suffix after it.
+  for (const generated of Arrays.values(generatedNames)) {
+    if (
+      name == generated ||
+        Str.startsWith(name, `${generated}_`) ||
+        Str.endsWith(name, `_${generated}`)
+    ) {
+      return `the name ${generated}`
+    }
+  }
+  return ""
+}
+
+function isCIdentifier(name: string): bool {
+  if (name == "") {
+    return false
+  }
+  let first = true
+  for (const character of Arrays.values(Str.chars(name))) {
+    const isLetter =
+      (character >= 'a' && character <= 'z') ||
+        (character >= 'A' && character <= 'Z') ||
+        character == '_'
+    const isDigit = character >= '0' && character <= '9'
+    if (!isLetter && (first || !isDigit)) {
+      return false
+    }
+    first = false
+  }
+  return true
+}
+
+function isLiteralName(name: string): bool {
+  // String literals are L1, L2 and so on.
+  const characters = Str.chars(name)
+  if (Arrays.length(characters) < 2 || characters[0] != 'L') {
+    return false
+  }
+  for (const index of Ranges.between(1, Arrays.length(characters))) {
+    if (characters[index] < '0' || characters[index] > '9') {
+      return false
+    }
+  }
+  return true
+}
+
+function hasModuleHash(name: string): bool {
+  // A declaration of a module is <kind letter>_<8 hex digits>_<name>.
+  const characters = Str.chars(name)
+  if (Arrays.length(characters) < 12 || characters[1] != '_' || characters[10] != '_') {
+    return false
+  }
+  for (const index of Ranges.between(2, 10)) {
+    const character = characters[index]
+    const isHex = (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')
+    if (!isHex) {
+      return false
+    }
+  }
+  return true
+}

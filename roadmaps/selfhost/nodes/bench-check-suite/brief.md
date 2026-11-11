@@ -1,7 +1,7 @@
 ---
 id: bench-check-suite
 title: "A test suite checks every benchmark program"
-status: active
+status: done
 priority: should
 type: chore
 story: batch-7
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 80027
 owns:
   - roadmaps/selfhost/nodes/bench-check-suite/**
 shared:

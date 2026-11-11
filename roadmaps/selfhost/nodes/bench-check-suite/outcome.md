@@ -34,3 +34,5 @@
 ## Size
 
 - Estimated S, actual S.
+
+Landed on feat/batch-7 as e4dc5a17.

@@ -1,0 +1,152 @@
+// Unsafe code: Ptr<T> from std/ptr inside `unsafe { }` blocks, the unsafe
+// effect on callers, and a `@trusted` wrapper that stops it. Every allocation
+// is freed, so the leak check passes.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ptr from "std/ptr"
+import * as U8 from "std/u8"
+
+struct Point {
+  x: int
+  y: f64
+  next: Ptr<Point>
+}
+
+struct Buffer {
+  data: Ptr<u8>
+  length: int
+}
+
+trait Measure {
+  function measure(self: Self): int
+}
+
+struct Cells implements Measure {
+  data: Ptr<int>
+  count: int
+}
+
+// An implementation may use `unsafe` only behind @trusted, since a call
+// through the trait does not see it.
+implement Measure for Cells {
+  @trusted
+  function measure(self: Cells): int {
+    let total = 0
+    unsafe {
+      for (let i = 0; i < self.count; i++) {
+        total += Ptr.read(Ptr.offset(self.data, i))
+      }
+    }
+    return total
+  }
+}
+
+function measureAny<T: Measure>(value: T): int {
+  return Measure.measure(value)
+}
+
+// Running the generator runs its unsafe block, so it is iterated inside one.
+function* readAll(data: Ptr<int>, count: int): Generator<int> {
+  for (let i = 0; i < count; i++) {
+    unsafe {
+      yield Ptr.read(Ptr.offset(data, i))
+    }
+  }
+}
+
+// A hand-checked wrapper: callers need no unsafe block.
+@trusted
+function sumSquares(count: int): int uses alloc {
+  let total = 0
+  unsafe {
+    const items: Ptr<int> = Ptr.alloc(count)
+    for (let i = 0; i < count; i++) {
+      Ptr.write(Ptr.offset(items, i), i * i)
+    }
+    for (let i = 0; i < count; i++) {
+      total += Ptr.read(Ptr.offset(items, i))
+    }
+    Ptr.free(items)
+  }
+  return total
+}
+
+// No @trusted: the unsafe effect reaches every caller.
+export function readByte(buffer: Buffer, index: int): u8 uses unsafe {
+  let value: u8 = 0
+  unsafe {
+    value = Ptr.read(Ptr.offset(buffer.data, index))
+  }
+  return value
+}
+
+@trusted
+function fillBuffer(length: int): Buffer uses alloc {
+  let buffer = Buffer { data: Ptr.null(), length: 0 }
+  unsafe {
+    const data: Ptr<u8> = Ptr.alloc(length)
+    for (let i = 0; i < length; i++) {
+      const byte = U8.tryFrom(65 + i)
+      if (byte is Some(code)) {
+        Ptr.write(Ptr.offset(data, i), code)
+      }
+    }
+    buffer = Buffer { data: data, length: length }
+  }
+  return buffer
+}
+
+export function run(_args: Array<string>): int uses io, alloc, unsafe {
+  print(`squares ${Int.toString(sumSquares(5))}`)
+  const buffer = fillBuffer(3)
+  let pointers: Array<Ptr<u8>> = []
+  unsafe {
+    let text = ""
+    for (let i = 0; i < buffer.length; i++) {
+      text = `${text} ${U8.toString(readByte(buffer, i))}`
+    }
+    print(`bytes${text}`)
+    Arrays.push(mutable pointers, buffer.data)
+    Arrays.push(mutable pointers, Ptr.offset(buffer.data, 2))
+    print(`last ${U8.toString(Ptr.read(pointers[1]))}`)
+    Ptr.free(buffer.data)
+
+    // A linked pair of structs in one allocation.
+    const points: Ptr<Point> = Ptr.alloc(2)
+    const second = Ptr.offset(points, 1)
+    Ptr.write(points, Point { x: 1, y: 2.5, next: second })
+    Ptr.write(second, Point { x: 3, y: 4.5, next: Ptr.null() })
+    const first = Ptr.read(points)
+    const next = Ptr.read(first.next)
+    print(`sum ${Int.toString(first.x + next.x)}`)
+    if (Ptr.isNull(next.next)) {
+      print("end of list")
+    }
+    Ptr.free(points)
+
+    // A pointer to a pointer.
+    const cell: Ptr<Ptr<int>> = Ptr.alloc(1)
+    const target: Ptr<int> = Ptr.alloc(1)
+    Ptr.write(target, 42)
+    Ptr.write(cell, target)
+    print(`through two ${Int.toString(Ptr.read(Ptr.read(cell)))}`)
+    Ptr.free(target)
+    Ptr.free(cell)
+
+    // A trait implementation and a generator over the same memory.
+    const numbers: Ptr<int> = Ptr.alloc(3)
+    for (let i = 0; i < 3; i++) {
+      Ptr.write(Ptr.offset(numbers, i), i + 1)
+    }
+    print(`measured ${Int.toString(measureAny(Cells { data: numbers, count: 3 }))}`)
+    let listed = ""
+    for (const number of readAll(numbers, 3)) {
+      listed = `${listed} ${Int.toString(number)}`
+    }
+    print(`listed${listed}`)
+    Ptr.free(numbers)
+    const none: Ptr<int> = Ptr.null()
+    Ptr.free(none)
+  }
+  return 0
+}

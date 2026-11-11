@@ -21,6 +21,7 @@ import {
   opFuncName,
   parameterCType,
 } from "narrac/cnames"
+import * as Fixed from "narrac/emitfixed"
 import {
   Emitter,
   Code,
@@ -183,7 +184,7 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
     }
     return `struct ${name} { int32_t tag; };\n`
   }
-  return ""
+  return Fixed.buildFixedDefinition(emitter, type)
 }
 
 function buildVariantMembers(emitter: Emitter, enumIndex: int): string uses alloc {
@@ -450,6 +451,13 @@ function typeRcFunction(emitter: Emitter, type: Type, operation: string): string
       }
     }
   }
+  if (type is Type.TFixedArray(element, _)) {
+    const item = buildCountCode(emitter, operation, element, `${value}.items[i]`)
+    const loop = Fixed.wrapItemsLoop(type, "i", item)
+    if (loop != "") {
+      Str.append(mutable builder, `  ${loop}\n`)
+    }
+  }
   if (type is Type.TEnum(_)) {
     if (operation == "retain") {
       Str.append(mutable builder, "  if (v.u) v.u->rc++;\n")
@@ -601,6 +609,11 @@ export function buildCreditCode(emitter: Emitter, type: Type, value: string): st
       }
       return Str.join(statements, " ")
     }
+    Type.TFixedArray(element, _) => {
+      const indexName = Fixed.buildItemIndexName(value)
+      const item = buildCreditCode(emitter, element, `(${value}).items[${indexName}]`)
+      return Fixed.wrapItemsLoop(base, indexName, item)
+    }
     _ => ""
   }
 }
@@ -687,6 +700,16 @@ function buildPartCreditCode(
       }
       return Str.join(statements, " ")
     }
+    Type.TFixedArray(element, _) => {
+      const indexName = Fixed.buildItemIndexName(value)
+      const item = buildPartCreditCode(
+        emitter,
+        element,
+        `(${value}).items[${indexName}]`,
+        operation,
+      )
+      return Fixed.wrapItemsLoop(base, indexName, item)
+    }
     _ => ""
   }
 }
@@ -716,6 +739,7 @@ function holdsHeapEnum(emitter: Emitter, type: Type): bool {
       }
       return false
     }
+    Type.TFixedArray(element, _) => holdsHeapEnum(emitter, underlyingType(emitter, element))
     _ => false
   }
 }

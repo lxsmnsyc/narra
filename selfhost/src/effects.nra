@@ -20,7 +20,20 @@
 // walks the declarations and not the instances. The reporting walk also visits the value of each top-level
 // constant, so the function stores in it are checked.
 
-import { Pos, Decl, FuncDecl, TypeExpr, Block, Stmt, Expr, Arg } from "narrac/ast"
+import {
+  Pos,
+  Decl,
+  FuncDecl,
+  ImplDecl,
+  TypeExpr,
+  Block,
+  Stmt,
+  Expr,
+  Arg,
+  findAttribute,
+} from "narrac/ast"
+import { checkTrusted } from "narrac/unsafecode"
+import { checkExternFunctions } from "narrac/externs"
 import { quoteDump } from "narrac/modules"
 import { Type } from "narrac/types"
 import {
@@ -37,7 +50,9 @@ import {
   getExpressionPos,
   orderArguments,
   isHeapEnum,
+  lookupTrait,
 } from "narrac/check"
+import { findTraitFunc } from "narrac/traits"
 import { describeType, generatorUseFails } from "narrac/exprs"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -78,6 +93,8 @@ export struct EffectState {
   // The direct calls of declared functions found by the reporting walk, in
   // walk order (the call graph that narrac query reads).
   calls: Array<CallEdge> = []
+  unsafeDepth: int = 0 // the `unsafe { }` blocks around the statement being walked
+  sawUnsafeBlock: bool = false // the function being analysed has an `unsafe { }` block
 }
 
 // A call of a declared function or implement block function: the body that
@@ -266,6 +283,8 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
   walkAll(mutable checker, mutable state, true)
   checkGeneratorUses(mutable checker)
   checkFunctionStores(mutable checker, mutable state)
+  // The C functions of extern blocks, once every name the program generates is known.
+  checkExternFunctions(mutable checker)
   return state
 }
 
@@ -369,7 +388,7 @@ function generatorEffects(
 }
 
 function walkGeneratorRun(
-  checker: Checker,
+  mutable checker: Checker,
   state: EffectState,
   mutable out: Array<Effect>,
   expression: Expr,
@@ -378,10 +397,34 @@ function walkGeneratorRun(
     if (found is Type.TGenerator(_, _, _, _, _)) {
       const via = typeString(checker, found)
       const pos = getExpressionPos(expression)
-      for (const name of Arrays.values(generatorEffects(checker, state, found))) {
+      const names = generatorEffects(checker, state, found)
+      for (const name of Arrays.values(names)) {
         addEffect(mutable out, name, pos, via)
       }
+      // Running the generator runs its body, so an unsafe body needs a block here.
+      if (state.report && state.unsafeDepth == 0 && containsName(names, "unsafe")) {
+        let generatorName = describeCallTarget(expression)
+        if (generatorName == "") {
+          generatorName = "this generator"
+        }
+        reportError(
+          mutable checker,
+          pos,
+          "E0996",
+          `${generatorName} runs unsafe code; iterate it inside an \`unsafe { }\` block`,
+        )
+      }
     }
+  }
+}
+
+function describeCallTarget(expression: Expr): string uses alloc {
+  // The name a call or a generator is written with: `first`, `Ptr.read`, `g`.
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name) => `${alias}.${name}`
+    Expr.CallExpr(_, _, callee, _, _) => describeCallTarget(callee)
+    _ => ""
   }
 }
 
@@ -396,6 +439,9 @@ function walkAll(mutable checker: Checker, mutable state: EffectState, report: b
           for (const funcDecl of Arrays.values(implDecl.functions)) {
             analyseFunction(mutable checker, mutable state, scope, funcDecl)
           }
+          if (report) {
+            checkImplementationEffects(mutable checker, state, scope, implDecl)
+          }
         }
         Decl.Test(testDecl) => walkTest(mutable checker, mutable state, scope, testDecl.body)
         _ => {}
@@ -405,6 +451,72 @@ function walkAll(mutable checker: Checker, mutable state: EffectState, report: b
   }
   if (report) {
     walkConstants(mutable checker, mutable state)
+  }
+}
+
+function checkImplementationEffects(
+  mutable checker: Checker,
+  state: EffectState,
+  scope: int,
+  implDecl: ImplDecl,
+) uses alloc {
+  // A call through the trait charges what the trait function declares, so an
+  // implementation may not use `unsafe` unless the trait function declares it.
+  // Other effects are not checked yet: implementations of pure trait functions
+  // allocate and print in existing programs.
+  let traitIndex = -1
+  for (const info of Arrays.values(checker.implementations)) {
+    if (info.scope == scope && info.declaration.pos == implDecl.pos) {
+      traitIndex = info.traitIndex
+    }
+  }
+  if (traitIndex < 0) {
+    return
+  }
+  const traitName = checker.traits[traitIndex].name
+  for (const member of Arrays.values(implDecl.functions)) {
+    const funcIndex = findTraitFunc(checker, traitIndex, member.name)
+    if (funcIndex < 0) {
+      continue
+    }
+    const traitFunction = copy(checker.traits[traitIndex].functions[funcIndex].declaration)
+    if (Arrays.length(traitFunction.effectParameters) > 0) {
+      continue
+    }
+    const allowed = traitFunction.effects
+    const label = `${traitName}.${member.name}`
+    for (const name of Arrays.values(member.effects)) {
+      if (name == "unsafe" && !containsName(allowed, name)) {
+        reportError(
+          mutable checker,
+          member.pos,
+          "E0800",
+          `the implementation of \`${label}\` declares \`uses ${name}\`, but the trait function does not; an implementation may use only the effects its trait function declares`,
+        )
+      }
+    }
+    if (state.functions[packPosition(scope, member.pos)] is Some(used)) {
+      for (const name of Arrays.values(sortEffectNames(used))) {
+        if (name != "unsafe" || containsName(allowed, name) || containsName(member.effects, name)) {
+          continue
+        }
+        const cause = findEffect(used, name)
+        let causePos = cause.pos
+        if (causePos.line == 0 && causePos.column == 0) {
+          causePos = member.pos
+        }
+        let through = ""
+        if (cause.via != "") {
+          through = ` (through \`${cause.via}\`)`
+        }
+        reportError(
+          mutable checker,
+          causePos,
+          "E0800",
+          `the implementation of \`${label}\` uses \`${name}\`${through}, but the trait function does not declare it; an implementation may use only the effects its trait function declares`,
+        )
+      }
+    }
   }
 }
 
@@ -458,8 +570,16 @@ function analyseFunction(
   state.body = bodyIndex
 
   let out: Array<Effect> = []
+  state.sawUnsafeBlock = false
   if (declaration.body is Some(block)) {
     walkBlock(mutable checker, mutable state, mutable out, block)
+  }
+  // A `@trusted` function was checked by hand: its callers do not get the unsafe effect.
+  if (findAttribute(declaration, "trusted") is Some(attribute)) {
+    if (state.report) {
+      checkTrusted(mutable checker, declaration, attribute, state.sawUnsafeBlock)
+    }
+    out = stopUnsafeEffect(out)
   }
   let previousLength = 0
   if (state.functions[key] is Some(previous)) {
@@ -515,6 +635,16 @@ function analyseFunction(
       `Function \`${declaration.name}\` uses \`${name}\`${through} but its signature does not declare it; write \`uses ${name}\``,
     )
   }
+}
+
+function stopUnsafeEffect(effects: Array<Effect>): Array<Effect> from effects uses alloc {
+  let kept: Array<Effect> = []
+  for (const effect of Arrays.values(effects)) {
+    if (effect.name != "unsafe") {
+      Arrays.push(mutable kept, effect)
+    }
+  }
+  return kept
 }
 
 function findDeclaredLocal(checker: Checker, bodyIndex: int, nodeId: int): int {
@@ -664,7 +794,8 @@ function funcEffects(state: EffectState, callee: Callee): Array<Effect> from sta
     addEffect(mutable set, "alloc", nowhere, "")
     return set
   }
-  if (callee.declaration.exported) {
+  // A C function of an extern block has the effects of its declaration: unsafe.
+  if (callee.declaration.exported || callee.declaration.externBlock is Some(_)) {
     for (const name of Arrays.values(callee.declaration.effects)) {
       addEffect(mutable set, name, nowhere, "")
     }
@@ -820,7 +951,16 @@ function walkStatement(
   statement: Stmt,
 ) uses alloc {
   match (statement) {
-    Stmt.BlockStmt(block) => walkBlock(mutable checker, mutable state, mutable out, block)
+    Stmt.BlockStmt(block) => {
+      if (block.isUnsafe) {
+        state.sawUnsafeBlock = true
+        state.unsafeDepth++
+      }
+      walkBlock(mutable checker, mutable state, mutable out, block)
+      if (block.isUnsafe) {
+        state.unsafeDepth--
+      }
+    }
     Stmt.VarStmt(nodeId, _, _, _, _, _, value) => {
       walkExpression(mutable checker, mutable state, mutable out, value)
       // A local bound to a function value holds its effects.
@@ -883,13 +1023,13 @@ function walkStatement(
     }
     Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
       walkExpression(mutable checker, mutable state, mutable out, iterable)
-      walkGeneratorRun(checker, state, mutable out, iterable)
+      walkGeneratorRun(mutable checker, state, mutable out, iterable)
       walkBlock(mutable checker, mutable state, mutable out, body)
     }
     Stmt.YieldStmt(_, value, delegate, _) => {
       walkExpression(mutable checker, mutable state, mutable out, value)
       if (delegate) {
-        walkGeneratorRun(checker, state, mutable out, value)
+        walkGeneratorRun(mutable checker, state, mutable out, value)
       }
     }
     Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => {}
@@ -1023,11 +1163,16 @@ function walkExpression(
         walkExpression(mutable checker, mutable state, mutable out, base)
       }
     }
-    Expr.ArrayLit(_, pos, elements, isTuple) => {
+    Expr.ArrayLit(literalId, pos, elements, isTuple) => {
       for (const element of Arrays.values(elements)) {
         walkExpression(mutable checker, mutable state, mutable out, element)
       }
-      if (!isTuple) {
+      // A FixedArray literal is stored in place and allocates nothing.
+      let isFixed = false
+      if (findNodeType(checker, state.body, literalId) is Some(literalType)) {
+        isFixed = literalType is Type.TFixedArray(_, _)
+      }
+      if (!isTuple && !isFixed) {
         addEffect(mutable out, "alloc", pos, "array literal")
       }
     }
@@ -1083,6 +1228,43 @@ function walkCall(
   for (const argument of Arrays.values(arguments)) {
     walkExpression(mutable checker, mutable state, mutable out, argument.value)
   }
+  if (!state.report || state.unsafeDepth > 0) {
+    walkCallEffects(mutable checker, mutable state, mutable out, nodeId, pos, callee, arguments)
+    return
+  }
+  // The call's own effects are collected apart, so an unsafe call is found
+  // even when the function already has the effect.
+  let own: Array<Effect> = []
+  walkCallEffects(mutable checker, mutable state, mutable own, nodeId, pos, callee, arguments)
+  if (hasEffect(own, "unsafe")) {
+    let calleeName = describeCallTarget(callee)
+    if (calleeName == "") {
+      calleeName = findEffect(own, "unsafe").via
+    }
+    if (calleeName == "") {
+      calleeName = "this call"
+    }
+    reportError(
+      mutable checker,
+      pos,
+      "E0996",
+      `${calleeName} is unsafe; call it inside an \`unsafe { }\` block`,
+    )
+  }
+  for (const effect of Arrays.values(own)) {
+    addEffect(mutable out, effect.name, effect.pos, effect.via)
+  }
+}
+
+function walkCallEffects(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  nodeId: int,
+  pos: Pos,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
   const ref = findRef(checker, state.body, nodeId)
   if (findCallee(checker, state, ref) is Some(found)) {
     const calleeInfo = copy(found)
@@ -1141,7 +1323,34 @@ function walkCall(
         addEffect(mutable out, "alloc", pos, checker.enums[enumIndex].variants[variant].name)
       }
     }
+    Ref.Unresolved => addTraitCallEffects(checker, mutable out, pos, callee)
     _ => {}
+  }
+}
+
+function addTraitCallEffects(
+  checker: Checker,
+  mutable out: Array<Effect>,
+  pos: Pos,
+  callee: Expr,
+) uses alloc {
+  // `Trait.f(value)` on a type parameter resolves only in the instances; the
+  // implementations may use only what the trait function declares.
+  if (callee is Expr.FieldExpr(_, _, Expr.Ident(_, _, traitName), name)) {
+    const traitIndex = lookupTrait(checker, traitName)
+    if (traitIndex < 0) {
+      return
+    }
+    const funcIndex = findTraitFunc(checker, traitIndex, name)
+    if (funcIndex < 0) {
+      return
+    }
+    const declaration = checker.traits[traitIndex].functions[funcIndex].declaration
+    for (const effect of Arrays.values(declaration.effects)) {
+      if (!containsName(declaration.effectParameters, effect)) {
+        addEffect(mutable out, effect, pos, `${traitName}.${name}`)
+      }
+    }
   }
 }
 

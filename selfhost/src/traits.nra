@@ -12,6 +12,7 @@
 // implBodies (the bodies of the functions in checker.implementations) and the call-site use
 // of checkBounds. Left to selfhost-check-imports: importTrait (an exported
 // trait of another module becomes visible by name in ModScope.traits).
+import { flushPointerElements } from "narrac/unsafecode"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Pos, File, Decl, FuncDecl, TraitDecl, ImplDecl, EnumDecl, TypeExpr } from "narrac/ast"
@@ -515,7 +516,10 @@ export function shapeDeriveHolds(mutable checker: Checker, typeName: string): bo
 function containsParam(checker: Checker, type: Type, param: int): bool {
   return match (type) {
     Type.TParam(found) => found == param
-    Type.TArray(element) | Type.TBox(element) => containsParam(checker, element, param)
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TPtr(element)
+      | Type.TFixedArray(element, _) => containsParam(checker, element, param)
     Type.TMap(key, value) =>
       containsParam(checker, key, param) || containsParam(checker, value, param)
     Type.TFunc(parameters, result, _, _, _) =>
@@ -922,7 +926,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
       return false
     }
     // Arrays, boxes and the prelude enums implement a standard trait when their contents do.
-    Type.TArray(element) | Type.TBox(element) => {
+    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
       return std && typeImplements(mutable checker, element, traitIndex)
     }
     Type.TDistinct(index) => {
@@ -941,6 +945,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
       | Type.TMap(_, _)
       | Type.TRange
       | Type.TGenerator(_, _, _, _, _)
+      | Type.TPtr(_)
       | Type.TModule(_) => {
       return false
     }
@@ -1242,7 +1247,7 @@ export function containsFunc(
     Type.TFunc(_, _, _, _, _) => {
       return true
     }
-    Type.TArray(element) | Type.TBox(element) => {
+    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
       return containsFunc(checker, element, mutable seen)
     }
     Type.TDistinct(index) => {
@@ -1287,7 +1292,7 @@ export function mapKeyProblem(
     Type.TVoid => {
       return "void has no value"
     }
-    Type.TArray(element) | Type.TBox(element) => {
+    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
       return mapKeyProblem(mutable checker, element, mutable seen)
     }
     Type.TDistinct(index) => {
@@ -1307,6 +1312,9 @@ export function mapKeyProblem(
     }
     Type.TGenerator(_, _, _, _, _) => {
       return "a Generator is not hashable"
+    }
+    Type.TPtr(_) => {
+      return "a pointer is not hashable"
     }
     Type.TStruct(_) | Type.TEnum(_) => {
       return nominalKeyProblem(mutable checker, type, mutable seen)
@@ -1346,6 +1354,7 @@ function nominalKeyProblem(
 
 export function flushMapKeys(mutable checker: Checker) uses alloc {
   // Runs once every module is declared.
+  flushPointerElements(mutable checker)
   const keys = checker.mapKeys
   checker.mapKeys = []
   for (const check of Arrays.values(keys)) {

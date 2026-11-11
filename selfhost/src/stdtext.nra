@@ -7,6 +7,8 @@ const STD_CELL = "// std/cell: Cell<T>, one mutable slot that every copy of the 
 
 const STD_COROUTINE = "// std/coroutine: Co.resume runs a generator or a coroutine to its next yield.\n//\n// The compiler turns `Co.resume(mutable g)` into resumeGenerator and\n// `Co.resume(mutable g, input)` into resumeCoroutine, by argument count.\n\nimport * as Internal from \"std/internal/coroutine\"\n\nexport enum Step<Out> derives Show, Equatable {\n  Yielded(value: Out)\n  Done\n  Panicked(message: string)\n}\n\nexport function resumeGenerator<T, effect E>(mutable g: Generator<T> uses E): Step<T> uses E, alloc {\n  return readStep(Internal.next(mutable g))\n}\n\nexport function resumeCoroutine<In, Out, effect E>(mutable g: Coroutine<In, Out> uses E, input: In): Step<Out> uses E, alloc {\n  return readStep(Internal.resume(mutable g, input))\n}\n\n// readStep reads the outcome of one resume: a value, the end, or a panic.\nfunction readStep<T>(next: Option<T>): Step<T> from next uses alloc {\n  if (next is Some(value)) {\n    return Step.Yielded(value)\n  }\n  if (Internal.panicked()) {\n    return Step.Panicked(Internal.panicMessage())\n  }\n  return Step.Done\n}\n"
 
+const STD_CSTRING = "// std/cstring: CString, a string with no zero byte, which C reads as a zero-terminated string.\n//\n// Pass `CStrings.pointer(text)` to a C function that takes `char*`; the pointer is valid while\n// the CString is. `CStrings.read` copies a zero-terminated string that C returns.\n\nimport * as Bytes from \"std/bytes\"\nimport * as Str from \"std/string\"\nimport * as Ptr from \"std/ptr\"\nimport * as Text from \"std/internal/cstring\"\n\nexport opaque struct CString {\n  text: string\n}\n\nexport function from(text: string): Option<CString> {\n  // C would stop at a zero byte, so a string that holds one has no CString.\n  const length = Str.length(text)\n  for (let index = 0; index < length; index++) {\n    if (Str.byteAt(text, index) == 0) {\n      return None\n    }\n  }\n  return Some(CString { text: text })\n}\n\nexport function toString(value: CString): string from value {\n  return value.text\n}\n\nexport function pointer(value: CString): Ptr<u8> {\n  return Text.pointer(value.text)\n}\n\nexport function read(address: Ptr<u8>): Result<string, string> uses alloc, unsafe {\n  let copied: Result<string, string> = Err(\"\")\n  unsafe {\n    copied = Bytes.toString(Text.read(address))\n  }\n  return copied\n}\n"
+
 const STD_EXT__ARRAY = "// std/array: helpers over Array. The functions that need the compiler are built in.\n\nimport * as Arrays from \"std/array\"\n\nexport function map<T, U, effect E>(\n  items: Array<T>,\n  change: (value: T) => U uses E\n): Array<U> uses alloc, E {\n  let result: Array<U> = Arrays.withCapacity(Arrays.length(items))\n  for (const item of items) {\n    Arrays.push(mutable result, change(item))\n  }\n  return result\n}\n\nexport function slice<T>(items: Array<T>, start: int, finish: int): Option<Array<T>> uses alloc {\n  // A range outside the array has no slice.\n  if (start < 0 || finish > Arrays.length(items) || start > finish) {\n    return None\n  }\n  let result: Array<T> = Arrays.withCapacity(finish - start)\n  for (let index = start; index < finish; index++) {\n    Arrays.push(mutable result, copy(items[index]))\n  }\n  return Some(result)\n}\n"
 
 const STD_EXT__FLOAT = "// std/float: constants of f64. The functions are built into the compiler.\n\nexport const PI: f64 = 3.141592653589793\n"
@@ -14,6 +16,8 @@ const STD_EXT__FLOAT = "// std/float: constants of f64. The functions are built 
 const STD_EXT__INT = "// std/int: ordering and division of int. The rest of the functions are built into the compiler.\n\nexport function compare(first: int, second: int): Ordering {\n  if (first < second) {\n    return Ordering.Less\n  }\n  if (first > second) {\n    return Ordering.Greater\n  }\n  return Ordering.Equal\n}\n\nexport function divmod(dividend: int, divisor: int): Option<#[int, int]> {\n  // A zero divisor has no quotient.\n  if (divisor == 0) {\n    return None\n  }\n  return Some(#[dividend / divisor, dividend % divisor])\n}\n\nexport function floorDiv(dividend: int, divisor: int): Option<int> {\n  if (divisor == 0) {\n    return None\n  }\n  const quotient = dividend / divisor\n  const remainder = dividend % divisor\n  // Division truncates toward zero; step down when the signs differ and the division is inexact.\n  if (remainder != 0 && (remainder < 0) != (divisor < 0)) {\n    return Some(quotient - 1)\n  }\n  return Some(quotient)\n}\n"
 
 const STD_EXT__STRING = "// std/string: searching. The rest of the functions are built into the compiler.\n\nimport * as Str from \"std/string\"\n\nexport function find(text: string, needle: string): Option<int> uses alloc {\n  return Str.indexOf(text, needle)\n}\n"
+
+const STD_FIXEDARRAY = "// std/fixedarray: helpers over FixedArray. An index written as values[i] must be\n// proven in range; get checks the index and returns None outside it.\n\nexport function get<T, const N: int>(values: FixedArray<T, N>, index: int): Option<T> from values {\n  if (index >= 0 && index < N) {\n    return Some(values[index])\n  }\n  return None\n}\n\nexport function length<T, const N: int>(_values: FixedArray<T, N>): int {\n  return N\n}\n"
 
 const STD_HASH = "// std/hash: hashing. `of` is the hash of a Hashable value and may change between builds.\n// `fnv1a` is FNV-1a 64 over the UTF-8 bytes of a string and never changes.\n\nimport * as Str from \"std/string\"\nimport * as U64 from \"std/u64\"\nimport * as Ranges from \"std/range\"\n\nconst FNV_OFFSET: u64 = 14695981039346656037\nconst FNV_PRIME: u64 = 1099511628211\n\nexport function of<T: Hashable>(value: T): int {\n  return Hashable.hash(value)\n}\n\nexport function fnv1a(text: string): u64 {\n  let state = FNV_OFFSET\n  const length = Str.length(text)\n  for (const index of Ranges.upTo(length)) {\n    state = (state ^ U64.wrap(Str.byteAt(text, index))) * FNV_PRIME\n  }\n  return state\n}\n"
 
@@ -39,6 +43,9 @@ export function stdSourceFor(path: string): string {
   if (path == "std/coroutine") {
     return STD_COROUTINE
   }
+  if (path == "std/cstring") {
+    return STD_CSTRING
+  }
   if (path == "std/ext/array") {
     return STD_EXT__ARRAY
   }
@@ -50,6 +57,9 @@ export function stdSourceFor(path: string): string {
   }
   if (path == "std/ext/string") {
     return STD_EXT__STRING
+  }
+  if (path == "std/fixedarray") {
+    return STD_FIXEDARRAY
   }
   if (path == "std/hash") {
     return STD_HASH

@@ -40,6 +40,8 @@ import {
   TypeExpr,
   Param,
   FuncDecl,
+  ExternBlock,
+  Attribute,
   ConstDecl,
   FieldDecl,
   StructDecl,
@@ -490,13 +492,36 @@ function printFile(printer: Printer, file: File): Doc from printer uses alloc {
     Arrays.push(mutable keys, key)
     Arrays.push(mutable documents, withComments(printer, key, printImport(printer, importDecl)))
   }
-  for (const declaration of Arrays.values(file.declarations)) {
+  let index = 0
+  const count = Arrays.length(file.declarations)
+  while (index < count) {
+    const declaration = file.declarations[index]
+    // The members of an extern block follow each other and print as one block.
+    if (declaration is Decl.Func(funcDecl)) {
+      if (funcDecl.externBlock is Some(block)) {
+        let members: Array<FuncDecl> = []
+        while (index < count && isMemberOf(file.declarations[index], block)) {
+          if (file.declarations[index] is Decl.Func(member)) {
+            Arrays.push(mutable members, member)
+          }
+          index++
+        }
+        const blockKey = getPosKey("x", block.pos)
+        Arrays.push(mutable keys, blockKey)
+        Arrays.push(
+          mutable documents,
+          withComments(printer, blockKey, printExternBlock(printer, block, members)),
+        )
+        continue
+      }
+    }
     const key = getPosKey("d", getDeclPos(declaration))
     Arrays.push(mutable keys, key)
     Arrays.push(
       mutable documents,
       withComments(printer, key, printDeclaration(printer, declaration)),
     )
+    index++
   }
   if (Arrays.length(documents) == 0) {
     if (hasDangling(printer, "file")) {
@@ -505,6 +530,56 @@ function printFile(printer: Printer, file: File): Doc from printer uses alloc {
     return empty()
   }
   return Docs.concat([joinItems(printer, keys, documents), Doc.HardLine])
+}
+
+function isMemberOf(declaration: Decl, block: ExternBlock): bool {
+  if (declaration is Decl.Func(funcDecl)) {
+    if (funcDecl.externBlock is Some(found)) {
+      return found.pos == block.pos
+    }
+  }
+  return false
+}
+
+function printExternBlock(
+  printer: Printer,
+  block: ExternBlock,
+  members: Array<FuncDecl>,
+): Doc from printer uses alloc {
+  // A member's unsafe effect and the block's attributes are implied, so a member does not write them.
+  let written: Array<FuncDecl> = []
+  for (const member of Arrays.values(members)) {
+    let ownAttributes: Array<Attribute> = []
+    for (const attribute of Arrays.values(member.attributes)) {
+      if (!hasBlockAttribute(block, attribute)) {
+        Arrays.push(mutable ownAttributes, copy(attribute))
+      }
+    }
+    Arrays.push(mutable written, FuncDecl { ...member, effects: [], attributes: ownAttributes })
+  }
+  let lines: Array<Doc> = []
+  for (const attribute of Arrays.values(block.attributes)) {
+    Arrays.push(mutable lines, printAttribute(printer, attribute))
+  }
+  return Docs.concat([
+    Docs.concat(lines),
+    text("extern "),
+    withComments(
+      printer,
+      getPosKey("r", block.end),
+      printMembers(printer, getPosKey("x", block.pos), written),
+    ),
+    text(` from ${quoteString(block.library)}`),
+  ])
+}
+
+function hasBlockAttribute(block: ExternBlock, attribute: Attribute): bool {
+  for (const blockAttribute of Arrays.values(block.attributes)) {
+    if (blockAttribute.pos == attribute.pos) {
+      return true
+    }
+  }
+  return false
 }
 
 function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
@@ -553,7 +628,7 @@ function printImport(printer: Printer, importDecl: ImportDecl): Doc uses alloc {
 function printDeclaration(printer: Printer, declaration: Decl): Doc from printer uses alloc {
   return match (declaration) {
     Decl.Func(inner) => Docs.concat([
-      printTargetAttribute(printer, inner),
+      printAttributes(printer, inner),
       printFunction(printer, inner),
     ])
     Decl.Const(inner) => printConst(printer, inner)
@@ -570,28 +645,41 @@ function printDeclaration(printer: Printer, declaration: Decl): Doc from printer
   }
 }
 
-function printTargetAttribute(printer: Printer, declaration: FuncDecl): Doc uses alloc {
-  // The attribute takes a line of its own above the function.
-  if (declaration.target is Some(attribute)) {
+function printAttributes(printer: Printer, declaration: FuncDecl): Doc uses alloc {
+  // Each attribute takes a line of its own above the function.
+  let lines: Array<Doc> = []
+  for (const attribute of Arrays.values(declaration.attributes)) {
+    Arrays.push(mutable lines, printAttribute(printer, attribute))
+  }
+  return Docs.concat(lines)
+}
+
+function printAttribute(printer: Printer, attribute: Attribute): Doc uses alloc {
+  let written = `@${attribute.name}`
+  if (attribute.hasParentheses) {
     let names: Array<string> = []
     for (const argument of Arrays.values(attribute.arguments)) {
-      Arrays.push(mutable names, `${argument.name} = ${argument.typeName}.${argument.variant}`)
-    }
-    let parts: Array<Doc> = [text(`@target(${Str.join(names, ", ")})`)]
-    // Its comments follow it: the first stays on its line unless it was written on a line of its own.
-    const anchor = getPosKey("@", attribute.pos)
-    if (hasDangling(printer, anchor)) {
-      if (isFirstDanglingOnOwnLine(printer, anchor)) {
-        Arrays.push(mutable parts, Doc.HardLine)
+      if (argument.text is Some(argumentText)) {
+        Arrays.push(mutable names, quoteString(argumentText))
       } else {
-        Arrays.push(mutable parts, text(" "))
+        Arrays.push(mutable names, `${argument.name} = ${argument.typeName}.${argument.variant}`)
       }
-      Arrays.push(mutable parts, printDangling(printer, anchor))
     }
-    Arrays.push(mutable parts, Doc.HardLine)
-    return Docs.concat(parts)
+    written = `${written}(${Str.join(names, ", ")})`
   }
-  return empty()
+  let parts: Array<Doc> = [text(written)]
+  // Its comments follow it: the first stays on its line unless it was written on a line of its own.
+  const anchor = getPosKey("@", attribute.pos)
+  if (hasDangling(printer, anchor)) {
+    if (isFirstDanglingOnOwnLine(printer, anchor)) {
+      Arrays.push(mutable parts, Doc.HardLine)
+    } else {
+      Arrays.push(mutable parts, text(" "))
+    }
+    Arrays.push(mutable parts, printDangling(printer, anchor))
+  }
+  Arrays.push(mutable parts, Doc.HardLine)
+  return Docs.concat(parts)
 }
 
 function isFirstDanglingOnOwnLine(printer: Printer, anchor: string): bool {
@@ -642,10 +730,16 @@ function printTypeParameters(
   names: Array<string>,
   bounds: Array<Array<TypeExpr>>,
   effects: Array<string>,
+  constants: Array<string>,
 ): Doc uses alloc {
   let items: Array<Doc> = []
   for (const index of Ranges.upTo(Arrays.length(names))) {
     let item = names[index]
+    for (const constant of Arrays.values(constants)) {
+      if (constant == item) {
+        item = `const ${item}: int`
+      }
+    }
     if (index < Arrays.length(bounds) && Arrays.length(bounds[index]) > 0) {
       let boundNames: Array<string> = []
       for (const bound of Arrays.values(bounds[index])) {
@@ -725,6 +819,7 @@ function printFunction(printer: Printer, declaration: FuncDecl): Doc from printe
       declaration.typeParameters,
       declaration.bounds,
       declaration.effectParameters,
+      declaration.constantParameters,
     ),
     printParameterList(
       printer,
@@ -823,7 +918,13 @@ function printStruct(printer: Printer, declaration: StructDecl): Doc from printe
   }
   return Docs.concat([
     text(`${prefix}struct ${declaration.name}`),
-    printTypeParameters(printer, declaration.typeParameters, [], []),
+    printTypeParameters(
+      printer,
+      declaration.typeParameters,
+      [],
+      [],
+      declaration.constantParameters,
+    ),
     printTraitLists(printer, declaration.implementations, declaration.derived),
     text(" "),
     printBraces(printer, getPosKey("d", declaration.pos), keys, fields),
@@ -851,7 +952,7 @@ function printEnum(printer: Printer, declaration: EnumDecl): Doc uses alloc {
   }
   return Docs.concat([
     text(`${getExportPrefix(declaration.exported)}enum ${declaration.name}`),
-    printTypeParameters(printer, declaration.typeParameters, [], []),
+    printTypeParameters(printer, declaration.typeParameters, [], [], []),
     printTraitLists(printer, declaration.implementations, declaration.derived),
     text(" "),
     printBraces(printer, getPosKey("d", declaration.pos), keys, variants),
@@ -872,7 +973,7 @@ function printDistinct(printer: Printer, declaration: DistinctDecl): Doc uses al
 function printAlias(printer: Printer, declaration: AliasDecl): Doc uses alloc {
   return Docs.concat([
     text(`${getExportPrefix(declaration.exported)}type ${declaration.name}`),
-    printTypeParameters(printer, declaration.typeParameters, [], []),
+    printTypeParameters(printer, declaration.typeParameters, [], [], []),
     text(" = "),
     printer.printType(printer, declaration.body),
   ])
@@ -888,7 +989,8 @@ function printMembers(
   for (const member of Arrays.values(functions)) {
     const key = getPosKey("d", member.pos)
     Arrays.push(mutable keys, key)
-    Arrays.push(mutable documents, withComments(printer, key, printFunction(printer, member)))
+    const printed = Docs.concat([printAttributes(printer, member), printFunction(printer, member)])
+    Arrays.push(mutable documents, withComments(printer, key, printed))
   }
   return printBraces(printer, anchor, keys, documents)
 }
@@ -915,6 +1017,13 @@ function printImpl(printer: Printer, declaration: ImplDecl): Doc from printer us
 
 export function printBlock(printer: Printer, block: Block): Doc from printer uses alloc {
   return withComments(printer, getPosKey("b", block.pos), printBlockBody(printer, block))
+}
+
+function printBlockStatement(printer: Printer, block: Block): Doc from printer uses alloc {
+  if (block.isUnsafe) {
+    return Docs.concat([text("unsafe "), printBlock(printer, block)])
+  }
+  return printBlock(printer, block)
 }
 
 function printBlockBody(printer: Printer, block: Block): Doc from printer uses alloc {
@@ -960,7 +1069,7 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc from printer
     return Docs.concat([text("return "), printTernaryChain(printer, statement)])
   }
   return match (statement) {
-    Stmt.BlockStmt(block) => printBlock(printer, block)
+    Stmt.BlockStmt(block) => printBlockStatement(printer, block)
     Stmt.VarStmt(_, _, isMutable, name, pattern, type, value) => printVariable(
       printer,
       isMutable,

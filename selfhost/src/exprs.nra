@@ -87,7 +87,13 @@ import { unify } from "narrac/generics"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
-import { splitIntLiteral, narrowByCondition, checkDivisor, checkShiftCount } from "narrac/operands"
+import {
+  splitIntLiteral,
+  narrowByCondition,
+  checkDivisor,
+  checkShiftCount,
+  collectAssignedInExpr,
+} from "narrac/operands"
 import { buildConstantHint } from "narrac/stdcopy"
 import { canShareType } from "narrac/stdcopy"
 import {
@@ -105,6 +111,8 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
+import { checkConstantName, describeUnknownParameter } from "narrac/constgenerics"
+import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
 
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
@@ -987,6 +995,11 @@ function checkName<W: Walker>(
     return getLocal(checker, local).localType
   }
 
+  // A constant type parameter of the function being checked.
+  if (checkConstantName(mutable checker, nodeId, name)) {
+    return Type.TInt
+  }
+
   // A top-level constant, own or imported.
   const scope = checker.current
   if (checker.scopes[scope].consts[name] is Some(index)) {
@@ -1432,6 +1445,12 @@ function checkIndex<W: Walker>(
   if (targetType is Type.TArray(element)) {
     return element
   }
+  if (targetType is Type.TFixedArray(fixedElement, _)) {
+    if (indexType == Type.TInt) {
+      checkFixedIndex(mutable checker, targetType, index)
+    }
+    return fixedElement
+  }
   const text = typeString(checker, targetType)
   reportError(mutable checker, pos, "E0210", `only arrays can be indexed, found ${text}`)
   return Type.TVoid
@@ -1735,7 +1754,13 @@ function checkBinary<W: Walker>(
 export function containsOpen(checker: Checker, searched: Type, parameters: Array<int>): bool {
   return match (searched) {
     Type.TParam(index) => isParamIn(index, parameters)
-    Type.TArray(element) | Type.TBox(element) => containsOpen(checker, element, parameters)
+    Type.TArray(element) | Type.TBox(element) | Type.TPtr(element) => containsOpen(
+      checker,
+      element,
+      parameters,
+    )
+    Type.TFixedArray(element, length) =>
+      containsOpen(checker, element, parameters) || containsOpen(checker, length, parameters)
     Type.TGenerator(element, _, _, _, input) =>
       containsOpen(checker, element, parameters) || containsOpen(checker, input, parameters)
     Type.TMap(key, value) =>
@@ -1972,7 +1997,8 @@ function inferGenericStruct<W: Walker>(
     if (bindings[param] is Some(boundType)) {
       Arrays.push(mutable typeArguments, boundType)
     } else {
-      const message = `cannot tell type parameter ${checker.parameters[param].name} of ${checker.generics[generic].name} here; add a type annotation`
+      const owner = checker.generics[generic].name
+      const message = describeUnknownParameter(checker, param, owner, "literal")
       reportError(mutable checker, pos, "E0220", message)
       return -1
     }
@@ -1994,6 +2020,17 @@ function checkArrayLiteral<W: Walker>(
 ): Type from want uses alloc {
   if (isTuple) {
     return Walker.checkTuple(walker, mutable checker, pos, elements, want)
+  }
+  // An expected FixedArray type makes the literal one, with every element given.
+  if (want is Some(Type.TFixedArray(fixedElement, _))) {
+    for (const element of Arrays.values(elements)) {
+      const found = checkExpression(mutable checker, walker, element, Some(fixedElement))
+      expectType(mutable checker, getExpressionPos(element), Some(fixedElement), found)
+    }
+    if (want is Some(fixedType)) {
+      reportLiteralLength(mutable checker, pos, fixedType, Arrays.length(elements))
+      return fixedType
+    }
   }
   // The expected type gives the element type, or else the first element.
   let elementType: Option<Type> = None
@@ -2949,138 +2986,4 @@ function allConstant(checker: Checker, elements: Array<Expr>): bool {
     }
   }
   return true
-}
-
-export function findRootName(expression: Expr): string {
-  return match (expression) {
-    Expr.Ident(_, _, name) => name
-    Expr.FieldExpr(_, _, target, _) | Expr.IndexExpr(_, _, target, _) => findRootName(target)
-    _ => ""
-  }
-}
-
-export function collectAssignedInBlock(block: Block, mutable names: Array<string>) uses alloc {
-  for (const statement of Arrays.values(block.statements)) {
-    collectAssignedInStatement(statement, mutable names)
-  }
-}
-
-export function collectAssignedInStatement(
-  statement: Stmt,
-  mutable names: Array<string>,
-) uses alloc {
-  match (statement) {
-    Stmt.BlockStmt(block) => collectAssignedInBlock(block, mutable names)
-    Stmt.VarStmt(_, _, _, _, _, _, value) => collectAssignedInExpr(value, mutable names)
-    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
-      Arrays.push(mutable names, findRootName(target))
-      collectAssignedInExpr(target, mutable names)
-      collectAssignedInExpr(value, mutable names)
-    }
-    Stmt.ExprStmt(_, expression) => collectAssignedInExpr(expression, mutable names)
-    Stmt.ReturnStmt(_, value) => {
-      if (value is Some(returned)) {
-        collectAssignedInExpr(returned, mutable names)
-      }
-    }
-    Stmt.IfStmt(_, condition, then, orElse) => {
-      collectAssignedInExpr(condition, mutable names)
-      collectAssignedInBlock(then, mutable names)
-      if (orElse is Some(other)) {
-        collectAssignedInStatement(other, mutable names)
-      }
-    }
-    Stmt.WhileStmt(_, _, condition, body) => {
-      collectAssignedInExpr(condition, mutable names)
-      collectAssignedInBlock(body, mutable names)
-    }
-    Stmt.CForStmt(_, _, init, condition, step, body) => {
-      if (init is Some(declaration)) {
-        collectAssignedInStatement(declaration, mutable names)
-      }
-      if (condition is Some(loopCondition)) {
-        collectAssignedInExpr(loopCondition, mutable names)
-      }
-      if (step is Some(stepStatement)) {
-        collectAssignedInStatement(stepStatement, mutable names)
-      }
-      collectAssignedInBlock(body, mutable names)
-    }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
-      collectAssignedInExpr(iterable, mutable names)
-      collectAssignedInBlock(body, mutable names)
-    }
-    Stmt.YieldStmt(_, value, _, _) => collectAssignedInExpr(value, mutable names)
-    _ => {}
-  }
-}
-
-function collectAssignedInExprs(expressions: Array<Expr>, mutable names: Array<string>) uses alloc {
-  for (const expression of Arrays.values(expressions)) {
-    collectAssignedInExpr(expression, mutable names)
-  }
-}
-
-export function collectAssignedInExpr(expression: Expr, mutable names: Array<string>) uses alloc {
-  match (expression) {
-    Expr.TemplateLit(_, _, parts) => collectAssignedInExprs(parts, mutable names)
-    Expr.FieldExpr(_, _, target, _) => collectAssignedInExpr(target, mutable names)
-    Expr.IsExpr(_, _, subject, _) => collectAssignedInExpr(subject, mutable names)
-    Expr.IndexExpr(_, _, target, index) => {
-      collectAssignedInExpr(target, mutable names)
-      collectAssignedInExpr(index, mutable names)
-    }
-    Expr.MapLit(_, _, _, keys, values) => {
-      collectAssignedInExprs(keys, mutable names)
-      collectAssignedInExprs(values, mutable names)
-    }
-    Expr.UnaryExpr(_, _, _, operand) => collectAssignedInExpr(operand, mutable names)
-    Expr.BinaryExpr(_, _, _, left, right) => {
-      collectAssignedInExpr(left, mutable names)
-      collectAssignedInExpr(right, mutable names)
-    }
-    Expr.StructLit(_, _, _, _, fields, spread) => {
-      for (const field of Arrays.values(fields)) {
-        collectAssignedInExpr(field.value, mutable names)
-      }
-      if (spread is Some(source)) {
-        collectAssignedInExpr(source, mutable names)
-      }
-    }
-    Expr.ArrayLit(_, _, elements, _) => collectAssignedInExprs(elements, mutable names)
-    Expr.BlockExpr(_, _, block) => collectAssignedInBlock(block, mutable names)
-    Expr.ArrowExpr(_, _, _, _, bodyExpr, block) => {
-      // A closure passed to a call may assign what it captures.
-      if (bodyExpr is Some(arrowBody)) {
-        collectAssignedInExpr(arrowBody, mutable names)
-      }
-      if (block is Some(arrowBlock)) {
-        collectAssignedInBlock(arrowBlock, mutable names)
-      }
-    }
-    Expr.MatchExpr(_, _, subject, arms) => {
-      collectAssignedInExpr(subject, mutable names)
-      for (const arm of Arrays.values(arms)) {
-        if (arm.guard is Some(guard)) {
-          collectAssignedInExpr(guard, mutable names)
-        }
-        if (arm.body is Some(armBody)) {
-          collectAssignedInExpr(armBody, mutable names)
-        }
-        if (arm.block is Some(armBlock)) {
-          collectAssignedInBlock(armBlock, mutable names)
-        }
-      }
-    }
-    Expr.CallExpr(_, _, callee, _, arguments) => {
-      collectAssignedInExpr(callee, mutable names)
-      for (const argument of Arrays.values(arguments)) {
-        if (argument.isMutable) {
-          Arrays.push(mutable names, findRootName(argument.value))
-        }
-        collectAssignedInExpr(argument.value, mutable names)
-      }
-    }
-    _ => {}
-  }
 }

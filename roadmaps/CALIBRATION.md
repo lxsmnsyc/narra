@@ -80,3 +80,9 @@ Notes:
 | selfhost | build-conditions | M | M+ | 2 | 319k tokens. Review: a hanging `uname` hung the compiler and LSP. |
 | selfhost | build-targets | M | M+ | 3 | 415k tokens. Review: fmt lost comments around `@target`; `--all-targets` checked debug only. |
 | selfhost | bench-check-suite | S | S | 1 | 80k tokens. Reviewed inline by the orchestrator (41 lines). |
+| selfhost | attributes | S | S | 1 | 84k tokens. Reviewed inline. |
+| selfhost | const-generics | M | M+ | 3 | 459k tokens. Parse regression; maintainer chose TypeScript's syntactic rule mid-node. |
+| selfhost | fixed-arrays | M | L | 2 | 576k tokens. Review found a narrowing hole on main, shipped as its own fix commit; 1 MiB cap added. |
+| selfhost | unsafe-ptr | M | L | 3 | 469k tokens. Effect escapes through generators and trait implementations closed for unsafe. |
+| selfhost | c-interop | M | L | 2 | 462k tokens. Assembler-label prototypes; prefix-helper name clash closed. |
+| selfhost | c-audit-target | S | S | 1 | 142k tokens. Reviewed inline; sample renamed. |

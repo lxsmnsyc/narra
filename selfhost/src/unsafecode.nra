@@ -1,0 +1,160 @@
+// Unsafe code: the Ptr<T> type of std/ptr, the rule for what a pointer may
+// point at, and `@trusted`. The calls of std/ptr are checked in stdptr.nra.
+// The effect pass (effects.nra) reports unsafe calls outside an `unsafe { }`
+// block and stops the effect at a `@trusted` function.
+import { Type, PointerCheck } from "narrac/types"
+import { Checker, internComposite, reportError, reportErrorIn, typeString } from "narrac/check"
+import { Pos, FuncDecl, Attribute } from "narrac/ast"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+
+export const POINTER_MODULE = "std/ptr"
+
+export function importsPointers(checker: Checker): bool uses alloc {
+  // Ptr names a type only in a module that imports std/ptr, by alias or by name.
+  const scope = checker.scopes[checker.current]
+  for (const moduleEntry of Maps.entries(scope.modules)) {
+    const #[_, path] = moduleEntry
+    if (path == POINTER_MODULE) {
+      return true
+    }
+  }
+  for (const importEntry of Maps.entries(scope.imported)) {
+    const #[_, index] = importEntry
+    if (checker.registry.functions[index].module == POINTER_MODULE) {
+      return true
+    }
+  }
+  return false
+}
+
+export function resolvePointerType(
+  mutable checker: Checker,
+  pos: Pos,
+  element: Type,
+): Type from element uses alloc {
+  queuePointerElement(mutable checker, pos, element)
+  return internComposite(mutable checker, Type.TPtr(element))
+}
+
+function queuePointerElement(mutable checker: Checker, pos: Pos, element: Type) uses alloc {
+  // A struct's fields may not be resolved yet, so the check waits for flushPointerElements.
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  Arrays.push(mutable checker.pointerElements, PointerCheck {
+    pos: pos,
+    element: element,
+    file: file,
+  })
+}
+
+export function flushPointerElements(mutable checker: Checker) uses alloc {
+  const pending = checker.pointerElements
+  checker.pointerElements = []
+  for (const check of Arrays.values(pending)) {
+    let seen: Map<int, bool> = Map {}
+    const problem = findPointeeProblem(checker, check.element, mutable seen)
+    if (problem != "") {
+      const elementName = typeString(checker, check.element)
+      reportErrorIn(
+        mutable checker,
+        check.file,
+        check.pos,
+        "E0998",
+        `Ptr<${elementName}> is not allowed: ${problem}; a pointer may point at numbers, bool, char, Ptr, and FixedArrays and structs of those`,
+      )
+    }
+  }
+}
+
+function findPointeeProblem(
+  checker: Checker,
+  type: Type,
+  mutable seen: Map<int, bool>,
+): string uses alloc {
+  // A pointer bypasses reference counting, so what it points at must hold no counted value.
+  match (type) {
+    Type.TInt
+      | Type.TI8
+      | Type.TI16
+      | Type.TI32
+      | Type.TU8
+      | Type.TU16
+      | Type.TU32
+      | Type.TU64
+      | Type.TF64
+      | Type.TF32
+      | Type.TBool
+      | Type.TChar
+      | Type.TPtr(_) => {
+      return ""
+    }
+    Type.TVoid => {
+      // An unknown type was reported where it is written.
+      return ""
+    }
+    Type.TParam(_) => {
+      return "a type parameter could stand for a reference-counted type"
+    }
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return findPointeeProblem(checker, base, mutable seen)
+      }
+      return `${checker.distincts[index].name} is opaque`
+    }
+    Type.TStruct(index) => {
+      if (seen[index] is Some(_)) {
+        return ""
+      }
+      seen[index] = true
+      if (checker.structs[index].opaque) {
+        return `${checker.structs[index].name} is opaque`
+      }
+      for (const field of Arrays.values(checker.structs[index].fields)) {
+        const problem = findPointeeProblem(checker, field.fieldType, mutable seen)
+        if (problem != "") {
+          return `field ${field.name} of ${checker.structs[index].name}: ${problem}`
+        }
+      }
+      return ""
+    }
+    Type.TFixedArray(element, _) => {
+      const problem = findPointeeProblem(checker, element, mutable seen)
+      if (problem != "") {
+        return `element of ${typeString(checker, type)}: ${problem}`
+      }
+      return ""
+    }
+    _ => {
+      return `${typeString(checker, type)} is reference counted or has no fixed layout`
+    }
+  }
+}
+
+export function checkTrusted(
+  mutable checker: Checker,
+  declaration: FuncDecl,
+  attribute: Attribute,
+  hasUnsafeBlock: bool,
+) uses alloc {
+  if (!hasUnsafeBlock) {
+    reportError(
+      mutable checker,
+      attribute.pos,
+      "E0997",
+      `@trusted on ${declaration.name}, which has no \`unsafe\` block; remove @trusted`,
+    )
+  }
+  for (const effect of Arrays.values(declaration.effects)) {
+    if (effect == "unsafe") {
+      reportError(
+        mutable checker,
+        attribute.pos,
+        "E0997",
+        `${declaration.name} is @trusted, so it does not have the unsafe effect; remove \`uses unsafe\``,
+      )
+    }
+  }
+}

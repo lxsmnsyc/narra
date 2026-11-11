@@ -53,6 +53,8 @@ export enum Type derives Equatable {
   TParam(index: int) // Checker.parameters: a type parameter of one declaration
   TArray(element: Type)
   TBox(element: Type)
+  // A raw pointer from std/ptr: a plain value with no reference count.
+  TPtr(element: Type)
   TMap(key: Type, valueType: Type)
   // shared is the index of the parameter the result shares (`from`), or -1
   // for a fresh result.
@@ -71,6 +73,12 @@ export enum Type derives Equatable {
   TGenerator(element: Type, effects: Array<string>, binder: int, origin: int, input: Type)
   // A namespace import such as `Int` used as a value (body checker only).
   TModule(path: string)
+  // The value of a constant type parameter (`const N: int`) in an instance: the 3 of
+  // `Vector<3>`. It is a type argument only, never the type of a value.
+  TConst(value: int)
+  // FixedArray<element, length>: `length` elements stored inline, with no heap
+  // allocation. The length is a TConst, or a constant TParam in a generic body.
+  TFixedArray(element: Type, length: Type)
 }
 
 // A struct field or variant field. `pos` is the field's declaration, or the
@@ -142,6 +150,8 @@ export struct AliasInfo {
 // parameters named T of different declarations differ.
 export struct ParamInfo {
   name: string
+  // Set for `const N: int`: the parameter stands for an integer, not a type.
+  isConstant: bool = false
 }
 
 // A generic struct or enum declaration (Go's genericType). fields and
@@ -179,6 +189,16 @@ export function isUnsignedInteger(type: Type): bool {
   return match (type) { Type.TU8 | Type.TU16 | Type.TU32 | Type.TU64 => true, _ => false }
 }
 
+export function findFixedLength(type: Type): int {
+  // The length of a FixedArray whose length is known, or -1 while it is an open parameter.
+  if (type is Type.TFixedArray(_, length)) {
+    if (length is Type.TConst(value)) {
+      return value
+    }
+  }
+  return -1
+}
+
 export function typeKey(type: Type): string uses alloc {
   // Go keys by C name (typeID); this key has no hash and is unique because struct, enum, distinct and parameter types are indexes.
   return buildKey(type, false)
@@ -190,6 +210,8 @@ export function plainTypeKey(type: Type): string uses alloc {
 }
 
 function buildKey(type: Type, plain: bool): string uses alloc {
+  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, K, X,
+  // the primitive names, Range, module), so the keys of two variants never meet.
   return match (type) {
     Type.TInt => "int"
     Type.TI8 => "i8"
@@ -213,6 +235,7 @@ function buildKey(type: Type, plain: bool): string uses alloc {
     Type.TParam(index) => `P${Int.toString(index)}`
     Type.TArray(element) => `A(${buildKey(element, plain)})`
     Type.TBox(element) => `B(${buildKey(element, plain)})`
+    Type.TPtr(element) => `R(${buildKey(element, plain)})`
     Type.TMap(key, value) => `M(${buildKey(key, plain)},${buildKey(value, plain)})`
     Type.TFunc(parameters, result, effects, binder, shared) => buildFunctionKey(
       parameters,
@@ -231,6 +254,8 @@ function buildKey(type: Type, plain: bool): string uses alloc {
       input,
     ) => `G(${buildKey(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${buildKey(input, plain)})`
     Type.TModule(path) => `module ${path}`
+    Type.TConst(value) => `K${Int.toString(value)}`
+    Type.TFixedArray(element, length) => `X(${buildKey(element, plain)},${buildKey(length, plain)})`
   }
 }
 
@@ -332,6 +357,14 @@ export struct ImplInfo {
 export struct ImplRef {
   block: int
   index: int
+}
+
+// The element type of a written Ptr<T>, waiting for flushPointerElements
+// (unsafecode.nra), which runs once every struct has its fields.
+export struct PointerCheck {
+  pos: Pos
+  element: Type
+  file: string
 }
 
 // A Map key type waiting for flushMapKeys (Go's mapKeyCheck).

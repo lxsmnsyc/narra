@@ -1,0 +1,99 @@
+// The C of FixedArray<T, N>: a struct holding `T items[N]`, passed and stored by
+// value like any struct. Indexes need no bounds check: the checker proved them
+// (fixedarrays.nra). An empty FixedArray keeps one unused item, since C has no
+// arrays of length zero.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Math from "std/math"
+import { Expr } from "narrac/ast"
+import { Type, findFixedLength } from "narrac/types"
+import { getExpressionId } from "narrac/check"
+import { cachedCType } from "narrac/cnames"
+import { Emitter, Code, EmitWalker, consume, ownedTemp, temp, readNodeType } from "narrac/emitstate"
+
+export function buildFixedDefinition(emitter: Emitter, type: Type): string uses alloc {
+  if (type is Type.TFixedArray(element, _)) {
+    const name = cachedCType(emitter.checker, emitter.typeNames, type)
+    const elementType = cachedCType(emitter.checker, emitter.typeNames, element)
+    const slots = Math.max(findFixedLength(type), 1)
+    return `struct ${name} { ${elementType} items[${Int.toString(slots)}]; };\n`
+  }
+  return ""
+}
+
+export function wrapItemsLoop(type: Type, indexName: string, statement: string): string uses alloc {
+  // Runs statement once for each item; statement names the item through indexName.
+  const length = findFixedLength(type)
+  if (statement == "" || length <= 0) {
+    return ""
+  }
+  return `for (int64_t ${indexName} = 0; ${indexName} < ${Int.toString(length)}; ${indexName}++) { ${statement} }`
+}
+
+export function buildItemIndexName(value: string): string uses alloc {
+  // Nested FixedArrays loop inside each other; the text of the value grows with
+  // each level, so its length gives each loop an index of its own.
+  return `i${Int.toString(Str.length(value))}`
+}
+
+export function buildFixedLengthText(type: Type, value: string): string uses alloc {
+  // The number of items of an Array or FixedArray value, for a for ... of loop.
+  if (type is Type.TFixedArray(_, _)) {
+    return Int.toString(findFixedLength(type))
+  }
+  return `${value}->len`
+}
+
+export function buildFixedItemText(type: Type, value: string, index: string): string uses alloc {
+  if (type is Type.TFixedArray(_, _)) {
+    return `${value}.items[${index}]`
+  }
+  return `${value}->items[${index}]`
+}
+
+export function emitFixedLiteral<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  elements: Array<Expr>,
+): Code uses alloc {
+  // The literal owns every element it is given.
+  const fixedType = copy(readNodeType(emitter, nodeId))
+  if (fixedType is Type.TFixedArray(element, _)) {
+    let items: Array<string> = []
+    for (const item of Arrays.values(elements)) {
+      const code = EmitWalker.emitExpression(walker, mutable emitter, item)
+      Arrays.push(mutable items, consume(mutable emitter, code.text, code.owned, element))
+    }
+    const name = cachedCType(emitter.checker, emitter.typeNames, fixedType)
+    let value = `((${name}){0})`
+    if (Arrays.length(items) > 0) {
+      value = `((${name}){.items = {${Str.join(items, ", ")}}})`
+    }
+    return Code { text: ownedTemp(mutable emitter, fixedType, value), owned: true }
+  }
+  return Code { text: "0", owned: false }
+}
+
+export function emitFixedRead<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  target: Expr,
+  index: Expr,
+): Code uses alloc {
+  // A read borrows the item, as a field read does.
+  const fixedType = copy(readNodeType(emitter, getExpressionId(target)))
+  if (fixedType is Type.TFixedArray(element, _)) {
+    const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
+    const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
+    const read = temp(mutable emitter, element, `(${targetCode.text}).items[${indexCode.text}]`)
+    return Code { text: read, owned: false }
+  }
+  return Code { text: "0", owned: false }
+}
+
+export function buildFixedPointer(base: string, index: string): string uses alloc {
+  // base points at the FixedArray; the result points at one item.
+  return `&(${base})->items[${index}]`
+}

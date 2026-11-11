@@ -10,7 +10,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Expr } from "narrac/ast"
-import { Type, typeKey, isInteger } from "narrac/types"
+import { Type, typeKey, isInteger, findFixedLength } from "narrac/types"
 import { Ref, ProgramFunc, getExpressionId, orderArguments, isPassedByPointer } from "narrac/check"
 import { cachedCType, cachedTypeId, opFuncName, cachedFunctionName } from "narrac/cnames"
 import {
@@ -300,6 +300,13 @@ function writeEquality(
     addLine(mutable builder, `    if (!${equal}(a->items[i], b->items[i])) return false;`)
     addLine(mutable builder, "  }")
     addLine(mutable builder, "  return true;")
+  } else if (type is Type.TFixedArray(fixedElement, _)) {
+    const equal = useEq(mutable emitter, fixedElement)
+    const length = formatFixedLength(type)
+    addLine(mutable builder, `  for (int64_t i = 0; i < ${length}; i++) {`)
+    addLine(mutable builder, `    if (!${equal}(a.items[i], b.items[i])) return false;`)
+    addLine(mutable builder, "  }")
+    addLine(mutable builder, "  return true;")
   } else if (type is Type.TStruct(index)) {
     let parts = ["true"]
     for (const field of Arrays.values(copy(emitter.checker.structs[index].fields))) {
@@ -347,6 +354,12 @@ function writeHash(
       mutable builder,
       `  for (int64_t i = 0; i < v->len; i++) h = narra_hash_mix(h, ${hash}(v->items[i]));`,
     )
+  } else if (type is Type.TFixedArray(fixedElement, _)) {
+    const hash = useHash(mutable emitter, fixedElement)
+    addLine(
+      mutable builder,
+      `  for (int64_t i = 0; i < ${formatFixedLength(type)}; i++) h = narra_hash_mix(h, ${hash}(v.items[i]));`,
+    )
   } else if (type is Type.TStruct(index)) {
     for (const field of Arrays.values(copy(emitter.checker.structs[index].fields))) {
       const hash = useHash(mutable emitter, field.fieldType)
@@ -392,6 +405,14 @@ function writeCompare(
     addLine(mutable builder, "  return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);")
     return
   }
+  if (type is Type.TFixedArray(fixedElement, _)) {
+    const compare = useCmp(mutable emitter, fixedElement)
+    addLine(mutable builder, `  for (int64_t i = 0; i < ${formatFixedLength(type)}; i++) {`)
+    addLine(mutable builder, `    if ((c = ${compare}(a.items[i], b.items[i])) != 0) return c;`)
+    addLine(mutable builder, "  }")
+    addLine(mutable builder, "  return c;")
+    return
+  }
   if (type is Type.TStruct(index)) {
     for (const field of Arrays.values(copy(emitter.checker.structs[index].fields))) {
       const name = fieldName(field.name)
@@ -420,6 +441,10 @@ function writeCompare(
   addLine(mutable builder, "  return c;")
 }
 
+function formatFixedLength(type: Type): string uses alloc {
+  return Int.toString(findFixedLength(type))
+}
+
 function appendText(indent: string, text: string): string uses alloc {
   return `${indent}lstr_append_c(&s, ${cString(text)});`
 }
@@ -440,6 +465,14 @@ function writeShow(
     addLine(mutable builder, "  for (int64_t i = 0; i < v->len; i++) {")
     addLine(mutable builder, "    if (i > 0) lstr_append_c(&s, \", \");")
     addLine(mutable builder, `    lstr_append_owned(&s, ${show}(v->items[i]));`)
+    addLine(mutable builder, "  }")
+    addLine(mutable builder, appendText("  ", "]"))
+  } else if (type is Type.TFixedArray(fixedElement, _)) {
+    const show = useShow(mutable emitter, fixedElement)
+    addLine(mutable builder, "  lstr* s = lstr_from_cstr(\"[\");")
+    addLine(mutable builder, `  for (int64_t i = 0; i < ${formatFixedLength(type)}; i++) {`)
+    addLine(mutable builder, "    if (i > 0) lstr_append_c(&s, \", \");")
+    addLine(mutable builder, `    lstr_append_owned(&s, ${show}(v.items[i]));`)
     addLine(mutable builder, "  }")
     addLine(mutable builder, appendText("  ", "]"))
   } else if (type is Type.TStruct(index)) {

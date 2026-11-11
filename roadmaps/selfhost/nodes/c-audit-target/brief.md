@@ -1,7 +1,7 @@
 ---
 id: c-audit-target
 title: "narra audit and @target on extern functions"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 141625
 owns:
   - roadmaps/selfhost/nodes/c-audit-target/**
   - selfhost/src/audit.nra

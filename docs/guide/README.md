@@ -49,10 +49,6 @@ Save a sample to a file and run it with `narrac run file.nra` to try your own ch
 The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
 - `async` and `await`, threads, channels and shared state.
-- Regions, fixed-size arrays and SIMD vectors.
-- `unsafe`, `extern` and C interop.
-- Build conditions.
+- Regions and SIMD vectors.
 - `@inline`, `@const` functions and `lazy` values.
-- C-style `for` loops and compound assignment (`+=`, `++`).
-- Sized number types (`i8` to `i64`, `u8` to `u64`, `f32`). Today the number types are `int` and `f64`.
 - Dependencies on other packages.

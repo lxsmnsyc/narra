@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-11, end of batch-8
+
+Run of `bench/run.sh -n 9` at commit 1e0ef889 on `feat/batch-8`, same machine and toolchains as the batch-7 run below. No agent was running. The load average was 1.93 (1 minute) at the start, with the 5 and 15 minute averages (5.02 and 7.83) still falling after the batch's test runs and activity outside this session, and 4.23 at the end. The Go and Rust times are 3% to 9% above the batch-7 run, so the machine was noisier: Narra changes of that size are noise.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.113 | 0.132 | 0.121 | 39088169   |
+| sieve     | 0.155 | 0.169 | 0.140 | 1270607    |
+| matmul    | 0.107 | 0.233 | 0.128 | 3547800000 |
+| strings   | 0.227 | 0.307 | 0.369 | 100000     |
+| interp    | 0.187 | 0.255 | 0.174 | 972838     |
+| particles | 0.068 | 0.076 | 0.102 | 6996184    |
+| compiler  | 0.269 | -     | -     | peak memory 149 MB |
+
+Instructions retired by `narrac emit` (median of 5): on the batch-7 source, 2.218G with the batch-7 compiler and 2.239G with the batch-8 compiler (+0.9%); the batch-8 compiler on its own source 2.372G. Peak memory on the batch-7 source is 130 MB with the batch-7 compiler and 134 MB with the batch-8 compiler; the rest of the rise to 149 MB comes from the source, which grew 5.7% (61,201 to 64,661 lines) with fixed arrays, constant type parameters, unsafe code and C interop. The seed is 186,549 lines (177,598 at the end of batch-7).
+
 ## 2026-11-11, end of batch-7
 
 Run of `bench/run.sh -n 9` at commit 7706132c on `feat/batch-7`, same machine and toolchains as the batch-6 run below. No agent was running. The load average was 1.84 (1 minute) at the start, with the 5 and 15 minute averages (3.45 and 4.83) still falling after the batch's test runs, and 1.89 at the end.

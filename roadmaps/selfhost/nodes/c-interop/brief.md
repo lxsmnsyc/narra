@@ -1,7 +1,7 @@
 ---
 id: c-interop
 title: "C interop: extern blocks, CString and linking"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 461803
 owns:
   - roadmaps/selfhost/nodes/c-interop/**
   - selfhost/src/externs.nra
@@ -83,6 +83,7 @@ D95 C interop, step 1 part 2: C functions are imported in a block that names the
 - Linking today: `[link] libraries` and `search` are parsed (`manifest.nra`) and carried into `Package.libraries`/`search` (`modules.nra`, which also dumps them; `main.nra` builds a package with `libraries: []`), but nothing passes them to `cc`: `cCompilerArguments` (`driver.nra`) takes `(options, cPath, output)` and always adds `-lm`, and `compileToC` returns only the C text. So `from "m"` already links. Make `compileToC` return the libraries named by extern blocks with the text, and pass them to `cCompilerArguments` as `-l<name>`. Remove `[link] libraries` (and its `Package` field and dump line); keep `[link] search` and pass it as `-L<dir>`, which is not passed today either. With tree shaking, decide whether an unreached block still links its library, and say so in SPEC.
 - Rewrite the single-function `extern function ... = "name"` form in SPEC section 9 (around line 1472) and the section 12 `@target` sample (`GetTickCount64`, around line 1599) to the block form. `@target` goes before an `extern { } from` block and applies to all its members (one library per block); c-audit-target builds it.
 - C names: generated names are hashed; extern names are the only unhashed ones besides step 2's exports, so check them against the generated name table (see the c-interop outline notes from hashed-cnames).
+- Attributes (attributes outcome): add `extern` to `KNOWN_ATTRIBUTES` in `parser.nra`. The argument parser accepts only `name = Enum.Variant` today; `@extern("deflateInit_")` needs a string argument, so extend `AttributeArgument` for it.
 - Tests must use only libc and libm (`from "c"`, `from "m"`): the Linux check image has `libc6-dev` and nothing else.
 
 ## Acceptance

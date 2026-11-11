@@ -1,7 +1,7 @@
 ---
 id: fixed-arrays
 title: "Fixed arrays: FixedArray<T, N> with proven indexes"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 576076
 owns:
   - roadmaps/selfhost/nodes/fixed-arrays/**
   - selfhost/src/fixedarrays.nra

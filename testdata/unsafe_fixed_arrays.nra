@@ -1,0 +1,69 @@
+// Pointers to FixedArrays and to structs with FixedArray fields, and a
+// Ptr<u8> into a FixedArray buffer passed to libc.
+import * as Ptr from "std/ptr"
+import * as Int from "std/int"
+import * as U64 from "std/u64"
+import * as U8 from "std/u8"
+
+struct Header {
+  tag: FixedArray<u8, 4>
+  size: int
+}
+
+// memset returns its first argument, here the buffer's address as a Ptr<u8>.
+extern {
+  function memset(target: Ptr<FixedArray<u8, 8>>, value: i32, count: u64): Ptr<u8>
+  function strlen(text: Ptr<u8>): u64
+} from "c"
+
+function sumBytes(values: FixedArray<u8, 8>): int {
+  let total = 0
+  for (const value of values) {
+    total += Int.from(value)
+  }
+  return total
+}
+
+@trusted
+function useBuffer(): string uses alloc {
+  let report = ""
+  unsafe {
+    const buffer: Ptr<FixedArray<u8, 8>> = Ptr.alloc(1)
+    const written: FixedArray<u8, 8> = [1, 2, 3, 4, 5, 6, 7, 8]
+    Ptr.write(buffer, written)
+    const before = sumBytes(Ptr.read(buffer))
+    // Fill the first seven bytes with 'A'; the last one stays 8.
+    const bytes = memset(buffer, 65, 7)
+    let changed = Ptr.read(buffer)
+    changed[7] = 0
+    Ptr.write(buffer, changed)
+    const length = strlen(bytes)
+    const third = Ptr.read(Ptr.offset(bytes, 2))
+    report = `${Int.toString(before)} ${U64.toString(length)} ${U8.toString(third)} ${Int.toString(sumBytes(Ptr.read(buffer)))}`
+    Ptr.free(buffer)
+  }
+  return report
+}
+
+@trusted
+function useHeader(): string uses alloc {
+  let report = ""
+  unsafe {
+    const header: Ptr<Header> = Ptr.alloc(1)
+    Ptr.write(header, Header { tag: [78, 82, 65, 0], size: 12 })
+    let read = Ptr.read(header)
+    read.tag[3] = 33
+    read.size += 1
+    Ptr.write(header, read)
+    const stored = Ptr.read(header)
+    report = `${U8.toString(stored.tag[0])} ${U8.toString(stored.tag[3])} ${Int.toString(stored.size)}`
+    Ptr.free(header)
+  }
+  return report
+}
+
+export function run(_args: Array<string>): int {
+  print(useBuffer())
+  print(useHeader())
+  return 0
+}

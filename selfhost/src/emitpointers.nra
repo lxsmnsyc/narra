@@ -1,0 +1,102 @@
+// The emitters of std/ptr. A Ptr<T> is a plain C pointer `T*` with no
+// reference count; what it points at holds no counted value (unsafecode.nra),
+// so a read or a write copies bytes and retains nothing.
+import { Type } from "narrac/types"
+import { Arg } from "narrac/ast"
+import { getExpressionId } from "narrac/check"
+import { cachedCType } from "narrac/cnames"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  writeLine,
+  temp,
+  readNodeType,
+} from "narrac/emitstate"
+import { NODE, plain, argumentText } from "narrac/stdemithelp"
+
+function findElementCType(emitter: Emitter, pointerType: Type): string uses alloc {
+  if (pointerType is Type.TPtr(element)) {
+    return cachedCType(emitter.checker, emitter.typeNames, element)
+  }
+  return "void"
+}
+
+function emitAlloc<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // The memory starts zeroed and is counted by the leak check until Ptr.free.
+  const pointerType = copy(readNodeType(emitter, nodeId))
+  const elementName = findElementCType(emitter, pointerType)
+  const countCode = argumentText(walker, mutable emitter, arguments, 0)
+  const count = temp(mutable emitter, Type.TInt, countCode)
+  const size = `(size_t)${count} * sizeof(${elementName})`
+  return plain(
+    temp(mutable emitter, pointerType, `(${elementName}*)memset(narra_alloc(${size}), 0, ${size})`),
+  )
+}
+
+function emitFree<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // Freeing a null pointer does nothing, as in C.
+  const pointerType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const pointerCode = argumentText(walker, mutable emitter, arguments, 0)
+  const pointer = temp(mutable emitter, pointerType, pointerCode)
+  writeLine(mutable emitter, `if (${pointer}) narra_free(${pointer});`)
+  return plain("((void)0)")
+}
+
+function emitWrite<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // The pointer is read before the value, in the order the arguments are written.
+  const pointerType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const pointerCode = argumentText(walker, mutable emitter, arguments, 0)
+  const pointer = temp(mutable emitter, pointerType, pointerCode)
+  const value = argumentText(walker, mutable emitter, arguments, 1)
+  writeLine(mutable emitter, `*${pointer} = ${value};`)
+  return plain("((void)0)")
+}
+
+export function emitPointerCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "Ptr.alloc") {
+    return emitAlloc(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Ptr.free") {
+    return emitFree(walker, mutable emitter, arguments)
+  }
+  if (name == "Ptr.write") {
+    return emitWrite(walker, mutable emitter, arguments)
+  }
+  if (name == "Ptr.read") {
+    return plain(`(*(${argumentText(walker, mutable emitter, arguments, 0)}))`)
+  }
+  if (name == "Ptr.offset") {
+    const pointer = argumentText(walker, mutable emitter, arguments, 0)
+    const count = argumentText(walker, mutable emitter, arguments, 1)
+    return plain(`((${pointer}) + (${count}))`)
+  }
+  if (name == "Ptr.isNull") {
+    return plain(`((${argumentText(walker, mutable emitter, arguments, 0)}) == NULL)`)
+  }
+  if (name == "Ptr.null") {
+    const pointerType = copy(readNodeType(emitter, nodeId))
+    return plain(`((${findElementCType(emitter, pointerType)}*)NULL)`)
+  }
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

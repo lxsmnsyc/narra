@@ -308,7 +308,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/env`, `std/f32`, `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -377,7 +377,32 @@ export enum Token {
 ```
 
 - **Arrays.** `Array<T>` is a growable, contiguous array on the heap. Elements are stored directly: an `Array<int>` holds raw 8-byte integers. Indexes start at 0. `items[i]` is bounds checked and panics when out of range.
-- **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
+- **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `N` is an integer literal or a constant type parameter, and never negative (E0995). One `FixedArray` value takes at most 1 MiB (1048576 bytes), so a local fits well inside a thread's stack; a larger one is E0995, and an `Array` holds more. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`, and gives all `N` elements. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
+- **Fixed-size array indexes are proven.** Indexing a `FixedArray` never panics and has no runtime check. A constant index must be from 0 to `N - 1`, and any other index must be a name that a check proves to be in that range (E0994): an `if` or `while` condition such as `i >= 0 && i < N`, the condition of `for (let i = 0; i < N; i++)` when nothing in the loop assigns `i`, or `for (const i of Ranges.upTo(N))`. An assignment to the name ends the proof. In a generic body the proof is made in each instance, where `N` is a constant. `FixedArrays.get(values, i)` (`std/fixedarray`) returns an `Option<T>` for any index, and `FixedArrays.length(values)` returns `N`. `for (const v of values)` reads a copy of the elements. Equality, hashing, ordering and `Show` follow the element type, as for `Array`.
+
+```ts
+import * as FixedArrays from "std/fixedarray"
+
+function sum<const N: int>(values: FixedArray<f64, N>): f64 {
+  let total = 0.0
+  for (let i = 0; i < N; i++) {
+    total += values[i]
+  }
+  return total
+}
+
+function at(values: FixedArray<f64, 4>, index: int): f64 {
+  if (index >= 0 && index < 4) {
+    return values[index]
+  }
+  return 0.0
+}
+
+function last(values: FixedArray<f64, 4>): Option<f64> {
+  return FixedArrays.get(values, FixedArrays.length(values) - 1)
+}
+```
+
 - **Vector types.** `std/simd` provides fixed-width vectors such as `F32x4`, `F64x2` and `I32x8`. Their operators work lane by lane and compile to the target's vector instructions.
 - **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
@@ -687,7 +712,8 @@ const label = match (status) {
 - **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
-- **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
+- **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. An integer literal (`3`, `-1`) between the brackets is a constant type argument, whatever the name before `<`, as in TypeScript: `both(a < 3, 4 > (c))` is the call `a<3, 4>(c)`, so write the comparison in parentheses, `both((a < 3), 4 > (c))`. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
+- **Constant type parameters.** `const N: int` in the type parameters of a function or a struct stands for an integer, not a type: `function repeat<const N: int>(text: string): string`, `struct Vector<const N: int> { ... }`. Its argument is an integer literal (`repeat<3>("ab")`, `Vector<-1>`) or a constant parameter in scope (`Vector<N>`). A call infers it from the argument types or the expected type like a type parameter (`const plane: Vector<2> = zeros()`); one that only the body uses must be written. A type argument never computes: `Vector<N + 1>` is a compile error, and so are a local, a top-level constant or a type where a constant belongs, and a constant where a type belongs (`value: N`). In the body `N` is an `int` value, known in each instance: `total / N` needs no check, and an instance with `N` equal to 0 is the usual divisor error, which names the instance and its call. A local or parameter named like a constant parameter is a shadowing error. A constant parameter does not satisfy a `requires` condition yet: a call that passes `N` to a function with `requires` is E0985. Each value is its own instance, so `repeat<2>` and `repeat<3>` are two functions and `Vector<2>` and `Vector<3>` two types. The kind is `int` only for now; the sized integer kinds (`const N: u8`) may come later. Enums and type aliases take no constant parameters.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 <!-- context
@@ -701,6 +727,20 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
     }
   }
   return false
+}
+```
+
+```ts
+struct Vector<const N: int> {
+  values: Array<f64>
+}
+
+function dimension<const N: int>(_vector: Vector<N>): int {
+  return N
+}
+
+function share<const N: int>(total: int): int {
+  return total / N
 }
 ```
 
@@ -1413,7 +1453,7 @@ const now = Shared.read(hits, (count) => count)
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
 - **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
-- **Deadlocks are possible** when callbacks nest locks in different orders. `narra audit` lists every nested `Shared.update`.
+- **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narra audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
 
 ### Async functions
 
@@ -1468,8 +1508,66 @@ export function run(args: Array<string>): int {        // entry function set in 
 
 ## 9. Unsafe code and C interop
 
-- **`unsafe { ... }`** blocks allow raw pointers (`Ptr<T>`), pointer arithmetic and unchecked indexing. A function containing an `unsafe` block has the `unsafe` effect unless it is marked `@trusted`, which states that the author checked it by hand.
-- **`extern`** declares a C function: `extern function strlen(s: Ptr<u8>): u64 uses unsafe = "strlen"`.
+- **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression; assign to a `let` declared before it. Code inside `unsafe` may crash; it is the stated exception to D92.
+- **The `unsafe` effect.** A function that holds an `unsafe` block has the `unsafe` effect: an exported one writes `uses unsafe` (E0800), a private one is inferred, and every caller needs an `unsafe` block of its own. A function value whose type lists `uses unsafe` is called the same way.
+- **Generators and traits.** Running a generator runs its body, so a `for` loop or `yield*` over a generator whose body has the `unsafe` effect needs an `unsafe` block (E0996). A call through a trait has the effects the trait function declares, so an implementation may use `unsafe` only when its trait function declares `uses unsafe` (E0800); otherwise it wraps the unsafe code with `@trusted`, the one attribute allowed on an implement block member.
+- **`@trusted`** on a function states that its `unsafe` blocks were checked by hand. It stops the effect there: the function does not have `unsafe`, so callers need no block and an exported one does not declare it. `@trusted` on a function with no `unsafe` block, or on one that writes `uses unsafe`, is E0997.
+- **`Ptr<T>`** is a raw pointer, a plain value with no reference count, compiled to the C pointer `T*`. The type is visible in a module that imports `std/ptr` (`import * as Ptr from "std/ptr"`), and it is written `Ptr<T>` whatever the alias: with `import * as P from "std/ptr"` the functions are `P.read` and the type is still `Ptr<int>`; `P.Ptr<int>` is an error. `T` is a number type, `bool`, `char`, another `Ptr`, a `FixedArray` of such values, or a struct whose fields are all such values (tuples count as structs, and a field may be a `FixedArray`). A `FixedArray` of anything else, such as `FixedArray<string, 2>`, is E0998 with a message that names the element. Strings, `bytes`, arrays, maps, boxes, enums, function values, generators, opaque structs and type parameters are E0998, because a pointer to them would bypass reference counting.
+- **Pointer values are ordinary data.** A `Ptr` can be stored in a struct, an array or a tuple, copied, passed to and returned from any function, `@trusted` or not, and held across calls. Copying one copies the address. A `Ptr` is not `Equatable`, `Hashable` or printable: `==` and `!=` on it are compile errors, it cannot be a `Map` key, and a struct that holds one cannot derive those traits. Test for null with `Ptr.isNull`.
+- **std/ptr.** `Ptr.alloc(count: int): Ptr<T>` allocates `count` zeroed elements (`uses alloc`); `Ptr.free(pointer)` frees what `Ptr.alloc` returned and does nothing for a null pointer; `Ptr.read(pointer): T` and `Ptr.write(pointer, value: T)` read and write one element; `Ptr.offset(pointer, count: int): Ptr<T>` moves by `count` elements. These five have the `unsafe` effect. `Ptr.null(): Ptr<T>` and `Ptr.isNull(pointer): bool` touch no memory and are safe. `Ptr.alloc` and `Ptr.null` take `T` from the expected type (`const items: Ptr<int> = Ptr.alloc(4)`). There is no `Ptr<void>`, since `void` is not a type that can be written; `Ptr<u8>` stands for C's `void*`. Nothing is checked at run time: a read past the allocation, a use after `Ptr.free` or a double free is undefined behavior. Memory from `Ptr.alloc` counts toward the debug leak check (section 13) until it is freed.
+
+```ts
+import * as Ptr from "std/ptr"
+
+@trusted
+function sumSquares(count: int): int uses alloc {
+  let total = 0
+  unsafe {
+    const items: Ptr<int> = Ptr.alloc(count)
+    for (let i = 0; i < count; i++) {
+      Ptr.write(Ptr.offset(items, i), i * i)
+    }
+    for (let i = 0; i < count; i++) {
+      total += Ptr.read(Ptr.offset(items, i))
+    }
+    Ptr.free(items)
+  }
+  return total
+}
+```
+
+- **`extern { ... } from "library"`** declares C functions, like an import names a module. The block stands at the top level and holds one or more function signatures, each on its own line, with no type parameters, no `uses` and no body (E1000). `from` names the library as `cc` takes it after `-l` (letters, digits, `_`, `.`, `+` and `-`, not starting with `-`): `"m"` for libm, `"z"` for zlib; `"c"` is libc and needs no `-l`. A member may be written `export`, and is then called from other modules like any exported function.
+
+```ts
+import * as Float from "std/float"
+
+extern {
+  @extern("abs")
+  function absolute(value: i32): i32
+} from "c"
+
+extern {
+  function cbrt(value: f64): f64
+} from "m"
+
+@trusted
+export function cubeRootOfMagnitude(value: i32): f64 {
+  let result = 0.0
+  unsafe {
+    result = cbrt(Float.from(absolute(value)))
+  }
+  return result
+}
+```
+
+- **Every member has the `unsafe` effect**, so all the rules above apply: a call needs an `unsafe` block (E0996) or a `@trusted` wrapper, a private function that calls one inside a block gets the effect, a generator whose body calls one needs a block where it runs, an implementation may call one only when its trait function declares `uses unsafe`, and a function value of a member has the type `(...) => T uses unsafe`. A member's parameters are never "unused".
+- **Types.** Parameters and results are the number types, `bool` and `Ptr<T>`, and a member may return nothing (E1002). In C, `int` is `int64_t`, the sized integers are `int8_t` to `uint64_t`, `f64` is `double`, `f32` is `float`, `bool` is `bool` and `Ptr<T>` is `T*`. So C's `long` is `int` on both supported platforms, C's `int` is `i32`, `size_t` is `u64`, and `char*`, `const char*` and `void*` are `Ptr<u8>`. Nothing checks that the Narra signature matches the C function: a wrong one is undefined behavior, which is why a call is unsafe. A `mutable` parameter is E1002. A C function that returns `int` as a truth value (`isalpha` and the other `ctype.h` predicates) is declared with `i32`, not `bool`: a `bool` result reads only the low byte, and glibc returns values such as 1024.
+- **Variadic C functions cannot be declared.** There is no syntax for `...`, and a fixed prototype for one (`printf(format: Ptr<u8>, value: int): i32`) is undefined behavior: variadic arguments are passed differently from fixed ones on some platforms (macOS arm64 puts them on the stack), so the C function reads garbage. Call them through a C-side wrapper with a fixed signature, which waits for C-callable functions and C sources in a package (node c-abi-export).
+- **C names.** A member links to the C function with its own name, or with the name `@extern("name")` gives (the only attribute a member takes, written on the line before it). The C name must be a C identifier and must not be one the compiler writes (E1001): `main`, a name starting with `narra_` or `lstr_`, a string literal name (`L` and digits), a name with a module hash (`f_3fa9c1e7_show`), or the generated name of a function or type of the program, alone, followed by `_` and more, or after a word and `_` (the reference counting and trait helpers, such as `release_E_Option_e088c655` and `eq_S_Tuple2_…`). `@extern` on a function with a body is E1000 for now; C-callable Narra functions are step 2 below.
+- **How a member's C prototype is written.** The C code keeps calling the member by its generated, hashed name, and declares it once as `extern <result> <generated name>(<parameters>) __asm__("<symbol>")`, with the C types above and the C name as the symbol (with the platform's symbol prefix, `_` on macOS). Because the C identifier is not the C name, the prototype never meets a declaration of the same function in the headers the runtime includes (`string.h`, `stdlib.h`, `math.h` and others): declaring `strlen` with `Ptr<u8>` and `u64` while `string.h` declares `size_t strlen(const char*)`, or `sqrt` twice, compiles with no conflict, and both declarations name the same symbol. Only the prototypes of reached members are written.
+- **Linking.** `narrac build` and `narrac run` pass `-l<library>` to `cc` for every library whose block has a member that reached code calls (tree shaking, section 11), after the C file and in declaration order; `-lm` is always passed. A block whose members are never reached, for example because they are called only in a branch a build condition drops, links nothing, so its library need not exist on that target. `[link] search` in `narra.toml` adds `-L<directory>` (section 15).
+- **Memory from C.** Memory a C function allocates goes back through the C library's own function (an extern `free`), never through `Ptr.free`, which frees only what `Ptr.alloc` returned.
+- **Not built yet** (C interop step 2, node c-abi-export): `@layout(C)`, `@layout(u8)` and C-callable functions, written below under their earlier names.
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Red = 1` in an enum without `@repr` is a compile error whose fix adds `@repr(i32)` (D73). `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
 
@@ -1483,9 +1581,8 @@ export enum Color {
 ```
 
 - **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
-- **C strings.** `std/ffi` provides `CString`. `CString.from(s)` copies a string with a terminating zero byte, and `CString.toString(p)` copies back and returns `Result` on invalid UTF-8.
-- **Linking.** A `[link]` table in `narra.toml` lists C libraries and search paths (section 15).
-- `narra audit` lists every `unsafe` block and `@trusted` function in a package.
+- **C strings.** `std/cstring` provides `CString`, a string with no zero byte, written with `import * as CStrings from "std/cstring"` and `import { CString } from "std/cstring"`. `CStrings.from(text): Option<CString>` is `None` when the text holds a zero byte. `CStrings.pointer(value): Ptr<u8>` is the address of its zero-terminated bytes for a C function that takes `const char*`; it is valid while the CString is alive and must not be written through. `CStrings.toString(value): string` gives the text back, and `CStrings.read(pointer): Result<string, string>` (`uses alloc, unsafe`) copies a zero-terminated string a C function returned, with `Err` for invalid UTF-8.
+- `narra audit [path]` lists every `unsafe` block and `@trusted` function in a package, one line each, sorted by file, line and column: `src/x.nra:12:3: unsafe block in function name` and `src/x.nra:4:1: @trusted function name`. A block in a test reads `in test name`, and a trait or implement block member is named with its trait or implementation: `@trusted function measure in implement Measure for Cells`, `unsafe block in function measure in trait Measure`. It reads the source only and exits 0; a package that does not load is an error.
 
 ## 10. Top-level declarations
 
@@ -1559,7 +1656,7 @@ export function configDir(): string uses io, alloc {
 - **`narra emit` writes the C of a debug build.** The C of a release build comes from `narra build -release -emit-c file.c`.
 - **An `if` that tests only these constants is resolved at compile time.** The output contains no runtime check, only the matching branch, or nothing when no branch matches. The condition may combine the constants with `==`, `!=`, `is` (a variant without fields), `!`, `&&` and `||`, and each `else if` of a chain is resolved on its own. A condition that mixes the constants with any other value, or a `match` on them, is an ordinary runtime test.
 - **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed. The effects of every branch count toward the function's effects, the dropped ones included, so a function has the same signature on every target.
-- **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Only Narra functions take `@target` for now; other declarations do not.
+- **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Narra functions and `extern { } from` blocks take `@target`; other declarations do not.
 
 ```ts
 import * as Build from "std/build"
@@ -1592,11 +1689,15 @@ export function opener(): string {
   So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
 - **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
-- The C interop form, `@target` on an `extern` function so that a C function is linked only when building for its target, waits for C interop:
+- **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
 ```ts
+import { Os } from "std/build"
+
 @target(os = Os.Windows)
-extern function GetTickCount64(): u64 uses unsafe = "GetTickCount64"
+extern {
+  function GetTickCount64(): u64
+} from "kernel32"
 ```
 
 - There are no per-platform file names and no preprocessor.
@@ -1767,7 +1868,6 @@ name = "app"
 entry = "app/cli.run"
 
 [link]
-libraries = ["sqlite3"]
 search = ["/opt/homebrew/lib"]
 
 [build]
@@ -1776,7 +1876,7 @@ generics = "compact"    # optional: layout tables everywhere, for smaller binari
 
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect, and it is not `async`.
-- **`[link]`** lists C libraries to link and directories to search.
+- **`[link]`** has one key, `search`: directories `cc` searches for libraries (`-L`), relative to the package directory unless absolute. The libraries come from the `from` of extern blocks (section 9); any other key in `[link]` is E1000.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
 - **`narra.lock`** records the commit hash and content hash of every dependency. `narra build` fails when a fetched dependency does not match its hash.

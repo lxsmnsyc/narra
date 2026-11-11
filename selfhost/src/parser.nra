@@ -128,8 +128,9 @@ import {
   VariantDecl,
   EnumDecl,
   TestDecl,
-  TargetAttribute,
-  TargetArgument,
+  Attribute,
+  AttributeArgument,
+  ExternBlock,
   TraitDecl,
   ImplDecl,
   Decl,
@@ -200,11 +201,13 @@ struct Parser {
   contractPattern: bool = false
 }
 
-// The type parameters of `<A, B: Show & Ordered, effect E>`.
+// The type parameters of `<A, B: Show & Ordered, effect E, const N: int>`.
+// constants names the `const` ones, which names holds too.
 struct TypeParams {
   names: Array<string>
   bounds: Array<Array<TypeExpr>>
   effects: Array<string>
+  constants: Array<string>
 }
 
 struct TraitLists {
@@ -864,7 +867,22 @@ function parseFile(mutable parser: Parser): File {
   }
   while (isOk(parser) && currentToken(parser).kind != TokenKind.TokEof) {
     parser.typeNames = []
-    Arrays.push(mutable declarations, parseDecl(mutable parser))
+    // Attributes stand before a function or an extern block.
+    const startIndex = parser.index
+    const attributes = parseAttributeList(mutable parser)
+    if (isExternBlockStart(parser)) {
+      // The members of an extern block are top-level functions of their own.
+      for (const member of Arrays.values(
+        parseExternBlock(mutable parser, attributes, startIndex),
+      )) {
+        Arrays.push(mutable declarations, Decl.Func(member))
+      }
+    } else {
+      Arrays.push(
+        mutable declarations,
+        parseDeclWithAttributes(mutable parser, attributes, startIndex),
+      )
+    }
     skipNewlines(mutable parser)
   }
   return File { imports: imports, declarations: declarations, facts: createEmptyFacts() }
@@ -981,53 +999,252 @@ function isTypeBreaker(text: string): bool {
     text == "="
 }
 
-function parseDecl(mutable parser: Parser): Decl {
-  // `@target(...)` stands on its own line before a function. Its trivia record
-  // runs up to the declaration keyword, so the comments after it, on its line
-  // or on lines of their own, are the attribute's.
-  const startIndex = parser.index
-  let attribute: Option<TargetAttribute> = None
-  if (isAt(parser, SYMBOL_AT)) {
-    const written = parseTargetAttribute(mutable parser)
-    skipNewlines(mutable parser)
-    if (parser.collector.enabled && isOk(parser)) {
-      const key = getPosKey("@", written.pos)
-      const end = getPos(currentToken(parser))
-      noteNode(mutable parser.collector, key, written.pos, end)
-    }
-    attribute = Some(written)
-  }
+function parseDeclWithAttributes(
+  mutable parser: Parser,
+  attributes: Array<Attribute>,
+  startIndex: int,
+): Decl {
+  // Attributes stand on their own lines before a function. The trivia record of
+  // the declaration starts at the first `@` and each attribute has its own
+  // record that runs up to the next token, so the comments after an attribute,
+  // on its line or on lines of their own, are that attribute's.
   const body = parseDeclBody(mutable parser)
-  const declaration = addTargetAttribute(mutable parser, body, attribute)
+  const declaration = addAttributes(mutable parser, body, attributes)
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("d", getDeclPos(declaration)), startIndex)
   }
   return declaration
 }
 
-function addTargetAttribute(
+function parseAttributeList(mutable parser: Parser): Array<Attribute> uses alloc {
+  let attributes: Array<Attribute> = []
+  while (isOk(parser) && isAt(parser, SYMBOL_AT)) {
+    const written = parseAttribute(mutable parser)
+    skipNewlines(mutable parser)
+    if (parser.collector.enabled && isOk(parser)) {
+      const key = getPosKey("@", written.pos)
+      const end = getPos(currentToken(parser))
+      noteNode(mutable parser.collector, key, written.pos, end)
+    }
+    if (isOk(parser) && hasAttribute(attributes, written.name)) {
+      failAt(
+        mutable parser,
+        written.pos,
+        "E0990",
+        `\`@${written.name}\` is written once, before a function declaration`,
+      )
+    }
+    Arrays.push(mutable attributes, written)
+  }
+  return attributes
+}
+
+function hasAttribute(attributes: Array<Attribute>, name: string): bool {
+  for (const attribute of Arrays.values(attributes)) {
+    if (attribute.name == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function addAttributes(
   mutable parser: Parser,
   declaration: Decl,
-  attribute: Option<TargetAttribute>,
+  attributes: Array<Attribute>,
 ): Decl from declaration uses alloc {
-  if (attribute is Some(written)) {
-    if (declaration is Decl.Func(funcDecl)) {
-      return Decl.Func(FuncDecl { ...funcDecl, target: Some(copy(written)) })
-    }
-    failAt(
-      mutable parser,
-      written.pos,
-      "E0990",
-      "`@target` is written once, before a function declaration",
-    )
+  if (Arrays.length(attributes) == 0) {
+    return declaration
   }
+  if (declaration is Decl.Func(funcDecl)) {
+    rejectExternAttribute(mutable parser, attributes)
+    return Decl.Func(FuncDecl { ...funcDecl, attributes: copy(attributes) })
+  }
+  const first = attributes[0]
+  failAt(
+    mutable parser,
+    first.pos,
+    "E0990",
+    `\`@${first.name}\` is written once, before a function declaration`,
+  )
   return declaration
 }
 
-function parseDeclBody(mutable parser: Parser): Decl {
-  if (isAt(parser, SYMBOL_AT)) {
-    failHere(mutable parser, "E0990", "`@target` is written once, before a function declaration")
+function rejectExternAttribute(mutable parser: Parser, attributes: Array<Attribute>) {
+  // `@extern` names a C function, so it belongs on a member of an extern block.
+  for (const attribute of Arrays.values(attributes)) {
+    if (attribute.name == "extern") {
+      failAt(
+        mutable parser,
+        attribute.pos,
+        "E1000",
+        "@extern is written on a function inside an `extern { } from` block",
+      )
+    }
   }
+}
+
+function isExternBlockStart(parser: Parser): bool {
+  // `extern` is a keyword only before `{` at the start of a declaration.
+  const next = peekToken(parser, 1)
+  return isWord(parser, "extern") && next.kind == TokenKind.TokPunct && next.text == "{"
+}
+
+function parseExternBlock(
+  mutable parser: Parser,
+  attributes: Array<Attribute>,
+  startIndex: int,
+): Array<FuncDecl> {
+  // Only @target is written before a block; it applies to every member.
+  let targets: Array<Attribute> = []
+  for (const attribute of Arrays.values(attributes)) {
+    if (isOk(parser) && attribute.name != "target") {
+      failAt(
+        mutable parser,
+        attribute.pos,
+        "E1000",
+        `@${attribute.name} is not written before an extern block; only @target is`,
+      )
+    }
+    Arrays.push(mutable targets, copy(attribute))
+  }
+  const pos = getPos(advance(mutable parser))
+  expect(mutable parser, SYMBOL_LEFT_BRACE)
+  skipNewlines(mutable parser)
+  let members: Array<FuncDecl> = []
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
+    Arrays.push(mutable members, parseExternMember(mutable parser))
+    skipNewlines(mutable parser)
+  }
+  if (isOk(parser) && Arrays.length(members) == 0) {
+    failAt(mutable parser, pos, "E1000", "an extern block declares at least one C function")
+  }
+  const closeIndex = parser.index
+  const end = getPos(expect(mutable parser, SYMBOL_RIGHT_BRACE))
+  if (parser.collector.enabled) {
+    // Comments between the closing brace and `from` attach to the brace.
+    noteKey(mutable parser, getPosKey("r", end), closeIndex)
+  }
+  // The library comes after the block, like the path of an import.
+  if (isOk(parser) && !accept(mutable parser, SYMBOL_KEYWORD_FROM)) {
+    failFound(mutable parser, "E1000", "an extern block ends with `from \"library\"`")
+  }
+  const libraryToken = currentToken(parser)
+  if (isOk(parser) && libraryToken.kind != TokenKind.TokString) {
+    failFound(mutable parser, "E1000", "an extern block ends with `from \"library\"`")
+  }
+  if (isOk(parser)) {
+    advance(mutable parser)
+    if (!isLibraryName(libraryToken.text)) {
+      failAt(
+        mutable parser,
+        getPos(libraryToken),
+        "E1000",
+        `${quoteGo(libraryToken.text)} is not a library name; write the name cc takes after -l, such as "m"`,
+      )
+    }
+  }
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("x", pos), startIndex)
+  }
+  const block = ExternBlock {
+    pos: pos,
+    end: end,
+    library: libraryToken.text,
+    libraryPos: getPos(libraryToken),
+    attributes: targets,
+  }
+  let linked: Array<FuncDecl> = []
+  for (const member of Arrays.values(members)) {
+    // The member carries the block's @target, so the checks of a @target function apply to it.
+    let memberAttributes: Array<Attribute> = copy(targets)
+    for (const written of Arrays.values(member.attributes)) {
+      Arrays.push(mutable memberAttributes, copy(written))
+    }
+    Arrays.push(mutable linked, FuncDecl {
+      ...member,
+      attributes: memberAttributes,
+      externBlock: Some(copy(block)),
+    })
+  }
+  return linked
+}
+
+function isLibraryName(name: string): bool {
+  // Letters, digits, `_`, `.`, `+` and `-`, not starting with `-`.
+  if (name == "" || Str.startsWith(name, "-")) {
+    return false
+  }
+  for (const character of Arrays.values(Str.chars(name))) {
+    const isLetter =
+      (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
+    const isDigit = character >= '0' && character <= '9'
+    const isMark = character == '_' || character == '.' || character == '+' || character == '-'
+    if (!isLetter && !isDigit && !isMark) {
+      return false
+    }
+  }
+  return true
+}
+
+function parseExternMember(mutable parser: Parser): FuncDecl {
+  const startIndex = parser.index
+  const attributes = parseAttributeList(mutable parser)
+  for (const attribute of Arrays.values(attributes)) {
+    if (isOk(parser) && attribute.name != "extern") {
+      failAt(
+        mutable parser,
+        attribute.pos,
+        "E1000",
+        `@${attribute.name} is not written on a function of an extern block; only @extern is`,
+      )
+    }
+  }
+  const exported = accept(mutable parser, SYMBOL_KEYWORD_EXPORT)
+  if (isOk(parser) && !isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
+    failFound(mutable parser, "E1000", "an extern block holds only function signatures")
+  }
+  const header = parseFuncHeader(mutable parser, exported)
+  // A C function has no type parameters, no effects to write and no body.
+  if (isOk(parser) && (header.generator || Arrays.length(header.typeParameters) > 0)) {
+    failAt(
+      mutable parser,
+      header.pos,
+      "E1000",
+      `${header.name} in an extern block cannot be generic or a generator`,
+    )
+  }
+  if (isOk(parser) && Arrays.length(header.effects) > 0) {
+    failAt(
+      mutable parser,
+      header.pos,
+      "E1000",
+      `${header.name} in an extern block has the unsafe effect already; remove \`uses\``,
+    )
+  }
+  if (isOk(parser) && isAt(parser, SYMBOL_LEFT_BRACE)) {
+    failHere(
+      mutable parser,
+      "E1000",
+      `${header.name} in an extern block has no body; the C library provides it`,
+    )
+  }
+  // The next member starts on a line of its own.
+  const next = currentToken(parser)
+  const atEnd =
+    isAt(parser, SYMBOL_RIGHT_BRACE) ||
+      next.kind == TokenKind.TokNewline ||
+      (parser.index > 0 && next.line > parser.tokens[parser.index - 1].endLine)
+  if (isOk(parser) && !atEnd) {
+    failFound(mutable parser, "E0013", "expected the end of the statement")
+  }
+  if (parser.collector.enabled) {
+    noteKey(mutable parser, getPosKey("d", header.pos), startIndex)
+  }
+  return FuncDecl { ...header, effects: ["unsafe"], attributes: attributes }
+}
+
+function parseDeclBody(mutable parser: Parser): Decl {
   const exported = accept(mutable parser, SYMBOL_KEYWORD_EXPORT)
   const special = parseOpaqueOrDistinct(mutable parser, exported)
   if (special is Some(declaration)) {
@@ -1110,19 +1327,83 @@ function parseDeclBody(mutable parser: Parser): Decl {
   return Decl.Test(TestDecl { pos: createEmptyPos(), name: "", body: createDummyBlock() })
 }
 
-function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
+struct AttributeRow {
+  name: string
+  takesArguments: bool
+  // The argument is one string, as in `@extern("deflateInit_")`.
+  takesText: bool = false
+}
+
+const KNOWN_ATTRIBUTES: Array<AttributeRow> = [
+  AttributeRow { name: "target", takesArguments: true },
+  AttributeRow { name: "trusted", takesArguments: false },
+  AttributeRow { name: "extern", takesArguments: true, takesText: true },
+]
+
+function findAttributeRow(name: string): Option<AttributeRow> {
+  for (const row of Arrays.values(KNOWN_ATTRIBUTES)) {
+    if (row.name == name) {
+      return Some(row)
+    }
+  }
+  return None
+}
+
+function describeKnownAttributes(): string uses alloc {
+  let names: Array<string> = []
+  for (const row of Arrays.values(KNOWN_ATTRIBUTES)) {
+    Arrays.push(mutable names, `@${row.name}`)
+  }
+  return Str.join(names, ", ")
+}
+
+function parseAttribute(mutable parser: Parser): Attribute uses alloc {
   const pos = getPos(expect(mutable parser, SYMBOL_AT))
   const nameToken = expectIdent(mutable parser)
-  if (isOk(parser) && nameToken.text != "target") {
-    failAt(
-      mutable parser,
-      getPos(nameToken),
-      "E0990",
-      `unknown attribute @${nameToken.text}; the only attribute is @target`,
-    )
+  let takesArguments = false
+  let takesText = false
+  if (isOk(parser)) {
+    if (findAttributeRow(nameToken.text) is Some(row)) {
+      takesArguments = row.takesArguments
+      takesText = row.takesText
+    } else {
+      failAt(
+        mutable parser,
+        getPos(nameToken),
+        "E0990",
+        `unknown attribute @${nameToken.text}; the known attributes are ${describeKnownAttributes()}`,
+      )
+    }
+  }
+  let arguments: Array<AttributeArgument> = []
+  if (!takesArguments) {
+    return Attribute { pos: pos, name: nameToken.text, hasParentheses: false, arguments: arguments }
   }
   expect(mutable parser, SYMBOL_LEFT_PAREN)
-  let arguments: Array<TargetArgument> = []
+  if (takesText) {
+    // One string between the parentheses.
+    const textToken = currentToken(parser)
+    if (isOk(parser) && textToken.kind != TokenKind.TokString) {
+      failFound(
+        mutable parser,
+        "E0990",
+        `@${nameToken.text} takes one string, as in @${nameToken.text}("name")`,
+      )
+    }
+    if (isOk(parser)) {
+      advance(mutable parser)
+      Arrays.push(mutable arguments, AttributeArgument {
+        pos: getPos(textToken),
+        name: "",
+        typeName: "",
+        typePos: getPos(textToken),
+        variant: "",
+        text: Some(textToken.text),
+      })
+    }
+    expect(mutable parser, SYMBOL_RIGHT_PAREN)
+    return Attribute { pos: pos, name: nameToken.text, hasParentheses: true, arguments: arguments }
+  }
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const argumentToken = expectIdent(mutable parser)
     expect(mutable parser, SYMBOL_EQUALS)
@@ -1143,11 +1424,11 @@ function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
         mutable parser,
         typePos,
         "E0990",
-        `@target ${argumentToken.text} takes a variant such as Os.Windows`,
+        `@${nameToken.text} ${argumentToken.text} takes a variant such as Os.Windows`,
       )
     }
     if (isOk(parser)) {
-      Arrays.push(mutable arguments, TargetArgument {
+      Arrays.push(mutable arguments, AttributeArgument {
         pos: getPos(argumentToken),
         name: argumentToken.text,
         typeName: typeName,
@@ -1160,7 +1441,7 @@ function parseTargetAttribute(mutable parser: Parser): TargetAttribute {
     }
   }
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
-  return TargetAttribute { pos: pos, arguments: arguments }
+  return Attribute { pos: pos, name: nameToken.text, hasParentheses: true, arguments: arguments }
 }
 
 function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<Decl> {
@@ -1255,6 +1536,9 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
       typeofName: valueName,
     }
   }
+  if (isConstantTypeAhead(parser)) {
+    return parseConstantType(mutable parser)
+  }
   const token = expectIdent(mutable parser)
   if (!isOk(parser)) {
     return createDummyType()
@@ -1277,6 +1561,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   if (accept(mutable parser, SYMBOL_LESS)) {
     while (isOk(parser)) {
       Arrays.push(mutable arguments, parseType(mutable parser))
+      rejectTypeArithmetic(mutable parser)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
@@ -1322,11 +1607,34 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
   let names: Array<string> = []
   let bounds: Array<Array<TypeExpr>> = []
   let effects: Array<string> = []
+  let constants: Array<string> = []
   if (!accept(mutable parser, SYMBOL_LESS)) {
-    return TypeParams { names: names, bounds: bounds, effects: effects }
+    return TypeParams { names: names, bounds: bounds, effects: effects, constants: constants }
   }
   while (isOk(parser) && !isAt(parser, SYMBOL_GREATER)) {
     const token = currentToken(parser)
+    if (accept(mutable parser, SYMBOL_KEYWORD_CONST)) {
+      // `const N: int` is a constant parameter; it also counts as a type name for the lookaheads.
+      const constantName = expectIdent(mutable parser).text
+      expect(mutable parser, SYMBOL_COLON)
+      const kind = expectIdent(mutable parser)
+      if (isOk(parser) && kind.text != "int") {
+        failAt(
+          mutable parser,
+          getPos(kind),
+          "E0992",
+          `a constant type parameter must have type int, found ${kind.text}`,
+        )
+      }
+      Arrays.push(mutable names, constantName)
+      Arrays.push(mutable constants, constantName)
+      Arrays.push(mutable parser.typeNames, constantName)
+      Arrays.push(mutable bounds, [])
+      if (!accept(mutable parser, SYMBOL_COMMA)) {
+        break
+      }
+      continue
+    }
     if (
       token.kind == TokenKind.TokIdent &&
         token.text == "effect" &&
@@ -1358,7 +1666,54 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
     }
   }
   expect(mutable parser, SYMBOL_GREATER)
-  return TypeParams { names: names, bounds: bounds, effects: effects }
+  return TypeParams { names: names, bounds: bounds, effects: effects, constants: constants }
+}
+
+function isConstantTypeAhead(parser: Parser): bool {
+  // `3` or `-3` where a type is written: a constant type argument.
+  if (currentToken(parser).kind == TokenKind.TokInt) {
+    return true
+  }
+  return isAt(parser, SYMBOL_MINUS) && peekToken(parser, 1).kind == TokenKind.TokInt
+}
+
+function parseConstantType(mutable parser: Parser): TypeExpr {
+  const pos = getPos(currentToken(parser))
+  let sign = ""
+  if (accept(mutable parser, SYMBOL_MINUS)) {
+    sign = "-"
+  }
+  const literal = advance(mutable parser)
+  return TypeExpr {
+    pos: pos,
+    name: `${sign}${literal.text}`,
+    arguments: [],
+    isFunc: false,
+    result: None,
+    effects: [],
+    isTuple: false,
+    isConstant: true,
+  }
+}
+
+function rejectTypeArithmetic(mutable parser: Parser) {
+  // A type argument is a type, a literal or a constant parameter; it never computes.
+  if (
+    isOk(parser) &&
+      (isAt(parser, SYMBOL_PLUS) ||
+        isAt(parser, SYMBOL_MINUS) ||
+        isAt(parser, SYMBOL_STAR) ||
+        isAt(parser, SYMBOL_SLASH) ||
+        isAt(parser, SYMBOL_PERCENT))
+  ) {
+    const operator = currentToken(parser)
+    failAt(
+      mutable parser,
+      getPos(operator),
+      "E0992",
+      `a type argument cannot compute with \`${operator.text}\`; write an integer literal or a constant parameter`,
+    )
+  }
 }
 
 function createNamedType(token: Token): TypeExpr {
@@ -1373,9 +1728,17 @@ function createNamedType(token: Token): TypeExpr {
   }
 }
 
-function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
+function parseTypeParamsNoBounds(mutable parser: Parser, allowConstants: bool): TypeParams {
   const pos = getPos(currentToken(parser))
   const typeParameters = parseTypeParams(mutable parser)
+  if (!allowConstants && Arrays.length(typeParameters.constants) > 0) {
+    failAt(
+      mutable parser,
+      pos,
+      "E0992",
+      "constant type parameters are allowed only on functions and structs",
+    )
+  }
   // Struct and enum type parameters cannot have constraints in this compiler.
   for (const traitBounds of Arrays.values(typeParameters.bounds)) {
     if (Arrays.length(traitBounds) > 0) {
@@ -1387,7 +1750,7 @@ function parseTypeParamsNoBounds(mutable parser: Parser): Array<string> {
       )
     }
   }
-  return typeParameters.names
+  return typeParameters
 }
 
 function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
@@ -1472,9 +1835,9 @@ function isContractLine(parser: Parser, word: string): bool {
 function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_FUNCTION))
   const generator = accept(mutable parser, SYMBOL_STAR)
-  // A function may be named `of` (std/hash declares Hash.of), though it is a keyword.
+  // A function may be named `of` or `from` (Hash.of, CStrings.from), though they are keywords.
   let nameToken = currentToken(parser)
-  if (isAt(parser, SYMBOL_KEYWORD_OF)) {
+  if (isAt(parser, SYMBOL_KEYWORD_OF) || isAt(parser, SYMBOL_KEYWORD_FROM)) {
     nameToken = advance(mutable parser)
   } else {
     nameToken = expectIdent(mutable parser)
@@ -1529,6 +1892,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     result: result,
     effects: effects,
     effectParameters: typeParameters.effects,
+    constantParameters: typeParameters.constants,
     body: None,
   }
 }
@@ -1564,7 +1928,7 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
 function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
   const pos = getPos(advance(mutable parser))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser, false).names
   expect(mutable parser, SYMBOL_EQUALS)
   const body = parseType(mutable parser)
   endTypeDecl(mutable parser)
@@ -1580,7 +1944,7 @@ function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
 function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_STRUCT))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser, true)
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   const fields = parseFieldList(mutable parser)
@@ -1588,7 +1952,8 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   return StructDecl {
     pos: pos,
     name: name,
-    typeParameters: typeParameters,
+    typeParameters: typeParameters.names,
+    constantParameters: typeParameters.constants,
     exported: exported,
     implementations: traitLists.implementations,
     derived: traitLists.derived,
@@ -1600,7 +1965,7 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
 function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_ENUM))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser)
+  const typeParameters = parseTypeParamsNoBounds(mutable parser, false).names
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
@@ -1761,6 +2126,19 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
   skipNewlines(mutable parser)
   let functions: Array<FuncDecl> = []
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACE)) {
+    // A member may be @trusted, to wrap unsafe code.
+    const functionStart = parser.index
+    const attributes = parseAttributeList(mutable parser)
+    for (const attribute of Arrays.values(attributes)) {
+      if (isOk(parser) && attribute.name != "trusted") {
+        failAt(
+          mutable parser,
+          attribute.pos,
+          "E0990",
+          `\`@${attribute.name}\` is not allowed in an implement block; only @trusted is`,
+        )
+      }
+    }
     if (isAt(parser, SYMBOL_KEYWORD_EXPORT)) {
       failHere(mutable parser, "E0026", "functions in an implement block cannot be exported")
       break
@@ -1769,9 +2147,9 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
       failFound(mutable parser, "E0027", `an implement block has functions only`)
       break
     }
-    const functionStart = parser.index
     rejectNestedGenerator(mutable parser)
-    const implFunction = parseFuncDecl(mutable parser, false)
+    const parsedFunction = parseFuncDecl(mutable parser, false)
+    const implFunction = FuncDecl { ...parsedFunction, attributes: attributes }
     Arrays.push(mutable functions, implFunction)
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("d", implFunction.pos), functionStart)
@@ -2232,6 +2610,18 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       "E0930",
       "a function inside a function is not supported; declare it at module level as a private function and pass the enclosing values as arguments",
     )
+  }
+  if (
+    token.kind == TokenKind.TokIdent &&
+      token.text == "unsafe" &&
+      following.kind == TokenKind.TokPunct &&
+      following.text == "{"
+  ) {
+    // `unsafe` is a keyword only before a block, so it stays an effect name.
+    advance(mutable parser)
+    const block = parseBlock(mutable parser)
+    skipNewlines(mutable parser)
+    return Stmt.BlockStmt(Block { ...block, isUnsafe: true, keywordPos: Some(pos) })
   }
   if (isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
     failAt(
@@ -2854,6 +3244,10 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
       if (!isTypeNameAhead(parser, token.text) && !isQualifier) {
         return false
       }
+    } else if (isConstantArgumentToken(parser, offset)) {
+      if (depth == 0) {
+        return false
+      }
     } else if (token.kind != TokenKind.TokPunct) {
       return false
     } else if (token.text == "<") {
@@ -2877,6 +3271,17 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
     offset++
   }
   return false
+}
+
+function isConstantArgumentToken(parser: Parser, offset: int): bool {
+  // An integer, or `-` before one, may stand between type argument brackets: `f<3>(x)`.
+  const token = peekToken(parser, offset)
+  if (token.kind == TokenKind.TokInt) {
+    return true
+  }
+  return token.kind == TokenKind.TokPunct &&
+    token.text == "-" &&
+    peekToken(parser, offset + 1).kind == TokenKind.TokInt
 }
 
 function isTypeNameAhead(parser: Parser, name: string): bool {
@@ -2933,6 +3338,10 @@ function isLiteralTypeArgsAhead(parser: Parser): bool {
       if (depth == 0) {
         return false
       }
+    } else if (isConstantArgumentToken(parser, offset)) {
+      if (depth == 0) {
+        return false
+      }
     } else if (token.kind != TokenKind.TokPunct) {
       return false
     } else if (token.text == "<") {
@@ -2964,6 +3373,7 @@ function parseLiteralTypeArgs(mutable parser: Parser): Array<TypeExpr> {
   while (isOk(parser)) {
     // A trailing `>>` is split by parseType, as in a type.
     Arrays.push(mutable arguments, parseType(mutable parser))
+    rejectTypeArithmetic(mutable parser)
     if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }

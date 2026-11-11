@@ -32,10 +32,19 @@
 //                      Linux-X86_64 host fails `check --all-targets` on Linux-Arm64
 //   build-targets/release-only   a use kept only when Build.debug is false
 //                      fails `check --all-targets` in the release builds
+//   build-targets/extern-outside-branch   the same for a function of a `@target`
+//                      extern block
+//   audit/basic        `narrac audit` lists the unsafe blocks and @trusted
+//                      functions of testdata/audit/basic
+//   const-generics/distinct-instances   in the C of testdata/const_generics.nra,
+//                      instances that differ only in a constant type argument
+//                      (repeat<1>, repeat<2>, repeat<3>; Vector<1>, Vector<2>,
+//                      Vector<3>) have C names of their own
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 import * as Path from "std/path"
+import * as Ranges from "std/range"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
@@ -107,6 +116,17 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(buildTargets, "release_only.nra"),
       "release-only",
     ),
+    makeCase(
+      "build-targets/extern-outside-branch",
+      Path.join(buildTargets, "extern_outside_branch.nra"),
+      "extern-outside-branch",
+    ),
+    makeCase("audit/basic", Path.join(Path.join(context.testdata, "audit"), "basic"), "audit"),
+    makeCase(
+      "const-generics/distinct-instances",
+      Path.join(context.testdata, "const_generics.nra"),
+      "distinct-instances",
+    ),
   ]
 }
 
@@ -142,6 +162,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   if (testCase.variant == "unreached") {
     return checkUnreached(context, testCase.path)
   }
+  if (testCase.variant == "distinct-instances") {
+    return checkDistinctInstances(context, testCase.path)
+  }
   if (testCase.variant == "std-source") {
     return checkStdSourceShaken(context, testCase.path)
   }
@@ -153,6 +176,12 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "other-target") {
     return checkAllTargets(context, testCase.path, "other_target.err", true)
+  }
+  if (testCase.variant == "extern-outside-branch") {
+    return checkAllTargets(context, testCase.path, "extern_outside_branch.err", false)
+  }
+  if (testCase.variant == "audit") {
+    return checkAudit(context, testCase.path)
   }
   if (testCase.variant == "release-only") {
     return checkAllTargets(context, testCase.path, "release_only.err", false)
@@ -248,6 +277,44 @@ function checkOneBranch(context: Context, source: string): Result<bool, string> 
     }
   }
   return Ok(true)
+}
+
+function checkDistinctInstances(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // Each name is followed by the hash of its arguments; count the different hashes.
+  const expected: Array<#[string, int]> = [#["_repeat_", 3], #["_Vector_", 3], #["_share_", 2]]
+  for (const entry of Arrays.values(expected)) {
+    const #[name, count] = entry
+    const found = countHashes(result.output, name)
+    if (found != count) {
+      return Err(
+        `expected ${Int.toString(count)} C names for ${name}, found ${Int.toString(found)}`,
+      )
+    }
+  }
+  return Ok(true)
+}
+
+function countHashes(output: string, name: string): int uses alloc {
+  let hashes: Map<string, bool> = Map {}
+  let count = 0
+  const pieces = splitString(output, name)
+  for (const index of Ranges.between(1, Arrays.length(pieces))) {
+    const piece = pieces[index]
+    if (Str.slice(piece, 0, 8) is Some(hash)) {
+      if (hashes[hash] is None) {
+        hashes[hash] = true
+        count++
+      }
+    }
+  }
+  return count
 }
 
 function checkUnreached(context: Context, source: string): Result<bool, string> uses io, alloc {
@@ -368,6 +435,18 @@ function checkAllTargets(
     }
   }
   return expectEmitError(context, ["check", "--all-targets", source], source, goldenName)
+}
+
+function checkAudit(context: Context, folder: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["audit", folder])
+  if (result.code != 0 || result.errorOutput != "") {
+    return Err(`audit failed: ${Common.describeRun(result)}`)
+  }
+  const want = Common.readExpected(Path.join(folder, "expected.txt"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("stdout", want.value, result.output)
 }
 
 function emitIn(context: Context, folder: string): Result<string, string> uses io, alloc {

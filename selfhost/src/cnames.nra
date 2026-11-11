@@ -96,6 +96,8 @@ function functionTypeName(
 }
 
 export function typeId(checker: Checker, type: Type): string uses alloc {
+  // Every variant names its case, so a new Type variant must choose its C name
+  // here; two different types never fall into one shared default.
   return match (type) {
     Type.TInt => "int"
     Type.TI8 => "i8"
@@ -123,6 +125,7 @@ export function typeId(checker: Checker, type: Type): string uses alloc {
     Type.TParam(index) => `P_${checker.parameters[index].name}_${Int.toString(index)}`
     Type.TArray(element) => internedName("A", "Array", [typeId(checker, element)])
     Type.TBox(element) => internedName("B", "Box", [typeId(checker, element)])
+    Type.TPtr(element) => internedName("R", "Ptr", [typeId(checker, element)])
     Type.TMap(key, valueType) => internedName("M", "Map", [
       typeId(checker, key),
       typeId(checker, valueType),
@@ -130,8 +133,22 @@ export function typeId(checker: Checker, type: Type): string uses alloc {
     Type.TFunc(parameters, result, _, _, _) => functionTypeName(checker, parameters, result)
     Type.TRange => "Range"
     Type.TGenerator(element, _, _, _, input) => generatorId(checker, element, input)
-    _ => "x"
+    Type.TConst(value) => buildConstantId(value)
+    Type.TFixedArray(element, length) => internedName("X", "FixedArray", [
+      typeId(checker, element),
+      typeId(checker, length),
+    ])
+    Type.TModule(_) => "x"
   }
+}
+
+function buildConstantId(value: int): string uses alloc {
+  // A constant type argument folds into the hashed name of its instance, so
+  // Vector<3> and Vector<4> get different C names; `m` stands for the sign.
+  if (value < 0) {
+    return `Nm${Int.toString(0 - value)}`
+  }
+  return `N${Int.toString(value)}`
 }
 
 function generatorId(checker: Checker, element: Type, input: Type): string uses alloc {
@@ -169,10 +186,15 @@ export function cType(checker: Checker, type: Type): string uses alloc {
     Type.TRange => "narra_range"
     Type.TParam(_) => "void*"
     Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => `${typeId(checker, type)}*`
+    Type.TPtr(element) => `${cType(checker, element)}*`
     Type.TDistinct(index) => cDistinctType(checker, index)
-    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _, _) => typeId(checker, type)
+    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _, _) | Type.TFixedArray(_, _) => typeId(
+      checker,
+      type,
+    )
     Type.TGenerator(_, _, _, _, _) => "narra_gen*"
-    _ => "void"
+    // A module and a constant type argument are never the type of a C value.
+    Type.TModule(_) | Type.TConst(_) => "void"
   }
 }
 
@@ -185,6 +207,7 @@ function isCachedType(type: Type): bool {
       | Type.TBox(_)
       | Type.TMap(_, _)
       | Type.TFunc(_, _, _, _, _)
+      | Type.TFixedArray(_, _)
       | Type.TGenerator(_, _, _, _, _) => true
     _ => false
   }
@@ -271,11 +294,11 @@ export function cachedCType(
 ): string uses alloc {
   return match (type) {
     Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => `${cachedTypeId(checker, cache, type)}*`
-    Type.TStruct(_) | Type.TEnum(_) | Type.TFunc(_, _, _, _, _) => cachedTypeId(
-      checker,
-      cache,
-      type,
-    )
+    Type.TPtr(element) => `${cachedCType(checker, cache, element)}*`
+    Type.TStruct(_)
+      | Type.TEnum(_)
+      | Type.TFunc(_, _, _, _, _)
+      | Type.TFixedArray(_, _) => cachedTypeId(checker, cache, type)
     // The base goes through the cache too, so the emitter sees the types it names.
     Type.TDistinct(index) => cachedDistinctType(checker, cache, index)
     _ => cType(checker, type)

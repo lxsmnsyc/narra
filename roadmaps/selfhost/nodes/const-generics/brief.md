@@ -1,7 +1,7 @@
 ---
 id: const-generics
 title: "Constant type parameters: const N: int"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-8
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 459155
 owns:
   - roadmaps/selfhost/nodes/const-generics/**
   - selfhost/src/constgenerics.nra

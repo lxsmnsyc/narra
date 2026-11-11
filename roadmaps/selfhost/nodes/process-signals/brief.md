@@ -1,7 +1,7 @@
 ---
 id: process-signals
 title: "narrac run and test forward termination signals"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-9

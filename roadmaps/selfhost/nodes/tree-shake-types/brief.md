@@ -48,6 +48,8 @@ After tree-shake, the emitter still writes every type the checker collected and 
 
 - Collect the types reachable from the emitted functions' signatures, locals and expressions, closed over fields, payloads and element types. Every per-type section filters on that set.
 - A std runtime section stays when a reachable function calls a builtin from it.
+- From tree-shake (outcome and review): the reachable set is `ReachableBodies` in `emit.nra`, known only after `emitReachableBodies` runs, while the type sections are written before it. Either move the type sections after the bodies (the C needs declarations first, so write bodies to a buffer or emit prototypes and types into an earlier slot), or record type uses during emission the same way `noteReference` records functions.
+- Shaken programs keep helpers for types only unreached code used, which now draw `-Wunused-function` (for example `A_Array_*_get/retain/release` and `narra_wrap_add`). Acceptance: the emitted C of `testdata/tree_shake.nra` and `bench/fib` compiles with `cc -Wall` and no `-Wunused-function` warnings for generated helpers.
 - The `Option<int>`, `#[int, int]` instances that `fib` gained in batch-6 (from the ext functions) are the first check.
 
 ## Acceptance

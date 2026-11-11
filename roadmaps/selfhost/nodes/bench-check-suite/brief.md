@@ -1,7 +1,7 @@
 ---
 id: bench-check-suite
 title: "A test suite checks every benchmark program"
-status: todo
+status: active
 priority: should
 type: chore
 story: batch-7

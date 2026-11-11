@@ -49,3 +49,5 @@
 ## Size
 
 - Estimated M, actual M.
+
+Landed on feat/batch-9 as 754c3280. Linux check passed on the final branch (worker run, 2026-11-12).

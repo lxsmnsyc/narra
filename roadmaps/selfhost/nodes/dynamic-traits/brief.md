@@ -1,7 +1,7 @@
 ---
 id: dynamic-traits
 title: "Dynamic<Trait> values"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-04
-spent:
+spent: 708000
 owns:
   - roadmaps/selfhost/nodes/dynamic-traits/**
   - selfhost/src/dynamic.nra

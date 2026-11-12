@@ -1,0 +1,187 @@
+// Standard functions as values: the checker gives a std function with a fixed
+// signature a function type, and the emitter writes one thunk per function that
+// calls the builtin with the thunk's parameters as arguments.
+import { Pos, Expr, Arg } from "narrac/ast"
+import { Type } from "narrac/types"
+import { StdFunc } from "narrac/builtins"
+import { Checker, Ref, internComposite, setRef, reportError, isPassedByPointer } from "narrac/check"
+import { stdType } from "narrac/stdtypes"
+import { cachedCType, parameterCType } from "narrac/cnames"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  readNodeType,
+  writeLine,
+  beginStatement,
+  endStatement,
+  unwindAll,
+  consume,
+  temp,
+  enterBodyContext,
+  leaveBodyContext,
+} from "narrac/emitstate"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+function findValueObstacle(builtin: StdFunc): string {
+  if (builtin.check != "" && builtin.check != "fixed") {
+    return "its parameter and result types depend on the call"
+  }
+  for (const isMutable of Arrays.values(builtin.mutables)) {
+    if (isMutable) {
+      return "it has a mutable parameter"
+    }
+  }
+  if (Arrays.length(builtin.callbacks) > 0) {
+    return "it takes a function that it calls"
+  }
+  return ""
+}
+
+function writeArrowHint(builtin: StdFunc, shown: string): string uses alloc {
+  // The parameter count is known only for a row with a fixed signature.
+  let names: Array<string> = []
+  const count = Arrays.length(builtin.parameters)
+  if (count == 0) {
+    names = ["items"]
+  } else if (count == 1) {
+    names = ["value"]
+  } else {
+    for (const index of Ranges.between(0, count)) {
+      Arrays.push(mutable names, `value${Int.toString(index)}`)
+    }
+  }
+  let marked: Array<string> = []
+  let passed: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(names))) {
+    if (index < Arrays.length(builtin.mutables) && builtin.mutables[index]) {
+      Arrays.push(mutable marked, `mutable ${names[index]}`)
+      Arrays.push(mutable passed, `mutable ${names[index]}`)
+    } else {
+      Arrays.push(mutable marked, names[index])
+      Arrays.push(mutable passed, names[index])
+    }
+  }
+  const parameters = Str.join(marked, ", ")
+  return `(${parameters}) => ${shown}(${Str.join(passed, ", ")})`
+}
+
+export function checkStdFunctionValue(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  shown: string,
+  builtinIndex: int,
+): Type from checker uses alloc {
+  const builtin = copy(checker.registry.functions[builtinIndex])
+  // A function whose signature is computed per call has no single function type.
+  const obstacle = findValueObstacle(builtin)
+  if (obstacle != "") {
+    const hint = writeArrowHint(builtin, shown)
+    reportError(
+      mutable checker,
+      pos,
+      "E1013",
+      `${shown} cannot be used as a value: ${obstacle}; wrap it in an arrow function, such as \`${hint}\``,
+    )
+    return Type.TVoid
+  }
+
+  // The function type comes from the row, with no effects in the type.
+  let parameters: Array<Type> = []
+  for (const text of Arrays.values(builtin.parameters)) {
+    Arrays.push(mutable parameters, stdType(mutable checker, text))
+  }
+  let result = Type.TVoid
+  if (builtin.result != "") {
+    result = stdType(mutable checker, builtin.result)
+  }
+  setRef(mutable checker, nodeId, Ref.Builtin(builtinIndex))
+  return internComposite(mutable checker, Type.TFunc(parameters, result, [], -1, -1))
+}
+
+export function emitStdFunctionValue<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  pos: Pos,
+  nodeId: int,
+  builtinIndex: int,
+): Code uses alloc {
+  const checker = copy(emitter.checker)
+  const builtin = copy(checker.registry.functions[builtinIndex])
+  const functionType = copy(readNodeType(emitter, nodeId))
+  const functionTypeName = cachedCType(checker, emitter.typeNames, functionType)
+  const name = `thunk_std_${Str.replace(builtin.name, ".", "_")}`
+  if (emitter.thunks[name] is Some(_)) {
+    return Code { text: `((${functionTypeName}){.fn = ${name}, .env = NULL})`, owned: false }
+  }
+  emitter.thunks[name] = true
+  let parameterTypes: Array<Type> = []
+  let result = Type.TVoid
+  if (functionType is Type.TFunc(types, resultType, _, _, _)) {
+    parameterTypes = copy(types)
+    result = copy(resultType)
+  }
+
+  // The signature, and a synthetic identifier node for each parameter.
+  let parts = ["narra_env* env"]
+  const callId = -2
+  const calleeId = -3
+  let arguments: Array<Arg> = []
+  // The body runs in the middle of another one, so its state is saved and restored.
+  const saved = enterBodyContext(mutable emitter, result)
+  emitter.syntheticTypes[callId] = result
+  emitter.syntheticRefs[callId] = Ref.Builtin(builtinIndex)
+  for (const index of Ranges.between(0, Arrays.length(parameterTypes))) {
+    const parameterName = `p${Int.toString(index)}`
+    const argumentId = -4 - index
+    Arrays.push(
+      mutable parts,
+      `${parameterCType(checker, emitter.typeNames, parameterTypes[index], false)} ${parameterName}`,
+    )
+    // A large parameter arrives as a pointer to the caller's value.
+    if (isPassedByPointer(checker, parameterTypes[index])) {
+      emitter.syntheticCode[argumentId] = `(*${parameterName})`
+    } else {
+      emitter.syntheticCode[argumentId] = parameterName
+    }
+    emitter.syntheticTypes[argumentId] = parameterTypes[index]
+    Arrays.push(mutable arguments, Arg {
+      pos: pos,
+      name: None,
+      isMutable: false,
+      value: Expr.Ident(argumentId, pos, parameterName),
+    })
+  }
+  const signature = `static ${cachedCType(checker, emitter.typeNames, result)} ${name}(${Str.join(parts, ", ")})`
+  Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
+
+  const call = Expr.CallExpr(callId, pos, Expr.Ident(calleeId, pos, builtin.key), [], arguments)
+  writeLine(mutable emitter, `${signature} {`)
+  emitter.indent++
+  writeLine(mutable emitter, "(void)env;")
+  beginStatement(mutable emitter)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, call)
+  if (result == Type.TVoid) {
+    if (code.text != "") {
+      writeLine(mutable emitter, `${code.text};`)
+    }
+    endStatement(mutable emitter)
+  } else {
+    // The caller owns the result, so a borrowed one is retained first.
+    const consumed = consume(mutable emitter, code.text, code.owned, result)
+    const returned = temp(mutable emitter, result, consumed)
+    unwindAll(mutable emitter)
+    writeLine(mutable emitter, `return ${returned};`)
+  }
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, "")
+  const text = Str.build(emitter.out)
+  leaveBodyContext(mutable emitter, saved)
+  Str.append(mutable emitter.closureDefinitions, text)
+  return Code { text: `((${functionTypeName}){.fn = ${name}, .env = NULL})`, owned: false }
+}

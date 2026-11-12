@@ -20,6 +20,7 @@ import {
   ProgramFunc,
   getExpressionId,
   findBody,
+  getExpressionPos,
   findBodySlot,
   orderArguments,
   findParameterIndexes,
@@ -43,6 +44,7 @@ import {
   needsRc,
   readNodeType,
   readNodeRef,
+  findSyntheticCode,
   readLocal,
   localRef,
   isReference,
@@ -59,6 +61,7 @@ import {
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
 import * as Closures from "narrac/emitclosures"
+import * as StdValues from "narrac/stdvalues"
 import * as Traits from "narrac/emittraits"
 import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
@@ -292,12 +295,22 @@ function emitIdent<W: EmitWalker>(
   expression: Expr,
   nodeId: int,
 ): Code uses alloc {
+  if (findSyntheticCode(emitter, nodeId) is Some(synthetic)) {
+    return plain(synthetic)
+  }
   const ref = readNodeRef(emitter, nodeId)
   return match (ref) {
     Ref.Local(index) => plain(localRef(emitter, index))
     Ref.Const(index) => plain(constRef(mutable emitter, index))
     Ref.Constructor(enumIndex, variant) => plain(constructorValue(emitter, enumIndex, variant))
     Ref.Function(_) => Closures.emitFuncValue(walker, mutable emitter, expression)
+    Ref.Builtin(index) => StdValues.emitStdFunctionValue(
+      walker,
+      mutable emitter,
+      getExpressionPos(expression),
+      nodeId,
+      index,
+    )
     Ref.ConstantParameter(value, false) => plain(writeConstantParameter(value))
     _ => unsupportedCode(mutable emitter, "name")
   }
@@ -325,6 +338,15 @@ function emitFieldRead<W: EmitWalker>(
   }
   if (ref is Ref.Function(_)) {
     return Closures.emitFuncValue(walker, mutable emitter, expression)
+  }
+  if (ref is Ref.Builtin(index)) {
+    return StdValues.emitStdFunctionValue(
+      walker,
+      mutable emitter,
+      getExpressionPos(expression),
+      nodeId,
+      index,
+    )
   }
   if (ref is Ref.Constructor(enumIndex, variant)) {
     return plain(constructorValue(emitter, enumIndex, variant))

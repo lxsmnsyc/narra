@@ -138,6 +138,88 @@ export struct Emitter {
   // The C names of the functions and constant getters the emitted code calls,
   // in the order the calls were written; emitProgram emits only these.
   references: Array<string> = []
+  // The nodes of a thunk that calls a std function: negative ids with a type, a
+  // reference and the C text of the value, so the call emitters read them like
+  // the nodes of a body.
+  syntheticTypes: Map<int, Type>
+  syntheticRefs: Map<int, Ref>
+  syntheticCode: Map<int, string>
+}
+
+export struct BodyContext {
+  out: StringBuilder
+  indent: int
+  frames: Array<Array<TempVar>>
+  scopes: Array<ScopeFrame>
+  loopFrames: Array<int>
+  loopInfos: Array<LoopInfo>
+  blocks: Array<BlockInfo>
+  resultType: Type
+  inGenerator: bool
+  refCaptures: Array<int>
+  syntheticTypes: Map<int, Type>
+  syntheticRefs: Map<int, Ref>
+  syntheticCode: Map<int, string>
+}
+
+export function enterBodyContext(
+  mutable emitter: Emitter,
+  resultType: Type,
+): BodyContext from emitter uses alloc {
+  // A function written in the middle of another body starts with no frames, scopes, loops or
+  // blocks, and its own output. The context returned is what leaveBodyContext puts back.
+  const saved = BodyContext {
+    out: emitter.out,
+    indent: emitter.indent,
+    frames: emitter.frames,
+    scopes: emitter.scopes,
+    loopFrames: emitter.loopFrames,
+    loopInfos: emitter.loopInfos,
+    blocks: emitter.blocks,
+    resultType: emitter.resultType,
+    inGenerator: emitter.inGenerator,
+    refCaptures: emitter.refCaptures,
+    syntheticTypes: emitter.syntheticTypes,
+    syntheticRefs: emitter.syntheticRefs,
+    syntheticCode: emitter.syntheticCode,
+  }
+  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
+  emitter.frames = []
+  emitter.loopFrames = []
+  emitter.loopInfos = []
+  emitter.blocks = []
+  emitter.refCaptures = []
+  emitter.inGenerator = false
+  emitter.out = Str.builder()
+  emitter.indent = 0
+  emitter.resultType = resultType
+  emitter.syntheticTypes = Map {}
+  emitter.syntheticRefs = Map {}
+  emitter.syntheticCode = Map {}
+  return saved
+}
+
+export function leaveBodyContext(mutable emitter: Emitter, saved: BodyContext) {
+  emitter.out = saved.out
+  emitter.indent = saved.indent
+  emitter.frames = saved.frames
+  emitter.scopes = saved.scopes
+  emitter.loopFrames = saved.loopFrames
+  emitter.loopInfos = saved.loopInfos
+  emitter.blocks = saved.blocks
+  emitter.resultType = saved.resultType
+  emitter.inGenerator = saved.inGenerator
+  emitter.refCaptures = saved.refCaptures
+  emitter.syntheticTypes = saved.syntheticTypes
+  emitter.syntheticRefs = saved.syntheticRefs
+  emitter.syntheticCode = saved.syntheticCode
+}
+
+export function findSyntheticCode(emitter: Emitter, nodeId: int): Option<string> from emitter {
+  if (nodeId >= -1) {
+    return None
+  }
+  return emitter.syntheticCode[nodeId]
 }
 
 // BlockInfo is a block expression being emitted: where a return stores its
@@ -212,6 +294,9 @@ export function newEmitter(
     frameSeen: Map {},
     generatorElement: Type.TVoid,
     heldArguments: Map {},
+    syntheticTypes: Map {},
+    syntheticRefs: Map {},
+    syntheticCode: Map {},
   }
 }
 
@@ -316,6 +401,9 @@ export function where(emitter: Emitter, pos: Pos): string uses alloc {
 }
 
 export function readNodeType(emitter: Emitter, nodeId: int): Type from emitter {
+  if (emitter.syntheticTypes[nodeId] is Some(synthetic)) {
+    return synthetic
+  }
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot >= 0) {
@@ -327,6 +415,9 @@ export function readNodeType(emitter: Emitter, nodeId: int): Type from emitter {
 }
 
 export function readNodeRef(emitter: Emitter, nodeId: int): Ref {
+  if (emitter.syntheticRefs[nodeId] is Some(synthetic)) {
+    return synthetic
+  }
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot < 0) {

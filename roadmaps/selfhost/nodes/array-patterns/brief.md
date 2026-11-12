@@ -1,7 +1,7 @@
 ---
 id: array-patterns
 title: "Array patterns in match, is and const"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 395000
 owns:
   - roadmaps/selfhost/nodes/array-patterns/**
   - testdata/array_patterns*

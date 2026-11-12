@@ -1,7 +1,7 @@
 ---
 id: batch-10
 title: "Batch 10: hidden copies, batch-9 leftovers and the destructuring design"
-status: todo
+status: active
 priority: should
 type: story
 story: 

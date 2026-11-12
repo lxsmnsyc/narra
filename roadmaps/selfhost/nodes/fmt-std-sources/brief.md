@@ -1,7 +1,7 @@
 ---
 id: fmt-std-sources
 title: "The sources suite checks std/src, and fmt levels block operands in a chain"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-10

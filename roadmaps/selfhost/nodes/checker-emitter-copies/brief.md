@@ -1,7 +1,7 @@
 ---
 id: checker-emitter-copies
 title: "A debug-built compiler compiles itself with no hidden copies"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-10

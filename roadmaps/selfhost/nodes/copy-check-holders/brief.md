@@ -1,7 +1,7 @@
 ---
 id: copy-check-holders
 title: "The debug copy check counts copy credits per holder"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-10

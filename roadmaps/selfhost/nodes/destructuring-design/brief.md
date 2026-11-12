@@ -1,7 +1,7 @@
 ---
 id: destructuring-design
 title: "Spike: destructuring in parameters, array patterns and assignments"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-10

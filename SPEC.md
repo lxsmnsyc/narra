@@ -827,7 +827,9 @@ const text = Label.label(price)
 
 - `Dynamic<Trait>` holds a value of any type that implements the trait. `Dynamic.of(value)` creates one when the expected type is known.
 - `Array<Dynamic<Drawable>>` holds values of different types. `Drawable.draw(item, mutable canvas)` calls the implementation of each item's own type.
-- A `Dynamic<Trait>` stores the value in a box, plus a pointer to the implementation.
+- **Which traits.** Every function of the trait takes `Self` as its first parameter, once and not inside another type (`Array<Self>` does not count), and mentions `Self` nowhere else, the result included. Other parameters may be `mutable` (`mutable canvas: Canvas`). So `Show`, `Hashable` and traits like `Drawable` qualify, and `Equatable`, `Ordered` (two `Self` values) and `Shape` (`fromValue` returns `Self`) do not.
+- **Layout.** `Dynamic.of(value)` makes one allocation: a reference-counted cell that holds a pointer to the table of the value's type for the trait, then the value. A `Dynamic` is a pointer to that cell, so a copy is one retain and the value is never copied. The value is read-only: no field of it can be written through a `Dynamic`, which is why the copies can share it: `copy(item)` copies nothing and is an error, as for a `string`. A trait function that takes `mutable value: Self` cannot be called through a `Dynamic`.
+- A call through a `Dynamic` names the trait as any trait call does, and its effects are the trait function's declared effects. A `Dynamic` has no `==`, cannot be a map key and implements no trait, so it does not meet a bound such as `<T: Show>`: loop over an `Array<Dynamic<Show>>` and call `Show.show(item)` on each. In a generic body `<T: Drawable>`, `Dynamic.of(value)` with `value: T` works. `Dynamic` is a prelude name, like `Box`: a type of the module named `Dynamic` hides it.
 
 **Standard traits**
 

@@ -69,6 +69,7 @@ import { checkConstructor } from "narrac/ctors"
 import { addFuncInstance } from "narrac/instances"
 import { checkCopyCall } from "narrac/stdcopy"
 import { recordContractCall } from "narrac/contracts"
+import { isDynamicName, checkDynamicOf, checkDynamicCall } from "narrac/dynamic"
 import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -475,6 +476,9 @@ function checkDottedCall<W: Walker>(
         )
         checkArgumentsLoosely(mutable checker, walker, arguments)
         return Type.TVoid
+      }
+      if (isDynamicName(checker, alias)) {
+        return copy(checkDynamicOf(mutable checker, walker, nodeId, pos, name, arguments, want))
       }
       if (reportMissingImport(mutable checker, targetPos, alias, name)) {
         checkArgumentsLoosely(mutable checker, walker, arguments)
@@ -1027,6 +1031,13 @@ function checkTraitCall<W: Walker>(
     const message = `${traitName}.${name} has Self only in its result; name the type, as in ${traitName}.${name}<Type>(...)`
     reportError(mutable checker, pos, "E0529", message)
     return Type.TVoid
+  } else if (Arrays.length(ordered) > 0 && getArgumentType(checker, ordered[0]) == Type.TVoid) {
+    // The first argument already reported its error; a result without Self
+    // keeps the code after the call from reporting more.
+    if (!containsOpen(checker, traitFunc.result, self)) {
+      return copy(traitFunc.result)
+    }
+    return Type.TVoid
   } else {
     reportError(
       mutable checker,
@@ -1045,6 +1056,11 @@ function checkTraitCall<W: Walker>(
   }
   const result = substitute(mutable checker, traitFunc.result, bindings)
 
+  // A Dynamic of this trait calls through its table.
+  if (selfType == Type.TDynamic(traitIndex)) {
+    checkDynamicCall(mutable checker, nodeId, pos, traitIndex, funcIndex)
+    return copy(result)
+  }
   // Self must implement the trait; a type parameter only through its bounds.
   if (!typeImplements(mutable checker, selfType, traitIndex)) {
     if (selfType is Type.TParam(param)) {

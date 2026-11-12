@@ -1,0 +1,166 @@
+// Dynamic<Trait> values: the trait rule, `Dynamic.of(value)` and calls
+// through a Dynamic. resolve.nra makes the type and queues each written
+// Dynamic<Trait>; flushDynamicTraits checks the trait once its functions are
+// resolved. A Dynamic.of call and a call through a Dynamic keep Ref.Unresolved,
+// as a call through a bound does, and record the type in traitSelf: the
+// stored value's type for Dynamic.of, the Dynamic itself for a call. The
+// emitter (emitdynamic.nra) reads them from there.
+import { Pos, Arg } from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Walker,
+  reportError,
+  reportErrorIn,
+  typeString,
+  lookupType,
+  lookupGeneric,
+  containsTypeParameter,
+} from "narrac/check"
+import { checkExpression, checkArgumentsLoosely, containsOpen } from "narrac/exprs"
+import { typeImplements } from "narrac/traits"
+import { findImplementation } from "narrac/implementations"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function flushDynamicTraits(mutable checker: Checker) uses alloc {
+  // Runs once every module is declared, and again after the bodies.
+  const written = checker.dynamicTraits
+  checker.dynamicTraits = []
+  for (const dynamicUse of Arrays.values(written)) {
+    const problem = findTraitProblem(checker, dynamicUse.traitIndex)
+    if (problem != "") {
+      reportErrorIn(mutable checker, dynamicUse.file, dynamicUse.pos, "E1023", problem)
+    }
+  }
+}
+
+function findTraitProblem(checker: Checker, traitIndex: int): string uses alloc {
+  // Every function takes Self first, once and not nested, and mentions it
+  // nowhere else.
+  const info = checker.traits[traitIndex]
+  const self = [info.selfParameter]
+  for (const traitFunction of Arrays.values(info.functions)) {
+    const parameters = traitFunction.parameters
+    if (Arrays.length(parameters) == 0 || parameters[0] != Type.TParam(info.selfParameter)) {
+      return `Dynamic<${info.name}> needs Self as the first parameter of every function of ${info.name}, and ${info.name}.${traitFunction.name} does not take it first`
+    }
+    let elsewhere = containsOpen(checker, traitFunction.result, self)
+    for (const index of Ranges.between(1, Arrays.length(parameters))) {
+      if (containsOpen(checker, parameters[index], self)) {
+        elsewhere = true
+      }
+    }
+    if (elsewhere) {
+      return `Dynamic<${info.name}> needs Self only as the first parameter of every function of ${info.name}, and ${info.name}.${traitFunction.name} names it elsewhere`
+    }
+  }
+  return ""
+}
+
+export function isDynamicName(checker: Checker, name: string): bool {
+  // Dynamic is a prelude name: a user type of that name hides it.
+  return name == "Dynamic" &&
+    lookupType(checker, name) is None &&
+    lookupGeneric(checker, name) is None &&
+    checker.scopes[checker.current].aliases[name] is None
+}
+
+export function checkDynamicOf<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+  arguments: Array<Arg>,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (name != "of") {
+    reportError(
+      mutable checker,
+      pos,
+      "E1024",
+      `Dynamic has no function ${name}; Dynamic.of(value) is its only function`,
+    )
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return Type.TVoid
+  }
+  if (Arrays.length(arguments) != 1 || arguments[0].name is Some(_) || arguments[0].isMutable) {
+    reportError(mutable checker, pos, "E1024", "Dynamic.of takes one value")
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return Type.TVoid
+  }
+  // The expected type names the trait.
+  let traitIndex = -1
+  if (want is Some(Type.TDynamic(wanted))) {
+    traitIndex = wanted
+  }
+  if (traitIndex < 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1024",
+      "Dynamic.of needs an expected Dynamic<Trait> type; annotate it, as in `const item: Dynamic<Show> = Dynamic.of(value)`",
+    )
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return Type.TVoid
+  }
+  const valueType = copy(checkExpression(mutable checker, walker, arguments[0].value, None))
+  const result = Type.TDynamic(traitIndex)
+  if (valueType == Type.TVoid) {
+    return result
+  }
+  const traitName = checker.traits[traitIndex].name
+  if (!typeImplements(mutable checker, valueType, traitIndex)) {
+    if (valueType is Type.TParam(parameter)) {
+      const parameterName = checker.parameters[parameter].name
+      reportError(
+        mutable checker,
+        arguments[0].pos,
+        "E0523",
+        `Dynamic.of needs ${parameterName} to implement ${traitName}; declare it as <${parameterName}: ${traitName}>`,
+      )
+    } else {
+      const message = `${typeString(checker, valueType)} does not implement ${traitName}`
+      reportError(mutable checker, arguments[0].pos, "E0524", message)
+    }
+    return result
+  }
+  // A concrete type gets the instances its table calls; a generic body
+  // waits for its instances.
+  if (!containsTypeParameter(checker, valueType)) {
+    for (const traitFunction of Arrays.values(copy(checker.traits[traitIndex].functions))) {
+      const _ = findImplementation(mutable checker, valueType, traitIndex, traitFunction.name)
+    }
+  }
+  checker.bodies[checker.body].traitSelf[nodeId] = valueType
+  return result
+}
+
+export function checkDynamicCall(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  traitIndex: int,
+  funcIndex: int,
+) uses alloc {
+  // A call through a Dynamic cannot pass it as `mutable Self`: the value is
+  // shared by every copy of the Dynamic.
+  if (isSelfMutable(checker, traitIndex, funcIndex)) {
+    const traitName = checker.traits[traitIndex].name
+    const functionName = checker.traits[traitIndex].functions[funcIndex].name
+    reportError(
+      mutable checker,
+      pos,
+      "E1025",
+      `${traitName}.${functionName} takes a mutable Self, and a Dynamic<${traitName}> cannot be passed to it: its value is shared by every copy`,
+    )
+    return
+  }
+  checker.bodies[checker.body].traitSelf[nodeId] = Type.TDynamic(traitIndex)
+}
+
+export function isSelfMutable(checker: Checker, traitIndex: int, funcIndex: int): bool {
+  const parameters = checker.traits[traitIndex].functions[funcIndex].declaration.parameters
+  return Arrays.length(parameters) > 0 && parameters[0].isMutable
+}

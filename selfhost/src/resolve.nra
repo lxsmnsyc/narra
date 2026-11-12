@@ -35,6 +35,8 @@ import {
   typeString,
   findFixedArraySize,
   FIXED_ARRAY_SIZE_LIMIT,
+  DynamicTraitUse,
+  lookupTrait,
 } from "narrac/check"
 import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
@@ -565,6 +567,9 @@ export function resolveType(
     const boxed = resolveType(mutable checker, typeExpr.arguments[0])
     return internComposite(mutable checker, Type.TBox(boxed))
   }
+  if (typeExpr.name == "Dynamic" && !userType(checker, "Dynamic")) {
+    return resolveDynamicType(mutable checker, typeExpr)
+  }
   if (typeExpr.name == "Map" && !userType(checker, "Map")) {
     if (argCount != 2) {
       reportError(mutable checker, typeExpr.pos, "E0111", "Map takes two type arguments")
@@ -777,6 +782,36 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from 
     return namedType
   }
   return Type.TVoid
+}
+
+function resolveDynamicType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  // The trait rule needs the trait's functions, which a later declaration in
+  // this module may resolve, so it is queued for flushDynamicTraits.
+  if (Arrays.length(typeExpr.arguments) != 1) {
+    reportError(mutable checker, typeExpr.pos, "E1022", "Dynamic takes one trait argument")
+    return Type.TVoid
+  }
+  const argument = typeExpr.arguments[0]
+  let traitIndex = -1
+  if (Arrays.length(argument.arguments) == 0 && !argument.isFunc && !argument.isTuple) {
+    traitIndex = lookupTrait(checker, argument.name)
+  }
+  if (traitIndex < 0) {
+    const written = resolveType(mutable checker, argument)
+    if (written == Type.TVoid) {
+      return Type.TVoid
+    }
+    const message = `Dynamic takes a trait, and ${typeString(checker, written)} is not a trait`
+    reportError(mutable checker, argument.pos, "E1022", message)
+    return Type.TVoid
+  }
+  const file = checker.scopes[checker.current].file
+  Arrays.push(mutable checker.dynamicTraits, DynamicTraitUse {
+    pos: typeExpr.pos,
+    traitIndex: traitIndex,
+    file: file,
+  })
+  return Type.TDynamic(traitIndex)
 }
 
 function userType(checker: Checker, name: string): bool {

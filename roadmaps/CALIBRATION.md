@@ -96,3 +96,8 @@ Notes:
 | selfhost | guide-multifile-samples | M | M | 2 | 243k tokens. Review: extractor case for `narra file`. |
 | selfhost | fmt-block-hug | M | M+ | 2 | 482k tokens. Operand hug dropped after comparing with oxfmt 0.66.0. |
 | selfhost | seed-switch | S | S | 1 | 177k tokens. Two seed updates; -1.3% instructions, close to noise. |
+| selfhost | destructuring-design | M | M | 2 | 423k tokens. Gate answered in session; parameters and assignment dropped, named rest built as a copy. Review: tail-loop count was 0, really 15. |
+| selfhost | seed-switch-cleanup | S | S | 1 | 118k tokens. Clean review. |
+| selfhost | fmt-std-sources | S | S | 2 | 129k tokens. Review: 5 typesdump goldens moved with the std reformat; worker's first PASS line was not from its tree. |
+| selfhost | copy-check-holders | S | M | 2 | 232k tokens. Review: one-copy case still exited 103; needed an emitter field outside owned paths. |
+| selfhost | checker-emitter-copies | L | L+ | 4 | 613k tokens. 1927 hidden copies to 0; D104 rule took 171 site fixes. Reviews: enum and `is`/`match` holders, then the `copy(...)` initializer exception. |

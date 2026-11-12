@@ -1,7 +1,7 @@
 ---
 id: seed-switch-cleanup
 title: "narrac run exits without a release on a failed start, and the host target matches by value"
-status: active
+status: done
 priority: should
 type: refactor
 story: batch-10
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 118000
 owns:
   - roadmaps/selfhost/nodes/seed-switch-cleanup/**
   - selfhost/src/buildtarget.nra

@@ -462,6 +462,7 @@ Decision: `#[1, "a"]` builds a tuple, `const #[a, b] = t` destructures one, and 
 - **Rejected: `Tuple(a, b)`.** It is verbose, and it makes `Tuple` a reserved value name.
 - **Rejected: `[a, b]` with a tuple as the expected type.** The same text would build an array or a tuple depending on context.
 - **Note.** D44 now destructures with `const #[a, b] = f()`, and D23 lists tuples as its one exception. `Tuple` is not a prelude name.
+- **Note.** An element is read with `pair[0]`, as in the JavaScript proposal and in TypeScript, so the parser needs no new syntax. Rejected: `pair.0` (Rust, Swift), which would also make the lexer split `pair.0.1`.
 
 ## D54. C names are hashed, built in one file
 

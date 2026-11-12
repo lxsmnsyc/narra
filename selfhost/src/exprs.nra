@@ -101,6 +101,7 @@ import {
   checkDivisor,
   checkShiftCount,
   collectAssignedInExpr,
+  findTypedConstant,
 } from "narrac/operands"
 import { buildConstantHint } from "narrac/stdcopy"
 import { canShareType } from "narrac/stdcopy"
@@ -1476,8 +1477,50 @@ function checkIndex<W: Walker>(
     }
     return fixedElement
   }
+  if (targetType is Type.TStruct(structIndex)) {
+    if (checker.structs[structIndex].tuple) {
+      return checkTupleIndex(mutable checker, nodeId, pos, targetType, structIndex, index)
+    }
+  }
   const text = typeString(checker, targetType)
   reportError(mutable checker, pos, "E0210", `only arrays can be indexed, found ${text}`)
+  return Type.TVoid
+}
+
+function checkTupleIndex(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  tupleType: Type,
+  structIndex: int,
+  index: Expr,
+): Type uses alloc {
+  // The index picks a field, so it must be a constant inside the tuple.
+  const known = findTypedConstant(checker, index, Type.TInt)
+  if (known is None) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1010",
+      "a tuple index must be a constant integer; use a pattern such as `const #[first, second] = pair` to read the elements",
+    )
+    return Type.TVoid
+  }
+  const fields = copy(checker.structs[structIndex].fields)
+  const count = Arrays.length(fields)
+  if (known is Some(value)) {
+    if (value >= 0 && value < count) {
+      checker.bodies[checker.body].tupleIndexes[nodeId] = value
+      return fields[value].fieldType
+    }
+    const shown = typeString(checker, tupleType)
+    reportError(
+      mutable checker,
+      pos,
+      "E1011",
+      `index ${Int.toString(value)} is out of range for ${shown}, whose indexes are 0 to ${Int.toString(count - 1)}`,
+    )
+  }
   return Type.TVoid
 }
 
@@ -2665,6 +2708,12 @@ export function findAssignedLocal(checker: Checker, expression: Expr): int {
         current = target
       }
       Expr.IndexExpr(_, _, target, _) => {
+        // A tuple element is not a place.
+        if (getNodeType(checker, getExpressionId(target)) is Some(Type.TStruct(structIndex))) {
+          if (checker.structs[structIndex].tuple) {
+            return -1
+          }
+        }
         current = target
       }
       _ => {

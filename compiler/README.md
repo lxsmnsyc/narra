@@ -212,7 +212,6 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: trait function calls to user implementations are not followed, and an implementation may use effects its trait function does not declare, except `unsafe` (E0800). Implementations of pure trait functions such as `Show.show` allocate in existing programs and in the guide; enforcing the subset rule for `alloc` and `io` waits for a decision.
 - `async` arrow functions.
-- Reading a tuple element by index.
 - Async functions, threads and channels.
 - `@layout` and C-callable functions (node c-abi-export).
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.

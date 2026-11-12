@@ -419,7 +419,7 @@ function last(values: FixedArray<f64, 4>): Option<f64> {
 - **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
 - **Float keys are not allowed.** `Map<f64, V>` and keys that contain floats are compile errors.
-- **Tuples.** `#[int, string]` is a tuple type. It holds a fixed group of at least two values. `#[1, "a"]` builds one, `const #[n, s] = t` (or `let`) destructures one, and `#[0, name]` matches one in a pattern. The type is written like the literal, in every type position: `Array<#[int, string]>`, `#[#[int, int], string]`. A function that returns several values returns a tuple or a struct.
+- **Tuples.** `#[int, string]` is a tuple type. It holds a fixed group of at least two values. `#[1, "a"]` builds one, `const #[n, s] = t` (or `let`) destructures one, and `#[0, name]` matches one in a pattern. `pair[0]` reads one element, with that element's type. The index is a constant integer, a literal or a top-level `const`, inside the tuple's range, so the read has no runtime check and cannot panic; any other index is E1010, an index outside the range is E1011. Tuple elements are read-only: `pair[0] = 2` is E0226. The type is written like the literal, in every type position: `Array<#[int, string]>`, `#[#[int, int], string]`. A function that returns several values returns a tuple or a struct.
 - **Functions.** `(a: int, b: string) => bool`.
 
 ### Structs

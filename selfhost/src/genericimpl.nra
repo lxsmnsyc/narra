@@ -1,0 +1,126 @@
+// Implement blocks on generic structs and enums (`implement Show for Pair<T>`).
+//
+// The head names the type with the parameters of its declaration, by the same
+// names and in order (E1021). resolveImpl (traits.nra) records the block in
+// Checker.implementations with the type left open, so every instance
+// implements the trait. Each member is also a generic function in
+// Checker.functions, under a hidden name and with the type's parameters and
+// their bounds, so its body is checked once open and once per instance, and
+// emitted per instance, as generic functions are. implementations.nra finds
+// the member for an instance.
+import { Pos, ImplDecl, FuncDecl } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, FuncInfo, reportError } from "narrac/check"
+import { makeEnv } from "narrac/generics"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const MEMBER_INFIX = "_implement_"
+
+export function checkImplementHead(
+  mutable checker: Checker,
+  implDecl: ImplDecl,
+  traitName: string,
+  writtenType: string,
+  generic: int,
+): bool uses alloc {
+  const typeExpr = implDecl.type
+  let names: Array<string> = []
+  for (const parameter of Arrays.values(checker.generics[generic].parameters)) {
+    Arrays.push(mutable names, checker.parameters[parameter].name)
+  }
+  let matches = Arrays.length(typeExpr.arguments) == Arrays.length(names) && !typeExpr.isTuple
+  if (matches) {
+    for (const i of Ranges.between(0, Arrays.length(names))) {
+      const argument = typeExpr.arguments[i]
+      if (
+        argument.name != names[i] ||
+          Arrays.length(argument.arguments) > 0 ||
+          argument.isFunc ||
+          argument.isTuple
+      ) {
+        matches = false
+      }
+    }
+  }
+  if (!matches) {
+    const wanted = `${checker.generics[generic].name}<${Str.join(names, ", ")}>`
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1021",
+      `\`implement ${traitName} for ${writtenType}\` must name the type as ${wanted}, with the type parameters of its declaration in order`,
+    )
+  }
+  return matches
+}
+
+export function createImplementEnvironment(
+  checker: Checker,
+  parameters: Array<int>,
+  selfType: Type,
+): Map<string, Type> uses alloc {
+  let environment = makeEnv(checker, parameters)
+  environment["Self"] = copy(selfType)
+  return environment
+}
+
+export function registerImplementMember(
+  mutable checker: Checker,
+  block: int,
+  funcDecl: FuncDecl,
+  parameters: Array<int>,
+  result: Type,
+  selfType: Type,
+) uses alloc {
+  // The name starts with the block index: no Narra name starts with a digit, so it is unique in C.
+  const scope = checker.current
+  const module = checker.scopes[scope].path
+  Arrays.push(mutable checker.functions, FuncInfo {
+    name: `${Int.toString(block)}${MEMBER_INFIX}${funcDecl.name}`,
+    module: module,
+    scope: scope,
+    declaration: copy(funcDecl),
+    typeParameters: copy(parameters),
+    result: result,
+    selfType: Some(selfType),
+  })
+}
+
+export function describeImplementMember(checker: Checker, funcIndex: int): string uses alloc {
+  // A member is named `<module>.<Type>.<Trait>.<member>`, as a block function is.
+  const info = checker.functions[funcIndex]
+  for (const impl of Arrays.values(checker.implementations)) {
+    if (impl.scope != info.scope) {
+      continue
+    }
+    for (const implementation of Arrays.values(impl.functions)) {
+      if (implementation.declaration.pos == info.declaration.pos) {
+        let typeName = ""
+        if (impl.forType is Type.TStruct(index)) {
+          typeName = checker.structs[index].name
+        } else if (impl.forType is Type.TEnum(index)) {
+          typeName = checker.enums[index].name
+        }
+        return `${info.module}.${typeName}.${checker.traits[impl.traitIndex].name}.${implementation.name}`
+      }
+    }
+  }
+  return `${info.module}.${info.name}`
+}
+
+export function findImplementMember(checker: Checker, scope: int, pos: Pos): int {
+  // The Checker.functions index of the member declared at pos, or -1.
+  let index = 0
+  for (const info of Arrays.values(checker.functions)) {
+    if (info.selfType is Some(_)) {
+      if (info.scope == scope && info.declaration.pos == pos) {
+        return index
+      }
+    }
+    index++
+  }
+  return -1
+}

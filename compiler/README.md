@@ -238,8 +238,6 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - Modules are checked against the declarations of the modules they import, in memory. There are no `.nrai` files.
 - Every line of a compile error starts with its file, as in `src/text.nra:3:4: ...`.
 - Trait constraints do not compile to a hidden table parameter. Generic functions are compiled once per set of type arguments, so every trait call is a direct call.
-- Constraints are allowed on the type parameters of functions only, not of structs and enums.
-- `implement` blocks work for non-generic structs and enums only. A generic type gets traits through `derives`, and an instance implements a derived trait when its contents do.
 - An `implement` block must be in the module that declares the type. The prelude (`Option`, `Result`, `Ordering`) and primitive and array types belong to no user module, so they cannot get `implement` blocks.
 - Traits are imported by name (`import { Area } from "app/shapes"`). `Alias.Trait.f(x)` and `<T: Alias.Trait>` are not supported.
 - A bare constructor is E0323 with a fix that writes `Enum.Name`, except `Some`, `None`, `Ok` and `Err`, which stay bare as prelude names. The fix picks the expected type's enum first, then the enum the module declares, imports or the prelude, in that order; when the module cannot name the enum in a pattern, the fix also adds `import { Enum } from "module"`. A bare name shared by two enums of one rank is E0324, with no fix. Two enums may share a constructor name; a duplicate name in one enum is E0194.

@@ -46,7 +46,13 @@ import {
   isContentsType,
   findSharedParameter,
 } from "narrac/check"
-import { resolveOpt, substitute } from "narrac/resolve"
+import { resolveOpt, resolveType, substitute } from "narrac/resolve"
+import { makeEnv } from "narrac/generics"
+import {
+  checkImplementHead,
+  createImplementEnvironment,
+  registerImplementMember,
+} from "narrac/genericimpl"
 import { HIDDEN_SHAPE, isShapeDerive } from "narrac/deriveshape"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
@@ -652,21 +658,26 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
     return
   }
   const info = copy(checker.typeTraits[entryIndex])
-  if (info.generic) {
-    reportError(
-      mutable checker,
-      implDecl.pos,
-      "E0514",
-      "implement blocks for generic types are not supported by this compiler yet; use derives",
-    )
-    return
-  }
-  if (Arrays.length(typeExpr.arguments) > 0) {
-    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
-    return
-  }
+  // A generic type is named with its own parameters, and the block holds the type with them open.
   let type = Type.TVoid
-  if (lookupType(checker, typeExpr.name) is Some(namedType)) {
+  let parameters: Array<int> = []
+  if (info.generic) {
+    if (lookupGeneric(checker, typeExpr.name) is Some(generic)) {
+      const writtenType = typeExprString(typeExpr)
+      if (!checkImplementHead(mutable checker, implDecl, traitName, writtenType, generic)) {
+        markRejectedBlock(mutable checker, entryIndex, traitIndex)
+        return
+      }
+      parameters = copy(checker.generics[generic].parameters)
+      checker.environment = makeEnv(checker, parameters)
+      type = resolveType(mutable checker, typeExpr)
+      checker.environment = Map {}
+    }
+  } else if (Arrays.length(typeExpr.arguments) > 0) {
+    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
+    markRejectedBlock(mutable checker, entryIndex, traitIndex)
+    return
+  } else if (lookupType(checker, typeExpr.name) is Some(namedType)) {
     type = copy(namedType)
   }
   if (info.listed[traitIndex] is None) {
@@ -699,7 +710,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   })
   let selfMap: Map<int, Type> = Map {}
   selfMap[checker.traits[traitIndex].selfParameter] = type
-  checker.environment = Map { "Self": type }
+  checker.environment = createImplementEnvironment(checker, parameters, type)
   checkMutableSelf(mutable checker, implDecl.pos, traitIndex, type, info.name)
   let got: Map<string, bool> = Map {}
   for (const funcDecl of Arrays.values(implDecl.functions)) {
@@ -750,6 +761,10 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
       mutable checker.implementations[blockIndex].functions,
       ImplFunc { name: funcDecl.name, declaration: copy(funcDecl), result: result },
     )
+    if (info.generic) {
+      registerImplementMember(mutable checker, blockIndex, funcDecl, parameters, result, type)
+      continue
+    }
     checker.implFunctions[`${typeKey(type)}|${traitName}.${funcDecl.name}`] = ImplRef {
       block: blockIndex,
       index: implIndex,
@@ -766,6 +781,13 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
         `implement ${traitName} for ${info.name} is missing function ${traitFunc.name}`,
       )
     }
+  }
+}
+
+function markRejectedBlock(mutable checker: Checker, entryIndex: int, traitIndex: int) uses alloc {
+  // A block whose head is wrong was still written: -1 keeps E0507 from asking for it again.
+  if (checker.typeTraits[entryIndex].blocks[traitIndex] is None) {
+    checker.typeTraits[entryIndex].blocks[traitIndex] = -1
   }
 }
 

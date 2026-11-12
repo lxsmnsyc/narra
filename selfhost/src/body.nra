@@ -50,6 +50,9 @@ import { newPackageChecker, declareSourceModule } from "narrac/declare"
 import { checkEntries, recordEntryTargets } from "narrac/scopes"
 import { reportUnusedTopLevel } from "narrac/unused"
 import { flushMapKeys, shapeDeriveHolds } from "narrac/traits"
+import { flushTypeBounds } from "narrac/typebounds"
+import { findImplementMember, createImplementEnvironment } from "narrac/genericimpl"
+import { addImplementInstances } from "narrac/implementations"
 import { derivedShapeType } from "narrac/deriveshape"
 import { makeEnv } from "narrac/generics"
 import { resolveOpt } from "narrac/resolve"
@@ -283,6 +286,7 @@ export function checkModules(
   queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforePending
   checkContractCalls(mutable checker)
   flushMapKeys(mutable checker)
+  flushTypeBounds(mutable checker)
   checkEntries(mutable checker, package)
   const concrete = copy(checker.concrete)
   finish(mutable checker, concrete)
@@ -548,7 +552,8 @@ function checkFunctionBody(
 }
 
 function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
-  // Checking one instance can queue more.
+  // Checking one instance can queue more, and so can a new instance of a generic type with implement blocks.
+  addImplementInstances(mutable checker)
   while (checker.pendingNext < Arrays.length(checker.pending)) {
     const instanceIndex = checker.pending[checker.pendingNext]
     const instance = copy(checker.instanceList[instanceIndex])
@@ -569,6 +574,9 @@ function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
       instance.funcIndex,
     )
     enter(mutable checker, saved)
+    if (checker.pendingNext == Arrays.length(checker.pending)) {
+      addImplementInstances(mutable checker)
+    }
   }
 }
 
@@ -645,10 +653,17 @@ function checkImplBodies(
     for (const param of Arrays.values(funcDecl.parameters)) {
       Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
     }
-    const result = findImplResult(mutable checker, block, funcDecl, environment)
+    // A member of a block on a generic type is checked with the type's parameters open.
+    const memberIndex = findImplementMember(checker, scope, funcDecl.pos)
+    let memberEnvironment = environment
+    if (memberIndex >= 0) {
+      const parameters = copy(checker.functions[memberIndex].typeParameters)
+      memberEnvironment = createImplementEnvironment(checker, parameters, impl.forType)
+    }
+    const result = findImplResult(mutable checker, block, funcDecl, memberEnvironment)
     let key = ""
     const implIndex = findImplIndex(checker, block, funcDecl)
-    if (implIndex >= 0) {
+    if (implIndex >= 0 && memberIndex < 0) {
       key = `impl|${Int.toString(block)}|${Int.toString(implIndex)}`
     }
     checkFunctionBody(
@@ -660,9 +675,9 @@ function checkImplBodies(
       funcDecl,
       paramTypes,
       result,
-      environment,
+      memberEnvironment,
       key,
-      -1,
+      memberIndex,
     )
   }
 }

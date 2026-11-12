@@ -112,6 +112,16 @@ export struct FuncInfo {
   declaration: FuncDecl
   typeParameters: Array<int> // Checker.parameters
   result: Type
+  // Set for a member of an implement block on a generic type: the type with its parameters open.
+  selfType: Option<Type> = None
+}
+
+// A written use of a constrained struct or enum, waiting for flushTypeBounds (typebounds.nra).
+export struct TypeBoundCheck {
+  pos: Pos
+  generic: int
+  arguments: Array<Type>
+  file: string
 }
 
 // A top-level constant. declaredType is the declared type, set by declareConstTypes;
@@ -483,6 +493,7 @@ export struct Checker {
   implFunctions: Map<string, ImplRef>
   mapKeys: Array<MapKeyCheck>
   pointerElements: Array<PointerCheck> = []
+  typeBounds: Array<TypeBoundCheck> = []
   errors: Array<CheckError>
   errorKeys: Map<string, bool> // file, line, column and message of each error in errors
   // Structs and enums in C definition order, set by finish (Go's
@@ -973,6 +984,30 @@ export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses 
   }
   const item = MapKeyCheck { pos: pos, key: key, file: file }
   Arrays.push(mutable checker.mapKeys, item)
+}
+
+export function noteTypeBounds(
+  mutable checker: Checker,
+  pos: Pos,
+  generic: int,
+  arguments: Array<Type>,
+) uses alloc {
+  // Only a type with constraints is queued; flushTypeBounds checks it once every module is declared.
+  let constrained = false
+  for (const parameter of Arrays.values(checker.generics[generic].parameters)) {
+    if (checker.bounds[parameter] is Some(_)) {
+      constrained = true
+    }
+  }
+  if (!constrained) {
+    return
+  }
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  const item = TypeBoundCheck { pos: pos, generic: generic, arguments: arguments, file: file }
+  Arrays.push(mutable checker.typeBounds, item)
 }
 
 export function typeString(checker: Checker, type: Type): string uses alloc {

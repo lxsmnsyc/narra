@@ -1316,3 +1316,16 @@ Decision (spike const-eval-design; approved by the maintainer on 2026-11-12, wit
 - **Rejected: forbidding floats in `@const` instead of the pragma.** Float tables built from arithmetic and `Math.sqrt` (gamma curves, fixed-point scales) are a common use, and the pragma also makes run-time float results the same at every optimization level.
 
 Not built yet.
+
+## D106. Constraints and implement blocks on generic types
+
+Decision (node generic-implement, 2026-11-12). SPEC section "Traits" lets any type implement a trait, and "Generics" lets a type parameter require traits; the compiler built both for functions and non-generic types only (E0021 and E0514, now removed).
+
+1. **Constraints on struct and enum type parameters.** `struct Labeled<T: Show>` and `enum Tree<T: Ordered>` keep their bounds in the AST (`StructDecl.bounds`, `EnumDecl.bounds`) and in `Checker.bounds` for the type's parameters, as a function's do. Field types, implement blocks and derives see them. Each written use of the type with arguments (a type, a struct literal, an enum constructor, which also covers inferred instances) is checked once every module is declared: a failure is E1020. A type alias takes no constraints; `type P<T: Show> = ...` is the parser's ordinary `expected ">"` error.
+2. **Bounds are not implied.** A type argument that is a type parameter needs the constraint declared on its own parameter: `function first<T>(pair: Pair<T>)` with `struct Pair<T: Show>` is E1020 with the hint `declare it as <T: Show>`. This matches the explicit style of the rest of the language and keeps `typeImplements` on a type parameter a plain lookup.
+3. **Head syntax.** `implement Show for Pair<T>` writes the declaration's own parameter names, in order. A concrete type (`Pair<int>`), a missing list, the wrong count or another name is E1021. It keeps one name per parameter across the declaration and its blocks and rules out specialization.
+   - Rejected: Rust's `impl<T>` binder (new syntax). Fresh names mapped by position (two names for one parameter).
+4. **Where bounds come from.** Only the type declaration. An implement block adds no bounds of its own, so there are no conditional implementations (`Show` for `Pair<T>` only when `T: Show`). A type that wants `Show` for every instance declares `struct Pair<T: Show>`. Conditional implementations can come later on top of this.
+5. **How it is built.** The block is recorded on the generic type, so every instance implements the trait. Each member is also a generic function with the type's parameters and bounds, under a hidden name, so its body is checked once with the parameters open and once per instance, and emitted per instance. A trait call on an instance, direct or through a bound, calls the member's instance. Every concrete instance of the type gets the members' instances, so `==`, map keys, derived `Ordered` and `Show` of an enclosing type call the user's functions. `findImplementation(checker, type, traitIndex, name)` in `selfhost/src/implementations.nra` returns the implementing `ProgramFunc` (a block function or a member instance); the Dynamic tables (D95) build on it.
+
+Built (generic-implement).

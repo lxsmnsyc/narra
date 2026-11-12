@@ -1,0 +1,178 @@
+// Finds the user implementation of a trait function for a type: a member of an
+// implement block on the type itself, or, for an instance of a generic struct
+// or enum, the instance of the member of the block on the generic type
+// (genericimpl.nra). Trait calls (calls.nra) and the trait functions the
+// emitter writes (emittraits.nra) go through here.
+import { Type, typeKeys } from "narrac/types"
+import { Checker, ProgramFunc, Ref, setRef, containsTypeParameter } from "narrac/check"
+import { implFunc } from "narrac/traits"
+import { typeBoundsHold } from "narrac/typebounds"
+import { addFuncInstance } from "narrac/instances"
+import { findImplementMember } from "narrac/genericimpl"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+
+// The generic type an instance comes from, with the instance's arguments.
+struct GenericInstance {
+  generic: int
+  arguments: Array<Type>
+}
+
+export function findImplementation(
+  mutable checker: Checker,
+  type: Type,
+  traitIndex: int,
+  name: string,
+): Option<ProgramFunc> uses alloc {
+  // None when the compiler provides the function (automatic Equatable and Hashable, derives).
+  if (implFunc(checker, type, traitIndex, name) is Some(implementation)) {
+    return Some(ProgramFunc.ImplFunc(implementation.block, implementation.index))
+  }
+  const member = findGenericMember(checker, type, traitIndex, name)
+  if (member < 0) {
+    return None
+  }
+  const instance = copy(findGenericInstance(checker, type))
+  // A type argument that fails the type's bounds was reported where it was written.
+  if (!typeBoundsHold(mutable checker, instance.generic, instance.arguments)) {
+    return None
+  }
+  const index = addFuncInstance(mutable checker, member, instance.arguments)
+  return Some(ProgramFunc.InstanceFunc(index))
+}
+
+export function lookupImplementation(
+  checker: Checker,
+  type: Type,
+  traitIndex: int,
+  name: string,
+): Option<ProgramFunc> uses alloc {
+  // The same answer as findImplementation, for after the checker has made every instance.
+  if (implFunc(checker, type, traitIndex, name) is Some(implementation)) {
+    return Some(ProgramFunc.ImplFunc(implementation.block, implementation.index))
+  }
+  const member = findGenericMember(checker, type, traitIndex, name)
+  if (member < 0) {
+    return None
+  }
+  const instance = findGenericInstance(checker, type)
+  const key = `${Int.toString(member)}|${typeKeys(instance.arguments)}`
+  if (checker.funcInstances[key] is Some(index)) {
+    return Some(ProgramFunc.InstanceFunc(index))
+  }
+  return None
+}
+
+export function setImplementationRef(
+  mutable checker: Checker,
+  nodeId: int,
+  program: ProgramFunc,
+) uses alloc {
+  match (program) {
+    ProgramFunc.ImplFunc(block, index) => {
+      setRef(mutable checker, nodeId, Ref.Implementation(block, index))
+    }
+    ProgramFunc.InstanceFunc(instance) => {
+      const funcIndex = checker.instanceList[instance].funcIndex
+      setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+      checker.bodies[checker.body].instanceRefs[nodeId] = instance
+    }
+    ProgramFunc.PlainFunc(funcIndex) => setRef(mutable checker, nodeId, Ref.Function(funcIndex))
+  }
+}
+
+export function addImplementInstances(mutable checker: Checker) uses alloc {
+  // Every concrete instance of a generic type gets the members of the type's
+  // implement blocks, so the emitter finds them for ==, hashing, sorting and Show.
+  let members: Map<int, Array<int>> = Map {}
+  for (const impl of Arrays.values(checker.implementations)) {
+    const instance = copy(findGenericInstance(checker, impl.forType))
+    if (instance.generic < 0) {
+      continue
+    }
+    let found: Array<int> = []
+    if (members[instance.generic] is Some(known)) {
+      found = copy(known)
+    }
+    for (const implementation of Arrays.values(impl.functions)) {
+      const member = findImplementMember(checker, impl.scope, implementation.declaration.pos)
+      if (member >= 0) {
+        Arrays.push(mutable found, member)
+      }
+    }
+    members[instance.generic] = found
+  }
+  if (Maps.size(members) == 0) {
+    return
+  }
+  const structCount = Arrays.length(checker.structs)
+  for (const index of Ranges.between(0, structCount)) {
+    addMembersFor(mutable checker, Type.TStruct(index), members)
+  }
+  const enumCount = Arrays.length(checker.enums)
+  for (const index of Ranges.between(0, enumCount)) {
+    addMembersFor(mutable checker, Type.TEnum(index), members)
+  }
+}
+
+function addMembersFor(
+  mutable checker: Checker,
+  type: Type,
+  members: Map<int, Array<int>>,
+) uses alloc {
+  const instance = copy(findGenericInstance(checker, type))
+  if (instance.generic < 0 || containsTypeParameter(checker, type)) {
+    return
+  }
+  if (members[instance.generic] is Some(found)) {
+    if (!typeBoundsHold(mutable checker, instance.generic, instance.arguments)) {
+      return
+    }
+    for (const member of Arrays.values(found)) {
+      const _ = addFuncInstance(mutable checker, member, instance.arguments)
+    }
+  }
+}
+
+function findGenericMember(checker: Checker, type: Type, traitIndex: int, name: string): int {
+  // The Checker.functions index of the member of the generic type's block, or -1.
+  const generic = findGenericInstance(checker, type).generic
+  if (generic < 0) {
+    return -1
+  }
+  const key = `${checker.generics[generic].module}|${checker.generics[generic].name}`
+  if (checker.typeTraitIndex[key] is Some(entryIndex)) {
+    if (checker.typeTraits[entryIndex].blocks[traitIndex] is Some(block)) {
+      // A rejected block is -1 and has no members.
+      if (block < 0) {
+        return -1
+      }
+      for (const implementation of Arrays.values(checker.implementations[block].functions)) {
+        if (implementation.name == name) {
+          const scope = checker.implementations[block].scope
+          return findImplementMember(checker, scope, implementation.declaration.pos)
+        }
+      }
+    }
+  }
+  return -1
+}
+
+function findGenericInstance(
+  checker: Checker,
+  type: Type,
+): GenericInstance from checker uses alloc {
+  return match (type) {
+    Type.TStruct(index) => GenericInstance {
+      generic: checker.structs[index].generic,
+      arguments: checker.structs[index].arguments,
+    }
+    Type.TEnum(index) => GenericInstance {
+      generic: checker.enums[index].generic,
+      arguments: checker.enums[index].arguments,
+    }
+    _ => GenericInstance { generic: -1, arguments: [] }
+  }
+}

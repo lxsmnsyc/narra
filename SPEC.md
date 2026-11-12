@@ -712,7 +712,7 @@ const label = match (status) {
 ### Generics
 
 - Type parameters use angle brackets: `function first<T>(items: Array<T>): Option<T>` and `struct Entry<K, V> { ... }`.
-- A type parameter can require traits: `<T: Ordered>`, or `<T: Show & Ordered>` for several (see "Traits" below).
+- A type parameter can require traits: `<T: Ordered>`, or `<T: Show & Ordered>` for several (see "Traits" below). The type parameters of structs and enums take constraints too: `struct Labeled<T: Show> { ... }`. Field types and implement blocks see them. Every written use of the type with arguments must meet them, in a type, a struct literal or an enum constructor; a failure is a compile error. A type parameter of the enclosing declaration meets a constraint only when it declares the same trait: `function first<T>(pair: Labeled<T>)` is an error, `function first<T: Show>(pair: Labeled<T>)` is not. Constraints are not implied.
 - Arithmetic operators do not work on a type parameter. Pass a function or require a trait instead.
 - **Structural equality.** `==` compares values structurally. The compiler implements `Equatable` for every type that has no function inside it. Using `==` on a type that contains a function is a compile error.
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
@@ -804,6 +804,7 @@ const text = Label.label(price)
 - `trait Name { ... }` declares a trait. Its body lists function signatures. `Self` is the implementing type.
 - **A trait has functions only.** No fields, no default implementations, no associated types, and no traits that require other traits.
 - **Implementations live with the type.** A struct, enum or distinct type lists its traits with `implements`. Each listed trait needs an `implement Trait for Type { ... }` block in the same module, or a `derives` entry.
+- **Generic types.** A generic struct or enum is implemented once for all its instances: `implement Show for Pair<T> { ... }` names the type with the type parameters of its declaration, by the same names and in order. A concrete type (`Pair<int>`), a missing list, a wrong count or another name is a compile error, so there is no specialization. The block adds no constraints of its own: its functions see the constraints of the type's declaration, so a member that calls `Show.show` on a field of type `T` needs `struct Pair<T: Show>`. The functions take no type parameters of their own.
 - **No implementations anywhere else.** A module cannot implement a trait for a type declared in another module. To add a trait to another module's type, wrap it in a `distinct type` or a struct.
 - `derives` asks the compiler to write the implementation: `struct User derives Show, Ordered, Shape { ... }`.
 

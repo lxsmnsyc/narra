@@ -1622,8 +1622,8 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   return TypeExpr { ...named, arguments: arguments }
 }
 
-function parseTypeParams(mutable parser: Parser): TypeParams {
-  // Effect variables are kept apart from the type parameters.
+function parseTypeParams(mutable parser: Parser, allowBounds: bool): TypeParams {
+  // Effect variables are kept apart from the type parameters. Without allowBounds a `:` after a name is left for the closing `>` to reject.
   let names: Array<string> = []
   let bounds: Array<Array<TypeExpr>> = []
   let effects: Array<string> = []
@@ -1671,7 +1671,7 @@ function parseTypeParams(mutable parser: Parser): TypeParams {
     Arrays.push(mutable names, parameterName)
     Arrays.push(mutable parser.typeNames, parameterName)
     let traitBounds: Array<TypeExpr> = []
-    if (accept(mutable parser, SYMBOL_COLON)) {
+    if (allowBounds && accept(mutable parser, SYMBOL_COLON)) {
       while (isOk(parser)) {
         const boundName = expectIdent(mutable parser)
         Arrays.push(mutable traitBounds, createNamedType(boundName))
@@ -1748,9 +1748,13 @@ function createNamedType(token: Token): TypeExpr {
   }
 }
 
-function parseTypeParamsNoBounds(mutable parser: Parser, allowConstants: bool): TypeParams {
+function parseTypeDeclParams(
+  mutable parser: Parser,
+  allowConstants: bool,
+  allowBounds: bool,
+): TypeParams {
   const pos = getPos(currentToken(parser))
-  const typeParameters = parseTypeParams(mutable parser)
+  const typeParameters = parseTypeParams(mutable parser, allowBounds)
   if (!allowConstants && Arrays.length(typeParameters.constants) > 0) {
     failAt(
       mutable parser,
@@ -1758,17 +1762,6 @@ function parseTypeParamsNoBounds(mutable parser: Parser, allowConstants: bool): 
       "E0992",
       "constant type parameters are allowed only on functions and structs",
     )
-  }
-  // Struct and enum type parameters cannot have constraints in this compiler.
-  for (const traitBounds of Arrays.values(typeParameters.bounds)) {
-    if (Arrays.length(traitBounds) > 0) {
-      failAt(
-        mutable parser,
-        pos,
-        "E0021",
-        "trait constraints on struct and enum type parameters are not supported by this compiler yet",
-      )
-    }
   }
   return typeParameters
 }
@@ -1863,7 +1856,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     nameToken = expectIdent(mutable parser)
   }
   const name = nameToken.text
-  const typeParameters = parseTypeParams(mutable parser)
+  const typeParameters = parseTypeParams(mutable parser, true)
   expect(mutable parser, SYMBOL_LEFT_PAREN)
   let parameters: Array<Param> = []
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
@@ -1948,7 +1941,7 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
 function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
   const pos = getPos(advance(mutable parser))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser, false).names
+  const typeParameters = parseTypeDeclParams(mutable parser, false, false).names
   expect(mutable parser, SYMBOL_EQUALS)
   const body = parseType(mutable parser)
   endTypeDecl(mutable parser)
@@ -1964,7 +1957,7 @@ function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
 function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_STRUCT))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser, true)
+  const typeParameters = parseTypeDeclParams(mutable parser, true, true)
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   const fields = parseFieldList(mutable parser)
@@ -1973,6 +1966,7 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
     pos: pos,
     name: name,
     typeParameters: typeParameters.names,
+    bounds: typeParameters.bounds,
     constantParameters: typeParameters.constants,
     exported: exported,
     implementations: traitLists.implementations,
@@ -1985,7 +1979,7 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
 function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   const pos = getPos(expect(mutable parser, SYMBOL_KEYWORD_ENUM))
   const name = expectIdent(mutable parser).text
-  const typeParameters = parseTypeParamsNoBounds(mutable parser, false).names
+  const typeParameters = parseTypeDeclParams(mutable parser, false, true)
   const traitLists = parseTraitLists(mutable parser)
   expect(mutable parser, SYMBOL_LEFT_BRACE)
   skipNewlines(mutable parser)
@@ -2032,7 +2026,8 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   return EnumDecl {
     pos: pos,
     name: name,
-    typeParameters: typeParameters,
+    typeParameters: typeParameters.names,
+    bounds: typeParameters.bounds,
     exported: exported,
     implementations: traitLists.implementations,
     derived: traitLists.derived,

@@ -29,11 +29,18 @@ const FROM_VALUE_PREFIX = "__shapeFromValue_"
 // The name under which generated code sees the Shape trait of std/shape.
 export const HIDDEN_SHAPE = "__Shape"
 
+// The unwrap function of a distinct type under a name that does not depend on its base type.
+export const HIDDEN_UNWRAP = "__unwrap"
+
 export function shapeFunctionName(functionName: string, typeName: string): string uses alloc {
   if (functionName == "toValue") {
     return `${TO_VALUE_PREFIX}${typeName}`
   }
   return `${FROM_VALUE_PREFIX}${typeName}`
+}
+
+export function isShapeToValueName(functionName: string): bool {
+  return Str.startsWith(functionName, TO_VALUE_PREFIX)
 }
 
 export function derivedShapeType(functionName: string): string uses alloc {
@@ -77,6 +84,13 @@ export function addShapeDerives(parsed: Parsed, source: string): Parsed from par
           const header = TypeHeader { name: enumDecl.name, parameters: enumDecl.typeParameters }
           writeEnumToValue(mutable builder, header, enumDecl.variants)
           writeEnumFromValue(mutable builder, header, enumDecl.variants)
+          found = true
+        }
+      }
+      Decl.Distinct(distinctDecl) => {
+        if (derivesShape(distinctDecl.derived)) {
+          writeDistinctToValue(mutable builder, distinctDecl.name)
+          writeDistinctFromValue(mutable builder, distinctDecl.name, distinctDecl.base)
           found = true
         }
       }
@@ -299,6 +313,43 @@ function writeStructToValue(
     writeEncodeField(mutable builder, 1, field, `__value.${field.name}`)
   }
   writeLine(mutable builder, 1, "return __Value.Record(__fields)")
+  writeLine(mutable builder, 0, "}")
+}
+
+function writeDistinctToValue(mutable builder: StringBuilder, typeName: string) uses alloc {
+  // The Value is the base type's.
+  const name = shapeFunctionName("toValue", typeName)
+  Str.append(mutable builder, "\n")
+  writeLine(mutable builder, 0, `function ${name}(__value: ${typeName}): __Value uses alloc {`)
+  writeLine(
+    mutable builder,
+    1,
+    `return ${HIDDEN_SHAPE}.toValue(${typeName}.${HIDDEN_UNWRAP}(__value))`,
+  )
+  writeLine(mutable builder, 0, "}")
+}
+
+function writeDistinctFromValue(
+  mutable builder: StringBuilder,
+  typeName: string,
+  base: TypeExpr,
+) uses alloc {
+  const name = shapeFunctionName("fromValue", typeName)
+  Str.append(mutable builder, "\n")
+  writeLine(
+    mutable builder,
+    0,
+    `function ${name}(__value: __Value): Result<${typeName}, string> uses alloc {`,
+  )
+  writeLine(
+    mutable builder,
+    1,
+    `const __base = ${HIDDEN_SHAPE}.fromValue<${fieldTypeText(base)}>(__value)`,
+  )
+  writeLine(mutable builder, 1, "if (__base is Err(__message)) {")
+  writeLine(mutable builder, 2, "return Err(__message)")
+  writeLine(mutable builder, 1, "}")
+  writeLine(mutable builder, 1, `return Ok(${typeName}.from(__base.value))`)
   writeLine(mutable builder, 0, "}")
 }
 

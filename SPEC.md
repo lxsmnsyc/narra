@@ -663,7 +663,8 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 - **No implicit conversion.** A `UserId` is not an `int`, and an `OrderId` is not a `UserId`.
 - **`T.from` and `T.toInt`** are generated. For a distinct type over another type, the second function is named after it, such as `T.toString` for a distinct `string`.
-- **No operators carry over.** `user + 1` is a compile error. The declaring module defines any operations the type needs as functions.
+- **Arithmetic, bit operators and `<` do not carry over.** `user + 1` and `user < other` are compile errors. The declaring module defines any operations the type needs as functions. `==`, `!=` and map keys work when the base type supports them, through the automatic `Equatable` and `Hashable`; they compare the base value, so `implement Equatable` or `implement Hashable` for a distinct type is an error (E1014).
+- **Trait lists.** A distinct type lists traits after its base, as a struct does: `distinct type UserId = int implements Label derives Ordered, Show`. A trait in `implements` needs an `implement` block in the same module or a `derives` entry. A derived trait is the base type's: the derive is an error (E1012) when the base type does not implement the trait, and `Show.show(UserId.from(7))` is `7`. `derives Shape` encodes the base value, also for an `opaque` distinct type, so `Shape.fromValue` builds its values outside the module.
 - **No runtime cost.** A distinct type compiles to the same C type as its base.
 - **`export opaque distinct type`** hides `from`, so only the declaring module can create values. Other modules can still call the unwrap function.
 

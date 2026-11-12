@@ -531,7 +531,7 @@ Decision: a scalar or fieldless-constructor constant is emitted at each use. Any
 Decision: `distinct type A = B` makes a new type with `B`'s C type. `A.from(b)` wraps and an unwrap named after the base (`A.toInt`, `A.toString`) unwraps; both compile to the value itself. `==`, `!=` and map keys work when the base supports them. Arithmetic and mixing with the base are type errors. An `opaque` distinct type can only be wrapped in its own module.
 
 - **Reason.** Naming the unwrap after the base reads like the existing `Int.toString` style and needs no generic `unwrap`.
-- **Cost.** No `implements` or `derives` on distinct types yet, and no generic distinct types.
+- **Cost.** No `implements` or `derives` on distinct types yet (built, D108), and no generic distinct types.
 
 ## D63. The self-hosted compiler uses integer node ids and is ported soon
 
@@ -1336,3 +1336,20 @@ Decision (node generic-implement, 2026-11-12). SPEC section "Traits" lets any ty
 5. **How it is built.** The block is recorded on the generic type, so every instance implements the trait. Each member is also a generic function with the type's parameters and bounds, under a hidden name, so its body is checked once with the parameters open and once per instance, and emitted per instance. A trait call on an instance, direct or through a bound, calls the member's instance. Every concrete instance of the type gets the members' instances, so `==`, map keys, derived `Ordered` and `Show` of an enclosing type call the user's functions. `findImplementation(checker, type, traitIndex, name)` in `selfhost/src/implementations.nra` returns the implementing `ProgramFunc` (a block function or a member instance); the Dynamic tables (D95) build on it.
 
 Built (generic-implement).
+
+## D108. Traits on distinct types
+
+Decision (node distinct-traits, 2026-11-12). A distinct type lists traits like a struct or an enum. A listed trait needs an `implement` block in the declaring module or a `derives` entry; a derived trait uses the base type's implementation, because the C type is the same.
+
+1. **Where the lists go.** After the base: `distinct type UserId = int implements Label derives Show`. It reads left to right like a struct head, the base stays next to `=` as in a type alias, and `implements` is a keyword, so a generic base such as `Array<int>` ends without ambiguity.
+   - Rejected: `distinct type UserId implements Label = int`, which splits the name from its base.
+2. **`==` and map keys stay.** SPEC gives every type without a function inside an automatic `Equatable`, and D62 kept `==` and map keys for distinct types. SPEC now says that arithmetic, bit operators and `<` do not carry over, which is all the old line meant.
+   - Rejected: removing `==` and map keys from distinct types, which makes ids such as `UserId` hard to use.
+3. **What a derived `Show` prints.** The base's text: `Show.show(UserId.from(7))` is `7`, and a distinct `string` is quoted. A distinct type has no fields, so there is no `UserId(7)` form to show.
+   - Rejected: `UserId(7)`, which reads like an enum constructor that does not exist.
+4. **`derives Shape` on an opaque distinct type** is allowed, as on an opaque struct: the declaring module chose it. `Shape.fromValue` then builds values outside the module.
+5. **A derive needs the base to implement the trait.** Otherwise E1012 at the entry. The derivable traits stay Equatable, Hashable, Ordered, Show and Shape (E0503 for others).
+6. **An own `implement` block wins.** A direct call and a generic instance `<T: Show>` with `T = UserId` run the user's function, not the base's: the emitter strips a distinct type to its base only when the type has no block of its own for the operation. An `implement Equatable` or `implement Hashable` block for a distinct type is E1014: `==` and map keys compare and hash the base value (D62), so the block would never run. (On a struct, `==` and map keys do call the user block.)
+7. **How `derives Shape` is built.** The loader writes the two functions (`deriveshape.nra`) through the base's `Shape`; the unwrap call inside them uses the hidden name `__unwrap`, since the usual name (`toInt`, `toString`) depends on the resolved base. The checker accepts `__unwrap` only inside the generated `__shapeToValue_*` functions; anywhere else it is E0322 like any unknown function.
+
+Built (distinct-traits).

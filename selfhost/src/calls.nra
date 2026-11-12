@@ -35,7 +35,7 @@ import {
 import { substitute, resolveTypeArguments } from "narrac/resolve"
 import { describeUnknownParameter, noteInstanceCall } from "narrac/constgenerics"
 import { unify } from "narrac/generics"
-import { shapeFunctionName } from "narrac/deriveshape"
+import { shapeFunctionName, isShapeToValueName, HIDDEN_UNWRAP } from "narrac/deriveshape"
 import { findImplementation, setImplementationRef } from "narrac/implementations"
 import { checkTargetUse } from "narrac/buildconditions"
 import {
@@ -1171,6 +1171,10 @@ function setShapeRef(
       typeName = checker.enums[index].name
       typeArguments = copy(checker.enums[index].arguments)
     }
+    Type.TDistinct(index) => {
+      module = checker.distincts[index].module
+      typeName = checker.distincts[index].name
+    }
     _ => {
       return
     }
@@ -1260,7 +1264,7 @@ function checkDistinctCall<W: Walker>(
         `${info.name}.from is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`,
       )
     }
-  } else if (name != unwrap) {
+  } else if (name != unwrap && !(name == HIDDEN_UNWRAP && isInShapeToValue(checker))) {
     reportError(
       mutable checker,
       calleePos,
@@ -1292,6 +1296,15 @@ function checkDistinctCall<W: Walker>(
   const valueType = checkExpression(mutable checker, walker, value, Some(distinctType))
   expectType(mutable checker, valuePos, Some(distinctType), valueType)
   return base
+}
+
+function isInShapeToValue(checker: Checker): bool {
+  // Only the functions written for `derives Shape` may use the hidden unwrap.
+  if (checker.body < 0 || checker.body >= Arrays.length(checker.bodies)) {
+    return false
+  }
+  return checker.bodies[checker.body].kind == "func" &&
+    isShapeToValueName(checker.bodies[checker.body].name)
 }
 
 function findUnwrapName(checker: Checker, distinctIndex: int): string uses alloc {

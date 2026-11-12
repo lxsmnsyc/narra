@@ -173,16 +173,16 @@ static void narra_free(void* p) {
 // The debug copy check. With NARRA_CHECK_COPIES set, a debug build counts each
 // copy on write of a shared array, box, map, string builder or generator, and
 // at exit reports the ones that no copy(...) explains, with exit code 103.
-// copy(x) retains x with granting on, so each object the retain reaches gets
-// a credit. A copy on write uses one credit of the object it copies, and the
-// retains of its children during the copy grant each child one. The credits of an array, box, map, builder or generator end when its count falls
-// back to 2 or less. A heap enum value also carries
-// a copy_held id that copy(x) gives to the holder it makes. Retains of that
-// holder share the id, and the credit ends when the last of them is released,
-// so releasing the original holder ends no credit; the rest end when the box
-// is freed. The credits live in an
-// open-addressing table of plain malloc memory, outside narra_live.
-// Release builds (NARRA_RELEASE) have none of it: the hooks expand to nothing.
+// copy(x) retains x with granting on, so each object the retain reaches gets a
+// credit. A copy on write uses one credit of the object it copies, and the
+// retains of its children during the copy grant each child one. The credits of
+// an array, box, map, builder or generator end when its count falls back to 2
+// or less. A heap enum value also carries a copy_held id that copy(x) gives to
+// the holder it makes. Retains of that holder share the id, and the credit ends
+// when the last of them is released, so releasing the original holder ends no
+// credit; the rest end when the box is freed. The credits live in an
+// open-addressing table of plain malloc memory, outside narra_live. Release
+// builds (NARRA_RELEASE) have none of it: the hooks expand to nothing.
 #ifndef NARRA_RELEASE
 typedef struct narra_copy_slot { const void* p; int64_t credits; } narra_copy_slot;
 static bool narra_copy_on = false;

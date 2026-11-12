@@ -1,7 +1,7 @@
 ---
 id: const-eval-design
 title: "Design: how @const functions run at compile time"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-12
-spent:
+spent: 245000
 owns:
   - roadmaps/selfhost/nodes/const-eval-design/**
   - roadmaps/selfhost/nodes/const-functions/**

@@ -1,7 +1,7 @@
 ---
 id: contract-logic
 title: "Logical operators and relations in requires"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 570000
 owns:
   - roadmaps/selfhost/nodes/contract-logic/**
   - testdata/contracts_logic*

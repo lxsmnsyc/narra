@@ -1,0 +1,347 @@
+// The rules of `@inline` (SPEC section 2). Every call to an `@inline`
+// function is a copy of its body, so the function needs a body that runs to its
+// end (E1031) and cannot reach itself through other `@inline` functions (E1030).
+// The emitter reads the uses collected here to find the function-type
+// parameters that the body only calls (emitinline.nra).
+import { Pos, Expr, Stmt, Block, MatchArm, findAttribute } from "narrac/ast"
+import { Checker, Ref, findBody, findBodySlot, reportErrorIn } from "narrac/check"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// A call in a body: its node id, where it is written, the id of its callee when
+// that is a plain name, and whether it is inside an arrow function.
+export struct CallUse {
+  nodeId: int
+  pos: Pos
+  calleeId: int
+  inArrow: bool
+}
+
+// A name read in a body, and whether it is inside an arrow function.
+export struct NameUse {
+  nodeId: int
+  inArrow: bool
+}
+
+export struct BodyUses {
+  calls: Array<CallUse>
+  names: Array<NameUse>
+}
+
+// An error found before any is reported, since a report writes the checker.
+struct InlineReport {
+  file: string
+  pos: Pos
+  code: string
+  message: string
+}
+
+// A call from one `@inline` function to another.
+struct InlineEdge {
+  target: int
+  pos: Pos
+}
+
+export function isInlineFunction(checker: Checker, funcIndex: int): bool uses alloc {
+  return findAttribute(checker.functions[funcIndex].declaration, "inline") is Some(_)
+}
+
+export function checkInlineFunctions(mutable checker: Checker) uses alloc {
+  let inlineFunctions: Array<int> = []
+  for (const funcIndex of Ranges.upTo(Arrays.length(checker.functions))) {
+    if (isInlineFunction(checker, funcIndex)) {
+      Arrays.push(mutable inlineFunctions, funcIndex)
+    }
+  }
+  if (Arrays.length(inlineFunctions) == 0) {
+    return
+  }
+  // A generator has no body that runs to its end inside a call.
+  let reports: Array<InlineReport> = []
+  for (const funcIndex of Arrays.values(inlineFunctions)) {
+    const declaration = checker.functions[funcIndex].declaration
+    if (declaration.generator) {
+      if (findAttribute(declaration, "inline") is Some(attribute)) {
+        Arrays.push(mutable reports, InlineReport {
+          file: findFunctionFile(checker, funcIndex),
+          pos: attribute.pos,
+          code: "E1031",
+          message: `@inline cannot copy generator ${declaration.name} into its calls; remove @inline`,
+        })
+      }
+    }
+  }
+  // The calls between @inline functions, then the first cycle through each.
+  let edges: Map<int, Array<InlineEdge>> = Map {}
+  for (const funcIndex of Arrays.values(inlineFunctions)) {
+    edges[funcIndex] = copy(collectInlineEdges(checker, funcIndex))
+  }
+  let reported: Map<int, bool> = Map {}
+  for (const funcIndex of Arrays.values(inlineFunctions)) {
+    if (reported[funcIndex] is Some(_)) {
+      continue
+    }
+    const chain = findCycle(edges, funcIndex)
+    if (Arrays.length(chain) == 0) {
+      continue
+    }
+    const name = checker.functions[funcIndex].name
+    let names: Array<string> = [name]
+    for (const edge of Arrays.values(chain)) {
+      Arrays.push(mutable names, checker.functions[edge.target].name)
+      reported[edge.target] = true
+    }
+    Arrays.push(mutable reports, InlineReport {
+      file: findFunctionFile(checker, funcIndex),
+      pos: chain[0].pos,
+      code: "E1030",
+      message: `@inline function ${name} calls itself (${Str.join(names, " -> ")}); an @inline function cannot be recursive`,
+    })
+  }
+  for (const report of Arrays.values(reports)) {
+    reportErrorIn(mutable checker, report.file, report.pos, report.code, report.message)
+  }
+}
+
+function findFunctionFile(checker: Checker, funcIndex: int): string {
+  return checker.scopes[checker.functions[funcIndex].scope].file
+}
+
+function collectInlineEdges(
+  checker: Checker,
+  funcIndex: int,
+): Array<InlineEdge> from checker uses alloc {
+  // The body of a plain function, and one body per instance of a generic one.
+  let bodies: Array<int> = []
+  const plainBody = findBody(checker, `func|${Int.toString(funcIndex)}`)
+  if (plainBody >= 0) {
+    Arrays.push(mutable bodies, plainBody)
+  }
+  for (const instance of Ranges.upTo(Arrays.length(checker.instanceList))) {
+    if (checker.instanceList[instance].funcIndex == funcIndex) {
+      const instanceBody = findBody(checker, `inst|${Int.toString(instance)}`)
+      if (instanceBody >= 0) {
+        Arrays.push(mutable bodies, instanceBody)
+      }
+    }
+  }
+  let edges: Array<InlineEdge> = []
+  let seen: Map<int, bool> = Map {}
+  const declaration = checker.functions[funcIndex].declaration
+  if (declaration.body is Some(block)) {
+    const bodyUses = collectBlockUses(block)
+    for (const body of Arrays.values(bodies)) {
+      const info = checker.bodies[body]
+      for (const call of Arrays.values(bodyUses.calls)) {
+        const slot = findBodySlot(info, call.nodeId)
+        if (slot < 0) {
+          continue
+        }
+        if (info.refs[slot] is Ref.Function(target)) {
+          // Only calls to @inline functions are copied, so only they continue a chain.
+          if (isInlineFunction(checker, target) && seen[target] is None) {
+            seen[target] = true
+            Arrays.push(mutable edges, InlineEdge { target: target, pos: call.pos })
+          }
+        }
+      }
+    }
+  }
+  return edges
+}
+
+function findCycle(
+  edges: Map<int, Array<InlineEdge>>,
+  start: int,
+): Array<InlineEdge> from edges uses alloc {
+  // A depth-first search with an explicit stack of paths, so a long chain does
+  // not recurse; the first path that comes back to start wins.
+  let visited: Map<int, bool> = Map {}
+  let paths: Array<Array<InlineEdge>> = [[]]
+  while (Arrays.length(paths) > 0) {
+    const path = paths[Arrays.length(paths) - 1]
+    paths = withoutLastPath(paths)
+    let current = start
+    if (Arrays.length(path) > 0) {
+      current = path[Arrays.length(path) - 1].target
+    }
+    if (edges[current] is Some(outgoing)) {
+      for (let index = Arrays.length(outgoing) - 1; index >= 0; index--) {
+        const edge = outgoing[index]
+        let next = copy(path)
+        Arrays.push(mutable next, edge)
+        if (edge.target == start) {
+          return next
+        }
+        if (visited[edge.target] is None) {
+          visited[edge.target] = true
+          Arrays.push(mutable paths, next)
+        }
+      }
+    }
+  }
+  return []
+}
+
+function withoutLastPath(
+  paths: Array<Array<InlineEdge>>,
+): Array<Array<InlineEdge>> from paths uses alloc {
+  let kept: Array<Array<InlineEdge>> = []
+  for (const index of Ranges.upTo(Arrays.length(paths) - 1)) {
+    Arrays.push(mutable kept, paths[index])
+  }
+  return kept
+}
+
+export function collectBlockUses(block: Block): BodyUses from block uses alloc {
+  let found = BodyUses { calls: [], names: [] }
+  walkBlock(mutable found, block, false)
+  return found
+}
+
+function walkBlock(mutable found: BodyUses, block: Block, inArrow: bool) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    walkStatement(mutable found, statement, inArrow)
+  }
+}
+
+function walkStatement(mutable found: BodyUses, statement: Stmt, inArrow: bool) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => walkBlock(mutable found, block, inArrow)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => walkExpression(mutable found, value, inArrow)
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      walkExpression(mutable found, target, inArrow)
+      walkExpression(mutable found, value, inArrow)
+    }
+    Stmt.ExprStmt(_, expression) => walkExpression(mutable found, expression, inArrow)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        walkExpression(mutable found, returned, inArrow)
+      }
+    }
+    Stmt.IfStmt(_, condition, thenBlock, orElse) => {
+      walkExpression(mutable found, condition, inArrow)
+      walkBlock(mutable found, thenBlock, inArrow)
+      if (orElse is Some(elseStatement)) {
+        walkStatement(mutable found, elseStatement, inArrow)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      walkExpression(mutable found, condition, inArrow)
+      walkBlock(mutable found, body, inArrow)
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        walkStatement(mutable found, declaration, inArrow)
+      }
+      if (condition is Some(loopCondition)) {
+        walkExpression(mutable found, loopCondition, inArrow)
+      }
+      if (step is Some(stepStatement)) {
+        walkStatement(mutable found, stepStatement, inArrow)
+      }
+      walkBlock(mutable found, body, inArrow)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+      walkExpression(mutable found, iterable, inArrow)
+      walkBlock(mutable found, body, inArrow)
+    }
+    Stmt.YieldStmt(_, value, _, _) => walkExpression(mutable found, value, inArrow)
+    Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => {}
+  }
+}
+
+function walkExpression(mutable found: BodyUses, expression: Expr, inArrow: bool) uses alloc {
+  match (expression) {
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _) => {}
+    Expr.Ident(nodeId, _, _) => Arrays.push(mutable found.names, NameUse {
+      nodeId: nodeId,
+      inArrow: inArrow,
+    })
+    Expr.TemplateLit(_, _, parts) => walkExpressions(mutable found, parts, inArrow)
+    Expr.FieldExpr(_, _, target, _) => walkExpression(mutable found, target, inArrow)
+    Expr.IsExpr(_, _, subject, _) => walkExpression(mutable found, subject, inArrow)
+    Expr.IndexExpr(_, _, target, index) => {
+      walkExpression(mutable found, target, inArrow)
+      walkExpression(mutable found, index, inArrow)
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      walkExpressions(mutable found, keys, inArrow)
+      walkExpressions(mutable found, values, inArrow)
+    }
+    Expr.CallExpr(nodeId, pos, callee, _, arguments) => {
+      // The callee's id marks a name that is called, not passed on.
+      let calleeId = -1
+      if (callee is Expr.Ident(identId, _, _)) {
+        calleeId = identId
+      }
+      Arrays.push(mutable found.calls, CallUse {
+        nodeId: nodeId,
+        pos: copy(pos),
+        calleeId: calleeId,
+        inArrow: inArrow,
+      })
+      walkExpression(mutable found, callee, inArrow)
+      for (const argument of Arrays.values(arguments)) {
+        walkExpression(mutable found, argument.value, inArrow)
+      }
+    }
+    Expr.UnaryExpr(_, _, _, operand) => walkExpression(mutable found, operand, inArrow)
+    Expr.BinaryExpr(_, _, _, left, right) => {
+      walkExpression(mutable found, left, inArrow)
+      walkExpression(mutable found, right, inArrow)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        walkExpression(mutable found, field.value, inArrow)
+      }
+      if (spread is Some(spreadValue)) {
+        walkExpression(mutable found, spreadValue, inArrow)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => walkExpressions(mutable found, elements, inArrow)
+    Expr.MatchExpr(_, _, subject, arms) => {
+      walkExpression(mutable found, subject, inArrow)
+      for (const arm of Arrays.values(arms)) {
+        walkArm(mutable found, arm, inArrow)
+      }
+    }
+    Expr.BlockExpr(_, _, block) => walkBlock(mutable found, block, inArrow)
+    Expr.ArrowExpr(_, _, _, _, body, block) => {
+      if (body is Some(bodyExpression)) {
+        walkExpression(mutable found, bodyExpression, true)
+      }
+      if (block is Some(bodyBlock)) {
+        walkBlock(mutable found, bodyBlock, true)
+      }
+    }
+  }
+}
+
+function walkExpressions(
+  mutable found: BodyUses,
+  expressions: Array<Expr>,
+  inArrow: bool,
+) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    walkExpression(mutable found, expression, inArrow)
+  }
+}
+
+function walkArm(mutable found: BodyUses, arm: MatchArm, inArrow: bool) uses alloc {
+  if (arm.guard is Some(guard)) {
+    walkExpression(mutable found, guard, inArrow)
+  }
+  if (arm.body is Some(body)) {
+    walkExpression(mutable found, body, inArrow)
+  }
+  if (arm.block is Some(block)) {
+    walkBlock(mutable found, block, inArrow)
+  }
+}

@@ -61,6 +61,8 @@ import {
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
 import * as Closures from "narrac/emitclosures"
+import * as Inline from "narrac/emitinline"
+import { isInlineFunction } from "narrac/inlining"
 import * as StdValues from "narrac/stdvalues"
 import * as Traits from "narrac/emittraits"
 import * as Match from "narrac/emitmatch"
@@ -583,7 +585,7 @@ function emitCall<W: EmitWalker>(
       arguments,
     )
     Ref.TraitFunction(_, _) => Traits.emitTraitCall(walker, mutable emitter, expression)
-    Ref.Value => Closures.emitValueCall(walker, mutable emitter, expression)
+    Ref.Value => Inline.emitInlineValueCall(walker, mutable emitter, expression)
     Ref.Builtin(index) => emitBuiltinCall(
       walker,
       mutable emitter,
@@ -803,13 +805,16 @@ function emitPlainOrInstanceCall<W: EmitWalker>(
   arguments: Array<Arg>,
 ): Code uses alloc {
   const info = copy(emitter.checker.bodies[emitter.body])
+  let program = ProgramFunc.PlainFunc(funcIndex)
   if (info.instanceRefs[nodeId] is Some(instance)) {
-    return emitFunctionCall(walker, mutable emitter, ProgramFunc.InstanceFunc(instance), arguments)
-  }
-  if (Arrays.length(emitter.checker.functions[funcIndex].typeParameters) > 0) {
+    program = ProgramFunc.InstanceFunc(instance)
+  } else if (Arrays.length(emitter.checker.functions[funcIndex].typeParameters) > 0) {
     return unsupportedCode(mutable emitter, "generic call without an instance")
   }
-  return emitFunctionCall(walker, mutable emitter, ProgramFunc.PlainFunc(funcIndex), arguments)
+  if (isInlineFunction(emitter.checker, funcIndex)) {
+    return Inline.emitInlineCall(walker, mutable emitter, program, arguments)
+  }
+  return emitFunctionCall(walker, mutable emitter, program, arguments)
 }
 
 function emitFunctionCall<W: EmitWalker>(

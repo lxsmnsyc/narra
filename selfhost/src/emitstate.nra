@@ -144,6 +144,36 @@ export struct Emitter {
   syntheticTypes: Map<int, Type>
   syntheticRefs: Map<int, Ref>
   syntheticCode: Map<int, string>
+  // The @inline calls being written, innermost last (emitinline.nra), the
+  // count of copied bodies so far, and the suffix of the loop labels in the
+  // copy being written, since C labels are per function.
+  inlineSites: Array<InlineSite> = []
+  inlineCount: int = 0
+  labelSuffix: string = ""
+}
+
+// The caller's side of the emitter state at an @inline call, put back while the
+// body of an arrow argument is written.
+export struct InlineCaller {
+  body: int
+  file: string
+  refCaptures: Array<int>
+  hoistedArrays: Array<int>
+  inGenerator: bool
+  blocks: Array<BlockInfo>
+  labelSuffix: string
+}
+
+// An arrow argument that is written where the copied body calls its parameter
+// (a BodyInfo.locals index of the callee).
+export struct InlineArrow {
+  parameter: int
+  arrow: Expr
+}
+
+export struct InlineSite {
+  caller: InlineCaller
+  arrows: Array<InlineArrow>
 }
 
 export struct BodyContext {
@@ -242,6 +272,9 @@ export struct LoopInfo {
   continueUsed: bool
   // A C-style for loop: continue jumps to its step.
   hasStep: bool
+  // Set in the copy of an @inline body, so two copies in one function have
+  // labels of their own.
+  suffix: string = ""
 }
 
 // The recursion entry points of the body emitter. Narra function types cannot
@@ -826,6 +859,7 @@ export function unwindLoop(mutable emitter: Emitter) uses alloc {
 
 export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) uses alloc {
   const depth = Arrays.length(emitter.frames)
+  const suffix = emitter.labelSuffix
   Arrays.push(mutable emitter.loopFrames, depth)
   Arrays.push(mutable emitter.loopInfos, LoopInfo {
     label: label,
@@ -834,6 +868,7 @@ export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) use
     breakUsed: false,
     continueUsed: false,
     hasStep: false,
+    suffix: suffix,
   })
 }
 
@@ -866,7 +901,7 @@ export function emitStepJump(mutable emitter: Emitter) uses alloc {
   emitter.loopInfos[index].continueUsed = true
   writeLine(
     mutable emitter,
-    `goto narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)};`,
+    `goto narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix};`,
   )
 }
 
@@ -875,7 +910,7 @@ export function emitContinueLabel(mutable emitter: Emitter) uses alloc {
   if (info.continueUsed) {
     writeLine(
       mutable emitter,
-      `narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}:;`,
+      `narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix}:;`,
     )
   }
 }
@@ -884,7 +919,7 @@ export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses al
   if (info.breakUsed) {
     writeLine(
       mutable emitter,
-      `narra_break_${Int.toString(info.line)}_${Int.toString(info.column)}:;`,
+      `narra_break_${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix}:;`,
     )
   }
 }
@@ -894,7 +929,7 @@ export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak
     const info = copy(emitter.loopInfos[index])
     if (info.label == label) {
       unwindToLoop(mutable emitter, index)
-      const where = `${Int.toString(info.line)}_${Int.toString(info.column)}`
+      const where = `${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix}`
       if (isBreak) {
         emitter.loopInfos[index].breakUsed = true
         writeLine(mutable emitter, `goto narra_break_${where};`)

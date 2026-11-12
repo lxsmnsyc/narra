@@ -1052,6 +1052,13 @@ Build conditions are built (batch-7, node build-conditions), except `@target` an
 
 Status of D95 after batch-7: built are `requires`, `ensures`, build conditions, and `@target` with `--all-targets`. Not built yet: async exit and `Async.idle`, fixed arrays, `@inline`, C interop (including `@target` on `extern` functions) and dynamic traits.
 
+`@inline` (batch-11, node inline, 2026-11-12). Amendments from the build:
+
+- **E1030 and E1031.** A call chain through `@inline` functions back to the first is E1030, reported once at the first call of the chain with the chain in the message; a call to a function without `@inline` ends it. A generator or an extern block member with `@inline` is E1031. An `async` function waits for async functions (batch-12).
+- **Only called parameters are copied.** An arrow argument is copied into the body when every read of its parameter is a call outside any arrow function of the body. Any other use (passed on, captured, stored) builds the closure at the call, on the caller's stack as before.
+- **A value use keeps a C function.** An `@inline` function may be used as a value; that use gets one ordinary C function and every call is still copied (maintainer recommendation in the brief: an error would break every program that passes a std helper as a value once std uses `@inline`).
+- **No `static inline`.** The SPEC sentence that `@inline` functions are emitted as `static inline` C functions is replaced: C's `inline` is a hint and keeps the closure call.
+
 Constant type parameters (batch-8, node const-generics, 2026-11-11), the first part of fixed arrays. Amendments from the build:
 
 - **The kind is `int` only.** `const N: u8` and the other sized kinds are E0992 for now; they can come later without a syntax change.

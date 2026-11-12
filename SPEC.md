@@ -125,16 +125,24 @@ each(numbers, (item) => { total = total + item })
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
 - **`escaping`** marks a function-type parameter that may be stored or outlive the call: `function onClick(escaping handler: () => void)`. An escaping closure's environment is allocated on the heap.
 - Struct fields and array elements of function type always hold escaping closures. `Thread.start`, `Async.spawn` and `Async.run` take escaping parameters.
-- **`@inline`** on a function copies its body into each caller. On a higher-order function such as `Arrays.map`, this also places the closure's body at the call, which removes the indirect call.
+- **`@inline`** on a function copies its body into each call. An arrow function passed for a function-type parameter that the body only calls is copied too, to each place the body calls the parameter, so the call has no C call, no closure environment and no indirect call. The arrow reads the caller's variables in place.
 
 ```ts
 @inline
-export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): Array<U> uses alloc, E {
-  // f cannot escape, so the closure passed in needs no allocation
+function applyTwice(value: int, transform: (item: int) => int): int {
+  return transform(transform(value))
 }
 
-const scaled = Arrays.map(prices, (p) => p * rate)    // no closure allocation, no indirect call
+const rate = 3
+const result = applyTwice(2, (item) => item * rate)    // no call, no closure, no indirect call
 ```
+
+  - `@inline` is a guarantee, not a hint. Every call is copied, also across modules and packages, and a generic function is copied with the call's type arguments.
+  - Copying never changes behavior. Arguments are evaluated once, left to right; a `mutable` parameter still writes the caller's place; copies, releases, panics and effects are those of the ordinary call. A `return` in the body ends the copy, and a `return` in a block arrow ends that arrow.
+  - A function-type parameter that the body passes on, stores in a closure or reads other than in a call gets a real closure value, built at the call. A named function or a variable holding a function is passed as a value.
+  - An `@inline` function cannot be recursive: a call to itself, directly or through other `@inline` functions, is E1030, and the message names the chain (`isEven -> isOdd -> isEven`). A call to a function without `@inline` ends the chain.
+  - `@inline` needs a body that runs to its end inside the call: on a generator (`function*`) or a function of an `extern { } from` block it is E1031. It is not written in an `implement` block (E0990), since those calls go through the trait.
+  - An `@inline` function used as a value (`const f = applyTwice`, or passed as an argument) has an ordinary C function for that value. Calls are still copied. A program that only calls it has no C function for it.
 
 
 ### Control flow
@@ -1615,7 +1623,7 @@ export enum Color {
   - Dropping an unfinished generator releases what is live at its state and frees the struct. Resuming a shared generator first copies the struct and retains what is live in it, so `for ... of` and `yield*` work on their own copy.
 - **`mutable` parameters** compile to C pointer parameters.
 - **Self-calls in tail position** compile to loops in every function (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
-- **Closures.** A non-escaping closure's environment is a C struct on the caller's stack. An escaping closure's environment is a reference-counted heap object. `@inline` functions are emitted as `static inline` C functions, and their bodies are copied into callers.
+- **Closures.** A non-escaping closure's environment is a C struct on the caller's stack. An escaping closure's environment is a reference-counted heap object. The bodies of `@inline` functions, and of arrow functions passed to them, are written into each call (section 2).
 - **Trait constraints** compile to a hidden parameter that points to the implementation table.
 - **Constant parameters pass by pointer.** A parameter larger than two machine words is passed as a pointer to the caller's value. Parameters are constant and access is exclusive (section 6), so this changes nothing a program can observe.
 - **Reads do not copy.** `items[i].field` and `s.inner.field` read through a pointer. The element is not copied and its reference count is not touched.

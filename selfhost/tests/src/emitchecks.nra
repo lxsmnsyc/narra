@@ -40,6 +40,9 @@
 //                      instances that differ only in a constant type argument
 //                      (repeat<1>, repeat<2>, repeat<3>; Vector<1>, Vector<2>,
 //                      Vector<3>) have C names of their own
+//   inline/no-closure  the C of testdata/inline.nra has no C function for the
+//                      @inline function applyTwice, and no closure function or
+//                      environment for its arrow argument
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
@@ -127,6 +130,7 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(context.testdata, "const_generics.nra"),
       "distinct-instances",
     ),
+    makeCase("inline/no-closure", Path.join(context.testdata, "inline.nra"), "no-closure"),
   ]
 }
 
@@ -164,6 +168,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "distinct-instances") {
     return checkDistinctInstances(context, testCase.path)
+  }
+  if (testCase.variant == "no-closure") {
+    return checkInlineCopied(context, testCase.path)
   }
   if (testCase.variant == "std-source") {
     return checkStdSourceShaken(context, testCase.path)
@@ -275,6 +282,23 @@ function checkOneBranch(context: Context, source: string): Result<bool, string> 
     if (Str.contains(result.output, text) != (text == kept)) {
       return Err(`the emitted C should hold only "${kept}"; "${text}" is wrong`)
     }
+  }
+  return Ok(true)
+}
+
+function checkInlineCopied(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // The callee's C name ends in its own name; closures and environments use narra_env.
+  for (const text of Arrays.values(["_applyTwice", "narra_env"])) {
+    if (Str.contains(result.output, text)) {
+      return Err(`the emitted C should not hold "${text}"`)
+    }
+  }
+  if (!Str.contains(result.output, "narra_inline_")) {
+    return Err("the emitted C has no copied body")
   }
   return Ok(true)
 }

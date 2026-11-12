@@ -196,6 +196,10 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 
 - `type Name<T> = Body` and `export type`. A non-generic alias is entered in the module's type table as its resolved type, so constructors, patterns and struct literals work through it, also across modules. A generic alias is resolved again at each use with its arguments, so constructors through a generic alias (`Alias.Ctor`) are not available. Self reference and cycles are E0972, a wrong argument count is E0973. Diagnostics print `Alias (Type)` for a struct, enum or distinct type once an alias of it was used anywhere in the package, even where the source wrote the type name.
 
+## @inline
+
+- `selfhost/src/inlining.nra` checks the rules after every body: E1030 for an `@inline` function that reaches itself through `@inline` calls, E1031 for a generator. The parser reports E1031 for an extern block member. `selfhost/src/emitinline.nra` writes each call: the arguments into C temporaries in the caller, then the callee's body in a C block whose `return` stores the result and jumps to a label after it, reading the callee's side tables. An arrow argument for a parameter the body only calls (never inside an arrow, never passed on) is written where the body calls it, back in the caller's state. Loop labels in a copy get a suffix per copy. A generator caller writes the copy's locals as C locals, since no `yield` runs inside a copy.
+
 ## typeof
 
 - `typeof name` in a type (D96) is `TypeExpr.typeofName` (`name` is empty); the parser reads it in `parseTypeBody` when `typeof` is followed by a name, and `SourceFacts.hasTypeof` tells `checkModuleBodies` to check the module's constants first. `resolveTypeof` (`selfhost/src/resolve.nra`) resolves a parameter written earlier in the same signature (`Checker.signatureNames`), a local or parameter of the body, a constant or a function. A function declared further down the file is resolved from its declaration, so aliases and signatures may use it. A name already being resolved by its own type is E0981 (`Checker.busy`, key `typeof|name`); a type, a module, a generic function, a function with effect variables or with a `mutable` parameter is E0982. A constant without a written type has no type in the declaration passes (they run before any value is checked), so a declaration of the same module needs the written type (E1003); bodies and other modules see the inferred type. `narrac fmt` and `narrac query` signatures print `typeof name` as written; hover shows the resolved type.
@@ -207,7 +211,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - `Dynamic<Trait>` and `Hash.of`.
 - Defaults for generic struct fields whose type uses a type parameter.
 - Effects: trait function calls to user implementations are not followed, and an implementation may use effects its trait function does not declare, except `unsafe` (E0800). Implementations of pure trait functions such as `Show.show` allocate in existing programs and in the guide; enforcing the subset rule for `alloc` and `io` waits for a decision.
-- `@inline` (node inline) and `async` arrow functions.
+- `async` arrow functions.
 - Reading a tuple element by index.
 - Async functions, threads and channels.
 - `@layout` and C-callable functions (node c-abi-export).

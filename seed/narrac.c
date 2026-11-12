@@ -21164,7 +21164,7 @@ static lstr L2339 = {-1, 297, "A constant may take 10 million evaluation steps (
 static lstr L2340 = {-1, 5, "E1055"};
 static lstr L2341 = {-1, 414, "The values a constant builds while it is computed may take 64 MiB, counted as 8 bytes per number, element, field and entry, string lengths rounded up to 8, and 16 per array and map; `copy(...)` and storing a value read from a place count its outer level again. A std call whose result would pass the limit is stopped before it runs.\012Fix: build a table this large at run time with `lazy`, or generate a source file."};
 static lstr L2342 = {-1, 5, "E1056"};
-static lstr L2343 = {-1, 345, "A constant may make 1000 nested calls while it is computed, nest calls, blocks, loops and expressions 10000 deep, and build values nested 1000 levels deep, which keeps the compiler stack safe. A function that calls itself as its last step (`return f(...)`) runs as a loop and does not count.\012Fix: write the recursion as a loop or as a tail call."};
+static lstr L2343 = {-1, 344, "A constant may make 1000 nested calls while it is computed, nest calls, blocks, loops and expressions 5000 deep, and build values nested 1000 levels deep, which keeps the compiler stack safe. A function that calls itself as its last step (`return f(...)`) runs as a loop and does not count.\012Fix: write the recursion as a loop or as a tail call."};
 static lstr L2344 = {-1, 5, "E1057"};
 static lstr L2345 = {-1, 202, "An @const function may read top-level constants. A constant whose computation reads the constant itself has no value to start from.\012Fix: break the cycle, for example by passing the value as an argument."};
 static lstr L2346 = {-1, 13, "unsupported: "};
@@ -132295,7 +132295,7 @@ static void f_136a64fd_reportFailure(S_b2b309ba_Checker* v_checker_12681, const 
           }
           bool t11436 = t11435;
           if (t11436) {
-            lstr* t11437 = lstr_from_int(INT64_C(10000));
+            lstr* t11437 = lstr_from_int(INT64_C(5000));
             lstr* t11438 = lstr_concat_n(5, (lstr*[]){(&L2689), v_name_12685, (&L2690), t11437, (&L2691)});
             lstr** t11439 = &v_text_12686;
             lstr_release((*t11439));
@@ -137247,7 +137247,7 @@ static bool f_136a64fd_enterNesting(S_136a64fd_ConstEvaluator* v_state_13319, S_
   int64_t* t26600 = &(v_state_13319)->f_nesting;
   int64_t t26601 = narra_wrap_add((*t26600), t26599);
   *t26600 = t26601;
-  bool t26602 = (((*v_state_13319)).f_nesting > INT64_C(10000));
+  bool t26602 = (((*v_state_13319)).f_nesting > INT64_C(5000));
   if (t26602) {
     f_136a64fd_stopEvaluation(v_state_13319, v_pos_13320, (&L5974), (&L5975));
     bool t26603 = false;
@@ -137340,7 +137340,7 @@ static E_Option_277e33b1 f_136a64fd_findLoopPos(E_0682d6ee_Stmt v_statement_1332
   }
   E_Option_277e33b1 t49017 = r49007;
   return t49017;
-  narra_panic("src/consteval.nra:2211:1", "internal compiler error: function ended without returning a value");
+  narra_panic("src/consteval.nra:2212:1", "internal compiler error: function ended without returning a value");
   return (E_Option_277e33b1){0};
 }
 
@@ -137533,7 +137533,7 @@ static E_136a64fd_Flow f_136a64fd_executeStatementKind(const S_b2b309ba_Checker*
   }
   E_136a64fd_Flow t49055 = r49018;
   return t49055;
-  narra_panic("src/consteval.nra:2220:1", "internal compiler error: function ended without returning a value");
+  narra_panic("src/consteval.nra:2221:1", "internal compiler error: function ended without returning a value");
   return (E_136a64fd_Flow){0};
 }
 
@@ -137619,7 +137619,7 @@ static E_136a64fd_Flow f_136a64fd_executeAssign(const S_b2b309ba_Checker* v_chec
           retain_E_b2b309ba_ConstValue(&(t52136));
           int64_t t52137 = narra_wrap_add(((*v_state_13387)).f_base, v_index_13394);
           int64_t t52138 = t52137;
-          E_b2b309ba_ConstValue* t52139 = A_Array_a8188b9e_at(&(v_state_13387)->f_slots, t52138, "src/consteval.nra:2351:18");
+          E_b2b309ba_ConstValue* t52139 = A_Array_a8188b9e_at(&(v_state_13387)->f_slots, t52138, "src/consteval.nra:2352:18");
           E_b2b309ba_ConstValue* t52140 = t52139;
           release_E_b2b309ba_ConstValue(&((*t52140)));
           *t52140 = t52136;
@@ -137775,7 +137775,7 @@ static E_136a64fd_Flow f_136a64fd_executeExpressionStatement(const S_b2b309ba_Ch
         return t52187;
       }
       {
-        S_0682d6ee_MatchArm t52188 = A_Array_059ecac2_get(v_arms_13415, v_arm_13416, "src/consteval.nra:2429:13");
+        S_0682d6ee_MatchArm t52188 = A_Array_059ecac2_get(v_arms_13415, v_arm_13416, "src/consteval.nra:2430:13");
         E_Option_e70834c8 t52189 = (t52188).f_block;
         retain_E_Option_e70834c8(t52189);
         E_Option_e70834c8 t52190 = t52189;
@@ -137790,7 +137790,7 @@ static E_136a64fd_Flow f_136a64fd_executeExpressionStatement(const S_b2b309ba_Ch
         release_E_Option_e70834c8(t52190);
       }
       {
-        S_0682d6ee_MatchArm t52194 = A_Array_059ecac2_get(v_arms_13415, v_arm_13416, "src/consteval.nra:2432:13");
+        S_0682d6ee_MatchArm t52194 = A_Array_059ecac2_get(v_arms_13415, v_arm_13416, "src/consteval.nra:2433:13");
         E_Option_ea6d020a t52195 = (t52194).f_body;
         retain_E_Option_ea6d020a(t52195);
         E_Option_ea6d020a t52196 = t52195;
@@ -137896,7 +137896,7 @@ static bool f_136a64fd_isTailCall(const S_b2b309ba_Checker* v_checker_13430, con
       int64_t v_funcIndex_13434 = t55050.u.v_Function.f_index;
       bool t55052 = (v_funcIndex_13434 != ((*v_state_13431)).f_functionIndex);
       if (!t55052) {
-        S_b2b309ba_FuncInfo t55053 = A_Array_a54a7df6_get(((*v_checker_13430)).f_functions, v_funcIndex_13434, "src/consteval.nra:2485:40");
+        S_b2b309ba_FuncInfo t55053 = A_Array_a54a7df6_get(((*v_checker_13430)).f_functions, v_funcIndex_13434, "src/consteval.nra:2486:40");
         t55052 = (((t55053).f_typeParameters)->len > INT64_C(0));
       }
       bool t55054 = t55052;
@@ -138171,7 +138171,7 @@ static lstr* f_136a64fd_findBuiltinName(const S_b2b309ba_Checker* v_checker_1347
         bool t55079 = t55078.tag == 4;
         if (t55079) {
           int64_t v_index_13479 = t55078.u.v_Builtin.f_index;
-          S_17448948_StdFunc t55080 = A_Array_a7e59ce7_get((((*v_checker_13475)).f_registry).f_functions, v_index_13479, "src/consteval.nra:2630:40");
+          S_17448948_StdFunc t55080 = A_Array_a7e59ce7_get((((*v_checker_13475)).f_registry).f_functions, v_index_13479, "src/consteval.nra:2631:40");
           lstr* t55081 = (t55080).f_name;
           lstr_retain(t55081);
           lstr* t55082 = t55081;
@@ -138196,7 +138196,7 @@ static E_0682d6ee_Expr f_136a64fd_readFirstArgument(E_0682d6ee_Expr v_expression
       A_Array_549ae71e* v_arguments_13481 = t55130.u->v_CallExpr.f_arguments;
       bool t55132 = ((v_arguments_13481)->len > INT64_C(0));
       if (t55132) {
-        S_0682d6ee_Arg t55133 = A_Array_549ae71e_get(v_arguments_13481, INT64_C(0), "src/consteval.nra:2639:23");
+        S_0682d6ee_Arg t55133 = A_Array_549ae71e_get(v_arguments_13481, INT64_C(0), "src/consteval.nra:2640:23");
         E_0682d6ee_Expr t55134 = (t55133).f_value;
         retain_E_0682d6ee_Expr(t55134);
         E_0682d6ee_Expr t55135 = t55134;
@@ -138330,24 +138330,24 @@ static E_136a64fd_Flow f_136a64fd_executeFor(const S_b2b309ba_Checker* v_checker
       A_Array_a8188b9e* t52335 = A_Array_a8188b9e_new(2);
       E_b2b309ba_ConstValue t52336 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = v_index_13503}});
       t52335->items[t52335->len++] = t52336;
-      E_b2b309ba_ConstValue t52337 = A_Array_a8188b9e_get(v_items_13501, v_index_13503, "src/consteval.nra:2695:14");
+      E_b2b309ba_ConstValue t52337 = A_Array_a8188b9e_get(v_items_13501, v_index_13503, "src/consteval.nra:2696:14");
       E_b2b309ba_ConstValue t52338 = t52337;
       retain_E_b2b309ba_ConstValue(&(t52338));
       t52335->items[t52335->len++] = t52338;
       E_b2b309ba_ConstValue t52339 = ((E_b2b309ba_ConstValue){.tag = 7, .u.v_Fields = {.f_values = t52335}});
       int64_t t52340 = narra_wrap_add(((*v_state_13483)).f_base, v_localIndex_13502);
       int64_t t52341 = t52340;
-      E_b2b309ba_ConstValue* t52342 = A_Array_a8188b9e_at(&(v_state_13483)->f_slots, t52341, "src/consteval.nra:2693:18");
+      E_b2b309ba_ConstValue* t52342 = A_Array_a8188b9e_at(&(v_state_13483)->f_slots, t52341, "src/consteval.nra:2694:18");
       E_b2b309ba_ConstValue* t52343 = t52342;
       release_E_b2b309ba_ConstValue(&((*t52343)));
       *t52343 = t52339;
     } else {
-      E_b2b309ba_ConstValue t52344 = A_Array_a8188b9e_get(v_items_13501, v_index_13503, "src/consteval.nra:2698:51");
+      E_b2b309ba_ConstValue t52344 = A_Array_a8188b9e_get(v_items_13501, v_index_13503, "src/consteval.nra:2699:51");
       E_b2b309ba_ConstValue t52345 = t52344;
       retain_E_b2b309ba_ConstValue(&(t52345));
       int64_t t52346 = narra_wrap_add(((*v_state_13483)).f_base, v_localIndex_13502);
       int64_t t52347 = t52346;
-      E_b2b309ba_ConstValue* t52348 = A_Array_a8188b9e_at(&(v_state_13483)->f_slots, t52347, "src/consteval.nra:2698:18");
+      E_b2b309ba_ConstValue* t52348 = A_Array_a8188b9e_at(&(v_state_13483)->f_slots, t52347, "src/consteval.nra:2699:18");
       E_b2b309ba_ConstValue* t52349 = t52348;
       release_E_b2b309ba_ConstValue(&((*t52349)));
       *t52349 = t52345;
@@ -138424,7 +138424,7 @@ static E_136a64fd_Flow f_136a64fd_executeRangeFor(const S_b2b309ba_Checker* v_ch
     E_b2b309ba_ConstValue t55145 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = v_current_13515}});
     int64_t t55146 = narra_wrap_add(((*v_state_13506)).f_base, v_localIndex_13514);
     int64_t t55147 = t55146;
-    E_b2b309ba_ConstValue* t55148 = A_Array_a8188b9e_at(&(v_state_13506)->f_slots, t55147, "src/consteval.nra:2729:16");
+    E_b2b309ba_ConstValue* t55148 = A_Array_a8188b9e_at(&(v_state_13506)->f_slots, t55147, "src/consteval.nra:2730:16");
     E_b2b309ba_ConstValue* t55149 = t55148;
     release_E_b2b309ba_ConstValue(&((*t55149)));
     *t55149 = t55145;
@@ -138533,7 +138533,7 @@ static E_136a64fd_Flow f_136a64fd_executeReferenceFor(const S_b2b309ba_Checker* 
     retain_E_b2b309ba_ConstValue(&(t55107));
     int64_t t55108 = narra_wrap_add(((*v_state_13519)).f_base, v_localIndex_13529);
     int64_t t55109 = t55108;
-    E_b2b309ba_ConstValue* t55110 = A_Array_a8188b9e_at(&(v_state_13519)->f_slots, t55109, "src/consteval.nra:2781:16");
+    E_b2b309ba_ConstValue* t55110 = A_Array_a8188b9e_at(&(v_state_13519)->f_slots, t55109, "src/consteval.nra:2782:16");
     E_b2b309ba_ConstValue* t55111 = t55110;
     release_E_b2b309ba_ConstValue(&((*t55111)));
     *t55111 = t55107;
@@ -138542,7 +138542,7 @@ static E_136a64fd_Flow f_136a64fd_executeReferenceFor(const S_b2b309ba_Checker* 
       E_b2b309ba_ConstValue t55113 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = v_index_13532}});
       int64_t t55114 = narra_wrap_add(((*v_state_13519)).f_base, v_indexLocal_13530);
       int64_t t55115 = t55114;
-      E_b2b309ba_ConstValue* t55116 = A_Array_a8188b9e_at(&(v_state_13519)->f_slots, t55115, "src/consteval.nra:2783:18");
+      E_b2b309ba_ConstValue* t55116 = A_Array_a8188b9e_at(&(v_state_13519)->f_slots, t55115, "src/consteval.nra:2784:18");
       E_b2b309ba_ConstValue* t55117 = t55116;
       release_E_b2b309ba_ConstValue(&((*t55117)));
       *t55117 = t55113;
@@ -138598,12 +138598,12 @@ static E_136a64fd_Flow f_136a64fd_executeReferenceFor(const S_b2b309ba_Checker* 
 }
 
 static E_b2b309ba_ConstValue f_136a64fd_takeSlot(S_136a64fd_ConstEvaluator* v_state_13538, int64_t v_slot_13539) {
-  E_b2b309ba_ConstValue t48855 = A_Array_a8188b9e_get(((*v_state_13538)).f_slots, v_slot_13539, "src/consteval.nra:2801:28");
+  E_b2b309ba_ConstValue t48855 = A_Array_a8188b9e_get(((*v_state_13538)).f_slots, v_slot_13539, "src/consteval.nra:2802:28");
   E_b2b309ba_ConstValue t48856 = t48855;
   retain_E_b2b309ba_ConstValue(&(t48856));
   E_b2b309ba_ConstValue v_taken_13540 = t48856;
   int64_t t48857 = v_slot_13539;
-  E_b2b309ba_ConstValue* t48858 = A_Array_a8188b9e_at(&(v_state_13538)->f_slots, t48857, "src/consteval.nra:2802:14");
+  E_b2b309ba_ConstValue* t48858 = A_Array_a8188b9e_at(&(v_state_13538)->f_slots, t48857, "src/consteval.nra:2803:14");
   E_b2b309ba_ConstValue* t48859 = t48858;
   release_E_b2b309ba_ConstValue(&((*t48859)));
   *t48859 = ((E_b2b309ba_ConstValue){.tag = 0});
@@ -138660,7 +138660,7 @@ static A_Array_a8188b9e* f_136a64fd_evaluateArguments(const S_b2b309ba_Checker* 
       A_Array_e7fe1e37_retain(t38274);
       for (int64_t i38275 = 0; i38275 < t38274->len; i38275++) {
         int64_t v_index_13550 = t38274->items[i38275];
-        E_b2b309ba_ConstValue t38276 = A_Array_a8188b9e_get(v_written_13545, v_index_13550, "src/consteval.nra:2826:43");
+        E_b2b309ba_ConstValue t38276 = A_Array_a8188b9e_get(v_written_13545, v_index_13550, "src/consteval.nra:2827:43");
         E_b2b309ba_ConstValue t38277 = t38276;
         retain_E_b2b309ba_ConstValue(&(t38277));
         A_Array_a8188b9e_push(&v_ordered_13549, t38277);
@@ -138694,7 +138694,7 @@ static E_b2b309ba_ConstValue f_136a64fd_evaluateCall(const S_b2b309ba_Checker* v
     bool t32970 = t32968.tag == 9;
     if (t32970) {
       m32969 = true;
-      S_0682d6ee_Arg t32971 = A_Array_549ae71e_get(v_arguments_13556, INT64_C(0), "src/consteval.nra:2842:76");
+      S_0682d6ee_Arg t32971 = A_Array_549ae71e_get(v_arguments_13556, INT64_C(0), "src/consteval.nra:2843:76");
       E_b2b309ba_ConstValue t32972 = f_136a64fd_evaluateExpression(&(*v_checker_13551), v_state_13552, (t32971).f_value);
       r32966 = t32972;
     }
@@ -138764,16 +138764,16 @@ static E_b2b309ba_ConstValue f_136a64fd_evaluateCall(const S_b2b309ba_Checker* v
   E_b2b309ba_ConstValue t32989 = r32966;
   release_E_b2b309ba_Ref(&(t32967));
   return t32989;
-  narra_panic("src/consteval.nra:2833:1", "internal compiler error: function ended without returning a value");
+  narra_panic("src/consteval.nra:2834:1", "internal compiler error: function ended without returning a value");
   return (E_b2b309ba_ConstValue){0};
 }
 
 static int64_t f_136a64fd_findCallBody(const S_b2b309ba_Checker* v_checker_13561, const S_136a64fd_ConstEvaluator* v_state_13562, int64_t v_nodeId_13563, int64_t v_funcIndex_13564) {
-  S_b2b309ba_FuncInfo t43740 = A_Array_a54a7df6_get(((*v_checker_13561)).f_functions, v_funcIndex_13564, "src/consteval.nra:2873:38");
+  S_b2b309ba_FuncInfo t43740 = A_Array_a54a7df6_get(((*v_checker_13561)).f_functions, v_funcIndex_13564, "src/consteval.nra:2874:38");
   bool t43741 = (((t43740).f_typeParameters)->len > INT64_C(0));
   if (t43741) {
     {
-      S_b2b309ba_BodyInfo t43742 = A_Array_489601d7_get(((*v_checker_13561)).f_bodies, ((*v_state_13562)).f_body, "src/consteval.nra:2874:23");
+      S_b2b309ba_BodyInfo t43742 = A_Array_489601d7_get(((*v_checker_13561)).f_bodies, ((*v_state_13562)).f_body, "src/consteval.nra:2875:23");
       M_Map_16683c1c* t43743 = (t43742).f_instanceRefs;
       int64_t t43744 = M_Map_16683c1c_lookup(t43743, v_nodeId_13563);
       E_Option_89d0c73d t43745;
@@ -138814,7 +138814,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callFunction(const S_b2b309ba_Checker* v
   int64_t v_body_13572 = t38282;
   bool t38283 = (v_body_13572 < INT64_C(0));
   if (t38283) {
-    S_b2b309ba_FuncInfo t38284 = A_Array_a54a7df6_get(((*v_checker_13566)).f_functions, v_funcIndex_13570, "src/consteval.nra:2892:80");
+    S_b2b309ba_FuncInfo t38284 = A_Array_a54a7df6_get(((*v_checker_13566)).f_functions, v_funcIndex_13570, "src/consteval.nra:2893:80");
     lstr* t38285 = lstr_concat_n(2, (lstr*[]){(&L8030), (t38284).f_name});
     E_b2b309ba_ConstValue t38286 = f_136a64fd_reportUnsupported(v_state_13567, v_pos_13569, t38285);
     E_b2b309ba_ConstValue t38287 = t38286;
@@ -138838,10 +138838,10 @@ static E_b2b309ba_ConstValue f_136a64fd_callFunction(const S_b2b309ba_Checker* v
   int64_t t38293 = INT64_C(0);
   int64_t t38294 = (v_ordered_13573)->len;
   for (int64_t v_index_13576 = t38293; v_index_13576 < t38294; v_index_13576++) {
-    S_0682d6ee_Arg t38295 = A_Array_549ae71e_get(v_ordered_13573, v_index_13576, "src/consteval.nra:2902:16");
+    S_0682d6ee_Arg t38295 = A_Array_549ae71e_get(v_ordered_13573, v_index_13576, "src/consteval.nra:2903:16");
     bool t38296 = (t38295).f_isMutable;
     if (t38296) {
-      S_0682d6ee_Arg t38297 = A_Array_549ae71e_get(v_ordered_13573, v_index_13576, "src/consteval.nra:2903:65");
+      S_0682d6ee_Arg t38297 = A_Array_549ae71e_get(v_ordered_13573, v_index_13576, "src/consteval.nra:2904:65");
       S_136a64fd_Place t38298 = f_136a64fd_resolvePlace(&(*v_checker_13566), v_state_13567, (t38297).f_value);
       S_136a64fd_Place v_place_13577 = t38298;
       bool t38299 = ((*v_state_13567)).f_failed;
@@ -138854,13 +138854,13 @@ static E_b2b309ba_ConstValue f_136a64fd_callFunction(const S_b2b309ba_Checker* v
         return t38300;
       }
       int64_t t38301 = v_index_13576;
-      E_b2b309ba_ConstValue* t38302 = A_Array_a8188b9e_at(&v_values_13575, t38301, "src/consteval.nra:2907:13");
+      E_b2b309ba_ConstValue* t38302 = A_Array_a8188b9e_at(&v_values_13575, t38301, "src/consteval.nra:2908:13");
       E_b2b309ba_ConstValue* t38303 = t38302;
       release_E_b2b309ba_ConstValue(&((*t38303)));
       *t38303 = ((E_b2b309ba_ConstValue){.tag = 0});
       E_b2b309ba_ConstValue t38304 = f_136a64fd_takePlace(v_state_13567, v_place_13577);
       int64_t t38305 = v_index_13576;
-      E_b2b309ba_ConstValue* t38306 = A_Array_a8188b9e_at(&v_values_13575, t38305, "src/consteval.nra:2908:13");
+      E_b2b309ba_ConstValue* t38306 = A_Array_a8188b9e_at(&v_values_13575, t38305, "src/consteval.nra:2909:13");
       E_b2b309ba_ConstValue* t38307 = t38306;
       release_E_b2b309ba_ConstValue(&((*t38307)));
       *t38307 = t38304;
@@ -138888,7 +138888,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callFunction(const S_b2b309ba_Checker* v
   lstr_retain(t38314);
   lstr* v_callerName_13578 = t38314;
   int64_t v_callerBody_13579 = ((*v_state_13567)).f_body;
-  S_b2b309ba_FuncInfo t38315 = A_Array_a54a7df6_get(((*v_checker_13566)).f_functions, v_funcIndex_13570, "src/consteval.nra:2920:39");
+  S_b2b309ba_FuncInfo t38315 = A_Array_a54a7df6_get(((*v_checker_13566)).f_functions, v_funcIndex_13570, "src/consteval.nra:2921:39");
   lstr* t38316 = (t38315).f_name;
   lstr_retain(t38316);
   lstr* v_calleeName_13580 = t38316;
@@ -138912,16 +138912,16 @@ static E_b2b309ba_ConstValue f_136a64fd_callFunction(const S_b2b309ba_Checker* v
   int64_t t38323 = INT64_C(0);
   int64_t t38324 = (v_places_13574)->len;
   for (int64_t v_index_13582 = t38323; v_index_13582 < t38324; v_index_13582++) {
-    S_136a64fd_Place t38325 = A_Array_51a065d3_get(v_places_13574, v_index_13582, "src/consteval.nra:2932:15");
+    S_136a64fd_Place t38325 = A_Array_51a065d3_get(v_places_13574, v_index_13582, "src/consteval.nra:2933:15");
     bool t38326 = ((t38325).f_slot >= INT64_C(0));
     if (t38326) {
-      S_136a64fd_Place t38327 = A_Array_51a065d3_get(v_places_13574, v_index_13582, "src/consteval.nra:2933:39");
+      S_136a64fd_Place t38327 = A_Array_51a065d3_get(v_places_13574, v_index_13582, "src/consteval.nra:2934:39");
       int64_t t38328 = narra_wrap_add(v_index_13582, INT64_C(1));
-      E_b2b309ba_ConstValue t38329 = A_Array_a8188b9e_get(v_results_13581, t38328, "src/consteval.nra:2933:55");
+      E_b2b309ba_ConstValue t38329 = A_Array_a8188b9e_get(v_results_13581, t38328, "src/consteval.nra:2934:55");
       f_136a64fd_writePlace(v_state_13567, t38327, &t38329);
     }
   }
-  E_b2b309ba_ConstValue t38330 = A_Array_a8188b9e_get(v_results_13581, INT64_C(0), "src/consteval.nra:2936:17");
+  E_b2b309ba_ConstValue t38330 = A_Array_a8188b9e_get(v_results_13581, INT64_C(0), "src/consteval.nra:2937:17");
   E_b2b309ba_ConstValue t38331 = t38330;
   retain_E_b2b309ba_ConstValue(&(t38331));
   E_b2b309ba_ConstValue t38332 = t38331;
@@ -138941,11 +138941,11 @@ static E_b2b309ba_ConstValue f_136a64fd_callFunction(const S_b2b309ba_Checker* v
 }
 
 static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_checker_13583, S_136a64fd_ConstEvaluator* v_state_13584, int64_t v_body_13585, int64_t v_funcIndex_13586, A_Array_a8188b9e* v_arguments_13587) {
-  S_b2b309ba_FuncInfo t43821 = A_Array_a54a7df6_get(((*v_checker_13583)).f_functions, v_funcIndex_13586, "src/consteval.nra:2946:40");
+  S_b2b309ba_FuncInfo t43821 = A_Array_a54a7df6_get(((*v_checker_13583)).f_functions, v_funcIndex_13586, "src/consteval.nra:2947:40");
   S_0682d6ee_FuncDecl t43822 = (t43821).f_declaration;
   retain_S_0682d6ee_FuncDecl(&(t43822));
   S_0682d6ee_FuncDecl v_declaration_13588 = t43822;
-  S_b2b309ba_BodyInfo t43823 = A_Array_489601d7_get(((*v_checker_13583)).f_bodies, v_body_13585, "src/consteval.nra:2947:50");
+  S_b2b309ba_BodyInfo t43823 = A_Array_489601d7_get(((*v_checker_13583)).f_bodies, v_body_13585, "src/consteval.nra:2948:50");
   int64_t v_localCount_13589 = ((t43823).f_locals)->len;
   int64_t v_savedBase_13590 = ((*v_state_13584)).f_base;
   int64_t v_savedTop_13591 = ((*v_state_13584)).f_top;
@@ -138986,20 +138986,20 @@ static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_chec
   int64_t t43836 = INT64_C(0);
   int64_t t43837 = (v_parameterLocals_13595)->len;
   for (int64_t v_index_13597 = t43836; v_index_13597 < t43837; v_index_13597++) {
-    int64_t t43838 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13597, "src/consteval.nra:2968:24");
+    int64_t t43838 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13597, "src/consteval.nra:2969:24");
     bool t43839 = (t43838 >= INT64_C(0));
     if (t43839) {
       t43839 = (v_index_13597 < (v_arguments_13587)->len);
     }
     bool t43840 = t43839;
     if (t43840) {
-      E_b2b309ba_ConstValue t43841 = A_Array_a8188b9e_get(v_arguments_13587, v_index_13597, "src/consteval.nra:2969:67");
+      E_b2b309ba_ConstValue t43841 = A_Array_a8188b9e_get(v_arguments_13587, v_index_13597, "src/consteval.nra:2970:67");
       E_b2b309ba_ConstValue t43842 = t43841;
       retain_E_b2b309ba_ConstValue(&(t43842));
-      int64_t t43843 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13597, "src/consteval.nra:2969:47");
+      int64_t t43843 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13597, "src/consteval.nra:2970:47");
       int64_t t43844 = narra_wrap_add(((*v_state_13584)).f_base, t43843);
       int64_t t43845 = t43844;
-      E_b2b309ba_ConstValue* t43846 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43845, "src/consteval.nra:2969:18");
+      E_b2b309ba_ConstValue* t43846 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43845, "src/consteval.nra:2970:18");
       E_b2b309ba_ConstValue* t43847 = t43846;
       release_E_b2b309ba_ConstValue(&((*t43847)));
       *t43847 = t43842;
@@ -139024,7 +139024,7 @@ static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_chec
           int64_t t43855 = ((*v_state_13584)).f_top;
           for (int64_t v_slot_13601 = t43854; v_slot_13601 < t43855; v_slot_13601++) {
             int64_t t43856 = v_slot_13601;
-            E_b2b309ba_ConstValue* t43857 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43856, "src/consteval.nra:2979:22");
+            E_b2b309ba_ConstValue* t43857 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43856, "src/consteval.nra:2980:22");
             E_b2b309ba_ConstValue* t43858 = t43857;
             release_E_b2b309ba_ConstValue(&((*t43858)));
             *t43858 = ((E_b2b309ba_ConstValue){.tag = 0});
@@ -139032,16 +139032,16 @@ static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_chec
           int64_t t43859 = INT64_C(0);
           int64_t t43860 = (v_parameterLocals_13595)->len;
           for (int64_t v_index_13602 = t43859; v_index_13602 < t43860; v_index_13602++) {
-            int64_t t43861 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13602, "src/consteval.nra:2982:30");
+            int64_t t43861 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13602, "src/consteval.nra:2983:30");
             bool t43862 = (t43861 >= INT64_C(0));
             if (t43862) {
-              E_b2b309ba_ConstValue t43863 = A_Array_a8188b9e_get(((*v_state_13584)).f_tailArguments, v_index_13602, "src/consteval.nra:2983:83");
+              E_b2b309ba_ConstValue t43863 = A_Array_a8188b9e_get(((*v_state_13584)).f_tailArguments, v_index_13602, "src/consteval.nra:2984:83");
               E_b2b309ba_ConstValue t43864 = t43863;
               retain_E_b2b309ba_ConstValue(&(t43864));
-              int64_t t43865 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13602, "src/consteval.nra:2983:53");
+              int64_t t43865 = A_Array_e7fe1e37_get(v_parameterLocals_13595, v_index_13602, "src/consteval.nra:2984:53");
               int64_t t43866 = narra_wrap_add(((*v_state_13584)).f_base, t43865);
               int64_t t43867 = t43866;
-              E_b2b309ba_ConstValue* t43868 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43867, "src/consteval.nra:2983:24");
+              E_b2b309ba_ConstValue* t43868 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43867, "src/consteval.nra:2984:24");
               E_b2b309ba_ConstValue* t43869 = t43868;
               release_E_b2b309ba_ConstValue(&((*t43869)));
               *t43869 = t43864;
@@ -139058,7 +139058,7 @@ static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_chec
           E_b2b309ba_ConstValue t43873 = ((*v_state_13584)).f_returnValue;
           retain_E_b2b309ba_ConstValue(&(t43873));
           int64_t t43874 = INT64_C(0);
-          E_b2b309ba_ConstValue* t43875 = A_Array_a8188b9e_at(&v_results_13598, t43874, "src/consteval.nra:2990:16");
+          E_b2b309ba_ConstValue* t43875 = A_Array_a8188b9e_at(&v_results_13598, t43874, "src/consteval.nra:2991:16");
           E_b2b309ba_ConstValue* t43876 = t43875;
           release_E_b2b309ba_ConstValue(&((*t43876)));
           *t43876 = t43873;
@@ -139090,7 +139090,7 @@ static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_chec
   int64_t t43884 = ((*v_state_13584)).f_top;
   for (int64_t v_slot_13605 = t43883; v_slot_13605 < t43884; v_slot_13605++) {
     int64_t t43885 = v_slot_13605;
-    E_b2b309ba_ConstValue* t43886 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43885, "src/consteval.nra:3005:16");
+    E_b2b309ba_ConstValue* t43886 = A_Array_a8188b9e_at(&(v_state_13584)->f_slots, t43885, "src/consteval.nra:3006:16");
     E_b2b309ba_ConstValue* t43887 = t43886;
     release_E_b2b309ba_ConstValue(&((*t43887)));
     *t43887 = ((E_b2b309ba_ConstValue){.tag = 0});
@@ -139123,7 +139123,7 @@ static A_Array_a8188b9e* f_136a64fd_runFunction(const S_b2b309ba_Checker* v_chec
 }
 
 static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_checker_13606, S_136a64fd_ConstEvaluator* v_state_13607, int64_t v_nodeId_13608, S_0682d6ee_Pos v_pos_13609, int64_t v_builtinIndex_13610, A_Array_549ae71e* v_arguments_13611) {
-  S_17448948_StdFunc t38333 = A_Array_a7e59ce7_get((((*v_checker_13606)).f_registry).f_functions, v_builtinIndex_13610, "src/consteval.nra:3027:42");
+  S_17448948_StdFunc t38333 = A_Array_a7e59ce7_get((((*v_checker_13606)).f_registry).f_functions, v_builtinIndex_13610, "src/consteval.nra:3028:42");
   lstr* t38334 = (t38333).f_name;
   lstr_retain(t38334);
   lstr* v_name_13612 = t38334;
@@ -139175,7 +139175,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
   }
   bool t38351 = lstr_eq(v_name_13612, (&L8038));
   if (t38351) {
-    E_b2b309ba_ConstValue t38352 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3044:25");
+    E_b2b309ba_ConstValue t38352 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3045:25");
     bool t38353 = f_136a64fd_readBool(&t38352);
     bool t38354 = (!t38353);
     if (t38354) {
@@ -139190,7 +139190,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
   }
   bool t38356 = lstr_eq(v_name_13612, (&L8041));
   if (t38356) {
-    E_b2b309ba_ConstValue t38357 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3050:64");
+    E_b2b309ba_ConstValue t38357 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3051:64");
     lstr* t38358 = f_136a64fd_readText(&t38357);
     f_136a64fd_stopEvaluation(v_state_13607, v_pos_13609, (&L8042), t38358);
     lstr_release(t38358);
@@ -139203,7 +139203,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
   }
   bool t38360 = lstr_eq(v_name_13612, (&L8043));
   if (t38360) {
-    E_b2b309ba_ConstValue t38361 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3055:55");
+    E_b2b309ba_ConstValue t38361 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3056:55");
     int64_t t38362 = f_136a64fd_measureCopy(&t38361);
     bool t38363 = f_136a64fd_charge(v_state_13607, v_pos_13609, t38362, (&L8044));
     bool t38364 = (!t38363);
@@ -139215,7 +139215,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
       lstr_release(v_name_13612);
       return t38365;
     }
-    E_b2b309ba_ConstValue t38366 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3058:18");
+    E_b2b309ba_ConstValue t38366 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3059:18");
     E_b2b309ba_ConstValue t38367 = t38366;
     retain_E_b2b309ba_ConstValue(&(t38367));
     E_b2b309ba_ConstValue t38368 = t38367;
@@ -139277,7 +139277,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
   }
   bool t38384 = lstr_eq(v_name_13612, (&L8050));
   if (t38384) {
-    E_b2b309ba_ConstValue t38385 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3076:49");
+    E_b2b309ba_ConstValue t38385 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3077:49");
     int64_t t38386 = f_136a64fd_readInteger(&t38385);
     E_b2b309ba_ConstValue t38387 = ((E_b2b309ba_ConstValue){.tag = 10, .u.v_Span = {.f_start = INT64_C(0), .f_end = t38386, .f_step = INT64_C(1)}});
     E_b2b309ba_ConstValue t38388 = t38387;
@@ -139289,9 +139289,9 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
   }
   bool t38389 = lstr_eq(v_name_13612, (&L8051));
   if (t38389) {
-    E_b2b309ba_ConstValue t38390 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3079:46");
+    E_b2b309ba_ConstValue t38390 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3080:46");
     int64_t t38391 = f_136a64fd_readInteger(&t38390);
-    E_b2b309ba_ConstValue t38392 = A_Array_a8188b9e_get(v_values_13616, INT64_C(1), "src/consteval.nra:3079:70");
+    E_b2b309ba_ConstValue t38392 = A_Array_a8188b9e_get(v_values_13616, INT64_C(1), "src/consteval.nra:3080:70");
     int64_t t38393 = f_136a64fd_readInteger(&t38392);
     E_b2b309ba_ConstValue t38394 = ((E_b2b309ba_ConstValue){.tag = 10, .u.v_Span = {.f_start = t38391, .f_end = t38393, .f_step = INT64_C(1)}});
     E_b2b309ba_ConstValue t38395 = t38394;
@@ -139303,7 +139303,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
   }
   bool t38396 = lstr_eq(v_name_13612, (&L8052));
   if (t38396) {
-    E_b2b309ba_ConstValue t38397 = A_Array_a8188b9e_get(v_values_13616, INT64_C(2), "src/consteval.nra:3082:27");
+    E_b2b309ba_ConstValue t38397 = A_Array_a8188b9e_get(v_values_13616, INT64_C(2), "src/consteval.nra:3083:27");
     int64_t t38398 = f_136a64fd_readInteger(&t38397);
     bool t38399 = (t38398 == INT64_C(0));
     if (t38399) {
@@ -139316,11 +139316,11 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
       lstr_release(v_name_13612);
       return t38402;
     }
-    E_b2b309ba_ConstValue t38403 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3086:25");
+    E_b2b309ba_ConstValue t38403 = A_Array_a8188b9e_get(v_values_13616, INT64_C(0), "src/consteval.nra:3087:25");
     int64_t t38404 = f_136a64fd_readInteger(&t38403);
-    E_b2b309ba_ConstValue t38405 = A_Array_a8188b9e_get(v_values_13616, INT64_C(1), "src/consteval.nra:3087:25");
+    E_b2b309ba_ConstValue t38405 = A_Array_a8188b9e_get(v_values_13616, INT64_C(1), "src/consteval.nra:3088:25");
     int64_t t38406 = f_136a64fd_readInteger(&t38405);
-    E_b2b309ba_ConstValue t38407 = A_Array_a8188b9e_get(v_values_13616, INT64_C(2), "src/consteval.nra:3088:25");
+    E_b2b309ba_ConstValue t38407 = A_Array_a8188b9e_get(v_values_13616, INT64_C(2), "src/consteval.nra:3089:25");
     int64_t t38408 = f_136a64fd_readInteger(&t38407);
     E_b2b309ba_ConstValue t38409 = ((E_b2b309ba_ConstValue){.tag = 10, .u.v_Span = {.f_start = t38404, .f_end = t38406, .f_step = t38408}});
     E_b2b309ba_ConstValue v_span_13617 = t38409;
@@ -139356,7 +139356,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callBuiltin(const S_b2b309ba_Checker* v_
 static E_b2b309ba_ConstValue f_136a64fd_callChangingBuiltin(const S_b2b309ba_Checker* v_checker_13618, S_136a64fd_ConstEvaluator* v_state_13619, int64_t v_nodeId_13620, S_0682d6ee_Pos v_pos_13621, lstr* v_name_13622, A_Array_549ae71e* v_arguments_13623) {
   A_Array_549ae71e* t43895 = f_b2b309ba_orderArguments(&(*v_checker_13618), v_nodeId_13620, v_arguments_13623);
   A_Array_549ae71e* v_ordered_13624 = t43895;
-  S_0682d6ee_Arg t43896 = A_Array_549ae71e_get(v_ordered_13624, INT64_C(1), "src/consteval.nra:3104:62");
+  S_0682d6ee_Arg t43896 = A_Array_549ae71e_get(v_ordered_13624, INT64_C(1), "src/consteval.nra:3105:62");
   E_b2b309ba_ConstValue t43897 = f_136a64fd_evaluateHeld(&(*v_checker_13618), v_state_13619, (t43896).f_value);
   E_b2b309ba_ConstValue v_second_13625 = t43897;
   bool t43898 = ((*v_state_13619)).f_failed;
@@ -139366,7 +139366,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callChangingBuiltin(const S_b2b309ba_Che
     A_Array_549ae71e_release(v_ordered_13624);
     return t43899;
   }
-  S_0682d6ee_Arg t43900 = A_Array_549ae71e_get(v_ordered_13624, INT64_C(0), "src/consteval.nra:3108:61");
+  S_0682d6ee_Arg t43900 = A_Array_549ae71e_get(v_ordered_13624, INT64_C(0), "src/consteval.nra:3109:61");
   S_136a64fd_Place t43901 = f_136a64fd_resolvePlace(&(*v_checker_13618), v_state_13619, (t43900).f_value);
   S_136a64fd_Place v_place_13626 = t43901;
   bool t43902 = ((*v_state_13619)).f_failed;
@@ -139668,7 +139668,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   bool t43951 = lstr_eq(v_name_13660, (&L9088));
   if (t43951) {
     {
-      E_b2b309ba_ConstValue t43952 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3252:15");
+      E_b2b309ba_ConstValue t43952 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3253:15");
       E_b2b309ba_ConstValue t43953 = t43952;
       retain_E_b2b309ba_ConstValue(&(t43953));
       E_b2b309ba_ConstValue t43954 = t43953;
@@ -139698,7 +139698,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
     E_b2b309ba_ConstValue t43965 = t43964;
     return t43965;
   }
-  E_b2b309ba_ConstValue t43966 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3260:31");
+  E_b2b309ba_ConstValue t43966 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3261:31");
   lstr* t43967 = f_136a64fd_readText(&t43966);
   lstr* v_text_13664 = t43967;
   bool t43968 = lstr_eq(v_name_13660, (&L9091));
@@ -139736,7 +139736,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t43981 = lstr_eq(v_name_13660, (&L9096));
   if (t43981) {
-    E_b2b309ba_ConstValue t43982 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3274:40");
+    E_b2b309ba_ConstValue t43982 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3275:40");
     int64_t t43983 = f_136a64fd_readInteger(&t43982);
     int64_t v_position_13665 = t43983;
     bool t43984 = (v_position_13665 < INT64_C(0));
@@ -139756,7 +139756,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
       lstr_release(v_text_13664);
       return t43989;
     }
-    E_b2b309ba_ConstValue t43990 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = narra_str_byte_at(v_text_13664, v_position_13665, "src/consteval.nra:3284:41")}});
+    E_b2b309ba_ConstValue t43990 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = narra_str_byte_at(v_text_13664, v_position_13665, "src/consteval.nra:3285:41")}});
     E_b2b309ba_ConstValue t43991 = t43990;
     lstr_release(v_text_13664);
     return t43991;
@@ -139767,7 +139767,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t43993 = t43992;
   if (t43993) {
-    E_b2b309ba_ConstValue t43994 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3287:40");
+    E_b2b309ba_ConstValue t43994 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3288:40");
     int64_t t43995 = f_136a64fd_readInteger(&t43994);
     int64_t v_position_13666 = t43995;
     bool t43996 = f_136a64fd_checkTextPosition(v_state_13658, v_pos_13659, v_name_13660, v_text_13664, v_position_13666, true);
@@ -139779,19 +139779,19 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
     }
     bool t43999 = lstr_eq(v_name_13660, (&L9102));
     if (t43999) {
-      E_b2b309ba_ConstValue t44000 = ((E_b2b309ba_ConstValue){.tag = 4, .u.v_Character = {.f_value = narra_str_char_at(v_text_13664, v_position_13666, "src/consteval.nra:3292:45")}});
+      E_b2b309ba_ConstValue t44000 = ((E_b2b309ba_ConstValue){.tag = 4, .u.v_Character = {.f_value = narra_str_char_at(v_text_13664, v_position_13666, "src/consteval.nra:3293:45")}});
       E_b2b309ba_ConstValue t44001 = t44000;
       lstr_release(v_text_13664);
       return t44001;
     }
-    E_b2b309ba_ConstValue t44002 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = narra_str_next_char(v_text_13664, v_position_13666, "src/consteval.nra:3294:43")}});
+    E_b2b309ba_ConstValue t44002 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = narra_str_next_char(v_text_13664, v_position_13666, "src/consteval.nra:3295:43")}});
     E_b2b309ba_ConstValue t44003 = t44002;
     lstr_release(v_text_13664);
     return t44003;
   }
   bool t44004 = lstr_eq(v_name_13660, (&L9103));
   if (t44004) {
-    E_b2b309ba_ConstValue t44005 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3297:40");
+    E_b2b309ba_ConstValue t44005 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3298:40");
     int64_t t44006 = f_136a64fd_readInteger(&t44005);
     int64_t v_position_13667 = t44006;
     bool t44007 = f_136a64fd_checkTextPosition(v_state_13658, v_pos_13659, v_name_13660, v_text_13664, v_position_13667, false);
@@ -139801,7 +139801,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
       lstr_release(v_text_13664);
       return t44009;
     }
-    lstr* t44010 = narra_str_slice_from(v_text_13664, v_position_13667, "src/consteval.nra:3301:62");
+    lstr* t44010 = narra_str_slice_from(v_text_13664, v_position_13667, "src/consteval.nra:3302:62");
     E_b2b309ba_ConstValue t44011 = f_136a64fd_textResult(v_state_13658, v_pos_13659, v_name_13660, t44010);
     E_b2b309ba_ConstValue t44012 = t44011;
     lstr_release(t44010);
@@ -139810,9 +139810,9 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44013 = lstr_eq(v_name_13660, (&L9104));
   if (t44013) {
-    E_b2b309ba_ConstValue t44014 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3304:54");
+    E_b2b309ba_ConstValue t44014 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3305:54");
     int64_t t44015 = f_136a64fd_readInteger(&t44014);
-    E_b2b309ba_ConstValue t44016 = A_Array_a8188b9e_get(v_values_13661, INT64_C(2), "src/consteval.nra:3304:78");
+    E_b2b309ba_ConstValue t44016 = A_Array_a8188b9e_get(v_values_13661, INT64_C(2), "src/consteval.nra:3305:78");
     int64_t t44017 = f_136a64fd_readInteger(&t44016);
     lstr* t44018 = NULL;
     bool t44019 = narra_str_slice(v_text_13664, t44015, t44017, &t44018);
@@ -139848,7 +139848,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44030 = lstr_eq(v_name_13660, (&L9105));
   if (t44030) {
-    E_b2b309ba_ConstValue t44031 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3311:65");
+    E_b2b309ba_ConstValue t44031 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3312:65");
     lstr* t44032 = f_136a64fd_readText(&t44031);
     E_b2b309ba_ConstValue t44033 = ((E_b2b309ba_ConstValue){.tag = 3, .u.v_Boolean = {.f_value = narra_str_contains(v_text_13664, t44032)}});
     E_b2b309ba_ConstValue t44034 = t44033;
@@ -139858,7 +139858,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44035 = lstr_eq(v_name_13660, (&L9106));
   if (t44035) {
-    E_b2b309ba_ConstValue t44036 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3314:67");
+    E_b2b309ba_ConstValue t44036 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3315:67");
     lstr* t44037 = f_136a64fd_readText(&t44036);
     E_b2b309ba_ConstValue t44038 = ((E_b2b309ba_ConstValue){.tag = 3, .u.v_Boolean = {.f_value = narra_str_starts_with(v_text_13664, t44037)}});
     E_b2b309ba_ConstValue t44039 = t44038;
@@ -139868,7 +139868,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44040 = lstr_eq(v_name_13660, (&L9107));
   if (t44040) {
-    E_b2b309ba_ConstValue t44041 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3317:65");
+    E_b2b309ba_ConstValue t44041 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3318:65");
     lstr* t44042 = f_136a64fd_readText(&t44041);
     E_b2b309ba_ConstValue t44043 = ((E_b2b309ba_ConstValue){.tag = 3, .u.v_Boolean = {.f_value = narra_str_ends_with(v_text_13664, t44042)}});
     E_b2b309ba_ConstValue t44044 = t44043;
@@ -139879,7 +139879,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   bool t44045 = lstr_eq(v_name_13660, (&L9108));
   if (t44045) {
     {
-      E_b2b309ba_ConstValue t44046 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3320:42");
+      E_b2b309ba_ConstValue t44046 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3321:42");
       lstr* t44047 = f_136a64fd_readText(&t44046);
       int64_t t44048 = narra_str_index_of(v_text_13664, t44047);
       E_Option_89d0c73d t44049 = ((E_Option_89d0c73d){0});
@@ -139910,7 +139910,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44059 = lstr_eq(v_name_13660, (&L9109));
   if (t44059) {
-    E_b2b309ba_ConstValue t44060 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3326:82");
+    E_b2b309ba_ConstValue t44060 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3327:82");
     uint32_t t44061 = f_136a64fd_readCharacter(&t44060);
     lstr* t44062 = lstr_from_char(t44061);
     E_b2b309ba_ConstValue t44063 = f_136a64fd_textResult(v_state_13658, v_pos_13659, v_name_13660, t44062);
@@ -139921,7 +139921,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44065 = lstr_eq(v_name_13660, (&L9110));
   if (t44065) {
-    E_b2b309ba_ConstValue t44066 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3329:35");
+    E_b2b309ba_ConstValue t44066 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3330:35");
     lstr* t44067 = f_136a64fd_readText(&t44066);
     lstr* v_second_13671 = t44067;
     int64_t t44068 = narra_wrap_add((v_text_13664)->len, (v_second_13671)->len);
@@ -139953,7 +139953,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44080 = lstr_eq(v_name_13660, (&L9112));
   if (t44080) {
-    E_b2b309ba_ConstValue t44081 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3339:37");
+    E_b2b309ba_ConstValue t44081 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3340:37");
     int64_t t44082 = f_136a64fd_readInteger(&t44081);
     int64_t v_count_13672 = t44082;
     bool t44083 = (v_count_13672 < INT64_C(0));
@@ -140018,10 +140018,10 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44109 = lstr_eq(v_name_13660, (&L9114));
   if (t44109) {
-    E_b2b309ba_ConstValue t44110 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3359:32");
+    E_b2b309ba_ConstValue t44110 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3360:32");
     lstr* t44111 = f_136a64fd_readText(&t44110);
     lstr* v_old_13674 = t44111;
-    E_b2b309ba_ConstValue t44112 = A_Array_a8188b9e_get(v_values_13661, INT64_C(2), "src/consteval.nra:3360:40");
+    E_b2b309ba_ConstValue t44112 = A_Array_a8188b9e_get(v_values_13661, INT64_C(2), "src/consteval.nra:3361:40");
     lstr* t44113 = f_136a64fd_readText(&t44112);
     lstr* v_replacement_13675 = t44113;
     int64_t t44114 = narra_wrap_add((v_text_13664)->len, INT64_C(1));
@@ -140059,13 +140059,13 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44129 = lstr_eq(v_name_13660, (&L9115));
   if (t44129) {
-    E_b2b309ba_ConstValue t44130 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3373:38");
+    E_b2b309ba_ConstValue t44130 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3374:38");
     lstr* t44131 = f_136a64fd_readText(&t44130);
     lstr* v_separator_13678 = t44131;
     A_Array_5fce1d7c* t44132 = A_Array_5fce1d7c_new(0);
     A_Array_5fce1d7c* v_texts_13679 = t44132;
     int64_t v_length_13680 = INT64_C(0);
-    E_b2b309ba_ConstValue t44133 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3376:57");
+    E_b2b309ba_ConstValue t44133 = A_Array_a8188b9e_get(v_values_13661, INT64_C(0), "src/consteval.nra:3377:57");
     A_Array_a8188b9e* t44134 = f_136a64fd_readElements(&t44133);
     for (int64_t i44135 = 0; i44135 < t44134->len; i44135++) {
       E_b2b309ba_ConstValue v_part_13681 = t44134->items[i44135];
@@ -140102,7 +140102,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
   }
   bool t44147 = lstr_eq(v_name_13660, (&L9116));
   if (t44147) {
-    E_b2b309ba_ConstValue t44148 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3387:38");
+    E_b2b309ba_ConstValue t44148 = A_Array_a8188b9e_get(v_values_13661, INT64_C(1), "src/consteval.nra:3388:38");
     lstr* t44149 = f_136a64fd_readText(&t44148);
     lstr* v_separator_13683 = t44149;
     {
@@ -140219,12 +140219,12 @@ static E_b2b309ba_ConstValue f_136a64fd_callStringBuiltin(const S_b2b309ba_Check
 }
 
 static E_b2b309ba_ConstValue f_136a64fd_callIntBuiltin(const S_b2b309ba_Checker* v_checker_13690, S_136a64fd_ConstEvaluator* v_state_13691, S_0682d6ee_Pos v_pos_13692, lstr* v_name_13693, A_Array_a8188b9e* v_values_13694, A_Array_faf8c50c* v_argumentTypes_13695, E_8f41f392_Type v_resultType_13696) {
-  E_b2b309ba_ConstValue t44193 = A_Array_a8188b9e_get(v_values_13694, INT64_C(0), "src/consteval.nra:3430:36");
+  E_b2b309ba_ConstValue t44193 = A_Array_a8188b9e_get(v_values_13694, INT64_C(0), "src/consteval.nra:3431:36");
   int64_t t44194 = f_136a64fd_readInteger(&t44193);
   int64_t v_number_13697 = t44194;
   bool t44195 = lstr_eq(v_name_13693, (&L9119));
   if (t44195) {
-    int64_t t44196 = narra_abs(v_number_13697, "src/consteval.nra:3432:38");
+    int64_t t44196 = narra_abs(v_number_13697, "src/consteval.nra:3433:38");
     E_b2b309ba_ConstValue t44197 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = t44196}});
     E_b2b309ba_ConstValue t44198 = t44197;
     return t44198;
@@ -140247,9 +140247,9 @@ static E_b2b309ba_ConstValue f_136a64fd_callIntBuiltin(const S_b2b309ba_Checker*
   }
   bool t44207 = lstr_eq(v_name_13693, (&L9122));
   if (t44207) {
-    E_b2b309ba_ConstValue t44208 = A_Array_a8188b9e_get(v_values_13694, INT64_C(0), "src/consteval.nra:3441:45");
+    E_b2b309ba_ConstValue t44208 = A_Array_a8188b9e_get(v_values_13694, INT64_C(0), "src/consteval.nra:3442:45");
     lstr* t44209 = f_136a64fd_readText(&t44208);
-    E_b2b309ba_ConstValue t44210 = A_Array_a8188b9e_get(v_values_13694, INT64_C(1), "src/consteval.nra:3441:69");
+    E_b2b309ba_ConstValue t44210 = A_Array_a8188b9e_get(v_values_13694, INT64_C(1), "src/consteval.nra:3442:69");
     int64_t t44211 = f_136a64fd_readInteger(&t44210);
     int64_t t44212 = 0;
     lstr* t44213 = NULL;
@@ -140306,7 +140306,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callIntBuiltin(const S_b2b309ba_Checker*
   }
   bool t44231 = t44230;
   if (t44231) {
-    E_b2b309ba_ConstValue t44232 = A_Array_a8188b9e_get(v_values_13694, INT64_C(1), "src/consteval.nra:3450:37");
+    E_b2b309ba_ConstValue t44232 = A_Array_a8188b9e_get(v_values_13694, INT64_C(1), "src/consteval.nra:3451:37");
     int64_t t44233 = f_136a64fd_readInteger(&t44232);
     int64_t v_other_13701 = t44233;
     E_Option_89d0c73d v_checked_13702 = ((E_Option_89d0c73d){.tag = 1});
@@ -140363,7 +140363,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callIntBuiltin(const S_b2b309ba_Checker*
     E_b2b309ba_ConstValue t44253 = t44252;
     return t44253;
   }
-  E_8f41f392_Type t44254 = A_Array_faf8c50c_get(v_argumentTypes_13695, INT64_C(0), "src/consteval.nra:3465:40");
+  E_8f41f392_Type t44254 = A_Array_faf8c50c_get(v_argumentTypes_13695, INT64_C(0), "src/consteval.nra:3466:40");
   bool t44255 = eq_E_8f41f392_Type(t44254, ((E_8f41f392_Type){.tag = 7}));
   if (t44255) {
     t44255 = (v_number_13697 < INT64_C(0));
@@ -140405,7 +140405,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callIntBuiltin(const S_b2b309ba_Checker*
 static E_b2b309ba_ConstValue f_136a64fd_callFloatBuiltin(const S_b2b309ba_Checker* v_checker_13705, S_136a64fd_ConstEvaluator* v_state_13706, S_0682d6ee_Pos v_pos_13707, lstr* v_name_13708, A_Array_a8188b9e* v_values_13709, A_Array_faf8c50c* v_argumentTypes_13710, E_8f41f392_Type v_resultType_13711) {
   bool t44272 = lstr_eq(v_name_13708, (&L9134));
   if (t44272) {
-    E_b2b309ba_ConstValue t44273 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3488:61");
+    E_b2b309ba_ConstValue t44273 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3489:61");
     int64_t t44274 = f_136a64fd_readInteger(&t44273);
     E_b2b309ba_ConstValue t44275 = ((E_b2b309ba_ConstValue){.tag = 2, .u.v_Float = {.f_value = ((double)t44274)}});
     E_b2b309ba_ConstValue t44276 = t44275;
@@ -140414,7 +140414,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callFloatBuiltin(const S_b2b309ba_Checke
   bool t44277 = lstr_eq(v_name_13708, (&L9135));
   if (t44277) {
     {
-      E_b2b309ba_ConstValue t44278 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3492:15");
+      E_b2b309ba_ConstValue t44278 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3493:15");
       E_b2b309ba_ConstValue t44279 = t44278;
       retain_E_b2b309ba_ConstValue(&(t44279));
       E_b2b309ba_ConstValue t44280 = t44279;
@@ -140428,22 +140428,22 @@ static E_b2b309ba_ConstValue f_136a64fd_callFloatBuiltin(const S_b2b309ba_Checke
       }
       release_E_b2b309ba_ConstValue(&(t44280));
     }
-    E_8f41f392_Type t44284 = A_Array_faf8c50c_get(v_argumentTypes_13710, INT64_C(0), "src/consteval.nra:3495:22");
+    E_8f41f392_Type t44284 = A_Array_faf8c50c_get(v_argumentTypes_13710, INT64_C(0), "src/consteval.nra:3496:22");
     bool t44285 = eq_E_8f41f392_Type(t44284, ((E_8f41f392_Type){.tag = 7}));
     if (t44285) {
-      E_b2b309ba_ConstValue t44286 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3496:69");
+      E_b2b309ba_ConstValue t44286 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3497:69");
       int64_t t44287 = f_136a64fd_readInteger(&t44286);
       E_b2b309ba_ConstValue t44288 = ((E_b2b309ba_ConstValue){.tag = 2, .u.v_Float = {.f_value = ((double)(((uint64_t)(t44287))))}});
       E_b2b309ba_ConstValue t44289 = t44288;
       return t44289;
     }
-    E_b2b309ba_ConstValue t44290 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3498:61");
+    E_b2b309ba_ConstValue t44290 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3499:61");
     int64_t t44291 = f_136a64fd_readInteger(&t44290);
     E_b2b309ba_ConstValue t44292 = ((E_b2b309ba_ConstValue){.tag = 2, .u.v_Float = {.f_value = ((double)t44291)}});
     E_b2b309ba_ConstValue t44293 = t44292;
     return t44293;
   }
-  E_b2b309ba_ConstValue t44294 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3500:34");
+  E_b2b309ba_ConstValue t44294 = A_Array_a8188b9e_get(v_values_13709, INT64_C(0), "src/consteval.nra:3501:34");
   double t44295 = f_136a64fd_readFloat(&t44294);
   double v_number_13713 = t44295;
   bool t44296 = lstr_eq(v_name_13708, (&L9136));
@@ -140498,7 +140498,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callFloatBuiltin(const S_b2b309ba_Checke
 static E_b2b309ba_ConstValue f_136a64fd_callArrayBuiltin(const S_b2b309ba_Checker* v_checker_13715, S_136a64fd_ConstEvaluator* v_state_13716, S_0682d6ee_Pos v_pos_13717, lstr* v_name_13718, A_Array_a8188b9e* v_values_13719, E_8f41f392_Type v_resultType_13720) {
   bool t44319 = lstr_eq(v_name_13718, (&L9140));
   if (t44319) {
-    E_b2b309ba_ConstValue t44320 = A_Array_a8188b9e_get(v_values_13719, INT64_C(0), "src/consteval.nra:3525:49");
+    E_b2b309ba_ConstValue t44320 = A_Array_a8188b9e_get(v_values_13719, INT64_C(0), "src/consteval.nra:3526:49");
     int64_t t44321 = f_136a64fd_countValues(&t44320);
     E_b2b309ba_ConstValue t44322 = ((E_b2b309ba_ConstValue){.tag = 1, .u.v_Integer = {.f_value = t44321}});
     E_b2b309ba_ConstValue t44323 = t44322;
@@ -140506,7 +140506,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callArrayBuiltin(const S_b2b309ba_Checke
   }
   bool t44324 = lstr_eq(v_name_13718, (&L9141));
   if (t44324) {
-    E_b2b309ba_ConstValue t44325 = A_Array_a8188b9e_get(v_values_13719, INT64_C(0), "src/consteval.nra:3529:38");
+    E_b2b309ba_ConstValue t44325 = A_Array_a8188b9e_get(v_values_13719, INT64_C(0), "src/consteval.nra:3530:38");
     int64_t t44326 = f_136a64fd_readInteger(&t44325);
     int64_t v_capacity_13721 = t44326;
     bool t44327 = (v_capacity_13721 < INT64_C(0));
@@ -140532,7 +140532,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callArrayBuiltin(const S_b2b309ba_Checke
   }
   bool t44337 = lstr_eq(v_name_13718, (&L9142));
   if (t44337) {
-    E_b2b309ba_ConstValue t44338 = A_Array_a8188b9e_get(v_values_13719, INT64_C(1), "src/consteval.nra:3542:37");
+    E_b2b309ba_ConstValue t44338 = A_Array_a8188b9e_get(v_values_13719, INT64_C(1), "src/consteval.nra:3543:37");
     int64_t t44339 = f_136a64fd_readInteger(&t44338);
     int64_t v_count_13722 = t44339;
     bool t44340 = (v_count_13722 < INT64_C(0));
@@ -140566,7 +140566,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callArrayBuiltin(const S_b2b309ba_Checke
     A_Array_a8188b9e* v_items_13723 = t44354;
     int64_t t44355 = v_count_13722;
     for (int64_t v___13724 = 0; v___13724 < t44355; v___13724++) {
-      E_b2b309ba_ConstValue t44356 = A_Array_a8188b9e_get(v_values_13719, INT64_C(0), "src/consteval.nra:3556:40");
+      E_b2b309ba_ConstValue t44356 = A_Array_a8188b9e_get(v_values_13719, INT64_C(0), "src/consteval.nra:3557:40");
       E_b2b309ba_ConstValue t44357 = t44356;
       retain_E_b2b309ba_ConstValue(&(t44357));
       A_Array_a8188b9e_push(&v_items_13723, t44357);
@@ -140591,7 +140591,7 @@ static E_b2b309ba_ConstValue f_136a64fd_callArrayBuiltin(const S_b2b309ba_Checke
 
 static E_b2b309ba_ConstValue f_136a64fd_callMapBuiltin(S_136a64fd_ConstEvaluator* v_state_13725, S_0682d6ee_Pos v_pos_13726, lstr* v_name_13727, A_Array_a8188b9e* v_values_13728) {
   {
-    E_b2b309ba_ConstValue t44366 = A_Array_a8188b9e_get(v_values_13728, INT64_C(0), "src/consteval.nra:3569:13");
+    E_b2b309ba_ConstValue t44366 = A_Array_a8188b9e_get(v_values_13728, INT64_C(0), "src/consteval.nra:3570:13");
     E_b2b309ba_ConstValue t44367 = t44366;
     retain_E_b2b309ba_ConstValue(&(t44367));
     E_b2b309ba_ConstValue t44368 = t44367;
@@ -140639,11 +140639,11 @@ static E_b2b309ba_ConstValue f_136a64fd_callMapBuiltin(S_136a64fd_ConstEvaluator
         int64_t t44388 = (v_keys_13729)->len;
         for (int64_t v_index_13732 = t44387; v_index_13732 < t44388; v_index_13732++) {
           A_Array_a8188b9e* t44389 = A_Array_a8188b9e_new(2);
-          E_b2b309ba_ConstValue t44390 = A_Array_a8188b9e_get(v_keys_13729, v_index_13732, "src/consteval.nra:3585:64");
+          E_b2b309ba_ConstValue t44390 = A_Array_a8188b9e_get(v_keys_13729, v_index_13732, "src/consteval.nra:3586:64");
           E_b2b309ba_ConstValue t44391 = t44390;
           NARRA_COPY_GRANTED(retain_E_b2b309ba_ConstValue(&(t44391)););
           t44389->items[t44389->len++] = t44391;
-          E_b2b309ba_ConstValue t44392 = A_Array_a8188b9e_get(v_entryValues_13730, v_index_13732, "src/consteval.nra:3585:90");
+          E_b2b309ba_ConstValue t44392 = A_Array_a8188b9e_get(v_entryValues_13730, v_index_13732, "src/consteval.nra:3586:90");
           E_b2b309ba_ConstValue t44393 = t44392;
           NARRA_COPY_GRANTED(retain_E_b2b309ba_ConstValue(&(t44393)););
           t44389->items[t44389->len++] = t44393;

@@ -1,7 +1,7 @@
 ---
 id: seed-switch-cleanup
 title: "narrac run exits without a release on a failed start, and the host target matches by value"
-status: todo
+status: active
 priority: should
 type: refactor
 story: batch-10

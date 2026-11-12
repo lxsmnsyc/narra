@@ -1,7 +1,7 @@
 ---
 id: generic-field-defaults
 title: "Defaults for generic struct fields"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

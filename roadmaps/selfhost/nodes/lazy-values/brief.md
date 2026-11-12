@@ -1,7 +1,7 @@
 ---
 id: lazy-values
 title: "lazy values: a top-level constant built on first force"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 512000
 owns:
   - roadmaps/selfhost/nodes/lazy-values/**
   - selfhost/src/stdlazy.nra

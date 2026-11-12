@@ -1,7 +1,7 @@
 ---
 id: const-functions
 title: "@const functions: top-level constants computed by the compiler"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

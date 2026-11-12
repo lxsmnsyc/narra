@@ -1,7 +1,7 @@
 ---
 id: inline
 title: "@inline for higher-order functions"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added:
-spent:
+spent: 430000
 owns:
   - roadmaps/selfhost/nodes/inline/**
   - selfhost/src/inlining.nra

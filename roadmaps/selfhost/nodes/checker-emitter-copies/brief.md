@@ -1,7 +1,7 @@
 ---
 id: checker-emitter-copies
 title: "A debug-built compiler compiles itself with no hidden copies"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-10
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 613000
 owns:
   - roadmaps/selfhost/nodes/checker-emitter-copies/**
   - selfhost/src/sharedwrites.nra

@@ -1,7 +1,7 @@
 ---
 id: param-destructuring
 title: "Destructuring in parameters"
-status: todo
+status: dropped
 priority: should
 type: feature
 story:

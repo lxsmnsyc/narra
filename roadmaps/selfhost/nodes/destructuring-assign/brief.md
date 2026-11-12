@@ -1,7 +1,7 @@
 ---
 id: destructuring-assign
 title: "Destructuring assignment"
-status: todo
+status: dropped
 priority: should
 type: feature
 story:

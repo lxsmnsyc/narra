@@ -235,12 +235,8 @@ const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
 const IS_LEVEL = 2
 
 export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> uses alloc {
-  const lexed = lex(source)
-  if (lexed is Err(error)) {
-    return Err(splitLexError(error))
-  }
   let parser = Parser {
-    tokens: lexed.value,
+    tokens: [],
     index: 0,
     nextId: firstId,
     failed: None,
@@ -251,12 +247,26 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
     resultFunction: false,
     statementStart: 0 - 1,
   }
+  if (readTokens(mutable parser, source) is Some(error)) {
+    return Err(error)
+  }
   const file = parseFile(mutable parser)
   if (parser.failed is Some(diagnostic)) {
     return Err(diagnostic)
   }
   const facts = finishFacts(parser, source)
   return Ok(Parsed { file: File { ...file, facts: facts }, nextId: parser.nextId })
+}
+
+function readTokens(mutable parser: Parser, source: string): Option<Diagnostic> {
+  // The lexer's result is released on return, so the parser's tokens have
+  // one owner and splitting a `>>` writes them in place.
+  const lexed = lex(source)
+  if (lexed is Err(error)) {
+    return Some(splitLexError(error))
+  }
+  parser.tokens = lexed.value
+  return None
 }
 
 export function parseWithTrivia(source: string, firstId: int): Result<#[

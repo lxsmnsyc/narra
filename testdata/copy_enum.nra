@@ -1,8 +1,10 @@
 // copy(x) of an enum whose payload holds a tracked value: an Option of an
 // array, kept inline, and a recursive enum with a struct payload, kept on the
-// heap. A write to a part taken out of the copy copies only that part, and the
-// original keeps its values. The debug copy check runs on this sample and must
-// find nothing, because each copy on write comes from a copy(...).
+// heap. A part taken out of the copy still shares the original's part while
+// the copy is held, so it is changed through a copy(...) of the part, which
+// copies only that part; the original keeps its values. The debug copy check
+// runs on this sample and must find nothing, because each copy on write comes
+// from a copy(...).
 import * as Int from "std/int"
 
 struct Row {
@@ -14,6 +16,13 @@ enum Tree {
   Node(left: Tree, right: Tree)
 }
 
+function takeItems(found: Option<Array<int>>): Array<int> from found {
+  if (found is Some(items)) {
+    return items
+  }
+  return []
+}
+
 function firstCell(tree: Tree): int {
   return match (tree) { Tree.Leaf(row) => row.cells[0], Tree.Node(left, _) => firstCell(left) }
 }
@@ -22,10 +31,15 @@ export function run(_args: Array<string>): int {
   const original: Option<Array<int>> = Some([1, 2, 3])
   const copied = copy(original)
   if (copied is Some(items)) {
-    let list = items
+    let list = copy(items)
     list[0] = 7
     print(`changed ${Int.toString(list[0])}`)
   }
+  // The array taken out of a copy that ends with the statement: the copy's
+  // credit on the array explains the copy on write.
+  let taken = takeItems(copy(original))
+  taken[1] = 8
+  print(`taken ${Int.toString(taken[1])}`)
   if (original is Some(items)) {
     print(`original ${Int.toString(items[0])}`)
   }
@@ -34,7 +48,7 @@ export function run(_args: Array<string>): int {
   const other = copy(tree)
   if (other is Tree.Node(left, _)) {
     if (left is Tree.Leaf(row)) {
-      let edited = row
+      let edited = copy(row)
       edited.cells[0] = 9
       print(`edited ${Int.toString(edited.cells[0])}`)
     }

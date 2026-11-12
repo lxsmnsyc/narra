@@ -1241,12 +1241,7 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
     }
   }
   // Layouts first: the order depends on which enums keep a heap payload.
-  let memo = LayoutMemo { heapEnums: Map {}, sizes: Map {} }
-  let heapEnums: Array<bool> = []
-  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
-    Arrays.push(mutable heapEnums, decideHeapEnum(checker, index, mutable memo))
-  }
-  checker.heapEnums = heapEnums
+  decideHeapEnums(mutable checker)
   let state: Map<string, int> = Map {}
   for (const type of Arrays.values(all)) {
     visitOrder(mutable checker, mutable state, type)
@@ -1255,6 +1250,23 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
   if (Arrays.length(checker.errors) > 0) {
     return
   }
+  decideLayouts(mutable checker)
+  reportLargeFixedArrays(mutable checker)
+}
+
+function decideHeapEnums(mutable checker: Checker) {
+  // The table is built in a local and stored once, so the checker holds it alone.
+  let memo = LayoutMemo { heapEnums: Map {}, sizes: Map {} }
+  let heapEnums: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable heapEnums, decideHeapEnum(checker, index, mutable memo))
+  }
+  checker.heapEnums = heapEnums
+}
+
+function decideLayouts(mutable checker: Checker) {
+  // Which types hold counted values, then the C layouts, which decide how a
+  // value is passed to a function.
   let countedStructs: Array<bool> = []
   for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
     Arrays.push(mutable countedStructs, isCountedType(checker, Type.TStruct(index)))
@@ -1265,7 +1277,6 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
   }
   checker.countedStructs = countedStructs
   checker.countedEnums = countedEnums
-  // C layouts, which decide how a value is passed to a function.
   let layouts: Map<int, CLayout> = Map {}
   let structLayouts: Array<CLayout> = []
   for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
@@ -1277,7 +1288,6 @@ export function finish(mutable checker: Checker, concrete: Array<Type>) uses all
   }
   checker.structLayouts = structLayouts
   checker.enumLayouts = enumLayouts
-  reportLargeFixedArrays(mutable checker)
 }
 
 // The size and alignment in bytes of a value in the emitted C.
@@ -1747,13 +1757,13 @@ function visitOrder(
   let boxed = false
   match (type) {
     Type.TStruct(index) => {
-      fields = checker.structs[index].fields
+      fields = copy(checker.structs[index].fields)
     }
     Type.TEnum(index) => {
       boxed = isHeapEnum(checker, index)
       for (const variant of Arrays.values(checker.enums[index].variants)) {
         for (const field of Arrays.values(variant.fields)) {
-          Arrays.push(mutable fields, field)
+          Arrays.push(mutable fields, copy(field))
         }
       }
     }
@@ -2219,20 +2229,24 @@ export function declareLocal(
   if (checker.scopes[checker.current].facts.namePositions[nodeId] is Some(written)) {
     namePos = written
   }
-  const local = LocalInfo {
-    name: name,
-    localType: localType,
-    isMutable: isMutable,
-    param: param,
-    binding: BindingKind.Plain,
-    pos: copy(pos),
-    noEscape: false,
-    used: false,
-    number: checker.localCount,
-    namePos: copy(namePos),
-    shorthand: checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_),
-  }
-  Arrays.push(mutable checker.bodies[body].locals, local)
+  const number = checker.localCount
+  const shorthand = checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_)
+  Arrays.push(
+    mutable checker.bodies[body].locals,
+    LocalInfo {
+      name: name,
+      localType: localType,
+      isMutable: isMutable,
+      param: param,
+      binding: BindingKind.Plain,
+      pos: copy(pos),
+      noEscape: false,
+      used: false,
+      number: number,
+      namePos: copy(namePos),
+      shorthand: shorthand,
+    },
+  )
   const index = Arrays.length(checker.bodies[body].locals) - 1
   const slot = findSlot(checker, nodeId)
   if (slot >= 0) {

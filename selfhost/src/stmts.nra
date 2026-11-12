@@ -408,7 +408,7 @@ function checkAssignment<W: Walker>(
   // A map element has no old value to combine with, so only `=` writes one.
   if (operator != "=") {
     if (target is Expr.IndexExpr(_, _, mapTarget, _)) {
-      if (getNodeType(checker, getExpressionId(mapTarget)) is Some(mapType)) {
+      if (copy(getNodeType(checker, getExpressionId(mapTarget))) is Some(mapType)) {
         if (mapType is Type.TMap(_, _)) {
           reportError(
             mutable checker,
@@ -434,7 +434,7 @@ function checkAssignment<W: Walker>(
     )
   } else if (target is Expr.Ident(_, _, _)) {
     // A whole assignment changes the name: only a `let` can.
-    const local = getLocal(checker, root)
+    const local = copy(getLocal(checker, root))
     if (local.binding == BindingKind.Reference) {
       reportError(
         mutable checker,
@@ -564,7 +564,7 @@ function checkExpressionStatement<W: Walker>(
 
   // Only a call can stand alone, and a Result it returns must be used.
   if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
-    if (getNodeType(checker, nodeId) is Some(found)) {
+    if (copy(getNodeType(checker, nodeId)) is Some(found)) {
       if (isResult(checker, found)) {
         reportError(
           mutable checker,
@@ -654,21 +654,17 @@ export function checkBlockBody<W: Walker>(
   want: Option<Type>,
 ): Type from checker uses alloc {
   // A match arm written as a block in value position uses this too.
-  const context = BlockContext {
-    result: want,
-    returns: 0,
-    loops: checker.loops,
-    labels: checker.labels,
-    cond: block.pos.line != pos.line || block.pos.column != pos.column,
-    reported: false,
-  }
-  Arrays.push(mutable checker.blocks, context)
+  pushBlockContext(
+    mutable checker,
+    want,
+    block.pos.line != pos.line || block.pos.column != pos.column,
+  )
   checker.loops = 0
   checker.labels = []
   checkBlock(mutable checker, walker, block)
   const finished = checker.blocks[Arrays.length(checker.blocks) - 1]
   checker.loops = finished.loops
-  checker.labels = finished.labels
+  checker.labels = copy(finished.labels)
   checker.blocks = withoutLastBlock(checker.blocks)
   if (finished.returns == 0) {
     reportError(
@@ -691,6 +687,19 @@ export function checkBlockBody<W: Walker>(
     return found
   }
   return Type.TVoid
+}
+
+function pushBlockContext(mutable checker: Checker, want: Option<Type>, cond: bool) {
+  // The context is released on return, so checker.blocks holds the only copy.
+  const context = BlockContext {
+    result: want,
+    returns: 0,
+    loops: checker.loops,
+    labels: checker.labels,
+    cond: cond,
+    reported: false,
+  }
+  Arrays.push(mutable checker.blocks, context)
 }
 
 function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> from blocks uses alloc {
@@ -1073,7 +1082,7 @@ function checkFor<W: Walker>(
   }
   // Only an array place can be written through by index.
   if (findAssignedLocal(checker, source) >= 0) {
-    if (getNodeType(checker, getExpressionId(source)) is Some(Type.TArray(sourceElement))) {
+    if (copy(getNodeType(checker, getExpressionId(source))) is Some(Type.TArray(sourceElement))) {
       const contents = isContentsType(checker, sourceElement)
       checker.bodies[bodyIndex].locals[local].loopSource = describePlace(source)
       checker.bodies[bodyIndex].locals[local].loopContents = contents
@@ -1132,7 +1141,7 @@ function checkReferenceFor<W: Walker>(
   // The element type, also after an error below, so the body is checked
   // without errors that only follow from it.
   let element = Type.TVoid
-  const sourceType = getNodeType(checker, getExpressionId(source))
+  const sourceType = copy(getNodeType(checker, getExpressionId(source)))
   if (sourceType is Some(Type.TArray(arrayElement))) {
     element = copy(arrayElement)
   } else if (sourceType is Some(Type.TMap(_, mapValue))) {
@@ -1229,7 +1238,7 @@ function checkReferenceFor<W: Walker>(
   enterLoop(mutable checker, pos, label)
   checkBlock(mutable checker, walker, body)
   leaveLoop(mutable checker, label)
-  checker.loopBorrows = outerBorrows
+  checker.loopBorrows = copy(outerBorrows)
   if (Arrays.length(checker.loopBorrows) == 0) {
     checker.borrowChecked = []
   }

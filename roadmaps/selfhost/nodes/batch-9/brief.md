@@ -1,7 +1,7 @@
 ---
 id: batch-9
 title: "Batch 9: debt the fresh seed unblocks"
-status: active
+status: done
 priority: should
 type: story
 story: 
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-11
-spent:
+spent: 78000
 owns:
   - roadmaps/selfhost/nodes/batch-9/**
 shared:

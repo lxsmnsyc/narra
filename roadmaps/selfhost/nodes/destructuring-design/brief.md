@@ -4,12 +4,12 @@ title: "Spike: destructuring in parameters, array patterns and assignments"
 status: todo
 priority: should
 type: spike
-story:
+story: batch-10
 early: false
 outline: false
-milestone: m12-spec-gaps
+milestone: 
 target:
-ship: pr
+ship: auto
 from:
 size: M
 spike: true

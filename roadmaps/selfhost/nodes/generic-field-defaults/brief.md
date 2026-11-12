@@ -1,7 +1,7 @@
 ---
 id: generic-field-defaults
 title: "Defaults for generic struct fields"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 180000
 owns:
   - roadmaps/selfhost/nodes/generic-field-defaults/**
   - testdata/generic_field_defaults*

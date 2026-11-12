@@ -1,7 +1,7 @@
 ---
 id: contract-logic-design
 title: "Spike: logical operators in requires and ensures"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-11
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-11
-spent:
+spent: 438000
 owns:
   - roadmaps/selfhost/nodes/contract-logic-design/**
 shared:

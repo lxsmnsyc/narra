@@ -1,4 +1,4 @@
-# Wave 22 report: batch-9 (in progress)
+# Wave 22 report: batch-9
 
 Batch-9 runs on the local story branch `feat/batch-9` (not pushed). Every child has landed as a direct commit after a worker check and a fresh review. seed-switch landed as four commits so the seed regenerations stay readable.
 
@@ -23,12 +23,10 @@ Diagnostic codes used: E1003, E1004. c-audit-target's unused E1003 reservation w
 
 On the final children: `sh scripts/test.sh` passes (7107 cases); `sh scripts/linux-check.sh` passed on seed-switch's branch, which is the story branch tip.
 
-## Left before the story pull request
+## Closing the story
 
-1. A fresh review of the whole `feat/batch-9` branch against `main`.
-2. `bench/BASELINE.md` end-of-batch row.
-3. Remove the inbox entries this batch closed (Ptr cast, fmt block hug, guide fragments, and the rest named in the batch-9 brief).
-4. Curator pass: promote lasting rules from the outcomes (for example, `narrac fmt` follows oxfmt and was checked against oxfmt 0.66.0; read the total on the final line of `scripts/test.sh`).
-5. Push `feat/batch-9` and open the story pull request into `main` for the maintainer.
-
-Stale worktree to remove: `.claude/worktrees/agent-aaa8582c137bb0b37` (`fix/batch-8-review`, merged).
+- A fresh review of the whole branch at bcc94cd9: `sh scripts/test.sh` PASS, 7107 cases; `sh selfhost/bootstrap.sh` reports the seed current. Nothing blocking. Fixed: the build-conditions entry in `DECISIONS.md` still named `uname`. Left: `scripts/test.sh` prints PASS when every shard reports zero cases (display only; the runner already fails an empty plan).
+- `bench/BASELINE.md` end-of-batch-9 section: programs within noise; `narrac emit` on the batch-8 source 2.370G (batch-8 compiler) to 2.378G (batch-9 compiler), +0.3%, within spread. seed-switch's -1.3% did not reproduce.
+- Inbox: the entries this batch closed are removed; the seed-switch review nits added.
+- Curator: rules promoted to `selfhost/CLAUDE.md` (fmt follows oxfmt, trivia nodes for keywords with comments, the `holder.field` copy, orphaned test programs) and the roadmap `CLAUDE.md` (read the test total on the final line). Calibration rows in `roadmaps/CALIBRATION.md`.
+- The stale `fix/batch-8-review` worktree is removed.

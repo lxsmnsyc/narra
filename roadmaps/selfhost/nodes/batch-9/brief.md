@@ -67,9 +67,9 @@ Runtime text changes (process-signals, process-exit) need two seed updates (GOAL
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] A fresh review of the whole story branch, before the pull request.
-- [ ] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise (process-exit should lower them a little).
-- [ ] The inbox entries this batch closes are removed from `inbox.md`.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
+- [x] A fresh review of the whole story branch, before the pull request.
+- [x] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise (process-exit should lower them a little).
+- [x] The inbox entries this batch closes are removed from `inbox.md`.

@@ -1,0 +1,266 @@
+// The C of a constant computed while compiling (consteval.nra). A scalar result
+// is written at each use, as other scalar constants are. Any other result is
+// built by the constant's getter from the value: an array of scalars is one
+// `static const` C array copied with memcpy, other values are built from the
+// parts in order. A float that is not finite is NAN, INFINITY or -INFINITY.
+import { substring } from "narrac/textops"
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as Str from "std/string"
+import * as Char from "std/char"
+import { Type } from "narrac/types"
+import { ConstValue } from "narrac/check"
+import { cachedCType } from "narrac/cnames"
+import {
+  Emitter,
+  Code,
+  reportUnsupported,
+  writeLine,
+  literal,
+  ownedTemp,
+  consume,
+  underlyingType,
+  useHelper,
+} from "narrac/emitstate"
+import * as Decls from "narrac/emitdecls"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const NODE = "const-functions"
+
+export function findComputedValue(
+  emitter: Emitter,
+  constIndex: int,
+): Option<ConstValue> from emitter {
+  return emitter.checker.constValues[constIndex]
+}
+
+export function isScalarValue(value: ConstValue): bool {
+  return match (value) {
+    ConstValue.Integer(_) | ConstValue.Float(_) | ConstValue.Boolean(_) | ConstValue.Character(_) =>
+      true
+    ConstValue.Variant(_, values) => Arrays.length(values) == 0
+    _ => false
+  }
+}
+
+function isScalarType(type: Type): bool {
+  return match (type) {
+    Type.TInt
+      | Type.TI8
+      | Type.TI16
+      | Type.TI32
+      | Type.TU8
+      | Type.TU16
+      | Type.TU32
+      | Type.TU64
+      | Type.TF64
+      | Type.TF32
+      | Type.TBool
+      | Type.TChar => true
+    _ => false
+  }
+}
+
+function writeInteger(emitter: Emitter, type: Type, value: int): string uses alloc {
+  let text = `INT64_C(${Int.toString(value)})`
+  if (value == -9223372036854775807 - 1) {
+    text = "INT64_MIN"
+  }
+  if (type == Type.TInt) {
+    return text
+  }
+  return `((${cachedCType(emitter.checker, emitter.typeNames, type)})${text})`
+}
+
+export function writeFloat(type: Type, value: f64): string uses alloc {
+  // The shortest text that reads back as the same double, or a <math.h> name.
+  let text = Float.toString(value)
+  if (value != value) {
+    text = "NAN"
+  } else if (value - value != 0.0) {
+    text = value > 0.0 ? "INFINITY" : "(-INFINITY)"
+  }
+  if (type == Type.TF32) {
+    return `((float)${text})`
+  }
+  return text
+}
+
+export function writeScalar(emitter: Emitter, value: ConstValue, type: Type): string uses alloc {
+  const base = underlyingType(emitter, type)
+  return match (value) {
+    ConstValue.Integer(number) => writeInteger(emitter, base, number)
+    ConstValue.Float(number) => writeFloat(base, number)
+    ConstValue.Boolean(flag) => flag ? "true" : "false"
+    ConstValue.Character(character) => {
+      // A char of a sized integer type cannot reach here; a char is its code.
+      if (isScalarType(base) && base != Type.TChar) {
+        return writeInteger(emitter, base, readCode(character))
+      }
+      return `${Int.toString(readCode(character))}U`
+    }
+    ConstValue.Variant(tag, _) => {
+      const enumName = cachedCType(emitter.checker, emitter.typeNames, base)
+      return `((${enumName}){.tag = ${Int.toString(tag)}})`
+    }
+    _ => "0"
+  }
+}
+
+function readCode(character: char): int {
+  return Char.code(character)
+}
+
+function containerName(emitter: Emitter, type: Type): string uses alloc {
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
+  return substring(name, 0, Str.length(name) - 1)
+}
+
+export function writeValue(
+  mutable emitter: Emitter,
+  value: ConstValue,
+  type: Type,
+): Code uses alloc {
+  // Writes the lines that build value, of type type, and returns the C value.
+  const base = copy(underlyingType(emitter, type))
+  if (isScalarValue(value)) {
+    return Code { text: writeScalar(emitter, value, base), owned: false }
+  }
+  return match (value) {
+    ConstValue.Text(text) => Code { text: literal(mutable emitter, text), owned: false }
+    ConstValue.Items(elements) => writeItems(mutable emitter, elements, base)
+    ConstValue.Fields(values) => writeFields(mutable emitter, values, base)
+    ConstValue.Variant(tag, values) => writeVariant(mutable emitter, tag, values, base)
+    ConstValue.Entries(keys, values, _) => writeEntries(mutable emitter, keys, values, base)
+    _ => Code { text: reportUnsupported(mutable emitter, "constant value", NODE), owned: false }
+  }
+}
+
+function writeStaticTable(
+  mutable emitter: Emitter,
+  elements: Array<ConstValue>,
+  element: Type,
+): string uses alloc {
+  // A `static const` array in the getter: data, with no code per element.
+  emitter.tempCount++
+  const name = `narra_table_${Int.toString(emitter.tempCount)}`
+  const elementName = cachedCType(emitter.checker, emitter.typeNames, element)
+  let texts: Array<string> = []
+  for (const item of Arrays.values(elements)) {
+    Arrays.push(mutable texts, writeScalar(emitter, item, element))
+  }
+  writeLine(mutable emitter, `static const ${elementName} ${name}[] = {${Str.join(texts, ", ")}};`)
+  return name
+}
+
+function writeItems(
+  mutable emitter: Emitter,
+  elements: Array<ConstValue>,
+  type: Type,
+): Code uses alloc {
+  const count = Int.toString(Arrays.length(elements))
+  if (type is Type.TFixedArray(fixedElement, _)) {
+    const fixedName = cachedCType(emitter.checker, emitter.typeNames, type)
+    if (isScalarType(underlyingType(emitter, fixedElement)) && Arrays.length(elements) > 0) {
+      const table = writeStaticTable(mutable emitter, elements, fixedElement)
+      const fixed = ownedTemp(mutable emitter, type, `((${fixedName}){0})`)
+      writeLine(mutable emitter, `memcpy(${fixed}.items, ${table}, sizeof ${table});`)
+      return Code { text: fixed, owned: true }
+    }
+    let items: Array<string> = []
+    for (const item of Arrays.values(elements)) {
+      const code = writeValue(mutable emitter, item, fixedElement)
+      Arrays.push(mutable items, consume(mutable emitter, code.text, code.owned, fixedElement))
+    }
+    let fixedValue = `((${fixedName}){0})`
+    if (Arrays.length(items) > 0) {
+      fixedValue = `((${fixedName}){.items = {${Str.join(items, ", ")}}})`
+    }
+    return Code { text: ownedTemp(mutable emitter, type, fixedValue), owned: true }
+  }
+  if (type is Type.TArray(element)) {
+    const arrayStruct = containerName(emitter, type)
+    const newHelper = useHelper(emitter, arrayStruct, "new")
+    const array = ownedTemp(mutable emitter, type, `${newHelper}(${count})`)
+    if (isScalarType(underlyingType(emitter, element)) && Arrays.length(elements) > 0) {
+      const table = writeStaticTable(mutable emitter, elements, element)
+      writeLine(mutable emitter, `memcpy(${array}->items, ${table}, sizeof ${table});`)
+      writeLine(mutable emitter, `${array}->len = ${count};`)
+      return Code { text: array, owned: true }
+    }
+    for (const item of Arrays.values(elements)) {
+      const code = writeValue(mutable emitter, item, element)
+      const consumed = consume(mutable emitter, code.text, code.owned, element)
+      writeLine(mutable emitter, `${array}->items[${array}->len++] = ${consumed};`)
+    }
+    return Code { text: array, owned: true }
+  }
+  return Code { text: reportUnsupported(mutable emitter, "constant array", NODE), owned: false }
+}
+
+function writeFields(
+  mutable emitter: Emitter,
+  values: Array<ConstValue>,
+  type: Type,
+): Code uses alloc {
+  if (type is Type.TStruct(structIndex)) {
+    const fields = copy(emitter.checker.structs[structIndex].fields)
+    let parts: Array<string> = []
+    for (const index of Ranges.between(0, Arrays.length(fields))) {
+      const fieldType = fields[index].fieldType
+      const code = writeValue(mutable emitter, values[index], fieldType)
+      const consumed = consume(mutable emitter, code.text, code.owned, fieldType)
+      Arrays.push(mutable parts, `.f_${fields[index].name} = ${consumed}`)
+    }
+    const structName = cachedCType(emitter.checker, emitter.typeNames, type)
+    const built = ownedTemp(mutable emitter, type, `((${structName}){${Str.join(parts, ", ")}})`)
+    return Code { text: built, owned: true }
+  }
+  return Code { text: reportUnsupported(mutable emitter, "constant struct", NODE), owned: false }
+}
+
+function writeVariant(
+  mutable emitter: Emitter,
+  tag: int,
+  values: Array<ConstValue>,
+  type: Type,
+): Code uses alloc {
+  if (type is Type.TEnum(enumIndex)) {
+    const fields = copy(emitter.checker.enums[enumIndex].variants[tag].fields)
+    let parts: Array<string> = []
+    for (const index of Ranges.between(0, Arrays.length(fields))) {
+      const fieldType = fields[index].fieldType
+      const code = writeValue(mutable emitter, values[index], fieldType)
+      Arrays.push(mutable parts, consume(mutable emitter, code.text, code.owned, fieldType))
+    }
+    const allocated = Decls.enumAllocation(mutable emitter, type, tag, parts)
+    return Code { text: ownedTemp(mutable emitter, type, allocated.text), owned: true }
+  }
+  return Code { text: reportUnsupported(mutable emitter, "constant enum", NODE), owned: false }
+}
+
+function writeEntries(
+  mutable emitter: Emitter,
+  keys: Array<ConstValue>,
+  values: Array<ConstValue>,
+  type: Type,
+): Code uses alloc {
+  if (type is Type.TMap(keyType, valueType)) {
+    const name = containerName(emitter, type)
+    const map = ownedTemp(
+      mutable emitter,
+      type,
+      `${name}_new(${Int.toString(Arrays.length(keys))})`,
+    )
+    for (const index of Ranges.between(0, Arrays.length(keys))) {
+      const keyCode = writeValue(mutable emitter, keys[index], keyType)
+      const key = consume(mutable emitter, keyCode.text, keyCode.owned, keyType)
+      const valueCode = writeValue(mutable emitter, values[index], valueType)
+      const entry = consume(mutable emitter, valueCode.text, valueCode.owned, valueType)
+      writeLine(mutable emitter, `${name}_set(&${map}, ${key}, ${entry});`)
+    }
+    return Code { text: map, owned: true }
+  }
+  return Code { text: reportUnsupported(mutable emitter, "constant map", NODE), owned: false }
+}

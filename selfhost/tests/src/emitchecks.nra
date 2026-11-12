@@ -45,6 +45,15 @@
 //   inline/no-closure  the C of testdata/inline.nra has no C function for the
 //                      @inline function applyTwice, and no closure function or
 //                      environment for its arrow argument
+//   const-functions/scalar-inline   in the C of testdata/const_functions_scalar.nra
+//                      the constant AREA = square(4) is the literal 16 at its
+//                      use, with no getter and no call of square
+//   const-functions/static-table   the C of testdata/const_functions.nra builds
+//                      the CRC table from a `static const` array with one memcpy,
+//                      with no store per element
+//   const-functions/fp-contract   the emitted C starts with
+//                      `#pragma STDC FP_CONTRACT OFF`
+//   const-functions/deterministic   the same program emits byte-identical C twice
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
@@ -138,6 +147,26 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       "distinct-instances",
     ),
     makeCase("inline/no-closure", Path.join(context.testdata, "inline.nra"), "no-closure"),
+    makeCase(
+      "const-functions/scalar-inline",
+      Path.join(context.testdata, "const_functions_scalar.nra"),
+      "const-scalar",
+    ),
+    makeCase(
+      "const-functions/static-table",
+      Path.join(context.testdata, "const_functions.nra"),
+      "const-table",
+    ),
+    makeCase(
+      "const-functions/fp-contract",
+      Path.join(context.testdata, "const_functions_float.nra"),
+      "fp-contract",
+    ),
+    makeCase(
+      "const-functions/deterministic",
+      Path.join(context.testdata, "const_functions_struct.nra"),
+      "deterministic",
+    ),
   ]
 }
 
@@ -181,6 +210,18 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "no-closure") {
     return checkInlineCopied(context, testCase.path)
+  }
+  if (testCase.variant == "const-scalar") {
+    return checkConstScalar(context, testCase.path)
+  }
+  if (testCase.variant == "const-table") {
+    return checkConstTable(context, testCase.path)
+  }
+  if (testCase.variant == "fp-contract") {
+    return checkContractPragma(context, testCase.path)
+  }
+  if (testCase.variant == "deterministic") {
+    return checkSameTwice(context, testCase.path)
   }
   if (testCase.variant == "std-source") {
     return checkStdSourceShaken(context, testCase.path)
@@ -309,6 +350,78 @@ function checkInlineCopied(context: Context, source: string): Result<bool, strin
   }
   if (!Str.contains(result.output, "narra_inline_")) {
     return Err("the emitted C has no copied body")
+  }
+  return Ok(true)
+}
+
+function checkConstScalar(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // A getter's storage is named G_<hash>_AREA; a call of square names f_<hash>_square(.
+  for (const text of Arrays.values(["_AREA", "_square(INT64_C(4))"])) {
+    if (Str.contains(result.output, text)) {
+      return Err(`the emitted C should not hold "${text}"`)
+    }
+  }
+  if (!Str.contains(result.output, "lstr_from_int(INT64_C(16))")) {
+    return Err("the emitted C does not write the constant as the literal 16")
+  }
+  return Ok(true)
+}
+
+function checkConstTable(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // The getter runs from its signature to the closing brace at the start of a line.
+  const start = Str.indexOf(result.output, "_CRC_TABLE(void) {")
+  if (start is None) {
+    return Err("the emitted C has no getter for CRC_TABLE")
+  }
+  const rest = Str.sliceFrom(result.output, start.value)
+  let getter = rest
+  if (Str.indexOf(rest, "\n}\n") is Some(end)) {
+    if (Str.slice(rest, 0, end) is Some(body)) {
+      getter = body
+    }
+  }
+  if (!Str.contains(getter, "static const int64_t narra_table_")) {
+    return Err("the getter has no static const table")
+  }
+  if (!Str.contains(getter, "memcpy(")) {
+    return Err("the getter does not copy the table with memcpy")
+  }
+  if (Str.contains(getter, "->len++]")) {
+    return Err("the getter stores the elements one by one")
+  }
+  return Ok(true)
+}
+
+function checkContractPragma(
+  context: Context,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  if (!Str.startsWith(result.output, "#pragma STDC FP_CONTRACT OFF\n")) {
+    return Err("the emitted C does not start with #pragma STDC FP_CONTRACT OFF")
+  }
+  return Ok(true)
+}
+
+function checkSameTwice(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const first = Common.runNarrac(context, ["emit", source])
+  const second = Common.runNarrac(context, ["emit", source])
+  if (first.code != 0 || second.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(first)}`)
+  }
+  if (first.output != second.output) {
+    return Err("two emits of the same program differ")
   }
   return Ok(true)
 }

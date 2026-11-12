@@ -1,0 +1,3591 @@
+// Compile-time evaluation of top-level constants that call `@const` functions
+// (SPEC.md section 10). A tree-walking evaluator runs the checked syntax with
+// the side tables of each body and gives a ConstValue, kept in
+// Checker.constValues for the C writer (emitconstvalues.nra).
+//
+// The locals of every open call live in one array of slots: a call takes the
+// slots from `top` up, one per BodyInfo.locals entry, and clears them when it
+// returns. A `mutable` argument or a write moves the value out of its slot,
+// changes it and moves it back, so the arrays inside stay unique and a write
+// does not copy them. Any read that sits next to a write is done in a helper,
+// whose locals end at its return.
+//
+// Limits per constant: steps, bytes of values and nested calls. A panic, a
+// failed assert, a bad index or a limit stops the evaluation, and the error
+// is reported at the constant with the chain of calls as notes.
+import {
+  Pos,
+  Expr,
+  Stmt,
+  Block,
+  Arg,
+  Pattern,
+  MatchArm,
+  FieldInit,
+  LoopReference,
+} from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  ConstValue,
+  reportErrorIn,
+  findBody,
+  getExpressionId,
+  getExpressionPos,
+  orderArguments,
+} from "narrac/check"
+import { isConstFunction, checkConstFunctions } from "narrac/constfunctions"
+import { EffectState } from "narrac/effects"
+import { substring } from "narrac/textops"
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as F32 from "std/f32"
+import * as U64 from "std/u64"
+import * as Str from "std/string"
+import * as Char from "std/char"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const STEP_LIMIT = 10000000
+const MEMORY_LIMIT = 67108864
+export const DEPTH_LIMIT = 1000
+const NESTING_LIMIT = 10000
+const VALUE_DEPTH_LIMIT = 1000
+const INT_MIN = -9223372036854775807 - 1
+
+// What a statement did: went on, left a loop, returned (the value is in
+// returnValue) or failed. A break or continue names its label in flowLabel.
+enum Flow {
+  Normal
+  Breaking
+  Continuing
+  Returning
+  TailCalling
+  Failing
+}
+
+// One step of a place below its local: an element, a field or a map key.
+enum PlaceStep {
+  AtElement(index: int)
+  AtField(index: int)
+  AtKey(key: ConstValue)
+}
+
+struct Place {
+  slot: int
+  steps: Array<PlaceStep>
+}
+
+// A note of the call chain: where a call was made and what it called.
+struct ChainNote {
+  file: string
+  pos: Pos
+  text: string
+}
+
+struct ConstEvaluator {
+  slots: Array<ConstValue>
+  top: int
+  base: int
+  body: int
+  // The function whose body runs (Checker.functions), or -1 in a constant.
+  functionIndex: int
+  // The name of what runs, for the notes: a function or the constant.
+  runningName: string
+  depth: int
+  // The blocks and expressions being evaluated, across every open call.
+  nesting: int
+  steps: int
+  memory: int
+  failed: bool
+  code: string
+  message: string
+  failurePos: Pos
+  failureBody: int
+  chain: Array<ChainNote>
+  returnValue: ConstValue
+  flowLabel: string
+  tailArguments: Array<ConstValue>
+  // 1 while a constant is computed, 2 when its value is in constResults.
+  constStates: Map<int, int>
+  constResults: Map<int, ConstValue>
+}
+
+export function checkConstants(mutable checker: Checker, effects: EffectState) uses alloc {
+  // The `@const` declarations need the effects; constants that call them are computed last.
+  if (Arrays.length(checker.errors) == 0) {
+    checkConstFunctions(mutable checker, effects)
+  }
+  if (Arrays.length(checker.errors) == 0) {
+    evaluateConstants(mutable checker)
+  }
+}
+
+function evaluateConstants(mutable checker: Checker) uses alloc {
+  let state = ConstEvaluator {
+    slots: [],
+    top: 0,
+    base: 0,
+    body: -1,
+    functionIndex: -1,
+    runningName: "",
+    depth: 0,
+    nesting: 0,
+    steps: 0,
+    memory: 0,
+    failed: false,
+    code: "",
+    message: "",
+    failurePos: Pos { line: 0, column: 0 },
+    failureBody: -1,
+    chain: [],
+    returnValue: ConstValue.Unit,
+    flowLabel: "",
+    tailArguments: [],
+    constStates: Map {},
+    constResults: Map {},
+  }
+  for (const constIndex of Arrays.values(copy(checker.programConsts))) {
+    const body = findBody(checker, `const|${Int.toString(constIndex)}`)
+    if (body < 0 || checker.consts[constIndex].declaration.lazyPos is Some(_)) {
+      continue
+    }
+    if (!callsConstFunction(checker, body, checker.consts[constIndex].declaration.value)) {
+      continue
+    }
+    // Each constant has its own limits.
+    state.steps = 0
+    state.memory = 0
+    state.depth = 0
+    state.nesting = 0
+    state.failed = false
+    state.chain = []
+    const value = readConstant(checker, mutable state, constIndex)
+    // The C writer recurses once per level of the value.
+    if (!state.failed && measureValueDepth(value) > VALUE_DEPTH_LIMIT) {
+      stopEvaluation(
+        mutable state,
+        getExpressionPos(checker.consts[constIndex].declaration.value),
+        "E1056",
+        "value",
+      )
+      state.failureBody = -1
+    }
+    if (state.failed) {
+      reportFailure(mutable checker, state, constIndex)
+      return
+    }
+    checker.constValues[constIndex] = value
+  }
+}
+
+function callsConstFunction(checker: Checker, body: int, value: Expr): bool uses alloc {
+  // Only the constant parts of a value can hold a call: literals, structs, arrays, maps.
+  return match (value) {
+    Expr.CallExpr(nodeId, _, _, _, arguments) => {
+      if (readRefIn(checker, body, nodeId) is Ref.Function(funcIndex)) {
+        if (isConstFunction(checker, funcIndex)) {
+          return true
+        }
+      }
+      for (const argument of Arrays.values(arguments)) {
+        if (callsConstFunction(checker, body, argument.value)) {
+          return true
+        }
+      }
+      return false
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      if (spread is Some(base)) {
+        if (callsConstFunction(checker, body, base)) {
+          return true
+        }
+      }
+      for (const field of Arrays.values(fields)) {
+        if (callsConstFunction(checker, body, field.value)) {
+          return true
+        }
+      }
+      return false
+    }
+    Expr.ArrayLit(_, _, elements, _) => anyCallsConstFunction(checker, body, elements)
+    Expr.TemplateLit(_, _, parts) => anyCallsConstFunction(checker, body, parts)
+    Expr.MapLit(_, _, _, keys, values) =>
+      anyCallsConstFunction(checker, body, keys) || anyCallsConstFunction(checker, body, values)
+    Expr.UnaryExpr(_, _, _, operand) => callsConstFunction(checker, body, operand)
+    Expr.BinaryExpr(_, _, _, left, right) =>
+      callsConstFunction(checker, body, left) || callsConstFunction(checker, body, right)
+    _ => false
+  }
+}
+
+function anyCallsConstFunction(checker: Checker, body: int, values: Array<Expr>): bool uses alloc {
+  for (const value of Arrays.values(values)) {
+    if (callsConstFunction(checker, body, value)) {
+      return true
+    }
+  }
+  return false
+}
+
+function findFile(checker: Checker, body: int): string {
+  if (body < 0) {
+    return ""
+  }
+  if (checker.scopeIndex[checker.bodies[body].module] is Some(scope)) {
+    return checker.scopes[scope].file
+  }
+  return ""
+}
+
+function reportFailure(
+  mutable checker: Checker,
+  state: ConstEvaluator,
+  constIndex: int,
+) uses alloc {
+  const info = copy(checker.consts[constIndex])
+  const name = info.name
+  let text = ""
+  if (state.code == "E1053") {
+    text = `constant ${name} panicked while the compiler computed it: ${state.message}`
+  } else if (state.code == "E1054") {
+    text = `constant ${name} needs more than ${Int.toString(STEP_LIMIT)} evaluation steps; build a table this large with lazy or a generated source file`
+  } else if (state.code == "E1055") {
+    text = `constant ${name} needs more than 64 MiB of values (${state.message}); build a table this large with lazy or a generated source file`
+  } else if (state.code == "E1056" && state.message == "value") {
+    text = `constant ${name} holds a value nested more than ${Int.toString(VALUE_DEPTH_LIMIT)} levels deep; the compiler writes a computed value only up to that depth`
+  } else if (state.code == "E1056" && state.message == "nesting") {
+    text = `constant ${name} nests calls, blocks and expressions more than ${Int.toString(NESTING_LIMIT)} deep; a self-call in tail position runs as a loop and does not count`
+  } else if (state.code == "E1056") {
+    text = `constant ${name} makes more than ${Int.toString(DEPTH_LIMIT)} nested calls; a self-call in tail position runs as a loop and does not count`
+  } else if (state.code == "E1057") {
+    text = `constant ${state.message} is read by an @const function while it is computed, so it is defined in terms of itself`
+  } else {
+    text = `constant ${name} cannot be computed while compiling: ${state.message}`
+  }
+  // The notes go from the constant down to the failing expression.
+  let builder = Str.builder()
+  Str.append(mutable builder, text)
+  // A call repeated by a recursion is one note with its count.
+  let index = Arrays.length(state.chain) - 1
+  while (index >= 0) {
+    const note = state.chain[index]
+    let repeats = 1
+    while (index - repeats >= 0 && isSameNote(state.chain[index - repeats], note)) {
+      repeats++
+    }
+    let times = ""
+    if (repeats > 1) {
+      times = ` (${Int.toString(repeats)} times)`
+    }
+    Str.append(
+      mutable builder,
+      `\n${note.file}:${Int.toString(note.pos.line)}:${Int.toString(note.pos.column)}: note: ${note.text}${times}`,
+    )
+    index = index - repeats
+  }
+  if (state.failureBody >= 0 && state.code != "E1057") {
+    const file = findFile(checker, state.failureBody)
+    const pos = state.failurePos
+    Str.append(
+      mutable builder,
+      `\n${file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}: note: the evaluation stops here`,
+    )
+  }
+  let file = ""
+  if (checker.scopeIndex[info.module] is Some(scope)) {
+    file = checker.scopes[scope].file
+  }
+  reportErrorIn(
+    mutable checker,
+    file,
+    getExpressionPos(info.declaration.value),
+    state.code,
+    Str.build(builder),
+  )
+}
+
+function isSameNote(first: ChainNote, second: ChainNote): bool {
+  return first.file == second.file &&
+    first.pos.line == second.pos.line &&
+    first.pos.column == second.pos.column &&
+    first.text == second.text
+}
+
+function stopEvaluation(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  code: string,
+  message: string,
+) uses alloc {
+  if (state.failed) {
+    return
+  }
+  state.failed = true
+  state.code = code
+  state.message = message
+  state.failurePos = pos
+  state.failureBody = state.body
+}
+
+function countStep(mutable state: ConstEvaluator, pos: Pos): bool uses alloc {
+  state.steps++
+  if (state.steps > STEP_LIMIT) {
+    stopEvaluation(mutable state, pos, "E1054", "steps")
+  }
+  return !state.failed
+}
+
+function charge(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  bytes: int,
+  what: string,
+): bool uses alloc {
+  // A negative or huge request counts as over the limit, so it never runs.
+  if (bytes < 0 || bytes > MEMORY_LIMIT || state.memory + bytes > MEMORY_LIMIT) {
+    stopEvaluation(mutable state, pos, "E1055", what)
+    return false
+  }
+  state.memory = state.memory + bytes
+  return true
+}
+
+function countTextBytes(length: int): int {
+  // A string's bytes, rounded up to 8.
+  return (length + 7) / 8 * 8
+}
+
+function readRefIn(checker: Checker, body: int, nodeId: int): Ref {
+  const slot = nodeId - checker.bodies[body].first
+  if (slot < 0 || slot >= Arrays.length(checker.bodies[body].refs)) {
+    return Ref.Unresolved
+  }
+  return checker.bodies[body].refs[slot]
+}
+
+function readRef(checker: Checker, state: ConstEvaluator, nodeId: int): Ref {
+  return readRefIn(checker, state.body, nodeId)
+}
+
+function readType(checker: Checker, state: ConstEvaluator, nodeId: int): Type from checker {
+  const slot = nodeId - checker.bodies[state.body].first
+  if (slot < 0 || slot >= Arrays.length(checker.bodies[state.body].types)) {
+    return Type.TVoid
+  }
+  if (checker.bodies[state.body].types[slot] is Some(found)) {
+    return found
+  }
+  return Type.TVoid
+}
+
+function findDeclaredLocal(checker: Checker, state: ConstEvaluator, nodeId: int): int {
+  const slot = nodeId - checker.bodies[state.body].first
+  if (slot < 0 || slot >= Arrays.length(checker.bodies[state.body].declared)) {
+    return -1
+  }
+  return checker.bodies[state.body].declared[slot]
+}
+
+function findUnderlying(checker: Checker, type: Type): Type from type {
+  if (type is Type.TDistinct(index)) {
+    if (checker.distincts[index].base is Some(base)) {
+      return copy(findUnderlying(checker, base))
+    }
+  }
+  return type
+}
+
+function findVariant(checker: Checker, enumType: Type, name: string): int {
+  if (findUnderlying(checker, enumType) is Type.TEnum(enumIndex)) {
+    for (const variant of Arrays.values(checker.enums[enumIndex].variants)) {
+      if (variant.name == name) {
+        return variant.index
+      }
+    }
+  }
+  return 0
+}
+
+function findStructField(checker: Checker, structType: Type, name: string): int {
+  if (findUnderlying(checker, structType) is Type.TStruct(structIndex)) {
+    for (const index of Ranges.between(0, Arrays.length(checker.structs[structIndex].fields))) {
+      if (checker.structs[structIndex].fields[index].name == name) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+function findFieldType(checker: Checker, structType: Type, index: int): Type from checker {
+  if (findUnderlying(checker, structType) is Type.TStruct(structIndex)) {
+    if (index >= 0 && index < Arrays.length(checker.structs[structIndex].fields)) {
+      return checker.structs[structIndex].fields[index].fieldType
+    }
+  }
+  return Type.TVoid
+}
+
+function findVariantFieldType(
+  checker: Checker,
+  enumType: Type,
+  variant: int,
+  index: int,
+): Type from checker {
+  if (findUnderlying(checker, enumType) is Type.TEnum(enumIndex)) {
+    const variants = checker.enums[enumIndex].variants
+    if (variant >= 0 && variant < Arrays.length(variants)) {
+      if (index >= 0 && index < Arrays.length(variants[variant].fields)) {
+        return checker.enums[enumIndex].variants[variant].fields[index].fieldType
+      }
+    }
+  }
+  return Type.TVoid
+}
+
+function findElementType(checker: Checker, type: Type): Type from checker {
+  return match (findUnderlying(checker, type)) {
+    Type.TArray(element) => copy(element)
+    Type.TFixedArray(element, _) => copy(element)
+    _ => Type.TVoid
+  }
+}
+
+// Reading values.
+
+function readInteger(value: ConstValue): int {
+  return match (value) {
+    ConstValue.Integer(number) => number
+    ConstValue.Character(character) => Char.code(character)
+    _ => 0
+  }
+}
+
+function readFloat(value: ConstValue): f64 {
+  return match (value) { ConstValue.Float(number) => number, _ => 0.0 }
+}
+
+function readBool(value: ConstValue): bool {
+  return match (value) { ConstValue.Boolean(flag) => flag, _ => false }
+}
+
+function readText(value: ConstValue): string {
+  return match (value) { ConstValue.Text(text) => text, _ => "" }
+}
+
+function readCharacter(value: ConstValue): char {
+  return match (value) { ConstValue.Character(character) => character, _ => ' ' }
+}
+
+function readElements(value: ConstValue): Array<ConstValue> from value {
+  return match (value) { ConstValue.Items(elements) => elements, _ => [] }
+}
+
+function readParts(value: ConstValue): Array<ConstValue> from value {
+  // The fields of a struct or tuple, or the payload of a variant.
+  return match (value) {
+    ConstValue.Fields(values) => values
+    ConstValue.Variant(_, values) => values
+    _ => []
+  }
+}
+
+function readTag(value: ConstValue): int {
+  return match (value) { ConstValue.Variant(tag, _) => tag, _ => -1 }
+}
+
+function countValues(value: ConstValue): int {
+  return match (value) {
+    ConstValue.Items(elements) => Arrays.length(elements)
+    ConstValue.Entries(keys, _, _) => Arrays.length(keys)
+    _ => 0
+  }
+}
+
+// A map as three arrays: keys and values in insertion order, and the position of each key.
+struct MapParts {
+  keys: Array<ConstValue>
+  values: Array<ConstValue>
+  positions: Map<string, int>
+}
+
+function readMapParts(value: ConstValue): MapParts uses alloc {
+  if (value is ConstValue.Entries(keys, values, positions)) {
+    return copy(MapParts { keys: keys, values: values, positions: positions })
+  }
+  return MapParts { keys: [], values: [], positions: Map {} }
+}
+
+function takeAt(mutable items: Array<ConstValue>, index: int): ConstValue uses alloc {
+  // Moves the value out and leaves Unit, so the caller holds the only reference.
+  const taken = items[index]
+  items[index] = ConstValue.Unit
+  return copy(taken)
+}
+
+function takeElementsAt(
+  mutable items: Array<ConstValue>,
+  index: int,
+): Array<ConstValue> uses alloc {
+  const taken = takeAt(mutable items, index)
+  return copy(readElements(taken))
+}
+
+function takePartsAt(mutable items: Array<ConstValue>, index: int): Array<ConstValue> uses alloc {
+  const taken = takeAt(mutable items, index)
+  return copy(readParts(taken))
+}
+
+function takeMapAt(mutable items: Array<ConstValue>, index: int): MapParts uses alloc {
+  const taken = takeAt(mutable items, index)
+  return readMapParts(taken)
+}
+
+// One step of writing a key text: a value still to write, or text to add as it is.
+enum KeyWork {
+  Write(value: ConstValue)
+  Piece(text: string)
+}
+
+// A stack of work kept in an array: the entries below top are live.
+struct KeyWorkStack {
+  items: Array<KeyWork>
+  top: int
+}
+
+function pushKeyWork(mutable stack: KeyWorkStack, work: KeyWork) uses alloc {
+  if (stack.top < Arrays.length(stack.items)) {
+    stack.items[stack.top] = work
+  } else {
+    Arrays.push(mutable stack.items, work)
+  }
+  stack.top++
+}
+
+function pushKeyList(
+  mutable stack: KeyWorkStack,
+  open: string,
+  values: Array<ConstValue>,
+  close: string,
+) uses alloc {
+  // Pushed in reverse, so the open text comes off the stack first.
+  pushKeyWork(mutable stack, KeyWork.Piece(close))
+  for (let index = Arrays.length(values) - 1; index >= 0; index--) {
+    pushKeyWork(mutable stack, KeyWork.Write(copy(values[index])))
+    if (index > 0) {
+      pushKeyWork(mutable stack, KeyWork.Piece(","))
+    }
+  }
+  pushKeyWork(mutable stack, KeyWork.Piece(open))
+}
+
+export function writeKeyText(value: ConstValue): string uses alloc {
+  // A text that two keys share exactly when they are equal. Values nest without
+  // a limit, so the walk keeps its own stack instead of recursing.
+  let pieces: Array<string> = []
+  let stack = KeyWorkStack { items: [], top: 0 }
+  pushKeyWork(mutable stack, KeyWork.Write(copy(value)))
+  while (stack.top > 0) {
+    stack.top--
+    const work = copy(stack.items[stack.top])
+    stack.items[stack.top] = KeyWork.Piece("")
+    match (work) {
+      KeyWork.Piece(text) => Arrays.push(mutable pieces, text)
+      KeyWork.Write(item) => {
+        match (item) {
+          ConstValue.Items(elements) => pushKeyList(mutable stack, "[", elements, "]")
+          ConstValue.Fields(values) => pushKeyList(mutable stack, "{", values, "}")
+          ConstValue.Variant(tag, values) => pushKeyList(
+            mutable stack,
+            `${Int.toString(tag)}(`,
+            values,
+            ")",
+          )
+          ConstValue.Entries(keys, values, _) => {
+            pushKeyList(mutable stack, "|", values, ">")
+            pushKeyList(mutable stack, "<", keys, "")
+          }
+          _ => Arrays.push(mutable pieces, writeScalarKeyText(item))
+        }
+      }
+    }
+  }
+  return Str.join(pieces, "")
+}
+
+function writeScalarKeyText(value: ConstValue): string uses alloc {
+  return match (value) {
+    ConstValue.Integer(number) => `i${Int.toString(number)}`
+    ConstValue.Float(number) => `f${Float.toString(number)}`
+    ConstValue.Boolean(flag) => flag ? "t" : "n"
+    ConstValue.Character(character) => `c${Int.toString(Char.code(character))}`
+    ConstValue.Text(text) => `s${Int.toString(Str.length(text))}:${text}`
+    ConstValue.Span(
+      start,
+      end,
+      step,
+    ) => `r${Int.toString(start)},${Int.toString(end)},${Int.toString(step)}`
+    ConstValue.Builder(parts) => `b${Str.join(parts, "")}`
+    _ => "u"
+  }
+}
+
+// Two values still to compare.
+struct EqualPair {
+  left: ConstValue
+  right: ConstValue
+}
+
+struct EqualStack {
+  items: Array<EqualPair>
+  top: int
+}
+
+function pushEqualPair(mutable stack: EqualStack, left: ConstValue, right: ConstValue) uses alloc {
+  const pair = EqualPair { left: copy(left), right: copy(right) }
+  if (stack.top < Arrays.length(stack.items)) {
+    stack.items[stack.top] = pair
+  } else {
+    Arrays.push(mutable stack.items, pair)
+  }
+  stack.top++
+}
+
+function pushEqualParts(
+  mutable stack: EqualStack,
+  left: Array<ConstValue>,
+  right: Array<ConstValue>,
+): bool uses alloc {
+  // False when the lengths differ, so the values cannot be equal.
+  if (Arrays.length(left) != Arrays.length(right)) {
+    return false
+  }
+  for (const index of Ranges.between(0, Arrays.length(left))) {
+    pushEqualPair(mutable stack, left[index], right[index])
+  }
+  return true
+}
+
+export function areEqual(left: ConstValue, right: ConstValue): bool uses alloc {
+  // Structural equality, as the derived and built-in implementations compare,
+  // with its own stack, since values nest without a limit.
+  let stack = EqualStack { items: [], top: 0 }
+  pushEqualPair(mutable stack, left, right)
+  while (stack.top > 0) {
+    stack.top--
+    const pair = copy(stack.items[stack.top])
+    stack.items[stack.top] = EqualPair { left: ConstValue.Unit, right: ConstValue.Unit }
+    if (!comparePair(mutable stack, pair.left, pair.right)) {
+      return false
+    }
+  }
+  return true
+}
+
+function comparePair(
+  mutable stack: EqualStack,
+  left: ConstValue,
+  right: ConstValue,
+): bool uses alloc {
+  // Compares one level and pushes the parts still to compare.
+  return match (left) {
+    ConstValue.Float(number) => number == readFloat(right)
+    ConstValue.Items(elements) => pushEqualParts(mutable stack, elements, readElements(right))
+    ConstValue.Fields(values) => pushEqualParts(mutable stack, values, readParts(right))
+    ConstValue.Variant(tag, values) => {
+      if (tag != readTag(right)) {
+        return false
+      }
+      return pushEqualParts(mutable stack, values, readParts(right))
+    }
+    ConstValue.Entries(keys, values, _) => pushEqualEntries(mutable stack, keys, values, right)
+    _ => writeScalarKeyText(left) == writeScalarKeyText(right)
+  }
+}
+
+function pushEqualEntries(
+  mutable stack: EqualStack,
+  keys: Array<ConstValue>,
+  values: Array<ConstValue>,
+  right: ConstValue,
+): bool uses alloc {
+  // Two maps are equal when they hold the same keys with equal values, in any order.
+  if (right is ConstValue.Entries(otherKeys, otherValues, otherPositions)) {
+    if (Arrays.length(keys) != Arrays.length(otherKeys)) {
+      return false
+    }
+    for (const index of Ranges.between(0, Arrays.length(keys))) {
+      if (otherPositions[writeKeyText(keys[index])] is Some(position)) {
+        pushEqualPair(mutable stack, values[index], otherValues[position])
+      } else {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+// A value and how deep it sits, for measureValueDepth.
+struct DepthWork {
+  value: ConstValue
+  depth: int
+}
+
+function measureValueDepth(value: ConstValue): int uses alloc {
+  // The deepest level of nested arrays, fields, variants and maps, walked with its own stack.
+  let stack: Array<DepthWork> = [DepthWork { value: copy(value), depth: 1 }]
+  let top = 1
+  let deepest = 0
+  while (top > 0) {
+    top--
+    const work = copy(stack[top])
+    stack[top] = DepthWork { value: ConstValue.Unit, depth: 0 }
+    if (work.depth > deepest) {
+      deepest = work.depth
+    }
+    let parts: Array<ConstValue> = []
+    match (work.value) {
+      ConstValue.Items(elements) => {
+        parts = copy(elements)
+      }
+      ConstValue.Fields(values) => {
+        parts = copy(values)
+      }
+      ConstValue.Variant(_, values) => {
+        parts = copy(values)
+      }
+      ConstValue.Entries(keys, values, _) => {
+        parts = copy(keys)
+        for (const entry of Arrays.values(values)) {
+          Arrays.push(mutable parts, entry)
+        }
+      }
+      _ => {}
+    }
+    for (const part of Arrays.values(parts)) {
+      const next = DepthWork { value: copy(part), depth: work.depth + 1 }
+      if (top < Arrays.length(stack)) {
+        stack[top] = next
+      } else {
+        Arrays.push(mutable stack, next)
+      }
+      top++
+    }
+  }
+  return deepest
+}
+
+// Making values.
+
+function makeVariant(
+  checker: Checker,
+  enumType: Type,
+  name: string,
+  values: Array<ConstValue>,
+): ConstValue uses alloc {
+  return ConstValue.Variant(findVariant(checker, enumType, name), copy(values))
+}
+
+function makeOption(
+  checker: Checker,
+  optionType: Type,
+  found: Option<ConstValue>,
+): ConstValue uses alloc {
+  if (found is Some(value)) {
+    return makeVariant(checker, optionType, "Some", [value])
+  }
+  return makeVariant(checker, optionType, "None", [])
+}
+
+function wrapInteger(type: Type, value: int): int {
+  // Keeps a sized integer inside its type, as the C type does.
+  return match (type) {
+    Type.TI8 => ((value & 255) ^ 128) - 128
+    Type.TI16 => ((value & 65535) ^ 32768) - 32768
+    Type.TI32 => ((value & 4294967295) ^ 2147483648) - 2147483648
+    Type.TU8 => value & 255
+    Type.TU16 => value & 65535
+    Type.TU32 => value & 4294967295
+    _ => value
+  }
+}
+
+function roundFloat(type: Type, value: f64): f64 {
+  // An f32 result is rounded to f32, as C computes it in float.
+  if (type == Type.TF32) {
+    return Float.from(F32.from(value))
+  }
+  return value
+}
+
+function parseIntegerText(text: string): int uses alloc {
+  // A base prefix (0x, 0b, 0o, or a leading 0 for octal) and `_` between numerals.
+  let base = 10
+  let numerals = text
+  if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
+    base = 16
+    numerals = Str.sliceFrom(text, 2)
+  } else if (Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))) {
+    base = 2
+    numerals = Str.sliceFrom(text, 2)
+  } else if (Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))) {
+    base = 8
+    numerals = Str.sliceFrom(text, 2)
+  } else if (Str.length(text) >= 2 && Str.startsWith(text, "0")) {
+    base = 8
+    numerals = Str.sliceFrom(text, 1)
+  }
+  const joined = Str.replace(numerals, "_", "")
+  if (joined == "") {
+    return 0
+  }
+  if (Int.parse(joined, base) is Ok(value)) {
+    return value
+  }
+  // A u64 above int's maximum keeps its low 64 bits.
+  let wrapped = 0
+  for (const index of Ranges.between(0, Str.length(joined))) {
+    if (Int.parse(substring(joined, index, index + 1), base) is Ok(digit)) {
+      wrapped = wrapped * base + digit
+    }
+  }
+  return wrapped
+}
+
+function parseFloatText(text: string): Option<f64> uses alloc {
+  // A decimal literal whose digits fit in 53 bits and whose power of ten is at
+  // most 22 is one exact product or quotient, so it rounds once, like C does.
+  let mantissa = 0
+  let digits = 0
+  let exponent = 0
+  let index = 0
+  let afterPoint = false
+  const length = Str.length(text)
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 95) {
+      index++
+      continue
+    }
+    if (byte == 46) {
+      afterPoint = true
+      index++
+      continue
+    }
+    if (byte == 101 || byte == 69) {
+      break
+    }
+    const digit = byte - 48
+    if (mantissa == 0 && digit == 0) {
+      if (afterPoint) {
+        exponent--
+      }
+      index++
+      continue
+    }
+    if (digits >= 18) {
+      return None
+    }
+    mantissa = mantissa * 10 + digit
+    digits++
+    if (afterPoint) {
+      exponent--
+    }
+    index++
+  }
+  if (index < length) {
+    const written = Str.replace(Str.sliceFrom(text, index + 1), "_", "")
+    if (Int.parse(Str.replace(written, "+", ""), 10) is Ok(power)) {
+      exponent = exponent + power
+    } else {
+      return None
+    }
+  }
+  if (mantissa == 0) {
+    return Some(0.0)
+  }
+  // Trailing zeros move into the exponent.
+  while (mantissa % 10 == 0) {
+    mantissa = mantissa / 10
+    exponent++
+  }
+  // A large exponent may still leave an exact integer.
+  while (exponent > 22 && mantissa < 900719925474099) {
+    mantissa = mantissa * 10
+    exponent--
+  }
+  if (mantissa > 9007199254740992 || exponent > 22 || exponent < -22) {
+    return None
+  }
+  let power = 1.0
+  for (const _ of Ranges.upTo(exponent < 0 ? 0 - exponent : exponent)) {
+    power = power * 10.0
+  }
+  if (exponent < 0) {
+    return Some(Float.fromInt(mantissa) / power)
+  }
+  return Some(Float.fromInt(mantissa) * power)
+}
+
+function isExactDecimal(text: string): bool uses alloc {
+  // True when the literal's value is a double with no rounding: an integer
+  // below 2^53, or a fraction whose power of five divides the digits.
+  let mantissa = 0
+  let exponent = 0
+  let afterPoint = false
+  for (const index of Ranges.upTo(Str.length(text))) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 101 || byte == 69) {
+      const written = Str.replace(Str.replace(Str.sliceFrom(text, index + 1), "_", ""), "+", "")
+      if (Int.parse(written, 10) is Ok(power)) {
+        exponent = exponent + power
+      } else {
+        return false
+      }
+      break
+    }
+    if (byte == 46) {
+      afterPoint = true
+    } else if (byte >= 48 && byte <= 57) {
+      if (mantissa > 900719925474099) {
+        return false
+      }
+      mantissa = mantissa * 10 + byte - 48
+      if (afterPoint) {
+        exponent--
+      }
+    }
+  }
+  while (exponent > 0) {
+    if (mantissa > 900719925474099) {
+      return false
+    }
+    mantissa = mantissa * 10
+    exponent--
+  }
+  while (exponent < 0) {
+    if (mantissa % 5 != 0) {
+      return false
+    }
+    mantissa = mantissa / 5
+    exponent++
+  }
+  return mantissa <= 9007199254740992
+}
+
+function isSingleTie(value: f64): bool {
+  // True when the double lies exactly halfway between two f32 values, where a
+  // second rounding to f32 can differ from reading the decimal text as f32.
+  const rounded = Float.from(F32.from(value))
+  if (rounded == value) {
+    return false
+  }
+  const other = 2.0 * value - rounded
+  return other != rounded && Float.from(F32.from(other)) == other
+}
+
+// Constants.
+
+function readConstant(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  constIndex: int,
+): ConstValue uses alloc {
+  if (state.constResults[constIndex] is Some(known)) {
+    return copy(known)
+  }
+  if (state.constStates[constIndex] is Some(_)) {
+    stopEvaluation(
+      mutable state,
+      Pos { line: 0, column: 0 },
+      "E1057",
+      checker.consts[constIndex].name,
+    )
+    return ConstValue.Unit
+  }
+  const body = findBody(checker, `const|${Int.toString(constIndex)}`)
+  if (body < 0) {
+    stopEvaluation(
+      mutable state,
+      Pos { line: 0, column: 0 },
+      "E1052",
+      "a constant without a checked value",
+    )
+    return ConstValue.Unit
+  }
+  state.constStates[constIndex] = 1
+  // The value runs in the constant's own body, with no locals.
+  const savedBody = state.body
+  const savedBase = state.base
+  const savedFunction = state.functionIndex
+  const savedName = state.runningName
+  state.body = body
+  state.base = state.top
+  state.functionIndex = -1
+  state.runningName = checker.consts[constIndex].name
+  const value = evaluateExpression(
+    checker,
+    mutable state,
+    checker.consts[constIndex].declaration.value,
+  )
+  state.body = savedBody
+  state.base = savedBase
+  state.functionIndex = savedFunction
+  state.runningName = savedName
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  state.constResults[constIndex] = value
+  return value
+}
+
+// Expressions.
+
+function evaluateExpression(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  expression: Expr,
+): ConstValue uses alloc {
+  const pos = getExpressionPos(expression)
+  if (!countStep(mutable state, pos) || !enterNesting(mutable state, pos)) {
+    return ConstValue.Unit
+  }
+  const value = evaluateExpressionKind(checker, mutable state, expression)
+  state.nesting--
+  return value
+}
+
+function evaluateExpressionKind(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  expression: Expr,
+): ConstValue uses alloc {
+  return match (expression) {
+    Expr.IntLit(nodeId, _, text) => ConstValue.Integer(
+      wrapInteger(readType(checker, state, nodeId), parseIntegerText(text)),
+    )
+    Expr.FloatLit(nodeId, pos, text) => evaluateFloatLiteral(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      text,
+    )
+    Expr.StringLit(_, _, value, _) => ConstValue.Text(value)
+    Expr.CharLit(_, _, value) => ConstValue.Character(Str.charAt(value, 0))
+    Expr.BoolLit(_, _, value) => ConstValue.Boolean(value)
+    Expr.TemplateLit(_, pos, parts) => evaluateTemplate(checker, mutable state, pos, parts)
+    Expr.Ident(nodeId, pos, name) => evaluateName(checker, mutable state, nodeId, pos, name)
+    Expr.FieldExpr(nodeId, pos, target, name) => evaluateField(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      target,
+      name,
+    )
+    Expr.IsExpr(_, _, subject, pattern) => evaluateIs(checker, mutable state, subject, pattern)
+    Expr.IndexExpr(nodeId, pos, target, index) => evaluateIndex(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      target,
+      index,
+    )
+    Expr.MapLit(_, pos, _, keys, values) => evaluateMapLiteral(
+      checker,
+      mutable state,
+      pos,
+      keys,
+      values,
+    )
+    Expr.CallExpr(nodeId, pos, callee, _, arguments) => evaluateCall(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      callee,
+      arguments,
+    )
+    Expr.UnaryExpr(nodeId, pos, operator, operand) => evaluateUnary(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      operator,
+      operand,
+    )
+    Expr.BinaryExpr(_, pos, operator, left, right) => evaluateBinary(
+      checker,
+      mutable state,
+      pos,
+      operator,
+      left,
+      right,
+    )
+    Expr.StructLit(nodeId, pos, _, _, fields, spread) => evaluateStructLiteral(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      fields,
+      spread,
+    )
+    Expr.ArrayLit(_, pos, elements, isTuple) => evaluateArrayLiteral(
+      checker,
+      mutable state,
+      pos,
+      elements,
+      isTuple,
+    )
+    Expr.MatchExpr(_, pos, subject, arms) => evaluateMatchValue(
+      checker,
+      mutable state,
+      pos,
+      subject,
+      arms,
+    )
+    Expr.BlockExpr(_, pos, block) => evaluateBlockValue(checker, mutable state, pos, block)
+    Expr.ArrowExpr(_, pos, _, _, _, _) => reportUnsupported(mutable state, pos, "an arrow function")
+  }
+}
+
+function evaluateHeld(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  expression: Expr,
+): ConstValue uses alloc {
+  // A value read from a place and stored somewhere else is held twice, and the
+  // first write to either copies it, so the store counts as a copy.
+  const value = evaluateExpression(checker, mutable state, expression)
+  const isPlaceRead = match (expression) {
+    Expr.Ident(_, _, _) | Expr.FieldExpr(_, _, _, _) | Expr.IndexExpr(_, _, _, _) => true
+    _ => false
+  }
+  if (isPlaceRead && !state.failed) {
+    const _ = charge(
+      mutable state,
+      getExpressionPos(expression),
+      measureCopy(value),
+      "a shared value",
+    )
+  }
+  return value
+}
+
+function measureCopy(value: ConstValue): int {
+  // The bytes a copy on write of the value's outer level takes.
+  return match (value) {
+    ConstValue.Items(elements) => 16 + 8 * Arrays.length(elements)
+    ConstValue.Entries(keys, _, _) => 16 + 16 * Arrays.length(keys)
+    ConstValue.Fields(values) => 8 * Arrays.length(values)
+    ConstValue.Variant(_, values) => Arrays.length(values) == 0 ? 0 : 16 + 8 * Arrays.length(values)
+    ConstValue.Builder(parts) => 16 + 8 * Arrays.length(parts)
+    _ => 0
+  }
+}
+
+function reportUnsupported(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  what: string,
+): ConstValue uses alloc {
+  stopEvaluation(mutable state, pos, "E1052", `it uses ${what}`)
+  return ConstValue.Unit
+}
+
+function evaluateFloatLiteral(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  text: string,
+): ConstValue uses alloc {
+  if (parseFloatText(text) is Some(value)) {
+    const type = readType(checker, state, nodeId)
+    // Reading as f64 then rounding to f32 is right unless the f64 was rounded and is a tie.
+    if (type == Type.TF32 && isSingleTie(value) && !isExactDecimal(text)) {
+      return reportUnsupported(
+        mutable state,
+        pos,
+        `the f32 literal ${text}, which the compiler cannot round to f32 the way C reads it`,
+      )
+    }
+    return ConstValue.Float(roundFloat(type, value))
+  }
+  return reportUnsupported(
+    mutable state,
+    pos,
+    `the float literal ${text}, which has more digits or a larger exponent than the compiler reads exactly`,
+  )
+}
+
+function evaluateTemplate(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  parts: Array<Expr>,
+): ConstValue uses alloc {
+  let texts: Array<string> = []
+  let length = 0
+  for (const part of Arrays.values(parts)) {
+    const value = evaluateExpression(checker, mutable state, part)
+    if (state.failed) {
+      return ConstValue.Unit
+    }
+    const text = readText(value)
+    length = length + Str.length(text)
+    Arrays.push(mutable texts, text)
+  }
+  if (!charge(mutable state, pos, countTextBytes(length), "a template string")) {
+    return ConstValue.Unit
+  }
+  return ConstValue.Text(Str.join(texts, ""))
+}
+
+function evaluateName(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+): ConstValue uses alloc {
+  return match (readRef(checker, state, nodeId)) {
+    Ref.Local(index) => copy(state.slots[state.base + index])
+    Ref.Const(constIndex) => readConstant(checker, mutable state, constIndex)
+    Ref.Constructor(_, variant) => ConstValue.Variant(variant, [])
+    Ref.ConstantParameter(value, false) => ConstValue.Integer(value)
+    _ => reportUnsupported(mutable state, pos, `${name} as a value`)
+  }
+}
+
+function evaluateField(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  target: Expr,
+  name: string,
+): ConstValue uses alloc {
+  match (readRef(checker, state, nodeId)) {
+    Ref.Const(constIndex) => {
+      return readConstant(checker, mutable state, constIndex)
+    }
+    Ref.Constructor(_, variant) => {
+      return ConstValue.Variant(variant, [])
+    }
+    Ref.Narrow(enumIndex, variantIndex) => {
+      const value = evaluateExpression(checker, mutable state, target)
+      if (state.failed) {
+        return ConstValue.Unit
+      }
+      const fields = checker.enums[enumIndex].variants[variantIndex].fields
+      for (const index of Ranges.between(0, Arrays.length(fields))) {
+        if (fields[index].name == name) {
+          return readParts(value)[index]
+        }
+      }
+      return reportUnsupported(mutable state, pos, `the field ${name}`)
+    }
+    _ => {}
+  }
+  const targetType = copy(readType(checker, state, getExpressionId(target)))
+  const fieldIndex = findStructField(checker, targetType, name)
+  if (fieldIndex < 0) {
+    return reportUnsupported(mutable state, pos, `the field ${name}`)
+  }
+  const value = evaluateExpression(checker, mutable state, target)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  return readParts(value)[fieldIndex]
+}
+
+function evaluateIs(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  subject: Expr,
+  pattern: Pattern,
+): ConstValue uses alloc {
+  const subjectType = copy(readType(checker, state, getExpressionId(subject)))
+  const value = evaluateExpression(checker, mutable state, subject)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  return ConstValue.Boolean(matchPattern(checker, mutable state, pattern, value, subjectType))
+}
+
+function evaluateIndex(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  target: Expr,
+  index: Expr,
+): ConstValue uses alloc {
+  const targetType = copy(
+    findUnderlying(checker, readType(checker, state, getExpressionId(target))),
+  )
+  const value = evaluateExpression(checker, mutable state, target)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  const key = evaluateExpression(checker, mutable state, index)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  if (targetType is Type.TMap(_, _)) {
+    const resultType = copy(readType(checker, state, nodeId))
+    if (value is ConstValue.Entries(_, values, positions)) {
+      if (positions[writeKeyText(key)] is Some(position)) {
+        return makeOption(checker, resultType, Some(values[position]))
+      }
+    }
+    return makeOption(checker, resultType, None)
+  }
+  if (targetType is Type.TStruct(_)) {
+    return readParts(value)[readInteger(key)]
+  }
+  const elements = readElements(value)
+  const position = readInteger(key)
+  if (position < 0 || position >= Arrays.length(elements)) {
+    stopEvaluation(
+      mutable state,
+      pos,
+      "E1053",
+      `index ${Int.toString(position)} out of range for length ${Int.toString(Arrays.length(elements))}`,
+    )
+    return ConstValue.Unit
+  }
+  return elements[position]
+}
+
+function evaluateMapLiteral(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  keys: Array<Expr>,
+  values: Array<Expr>,
+): ConstValue uses alloc {
+  if (!charge(mutable state, pos, 16 + 16 * Arrays.length(keys), "a map literal")) {
+    return ConstValue.Unit
+  }
+  let parts = MapParts { keys: [], values: [], positions: Map {} }
+  for (const index of Ranges.between(0, Arrays.length(keys))) {
+    const key = evaluateHeld(checker, mutable state, keys[index])
+    if (state.failed) {
+      return ConstValue.Unit
+    }
+    const value = evaluateHeld(checker, mutable state, values[index])
+    if (state.failed) {
+      return ConstValue.Unit
+    }
+    setMapEntry(mutable parts, key, value)
+  }
+  return ConstValue.Entries(parts.keys, parts.values, parts.positions)
+}
+
+function setMapEntry(mutable parts: MapParts, key: ConstValue, value: ConstValue) uses alloc {
+  // An existing key keeps its place.
+  const keyText = writeKeyText(key)
+  if (parts.positions[keyText] is Some(position)) {
+    parts.values[position] = value
+    return
+  }
+  parts.positions[keyText] = Arrays.length(parts.keys)
+  Arrays.push(mutable parts.keys, key)
+  Arrays.push(mutable parts.values, value)
+}
+
+function removeMapEntry(parts: MapParts, key: ConstValue): MapParts uses alloc {
+  // The other entries keep their order.
+  const keyText = writeKeyText(key)
+  let rebuilt = MapParts { keys: [], values: [], positions: Map {} }
+  for (const index of Ranges.between(0, Arrays.length(parts.keys))) {
+    if (writeKeyText(parts.keys[index]) != keyText) {
+      setMapEntry(mutable rebuilt, copy(parts.keys[index]), copy(parts.values[index]))
+    }
+  }
+  return rebuilt
+}
+
+function evaluateUnary(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  operator: string,
+  operand: Expr,
+): ConstValue uses alloc {
+  const operandType = copy(findUnderlying(checker, readType(checker, state, nodeId)))
+  const value = evaluateExpression(checker, mutable state, operand)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  if (operator == "!") {
+    return ConstValue.Boolean(!readBool(value))
+  }
+  if (value is ConstValue.Float(number)) {
+    if (operator == "-") {
+      return ConstValue.Float(-number)
+    }
+  }
+  const number = readInteger(value)
+  if (operator == "-") {
+    return ConstValue.Integer(wrapInteger(operandType, 0 - number))
+  }
+  if (operator == "~") {
+    return ConstValue.Integer(wrapInteger(operandType, ~number))
+  }
+  return reportUnsupported(mutable state, pos, `the operator ${operator}`)
+}
+
+function evaluateBinary(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  operator: string,
+  left: Expr,
+  right: Expr,
+): ConstValue uses alloc {
+  // && and || evaluate the right side only when needed.
+  if (operator == "&&" || operator == "||") {
+    const first = evaluateExpression(checker, mutable state, left)
+    if (state.failed) {
+      return ConstValue.Unit
+    }
+    if (readBool(first) == (operator == "||")) {
+      return first
+    }
+    return evaluateExpression(checker, mutable state, right)
+  }
+  const operandType = copy(findUnderlying(checker, readType(checker, state, getExpressionId(left))))
+  const leftValue = evaluateExpression(checker, mutable state, left)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  const rightValue = evaluateExpression(checker, mutable state, right)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  if (operator == "==") {
+    return ConstValue.Boolean(areEqual(leftValue, rightValue))
+  }
+  if (operator == "!=") {
+    return ConstValue.Boolean(!areEqual(leftValue, rightValue))
+  }
+  return match (leftValue) {
+    ConstValue.Integer(number) => computeInteger(
+      mutable state,
+      pos,
+      operator,
+      operandType,
+      number,
+      readInteger(rightValue),
+    )
+    ConstValue.Float(number) => computeFloat(operator, operandType, number, readFloat(rightValue))
+    ConstValue.Text(text) => ConstValue.Boolean(compareTexts(operator, text, readText(rightValue)))
+    ConstValue.Character(character) => ConstValue.Boolean(
+      compareIntegers(operator, Char.code(character), Char.code(readCharacter(rightValue))),
+    )
+    _ => reportUnsupported(mutable state, pos, `the operator ${operator} on this type`)
+  }
+}
+
+function compareIntegers(operator: string, left: int, right: int): bool {
+  if (operator == "<") {
+    return left < right
+  }
+  if (operator == "<=") {
+    return left <= right
+  }
+  if (operator == ">") {
+    return left > right
+  }
+  return left >= right
+}
+
+function compareTexts(operator: string, left: string, right: string): bool {
+  if (operator == "<") {
+    return left < right
+  }
+  if (operator == "<=") {
+    return left <= right
+  }
+  if (operator == ">") {
+    return left > right
+  }
+  return left >= right
+}
+
+function computeInteger(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  operator: string,
+  type: Type,
+  left: int,
+  right: int,
+): ConstValue uses alloc {
+  const isComparison = operator == "<" || operator == "<=" || operator == ">" || operator == ">="
+  // u64 compares, divides and shifts right without a sign.
+  if (type == Type.TU64) {
+    if (isComparison) {
+      return ConstValue.Boolean(compareIntegers(operator, left ^ INT_MIN, right ^ INT_MIN))
+    }
+    if (operator == "/" || operator == "%" || operator == ">>") {
+      if (right == 0 && operator != ">>") {
+        stopEvaluation(mutable state, pos, "E1053", "division by zero")
+        return ConstValue.Unit
+      }
+      return ConstValue.Integer(computeUnsigned(operator, left, right))
+    }
+  }
+  if (isComparison) {
+    return ConstValue.Boolean(compareIntegers(operator, left, right))
+  }
+  let result = 0
+  if (operator == "+") {
+    result = left + right
+  } else if (operator == "-") {
+    result = left - right
+  } else if (operator == "*") {
+    result = left * right
+  } else if (operator == "/" || operator == "%") {
+    if (right == 0) {
+      stopEvaluation(mutable state, pos, "E1053", "division by zero")
+      return ConstValue.Unit
+    }
+    result = divideIntegers(operator, left, right)
+  } else if (operator == "&") {
+    result = left & right
+  } else if (operator == "|") {
+    result = left | right
+  } else if (operator == "^") {
+    result = left ^ right
+  } else if (operator == "<<" || operator == ">>") {
+    // The checker proves the amount is inside the type's width.
+    if (right < 0 || right > 63) {
+      stopEvaluation(mutable state, pos, "E1053", `shift by ${Int.toString(right)}`)
+      return ConstValue.Unit
+    }
+    result = shiftInteger(operator, left, right)
+  } else {
+    stopEvaluation(mutable state, pos, "E1052", `the operator ${operator}`)
+    return ConstValue.Unit
+  }
+  return ConstValue.Integer(wrapInteger(type, result))
+}
+
+function divideIntegers(operator: string, left: int, right: int): int {
+  if (right != 0) {
+    return operator == "/" ? left / right : left % right
+  }
+  return 0
+}
+
+function shiftInteger(operator: string, left: int, right: int): int {
+  if (right >= 0 && right <= 63) {
+    return operator == "<<" ? left << right : left >> right
+  }
+  return 0
+}
+
+function computeUnsigned(operator: string, left: int, right: int): int {
+  const first = U64.wrap(left)
+  const second = U64.wrap(right)
+  if (operator == ">>") {
+    if (second >= 0 && second <= 63) {
+      return Int.wrap(first >> second)
+    }
+    return 0
+  }
+  if (second != 0) {
+    return Int.wrap(operator == "/" ? first / second : first % second)
+  }
+  return 0
+}
+
+function computeFloat(operator: string, type: Type, left: f64, right: f64): ConstValue uses alloc {
+  if (operator == "+") {
+    return ConstValue.Float(roundFloat(type, left + right))
+  }
+  if (operator == "-") {
+    return ConstValue.Float(roundFloat(type, left - right))
+  }
+  if (operator == "*") {
+    return ConstValue.Float(roundFloat(type, left * right))
+  }
+  if (operator == "/") {
+    return ConstValue.Float(roundFloat(type, left / right))
+  }
+  if (operator == "%") {
+    return ConstValue.Float(roundFloat(type, left % right))
+  }
+  if (operator == "<") {
+    return ConstValue.Boolean(left < right)
+  }
+  if (operator == "<=") {
+    return ConstValue.Boolean(left <= right)
+  }
+  if (operator == ">") {
+    return ConstValue.Boolean(left > right)
+  }
+  return ConstValue.Boolean(left >= right)
+}
+
+function evaluateStructLiteral(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  fields: Array<FieldInit>,
+  spread: Option<Expr>,
+): ConstValue uses alloc {
+  const structType = copy(findUnderlying(checker, readType(checker, state, nodeId)))
+  if (structType is Type.TStruct(structIndex)) {
+    const declared = copy(checker.structs[structIndex].fields)
+    if (!charge(mutable state, pos, 8 * Arrays.length(declared), "a struct")) {
+      return ConstValue.Unit
+    }
+    let values: Array<ConstValue> = []
+    let given: Array<bool> = []
+    for (const _ of Arrays.values(declared)) {
+      Arrays.push(mutable values, ConstValue.Unit)
+      Arrays.push(mutable given, false)
+    }
+    if (spread is Some(base)) {
+      const baseValue = evaluateExpression(checker, mutable state, base)
+      if (state.failed) {
+        return ConstValue.Unit
+      }
+      values = copy(readParts(baseValue))
+      for (const index of Ranges.between(0, Arrays.length(given))) {
+        given[index] = true
+      }
+    }
+    // The written fields in source order, then the defaults.
+    for (const field of Arrays.values(fields)) {
+      const fieldIndex = findStructField(checker, structType, field.name)
+      const value = evaluateHeld(checker, mutable state, field.value)
+      if (state.failed || fieldIndex < 0) {
+        return ConstValue.Unit
+      }
+      values[fieldIndex] = value
+      given[fieldIndex] = true
+    }
+    for (const index of Ranges.between(0, Arrays.length(declared))) {
+      if (given[index]) {
+        continue
+      }
+      if (declared[index].default is Some(defaultValue)) {
+        const value = evaluateDefault(
+          checker,
+          mutable state,
+          structIndex,
+          declared[index].name,
+          defaultValue,
+        )
+        if (state.failed) {
+          return ConstValue.Unit
+        }
+        values[index] = value
+      }
+    }
+    return ConstValue.Fields(values)
+  }
+  return reportUnsupported(mutable state, pos, "this struct literal")
+}
+
+function evaluateDefault(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  structIndex: int,
+  field: string,
+  defaultValue: Expr,
+): ConstValue uses alloc {
+  // A default runs in its own body, keyed by the declaration's module and name.
+  const info = checker.structs[structIndex]
+  let qualified = info.name
+  if (info.module != "") {
+    qualified = `${info.module}.${info.name}`
+  }
+  const body = findBody(checker, `default|${qualified}|${field}`)
+  if (body < 0) {
+    return reportUnsupported(
+      mutable state,
+      getExpressionPos(defaultValue),
+      `the default of field ${field}`,
+    )
+  }
+  const savedBody = state.body
+  state.body = body
+  const value = evaluateExpression(checker, mutable state, defaultValue)
+  state.body = savedBody
+  return value
+}
+
+function evaluateArrayLiteral(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  elements: Array<Expr>,
+  isTuple: bool,
+): ConstValue uses alloc {
+  if (!charge(mutable state, pos, 16 + 8 * Arrays.length(elements), "an array literal")) {
+    return ConstValue.Unit
+  }
+  let values: Array<ConstValue> = []
+  for (const element of Arrays.values(elements)) {
+    const value = evaluateHeld(checker, mutable state, element)
+    if (state.failed) {
+      return ConstValue.Unit
+    }
+    Arrays.push(mutable values, value)
+  }
+  if (isTuple) {
+    return ConstValue.Fields(values)
+  }
+  return ConstValue.Items(values)
+}
+
+function evaluateBlockValue(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  block: Block,
+): ConstValue uses alloc {
+  // The value of a block expression comes from its `return`.
+  const flow = executeBlock(checker, mutable state, block)
+  if (flow == Flow.Returning) {
+    const value = state.returnValue
+    state.returnValue = ConstValue.Unit
+    return copy(value)
+  }
+  if (!state.failed) {
+    stopEvaluation(mutable state, pos, "E1052", "a block expression that ends without a value")
+  }
+  return ConstValue.Unit
+}
+
+function evaluateMatchValue(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  subject: Expr,
+  arms: Array<MatchArm>,
+): ConstValue uses alloc {
+  const arm = chooseArm(checker, mutable state, pos, subject, arms)
+  if (arm < 0) {
+    return ConstValue.Unit
+  }
+  if (arms[arm].body is Some(value)) {
+    return evaluateExpression(checker, mutable state, value)
+  }
+  if (arms[arm].block is Some(block)) {
+    return evaluateBlockValue(checker, mutable state, arms[arm].pos, block)
+  }
+  return ConstValue.Unit
+}
+
+function chooseArm(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  subject: Expr,
+  arms: Array<MatchArm>,
+): int uses alloc {
+  // The index of the first arm whose pattern and guard hold, or -1.
+  const subjectType = copy(readType(checker, state, getExpressionId(subject)))
+  const value = evaluateExpression(checker, mutable state, subject)
+  if (state.failed) {
+    return -1
+  }
+  for (const index of Ranges.between(0, Arrays.length(arms))) {
+    // A guard covers each alternative of a list with that alternative's bindings.
+    let alternatives = [arms[index].pattern]
+    if (arms[index].pattern is Pattern.PatOr(_, _, listed)) {
+      alternatives = copy(listed)
+    }
+    for (const alternative of alternatives) {
+      if (!matchPattern(checker, mutable state, alternative, value, subjectType)) {
+        continue
+      }
+      if (arms[index].guard is Some(guard)) {
+        const passed = evaluateExpression(checker, mutable state, guard)
+        if (state.failed) {
+          return -1
+        }
+        if (!readBool(passed)) {
+          continue
+        }
+      }
+      return index
+    }
+  }
+  stopEvaluation(mutable state, pos, "E1053", "no arm of the match fits the value")
+  return -1
+}
+
+// Patterns.
+
+function bindLocal(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  value: ConstValue,
+) uses alloc {
+  const localIndex = findDeclaredLocal(checker, state, nodeId)
+  if (localIndex >= 0) {
+    state.slots[state.base + localIndex] = value
+  }
+}
+
+function matchPattern(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pattern: Pattern,
+  value: ConstValue,
+  type: Type,
+): bool uses alloc {
+  return match (pattern) {
+    Pattern.PatWildcard(_, _) => true
+    Pattern.PatName(nodeId, _, _) => {
+      if (readRef(checker, state, nodeId) is Ref.Constructor(_, variant)) {
+        return readTag(value) == variant
+      }
+      bindLocal(checker, mutable state, nodeId, value)
+      return true
+    }
+    Pattern.PatCtor(nodeId, _, _, _, arguments, _) => matchConstructor(
+      checker,
+      mutable state,
+      nodeId,
+      arguments,
+      value,
+      type,
+    )
+    Pattern.PatStruct(_, _, fields) => {
+      const parts = readParts(value)
+      for (const field of Arrays.values(fields)) {
+        const fieldIndex = findStructField(checker, type, field.name)
+        if (fieldIndex < 0) {
+          return false
+        }
+        const fieldType = copy(findFieldType(checker, type, fieldIndex))
+        if (!matchPattern(checker, mutable state, field.pattern, parts[fieldIndex], fieldType)) {
+          return false
+        }
+      }
+      return true
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      const parts = readParts(value)
+      for (const index of Ranges.between(0, Arrays.length(arguments))) {
+        const fieldType = copy(findFieldType(checker, type, index))
+        if (!matchPattern(checker, mutable state, arguments[index], parts[index], fieldType)) {
+          return false
+        }
+      }
+      return true
+    }
+    Pattern.PatArray(_, _, elements, rest) => matchArray(
+      checker,
+      mutable state,
+      elements,
+      rest,
+      value,
+      type,
+    )
+    Pattern.PatLit(_, _, literal) => {
+      const expected = evaluateExpression(checker, mutable state, literal)
+      return areEqual(value, expected)
+    }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        if (matchPattern(checker, mutable state, alternative, value, type)) {
+          return true
+        }
+      }
+      return false
+    }
+    Pattern.PatCompare(_, _, _, _) => true
+  }
+}
+
+function matchConstructor(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  arguments: Array<Pattern>,
+  value: ConstValue,
+  type: Type,
+): bool uses alloc {
+  if (readRef(checker, state, nodeId) is Ref.Constructor(_, variant)) {
+    if (readTag(value) != variant) {
+      return false
+    }
+    const parts = readParts(value)
+    for (const index of Ranges.between(0, Arrays.length(arguments))) {
+      const fieldType = copy(findVariantFieldType(checker, type, variant, index))
+      if (!matchPattern(checker, mutable state, arguments[index], parts[index], fieldType)) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function matchArray(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  elements: Array<Pattern>,
+  rest: Option<Pattern>,
+  value: ConstValue,
+  type: Type,
+): bool uses alloc {
+  const items = readElements(value)
+  const count = Arrays.length(elements)
+  if (rest is None && Arrays.length(items) != count) {
+    return false
+  }
+  if (Arrays.length(items) < count) {
+    return false
+  }
+  const elementType = copy(findElementType(checker, type))
+  for (const index of Ranges.between(0, count)) {
+    if (!matchPattern(checker, mutable state, elements[index], items[index], elementType)) {
+      return false
+    }
+  }
+  if (rest is Some(Pattern.PatName(restId, _, _))) {
+    let restItems: Array<ConstValue> = []
+    for (const index of Ranges.between(count, Arrays.length(items))) {
+      Arrays.push(mutable restItems, items[index])
+    }
+    bindLocal(checker, mutable state, restId, ConstValue.Items(restItems))
+  }
+  return true
+}
+
+// Places: the targets of writes and `mutable` arguments.
+
+function resolvePlace(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  expression: Expr,
+): Place uses alloc {
+  match (expression) {
+    Expr.Ident(nodeId, pos, _) => {
+      if (readRef(checker, state, nodeId) is Ref.Local(index)) {
+        return Place { slot: state.base + index, steps: [] }
+      }
+      stopEvaluation(mutable state, pos, "E1052", "a write to something that is not a local")
+    }
+    Expr.FieldExpr(_, pos, target, name) => {
+      const targetType = copy(readType(checker, state, getExpressionId(target)))
+      let place = resolvePlace(checker, mutable state, target)
+      const fieldIndex = findStructField(checker, targetType, name)
+      if (fieldIndex < 0) {
+        stopEvaluation(mutable state, pos, "E1052", `a write to the field ${name}`)
+      }
+      Arrays.push(mutable place.steps, PlaceStep.AtField(fieldIndex))
+      return place
+    }
+    Expr.IndexExpr(_, pos, target, index) => {
+      const targetType = copy(
+        findUnderlying(checker, readType(checker, state, getExpressionId(target))),
+      )
+      let place = resolvePlace(checker, mutable state, target)
+      const key = evaluateExpression(checker, mutable state, index)
+      if (state.failed) {
+        return place
+      }
+      if (targetType is Type.TMap(_, _)) {
+        Arrays.push(mutable place.steps, PlaceStep.AtKey(key))
+        return place
+      }
+      if (targetType is Type.TStruct(_)) {
+        Arrays.push(mutable place.steps, PlaceStep.AtField(readInteger(key)))
+        return place
+      }
+      const position = readInteger(key)
+      const length = measurePlace(state, place)
+      if (position < 0 || position >= length) {
+        stopEvaluation(
+          mutable state,
+          pos,
+          "E1053",
+          `index ${Int.toString(position)} out of range for length ${Int.toString(length)}`,
+        )
+        return place
+      }
+      Arrays.push(mutable place.steps, PlaceStep.AtElement(position))
+      return place
+    }
+    _ => stopEvaluation(
+      mutable state,
+      getExpressionPos(expression),
+      "E1052",
+      "a write to this expression",
+    )
+  }
+  return Place { slot: 0, steps: [] }
+}
+
+function measurePlace(state: ConstEvaluator, place: Place): int uses alloc {
+  return countValues(readPlace(state, place))
+}
+
+function readPlace(state: ConstEvaluator, place: Place): ConstValue uses alloc {
+  let value = state.slots[place.slot]
+  for (const step of Arrays.values(place.steps)) {
+    value = match (step) {
+      PlaceStep.AtElement(index) => readElements(value)[index]
+      PlaceStep.AtField(index) => readParts(value)[index]
+      PlaceStep.AtKey(key) => readMapValue(value, key)
+    }
+  }
+  return copy(value)
+}
+
+function readMapValue(map: ConstValue, key: ConstValue): ConstValue uses alloc {
+  if (map is ConstValue.Entries(_, values, positions)) {
+    if (positions[writeKeyText(key)] is Some(position)) {
+      return copy(values[position])
+    }
+  }
+  return ConstValue.Unit
+}
+
+function storeIntoArray(
+  mutable items: Array<ConstValue>,
+  index: int,
+  steps: Array<PlaceStep>,
+  depth: int,
+  value: ConstValue,
+) uses alloc {
+  if (depth == Arrays.length(steps)) {
+    items[index] = value
+    return
+  }
+  match (steps[depth]) {
+    PlaceStep.AtElement(position) => {
+      let elements = takeElementsAt(mutable items, index)
+      storeIntoArray(mutable elements, position, steps, depth + 1, value)
+      items[index] = ConstValue.Items(elements)
+    }
+    PlaceStep.AtField(position) => {
+      let parts = takePartsAt(mutable items, index)
+      storeIntoArray(mutable parts, position, steps, depth + 1, value)
+      items[index] = ConstValue.Fields(parts)
+    }
+    PlaceStep.AtKey(key) => {
+      // A map key is always the last step: `map[key] = value`.
+      let map = takeMapAt(mutable items, index)
+      setMapEntry(mutable map, key, value)
+      items[index] = ConstValue.Entries(map.keys, map.values, map.positions)
+    }
+  }
+}
+
+function takeFromArray(
+  mutable items: Array<ConstValue>,
+  index: int,
+  steps: Array<PlaceStep>,
+  depth: int,
+): ConstValue uses alloc {
+  // Moves the value at the place out and leaves Unit behind.
+  if (depth == Arrays.length(steps)) {
+    return takeAt(mutable items, index)
+  }
+  let taken = ConstValue.Unit
+  match (steps[depth]) {
+    PlaceStep.AtElement(position) => {
+      let elements = takeElementsAt(mutable items, index)
+      taken = takeFromArray(mutable elements, position, steps, depth + 1)
+      items[index] = ConstValue.Items(elements)
+    }
+    PlaceStep.AtField(position) => {
+      let parts = takePartsAt(mutable items, index)
+      taken = takeFromArray(mutable parts, position, steps, depth + 1)
+      items[index] = ConstValue.Fields(parts)
+    }
+    PlaceStep.AtKey(_) => {}
+  }
+  return taken
+}
+
+function writePlace(mutable state: ConstEvaluator, place: Place, value: ConstValue) uses alloc {
+  storeIntoArray(mutable state.slots, place.slot, place.steps, 0, value)
+}
+
+function takePlace(mutable state: ConstEvaluator, place: Place): ConstValue uses alloc {
+  return takeFromArray(mutable state.slots, place.slot, place.steps, 0)
+}
+
+function takeElementsFromPlace(
+  mutable state: ConstEvaluator,
+  place: Place,
+): Array<ConstValue> uses alloc {
+  const taken = takePlace(mutable state, place)
+  return copy(readElements(taken))
+}
+
+function takeMapFromPlace(mutable state: ConstEvaluator, place: Place): MapParts uses alloc {
+  const taken = takePlace(mutable state, place)
+  return readMapParts(taken)
+}
+
+function takeBuilderFromPlace(
+  mutable state: ConstEvaluator,
+  place: Place,
+): Array<string> uses alloc {
+  const taken = takePlace(mutable state, place)
+  if (taken is ConstValue.Builder(parts)) {
+    return copy(parts)
+  }
+  return []
+}
+
+// Statements.
+
+function executeBlock(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  block: Block,
+): Flow uses alloc {
+  if (!enterNesting(mutable state, block.pos)) {
+    return Flow.Failing
+  }
+  let result = Flow.Normal
+  for (const statement of Arrays.values(block.statements)) {
+    const flow = executeStatement(checker, mutable state, statement)
+    if (flow != Flow.Normal) {
+      result = flow
+      break
+    }
+  }
+  state.nesting--
+  return result
+}
+
+function enterNesting(mutable state: ConstEvaluator, pos: Pos): bool uses alloc {
+  // The evaluator recurses on the compiler's C stack: about 600 bytes per level
+  // in a release build, so the limit keeps it under half of an 8 MiB stack.
+  state.nesting++
+  if (state.nesting > NESTING_LIMIT) {
+    stopEvaluation(mutable state, pos, "E1056", "nesting")
+    return false
+  }
+  return true
+}
+
+function makeFailingFlow(state: ConstEvaluator): Flow {
+  return state.failed ? Flow.Failing : Flow.Normal
+}
+
+function executeStatement(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  statement: Stmt,
+): Flow uses alloc {
+  // A loop takes more C stack than other statements, so it counts as a level of its own.
+  const loopPos = findLoopPos(statement)
+  if (loopPos is Some(pos)) {
+    if (!enterNesting(mutable state, pos)) {
+      return Flow.Failing
+    }
+  }
+  const flow = executeStatementKind(checker, mutable state, statement)
+  if (loopPos is Some(_)) {
+    state.nesting--
+  }
+  return flow
+}
+
+function findLoopPos(statement: Stmt): Option<Pos> from statement {
+  return match (statement) {
+    Stmt.WhileStmt(pos, _, _, _) => Some(pos)
+    Stmt.CForStmt(pos, _, _, _, _, _) => Some(pos)
+    Stmt.ForStmt(_, pos, _, _, _, _, _) => Some(pos)
+    _ => None
+  }
+}
+
+function executeStatementKind(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  statement: Stmt,
+): Flow uses alloc {
+  return match (statement) {
+    Stmt.BlockStmt(block) => executeBlock(checker, mutable state, block)
+    Stmt.VarStmt(nodeId, pos, _, _, pattern, _, value) => executeVar(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      pattern,
+      value,
+    )
+    Stmt.AssignStmt(pos, target, value) => executeAssign(checker, mutable state, pos, target, value)
+    Stmt.CompoundAssignStmt(pos, target, operator, value) => executeCompound(
+      checker,
+      mutable state,
+      pos,
+      target,
+      operator,
+      value,
+    )
+    Stmt.ExprStmt(pos, expression) => executeExpressionStatement(
+      checker,
+      mutable state,
+      pos,
+      expression,
+    )
+    Stmt.ReturnStmt(pos, value) => executeReturn(checker, mutable state, pos, value)
+    Stmt.IfStmt(pos, condition, then, orElse) => executeIf(
+      checker,
+      mutable state,
+      pos,
+      condition,
+      then,
+      orElse,
+    )
+    Stmt.WhileStmt(pos, label, condition, body) => executeWhile(
+      checker,
+      mutable state,
+      pos,
+      label,
+      condition,
+      body,
+    )
+    Stmt.CForStmt(pos, label, init, condition, step, body) => executeCFor(
+      checker,
+      mutable state,
+      pos,
+      label,
+      init,
+      condition,
+      step,
+      body,
+    )
+    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference) => executeFor(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      label,
+      iterable,
+      body,
+      reference,
+    )
+    Stmt.YieldStmt(pos, _, _, _) => {
+      stopEvaluation(mutable state, pos, "E1052", "it yields")
+      return Flow.Failing
+    }
+    Stmt.BreakStmt(pos, label) => {
+      if (!countStep(mutable state, pos)) {
+        return Flow.Failing
+      }
+      state.flowLabel = label
+      return Flow.Breaking
+    }
+    Stmt.ContinueStmt(pos, label) => {
+      if (!countStep(mutable state, pos)) {
+        return Flow.Failing
+      }
+      state.flowLabel = label
+      return Flow.Continuing
+    }
+  }
+}
+
+function executeVar(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  pattern: Option<Pattern>,
+  value: Expr,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  const valueType = copy(readType(checker, state, getExpressionId(value)))
+  const result = evaluateHeld(checker, mutable state, value)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  if (pattern is Some(written)) {
+    const _ = matchPattern(checker, mutable state, written, result, valueType)
+    return makeFailingFlow(state)
+  }
+  bindLocal(checker, mutable state, nodeId, result)
+  return Flow.Normal
+}
+
+function executeAssign(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  target: Expr,
+  value: Expr,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  const result = evaluateHeld(checker, mutable state, value)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  if (target is Expr.Ident(nodeId, _, name)) {
+    if (name == "_") {
+      return Flow.Normal
+    }
+    if (readRef(checker, state, nodeId) is Ref.Local(index)) {
+      state.slots[state.base + index] = result
+      return Flow.Normal
+    }
+  }
+  const place = resolvePlace(checker, mutable state, target)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  writePlace(mutable state, place, result)
+  return Flow.Normal
+}
+
+function executeCompound(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  target: Expr,
+  operator: string,
+  value: Expr,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  const operandType = copy(
+    findUnderlying(checker, readType(checker, state, getExpressionId(target))),
+  )
+  const change = evaluateExpression(checker, mutable state, value)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  const place = resolvePlace(checker, mutable state, target)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  // `x++` is `x += 1`; the other forms drop the `=`.
+  let binary = substring(operator, 0, Str.length(operator) - 1)
+  if (operator == "--") {
+    binary = "-"
+  }
+  if (operator == "++") {
+    binary = "+"
+  }
+  const current = readPlace(state, place)
+  let result = ConstValue.Unit
+  if (current is ConstValue.Float(number)) {
+    result = computeFloat(binary, operandType, number, readFloat(change))
+  } else {
+    result = computeInteger(
+      mutable state,
+      pos,
+      binary,
+      operandType,
+      readInteger(current),
+      readInteger(change),
+    )
+  }
+  if (state.failed) {
+    return Flow.Failing
+  }
+  writePlace(mutable state, place, result)
+  return Flow.Normal
+}
+
+function executeExpressionStatement(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  expression: Expr,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  // A match in statement position runs its arms as statements.
+  if (expression is Expr.MatchExpr(_, matchPos, subject, arms)) {
+    const arm = chooseArm(checker, mutable state, matchPos, subject, arms)
+    if (arm < 0) {
+      return Flow.Failing
+    }
+    if (arms[arm].block is Some(block)) {
+      return executeBlock(checker, mutable state, block)
+    }
+    if (arms[arm].body is Some(value)) {
+      const _ = evaluateExpression(checker, mutable state, value)
+    }
+    return makeFailingFlow(state)
+  }
+  const _ = evaluateExpression(checker, mutable state, expression)
+  return makeFailingFlow(state)
+}
+
+function executeReturn(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  value: Option<Expr>,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  if (value is Some(returned)) {
+    // A self-call in tail position runs as a loop.
+    if (returned is Expr.CallExpr(nodeId, _, _, _, arguments)) {
+      if (isTailCall(checker, state, nodeId, arguments)) {
+        const values = evaluateArguments(checker, mutable state, nodeId, arguments)
+        if (state.failed) {
+          return Flow.Failing
+        }
+        state.tailArguments = values
+        return Flow.TailCalling
+      }
+    }
+    const result = evaluateHeld(checker, mutable state, returned)
+    if (state.failed) {
+      return Flow.Failing
+    }
+    state.returnValue = result
+  } else {
+    state.returnValue = ConstValue.Unit
+  }
+  return Flow.Returning
+}
+
+function isTailCall(
+  checker: Checker,
+  state: ConstEvaluator,
+  nodeId: int,
+  arguments: Array<Arg>,
+): bool {
+  if (state.functionIndex < 0) {
+    return false
+  }
+  if (readRef(checker, state, nodeId) is Ref.Function(funcIndex)) {
+    if (
+      funcIndex != state.functionIndex ||
+        Arrays.length(checker.functions[funcIndex].typeParameters) > 0
+    ) {
+      return false
+    }
+    for (const argument of Arrays.values(arguments)) {
+      if (argument.isMutable) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function executeIf(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  condition: Expr,
+  then: Block,
+  orElse: Option<Stmt>,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  // A condition on the build target is decided by the checker.
+  let taken = false
+  if (checker.foldedConditions[getExpressionId(condition)] is Some(kept)) {
+    taken = kept
+  } else {
+    const value = evaluateExpression(checker, mutable state, condition)
+    if (state.failed) {
+      return Flow.Failing
+    }
+    taken = readBool(value)
+  }
+  if (taken) {
+    return executeBlock(checker, mutable state, then)
+  }
+  if (orElse is Some(otherwise)) {
+    return executeStatement(checker, mutable state, otherwise)
+  }
+  return Flow.Normal
+}
+
+function leavesLoop(mutable state: ConstEvaluator, flow: Flow, label: string): bool {
+  // True when the loop stops; a break or continue for an outer loop passes through.
+  if (flow == Flow.Breaking || flow == Flow.Continuing) {
+    return state.flowLabel != "" && state.flowLabel != label
+  }
+  return flow != Flow.Normal
+}
+
+function finishLoop(mutable state: ConstEvaluator, flow: Flow, label: string): Flow {
+  // The flow after the loop: its own break ends here.
+  if (
+    (flow == Flow.Breaking || flow == Flow.Continuing) &&
+      (state.flowLabel == "" || state.flowLabel == label)
+  ) {
+    state.flowLabel = ""
+    return Flow.Normal
+  }
+  return flow
+}
+
+function executeWhile(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  label: string,
+  condition: Expr,
+  body: Block,
+): Flow uses alloc {
+  while (true) {
+    if (!countStep(mutable state, pos)) {
+      return Flow.Failing
+    }
+    const passed = evaluateExpression(checker, mutable state, condition)
+    if (state.failed) {
+      return Flow.Failing
+    }
+    if (!readBool(passed)) {
+      return Flow.Normal
+    }
+    const flow = executeBlock(checker, mutable state, body)
+    if (leavesLoop(mutable state, flow, label)) {
+      return flow
+    }
+    if (flow == Flow.Breaking) {
+      return finishLoop(mutable state, flow, label)
+    }
+  }
+  return Flow.Normal
+}
+
+function executeCFor(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  label: string,
+  init: Option<Stmt>,
+  condition: Option<Expr>,
+  step: Option<Stmt>,
+  body: Block,
+): Flow uses alloc {
+  if (init is Some(initStatement)) {
+    const flow = executeStatement(checker, mutable state, initStatement)
+    if (flow != Flow.Normal) {
+      return flow
+    }
+  }
+  while (true) {
+    if (!countStep(mutable state, pos)) {
+      return Flow.Failing
+    }
+    if (condition is Some(conditionValue)) {
+      const value = evaluateExpression(checker, mutable state, conditionValue)
+      if (state.failed) {
+        return Flow.Failing
+      }
+      if (!readBool(value)) {
+        return Flow.Normal
+      }
+    }
+    const flow = executeBlock(checker, mutable state, body)
+    if (leavesLoop(mutable state, flow, label)) {
+      return flow
+    }
+    if (flow == Flow.Breaking) {
+      return finishLoop(mutable state, flow, label)
+    }
+    state.flowLabel = ""
+    if (step is Some(stepStatement)) {
+      const stepFlow = executeStatement(checker, mutable state, stepStatement)
+      if (stepFlow != Flow.Normal) {
+        return stepFlow
+      }
+    }
+  }
+  return Flow.Normal
+}
+
+function findBuiltinName(checker: Checker, state: ConstEvaluator, expression: Expr): string {
+  if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
+    if (readRef(checker, state, nodeId) is Ref.Builtin(index)) {
+      return checker.registry.functions[index].name
+    }
+  }
+  return ""
+}
+
+function readFirstArgument(expression: Expr): Expr from expression {
+  if (expression is Expr.CallExpr(_, _, _, _, arguments)) {
+    if (Arrays.length(arguments) > 0) {
+      return arguments[0].value
+    }
+  }
+  return expression
+}
+
+function executeFor(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  iterable: Expr,
+  body: Block,
+  reference: Option<LoopReference>,
+): Flow uses alloc {
+  if (!countStep(mutable state, pos)) {
+    return Flow.Failing
+  }
+  const name = findBuiltinName(checker, state, iterable)
+  if (reference is Some(marker)) {
+    return executeReferenceFor(checker, mutable state, nodeId, pos, label, iterable, body, marker)
+  }
+  // Array.values and Array.entries loop over their argument.
+  let source = iterable
+  let entries = false
+  if (name == "Array.values" || name == "Array.entries") {
+    source = readFirstArgument(iterable)
+    entries = name == "Array.entries"
+  }
+  const sourceType = copy(
+    findUnderlying(checker, readType(checker, state, getExpressionId(source))),
+  )
+  const value = evaluateExpression(checker, mutable state, source)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  if (value is ConstValue.Span(start, end, step)) {
+    return executeRangeFor(checker, mutable state, nodeId, pos, label, body, start, end, step)
+  }
+  // Map.keys and Map.entries already gave an array.
+  const isArray = sourceType is Type.TArray(_) || sourceType is Type.TFixedArray(_, _)
+  const isMapCall = name == "Map.keys" || name == "Map.entries"
+  if (!isArray && !isMapCall) {
+    stopEvaluation(mutable state, pos, "E1052", "a loop over this value")
+    return Flow.Failing
+  }
+  const items = readElements(value)
+  const localIndex = findDeclaredLocal(checker, state, nodeId)
+  for (const index of Ranges.between(0, Arrays.length(items))) {
+    if (!countStep(mutable state, pos)) {
+      return Flow.Failing
+    }
+    if (entries) {
+      state.slots[state.base + localIndex] = ConstValue.Fields([
+        ConstValue.Integer(index),
+        items[index],
+      ])
+    } else {
+      state.slots[state.base + localIndex] = items[index]
+    }
+    const flow = executeBlock(checker, mutable state, body)
+    if (leavesLoop(mutable state, flow, label)) {
+      return flow
+    }
+    if (flow == Flow.Breaking) {
+      return finishLoop(mutable state, flow, label)
+    }
+    state.flowLabel = ""
+  }
+  return Flow.Normal
+}
+
+function executeRangeFor(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  body: Block,
+  start: int,
+  end: int,
+  step: int,
+): Flow uses alloc {
+  const localIndex = findDeclaredLocal(checker, state, nodeId)
+  let current = start
+  while (step > 0 ? current < end : current > end) {
+    if (!countStep(mutable state, pos)) {
+      return Flow.Failing
+    }
+    state.slots[state.base + localIndex] = ConstValue.Integer(current)
+    const flow = executeBlock(checker, mutable state, body)
+    if (leavesLoop(mutable state, flow, label)) {
+      return flow
+    }
+    if (flow == Flow.Breaking) {
+      return finishLoop(mutable state, flow, label)
+    }
+    state.flowLabel = ""
+    // A sum past the int range ends the loop, as narra_range_advance does.
+    const next = current + step
+    if ((step > 0 && next < current) || (step < 0 && next > current)) {
+      return Flow.Normal
+    }
+    current = next
+  }
+  return Flow.Normal
+}
+
+function executeReferenceFor(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  iterable: Expr,
+  body: Block,
+  marker: LoopReference,
+): Flow uses alloc {
+  // The binding is the element itself: each turn moves it out, runs the body and moves it back.
+  const name = findBuiltinName(checker, state, iterable)
+  let source = iterable
+  if (name == "Array.values" || name == "Array.entries") {
+    source = readFirstArgument(iterable)
+  }
+  const place = resolvePlace(checker, mutable state, source)
+  if (state.failed) {
+    return Flow.Failing
+  }
+  const localIndex = findDeclaredLocal(checker, state, nodeId)
+  let indexLocal = -1
+  if (marker.indexName != "") {
+    indexLocal = findDeclaredLocal(checker, state, marker.indexId)
+  }
+  const count = measurePlace(state, place)
+  for (const index of Ranges.between(0, count)) {
+    if (!countStep(mutable state, pos)) {
+      return Flow.Failing
+    }
+    let elementPlace = copy(place)
+    Arrays.push(mutable elementPlace.steps, PlaceStep.AtElement(index))
+    const element = takePlace(mutable state, elementPlace)
+    state.slots[state.base + localIndex] = element
+    if (indexLocal >= 0) {
+      state.slots[state.base + indexLocal] = ConstValue.Integer(index)
+    }
+    const flow = executeBlock(checker, mutable state, body)
+    const bindingSlot = state.base + localIndex
+    const changed = takeSlot(mutable state, bindingSlot)
+    writePlace(mutable state, elementPlace, changed)
+    if (leavesLoop(mutable state, flow, label)) {
+      return flow
+    }
+    if (flow == Flow.Breaking) {
+      return finishLoop(mutable state, flow, label)
+    }
+    state.flowLabel = ""
+  }
+  return Flow.Normal
+}
+
+function takeSlot(mutable state: ConstEvaluator, slot: int): ConstValue uses alloc {
+  const taken = state.slots[slot]
+  state.slots[slot] = ConstValue.Unit
+  return copy(taken)
+}
+
+// Calls.
+
+function evaluateArguments(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Array<ConstValue> uses alloc {
+  // Written order, then parameter order.
+  let written: Array<ConstValue> = []
+  for (const argument of Arrays.values(arguments)) {
+    const value = evaluateExpression(checker, mutable state, argument.value)
+    if (state.failed) {
+      return []
+    }
+    Arrays.push(mutable written, value)
+  }
+  if (checker.argumentOrders[nodeId] is Some(order)) {
+    let ordered: Array<ConstValue> = []
+    for (const index of Arrays.values(order)) {
+      Arrays.push(mutable ordered, written[index])
+    }
+    return ordered
+  }
+  return written
+}
+
+function evaluateCall(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  _callee: Expr,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  return match (readRef(checker, state, nodeId)) {
+    Ref.Distinct(_) => evaluateExpression(checker, mutable state, arguments[0].value)
+    Ref.Constructor(_, variant) => {
+      const values = evaluateArguments(checker, mutable state, nodeId, arguments)
+      if (state.failed) {
+        return ConstValue.Unit
+      }
+      if (!charge(mutable state, pos, 16 + 8 * Arrays.length(values), "an enum value")) {
+        return ConstValue.Unit
+      }
+      return ConstValue.Variant(variant, values)
+    }
+    Ref.Function(funcIndex) => callFunction(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      funcIndex,
+      arguments,
+    )
+    Ref.Builtin(index) => callBuiltin(checker, mutable state, nodeId, pos, index, arguments)
+    _ => reportUnsupported(mutable state, pos, "a call of this kind")
+  }
+}
+
+function findCallBody(
+  checker: Checker,
+  state: ConstEvaluator,
+  nodeId: int,
+  funcIndex: int,
+): int uses alloc {
+  // A generic function runs the body of the instance the call names.
+  if (Arrays.length(checker.functions[funcIndex].typeParameters) > 0) {
+    if (checker.bodies[state.body].instanceRefs[nodeId] is Some(instance)) {
+      return findBody(checker, `inst|${Int.toString(instance)}`)
+    }
+    return -1
+  }
+  return findBody(checker, `func|${Int.toString(funcIndex)}`)
+}
+
+function callFunction(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  funcIndex: int,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  const body = findCallBody(checker, state, nodeId, funcIndex)
+  if (body < 0) {
+    return reportUnsupported(mutable state, pos, `a call of ${checker.functions[funcIndex].name}`)
+  }
+  const ordered = orderArguments(checker, nodeId, arguments)
+  // A `mutable` argument is moved out of its place for the call, and back after it.
+  let places: Array<Place> = []
+  let values = evaluateArguments(checker, mutable state, nodeId, arguments)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  for (const index of Ranges.between(0, Arrays.length(ordered))) {
+    if (ordered[index].isMutable) {
+      const place = resolvePlace(checker, mutable state, ordered[index].value)
+      if (state.failed) {
+        return ConstValue.Unit
+      }
+      values[index] = ConstValue.Unit
+      values[index] = takePlace(mutable state, place)
+      Arrays.push(mutable places, place)
+    } else {
+      Arrays.push(mutable places, Place { slot: -1, steps: [] })
+    }
+  }
+  if (state.depth >= DEPTH_LIMIT) {
+    stopEvaluation(mutable state, pos, "E1056", "calls")
+    return ConstValue.Unit
+  }
+  const callerName = state.runningName
+  const callerBody = state.body
+  const calleeName = checker.functions[funcIndex].name
+  const results = runFunction(checker, mutable state, body, funcIndex, values)
+  if (state.failed) {
+    Arrays.push(mutable state.chain, ChainNote {
+      file: findFile(checker, callerBody),
+      pos: pos,
+      text: `${callerName} calls ${calleeName}`,
+    })
+    return ConstValue.Unit
+  }
+  // Results holds the return value, then the final value of each parameter.
+  for (const index of Ranges.between(0, Arrays.length(places))) {
+    if (places[index].slot >= 0) {
+      writePlace(mutable state, places[index], results[index + 1])
+    }
+  }
+  return results[0]
+}
+
+function runFunction(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  body: int,
+  funcIndex: int,
+  arguments: Array<ConstValue>,
+): Array<ConstValue> uses alloc {
+  const declaration = checker.functions[funcIndex].declaration
+  const localCount = Arrays.length(checker.bodies[body].locals)
+  // The callee's slots start at the first free one.
+  const savedBase = state.base
+  const savedTop = state.top
+  const savedBody = state.body
+  const savedFunction = state.functionIndex
+  const savedName = state.runningName
+  state.base = state.top
+  state.top = state.top + localCount
+  while (Arrays.length(state.slots) < state.top) {
+    Arrays.push(mutable state.slots, ConstValue.Unit)
+  }
+  state.body = body
+  state.functionIndex = funcIndex
+  state.runningName = declaration.name
+  state.depth++
+  let parameterLocals: Array<int> = []
+  for (const parameter of Arrays.values(declaration.parameters)) {
+    Arrays.push(mutable parameterLocals, findDeclaredLocal(checker, state, parameter.id))
+  }
+  for (const index of Ranges.between(0, Arrays.length(parameterLocals))) {
+    if (parameterLocals[index] >= 0 && index < Arrays.length(arguments)) {
+      state.slots[state.base + parameterLocals[index]] = arguments[index]
+    }
+  }
+  let results: Array<ConstValue> = [ConstValue.Unit]
+  if (declaration.body is Some(block)) {
+    while (true) {
+      const flow = executeBlock(checker, mutable state, block)
+      if (flow == Flow.TailCalling) {
+        // The next turn runs with new arguments; other locals start empty.
+        for (const slot of Ranges.between(state.base, state.top)) {
+          state.slots[slot] = ConstValue.Unit
+        }
+        for (const index of Ranges.between(0, Arrays.length(parameterLocals))) {
+          if (parameterLocals[index] >= 0) {
+            state.slots[state.base + parameterLocals[index]] = state.tailArguments[index]
+          }
+        }
+        state.tailArguments = []
+        continue
+      }
+      if (flow == Flow.Returning) {
+        results[0] = state.returnValue
+        state.returnValue = ConstValue.Unit
+      }
+      break
+    }
+  }
+  for (const local of Arrays.values(parameterLocals)) {
+    if (local >= 0) {
+      const parameterSlot = state.base + local
+      Arrays.push(mutable results, takeSlot(mutable state, parameterSlot))
+    } else {
+      Arrays.push(mutable results, ConstValue.Unit)
+    }
+  }
+  for (const slot of Ranges.between(state.base, state.top)) {
+    state.slots[slot] = ConstValue.Unit
+  }
+  state.depth--
+  state.base = savedBase
+  state.top = savedTop
+  state.body = savedBody
+  state.functionIndex = savedFunction
+  state.runningName = savedName
+  return copy(results)
+}
+
+// Std functions. Each runs the same std function inside the compiler after
+// the evaluator checks the conditions under which it would panic.
+
+function callBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  builtinIndex: int,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  const name = checker.registry.functions[builtinIndex].name
+  const resultType = copy(readType(checker, state, nodeId))
+  // The functions that change their first argument.
+  if (
+    name == "Array.push" || name == "Map.remove" || name == "Str.append" || name == "Str.appendChar"
+  ) {
+    return callChangingBuiltin(checker, mutable state, nodeId, pos, name, arguments)
+  }
+  let argumentTypes: Array<Type> = []
+  for (const argument of Arrays.values(orderArguments(checker, nodeId, arguments))) {
+    Arrays.push(mutable argumentTypes, readType(checker, state, getExpressionId(argument.value)))
+  }
+  const values = evaluateArguments(checker, mutable state, nodeId, arguments)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  if (name == "assert") {
+    if (!readBool(values[0])) {
+      stopEvaluation(mutable state, pos, "E1053", "assertion failed")
+    }
+    return ConstValue.Unit
+  }
+  if (name == "panic") {
+    stopEvaluation(mutable state, pos, "E1053", readText(values[0]))
+    return ConstValue.Unit
+  }
+  if (name == "copy") {
+    // The copy is free until a write, which then copies the outer level.
+    if (!charge(mutable state, pos, measureCopy(values[0]), "copy")) {
+      return ConstValue.Unit
+    }
+    return values[0]
+  }
+  if (Str.startsWith(name, "Str.")) {
+    return callStringBuiltin(checker, mutable state, pos, name, values, resultType)
+  }
+  if (Str.startsWith(name, "Int.")) {
+    return callIntBuiltin(checker, mutable state, pos, name, values, argumentTypes, resultType)
+  }
+  if (Str.startsWith(name, "Float.")) {
+    return callFloatBuiltin(checker, mutable state, pos, name, values, argumentTypes, resultType)
+  }
+  if (Str.startsWith(name, "Array.")) {
+    return callArrayBuiltin(checker, mutable state, pos, name, values, resultType)
+  }
+  if (Str.startsWith(name, "Map.")) {
+    return callMapBuiltin(mutable state, pos, name, values)
+  }
+  if (name == "Range.upTo") {
+    return ConstValue.Span(0, readInteger(values[0]), 1)
+  }
+  if (name == "Range.between") {
+    return ConstValue.Span(readInteger(values[0]), readInteger(values[1]), 1)
+  }
+  if (name == "Range.stepped") {
+    if (readInteger(values[2]) == 0) {
+      return makeOption(checker, resultType, None)
+    }
+    const span = ConstValue.Span(
+      readInteger(values[0]),
+      readInteger(values[1]),
+      readInteger(values[2]),
+    )
+    return makeOption(checker, resultType, Some(span))
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function callChangingBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  const ordered = orderArguments(checker, nodeId, arguments)
+  const second = evaluateHeld(checker, mutable state, ordered[1].value)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  const place = resolvePlace(checker, mutable state, ordered[0].value)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  if (name == "Array.push") {
+    if (!charge(mutable state, pos, 8, "Arrays.push")) {
+      return ConstValue.Unit
+    }
+    let elements = takeElementsFromPlace(mutable state, place)
+    Arrays.push(mutable elements, second)
+    writePlace(mutable state, place, ConstValue.Items(elements))
+    return ConstValue.Unit
+  }
+  if (name == "Map.remove") {
+    const map = takeMapFromPlace(mutable state, place)
+    if (!countScanSteps(mutable state, pos, Arrays.length(map.keys))) {
+      return ConstValue.Unit
+    }
+    const removed = map.positions[writeKeyText(second)] is Some(_)
+    const rebuilt = removeMapEntry(map, second)
+    writePlace(
+      mutable state,
+      place,
+      ConstValue.Entries(rebuilt.keys, rebuilt.values, rebuilt.positions),
+    )
+    return ConstValue.Boolean(removed)
+  }
+  // Str.append and Str.appendChar add a part to the builder.
+  let text = ""
+  if (second is ConstValue.Character(character)) {
+    text = Str.fromChar(character)
+  } else {
+    text = readText(second)
+  }
+  if (!charge(mutable state, pos, countTextBytes(Str.length(text)), name)) {
+    return ConstValue.Unit
+  }
+  let parts = takeBuilderFromPlace(mutable state, place)
+  Arrays.push(mutable parts, text)
+  writePlace(mutable state, place, ConstValue.Builder(parts))
+  return ConstValue.Unit
+}
+
+function checkTextPosition(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  text: string,
+  position: int,
+  needsCharacter: bool,
+): bool uses alloc {
+  // The checks of narra_str_check_pos and narra_str_check_char, with the same messages.
+  const length = Str.length(text)
+  if (position < 0 || position > length) {
+    stopEvaluation(
+      mutable state,
+      pos,
+      "E1053",
+      `${name}: position ${Int.toString(position)} out of range for length ${Int.toString(length)}`,
+    )
+    return false
+  }
+  if (Str.slice(text, position, length) is None) {
+    stopEvaluation(
+      mutable state,
+      pos,
+      "E1053",
+      `${name}: position ${Int.toString(position)} is inside a character`,
+    )
+    return false
+  }
+  if (needsCharacter && position == length) {
+    stopEvaluation(
+      mutable state,
+      pos,
+      "E1053",
+      `${name}: position ${Int.toString(position)} is at the end of the string`,
+    )
+    return false
+  }
+  return true
+}
+
+function textResult(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  text: string,
+): ConstValue uses alloc {
+  if (!charge(mutable state, pos, countTextBytes(Str.length(text)), name)) {
+    return ConstValue.Unit
+  }
+  return ConstValue.Text(text)
+}
+
+function countScanSteps(mutable state: ConstEvaluator, pos: Pos, units: int): bool uses alloc {
+  // One step per 8 bytes or elements a std call goes through.
+  state.steps = state.steps + units / 8
+  if (state.steps > STEP_LIMIT) {
+    stopEvaluation(mutable state, pos, "E1054", "steps")
+  }
+  return !state.failed
+}
+
+function measureTexts(texts: Array<string>): int {
+  let total = 0
+  for (const text of Arrays.values(texts)) {
+    total = total + Str.length(text)
+  }
+  return total
+}
+
+function measureTextArguments(values: Array<ConstValue>): int {
+  // The bytes of the strings among the arguments, and of the strings in an array argument.
+  let total = 0
+  for (const value of Arrays.values(values)) {
+    match (value) {
+      ConstValue.Text(text) => {
+        total = total + Str.length(text)
+      }
+      ConstValue.Items(elements) => {
+        total = total + Arrays.length(elements)
+        for (const element of Arrays.values(elements)) {
+          total = total + Str.length(readText(element))
+        }
+      }
+      _ => {}
+    }
+  }
+  return total
+}
+
+function callStringBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+  resultType: Type,
+): ConstValue uses alloc {
+  if (name == "Str.builder") {
+    return ConstValue.Builder([])
+  }
+  if (name == "Str.build") {
+    if (values[0] is ConstValue.Builder(parts)) {
+      if (!countScanSteps(mutable state, pos, measureTexts(parts))) {
+        return ConstValue.Unit
+      }
+      return textResult(mutable state, pos, name, Str.join(parts, ""))
+    }
+    return ConstValue.Text("")
+  }
+  const text = readText(values[0])
+  if (name == "Str.length") {
+    return ConstValue.Integer(Str.length(text))
+  }
+  // A call that scans text costs a step per 8 bytes of its text arguments.
+  if (name != "Str.byteAt" && name != "Str.charAt" && name != "Str.nextChar") {
+    if (!countScanSteps(mutable state, pos, measureTextArguments(values))) {
+      return ConstValue.Unit
+    }
+  }
+  if (name == "Str.charCount") {
+    return ConstValue.Integer(Str.charCount(text))
+  }
+  if (name == "Str.byteAt") {
+    const position = readInteger(values[1])
+    if (position < 0 || position >= Str.length(text)) {
+      stopEvaluation(
+        mutable state,
+        pos,
+        "E1053",
+        `Str.byteAt: position ${Int.toString(position)} out of range for length ${Int.toString(Str.length(text))}`,
+      )
+      return ConstValue.Unit
+    }
+    return ConstValue.Integer(Str.byteAt(text, position))
+  }
+  if (name == "Str.charAt" || name == "Str.nextChar") {
+    const position = readInteger(values[1])
+    if (!checkTextPosition(mutable state, pos, name, text, position, true)) {
+      return ConstValue.Unit
+    }
+    if (name == "Str.charAt") {
+      return ConstValue.Character(Str.charAt(text, position))
+    }
+    return ConstValue.Integer(Str.nextChar(text, position))
+  }
+  if (name == "Str.sliceFrom") {
+    const position = readInteger(values[1])
+    if (!checkTextPosition(mutable state, pos, name, text, position, false)) {
+      return ConstValue.Unit
+    }
+    return textResult(mutable state, pos, name, Str.sliceFrom(text, position))
+  }
+  if (name == "Str.slice") {
+    const sliced = Str.slice(text, readInteger(values[1]), readInteger(values[2]))
+    if (sliced is Some(piece)) {
+      return makeOption(checker, resultType, Some(textResult(mutable state, pos, name, piece)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  if (name == "Str.contains") {
+    return ConstValue.Boolean(Str.contains(text, readText(values[1])))
+  }
+  if (name == "Str.startsWith") {
+    return ConstValue.Boolean(Str.startsWith(text, readText(values[1])))
+  }
+  if (name == "Str.endsWith") {
+    return ConstValue.Boolean(Str.endsWith(text, readText(values[1])))
+  }
+  if (name == "Str.indexOf") {
+    if (Str.indexOf(text, readText(values[1])) is Some(position)) {
+      return makeOption(checker, resultType, Some(ConstValue.Integer(position)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  if (name == "Str.fromChar") {
+    return textResult(mutable state, pos, name, Str.fromChar(readCharacter(values[0])))
+  }
+  if (name == "Str.concat") {
+    const second = readText(values[1])
+    if (!charge(mutable state, pos, countTextBytes(Str.length(text) + Str.length(second)), name)) {
+      return ConstValue.Unit
+    }
+    return ConstValue.Text(Str.concat(text, second))
+  }
+  if (name == "Str.trim") {
+    return textResult(mutable state, pos, name, Str.trim(text))
+  }
+  if (name == "Str.repeat") {
+    const count = readInteger(values[1])
+    if (count < 0) {
+      return makeOption(checker, resultType, None)
+    }
+    // The size is charged before the string is built.
+    if (count > 0) {
+      if (Str.length(text) > MEMORY_LIMIT / count) {
+        stopEvaluation(mutable state, pos, "E1055", name)
+        return ConstValue.Unit
+      }
+    }
+    if (!charge(mutable state, pos, countTextBytes(Str.length(text) * count), name)) {
+      return ConstValue.Unit
+    }
+    if (Str.repeat(text, count) is Some(repeated)) {
+      return makeOption(checker, resultType, Some(ConstValue.Text(repeated)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  if (name == "Str.replace") {
+    const old = readText(values[1])
+    const replacement = readText(values[2])
+    // At most one replacement per byte, plus the text itself.
+    let bound = Str.length(text) + Str.length(replacement) * (Str.length(text) + 1)
+    const oldLength = Str.length(old)
+    if (oldLength > 0) {
+      bound = Str.length(text) + Str.length(replacement) * (Str.length(text) / oldLength + 1)
+    }
+    if (!charge(mutable state, pos, countTextBytes(bound), name)) {
+      return ConstValue.Unit
+    }
+    return ConstValue.Text(Str.replace(text, old, replacement))
+  }
+  if (name == "Str.join") {
+    const separator = readText(values[1])
+    let texts: Array<string> = []
+    let length = 0
+    for (const part of Arrays.values(readElements(values[0]))) {
+      const partText = readText(part)
+      length = length + Str.length(partText) + Str.length(separator)
+      Arrays.push(mutable texts, partText)
+    }
+    if (!charge(mutable state, pos, countTextBytes(length), name)) {
+      return ConstValue.Unit
+    }
+    return ConstValue.Text(Str.join(texts, separator))
+  }
+  if (name == "Str.split") {
+    const separator = readText(values[1])
+    if (Str.split(text, separator) is Some(pieces)) {
+      if (
+        !charge(
+          mutable state,
+          pos,
+          16 + 8 * Arrays.length(pieces) + countTextBytes(Str.length(text)),
+          name,
+        )
+      ) {
+        return ConstValue.Unit
+      }
+      let items: Array<ConstValue> = []
+      for (const piece of Arrays.values(pieces)) {
+        Arrays.push(mutable items, ConstValue.Text(piece))
+      }
+      return makeOption(checker, resultType, Some(ConstValue.Items(items)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  if (name == "Str.chars") {
+    const characters = Str.chars(text)
+    if (!charge(mutable state, pos, 16 + 8 * Arrays.length(characters), name)) {
+      return ConstValue.Unit
+    }
+    let items: Array<ConstValue> = []
+    for (const character of Arrays.values(characters)) {
+      Arrays.push(mutable items, ConstValue.Character(character))
+    }
+    return ConstValue.Items(items)
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function callIntBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+  argumentTypes: Array<Type>,
+  resultType: Type,
+): ConstValue uses alloc {
+  const number = readInteger(values[0])
+  if (name == "Int.abs") {
+    return ConstValue.Integer(Int.abs(number))
+  }
+  if (name == "Int.toString") {
+    return textResult(mutable state, pos, name, Int.toString(number))
+  }
+  if (name == "Int.toHex") {
+    return textResult(mutable state, pos, name, Int.toHex(number))
+  }
+  if (name == "Int.parse") {
+    const parsed = Int.parse(readText(values[0]), readInteger(values[1]))
+    if (parsed is Ok(value)) {
+      return makeVariant(checker, resultType, "Ok", [ConstValue.Integer(value)])
+    }
+    if (parsed is Err(message)) {
+      return makeVariant(checker, resultType, "Err", [ConstValue.Text(message)])
+    }
+  }
+  if (name == "Int.addChecked" || name == "Int.subChecked" || name == "Int.mulChecked") {
+    const other = readInteger(values[1])
+    let checked: Option<int> = None
+    if (name == "Int.addChecked") {
+      checked = Int.addChecked(number, other)
+    } else if (name == "Int.subChecked") {
+      checked = Int.subChecked(number, other)
+    } else {
+      checked = Int.mulChecked(number, other)
+    }
+    if (checked is Some(value)) {
+      return makeOption(checker, resultType, Some(ConstValue.Integer(value)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  // The conversions to int: a u64 above int's maximum has no int.
+  const isLargeUnsigned = argumentTypes[0] == Type.TU64 && number < 0
+  if (name == "Int.from" || name == "Int.wrap") {
+    return ConstValue.Integer(number)
+  }
+  if (name == "Int.tryFrom") {
+    if (isLargeUnsigned) {
+      return makeOption(checker, resultType, None)
+    }
+    return makeOption(checker, resultType, Some(ConstValue.Integer(number)))
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function callFloatBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+  argumentTypes: Array<Type>,
+  resultType: Type,
+): ConstValue uses alloc {
+  if (name == "Float.fromInt") {
+    return ConstValue.Float(Float.fromInt(readInteger(values[0])))
+  }
+  if (name == "Float.from") {
+    // An f32 is already held as its f64 value; an integer converts.
+    if (values[0] is ConstValue.Float(number)) {
+      return ConstValue.Float(number)
+    }
+    if (argumentTypes[0] == Type.TU64) {
+      return ConstValue.Float(Float.from(U64.wrap(readInteger(values[0]))))
+    }
+    return ConstValue.Float(Float.fromInt(readInteger(values[0])))
+  }
+  const number = readFloat(values[0])
+  if (name == "Float.sqrt") {
+    return ConstValue.Float(Float.sqrt(number))
+  }
+  if (name == "Float.toString") {
+    return textResult(mutable state, pos, name, Float.toString(number))
+  }
+  if (name == "Float.truncate") {
+    if (Float.truncate(number) is Some(whole)) {
+      return makeOption(checker, resultType, Some(ConstValue.Integer(whole)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function callArrayBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+  resultType: Type,
+): ConstValue uses alloc {
+  if (name == "Array.length") {
+    return ConstValue.Integer(countValues(values[0]))
+  }
+  if (name == "Array.withCapacity") {
+    // The runtime caps the capacity it reserves at 1048576 elements.
+    let capacity = readInteger(values[0])
+    if (capacity < 0) {
+      capacity = 0
+    }
+    if (capacity > 1048576) {
+      capacity = 1048576
+    }
+    if (!charge(mutable state, pos, 16 + 8 * capacity, name)) {
+      return ConstValue.Unit
+    }
+    return ConstValue.Items([])
+  }
+  if (name == "Array.filled") {
+    const count = readInteger(values[1])
+    if (count < 0) {
+      return makeOption(checker, resultType, None)
+    }
+    // The size is charged before the array is built.
+    if (count > MEMORY_LIMIT / 8 || !charge(mutable state, pos, 16 + 8 * count, name)) {
+      stopEvaluation(mutable state, pos, "E1055", "Arrays.filled")
+      return ConstValue.Unit
+    }
+    if (!countScanSteps(mutable state, pos, count)) {
+      return ConstValue.Unit
+    }
+    let items: Array<ConstValue> = []
+    for (const _ of Ranges.upTo(count)) {
+      Arrays.push(mutable items, values[0])
+    }
+    return makeOption(checker, resultType, Some(ConstValue.Items(items)))
+  }
+  return reportUnsupported(mutable state, pos, `${name} outside a for loop`)
+}
+
+function callMapBuiltin(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+): ConstValue uses alloc {
+  if (values[0] is ConstValue.Entries(keys, entryValues, _)) {
+    if (name == "Map.size") {
+      return ConstValue.Integer(Arrays.length(keys))
+    }
+    if (!countScanSteps(mutable state, pos, Arrays.length(keys))) {
+      return ConstValue.Unit
+    }
+    if (!charge(mutable state, pos, 16 + 8 * Arrays.length(keys), name)) {
+      return ConstValue.Unit
+    }
+    if (name == "Map.keys") {
+      return ConstValue.Items(copy(keys))
+    }
+    if (name == "Map.entries") {
+      let pairs: Array<ConstValue> = []
+      for (const index of Ranges.between(0, Arrays.length(keys))) {
+        Arrays.push(mutable pairs, ConstValue.Fields([copy(keys[index]), copy(entryValues[index])]))
+      }
+      return ConstValue.Items(pairs)
+    }
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}

@@ -1,7 +1,7 @@
 ---
 id: contract-logic-design
 title: "Spike: logical operators in requires and ensures"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-11

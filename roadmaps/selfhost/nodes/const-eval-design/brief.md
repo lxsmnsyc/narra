@@ -1,7 +1,7 @@
 ---
 id: const-eval-design
 title: "Design: how @const functions run at compile time"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-11

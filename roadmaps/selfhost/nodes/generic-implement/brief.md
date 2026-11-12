@@ -1,7 +1,7 @@
 ---
 id: generic-implement
 title: "implement blocks and constraints on generic types"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

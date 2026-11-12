@@ -1,7 +1,7 @@
 ---
 id: array-patterns
 title: "Array patterns in match, is and const"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

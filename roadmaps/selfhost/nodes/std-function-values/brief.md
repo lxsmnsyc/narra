@@ -1,7 +1,7 @@
 ---
 id: std-function-values
 title: "Standard functions as values"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

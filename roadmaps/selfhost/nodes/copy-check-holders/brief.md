@@ -1,7 +1,7 @@
 ---
 id: copy-check-holders
 title: "The debug copy check counts copy credits per holder"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-10
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 232000
 owns:
   - roadmaps/selfhost/nodes/copy-check-holders/**
   - selfhost/runtime/runtime.h

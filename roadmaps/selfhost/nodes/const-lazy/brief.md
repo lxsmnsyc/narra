@@ -2,7 +2,7 @@
 id: const-lazy
 title: "lazy values and @const functions"
 status: todo
-priority: could
+priority: should
 type: feature
 story:
 early: false

@@ -2,7 +2,7 @@
 id: dynamic-traits
 title: "Dynamic<Trait> values"
 status: todo
-priority: later
+priority: should
 type: feature
 story:
 early: false

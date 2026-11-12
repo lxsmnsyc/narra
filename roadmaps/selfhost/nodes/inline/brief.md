@@ -1,7 +1,7 @@
 ---
 id: inline
 title: "@inline for higher-order functions"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

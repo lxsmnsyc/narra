@@ -1,7 +1,7 @@
 ---
 id: lazy-values
 title: "lazy values: a top-level constant built on first force"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

@@ -1,7 +1,7 @@
 ---
 id: tuple-index
 title: "Reading a tuple element by index"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 177000
 owns:
   - roadmaps/selfhost/nodes/tuple-index/**
   - testdata/tuple_index*

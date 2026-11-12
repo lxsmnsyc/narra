@@ -1,7 +1,7 @@
 ---
 id: contract-logic
 title: "Logical operators and relations in requires"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

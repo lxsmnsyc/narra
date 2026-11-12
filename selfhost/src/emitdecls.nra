@@ -177,7 +177,7 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
   }
   if (type is Type.TEnum(enumIndex)) {
     if (isHeapEnum(emitter.checker, enumIndex)) {
-      return `struct ${name} { int32_t tag; ${payloadName(emitter.checker, type)}* u; };\n`
+      return `struct ${name} { int32_t tag; NARRA_COPY_ONLY(int32_t copy_held;) ${payloadName(emitter.checker, type)}* u; };\n`
     }
     if (isBoxedEnum(emitter.checker.enums[enumIndex])) {
       return `struct ${name} { int32_t tag; union {${buildVariantMembers(emitter, enumIndex)} } u; };\n`
@@ -460,11 +460,11 @@ function typeRcFunction(emitter: Emitter, type: Type, operation: string): string
   }
   if (type is Type.TEnum(_)) {
     if (operation == "retain") {
-      Str.append(mutable builder, "  if (v.u) v.u->rc++;\n")
+      Str.append(mutable builder, "  NARRA_COPY_HELD(v);\n  if (v.u) v.u->rc++;\n")
     } else {
       // In debug builds, the mark counts the copies that retained the box.
-      // After this release at most count - 2 of them can still hold it, so
-      // the credits of the copies past that end here.
+      // The last release of the holders that one copy(...) made ends its
+      // credit; when the box is freed, they all end.
       const uncreditName = opFuncName("uncredit", id)
       const dropName = opFuncName("drop", id)
       noteHelper(emitter, uncreditName)
@@ -522,7 +522,7 @@ function buildCreditFunction(
   // inside the payload instead, so a copy on write of a part taken out of the
   // copy is explained. The parts keep a count of one, so their credits never
   // end on their own: the copy marks the box it retained (buildCreditCode),
-  // and when that box's count falls back to one the "uncredit" function takes
+  // and when the last holder of that copy is released the "uncredit" function takes
   // one credit back from each part. Nested payload boxes are walked, not
   // marked, because the copy did not retain them.
   let builder = Str.builder()
@@ -571,7 +571,7 @@ export function buildCreditCode(emitter: Emitter, type: Type, value: string): st
     Type.TEnum(enumIndex) => {
       if (isHeapEnum(emitter.checker, enumIndex)) {
         const call = buildPayloadCall(emitter, base, value, "credit")
-        return `if ((${value}).u) narra_copy_credit((${value}).u); ${call}`
+        return `if ((${value}).u) { narra_copy_credit((${value}).u); NARRA_COPY_BRAND(${value}); } ${call}`
       }
       let cases: Array<string> = []
       for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {

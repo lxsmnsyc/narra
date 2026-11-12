@@ -175,8 +175,12 @@ static void narra_free(void* p) {
 // at exit reports the ones that no copy(...) explains, with exit code 103.
 // copy(x) retains x with granting on, so each object the retain reaches gets
 // a credit. A copy on write uses one credit of the object it copies, and the
-// retains of its children during the copy grant each child one. An object's
-// credits end when its count falls back to 1. The credits live in an
+// retains of its children during the copy grant each child one. The credits of an array, box, map, builder or generator end when its count falls
+// back to 2 or less. A heap enum value also carries
+// a copy_held id that copy(x) gives to the holder it makes. Retains of that
+// holder share the id, and the credit ends when the last of them is released,
+// so releasing the original holder ends no credit; the rest end when the box
+// is freed. The credits live in an
 // open-addressing table of plain malloc memory, outside narra_live.
 // Release builds (NARRA_RELEASE) have none of it: the hooks expand to nothing.
 #ifndef NARRA_RELEASE
@@ -250,6 +254,25 @@ static void narra_copy_forget(const void* p) {
   narra_copy_used--;
 }
 
+// Each heap enum holder that copy(...) makes gets an id, and the count of the
+// holders sharing that id ends its credit when it falls to zero. Ids are not
+// reused, so the table grows 4 bytes per copy(...) and a run is limited to
+// 2^31 - 2 copies with the check on.
+static int32_t* narra_copy_holders = NULL;
+static int32_t narra_copy_ids = 0;
+static size_t narra_copy_ids_cap = 0;
+
+static int32_t narra_copy_brand(void) {
+  if (narra_copy_ids == INT32_MAX - 1) narra_panic("runtime", "too many copy(...) calls for the copy check");
+  if ((size_t)narra_copy_ids + 1 >= narra_copy_ids_cap) {
+    narra_copy_ids_cap = narra_copy_ids_cap ? narra_copy_ids_cap * 2 : 64;
+    narra_copy_holders = realloc(narra_copy_holders, narra_copy_ids_cap * sizeof(int32_t));
+    if (!narra_copy_holders) narra_panic("runtime", "out of memory");
+  }
+  narra_copy_holders[++narra_copy_ids] = 1;
+  return narra_copy_ids;
+}
+
 static void narra_copy_start(void) { narra_copy_on = getenv("NARRA_CHECK_COPIES") != NULL; }
 
 static void narra_copy_grant(bool on) { narra_copy_granting = on && narra_copy_on; }
@@ -287,7 +310,8 @@ static void narra_report_copies(void) {
 // WRITTEN surround the copy that a copy on write makes.
 // ONLY holds code that exists for the check, CREDIT gives credits at a copy(...),
 // GRANTED runs a retain with granting on, and ENDED takes back the credits of
-// copies that can no longer hold a heap enum payload. All expand to nothing, or
+// the copy whose last holder was released, HELD counts a retain of a holder
+// made by copy(...) and BRAND marks the holder it makes. All expand to nothing, or
 // to the plain retain, under NARRA_RELEASE.
 #define NARRA_COPY_SHARED(p) do { if (narra_copy_granting) narra_copy_credit(p); } while (0)
 #define NARRA_COPY_DROP(p) do { if (narra_copy_used && (p)->rc <= 2) narra_copy_forget(p); } while (0)
@@ -297,7 +321,9 @@ static void narra_report_copies(void) {
 #define NARRA_COPY_ONLY(...) __VA_ARGS__
 #define NARRA_COPY_CREDIT(...) if (!narra_copy_on) {} else { __VA_ARGS__ }
 #define NARRA_COPY_GRANTED(...) do { narra_copy_grant(true); __VA_ARGS__ narra_copy_grant(false); } while (0)
-#define NARRA_COPY_ENDED(v, uncredit) do { if ((v).u && narra_copy_used) { narra_copy_slot* mark = narra_copy_find((v).u); int64_t live = (v).u->rc - 2; if (mark && mark->credits > live) { int64_t ended = mark->credits - live; if (live > 0) mark->credits = live; else narra_copy_forget((v).u); while (ended-- > 0) uncredit(v); } } } while (0)
+#define NARRA_COPY_ENDED(v, uncredit) do { bool retired = (v).copy_held && --narra_copy_holders[(v).copy_held] == 0; if ((v).u && narra_copy_used) { narra_copy_slot* mark = narra_copy_find((v).u); if (mark) { bool last = (v).u->rc <= 1; int64_t ended = last ? mark->credits : (retired && mark->credits > 0 ? 1 : 0); if (ended > 0 && ended < mark->credits) mark->credits -= ended; else if (ended > 0 || last) narra_copy_forget((v).u); while (ended-- > 0) uncredit(v); } } } while (0)
+#define NARRA_COPY_HELD(v) do { if ((v).copy_held) narra_copy_holders[(v).copy_held]++; } while (0)
+#define NARRA_COPY_BRAND(v) do { if ((v).copy_held) narra_copy_holders[(v).copy_held]--; (v).copy_held = narra_copy_brand(); } while (0)
 #define NARRA_COPY_START() narra_copy_start()
 #define NARRA_COPY_REPORT() narra_report_copies()
 #else
@@ -310,6 +336,8 @@ static void narra_report_copies(void) {
 #define NARRA_COPY_CREDIT(...)
 #define NARRA_COPY_GRANTED(...) do { __VA_ARGS__ } while (0)
 #define NARRA_COPY_ENDED(v, uncredit) ((void)0)
+#define NARRA_COPY_HELD(v) ((void)0)
+#define NARRA_COPY_BRAND(v) ((void)0)
 #define NARRA_COPY_START() ((void)0)
 #define NARRA_COPY_REPORT() ((void)0)
 #endif

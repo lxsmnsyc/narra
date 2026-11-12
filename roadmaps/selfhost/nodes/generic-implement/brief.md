@@ -1,7 +1,7 @@
 ---
 id: generic-implement
 title: "implement blocks and constraints on generic types"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 396000
 owns:
   - roadmaps/selfhost/nodes/generic-implement/**
   - selfhost/src/typebounds.nra

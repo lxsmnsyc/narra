@@ -1,7 +1,7 @@
 ---
 id: dynamic-traits
 title: "Dynamic<Trait> values"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

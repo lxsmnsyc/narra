@@ -1,7 +1,7 @@
 ---
 id: distinct-traits
 title: "implements and derives on distinct types"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

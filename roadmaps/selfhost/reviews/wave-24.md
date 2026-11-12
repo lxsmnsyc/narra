@@ -21,11 +21,11 @@ const-lazy is dropped (split into lazy-values and const-eval-design).
 
 ## Still to do (end of batch)
 
-1. `sh scripts/seed-update.sh` twice; `sh selfhost/bootstrap.sh` reports the seed current.
-2. Mark `Options.map`, `Options.andThen` and `Options.orElse` in `std/src/option.nra` `@inline`, regenerate `stdtext.nra` (`sh scripts/test.sh --suite generated --update`), then one more seed update.
-3. `sh scripts/test.sh`, `sh scripts/linux-check.sh`, and a debug build of the seed running `emit selfhost` with `NARRA_CHECK_COPIES=1` (exit 0).
-4. Curator pass: remove the inbox entries this batch closed, calibration rows, check `compiler/README.md` "Not supported yet" lists none of the built features, tick the batch-11 acceptance boxes.
-5. A fresh review of the whole branch, then the bench row (load under 2), then one pull request from `feat/batch-11` into `main`.
+Done on 2026-11-12: the seed updates, `@inline` on `Options.map`, `andThen` and `orElse`, both checks and the debug copy check (the Linux check found the `@const` nesting limit past the gcc stack; fixed in eb21b81b, limit 5000), the curator pass, and a fresh review of the whole branch (no blocking or should-fix findings).
+
+1. Bench row, on an idle machine (1-minute load under 2): `bash bench/run.sh -n 9`, then an "end of batch-11" section at the top of `bench/BASELINE.md` in the batch-10 format. Instructions retired by `narrac emit selfhost` (median of 5, `/usr/bin/time -l`, compilers built from their seeds with `cc -O2 -DNARRA_RELEASE`): on the batch-10 source, 2.408G with the batch-10 compiler and 2.453G with the batch-11 compiler (+1.9%); the batch-11 compiler on its own source 2.902G. The source grew from 65,405 to 75,144 lines; the seed is 215,778 lines. A per-commit bisect puts the one lasting step at array-patterns (+1.3%), within the 2% code layout spread (inbox entry). Rerun the instruction numbers on the idle machine too.
+2. Tick the last two acceptance boxes in `nodes/batch-11/brief.md`.
+3. Push `feat/batch-11` (the repo is public) and open one pull request into `main`, marked ready: the review was clean before it opened.
 
 ## Inbox from this batch
 

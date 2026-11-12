@@ -1,7 +1,7 @@
 ---
 id: const-functions
 title: "@const functions: top-level constants computed by the compiler"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 1100000
 owns:
   - roadmaps/selfhost/nodes/const-functions/**
   - selfhost/src/consteval.nra

@@ -97,9 +97,15 @@ while [ "$shard" -le "$jobs" ]; do
   fi
   shard=$((shard + 1))
 done
+# The number of cases that ran, summed over the shards, goes on the final line.
+ran=$(cat "$work"/shard-*.log | awk '/[0-9]+ passed, [0-9]+ failed/ { for (i = 1; i < NF; i++) if ($(i + 1) == "passed,") total += $i } END { print total + 0 }')
 elapsed=$(($(date +%s) - start))
 if [ "$status" -eq 0 ]; then
-  echo "test.sh: PASS in ${elapsed}s"
+  if [ "$ran" -gt 0 ]; then
+    echo "test.sh: PASS, $ran cases in ${elapsed}s"
+  else
+    echo "test.sh: PASS in ${elapsed}s"
+  fi
 else
   echo "test.sh: FAIL after ${elapsed}s" >&2
 fi

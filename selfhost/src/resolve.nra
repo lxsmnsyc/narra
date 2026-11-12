@@ -256,14 +256,41 @@ function resolveTypeof(mutable checker: Checker, typeExpr: TypeExpr): Type from 
   return Type.TVoid
 }
 
+const CHAIN_SEPARATOR = " -> "
+
 function reportTypeofCycle(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  const name = typeExpr.typeofName
+  // The names being resolved, from the first typeof that reached this one.
+  const haystack = `${CHAIN_SEPARATOR}${checker.typeofChain}${CHAIN_SEPARATOR}`
+  if (Str.indexOf(haystack, `${CHAIN_SEPARATOR}${name}${CHAIN_SEPARATOR}`) is Some(start)) {
+    const cycle = `${Str.sliceFrom(haystack, start + Str.length(CHAIN_SEPARATOR))}${name}`
+    if (cycle != `${name}${CHAIN_SEPARATOR}${name}`) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0981",
+        `typeof ${name} is part of the cycle ${cycle}; write one of the types out`,
+      )
+      return Type.TVoid
+    }
+  }
   reportError(
     mutable checker,
     typeExpr.pos,
     "E0981",
-    `typeof ${typeExpr.typeofName} refers to its own declaration; write the type out`,
+    `typeof ${name} refers to its own declaration; write the type out`,
   )
   return Type.TVoid
+}
+
+export function enterTypeofChain(mutable checker: Checker, name: string): string uses alloc {
+  const saved = checker.typeofChain
+  if (saved == "") {
+    checker.typeofChain = name
+  } else {
+    checker.typeofChain = `${saved}${CHAIN_SEPARATOR}${name}`
+  }
+  return saved
 }
 
 function resolveConstTypeof(
@@ -292,16 +319,18 @@ function resolveConstTypeof(
   if (constDecl.type is Some(written)) {
     const busyKey = `typeof|${name}`
     checker.busy[busyKey] = true
+    const savedChain = enterTypeofChain(mutable checker, name)
     const savedScope = enter(mutable checker, scope)
     const resolved = resolveType(mutable checker, written)
     enter(mutable checker, savedScope)
+    checker.typeofChain = savedChain
     checker.busy[busyKey] = false
     return resolved
   }
   reportError(
     mutable checker,
     typeExpr.pos,
-    "E0982",
+    "E1003",
     `the type of constant ${quoteGo(name)} is not known here; write it as \`const ${name}: Type = ...\``,
   )
   return Type.TVoid
@@ -356,10 +385,12 @@ function resolveFunctionTypeof(
     // The signature is resolved here, in this module, without the type parameters of the caller.
     const busyKey = `typeof|${name}`
     checker.busy[busyKey] = true
+    const savedChain = enterTypeofChain(mutable checker, name)
     const savedEnvironment = checker.environment
     checker.environment = Map {}
     const signature = resolveSignature(mutable checker, funcDecl, -1, false)
     checker.environment = savedEnvironment
+    checker.typeofChain = savedChain
     checker.busy[busyKey] = false
     parameters = signature.parameters
     result = signature.result

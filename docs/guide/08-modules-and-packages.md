@@ -106,15 +106,28 @@ The same goes for the other prelude types. Their modules are imported as `Arrays
 
 The other standard modules are `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/process`, `std/string` and `std/test`. Importing a path that does not exist is an error that lists them all.
 
+`Process.exit(code)` in `std/process` ends the program at once with that exit code. It flushes the output printed so far, has the `io` effect, and does not run the code after it.
+
 ## Splitting a program into files
 
-When the counter grows, you want the counting in one file and the command-line code in another. Chapter 1 split a program into a package: a folder with a `narra.toml` and a `src/` folder. Do the same here, with the files `src/cli.nra` and `src/count.nra`. In `narra.toml`, name the package `words`, and give it a `[[binary]]` with `name = "words"` and `entry = "cli.run"`.
+When the counter grows, you want the counting in one file and the command-line code in another. Chapter 1 split a program into a package: a folder with a `narra.toml` and a `src/` folder. Do the same here, with the files `src/cli.nra` and `src/count.nra`.
 
 A file's module name comes from its path in `src/`: `src/count.nra` is the module `"words/count"`, and a file `src/text/split.nra` would be `"words/text/split"`. An import always writes this full path, starting with the package name. A path relative to the current file, such as `"./count"`, is not accepted.
 
+Its `narra.toml` names the package `words` and gives it a `[[binary]]` with `name = "words"` and `entry = "cli.run"`:
+
+```narra file words narra.toml
+[package]
+name = "words"
+
+[[binary]]
+name = "words"
+entry = "cli.run"
+```
+
 Move the counting into `src/count.nra`:
 
-```narra fragment
+```narra file words src/count.nra
 import * as Arrays from "std/array"
 import * as Str from "std/string"
 
@@ -148,9 +161,9 @@ function addWord(mutable tallies: Array<Tally>, word: string) {
 
 A name in a module is private to that file unless its declaration starts with `export`. Here `Tally` and `countWords` are exported, and `addWord` stays private, so `count.nra` can change it later without breaking any other file. `countWords` builds an array, so, as in chapter 4, the exported function writes `uses alloc` after its result type. Leave it out and the compiler names the array that allocates. Chapter 10 explains `uses`.
 
-`src/cli.nra` imports what it needs from `"words/count"`:
+`src/cli.nra` imports what it needs from `"words/count"`. From the `words` folder, `narrac run .` builds and runs the package:
 
-```narra fragment
+```narra file words src/cli.nra
 import * as Int from "std/int"
 import { countWords } from "words/count"
 
@@ -160,13 +173,6 @@ export function run(args: Array<string>): int {
   }
   return 0
 }
-```
-
-Run the package from its folder:
-
-```sh
-cd words
-narrac run .
 ```
 
 ```text
@@ -241,7 +247,7 @@ A module holds declarations only, so importing it never runs any code and no fil
 
 The counter gets a third file, `src/report.nra`, that formats a tally in one of two styles. The styles are an enum:
 
-```narra fragment
+```narra file words src/report.nra
 import * as Int from "std/int"
 import * as Str from "std/string"
 import { Tally } from "words/count"
@@ -264,7 +270,7 @@ export function render(tally: Tally, style: Style): string uses alloc {
 
 `cli.nra` can import your own modules with an alias, like the standard ones. Through the alias you reach functions, types, and the constructors of an enum:
 
-```narra fragment
+```narra file words src/cli.nra
 import * as Count from "words/count"
 import * as Report from "words/report"
 

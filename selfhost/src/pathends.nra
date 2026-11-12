@@ -3,14 +3,15 @@ import { Block, Expr, MatchArm, Stmt } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, Ref, findBodySlot, reportError, typeString } from "narrac/check"
 
-export function isPanicCall(checker: Checker, bodyIndex: int, expression: Expr): bool {
-  // A local or parameter named `panic` shadows the prelude function.
+export function isPathEndingCall(checker: Checker, bodyIndex: int, expression: Expr): bool {
+  // A call to panic or Process.exit ends the path; a local named `panic` shadows the prelude one.
   if (expression is Expr.CallExpr(callId, _, _, _, _)) {
     const info = checker.bodies[bodyIndex]
     const slot = findBodySlot(info, callId)
     if (slot >= 0) {
       if (info.refs[slot] is Ref.Builtin(index)) {
-        return checker.registry.functions[index].name == "panic"
+        const name = checker.registry.functions[index].name
+        return name == "panic" || name == "Process.exit"
       }
     }
   }
@@ -62,7 +63,7 @@ function isStatementEnding(checker: Checker, bodyIndex: int, statement: Stmt): b
     Stmt.ReturnStmt(_, value) => !isMatchValue(value)
     Stmt.BlockStmt(block) => !hasReachableEnd(checker, bodyIndex, block)
     Stmt.IfStmt(_, _, then, orElse) => isIfEnding(checker, bodyIndex, then, orElse)
-    Stmt.ExprStmt(_, expression) => isPanicCall(checker, bodyIndex, expression)
+    Stmt.ExprStmt(_, expression) => isPathEndingCall(checker, bodyIndex, expression)
     Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body) is None
     Stmt.CForStmt(_, label, _, condition, _, body) =>
       findCForOpenPath(label, condition, body) is None
@@ -143,7 +144,7 @@ function findExpressionOpenPath(
   bodyIndex: int,
   expression: Expr,
 ): Option<string> {
-  if (isPanicCall(checker, bodyIndex, expression)) {
+  if (isPathEndingCall(checker, bodyIndex, expression)) {
     return None
   }
   if (expression is Expr.MatchExpr(_, _, _, arms)) {

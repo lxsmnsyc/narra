@@ -52,7 +52,7 @@ import { reportSharedWrites } from "narrac/sharedwrites"
 import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
 import { Fix, applyFix } from "narrac/fixes"
 import { emitProgram } from "narrac/emit"
-import { findEntry, skipTeardown } from "narrac/emitter"
+import { findEntry, exitWithoutRelease } from "narrac/emitter"
 
 // A problem found while loading or checking: file is empty and line is 0 for
 // a problem that is not a diagnostic (an unreadable file).
@@ -524,11 +524,14 @@ function isDiagnosticBefore(left: Diagnostic, right: Diagnostic): bool {
 }
 
 // The C text of a program, the libraries its reached extern blocks name, and the
-// `[link] search` directories of its package.
+// `[link] search` directories of its package. The package and the checker stay
+// live until the command exits, so the process exit frees them.
 struct CompiledProgram {
   text: string
   libraries: Array<string>
   search: Array<string>
+  package: Package
+  checker: Checker
 }
 
 function compileToC(
@@ -552,7 +555,6 @@ function compileToC(
     entry = found.value
   }
   const result = emitProgram(checker, entry, tests)
-  skipTeardown(checker, package)
   if (Arrays.length(result.unsupported) > 0) {
     let lines: Array<string> = []
     for (const construct of Arrays.values(result.unsupported)) {
@@ -564,6 +566,8 @@ function compileToC(
     text: result.text,
     libraries: result.libraries,
     search: findSearchDirectories(package),
+    package: package,
+    checker: checker,
   })
 }
 
@@ -646,7 +650,7 @@ function buildExecutable(
   binaryName: string,
   tests: bool,
   output: string,
-): Result<bool, string> uses io, alloc {
+): Result<CompiledProgram, string> uses io, alloc {
   const compiled = compileToC(options.path, binaryName, tests, options.release)
   if (compiled is Err(message)) {
     return Err(message)
@@ -680,7 +684,7 @@ function buildExecutable(
   if (code != 0) {
     return Err(`C compiler failed: exit status ${Int.toString(code)}`)
   }
-  return Ok(true)
+  return compiled
 }
 
 function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
@@ -700,7 +704,8 @@ function runBuild(options: DriverOptions): int uses io, alloc {
     if (output == "") {
       output = Str.replace(Path.basename(options.path), ".nra", "")
     }
-    return finishBuild(buildExecutable(options, options.binaryName, false, output))
+    const built = buildExecutable(options, options.binaryName, false, output)
+    return exitWithoutRelease(finishBuild(built))
   }
   const loaded = Modules.load(options.path)
   if (loaded is Err(errors)) {
@@ -727,19 +732,21 @@ function runBuild(options: DriverOptions): int uses io, alloc {
     )
     return 1
   }
+  let builds: Array<Result<CompiledProgram, string>> = []
   for (const name of Arrays.values(names)) {
     let output = options.output
     if (output == "") {
       output = name
     }
-    if (finishBuild(buildExecutable(options, name, false, output)) != 0) {
-      return 1
+    Arrays.push(mutable builds, buildExecutable(options, name, false, output))
+    if (finishBuild(builds[Arrays.length(builds) - 1]) != 0) {
+      return exitWithoutRelease(1)
     }
   }
-  return 0
+  return exitWithoutRelease(0)
 }
 
-function finishBuild(built: Result<bool, string>): int uses io {
+function finishBuild(built: Result<CompiledProgram, string>): int uses io {
   if (built is Err(message)) {
     printError(message)
     return 1
@@ -786,7 +793,7 @@ function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
   const #[code, standardOutput, standardError] = ran.value
   writeStandardOutput(standardOutput)
   writeStandardError(standardError)
-  return code
+  return exitWithoutRelease(code)
 }
 
 function removeProgramDirectory(directory: string, output: string) uses io, alloc {

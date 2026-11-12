@@ -385,6 +385,37 @@ export function removeComments(
   return Printer { ...printer, trivia: Trivia { ...printer.trivia, attached: attached } }
 }
 
+export function moveLineCommentsToTrailing(
+  printer: Printer,
+  anchor: string,
+): Printer from printer uses alloc {
+  // A leading comment that cannot share the line with its node follows the node instead.
+  let attached: Map<string, Array<Attached>> = Map {}
+  for (const key of Arrays.values(Maps.keys(printer.trivia.attached))) {
+    if (key != anchor) {
+      attached[key] = getAttached(printer, key)
+      continue
+    }
+    let moved: Array<Attached> = []
+    for (const item of Arrays.values(getAttached(printer, key))) {
+      const comment = printer.trivia.comments[item.comment]
+      const endOffset = getOffset(printer.source, comment.end)
+      const sharesLine =
+        comment.kind is CommentKind.Block && !isNewlineAfter(printer.source, endOffset)
+      if (item.placement is Placement.Leading && !sharesLine) {
+        Arrays.push(mutable moved, Attached {
+          comment: item.comment,
+          placement: Placement.Trailing,
+        })
+      } else {
+        Arrays.push(mutable moved, item)
+      }
+    }
+    attached[key] = moved
+  }
+  return Printer { ...printer, trivia: Trivia { ...printer.trivia, attached: attached } }
+}
+
 function printComment(comment: Comment): Doc uses alloc {
   return Docs.text(trimEnd(comment.text))
 }

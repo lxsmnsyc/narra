@@ -10,15 +10,71 @@ import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Path from "std/path"
 import * as Str from "std/string"
+import * as Int from "std/int"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Files from "testrunner/files"
+import * as Scratch from "testrunner/scratch"
+import { repeatString } from "testrunner/textops"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   let cases: Array<TestCase> = []
   addCases(mutable cases, Path.join(context.testdata, "lex"), "lex")
   addCases(mutable cases, Path.join(context.testdata, "parse"), "parse")
+  Arrays.push(mutable cases, TestCase {
+    suite: "edge",
+    name: "lex/position_limit",
+    path: "",
+    variant: "limit",
+  })
   return cases
+}
+
+const POSITION_LIMIT = 1048576
+const LIMIT_ERROR = "a source line or column must be below 1048576; split the file or the line"
+
+function runLimitCase(context: Context): Result<bool, string> uses io, alloc {
+  // Each input puts one token on the last position below the limit, or on the limit.
+  const inputs = [
+    #["column below", `x${repeatString(" ", POSITION_LIMIT - 3)}y\n`, ""],
+    #[
+      "column at",
+      `x${repeatString(" ", POSITION_LIMIT - 2)}y\n`,
+      `error 1:${Int.toString(POSITION_LIMIT)}: ${LIMIT_ERROR}\n`,
+    ],
+    #["line below", `${repeatString("\n", POSITION_LIMIT - 2)}x\n`, ""],
+    #[
+      "line at",
+      `${repeatString("\n", POSITION_LIMIT - 1)}x\n`,
+      `error ${Int.toString(POSITION_LIMIT)}:1: ${LIMIT_ERROR}\n`,
+    ],
+  ]
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  for (const input of Arrays.values(inputs)) {
+    const #[label, source, wanted] = input
+    const path = Path.join(scratch.work, "limit.nra")
+    const written = Scratch.writeFile(path, source)
+    if (written is Err(message)) {
+      Scratch.removeScratch(scratch)
+      return Err(message)
+    }
+    const result = Common.runNarrac(context, [path])
+    const failed = wanted != ""
+    if (failed && (result.code != 1 || result.errorOutput != wanted)) {
+      Scratch.removeScratch(scratch)
+      return Err(`${label}: want ${wanted}, got ${Common.describeRun(result)}`)
+    }
+    if (!failed && result.code != 0) {
+      Scratch.removeScratch(scratch)
+      return Err(`${label}: want success, got ${Common.describeRun(result)}`)
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return Ok(true)
 }
 
 function addCases(mutable cases: Array<TestCase>, folder: string, kind: string) uses io, alloc {
@@ -33,6 +89,9 @@ function addCases(mutable cases: Array<TestCase>, folder: string, kind: string) 
 }
 
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "limit") {
+    return runLimitCase(context)
+  }
   let arguments = [testCase.path]
   let golden = Files.replaceSuffix(testCase.path, ".nra", ".lex")
   if (testCase.variant == "parse") {

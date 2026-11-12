@@ -1,0 +1,89 @@
+// The exits suite: each sample in testdata/exits ends the process with
+// Process.exit. It must stop with the exit code in the .code file next to it, print exactly its .out text
+// (flushed even though stdout is a pipe), and not be reported by the leak
+// check, built with the sanitizers.
+import * as Arrays from "std/array"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  const folder = Path.join(context.testdata, "exits")
+  for (const path of Arrays.values(Files.listPaths(folder, ".nra"))) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "exits",
+      name: Path.basename(path),
+      path: path,
+      variant: "debug",
+    })
+  }
+  // The signal cases: a SIGTERM sent to narrac must stop every process it started.
+  Arrays.push(mutable cases, TestCase {
+    suite: "exits",
+    name: "signal_forwarding_run",
+    path: Path.join(context.testdata, "signals"),
+    variant: "signal-run",
+  })
+  Arrays.push(mutable cases, TestCase {
+    suite: "exits",
+    name: "signal_forwarding_test",
+    path: Path.join(context.testdata, "signals"),
+    variant: "signal-test",
+  })
+  return cases
+}
+
+function runSignalCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const folder = Shell.makeTempDirectory()
+  if (folder is Err(message)) {
+    return Err(message)
+  }
+  const marker = Path.join(folder.value, "started")
+  const mode = testCase.variant == "signal-test" ? "test" : "run"
+  const sample = testCase.variant == "signal-test" ? "spin_test.nra" : "spin_until_killed.nra"
+  const result = Shell.runScript(
+    "sh \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"",
+    [
+      Path.join(testCase.path, "forward.sh"),
+      mode,
+      context.narrac,
+      Path.join(testCase.path, sample),
+      marker,
+    ],
+  )
+  Shell.removeTree(folder.value)
+  if (result.code != 0) {
+    return Err(Str.trim(result.output))
+  }
+  return Ok(true)
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (Str.startsWith(testCase.variant, "signal")) {
+    return runSignalCase(context, testCase)
+  }
+  const want = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const wantCode = Common.readExpected(Files.replaceSuffix(testCase.path, ".nra", ".code"))
+  if (wantCode is Err(message)) {
+    return Err(message)
+  }
+  const code = Int.parse(Str.trim(wantCode.value), 10)
+  if (code is Err(message)) {
+    return Err(`bad exit code in the .code file: ${message}`)
+  }
+  const result = Common.runNarrac(context, ["run", "-sanitize", testCase.path])
+  if (result.code != code.value || Str.contains(result.errorOutput, "leak check:")) {
+    return Err(
+      `want exit code ${Int.toString(code.value)} and no leak report, got ${Common.describeRun(result)}`,
+    )
+  }
+  return Common.compareText("stdout", want.value, result.output)
+}

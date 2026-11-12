@@ -4,6 +4,7 @@
 // in emitpointers.nra and the Ptr<T> type rules in unsafecode.nra.
 import { StdFunc } from "narrac/builtins"
 import { Type } from "narrac/types"
+import { checkFixedIndex } from "narrac/fixedarrays"
 import {
   Checker,
   Walker,
@@ -13,7 +14,7 @@ import {
   getExpressionPos,
 } from "narrac/check"
 import { Pos, Arg } from "narrac/ast"
-import { checkExpression } from "narrac/exprs"
+import { checkExpression, expectType } from "narrac/exprs"
 import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
 
 export const POINTER_FUNCS: Array<StdFunc> = [
@@ -23,6 +24,20 @@ export const POINTER_FUNCS: Array<StdFunc> = [
     key: "alloc",
     effects: ["alloc", "unsafe"],
     check: "checkPtrAlloc",
+  },
+  StdFunc {
+    name: "Ptr.cast",
+    module: "std/ptr",
+    key: "cast",
+    effects: ["unsafe"],
+    check: "checkPtrCast",
+  },
+  StdFunc {
+    name: "Ptr.element",
+    module: "std/ptr",
+    key: "element",
+    effects: ["unsafe"],
+    check: "checkPtrElement",
   },
   StdFunc {
     name: "Ptr.free",
@@ -213,6 +228,59 @@ function checkPtrOffset<W: Walker>(
   return Type.TVoid
 }
 
+function checkPtrCast<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  const found = checkPointerArgument(mutable checker, walker, arguments[0], name)
+  if (want is Some(Type.TPtr(target))) {
+    return internComposite(mutable checker, Type.TPtr(target))
+  }
+  if (found is Some(_)) {
+    reportMissingElement(mutable checker, pos, name, "const bytes: Ptr<u8> = Ptr.cast(pointer)")
+  }
+  return Type.TVoid
+}
+
+function checkPtrElement<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = checkPointerArgument(mutable checker, walker, arguments[0], name)
+  const indexType = checkExpression(mutable checker, walker, arguments[1].value, Some(Type.TInt))
+  expectType(mutable checker, getExpressionPos(arguments[1].value), Some(Type.TInt), indexType)
+  if (found is Some(arrayType)) {
+    if (arrayType is Type.TFixedArray(element, _)) {
+      if (indexType == Type.TInt) {
+        // The index is proven like the index of a FixedArray read.
+        checkFixedIndex(mutable checker, arrayType, arguments[1].value)
+      }
+      return internComposite(mutable checker, Type.TPtr(element))
+    }
+    const arrayName = typeString(checker, arrayType)
+    reportError(
+      mutable checker,
+      getExpressionPos(arguments[0].value),
+      "E0998",
+      `${name} takes a Ptr to a FixedArray, found Ptr<${arrayName}>`,
+    )
+  }
+  return Type.TVoid
+}
+
 export function checkPointerCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -227,6 +295,12 @@ export function checkPointerCall<W: Walker>(
   }
   if (kind == "checkPtrNull") {
     return checkPtrNull(mutable checker, walker, pos, arguments, name, want)
+  }
+  if (kind == "checkPtrCast") {
+    return checkPtrCast(mutable checker, walker, pos, arguments, name, want)
+  }
+  if (kind == "checkPtrElement") {
+    return checkPtrElement(mutable checker, walker, pos, arguments, name)
   }
   if (kind == "checkPtrFree") {
     return checkPtrFree(mutable checker, walker, pos, arguments, name)

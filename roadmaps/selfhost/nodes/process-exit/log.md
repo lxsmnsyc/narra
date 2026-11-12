@@ -1,0 +1,3 @@
+- Result type is void (the language has no never type; panic is void too). pathends treats Process.exit like panic so a value function may end with it.
+- Emitted inline as (fflush(NULL), _exit(code)); no runtime C change, so no seed double update.
+- New exits suite (exit code 7 needs its own runner; programs suite expects 0).

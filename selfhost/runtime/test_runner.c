@@ -57,6 +57,60 @@ static const char* narra_test_opt(const char* a) {
   return a[1] == '-' ? a + 2 : a + 1;
 }
 
+// While a child runs, SIGTERM, SIGINT and SIGHUP are passed on to it, so
+// killing this process does not orphan the child. The signals are blocked from
+// before the fork until the child pid is stored.
+static volatile sig_atomic_t narra_runner_child = 0;
+static volatile sig_atomic_t narra_runner_caught = 0;
+static const int narra_runner_signals[3] = {SIGTERM, SIGINT, SIGHUP};
+
+typedef struct narra_runner_guard {
+  sigset_t mask;
+  struct sigaction actions[3];
+} narra_runner_guard;
+
+static void narra_runner_forward(int signal_number) {
+  narra_runner_caught = signal_number;
+  pid_t child = (pid_t)narra_runner_child;
+  if (child > 0) kill(child, signal_number);
+}
+
+static void narra_runner_begin(narra_runner_guard* guard) {
+  sigset_t set;
+  sigemptyset(&set);
+  for (int i = 0; i < 3; i++) sigaddset(&set, narra_runner_signals[i]);
+  sigprocmask(SIG_BLOCK, &set, &guard->mask);
+  struct sigaction action;
+  memset(&action, 0, sizeof action);
+  action.sa_handler = narra_runner_forward;
+  sigemptyset(&action.sa_mask);
+  for (int i = 0; i < 3; i++) {
+    // A signal that was ignored on entry (a background job, nohup) stays ignored.
+    sigaction(narra_runner_signals[i], NULL, &guard->actions[i]);
+    if (guard->actions[i].sa_handler != SIG_IGN) sigaction(narra_runner_signals[i], &action, NULL);
+  }
+}
+
+static void narra_runner_restore_child(narra_runner_guard* guard) {
+  for (int i = 0; i < 3; i++) sigaction(narra_runner_signals[i], &guard->actions[i], NULL);
+  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
+static void narra_runner_attach(narra_runner_guard* guard, pid_t pid) {
+  narra_runner_child = (sig_atomic_t)pid;
+  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
+static void narra_runner_detach(narra_runner_guard* guard) {
+  sigset_t set;
+  sigemptyset(&set);
+  for (int i = 0; i < 3; i++) sigaddset(&set, narra_runner_signals[i]);
+  sigprocmask(SIG_BLOCK, &set, NULL);
+  narra_runner_child = 0;
+  for (int i = 0; i < 3; i++) sigaction(narra_runner_signals[i], &guard->actions[i], NULL);
+  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
 // narra_test_run returns the exit code of the run.
 static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
   const char* filter = NULL;
@@ -88,12 +142,16 @@ static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
     fflush(stderr);
     if (pipe(fds) != 0) { fprintf(stderr, "cannot create a pipe\n"); return 1; }
     int64_t start = narra_test_now_ms();
+    narra_runner_guard guard;
+    narra_runner_begin(&guard);
     pid_t pid = fork();
-    if (pid < 0) { fprintf(stderr, "cannot fork\n"); return 1; }
+    if (pid < 0) { narra_runner_detach(&guard); fprintf(stderr, "cannot fork\n"); return 1; }
     if (pid == 0) {
+      narra_runner_restore_child(&guard);
       close(fds[0]);
       narra_test_child(c, fds[1]);
     }
+    narra_runner_attach(&guard, pid);
     close(fds[1]);
     size_t cap = 256, len = 0;
     char* msg = malloc(cap);
@@ -108,6 +166,12 @@ static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
     close(fds[0]);
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    narra_runner_detach(&guard);
+    if (narra_runner_caught) {
+      free(msg);
+      fflush(stdout);
+      return 128 + narra_runner_caught;
+    }
     int64_t ms = narra_test_now_ms() - start;
     char tbuf[48] = "";
     if (timing) snprintf(tbuf, sizeof tbuf, " (%lld ms)", (long long)ms);

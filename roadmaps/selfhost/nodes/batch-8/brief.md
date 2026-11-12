@@ -1,7 +1,7 @@
 ---
 id: batch-8
 title: "Batch 8: fixed arrays and C interop"
-status: active
+status: done
 priority: should
 type: story
 story: 

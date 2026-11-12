@@ -589,6 +589,30 @@ function printBinaryChain(
   )
 }
 
+function isPlainBlock(expression: Expr): bool {
+  return expression is Expr.BlockExpr(_, _, _) &&
+    !isConditional(expression) &&
+    !isIfValue(expression)
+}
+
+export function endsWithBlock(printer: Printer, expression: Expr): bool uses alloc {
+  if (expression is Expr.BinaryExpr(id, _, _, _, right)) {
+    return isPlainBlock(right) && !isParenthesized(printer, id)
+  }
+  return false
+}
+
+export function printLevelChain(
+  printer: Printer,
+  expression: Expr,
+): Document from printer uses alloc {
+  return withComments(
+    printer,
+    getIdKey(getExprId(expression)),
+    printBinaryChain(printer, expression, false),
+  )
+}
+
 function isHuggable(expression: Expr): bool {
   // The last argument that stays on the line of the call and opens its own lines: an arrow function
   // or a non-empty literal.
@@ -597,6 +621,7 @@ function isHuggable(expression: Expr): bool {
     Expr.StructLit(_, _, _, _, fields, spread) => Arrays.length(fields) > 0 || spread is Some(_)
     Expr.ArrayLit(_, _, elements, _) => Arrays.length(elements) > 0
     Expr.MapLit(_, _, _, keys, _) => Arrays.length(keys) > 0
+    Expr.BlockExpr(_, _, _) => isPlainBlock(expression)
     _ => false
   }
 }
@@ -654,6 +679,13 @@ function printArguments(printer: Printer, arguments: Array<Arg>): Document from 
   const last = arguments[count - 1].value
   let hug = isHuggable(last)
   if (hug && count > 1 && isHuggable(arguments[count - 2].value)) {
+    hug = false
+  }
+  // A comment on the last argument or after the one before it would move when formatted again.
+  if (hug && hasAttached(printer, getIdKey(getExprId(last)))) {
+    hug = false
+  }
+  if (hug && count > 1 && hasAttached(printer, getIdKey(getExprId(arguments[count - 2].value)))) {
     hug = false
   }
   // The arguments before the last one never break, so hug only when they are

@@ -13,7 +13,7 @@ import {
 import { splitString, substring } from "narrac/textops"
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
-import { isPanicCall } from "narrac/pathends"
+import { isPathEndingCall } from "narrac/pathends"
 import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/fixes"
 import { Type, isInteger } from "narrac/types"
 import {
@@ -41,7 +41,7 @@ import {
   isContentsType,
   isNumeric,
 } from "narrac/check"
-import { resolveType, findTupleType } from "narrac/resolve"
+import { resolveType, findTupleType, enterTypeofChain } from "narrac/resolve"
 import {
   checkExpression,
   expectType,
@@ -343,7 +343,9 @@ function checkVariable<W: Walker>(
   if (type is Some(typeExpression)) {
     // `typeof name` in the annotation of `name` refers to its own declaration.
     checker.busy[`typeof|${name}`] = true
+    const savedChain = enterTypeofChain(mutable checker, name)
     want = Some(resolveType(mutable checker, typeExpression))
+    checker.typeofChain = savedChain
     checker.busy[`typeof|${name}`] = false
   }
   const errorCount = Arrays.length(checker.errors)
@@ -765,7 +767,7 @@ function statementEndsInReturn(checker: Checker, bodyIndex: int, statement: Stmt
     Stmt.BlockStmt(block) => endsInReturn(checker, bodyIndex, block)
     Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(checker, bodyIndex, then, orElse)
     Stmt.ExprStmt(_, expression) =>
-      isPanicCall(checker, bodyIndex, expression) ||
+      isPathEndingCall(checker, bodyIndex, expression) ||
       matchEndsInReturn(checker, bodyIndex, expression)
     _ => false
   }
@@ -790,7 +792,7 @@ function matchEndsInReturn(checker: Checker, bodyIndex: int, expression: Expr): 
           return false
         }
       } else if (arm.body is Some(armBody)) {
-        if (!isPanicCall(checker, bodyIndex, armBody)) {
+        if (!isPathEndingCall(checker, bodyIndex, armBody)) {
           return false
         }
       } else {
@@ -1365,7 +1367,7 @@ export function diverges(checker: Checker, bodyIndex: int, block: Block): bool {
 function statementDiverges(checker: Checker, bodyIndex: int, statement: Stmt): bool {
   return match (statement) {
     Stmt.ReturnStmt(_, _) | Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => true
-    Stmt.ExprStmt(_, expression) => isPanicCall(checker, bodyIndex, expression)
+    Stmt.ExprStmt(_, expression) => isPathEndingCall(checker, bodyIndex, expression)
     Stmt.IfStmt(_, _, then, orElse) => ifDiverges(checker, bodyIndex, then, orElse)
     Stmt.BlockStmt(block) => diverges(checker, bodyIndex, block)
     _ => false

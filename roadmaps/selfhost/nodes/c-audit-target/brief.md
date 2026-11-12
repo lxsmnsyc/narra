@@ -42,7 +42,7 @@ shared:
   - selfhost/src/driver.nra
   - selfhost/src/buildconditions.nra
   - selfhost/src/main.nra
-reserves: [diag E1003]
+reserves: []
 provides: []
 depends_on:
   - on: c-interop

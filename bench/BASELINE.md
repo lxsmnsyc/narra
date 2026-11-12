@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-12, end of batch-9
+
+Run of `bench/run.sh -n 9` at commit e27bc030 on `feat/batch-9`, same machine and toolchains as the batch-8 run below. No agent was running. The load average was 1.92 (1 minute) at the start and 2.79 at the end, with the 5 and 15 minute averages (3.36 and 4.08) still falling after the batch's test runs. Batch-9 changed no code generation, and the programs are within noise of batch-8.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.115 | 0.127 | 0.114 | 39088169   |
+| sieve     | 0.132 | 0.141 | 0.132 | 1270607    |
+| matmul    | 0.110 | 0.208 | 0.122 | 3547800000 |
+| strings   | 0.222 | 0.282 | 0.370 | 100000     |
+| interp    | 0.190 | 0.248 | 0.173 | 972838     |
+| particles | 0.068 | 0.076 | 0.095 | 6996184    |
+| compiler  | 0.264 | -     | -     | peak memory 149 MB |
+
+Instructions retired by `narrac emit selfhost` (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`): on the batch-8 source, 2.370G with the batch-8 compiler and 2.378G with the batch-9 compiler (+0.3%, within run-to-run spread); the batch-9 compiler on its own source 2.388G. `Process.exit` replaced `skipTeardown`, which already skipped the final release, so the exit saves little over batch-8. seed-switch measured -1.3% (2.427G to 2.396G) in an earlier run; this run does not reproduce it. The source grew 0.5% (64,661 to 64,992 lines). The seed is 187,536 lines.
+
 ## 2026-11-11, end of batch-8
 
 Run of `bench/run.sh -n 9` at commit 1e0ef889 on `feat/batch-8`, same machine and toolchains as the batch-7 run below. No agent was running. The load average was 1.93 (1 minute) at the start, with the 5 and 15 minute averages (5.02 and 7.83) still falling after the batch's test runs and activity outside this session, and 4.23 at the end. The Go and Rust times are 3% to 9% above the batch-7 run, so the machine was noisier: Narra changes of that size are noise.

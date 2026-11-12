@@ -1,9 +1,13 @@
 // The runner suite: testdata/runner/mixed.nra holds passing and failing test
 // blocks. `narrac test` must run all of them, list the failures exactly as
 // mixed.out says and exit with code 1, in debug (sanitizers, leak check) and
-// in release mode.
+// in release mode. A third case builds the test runner itself and checks that a run whose filters
+// match no case exits with code 1 and names the filters.
 import * as Arrays from "std/array"
 import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Scratch from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 
@@ -18,10 +22,19 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       variant: variant,
     })
   }
+  Arrays.push(mutable cases, TestCase {
+    suite: "runner",
+    name: "no-match-filters",
+    path: Path.join(context.repository, "selfhost/tests"),
+    variant: "no-match",
+  })
   return cases
 }
 
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "no-match") {
+    return runNoMatchCase(context, testCase)
+  }
   const want = Common.readExpected(Path.join(Path.dirname(testCase.path), "mixed.out"))
   if (want is Err(message)) {
     return Err(message)
@@ -32,4 +45,46 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   const result = Common.runNarrac(context, ["test", flag, testCase.path])
   return Common.expectRun(result, 1, want.value)
+}
+
+function runNoMatchCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const outcome = checkNoMatch(context, testCase, scratch.root)
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function checkNoMatch(
+  context: Context,
+  testCase: TestCase,
+  folder: string,
+): Result<bool, string> uses io, alloc {
+  // Build the runner, then ask it for a suite and a filter that select nothing.
+  const program = Path.join(folder, "testrunner")
+  const built = Common.runNarrac(context, ["build", "-o", program, testCase.path])
+  if (built.code != 0) {
+    return Err(`building the runner failed: ${Common.describeRun(built)}`)
+  }
+  const command = Shell.newCommand(program, [
+    "--narrac",
+    context.narrac,
+    "--repository",
+    context.repository,
+    "--suite",
+    "bench",
+    "--filter",
+    "no-case-has-this-text",
+  ])
+  const result = Shell.runCommand(command)
+  if (result.code != 1) {
+    return Err(`want exit code 1, got ${Common.describeRun(result)}`)
+  }
+  if (!Str.contains(result.errorOutput, "--suite bench --filter no-case-has-this-text")) {
+    return Err(`the message does not name the filters: ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
 }

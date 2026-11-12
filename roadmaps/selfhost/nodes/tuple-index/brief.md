@@ -1,7 +1,7 @@
 ---
 id: tuple-index
 title: "Reading a tuple element by index"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-11

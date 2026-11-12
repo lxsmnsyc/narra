@@ -2661,7 +2661,12 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     const namePos = getPos(currentToken(parser))
     let name = ""
     let pattern: Option<Pattern> = None
-    if (isAt(parser, SYMBOL_LEFT_BRACE) || isAt(parser, SYMBOL_HASH_BRACKET) || isConstructor) {
+    if (
+      isAt(parser, SYMBOL_LEFT_BRACE) ||
+        isAt(parser, SYMBOL_HASH_BRACKET) ||
+        isAt(parser, SYMBOL_LEFT_BRACKET) ||
+        isConstructor
+    ) {
       pattern = Some(parsePattern(mutable parser))
     } else {
       name = expectIdent(mutable parser).text
@@ -2767,7 +2772,12 @@ function parseStmtBody(mutable parser: Parser): Stmt {
         (after.text == "(" || after.text == ".")
     let name = ""
     let pattern: Option<Pattern> = None
-    if (isAt(parser, SYMBOL_LEFT_BRACE) || isAt(parser, SYMBOL_HASH_BRACKET) || isConstructor) {
+    if (
+      isAt(parser, SYMBOL_LEFT_BRACE) ||
+        isAt(parser, SYMBOL_HASH_BRACKET) ||
+        isAt(parser, SYMBOL_LEFT_BRACKET) ||
+        isConstructor
+    ) {
       pattern = Some(parsePattern(mutable parser))
     } else {
       name = expectIdent(mutable parser).text
@@ -4076,6 +4086,9 @@ function parsePatternBody(mutable parser: Parser): Pattern {
     const arguments = parsePatternList(mutable parser, SYMBOL_RIGHT_BRACKET)
     return Pattern.PatTuple(newId(mutable parser), pos, arguments)
   }
+  if (isAt(parser, SYMBOL_LEFT_BRACKET)) {
+    return parseArrayPattern(mutable parser)
+  }
   if (isAt(parser, SYMBOL_MINUS)) {
     advance(mutable parser)
     const number = currentToken(parser)
@@ -4130,6 +4143,49 @@ function parsePatternBody(mutable parser: Parser): Pattern {
     return Pattern.PatCtor(newId(mutable parser), pos, enumName, name, [], true)
   }
   return Pattern.PatName(newId(mutable parser), pos, name)
+}
+
+function parseArrayPattern(mutable parser: Parser): Pattern {
+  const pos = getPos(currentToken(parser))
+  advance(mutable parser)
+  skipNewlines(mutable parser)
+  let elements: Array<Pattern> = []
+  let rest: Option<Pattern> = None
+  while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_BRACKET)) {
+    if (isAt(parser, SYMBOL_ELLIPSIS)) {
+      advance(mutable parser)
+      const startIndex = parser.index
+      const name = expectIdent(mutable parser)
+      if (!isOk(parser)) {
+        return createDummyPattern()
+      }
+      let restPattern = Pattern.PatName(newId(mutable parser), getPos(name), name.text)
+      if (name.text == "_") {
+        restPattern = Pattern.PatWildcard(newId(mutable parser), getPos(name))
+      }
+      noteKey(mutable parser, getIdKey(getPatternId(restPattern)), startIndex)
+      rest = Some(restPattern)
+    } else {
+      Arrays.push(mutable elements, parsePattern(mutable parser))
+    }
+    skipNewlines(mutable parser)
+    if (!isAt(parser, SYMBOL_COMMA)) {
+      break
+    }
+    // Only the closing bracket may follow the rest.
+    if (rest is Some(_)) {
+      failHere(
+        mutable parser,
+        "E0722",
+        "`...` must be the last element of an array pattern, and appear once",
+      )
+      return createDummyPattern()
+    }
+    advance(mutable parser)
+    skipNewlines(mutable parser)
+  }
+  expect(mutable parser, SYMBOL_RIGHT_BRACKET)
+  return Pattern.PatArray(newId(mutable parser), pos, elements, rest)
 }
 
 function isComparisonToken(token: Token): bool {

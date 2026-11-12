@@ -1,0 +1,334 @@
+// Array patterns: `[]`, `[a, b]`, `[first, ..._]` and `[first, ...rest]` over
+// `Array<T>` and `FixedArray<T, N>`.
+//
+// This module holds what the checker knows about them: the element type a
+// pattern resolves its elements with, the length errors, whether a pattern
+// matches every value, and the lengths that act as constructors in the
+// usefulness matrix of narrac/patterns. It imports narrac/check only, so
+// narrac/patterns and narrac/match can both call it.
+//
+// Lengths as constructors: on an Array column, L is the largest element count
+// of any pattern in the column. Constructor k, for k from 0 to L, is the exact
+// length k and has k element columns. Constructor L + 1 stands for every
+// length above L and has L + 1 element columns. A pattern without a rest
+// matches the constructor whose column count equals its element count, and a
+// pattern with a rest after k elements matches every constructor with k
+// columns or more. A FixedArray of a known length N has one constructor, with
+// N columns.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import { Pos, Pattern } from "narrac/ast"
+import { Type, findFixedLength } from "narrac/types"
+import { Checker, reportError, typeString, getNodeType } from "narrac/check"
+import * as Ranges from "std/range"
+
+// The length findPatternLength gives a pattern whose value is not a FixedArray.
+const NOT_FIXED = -2
+
+export function resolveArrayShape(
+  mutable checker: Checker,
+  pos: Pos,
+  elementCount: int,
+  rest: Option<Pattern>,
+  valueType: Type,
+): Option<Type> from valueType uses alloc {
+  // The element type the elements resolve with, or None after an error.
+  if (valueType is Type.TArray(element)) {
+    return Some(element)
+  }
+  if (valueType is Type.TFixedArray(element, _)) {
+    if (rest is Some(Pattern.PatName(_, restPos, _))) {
+      const shown = typeString(checker, valueType)
+      reportError(
+        mutable checker,
+        restPos,
+        "E0724",
+        `the rest of a ${shown} pattern cannot have a name, since its length would be N minus the elements before it; write \`..._\` and index the array`,
+      )
+      return None
+    }
+    const length = findFixedLength(valueType)
+    const hasRest = rest is Some(_)
+    if (
+      length >= 0 && !isInstanceBody(checker) && !isLengthPossible(length, elementCount, hasRest)
+    ) {
+      reportLengthMismatch(mutable checker, pos, valueType, elementCount, hasRest)
+      return None
+    }
+    return Some(element)
+  }
+  // void marks a value that already had an error
+  if (!(valueType is Type.TVoid)) {
+    const found = typeString(checker, valueType)
+    reportError(
+      mutable checker,
+      pos,
+      "E0726",
+      `an array pattern needs an Array or FixedArray value, found ${found}`,
+    )
+  }
+  return None
+}
+
+export function isInstanceBody(checker: Checker): bool {
+  // A generic instance repeats its declaration's checks with N known; a length test there
+  // is made per instance, so another length is not an error, and a match's arms were
+  // already judged in the declaration's own body.
+  if (checker.body < 0 || checker.body >= Arrays.length(checker.bodies)) {
+    return false
+  }
+  return Arrays.length(checker.bodies[checker.body].typeArguments) > 0
+}
+
+function isLengthPossible(length: int, elementCount: int, hasRest: bool): bool {
+  if (hasRest) {
+    return elementCount <= length
+  }
+  return elementCount == length
+}
+
+function describeMatchedLengths(elementCount: int, hasRest: bool): string uses alloc {
+  if (hasRest) {
+    return `${Int.toString(elementCount)} or more`
+  }
+  return `exactly ${Int.toString(elementCount)}`
+}
+
+function reportLengthMismatch(
+  mutable checker: Checker,
+  pos: Pos,
+  valueType: Type,
+  elementCount: int,
+  hasRest: bool,
+) uses alloc {
+  const shown = typeString(checker, valueType)
+  const length = Int.toString(findFixedLength(valueType))
+  const matched = describeMatchedLengths(elementCount, hasRest)
+  reportError(
+    mutable checker,
+    pos,
+    "E0723",
+    `${shown} holds ${length} elements, but this pattern matches ${matched}`,
+  )
+}
+
+export function isArrayShapeIrrefutable(
+  checker: Checker,
+  nodeId: int,
+  elementCount: int,
+  hasRest: bool,
+): bool {
+  // Whether every length of the value matches; the caller checks the elements.
+  if (getNodeType(checker, nodeId) is Some(valueType)) {
+    if (valueType is Type.TFixedArray(_, _)) {
+      const length = findFixedLength(valueType)
+      if (length >= 0) {
+        return isLengthPossible(length, elementCount, hasRest)
+      }
+    }
+  }
+  return hasRest && elementCount == 0
+}
+
+export function checkDestructureLengths(
+  mutable checker: Checker,
+  pattern: Pattern,
+): bool uses alloc {
+  // A destructuring holds for every value, so a FixedArray pattern of an open length
+  // must be `[..._]`. True when some FixedArray pattern has a length error, which
+  // then stands in for the refutable pattern error.
+  let found = false
+  match (pattern) {
+    Pattern.PatArray(nodeId, pos, elements, rest) => {
+      found = checkFixedLength(mutable checker, nodeId, pos, Arrays.length(elements), rest)
+      for (const element of Arrays.values(elements)) {
+        if (checkDestructureLengths(mutable checker, element)) {
+          found = true
+        }
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) | Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        if (checkDestructureLengths(mutable checker, argument)) {
+          found = true
+        }
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        if (checkDestructureLengths(mutable checker, field.pattern)) {
+          found = true
+        }
+      }
+    }
+    _ => {}
+  }
+  return found
+}
+
+function checkFixedLength(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  elementCount: int,
+  rest: Option<Pattern>,
+): bool uses alloc {
+  const hasRest = rest is Some(_)
+  const length = findPatternLength(checker, nodeId)
+  if (length == NOT_FIXED) {
+    return false
+  }
+  if (length >= 0) {
+    // A known length was compared when the pattern resolved.
+    return !isLengthPossible(length, elementCount, hasRest)
+  }
+  if (hasRest && elementCount == 0) {
+    return false
+  }
+  const shown = describePatternType(checker, nodeId)
+  reportError(
+    mutable checker,
+    pos,
+    "E0723",
+    `the length of ${shown} is a constant parameter, so only \`[..._]\` matches every value; use match or \`is\` to test the length`,
+  )
+  return true
+}
+
+function findPatternLength(checker: Checker, nodeId: int): int {
+  // The FixedArray length of the pattern's value, -1 while it is open, or NOT_FIXED.
+  if (getNodeType(checker, nodeId) is Some(valueType)) {
+    if (valueType is Type.TFixedArray(_, _)) {
+      return findFixedLength(valueType)
+    }
+  }
+  return NOT_FIXED
+}
+
+function describePatternType(checker: Checker, nodeId: int): string uses alloc {
+  if (getNodeType(checker, nodeId) is Some(valueType)) {
+    return typeString(checker, valueType)
+  }
+  return ""
+}
+
+export function findArrayPattern(pattern: Pattern): Option<Pos> from pattern {
+  // The first array pattern inside a pattern, for the places that do not take one.
+  match (pattern) {
+    Pattern.PatArray(_, pos, _, _) => {
+      return Some(pos)
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _)
+      | Pattern.PatTuple(_, _, arguments)
+      | Pattern.PatOr(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        if (findArrayPattern(argument) is Some(pos)) {
+          return Some(pos)
+        }
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        if (findArrayPattern(field.pattern) is Some(pos)) {
+          return Some(pos)
+        }
+      }
+    }
+    _ => {}
+  }
+  return None
+}
+
+// ---- lengths in the usefulness matrix ----
+
+export function isLengthColumn(type: Type): bool {
+  // A FixedArray of an open length has no length constructors: only `[..._]` and `_` cover it.
+  if (type is Type.TArray(_)) {
+    return true
+  }
+  return findFixedLength(type) >= 0
+}
+
+export function findLengthLimit(heads: Array<Pattern>): int {
+  // The largest element count of the array patterns that start the rows.
+  let limit = 0
+  for (const head of Arrays.values(heads)) {
+    if (head is Pattern.PatArray(_, _, elements, _)) {
+      if (Arrays.length(elements) > limit) {
+        limit = Arrays.length(elements)
+      }
+    }
+  }
+  return limit
+}
+
+export function countLengthConstructors(type: Type, limit: int): int {
+  if (findFixedLength(type) >= 0) {
+    return 1
+  }
+  return limit + 2
+}
+
+export function listLengthTypes(
+  type: Type,
+  constructorIndex: int,
+  limit: int,
+): Array<Type> from type uses alloc {
+  // One column per element of the constructor.
+  let columns = constructorIndex
+  let element = Type.TVoid
+  if (type is Type.TFixedArray(fixedElement, _)) {
+    columns = findFixedLength(type)
+    element = fixedElement
+  } else if (type is Type.TArray(arrayElement)) {
+    element = arrayElement
+    if (constructorIndex > limit) {
+      columns = limit + 1
+    }
+  }
+  let types: Array<Type> = []
+  for (const _column of Ranges.upTo(columns)) {
+    Arrays.push(mutable types, element)
+  }
+  return types
+}
+
+export function specializeArray(
+  elements: Array<Pattern>,
+  rest: Option<Pattern>,
+  columns: int,
+): Option<Array<Pattern>> from elements uses alloc {
+  // The element patterns of a constructor with this many columns, or None when the
+  // pattern does not match it.
+  const count = Arrays.length(elements)
+  if (count > columns || (rest is None && count != columns)) {
+    return None
+  }
+  let out: Array<Pattern> = []
+  for (const element of Arrays.values(elements)) {
+    Arrays.push(mutable out, element)
+  }
+  for (const _column of Ranges.between(count, columns)) {
+    Arrays.push(mutable out, Pattern.PatWildcard(-1, Pos { line: 0, column: 0 }))
+  }
+  return Some(out)
+}
+
+export function describeLength(
+  type: Type,
+  constructorIndex: int,
+  limit: int,
+  arguments: Array<string>,
+): string uses alloc {
+  // The constructor above every listed length ends with a rest.
+  if (type is Type.TArray(_)) {
+    if (constructorIndex > limit) {
+      if (Arrays.length(arguments) == 0) {
+        return "[..._]"
+      }
+      return `[${Str.join(arguments, ", ")}, ..._]`
+    }
+  }
+  return `[${Str.join(arguments, ", ")}]`
+}

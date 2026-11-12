@@ -1273,7 +1273,12 @@ Decision (spike destructuring-design; maintainer, 2026-11-12): build array patte
 - **Prior art.** TypeScript array destructuring and rest elements. Rust slice patterns (`[first, .., last]`, `[first, rest @ ..]` binding a slice view) and their exhaustiveness over lengths. Swift and Go have no array patterns. Kotlin destructures data classes but has no array patterns.
 - **Cost.** A new `Pattern` variant in the AST, its dump, `fmt`, `idcheck` and `trivia`; length constructors in the matrix; a length test and a tail copy in the emitter; FixedArray length checks, which need the scrutinee type where irrefutability is decided. About 600 lines. Codes in the patterns range: E0722 (`...` twice or not last), E0723 (FixedArray length), E0724 (named rest on a FixedArray), E0726 (an array pattern on another type).
 
-Not built yet.
+Built: part 1 (node array-patterns, 2026-11-12). Amendments from the build:
+
+- E0722 is a parser error: anything after the rest, a second `...` included, fails at that token. A trailing comma after the rest is the same error, and `narrac fmt` writes none.
+- An array pattern in `ensures` is E0987 (a new message row), since the prover keeps no array facts.
+- A generic instance repeats its declaration's checks with `N` known. There, a FixedArray length that cannot match is not an error, and no `match` is judged again for unreachable arms or exhaustiveness: the declaration's own body already judged every match, against the open length where `N` is a parameter, where only `[..._]` or `_` covers every length. The emitter writes `false` for the test of an arm whose length cannot match in the instance.
+- A FixedArray length error in a destructuring stands in for E0715, so `const [a, b] = values` over a generic `N` reports E0723 alone.
 
 ## D104. A local holds its value until its block ends
 

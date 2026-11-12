@@ -35,6 +35,7 @@ import {
 import { checkExpression, expectType, startsUpper } from "narrac/exprs"
 import { findModuleFunction } from "narrac/funcvalues"
 import { getPatternPos, collectPatternLocals } from "narrac/patterns"
+import { findArrayPattern } from "narrac/arraypatterns"
 import {
   Fact,
   findTypedConstant,
@@ -605,6 +606,15 @@ function checkEnsuresPattern<W: Walker>(
   valueType: Type,
   bounds: Map<int, int>,
 ) uses alloc {
+  if (findArrayPattern(pattern) is Some(arrayPos)) {
+    reportError(
+      mutable checker,
+      arrayPos,
+      "E0987",
+      "an ensures pattern cannot be an array pattern; the prover keeps no facts about array lengths",
+    )
+    return
+  }
   const errorsBefore = Arrays.length(checker.errors)
   Walker.resolvePattern(walker, mutable checker, pattern, valueType)
   if (Arrays.length(checker.errors) > errorsBefore) {
@@ -765,6 +775,8 @@ function isValueProven(
     )
     Pattern.PatStruct(_, _, fields) => isStructProven(checker, value, fields, bounds)
     Pattern.PatTuple(_, _, arguments) => isTupleProven(checker, value, arguments, bounds)
+    // An array pattern in `ensures` is an error, reported when it is checked.
+    Pattern.PatArray(_, _, _, _) => false
     Pattern.PatLit(nodeId, _, literal) => isLiteralProven(checker, value, nodeId, literal)
     Pattern.PatCompare(nodeId, _, operator, _) => isComparisonValue(
       checker,
@@ -975,6 +987,7 @@ function describePattern(pattern: Pattern, bounds: Map<int, int>): string uses a
     )
     Pattern.PatStruct(_, _, fields) => describeStruct(fields, bounds)
     Pattern.PatTuple(_, _, arguments) => `#[${describePatterns(arguments, ", ", bounds)}]`
+    Pattern.PatArray(_, _, elements, rest) => describeArrayPattern(elements, rest, bounds)
     Pattern.PatLit(_, _, literal) => describeLiteral(literal)
     Pattern.PatOr(_, _, alternatives) => describePatterns(alternatives, " | ", bounds)
     Pattern.PatCompare(nodeId, _, operator, bound) => describeComparison(
@@ -984,6 +997,21 @@ function describePattern(pattern: Pattern, bounds: Map<int, int>): string uses a
       bounds,
     )
   }
+}
+
+function describeArrayPattern(
+  elements: Array<Pattern>,
+  rest: Option<Pattern>,
+  bounds: Map<int, int>,
+): string uses alloc {
+  let parts: Array<string> = []
+  for (const element of Arrays.values(elements)) {
+    Arrays.push(mutable parts, describePattern(element, bounds))
+  }
+  if (rest is Some(restPattern)) {
+    Arrays.push(mutable parts, `...${describePattern(restPattern, bounds)}`)
+  }
+  return `[${Str.join(parts, ", ")}]`
 }
 
 function describePatterns(

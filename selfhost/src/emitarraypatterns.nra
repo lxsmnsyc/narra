@@ -1,0 +1,116 @@
+// The C of array patterns. A pattern tests the length once, then reads its
+// elements at `(path)->items[i]` (Array) or `(path).items[i]` (FixedArray)
+// without a bounds check. A named rest is a new Array that holds the remaining
+// elements, each retained, so its local owns it in every pattern position.
+// narrac/emitmatch walks the patterns and calls these helpers.
+import * as Int from "std/int"
+import { Pattern } from "narrac/ast"
+import { Type, findFixedLength } from "narrac/types"
+import { findBodySlot } from "narrac/check"
+import { Emitter, writeLine, temp, retainCode, containerName, useHelper } from "narrac/emitstate"
+import * as Arrays from "std/array"
+
+export function isLengthImpossible(type: Type, elementCount: int, hasRest: bool): bool {
+  // A FixedArray instance of another length never matches; the checker allows it only
+  // in generic instances, where the length test is made per instance.
+  const length = findFixedLength(type)
+  if (length < 0) {
+    return false
+  }
+  if (hasRest) {
+    return elementCount > length
+  }
+  return elementCount != length
+}
+
+export function buildLengthCondition(
+  type: Type,
+  path: string,
+  elementCount: int,
+  hasRest: bool,
+): string uses alloc {
+  // Empty when every value of the type has a matching length.
+  if (type is Type.TFixedArray(_, _)) {
+    if (isLengthImpossible(type, elementCount, hasRest)) {
+      return "false"
+    }
+    return ""
+  }
+  const count = Int.toString(elementCount)
+  if (!hasRest) {
+    return `(${path})->len == ${count}`
+  }
+  if (elementCount == 0) {
+    return ""
+  }
+  return `(${path})->len >= ${count}`
+}
+
+export function buildElementPath(type: Type, path: string, index: int): string uses alloc {
+  if (type is Type.TFixedArray(_, _)) {
+    return `(${path}).items[${Int.toString(index)}]`
+  }
+  return `(${path})->items[${Int.toString(index)}]`
+}
+
+export function emitRestCopy(
+  mutable emitter: Emitter,
+  type: Type,
+  path: string,
+  start: int,
+): string uses alloc {
+  // A new Array of the elements from start on, each retained; the caller owns it.
+  if (type is Type.TArray(element)) {
+    const newHelper = useHelper(emitter, containerName(emitter, type), "new")
+    const first = Int.toString(start)
+    const copied = temp(mutable emitter, type, `${newHelper}((${path})->len - ${first})`)
+    emitter.tempCount++
+    const index = `i${Int.toString(emitter.tempCount)}`
+    const item = `(${path})->items[${index}]`
+    let retainText = retainCode(emitter, element, item)
+    if (retainText != "") {
+      retainText = `${retainText} `
+    }
+    writeLine(
+      mutable emitter,
+      `for (int64_t ${index} = ${first}; ${index} < (${path})->len; ${index}++) { ${retainText}${copied}->items[${copied}->len++] = ${item}; }`,
+    )
+    return copied
+  }
+  return ""
+}
+
+export function collectRestLocals(
+  emitter: Emitter,
+  pattern: Pattern,
+  mutable locals: Array<int>,
+) uses alloc {
+  // The locals of named rests, which own their Array even where other bindings borrow.
+  match (pattern) {
+    Pattern.PatArray(_, _, elements, rest) => {
+      for (const element of Arrays.values(elements)) {
+        collectRestLocals(emitter, element, mutable locals)
+      }
+      if (rest is Some(Pattern.PatName(nodeId, _, _))) {
+        const info = emitter.checker.bodies[emitter.body]
+        const slot = findBodySlot(info, nodeId)
+        if (slot >= 0 && info.declared[slot] >= 0) {
+          Arrays.push(mutable locals, info.declared[slot])
+        }
+      }
+    }
+    Pattern.PatCtor(_, _, _, _, arguments, _) | Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        collectRestLocals(emitter, argument, mutable locals)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        collectRestLocals(emitter, field.pattern, mutable locals)
+      }
+    }
+    // Every alternative binds the same locals; the first one stands for all.
+    Pattern.PatOr(_, _, alternatives) => collectRestLocals(emitter, alternatives[0], mutable locals)
+    _ => {}
+  }
+}

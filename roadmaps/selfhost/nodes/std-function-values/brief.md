@@ -1,7 +1,7 @@
 ---
 id: std-function-values
 title: "Standard functions as values"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-11
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 242000
 owns:
   - roadmaps/selfhost/nodes/std-function-values/**
   - selfhost/src/stdvalues.nra

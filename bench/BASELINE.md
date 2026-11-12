@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-12, end of batch-11
+
+Run of `bench/run.sh -n 9` at commit dc6ce4b6 on `feat/batch-11`, same machine and toolchains as the batch-10 run below. No agent was running. The machine had booted 27 minutes earlier: the load average was 1.74 (1 minute) at the start, with the 5 and 15 minute averages (3.40 and 10.56) still falling from startup, and 2.10 at the end. Every program is within 4% of batch-10.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.111 | 0.124 | 0.111 | 39088169   |
+| sieve     | 0.131 | 0.140 | 0.131 | 1270607    |
+| matmul    | 0.104 | 0.198 | 0.116 | 3547800000 |
+| strings   | 0.215 | 0.289 | 0.353 | 100000     |
+| interp    | 0.183 | 0.241 | 0.168 | 972838     |
+| particles | 0.067 | 0.073 | 0.092 | 6996184    |
+| compiler  | 0.298 | -     | -     | peak memory 170 MB |
+
+Instructions retired by `narrac emit selfhost` (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`, load average 1.81 to 1.84): on the batch-10 source, 2.412G with the batch-10 compiler and 2.458G with the batch-11 compiler (+1.9%); the batch-11 compiler on its own source 2.897G. A per-commit bisect puts the one lasting step at array-patterns (about +1.3%), and builds of an unchanged tree vary by up to 2% from C code layout, so the rise is within noise (inbox entry). The compiler row rises from 0.257 s to 0.298 s and 150 MB to 170 MB mostly because the source grew 14.9% (65,405 to 75,144 lines). The seed is 215,778 lines.
+
 ## 2026-11-12, end of batch-10
 
 Run of `bench/run.sh -n 9` at commit 696f93c6 on `feat/batch-10`, same machine and toolchains as the batch-9 run below. No agent was running. The load average was 2.12 (1 minute) at the start, just above the usual limit of 2, with the 5 and 15 minute averages (2.86 and 3.37) still falling after the batch's test runs, and 4.15 at the end. Batch-10 changed no code generation for release builds (the per-holder copy check is debug only), and every program is within 2% of batch-9.

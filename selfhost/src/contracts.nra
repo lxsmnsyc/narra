@@ -1,8 +1,9 @@
-// `requires` and `ensures` lines, proven at compile time. A condition compares an
-// integer parameter with an integer constant, joined by `&&`. The function body
-// starts with each condition as a fact about its parameter (operands.nra), and each
-// call records what it knows about its arguments; after every body those
-// facts must prove the callee's conditions. The conditions themselves are read
+// `requires` and `ensures` lines, proven at compile time. A condition is clauses
+// joined by `&&`; a clause is comparisons joined by `||`, each of an integer parameter
+// with an integer constant or with another parameter (a relation). The function body
+// starts with each clause as a fact about its parameters (operands.nra), and each
+// call records what it knows about its arguments; after every body those facts must
+// prove one comparison of each clause of the callee. The conditions themselves are read
 // after each module's declarations, from names and constants alone.
 //
 // An `ensures` line is a pattern every result must match: each `return` value (each
@@ -10,7 +11,7 @@
 // constructors, literals and integer facts. A caller learns the pattern as facts
 // about the integer locals that receive parts of the result: `const n = f()`, the
 // bindings of `f() is P` and of `match` arms, and `r is P` for a `const r = f()`.
-import { Expr, FuncDecl, Arg, File, Decl, Pattern, FieldPattern, Pos } from "narrac/ast"
+import { Expr, FuncDecl, Param, Arg, File, Decl, Pattern, FieldPattern, Pos } from "narrac/ast"
 import { Type, isInteger } from "narrac/types"
 import {
   Checker,
@@ -51,6 +52,12 @@ import {
   joinFacts,
   narrowFact,
   isUnboundedEnd,
+  negateComparison,
+  buildSideFact,
+  findRelationSet,
+  isRelationProven,
+  recordRelation,
+  findArgumentRelation,
 } from "narrac/operands"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -129,15 +136,65 @@ export function checkRequires<W: Walker>(
     }
   }
 
-  // Each condition is a fact about its parameter at the start of the body.
+  // Each clause is a fact about its parameters at the start of the body.
   if (checker.requirements[funcIndex] is Some(known)) {
-    for (const requirement of Arrays.values(known)) {
-      const local = findLocal(checker, funcDecl.parameters[requirement.parameter].name)
-      if (local >= 0) {
-        refineFact(mutable checker, local, requirement.comparison, requirement.bound)
-      }
+    for (const clause of Arrays.values(groupClauses(known))) {
+      assumeClause(mutable checker, funcDecl, clause)
     }
   }
+}
+
+function groupClauses(
+  requirements: Array<Requirement>,
+): Array<Array<Requirement>> from requirements uses alloc {
+  // Comparisons of one clause are next to each other in the list.
+  let clauses: Array<Array<Requirement>> = []
+  let current: Array<Requirement> = []
+  for (const requirement of Arrays.values(requirements)) {
+    if (Arrays.length(current) > 0 && current[0].clause != requirement.clause) {
+      Arrays.push(mutable clauses, current)
+      current = []
+    }
+    Arrays.push(mutable current, requirement)
+  }
+  if (Arrays.length(current) > 0) {
+    Arrays.push(mutable clauses, current)
+  }
+  return clauses
+}
+
+function assumeClause(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  clause: Array<Requirement>,
+) uses alloc {
+  const first = clause[0]
+  const parameter = funcDecl.parameters[first.parameter]
+  const local = findLocal(checker, parameter.name)
+  if (local < 0) {
+    return
+  }
+  if (Arrays.length(clause) == 1) {
+    if (first.other < 0) {
+      refineFact(mutable checker, local, first.comparison, first.bound)
+      return
+    }
+    const otherLocal = findLocal(checker, funcDecl.parameters[first.other].name)
+    if (otherLocal >= 0) {
+      recordRelation(mutable checker, local, otherLocal, findRelationSet(first.comparison))
+    }
+    return
+  }
+  // A clause over one parameter gives it the hull of its sides; a clause over two gives nothing.
+  const type = checker.paramTypes[parameter.id]
+  let hull = buildSideFact(type, first.comparison, first.bound)
+  for (const requirement of Arrays.values(clause)) {
+    if (requirement.other >= 0 || requirement.parameter != first.parameter) {
+      return
+    }
+    hull = joinFacts(hull, buildSideFact(type, requirement.comparison, requirement.bound))
+  }
+  narrowFact(mutable checker, local, hull)
 }
 
 function collectRequirements(
@@ -154,27 +211,75 @@ function collectRequirements(
       collectRequirements(mutable checker, scope, funcDecl, right, mutable requirements, report)
       return
     }
+  }
+  // One clause: a comparison, or comparisons joined by `||`.
+  let sides: Array<Expr> = []
+  collectClauseSides(condition, mutable sides)
+  let clause = 0
+  const count = Arrays.length(requirements)
+  if (count > 0) {
+    clause = requirements[count - 1].clause + 1
+  }
+  let found: Array<Requirement> = []
+  for (const side of Arrays.values(sides)) {
+    if (findSideRequirement(checker, scope, funcDecl, side, clause) is Some(requirement)) {
+      Arrays.push(mutable found, requirement)
+    } else {
+      if (report) {
+        reportUnsupported(mutable checker, scope, funcDecl, side)
+      }
+      return
+    }
+  }
+  for (const requirement of Arrays.values(found)) {
+    Arrays.push(mutable requirements, requirement)
+  }
+}
+
+function collectClauseSides(condition: Expr, mutable sides: Array<Expr>) uses alloc {
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (operator == "||") {
+      collectClauseSides(left, mutable sides)
+      collectClauseSides(right, mutable sides)
+      return
+    }
+  }
+  Arrays.push(mutable sides, condition)
+}
+
+function reportUnsupported(
+  mutable checker: Checker,
+  scope: int,
+  funcDecl: FuncDecl,
+  condition: Expr,
+) uses alloc {
+  let detail = describeUnsupported(checker, funcDecl, condition)
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (isComparisonOperator(operator) && isWrappedBound(checker, scope, funcDecl, left, right)) {
+      detail = "the bound does not fit the parameter's type"
+    }
+  }
+  reportError(
+    mutable checker,
+    getExpressionPos(condition),
+    "E0984",
+    `requires compares integer parameters with integer constants or with each other, joined by && and ||; ${detail}`,
+  )
+}
+
+function findSideRequirement(
+  checker: Checker,
+  scope: int,
+  funcDecl: FuncDecl,
+  side: Expr,
+  clause: int,
+): Option<Requirement> uses alloc {
+  if (side is Expr.BinaryExpr(_, _, operator, left, right)) {
     if (isComparisonOperator(operator)) {
-      if (findRequirement(checker, scope, funcDecl, operator, left, right) is Some(requirement)) {
-        Arrays.push(mutable requirements, requirement)
-        return
-      }
+      return findRequirement(checker, scope, funcDecl, operator, left, right, clause)
     }
   }
-  if (report) {
-    let detail = describeUnsupported(checker, condition)
-    if (condition is Expr.BinaryExpr(_, _, _, left, right)) {
-      if (isWrappedBound(checker, scope, funcDecl, left, right)) {
-        detail = "the bound does not fit the parameter's type"
-      }
-    }
-    reportError(
-      mutable checker,
-      getExpressionPos(condition),
-      "E0984",
-      `requires compares an integer parameter with an integer constant, joined by &&; ${detail}`,
-    )
-  }
+  return None
 }
 
 function findRequirement(
@@ -184,17 +289,30 @@ function findRequirement(
   operator: string,
   left: Expr,
   right: Expr,
+  clause: int,
 ): Option<Requirement> uses alloc {
+  const leftParameter = findParameterIndex(funcDecl, left)
+  const rightParameter = findParameterIndex(funcDecl, right)
+  if (leftParameter >= 0 && rightParameter >= 0) {
+    return findRelationRequirement(
+      checker,
+      funcDecl,
+      operator,
+      leftParameter,
+      rightParameter,
+      clause,
+    )
+  }
   // The parameter may be on either side: `0 < count` is `count > 0`.
-  let parameter = findParameterIndex(funcDecl, left)
+  let parameter = leftParameter
   let constantSide = right
   let comparison = operator
   if (parameter < 0) {
-    parameter = findParameterIndex(funcDecl, right)
+    parameter = rightParameter
     constantSide = left
     comparison = flipComparison(operator)
   }
-  if (parameter < 0 || findParameterIndex(funcDecl, constantSide) >= 0) {
+  if (parameter < 0) {
     return None
   }
   const type = checker.paramTypes[funcDecl.parameters[parameter].id]
@@ -214,9 +332,38 @@ function findRequirement(
       comparison: comparison,
       bound: bound,
       boundText: describeBound(constantSide, bound),
+      clause: clause,
+      other: -1,
     })
   }
   return None
+}
+
+function findRelationRequirement(
+  checker: Checker,
+  funcDecl: FuncDecl,
+  operator: string,
+  leftParameter: int,
+  rightParameter: int,
+  clause: int,
+): Option<Requirement> uses alloc {
+  // Two different integer parameters of one type, compared with no arithmetic.
+  if (leftParameter == rightParameter) {
+    return None
+  }
+  const leftType = checker.paramTypes[funcDecl.parameters[leftParameter].id]
+  const rightType = checker.paramTypes[funcDecl.parameters[rightParameter].id]
+  if (!isInteger(leftType) || leftType != rightType) {
+    return None
+  }
+  return Some(Requirement {
+    parameter: leftParameter,
+    comparison: operator,
+    bound: 0,
+    boundText: funcDecl.parameters[rightParameter].name,
+    clause: clause,
+    other: rightParameter,
+  })
 }
 
 function hasName(names: Array<string>, name: string): bool {
@@ -364,16 +511,147 @@ function describeBound(expression: Expr, bound: int): string uses alloc {
   return Int.toString(bound)
 }
 
-function describeUnsupported(checker: Checker, condition: Expr): string uses alloc {
+function describeUnsupported(
+  checker: Checker,
+  funcDecl: FuncDecl,
+  condition: Expr,
+): string uses alloc {
+  // `!` over comparisons has a spelling without it, which the message gives.
+  if (condition is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "!") {
+      if (rewriteNegation(operand, true) is Some(rewritten)) {
+        return `write ${rewritten}`
+      }
+    }
+  }
   if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
-    if (operator == "||") {
-      return "`||` is not supported"
+    if (operator == "&&") {
+      return "split it into clauses joined by &&; && inside || is not supported"
     }
     if (isComparisonOperator(operator)) {
+      const leftParameter = findParameterIndex(funcDecl, left)
+      if (leftParameter >= 0 && leftParameter == findParameterIndex(funcDecl, right)) {
+        return "this compares the parameter with itself"
+      }
+      if (isOffsetComparison(funcDecl, left, right)) {
+        return "compare two parameters with no arithmetic; + and - wrap"
+      }
       return describeOperands(checker, left, right)
     }
   }
   return "write a comparison such as `count >= 0`"
+}
+
+function isOffsetComparison(funcDecl: FuncDecl, left: Expr, right: Expr): bool {
+  // Two parameters compared with `+` or `-` around one of them, on either side:
+  // `low + 1 <= high`, `x - y >= 0`.
+  const parameterCount = countParameters(funcDecl, left) + countParameters(funcDecl, right)
+  return (isArithmetic(left) || isArithmetic(right)) && parameterCount >= 2
+}
+
+function isArithmetic(expression: Expr): bool {
+  if (expression is Expr.BinaryExpr(_, _, operator, _, _)) {
+    return operator == "+" || operator == "-"
+  }
+  return false
+}
+
+function countParameters(funcDecl: FuncDecl, expression: Expr): int {
+  if (findParameterIndex(funcDecl, expression) >= 0) {
+    return 1
+  }
+  if (expression is Expr.BinaryExpr(_, _, _, left, right)) {
+    return countParameters(funcDecl, left) + countParameters(funcDecl, right)
+  }
+  if (expression is Expr.UnaryExpr(_, _, _, operand)) {
+    return countParameters(funcDecl, operand)
+  }
+  return 0
+}
+
+function rewriteNegation(expression: Expr, negate: bool): Option<string> uses alloc {
+  // The condition with each `!` pushed inward: `!(a || b)` is `!a && !b`, and a negated
+  // comparison turns around (`!(x < 0)` is `x >= 0`).
+  if (expression is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "!") {
+      return rewriteNegation(operand, !negate)
+    }
+    return None
+  }
+  if (expression is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (isComparisonOperator(operator)) {
+      let comparison = operator
+      if (negate) {
+        comparison = negateComparison(operator)
+      }
+      if (describeOperandText(left) is Some(leftText)) {
+        if (describeOperandText(right) is Some(rightText)) {
+          return Some(`${leftText} ${comparison} ${rightText}`)
+        }
+      }
+      return None
+    }
+    if (operator == "&&" || operator == "||") {
+      const joined = findJoinedOperator(expression, negate)
+      if (rewriteGrouped(left, negate, joined) is Some(leftText)) {
+        if (rewriteGrouped(right, negate, joined) is Some(rightText)) {
+          return Some(`${leftText} ${joined} ${rightText}`)
+        }
+      }
+    }
+  }
+  return None
+}
+
+function rewriteGrouped(expression: Expr, negate: bool, parent: string): Option<string> uses alloc {
+  // A part joined by the other operator than its parent's keeps its parentheses.
+  if (rewriteNegation(expression, negate) is Some(text)) {
+    const joined = findJoinedOperator(expression, negate)
+    if (joined != "" && joined != parent) {
+      return Some(`(${text})`)
+    }
+    return Some(text)
+  }
+  return None
+}
+
+function findJoinedOperator(expression: Expr, negate: bool): string {
+  // The operator that joins the rewritten expression at its top, or "" for a comparison.
+  if (expression is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "!") {
+      return findJoinedOperator(operand, !negate)
+    }
+    return ""
+  }
+  if (expression is Expr.BinaryExpr(_, _, operator, _, _)) {
+    if (operator == "&&" || operator == "||") {
+      if (negate == (operator == "&&")) {
+        return "||"
+      }
+      return "&&"
+    }
+  }
+  return ""
+}
+
+function describeOperandText(expression: Expr): Option<string> uses alloc {
+  if (expression is Expr.Ident(_, _, name)) {
+    return Some(name)
+  }
+  if (expression is Expr.IntLit(_, _, text)) {
+    return Some(text)
+  }
+  if (expression is Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name)) {
+    return Some(`${alias}.${name}`)
+  }
+  if (expression is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "-") {
+      if (describeOperandText(operand) is Some(text)) {
+        return Some(`-${text}`)
+      }
+    }
+  }
+  return None
 }
 
 function describeOperands(checker: Checker, left: Expr, right: Expr): string uses alloc {
@@ -398,7 +676,7 @@ function describeOperands(checker: Checker, left: Expr, right: Expr): string use
       }
     }
   }
-  return "compare one integer parameter with a constant, as in `count >= 0`"
+  return "compare an integer parameter with a constant or with another parameter, as in `count >= 0`"
 }
 
 export function recordContractCall(
@@ -439,11 +717,31 @@ export function recordContractCall(
       })
     }
   }
+  // Narrowing has ended when the calls are proven, so each relation is read now.
+  let relations: Array<int> = []
+  if (checker.requirements[funcIndex] is Some(known)) {
+    for (const requirement of Arrays.values(known)) {
+      if (requirement.other >= 0) {
+        let relation = 0
+        const count = Arrays.length(arguments)
+        if (requirement.parameter < count && requirement.other < count) {
+          relation = findArgumentRelation(
+            checker,
+            arguments[requirement.parameter].value,
+            arguments[requirement.other].value,
+            checker.paramTypes[parameters[requirement.parameter].id],
+          )
+        }
+        Arrays.push(mutable relations, relation)
+      }
+    }
+  }
   const file = checker.scopes[checker.current].file
   Arrays.push(mutable checker.contractCalls, ContractCall {
     file: file,
     funcIndex: funcIndex,
     arguments: facts,
+    relations: relations,
   })
 }
 
@@ -452,48 +750,123 @@ export function checkContractCalls(mutable checker: Checker) uses alloc {
   const calls = copy(checker.contractCalls)
   for (const call of Arrays.values(calls)) {
     if (checker.requirements[call.funcIndex] is Some(found)) {
-      const requirements = copy(found)
-      for (const parameter of Ranges.between(0, Arrays.length(call.arguments))) {
-        proveArgument(mutable checker, call, parameter, requirements)
-      }
+      proveCall(mutable checker, call, groupClauses(found))
     }
   }
 }
 
-function proveArgument(
+function proveCall(
+  mutable checker: Checker,
+  call: ContractCall,
+  clauses: Array<Array<Requirement>>,
+) uses alloc {
+  // A clause holds when one of its comparisons is proven.
+  let failed: Array<Array<Requirement>> = []
+  let relationIndex = 0
+  for (const clause of Arrays.values(clauses)) {
+    let proven = false
+    for (const requirement of Arrays.values(clause)) {
+      if (isRequirementProven(call, requirement, relationIndex)) {
+        proven = true
+      }
+      if (requirement.other >= 0) {
+        relationIndex++
+      }
+    }
+    if (!proven) {
+      Arrays.push(mutable failed, clause)
+    }
+  }
+  for (const parameter of Ranges.between(0, Arrays.length(call.arguments))) {
+    reportFailedClauses(mutable checker, call, parameter, failed)
+  }
+}
+
+function isRequirementProven(
+  call: ContractCall,
+  requirement: Requirement,
+  relationIndex: int,
+): bool {
+  // A parameter with no argument has nothing to prove.
+  const count = Arrays.length(call.arguments)
+  if (requirement.parameter >= count || requirement.other >= count) {
+    return true
+  }
+  if (requirement.other >= 0) {
+    if (relationIndex < Arrays.length(call.relations)) {
+      return isRelationProven(call.relations[relationIndex], requirement.comparison)
+    }
+    return false
+  }
+  const argument = call.arguments[requirement.parameter]
+  const fact = Fact { low: argument.low, high: argument.high, nonzero: argument.nonzero }
+  return isComparisonProven(fact, requirement.comparison, requirement.bound)
+}
+
+function reportFailedClauses(
   mutable checker: Checker,
   call: ContractCall,
   parameter: int,
-  requirements: Array<Requirement>,
+  failed: Array<Array<Requirement>>,
 ) uses alloc {
-  // One error per argument, naming each condition it does not meet.
-  const argument = call.arguments[parameter]
-  const fact = Fact { low: argument.low, high: argument.high, nonzero: argument.nonzero }
-  const info = copy(checker.functions[call.funcIndex])
-  const parameterName = info.declaration.parameters[parameter].name
-  let failed: Array<string> = []
-  for (const requirement of Arrays.values(requirements)) {
-    if (
-      requirement.parameter == parameter &&
-        !isComparisonProven(fact, requirement.comparison, requirement.bound)
-    ) {
-      Arrays.push(
-        mutable failed,
-        `${parameterName} ${requirement.comparison} ${requirement.boundText}`,
-      )
+  // One error for the one-comparison clauses of an argument, joined by &&, and one for
+  // each `||` clause, at the argument of the clause's first parameter.
+  let joined: Array<Requirement> = []
+  for (const clause of Arrays.values(failed)) {
+    if (clause[0].parameter == parameter && Arrays.length(clause) == 1) {
+      Arrays.push(mutable joined, clause[0])
     }
   }
-  if (Arrays.length(failed) == 0) {
-    return
+  if (Arrays.length(joined) > 0) {
+    reportClause(mutable checker, call, parameter, joined, " && ")
   }
-  const condition = Str.join(failed, " && ")
-  if (argument.constant) {
+  for (const clause of Arrays.values(failed)) {
+    if (clause[0].parameter == parameter && Arrays.length(clause) > 1) {
+      reportClause(mutable checker, call, parameter, clause, " || ")
+    }
+  }
+}
+
+function reportClause(
+  mutable checker: Checker,
+  call: ContractCall,
+  parameter: int,
+  comparisons: Array<Requirement>,
+  separator: string,
+) uses alloc {
+  const info = copy(checker.functions[call.funcIndex])
+  const parameters = info.declaration.parameters
+  let texts: Array<string> = []
+  for (const requirement of Arrays.values(comparisons)) {
+    const name = parameters[requirement.parameter].name
+    Arrays.push(mutable texts, `${name} ${requirement.comparison} ${requirement.boundText}`)
+  }
+  const condition = Str.join(texts, separator)
+  const argument = call.arguments[parameter]
+  const named = collectNamedParameters(parameters, comparisons)
+  if (hasConstantArguments(call, named)) {
+    // One constant names its value; several name each parameter, in parameter order.
+    if (Arrays.length(named) == 1) {
+      reportErrorIn(
+        mutable checker,
+        call.file,
+        argument.pos,
+        "E0985",
+        `${Int.toString(argument.value)} does not satisfy \`requires ${condition}\` of ${info.name}`,
+      )
+      return
+    }
+    let values: Array<string> = []
+    for (const index of Arrays.values(named)) {
+      const value = Int.toString(call.arguments[index].value)
+      Arrays.push(mutable values, `${parameters[index].name} = ${value}`)
+    }
     reportErrorIn(
       mutable checker,
       call.file,
       argument.pos,
       "E0985",
-      `${Int.toString(argument.value)} does not satisfy \`requires ${condition}\` of ${info.name}`,
+      `${joinWithAnd(values)} do not satisfy \`requires ${condition}\` of ${info.name}`,
     )
     return
   }
@@ -504,6 +877,48 @@ function proveArgument(
     "E0985",
     `this argument is not proven to meet \`requires ${condition}\` of ${info.name}; pass a constant, or a name checked first with an \`if\``,
   )
+}
+
+function collectNamedParameters(
+  parameters: Array<Param>,
+  comparisons: Array<Requirement>,
+): Array<int> uses alloc {
+  // Every parameter the comparisons name, in parameter order.
+  let named: Array<int> = []
+  for (const parameter of Ranges.upTo(Arrays.length(parameters))) {
+    if (isNamedParameter(comparisons, parameter)) {
+      Arrays.push(mutable named, parameter)
+    }
+  }
+  return named
+}
+
+function hasConstantArguments(call: ContractCall, named: Array<int>): bool {
+  for (const parameter of Arrays.values(named)) {
+    if (parameter >= Arrays.length(call.arguments) || !call.arguments[parameter].constant) {
+      return false
+    }
+  }
+  return true
+}
+
+function joinWithAnd(values: Array<string>): string uses alloc {
+  // `a, b and c`.
+  const count = Arrays.length(values)
+  let leading: Array<string> = []
+  for (const index of Ranges.upTo(count - 1)) {
+    Arrays.push(mutable leading, values[index])
+  }
+  return `${Str.join(leading, ", ")} and ${values[count - 1]}`
+}
+
+function isNamedParameter(comparisons: Array<Requirement>, parameter: int): bool {
+  for (const requirement of Arrays.values(comparisons)) {
+    if (requirement.parameter == parameter || requirement.other == parameter) {
+      return true
+    }
+  }
+  return false
 }
 
 function collectResultContract(

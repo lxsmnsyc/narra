@@ -1,15 +1,15 @@
 ---
 id: destructuring-design
 title: "Spike: destructuring in parameters, array patterns and assignments"
-status: todo
+status: done
 priority: should
 type: spike
-story:
+story: batch-10
 early: false
 outline: false
-milestone: m12-spec-gaps
+milestone: 
 target:
-ship: pr
+ship: auto
 from:
 size: M
 spike: true
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-11
-spent:
+spent: 423000
 owns:
   - roadmaps/selfhost/nodes/destructuring-design/**
 shared:

@@ -5,6 +5,8 @@
 // For the samples named copy_*.nra, the release build's C, preprocessed as a
 // release build, must also hold no credit or hook code, while the same C
 // preprocessed as a debug build holds it.
+// The copies suite builds a debug compiler and runs it on selfhost/ with the
+// copy check on: the compiler must compile itself with no hidden copy.
 import * as Fs from "std/fs"
 import * as Path from "std/path"
 import * as Str from "std/string"
@@ -87,6 +89,40 @@ function compareBuilds(
     return Err(
       `the release build's C must have no copy check code and the debug build's must have it: ${Common.describeRun(compared)}`,
     )
+  }
+  return Ok(true)
+}
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  const path = Path.join(context.repository, "selfhost")
+  return [TestCase { suite: "copies", name: "selfhost-no-hidden-copies", path: path, variant: "" }]
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const outcome = checkSelfhostCopies(context, testCase.path, made.value)
+  Shell.removeTree(made.value)
+  return outcome
+}
+
+function checkSelfhostCopies(
+  context: Context,
+  selfhost: string,
+  work: string,
+): Result<bool, string> uses io, alloc {
+  const compiler = Path.join(work, "narrac-debug")
+  const built = Common.runNarrac(context, ["build", "-o", compiler, selfhost])
+  if (built.code != 0) {
+    return Err(`building the debug compiler failed: ${Common.describeRun(built)}`)
+  }
+  // Exit code 103 and a report line on stderr mean a copy that no copy(...) explains.
+  const script = "NARRA_CHECK_COPIES=1 \"$1\" emit \"$2\" > /dev/null"
+  const emitted = Shell.runScript(script, [compiler, selfhost])
+  if (emitted.code != 0) {
+    return Err(`the debug compiler's copy check failed on selfhost: ${Common.describeRun(emitted)}`)
   }
   return Ok(true)
 }

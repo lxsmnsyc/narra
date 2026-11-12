@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-12, end of batch-10
+
+Run of `bench/run.sh -n 9` at commit 696f93c6 on `feat/batch-10`, same machine and toolchains as the batch-9 run below. No agent was running. The load average was 2.12 (1 minute) at the start, just above the usual limit of 2, with the 5 and 15 minute averages (2.86 and 3.37) still falling after the batch's test runs, and 4.15 at the end. Batch-10 changed no code generation for release builds (the per-holder copy check is debug only), and every program is within 2% of batch-9.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.115 | 0.127 | 0.114 | 39088169   |
+| sieve     | 0.132 | 0.141 | 0.132 | 1270607    |
+| matmul    | 0.108 | 0.205 | 0.119 | 3547800000 |
+| strings   | 0.224 | 0.284 | 0.370 | 100000     |
+| interp    | 0.189 | 0.248 | 0.173 | 972838     |
+| particles | 0.068 | 0.076 | 0.095 | 6996184    |
+| compiler  | 0.257 | -     | -     | peak memory 150 MB |
+
+Instructions retired by `narrac emit selfhost` on the batch-10 source (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`): 2.415G with the batch-9 compiler and 2.416G with the batch-10 compiler, the same within noise. The D104 rule added about 170 `copy(...)` calls to `selfhost/src`; a debug run shows none of them copies at run time, and copies on write in `emit selfhost` fell from 26353 to 25650. The source grew 0.6% (64,992 to 65,405 lines). The seed is 188,926 lines.
+
 ## 2026-11-12, end of batch-9
 
 Run of `bench/run.sh -n 9` at commit e27bc030 on `feat/batch-9`, same machine and toolchains as the batch-8 run below. No agent was running. The load average was 1.92 (1 minute) at the start and 2.79 at the end, with the 5 and 15 minute averages (3.36 and 4.08) still falling after the batch's test runs. Batch-9 changed no code generation, and the programs are within noise of batch-8.

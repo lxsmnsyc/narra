@@ -1,7 +1,7 @@
 ---
 id: fmt-std-sources
 title: "The sources suite checks std/src, and fmt levels block operands in a chain"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-10
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-12
-spent:
+spent: 129000
 owns:
   - roadmaps/selfhost/nodes/fmt-std-sources/**
   - selfhost/tests/src/sources.nra

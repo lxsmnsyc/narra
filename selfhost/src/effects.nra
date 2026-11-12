@@ -54,6 +54,13 @@ import {
   lookupTrait,
 } from "narrac/check"
 import { findTraitFunc } from "narrac/traits"
+import {
+  FORCE_NAME,
+  isLazyConstant,
+  addEdge,
+  findLazyCycles,
+  reportLazyCycle,
+} from "narrac/lazyvalues"
 import { describeType, generatorUseFails } from "narrac/exprs"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -96,6 +103,9 @@ export struct EffectState {
   calls: Array<CallEdge> = []
   unsafeDepth: int = 0 // the `unsafe { }` blocks around the statement being walked
   sawUnsafeBlock: bool = false // the function being analysed has an `unsafe { }` block
+  lazyConsts: Array<int> = [] // the lazy values (Checker.consts indexes) walked so far
+  lazyEffects: Array<Array<Effect>> = [] // the effects of each one's expression, in lazyConsts order
+  lazyEdges: Array<int> = [] // the edges of the lazy value graph (see lazyvalues.nra)
 }
 
 // A call of a declared function or implement block function: the body that
@@ -283,6 +293,7 @@ export function checkEffects(mutable checker: Checker): EffectState uses alloc {
     }
   }
   walkAll(mutable checker, mutable state, true)
+  reportLazyCycles(mutable checker, state)
   checkGeneratorUses(mutable checker)
   checkFunctionStores(mutable checker, mutable state)
   // The C functions of extern blocks, once every name the program generates is known.
@@ -451,9 +462,7 @@ function walkAll(mutable checker: Checker, mutable state: EffectState, report: b
     }
     enter(mutable checker, saved)
   }
-  if (report) {
-    walkConstants(mutable checker, mutable state)
-  }
+  walkConstants(mutable checker, mutable state)
 }
 
 function checkImplementationEffects(
@@ -523,7 +532,13 @@ function checkImplementationEffects(
 }
 
 function walkConstants(mutable checker: Checker, mutable state: EffectState) uses alloc {
+  // Only the reporting walk visits every constant; the passes before it need the
+  // lazy values, because a force carries the effects of the expression.
   for (const index of Ranges.between(0, Arrays.length(checker.consts))) {
+    const isLazy = isLazyConstant(checker, index)
+    if (!state.report && !isLazy) {
+      continue
+    }
     if (checker.bodyKeys[`const|${Int.toString(index)}`] is Some(bodyIndex)) {
       if (checker.bodies[bodyIndex].root is BodyRoot.RootExpr(value)) {
         const scope = checker.consts[index].scope
@@ -531,9 +546,73 @@ function walkConstants(mutable checker: Checker, mutable state: EffectState) use
         state.body = bodyIndex
         let out: Array<Effect> = []
         walkExpression(mutable checker, mutable state, mutable out, value)
+        if (isLazy) {
+          recordLazyEffects(mutable checker, mutable state, index, out)
+        }
         enter(mutable checker, saved)
       }
     }
+  }
+}
+
+function findLazySlot(state: EffectState, constIndex: int): int {
+  for (const slot of Ranges.between(0, Arrays.length(state.lazyConsts))) {
+    if (state.lazyConsts[slot] == constIndex) {
+      return slot
+    }
+  }
+  return -1
+}
+
+function recordLazyEffects(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  constIndex: int,
+  effects: Array<Effect>,
+) uses alloc {
+  const slot = findLazySlot(state, constIndex)
+  if (slot < 0) {
+    state.changed = true
+    Arrays.push(mutable state.lazyConsts, constIndex)
+    Arrays.push(mutable state.lazyEffects, effects)
+  } else {
+    if (Arrays.length(effects) != Arrays.length(state.lazyEffects[slot])) {
+      state.changed = true
+    }
+    state.lazyEffects[slot] = effects
+  }
+  if (!state.report) {
+    return
+  }
+  // A first force can happen anywhere, so only alloc may hide in it.
+  for (const effect of Arrays.values(effects)) {
+    if (effect.name != "alloc") {
+      reportError(
+        mutable checker,
+        effect.pos,
+        "E1034",
+        `the expression of a lazy value uses \`${effect.name}\`; only \`alloc\` is allowed`,
+      )
+    }
+  }
+}
+
+function reportLazyCycles(mutable checker: Checker, state: EffectState) uses alloc {
+  let lazyConstants: Array<int> = []
+  let lazyBodies: Array<int> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.consts))) {
+    if (isLazyConstant(checker, index)) {
+      if (checker.bodyKeys[`const|${Int.toString(index)}`] is Some(bodyIndex)) {
+        Arrays.push(mutable lazyConstants, index)
+        Arrays.push(mutable lazyBodies, bodyIndex)
+      }
+    }
+  }
+  for (const position of Arrays.values(findLazyCycles(state.lazyEdges, lazyBodies))) {
+    const info = copy(checker.consts[lazyConstants[position]])
+    const saved = enter(mutable checker, info.scope)
+    reportLazyCycle(mutable checker, info.declaration.pos, info.name)
+    enter(mutable checker, saved)
   }
 }
 
@@ -1212,6 +1291,14 @@ function walkExpression(
       }
       state.arrows[nodeId] = inner
     }
+    Expr.Ident(nodeId, _, _) => {
+      // A function named as a value counts as called.
+      if (state.report) {
+        if (copy(findCallee(checker, state, findRef(checker, state.body, nodeId))) is Some(named)) {
+          addCalleeEdge(mutable state, named)
+        }
+      }
+    }
     Expr.CallExpr(nodeId, pos, callee, _, arguments) => walkCall(
       mutable checker,
       mutable state,
@@ -1287,6 +1374,9 @@ function walkCallEffects(
       }
       Arrays.push(mutable state.calls, edge)
     }
+    if (state.report) {
+      addCalleeEdge(mutable state, calleeInfo)
+    }
     // The callee's parameters pair with the arguments in parameter order.
     const ordered = orderArguments(checker, nodeId, arguments)
     walkUserCall(mutable checker, mutable state, mutable out, pos, calleeInfo, ordered)
@@ -1299,6 +1389,9 @@ function walkCallEffects(
       const builtin = checker.registry.functions[index]
       for (const name of Arrays.values(builtin.effects)) {
         addEffect(mutable out, name, pos, builtin.name)
+      }
+      if (builtin.name == FORCE_NAME) {
+        addForceEffects(checker, mutable state, mutable out, pos, arguments)
       }
       for (const position of Arrays.values(builtin.callbacks)) {
         if (position < Arrays.length(arguments)) {
@@ -1335,6 +1428,40 @@ function walkCallEffects(
     }
     Ref.Unresolved => addTraitCallEffects(checker, mutable out, pos, callee)
     _ => {}
+  }
+}
+
+function addCalleeEdge(mutable state: EffectState, callee: Callee) uses alloc {
+  const source = state.body
+  if (state.bodyIndex[callee.key] is Some(target)) {
+    addEdge(mutable state.lazyEdges, source, target)
+  }
+}
+
+function addForceEffects(
+  checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  pos: Pos,
+  arguments: Array<Arg>,
+) uses alloc {
+  // A force has the effects of the lazy value's expression.
+  if (Arrays.length(arguments) != 1) {
+    return
+  }
+  if (findRef(checker, state.body, getExpressionId(arguments[0].value)) is Ref.Const(constIndex)) {
+    const slot = findLazySlot(state, constIndex)
+    if (slot >= 0) {
+      for (const effect of Arrays.values(state.lazyEffects[slot])) {
+        addEffect(mutable out, effect.name, pos, FORCE_NAME)
+      }
+    }
+    const source = state.body
+    if (state.report) {
+      if (checker.bodyKeys[`const|${Int.toString(constIndex)}`] is Some(target)) {
+        addEdge(mutable state.lazyEdges, source, target)
+      }
+    }
   }
 }
 

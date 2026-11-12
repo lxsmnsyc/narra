@@ -21,6 +21,8 @@
 //   tree-shake/unreached   the C of testdata/tree_shake.nra has no unreached
 //                      function, generic instance, trait implementation or
 //                      constant
+//   tree-shake/lazy-unforced   the C of testdata/lazy_values_unforced.nra has no
+//                      getter, storage or builder of the lazy value nobody forces
 //   tree-shake/std-source   the C of bench/fib/fib.nra has none of the
 //                      std/int functions written in Narra, which it never calls
 //   tree-shake/unused-types   the C of bench/fib/fib.nra has no type that only
@@ -95,6 +97,11 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     ),
     makeCase("tree-shake/unreached", Path.join(context.testdata, "tree_shake.nra"), "unreached"),
     makeCase(
+      "tree-shake/lazy-unforced",
+      Path.join(context.testdata, "lazy_values_unforced.nra"),
+      "lazy-unforced",
+    ),
+    makeCase(
       "tree-shake/std-source",
       Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
       "std-source",
@@ -165,6 +172,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "unreached") {
     return checkUnreached(context, testCase.path)
+  }
+  if (testCase.variant == "lazy-unforced") {
+    return checkLazyUnforced(context, testCase.path)
   }
   if (testCase.variant == "distinct-instances") {
     return checkDistinctInstances(context, testCase.path)
@@ -370,6 +380,25 @@ function checkUnreached(context: Context, source: string): Result<bool, string> 
   }
   if (definitions != 1) {
     return Err(`want one definition of an instance of pick, got ${Int.toString(definitions)}`)
+  }
+  return Ok(true)
+}
+
+function checkLazyUnforced(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["emit", source])
+  if (result.code != 0) {
+    return Err(`emit failed: ${Common.describeRun(result)}`)
+  }
+  // The forced value has its getter and builder; the other has neither.
+  for (const name of Arrays.values(["buildUsed", "_used_ready"])) {
+    if (!Str.contains(result.output, name)) {
+      return Err(`the emitted C should hold "${name}"`)
+    }
+  }
+  for (const name of Arrays.values(["buildUnused", "_unused"])) {
+    if (Str.contains(result.output, name)) {
+      return Err(`the emitted C should not hold "${name}"`)
+    }
   }
   return Ok(true)
 }

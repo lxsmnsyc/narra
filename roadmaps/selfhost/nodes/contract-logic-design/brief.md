@@ -4,12 +4,12 @@ title: "Spike: logical operators in requires and ensures"
 status: todo
 priority: should
 type: spike
-story:
+story: batch-11
 early: false
 outline: false
-milestone: m12-spec-gaps
+milestone: 
 target:
-ship: pr
+ship: auto
 from:
 size: M
 spike: true

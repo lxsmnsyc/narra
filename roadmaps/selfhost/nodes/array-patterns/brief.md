@@ -4,10 +4,10 @@ title: "Array patterns in match, is and const"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-11
 early: false
 outline: false
-milestone: m12-spec-gaps
+milestone: 
 target:
 ship: auto
 from:

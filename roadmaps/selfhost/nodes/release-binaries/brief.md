@@ -25,7 +25,7 @@ shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: const-lazy
+  - on: batch-11
     kind: hard
     why: user decision 2026-11-09, binaries ship after the remaining language features
   - on: type-aliases

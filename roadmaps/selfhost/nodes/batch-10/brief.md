@@ -1,7 +1,7 @@
 ---
 id: batch-10
 title: "Batch 10: hidden copies, batch-9 leftovers and the destructuring design"
-status: active
+status: done
 priority: should
 type: story
 story: 
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-12
-spent:
+spent: 1515000
 owns:
   - roadmaps/selfhost/nodes/batch-10/**
 shared:

@@ -30,7 +30,7 @@ import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
 import { BuildTarget, createUnknownTarget } from "narrac/buildtarget"
 import { applyBuildTarget, reportUnsupportedHost } from "narrac/buildconditions"
-import { Type, Field } from "narrac/types"
+import { Type, Field, plainTypeKey } from "narrac/types"
 import {
   Checker,
   BodyRoot,
@@ -41,6 +41,7 @@ import {
   startBody,
   finishBody,
   keyBody,
+  containsTypeParameter,
   declareLocal,
   getExpressionPos,
   finish,
@@ -55,7 +56,7 @@ import { flushDynamicTraits } from "narrac/dynamic"
 import { findImplementMember, createImplementEnvironment } from "narrac/genericimpl"
 import { addImplementInstances } from "narrac/implementations"
 import { derivedShapeType } from "narrac/deriveshape"
-import { makeEnv } from "narrac/generics"
+import { makeEnv, envWith } from "narrac/generics"
 import { resolveOpt } from "narrac/resolve"
 import { dumpTypeString } from "narrac/declsdump"
 import * as Exprs from "narrac/exprs"
@@ -356,6 +357,7 @@ function checkGenericDefaults(
     owner = `${info.module}.${info.name}`
   }
   const environment = makeEnv(checker, info.parameters)
+  const before = Arrays.length(checker.errors)
   checkFieldDefaults(
     mutable checker,
     walker,
@@ -364,6 +366,38 @@ function checkGenericDefaults(
     info.fields,
     environment,
   )
+  // An instance repeats the check only for a default that held with the parameters open.
+  if (Arrays.length(checker.errors) > before) {
+    checker.failedDefaults[generic] = true
+  }
+  enter(mutable checker, saved)
+}
+
+function checkInstanceDefaults(
+  mutable checker: Checker,
+  walker: BodyWalker,
+  structIndex: int,
+) uses alloc {
+  const instance = copy(checker.structs[structIndex])
+  if (checker.failedDefaults[instance.generic] is Some(_)) {
+    return
+  }
+  const info = copy(checker.generics[instance.generic])
+  // Only the fields that use a type parameter, with this instance's types.
+  let fields: Array<Field> = []
+  for (const index of Ranges.between(0, Arrays.length(info.fields))) {
+    if (
+      info.fields[index].default is Some(_) &&
+        containsTypeParameter(checker, info.fields[index].fieldType)
+    ) {
+      Arrays.push(mutable fields, instance.fields[index])
+    }
+  }
+  const type = Type.TStruct(structIndex)
+  const saved = enter(mutable checker, info.scope)
+  const owner = dumpTypeString(checker, type)
+  const environment = envWith(checker, info.parameters, instance.arguments)
+  checkFieldDefaults(mutable checker, walker, owner, plainTypeKey(type), fields, environment)
   enter(mutable checker, saved)
 }
 
@@ -558,7 +592,19 @@ function checkFunctionBody(
 function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
   // Checking one instance can queue more, and so can a new instance of a generic type with implement blocks.
   addImplementInstances(mutable checker)
-  while (checker.pendingNext < Arrays.length(checker.pending)) {
+  while (true) {
+    // The defaults of a new struct instance come first; checking them can make more instances.
+    if (Arrays.length(checker.pendingInstanceDefaults) > 0) {
+      const structs = checker.pendingInstanceDefaults
+      checker.pendingInstanceDefaults = []
+      for (const structIndex of Arrays.values(structs)) {
+        checkInstanceDefaults(mutable checker, walker, structIndex)
+      }
+      continue
+    }
+    if (checker.pendingNext >= Arrays.length(checker.pending)) {
+      break
+    }
     const instanceIndex = checker.pending[checker.pendingNext]
     const instance = copy(checker.instanceList[instanceIndex])
     checker.pendingNext++

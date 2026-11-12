@@ -443,6 +443,7 @@ struct Entry<K, V> {
 
 - Each field has a name and a type, one per line.
 - A field can have a default value after `=`. The default must be a compile-time constant (section 10).
+- In a generic struct a field whose type uses a type parameter can have a default (`items: Array<T> = []`, `value: Option<T> = None`). The default is checked once in the declaration with the parameter open, so it must type-check for every type argument (`count: T = 0` is a type error), and it is built for each instance with that instance's types.
 - A field without a default must be given every time the struct is built.
 
 **Building a struct**

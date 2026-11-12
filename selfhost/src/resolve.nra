@@ -25,6 +25,7 @@ import {
   lookupType,
   lookupGeneric,
   containsTypeParameter,
+  anyTypeParameter,
   findSharedParameter,
   findFromNamePos,
   findLocal,
@@ -1020,20 +1021,7 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
   const savedEnv = checker.environment
   checker.environment = makeEnv(checker, info.parameters)
   if (info.isStruct) {
-    let fields = copy(resolveFields(mutable checker, info.fieldDeclarations))
-    for (const index of Ranges.between(0, Arrays.length(fields))) {
-      if (
-        fields[index].default is Some(_) && containsTypeParameter(checker, fields[index].fieldType)
-      ) {
-        reportError(
-          mutable checker,
-          info.fieldDeclarations[index].pos,
-          "E0107",
-          "a default for a field whose type uses a type parameter is not supported by this compiler yet",
-        )
-        fields[index].default = None
-      }
-    }
+    const fields = copy(resolveFields(mutable checker, info.fieldDeclarations))
     // Go checks the defaults here; the body checker (body.nra) checks the
     // queued ones after the module's declarations.
     if (checker.checkingBodies) {
@@ -1150,6 +1138,28 @@ function fillInstance(mutable checker: Checker, generic: int, instance: Type) us
     checker.enums[index].variants = variants
   }
   Arrays.push(mutable checker.instanceTypes, instance)
+  if (checker.checkingBodies) {
+    queueInstanceDefaults(mutable checker, info.fields, instance)
+  }
+}
+
+function queueInstanceDefaults(
+  mutable checker: Checker,
+  fields: Array<Field>,
+  instance: Type,
+) uses alloc {
+  // A default whose field type uses a parameter is checked again with the instance's types.
+  if (instance is Type.TStruct(index)) {
+    if (anyTypeParameter(checker, checker.structs[index].arguments)) {
+      return
+    }
+    for (const field of Arrays.values(fields)) {
+      if (field.default is Some(_) && containsTypeParameter(checker, field.fieldType)) {
+        Arrays.push(mutable checker.pendingInstanceDefaults, index)
+        return
+      }
+    }
+  }
 }
 
 function resolveFixedLength(

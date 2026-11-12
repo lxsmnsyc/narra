@@ -209,7 +209,6 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 
 - `@const` functions. A top-level constant cannot call a function.
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
-- Defaults for generic struct fields whose type uses a type parameter.
 - Effects: trait function calls to user implementations are not followed, and an implementation may use effects its trait function does not declare, except `unsafe` (E0800). Implementations of pure trait functions such as `Show.show` allocate in existing programs and in the guide; enforcing the subset rule for `alloc` and `io` waits for a decision.
 - `async` arrow functions.
 - Async functions, threads and channels.

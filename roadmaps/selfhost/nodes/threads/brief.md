@@ -1,7 +1,7 @@
 ---
 id: threads
 title: "Threads runtime and std/thread: thread mode, tagged counts, per-thread heaps"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

@@ -1,7 +1,7 @@
 ---
 id: uses-list-syntax
 title: "Effect lists inside type lists"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

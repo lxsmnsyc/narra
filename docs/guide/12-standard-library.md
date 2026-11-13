@@ -308,6 +308,22 @@ export function run(args: Array<string>): int uses io, alloc {
   if (broken is Err(error)) {
     print(Toml.formatError(error))
   }
+## Terminals: `std/terminal`
+
+`std/terminal` adds colors and styles to text, and tells a program whether it is writing to a terminal. The style functions do not look at the terminal. They always add the codes, so a test can compare their output:
+
+```narra
+import * as Terminal from "std/terminal"
+import * as Str from "std/string"
+
+function show(text: string) uses io, alloc {
+  print(Str.replace(text, "\u{1b}", "<ESC>"))
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  show(Terminal.red("error"))
+  show(Terminal.bold(`${Terminal.dim("note")} and more`))
+  print(Terminal.stripStyles(Terminal.green("done")))
   return 0
 }
 ```
@@ -325,3 +341,11 @@ entry = "main.run"
 ```
 
 `Toml.parse` returns a `TomlError` with `line`, `column` and `reason` fields, so a tool can report the error in its own format. `Toml.stringify` writes the plain keys of each table before its sub-tables and drops comments, so a tool that rewrites a file changes its layout. It returns an error for `Value.Null`, which TOML cannot write.
+<ESC>[31merror<ESC>[39m
+<ESC>[1m<ESC>[2mnote<ESC>[22m<ESC>[1m and more<ESC>[22m
+done
+```
+
+Each function closes with its own reset code. When the text already holds that close, as `dim` inside `bold` does, the outer style is opened again after it, so `and more` stays bold. `Terminal.stripStyles` removes the codes again. `Terminal.style(text, Style { ... })` applies several at once: `bold`, `dim`, `italic`, `underline`, `inverse`, `strikethrough`, and a `foreground` and `background` that hold `Some(Color.Red)`, `Some(Color.Ansi256(21))` or `Some(Color.Rgb(255, 128, 0))`.
+
+The caller decides when to style. `Terminal.useColor(Stream.Stderr)` answers for one stream: `false` when `NO_COLOR` is set and not empty, `true` when `FORCE_COLOR` is set to anything but `""` or `"0"`, `false` when `TERM` is `dumb`, and otherwise whether the stream is a terminal. `Terminal.isTerminal(stream)` is that last test alone, and `Terminal.columns(stream)` is `Some(width)` for a terminal and `None` for a pipe or a file.

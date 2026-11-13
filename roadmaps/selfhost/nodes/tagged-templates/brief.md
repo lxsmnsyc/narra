@@ -1,7 +1,7 @@
 ---
 id: tagged-templates
 title: "Tagged template literals"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 370919
 owns:
   - roadmaps/selfhost/nodes/tagged-templates/**
   - selfhost/src/taggedtemplates.nra

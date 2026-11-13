@@ -1,7 +1,7 @@
 ---
 id: parameter-defaults
 title: "Parameter defaults"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 326043
 owns:
   - roadmaps/selfhost/nodes/parameter-defaults/**
   - selfhost/src/paramdefaults.nra

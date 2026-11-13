@@ -1,7 +1,67 @@
-// The registry rows of std/regex.
+// The registry rows of std/regex, and the check that keeps Regexes.checked
+// to the values of top-level constants.
 import { StdFunc } from "narrac/builtins"
+import { Pos, Expr } from "narrac/ast"
+import { Checker, CONST_BUSY, reportError } from "narrac/check"
+import * as Arrays from "std/array"
 
 export const REGEX_FUNCS: Array<StdFunc> = [
   // std/regex is Narra source (std/src/regex.nra): a module row with no function.
   StdFunc { name: "std/regex", module: "std/regex", key: "", check: "source" },
 ]
+
+export function findCalleeAlias(callee: Expr): string {
+  if (callee is Expr.FieldExpr(_, _, target, _)) {
+    if (target is Expr.Ident(_, _, alias)) {
+      return alias
+    }
+  }
+  return ""
+}
+
+export function checkRegexCheckedUse(
+  mutable checker: Checker,
+  pos: Pos,
+  funcIndex: int,
+  alias: string,
+  name: string,
+  isCall: bool,
+) uses alloc {
+  if (checker.functions[funcIndex].module != "std/regex") {
+    return
+  }
+  if (checker.functions[funcIndex].name != "checked") {
+    return
+  }
+  // A call in the value of a constant that is not lazy runs while the compiler
+  // runs; a function value could be called at run time.
+  if (isCall && isEagerConstantBody(checker)) {
+    return
+  }
+  // The names as the code writes them: `Regexes.checked`, or `c` for `checked as c`.
+  let written = name
+  let compile = "compile from std/regex"
+  if (alias != "") {
+    written = `${alias}.${name}`
+    compile = `${alias}.compile`
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E1360",
+    `${written} can only be the value of a top-level const; use ${compile}`,
+  )
+}
+
+function isEagerConstantBody(checker: Checker): bool {
+  if (checker.body < 0 || checker.bodies[checker.body].kind != "const") {
+    return false
+  }
+  const name = checker.bodies[checker.body].name
+  for (const info of Arrays.values(checker.consts)) {
+    if (info.state == CONST_BUSY && info.name == name && info.scope == checker.current) {
+      return info.declaration.lazyPos is None
+    }
+  }
+  return false
+}

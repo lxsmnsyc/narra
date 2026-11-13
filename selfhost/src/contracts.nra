@@ -43,6 +43,7 @@ import {
   parseLiteral,
   wrapConstant,
   findOperandFact,
+  findRefinedFact,
   flipComparison,
   isComparisonOperator,
   isComparisonProven,
@@ -935,7 +936,7 @@ function collectResultContract(
   return ResultContract { patterns: copy(funcDecl.ensures), bounds: copy(bounds) }
 }
 
-function collectBounds(
+export function collectBounds(
   checker: Checker,
   scope: int,
   parameterNames: Array<string>,
@@ -1133,7 +1134,7 @@ function findPatternType(checker: Checker, nodeId: int): Type uses alloc {
   return Type.TVoid
 }
 
-function isFittingBound(bound: int, type: Type): bool {
+export function isFittingBound(bound: int, type: Type): bool {
   // A u64 bound from 2^63 up is negative as an int, and the facts cannot order it.
   return isInteger(type) && wrapConstant(bound, type) == bound && !(type == Type.TU64 && bound < 0)
 }
@@ -1332,7 +1333,7 @@ function isLiteralProven(
   return isSameLiteral(value, literal)
 }
 
-function findLiteralValue(literal: Expr): Option<int> uses alloc {
+export function findLiteralValue(literal: Expr): Option<int> uses alloc {
   if (literal is Expr.IntLit(_, _, text)) {
     return parseLiteral(text)
   }
@@ -1391,7 +1392,7 @@ function isComparisonValue(
   return false
 }
 
-function describePattern(pattern: Pattern, bounds: Map<int, int>): string uses alloc {
+export function describePattern(pattern: Pattern, bounds: Map<int, int>): string uses alloc {
   return match (pattern) {
     Pattern.PatWildcard(_, _) => "_"
     Pattern.PatName(_, _, name) => name
@@ -1535,7 +1536,12 @@ function createHolderKey(local: int): string uses alloc {
 }
 
 export function seedResultLocal(mutable checker: Checker, local: int, value: Expr) uses alloc {
-  // `const n = f()`: n starts with the facts of f's patterns.
+  // `const n = f()`: n starts with the facts of f's patterns, and `const n = Port.toInt(port)`
+  // with the hull of Port's items.
+  if (findRefinedFact(checker, value) is Some(refined)) {
+    narrowFact(mutable checker, local, refined)
+    return
+  }
   const funcIndex = findResultFunction(checker, value)
   if (funcIndex < 0) {
     return

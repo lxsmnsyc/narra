@@ -56,6 +56,8 @@ import {
   noteReference,
   useHelper,
   findDeclaredLocal,
+  declareUnset,
+  retainCode,
 } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
@@ -621,7 +623,13 @@ function emitCall<W: EmitWalker>(
   const ordered = orderArguments(emitter.checker, nodeId, arguments)
   const ref = readNodeRef(emitter, nodeId)
   return match (ref) {
-    Ref.Distinct(_) => EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+    Ref.Distinct(distinctIndex) => emitDistinctCall(
+      walker,
+      mutable emitter,
+      expression,
+      distinctIndex,
+      arguments,
+    )
     Ref.Constructor(enumIndex, variant) => emitConstructorCall(
       walker,
       mutable emitter,
@@ -812,6 +820,99 @@ function emitConstructorCall<W: EmitWalker>(
   const allocated = Decls.enumAllocation(mutable emitter, enumType, variant, parts)
   const name = ownedTemp(mutable emitter, enumType, allocated.text)
   return Code { text: name, owned: true }
+}
+
+function emitDistinctCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  distinctIndex: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // from and the unwrap function are their argument; check of a refined type tests it (D116).
+  if (expression is Expr.CallExpr(nodeId, _, Expr.FieldExpr(_, _, _, name), _, _)) {
+    if (name == "check" && emitter.checker.distincts[distinctIndex].refined) {
+      return emitRefinedCheck(walker, mutable emitter, nodeId, distinctIndex, arguments[0].value)
+    }
+  }
+  return EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+}
+
+function emitRefinedCheck<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  distinctIndex: int,
+  argument: Expr,
+): Code uses alloc {
+  const info = copy(emitter.checker.distincts[distinctIndex])
+  let base = Type.TInt
+  if (info.base is Some(declared)) {
+    base = declared
+  }
+  const optionType = copy(readNodeType(emitter, nodeId))
+  // An owned argument is a temporary the statement already releases; Some takes its own reference.
+  const code = EmitWalker.emitExpression(walker, mutable emitter, argument)
+  const value = temp(mutable emitter, base, code.text)
+  // Each item is one test, and its alternatives are joined by `||`.
+  let items: Array<string> = []
+  for (const alternatives of Arrays.values(info.tests)) {
+    let parts: Array<string> = []
+    for (const alternative of Arrays.values(alternatives)) {
+      if (base == Type.TStr) {
+        const text = literal(mutable emitter, alternative.text)
+        Arrays.push(mutable parts, `lstr_eq(${value}, ${text})`)
+      } else {
+        Arrays.push(
+          mutable parts,
+          `${value} ${alternative.operator} ${integerValueCode(alternative.bound)}`,
+        )
+      }
+    }
+    Arrays.push(mutable items, `(${Str.join(parts, " || ")})`)
+  }
+  emitter.tempCount++
+  const optionName = cachedCType(emitter.checker, emitter.typeNames, optionType)
+  const resultName = `t${Int.toString(emitter.tempCount)}`
+  const result = declareUnset(mutable emitter, optionName, resultName)
+  const somePosition = findOptionVariant(emitter, optionType, "Some")
+  const nonePosition = findOptionVariant(emitter, optionType, "None")
+  writeLine(mutable emitter, `if (${Str.join(items, " && ")}) {`)
+  emitter.indent++
+  const retainText = retainCode(emitter, base, value)
+  if (retainText != "") {
+    writeLine(mutable emitter, retainText)
+  }
+  const some = Decls.enumAllocation(mutable emitter, optionType, somePosition, [value])
+  writeLine(mutable emitter, `${result} = ${some.text};`)
+  emitter.indent--
+  writeLine(mutable emitter, "} else {")
+  emitter.indent++
+  const none = Decls.enumAllocation(mutable emitter, optionType, nonePosition, [])
+  writeLine(mutable emitter, `${result} = ${none.text};`)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  // The statement releases the Option at its end.
+  return Code { text: ownedTemp(mutable emitter, optionType, result), owned: true }
+}
+
+function findOptionVariant(emitter: Emitter, optionType: Type, name: string): int {
+  if (underlyingType(emitter, optionType) is Type.TEnum(enumIndex)) {
+    const variants = emitter.checker.enums[enumIndex].variants
+    for (const index of Ranges.between(0, Arrays.length(variants))) {
+      if (variants[index].name == name) {
+        return index
+      }
+    }
+  }
+  return 0
+}
+
+function integerValueCode(value: int): string uses alloc {
+  if (value == -9223372036854775807 - 1) {
+    return "INT64_MIN"
+  }
+  return `INT64_C(${Int.toString(value)})`
 }
 
 function emitPlainOrInstanceCall<W: EmitWalker>(

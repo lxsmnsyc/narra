@@ -20,7 +20,8 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Int from "std/int"
-import { File, Decl, Expr, FieldDecl, Pos, TypeExpr, VariantDecl } from "narrac/ast"
+import { File, Decl, Expr, FieldDecl, Pos, TypeExpr, VariantDecl, DistinctDecl } from "narrac/ast"
+import { writeRefinementItems } from "narrac/querysignature"
 import { Parsed, Diagnostic, parse } from "narrac/parser"
 import { Token, TokenKind, lex } from "narrac/lexer"
 
@@ -94,7 +95,7 @@ export function addShapeDerives(
       Decl.Distinct(distinctDecl) => {
         if (derivesShape(distinctDecl.derived)) {
           writeDistinctToValue(mutable builder, distinctDecl.name)
-          writeDistinctFromValue(mutable builder, distinctDecl.name, distinctDecl.base)
+          writeDistinctFromValue(mutable builder, distinctDecl)
           found = true
         }
       }
@@ -391,9 +392,10 @@ function writeDistinctToValue(mutable builder: StringBuilder, typeName: string) 
 
 function writeDistinctFromValue(
   mutable builder: StringBuilder,
-  typeName: string,
-  base: TypeExpr,
+  distinctDecl: DistinctDecl,
 ) uses alloc {
+  const typeName = distinctDecl.name
+  const base = distinctDecl.base
   const name = shapeFunctionName("fromValue", typeName)
   Str.append(mutable builder, "\n")
   writeLine(
@@ -409,8 +411,33 @@ function writeDistinctFromValue(
   writeLine(mutable builder, 1, "if (__base is Err(__message)) {")
   writeLine(mutable builder, 2, "return Err(__message)")
   writeLine(mutable builder, 1, "}")
-  writeLine(mutable builder, 1, `return Ok(${typeName}.from(__base.value))`)
+  if (Arrays.length(distinctDecl.refinement) == 0) {
+    writeLine(mutable builder, 1, `return Ok(${typeName}.from(__base.value))`)
+    writeLine(mutable builder, 0, "}")
+    return
+  }
+  // A refined type goes through check; a value that fails is a decode error (D116).
+  const items = escapeTemplateText(writeRefinementItems(distinctDecl.refinement))
+  writeLine(mutable builder, 1, `if (${typeName}.check(__base.value) is Some(__checked)) {`)
+  writeLine(mutable builder, 2, "return Ok(__checked)")
+  writeLine(mutable builder, 1, "}")
+  writeLine(
+    mutable builder,
+    1,
+    `return Err(\`\${Show.show(__base.value)} does not satisfy ${typeName} (${items})\`)`,
+  )
   writeLine(mutable builder, 0, "}")
+}
+
+function escapeTemplateText(text: string): string uses alloc {
+  let builder = Str.builder()
+  for (const character of Arrays.values(Str.chars(text))) {
+    if (character == '`' || character == '$' || character == '\\') {
+      Str.appendChar(mutable builder, '\\')
+    }
+    Str.appendChar(mutable builder, character)
+  }
+  return Str.build(builder)
 }
 
 function writeStructFromValue(

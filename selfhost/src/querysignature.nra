@@ -14,6 +14,8 @@ import {
   TraitDecl,
   DistinctDecl,
   AliasDecl,
+  Expr,
+  Pattern,
 } from "narrac/ast"
 
 export function writeType(type: TypeExpr): string uses alloc {
@@ -210,5 +212,73 @@ export function writeDistinct(distinctDecl: DistinctDecl): string uses alloc {
     return `opaque distinct type ${distinctDecl.name}`
   }
   const base = writeType(distinctDecl.base)
-  return `distinct type ${distinctDecl.name} = ${base}${writeTraitList("implements", distinctDecl.implementations)}${writeTraitList("derives", distinctDecl.derived)}`
+  return `distinct type ${distinctDecl.name} = ${base}${writeTraitList("implements", distinctDecl.implementations)}${writeTraitList("derives", distinctDecl.derived)}${writeRefinement(distinctDecl.refinement)}`
+}
+
+function writeRefinement(items: Array<Pattern>): string uses alloc {
+  if (Arrays.length(items) == 0) {
+    return ""
+  }
+  return ` requires ${writeRefinementItems(items)}`
+}
+
+export function writeRefinementItems(items: Array<Pattern>): string uses alloc {
+  // The items of a `requires` list as written: `>= 1 && <= 65535`.
+  let texts: Array<string> = []
+  for (const item of Arrays.values(items)) {
+    Arrays.push(mutable texts, writePattern(item))
+  }
+  return Str.join(texts, " && ")
+}
+
+function writePattern(pattern: Pattern): string uses alloc {
+  // A refinement holds comparisons, literals and alternatives of them.
+  return match (pattern) {
+    Pattern.PatCompare(_, _, operator, bound) => `${operator} ${writeConstant(bound)}`
+    Pattern.PatLit(_, _, literal) => writeConstant(literal)
+    Pattern.PatOr(_, _, alternatives) => writeAlternatives(alternatives)
+    _ => "_"
+  }
+}
+
+function writeAlternatives(alternatives: Array<Pattern>): string uses alloc {
+  let texts: Array<string> = []
+  for (const alternative of Arrays.values(alternatives)) {
+    Arrays.push(mutable texts, writePattern(alternative))
+  }
+  return Str.join(texts, " | ")
+}
+
+export function quoteString(value: string): string uses alloc {
+  // The text as a string literal writes it: `"` and `\` escaped, control characters as escapes.
+  let builder = Str.builder()
+  Str.appendChar(mutable builder, '"')
+  for (const character of Arrays.values(Str.chars(value))) {
+    if (character == '"') {
+      Str.append(mutable builder, "\\\"")
+    } else if (character == '\\') {
+      Str.append(mutable builder, "\\\\")
+    } else if (character == '\n') {
+      Str.append(mutable builder, "\\n")
+    } else if (character == '\t') {
+      Str.append(mutable builder, "\\t")
+    } else if (character == '\r') {
+      Str.append(mutable builder, "\\r")
+    } else {
+      Str.appendChar(mutable builder, character)
+    }
+  }
+  Str.appendChar(mutable builder, '"')
+  return Str.build(builder)
+}
+
+function writeConstant(expression: Expr): string uses alloc {
+  return match (expression) {
+    Expr.IntLit(_, _, text) => text
+    Expr.StringLit(_, _, value, _) => quoteString(value)
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name) => `${alias}.${name}`
+    Expr.UnaryExpr(_, _, operator, operand) => `${operator}${writeConstant(operand)}`
+    _ => "..."
+  }
 }

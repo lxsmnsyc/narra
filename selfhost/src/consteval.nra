@@ -780,6 +780,65 @@ function measureValueDepth(value: ConstValue): int uses alloc {
   return deepest
 }
 
+function evaluateDistinctCall(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  callee: Expr,
+  distinctIndex: int,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  // from and the unwrap function are their argument; check of a refined type tests it (D116).
+  const value = evaluateExpression(checker, mutable state, arguments[0].value)
+  if (callee is Expr.FieldExpr(_, _, _, name)) {
+    if (name == "check" && checker.distincts[distinctIndex].refined && !state.failed) {
+      const optionType = readType(checker, state, nodeId)
+      if (isRefinementMet(checker, distinctIndex, value)) {
+        return makeOption(checker, optionType, Some(value))
+      }
+      return makeOption(checker, optionType, None)
+    }
+  }
+  return value
+}
+
+function isRefinementMet(checker: Checker, distinctIndex: int, value: ConstValue): bool uses alloc {
+  // Every item has an alternative that holds. A u64 from 2^63 up is negative as an int,
+  // above every bound a refinement can hold.
+  const info = checker.distincts[distinctIndex]
+  const isWide = info.base is Some(Type.TU64)
+  for (const alternatives of Arrays.values(info.tests)) {
+    let met = false
+    for (const alternative of Arrays.values(alternatives)) {
+      if (value is ConstValue.Text(text)) {
+        met = met || text == alternative.text
+      } else if (value is ConstValue.Integer(number)) {
+        met =
+          met ||
+            isComparisonMet(number, alternative.operator, alternative.bound, isWide && number < 0)
+      }
+    }
+    if (!met) {
+      return false
+    }
+  }
+  return true
+}
+
+function isComparisonMet(number: int, operator: string, bound: int, isAbove: bool): bool {
+  if (isAbove) {
+    return operator == ">" || operator == ">=" || operator == "!="
+  }
+  return match (operator) {
+    "==" => number == bound
+    "!=" => number != bound
+    "<" => number < bound
+    "<=" => number <= bound
+    ">" => number > bound
+    _ => number >= bound
+  }
+}
+
 // Making values.
 
 function makeVariant(
@@ -2840,11 +2899,18 @@ function evaluateCall(
   mutable state: ConstEvaluator,
   nodeId: int,
   pos: Pos,
-  _callee: Expr,
+  callee: Expr,
   arguments: Array<Arg>,
 ): ConstValue uses alloc {
   return match (readRef(checker, state, nodeId)) {
-    Ref.Distinct(_) => evaluateExpression(checker, mutable state, arguments[0].value)
+    Ref.Distinct(distinctIndex) => evaluateDistinctCall(
+      checker,
+      mutable state,
+      nodeId,
+      callee,
+      distinctIndex,
+      arguments,
+    )
     Ref.Constructor(_, variant) => {
       const values = evaluateArguments(checker, mutable state, nodeId, arguments)
       if (state.failed) {

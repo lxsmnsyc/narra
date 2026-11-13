@@ -70,6 +70,7 @@ import { checkConstructor } from "narrac/ctors"
 import { addFuncInstance } from "narrac/instances"
 import { checkCopyCall } from "narrac/stdcopy"
 import { recordContractCall } from "narrac/contracts"
+import { proveRefinedFrom, findCheckType } from "narrac/refinements"
 import { isDynamicName, checkDynamicOf, checkDynamicCall } from "narrac/dynamic"
 import * as Char from "std/char"
 import * as Int from "std/int"
@@ -1293,24 +1294,29 @@ function checkDistinctCall<W: Walker>(
   }
   const unwrap = findUnwrapName(checker, distinctIndex)
 
-  // Only from and the unwrap function exist; from is private to the module
-  // of an opaque type.
+  // Only from, the unwrap function and, with a `requires` list, check exist; from
+  // and check are private to the module of an opaque type.
   const isFrom = name == "from"
-  if (isFrom) {
+  const isCheck = name == "check" && info.refined
+  if (isFrom || isCheck) {
     if (info.opaque && info.module != checker.scopes[checker.current].path) {
       reportError(
         mutable checker,
         calleePos,
         "E0321",
-        `${info.name}.from is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`,
+        `${info.name}.${name} is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`,
       )
     }
   } else if (name != unwrap && !(name == HIDDEN_UNWRAP && isInShapeToValue(checker))) {
+    let functions = `from and ${unwrap}`
+    if (info.refined) {
+      functions = `from, check and ${unwrap}`
+    }
     reportError(
       mutable checker,
       calleePos,
       "E0322",
-      `${info.name} has no function ${quoteGo(name)}; a distinct type has from and ${unwrap}`,
+      `${info.name} has no function ${quoteGo(name)}; a distinct type has ${functions}`,
     )
     checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
@@ -1329,9 +1335,13 @@ function checkDistinctCall<W: Walker>(
   // from wraps a base value; the unwrap function unwraps a distinct one.
   const value = arguments[0].value
   const valuePos = getExpressionPos(value)
-  if (isFrom) {
+  if (isFrom || isCheck) {
     const valueType = checkExpression(mutable checker, walker, value, Some(base))
     expectType(mutable checker, valuePos, Some(base), valueType)
+    if (isCheck) {
+      return copy(findCheckType(mutable checker, distinctIndex))
+    }
+    proveRefinedFrom(mutable checker, distinctIndex, value)
     return distinctType
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(distinctType))

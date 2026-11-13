@@ -1709,6 +1709,8 @@ Evidence, on `feat/batch-13` (b23bbd4f): `selfhost/src` and `std/src` declare no
 - **Literal conversion by expected type** (`const port: Port = 8080`). Distinct types have no implicit conversion, and it would be the only one.
 
 **Open for the maintainer.** (1) Proven `from` plus `check`, or `from` returning `Option`: recommended proven `from` plus `check`. (2) The name `check` or `tryFrom`: recommended `check`. (3) Integer and `string` bases only at first: recommended yes.
+
+**Built** (node refinement-types, 2026-11-13). As decided, with these details. A top-level `const` and a struct field default may now call any distinct type's `from` (they were E0192 and E0106 for every distinct type; part 2 assumed they worked). After `&&` the list may go on on the next line only before a comparison or a literal; a second `requires` (on the same line or the next) is E1220. E0321 names the hidden function (`Port.check is not available outside module ...`), and E0322 lists `check` only for a refined type. A `!= c` item with `c != 0` adds no fact. The check emits the items as one C condition with `lstr_eq` for string literals; the `@const` evaluator runs the same tests. Opaque refined types print no `requires` list in `narrac query` signatures, as they print no base.
 ## D117. A `uses` list inside a type takes one effect or a list in parentheses
 
 Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike.

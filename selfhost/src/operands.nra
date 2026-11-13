@@ -772,12 +772,29 @@ export function findOperandFact(checker: Checker, operand: Expr, type: Type): Fa
     }
     return Fact { low: value, high: value, nonzero: value != 0 }
   }
+  if (findRefinedFact(checker, operand) is Some(refined)) {
+    return refined
+  }
   // A name has the facts its checks recorded.
   const local = findFactLocal(checker, operand)
   if (local < 0 || isCapturedByArrow(checker, local)) {
     return unknown
   }
   return readFact(checker, local)
+}
+
+export function findRefinedFact(checker: Checker, operand: Expr): Option<Fact> uses alloc {
+  // `Port.toInt(e)` of a refined integer type has the hull of Port's items, whatever e is (D116).
+  if (operand is Expr.CallExpr(callId, _, Expr.FieldExpr(_, _, _, name), _, _)) {
+    if (name != "from" && name != "check") {
+      if (getRef(checker, callId) is Ref.Distinct(distinctIndex)) {
+        if (checker.distincts[distinctIndex].hull is Some(hull)) {
+          return Some(Fact { low: hull.low, high: hull.high, nonzero: hull.nonzero })
+        }
+      }
+    }
+  }
+  return None
 }
 
 export function isComparisonProven(fact: Fact, comparison: string, bound: int): bool {
@@ -817,6 +834,9 @@ function isProvenDivisor(checker: Checker, divisor: Expr, operandType: Type): bo
   if (findTypedConstant(checker, divisor, operandType) is Some(value)) {
     return value != 0
   }
+  if (findRefinedFact(checker, divisor) is Some(refined)) {
+    return isNonzeroFact(refined)
+  }
   const local = findFactLocal(checker, divisor)
   if (local < 0 || isCapturedByArrow(checker, local)) {
     return false
@@ -829,11 +849,16 @@ function isProvenCount(checker: Checker, count: Expr, operandType: Type): bool u
   if (findTypedConstant(checker, count, operandType) is Some(value)) {
     return value >= 0 && value < width
   }
-  const local = findFactLocal(checker, count)
-  if (local < 0 || isCapturedByArrow(checker, local)) {
-    return false
+  let fact = createUnknownFact()
+  if (findRefinedFact(checker, count) is Some(refined)) {
+    fact = refined
+  } else {
+    const local = findFactLocal(checker, count)
+    if (local < 0 || isCapturedByArrow(checker, local)) {
+      return false
+    }
+    fact = readFact(checker, local)
   }
-  const fact = readFact(checker, local)
   return (fact.low >= 0 || isUnsignedInteger(operandType)) && fact.high < width
 }
 

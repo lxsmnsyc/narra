@@ -717,13 +717,40 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 #### Refinements
 
-Not built yet (D116, node refinement-types). The samples below become checked `ts` blocks when the node lands.
+A distinct type may restrict its values with `requires` and a list of patterns joined by `&&` (D116). The list follows the base and the trait lists and may start on the next line.
 
-A distinct type may restrict its values with `requires` and a list of patterns joined by `&&`: `distinct type Port = int requires >= 1 && <= 65535`, `distinct type Method = string requires "GET" | "POST"`. The list follows the base and the trait lists (`distinct type Port = int derives Show requires >= 1`) and may start on the next line.
+```ts
+export distinct type Port = int derives Show requires >= 1 && <= 65535
+export distinct type Method = string requires "GET" | "POST"
+distinct type Bit = u8
+  requires < 8
+
+const DEFAULT_PORT = Port.from(8080)          // proven from the literal
+
+function share(total: int, port: Port): int {
+  return total / Port.toInt(port)              // 1 <= n <= 65535, so the divisor is proven
+}
+
+function parsePort(raw: int): Option<Port> {
+  if (raw >= 1 && raw <= 65535) {
+    return Some(Port.from(raw))                // proven by the check
+  }
+  return Port.check(raw)                       // tested at run time: None here
+}
+```
+
+<!-- context
+distinct type Port = int requires >= 1 && <= 65535
+---
+-->
+<!-- error: E1223 -->
+```ts
+const port = Port.from(70000)     // compile error: 70000 does not satisfy Port (<= 65535)
+```
 
 - **The patterns are `ensures` patterns** (section 13): comparisons `< c`, `<= c`, `> c`, `>= c` and `!= c` with an integer constant that fits the base, literals, and or-patterns of these. `&&` joins patterns only at the top of the list. A malformed list is E1220.
 - **The base is an integer type or `string`.** A `string` takes literal patterns only. Any other base, another distinct type included, is E1221. A pattern that does not fit the base (a comparison on a `string`, a bound that is not a constant or does not fit, a u64 bound from 2^63 up, a literal of another type, a wildcard, a name, a constructor, a struct, tuple or array pattern) is E1222.
-- **`T.from(value)` is proven at compile time**, as a call to a function with `requires`: the value must match every pattern, proven from a constant, a literal, or an integer name narrowed by a check or by the caller's `requires`. Nothing is checked at run time. An unproven `from` is E1223, and the message names the patterns that failed: `Port.from(8080)` compiles, `Port.from(raw)` compiles inside `if (raw >= 1 && raw <= 65535)`, and `Port.from(70000)` is E1223 (`70000 does not satisfy Port (<= 65535)`).
+- **`T.from(value)` is proven at compile time**, as a call to a function with `requires`: the value must match every pattern, proven from a constant, a literal, or an integer name narrowed by a check or by the caller's `requires`. Nothing is checked at run time. An unproven `from` is E1223, and the message names the patterns that failed: `Port.from(8080)` compiles, `Port.from(raw)` compiles inside `if (raw >= 1 && raw <= 65535)`, and `Port.from(70000)` is E1223 (`70000 does not satisfy Port (<= 65535)`). A top-level `const` or a struct field default may hold a `from` call, proven the same way.
 - **`T.check(value): Option<T>` tests at run time.** It exists only on a refined type, allocates nothing, and is `None` when a pattern does not match: `if (Port.check(raw) is Some(port))`. `export opaque distinct type` hides it with `from`.
 - **Unwrapping gives the fact.** `Port.toInt(port)` has the bounds of the patterns, wherever `port` comes from (a parameter, a field, an array element). It proves divisors, shift counts, `FixedArray` indexes, `requires` arguments and `ensures` returns, and `const n = Port.toInt(port)` starts with it. The fact is the hull of the patterns, as for `ensures`: `Port` gives `1 <= n <= 65535`, `!= 0` gives a non-zero value, and a `string` refinement gives no fact. The unwrapped value is a plain base value: `Port.toInt(port) + 1` is an `int` with no fact.
 - **`derives Shape`** decodes the base, then checks the patterns. A value that fails is an `Err` with the usual path: `Json.decode<Config>(text)` gives `Err(".port: 70000 does not satisfy Port (>= 1 && <= 65535)")`, and a string value is quoted. The other derived traits use the base, as for every distinct type.

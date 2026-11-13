@@ -3167,9 +3167,10 @@ function checkConstCall(
   callee: Expr,
   arguments: Array<Arg>,
 ): bool uses alloc {
-  // Constructor calls and calls of `@const` functions are allowed, with constant arguments.
+  // Constructor calls, distinct type calls (`Port.from(8080)`, D116) and calls of `@const`
+  // functions are allowed, with constant arguments.
   const ref = getRef(checker, nodeId)
-  if (ref is Ref.Constructor(_, _) || isConstFunctionCall(checker, ref)) {
+  if (ref is Ref.Constructor(_, _) || ref is Ref.Distinct(_) || isConstFunctionCall(checker, ref)) {
     for (const arg of Arrays.values(arguments)) {
       if (!checkConstValue(mutable checker, name, arg.value)) {
         return false
@@ -3256,10 +3257,18 @@ export function isConstantValue(checker: Checker, expression: Expr): bool {
     Expr.ArrayLit(_, _, elements, _) => allConstant(checker, elements)
     Expr.Ident(nodeId, _, _) | Expr.FieldExpr(nodeId, _, _, _) =>
       getRef(checker, nodeId) is Ref.Constructor(_, _)
-    Expr.CallExpr(nodeId, _, _, _, arguments) =>
-      getRef(checker, nodeId) is Ref.Constructor(_, _) && allArgumentsConstant(checker, arguments)
+    Expr.CallExpr(nodeId, _, callee, _, arguments) =>
+      isConstantCallee(checker, nodeId, callee) && allArgumentsConstant(checker, arguments)
     _ => false
   }
+}
+
+function isConstantCallee(checker: Checker, nodeId: int, callee: Expr): bool {
+  // A constructor, or a distinct type's `from`, which checkDistinctCall proves (D116).
+  if (getRef(checker, nodeId) is Ref.Distinct(_)) {
+    return callee is Expr.FieldExpr(_, _, _, "from")
+  }
+  return getRef(checker, nodeId) is Ref.Constructor(_, _)
 }
 
 function allArgumentsConstant(checker: Checker, arguments: Array<Arg>): bool {

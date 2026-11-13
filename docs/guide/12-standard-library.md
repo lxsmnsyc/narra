@@ -264,3 +264,64 @@ second is there: false
 ```
 
 `first` and `second` point at each other, and the arena frees both when it goes. Removing a node raises its slot's generation, so a handle that is left over finds nothing: `get` returns `None`, and `set` and `update` return `false`. `clear` does the same for every slot. A handle from another arena is not detected, so keep one arena per kind of node.
+
+## Configuration files: `std/toml`
+
+`std/toml` reads and writes TOML, the format of `narra.toml`. Like `std/json`, it works with the `Value` of `std/shape`: a table is a `Value.Record`, an array a `Value.List`, and numbers, strings and booleans are `Int`, `Float`, `Text` and `Bool`. Dates and times have no `Value` of their own, so they come back as `Text` holding the date as written.
+
+`Toml.decode` reads a document straight into a type that derives `Shape`. The struct's fields are the table's keys, and an array of tables (`[[binary]]`) is an `Array` of structs. A syntax error is placed at a line and a column. `Toml.encode` writes a value back, and `Toml.stringify` writes a `Value`:
+
+```narra
+import * as Toml from "std/toml"
+
+struct Binary derives Shape, Show {
+  name: string
+  entry: string
+}
+
+struct Package derives Shape, Show {
+  name: string
+}
+
+struct Manifest derives Shape, Show {
+  package: Package
+  binary: Array<Binary>
+}
+
+const TEXT = `[package]
+name = "hello"
+
+[[binary]]
+name = "hello"
+entry = "main.run"
+`
+
+export function run(args: Array<string>): int uses io, alloc {
+  const manifest = Toml.decode<Manifest>(TEXT)
+  if (manifest is Ok(value)) {
+    print(value.binary[0].entry)
+    if (Toml.encode(value) is Ok(text)) {
+      print(text)
+    }
+  }
+  const broken = Toml.parse("[package\nname = 1\n")
+  if (broken is Err(error)) {
+    print(Toml.formatError(error))
+  }
+  return 0
+}
+```
+
+```text
+main.run
+[package]
+name = "hello"
+
+[[binary]]
+name = "hello"
+entry = "main.run"
+
+1:9: expected ]
+```
+
+`Toml.parse` returns a `TomlError` with `line`, `column` and `reason` fields, so a tool can report the error in its own format. `Toml.stringify` writes the plain keys of each table before its sub-tables and drops comments, so a tool that rewrites a file changes its layout. It returns an error for `Value.Null`, which TOML cannot write.

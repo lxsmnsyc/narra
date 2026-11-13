@@ -1,0 +1,114 @@
+// The checks of async generators (D110 items 1, 3 and 6). resolve.nra resolves
+// `AsyncGenerator<T>` and the result of an `async function*`; body.nra calls
+// prepareStreamBody before the body, stmts.nra calls checkStreamYield for a
+// `yield` in it, and stdasync.nra calls checkStreamNext for the primitive
+// behind `Async.next`. The emitter is emitasyncgenerators.nra.
+import { Pos, Expr, YieldBinding, Arg } from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Walker,
+  reportError,
+  typeString,
+  declareLocal,
+  getExpressionPos,
+  internComposite,
+} from "narrac/check"
+import { checkExpression, expectType } from "narrac/exprs"
+import { proveResult, rejectDelegatedResults } from "narrac/contracts"
+import { makePreludeEnum, checkArgumentCount } from "narrac/stdcheckhelp"
+import * as Arrays from "std/array"
+
+export function prepareStreamBody(mutable checker: Checker, result: Type) uses alloc {
+  // The emitter writes each step's Option<T>, so the instance must exist even
+  // when nothing in the program calls Async.next.
+  if (result is Type.TAsyncGenerator(element, _, _, _)) {
+    makePreludeEnum(mutable checker, "Option", [element])
+  }
+}
+
+export function checkStreamYield<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  value: Expr,
+  delegate: bool,
+  binding: Option<YieldBinding>,
+  element: Type,
+) uses alloc {
+  // There is no async coroutine: a yield gives no value back.
+  if (binding is Some(bound)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1115",
+      `\`const ${bound.name} = yield value\` needs a coroutine, and an async generator has no input; write \`yield value\``,
+    )
+    declareLocal(
+      mutable checker,
+      bound.id,
+      bound.pos,
+      bound.name,
+      Type.TVoid,
+      bound.isMutable,
+      false,
+    )
+  }
+  if (!delegate) {
+    const errorsBefore = Arrays.length(checker.errors)
+    const found = checkExpression(mutable checker, walker, value, Some(element))
+    expectType(mutable checker, getExpressionPos(value), Some(element), found)
+    if (Arrays.length(checker.errors) == errorsBefore) {
+      proveResult(mutable checker, value)
+    }
+    return
+  }
+  // yield* passes on the values of another stream of the same element type.
+  rejectDelegatedResults(mutable checker, pos)
+  const found = checkExpression(mutable checker, walker, value, None)
+  let matches = false
+  if (found is Type.TAsyncGenerator(otherElement, _, _, _)) {
+    matches = otherElement == element
+  }
+  if (matches || found == Type.TVoid) {
+    return
+  }
+  const wanted = typeString(checker, Type.TAsyncGenerator(element, [], -1, -1))
+  const text = typeString(checker, found)
+  if (found is Type.TGenerator(_, _, _, _, _)) {
+    reportError(
+      mutable checker,
+      getExpressionPos(value),
+      "E1116",
+      `yield* in an async generator needs a ${wanted}, found ${text}; write \`for (const x of g) { yield x }\``,
+    )
+    return
+  }
+  reportError(
+    mutable checker,
+    getExpressionPos(value),
+    "E1116",
+    `yield* in an async generator needs a ${wanted}, found ${text}`,
+  )
+}
+
+export function checkStreamNext<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type from checker uses alloc {
+  // Tasks.next(stream): the handle of one step, Async<Option<T>>.
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TAsyncGenerator(element, _, _, _)) {
+    const option = makePreludeEnum(mutable checker, "Option", [element])
+    return internComposite(mutable checker, Type.TAsync(option))
+  }
+  // Only std/async calls it, with a stream.
+  panic(`internal error: ${name} needs an AsyncGenerator`)
+  return Type.TVoid
+}

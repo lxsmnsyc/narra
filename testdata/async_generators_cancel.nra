@@ -1,0 +1,57 @@
+// A cancel of a step passes to its stream when it is the stream's only
+// pending step: the sleep inside the body ends with Err(AsyncError.Cancelled),
+// and the steps after the body ends give None. A cancel of a task that awaits
+// the only step passes down the same way. A step that is not the only pending
+// one does not cancel the stream.
+import * as Async from "std/async"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+import { sleep } from "std/async/time"
+
+async function* slow(label: string, milliseconds: int): AsyncGenerator<string> uses io, alloc {
+  const slept = await sleep(Time.milliseconds(milliseconds))
+  if (slept is Err(AsyncError.Cancelled)) {
+    print(`${label}: sleep cancelled`)
+    yield `${label} after the cancel`
+    return
+  }
+  yield `${label} slept`
+  yield `${label} again`
+}
+
+function show(value: Option<string>): string uses alloc {
+  if (value is Some(text)) {
+    return text
+  }
+  return "None"
+}
+
+export async function run(_args: Array<string>): int {
+  // Cancel the only pending step.
+  const stream = slow("direct", 60000)
+  const step = Async.next(stream)
+  Async.cancel(step)
+  print(`cancelled step gives ${show(await step)}`)
+  print(`next step gives ${show(await Async.next(stream))}`)
+
+  // Cancel a task that awaits the only pending step.
+  const awaited = slow("awaited", 60000)
+  const reader = async {
+    const value = await Async.next(awaited)
+    print(`reader gets ${show(value)}`)
+    return 0
+  }
+  Async.cancel(reader)
+  await reader
+  print(`after the reader: ${show(await Async.next(awaited))}`)
+
+  // A step that is not the only pending one keeps the stream running.
+  const both = slow("both", 1)
+  const first = Async.next(both)
+  const second = Async.next(both)
+  Async.cancel(second)
+  Async.cancel(first)
+  print(`first gives ${show(await first)}`)
+  print(`second gives ${show(await second)}`)
+  return 0
+}

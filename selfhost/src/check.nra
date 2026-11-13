@@ -1108,6 +1108,12 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
       input,
     ) => `${generatorName(checker, element, input)}${usesSuffix(generatorEffectList(checker, type))}`
     Type.TAsync(value) => `Async<${typeString(checker, value)}>`
+    Type.TAsyncGenerator(
+      element,
+      _,
+      _,
+      _,
+    ) => `AsyncGenerator<${typeString(checker, element)}>${usesSuffix(generatorEffectList(checker, type))}`
     Type.TModule(path) => `module ${path}`
     Type.TConst(value) => Int.toString(value)
     Type.TFixedArray(
@@ -1129,16 +1135,25 @@ export function generatorEffectList(
   type: Type,
 ): Array<string> from type uses alloc {
   // A private generator has its inferred effects once the effect pass has run.
-  if (type is Type.TGenerator(_, effects, _, origin, _)) {
-    if (origin == -1) {
-      return effects
-    }
-    if (origin < -1) {
-      return copy(checker.boundGenerators[-2 - origin])
-    }
-    if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
-      return copy(inferred)
-    }
+  let effects: Array<string> = []
+  let origin = -1
+  if (type is Type.TGenerator(_, generatorNames, _, generatorOrigin, _)) {
+    effects = generatorNames
+    origin = generatorOrigin
+  } else if (type is Type.TAsyncGenerator(_, streamNames, _, streamOrigin)) {
+    effects = streamNames
+    origin = streamOrigin
+  } else {
+    return []
+  }
+  if (origin == -1) {
+    return effects
+  }
+  if (origin < -1) {
+    return copy(checker.boundGenerators[-2 - origin])
+  }
+  if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
+    return copy(inferred)
   }
   return []
 }
@@ -1274,6 +1289,7 @@ export function containsTypeParameter(checker: Checker, type: Type): bool {
       containsTypeParameter(checker, element) || containsTypeParameter(checker, length)
     Type.TGenerator(element, _, _, _, input) =>
       containsTypeParameter(checker, element) || containsTypeParameter(checker, input)
+    Type.TAsyncGenerator(element, _, _, _) => containsTypeParameter(checker, element)
     Type.TMap(key, value) =>
       containsTypeParameter(checker, key) || containsTypeParameter(checker, value)
     Type.TStruct(index) => anyTypeParameter(checker, checker.structs[index].arguments)
@@ -1625,6 +1641,7 @@ export function isCountedType(checker: Checker, type: Type): bool {
       | Type.TMap(_, _)
       | Type.TGenerator(_, _, _, _, _)
       | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
       | Type.TDynamic(_) => true
     Type.TStruct(index) => isCountedStruct(checker, index)
     Type.TEnum(index) => isCountedEnum(checker, index)

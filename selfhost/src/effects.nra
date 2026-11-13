@@ -327,7 +327,9 @@ function checkFunctionStores(mutable checker: Checker, mutable state: EffectStat
         }
         // Creating a generator allocs its frame, and a function type cannot list that
         // effect apart from the effects of its generator result
-        const createsGenerator = wantResult is Type.TGenerator(_, _, _, _, _)
+        const createsGenerator =
+          wantResult is Type.TGenerator(_, _, _, _, _) ||
+            wantResult is Type.TAsyncGenerator(_, _, _, _)
         let extra = false
         for (const name of Arrays.values(found)) {
           if (createsGenerator && name == "alloc") {
@@ -380,7 +382,19 @@ function generatorEffects(
   type: Type,
 ): Array<string> from type uses alloc {
   let names: Array<string> = []
-  if (type is Type.TGenerator(_, effects, _, origin, _)) {
+  let effects: Array<string> = []
+  let origin = -1
+  let isGenerator = false
+  if (type is Type.TGenerator(_, generatorNames, _, generatorOrigin, _)) {
+    effects = generatorNames
+    origin = generatorOrigin
+    isGenerator = true
+  } else if (type is Type.TAsyncGenerator(_, streamNames, _, streamOrigin)) {
+    effects = streamNames
+    origin = streamOrigin
+    isGenerator = true
+  }
+  if (isGenerator) {
     // A private function* has no effects in its type: they are the body effects found so far.
     if (origin == -1) {
       return effects
@@ -407,7 +421,7 @@ function walkGeneratorRun(
   expression: Expr,
 ) uses alloc {
   if (copy(findNodeType(checker, state.body, getExpressionId(expression))) is Some(found)) {
-    if (found is Type.TGenerator(_, _, _, _, _)) {
+    if (found is Type.TGenerator(_, _, _, _, _) || found is Type.TAsyncGenerator(_, _, _, _)) {
       const via = typeString(checker, found)
       const pos = getExpressionPos(expression)
       const names = copy(generatorEffects(checker, state, found))
@@ -863,7 +877,8 @@ function findCallee(
 
 function funcEffects(state: EffectState, callee: Callee): Array<Effect> from state uses alloc {
   // A call of an async function also allocates the task frame (D109 item 9).
-  if (callee.declaration.isAsync) {
+  // An async generator runs none of its body, as a function* (D110 item 6).
+  if (callee.declaration.isAsync && !callee.declaration.generator) {
     let set = copy(findBodyEffects(state, callee))
     addEffect(mutable set, "alloc", Pos { line: 0, column: 0 }, "")
     return set
@@ -1447,7 +1462,10 @@ function walkCallEffects(
       if (
         findNodeType(checker, state.body, getExpressionId(callee)) is Some(
           Type.TFunc(_, Type.TGenerator(_, _, _, _, _), _, _, _),
-        )
+        ) ||
+          findNodeType(checker, state.body, getExpressionId(callee)) is Some(
+            Type.TFunc(_, Type.TAsyncGenerator(_, _, _, _), _, _, _),
+          )
       ) {
         addEffect(mutable out, "alloc", pos, "")
       }
@@ -1555,6 +1573,9 @@ function addValueBoundEffects(
       } else if (parameters[index] is Type.TGenerator(_, generatorNames, generatorBinder, _, _)) {
         parameterEffects = generatorNames
         binder = generatorBinder
+      } else if (parameters[index] is Type.TAsyncGenerator(_, streamNames, streamBinder, _)) {
+        parameterEffects = streamNames
+        binder = streamBinder
       }
       if (binder < 0) {
         continue
@@ -1641,7 +1662,17 @@ function bindResultEffects(
   callee: Callee,
   arguments: Array<Arg>,
 ) uses alloc {
-  if (findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, origin, _))) {
+  let origin = -1
+  if (
+    findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, generatorOrigin, _))
+  ) {
+    origin = generatorOrigin
+  } else if (
+    findNodeType(checker, state.body, nodeId) is Some(Type.TAsyncGenerator(_, _, _, streamOrigin))
+  ) {
+    origin = streamOrigin
+  }
+  if (origin < -1) {
     // Only the call that made the type fills it.
     if (origin >= -1 || checker.boundCallIds[-2 - origin] != nodeId) {
       return

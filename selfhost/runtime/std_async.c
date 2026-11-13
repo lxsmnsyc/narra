@@ -27,6 +27,9 @@ struct narra_task {
   // Set on the task of Async.all: a cancel of it stops there and does not
   // reach the handles it awaits.
   bool keeps_inputs;
+  // Set on a step of an async generator (narra_step below): while it is
+  // pending, awaited is its stream.
+  bool is_step;
   // The unfinished Async.all tasks that were given this handle. Like a then
   // callback, each observes the handle, so a cancel walk does not cancel it.
   int64_t observers;
@@ -390,4 +393,156 @@ static void narra_task_check_watchers(narra_task* live) {
     fprintf(stderr, "leak check: %" PRId64 " race watchers outlived their race\n", stale);
     exit(102);
   }
+}
+
+// Async generators (D110 items 1, 4 and 5). A stream is a task frame whose
+// header is followed by narra_stream_part (emitasyncgenerators.nra). Each
+// Async.next makes a step, a bare task { narra_step s; Option<T> value; }
+// that the stream's step function allocates holding None. The body runs only
+// while a step is pending: a yield fills the first pending step, and the end
+// of the body finishes every pending one with its None.
+//
+// Who holds a stream: each copy, each pending step, and the loop while the
+// body runs or waits. A stream parked at a yield with no step pending, or not
+// started yet, is out of the loop's list of live tasks, so dropping its last
+// copy frees it through its release function.
+typedef struct narra_step narra_step;
+struct narra_step {
+  narra_task h;
+  // The next pending step of the same stream.
+  narra_step* next_step;
+  // Set when a yield filled the value; a step finished by the end of the
+  // body keeps its None.
+  bool filled;
+};
+
+typedef struct narra_stream_part {
+  narra_task* (*make_step)(void);
+  narra_step* first_step;
+  narra_step* last_step;
+  bool parked;
+} narra_stream_part;
+
+typedef struct narra_stream {
+  narra_task h;
+  narra_stream_part s;
+} narra_stream;
+
+// Fills the header of a new stream frame: one reference, for the copy the
+// call returns. The stream starts parked and runs nothing.
+static void narra_stream_init(
+  narra_task* task,
+  void (*resume)(narra_task*),
+  void (*release)(narra_task*),
+  narra_task* (*make_step)(void)
+) {
+  narra_stream* stream = (narra_stream*)task;
+  task->rc = 1;
+  task->state = 0;
+  task->resume = resume;
+  task->release = release;
+  task->value = NULL;
+  stream->s.make_step = make_step;
+  stream->s.parked = true;
+}
+
+// A parked stream joins the loop's list again, with the loop's reference, and
+// runs inline until it yields, ends or waits. Its cancel state is its own, not
+// that of the task that asked for the step.
+static void narra_stream_run(narra_task* task) {
+  narra_stream* stream = (narra_stream*)task;
+  bool cancelled = task->cancelled;
+  bool started_cancelled = task->started_cancelled;
+  stream->s.parked = false;
+  narra_loop_add(task);
+  task->cancelled = task->cancelled || cancelled;
+  task->started_cancelled = started_cancelled;
+  narra_task_retain(task);
+  narra_task* previous = narra_loop_enter(task);
+  task->resume(task);
+  narra_loop_leave(previous);
+}
+
+// Async.next: a new step. On a stream that has ended it is finished at once
+// with None. Otherwise it waits in the FIFO, holding a reference to the
+// stream, and a parked stream runs now to serve it.
+static narra_task* narra_stream_next(narra_task* task) {
+  narra_stream* stream = (narra_stream*)task;
+  narra_task* handle = stream->s.make_step();
+  if (task->done) {
+    narra_task_finish(handle);
+    return handle;
+  }
+  narra_step* step = (narra_step*)handle;
+  handle->is_step = true;
+  narra_task_retain(task);
+  handle->awaited = task;
+  if (stream->s.last_step) {
+    stream->s.last_step->next_step = step;
+  } else {
+    stream->s.first_step = step;
+  }
+  stream->s.last_step = step;
+  if (stream->s.parked) narra_stream_run(task);
+  return handle;
+}
+
+// Takes the first pending step off the FIFO, for a yield or the end. The
+// body runs only while a step is pending, so a yield always finds one.
+static narra_task* narra_stream_take(narra_task* task) {
+  narra_stream* stream = (narra_stream*)task;
+  narra_step* step = stream->s.first_step;
+  if (!step) return NULL;
+  stream->s.first_step = step->next_step;
+  if (!stream->s.first_step) stream->s.last_step = NULL;
+  step->next_step = NULL;
+  return &step->h;
+}
+
+// Drops a step's reference to its stream (a step's release function, and
+// the end of a pending step).
+static void narra_step_drop(narra_task* task) {
+  narra_task* stream = task->awaited;
+  if (!stream || !task->is_step) return;
+  task->awaited = NULL;
+  narra_task_release(stream);
+}
+
+// Finishes a step taken off the FIFO: its awaiters become ready. The loop
+// still holds the stream while its body runs, so the release frees nothing.
+static void narra_stream_give(narra_task* task, bool filled) {
+  ((narra_step*)task)->filled = filled;
+  narra_task* stream = task->awaited;
+  task->awaited = NULL;
+  narra_task_finish(task);
+  narra_task_release(stream);
+}
+
+static bool narra_step_filled(narra_task* task) {
+  return ((narra_step*)task)->filled;
+}
+
+// After a yield: with steps pending, the stream serves the next one on a
+// later loop turn; with none it parks and the loop drops its reference,
+// which frees a stream nobody holds. Nothing reads the frame after this call.
+static void narra_stream_pause(narra_task* task) {
+  narra_stream* stream = (narra_stream*)task;
+  if (stream->s.first_step) {
+    narra_loop_queue(task);
+    return;
+  }
+  stream->s.parked = true;
+  narra_loop_remove(task);
+  narra_task_release(task);
+}
+
+// The end of the body: every pending step gives None, then the stream
+// finishes and the loop drops its reference.
+static void narra_stream_end(narra_task* task) {
+  narra_task* step = narra_stream_take(task);
+  while (step) {
+    narra_stream_give(step, false);
+    step = narra_stream_take(task);
+  }
+  narra_task_finish(task);
 }

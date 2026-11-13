@@ -443,6 +443,22 @@ function bindCallResult(
       )
     }
   }
+  if (found is Type.TAsyncGenerator(streamElement, _, streamBinder, _)) {
+    let streamCallee = -1
+    if (getRef(checker, nodeId) is Ref.Function(index)) {
+      streamCallee = index
+    }
+    if (streamBinder >= 0 && streamBinder == streamCallee) {
+      Arrays.push(mutable checker.boundGenerators, [])
+      Arrays.push(mutable checker.boundCallIds, nodeId)
+      return Type.TAsyncGenerator(
+        streamElement,
+        [],
+        checker.functionIndex,
+        -1 - Arrays.length(checker.boundGenerators),
+      )
+    }
+  }
   return found
 }
 
@@ -488,6 +504,21 @@ export function expectType(
             expected,
             wantBinder,
             wantOrigin != -1 || gotOrigin != -1,
+            got,
+          )
+          return
+        }
+      }
+    }
+    if (expected is Type.TAsyncGenerator(wantStream, _, wantStreamBinder, wantStreamOrigin)) {
+      if (got is Type.TAsyncGenerator(gotStream, _, _, gotStreamOrigin)) {
+        if (wantStream == gotStream) {
+          expectGenerator(
+            mutable checker,
+            pos,
+            expected,
+            wantStreamBinder,
+            wantStreamOrigin != -1 || gotStreamOrigin != -1,
             got,
           )
           return
@@ -590,6 +621,11 @@ function sameGeneratorShape(want: Type, got: Type): bool {
       return wantElement == gotElement && wantInput == gotInput
     }
   }
+  if (want is Type.TAsyncGenerator(wantStream, _, _, _)) {
+    if (got is Type.TAsyncGenerator(gotStream, _, _, _)) {
+      return wantStream == gotStream
+    }
+  }
   return false
 }
 
@@ -607,6 +643,18 @@ function checkGeneratorResult(
         want,
         wantBinder,
         wantOrigin != -1 || gotOrigin != -1,
+        got,
+      )
+    }
+  }
+  if (want is Type.TAsyncGenerator(_, _, wantStreamBinder, wantStreamOrigin)) {
+    if (got is Type.TAsyncGenerator(_, _, _, gotStreamOrigin)) {
+      expectGenerator(
+        mutable checker,
+        pos,
+        want,
+        wantStreamBinder,
+        wantStreamOrigin != -1 || gotStreamOrigin != -1,
         got,
       )
     }
@@ -1838,7 +1886,8 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
     Type.TArray(element)
       | Type.TBox(element)
       | Type.TPtr(element)
-      | Type.TAsync(element) => containsOpen(checker, element, parameters)
+      | Type.TAsync(element)
+      | Type.TAsyncGenerator(element, _, _, _) => containsOpen(checker, element, parameters)
     Type.TFixedArray(element, length) =>
       containsOpen(checker, element, parameters) || containsOpen(checker, length, parameters)
     Type.TGenerator(element, _, _, _, input) =>

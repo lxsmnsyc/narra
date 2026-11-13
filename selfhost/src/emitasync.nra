@@ -68,7 +68,7 @@ export struct TaskCall {
 }
 
 // The C names of one task's frame, resume and release functions.
-struct TaskNames {
+export struct TaskNames {
   frame: string
   resume: string
   release: string
@@ -221,7 +221,7 @@ function emitNestedTask<W: EmitWalker>(
   return creation
 }
 
-function emitTaskParts<W: EmitWalker>(
+export function emitTaskParts<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   inputs: Array<int>,
@@ -266,6 +266,10 @@ function emitTaskParts<W: EmitWalker>(
   // The frame, the resume function and the release function.
   let fields = Str.builder()
   Str.append(mutable fields, " narra_task h;")
+  if (emitter.inStream) {
+    // The steps of an async generator (D110 item 4).
+    Str.append(mutable fields, " narra_stream_part s;")
+  }
   if (valueType != Type.TVoid) {
     const valueName = cachedCType(emitter.checker, emitter.typeNames, valueType)
     Str.append(mutable fields, ` ${valueName} value;`)
@@ -341,8 +345,14 @@ function emitTaskCreation(
 }
 
 function emitTaskFinish(mutable emitter: Emitter) uses alloc {
-  // narra_task_finish may free the frame, so nothing follows it.
+  // narra_task_finish may free the frame, so nothing follows it. The end of
+  // an async generator also gives None to every pending step.
   unwindAll(mutable emitter)
+  if (emitter.inStream) {
+    writeLine(mutable emitter, "narra_stream_end(&f->h);")
+    writeLine(mutable emitter, "return;")
+    return
+  }
   writeLine(mutable emitter, "narra_task_finish(&f->h);")
   writeLine(mutable emitter, "return;")
 }

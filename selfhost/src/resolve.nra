@@ -88,7 +88,8 @@ export function resolveSignature(
     if (funcDecl.isAsync && report) {
       checkAsyncParameter(mutable checker, funcDecl, param)
     }
-    if (!funcDecl.generator || !report) {
+    // An async generator's parameters follow the async rules (D110 item 3).
+    if (!funcDecl.generator || funcDecl.isAsync || !report) {
       continue
     }
     let isFunc = false
@@ -169,6 +170,9 @@ function resolveGeneratorResult(
   funcIndex: int,
   report: bool,
 ): Type from checker uses alloc {
+  if (funcDecl.isAsync && funcDecl.generator) {
+    return resolveStreamResult(mutable checker, funcDecl, funcIndex, report)
+  }
   if (funcDecl.isAsync) {
     // An async function declares the value of its task; a call gives Async<T>.
     const value = resolveOpt(mutable checker, funcDecl.result)
@@ -185,6 +189,22 @@ function resolveGeneratorResult(
     valid =
       resultType.name == "Generator" && Arrays.length(resultType.arguments) == 1 ||
         resultType.name == "Coroutine" && Arrays.length(resultType.arguments) == 2
+  }
+  let writtenName = ""
+  if (funcDecl.result is Some(streamResult)) {
+    writtenName = streamResult.name
+  }
+  if (!valid && report) {
+    // AsyncGenerator<T> needs an async body (D110 item 3).
+    if (writtenName == "AsyncGenerator" && !userType(checker, "AsyncGenerator")) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1113",
+        `generator ${funcDecl.name} cannot return AsyncGenerator<T>, which needs an async body; declare it as \`async function* ${funcDecl.name}\``,
+      )
+      return Type.TVoid
+    }
   }
   if (!valid) {
     if (report) {
@@ -213,6 +233,73 @@ function resolveGeneratorResult(
     return resolved
   }
   return Type.TVoid
+}
+
+function resolveStreamResult(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+  report: bool,
+): Type from checker uses alloc {
+  // An async function* declares AsyncGenerator<T> (D110 item 3). A private one
+  // gets a result type whose effects the effect pass infers, as a function* does.
+  noteAsyncUse(mutable checker)
+  let pos = funcDecl.pos
+  let written = ""
+  if (funcDecl.result is Some(resultType)) {
+    pos = resultType.pos
+    written = resultType.name
+  }
+  if (written != "AsyncGenerator" || userType(checker, "AsyncGenerator")) {
+    if (!report) {
+      return Type.TVoid
+    }
+    if (written == "Generator" && !userType(checker, "Generator")) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1112",
+        `async generator ${funcDecl.name} must declare its return type as AsyncGenerator<T>, not Generator<T>; write AsyncGenerator<T>`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        pos,
+        "E1112",
+        `async generator ${funcDecl.name} must declare its return type as AsyncGenerator<T>`,
+      )
+    }
+    return Type.TVoid
+  }
+  // The parser reads a `uses` list after AsyncGenerator<T> into the type.
+  const resolved = resolveOpt(mutable checker, funcDecl.result)
+  if (resolved is Type.TAsyncGenerator(element, _effects, _binder, _)) {
+    if (!funcDecl.exported) {
+      return Type.TAsyncGenerator(element, [], -1, funcIndex)
+    }
+    return resolved
+  }
+  return Type.TVoid
+}
+
+function resolveStreamType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
+  // AsyncGenerator<T> uses E, a builtin name like Generator (D110 item 1).
+  if (Arrays.length(typeExpr.arguments) != 1) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1114",
+      "AsyncGenerator takes one type argument, the type of the values it yields",
+    )
+    return Type.TVoid
+  }
+  const element = resolveType(mutable checker, typeExpr.arguments[0])
+  noteAsyncUse(mutable checker)
+  const sorted = sortEffects(typeExpr.effects)
+  return copy(Type.TAsyncGenerator(element, sorted, findEffectBinder(checker, sorted), -1))
 }
 
 export function funcResult(
@@ -630,6 +717,9 @@ export function resolveType(
     }
     const element = resolveType(mutable checker, typeExpr.arguments[0])
     return makeGenerator(checker, element, Type.TVoid, typeExpr.effects)
+  }
+  if (typeExpr.name == "AsyncGenerator" && !userType(checker, "AsyncGenerator")) {
+    return resolveStreamType(mutable checker, typeExpr)
   }
   if (typeExpr.name == "Async" && !userType(checker, "Async")) {
     if (argCount != 1) {
@@ -1356,6 +1446,13 @@ export function substitute(
       const newElement = substitute(mutable checker, element, bindings)
       const newInput = substitute(mutable checker, input, bindings)
       return copy(Type.TGenerator(newElement, effects, binder, origin, newInput))
+    }
+    Type.TAsyncGenerator(element, effects, binder, origin) => {
+      if (!containsTypeParameter(checker, element)) {
+        return copy(type)
+      }
+      const newElement = substitute(mutable checker, element, bindings)
+      return copy(Type.TAsyncGenerator(newElement, effects, binder, origin))
     }
     Type.TMap(key, value) => {
       const newKey = substitute(mutable checker, key, bindings)

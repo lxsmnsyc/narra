@@ -21,6 +21,8 @@ import {
 } from "narrac/emitstate"
 import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
 import { NODE, plain, owned, argumentText } from "narrac/stdemithelp"
+import { checkStreamNext } from "narrac/asyncgenerators"
+import { emitStreamNext } from "narrac/emitasyncgenerators"
 
 export const ASYNC_FUNCS: Array<StdFunc> = [
   // std/async is Narra source: a module row with no function.
@@ -103,6 +105,14 @@ export const INTERNAL_ASYNC_FUNCS: Array<StdFunc> = [
     key: "unobserve",
     check: "checkTasks",
   },
+  // The handle of the next step of a stream (D110 item 1): Some at its next yield, None at its end.
+  StdFunc {
+    name: "Tasks.next",
+    module: "std/internal/async",
+    key: "next",
+    effects: ["alloc"],
+    check: "checkTasks",
+  },
   // Sets the winner to index once the handle finishes, unless another came first.
   StdFunc {
     name: "Tasks.watch",
@@ -144,6 +154,9 @@ export function checkTasksCall<W: Walker>(
     const callback = Type.TFunc([Type.TAsync(value)], Type.TVoid, [], -1, -1)
     checkArgumentAgainst(mutable checker, walker, arguments[1].value, callback)
     return Type.TVoid
+  }
+  if (name == "Tasks.next") {
+    return checkStreamNext(mutable checker, walker, pos, arguments, name)
   }
   if (name == "Tasks.watch") {
     if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 3)) {
@@ -251,6 +264,9 @@ export function emitAsyncCall<W: EmitWalker>(
       const valueName = cachedCType(emitter.checker, emitter.typeNames, value)
       return plain(`(*(${valueName}*)(${handle})->value)`)
     }
+  }
+  if (name == "Tasks.next") {
+    return emitStreamNext(walker, mutable emitter, arguments)
   }
   if (name == "Tasks.watch") {
     const winner = emitHandleArgument(walker, mutable emitter, arguments, 0)

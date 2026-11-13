@@ -132,6 +132,10 @@ export struct Emitter {
   // taskValue is the type of its result slot.
   inAsync: bool = false
   taskValue: Type
+  // Set while an async generator body is emitted (emitasyncgenerators.nra);
+  // streamOption is the Option<T> of its steps.
+  inStream: bool = false
+  streamOption: Type
   // The `let` variables (BodyInfo.locals indexes) that the closure being
   // emitted captures by reference; its C variables are pointers (Go:
   // refCaptures).
@@ -205,6 +209,7 @@ export struct BodyContext {
   inFrame: bool
   inAsync: bool
   taskValue: Type
+  inStream: bool
   frameFields: Array<string>
   frameSeen: Map<string, bool>
   liveValues: Array<Array<TempVar>>
@@ -232,6 +237,7 @@ export function enterBodyContext(
     inFrame: emitter.inFrame,
     inAsync: emitter.inAsync,
     taskValue: emitter.taskValue,
+    inStream: emitter.inStream,
     frameFields: emitter.frameFields,
     frameSeen: emitter.frameSeen,
     liveValues: emitter.liveValues,
@@ -248,6 +254,7 @@ export function enterBodyContext(
   emitter.refCaptures = []
   emitter.inFrame = false
   emitter.inAsync = false
+  emitter.inStream = false
   emitter.frameFields = []
   emitter.frameSeen = Map {}
   emitter.liveValues = []
@@ -272,6 +279,7 @@ export function leaveBodyContext(mutable emitter: Emitter, saved: BodyContext) {
   emitter.inFrame = saved.inFrame
   emitter.inAsync = saved.inAsync
   emitter.taskValue = saved.taskValue
+  emitter.inStream = saved.inStream
   emitter.frameFields = saved.frameFields
   emitter.frameSeen = saved.frameSeen
   emitter.liveValues = saved.liveValues
@@ -363,6 +371,7 @@ export function newEmitter(
     frameSeen: Map {},
     generatorElement: Type.TVoid,
     taskValue: Type.TVoid,
+    streamOption: Type.TVoid,
     heldArguments: Map {},
     syntheticTypes: Map {},
     syntheticRefs: Map {},
@@ -658,7 +667,7 @@ function refCountCode(
     }
     Type.TFunc(_, _, _, _, _) => `narra_env_${operation}((${value}).env);`
     Type.TGenerator(_, _, _, _, _) => `narra_gen_${operation}(${value});`
-    Type.TAsync(_) => {
+    Type.TAsync(_) | Type.TAsyncGenerator(_, _, _, _) => {
       noteHelper(emitter, "std/internal/async")
       return `narra_task_${operation}(${value});`
     }

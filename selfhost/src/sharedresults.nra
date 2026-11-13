@@ -137,6 +137,19 @@ export function findSharedArgument(
   checker: Checker,
   call: Expr,
 ): Option<Expr> from call uses alloc {
+  // `await f(x)` of an async function with `from x` shares x, as a plain call does (D109
+  // item 9).
+  if (call is Expr.AwaitExpr(_, _, operand)) {
+    return findCallArgument(checker, operand, true)
+  }
+  return findCallArgument(checker, call, false)
+}
+
+function findCallArgument(
+  checker: Checker,
+  call: Expr,
+  awaited: bool,
+): Option<Expr> from call uses alloc {
   // The argument the call's result shares, or None for a fresh result. It reads the side
   // tables of the body being checked.
   if (call is Expr.CallExpr(nodeId, _, callee, _, arguments)) {
@@ -145,10 +158,12 @@ export function findSharedArgument(
     }
     let parameters: Array<Param> = []
     let shared = -1
+    let asyncCallee = false
     match (getRef(checker, nodeId)) {
       Ref.Function(index) => {
         parameters = checker.functions[index].declaration.parameters
         shared = findSharedParameter(checker.functions[index].declaration)
+        asyncCallee = checker.functions[index].declaration.isAsync
       }
       Ref.Implementation(block, index) => {
         const declaration = checker.implementations[block].functions[index].declaration
@@ -192,7 +207,9 @@ export function findSharedArgument(
       }
       _ => {}
     }
-    if (shared < 0) {
+    // A handle holds every argument of its task (sharedwrites.nra), and only the awaited
+    // value of an async function shares what its `from` names.
+    if (shared < 0 || awaited != asyncCallee) {
       return None
     }
     return findArgument(arguments, parameters, shared)
@@ -795,7 +812,13 @@ function collectShared(
       collectShared(checker, facts, mutable query, right)
     }
     Expr.UnaryExpr(_, _, _, operand) => collectShared(checker, facts, mutable query, operand)
-    Expr.AwaitExpr(_, _, operand) => collectShared(checker, facts, mutable query, operand)
+    Expr.AwaitExpr(_, _, operand) => {
+      if (findSharedArgument(checker, expression) is Some(argument)) {
+        collectShared(checker, facts, mutable query, argument)
+      } else {
+        collectShared(checker, facts, mutable query, operand)
+      }
+    }
     Expr.AsyncExpr(_, _, operand) => collectShared(checker, facts, mutable query, operand)
     _ => {}
   }

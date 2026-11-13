@@ -2218,7 +2218,13 @@ function evaluateParts(
       return evaluate(checker, mutable walk, operand)
     }
     Expr.AwaitExpr(_, _, operand) => {
-      // The task has returned: its value shares nothing it was given.
+      // `await f(x)` of an async function with `from x` shares x (D109 item 9).
+      if (findSharedArgument(checker, expression) is Some(_)) {
+        if (operand is Expr.CallExpr(nodeId, _, callee, _, arguments)) {
+          return evaluateCall(checker, mutable walk, expression, nodeId, callee, arguments)
+        }
+      }
+      // Otherwise the task has returned: its value shares nothing it was given.
       evaluateIgnored(checker, mutable walk, operand)
       return []
     }
@@ -2436,7 +2442,8 @@ function evaluateCall(
     return payload
   }
   // A task handle holds every argument of its task while it is live.
-  if (getNodeType(checker, nodeId) is Some(Type.TAsync(_))) {
+  const awaited = call is Expr.AwaitExpr(_, _, _)
+  if (!awaited && getNodeType(checker, nodeId) is Some(Type.TAsync(_))) {
     let held: Array<ValueShare> = []
     for (const shares of Arrays.values(argumentShares)) {
       appendShares(mutable held, shares)

@@ -172,6 +172,7 @@ for (mutable player of players) {
 ```
 
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **`for await (const chunk of stream) { ... }`** reads an `AsyncGenerator<T>` in an async body, waiting for each value (section 8, Async generators). Not built yet.
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and `Ranges.stepped` returns `None` for a step of 0. The loop stops before the value would pass the largest or smallest `int`.
 
 <!-- context
@@ -308,7 +309,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | Calling an async function without `await` starts it in the background | It starts it too, and the call gives an `Async<T>` handle. A handle left unused is a compile error (E1103): write `await f()`, keep the handle, or let it run with `Async.detach(f())` (section 8) |
 | `const o = { a }` builds an object | Not present. `{ a }` in value position is a block expression, which needs `return` (E0933). Write a struct literal: `Point { x: 1 }` |
 | `Promise<T>` | `Async<T>` (section 8). The methods are functions: `Async.then(handle, callback)`, `Async.all(handles)` |
-| `async function*` | Not present in the first version |
+| `async function*` returns an object with a `next()` method, and `for await` also takes sync iterables and arrays of promises | `async function*` returns an `AsyncGenerator<T>`, read with `for await` or `Async.next(stream)`. `for await` takes only an `AsyncGenerator<T>` (E1123), and copies of a stream share one position (section 8). Not built yet |
 | A `function` declared inside a function | A compile error (E0930). Declare it at module level as a private function and pass the enclosing values as arguments |
 
 ## 3. Modules and imports
@@ -1322,6 +1323,7 @@ Narra has three tools. Each covers one type of concurrent work:
 | Produce values one at a time, on demand | Generators |
 | Run computations in parallel on several cores | Scoped threads and channels |
 | Wait on many I/O operations at once | Async functions on an event loop |
+| Produce values one at a time that need I/O | Async generators (not built yet) |
 
 A panic on any thread or task aborts the whole program.
 
@@ -1528,7 +1530,7 @@ Tasks and handles:
 - **An unused `Async<T>` is a compile error** (E1103), like an unchecked `Result`: a call without `await` as a statement, an `async { ... }` alone, and `const _ = f()`. Await the handle, keep it, pass it on, or let the task run with `Async.detach(handle)`.
 - **Effects are charged where the handle is made.** A call of an async function has the function's effects plus `alloc` for the task, and `await` has none. `Async<T>` carries no effects. The type of an async arrow lists the effects of its body: `(id: int) => Async<User> uses io`.
 - **Parameters.** An async function or arrow takes no `mutable` parameter (E1104), because the task outlives the call, and a function-type parameter of an async function must be `escaping` (E1111). Its parameters are kept in the task, and a value passed to a task is shared with it: while a local holds the handle, a write to the passed place is a shared write (E0978, section 6), and `copy(...)` at the argument is the fix. The value an async function or arrow returns follows the `from` rules of a plain function or arrow (section 6): a returned parameter needs `from` after the result type, and `await f(x)` of a function with `from x`, called by name or through a function value, shares `x` as a plain call does. The compiler does not yet follow `from` through a stored handle (`const h = f(x)`, then `await h`), so a write to that value copies without an error, and the debug copy check reports it.
-- `for (mutable item of items)` is a compile error in an async body (E1105). `async function*` is not present (E1107).
+- `for (mutable item of items)` is a compile error in an async body (E1105). `async function*` declares an async generator (below).
 
 The functions of `std/async` (`import * as Async from "std/async"`):
 
@@ -1556,6 +1558,43 @@ The loop:
 - **Blocking calls block the loop.** `std/fs`, `Time.sleep`, `Process.run` and the other blocking functions are allowed in async code, and no other task runs while they wait.
 - **A task stays on the thread that runs its loop.** An `Async<T>` or a `Cell` cannot be sent to another thread. Pass work between the loops of several threads with channels.
 - The loop waits with `kqueue` on macOS and `epoll` on Linux.
+
+### Async generators
+
+Not built yet (D110). An async generator produces values one at a time and may wait between them. The syntax is TypeScript's `async function*` and `for await`.
+
+```text
+import * as Bytes from "std/bytes"
+import * as Net from "std/async/net"
+import { Connection } from "std/async/net"
+
+async function* sizes(connection: Connection): AsyncGenerator<int> uses io, alloc {
+  for await (const chunk of Net.chunks(connection, 4096)) {
+    if (chunk is Err(_)) {
+      return
+    }
+    yield Bytes.length(chunk.value)
+  }
+}
+
+async function total(connection: Connection): int uses io, alloc {
+  let sum = 0
+  for await (const size of sizes(connection)) {
+    sum += size
+  }
+  return sum
+}
+```
+
+- **`async function* f(...): AsyncGenerator<T>`** declares an async generator. The result must be written `AsyncGenerator<T>` (E1112); a `function*` that is not async cannot declare it (E1113). `AsyncGenerator` takes one type argument (E1114), needs no import, and a type named `AsyncGenerator` that the module declares hides it. As for a generator, an exported one writes its effects on the result (`AsyncGenerator<T> uses io`), a private one has them inferred, it takes no `mutable` parameter (E1104), and its function-type parameters must be `escaping` (E1111). There is no arrow and no block form.
+- **The call runs nothing.** It makes the stream and stores the arguments, as a `function*` call does, and charges `alloc`. The body runs only while a reader waits for a value, so a stream nobody reads does no work.
+- **The body** is both an async body and a generator body. `await` stands in any expression, as in an async function. `yield value` is a statement, as in a `function*`, and `yield await f()` works. `return` takes no value (E0292). `const input = yield value` is E1115: there is no async coroutine. `yield* other` passes on every value of another `AsyncGenerator<T>` with the same `T`; any other operand, a `Generator<T>` included, is E1116.
+- **`Async.next(stream): Async<Option<T>>`** (`std/async`) asks for the next value. The handle gives `Some(value)` at the next `yield` and `None` once the body has ended, and then for every later call. It is an ordinary handle: `await` it, race it against a `sleep` for a timeout, or keep it to read one value ahead. The call charges the effects of the stream's type and `alloc`. Requests are served in the order they were made, and the body runs until its next `yield` inline in the call when nothing makes it wait.
+- **`for await (const x of stream)`** awaits `Async.next` until it gives `None`, binding each value. It is allowed in an async function, an async arrow, an `async { ... }` block and an async generator, and elsewhere it is E1122. The source must be an `AsyncGenerator<T>` (E1123): loop over a `Generator<T>` with `for ... of`, and over an `Array<Async<T>>` with `for ... of` and an `await` on each handle. `for ... of` over an `AsyncGenerator<T>` is E1124. `for await (mutable x of stream)` is E1105. Labels, `break`, `continue` and destructuring heads work as in `for ... of`, and `ensures` on the generator gives the binding the same facts.
+- **A stream is shared, not copied.** Copies of an `AsyncGenerator<T>` share one body and one position, as copies of an `Async<T>` share one task, so two loops over one stream each get some of its values. `==`, `!=` and map keys on one are E1106. A value passed to a stream is shared with it as with a task: while a local holds the stream, a write to the passed place is E0978.
+- **Stopping early.** `break`, `return` or a labeled `break` out of a `for await` drops the loop's reference to the stream. When it was the last one, the body is dropped where it waits at its `yield`, and what it holds there is released; a `Connection` closes when its last copy goes. Nothing else of the body runs.
+- **Cancel.** A cancel of a task that waits on a value of a stream, or of the `Async.next` handle itself, passes to the stream when it is the only request waiting on it: the wait inside the body gives `Err(AsyncError.Cancelled)`, as do its later suspending calls, and later requests give `None` once the body ends. A request nobody awaits still runs the body to its next `yield`; that value is lost when the handle is dropped.
+- **`Net.chunks(connection, maxBytes): AsyncGenerator<Result<bytes, AsyncError>>`** in `std/async/net` yields `Ok(chunk)` for each read that is not empty, ends at the end of the stream, and on an error yields one `Err` and ends.
 
 ## 9. Unsafe code and C interop
 

@@ -1,7 +1,7 @@
 ---
 id: threads-check
 title: "Sendable, Scope escape rules, thread function rules and std/parallel"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

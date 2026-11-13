@@ -1,7 +1,7 @@
 ---
 id: threads
 title: "Threads runtime and std/thread: thread mode, tagged counts, per-thread heaps"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 460438
 owns:
   - roadmaps/selfhost/nodes/threads/**
   - std/src/thread.nra

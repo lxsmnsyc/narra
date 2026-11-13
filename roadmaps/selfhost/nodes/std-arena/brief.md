@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 142139
 owns:
   - std/src/arena.nra
   - selfhost/src/stdarena.nra

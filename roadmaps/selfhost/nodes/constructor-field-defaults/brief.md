@@ -1,7 +1,7 @@
 ---
 id: constructor-field-defaults
 title: "A qualified enum constructor is not a constant default"
-status: active
+status: done
 priority: must
 type: fix
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 80889
 owns:
   - roadmaps/selfhost/nodes/constructor-field-defaults/**
 shared:

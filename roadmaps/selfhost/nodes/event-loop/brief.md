@@ -65,6 +65,8 @@ Give the D109 loop real waiting (D109 item 7): `kqueue` on macOS, `epoll` on Lin
 
 None expected: `Async.idle` and `std/async/time` are ordinary calls. Use the block only if a compile-time rule turns up, and record it in the outcome.
 
+- async-core built `Async.idle()` with a looser rule (it finishes once no task is ready). Make it follow D109 item 7: it finishes when no other task of the loop is unfinished, including tasks started while it waits.
+
 ## Acceptance
 
 - [ ] Samples, output checked and clean under AddressSanitizer and the leak check on macOS and in the Linux check: several sleeping tasks finish in deadline order, and two equal deadlines in the order they were set; `Async.idle` waits for tasks started while it waits; a sleeping task cancelled with `Async.cancel` gets `Err(AsyncError.Cancelled)` (once async-api has landed; before that, through the exit sequence); tasks still sleeping at exit are cancelled, run to their return and leak nothing; a detached task that never finishes does not keep the program running after the entry returns.

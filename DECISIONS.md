@@ -1603,6 +1603,8 @@ Status: Approved by the maintainer, 2026-11-13, with every recommendation of the
 
 - **Reason.** No new syntax: the types are names, the operations are existing operators and std calls, and lane indexes reuse the `FixedArray` proof. The parser, `fmt`, `astdump` and the language service need nothing beyond type names.
 - **Cost.** One `Type` variant (`TVector(lane, count)`) in `types.nra` with its cases in the type switches (about 35 sites, as `TPtr` has), C typedefs, and about 25 std functions with their own checks. About 1600 lines over two nodes (estimate). A program that wants instructions wider than SSE2 waits for build targets.
+
+**Built** (node simd, 2026-11-14): the types, literals, operators, lane reads, `==`, hashing, `Show`, `Simd.splat`, `Simd.fromFixed`, `Simd.toFixed` and `Simd.withLane`, as decided. A vector does not derive `Shape`, as a `FixedArray` does not (D84): `derives Shape` on a struct with a vector field reports that the vector has no Value form (orchestrator, 2026-11-14). A template does not take a vector; `Show.show` prints the lanes. `!` on a vector is the "expected bool" error it is on a number. A non-vector argument of a `std/simd` function is E1256.
 ## D114. Tagged templates call a named function with the parts and an array of the values
 
 Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Spike tagged-templates-design, 2026-11-13. Evidence at commit b23bbd4f: `roadmaps/selfhost/nodes/tagged-templates-design/log.md`.

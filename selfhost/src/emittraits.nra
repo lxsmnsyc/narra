@@ -20,6 +20,7 @@ import {
   stdTrait,
 } from "narrac/check"
 import { lookupImplementation } from "narrac/implementations"
+import { buildLaneLoop } from "narrac/emitsimd"
 import { cachedCType, cachedTypeId, opFuncName, cachedFunctionName } from "narrac/cnames"
 import {
   Emitter,
@@ -351,6 +352,10 @@ function writeEquality(
     addLine(mutable builder, `    if (!${equal}(a.items[i], b.items[i])) return false;`)
     addLine(mutable builder, "  }")
     addLine(mutable builder, "  return true;")
+  } else if (type is Type.TVector(_, _)) {
+    // Lanes compare with C ==, so a NaN lane is not equal to itself.
+    addLine(mutable builder, buildLaneLoop(type, "if (!(a[i] == b[i])) return false;"))
+    addLine(mutable builder, "  return true;")
   } else if (type is Type.TStruct(index)) {
     let parts = ["true"]
     for (const field of Arrays.values(copy(emitter.checker.structs[index].fields))) {
@@ -404,6 +409,9 @@ function writeHash(
       mutable builder,
       `  for (int64_t i = 0; i < ${formatFixedLength(type)}; i++) h = narra_hash_mix(h, ${hash}(v.items[i]));`,
     )
+  } else if (type is Type.TVector(lane, _)) {
+    const hash = useHash(mutable emitter, lane)
+    addLine(mutable builder, buildLaneLoop(type, `h = narra_hash_mix(h, ${hash}(v[i]));`))
   } else if (type is Type.TStruct(index)) {
     for (const field of Arrays.values(copy(emitter.checker.structs[index].fields))) {
       const hash = useHash(mutable emitter, field.fieldType)
@@ -518,6 +526,18 @@ function writeShow(
     addLine(mutable builder, "    if (i > 0) lstr_append_c(&s, \", \");")
     addLine(mutable builder, `    lstr_append_owned(&s, ${show}(v.items[i]));`)
     addLine(mutable builder, "  }")
+    addLine(mutable builder, appendText("  ", "]"))
+  } else if (type is Type.TVector(lane, _)) {
+    // A vector prints its lanes as a FixedArray does.
+    const show = useShow(mutable emitter, lane)
+    addLine(mutable builder, "  lstr* s = lstr_from_cstr(\"[\");")
+    addLine(
+      mutable builder,
+      buildLaneLoop(
+        type,
+        `{ if (i > 0) lstr_append_c(&s, ", "); lstr_append_owned(&s, ${show}(v[i])); }`,
+      ),
+    )
     addLine(mutable builder, appendText("  ", "]"))
   } else if (type is Type.TStruct(index)) {
     writeStructShow(mutable emitter, mutable builder, index)

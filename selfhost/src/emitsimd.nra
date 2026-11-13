@@ -1,0 +1,214 @@
+// The C of the vector types of std/simd (D112). Each vector type is a C vector
+// extension typedef, `typedef float narra_f32x4 __attribute__((vector_size(16),
+// aligned(8)));`, written only when the program names the type. Alignment 8
+// matches the runtime's heap blocks, which start at 8-byte boundaries, so an
+// `Array<F32x4>` element is never misaligned. Operators are C operators on the
+// typedefs; signed integer + - * and unary - go through the unsigned twin, because
+// C leaves signed overflow undefined. A lane read is `v[i]`; the checker proved i.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import { Expr, Arg } from "narrac/ast"
+import { Type, findLaneSize, isUnsignedInteger } from "narrac/types"
+import { getExpressionId } from "narrac/check"
+import { cachedCType } from "narrac/cnames"
+import { findUnsignedTwin, isFloatVector } from "narrac/simdtypes"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  writeLine,
+  temp,
+  readNodeType,
+  reportUnsupported,
+} from "narrac/emitstate"
+import { NODE, plain, argumentText } from "narrac/stdemithelp"
+
+function buildTypedef(emitter: Emitter, vector: Type): string uses alloc {
+  if (vector is Type.TVector(lane, count)) {
+    const name = cachedCType(emitter.checker, emitter.typeNames, vector)
+    const laneName = cachedCType(emitter.checker, emitter.typeNames, lane)
+    const size = Int.toString(findLaneSize(lane) * count)
+    return `typedef ${laneName} ${name} __attribute__((vector_size(${size}), aligned(8)));\n`
+  }
+  return ""
+}
+
+export function emitVectorTypedefs(emitter: Emitter): string uses alloc {
+  // A signed integer vector needs its unsigned twin for the wrapping operators.
+  let builder = Str.builder()
+  let written: Map<string, bool> = Map {}
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (!(composite is Type.TVector(_, _))) {
+      continue
+    }
+    for (const vector of Arrays.values([findUnsignedTwin(composite), composite])) {
+      const name = cachedCType(emitter.checker, emitter.typeNames, vector)
+      if (written[name] is None) {
+        written[name] = true
+        Str.append(mutable builder, buildTypedef(emitter, vector))
+      }
+    }
+  }
+  return Str.build(builder)
+}
+
+function isWrapping(vector: Type): bool {
+  // Signed integer lanes, whose C overflow is undefined.
+  if (vector is Type.TVector(lane, _)) {
+    return !isFloatVector(vector) && !isUnsignedInteger(lane)
+  }
+  return false
+}
+
+export function emitVectorLiteral<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  elements: Array<Expr>,
+): Code uses alloc {
+  const vector = copy(readNodeType(emitter, nodeId))
+  let lanes: Array<string> = []
+  for (const element of Arrays.values(elements)) {
+    Arrays.push(mutable lanes, EmitWalker.emitExpression(walker, mutable emitter, element).text)
+  }
+  const name = cachedCType(emitter.checker, emitter.typeNames, vector)
+  return plain(temp(mutable emitter, vector, `((${name}){${Str.join(lanes, ", ")}})`))
+}
+
+export function emitLaneRead<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  target: Expr,
+  index: Expr,
+): Code uses alloc {
+  const vector = copy(readNodeType(emitter, getExpressionId(target)))
+  const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
+  const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
+  if (vector is Type.TVector(lane, _)) {
+    return plain(temp(mutable emitter, lane, `(${targetCode.text})[${indexCode.text}]`))
+  }
+  return plain("0")
+}
+
+export function emitVectorArithmetic(
+  emitter: Emitter,
+  operator: string,
+  vector: Type,
+  leftText: string,
+  rightText: string,
+): Code uses alloc {
+  // + - * on signed lanes run on the unsigned twin, which wraps, and cast back.
+  if (isWrapping(vector) && (operator == "+" || operator == "-" || operator == "*")) {
+    const name = cachedCType(emitter.checker, emitter.typeNames, vector)
+    const twin = cachedCType(emitter.checker, emitter.typeNames, findUnsignedTwin(vector))
+    return plain(`((${name})((${twin})(${leftText}) ${operator} (${twin})(${rightText})))`)
+  }
+  return plain(`(${leftText} ${operator} ${rightText})`)
+}
+
+export function emitVectorUnary(
+  emitter: Emitter,
+  operator: string,
+  vector: Type,
+  value: string,
+): Code uses alloc {
+  if (isWrapping(vector) && operator == "-") {
+    const name = cachedCType(emitter.checker, emitter.typeNames, vector)
+    const twin = cachedCType(emitter.checker, emitter.typeNames, findUnsignedTwin(vector))
+    return plain(`((${name})(-(${twin})(${value})))`)
+  }
+  return plain(`(${operator}${value})`)
+}
+
+export function buildLaneLoop(vector: Type, statement: string): string uses alloc {
+  // Runs statement once per lane, which it names `i`.
+  if (vector is Type.TVector(_, count)) {
+    return `  for (int i = 0; i < ${Int.toString(count)}; i++) ${statement}`
+  }
+  return ""
+}
+
+function emitSplat<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // The value is read once, then written to every lane.
+  const vector = copy(readNodeType(emitter, nodeId))
+  if (vector is Type.TVector(lane, count)) {
+    const valueCode = argumentText(walker, mutable emitter, arguments, 0)
+    const value = temp(mutable emitter, lane, valueCode)
+    let lanes: Array<string> = []
+    for (let i = 0; i < count; i++) {
+      Arrays.push(mutable lanes, value)
+    }
+    const name = cachedCType(emitter.checker, emitter.typeNames, vector)
+    return plain(temp(mutable emitter, vector, `((${name}){${Str.join(lanes, ", ")}})`))
+  }
+  return plain("0")
+}
+
+function emitCopyBytes<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+  toFixed: bool,
+): Code uses alloc {
+  // A FixedArray and a vector of the same lanes hold the same bytes.
+  const resultType = copy(readNodeType(emitter, nodeId))
+  const sourceType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const sourceCode = argumentText(walker, mutable emitter, arguments, 0)
+  const source = temp(mutable emitter, sourceType, sourceCode)
+  const resultName = cachedCType(emitter.checker, emitter.typeNames, resultType)
+  const result = temp(mutable emitter, resultType, `((${resultName}){0})`)
+  if (toFixed) {
+    writeLine(mutable emitter, `memcpy(${result}.items, &${source}, sizeof(${source}));`)
+  } else {
+    writeLine(mutable emitter, `memcpy(&${result}, ${source}.items, sizeof(${result}));`)
+  }
+  return plain(result)
+}
+
+function emitWithLane<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // The arguments are read in order into a copy, whose lane is then replaced.
+  const vector = copy(readNodeType(emitter, nodeId))
+  const vectorCode = argumentText(walker, mutable emitter, arguments, 0)
+  const result = temp(mutable emitter, vector, vectorCode)
+  const indexCode = argumentText(walker, mutable emitter, arguments, 1)
+  const index = temp(mutable emitter, Type.TInt, indexCode)
+  const value = argumentText(walker, mutable emitter, arguments, 2)
+  writeLine(mutable emitter, `${result}[${index}] = ${value};`)
+  return plain(result)
+}
+
+export function emitSimdCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "Simd.splat") {
+    return emitSplat(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Simd.fromFixed") {
+    return emitCopyBytes(walker, mutable emitter, nodeId, arguments, false)
+  }
+  if (name == "Simd.toFixed") {
+    return emitCopyBytes(walker, mutable emitter, nodeId, arguments, true)
+  }
+  if (name == "Simd.withLane") {
+    return emitWithLane(walker, mutable emitter, nodeId, arguments)
+  }
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

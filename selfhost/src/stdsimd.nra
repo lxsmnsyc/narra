@@ -1,0 +1,202 @@
+// The registry rows and checks of std/simd (D112): the functions that build
+// vectors. The vector types and their operators are in simdtypes.nra, the
+// emitters in emitsimd.nra. No function has an effect, panics or allocates.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { checkFixedIndex } from "narrac/fixedarrays"
+import { findVectorFor } from "narrac/simdtypes"
+import {
+  Checker,
+  Walker,
+  internComposite,
+  reportError,
+  typeString,
+  getExpressionPos,
+} from "narrac/check"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression, expectType, checkArgumentsLoosely } from "narrac/exprs"
+import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+
+export const SIMD_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Simd.fromFixed",
+    module: "std/simd",
+    key: "fromFixed",
+    check: "checkSimdFromFixed",
+  },
+  StdFunc { name: "Simd.splat", module: "std/simd", key: "splat", check: "checkSimdSplat" },
+  StdFunc { name: "Simd.toFixed", module: "std/simd", key: "toFixed", check: "checkSimdToFixed" },
+  StdFunc {
+    name: "Simd.withLane",
+    module: "std/simd",
+    key: "withLane",
+    check: "checkSimdWithLane",
+  },
+]
+
+function checkVectorArgument<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  argument: Arg,
+  name: string,
+): Option<Type> uses alloc {
+  // The vector type of an argument, or None after an error.
+  const found = checkExpression(mutable checker, walker, argument.value, None)
+  if (found is Type.TVector(_, _)) {
+    return Some(found)
+  }
+  if (found != Type.TVoid) {
+    const foundText = typeString(checker, found)
+    reportError(
+      mutable checker,
+      getExpressionPos(argument.value),
+      "E1256",
+      `${name} takes a vector, found ${foundText}`,
+    )
+  }
+  return None
+}
+
+function checkSimdSplat<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  // The vector type comes from where the result goes, or from a type argument.
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (want is Some(Type.TVector(lane, _))) {
+    checkArgumentAgainst(mutable checker, walker, arguments[0].value, lane)
+    if (want is Some(vector)) {
+      return vector
+    }
+  }
+  checkArgumentsLoosely(mutable checker, walker, arguments)
+  reportError(
+    mutable checker,
+    pos,
+    "E1254",
+    `${name} takes its vector type from where the result goes or from a type argument, as in \`const ones: F32x4 = Simd.splat(1.0)\` or \`Simd.splat<F32x4>(1.0)\``,
+  )
+  return Type.TVoid
+}
+
+function checkSimdFromFixed<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  // An expected vector type gives a literal argument its FixedArray type.
+  let argumentWant: Option<Type> = None
+  if (want is Some(Type.TVector(lane, count))) {
+    argumentWant = Some(
+      internComposite(mutable checker, Type.TFixedArray(lane, Type.TConst(count))),
+    )
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, argumentWant)
+  const argumentPos = getExpressionPos(arguments[0].value)
+  if (found is Type.TFixedArray(element, Type.TConst(length))) {
+    if (findVectorFor(element, length) is Some(vector)) {
+      return internComposite(mutable checker, vector)
+    }
+    const fixedText = typeString(checker, found)
+    reportError(
+      mutable checker,
+      argumentPos,
+      "E1255",
+      `${fixedText} has no vector type: a vector holds 16 or 32 bytes of i8 to u64, f32 or f64 lanes`,
+    )
+    return Type.TVoid
+  }
+  if (found != Type.TVoid) {
+    const foundText = typeString(checker, found)
+    reportError(
+      mutable checker,
+      argumentPos,
+      "E1255",
+      `${name} takes a FixedArray of known length, found ${foundText}`,
+    )
+  }
+  return Type.TVoid
+}
+
+function checkSimdToFixed<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (checkVectorArgument(mutable checker, walker, arguments[0], name) is Some(vector)) {
+    if (vector is Type.TVector(lane, count)) {
+      return internComposite(mutable checker, Type.TFixedArray(lane, Type.TConst(count)))
+    }
+  }
+  return Type.TVoid
+}
+
+function checkSimdWithLane<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 3)) {
+    return Type.TVoid
+  }
+  const found = checkVectorArgument(mutable checker, walker, arguments[0], name)
+  // The lane index is proven as the index of `v[i]` is.
+  const index = arguments[1].value
+  const indexType = checkExpression(mutable checker, walker, index, Some(Type.TInt))
+  expectType(mutable checker, getExpressionPos(index), Some(Type.TInt), indexType)
+  if (found is Some(vector)) {
+    if (indexType == Type.TInt) {
+      checkFixedIndex(mutable checker, vector, index)
+    }
+    if (vector is Type.TVector(lane, _)) {
+      checkArgumentAgainst(mutable checker, walker, arguments[2].value, lane)
+    }
+    return vector
+  }
+  checkExpression(mutable checker, walker, arguments[2].value, None)
+  return Type.TVoid
+}
+
+export function checkSimdCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+  want: Option<Type>,
+): Type from want uses alloc {
+  if (kind == "checkSimdSplat") {
+    return checkSimdSplat(mutable checker, walker, pos, arguments, name, want)
+  }
+  if (kind == "checkSimdFromFixed") {
+    return copy(checkSimdFromFixed(mutable checker, walker, pos, arguments, name, want))
+  }
+  if (kind == "checkSimdToFixed") {
+    return copy(checkSimdToFixed(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdWithLane") {
+    return copy(checkSimdWithLane(mutable checker, walker, pos, arguments, name))
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+  return Type.TVoid
+}

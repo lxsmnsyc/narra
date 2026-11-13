@@ -90,6 +90,8 @@ export enum Type derives Equatable {
   // Dynamic<Trait>: a value of any type that implements the trait at
   // Checker.traits[traitIndex], called through a table of functions.
   TDynamic(traitIndex: int)
+  // A vector of std/simd (D112): count lanes of the number type lane, 16 or 32 bytes.
+  TVector(lane: Type, count: int)
 }
 
 // A struct field or variant field. `pos` is the field's declaration, or the
@@ -232,6 +234,34 @@ export function findFixedLength(type: Type): int {
   return -1
 }
 
+export function findIndexedLength(type: Type): int {
+  // The length a proven index is checked against: a FixedArray's, or a vector's lane count.
+  if (type is Type.TVector(_, count)) {
+    return count
+  }
+  return findFixedLength(type)
+}
+
+export function findLaneSize(lane: Type): int {
+  // The bytes of one lane of a vector type.
+  return match (lane) {
+    Type.TI8 | Type.TU8 => 1
+    Type.TI16 | Type.TU16 => 2
+    Type.TI32 | Type.TU32 | Type.TF32 => 4
+    _ => 8
+  }
+}
+
+export function formatVectorName(lane: Type, count: int): string uses alloc {
+  // F32x4, I64x2, U8x16: the lane kind, its bits and the lane count.
+  const kind = match (lane) {
+    Type.TF32 | Type.TF64 => "F"
+    Type.TU8 | Type.TU16 | Type.TU32 | Type.TU64 => "U"
+    _ => "I"
+  }
+  return `${kind}${Int.toString(findLaneSize(lane) * 8)}x${Int.toString(count)}`
+}
+
 export function typeKey(type: Type): string uses alloc {
   // Go keys by C name (typeID); this key has no hash and is unique because struct, enum, distinct and parameter types are indexes.
   return buildKey(type, false)
@@ -243,7 +273,7 @@ export function plainTypeKey(type: Type): string uses alloc {
 }
 
 function buildKey(type: Type, plain: bool): string uses alloc {
-  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, Y, K, X,
+  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, Y, K, X, V,
   // the primitive names, Range, module), so the keys of two variants never meet.
   return match (type) {
     Type.TInt => "int"
@@ -298,6 +328,7 @@ function buildKey(type: Type, plain: bool): string uses alloc {
     Type.TConst(value) => `K${Int.toString(value)}`
     Type.TFixedArray(element, length) => `X(${buildKey(element, plain)},${buildKey(length, plain)})`
     Type.TDynamic(traitIndex) => `Q${Int.toString(traitIndex)}`
+    Type.TVector(lane, count) => `V(${buildKey(lane, plain)},${Int.toString(count)})`
   }
 }
 

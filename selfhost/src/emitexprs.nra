@@ -79,6 +79,7 @@ import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
 import * as Options from "narrac/emitoptions"
 import * as Fixed from "narrac/emitfixed"
+import * as Simd from "narrac/emitsimd"
 import { emitCopyCall } from "narrac/stdcopy"
 import * as TaggedTemplates from "narrac/taggedtemplates"
 import * as StdHelp from "narrac/stdemithelp"
@@ -420,6 +421,9 @@ function emitIndexRead<W: EmitWalker>(
   if (targetType is Type.TFixedArray(_, _)) {
     return Fixed.emitFixedRead(walker, mutable emitter, target, index)
   }
+  if (targetType is Type.TVector(_, _)) {
+    return Simd.emitLaneRead(walker, mutable emitter, target, index)
+  }
   if (targetType is Type.TArray(element)) {
     const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
@@ -455,6 +459,10 @@ function emitUnary<W: EmitWalker>(
   operand: Expr,
 ): Code uses alloc {
   const value = EmitWalker.emitExpression(walker, mutable emitter, operand).text
+  const vectorType = copy(readNodeType(emitter, nodeId))
+  if (vectorType is Type.TVector(_, _)) {
+    return Simd.emitVectorUnary(emitter, operator, vectorType, value)
+  }
   if (operator == "-") {
     const operandType = copy(readNodeType(emitter, nodeId))
     if (operandType == Type.TInt) {
@@ -521,7 +529,8 @@ function isPrimitive(type: Type): bool {
       | Type.TFixedArray(_, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
-      | Type.TFunc(_, _, _, _, _) => false
+      | Type.TFunc(_, _, _, _, _)
+      | Type.TVector(_, _) => false
     _ => true
   }
 }
@@ -585,6 +594,9 @@ export function emitArithmetic(
   leftText: string,
   rightText: string,
 ): Code uses alloc {
+  if (operandType is Type.TVector(_, _)) {
+    return Simd.emitVectorArithmetic(emitter, operator, operandType, leftText, rightText)
+  }
   if (isInteger(operandType)) {
     // A sized integer has its own functions, named with the type.
     let suffix = ""
@@ -1340,6 +1352,9 @@ function emitArrayLiteral<W: EmitWalker>(
   const arrayType = copy(readNodeType(emitter, nodeId))
   if (arrayType is Type.TFixedArray(_, _)) {
     return Fixed.emitFixedLiteral(walker, mutable emitter, nodeId, elements)
+  }
+  if (arrayType is Type.TVector(_, _)) {
+    return Simd.emitVectorLiteral(walker, mutable emitter, nodeId, elements)
   }
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)

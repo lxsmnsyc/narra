@@ -125,6 +125,13 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { checkConstantName, describeUnknownParameter } from "narrac/constgenerics"
 import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
+import {
+  isVector,
+  checkVectorOperator,
+  checkVectorUnary,
+  reportLaneCount,
+  reportLaneWrite,
+} from "narrac/simdtypes"
 import { checkLazyUse, reportLazyCycle } from "narrac/lazyvalues"
 import * as AsyncCheck from "narrac/asynccheck"
 import * as TaggedTemplates from "narrac/taggedtemplates"
@@ -1674,6 +1681,15 @@ function checkIndex<W: Walker>(
     }
     return fixedElement
   }
+  // A lane of a vector is read with the FixedArray proof, and never written.
+  if (targetType is Type.TVector(lane, _)) {
+    if (checker.assigningId == nodeId) {
+      reportLaneWrite(mutable checker, pos, targetType)
+    } else if (indexType == Type.TInt) {
+      checkFixedIndex(mutable checker, targetType, index)
+    }
+    return copy(lane)
+  }
   if (targetType is Type.TStruct(structIndex)) {
     if (checker.structs[structIndex].tuple) {
       return checkTupleIndex(mutable checker, nodeId, pos, targetType, structIndex, index)
@@ -1739,6 +1755,11 @@ function checkUnary<W: Walker>(
   }
   const operandType = checkExpression(mutable checker, walker, operand, want)
   checker.negatedLiteralId = -1
+  // `!` on a vector is the error it is on a number.
+  if (isVector(operandType) && operator != "!") {
+    checkVectorUnary(mutable checker, pos, operator, operandType)
+    return operandType
+  }
   if (operator == "-") {
     if (!isNumeric(operandType)) {
       const text = typeString(checker, operandType)
@@ -1916,6 +1937,9 @@ function checkBinary<W: Walker>(
     }
     rightType = checkExpression(mutable checker, walker, right, Some(leftType))
     popScope(mutable checker)
+  }
+  if (operator != "&&" && operator != "||" && (isVector(leftType) || isVector(rightType))) {
+    return checkVectorOperator(mutable checker, pos, operator, leftType, rightType)
   }
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
@@ -2308,6 +2332,17 @@ function checkArrayLiteral<W: Walker>(
       return fixedType
     }
   }
+  // An expected vector type makes the literal one, with every lane given.
+  if (want is Some(Type.TVector(lane, _))) {
+    for (const element of Arrays.values(elements)) {
+      const found = checkExpression(mutable checker, walker, element, Some(lane))
+      expectType(mutable checker, getExpressionPos(element), Some(lane), found)
+    }
+    if (want is Some(vectorType)) {
+      reportLaneCount(mutable checker, pos, vectorType, Arrays.length(elements))
+      return vectorType
+    }
+  }
   // The expected type gives the element type, or else the first element.
   let elementType: Option<Type> = None
   if (want is Some(Type.TArray(element))) {
@@ -2698,8 +2733,18 @@ export function checkBuiltinCall<W: Walker>(
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
   const info = copy(checker.registry.functions[builtin])
   if (info.check != "" && info.check != "fixed") {
+    // A std/simd call takes its vector type from a type argument, as from an expected type.
+    let callWant = want
+    if (Str.startsWith(info.check, "checkSimd")) {
+      if (checker.callTypeArguments[nodeId] is Some(written)) {
+        if (Arrays.length(written) == 1) {
+          callWant = Some(resolveType(mutable checker, written[0]))
+          checker.callTypeArguments[nodeId] = []
+        }
+      }
+    }
     return copy(
-      Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, want),
+      Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, callWant),
     )
   }
 

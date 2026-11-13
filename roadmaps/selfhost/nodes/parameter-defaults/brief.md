@@ -53,6 +53,9 @@ shared:
 reserves: [diag E1210-E1219]
 provides: []
 depends_on:
+  - on: constructor-field-defaults
+    kind: hard
+    why: parameter defaults use isConstantValue, which this fix changes
   - on: parameter-defaults-design
     kind: hard
     why: the design gate fixes the syntax, codes and SPEC text this node builds (D115)

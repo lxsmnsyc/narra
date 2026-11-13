@@ -33,6 +33,7 @@ import {
   Stmt,
   Expr,
   Pattern,
+  isTaggedArguments,
 } from "narrac/ast"
 import { getPosKey, getIdKey, getExprId, getPatternId } from "narrac/trivia"
 import {
@@ -393,11 +394,14 @@ function printExpressionBody(
       keys,
       values,
     )
-    Expr.CallExpr(_, _, callee, typeArguments, arguments) => createConcat([
-      printWithMinimum(printer, callee, PRIMARY_PRECEDENCE),
-      printTypeArguments(printer, typeArguments),
-      printArguments(printer, arguments),
-    ])
+    Expr.CallExpr(id, _, callee, typeArguments, arguments) => printCall(
+      printer,
+      id,
+      callee,
+      typeArguments,
+      arguments,
+    )
+    Expr.TemplateParts(_, _, _) => createText("``")
     Expr.UnaryExpr(_, _, operator, operand) => printUnary(printer, operator, operand)
     Expr.BinaryExpr(_, _, _, _, _) => printBinary(printer, expression)
     Expr.StructLit(id, pos, typeName, typeArguments, fields, spread) => printStructLiteral(
@@ -441,6 +445,36 @@ function getLiteralText(
     return fallback
   }
   return getSourceText(printer, start, end)
+}
+
+function printCall(
+  printer: Printer,
+  callId: int,
+  callee: Expr,
+  typeArguments: Array<TypeExpr>,
+  arguments: Array<Arg>,
+): Document from printer uses alloc {
+  if (isTaggedArguments(arguments)) {
+    return printTaggedTemplate(printer, callId, callee, arguments[0].pos)
+  }
+  return createConcat([
+    printWithMinimum(printer, callee, PRIMARY_PRECEDENCE),
+    printTypeArguments(printer, typeArguments),
+    printArguments(printer, arguments),
+  ])
+}
+
+function printTaggedTemplate(
+  printer: Printer,
+  callId: int,
+  tag: Expr,
+  templatePos: Pos,
+): Document from printer uses alloc {
+  // The tag, no space, then the template as written: the call ends where the template does.
+  return createConcat([
+    printWithMinimum(printer, tag, PRIMARY_PRECEDENCE),
+    createText(getEndedText(printer, callId, templatePos, "``")),
+  ])
 }
 
 function getEndedText(printer: Printer, id: int, start: Pos, fallback: string): string uses alloc {

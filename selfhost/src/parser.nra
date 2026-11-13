@@ -148,6 +148,8 @@ import {
   LoopReference,
   SourceFacts,
   DotUse,
+  TemplatePart,
+  TemplatePartError,
   createEmptyFacts,
 } from "narrac/ast"
 import {
@@ -433,6 +435,7 @@ function finishFacts(parser: Parser, source: string): SourceFacts from parser us
     shorthandIds: parser.facts.shorthandIds,
     callEnds: parser.facts.callEnds,
     templateTokenEnds: parser.facts.templateTokenEnds,
+    taggedCalls: parser.facts.taggedCalls,
     referenced: referenced,
     resultEnds: parser.facts.resultEnds,
     fromNames: parser.facts.fromNames,
@@ -3341,6 +3344,14 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
       const name = parseMemberName(mutable parser)
       expression = Expr.FieldExpr(newId(mutable parser), getPos(name), expression, name.text)
       noteExpr(mutable parser, startIndex, expression)
+    } else if (isAt(parser, SYMBOL_LESS) && isTaggedTypeArgsAhead(parser, expression)) {
+      failAt(
+        mutable parser,
+        getPos(token),
+        "E1200",
+        "a tag takes no type arguments; the tag's parameters give its type",
+      )
+      return createDummyExpr()
     } else if (isAt(parser, SYMBOL_LESS) && isCallTypeArgsAhead(parser, expression)) {
       // `f<int>(x)`: type arguments of a call.
       const typeArguments = parseLiteralTypeArgs(mutable parser)
@@ -3362,6 +3373,20 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
       const index = parseExpr(mutable parser)
       expect(mutable parser, SYMBOL_RIGHT_BRACKET)
       expression = Expr.IndexExpr(newId(mutable parser), getPos(token), expression, index)
+      noteExpr(mutable parser, startIndex, expression)
+    } else if (token.kind == TokenKind.TokTemplate && isTemplateOnSameLine(parser)) {
+      // `tag`...``: only a name or a dotted name is a tag (D114).
+      if (!isTagName(parser, expression)) {
+        failAt(
+          mutable parser,
+          getPos(token),
+          "E1200",
+          "a template after an expression is a tagged template, and only a name or a dotted name can be its tag",
+        )
+        return createDummyExpr()
+      }
+      advance(mutable parser)
+      expression = parseTaggedTemplate(mutable parser, expression, token)
       noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, SYMBOL_LESS) || isAt(parser, SYMBOL_LEFT_BRACE)) {
       // `Name { field: value }` is a struct literal, and
@@ -3391,6 +3416,39 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
     }
   }
   return expression
+}
+
+function isTemplateOnSameLine(parser: Parser): bool {
+  if (parser.index == 0) {
+    return false
+  }
+  const previous = parser.tokens[parser.index - 1]
+  return previous.kind != TokenKind.TokNewline && previous.endLine == currentToken(parser).line
+}
+
+function isTemplateAfterNameLine(parser: Parser): bool {
+  // TypeScript reads `tag` and a template on the next line as one tagged template.
+  if (parser.index < 2) {
+    return false
+  }
+  return parser.tokens[parser.index - 1].kind == TokenKind.TokNewline &&
+    parser.tokens[parser.index - 2].kind == TokenKind.TokIdent
+}
+
+function isTagName(parser: Parser, expression: Expr): bool {
+  // A name or a dotted name, written right before the template.
+  if (parser.tokens[parser.index - 1].kind != TokenKind.TokIdent) {
+    return false
+  }
+  return isNameChain(expression)
+}
+
+function isNameChain(expression: Expr): bool {
+  return match (expression) {
+    Expr.Ident(_, _, _) => true
+    Expr.FieldExpr(_, _, target, _) => isNameChain(target)
+    _ => false
+  }
 }
 
 function parseCallArguments(mutable parser: Parser): Array<Arg> {
@@ -3424,12 +3482,32 @@ function parseCallArguments(mutable parser: Parser): Array<Arg> {
 }
 
 function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
+  const after = findTypeArgsEnd(parser, callee)
+  if (after < 0) {
+    return false
+  }
+  const token = peekToken(parser, after)
+  return token.kind == TokenKind.TokPunct && token.text == "("
+}
+
+function isTaggedTypeArgsAhead(parser: Parser, callee: Expr): bool {
+  // `tag<int>`...``: a tag takes no type arguments (D114).
+  const after = findTypeArgsEnd(parser, callee)
+  if (after < 0) {
+    return false
+  }
+  const token = peekToken(parser, after)
+  return token.kind == TokenKind.TokTemplate && token.line == peekToken(parser, after - 1).endLine
+}
+
+function findTypeArgsEnd(parser: Parser, callee: Expr): int {
+  // The offset of the token after a balanced `<...>` of type arguments, or -1.
   if (callee is Expr.FieldExpr(_, _, target, _)) {
     if (!(target is Expr.Ident(_, _, _))) {
-      return false
+      return -1
     }
   } else if (!(callee is Expr.Ident(_, _, _))) {
-    return false
+    return -1
   }
   // A name not followed by `.` must be a type: a type parameter in scope, a primitive type name, or a capitalized name that is not SCREAMING_CASE. So `a < b > (c)` and `x < MAX, MIN > (y)` stay comparisons.
   let depth = 0
@@ -3439,19 +3517,19 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
     const token = peekToken(parser, offset)
     if (token.kind == TokenKind.TokIdent) {
       if (depth == 0) {
-        return false
+        return -1
       }
       const next = peekToken(parser, offset + 1)
       const isQualifier = next.kind == TokenKind.TokPunct && next.text == "."
       if (!isTypeNameAhead(parser, token.text) && !isQualifier) {
-        return false
+        return -1
       }
     } else if (isConstantArgumentToken(parser, offset)) {
       if (depth == 0) {
-        return false
+        return -1
       }
     } else if (token.kind != TokenKind.TokPunct) {
-      return false
+      return -1
     } else if (token.text == "<") {
       depth++
     } else if (token.text == ">" || token.text == ">>") {
@@ -3461,18 +3539,17 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
         depth -= 2
       }
       if (depth < 0) {
-        return false
+        return -1
       }
       if (depth == 0) {
-        const after = peekToken(parser, offset + 1)
-        return after.kind == TokenKind.TokPunct && after.text == "("
+        return offset + 1
       }
     } else if (token.text != "," && token.text != "." && token.text != "#[" && token.text != "]") {
-      return false
+      return -1
     }
     offset++
   }
-  return false
+  return -1
 }
 
 function isConstantArgumentToken(parser: Parser, offset: int): bool {
@@ -3653,6 +3730,7 @@ function getExpressionPos(expression: Expr): Pos {
       | Expr.CharLit(_, pos, _)
       | Expr.BoolLit(_, pos, _)
       | Expr.TemplateLit(_, pos, _)
+      | Expr.TemplateParts(_, pos, _)
       | Expr.Ident(_, pos, _)
       | Expr.FieldExpr(_, pos, _, _)
       | Expr.IsExpr(_, pos, _, _)
@@ -3837,6 +3915,15 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     return Expr.CharLit(newId(mutable parser), pos, token.text)
   }
   if (token.kind == TokenKind.TokTemplate) {
+    if (isTemplateAfterNameLine(parser)) {
+      failAt(
+        mutable parser,
+        pos,
+        "E1203",
+        "a template at the start of a line is not tagged by the name that ends the line before; join the lines to tag it",
+      )
+      return createDummyExpr()
+    }
     advance(mutable parser)
     return parseTemplate(mutable parser, token)
   }
@@ -4030,15 +4117,69 @@ function advancePosition(raw: Array<char>, fromIndex: int, toIndex: int, start: 
   return Pos { line: line, column: column }
 }
 
+// The text parts and the `${}` expressions of a template, in source order;
+// there is always one more part than expressions. An untagged template takes
+// the id of each part's StringLit when the part ends, -1 for an empty part.
+struct TemplatePieces {
+  parts: Array<TemplatePart>
+  holes: Array<Expr>
+  literalIds: Array<int>
+}
+
 function parseTemplate(mutable parser: Parser, token: Token): Expr {
-  // Each expression is lexed and parsed on its own, with its tokens placed where they are written.
+  // Empty parts are dropped; each other part is a StringLit at the template's position.
   const pos = getPos(token)
   const end = Pos { line: token.endLine, column: token.endColumn }
+  const pieces = splitTemplate(mutable parser, token, false)
+  if (!isOk(parser)) {
+    return createDummyExpr()
+  }
+  let parts: Array<Expr> = []
+  for (const index of Ranges.upTo(Arrays.length(pieces.parts))) {
+    if (pieces.parts[index].decoded is Ok(text)) {
+      const literalId = pieces.literalIds[index]
+      if (literalId >= 0) {
+        Arrays.push(mutable parts, Expr.StringLit(literalId, pos, text, end))
+      }
+    }
+    if (index < Arrays.length(pieces.holes)) {
+      Arrays.push(mutable parts, pieces.holes[index])
+    }
+  }
+  return Expr.TemplateLit(newId(mutable parser), pos, parts)
+}
+
+function parseTaggedTemplate(mutable parser: Parser, tag: Expr, token: Token): Expr from tag {
+  // `tag`a${x}b`` is the call `tag(["a", "b"], [x])` (D114). Escape errors stay in the parts.
+  const pos = getPos(token)
+  const pieces = splitTemplate(mutable parser, token, true)
+  if (!isOk(parser)) {
+    return createDummyExpr()
+  }
+  const partsExpression = Expr.TemplateParts(newId(mutable parser), pos, pieces.parts)
+  const valuesExpression = Expr.ArrayLit(newId(mutable parser), pos, pieces.holes, false)
+  const callId = newId(mutable parser)
+  parser.facts.callEnds[callId] = Pos { line: token.endLine, column: token.endColumn }
+  parser.facts.taggedCalls[callId] = true
+  return Expr.CallExpr(callId, pos, tag, [], [
+    Arg { pos: pos, name: None, isMutable: false, value: partsExpression },
+    Arg { pos: pos, name: None, isMutable: false, value: valuesExpression },
+  ])
+}
+
+function splitTemplate(mutable parser: Parser, token: Token, tagged: bool): TemplatePieces {
+  // Each expression is lexed and parsed on its own, with its tokens placed where they are written.
+  // An untagged template fails at its first bad escape; a tagged one keeps the error in its part.
+  const pos = getPos(token)
   const raw = Str.chars(token.text)
   const count = Arrays.length(raw)
-  let parts: Array<Expr> = []
+  let parts: Array<TemplatePart> = []
+  let holes: Array<Expr> = []
+  let literalIds: Array<int> = []
   let text = Str.builder()
-  let pending = 0 // characters in text
+  let partError: Option<TemplatePartError> = None
+  let partStart = 0
+  let partPos = Pos { line: token.line, column: token.column + 1 }
   let index = 0
   // The source position of raw[scanned]; raw starts after the backtick.
   let scanned = 0
@@ -4053,11 +4194,22 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const escaped = decodeEscape(raw, index, cursor.line, cursor.column)
       if (escaped is Err(error)) {
         const errorPos = Pos { line: error.line, column: error.column }
-        failAt(mutable parser, errorPos, error.code, error.message)
-        return createDummyExpr()
+        if (!tagged) {
+          failAt(mutable parser, errorPos, error.code, error.message)
+          return TemplatePieces { parts: [], holes: [], literalIds: [] }
+        }
+        if (partError is None) {
+          partError = Some(TemplatePartError {
+            code: error.code,
+            message: error.message,
+            pos: errorPos,
+          })
+        }
+        // The backslash keeps the next character in the part.
+        index = index + 2
+        continue
       }
       Str.append(mutable text, escaped.value.text)
-      pending++
       index = escaped.value.end
       continue
     }
@@ -4065,13 +4217,16 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const closeIndex = findInterpolationEnd(raw, index + 2)
       if (closeIndex < 0) {
         failAt(mutable parser, pos, "E0040", "unterminated ${ in template string")
-        return createDummyExpr()
+        return TemplatePieces { parts: [], holes: [], literalIds: [] }
       }
-      if (pending > 0) {
-        Arrays.push(mutable parts, Expr.StringLit(newId(mutable parser), pos, Str.build(text), end))
-        text = Str.builder()
-        pending = 0
-      }
+      const partText = Str.build(text)
+      Arrays.push(mutable literalIds, takeLiteralId(mutable parser, tagged, partText))
+      Arrays.push(
+        mutable parts,
+        createTemplatePart(raw, partStart, index, partText, partError, partPos),
+      )
+      text = Str.builder()
+      partError = None
       let source = Str.builder()
       for (const sourceIndex of Ranges.between(index + 2, closeIndex - 1)) {
         Str.appendChar(mutable source, raw[sourceIndex])
@@ -4082,7 +4237,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const lexed = lexFrom(Str.build(source), cursor.line, cursor.column)
       if (lexed is Err(error)) {
         failAt(mutable parser, pos, "E0041", `in template string: ${formatLexError(error)}`)
-        return createDummyExpr()
+        return TemplatePieces { parts: [], holes: [], literalIds: [] }
       }
       let innerParser = Parser {
         tokens: copy(lexed.value),
@@ -4118,22 +4273,59 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
         const #[callId, callEnd] = entry
         parser.facts.callEnds[callId] = callEnd
       }
+      for (const entry of Maps.entries(innerParser.facts.taggedCalls)) {
+        const #[taggedId, isTagged] = entry
+        parser.facts.taggedCalls[taggedId] = isTagged
+      }
       if (innerParser.failed is Some(diagnostic)) {
         failAt(mutable parser, diagnostic.pos, diagnostic.code, diagnostic.message)
-        return createDummyExpr()
+        return TemplatePieces { parts: [], holes: [], literalIds: [] }
       }
-      Arrays.push(mutable parts, expression)
+      Arrays.push(mutable holes, expression)
       index = closeIndex
+      // The next part starts after the `}`.
+      cursor = advancePosition(raw, scanned, index, cursor)
+      scanned = index
+      partStart = index
+      partPos = cursor
       continue
     }
     Str.appendChar(mutable text, character)
-    pending++
     index++
   }
-  if (pending > 0) {
-    Arrays.push(mutable parts, Expr.StringLit(newId(mutable parser), pos, Str.build(text), end))
+  const lastText = Str.build(text)
+  Arrays.push(mutable literalIds, takeLiteralId(mutable parser, tagged, lastText))
+  Arrays.push(
+    mutable parts,
+    createTemplatePart(raw, partStart, count, lastText, partError, partPos),
+  )
+  return TemplatePieces { parts: parts, holes: holes, literalIds: literalIds }
+}
+
+function takeLiteralId(mutable parser: Parser, tagged: bool, text: string): int {
+  if (tagged || Str.length(text) == 0) {
+    return -1
   }
-  return Expr.TemplateLit(newId(mutable parser), pos, parts)
+  return newId(mutable parser)
+}
+
+function createTemplatePart(
+  raw: Array<char>,
+  start: int,
+  end: int,
+  text: string,
+  failure: Option<TemplatePartError>,
+  pos: Pos,
+): TemplatePart {
+  let source = Str.builder()
+  for (const rawIndex of Ranges.between(start, end)) {
+    Str.appendChar(mutable source, raw[rawIndex])
+  }
+  let decoded: Result<string, TemplatePartError> = Ok(text)
+  if (failure is Some(error)) {
+    decoded = Err(copy(error))
+  }
+  return TemplatePart { raw: Str.build(source), decoded: decoded, pos: copy(pos) }
 }
 
 function parseMatch(mutable parser: Parser): Expr {

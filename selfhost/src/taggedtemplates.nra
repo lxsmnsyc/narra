@@ -1,0 +1,385 @@
+// Tagged template literals (D114). The parser writes `tag`a${x}b`` as the
+// call `tag(parts, [x])`, whose first argument is an Expr.TemplateParts. This
+// module checks the tag's type before the ordinary call check (E1201), gives
+// the parts their type from the tag's first parameter, `Array<string>` with
+// the escapes decoded or `Template.Raw` with the source text, and checks each
+// `${}` value against the tag's value type (E1202). The emitter and the
+// evaluator read the parts' node type to pick the raw or the decoded text.
+import { Expr, Arg, Decl, TemplatePart } from "narrac/ast"
+import { Type } from "narrac/types"
+import {
+  Checker,
+  Walker,
+  reportError,
+  typeString,
+  findLocal,
+  getLocal,
+  getExpressionId,
+  getExpressionPos,
+  internComposite,
+} from "narrac/check"
+import { findModuleFunction } from "narrac/funcvalues"
+import { memberScope } from "narrac/scopes"
+import { cachedCType } from "narrac/cnames"
+import { substring } from "narrac/textops"
+import {
+  Emitter,
+  Code,
+  literal,
+  ownedTemp,
+  readNodeType,
+  useHelper,
+  writeLine,
+} from "narrac/emitstate"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// The parameters of a tag as far as the call site sees them: their types,
+// whether each is mutable, the text of the tag's type for E1201, and the
+// result a call gives after E1201 (void when it is not known).
+struct TagSignature {
+  isFunction: bool
+  parameters: Array<Type>
+  mutables: Array<bool>
+  text: string
+  result: Type
+}
+
+export function isRawParts(checker: Checker, partsType: Type): bool {
+  // Template.Raw is found by its module and name.
+  if (partsType is Type.TDistinct(index)) {
+    return checker.distincts[index].module == "std/template" &&
+      checker.distincts[index].name == "Raw"
+  }
+  return false
+}
+
+export function checkTag<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  callee: Expr,
+  arguments: Array<Arg>,
+  want: Option<Type>,
+): Option<Type> uses alloc {
+  // After E1201 the type the call gives, with the values checked on their own; None when the ordinary call check goes on.
+  const values = arguments[1].value
+  let isFailed = false
+  let failedType = Type.TVoid
+  if (findPlaceType(checker, callee) is Some(Type.TVoid)) {
+    // A void local was reported where it was declared.
+    isFailed = true
+  } else if (findTagSignature(mutable checker, callee) is Some(signature)) {
+    failedType = copy(signature.result)
+    if (!isTagSignature(checker, signature)) {
+      reportError(
+        mutable checker,
+        getExpressionPos(callee),
+        "E1201",
+        `a tag must be a function of (Array<string> or Template.Raw, Array<T>) with no mutable parameter, found ${signature.text}`,
+      )
+      isFailed = true
+    }
+  }
+  if (isFailed) {
+    if (values is Expr.ArrayLit(_, _, elements, _)) {
+      for (const element of Arrays.values(elements)) {
+        Walker.checkExpression(walker, mutable checker, element, None)
+      }
+    }
+    // The expected type, or the tag's result, keeps the error from being reported twice.
+    if (want is Some(wanted)) {
+      return Some(copy(wanted))
+    }
+    return Some(failedType)
+  }
+  checker.taggedValues = getExpressionId(values)
+  return None
+}
+
+function findTagSignature(mutable checker: Checker, callee: Expr): Option<TagSignature> uses alloc {
+  // None when the name is not known here; the ordinary call check reports it.
+  // A local, or a field of one: the type of the value. A void local was reported where it was declared.
+  if (findPlaceType(checker, callee) is Some(placeType)) {
+    if (placeType == Type.TVoid) {
+      return None
+    }
+    return Some(describeValueType(checker, copy(placeType)))
+  }
+  if (callee is Expr.Ident(_, _, name)) {
+    if (findLocal(checker, name) >= 0) {
+      return None
+    }
+    const scope = checker.current
+    if (checker.scopes[scope].consts[name] is Some(constIndex)) {
+      if (copy(checker.consts[constIndex].declaredType) is Some(declared)) {
+        return Some(describeValueType(checker, declared))
+      }
+      if (copy(checker.consts[constIndex].valueType) is Some(valueType)) {
+        return Some(describeValueType(checker, valueType))
+      }
+      return None
+    }
+    if (checker.scopes[scope].functions[name] is Some(funcIndex)) {
+      return Some(copy(describeFunction(checker, funcIndex)))
+    }
+    return None
+  }
+  if (callee is Expr.FieldExpr(_, _, target, name)) {
+    return findModuleTag(mutable checker, target, name)
+  }
+  return None
+}
+
+function findPlaceType(checker: Checker, expression: Expr): Option<Type> uses alloc {
+  // `tags.html.tag`: a local, then the fields of plain structs.
+  if (expression is Expr.Ident(_, _, name)) {
+    const local = findLocal(checker, name)
+    if (local >= 0) {
+      return Some(copy(getLocal(checker, local).localType))
+    }
+    return None
+  }
+  if (expression is Expr.FieldExpr(_, _, target, name)) {
+    if (findPlaceType(checker, target) is Some(Type.TStruct(structIndex))) {
+      for (const field of Arrays.values(checker.structs[structIndex].fields)) {
+        if (field.name == name) {
+          return Some(copy(field.fieldType))
+        }
+      }
+    }
+  }
+  return None
+}
+
+function findModuleTag(
+  mutable checker: Checker,
+  target: Expr,
+  name: string,
+): Option<TagSignature> uses alloc {
+  // `Module.tag`, where Module is a module alias and not a local.
+  if (target is Expr.Ident(_, _, alias)) {
+    if (findLocal(checker, alias) >= 0) {
+      return None
+    }
+    if (checker.scopes[checker.current].modules[alias] is Some(path)) {
+      const moduleScope = memberScope(checker, path)
+      if (moduleScope < 0) {
+        return None
+      }
+      if (checker.scopes[moduleScope].exports[name] is Some(declarationIndex)) {
+        const declaration = copy(checker.scopes[moduleScope].declarations[declarationIndex])
+        if (declaration is Decl.Func(funcDecl)) {
+          const funcIndex = findModuleFunction(checker, moduleScope, funcDecl)
+          if (funcIndex >= 0) {
+            return Some(copy(describeFunction(checker, funcIndex)))
+          }
+        }
+      }
+    }
+  }
+  return None
+}
+
+function describeFunction(checker: Checker, funcIndex: int): TagSignature from checker uses alloc {
+  let parameters: Array<Type> = []
+  let mutables: Array<bool> = []
+  let texts: Array<string> = []
+  for (const param of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
+    const paramType = checker.paramTypes[param.id]
+    Arrays.push(mutable parameters, paramType)
+    Arrays.push(mutable mutables, param.isMutable)
+    if (param.isMutable) {
+      Arrays.push(mutable texts, `mutable ${typeString(checker, paramType)}`)
+    } else {
+      Arrays.push(mutable texts, typeString(checker, paramType))
+    }
+  }
+  const resultText = typeString(checker, checker.functions[funcIndex].result)
+  let result = Type.TVoid
+  if (Arrays.length(checker.functions[funcIndex].typeParameters) == 0) {
+    result = copy(checker.functions[funcIndex].result)
+  }
+  return TagSignature {
+    isFunction: true,
+    parameters: parameters,
+    mutables: mutables,
+    text: `(${Str.join(texts, ", ")}) => ${resultText}`,
+    result: result,
+  }
+}
+
+function describeValueType(
+  checker: Checker,
+  valueType: Type,
+): TagSignature from valueType uses alloc {
+  let parameters: Array<Type> = []
+  let mutables: Array<bool> = []
+  let isFunction = false
+  let result = Type.TVoid
+  if (valueType is Type.TFunc(functionParameters, functionResult, _, _, _)) {
+    isFunction = true
+    result = copy(functionResult)
+    for (const paramType of Arrays.values(functionParameters)) {
+      Arrays.push(mutable parameters, paramType)
+      Arrays.push(mutable mutables, false)
+    }
+  }
+  return TagSignature {
+    isFunction: isFunction,
+    parameters: parameters,
+    mutables: mutables,
+    text: typeString(checker, valueType),
+    result: result,
+  }
+}
+
+function isTagSignature(checker: Checker, signature: TagSignature): bool {
+  if (!signature.isFunction || Arrays.length(signature.parameters) != 2) {
+    return false
+  }
+  for (const isMutable of Arrays.values(signature.mutables)) {
+    if (isMutable) {
+      return false
+    }
+  }
+  const partsType = signature.parameters[0]
+  if (partsType != Type.TArray(Type.TStr) && !isRawParts(checker, partsType)) {
+    return false
+  }
+  return signature.parameters[1] is Type.TArray(_)
+}
+
+export function checkTemplateParts(
+  mutable checker: Checker,
+  parts: Array<TemplatePart>,
+  want: Option<Type>,
+): Type uses alloc {
+  // A Template.Raw tag takes the source text; any other takes the decoded text, so its escapes must decode.
+  if (want is Some(wanted)) {
+    if (isRawParts(checker, wanted)) {
+      return copy(wanted)
+    }
+  }
+  for (const part of Arrays.values(parts)) {
+    if (part.decoded is Err(error)) {
+      reportError(mutable checker, error.pos, error.code, error.message)
+      break
+    }
+  }
+  return internComposite(mutable checker, Type.TArray(Type.TStr))
+}
+
+export function checkTemplateValues<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  elements: Array<Expr>,
+  want: Option<Type>,
+): Type uses alloc {
+  // Every value has the tag's value type T. A generic tag takes T from the first value whose type is known.
+  checker.taggedValues = -1
+  let valueType: Option<Type> = None
+  if (want is Some(Type.TArray(element))) {
+    valueType = Some(element)
+  }
+  // An open T comes from the first value that has a type of its own, so `${None}` can come first.
+  let first = 0
+  if (valueType is None) {
+    first = findTypedValue(elements)
+  }
+  for (const step of Ranges.upTo(Arrays.length(elements))) {
+    let index = step
+    if (step == 0) {
+      index = first
+    } else if (step <= first) {
+      index = step - 1
+    }
+    const element = elements[index]
+    const errorsBefore = Arrays.length(checker.errors)
+    const found = Walker.checkExpression(walker, mutable checker, element, valueType)
+    if (found == Type.TVoid) {
+      // A value with no type, unless its own check already failed.
+      if (Arrays.length(checker.errors) == errorsBefore) {
+        const holeText = Int.toString(index + 1)
+        reportError(
+          mutable checker,
+          getExpressionPos(element),
+          "E1202",
+          `value ${holeText} of the tagged template is void; a value must have the tag's value type`,
+        )
+      }
+      continue
+    }
+    if (valueType is Some(expected)) {
+      if (found != expected) {
+        const holeText = Int.toString(index + 1)
+        const foundText = typeString(checker, found)
+        const expectedText = typeString(checker, expected)
+        reportError(
+          mutable checker,
+          getExpressionPos(element),
+          "E1202",
+          `value ${holeText} of the tagged template is ${foundText}, but the tag takes values of type ${expectedText}; convert it inside the \${}`,
+        )
+      }
+    } else {
+      valueType = Some(found)
+    }
+  }
+  if (valueType is Some(known)) {
+    return internComposite(mutable checker, Type.TArray(copy(known)))
+  }
+  // No value: the parameter's type, or an empty array of strings.
+  if (want is Some(wanted)) {
+    return copy(wanted)
+  }
+  return internComposite(mutable checker, Type.TArray(Type.TStr))
+}
+
+function findTypedValue(elements: Array<Expr>): int {
+  // None, [] and Map {} take their type from the tag.
+  for (const index of Ranges.upTo(Arrays.length(elements))) {
+    const needsContext = match (elements[index]) {
+      Expr.Ident(_, _, name) => name == "None"
+      Expr.ArrayLit(_, _, items, _) => Arrays.length(items) == 0
+      Expr.MapLit(_, _, typeArguments, keys, _) =>
+        Arrays.length(keys) == 0 && Arrays.length(typeArguments) == 0
+      _ => false
+    }
+    if (!needsContext) {
+      return index
+    }
+  }
+  return 0
+}
+
+export function emitTemplateParts(
+  mutable emitter: Emitter,
+  nodeId: int,
+  parts: Array<TemplatePart>,
+): Code uses alloc {
+  // One array of static string literals: the source text for Template.Raw, else the decoded text.
+  const partsType = copy(readNodeType(emitter, nodeId))
+  const isRaw = isRawParts(emitter.checker, partsType)
+  const arrayType = Type.TArray(Type.TStr)
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, arrayType)
+  const arrayStruct = substring(typeName, 0, Str.length(typeName) - 1)
+  const newHelper = useHelper(emitter, arrayStruct, "new")
+  const array = ownedTemp(
+    mutable emitter,
+    arrayType,
+    `${newHelper}(${Int.toString(Arrays.length(parts))})`,
+  )
+  for (const part of Arrays.values(parts)) {
+    let text = part.raw
+    if (!isRaw) {
+      if (part.decoded is Ok(decoded)) {
+        text = decoded
+      }
+    }
+    const code = literal(mutable emitter, text)
+    writeLine(mutable emitter, `${array}->items[${array}->len++] = ${code};`)
+  }
+  return Code { text: array, owned: true }
+}

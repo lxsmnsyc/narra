@@ -69,6 +69,7 @@ export struct DotUse {
 // - templateTokenEnds: where each token inside a `${}` of a template ends,
 //   keyed by `t` and its start line:column (the module's token list has only
 //   the template token).
+// - taggedCalls: the ids of the calls written as tagged templates (D114).
 export struct SourceFacts {
   source: string
   header: int
@@ -78,6 +79,7 @@ export struct SourceFacts {
   shorthandIds: Map<int, bool>
   callEnds: Map<int, Pos>
   templateTokenEnds: Map<string, Pos>
+  taggedCalls: Map<int, bool>
   referenced: Map<string, bool>
   // resultEnds: where a result type ends, by getPosKey("r", its pos), for the
   // fix that adds `from`; fromNames: where the name after a result type's
@@ -101,6 +103,7 @@ export function createEmptyFacts(): SourceFacts uses alloc {
     shorthandIds: Map {},
     callEnds: Map {},
     templateTokenEnds: Map {},
+    taggedCalls: Map {},
     referenced: Map {},
     resultEnds: Map {},
     fromNames: Map {},
@@ -436,6 +439,22 @@ export struct LoopReference {
   indexName: string
 }
 
+// An escape of a tagged template part that does not decode: the lexer's code
+// and message, at the backslash. Reported only when the tag takes decoded parts.
+export struct TemplatePartError {
+  code: string
+  message: string
+  pos: Pos
+}
+
+// One text part of a tagged template: the source text between the
+// delimiters, the text with its escapes decoded, and where the part starts.
+export struct TemplatePart {
+  raw: string
+  decoded: Result<string, TemplatePartError>
+  pos: Pos
+}
+
 // Every expression carries an id and the position the Go parser records.
 export enum Expr {
   IntLit(id: int, pos: Pos, text: string)
@@ -445,6 +464,9 @@ export enum Expr {
   BoolLit(id: int, pos: Pos, value: bool)
   // parts are StringLit pieces and string expressions, in order.
   TemplateLit(id: int, pos: Pos, parts: Array<Expr>)
+  // The text parts of a tagged template, the first argument of its call
+  // (D114); always one more part than the call's array of values.
+  TemplateParts(id: int, pos: Pos, parts: Array<TemplatePart>)
   Ident(id: int, pos: Pos, name: string)
   FieldExpr(id: int, pos: Pos, target: Expr, name: string)
   // `subject is Pattern`.
@@ -512,4 +534,12 @@ export enum Pattern {
   PatOr(id: int, pos: Pos, alternatives: Array<Pattern>)
   // `>= 0` or `!= 0`: an integer compared with a constant; only in an `ensures` line.
   PatCompare(id: int, pos: Pos, operator: string, bound: Expr)
+}
+
+// A call written as a tagged template has the template's parts as its first argument.
+export function isTaggedArguments(arguments: Array<Arg>): bool {
+  if (Arrays.length(arguments) != 2) {
+    return false
+  }
+  return arguments[0].value is Expr.TemplateParts(_, _, _)
 }

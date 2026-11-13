@@ -23,6 +23,7 @@ import {
   MatchArm,
   FieldInit,
   LoopReference,
+  TemplatePart,
 } from "narrac/ast"
 import { Type } from "narrac/types"
 import {
@@ -37,6 +38,7 @@ import {
 } from "narrac/check"
 import { isConstFunction, checkConstFunctions } from "narrac/constfunctions"
 import { EffectState } from "narrac/effects"
+import * as TaggedTemplates from "narrac/taggedtemplates"
 import { substring } from "narrac/textops"
 import * as Int from "std/int"
 import * as Float from "std/float"
@@ -1139,6 +1141,13 @@ function evaluateExpressionKind(
     Expr.CharLit(_, _, value) => ConstValue.Character(Str.charAt(value, 0))
     Expr.BoolLit(_, _, value) => ConstValue.Boolean(value)
     Expr.TemplateLit(_, pos, parts) => evaluateTemplate(checker, mutable state, pos, parts)
+    Expr.TemplateParts(nodeId, pos, parts) => evaluateTemplateParts(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      parts,
+    )
     Expr.Ident(nodeId, pos, name) => evaluateName(checker, mutable state, nodeId, pos, name)
     Expr.FieldExpr(nodeId, pos, target, name) => evaluateField(
       checker,
@@ -1308,6 +1317,31 @@ function evaluateTemplate(
     return ConstValue.Unit
   }
   return ConstValue.Text(Str.join(texts, ""))
+}
+
+function evaluateTemplateParts(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  parts: Array<TemplatePart>,
+): ConstValue uses alloc {
+  // The parts of a tagged template: the source text for Template.Raw, else the decoded text.
+  if (!charge(mutable state, pos, 16 + 8 * Arrays.length(parts), "an array literal")) {
+    return ConstValue.Unit
+  }
+  const isRaw = TaggedTemplates.isRawParts(checker, readType(checker, state, nodeId))
+  let values: Array<ConstValue> = []
+  for (const part of Arrays.values(parts)) {
+    let text = part.raw
+    if (!isRaw) {
+      if (part.decoded is Ok(decoded)) {
+        text = decoded
+      }
+    }
+    Arrays.push(mutable values, ConstValue.Text(text))
+  }
+  return ConstValue.Items(values)
 }
 
 function evaluateName(

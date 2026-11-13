@@ -127,6 +127,7 @@ import { checkConstantName, describeUnknownParameter } from "narrac/constgeneric
 import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
 import { checkLazyUse, reportLazyCycle } from "narrac/lazyvalues"
 import * as AsyncCheck from "narrac/asynccheck"
+import * as TaggedTemplates from "narrac/taggedtemplates"
 
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
@@ -249,6 +250,11 @@ function checkExpressionKind<W: Walker>(
       Expr.CharLit(_, _, _) => Type.TChar
       Expr.BoolLit(_, _, _) => Type.TBool
       Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
+      Expr.TemplateParts(_, _, parts) => TaggedTemplates.checkTemplateParts(
+        mutable checker,
+        parts,
+        want,
+      )
       Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name, want)
       Expr.FieldExpr(nodeId, pos, target, name) => checkField(
         mutable checker,
@@ -311,9 +317,10 @@ function checkExpressionKind<W: Walker>(
         spread,
         want,
       )
-      Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(
+      Expr.ArrayLit(nodeId, pos, elements, isTuple) => checkArrayLiteral(
         mutable checker,
         walker,
+        nodeId,
         pos,
         elements,
         isTuple,
@@ -2277,11 +2284,16 @@ function inferGenericStruct<W: Walker>(
 function checkArrayLiteral<W: Walker>(
   mutable checker: Checker,
   walker: W,
+  nodeId: int,
   pos: Pos,
   elements: Array<Expr>,
   isTuple: bool,
   want: Option<Type>,
 ): Type from want uses alloc {
+  // The values of a tagged template are checked against the tag's value type.
+  if (nodeId == checker.taggedValues) {
+    return TaggedTemplates.checkTemplateValues(mutable checker, walker, elements, want)
+  }
   if (isTuple) {
     return copy(Walker.checkTuple(walker, mutable checker, pos, elements, want))
   }
@@ -3082,6 +3094,7 @@ function checkConstValue(mutable checker: Checker, name: string, value: Expr): b
       | Expr.CharLit(_, _, _)
       | Expr.BoolLit(_, _, _) => true
     Expr.TemplateLit(_, _, parts) => checkConstValues(mutable checker, name, parts)
+    Expr.TemplateParts(_, _, _) => true
     Expr.Ident(_, _, _) => true
     Expr.FieldExpr(nodeId, _, target, _) => checkConstField(mutable checker, name, nodeId, target)
     Expr.UnaryExpr(_, _, _, operand) => checkConstValue(mutable checker, name, operand)

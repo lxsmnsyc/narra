@@ -1536,3 +1536,69 @@ Status: Proposed, waiting for the maintainer. Spike threads-design, 2026-11-13. 
    - Order: threads-process, then threads, then threads-check, then threads-channels and threads-shared side by side.
 
 - **Cost.** About 3000 lines over five nodes (estimate): the count macros and share walkers in `emitdecls.nra` and the runtime, about 500 lines of C for the heap, threads, locks and channels, four std source modules, and the trait and escape checks. Thread programs run about 5% slower in count-heavy code than the same code without threads, and pay one walk per value that crosses. Deadlocks from nested `Shared` calls are not reported.
+## D112. SIMD vector types: twenty fixed types, operators lane by lane, functions in `std/simd`
+
+Status: Proposed, waiting for the maintainer. Spike simd-design, 2026-11-13. It settles the `std/simd` types that D47 and SPEC section 4 name, and how they compile (section 11). Codes E1250-E1269.
+
+1. **Types.** Ten lane types at two widths, twenty types in all:
+
+   | Lane | 128 bits | 256 bits |
+   | --- | --- | --- |
+   | `i8`, `u8` | `I8x16`, `U8x16` | `I8x32`, `U8x32` |
+   | `i16`, `u16` | `I16x8`, `U16x8` | `I16x16`, `U16x16` |
+   | `i32`, `u32` | `I32x4`, `U32x4` | `I32x8`, `U32x8` |
+   | `int` (`i64`), `u64` | `I64x2`, `U64x2` | `I64x4`, `U64x4` |
+   | `f32` | `F32x4` | `F32x8` |
+   | `f64` | `F64x2` | `F64x4` |
+
+   - The names are visible in a module that imports `std/simd` (`import * as Simd from "std/simd"`), as `Ptr<T>` is with `std/ptr`. They are built in, not Narra source.
+   - **The widths do not depend on the target.** Every type exists on every target and gives the same lane results. A 256-bit type on a 128-bit machine compiles to two 128-bit instructions per operation.
+   - **A vector is a plain value,** like an `int`: copied on assignment, no heap, no reference count. It is not a contents type (D81), so it cannot be a `mutable` parameter or the argument of `copy`. It can be an element of `Array` and `FixedArray`, a struct field, a type argument and a `Ptr` target.
+   - `==` and `!=` compare whole vectors and give `bool` (`Equatable`, so derived equality and generic code work). Integer vectors hash and can be map keys; float vectors cannot, by the float key rule. `Show` prints the lanes as a `FixedArray` does. No `Ordered`.
+   - **Reason.** SPEC names `F32x4`, `F64x2` and `I32x8`. A fixed table keeps the names short and every vector a power of two bytes, which C vector types need.
+   - **Reason for fixed widths.** On arm64, which has only 128-bit registers, the 256-bit type gave twice the gain of the 128-bit type (item 5): two registers per value let two operations run at once. A program that picked its width by target would compute different float sums on different machines.
+   - **Rejected: a generic `Vector<T, const N: int>`.** Most instances would be invalid (`Vector<string, 3>`, `Vector<f32, 5>`), and a generic body over `N` cannot be checked against the hardware widths once. The fixed names say the same in fewer characters.
+   - **Rejected: 512-bit types.** No baseline target has 512-bit registers (x86-64 needs AVX-512, arm64 has none), so each operation would be four instructions with no gain over two 256-bit values.
+   - **Rejected: `bool` lanes and separate mask types.** C vector comparisons give an integer vector of all ones or zeros; item 2 uses that type as the mask.
+
+2. **Operations.**
+   - **Operators work lane by lane** (D12: built-in operators only). `+`, `-`, `*` and unary `-` on every vector type (unary `-` not on unsigned ones, E0296); `/` on float vectors only; `&`, `|`, `^` and `~` on integer vectors only. The compound forms follow (`total += a * b`). Integer lanes wrap, as `int` does (D92). Both operands have the same vector type: `v * 2.0` is a compile error whose hint is `Simd.splat(2.0)`.
+   - **Not operators on vectors:** `<`, `<=`, `>`, `>=` (use the comparison functions), `%` and integer `/` (no SSE2 or NEON instruction divides integer lanes, and a zero lane would need a proof per lane), and `<<`, `>>` (the shift functions below). Each is a compile error that names the function to use.
+   - **Building a vector.** An array literal with an expected vector type gives every lane: `const unit: F32x4 = [1.0, 0.0, 0.0, 0.0]`, as for `FixedArray`. `Simd.splat(value)` fills every lane. `Simd.fromFixed(values)` turns a `FixedArray<L, N>` into the vector of `N` lanes of `L`, and `Simd.toFixed(v)` turns it back.
+   - **Lane access.** `v[i]` reads lane `i`. `v[i] = x` is a compile error: a vector is a value, so `Simd.withLane(v, i, x)` returns a new one.
+   - **Comparisons give masks.** `Simd.equal`, `Simd.notEqual`, `Simd.less`, `Simd.lessOrEqual`, `Simd.greater` and `Simd.greaterOrEqual` take two vectors of one type and return its mask: the signed integer vector with the same lane width and count (`F32x4` gives `I32x4`, `U8x16` gives `I8x16`), whose lanes are `-1` (true) or `0`. `Simd.select(mask, ifTrue, ifFalse)` takes each bit from `ifTrue` where the mask bit is set and from `ifFalse` elsewhere. `Simd.any(mask)` and `Simd.all(mask)` test whether any or every lane is not `0`.
+   - **Loads and stores.** `Simd.load(items, start)` reads lanes `start` to `start + count - 1` of an `Array<L>` and returns `Option<V>`, `None` when they are not all in range. `Simd.store(mutable items, start, v)` writes them and returns `true`, or writes nothing and returns `false` when they are not all in range. `FixedArray` goes through `Simd.fromFixed` and `Simd.toFixed`. `Simd.splat` and `Simd.load` take `V` from the expected type or a call type argument (`Simd.load<F32x8>(items, i)`); with neither, the call is a compile error.
+   - **Shuffles.** `Simd.shuffle(v, [3, 2, 1, 0])` returns a vector of the same type whose lane `k` is lane `lanes[k]` of `v`. The lane list is a literal of constants, one per lane, each in range.
+   - **Reductions and lane functions.** `Simd.sum(v)` adds the lanes in a fixed order (the high half to the low half, until one lane is left), so a float sum is the same on every target; integer sums wrap. `Simd.min(a, b)` and `Simd.max(a, b)` work per lane (`min` gives `a` where `a < b`, else `b`; `max` the reverse). `Simd.abs(v)` takes signed and float vectors; the lowest integer stays itself, as it wraps. `Simd.shiftLeft(v, count)` and `Simd.shiftRight(v, count)` take integer vectors (arithmetic on signed lanes, logical on unsigned), with an `int` count proven like a scalar shift count against the lane width (D92).
+   - **Rejected: `<` giving a mask.** `==` would then give a mask too, which breaks `Equatable`, `match` and generic code. A mask from `<` but a `bool` from `==` would be two rules for one operator family.
+   - **Rejected: a scalar operand broadcast (`v * 2.0`).** It breaks "both operands have the same type" (section 2). `Simd.splat` costs one call and nothing at run time.
+   - **Rejected: shifts as operators.** Section 2 gives a shift count the type of the value shifted, which for a vector would need a proof per lane.
+   - **Rejected for now: conversions between lane types, `sqrt` and shuffles of two vectors.** Float to integer conversion is undefined in C for NaN and out-of-range lanes, and `sqrt` has no lane form that clang and gcc share. `Simd.select` and two shuffles cover most two-vector shuffles. Each can be added later as a function without changing the rest.
+   - **Cost.** About 25 std functions with checks of their own, because their types range over vector types and Narra has no trait for that. A program cannot write a function generic over vector types.
+
+3. **Portability: C vector extensions, eight-byte alignment, no target flags.**
+   - Each vector type is a C typedef, written into the program only when it is used: `typedef float narra_f32x4 __attribute__((vector_size(16), aligned(8)));`. clang and gcc both accept it in `-std=c11`. Operators are C operators on these types. Integer `+`, `-`, `*` and unary `-` go through the unsigned type of the same shape, as `narra_wrap_add` does for scalars, because C leaves signed overflow undefined. A load or store is a `memcpy`, which compiles to one unaligned load or store.
+   - **Alignment 8, not 16 or 32.** Heap blocks of the runtime allocator start 8 bytes past a 16-byte boundary (`narra_block_new` in `runtime.h`), so an `Array<F32x4>` holds its elements at 8-byte boundaries. A vector type with its natural alignment there is undefined behavior. With `aligned(8)` the compiler emits unaligned loads (`movups` on x86-64, `ldr q` on arm64), which are as fast as aligned ones on both. Measured: `_Alignof` is 8 for both widths, and the loop over `Array<F32x4>` elements read in place ran as fast as the `memcpy` loads (0.049 s, item 5).
+   - **No `-march` or `-mavx2`.** The release build keeps the plain `-O2` of `driver.nra`. x86-64 then has SSE2 and arm64 NEON, both 128-bit, so every binary runs on every machine of its target. Wider instructions can come later through build targets (`@target`).
+   - **TCC and other compilers without vector extensions** cannot compile a program that uses `std/simd`. The driver already calls `cc` (clang or gcc), and SPEC's TCC debug builds are not wired.
+   - **Rejected: vectors as structs of lanes.** They would compile everywhere but leave vectorizing to the C compiler, which does not reorder float sums without `-ffast-math`: no gain for reductions.
+   - **Rejected: intrinsics (`arm_neon.h`, `immintrin.h`).** Two code paths per operation, and 256-bit types would need hand-split code on arm64.
+
+4. **Effects and panics (D92).** No `std/simd` function has an effect, panics or allocates. A lane index (`v[i]`, `Simd.withLane`) follows the `FixedArray` rule: a constant from 0 to the lane count minus 1, or a name a check proves to be in that range; anything else is E0994, as for `FixedArray`. Out-of-range loads and stores give `None` and `false`. Shift counts use the scalar proof (E0980). Integer lanes wrap; float lanes follow IEEE.
+
+5. **Benchmark.** New program `bench/dot`: the dot product of two `Array<f32>` of 1,048,576 elements, 200 times, with an `F32x8` accumulator fed by `Simd.load`, then `Simd.sum`. The Go and Rust versions keep eight scalar accumulators added in the same order, so all three print the same float. Measured on C written the way the emitter will write it (Apple arm64, clang 21, `-O2`, three runs, spread under 2%; `/private/tmp/claude-501/simd-design/dot.c` and `optload.c`):
+
+   | C loop | Time |
+   | --- | --- |
+   | scalar, bounds checked (as Narra indexes `Array`) | 0.288 s |
+   | scalar, unchecked | 0.198 s |
+   | `F32x4` | 0.049 s |
+   | `F32x8` | 0.025 s |
+   | `F32x8` through an `Option` load (`Simd.load`) | 0.036 s |
+
+   The `Option` of `Simd.load` costs about 40% over a raw load and still runs 8 times faster than the checked scalar loop. On x86-64 (assembly only, no machine) clang emits `movups`, `mulps` and `addps` for `F32x8` and `paddd` for the wrapping `I32x4` addition, and keeps the scalar loop scalar. gcc was not run (no Linux host or container on the spike machine); the Linux check of the build node covers it.
+
+6. **Codes.** Node simd: E1250 an operator not defined on a vector type, E1251 a vector and a scalar operand, E1252 a write to a lane, E1253 a literal with the wrong number of lanes, E1254 no expected type or type argument for `Simd.splat` or `Simd.load`, E1255 a `FixedArray` whose lane type and length have no vector type. Node simd-library: E1260 a shuffle lane that is not a constant in range, E1261 a vector type the function does not take (`Simd.shiftLeft` on a float vector, `Simd.abs` on an unsigned one, a mask of the wrong type). E1256-E1259 and E1262-E1269 stay free.
+
+- **Reason.** No new syntax: the types are names, the operations are existing operators and std calls, and lane indexes reuse the `FixedArray` proof. The parser, `fmt`, `astdump` and the language service need nothing beyond type names.
+- **Cost.** One `Type` variant (`TVector(lane, count)`) in `types.nra` with its cases in the type switches (about 35 sites, as `TPtr` has), C typedefs, and about 25 std functions with their own checks. About 1600 lines over two nodes (estimate). A program that wants instructions wider than SSE2 waits for build targets.

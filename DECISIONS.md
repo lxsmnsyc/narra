@@ -1655,3 +1655,56 @@ Decision: a parameter of a declared function can have a default, `function rende
 - **Rejected: overloading.** Two functions with one name break text search and D12's one reading per call.
 - **Cost.** Parameter defaults are part of a function's interface, like parameter names (D87): changing a default changes every call that leaves it out.
 - **Cost.** About 500 lines in one node (estimate): a `default` slot on `Param`, a default body per parameter as for field defaults (`checkFieldDefaults` in `selfhost/src/body.nra`), the fill step in `matchNamedArguments` and `checkArguments` (`calls.nra`, `exprs.nra`), the emitter, the effect pass, fmt, astdump, declsdump, the language service and `narrac query`. The compiler can use defaults only after the batch's seed update.
+## D116. Refinement types: a distinct type with a `requires` pattern list
+
+Proposed, waiting for the maintainer (spike refinement-types-design, 2026-11-13). Built by node refinement-types. Codes E1220-E1239.
+
+```ts
+export distinct type Port = int requires >= 1 && <= 65535
+export distinct type Method = string requires "GET" | "POST"
+```
+
+Evidence, on `feat/batch-13` (b23bbd4f): `selfhost/src` and `std/src` declare no distinct type, so the feature has no user in the repo yet; `ByteIndex` is a builtin. The predicate, the proof and the runtime test reuse three parts that exist: the `ensures` patterns (`parsePatternBody`, `PatCompare`), the `ensures` prover (`isValueProven` in `contracts.nra`), and the integer facts (`Fact`, `findOperandFact` in `operands.nra`).
+
+**1. The predicate is a list of `ensures` patterns joined by `&&`.**
+
+- **Syntax.** `requires` follows the base and the trait lists: `distinct type Port = int derives Show requires >= 1 && <= 65535`. It may start on the next line. Each item is a pattern as an `ensures` line takes it (D95, D102): a comparison `< c`, `<= c`, `> c`, `>= c`, `!= c`, a literal, or an or-pattern of literals and comparisons. `&&` joins items at the top only, as several `ensures` lines do; `Some(>= 1 && <= 9)` stays a parse error. A bound is an integer constant that fits the base (literals and top-level `const` values), as in `ensures`.
+- **Bases.** Integer types (`int` and the sized ones) and `string`. On `string` only literal patterns and or-patterns of them. Any other base (float, `char`, `bool`, structs, enums, arrays, another distinct type) is E1221.
+- **Wrong patterns.** A comparison on a `string`, a bound that is not a constant or does not fit, a u64 bound from 2^63 up, a literal of another type, a wildcard, a name, a constructor, a struct, tuple or array pattern are E1222.
+- **Reason.** Patterns have no subject, so the type needs no invented name. They cover strings, which `requires` conditions (integer parameters only) do not. The parser stops a comparison bound at `&&` already (`parseUnary`), and the list is stored as `Array<Pattern>`, the type of `FuncDecl.ensures`, so no `Pattern` variant is added.
+
+**2. Where a value is built.**
+
+- **`Port.from(value): Port` is proven at compile time**, as a call to a function with `requires`: the argument must be proven against every item by the `ensures` prover (an integer constant, a literal, an integer name narrowed by a check or by the caller's own `requires`). Nothing is checked at run time. An unproven item is E1223, and the message names the items that failed: `Port.from needs raw to satisfy <= 65535; check it first or call Port.check`. With a constant it names the value: `70000 does not satisfy Port (<= 65535)`.
+- **`Port.check(value): Option<Port>` tests at run time.** It is generated only for a refined type, is pure (no `alloc`; an `Option<int>` is inline, D99), and emits the items as one C condition (`x >= 1 && x <= 65535`, `||` between alternatives, string equality for string literals). A refined type keeps `from` and its unwrap function (`toInt`, `toString`); `check` on a type without `requires` is E0322 as today.
+- **`export opaque distinct type`** hides `check` as well as `from` (E0321).
+- **No other way in.** A distinct type has no arithmetic (D108), so `Port.toInt(port) + 1` is an `int` and goes back through `from` or `check`. Struct defaults and top-level `const` values call `from` and are proven the same way. `@const` evaluation of `check` gives `Some` or `None` from the test (today `consteval.nra:2847` evaluates every distinct call as its argument). `derives Shape` goes through `check` (part 4). Code inside `unsafe` may forge a value through a `Ptr`, the stated exception of D92.
+- **Not a function value.** No distinct function is a value today: with the batch-13 base, `const unwrap = UserId.toInt` is `unknown name "UserId"`, and `const make = UserId.from` is a parse error. That stays. If distinct functions become values later, a refined `from` stays out, for the reason of E0986: a call through the value would skip the proof.
+
+**3. What the prover knows about a `Port`.**
+
+- **The fact lives in the type, not in a local.** A `Port` value cannot be compared (D108), so the fact appears where it is unwrapped. `Port.toInt(e)` is an operand with the type's fact, for any `e` of type `Port`: a parameter, a field (`config.port`), an array element. This is the gain over `requires`, whose facts stop at field paths (D102, out of scope there).
+- **Where it is read.** `findOperandFact` treats a call of the unwrap function of a refined integer type as a fact source, so divisors, shift counts, `FixedArray` indexes, `requires` arguments and `ensures` returns accept it. `const n = Port.toInt(port)` (and `let` until assigned) seeds `n` with it, as `seedResultLocal` seeds the result of an `ensures` function.
+- **The fact is the hull** of the items, built as `ensures` facts are: each comparison refines, a literal is its own interval, an or-pattern joins its alternatives, `!= 0` gives non-zero and another `!= c` gives nothing. `Port` gives `1 <= n <= 65535`, so `total / Port.toInt(port)` needs no check. A `string` refinement gives no fact: the prover has no string facts.
+- **Rejected: a `match` over the literal set is exhaustive** (`match (Method.toString(m)) { "GET" => ..., "POST" => ... }` without `_`). It needs the match matrix to know refined unwraps. Later, if users ask.
+
+**4. `Shape` and `Json.decode`.** A derived `Shape.fromValue` decodes the base, then calls `check`. A value that fails is `Err`, with the path rules of `std/shape`: `Json.decode<Config>(text)` gives `Err(".port: 70000 does not satisfy Port (>= 1 && <= 65535)")`, a string value is quoted (`"PUT" does not satisfy Method ("GET" | "POST")`). `toValue` is unchanged. This is the standard-schema behavior (a failed refinement is a decode issue with a path, never a panic). The error stays one string, as every `Shape` error is today; a list of issues would change the `Shape` trait for every type, a separate decision.
+
+**5. Generics, derives, diagnostics.**
+
+- **Generics.** A distinct type takes no type parameters, so a refinement is never generic. A refined type is an ordinary type argument (`Array<Port>`, `Option<Port>`). Generic code cannot build a `T` from a base value, so it cannot break the refinement; it calls `Shape.fromValue<T>`, which checks. A generic body learns no fact, since it never unwraps `T`. A bound cannot name a refinement.
+- **`derives`.** Equatable, Hashable, Ordered and Show use the base (D108) and build no value, so they are unchanged. Only Shape changes (part 4).
+- **Codes.** E1220 a malformed `requires` on a distinct type (parse: no item, `&&` with nothing after it, `requires` before the trait lists). E1221 a base that cannot be refined. E1222 an item that does not fit the base. E1223 an unproven `from`. E1224 to E1239 stay free. Each message prints the items as written, so the failed predicate is named.
+- **Tools.** `fmt`, `astdump`, `narrac query` signatures (`querysignature.nra:210`) and hover print the `requires` list after the trait lists.
+
+**Cost.** Node refinement-types, size L: parser and AST field (`DistinctDecl.refinement: Array<Pattern>`), `DistinctInfo.refinement`, the item check, the `from` proof through `isValueProven`, `check` in the checker, emitter and `@const` evaluator, the unwrap fact in `findOperandFact` and the result seed, the `derives Shape` change in `deriveshape.nra`, `fmt`, `astdump`, query, trivia, SPEC and README. About 700 to 900 lines of compiler (estimate). No runtime cost for a type without `requires`; `check` costs one test per call. Programs without refined types check as before, so `emit selfhost` should not move.
+
+**Rejected.**
+
+- **`Port.from(raw): Option<Port>` as the only constructor** (the inbox draft). A literal port needs a `match` around a value the compiler already knows, and adding `requires` to an existing type would change the type of every `from` call. With `from` proven, callers that pass literals or checked names keep compiling, and only the others move to `check`.
+- **A condition with a subject** (`requires value >= 1 && value <= 65535`). It invents a name no one declares, and conditions are integer-only, so `Method` could not be written.
+- **Any boolean predicate** (`requires Str.length(value) > 0`). The prover has no facts about calls, so `from` could never be proven and every value would need `check`. A later extension could allow call predicates with `check` only.
+- **Struct, enum and array bases** (`distinct type Wide = Rect requires { width: > 0 }`). The prover accepts such patterns in `ensures`, but the runtime test needs comparison patterns in the match emitter, and callers would learn no field facts. Later.
+- **Literal conversion by expected type** (`const port: Port = 8080`). Distinct types have no implicit conversion, and it would be the only one.
+
+**Open for the maintainer.** (1) Proven `from` plus `check`, or `from` returning `Option`: recommended proven `from` plus `check`. (2) The name `check` or `tryFrom`: recommended `check`. (3) Integer and `string` bases only at first: recommended yes.

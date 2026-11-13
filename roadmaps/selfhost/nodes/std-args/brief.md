@@ -1,7 +1,7 @@
 ---
 id: std-args
 title: "std/args"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 189875
 owns:
   - std/src/args.nra
   - selfhost/src/stdargs.nra

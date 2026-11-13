@@ -65,6 +65,10 @@ Build the channels of D111 item 4: `Channel.create<T>(capacity)`, `send`, `recei
 
 None expected: misuses are type errors and E1190 covers the element type. Use the block only if a compile-time rule turns up, and record it in the outcome.
 
+## SyncSlot
+
+- Orchestrator, 2026-11-13: the threads node built `Thread<T>` and `Scope` as boxes in Narra source and left out the builtin `SyncSlot<T>` (a value next to a mutex and condition variable). This node builds it, owns the type, cnames, traits, generics and dump changes it needs, and records its API in the outcome for threads-shared.
+
 ## Acceptance
 
 - [ ] Proof first: `testdata/channel_basic.nra` fails to compile on this node's base.

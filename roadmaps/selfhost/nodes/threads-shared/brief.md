@@ -42,6 +42,9 @@ shared:
 reserves: [diag E1410-E1419]
 provides: []
 depends_on:
+  - on: threads-channels
+    kind: hard
+    why: threads-channels builds SyncSlot<T>, which Shared and Atomic sit on
   - on: threads-design
     kind: hard
     why: D111 item 4 fixes the Shared and Atomic functions and codes

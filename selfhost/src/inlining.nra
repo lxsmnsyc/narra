@@ -16,6 +16,7 @@ export struct CallUse {
   nodeId: int
   pos: Pos
   calleeId: int
+  calleeName: string
   inArrow: bool
 }
 
@@ -132,6 +133,22 @@ function collectInlineEdges(
   const declaration = checker.functions[funcIndex].declaration
   if (declaration.body is Some(block)) {
     const bodyUses = collectBlockUses(block)
+    // A generic function that nothing instantiates has no checked body, so its
+    // calls are read by name from its own scope.
+    if (Arrays.length(bodies) == 0) {
+      const scope = checker.functions[funcIndex].scope
+      for (const call of Arrays.values(bodyUses.calls)) {
+        if (call.calleeName == "") {
+          continue
+        }
+        if (checker.scopes[scope].functions[call.calleeName] is Some(target)) {
+          if (isInlineFunction(checker, target) && seen[target] is None) {
+            seen[target] = true
+            Arrays.push(mutable edges, InlineEdge { target: target, pos: call.pos })
+          }
+        }
+      }
+    }
     for (const body of Arrays.values(bodies)) {
       const info = checker.bodies[body]
       for (const call of Arrays.values(bodyUses.calls)) {
@@ -278,13 +295,16 @@ function walkExpression(mutable found: BodyUses, expression: Expr, inArrow: bool
     Expr.CallExpr(nodeId, pos, callee, _, arguments) => {
       // The callee's id marks a name that is called, not passed on.
       let calleeId = -1
-      if (callee is Expr.Ident(identId, _, _)) {
+      let calleeName = ""
+      if (callee is Expr.Ident(identId, _, identName)) {
         calleeId = identId
+        calleeName = identName
       }
       Arrays.push(mutable found.calls, CallUse {
         nodeId: nodeId,
         pos: copy(pos),
         calleeId: calleeId,
+        calleeName: calleeName,
         inArrow: inArrow,
       })
       walkExpression(mutable found, callee, inArrow)

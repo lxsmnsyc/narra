@@ -1,0 +1,114 @@
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+// A generator that names the callee's effect variable inside the result type
+// (an Option, an Array, a tuple, a generic struct), and a function type there, is
+// charged the effects of the argument that binds the variable.
+
+function* lines(): Generator<int> uses io {
+  print("read")
+  yield 1
+  yield 2
+}
+
+function* numbers(): Generator<int> {
+  yield 10
+}
+
+function* relay<effect E>(source: Generator<int> uses E): Generator<int> uses E {
+  for (const value of source) {
+    yield value
+  }
+}
+
+struct Holder<T> {
+  item: T
+}
+
+export function wrap<effect E>(
+  source: Generator<int> uses E
+): Option<Generator<int> uses E> uses alloc {
+  return Some(relay(source))
+}
+
+export function listed<effect E>(
+  source: Generator<int> uses E
+): Array<Generator<int> uses E> uses alloc {
+  return [relay(source)]
+}
+
+export function paired<effect E>(source: Generator<int> uses E): #[
+  int,
+  Generator<int> uses E
+] uses alloc {
+  return #[5, relay(source)]
+}
+
+export function held<effect E>(
+  source: Generator<int> uses E
+): Holder<Generator<int> uses E> uses alloc {
+  return Holder { item: relay(source) }
+}
+
+function shout(value: int): int {
+  print("shout")
+  return value
+}
+
+export function keep<effect E>(
+  escaping action: () => int uses E
+): Option<() => int uses E> uses alloc {
+  return Some(action)
+}
+
+function sum(source: Generator<int> uses alloc, io): int {
+  let total = 0
+  for (const value of source) {
+    total = total + value
+  }
+  return total
+}
+
+export function pure(): int uses alloc {
+  // The source has no effects, so the caller stays pure.
+  let total = 0
+  if (wrap(numbers()) is Some(generator)) {
+    for (const value of generator) {
+      total = total + value
+    }
+  }
+  return total
+}
+
+export function loud(): int uses io, alloc {
+  let total = 0
+  if (wrap(lines()) is Some(generator)) {
+    total = total + sum(generator)
+  }
+  for (const generator of Arrays.values(listed(lines()))) {
+    total = total + sum(generator)
+  }
+  const #[extra, first] = paired(lines())
+  total = total + sum(first) + extra
+  total = total + sum(held(lines()).item)
+  if (keep(() => shout(100)) is Some(action)) {
+    total = total + action()
+  }
+  return total
+}
+
+function apply<effect E>(action: () => int uses E): int uses E {
+  return action()
+}
+
+// A private function without a `uses` list is inferred: it gets `io` here.
+function inferred(): int {
+  return apply(() => shout(1000))
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  print(Int.toString(pure()))
+  print(Int.toString(loud()))
+  print(Int.toString(inferred()))
+  return 0
+}

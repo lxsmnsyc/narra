@@ -88,6 +88,7 @@ import {
 import {
   resolveType,
   instantiate,
+  findTupleType,
   substitute,
   buildGeneric,
   enterTypeofChain,
@@ -425,41 +426,169 @@ function bindCallResult(
   found: Type,
 ): Type from found uses alloc {
   // The effect pass replaces each effect variable by the effects of the argument that
-  // binds it, so the name never leaves the callee.
-  if (found is Type.TGenerator(element, _, binder, _, input)) {
-    let calleeIndex = -1
-    if (getRef(checker, nodeId) is Ref.Function(index)) {
-      calleeIndex = index
-    }
-    if (binder >= 0 && binder == calleeIndex) {
-      Arrays.push(mutable checker.boundGenerators, [])
-      Arrays.push(mutable checker.boundCallIds, nodeId)
-      return Type.TGenerator(
-        element,
-        [],
-        checker.functionIndex,
-        -1 - Arrays.length(checker.boundGenerators),
-        input,
-      )
+  // binds it, so the name never leaves the callee. The generator or function type may
+  // be the result itself or sit inside it, as in `Option<Generator<T> uses E>`. A
+  // function result is found through the call that made it, so it keeps its names.
+  let calleeIndex = -1
+  if (getRef(checker, nodeId) is Ref.Function(index)) {
+    calleeIndex = index
+  }
+  if (found is Type.TFunc(_, _, _, _, _)) {
+    return found
+  }
+  if (calleeIndex < 0 || !holdsBoundEffects(checker, found, calleeIndex)) {
+    return found
+  }
+  return bindResultType(mutable checker, nodeId, calleeIndex, found)
+}
+
+function holdsBoundEffects(checker: Checker, type: Type, calleeIndex: int): bool uses alloc {
+  return match (type) {
+    Type.TGenerator(element, _, binder, _, _) =>
+      binder == calleeIndex || holdsBoundEffects(checker, element, calleeIndex)
+    Type.TAsyncGenerator(element, _, binder, _) =>
+      binder == calleeIndex || holdsBoundEffects(checker, element, calleeIndex)
+    Type.TFunc(_, _, _, binder, _) => binder == calleeIndex
+    Type.TArray(element) | Type.TBox(element) | Type.TAsync(element) => holdsBoundEffects(
+      checker,
+      element,
+      calleeIndex,
+    )
+    Type.TFixedArray(element, _) => holdsBoundEffects(checker, element, calleeIndex)
+    Type.TMap(key, value) =>
+      holdsBoundEffects(checker, key, calleeIndex) || holdsBoundEffects(checker, value, calleeIndex)
+    Type.TStruct(index) => holdsAnyBoundEffects(
+      checker,
+      checker.structs[index].arguments,
+      calleeIndex,
+    )
+    Type.TEnum(index) => holdsAnyBoundEffects(checker, checker.enums[index].arguments, calleeIndex)
+    _ => false
+  }
+}
+
+function holdsAnyBoundEffects(
+  checker: Checker,
+  types: Array<Type>,
+  calleeIndex: int,
+): bool uses alloc {
+  for (const type of Arrays.values(types)) {
+    if (holdsBoundEffects(checker, type, calleeIndex)) {
+      return true
     }
   }
-  if (found is Type.TAsyncGenerator(streamElement, _, streamBinder, _)) {
-    let streamCallee = -1
-    if (getRef(checker, nodeId) is Ref.Function(index)) {
-      streamCallee = index
-    }
-    if (streamBinder >= 0 && streamBinder == streamCallee) {
+  return false
+}
+
+function bindResultType(
+  mutable checker: Checker,
+  nodeId: int,
+  calleeIndex: int,
+  type: Type,
+): Type from type uses alloc {
+  // Each generator or function type that names the callee's effect variables gets a
+  // slot of its own, which the effect pass fills from the names the callee declared.
+  // Struct and enum instances are made again with the bound arguments.
+  if (!holdsBoundEffects(checker, type, calleeIndex)) {
+    return type
+  }
+  match (type) {
+    Type.TGenerator(element, effects, binder, origin, input) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      if (binder != calleeIndex) {
+        return copy(Type.TGenerator(newElement, effects, binder, origin, input))
+      }
       Arrays.push(mutable checker.boundGenerators, [])
       Arrays.push(mutable checker.boundCallIds, nodeId)
-      return Type.TAsyncGenerator(
-        streamElement,
-        [],
-        checker.functionIndex,
-        -1 - Arrays.length(checker.boundGenerators),
+      Arrays.push(mutable checker.boundNames, copy(effects))
+      return copy(
+        Type.TGenerator(
+          newElement,
+          [],
+          checker.functionIndex,
+          -1 - Arrays.length(checker.boundGenerators),
+          input,
+        ),
       )
     }
+    Type.TAsyncGenerator(element, effects, binder, origin) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      if (binder != calleeIndex) {
+        return copy(Type.TAsyncGenerator(newElement, effects, binder, origin))
+      }
+      Arrays.push(mutable checker.boundGenerators, [])
+      Arrays.push(mutable checker.boundCallIds, nodeId)
+      Arrays.push(mutable checker.boundNames, copy(effects))
+      return copy(
+        Type.TAsyncGenerator(
+          newElement,
+          [],
+          checker.functionIndex,
+          -1 - Arrays.length(checker.boundGenerators),
+        ),
+      )
+    }
+    Type.TFunc(parameters, result, effects, _, shared) => {
+      // The binder of a bound function type is the slot, as the origin of a generator.
+      Arrays.push(mutable checker.boundGenerators, [])
+      Arrays.push(mutable checker.boundCallIds, nodeId)
+      Arrays.push(mutable checker.boundNames, copy(effects))
+      const slot = -1 - Arrays.length(checker.boundGenerators)
+      return copy(
+        internComposite(mutable checker, Type.TFunc(parameters, result, [], slot, shared)),
+      )
+    }
+    Type.TArray(element) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      return copy(internComposite(mutable checker, Type.TArray(newElement)))
+    }
+    Type.TBox(element) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      return copy(internComposite(mutable checker, Type.TBox(newElement)))
+    }
+    Type.TAsync(value) => {
+      const newValue = bindResultType(mutable checker, nodeId, calleeIndex, value)
+      return copy(internComposite(mutable checker, Type.TAsync(newValue)))
+    }
+    Type.TFixedArray(element, length) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      return copy(internComposite(mutable checker, Type.TFixedArray(newElement, length)))
+    }
+    Type.TMap(key, value) => {
+      const newKey = bindResultType(mutable checker, nodeId, calleeIndex, key)
+      const newValue = bindResultType(mutable checker, nodeId, calleeIndex, value)
+      return copy(internComposite(mutable checker, Type.TMap(newKey, newValue)))
+    }
+    Type.TStruct(index) => {
+      const info = copy(checker.structs[index])
+      const arguments = bindResultTypes(mutable checker, nodeId, calleeIndex, info.arguments)
+      if (info.tuple) {
+        return copy(findTupleType(mutable checker, arguments))
+      }
+      return copy(instantiate(mutable checker, info.generic, arguments))
+    }
+    Type.TEnum(index) => {
+      const info = copy(checker.enums[index])
+      const arguments = bindResultTypes(mutable checker, nodeId, calleeIndex, info.arguments)
+      return copy(instantiate(mutable checker, info.generic, arguments))
+    }
+    _ => {
+      return type
+    }
   }
-  return found
+}
+
+function bindResultTypes(
+  mutable checker: Checker,
+  nodeId: int,
+  calleeIndex: int,
+  types: Array<Type>,
+): Array<Type> uses alloc {
+  let out: Array<Type> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable out, copy(bindResultType(mutable checker, nodeId, calleeIndex, type)))
+  }
+  return out
 }
 
 export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses alloc {

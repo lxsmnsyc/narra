@@ -1335,7 +1335,7 @@ An effect marks something a function can do beyond computing a value. The set is
 Rules:
 
 - Exported functions declare their effects after the return type: `function f(s: string): int uses alloc { ... }`.
-- The compiler infers effects for private functions and arrow functions.
+- The compiler infers effects for private functions and arrow functions. A private function that writes a `uses` list is checked against it, as an exported one is.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
 - The entry function (section 15) has every effect. It may be `async` (section 8).

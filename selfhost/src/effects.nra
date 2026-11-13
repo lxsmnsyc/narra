@@ -697,18 +697,23 @@ function analyseFunction(
       declaration.pos,
     )] = inferred
   }
-  if (!state.report || !declaration.exported || state.entries[key] is Some(_)) {
+  if (!state.report || state.entries[key] is Some(_)) {
     return
   }
 
   // The body may use only the declared effects. An exported function* runs
-  // its body where the generator runs, so they are in its return type.
+  // its body where the generator runs, so they are in its return type. A
+  // private function is inferred, unless it writes a `uses` list: then the
+  // list holds as it does for an exported one.
   let declared = declaration.effects
   if (declaration.generator) {
     declared = []
     if (declaration.result is Some(resultType)) {
       declared = resultType.effects
     }
+  }
+  if (!declaration.exported && Arrays.length(declared) == 0) {
+    return
   }
   for (const name of Arrays.values(sortEffectNames(out))) {
     if (containsName(declared, name)) {
@@ -952,6 +957,14 @@ function findTypeEffects(
       Type.TFunc(_, _, effects, binder, _),
     )
   ) {
+    // A function type bound inside a call result has its effects in the slot.
+    if (binder < -1) {
+      let bound: Array<Effect> = []
+      for (const name of Arrays.values(checker.boundGenerators[-2 - binder])) {
+        addEffect(mutable bound, name, Pos { line: 0, column: 0 }, "")
+      }
+      return Some(bound)
+    }
     let source: Option<Expr> = None
     if (binder >= 0) {
       source = findSourceCall(checker, state, expression)
@@ -1662,26 +1675,15 @@ function bindResultEffects(
   callee: Callee,
   arguments: Array<Arg>,
 ) uses alloc {
-  let origin = -1
-  if (
-    findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, generatorOrigin, _))
-  ) {
-    origin = generatorOrigin
-  } else if (
-    findNodeType(checker, state.body, nodeId) is Some(Type.TAsyncGenerator(_, _, _, streamOrigin))
-  ) {
-    origin = streamOrigin
-  }
-  if (origin < -1) {
-    // Only the call that made the type fills it.
-    if (origin >= -1 || checker.boundCallIds[-2 - origin] != nodeId) {
-      return
-    }
+  if (copy(findNodeType(checker, state.body, nodeId)) is Some(resultType)) {
+    let slots: Array<int> = []
+    collectBoundSlots(checker, nodeId, resultType, mutable slots)
     const declaration = callee.declaration
-    let set: Array<Effect> = []
     const nowhere = Pos { line: 0, column: 0 }
-    if (declaration.result is Some(resultType)) {
-      for (const name of Arrays.values(resultType.effects)) {
+    for (const slot of Arrays.values(slots)) {
+      // A name that is not a variable of the callee stands for itself.
+      let set: Array<Effect> = []
+      for (const name of Arrays.values(copy(checker.boundNames[slot]))) {
         if (!containsName(declaration.effectParameters, name)) {
           addEffect(mutable set, name, nowhere, "")
           continue
@@ -1692,8 +1694,55 @@ function bindResultEffects(
           addEffect(mutable set, passed, nowhere, "")
         }
       }
+      checker.boundGenerators[slot] = sortEffectNames(set)
     }
-    checker.boundGenerators[-2 - origin] = sortEffectNames(set)
+  }
+}
+
+function collectBoundSlots(
+  checker: Checker,
+  nodeId: int,
+  type: Type,
+  mutable slots: Array<int>,
+) uses alloc {
+  // Only the call that made a slot fills it: a generic `id(x)` returns the same type.
+  match (type) {
+    Type.TGenerator(element, _, _, origin, _) => {
+      if (origin < -1 && checker.boundCallIds[-2 - origin] == nodeId) {
+        Arrays.push(mutable slots, -2 - origin)
+      }
+      collectBoundSlots(checker, nodeId, element, mutable slots)
+    }
+    Type.TAsyncGenerator(element, _, _, origin) => {
+      if (origin < -1 && checker.boundCallIds[-2 - origin] == nodeId) {
+        Arrays.push(mutable slots, -2 - origin)
+      }
+      collectBoundSlots(checker, nodeId, element, mutable slots)
+    }
+    Type.TFunc(_, _, _, binder, _) => {
+      if (binder < -1 && checker.boundCallIds[-2 - binder] == nodeId) {
+        Arrays.push(mutable slots, -2 - binder)
+      }
+    }
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TAsync(element)
+      | Type.TFixedArray(element, _) => collectBoundSlots(checker, nodeId, element, mutable slots)
+    Type.TMap(key, value) => {
+      collectBoundSlots(checker, nodeId, key, mutable slots)
+      collectBoundSlots(checker, nodeId, value, mutable slots)
+    }
+    Type.TStruct(index) => {
+      for (const argument of Arrays.values(checker.structs[index].arguments)) {
+        collectBoundSlots(checker, nodeId, argument, mutable slots)
+      }
+    }
+    Type.TEnum(index) => {
+      for (const argument of Arrays.values(checker.enums[index].arguments)) {
+        collectBoundSlots(checker, nodeId, argument, mutable slots)
+      }
+    }
+    _ => {}
   }
 }
 

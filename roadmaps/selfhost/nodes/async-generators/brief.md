@@ -1,7 +1,7 @@
 ---
 id: async-generators
 title: "Async generators: async function*, AsyncGenerator<T> and Async.next"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

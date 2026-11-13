@@ -1,7 +1,7 @@
 ---
 id: threads-process
 title: "Thread-safe signal forwarding in Process.run, the test runner and Test.panics"
-status: todo
+status: active
 priority: must
 type: fix
 story: batch-13

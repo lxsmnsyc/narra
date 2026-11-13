@@ -1,7 +1,7 @@
 ---
 id: tagged-templates
 title: "Tagged template literals"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

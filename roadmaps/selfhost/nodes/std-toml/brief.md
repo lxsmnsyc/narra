@@ -1,7 +1,7 @@
 ---
 id: std-toml
 title: "std/toml"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 203790
 owns:
   - std/src/toml.nra
   - selfhost/src/stdtoml.nra

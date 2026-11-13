@@ -1,7 +1,7 @@
 ---
 id: std-regex
 title: "std/regex: syntax and a linear-time engine"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

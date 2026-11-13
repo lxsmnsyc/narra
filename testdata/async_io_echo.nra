@@ -1,0 +1,104 @@
+// An echo server and two clients on loopback in one program. The server
+// listens on port 0, the clients read the port back, and every message comes
+// back whole and in order.
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Net from "std/async/net"
+import * as Str from "std/string"
+import { Connection, Listener } from "std/async/net"
+
+async function echo(connection: Connection): int uses io, alloc {
+  let total = 0
+  while (true) {
+    const data = await Net.read(connection, 4096)
+    if (data is Err(_)) {
+      return total
+    }
+    if (Bytes.length(data.value) == 0) {
+      return total
+    }
+    const written = await Net.write(connection, data.value)
+    if (written is Err(_)) {
+      return total
+    }
+    total += written.value
+  }
+  return total
+}
+
+async function serve(listener: Listener, clients: int): int uses io, alloc {
+  let echoed: Array<Async<int>> = []
+  let accepted = 0
+  while (accepted < clients) {
+    const connection = await Net.accept(listener)
+    if (connection is Err(_)) {
+      return -1
+    }
+    Arrays.push(mutable echoed, echo(connection.value))
+    accepted += 1
+  }
+  let total = 0
+  for (const count of Arrays.values(await Async.all(echoed))) {
+    total += count
+  }
+  return total
+}
+
+async function readText(connection: Connection, length: int): string uses io, alloc {
+  // Reads until length bytes have come, since TCP may split a message.
+  let text = ""
+  while (Str.length(text) < length) {
+    const data = await Net.read(connection, 4096)
+    if (data is Err(_)) {
+      return "read failed"
+    }
+    if (Bytes.length(data.value) == 0) {
+      return "early end"
+    }
+    const part = Bytes.toString(data.value)
+    if (part is Err(_)) {
+      return "not text"
+    }
+    text = `${text}${part.value}`
+  }
+  return text
+}
+
+async function client(name: string, port: int, messages: Array<string>): string uses io, alloc {
+  const connection = await Net.connect("127.0.0.1", port)
+  if (connection is Err(_)) {
+    return `${name}: connect failed`
+  }
+  let replies: Array<string> = []
+  for (const message of Arrays.values(messages)) {
+    const written = await Net.write(connection.value, Bytes.fromString(message))
+    if (written is Err(_)) {
+      return `${name}: write failed`
+    }
+    Arrays.push(mutable replies, await readText(connection.value, Str.length(message)))
+  }
+  return `${name}: ${Str.join(replies, ", ")}`
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    print("listen failed")
+    return 1
+  }
+  const port = Net.localPort(listener.value)
+  if (port > 0) {
+    print("listening on a free port")
+  }
+  const server = serve(listener.value, 2)
+  const first = client("first", port, ["hello", "world"])
+  const second = client("second", port, ["one", "two", "three"])
+  print(await first)
+  print(await second)
+  // The clients' connections closed when their last copies went, so each echo
+  // read the end of the stream.
+  print(`echoed ${Int.toString(await server)} bytes`)
+  return 0
+}

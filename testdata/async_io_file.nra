@@ -1,0 +1,105 @@
+// std/async/file: a write then a read of text and of bytes, a missing file,
+// a ticker task that runs between the calls, and a cancelled task whose call
+// gives Err(AsyncError.Cancelled) without touching the file.
+import * as Async from "std/async"
+import * as AsyncFile from "std/async/file"
+import * as AsyncTime from "std/async/time"
+import * as Bytes from "std/bytes"
+import * as Env from "std/env"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Process from "std/process"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+
+function tempDir(): string {
+  const found = Env.get("TMPDIR")
+  if (found is Some(dir)) {
+    return dir
+  }
+  return "/tmp"
+}
+
+function makeDir(): string uses io, alloc {
+  // A folder of its own, so runs at the same time do not share files.
+  const made = Process.run("mktemp", ["-d", `${tempDir()}/narra_async_io_file.XXXXXX`])
+  if (made is Ok(output)) {
+    const #[code, text, _] = output
+    if (code == 0) {
+      return Str.trim(text)
+    }
+  }
+  return ""
+}
+
+async function ticker(): int uses io, alloc {
+  // This zero sleep ends on the next turn. A file call gives the ready tasks
+  // one turn before it returns, so the line comes before "wrote".
+  const slept = await AsyncTime.sleep(Time.nanoseconds(0))
+  if (slept is Err(_)) {
+    return 1
+  }
+  print("ticker runs")
+  return 0
+}
+
+export async function run(_args: Array<string>): int {
+  const dir = makeDir()
+  if (dir == "") {
+    print("mktemp failed")
+    return 1
+  }
+  const textPath = `${dir}/note.txt`
+  const ticking = ticker()
+  const written = await AsyncFile.writeText(textPath, "hello, file")
+  if (written is Ok(count)) {
+    print(`wrote ${Int.toString(count)} bytes`)
+  }
+  const text = await AsyncFile.readText(textPath)
+  if (text is Ok(value)) {
+    print(`read "${value}"`)
+  }
+  print(`ticker gives ${Int.toString(await ticking)}`)
+
+  const bytesPath = `${dir}/data.bin`
+  const data = Bytes.fromArray([0, 1, 2, 255])
+  const wroteBytes = await AsyncFile.writeBytes(bytesPath, data)
+  if (wroteBytes is Ok(count)) {
+    print(`wrote ${Int.toString(count)} bytes`)
+  }
+  const readBack = await AsyncFile.readBytes(bytesPath)
+  if (readBack is Ok(value)) {
+    print(`read ${Int.toString(Bytes.length(value))} bytes`)
+  }
+
+  const missing = await AsyncFile.readText(`${dir}/missing.txt`)
+  if (missing is Err(AsyncError.Failed(_))) {
+    print("missing file fails")
+  }
+
+  // A task cancelled before its call: the call gives Cancelled and the file
+  // is never made.
+  const laterPath = `${dir}/later.txt`
+  const sleeper = async {
+    const slept = await AsyncTime.sleep(Time.seconds(3600))
+    if (slept is Err(_)) {
+      const late = await AsyncFile.writeText(laterPath, "never")
+      if (late is Err(AsyncError.Cancelled)) {
+        return "cancelled write"
+      }
+      return "wrote"
+    }
+    return "slept"
+  }
+  Async.cancel(sleeper)
+  print(await sleeper)
+  if (!Fs.exists(laterPath)) {
+    print("no file was made")
+  }
+
+  const _removedText = Fs.removeFile(textPath)
+  const _removedBytes = Fs.removeFile(bytesPath)
+  const _removedDir = Fs.removeDir(dir)
+  return 0
+}

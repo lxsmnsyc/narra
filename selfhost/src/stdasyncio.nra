@@ -1,0 +1,281 @@
+// The registry rows and emitters of std/internal/asyncio, the socket
+// primitives behind std/async/net, and the module rows of std/async/net and
+// std/async/file, which are Narra source (D109 item 8). A Handle is a counted
+// socket (selfhost/runtime/std_async_io.c); the waits are the loop's.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Pos, Arg } from "narrac/ast"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  noteHelper,
+  ownedTemp,
+  reportUnsupported,
+} from "narrac/emitstate"
+import { NODE, FixedCall, plain, owned, emitFixedCall, argumentText } from "narrac/stdemithelp"
+import * as Arrays from "std/array"
+
+export const ASYNC_IO_FUNCS: Array<StdFunc> = [
+  StdFunc { name: "std/async/net", module: "std/async/net", key: "", check: "source" },
+  StdFunc { name: "std/async/file", module: "std/async/file", key: "", check: "source" },
+]
+
+export const INTERNAL_ASYNC_IO_FUNCS: Array<StdFunc> = [
+  // A listening socket bound to a numeric host and a port (0 picks one).
+  StdFunc {
+    name: "Handles.listen",
+    module: "std/internal/asyncio",
+    key: "listen",
+    parameters: ["string", "int"],
+    result: "Handle",
+    effects: ["io", "alloc"],
+  },
+  // A socket whose connect has started; Handles.error is EINPROGRESS until it is done.
+  StdFunc {
+    name: "Handles.connect",
+    module: "std/internal/asyncio",
+    key: "connect",
+    parameters: ["string", "int"],
+    result: "Handle",
+    effects: ["io", "alloc"],
+  },
+  // The result of a connect once the socket is writable: 0 or an errno value.
+  StdFunc {
+    name: "Handles.connected",
+    module: "std/internal/asyncio",
+    key: "connected",
+    parameters: ["Handle"],
+    result: "int",
+    effects: ["io"],
+  },
+  // A connection taken from the listener, or a handle with no socket.
+  StdFunc {
+    name: "Handles.accept",
+    module: "std/internal/asyncio",
+    key: "accept",
+    parameters: ["Handle"],
+    result: "Handle",
+    effects: ["io", "alloc"],
+  },
+  StdFunc {
+    name: "Handles.localPort",
+    module: "std/internal/asyncio",
+    key: "localPort",
+    parameters: ["Handle"],
+    result: "int",
+    effects: ["io"],
+  },
+  // Up to the count of bytes that are there; empty at the end and on a failure.
+  StdFunc {
+    name: "Handles.read",
+    module: "std/internal/asyncio",
+    key: "read",
+    parameters: ["Handle", "int"],
+    result: "bytes",
+    effects: ["io", "alloc"],
+  },
+  // Sends the bytes from the offset on and gives how many went, or -1.
+  StdFunc {
+    name: "Handles.write",
+    module: "std/internal/asyncio",
+    key: "write",
+    parameters: ["Handle", "bytes", "int"],
+    result: "int",
+    effects: ["io"],
+  },
+  // A wait until the socket can be read, or written when the flag is set: 0
+  // when ready, -1 on a cancel, else an errno value.
+  StdFunc {
+    name: "Handles.wait",
+    module: "std/internal/asyncio",
+    key: "wait",
+    parameters: ["Handle", "bool"],
+    result: "Async<int>",
+    effects: ["io", "alloc"],
+  },
+  // Whether the running task's suspending calls must give Err(AsyncError.Cancelled).
+  StdFunc {
+    name: "Handles.cancelled",
+    module: "std/internal/asyncio",
+    key: "cancelled",
+    parameters: [],
+    result: "bool",
+    effects: ["io"],
+  },
+  // The errno value of the last call of this module, 0 when it succeeded.
+  StdFunc {
+    name: "Handles.error",
+    module: "std/internal/asyncio",
+    key: "error",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+  // Whether the error means the call has to wait for the socket.
+  StdFunc {
+    name: "Handles.retry",
+    module: "std/internal/asyncio",
+    key: "retry",
+    parameters: ["int"],
+    result: "bool",
+  },
+  // Whether accept failed only for the connection it took, so the next may work.
+  StdFunc {
+    name: "Handles.acceptAgain",
+    module: "std/internal/asyncio",
+    key: "acceptAgain",
+    parameters: ["int"],
+    result: "bool",
+  },
+  // Whether a wait failed because another task waits in the same direction.
+  StdFunc {
+    name: "Handles.busy",
+    module: "std/internal/asyncio",
+    key: "busy",
+    parameters: ["int"],
+    result: "bool",
+  },
+  // Whether the error means a connect is under way.
+  StdFunc {
+    name: "Handles.pending",
+    module: "std/internal/asyncio",
+    key: "pending",
+    parameters: ["int"],
+    result: "bool",
+  },
+  // The operating system's message for the error.
+  StdFunc {
+    name: "Handles.message",
+    module: "std/internal/asyncio",
+    key: "message",
+    parameters: ["int"],
+    result: "string",
+    effects: ["alloc"],
+  },
+]
+
+const ASYNC_IO_FIXED_CALLS: Array<FixedCall> = [
+  FixedCall {
+    name: "Handles.listen",
+    call: "narra_handle_listen",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.connect",
+    call: "narra_handle_connect",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.connected",
+    call: "narra_handle_connected",
+    withPos: false,
+    owned: false,
+    temporary: true,
+  },
+  FixedCall {
+    name: "Handles.accept",
+    call: "narra_handle_accept",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.localPort",
+    call: "narra_handle_local_port",
+    withPos: false,
+    owned: false,
+    temporary: true,
+  },
+  FixedCall {
+    name: "Handles.read",
+    call: "narra_handle_read",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.write",
+    call: "narra_handle_write",
+    withPos: false,
+    owned: false,
+    temporary: true,
+  },
+  FixedCall {
+    name: "Handles.error",
+    call: "narra_handle_error",
+    withPos: false,
+    owned: false,
+    temporary: true,
+  },
+  FixedCall {
+    name: "Handles.retry",
+    call: "narra_handle_retry",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.acceptAgain",
+    call: "narra_handle_accept_again",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.busy",
+    call: "narra_handle_busy",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.pending",
+    call: "narra_handle_pending",
+    withPos: false,
+    owned: false,
+    temporary: false,
+  },
+  FixedCall {
+    name: "Handles.message",
+    call: "narra_handle_message",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+]
+
+export function emitAsyncIoCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  noteHelper(emitter, "std/internal/asyncio")
+  for (const fixed of Arrays.values(ASYNC_IO_FIXED_CALLS)) {
+    if (fixed.name == name) {
+      return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+    }
+  }
+  // The loop's own functions: the call text sits in the program, after every runtime part.
+  if (name == "Handles.wait") {
+    noteHelper(emitter, "std/internal/async")
+    const handle = argumentText(walker, mutable emitter, arguments, 0)
+    const writable = argumentText(walker, mutable emitter, arguments, 1)
+    const handleType = Type.TAsync(Type.TInt)
+    const callText = `narra_loop_wait_io((${handle})->descriptor, ${writable})`
+    return owned(ownedTemp(mutable emitter, handleType, callText))
+  }
+  if (name == "Handles.cancelled") {
+    noteHelper(emitter, "std/internal/async")
+    return plain("narra_loop_cancelled_now()")
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

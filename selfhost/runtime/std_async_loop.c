@@ -401,23 +401,33 @@ static narra_task* narra_loop_wait_io(int descriptor, bool writable) {
 
 static void narra_loop_cancel_idle(narra_task* idle);
 
-// A cancel of task reaches the wait it is stuck in: its own Async.idle handle,
-// which finishes, or, through the tasks of suspending std functions it
-// awaits, a timer or descriptor wait, which finishes with -1. A task awaiting
-// another task's handle keeps waiting. Async.cancel calls this after it sets
-// the cancelled flag.
+// A cancel of task passes down the await chain (D109 item 8, amended
+// 2026-11-13) to the wait at its end: an Async.idle handle, which finishes,
+// or a timer or descriptor wait, which finishes with -1. The task of a
+// suspending std function passes it on. A user task it awaits is cancelled
+// too when the waiter is the only task waiting on it; a handle that other
+// tasks await keeps running, and so do the tasks a cancelled task started but
+// does not await. Async.cancel calls this after it sets the cancelled flag,
+// and so does an await in a task that is already cancelled.
 static void narra_loop_cancel_wait(narra_task* task) {
+  narra_task* waiter = task;
   narra_task* awaited = task->awaited;
-  if (awaited && awaited->release == narra_task_release_nothing && !awaited->done) {
-    narra_loop_cancel_idle(awaited);
-    return;
-  }
-  while (awaited) {
+  while (awaited && !awaited->done) {
+    if (awaited->release == narra_task_release_nothing) {
+      narra_loop_cancel_idle(awaited);
+      return;
+    }
     if (narra_wait_is(awaited)) {
       narra_wait_finish((narra_wait*)awaited, -1);
       return;
     }
-    if (!awaited->forwards_cancel) return;
+    if (!awaited->forwards_cancel) {
+      // A bare task (a race winner) has no wait of its own to end.
+      if (awaited->resume == NULL) return;
+      bool alone = awaited->waiters == waiter && waiter->next_waiter == NULL;
+      if (!alone || !narra_task_mark_cancelled(awaited)) return;
+    }
+    waiter = awaited;
     awaited = awaited->awaited;
   }
 }

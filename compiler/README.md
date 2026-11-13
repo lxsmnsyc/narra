@@ -219,7 +219,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - Effects: trait function calls to user implementations are not followed, and an implementation may use effects its trait function does not declare, except `unsafe` (E0800). Implementations of pure trait functions such as `Show.show` allocate in existing programs and in the guide; enforcing the subset rule for `alloc` and `io` waits for a decision.
 - Threads and channels.
-- Async I/O: the loop waits with kqueue or epoll and has timers (`std/async/time`), but no std module registers a socket or file yet (node std-async-io adds `std/async/net` and `std/async/file`).
+- Async I/O, first build (`std/async/net`, `std/async/file`): `host` must be a numeric IPv4 or IPv6 address, with no name lookup. A `std/async/file` call does the blocking read or write, so it blocks the loop for as long as the file call takes, then gives the other ready tasks one turn. TCP only: no UDP, no Unix sockets, no shutdown of one direction, no timeouts other than an `AsyncTime.sleep` raced against the call.
 - `@layout` and C-callable functions (node c-abi-export).
 - `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.
 

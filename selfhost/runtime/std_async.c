@@ -102,12 +102,14 @@ static narra_task* narra_task_start(narra_task* task) {
 }
 
 // The running task waits until handle finishes. The waiter list holds a
-// reference to it.
+// reference to it. A task cancelled before it waits passes the cancel down
+// the chain now, as Async.cancel does for a task already waiting.
 static void narra_task_wait(narra_task* task, narra_task* handle) {
   narra_task_retain(task);
   task->awaited = handle;
   task->next_waiter = handle->waiters;
   handle->waiters = task;
+  if (task->cancelled) narra_loop_cancel_wait(task);
 }
 
 // Takes the callbacks off the task and gives them, so a callback that

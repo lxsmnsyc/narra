@@ -1,0 +1,173 @@
+// std/async/net: TCP sockets on the loop of the thread (SPEC.md section 8, D109).
+//
+// listen and localPort do not suspend. accept, connect, read and write wait in
+// the loop until the socket is ready, so the other tasks run meanwhile. A
+// Listener or a Connection is a handle: copies share the socket, and it
+// closes when the last copy is dropped. host is a numeric IPv4 or IPv6
+// address; there is no name lookup.
+
+import * as Bytes from "std/bytes"
+import * as Handles from "std/internal/asyncio"
+import { AsyncError } from "std/async"
+
+export opaque struct Listener {
+  handle: Handle
+}
+
+export opaque struct Connection {
+  handle: Handle
+}
+
+function failWith(code: int): AsyncError uses alloc {
+  return AsyncError.Failed(Handles.message(code))
+}
+
+// The error of a wait that ended with ready: None when the socket is ready.
+// Each suspending function waits itself, never through a helper task, so a
+// cancel of the task that awaits it reaches the wait. One task at a time may
+// wait in each direction; busy names what the other task already does.
+function checkWait(ready: int, busy: string): Option<AsyncError> uses alloc {
+  if (ready < 0) {
+    return Some(AsyncError.Cancelled)
+  }
+  if (Handles.busy(ready)) {
+    return Some(AsyncError.Failed(`another task is already ${busy}`))
+  }
+  if (ready > 0) {
+    return Some(failWith(ready))
+  }
+  return None
+}
+
+// A socket that accepts connections on host and port. Port 0 picks a free
+// port, which localPort gives.
+export function listen(host: string, port: int): Result<Listener, AsyncError> uses io, alloc {
+  const handle = Handles.listen(host, port)
+  const code = Handles.error()
+  if (code != 0) {
+    return Err(failWith(code))
+  }
+  return Ok(Listener { handle: handle })
+}
+
+// The port the listener is bound to.
+export function localPort(listener: Listener): int uses io {
+  return Handles.localPort(listener.handle)
+}
+
+// The next connection to the listener.
+export async function accept(listener: Listener): Result<Connection, AsyncError> uses io, alloc {
+  while (true) {
+    if (Handles.cancelled()) {
+      return Err(AsyncError.Cancelled)
+    }
+    const handle = Handles.accept(listener.handle)
+    const code = Handles.error()
+    if (code == 0) {
+      return Ok(Connection { handle: handle })
+    }
+    // A connection that went before it was taken leaves the others to accept.
+    if (!Handles.acceptAgain(code)) {
+      if (!Handles.retry(code)) {
+        return Err(failWith(code))
+      }
+      const problem = checkWait(
+        await Handles.wait(listener.handle, false),
+        "accepting on this listener",
+      )
+      if (problem is Some(error)) {
+        return Err(error)
+      }
+    }
+  }
+  return Err(AsyncError.Cancelled)
+}
+
+// A connection to host and port.
+export async function connect(
+  host: string,
+  port: int,
+): Result<Connection, AsyncError> uses io, alloc {
+  if (Handles.cancelled()) {
+    return Err(AsyncError.Cancelled)
+  }
+  const handle = Handles.connect(host, port)
+  const code = Handles.error()
+  if (code == 0) {
+    return Ok(Connection { handle: handle })
+  }
+  if (!Handles.pending(code)) {
+    return Err(failWith(code))
+  }
+  const problem = checkWait(await Handles.wait(handle, true), "connecting this socket")
+  if (problem is Some(error)) {
+    return Err(error)
+  }
+  const result = Handles.connected(handle)
+  if (result != 0) {
+    return Err(failWith(result))
+  }
+  return Ok(Connection { handle: handle })
+}
+
+// Up to maxBytes bytes from the connection, at most 64 KiB, once some are
+// there. Empty bytes mean the peer has closed its side; a maxBytes of zero or
+// less gives empty bytes at once.
+export async function read(
+  connection: Connection,
+  maxBytes: int,
+): Result<bytes, AsyncError> uses io, alloc {
+  while (true) {
+    if (Handles.cancelled()) {
+      return Err(AsyncError.Cancelled)
+    }
+    const data = Handles.read(connection.handle, maxBytes)
+    const code = Handles.error()
+    if (code == 0) {
+      return Ok(data)
+    }
+    if (!Handles.retry(code)) {
+      return Err(failWith(code))
+    }
+    const problem = checkWait(
+      await Handles.wait(connection.handle, false),
+      "reading this connection",
+    )
+    if (problem is Some(error)) {
+      return Err(error)
+    }
+  }
+  return Err(AsyncError.Cancelled)
+}
+
+// Writes every byte of data and gives the count. A cancel while it waits
+// ends it with Err(AsyncError.Cancelled), whatever part was sent.
+export async function write(
+  connection: Connection,
+  data: bytes,
+): Result<int, AsyncError> uses io, alloc {
+  if (Handles.cancelled()) {
+    return Err(AsyncError.Cancelled)
+  }
+  let sent = 0
+  const total = Bytes.length(data)
+  // A wait that a cancel ends gives -1, so the loop needs no second check.
+  while (sent < total) {
+    const count = Handles.write(connection.handle, data, sent)
+    const code = Handles.error()
+    if (code == 0) {
+      sent += count
+    } else if (!Handles.retry(code)) {
+      return Err(failWith(code))
+    } else {
+      const problem = checkWait(
+        await Handles.wait(connection.handle, true),
+        "writing this connection",
+      )
+      if (problem is Some(error)) {
+        return Err(error)
+      }
+    }
+  }
+  return Ok(sent)
+}

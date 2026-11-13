@@ -1,7 +1,7 @@
 ---
 id: effect-var-nested-result
 title: "Effect variables leak through a generator inside another type"
-status: active
+status: done
 priority: must
 type: fix
 story: batch-13
@@ -12,7 +12,7 @@ target:
 ship: auto
 land: auto
 from:
-size: S
+size: M
 spike: false
 hypothesis:
 verify: sh scripts/test.sh
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 185781
 owns:
   - roadmaps/selfhost/nodes/effect-var-nested-result/**
 shared:

@@ -56,6 +56,12 @@ import { markCapturedWrite } from "narrac/funcvalues"
 import { recordBuildCondition } from "narrac/buildconditions"
 import { checkStreamYield } from "narrac/asyncgenerators"
 import {
+  checkForAwaitPlace,
+  findStreamElement,
+  reportPlainStreamLoop,
+  reportMutableStreamLoop,
+} from "narrac/forawait"
+import {
   getPatternId,
   collectPatternLocals,
   bindPatternLocals,
@@ -113,7 +119,7 @@ export function checkStatement<W: Walker>(
       }
     }
     Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
-    Stmt.ForStmt(_, _, _, _, iterable, _, _) => endExpressionNarrowing(mutable checker, iterable)
+    Stmt.ForStmt(_, _, _, _, iterable, _, _, _) => endExpressionNarrowing(mutable checker, iterable)
     Stmt.YieldStmt(_, value, _, _) => endExpressionNarrowing(mutable checker, value)
     _ => {}
   }
@@ -178,7 +184,7 @@ export function checkStatement<W: Walker>(
       step,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference) => checkFor(
+    Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference, awaitPos) => checkFor(
       mutable checker,
       walker,
       nodeId,
@@ -188,6 +194,7 @@ export function checkStatement<W: Walker>(
       iterable,
       body,
       reference,
+      awaitPos,
     )
     Stmt.BreakStmt(pos, label) => checkLoopExit(
       mutable checker,
@@ -1008,10 +1015,18 @@ function checkFor<W: Walker>(
   iterable: Expr,
   body: Block,
   reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
 ) uses alloc {
+  if (awaitPos is Some(written)) {
+    checkForAwaitPlace(mutable checker, written)
+  }
   if (reference is Some(marker)) {
-    checkReferenceFor(mutable checker, walker, nodeId, pos, label, name, iterable, body, marker)
-    return
+    if (awaitPos is Some(_)) {
+      reportMutableStreamLoop(mutable checker, pos)
+    } else {
+      checkReferenceFor(mutable checker, walker, nodeId, pos, label, name, iterable, body, marker)
+      return
+    }
   }
   // The iterable is a call of a std function that gives the element type.
   const outerLine = checker.forSourceLine
@@ -1036,7 +1051,9 @@ function checkFor<W: Walker>(
   }
   endLoopNarrowing(mutable checker, None, body)
   let element = Type.TVoid
-  if (builtin == "Range.upTo" || builtin == "Range.between") {
+  if (awaitPos is Some(_)) {
+    element = findStreamElement(mutable checker, iterable, iterableType)
+  } else if (builtin == "Range.upTo" || builtin == "Range.between") {
     element = Type.TInt
   } else if (builtin == "Array.values" || builtin == "Array.entries") {
     element = Type.TVoid
@@ -1069,6 +1086,8 @@ function checkFor<W: Walker>(
     element = arrayElement
   } else if (iterableType is Type.TFixedArray(fixedElement, _)) {
     element = fixedElement
+  } else if (iterableType is Type.TAsyncGenerator(_, _, _, _)) {
+    reportPlainStreamLoop(mutable checker, iterable, iterableType)
   } else {
     const text = typeString(checker, iterableType)
     reportError(
@@ -1835,7 +1854,7 @@ function collectStatementUses(
         collectStatementUses(checker, mutable collector, stepStatement, chain, arms)
       }
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
       collector.blocks++
       const stepNode = -collector.blocks
       collectUses(
@@ -2043,7 +2062,7 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
         collectUses(checker, mutable collector, loopCondition, noCalls, noArms)
       }
     }
-    Stmt.ForStmt(_, _, _, _, iterable, _, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, _, _, _) => {
       isFixable = false
       collectUses(checker, mutable collector, iterable, noCalls, noArms)
     }

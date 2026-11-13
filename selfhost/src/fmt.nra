@@ -1168,7 +1168,7 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc from printer
       step,
       body,
     )
-    Stmt.ForStmt(_, pos, label, name, iterable, body, reference) => printFor(
+    Stmt.ForStmt(_, pos, label, name, iterable, body, reference, awaitPos) => printFor(
       printer,
       pos,
       label,
@@ -1176,6 +1176,7 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc from printer
       iterable,
       body,
       reference,
+      awaitPos,
     )
     Stmt.YieldStmt(_, value, delegate, binding) => printYield(printer, value, delegate, binding)
     Stmt.BreakStmt(_, label) => text(getJump("break", label))
@@ -1471,6 +1472,7 @@ function printFor(
   iterable: Expr,
   body: Block,
   reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
 ): Doc from printer uses alloc {
   let keyword = "const "
   let declaredName = name
@@ -1525,12 +1527,21 @@ function printFor(
   if (declaredPattern is Some(headPattern)) {
     head = Docs.concat([text(keyword), active.printPattern(active, headPattern)])
   }
+  // `for await (`: the keyword keeps the comments written on either side of it.
+  let opening = text("for (")
+  if (awaitPos is Some(written)) {
+    opening = Docs.concat([
+      text("for "),
+      withComments(active, getPosKey("k", written), text("await")),
+      text(" ("),
+    ])
+  }
   // A comment before the `)` stays inside the header, on a line of its own.
   const iterableDocument = active.printExpression(active, iterable)
   if (!hasTrailing(active, getIdKey(getExprId(iterable)))) {
     return Docs.concat([
       taken.prefix,
-      text("for ("),
+      opening,
       head,
       text(" of "),
       iterableDocument,
@@ -1540,7 +1551,7 @@ function printFor(
   }
   const header = Docs.group(
     Docs.concat([
-      text("for ("),
+      opening,
       head,
       text(" of "),
       Docs.indent(iterableDocument),

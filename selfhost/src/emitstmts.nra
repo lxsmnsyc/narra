@@ -50,6 +50,7 @@ import {
 import { pointerTemp, declaredLocal, emitArithmetic } from "narrac/emitexprs"
 import * as Generators from "narrac/emitgenerators"
 import { emitStreamYield } from "narrac/emitasyncgenerators"
+import { emitForAwait } from "narrac/emitforawait"
 import * as Async from "narrac/emitasync"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
@@ -143,7 +144,7 @@ export function emitStatement<W: EmitWalker>(
       step,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference) => emitFor(
+    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference, awaitPos) => emitFor(
       walker,
       mutable emitter,
       statement,
@@ -153,6 +154,7 @@ export function emitStatement<W: EmitWalker>(
       iterable,
       body,
       reference,
+      awaitPos,
     )
     Stmt.BreakStmt(_, label) => emitLoopExit(mutable emitter, label, true)
     Stmt.ContinueStmt(_, label) => emitLoopExit(mutable emitter, label, false)
@@ -575,10 +577,13 @@ function emitFor<W: EmitWalker>(
   iterable: Expr,
   body: Block,
   reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
 ) uses alloc {
   const name = iterableName(emitter, iterable)
   beginStatement(mutable emitter)
-  if (reference is Some(marker)) {
+  if (awaitPos is Some(_)) {
+    emitForAwait(walker, mutable emitter, nodeId, pos, label, iterable, body)
+  } else if (reference is Some(marker)) {
     emitReferenceFor(walker, mutable emitter, nodeId, pos, label, iterable, body, marker)
   } else if (name == "Range.upTo" || name == "Range.between") {
     emitRangeFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name)
@@ -1036,7 +1041,7 @@ function scanHoistStatement(emitter: Emitter, mutable scan: HoistScan, statement
       }
       scanHoistBlock(emitter, mutable scan, body)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
       scanHoistExpression(emitter, mutable scan, iterable)
       scanHoistBlock(emitter, mutable scan, body)
     }

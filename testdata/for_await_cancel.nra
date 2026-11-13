@@ -1,0 +1,37 @@
+// Cancelling the task that runs a `for await` passes to the stream through
+// the loop's only pending step: the sleep inside the stream ends with
+// Err(AsyncError.Cancelled), the stream ends, and so does the loop.
+import * as Async from "std/async"
+import * as Int from "std/int"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+import { sleep } from "std/async/time"
+
+async function* slow(): AsyncGenerator<string> uses io, alloc {
+  yield "first"
+  const slept = await sleep(Time.milliseconds(60000))
+  if (slept is Err(AsyncError.Cancelled)) {
+    print("stream: sleep cancelled")
+    return
+  }
+  yield "never"
+}
+
+async function readAll(): int uses io, alloc {
+  let seen = 0
+  for await (const value of slow()) {
+    print(`reader: ${value}`)
+    seen += 1
+  }
+  print("reader: loop ended")
+  return seen
+}
+
+export async function run(_args: Array<string>): int {
+  // The reader runs until the stream waits in its sleep.
+  const reader = readAll()
+  print("cancelling the reader")
+  Async.cancel(reader)
+  print(`reader saw ${Int.toString(await reader)} value`)
+  return 0
+}

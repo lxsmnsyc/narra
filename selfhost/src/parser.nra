@@ -2676,7 +2676,11 @@ function isMarkedEntries(parser: Parser): bool {
     marker.text == "mutable"
 }
 
-function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt from pos uses alloc {
+function parseReferenceFor(
+  mutable parser: Parser,
+  pos: Pos,
+  awaitPos: Option<Pos>,
+): Stmt from pos uses alloc {
   // The head is not desugared into a declaration, which would copy the element.
   let indexName = ""
   let indexPos = pos
@@ -2708,7 +2712,28 @@ function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt from pos uses
   const forId = newId(mutable parser)
   parser.facts.namePositions[forId] = getPos(nameToken)
   const reference = LoopReference { indexId: indexId, indexName: indexName }
-  return Stmt.ForStmt(forId, pos, "", nameToken.text, iterable, body, Some(reference))
+  return Stmt.ForStmt(
+    forId,
+    pos,
+    "",
+    nameToken.text,
+    iterable,
+    body,
+    Some(reference),
+    copy(awaitPos),
+  )
+}
+
+function parseForAwait(mutable parser: Parser): Option<Pos> uses alloc {
+  // `for await`: the keyword gets a trivia node of its own, so a comment on
+  // either side of it stays there.
+  if (!isAt(parser, SYMBOL_KEYWORD_AWAIT)) {
+    return None
+  }
+  const awaitIndex = parser.index
+  const awaitPos = getPos(advance(mutable parser))
+  noteKey(mutable parser, getPosKey("k", awaitPos), awaitIndex)
+  return Some(awaitPos)
 }
 
 function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
@@ -2731,8 +2756,17 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   if (loop is Stmt.CForStmt(_, _, init, condition, step, body)) {
     return Stmt.CForStmt(labelPos, labelToken.text, init, condition, step, body)
   }
-  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference)) {
-    return Stmt.ForStmt(nodeId, labelPos, labelToken.text, name, iterable, body, reference)
+  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference, awaitPos)) {
+    return Stmt.ForStmt(
+      nodeId,
+      labelPos,
+      labelToken.text,
+      name,
+      iterable,
+      body,
+      reference,
+      awaitPos,
+    )
   }
   return loop
 }
@@ -2980,9 +3014,16 @@ function parseStmtBody(mutable parser: Parser): Stmt {
   }
   if (isAt(parser, SYMBOL_KEYWORD_FOR)) {
     advance(mutable parser)
+    const awaitPos = parseForAwait(mutable parser)
     expect(mutable parser, SYMBOL_LEFT_PAREN)
     if (isAt(parser, SYMBOL_KEYWORD_MUTABLE) || isMarkedEntries(parser)) {
-      return parseReferenceFor(mutable parser, pos)
+      return parseReferenceFor(mutable parser, pos, awaitPos)
+    }
+    if (awaitPos is Some(written)) {
+      if (!isAt(parser, SYMBOL_KEYWORD_CONST)) {
+        failHere(mutable parser, "E0030", "write `for await (const item of stream)`")
+        return Stmt.BreakStmt(written, "")
+      }
     }
     if (isAt(parser, SYMBOL_SEMICOLON)) {
       return parseCStyleFor(mutable parser, pos, None)
@@ -3053,7 +3094,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     }
     const forId = newId(mutable parser)
     parser.facts.namePositions[forId] = headPos
-    return Stmt.ForStmt(forId, pos, "", name, iterable, body, None)
+    return Stmt.ForStmt(forId, pos, "", name, iterable, body, None, awaitPos)
   }
   if (isAt(parser, SYMBOL_KEYWORD_YIELD)) {
     advance(mutable parser)

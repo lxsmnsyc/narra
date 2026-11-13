@@ -1,0 +1,50 @@
+// A handle given to Async.all or Async.race is observed while that all or race
+// is unfinished: a cancel of another task that awaits it does not cancel it.
+// Once the race is decided, the handles that lost are no longer observed.
+import * as Int from "std/int"
+import * as Async from "std/async"
+import * as AsyncTime from "std/async/time"
+import * as Time from "std/time"
+
+async function sleeper(label: string, value: int, milliseconds: int): int uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  if (slept is Err(_)) {
+    print(`${label} cancelled`)
+    return 0
+  }
+  print(`${label} slept`)
+  return value
+}
+
+async function waitOn(handle: Async<int>): int {
+  return await handle
+}
+
+export async function run(_args: Array<string>): int {
+  const first = sleeper("first", 1, 5)
+  const shared = sleeper("shared", 2, 1)
+  const both = Async.all([first, shared])
+  const direct = waitOn(shared)
+  Async.cancel(direct)
+  const values = await both
+  print(`all gives [${Int.toString(values[0])}, ${Int.toString(values[1])}]`)
+  print(`direct gives ${Int.toString(await direct)}`)
+  const raced = sleeper("raced", 3, 5)
+  const winner = Async.race([sleeper("quick", 4, 10), raced])
+  const other = waitOn(raced)
+  Async.cancel(other)
+  if (await winner is Some(value)) {
+    print(`race gives ${Int.toString(value)}`)
+  }
+  print(`other gives ${Int.toString(await other)}`)
+  const late = sleeper("late", 5, 5)
+  const decided = Async.race([sleeper("early", 6, 1), late])
+  if (await decided is Some(value)) {
+    print(`decided gives ${Int.toString(value)}`)
+  }
+  const after = waitOn(late)
+  Async.cancel(after)
+  print(`after gives ${Int.toString(await after)}`)
+  await Async.idle()
+  return 0
+}

@@ -410,11 +410,13 @@ static void narra_loop_cancel_idle(narra_task* idle);
 // 2026-11-13) to the wait at its end: an Async.idle handle, which finishes,
 // or a timer or descriptor wait, which finishes with -1. The task of a
 // suspending std function passes it on. A user task it awaits is cancelled
-// too when the waiter is the only task waiting on it and it has no then
-// callbacks; a handle that other tasks await or that has callbacks keeps
+// too when the waiter is the only task waiting on it, it has no then
+// callbacks and no unfinished Async.all was given it; a handle that other
+// tasks await, that has callbacks or that an Async.all observes keeps
 // running, and so do the tasks a cancelled task started but does not await.
-// The task of Async.all stops the walk, as the winner of Async.race does, so
-// neither cancels the handles it was given. Async.cancel calls this after it
+// The race watchers wait on every handle of an undecided Async.race, so its
+// handles are never alone. The task of Async.all stops the walk, as the
+// winner of Async.race does, so neither cancels the handles it was given. Async.cancel calls this after it
 // sets the cancelled flag, and so does an await in a task that is already
 // cancelled.
 static void narra_loop_cancel_wait(narra_task* task) {
@@ -433,7 +435,7 @@ static void narra_loop_cancel_wait(narra_task* task) {
       // A bare task (a race winner) has no wait of its own to end.
       if (awaited->resume == NULL) return;
       bool alone = awaited->waiters == waiter && waiter->next_waiter == NULL;
-      if (!alone || awaited->callbacks != NULL) return;
+      if (!alone || awaited->callbacks != NULL || awaited->observers != 0) return;
       if (!narra_task_mark_cancelled(awaited)) return;
     }
     waiter = awaited;

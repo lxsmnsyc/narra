@@ -27,6 +27,9 @@ struct narra_task {
   // Set on the task of Async.all: a cancel of it stops there and does not
   // reach the handles it awaits.
   bool keeps_inputs;
+  // The unfinished Async.all tasks that were given this handle. Like a then
+  // callback, each observes the handle, so a cancel walk does not cancel it.
+  int64_t observers;
   void (*resume)(narra_task* task);
   void (*release)(narra_task* task);
   // The value slot of the frame, or NULL for an Async<void>.
@@ -210,6 +213,15 @@ static bool narra_task_mark_cancelled(narra_task* task) {
 // goes on (D109 item 8).
 static void narra_task_cancel(narra_task* task) {
   if (narra_task_mark_cancelled(task)) narra_loop_cancel_wait(task);
+}
+
+// Async.all takes each handle it was given as observed until it has awaited it.
+static void narra_task_observe(narra_task* task) {
+  task->observers++;
+}
+
+static void narra_task_unobserve(narra_task* task) {
+  task->observers--;
 }
 
 // Whether Async.peek gives the value: the task finished and was not cancelled.

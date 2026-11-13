@@ -161,3 +161,72 @@ The second loop starts from `"one"` again, and runs the generator's work a secon
 ### Effects
 
 The result of a lazy operator has the effects of its source and its callback. Mapping over a generator that prints gives a generator that prints, and its type says `uses io`. A pure source with a pure callback gives a pure generator.
+
+## Command lines: `std/args`
+
+`std/args` reads a command line. The program describes its command line as a `Command` value, and one call of `Args.parse` reads the arguments against it. The same value gives the help text and the error messages.
+
+A `Command` has a name, a summary, its flags, its positionals and what to do with extra arguments. A `Flag` with no `value` is a switch such as `--loud`. A flag with a `value` takes one, and the text of `value` names it in the help. `rest` says what happens to arguments after the declared positionals: `Rest.None` makes them an error, `Rest.Positionals` collects them, and `Rest.Raw` keeps everything after the declared positionals as written, flags included.
+
+`Args.parse` returns a `Result`. On success, `Args.has`, `Args.value`, `Args.values` and `Args.positional` read what was given. `-h` and `--help` work on every command and come back as the error `ArgsError.Help`, so the program prints the help and stops. Any other error has a message from `Args.formatError`, with a hint when a flag or command name is close to a known one:
+
+```narra
+import * as Args from "std/args"
+import { Command, Flag, Rest } from "std/args"
+
+const GREET = Command {
+  name: "greet",
+  summary: "Say hello.",
+  flags: [
+    Flag { name: "loud", short: "l", help: "shout the greeting" },
+    Flag { name: "times", short: "n", value: "count", help: "a number to show" },
+  ],
+  positionals: ["name"],
+  rest: Rest.None,
+}
+
+function greet(arguments: Array<string>) uses io, alloc {
+  const parsed = Args.parse(GREET, arguments)
+  if (parsed is Err(Args.ArgsError.Help(path))) {
+    print(Args.help(GREET, path))
+    return
+  }
+  if (parsed is Err(error)) {
+    print(`error: ${Args.formatError(error)}`)
+    return
+  }
+  const result = parsed.value
+  let greeting = "hello"
+  if (Args.has(result, "loud")) {
+    greeting = "HELLO"
+  }
+  if (Args.positional(result, "name") is Some(name)) {
+    print(`${greeting}, ${name} (${Show.show(Args.value(result, "times"))})`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  greet(["greet", "--help"])
+  greet(["greet", "Ada"])
+  greet(["greet", "--loud", "-n", "3", "Ada"])
+  greet(["greet", "--lod", "Ada"])
+  return 0
+}
+```
+
+```text
+Usage: greet [flags] <name>
+
+Say hello.
+
+Flags:
+  -l, --loud           shout the greeting
+  -n, --times <count>  a number to show
+  -h, --help           print this help
+
+hello, Ada (None)
+HELLO, Ada (Some("3"))
+error: unknown flag --lod; did you mean --loud?
+```
+
+Long flags take two dashes and short flags one: `--times 3`, `--times=3`, `-n 3` and `-n3` are the same. Short switches can be bundled, so `-ab` is `-a -b`. `--` ends the flags, and a lone `-` is a positional. A command can have subcommands in `commands`: the first positional picks one, and `Args.commandPath` returns the names, such as `["narrac", "build"]`.

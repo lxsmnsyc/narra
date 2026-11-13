@@ -1,0 +1,647 @@
+// std/args: a command line as data, parsed in one call (D118 item 4).
+//
+// A Command lists its flags, positionals and subcommands. Args.parse reads the
+// arguments `run` receives (the program name first) into a Parsed, or returns
+// an ArgsError. `-h` and `--help` come back as ArgsError.Help: the caller
+// prints Args.help(command, path) and exits 0.
+
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+// A flag. An empty value is a flag without a value; any other text names the
+// value in the help (`--output <path>`). short is one character or empty.
+export struct Flag derives Show, Equatable {
+  name: string
+  short: string = ""
+  value: string = ""
+  repeated: bool = false
+  help: string = ""
+}
+
+// What a command does with positionals after the declared ones: an error
+// (None), collect them (Positionals, flags after them still parse), or keep
+// everything after the declared positionals as written (Raw).
+export enum Rest derives Show, Equatable {
+  None
+  Positionals
+  Raw
+}
+
+export struct Command derives Show, Equatable {
+  name: string
+  summary: string = ""
+  flags: Array<Flag> = []
+  positionals: Array<string> = []
+  rest: Rest
+  commands: Array<Command> = []
+}
+
+// One flag or positional as given. A flag without a value has the value "".
+export struct Entry derives Show, Equatable {
+  name: string
+  value: string
+}
+
+export struct Parsed derives Show, Equatable {
+  path: Array<string>
+  flags: Array<Entry>
+  positionals: Array<Entry>
+  rest: Array<string>
+}
+
+// The ways a parse fails. closest is the nearest known name for a hint, or "".
+// UnknownFlag and MissingValue name the flag as it was typed (`-o` or
+// `--output`); UnexpectedValue and Repeated give its long name.
+export enum ArgsError derives Show, Equatable {
+  UnknownFlag(name: string, closest: string)
+  MissingValue(flag: string)
+  UnexpectedValue(flag: string)
+  Repeated(flag: string)
+  UnknownCommand(name: string, closest: string)
+  MissingCommand(path: Array<string>)
+  MissingPositional(name: string)
+  ExtraPositional(text: string)
+  Help(path: Array<string>)
+  BadSpec(reason: string)
+}
+
+const HELP_FLAG = Flag { name: "help", short: "h", help: "print this help" }
+
+// A name may be a hint when it is at most this many edits away.
+const HINT_DISTANCE = 2
+
+// A name needs at least this many bytes to get a hint.
+const HINT_LENGTH = 3
+
+struct Walk {
+  command: Command
+  path: Array<string>
+  flags: Array<Entry>
+  positionals: Array<Entry>
+  rest: Array<string>
+  // How many of the command's declared positionals are filled.
+  filled: int
+}
+
+export function parse(
+  command: Command,
+  arguments: Array<string>,
+): Result<Parsed, ArgsError> uses alloc {
+  const problem = checkSpec(command, [])
+  if (problem != "") {
+    return Err(ArgsError.BadSpec(problem))
+  }
+  let walk = Walk {
+    command: copy(command),
+    path: [command.name],
+    flags: [],
+    positionals: [],
+    rest: [],
+    filled: 0,
+  }
+  // The result keeps texts of the arguments, so it reads a copy of its own.
+  const given = copy(arguments)
+  const count = Arrays.length(given)
+  let flagsEnded = false
+  let index = 1
+  while (index < count) {
+    const argument = given[index]
+    index += 1
+    if (!flagsEnded && argument == "--") {
+      flagsEnded = true
+      continue
+    }
+    if (!flagsEnded && Str.startsWith(argument, "--")) {
+      const next = readLong(mutable walk, argument, given, index)
+      if (next is Err(error)) {
+        return Err(error)
+      }
+      index = next.value
+      continue
+    }
+    if (!flagsEnded && Str.startsWith(argument, "-") && argument != "-") {
+      const next = readShorts(mutable walk, argument, given, index)
+      if (next is Err(error)) {
+        return Err(error)
+      }
+      index = next.value
+      continue
+    }
+    // A positional: a subcommand name, a declared positional or the rest.
+    if (Arrays.length(walk.command.commands) > 0) {
+      const chosen = enterCommand(mutable walk, argument)
+      if (chosen is Err(error)) {
+        return Err(error)
+      }
+      continue
+    }
+    if (walk.filled < Arrays.length(walk.command.positionals)) {
+      const name = walk.command.positionals[walk.filled]
+      Arrays.push(mutable walk.positionals, Entry { name: name, value: argument })
+      walk.filled += 1
+      if (walk.command.rest == Rest.Raw && walk.filled == Arrays.length(walk.command.positionals)) {
+        // After the last declared positional, everything is kept as written.
+        while (index < count) {
+          Arrays.push(mutable walk.rest, given[index])
+          index += 1
+        }
+      }
+      continue
+    }
+    if (walk.command.rest == Rest.Raw) {
+      // A command with no declared positionals keeps everything from here on.
+      Arrays.push(mutable walk.rest, argument)
+      while (index < count) {
+        Arrays.push(mutable walk.rest, given[index])
+        index += 1
+      }
+      continue
+    }
+    if (walk.command.rest == Rest.Positionals) {
+      Arrays.push(mutable walk.rest, argument)
+      continue
+    }
+    return Err(ArgsError.ExtraPositional(argument))
+  }
+  // Every level with subcommands needs one, and every declared positional a value.
+  if (Arrays.length(walk.command.commands) > 0) {
+    return Err(ArgsError.MissingCommand(copy(walk.path)))
+  }
+  if (walk.filled < Arrays.length(walk.command.positionals)) {
+    return Err(ArgsError.MissingPositional(walk.command.positionals[walk.filled]))
+  }
+  return Ok(Parsed {
+    path: walk.path,
+    flags: walk.flags,
+    positionals: walk.positionals,
+    rest: walk.rest,
+  })
+}
+
+// readLong reads `--name`, `--name=value` or `--name value` and returns the
+// index of the next argument.
+function readLong(
+  mutable walk: Walk,
+  argument: string,
+  arguments: Array<string>,
+  index: int,
+): Result<int, ArgsError> uses alloc {
+  const body = Str.sliceFrom(argument, 2)
+  let name = body
+  let inline = ""
+  let hasInline = false
+  const equals = Str.indexOf(body, "=")
+  if (equals is Some(at)) {
+    name = cutText(body, 0, at)
+    inline = Str.sliceFrom(body, at + 1)
+    hasInline = true
+  }
+  if (name == "help" && findLong(walk.command, "help") is None) {
+    if (hasInline) {
+      return Err(ArgsError.UnexpectedValue("help"))
+    }
+    return Err(ArgsError.Help(copy(walk.path)))
+  }
+  const found = findLong(walk.command, name)
+  if (found is None) {
+    if (name == "") {
+      return Err(ArgsError.UnknownFlag(argument, ""))
+    }
+    const closest = closestName(name, longNames(walk.command))
+    if (closest == "") {
+      return Err(ArgsError.UnknownFlag(`--${name}`, ""))
+    }
+    return Err(ArgsError.UnknownFlag(`--${name}`, `--${closest}`))
+  }
+  const flag = walk.command.flags[found.value]
+  if (flag.value == "") {
+    if (hasInline) {
+      return Err(ArgsError.UnexpectedValue(flag.name))
+    }
+    return addFlag(mutable walk, flag, "", index)
+  }
+  if (hasInline) {
+    return addFlag(mutable walk, flag, inline, index)
+  }
+  if (index >= Arrays.length(arguments)) {
+    return Err(ArgsError.MissingValue(`--${flag.name}`))
+  }
+  return addFlag(mutable walk, flag, arguments[index], index + 1)
+}
+
+// readShorts reads `-x`, `-x value`, `-xvalue` and bundled `-abc`, and returns
+// the index of the next argument.
+function readShorts(
+  mutable walk: Walk,
+  argument: string,
+  arguments: Array<string>,
+  index: int,
+): Result<int, ArgsError> uses alloc {
+  const length = Str.length(argument)
+  // The byte offset of the next character of the bundle.
+  let offset = 1
+  for (const character of Str.chars(Str.sliceFrom(argument, 1))) {
+    const short = Str.fromChar(character)
+    offset += Str.length(short)
+    const found = findShort(walk.command, short)
+    if (found is None) {
+      if (short == "h") {
+        return Err(ArgsError.Help(copy(walk.path)))
+      }
+      return Err(ArgsError.UnknownFlag(`-${short}`, ""))
+    }
+    const flag = walk.command.flags[found.value]
+    if (flag.value == "") {
+      const added = addFlag(mutable walk, flag, "", index)
+      if (added is Err(error)) {
+        return Err(error)
+      }
+      continue
+    }
+    // A flag with a value takes the rest of the bundle, or the next argument.
+    if (offset < length) {
+      return addFlag(mutable walk, flag, Str.sliceFrom(argument, offset), index)
+    }
+    if (index >= Arrays.length(arguments)) {
+      return Err(ArgsError.MissingValue(`-${short}`))
+    }
+    return addFlag(mutable walk, flag, arguments[index], index + 1)
+  }
+  return Ok(index)
+}
+
+function addFlag(
+  mutable walk: Walk,
+  flag: Flag,
+  value: string,
+  next: int,
+): Result<int, ArgsError> uses alloc {
+  if (!flag.repeated && findEntry(walk.flags, flag.name) is Some(_)) {
+    return Err(ArgsError.Repeated(flag.name))
+  }
+  Arrays.push(mutable walk.flags, Entry { name: flag.name, value: value })
+  return Ok(next)
+}
+
+// enterCommand moves the walk into the subcommand named text.
+function enterCommand(mutable walk: Walk, text: string): Result<int, ArgsError> uses alloc {
+  let names: Array<string> = []
+  let position = -1
+  for (const #[index, command] of Arrays.entries(walk.command.commands)) {
+    Arrays.push(mutable names, command.name)
+    if (command.name == text && position < 0) {
+      position = index
+    }
+  }
+  if (position < 0) {
+    return Err(ArgsError.UnknownCommand(text, closestName(text, names)))
+  }
+  const next = copy(walk.command.commands[position])
+  walk.command = next
+  Arrays.push(mutable walk.path, text)
+  walk.filled = 0
+  return Ok(position)
+}
+
+function findLong(command: Command, name: string): Option<int> {
+  for (const #[index, flag] of Arrays.entries(command.flags)) {
+    if (flag.name == name) {
+      return Some(index)
+    }
+  }
+  return None
+}
+
+function findShort(command: Command, short: string): Option<int> {
+  for (const #[index, flag] of Arrays.entries(command.flags)) {
+    if (flag.short != "" && flag.short == short) {
+      return Some(index)
+    }
+  }
+  return None
+}
+
+function findEntry(entries: Array<Entry>, name: string): Option<int> {
+  for (const #[index, entry] of Arrays.entries(entries)) {
+    if (entry.name == name) {
+      return Some(index)
+    }
+  }
+  return None
+}
+
+// The long names a command accepts, without their dashes.
+function longNames(command: Command): Array<string> uses alloc {
+  let names: Array<string> = []
+  for (const flag of command.flags) {
+    Arrays.push(mutable names, flag.name)
+  }
+  if (findLong(command, "help") is None) {
+    Arrays.push(mutable names, "help")
+  }
+  return names
+}
+
+// checkSpec returns the first mistake in the spec, or "". inherited holds the
+// long names of the enclosing commands: Parsed keeps flags by name, so a
+// subcommand may not reuse one.
+function checkSpec(command: Command, inherited: Array<string>): string uses alloc {
+  let longs: Array<string> = []
+  let shorts: Array<string> = []
+  for (const flag of command.flags) {
+    if (flag.name == "") {
+      return `command ${command.name} has a flag with an empty name`
+    }
+    if (Arrays.length(longs) > 0 && containsText(longs, flag.name)) {
+      return `command ${command.name} has two flags named --${flag.name}`
+    }
+    if (containsText(inherited, flag.name)) {
+      return `command ${command.name} reuses --${flag.name}, a flag of an enclosing command`
+    }
+    Arrays.push(mutable longs, flag.name)
+    if (flag.short != "") {
+      if (Str.charCount(flag.short) != 1) {
+        return `flag --${flag.name} has the short name "${flag.short}", which is not one character`
+      }
+      if (flag.short == "-") {
+        return `flag --${flag.name} has the short name "-"`
+      }
+      if (containsText(shorts, flag.short)) {
+        return `command ${command.name} has two flags with the short name -${flag.short}`
+      }
+      Arrays.push(mutable shorts, flag.short)
+    }
+  }
+  let positionals: Array<string> = []
+  for (const name of command.positionals) {
+    if (containsText(positionals, name)) {
+      return `command ${command.name} has two positionals named <${name}>`
+    }
+    Arrays.push(mutable positionals, name)
+  }
+  if (Arrays.length(command.commands) > 0 && Arrays.length(command.positionals) > 0) {
+    return `command ${command.name} has both positionals and subcommands`
+  }
+  // The subcommands see the long names of this command and of its parents.
+  let enclosing = copy(inherited)
+  for (const name of longs) {
+    Arrays.push(mutable enclosing, name)
+  }
+  let names: Array<string> = []
+  for (const sub of command.commands) {
+    if (containsText(names, sub.name)) {
+      return `command ${command.name} has two subcommands named ${sub.name}`
+    }
+    Arrays.push(mutable names, sub.name)
+    const problem = checkSpec(sub, enclosing)
+    if (problem != "") {
+      return problem
+    }
+  }
+  return ""
+}
+
+function containsText(items: Array<string>, text: string): bool {
+  for (const item of items) {
+    if (item == text) {
+      return true
+    }
+  }
+  return false
+}
+
+function cutText(text: string, start: int, end: int): string uses alloc {
+  if (Str.slice(text, start, end) is Some(piece)) {
+    return piece
+  }
+  return ""
+}
+
+// closestName returns the candidate fewest edits from text, at most
+// HINT_DISTANCE away, or "". The first one wins a tie. A name shorter than
+// HINT_LENGTH gets no hint, since two edits reach any other short name.
+function closestName(text: string, candidates: Array<string>): string uses alloc {
+  if (Str.length(text) < HINT_LENGTH) {
+    return ""
+  }
+  let best = ""
+  let bestDistance = HINT_DISTANCE + 1
+  for (const candidate of candidates) {
+    const distance = editDistance(text, candidate)
+    if (distance < bestDistance) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+// editDistance is the Levenshtein distance over the bytes of two names.
+function editDistance(left: string, right: string): int uses alloc {
+  const leftLength = Str.length(left)
+  const rightLength = Str.length(right)
+  let previous: Array<int> = Arrays.withCapacity(rightLength + 1)
+  for (let j = 0; j <= rightLength; j++) {
+    Arrays.push(mutable previous, j)
+  }
+  for (let i = 1; i <= leftLength; i++) {
+    let current: Array<int> = Arrays.withCapacity(rightLength + 1)
+    Arrays.push(mutable current, i)
+    for (let j = 1; j <= rightLength; j++) {
+      let cost = 1
+      if (Str.byteAt(left, i - 1) == Str.byteAt(right, j - 1)) {
+        cost = 0
+      }
+      let best = previous[j - 1] + cost
+      if (previous[j] + 1 < best) {
+        best = previous[j] + 1
+      }
+      if (current[j - 1] + 1 < best) {
+        best = current[j - 1] + 1
+      }
+      Arrays.push(mutable current, best)
+    }
+    previous = current
+  }
+  return previous[rightLength]
+}
+
+export function has(parsed: Parsed, name: string): bool {
+  return findEntry(parsed.flags, name) is Some(_)
+}
+
+// value returns the last value given for the flag name.
+export function value(parsed: Parsed, name: string): Option<string> uses alloc {
+  let found: Option<string> = None
+  for (const entry of parsed.flags) {
+    if (entry.name == name) {
+      found = Some(entry.value)
+    }
+  }
+  return found
+}
+
+export function values(parsed: Parsed, name: string): Array<string> uses alloc {
+  let found: Array<string> = []
+  for (const entry of parsed.flags) {
+    if (entry.name == name) {
+      Arrays.push(mutable found, entry.value)
+    }
+  }
+  return found
+}
+
+export function positional(parsed: Parsed, name: string): Option<string> uses alloc {
+  for (const entry of parsed.positionals) {
+    if (entry.name == name) {
+      return Some(entry.value)
+    }
+  }
+  return None
+}
+
+export function rest(parsed: Parsed): Array<string> uses alloc {
+  return copy(parsed.rest)
+}
+
+export function commandPath(parsed: Parsed): Array<string> uses alloc {
+  return copy(parsed.path)
+}
+
+// help writes the help of the command at path (`["narrac", "build"]`): the
+// usage line, the summary, the flags and the subcommands, in aligned columns.
+export function help(command: Command, path: Array<string>): string uses alloc {
+  let target = copy(command)
+  let names: Array<string> = [command.name]
+  for (const #[index, name] of Arrays.entries(path)) {
+    if (index == 0) {
+      continue
+    }
+    const found = findCommand(target, name)
+    if (found is None) {
+      break
+    }
+    const next = copy(target.commands[found.value])
+    target = next
+    Arrays.push(mutable names, name)
+  }
+  let builder = Str.builder()
+  Str.append(mutable builder, `Usage: ${Str.join(names, " ")} [flags]`)
+  for (const name of target.positionals) {
+    Str.append(mutable builder, ` <${name}>`)
+  }
+  if (target.rest == Rest.Positionals) {
+    Str.append(mutable builder, " [arguments...]")
+  } else if (target.rest == Rest.Raw) {
+    Str.append(mutable builder, " [arguments...]")
+  }
+  if (Arrays.length(target.commands) > 0) {
+    Str.append(mutable builder, " <command>")
+  }
+  Str.append(mutable builder, "\n")
+  if (target.summary != "") {
+    Str.append(mutable builder, `\n${target.summary}\n`)
+  }
+  // The flag column, with the added help flag last.
+  let flags = copy(target.flags)
+  if (findLong(target, "help") is None) {
+    if (findShort(target, "h") is None) {
+      Arrays.push(mutable flags, HELP_FLAG)
+    } else {
+      Arrays.push(mutable flags, Flag { name: "help", help: "print this help" })
+    }
+  }
+  let labels: Array<string> = []
+  let texts: Array<string> = []
+  for (const flag of flags) {
+    Arrays.push(mutable labels, flagLabel(flag))
+    Arrays.push(mutable texts, flag.help)
+  }
+  Str.append(mutable builder, "\nFlags:\n")
+  writeColumns(mutable builder, labels, texts)
+  if (Arrays.length(target.commands) > 0) {
+    let commandNames: Array<string> = []
+    let summaries: Array<string> = []
+    for (const sub of target.commands) {
+      Arrays.push(mutable commandNames, sub.name)
+      Arrays.push(mutable summaries, sub.summary)
+    }
+    Str.append(mutable builder, "\nCommands:\n")
+    writeColumns(mutable builder, commandNames, summaries)
+  }
+  return Str.build(builder)
+}
+
+function findCommand(command: Command, name: string): Option<int> {
+  for (const #[index, sub] of Arrays.entries(command.commands)) {
+    if (sub.name == name) {
+      return Some(index)
+    }
+  }
+  return None
+}
+
+// flagLabel writes `-o, --output <path>`, or `    --release` without a short name.
+function flagLabel(flag: Flag): string uses alloc {
+  let label = "    "
+  if (flag.short != "") {
+    label = `-${flag.short}, `
+  }
+  label = `${label}--${flag.name}`
+  if (flag.value != "") {
+    label = `${label} <${flag.value}>`
+  }
+  if (flag.repeated) {
+    label = `${label}...`
+  }
+  return label
+}
+
+// writeColumns writes one line per label, with the texts lined up after the
+// widest label.
+function writeColumns(
+  mutable builder: StringBuilder,
+  labels: Array<string>,
+  texts: Array<string>,
+) uses alloc {
+  let width = 0
+  for (const label of labels) {
+    if (Str.charCount(label) > width) {
+      width = Str.charCount(label)
+    }
+  }
+  for (const #[index, label] of Arrays.entries(labels)) {
+    Str.append(mutable builder, `  ${label}`)
+    if (texts[index] != "") {
+      if (Str.repeat(" ", width - Str.charCount(label) + 2) is Some(padding)) {
+        Str.append(mutable builder, padding)
+      }
+      Str.append(mutable builder, texts[index])
+    }
+    Str.append(mutable builder, "\n")
+  }
+}
+
+// formatError writes the message line of an error, with a hint when a known
+// name is close (`unknown flag --relase; did you mean --release?`).
+export function formatError(error: ArgsError): string uses alloc {
+  return match (error) {
+    ArgsError.UnknownFlag(name, closest) => withHint(`unknown flag ${name}`, closest)
+    ArgsError.MissingValue(flag) => `flag ${flag} needs a value`
+    ArgsError.UnexpectedValue(flag) => `flag --${flag} takes no value`
+    ArgsError.Repeated(flag) => `flag --${flag} is given more than once`
+    ArgsError.UnknownCommand(name, closest) => withHint(`unknown command ${name}`, closest)
+    ArgsError.MissingCommand(path) => `${Str.join(path, " ")} needs a command`
+    ArgsError.MissingPositional(name) => `missing argument <${name}>`
+    ArgsError.ExtraPositional(text) => `unexpected argument ${text}`
+    ArgsError.Help(path) => `help for ${Str.join(path, " ")}`
+    ArgsError.BadSpec(reason) => `bad command spec: ${reason}`
+  }
+}
+
+function withHint(message: string, closest: string): string uses alloc {
+  if (closest == "") {
+    return message
+  }
+  return `${message}; did you mean ${closest}?`
+}

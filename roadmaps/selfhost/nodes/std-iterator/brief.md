@@ -1,7 +1,7 @@
 ---
 id: std-iterator
 title: std/iterator
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 159248
 owns:
   - std/src/iterator.nra
   - selfhost/src/stditerator.nra

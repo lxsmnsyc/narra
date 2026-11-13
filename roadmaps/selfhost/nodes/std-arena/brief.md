@@ -1,7 +1,7 @@
 ---
 id: std-arena
 title: std/arena
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

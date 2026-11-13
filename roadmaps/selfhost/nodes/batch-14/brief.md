@@ -49,6 +49,11 @@ Children:
 - Codes: E1300-E1399 (standard library for tools), split by std-design. Decision D118.
 - batch-13 may change syntax std uses (for example the `uses` list form): whichever batch merges second rebases and fixes std sources.
 
+## Follow-ups after batch-13 merges
+
+- `chunk` and `window` in std/iterator take the D118 signature (an effect variable) once effect-var-nested-result lands.
+- `Command.rest` in std/args gets `= Rest.None` once constructor-field-defaults lands.
+
 ## Seed
 
 `std/src` modules compiled by the seed may use only features the seed compiles. A module the compiler itself will use (args, toml, terminal) must stay seed-compilable.

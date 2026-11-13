@@ -1,7 +1,7 @@
 ---
 id: std-terminal
 title: "std/terminal"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

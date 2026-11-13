@@ -1,7 +1,7 @@
 ---
 id: async-core
 title: "Async functions, blocks and await"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-12

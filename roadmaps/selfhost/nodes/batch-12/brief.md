@@ -43,7 +43,7 @@ Children:
 - async-core (L): `async function`, `async` arrows, `async { ... }`, `await`, the `Async<T>` type, the unused-handle error, an async entry function, and a ready-queue loop with no I/O.
 - event-loop (M): kqueue and epoll, timers, `Async.sleep`, `Async.idle`, exit and cancel of tasks still running.
 - async-api (M): `Async.then`, `detach`, `peek`, `cancel`, `all`, `race`.
-- std-async-io (M): `std/async/net`, `std/async/file` and `std/async/time`.
+- std-async-io (L, D109: counted `Handle` for sockets): `std/async/net`, `std/async/file` and `std/async/time`.
 - poly-recursion-hang (S fix), arrow-arg-order (S fix), bound-trait-shared-results (S fix), shape-names-private (S fix).
 - review-nits (S chore).
 
@@ -53,10 +53,10 @@ The async outline node is dropped, replaced by the async children.
 
 - Machine: 8 GB, four building workers at a time. The spike and the fixes run beside async-design's gate.
 - The fixes and review-nits do not wait for the gate. async-core waits for it; event-loop and async-api start from async-core (both change the runtime loop and `std/async`). The second to land rebases and keeps both sides. std-async-io starts from event-loop.
-- The async runtime is C text in its own module, `selfhost/src/runtimeasync.nra` (created by async-core); `runtimecore.nra` gets only the hook that includes it. `diagnostics.nra` is a table with one row per code, so each node appends its rows inside its own reserved codes and a rebase keeps both sides.
+- The async runtime is C text in `selfhost/runtime/std_async.c`, `std_async_loop.c` and `std_async_io.c` (D109), each generated into its own module and picked in `runtimetext.nra`. `diagnostics.nra` is a table with one row per code, so each node appends its rows inside its own reserved codes and a rebase keeps both sides.
 - Runtime text lives in `selfhost/src/runtime*.nra` and `selfhost/runtime/`; editing it needs two seed updates at the end of the batch, not per node.
 - Every new syntax adds cases to the checker, emitter, fmt and astdump switches and rows to `diagnostics.nra`. Each feature's logic goes in its own module; shared files carry only dispatch.
-- Codes: async nodes take codes from the range E1100-E1199 (concurrency), which async-design adds to the header of `diagnostics.nra` and splits between the async nodes. Decision D109: async-design.
+- Codes (D109): async-core E1100-E1129, event-loop E1130-E1149, async-api E1150-E1169, std-async-io E1170-E1189, E1190-E1199 left for threads. Decision D109: async-design.
 - Each worker uses a scratch folder named after its node under /private/tmp/claude-501/. Check a rebase's exit code before testing.
 
 ## Seed

@@ -1,7 +1,7 @@
 ---
 id: async-design
 title: "Design: the async runtime, codes and SPEC text"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 211840
 owns:
   - roadmaps/selfhost/nodes/async-core/**
   - roadmaps/selfhost/nodes/event-loop/**

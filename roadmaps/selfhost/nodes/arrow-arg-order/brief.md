@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 71962
 owns:
   - testdata/arg_order_arrow_*
   - roadmaps/selfhost/nodes/arrow-arg-order/**

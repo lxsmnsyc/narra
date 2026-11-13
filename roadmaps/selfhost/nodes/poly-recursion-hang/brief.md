@@ -1,7 +1,7 @@
 ---
 id: poly-recursion-hang
 title: "Polymorphic recursion in generic functions makes the compiler run forever"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 82573
 owns:
   - testdata/errors/poly_recursion_*
   - roadmaps/selfhost/nodes/poly-recursion-hang/**

@@ -1,7 +1,7 @@
 ---
 id: bound-trait-shared-results
 title: "Shared results through a bound <T: Trait> count as fresh"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 127629
 owns:
   - testdata/errors/shared_result_bound_*
   - roadmaps/selfhost/nodes/bound-trait-shared-results/**

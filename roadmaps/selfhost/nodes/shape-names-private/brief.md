@@ -1,7 +1,7 @@
 ---
 id: shape-names-private
 title: "Generated Shape names are reachable from user code"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 100449
 owns:
   - testdata/errors/shape_hidden_*
   - roadmaps/selfhost/nodes/shape-names-private/**

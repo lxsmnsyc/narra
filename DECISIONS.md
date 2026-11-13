@@ -1443,7 +1443,7 @@ Amended 2026-11-13 (maintainer): cancel passes down the await chain.
 
 ## D118. Std modules for the tool layer: iterator, arena, unicode, args, toml, regex, terminal
 
-Proposed, waiting for the maintainer (spike std-design, 2026-11-13).
+Approved by the maintainer, 2026-11-13, with every recommendation of the spike (std-design): narrac drops single-dash long flags, TOML dates are `Value.Text`, `TomlError` is a struct, `Regexes.checked` is const-only, the alias is `Regexes`, normalization is its own node, and narrac-args and manifest-toml follow the batch.
 
 Decision: seven std modules, each a Narra source file in `std/src/`. Only `std/terminal` needs runtime C. Names follow TypeScript and Node where they have one. Bad input is a `Result` or an `Option`, never a panic (D92). Every call is written out (D12): no methods, no pipe, no callbacks the caller did not pass. Measurements: Apple M2, macOS 27, `-release` builds of the batch-14 seed; programs in `roadmaps/selfhost/nodes/std-design/log.md`.
 

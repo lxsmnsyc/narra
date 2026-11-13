@@ -1,7 +1,7 @@
 ---
 id: std-design
 title: "Design: std APIs for the tool layer"
-status: active
+status: done
 priority: should
 type: spike
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 175745
 owns:
   - roadmaps/selfhost/nodes/std-iterator/**
   - roadmaps/selfhost/nodes/std-arena/**

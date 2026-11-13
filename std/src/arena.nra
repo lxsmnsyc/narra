@@ -1,0 +1,133 @@
+// std/arena: values in slots, reached through generation-checked handles (D118 item 2).
+//
+// A graph with cycles keeps its nodes in an Arena and refers to them with
+// Handle values. A handle is a slot index and the generation the slot had when
+// the value went in. Removing a value, or clearing the arena, raises the
+// generation, so an old handle finds nothing. A handle from another arena is
+// not detected: it reads whatever that slot of this arena holds.
+
+import * as Arrays from "std/array"
+
+export opaque struct Handle<T> derives Equatable, Hashable, Show {
+  index: int
+  generation: int
+}
+
+export opaque struct Arena<T> {
+  slots: Array<Option<T>>
+  generations: Array<int>
+  free: Array<int>
+  freeCount: int
+  count: int
+}
+
+export function create<T>(): Arena<T> uses alloc {
+  return Arena<T> { slots: [], generations: [], free: [], freeCount: 0, count: 0 }
+}
+
+export function insert<T>(mutable arena: Arena<T>, value: T): Handle<T> uses alloc {
+  // Reuse the last freed slot, or add a new one.
+  if (arena.freeCount > 0) {
+    arena.freeCount = arena.freeCount - 1
+    const index = arena.free[arena.freeCount]
+    arena.slots[index] = Some(value)
+    arena.count = arena.count + 1
+    return Handle<T> { index: index, generation: arena.generations[index] }
+  }
+  const index = Arrays.length(arena.slots)
+  Arrays.push(mutable arena.slots, Some(value))
+  Arrays.push(mutable arena.generations, 0)
+  arena.count = arena.count + 1
+  return Handle<T> { index: index, generation: 0 }
+}
+
+function pushFree<T>(mutable arena: Arena<T>, index: int) uses alloc {
+  // The free list is a stack: freeCount says how many entries are in use.
+  if (arena.freeCount < Arrays.length(arena.free)) {
+    arena.free[arena.freeCount] = index
+  } else {
+    Arrays.push(mutable arena.free, index)
+  }
+  arena.freeCount = arena.freeCount + 1
+}
+
+function isLive<T>(arena: Arena<T>, handle: Handle<T>): bool {
+  if (handle.index < 0 || handle.index >= Arrays.length(arena.slots)) {
+    return false
+  }
+  if (arena.generations[handle.index] != handle.generation) {
+    return false
+  }
+  return arena.slots[handle.index] is Some(_)
+}
+
+export function contains<T>(arena: Arena<T>, handle: Handle<T>): bool {
+  return isLive(arena, handle)
+}
+
+export function size<T>(arena: Arena<T>): int {
+  return arena.count
+}
+
+export function get<T>(arena: Arena<T>, handle: Handle<T>): Option<T> from arena {
+  if (!isLive(arena, handle)) {
+    return None
+  }
+  return arena.slots[handle.index]
+}
+
+export function set<T>(mutable arena: Arena<T>, handle: Handle<T>, value: T): bool {
+  if (!isLive(arena, handle)) {
+    return false
+  }
+  arena.slots[handle.index] = Some(value)
+  return true
+}
+
+export function update<T, effect E>(
+  mutable arena: Arena<T>,
+  handle: Handle<T>,
+  change: (value: T) => T uses E
+): bool uses E {
+  if (!isLive(arena, handle)) {
+    return false
+  }
+  // Take the value out first, so the change works on a unique value.
+  const old = arena.slots[handle.index]
+  arena.slots[handle.index] = None
+  if (old is Some(value)) {
+    arena.slots[handle.index] = Some(change(value))
+  }
+  return true
+}
+
+export function remove<T>(mutable arena: Arena<T>, handle: Handle<T>): Option<T> uses alloc {
+  if (!isLive(arena, handle)) {
+    return None
+  }
+  const old = arena.slots[handle.index]
+  arena.slots[handle.index] = None
+  arena.generations[handle.index] = handle.generation + 1
+  pushFree(mutable arena, handle.index)
+  arena.count = arena.count - 1
+  return copy(old)
+}
+
+export function clear<T>(mutable arena: Arena<T>) uses alloc {
+  // Keep the slots and raise every generation, so no old handle matches.
+  arena.freeCount = 0
+  arena.count = 0
+  for (let index = 0; index < Arrays.length(arena.slots); index = index + 1) {
+    arena.slots[index] = None
+    arena.generations[index] = arena.generations[index] + 1
+    pushFree(mutable arena, index)
+  }
+}
+
+export function* entries<T>(arena: Arena<T>): Generator<#[Handle<T>, T]> {
+  for (let index = 0; index < Arrays.length(arena.slots); index = index + 1) {
+    if (arena.slots[index] is Some(value)) {
+      yield #[Handle<T> { index: index, generation: arena.generations[index] }, value]
+    }
+  }
+}

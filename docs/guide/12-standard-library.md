@@ -230,3 +230,37 @@ error: unknown flag --lod; did you mean --loud?
 ```
 
 Long flags take two dashes and short flags one: `--times 3`, `--times=3`, `-n 3` and `-n3` are the same. Short switches can be bundled, so `-ab` is `-a -b`. `--` ends the flags, and a lone `-` is a positional. A command can have subcommands in `commands`: the first positional picks one, and `Args.commandPath` returns the names, such as `["narrac", "build"]`.
+
+## Graphs: `std/arena`
+
+A graph with cycles cannot hold its nodes directly: a value that holds itself would never be freed. Keep the nodes in an `Arena` instead, and let each node name its neighbours with `Handle` values. A handle is a slot number and a generation, and it works as a map key.
+
+```narra
+import * as Arenas from "std/arena"
+import { Arena, Handle } from "std/arena"
+
+struct Node {
+  name: string
+  next: Option<Handle<Node>>
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  let graph: Arena<Node> = Arenas.create()
+  const first = Arenas.insert(mutable graph, Node { name: "first", next: None })
+  const second = Arenas.insert(mutable graph, Node { name: "second", next: Some(first) })
+  Arenas.update(mutable graph, first, (node) => Node { name: node.name, next: Some(copy(second)) })
+  if (Arenas.get(graph, first) is Some(node)) {
+    print(`${node.name} is followed by a node`)
+  }
+  Arenas.remove(mutable graph, second)
+  print(`second is there: ${Show.show(Arenas.contains(graph, second))}`)
+  return 0
+}
+```
+
+```text
+first is followed by a node
+second is there: false
+```
+
+`first` and `second` point at each other, and the arena frees both when it goes. Removing a node raises its slot's generation, so a handle that is left over finds nothing: `get` returns `None`, and `set` and `update` return `false`. `clear` does the same for every slot. A handle from another arena is not detected, so keep one arena per kind of node.

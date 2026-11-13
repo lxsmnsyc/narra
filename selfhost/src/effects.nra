@@ -30,6 +30,7 @@ import {
   Stmt,
   Expr,
   Arg,
+  FieldInit,
   Param,
   findAttribute,
 } from "narrac/ast"
@@ -48,6 +49,9 @@ import {
   reportErrorIn,
   enter,
   findBodySlot,
+  findBody,
+  containsTypeParameter,
+  instanceDefaultKey,
   getExpressionId,
   getExpressionPos,
   orderArguments,
@@ -1290,12 +1294,14 @@ function walkExpression(
         addEffect(mutable out, "alloc", pos, "string +")
       }
     }
-    Expr.StructLit(_, _, _, _, fields, spread) => {
+    Expr.StructLit(nodeId, pos, _, _, fields, spread) => {
       for (const field of Arrays.values(fields)) {
         walkExpression(mutable checker, mutable state, mutable out, field.value)
       }
       if (spread is Some(base)) {
         walkExpression(mutable checker, mutable state, mutable out, base)
+      } else {
+        walkLeftOutFieldDefaults(mutable checker, mutable state, mutable out, nodeId, pos, fields)
       }
     }
     Expr.ArrayLit(literalId, pos, elements, isTuple) => {
@@ -1444,6 +1450,75 @@ function walkFilledDefaults(
       state.body = callerBody
       for (const effect of Arrays.values(inner)) {
         addEffect(mutable out, effect.name, pos, `the default of ${parameters[index].name}`)
+      }
+    }
+  }
+}
+
+function findFieldDefaultKey(checker: Checker, structIndex: int, field: string): string uses alloc {
+  // The body key the checker gave the default (see checkFieldDefaults in body.nra).
+  const info = checker.structs[structIndex]
+  if (info.generic >= 0) {
+    for (const declared of Arrays.values(checker.generics[info.generic].fields)) {
+      if (declared.name == field && containsTypeParameter(checker, declared.fieldType)) {
+        return instanceDefaultKey(Type.TStruct(structIndex), field)
+      }
+    }
+  }
+  if (info.module == "") {
+    return `default|${info.name}|${field}`
+  }
+  return `default|${info.module}.${info.name}|${field}`
+}
+
+function walkLeftOutFieldDefaults(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  nodeId: int,
+  pos: Pos,
+  fields: Array<FieldInit>,
+) uses alloc {
+  // A left-out field default is built at the literal, so its effects (`alloc`
+  // for an array literal) belong to the literal, as if the caller had written it.
+  if (findNodeType(checker, state.body, nodeId) is Some(Type.TStruct(structIndex))) {
+    walkStructDefaults(mutable checker, mutable state, mutable out, structIndex, pos, fields)
+  }
+}
+
+function walkStructDefaults(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  structIndex: int,
+  pos: Pos,
+  fields: Array<FieldInit>,
+) uses alloc {
+  const literalBody = state.body
+  for (const declared of Arrays.values(copy(checker.structs[structIndex].fields))) {
+    if (declared.default is None) {
+      continue
+    }
+    let isGiven = false
+    for (const field of Arrays.values(fields)) {
+      if (field.name == declared.name) {
+        isGiven = true
+      }
+    }
+    if (isGiven) {
+      continue
+    }
+    const body = findBody(checker, findFieldDefaultKey(checker, structIndex, declared.name))
+    if (body < 0) {
+      continue
+    }
+    if (declared.default is Some(value)) {
+      let inner: Array<Effect> = []
+      state.body = body
+      walkExpression(mutable checker, mutable state, mutable inner, value)
+      state.body = literalBody
+      for (const effect of Arrays.values(inner)) {
+        addEffect(mutable out, effect.name, pos, `the default of ${declared.name}`)
       }
     }
   }

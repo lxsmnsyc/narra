@@ -30,6 +30,7 @@ import {
   Stmt,
   Expr,
   Arg,
+  Param,
   findAttribute,
 } from "narrac/ast"
 import { checkTrusted } from "narrac/unsafecode"
@@ -66,6 +67,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 export struct Effect {
   name: string
@@ -1414,6 +1416,35 @@ function walkCall(
   }
 }
 
+function walkFilledDefaults(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  nodeId: int,
+  pos: Pos,
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+) uses alloc {
+  // A left-out default is built at the call, so its effects (`alloc` for an
+  // array literal) belong to the call, as if the caller had written it.
+  const callerBody = state.body
+  for (const index of Arrays.values(ParamDefaults.findFilledParameters(parameters, arguments))) {
+    const body = ParamDefaults.findCallDefaultBody(checker, callerBody, nodeId, index)
+    if (body < 0) {
+      continue
+    }
+    if (parameters[index].default is Some(value)) {
+      let inner: Array<Effect> = []
+      state.body = body
+      walkExpression(mutable checker, mutable state, mutable inner, value)
+      state.body = callerBody
+      for (const effect of Arrays.values(inner)) {
+        addEffect(mutable out, effect.name, pos, `the default of ${parameters[index].name}`)
+      }
+    }
+  }
+}
+
 function walkCallEffects(
   mutable checker: Checker,
   mutable state: EffectState,
@@ -1439,7 +1470,20 @@ function walkCallEffects(
       addCalleeEdge(mutable state, calleeInfo)
     }
     // The callee's parameters pair with the arguments in parameter order.
-    const ordered = orderArguments(checker, nodeId, arguments)
+    let ordered = orderArguments(checker, nodeId, arguments)
+    const parameters = calleeInfo.declaration.parameters
+    if (ParamDefaults.leavesOutDefaults(parameters, arguments)) {
+      ordered = ParamDefaults.fillArguments(parameters, arguments)
+      walkFilledDefaults(
+        mutable checker,
+        mutable state,
+        mutable out,
+        nodeId,
+        pos,
+        parameters,
+        arguments,
+      )
+    }
     walkUserCall(mutable checker, mutable state, mutable out, pos, calleeInfo, ordered)
     bindResultEffects(mutable checker, state, nodeId, calleeInfo, ordered)
     return

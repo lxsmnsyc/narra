@@ -78,6 +78,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 export function checkCall<W: Walker>(
   mutable checker: Checker,
@@ -201,6 +202,8 @@ function checkFunctionCall<W: Walker>(
     }
     return info.result
   }
+  // A left-out parameter with a default is checked apart and filled in (D115).
+  const passedParameters = ParamDefaults.findPassedParameters(parameters, arguments)
   if (isGeneric) {
     const genericResult = checkGenericCall(
       mutable checker,
@@ -209,21 +212,28 @@ function checkFunctionCall<W: Walker>(
       pos,
       funcIndex,
       ordered,
+      passedParameters,
       want,
     )
-    recordContractCall(mutable checker, funcIndex, ordered)
+    ParamDefaults.checkFilledDefaults(mutable checker, walker, nodeId, funcIndex, arguments)
+    recordContractCall(
+      mutable checker,
+      funcIndex,
+      ParamDefaults.fillArguments(parameters, arguments),
+    )
     return genericResult
   }
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
   let wants: Array<Option<Type>> = []
-  for (const param of Arrays.values(parameters)) {
+  for (const param of Arrays.values(passedParameters)) {
     Arrays.push(mutable wants, Some(checker.paramTypes[param.id]))
   }
   const savedCallee = checker.calleeIndex
   checker.calleeIndex = funcIndex
-  checkArguments(mutable checker, walker, pos, ordered, parameters, wants)
+  checkArguments(mutable checker, walker, pos, ordered, passedParameters, wants)
   checker.calleeIndex = savedCallee
-  recordContractCall(mutable checker, funcIndex, ordered)
+  ParamDefaults.checkFilledDefaults(mutable checker, walker, nodeId, funcIndex, arguments)
+  recordContractCall(mutable checker, funcIndex, ParamDefaults.fillArguments(parameters, arguments))
   return checker.functions[funcIndex].result
 }
 
@@ -235,7 +245,9 @@ function matchNamedArguments(
   arguments: Array<Arg>,
   parameters: Array<Param>,
 ): Option<Array<Arg>> from arguments uses alloc {
-  if (!hasNamedArgument(arguments)) {
+  const hasNamed = hasNamedArgument(arguments)
+  const withDefaults = ParamDefaults.hasDefaults(parameters)
+  if (!hasNamed && !withDefaults) {
     return Some(arguments)
   }
   // The order is recorded for the passes after the checker when it differs from the written order. The result is None after an error.
@@ -278,6 +290,20 @@ function matchNamedArguments(
     }
   }
   // A parameter passed twice already explains a count that is too high.
+  const required = ParamDefaults.countRequired(parameters)
+  if (
+    !failed &&
+      withDefaults &&
+      (argumentCount > parameterCount || (!hasNamed && argumentCount < required))
+  ) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0316",
+      `this call passes ${Int.toString(argumentCount)} arguments, the function takes ${Int.toString(required)} to ${Int.toString(parameterCount)}`,
+    )
+    return None
+  }
   if (!failed && argumentCount > parameterCount) {
     reportError(
       mutable checker,
@@ -297,7 +323,7 @@ function matchNamedArguments(
     return None
   }
   for (const parameter of Ranges.between(0, parameterCount)) {
-    if (passed[parameter] < 0) {
+    if (passed[parameter] < 0 && parameters[parameter].default is None) {
       reportError(
         mutable checker,
         pos,
@@ -311,19 +337,25 @@ function matchNamedArguments(
     return None
   }
 
-  // A call written in parameter order needs no recorded order.
+  // A call written in parameter order needs no recorded order. A left-out
+  // parameter with a default has no entry: the order lists the written arguments.
   let reordered = false
   let ordered: Array<Arg> = []
+  let order: Array<int> = []
   for (const parameter of Ranges.between(0, parameterCount)) {
-    if (passed[parameter] != parameter) {
+    if (passed[parameter] < 0) {
+      continue
+    }
+    if (passed[parameter] != Arrays.length(order)) {
       reordered = true
     }
+    Arrays.push(mutable order, passed[parameter])
     Arrays.push(mutable ordered, arguments[passed[parameter]])
   }
   if (!reordered) {
     return Some(arguments)
   }
-  checker.argumentOrders[nodeId] = passed
+  checker.argumentOrders[nodeId] = order
   return Some(ordered)
 }
 
@@ -838,12 +870,14 @@ function checkGenericCall<W: Walker>(
   pos: Pos,
   funcIndex: int,
   arguments: Array<Arg>,
+  passedParameters: Array<Param>,
   want: Option<Type>,
 ): Type from checker uses alloc {
   // Inside a generic body the call can stay open; each instance resolves it again.
+  // passedParameters are the parameters the arguments are written for.
   const info = copy(checker.functions[funcIndex])
   const typeParameters = copy(info.typeParameters)
-  const parameters = copy(info.declaration.parameters)
+  const parameters = copy(passedParameters)
   let bindings: Map<int, Type> = Map {}
   if (checker.callTypeArguments[nodeId] is Some(written)) {
     if (Arrays.length(written) > 0) {
@@ -932,7 +966,7 @@ function checkGenericCall<W: Walker>(
   }
   // A parameter inferred as void from an Async<void> must not stand for a value.
   let signature = [copy(info.result)]
-  for (const parameter of Arrays.values(parameters)) {
+  for (const parameter of Arrays.values(info.declaration.parameters)) {
     Arrays.push(mutable signature, copy(checker.paramTypes[parameter.id]))
   }
   if (

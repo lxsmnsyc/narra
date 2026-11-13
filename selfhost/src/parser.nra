@@ -2035,8 +2035,17 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     }
     const paramNameToken = expectIdent(mutable parser)
     const paramName = paramNameToken.text
+    if (isAt(parser, SYMBOL_QUESTION)) {
+      reportOptionalParameter(mutable parser, paramName, false)
+      break
+    }
     expect(mutable parser, SYMBOL_COLON)
     const paramType = parseType(mutable parser)
+    // `depth: int = 0`: the checker holds the value to the constant rule (D115).
+    let defaultValue: Option<Expr> = None
+    if (accept(mutable parser, SYMBOL_EQUALS)) {
+      defaultValue = Some(parseExpr(mutable parser))
+    }
     const paramId = newId(mutable parser)
     parser.facts.namePositions[paramId] = getPos(paramNameToken)
     Arrays.push(mutable parameters, Param {
@@ -2046,6 +2055,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
       isMutable: isMutable,
       type: Some(paramType),
       escaping: escaping,
+      default: defaultValue,
     })
     if (parser.collector.enabled) {
       noteKey(mutable parser, getIdKey(paramId), paramStart)
@@ -2074,6 +2084,53 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     constantParameters: typeParameters.constants,
     body: None,
   }
+}
+
+function reportOptionalParameter(mutable parser: Parser, name: string, isArrow: bool) {
+  // `name?: T` becomes `name: Option<T> = None`; the fix keeps the written type.
+  const question = getPos(advance(mutable parser))
+  expect(mutable parser, SYMBOL_COLON)
+  const typeStart = parser.index
+  const typePos = getPos(currentToken(parser))
+  parseType(mutable parser)
+  if (!isOk(parser)) {
+    return
+  }
+  let typeText = ""
+  for (const index of Ranges.between(typeStart, parser.index)) {
+    typeText = `${typeText}${parser.tokens[index].text}`
+    if (parser.tokens[index].text == ",") {
+      typeText = `${typeText} `
+    }
+  }
+  // An arrow function parameter takes no default, so it becomes `name: Option<T>`.
+  if (isArrow) {
+    failAt(
+      mutable parser,
+      question,
+      "E1216",
+      `an arrow function parameter cannot be optional; write ${quoteGo(`${name}: Option<${typeText}>`)}`,
+    )
+    return
+  }
+  const written = `${name}: Option<${typeText}> = None`
+  // With a default written after the type, `name?: T = value`, no edit fits, so there is no fix.
+  let fixes: Array<Fix> = []
+  if (!isAt(parser, SYMBOL_EQUALS)) {
+    const edits = [
+      createEdit(question, moveColumn(question, 1), ""),
+      insertAt(typePos, "Option<"),
+      insertAt(getEndPos(parser), "> = None"),
+    ]
+    fixes = [createFix(`write ${written}`, edits)]
+  }
+  failAtFix(
+    mutable parser,
+    question,
+    "E1216",
+    fixes,
+    `optional parameters are written with a default; write ${quoteGo(written)}`,
+  )
 }
 
 function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
@@ -2359,6 +2416,9 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
     }
     Arrays.push(mutable names, name)
     Arrays.push(mutable arguments, parseType(mutable parser))
+    if (isAt(parser, SYMBOL_EQUALS)) {
+      failHere(mutable parser, "E1213", "a function type cannot have parameter defaults")
+    }
     if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
@@ -2525,10 +2585,18 @@ function parseArrow(mutable parser: Parser): Expr {
     const paramPos = getPos(currentToken(parser))
     const paramStart = parser.index
     const paramName = expectIdent(mutable parser).text
+    if (isAt(parser, SYMBOL_QUESTION)) {
+      reportOptionalParameter(mutable parser, paramName, true)
+      return createDummyExpr()
+    }
     // Parameter types may be left out.
     let paramType: Option<TypeExpr> = None
     if (accept(mutable parser, SYMBOL_COLON)) {
       paramType = Some(parseType(mutable parser))
+    }
+    if (isAt(parser, SYMBOL_EQUALS)) {
+      failHere(mutable parser, "E1213", "an arrow function parameter cannot have a default")
+      return createDummyExpr()
     }
     const paramId = newId(mutable parser)
     Arrays.push(mutable parameters, Param {

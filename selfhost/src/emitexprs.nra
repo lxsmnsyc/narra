@@ -84,6 +84,7 @@ import * as TaggedTemplates from "narrac/taggedtemplates"
 import * as StdHelp from "narrac/stdemithelp"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 const NODE = "selfhost-emit-bodies"
 
@@ -659,11 +660,12 @@ function emitCall<W: EmitWalker>(
       ProgramFunc.ImplFunc(block, index),
       ordered,
     )
-    Ref.Function(funcIndex) => emitPlainOrInstanceCall(
+    Ref.Function(funcIndex) => emitDefaultsCall(
       walker,
       mutable emitter,
       nodeId,
       funcIndex,
+      arguments,
       ordered,
     )
     Ref.Unresolved => Dynamic.emitDynamicCall(walker, mutable emitter, expression, ordered)
@@ -919,6 +921,69 @@ function integerValueCode(value: int): string uses alloc {
     return "INT64_MIN"
   }
   return `INT64_C(${Int.toString(value)})`
+}
+
+function emitDefaultsCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  funcIndex: int,
+  written: Array<Arg>,
+  ordered: Array<Arg>,
+): Code uses alloc {
+  // A left-out parameter takes its default (D115), emitted from the call's
+  // default body and held for the argument list, which emits it in its place.
+  const parameters = copy(emitter.checker.functions[funcIndex].declaration.parameters)
+  const filled = ParamDefaults.findFilledParameters(parameters, written)
+  if (Arrays.length(filled) == 0) {
+    return emitPlainOrInstanceCall(walker, mutable emitter, nodeId, funcIndex, ordered)
+  }
+  // A call nested in an argument can fill the same default, so the outer entry is put back after.
+  let outerEntries: Array<Option<Code>> = []
+  for (const index of Arrays.values(filled)) {
+    if (parameters[index].default is Some(value)) {
+      const valueId = getExpressionId(value)
+      const outer = copy(emitter.heldArguments[valueId])
+      if (outer is Some(entry)) {
+        if (entry.text != "") {
+          emitter.heldPending--
+        }
+      }
+      Arrays.push(mutable outerEntries, outer)
+      emitter.heldArguments[valueId] = plain("")
+      const body = ParamDefaults.findCallDefaultBody(emitter.checker, emitter.body, nodeId, index)
+      if (body < 0) {
+        return unsupportedCode(mutable emitter, "parameter default body")
+      }
+      const callerBody = switchBody(mutable emitter, body)
+      const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+      emitter.body = callerBody
+      emitter.heldArguments[valueId] = code
+      emitter.heldPending++
+    }
+  }
+  const arguments = ParamDefaults.fillArguments(parameters, written)
+  const result = emitPlainOrInstanceCall(walker, mutable emitter, nodeId, funcIndex, arguments)
+  let position = 0
+  for (const index of Arrays.values(filled)) {
+    if (parameters[index].default is Some(value)) {
+      const valueId = getExpressionId(value)
+      if (emitter.heldArguments[valueId] is Some(left)) {
+        if (left.text != "") {
+          emitter.heldPending--
+        }
+      }
+      emitter.heldArguments[valueId] = plain("")
+      if (outerEntries[position] is Some(outer)) {
+        emitter.heldArguments[valueId] = outer
+        if (outer.text != "") {
+          emitter.heldPending++
+        }
+      }
+      position++
+    }
+  }
+  return result
 }
 
 function emitPlainOrInstanceCall<W: EmitWalker>(

@@ -19,6 +19,7 @@ import {
   Stmt,
   Block,
   Arg,
+  Param,
   Pattern,
   MatchArm,
   FieldInit,
@@ -48,6 +49,7 @@ import * as Str from "std/string"
 import * as Char from "std/char"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 const STEP_LIMIT = 10000000
 const MEMORY_LIMIT = 67108864
@@ -2984,6 +2986,46 @@ function findCallBody(
   return findBody(checker, `func|${Int.toString(funcIndex)}`)
 }
 
+function fillDefaultValues(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+  passed: Array<ConstValue>,
+): Array<ConstValue> uses alloc {
+  // passed holds the written arguments in parameter order; a left-out
+  // parameter takes its default, read in the call's default body (D115).
+  const written = ParamDefaults.findWrittenIndexes(parameters, arguments)
+  const callerBody = state.body
+  let values: Array<ConstValue> = []
+  let next = 0
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (written[index] >= 0) {
+      Arrays.push(mutable values, copy(passed[next]))
+      next++
+    } else if (parameters[index].default is Some(value)) {
+      const body = ParamDefaults.findCallDefaultBody(checker, callerBody, nodeId, index)
+      if (body < 0) {
+        return reportUnsupportedValues(mutable state, getExpressionPos(value))
+      }
+      state.body = body
+      const filled = evaluateExpression(checker, mutable state, value)
+      state.body = callerBody
+      Arrays.push(mutable values, filled)
+    }
+  }
+  return values
+}
+
+function reportUnsupportedValues(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+): Array<ConstValue> uses alloc {
+  stopEvaluation(mutable state, pos, "E1052", "it uses a parameter default")
+  return []
+}
+
 function callFunction(
   checker: Checker,
   mutable state: ConstEvaluator,
@@ -2996,12 +3038,20 @@ function callFunction(
   if (body < 0) {
     return reportUnsupported(mutable state, pos, `a call of ${checker.functions[funcIndex].name}`)
   }
-  const ordered = orderArguments(checker, nodeId, arguments)
+  let ordered = orderArguments(checker, nodeId, arguments)
   // A `mutable` argument is moved out of its place for the call, and back after it.
   let places: Array<Place> = []
   let values = evaluateArguments(checker, mutable state, nodeId, arguments)
   if (state.failed) {
     return ConstValue.Unit
+  }
+  const parameters = checker.functions[funcIndex].declaration.parameters
+  if (ParamDefaults.leavesOutDefaults(parameters, arguments)) {
+    ordered = ParamDefaults.fillArguments(parameters, arguments)
+    values = fillDefaultValues(checker, mutable state, nodeId, parameters, arguments, values)
+    if (state.failed) {
+      return ConstValue.Unit
+    }
   }
   for (const index of Ranges.between(0, Arrays.length(ordered))) {
     if (ordered[index].isMutable) {

@@ -15,8 +15,10 @@ import {
   DistinctDecl,
   AliasDecl,
   Expr,
+  Arg,
   Pattern,
 } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
 
 export function writeType(type: TypeExpr): string uses alloc {
   let text = ""
@@ -120,6 +122,9 @@ function writeParameter(parameter: Param): string uses alloc {
   text = `${text}${parameter.name}`
   if (parameter.type is Some(type)) {
     text = `${text}: ${writeType(type)}`
+  }
+  if (parameter.default is Some(value)) {
+    text = `${text} = ${writeDefaultValue(value)}`
   }
   return text
 }
@@ -281,4 +286,36 @@ function writeConstant(expression: Expr): string uses alloc {
     Expr.UnaryExpr(_, _, operator, operand) => `${operator}${writeConstant(operand)}`
     _ => "..."
   }
+}
+
+export function writeDefaultValue(value: Expr): string uses alloc {
+  // The constant forms of a default, as hover and `narrac query` show them.
+  return match (value) {
+    Expr.IntLit(_, _, text) | Expr.FloatLit(_, _, text) => text
+    Expr.StringLit(_, _, text, _) => quoteGo(text)
+    Expr.CharLit(_, _, text) => `'${text}'`
+    Expr.BoolLit(_, _, flag) => flag ? "true" : "false"
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, name) => `${writeDefaultValue(target)}.${name}`
+    Expr.UnaryExpr(_, _, operator, operand) => `${operator}${writeDefaultValue(operand)}`
+    Expr.CallExpr(_, _, callee, _, arguments) => writeDefaultCall(callee, arguments)
+    Expr.ArrayLit(_, _, elements, _) => writeDefaultArray(elements)
+    _ => "..."
+  }
+}
+
+function writeDefaultCall(callee: Expr, arguments: Array<Arg>): string uses alloc {
+  let parts: Array<string> = []
+  for (const argument of Arrays.values(arguments)) {
+    Arrays.push(mutable parts, writeDefaultValue(argument.value))
+  }
+  return `${writeDefaultValue(callee)}(${Str.join(parts, ", ")})`
+}
+
+function writeDefaultArray(elements: Array<Expr>): string uses alloc {
+  let parts: Array<string> = []
+  for (const element of Arrays.values(elements)) {
+    Arrays.push(mutable parts, writeDefaultValue(element))
+  }
+  return `[${Str.join(parts, ", ")}]`
 }

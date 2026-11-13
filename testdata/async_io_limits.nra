@@ -1,0 +1,45 @@
+// Read limits and the one-reader rule: a maxBytes of zero gives empty bytes at
+// once, a huge maxBytes reads what came (at most 64 KiB a call), and a second
+// task reading the same connection gets a Failed error that says so.
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Net from "std/async/net"
+import { AsyncError } from "std/async"
+import { Connection } from "std/async/net"
+
+async function readOnce(connection: Connection, maxBytes: int): string uses io, alloc {
+  const data = await Net.read(connection, maxBytes)
+  return match (data) {
+    Ok(value) => `read ${Int.toString(Bytes.length(value))} bytes`
+    Err(AsyncError.Cancelled) => "cancelled"
+    Err(AsyncError.Failed(message)) => `failed: ${message}`
+  }
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return 1
+  }
+  const connecting = Net.connect("127.0.0.1", Net.localPort(listener.value))
+  const accepted = await Net.accept(listener.value)
+  const client = await connecting
+  if (accepted is Err(_)) {
+    return 1
+  }
+  if (client is Err(_)) {
+    return 1
+  }
+  print(`zero: ${await readOnce(accepted.value, 0)}`)
+
+  // The first reader waits; the second finds it there.
+  const first = readOnce(accepted.value, 1099511627776)
+  const second = readOnce(accepted.value, 16)
+  print(`second: ${await second}`)
+  const written = await Net.write(client.value, Bytes.fromString("abc"))
+  if (written is Err(_)) {
+    return 1
+  }
+  print(`first: ${await first}`)
+  return 0
+}

@@ -1,0 +1,51 @@
+// Async.cancel wakes the wait of the task it cancels: a sleep ends at once
+// with Err(AsyncError.Cancelled), and an Async.idle() the task waits in
+// finishes at once. A then callback on the cancelled handle does not run.
+import * as Async from "std/async"
+import * as Int from "std/int"
+import * as AsyncTime from "std/async/time"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+
+async function sleeper(): string uses io, alloc {
+  print("sleeper sleeps for an hour")
+  const slept = await AsyncTime.sleep(Time.seconds(3600))
+  if (slept is Err(AsyncError.Cancelled)) {
+    return "sleep cancelled"
+  }
+  return "slept"
+}
+
+async function idler(): string uses io, alloc {
+  print("idler waits in idle")
+  await Async.idle()
+  return "idle woke"
+}
+
+async function busy(): int uses io, alloc {
+  // Keeps the loop from being idle, so only the cancel can wake the idler.
+  let rounds = 0
+  while (rounds < 3) {
+    const slept = await AsyncTime.sleep(Time.milliseconds(1))
+    if (slept is Err(_)) {
+      return rounds
+    }
+    rounds += 1
+  }
+  print("busy ends")
+  return rounds
+}
+
+export async function run(_args: Array<string>): int {
+  const sleeping = sleeper()
+  Async.then(sleeping, (value) => print(`never printed: ${value}`))
+  Async.cancel(sleeping)
+  print(await sleeping)
+
+  const running = busy()
+  const idling = idler()
+  Async.cancel(idling)
+  print(await idling)
+  print(`busy gives ${Int.toString(await running)}`)
+  return 0
+}

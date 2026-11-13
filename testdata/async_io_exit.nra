@@ -1,0 +1,51 @@
+// Sockets still open when the entry returns: a detached accept and a detached
+// read wait at exit, get Err(AsyncError.Cancelled), and their sockets close
+// with the tasks. A connection held by nobody but a detached task leaks
+// nothing, and neither does the listener the entry still holds.
+import * as Async from "std/async"
+import * as Net from "std/async/net"
+import { AsyncError } from "std/async"
+import { Connection, Listener } from "std/async/net"
+
+async function acceptForever(listener: Listener): int uses io, alloc {
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(AsyncError.Cancelled)) {
+    print("accept cancelled at exit")
+    return 0
+  }
+  return 1
+}
+
+async function readForever(connection: Connection): int uses io, alloc {
+  const data = await Net.read(connection, 16)
+  if (data is Err(AsyncError.Cancelled)) {
+    print("read cancelled at exit")
+    // The next call after the cancel gives it at once.
+    const again = await Net.read(connection, 16)
+    if (again is Err(AsyncError.Cancelled)) {
+      print("next read cancelled too")
+    }
+    return 0
+  }
+  return 1
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return 1
+  }
+  const connecting = Net.connect("127.0.0.1", Net.localPort(listener.value))
+  const accepted = await Net.accept(listener.value)
+  const client = await connecting
+  if (accepted is Err(_)) {
+    return 1
+  }
+  if (client is Err(_)) {
+    return 1
+  }
+  Async.detach(readForever(accepted.value))
+  Async.detach(acceptForever(listener.value))
+  print("entry returns")
+  return 0
+}

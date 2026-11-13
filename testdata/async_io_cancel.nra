@@ -1,0 +1,60 @@
+// A cancel ends a read that waits for data with Err(AsyncError.Cancelled),
+// and the cancelled task's next read gives it at once, even with data there.
+// The connection stays open: a read in another task still gets the bytes.
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Net from "std/async/net"
+import { AsyncError } from "std/async"
+import { Connection } from "std/async/net"
+
+async function reader(connection: Connection): string uses io, alloc {
+  print("reader waits")
+  const first = await Net.read(connection, 16)
+  if (first is Err(AsyncError.Cancelled)) {
+    print("first read cancelled")
+  }
+  const second = await Net.read(connection, 16)
+  if (second is Err(AsyncError.Cancelled)) {
+    return "second read cancelled at once"
+  }
+  return "second read went on"
+}
+
+async function readAll(connection: Connection): string uses io, alloc {
+  const data = await Net.read(connection, 16)
+  if (data is Ok(value)) {
+    const text = Bytes.toString(value)
+    if (text is Ok(decoded)) {
+      return decoded
+    }
+  }
+  return "read failed"
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return 1
+  }
+  const connecting = Net.connect("127.0.0.1", Net.localPort(listener.value))
+  const accepted = await Net.accept(listener.value)
+  const client = await connecting
+  if (accepted is Err(_)) {
+    print("accept failed")
+    return 1
+  }
+  if (client is Err(_)) {
+    print("connect failed")
+    return 1
+  }
+  const reading = reader(accepted.value)
+  Async.cancel(reading)
+  // Data comes after the cancel; the cancelled reader does not take it.
+  const written = await Net.write(client.value, Bytes.fromString("still open"))
+  if (written is Err(_)) {
+    return 1
+  }
+  print(await reading)
+  print(await readAll(accepted.value))
+  return 0
+}

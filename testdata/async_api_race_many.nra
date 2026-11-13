@@ -1,0 +1,41 @@
+// Many races against a handle that never finishes. Each race is decided by
+// the other handle, so its watcher on the pending handle must leave at once:
+// under the leak check, exit fails with code 102 if a decided race left a
+// watcher behind, and the pending handle's waiter list would grow per race.
+import * as Int from "std/int"
+import * as Async from "std/async"
+import * as Cells from "std/cell"
+import * as Ranges from "std/range"
+import { Cell } from "std/cell"
+
+async function waitForSelf(slot: Cell<Option<Async<int>>>): int uses alloc {
+  await Async.idle()
+  const own = Cells.get(slot)
+  if (own is Some(handle)) {
+    return await handle
+  }
+  return -1
+}
+
+async function quick(value: int, wait: bool): int uses alloc {
+  if (wait) {
+    await Async.idle()
+  }
+  return value
+}
+
+export async function run(_args: Array<string>): int {
+  const slot: Cell<Option<Async<int>>> = Cells.create(None)
+  const shutdown = waitForSelf(slot)
+  Cells.set(slot, Some(shutdown))
+  Async.detach(shutdown)
+  let total = 0
+  for (const index of Ranges.between(0, 2000)) {
+    const result = await Async.race([shutdown, quick(index, index % 2 == 0)])
+    if (result is Some(value)) {
+      total += value
+    }
+  }
+  print(`total ${Int.toString(total)}`)
+  return 0
+}

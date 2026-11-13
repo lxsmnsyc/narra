@@ -1,0 +1,149 @@
+// Operands that must run before an await in the same expression (D109 item 1).
+// In a task body every C variable is a frame field, so an operand held in a
+// temporary survives the wait, and the release function frees it if the task
+// is dropped there. holdArgument is also how a call keeps its written order
+// when a later argument may write a variable (emitexprs.nra).
+import { Expr, Arg, FieldInit } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Ref, getExpressionId } from "narrac/check"
+import {
+  Emitter,
+  EmitWalker,
+  Code,
+  TempVar,
+  writeLine,
+  temp,
+  retainCode,
+  needsRc,
+  readNodeType,
+  readNodeRef,
+} from "narrac/emitstate"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+function plain(text: string): Code {
+  return Code { text: text, owned: false }
+}
+
+export function containsAwait(expression: Expr): bool uses alloc {
+  // An await of this body, not of an arrow or task written inside it; a block or
+  // a match counts as holding one.
+  return match (expression) {
+    Expr.AwaitExpr(_, _, _) => true
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _)
+      | Expr.Ident(_, _, _)
+      | Expr.ArrowExpr(_, _, _, _, _, _)
+      | Expr.AsyncExpr(_, _, _) => false
+    Expr.TemplateLit(_, _, parts) => anyContainsAwait(parts)
+    Expr.FieldExpr(_, _, target, _) => containsAwait(target)
+    Expr.IsExpr(_, _, subject, _) => containsAwait(subject)
+    Expr.IndexExpr(_, _, target, index) => containsAwait(target) || containsAwait(index)
+    Expr.UnaryExpr(_, _, _, operand) => containsAwait(operand)
+    Expr.BinaryExpr(_, _, _, left, right) => containsAwait(left) || containsAwait(right)
+    Expr.ArrayLit(_, _, elements, _) => anyContainsAwait(elements)
+    Expr.MapLit(_, _, _, keys, values) => anyContainsAwait(keys) || anyContainsAwait(values)
+    Expr.StructLit(_, _, _, _, fields, spread) => fieldsContainAwait(fields, spread)
+    Expr.CallExpr(_, _, callee, _, arguments) => callContainsAwait(callee, arguments)
+    Expr.MatchExpr(_, _, _, _) | Expr.BlockExpr(_, _, _) => true
+  }
+}
+
+export function anyContainsAwait(expressions: Array<Expr>): bool uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    if (containsAwait(expression)) {
+      return true
+    }
+  }
+  return false
+}
+
+function fieldsContainAwait(fields: Array<FieldInit>, spread: Option<Expr>): bool uses alloc {
+  if (spread is Some(spreadValue)) {
+    if (containsAwait(spreadValue)) {
+      return true
+    }
+  }
+  for (const field of Arrays.values(fields)) {
+    if (containsAwait(field.value)) {
+      return true
+    }
+  }
+  return false
+}
+
+function callContainsAwait(callee: Expr, arguments: Array<Arg>): bool uses alloc {
+  if (containsAwait(callee)) {
+    return true
+  }
+  for (const argument of Arrays.values(arguments)) {
+    if (containsAwait(argument.value)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function holdBeforeAwait<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  values: Array<Expr>,
+) uses alloc {
+  // In a task body, each value written before the last one that awaits is
+  // evaluated now into a frame temporary, so it runs first and survives the wait.
+  let last = -1
+  for (const index of Ranges.upTo(Arrays.length(values))) {
+    if (containsAwait(values[index])) {
+      last = index
+    }
+  }
+  for (const index of Ranges.upTo(last)) {
+    holdArgument(walker, mutable emitter, values[index])
+  }
+}
+
+function isStableArgument(emitter: Emitter, value: Expr, nodeId: int): bool {
+  return match (value) {
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _) => true
+    Expr.Ident(_, _, _) => !(readNodeRef(emitter, nodeId) is Ref.Local(_))
+    _ => false
+  }
+}
+
+export function holdArgument<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  value: Expr,
+) uses alloc {
+  const nodeId = getExpressionId(value)
+  if (isStableArgument(emitter, value, nodeId)) {
+    return
+  }
+  const valueType = copy(readNodeType(emitter, nodeId))
+  if (valueType is Type.TFunc(_, _, _, _, _)) {
+    return
+  }
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  let held = code
+  if (!code.owned) {
+    // Keep the value this argument read, even if the variable changes.
+    const name = temp(mutable emitter, valueType, code.text)
+    held = plain(name)
+    if (needsRc(emitter, valueType)) {
+      const retainText = retainCode(emitter, valueType, name)
+      writeLine(mutable emitter, retainText)
+      const top = Arrays.length(emitter.frames) - 1
+      Arrays.push(mutable emitter.frames[top], TempVar { name: name, tempType: valueType })
+      held = Code { text: name, owned: true }
+    }
+  }
+  emitter.heldArguments[nodeId] = held
+  emitter.heldPending++
+}

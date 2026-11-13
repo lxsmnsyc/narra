@@ -16,6 +16,7 @@ export struct CallUse {
   nodeId: int
   pos: Pos
   calleeId: int
+  calleeName: string
   inArrow: bool
 }
 
@@ -58,17 +59,18 @@ export function checkInlineFunctions(mutable checker: Checker) uses alloc {
   if (Arrays.length(inlineFunctions) == 0) {
     return
   }
-  // A generator has no body that runs to its end inside a call.
+  // A generator or an async function has no body that runs to its end inside a call.
   let reports: Array<InlineReport> = []
   for (const funcIndex of Arrays.values(inlineFunctions)) {
     const declaration = checker.functions[funcIndex].declaration
-    if (declaration.generator) {
+    if (declaration.generator || declaration.isAsync) {
       if (findAttribute(declaration, "inline") is Some(attribute)) {
+        const kind = declaration.generator ? "generator" : "async function"
         Arrays.push(mutable reports, InlineReport {
           file: findFunctionFile(checker, funcIndex),
           pos: attribute.pos,
           code: "E1031",
-          message: `@inline cannot copy generator ${declaration.name} into its calls; remove @inline`,
+          message: `@inline cannot copy ${kind} ${declaration.name} into its calls; remove @inline`,
         })
       }
     }
@@ -132,6 +134,22 @@ function collectInlineEdges(
   const declaration = checker.functions[funcIndex].declaration
   if (declaration.body is Some(block)) {
     const bodyUses = collectBlockUses(block)
+    // A generic function that nothing instantiates has no checked body, so its
+    // calls are read by name from its own scope.
+    if (Arrays.length(bodies) == 0) {
+      const scope = checker.functions[funcIndex].scope
+      for (const call of Arrays.values(bodyUses.calls)) {
+        if (call.calleeName == "") {
+          continue
+        }
+        if (checker.scopes[scope].functions[call.calleeName] is Some(target)) {
+          if (isInlineFunction(checker, target) && seen[target] is None) {
+            seen[target] = true
+            Arrays.push(mutable edges, InlineEdge { target: target, pos: call.pos })
+          }
+        }
+      }
+    }
     for (const body of Arrays.values(bodies)) {
       const info = checker.bodies[body]
       for (const call of Arrays.values(bodyUses.calls)) {
@@ -278,13 +296,16 @@ function walkExpression(mutable found: BodyUses, expression: Expr, inArrow: bool
     Expr.CallExpr(nodeId, pos, callee, _, arguments) => {
       // The callee's id marks a name that is called, not passed on.
       let calleeId = -1
-      if (callee is Expr.Ident(identId, _, _)) {
+      let calleeName = ""
+      if (callee is Expr.Ident(identId, _, identName)) {
         calleeId = identId
+        calleeName = identName
       }
       Arrays.push(mutable found.calls, CallUse {
         nodeId: nodeId,
         pos: copy(pos),
         calleeId: calleeId,
+        calleeName: calleeName,
         inArrow: inArrow,
       })
       walkExpression(mutable found, callee, inArrow)
@@ -293,6 +314,8 @@ function walkExpression(mutable found: BodyUses, expression: Expr, inArrow: bool
       }
     }
     Expr.UnaryExpr(_, _, _, operand) => walkExpression(mutable found, operand, inArrow)
+    Expr.AwaitExpr(_, _, operand) => walkExpression(mutable found, operand, inArrow)
+    Expr.AsyncExpr(_, _, operand) => walkExpression(mutable found, operand, inArrow)
     Expr.BinaryExpr(_, _, _, left, right) => {
       walkExpression(mutable found, left, inArrow)
       walkExpression(mutable found, right, inArrow)

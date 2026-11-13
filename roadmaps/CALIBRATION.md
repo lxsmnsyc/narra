@@ -101,3 +101,13 @@ Notes:
 | selfhost | fmt-std-sources | S | S | 2 | 129k tokens. Review: 5 typesdump goldens moved with the std reformat; worker's first PASS line was not from its tree. |
 | selfhost | copy-check-holders | S | M | 2 | 232k tokens. Review: one-copy case still exited 103; needed an emitter field outside owned paths. |
 | selfhost | checker-emitter-copies | L | L+ | 4 | 613k tokens. 1927 hidden copies to 0; D104 rule took 171 site fixes. Reviews: enum and `is`/`match` holders, then the `copy(...)` initializer exception. |
+| selfhost | async-design | S | M | 2 | 221k tokens. D109 answered eleven questions; maintainer changed await to any position. |
+| selfhost | arrow-arg-order | S | S | 1 | 72k tokens. Needed a checker flag (writesCaptured) outside owned paths. |
+| selfhost | poly-recursion-hang | S | S | 1 | 83k tokens. Depth limit 64 on type arguments, reuses E0310. |
+| selfhost | shape-names-private | S | S | 1 | 100k tokens. Lexes Shape-deriving files for hidden names. |
+| selfhost | bound-trait-shared-results | S | M | 1 | 128k tokens. Fix exposed 17 unmarked shared results in std and the compiler. |
+| selfhost | review-nits | S | S | 1 | 91k tokens. Four of five fixed; arrow hint not reproduced. |
+| selfhost | async-core | L | L+ | 2 | 662k tokens. Review: unused-handle holes, map key across await. Built Async.idle early. |
+| selfhost | event-loop | M | L | 2 | 448k tokens. Review: deadline overflow, kqueue spin, duplicate fd waits; maintainer accepted a quiescent idle rule. |
+| selfhost | async-api | M | L | 3 | 280k tokens. Review: race watcher growth; Async<void> inference; then queued. |
+| selfhost | std-async-io | L | L | 2 | 247k tokens. Review: accept errors, read buffer; maintainer made cancel pass down the await chain. |

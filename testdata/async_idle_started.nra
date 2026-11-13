@@ -1,0 +1,40 @@
+// Async.idle waits until no other task can run: sleeping tasks count, and so
+// do tasks started while it waits. Idle handles finish one at a time, oldest
+// first, so work started after an earlier idle handle finishes also holds the
+// later ones.
+import * as Async from "std/async"
+import * as AsyncTime from "std/async/time"
+import * as Time from "std/time"
+
+async function sleeper(name: string, milliseconds: int): int uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  if (slept is Err(_)) {
+    print(`${name} cancelled`)
+    return 0
+  }
+  print(`${name} woke`)
+  return 1
+}
+
+async function chain(): int uses io, alloc {
+  const woke = await sleeper("first", 30)
+  // Started while the entry waits in idle.
+  Async.detach(sleeper("started later", 30))
+  return woke
+}
+
+async function afterIdle(): int uses io, alloc {
+  await Async.idle()
+  print("older idle done")
+  // Started after the older idle handle finished, before the entry's.
+  Async.detach(sleeper("started by the older idle", 30))
+  return 0
+}
+
+export async function run(_args: Array<string>): int {
+  Async.detach(afterIdle())
+  Async.detach(chain())
+  await Async.idle()
+  print("entry idle done")
+  return 0
+}

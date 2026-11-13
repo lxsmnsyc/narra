@@ -1,0 +1,163 @@
+// Type parameters bound to void through an Async<void> handle. Inference
+// binds T to void only from Async<T> (generics.nra), and a function-type
+// parameter of type void takes no argument (resolve.nra). A signature that
+// names T anywhere else would need a void value, so the call is E1150. In the
+// instance body, a value whose declared type is that T fills no parameter of a
+// call through a function value (closures.nra).
+import { Pos } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, reportError, findBodySlot } from "narrac/check"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+function holdsVoidValue(checker: Checker, type: Type, parameter: int): bool {
+  match (type) {
+    Type.TParam(found) => {
+      return found == parameter
+    }
+    Type.TAsync(value) => {
+      // Async<T> is a task with no value: allowed.
+      if (value is Type.TParam(_)) {
+        return false
+      }
+      return holdsVoidValue(checker, value, parameter)
+    }
+    Type.TFunc(parameters, result, _, _, _) => {
+      // A function-type parameter of type T takes no argument: allowed.
+      for (const functionParameter of Arrays.values(parameters)) {
+        if (!(functionParameter is Type.TParam(_))) {
+          if (holdsVoidValue(checker, functionParameter, parameter)) {
+            return true
+          }
+        }
+      }
+      return holdsVoidValue(checker, result, parameter)
+    }
+    Type.TArray(element) | Type.TBox(element) | Type.TPtr(element) => {
+      return holdsVoidValue(checker, element, parameter)
+    }
+    Type.TFixedArray(element, _) => {
+      return holdsVoidValue(checker, element, parameter)
+    }
+    Type.TMap(key, value) => {
+      return holdsVoidValue(checker, key, parameter) || holdsVoidValue(checker, value, parameter)
+    }
+    Type.TGenerator(element, _, _, _, input) => {
+      return holdsVoidValue(checker, element, parameter) ||
+        holdsVoidValue(checker, input, parameter)
+    }
+    Type.TStruct(index) => {
+      return anyHoldsVoidValue(checker, checker.structs[index].arguments, parameter)
+    }
+    Type.TEnum(index) => {
+      return anyHoldsVoidValue(checker, checker.enums[index].arguments, parameter)
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+function namesHandle(checker: Checker, type: Type, parameter: int): bool {
+  match (type) {
+    Type.TAsync(value) => {
+      if (value is Type.TParam(found)) {
+        return found == parameter
+      }
+      return namesHandle(checker, value, parameter)
+    }
+    Type.TFunc(parameters, result, _, _, _) => {
+      return anyNamesHandle(checker, parameters, parameter) ||
+        namesHandle(checker, result, parameter)
+    }
+    Type.TArray(element) | Type.TBox(element) | Type.TPtr(element) => {
+      return namesHandle(checker, element, parameter)
+    }
+    Type.TMap(key, value) => {
+      return namesHandle(checker, key, parameter) || namesHandle(checker, value, parameter)
+    }
+    Type.TStruct(index) => {
+      return anyNamesHandle(checker, checker.structs[index].arguments, parameter)
+    }
+    Type.TEnum(index) => {
+      return anyNamesHandle(checker, checker.enums[index].arguments, parameter)
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+function anyNamesHandle(checker: Checker, types: Array<Type>, parameter: int): bool {
+  for (const type of Arrays.values(types)) {
+    if (namesHandle(checker, type, parameter)) {
+      return true
+    }
+  }
+  return false
+}
+
+function anyHoldsVoidValue(checker: Checker, types: Array<Type>, parameter: int): bool {
+  for (const type of Arrays.values(types)) {
+    if (holdsVoidValue(checker, type, parameter)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function checkVoidBindings(
+  mutable checker: Checker,
+  pos: Pos,
+  functionName: string,
+  typeParameters: Array<int>,
+  typeArguments: Array<Type>,
+  signature: Array<Type>,
+): bool uses alloc {
+  // A parameter bound to void may appear only as Async<T> or as a parameter of a function type.
+  for (const index of Ranges.between(0, Arrays.length(typeParameters))) {
+    const parameter = typeParameters[index]
+    // Only a parameter that a handle names can be inferred as void; other void
+    // bindings come from errors already reported.
+    if (
+      typeArguments[index] == Type.TVoid &&
+        anyNamesHandle(checker, signature, parameter) &&
+        anyHoldsVoidValue(checker, signature, parameter)
+    ) {
+      const name = checker.parameters[parameter].name
+      reportError(
+        mutable checker,
+        pos,
+        "E1150",
+        `${functionName} cannot take an Async<void>: type parameter ${name} would be void outside Async<${name}>, and a task with no value gives none`,
+      )
+      return false
+    }
+  }
+  return true
+}
+
+export function isVoidParameterValue(checker: Checker, nodeId: int): bool {
+  // In an instance body, the generic body of the same function shares its node ids.
+  const current = checker.bodies[checker.body]
+  if (Arrays.length(current.typeArguments) == 0) {
+    return false
+  }
+  for (const body of Arrays.values(checker.bodies)) {
+    if (
+      body.first == current.first &&
+        body.kind == current.kind &&
+        Arrays.length(body.typeArguments) == 0
+    ) {
+      // The value is void here only because its declared type is a type parameter.
+      const slot = findBodySlot(body, nodeId)
+      if (slot >= 0) {
+        if (body.types[slot] is Some(Type.TParam(_))) {
+          return true
+        }
+      }
+      return false
+    }
+  }
+  return false
+}

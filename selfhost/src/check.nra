@@ -250,6 +250,10 @@ export struct ClosureInfo {
   // The captured local `const`s the closure, or one nested in it, changes:
   // they are captured by reference, as a `let` is.
   refCaptures: Array<int> = []
+  // Set when the arrow, or one nested in it, assigns a captured `let` or changes its contents.
+  writesCaptured: bool = false
+  // Set for an async arrow or block: its task copies each capture when it starts.
+  isTask: bool = false
   // Set when the arrow is checked against an expected function type whose
   // result is fresh, so its result may not share a parameter.
   expectsFresh: bool = false
@@ -581,6 +585,9 @@ export struct Checker {
   // a function* body.
   functionIndex: int = -1
   generator: bool = false
+  // Set in the body of an async function, an async arrow or an async block,
+  // where `await` is allowed (D109 item 4).
+  asyncBody: bool = false
   // Generator uses checked after the effect pass (Go's generatorUses), and
   // the inferred effects of each private function* by generatorKey, filled
   // by the effect pass.
@@ -1073,6 +1080,7 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TBytes => "bytes"
     Type.TVoid => "void"
     Type.TStringBuilder => "StringBuilder"
+    Type.THandle => "Handle"
     Type.TStruct(index) => structString(checker, index)
     Type.TEnum(
       index,
@@ -1099,6 +1107,7 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
       _,
       input,
     ) => `${generatorName(checker, element, input)}${usesSuffix(generatorEffectList(checker, type))}`
+    Type.TAsync(value) => `Async<${typeString(checker, value)}>`
     Type.TModule(path) => `module ${path}`
     Type.TConst(value) => Int.toString(value)
     Type.TFixedArray(
@@ -1257,10 +1266,10 @@ export function containsTypeParameter(checker: Checker, type: Type): bool {
     Type.TParam(_) => true
     Type.TFunc(parameters, result, _, _, _) =>
       anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
-    Type.TArray(element) | Type.TBox(element) | Type.TPtr(element) => containsTypeParameter(
-      checker,
-      element,
-    )
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TPtr(element)
+      | Type.TAsync(element) => containsTypeParameter(checker, element)
     Type.TFixedArray(element, length) =>
       containsTypeParameter(checker, element) || containsTypeParameter(checker, length)
     Type.TGenerator(element, _, _, _, input) =>
@@ -1609,11 +1618,13 @@ export function isCountedType(checker: Checker, type: Type): bool {
     Type.TStr
       | Type.TBytes
       | Type.TStringBuilder
+      | Type.THandle
       | Type.TArray(_)
       | Type.TFunc(_, _, _, _, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
       | Type.TGenerator(_, _, _, _, _)
+      | Type.TAsync(_)
       | Type.TDynamic(_) => true
     Type.TStruct(index) => isCountedStruct(checker, index)
     Type.TEnum(index) => isCountedEnum(checker, index)
@@ -1932,6 +1943,7 @@ export struct BodyState {
   environment: Map<string, Type>
   functionIndex: int
   generator: bool
+  asyncBody: bool
 }
 
 export function startBody(
@@ -1980,6 +1992,7 @@ export function startBody(
     environment: checker.environment,
     functionIndex: checker.functionIndex,
     generator: checker.generator,
+    asyncBody: checker.asyncBody,
   }
   const module = checker.scopes[checker.current].path
   const info = BodyInfo {
@@ -2017,6 +2030,7 @@ export function startBody(
   checker.environment = environment
   checker.functionIndex = -1
   checker.generator = false
+  checker.asyncBody = false
   return saved
 }
 
@@ -2035,6 +2049,7 @@ export function finishBody(mutable checker: Checker, saved: BodyState) uses allo
   checker.environment = saved.environment
   checker.functionIndex = saved.functionIndex
   checker.generator = saved.generator
+  checker.asyncBody = saved.asyncBody
 }
 
 function reportUnusedLocals(mutable checker: Checker) uses alloc {
@@ -2448,7 +2463,9 @@ export function getExpressionId(expression: Expr): int {
       | Expr.ArrayLit(nodeId, _, _, _)
       | Expr.MatchExpr(nodeId, _, _, _)
       | Expr.BlockExpr(nodeId, _, _)
-      | Expr.ArrowExpr(nodeId, _, _, _, _, _) => nodeId
+      | Expr.ArrowExpr(nodeId, _, _, _, _, _)
+      | Expr.AwaitExpr(nodeId, _, _)
+      | Expr.AsyncExpr(nodeId, _, _) => nodeId
   }
 }
 
@@ -2480,7 +2497,9 @@ export function getExpressionPos(expression: Expr): Pos {
       | Expr.ArrayLit(_, pos, _, _)
       | Expr.MatchExpr(_, pos, _, _)
       | Expr.BlockExpr(_, pos, _)
-      | Expr.ArrowExpr(_, pos, _, _, _, _) => copy(pos)
+      | Expr.ArrowExpr(_, pos, _, _, _, _)
+      | Expr.AwaitExpr(_, pos, _)
+      | Expr.AsyncExpr(_, pos, _) => copy(pos)
   }
 }
 
@@ -2496,6 +2515,29 @@ export function findBody(checker: Checker, key: string): int {
   // uses a type parameter, which is keyed "default|<instance type key>|<field>").
   if (checker.bodyKeys[key] is Some(index)) {
     return index
+  }
+  return -1
+}
+
+export function noteAsyncUse(mutable checker: Checker) uses alloc {
+  // The task runtime is written for a program that names Async<T>, awaits or
+  // makes a task, in the order of the other std modules.
+  for (const used of Arrays.values(checker.used)) {
+    if (used == "std/internal/async") {
+      return
+    }
+  }
+  Arrays.push(mutable checker.used, "std/internal/async")
+}
+
+export function findTaskClosureId(expression: Expr): int {
+  // The closure facts of `async (x) => ...` are kept by the arrow's id, those
+  // of `async { ... }` by the async expression's id.
+  if (expression is Expr.AsyncExpr(nodeId, _, body)) {
+    if (body is Expr.ArrowExpr(arrowId, _, _, _, _, _)) {
+      return arrowId
+    }
+    return nodeId
   }
   return -1
 }

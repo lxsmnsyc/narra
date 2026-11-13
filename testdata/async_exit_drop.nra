@@ -1,0 +1,40 @@
+// Tasks left waiting at exit: each waits on a handle that cannot finish (its
+// own, through a Cell). At exit they are cancelled, nothing is ready, and the
+// loop drops them: the frames release what they hold, including a heap string
+// spilled before an await in the middle of a call, so nothing leaks.
+import * as Int from "std/int"
+import * as Async from "std/async"
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+
+function join(left: string, right: int): string {
+  return `${left}+${Int.toString(right)}`
+}
+
+async function waitForSelf(slot: Cell<Option<Async<int>>>, spill: bool): int uses io, alloc {
+  await Async.idle()
+  print("waits on itself")
+  const own = Cells.get(slot)
+  if (own is Some(handle)) {
+    if (spill) {
+      print(join(Int.toString(1234), await handle))
+    }
+    return await handle
+  }
+  return 0
+}
+
+function startSelfWaiting(spill: bool) uses io, alloc {
+  const slot: Cell<Option<Async<int>>> = Cells.create(None)
+  const task = waitForSelf(slot, spill)
+  Cells.set(slot, Some(task))
+  Async.detach(task)
+}
+
+export async function run(_args: Array<string>): int {
+  startSelfWaiting(false)
+  startSelfWaiting(true)
+  await Async.idle()
+  print("entry ends")
+  return 0
+}

@@ -20,8 +20,9 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Int from "std/int"
-import { File, Decl, Expr, FieldDecl, TypeExpr, VariantDecl } from "narrac/ast"
-import { Parsed, parse } from "narrac/parser"
+import { File, Decl, Expr, FieldDecl, Pos, TypeExpr, VariantDecl } from "narrac/ast"
+import { Parsed, Diagnostic, parse } from "narrac/parser"
+import { Token, TokenKind, lex } from "narrac/lexer"
 
 const TO_VALUE_PREFIX = "__shapeToValue_"
 const FROM_VALUE_PREFIX = "__shapeFromValue_"
@@ -66,7 +67,10 @@ function derivesShape(derived: Array<TypeExpr>): bool {
   return false
 }
 
-export function addShapeDerives(parsed: Parsed, source: string): Parsed from parsed uses alloc {
+export function addShapeDerives(
+  parsed: Parsed,
+  source: string,
+): Result<Parsed, Diagnostic> from parsed uses alloc {
   let builder = Str.builder()
   let found = false
   for (const declaration of Arrays.values(parsed.file.declarations)) {
@@ -98,7 +102,11 @@ export function addShapeDerives(parsed: Parsed, source: string): Parsed from par
     }
   }
   if (!found) {
-    return parsed
+    return Ok(parsed)
+  }
+  // The generated names are written into this file, so user code must not reach them.
+  if (findHiddenShapeName(source) is Some(diagnostic)) {
+    return Err(diagnostic)
   }
   writeHelpers(mutable builder)
 
@@ -123,11 +131,59 @@ export function addShapeDerives(parsed: Parsed, source: string): Parsed from par
   for (const declaration of Arrays.values(generated.value.file.declarations)) {
     Arrays.push(mutable declarations, declaration)
   }
-  return Parsed {
+  return Ok(Parsed {
     file: File { ...parsed.file, imports: imports, declarations: declarations },
     nextId: generated.value.nextId,
+  })
+}
+
+// Whether a name is one the derive writes into the file: the hidden imports,
+// the generated functions and the helpers.
+function isHiddenShapeName(name: string): bool {
+  return Str.startsWith(name, "__Shape") || Str.startsWith(name, "__shape") || name == "__Value"
+}
+
+// The first place where the source of a file that derives Shape names a
+// hidden name, as an identifier or inside a template. The error is the one for
+// a name that does not exist.
+function findHiddenShapeName(source: string): Option<Diagnostic> uses alloc {
+  const lexed = lex(source)
+  if (lexed is Err(_)) {
+    return None
+  }
+  for (const token of Arrays.values(lexed.value)) {
+    if (token.kind == TokenKind.TokIdent && isHiddenShapeName(token.text)) {
+      return Some(hiddenNameDiagnostic(token, token.text))
+    }
+    if (token.kind == TokenKind.TokTemplate) {
+      const name = findHiddenInTemplate(token.text)
+      if (name != "") {
+        return Some(hiddenNameDiagnostic(token, name))
+      }
+    }
+  }
+  return None
+}
+
+function hiddenNameDiagnostic(token: Token, name: string): Diagnostic uses alloc {
+  return Diagnostic {
+    code: "E0203",
+    pos: Pos { line: token.line, column: token.column },
+    message: `unknown name "${name}"`,
   }
 }
+
+// A hidden name written inside the text of a template, or "".
+function findHiddenInTemplate(text: string): string uses alloc {
+  for (const name of Arrays.values(HIDDEN_PREFIXES)) {
+    if (Str.contains(text, name)) {
+      return name
+    }
+  }
+  return ""
+}
+
+const HIDDEN_PREFIXES = ["__Shape", "__shape", "__Value"]
 
 function countLines(source: string): int {
   let count = 1
@@ -306,7 +362,7 @@ function writeStructToValue(
   writeLine(
     mutable builder,
     0,
-    `function ${name}${boundsText(header)}(__value: ${typeText(header)}): __Value uses alloc {`,
+    `function ${name}${boundsText(header)}(__value: ${typeText(header)}): __Value from __value uses alloc {`,
   )
   writeLine(mutable builder, 1, "let __fields: Map<string, __Value> = Map {}")
   for (const field of Arrays.values(fields)) {
@@ -320,7 +376,11 @@ function writeDistinctToValue(mutable builder: StringBuilder, typeName: string) 
   // The Value is the base type's.
   const name = shapeFunctionName("toValue", typeName)
   Str.append(mutable builder, "\n")
-  writeLine(mutable builder, 0, `function ${name}(__value: ${typeName}): __Value uses alloc {`)
+  writeLine(
+    mutable builder,
+    0,
+    `function ${name}(__value: ${typeName}): __Value from __value uses alloc {`,
+  )
   writeLine(
     mutable builder,
     1,
@@ -339,7 +399,7 @@ function writeDistinctFromValue(
   writeLine(
     mutable builder,
     0,
-    `function ${name}(__value: __Value): Result<${typeName}, string> uses alloc {`,
+    `function ${name}(__value: __Value): Result<${typeName}, string> from __value uses alloc {`,
   )
   writeLine(
     mutable builder,
@@ -364,7 +424,7 @@ function writeStructFromValue(
   writeLine(
     mutable builder,
     0,
-    `function ${name}${boundsText(header)}(__value: __Value): Result<${type}, string> uses alloc {`,
+    `function ${name}${boundsText(header)}(__value: __Value): Result<${type}, string> from __value uses alloc {`,
   )
   if (Arrays.length(fields) == 0) {
     writeLine(mutable builder, 1, "if (__value is __Value.Record(_)) {")
@@ -415,7 +475,7 @@ function writeEnumToValue(
   writeLine(
     mutable builder,
     0,
-    `function ${name}${boundsText(header)}(__value: ${typeText(header)}): __Value uses alloc {`,
+    `function ${name}${boundsText(header)}(__value: ${typeText(header)}): __Value from __value uses alloc {`,
   )
   writeLine(mutable builder, 1, "let __fields: Map<string, __Value> = Map {}")
   writeLine(mutable builder, 1, "match (__value) {")
@@ -451,7 +511,7 @@ function writeEnumFromValue(
   writeLine(
     mutable builder,
     0,
-    `function ${name}${boundsText(header)}(__value: __Value): Result<${type}, string> uses alloc {`,
+    `function ${name}${boundsText(header)}(__value: __Value): Result<${type}, string> from __value uses alloc {`,
   )
   writeLine(mutable builder, 1, "if (__value is __Value.Record(__fields)) {")
   writeLine(mutable builder, 2, "const __tag = __fields[\"type\"]")

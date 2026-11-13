@@ -1,0 +1,105 @@
+// A connection closes when its last copy is dropped, and the peer then reads
+// the end of the stream. A read from a peer that has closed gives the bytes
+// it sent first, then empty bytes, and empty bytes again after that.
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Net from "std/async/net"
+import { AsyncError } from "std/async"
+import { Connection, Listener } from "std/async/net"
+
+struct Holder {
+  connection: Connection
+}
+
+async function readText(connection: Connection): string uses io, alloc {
+  const data = await Net.read(connection, 64)
+  if (data is Err(_)) {
+    return "read failed"
+  }
+  if (Bytes.length(data.value) == 0) {
+    return "end of stream"
+  }
+  const text = Bytes.toString(data.value)
+  if (text is Ok(decoded)) {
+    return decoded
+  }
+  return "not text"
+}
+
+async function pair(listener: Listener): Result<#[
+  Connection,
+  Connection,
+], AsyncError> uses io, alloc {
+  const connecting = Net.connect("127.0.0.1", Net.localPort(listener))
+  const accepted = await Net.accept(listener)
+  const client = await connecting
+  if (accepted is Err(error)) {
+    return Err(error)
+  }
+  if (client is Err(error)) {
+    return Err(error)
+  }
+  return Ok(#[accepted.value, client.value])
+}
+
+async function sendFromCopy(connection: Connection): int uses io, alloc {
+  // Two copies: the parameter and the holder's field. Both go at the return.
+  const holder = Holder { connection: connection }
+  const sent = await Net.write(holder.connection, Bytes.fromString("from a copy"))
+  if (sent is Ok(count)) {
+    print(`sent ${Int.toString(count)} bytes from a copy`)
+    return count
+  }
+  return -1
+}
+
+async function openWithSender(listener: Listener): Result<Connection, AsyncError> uses io, alloc {
+  // Only the sender task keeps the server side once this returns.
+  const paired = await pair(listener)
+  if (paired is Err(error)) {
+    return Err(error)
+  }
+  const #[server, peer] = paired.value
+  Async.detach(sendFromCopy(server))
+  return Ok(peer)
+}
+
+async function openWithClosedPeer(
+  listener: Listener,
+): Result<Connection, AsyncError> uses io, alloc {
+  const paired = await pair(listener)
+  if (paired is Err(error)) {
+    return Err(error)
+  }
+  const #[server, peer] = paired.value
+  const sent = await Net.write(peer, Bytes.fromString("goodbye"))
+  if (sent is Ok(count)) {
+    print(`peer sent ${Int.toString(count)} bytes`)
+  }
+  // peer is the last copy of the client side, so it closes at the return.
+  return Ok(server)
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return 1
+  }
+  const reader = await openWithSender(listener.value)
+  if (reader is Err(_)) {
+    return 1
+  }
+  print(await readText(reader.value))
+  print(await readText(reader.value))
+
+  const server = await openWithClosedPeer(listener.value)
+  if (server is Err(_)) {
+    return 1
+  }
+  print("peer closed")
+  print(await readText(server.value))
+  print(await readText(server.value))
+  print(await readText(server.value))
+  return 0
+}

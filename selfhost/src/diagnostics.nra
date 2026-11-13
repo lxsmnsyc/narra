@@ -16,6 +16,7 @@
 //   E0800-E0899  effects
 //   E0900-E0999  standard library, including maps
 //   E1000-E1099  C interop and unsafe code
+//   E1100-E1199  concurrency: async, the event loop and async I/O
 //
 // Add a code by appending the next free number in the range, at the end of
 // that range's rows. Never renumber or reuse a code. Rows keep the order of
@@ -896,6 +897,10 @@ const CODE_ROWS: Array<CodeRow> = [
   },
   CodeRow {
     code: "E0976",
+    format: "the async block returns a value that shares captured %q; return a copy with copy(...)",
+  },
+  CodeRow {
+    code: "E0976",
     format: "the arrow function returns a value that shares its parameter %q, which its function type does not allow; return a copy with copy(...)",
   },
   CodeRow {
@@ -1229,7 +1234,7 @@ const CODE_ROWS: Array<CodeRow> = [
   },
   CodeRow {
     code: "E1031",
-    format: "@inline cannot copy generator %s into its calls; remove @inline",
+    format: "@inline cannot copy %s %s into its calls; remove @inline",
   },
   CodeRow {
     code: "E1032",
@@ -1288,6 +1293,62 @@ const CODE_ROWS: Array<CodeRow> = [
   CodeRow {
     code: "E1057",
     format: "constant %s is read by an @const function while it is computed, so it is defined in terms of itself",
+  },
+  CodeRow {
+    code: "E1100",
+    format: "await is allowed only in an async function, an async arrow or an async block, not %s",
+  },
+  CodeRow {
+    code: "E1102",
+    format: "await takes an Async<T>, found %s; only the handle of a task can be awaited",
+  },
+  CodeRow {
+    code: "E1103",
+    format: "this Async handle is not used; await it, keep it, pass it on, or let the task run with Async.detach(handle)",
+  },
+  CodeRow {
+    code: "E1104",
+    format: "async function %s cannot take a mutable parameter %s; its task outlives the call",
+  },
+  CodeRow {
+    code: "E1105",
+    format: "`for (mutable ...)` is not allowed in an async body; change the elements through an index, as in `items[index].field = value`",
+  },
+  CodeRow {
+    code: "E1106",
+    format: "cannot use == on %s: a task handle is shared by identity; await the handles and compare the values",
+  },
+  CodeRow {
+    code: "E1106",
+    format: "%s cannot be a map key: %s",
+  },
+  CodeRow {
+    code: "E1107",
+    format: "there is no async function*; an async function returns one value through Async<T>",
+  },
+  CodeRow {
+    code: "E1108",
+    format: "async must be followed by function, an arrow function or a block, found %s",
+  },
+  CodeRow {
+    code: "E1109",
+    format: "Async takes one type argument, the value of the task",
+  },
+  CodeRow {
+    code: "E1110",
+    format: "an async arrow or block cannot capture %s, which is %s: the task copies its captures when it starts; keep state that changes in a Cell from std/cell",
+  },
+  CodeRow {
+    code: "E1110",
+    format: "an async arrow or block cannot change captured %s: the task copies its captures when it starts; keep state that changes in a Cell from std/cell",
+  },
+  CodeRow {
+    code: "E1111",
+    format: "parameter %s of async function %s has a function type, so it must be `escaping`: the task outlives the call",
+  },
+  CodeRow {
+    code: "E1150",
+    format: "%s cannot take an Async<void>: type parameter %s would be void outside Async<%s>, and a task with no value gives none",
   },
 ]
 
@@ -1499,7 +1560,7 @@ const EXPLANATIONS: Array<Explanation> = [
   },
   Explanation {
     code: "E1031",
-    text: "@inline copies a function's body into each call. A function of an `extern { } from` block has no body, and a generator (`function*`) is a frame that resumes later, not a body that runs to its end inside the call.\nFix: remove @inline.",
+    text: "@inline copies a function's body into each call. A function of an `extern { } from` block has no body, and a generator (`function*`) or an async function is a frame that resumes later, not a body that runs to its end inside the call.\nFix: remove @inline.",
   },
   Explanation {
     code: "E1050",
@@ -1532,6 +1593,54 @@ const EXPLANATIONS: Array<Explanation> = [
   Explanation {
     code: "E1057",
     text: "An @const function may read top-level constants. A constant whose computation reads the constant itself has no value to start from.\nFix: break the cycle, for example by passing the value as an argument.",
+  },
+  Explanation {
+    code: "E1100",
+    text: "`await` waits for a task, so it can stand only where the body is itself a task: an async function, an async arrow or an async block. A `function*` body and an arrow that is not async are bodies of their own, also inside an async body.\nFix: make the function or arrow async, or pass the handle on and await it in an async body.",
+  },
+  Explanation {
+    code: "E1102",
+    text: "`await` takes the handle of a task, an Async<T>, and gives its value.\nFix: await the call that returns the handle, or use the value without await.",
+  },
+  Explanation {
+    code: "E1103",
+    text: "A call of an async function, an async arrow or an `async { ... }` block starts a task and gives its handle. A handle that nobody uses hides a task that keeps running; `const _ =` does not let it go.\nFix: await the handle, keep it in a name, pass it on, or call Async.detach(handle) to let the task run with nobody waiting.",
+  },
+  Explanation {
+    code: "E1104",
+    text: "A task outlives the call that starts it, so it cannot keep a pointer into the caller's variable.\nFix: take the value as a plain parameter and return the new value from the task.",
+  },
+  Explanation {
+    code: "E1105",
+    text: "A `for (mutable ...)` loop holds a pointer to the element it changes, which cannot be kept in a task frame across an await.\nFix: change the elements through an index.",
+  },
+  Explanation {
+    code: "E1106",
+    text: "A handle is an identity type: copies share one task, so == and a map key would compare tasks, not values.\nFix: await the handles and compare or key by the values.",
+  },
+  Explanation {
+    code: "E1107",
+    text: "Async generators are not part of the language yet; an async function gives one value through its Async<T>.\nFix: write an async function that returns an Array, or a generator that is not async.",
+  },
+  Explanation {
+    code: "E1108",
+    text: "`async` starts an async function, an async arrow or an async block.\nFix: write `async function`, `async (x) => ...` or `async { ... }`.",
+  },
+  Explanation {
+    code: "E1109",
+    text: "Async<T> takes the type of the task's value as its one type argument.\nFix: write Async<T>, with Async<void> for a task that gives no value.",
+  },
+  Explanation {
+    code: "E1110",
+    text: "An async arrow or block copies what it captures when its task starts, so a `let`, a `mutable` parameter or a captured value it changes would no longer be shared with the code around it.\nFix: keep state that changes in a Cell from std/cell, or pass the value in and return the new one.",
+  },
+  Explanation {
+    code: "E1111",
+    text: "An async function keeps its parameters in its task, which outlives the call, so a function parameter must be one that may be stored.\nFix: declare the parameter as `escaping`.",
+  },
+  Explanation {
+    code: "E1150",
+    text: "An Async<void> handle binds the type parameter of its Async<T> to void. A generic function whose signature also uses that parameter as a value, such as Async.peek (Option<T>), Async.all (Array<T>) or Async.race (Option<T>), would need a void value, which does not exist.\nFix: await the handles one by one, or give the task a value, such as a bool.",
   },
 ]
 

@@ -47,6 +47,8 @@ export enum Type derives Equatable {
   TVoid
   // std/string's builder, visible only in modules that import std/string.
   TStringBuilder
+  // A socket of std/internal/asyncio, visible only in modules that import it.
+  THandle
   TStruct(index: int) // Checker.structs
   TEnum(index: int) // Checker.enums
   TDistinct(index: int) // Checker.distincts
@@ -71,6 +73,9 @@ export enum Type derives Equatable {
   // the effects the arguments bind (Go's GeneratorType.Bound).
   // `input` is the input type of a Coroutine<input, element>, and TVoid for a Generator<element>.
   TGenerator(element: Type, effects: Array<string>, binder: int, origin: int, input: Type)
+  // Async<value>: the handle of a task (D109). Copies share the task; it carries
+  // no effects, since its body has started already.
+  TAsync(value: Type)
   // A namespace import such as `Int` used as a value (body checker only).
   TModule(path: string)
   // The value of a constant type parameter (`const N: int`) in an instance: the 3 of
@@ -213,7 +218,7 @@ export function plainTypeKey(type: Type): string uses alloc {
 }
 
 function buildKey(type: Type, plain: bool): string uses alloc {
-  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, K, X,
+  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, Y, K, X,
   // the primitive names, Range, module), so the keys of two variants never meet.
   return match (type) {
     Type.TInt => "int"
@@ -232,6 +237,7 @@ function buildKey(type: Type, plain: bool): string uses alloc {
     Type.TBytes => "bytes"
     Type.TVoid => "void"
     Type.TStringBuilder => "StringBuilder"
+    Type.THandle => "Handle"
     Type.TStruct(index) => `S${Int.toString(index)}`
     Type.TEnum(index) => `E${Int.toString(index)}`
     Type.TDistinct(index) => `D${Int.toString(index)}`
@@ -256,6 +262,7 @@ function buildKey(type: Type, plain: bool): string uses alloc {
       origin,
       input,
     ) => `G(${buildKey(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${buildKey(input, plain)})`
+    Type.TAsync(value) => `Y(${buildKey(value, plain)})`
     Type.TModule(path) => `module ${path}`
     Type.TConst(value) => `K${Int.toString(value)}`
     Type.TFixedArray(element, length) => `X(${buildKey(element, plain)},${buildKey(length, plain)})`

@@ -10,6 +10,7 @@
 import { Type, ParamInfo } from "narrac/types"
 import { Checker, reportError, containsTypeParameter, typeString } from "narrac/check"
 import * as Arrays from "std/array"
+import * as Math from "std/math"
 import * as Ranges from "std/range"
 
 export function makeParameters(
@@ -50,7 +51,7 @@ export function unify(
   actual: Type,
   mutable bindings: Map<int, Type>,
 ) uses alloc {
-  // A parameter keeps its first match, and void never matches.
+  // A parameter keeps its first match, and void matches only as the value of an Async.
   match (pattern) {
     Type.TParam(param) => {
       if (bindings[param] is None && actual != Type.TVoid) {
@@ -82,6 +83,17 @@ export function unify(
       if (actual is Type.TGenerator(actualElement, _, _, _, actualInput)) {
         unify(checker, patternElement, actualElement, mutable bindings)
         unify(checker, patternInput, actualInput, mutable bindings)
+      }
+    }
+    Type.TAsync(patternValue) => {
+      if (actual is Type.TAsync(actualValue)) {
+        // A task with no value binds its parameter to void (Async<void>).
+        if (patternValue is Type.TParam(valueParam)) {
+          if (bindings[valueParam] is None && actualValue == Type.TVoid) {
+            bindings[valueParam] = Type.TVoid
+          }
+        }
+        unify(checker, patternValue, actualValue, mutable bindings)
       }
     }
     Type.TMap(patternKey, patternValue) => {
@@ -153,7 +165,8 @@ function templateEdges(checker: Checker, type: Type, mutable out: Array<GenericE
     Type.TArray(element)
       | Type.TBox(element)
       | Type.TPtr(element)
-      | Type.TFixedArray(element, _) => templateEdges(checker, element, mutable out)
+      | Type.TFixedArray(element, _)
+      | Type.TAsync(element) => templateEdges(checker, element, mutable out)
     Type.TGenerator(element, _, _, _, input) => {
       templateEdges(checker, element, mutable out)
       templateEdges(checker, input, mutable out)
@@ -198,6 +211,35 @@ function templateEdges(checker: Checker, type: Type, mutable out: Array<GenericE
     }
     _ => {}
   }
+}
+
+export function typeDepth(checker: Checker, type: Type): int uses alloc {
+  // Counts the levels of type arguments: Grow<Grow<int>> is 2 deep.
+  return match (type) {
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TPtr(element)
+      | Type.TFixedArray(element, _)
+      | Type.TAsync(element) => 1 + typeDepth(checker, element)
+    Type.TMap(key, value) => 1 + maxDepth(checker, [key, value])
+    Type.TFunc(parameters, result, _, _, _) =>
+      1 + Math.max(maxDepth(checker, parameters), typeDepth(checker, result))
+    Type.TGenerator(element, _, _, _, input) => 1 + maxDepth(checker, [element, input])
+    Type.TStruct(index) => 1 + maxDepth(checker, checker.structs[index].arguments)
+    Type.TEnum(index) => 1 + maxDepth(checker, checker.enums[index].arguments)
+    _ => 0
+  }
+}
+
+export function maxDepth(checker: Checker, types: Array<Type>): int uses alloc {
+  let deepest = 0
+  for (const type of Arrays.values(types)) {
+    const depth = typeDepth(checker, type)
+    if (depth > deepest) {
+      deepest = depth
+    }
+  }
+  return deepest
 }
 
 function growsArgs(checker: Checker, arguments: Array<Type>): bool {

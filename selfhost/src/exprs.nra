@@ -115,7 +115,7 @@ import {
   markChangedCapture,
   isReferenceCapture,
 } from "narrac/funcvalues"
-import { checkStdFunctionValue } from "narrac/stdvalues"
+import { checkStdFunctionValue, checkPreludeFunctionValue } from "narrac/stdvalues"
 import { sourceScope, memberScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -125,6 +125,7 @@ import * as Ranges from "std/range"
 import { checkConstantName, describeUnknownParameter } from "narrac/constgenerics"
 import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
 import { checkLazyUse, reportLazyCycle } from "narrac/lazyvalues"
+import * as AsyncCheck from "narrac/asynccheck"
 
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
@@ -324,10 +325,17 @@ function checkExpressionKind<W: Walker>(
         expression,
         want,
       )
-      Expr.ArrowExpr(_, _, _, _, _, _) => Walker.checkArrow(
+      Expr.ArrowExpr(_, _, _, _, _, _) | Expr.AsyncExpr(_, _, _) => Walker.checkArrow(
         walker,
         mutable checker,
         expression,
+        want,
+      )
+      Expr.AwaitExpr(_, pos, operand) => AsyncCheck.checkAwait(
+        mutable checker,
+        walker,
+        pos,
+        operand,
         want,
       )
     },
@@ -343,7 +351,7 @@ function checkCallEndingNarrowing<W: Walker>(
   typeArguments: Array<TypeExpr>,
   arguments: Array<Arg>,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   // A callee can change what it receives as `mutable`, so the narrowing of those locals
   // ends.
   if (Arrays.length(typeArguments) > 0) {
@@ -1040,6 +1048,9 @@ function checkName<W: Walker>(
     reportError(mutable checker, pos, "E0202", "a module is not a value")
     return Type.TVoid
   }
+  if (checker.registry.prelude[name] is Some(preludeBuiltin)) {
+    return checkPreludeFunctionValue(mutable checker, pos, name, preludeBuiltin)
+  }
   reportError(mutable checker, pos, "E0203", `unknown name ${quoteGo(name)}`)
   return Type.TVoid
 }
@@ -1404,7 +1415,7 @@ function checkConstructorField<W: Walker>(
   enumName: string,
   name: string,
   want: Option<Type>,
-): Type uses alloc {
+): Type from checker uses alloc {
   if (
     Walker.checkConstructorName(walker, mutable checker, nodeId, pos, enumName, name, want) is Some(
       constructorType,
@@ -1436,7 +1447,8 @@ function hasNoFields(fieldsType: Type): bool {
       | Type.TStr
       | Type.TBytes
       | Type.TVoid
-      | Type.TStringBuilder => true
+      | Type.TStringBuilder
+      | Type.THandle => true
     _ => false
   }
 }
@@ -1823,11 +1835,10 @@ function checkBinary<W: Walker>(
 export function containsOpen(checker: Checker, searched: Type, parameters: Array<int>): bool {
   return match (searched) {
     Type.TParam(index) => isParamIn(index, parameters)
-    Type.TArray(element) | Type.TBox(element) | Type.TPtr(element) => containsOpen(
-      checker,
-      element,
-      parameters,
-    )
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TPtr(element)
+      | Type.TAsync(element) => containsOpen(checker, element, parameters)
     Type.TFixedArray(element, length) =>
       containsOpen(checker, element, parameters) || containsOpen(checker, length, parameters)
     Type.TGenerator(element, _, _, _, input) =>
@@ -1924,7 +1935,7 @@ function checkStructLiteral<W: Walker>(
         }
       }
     }
-    return spreadType
+    return copy(spreadType)
   }
 
   // Find the struct: a generic one built from the field values, a named
@@ -2094,7 +2105,7 @@ function checkArrayLiteral<W: Walker>(
   want: Option<Type>,
 ): Type from want uses alloc {
   if (isTuple) {
-    return Walker.checkTuple(walker, mutable checker, pos, elements, want)
+    return copy(Walker.checkTuple(walker, mutable checker, pos, elements, want))
   }
   // An expected FixedArray type makes the literal one, with every element given.
   if (want is Some(Type.TFixedArray(fixedElement, _))) {
@@ -2270,6 +2281,8 @@ export function usesLocal(checker: Checker, expression: Expr, local: int): bool 
     Expr.IndexExpr(_, _, target, index) =>
       usesLocal(checker, target, local) || usesLocal(checker, index, local)
     Expr.UnaryExpr(_, _, _, operand) => usesLocal(checker, operand, local)
+    Expr.AwaitExpr(_, _, operand) => usesLocal(checker, operand, local)
+    Expr.AsyncExpr(_, _, operand) => usesLocal(checker, operand, local)
     Expr.BinaryExpr(_, _, _, left, right) =>
       usesLocal(checker, left, local) || usesLocal(checker, right, local)
     Expr.IsExpr(_, _, subject, _) => usesLocal(checker, subject, local)
@@ -2495,7 +2508,9 @@ export function checkBuiltinCall<W: Walker>(
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
   const info = copy(checker.registry.functions[builtin])
   if (info.check != "" && info.check != "fixed") {
-    return Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, want)
+    return copy(
+      Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, want),
+    )
   }
 
   // The signature comes from the registry's type text.
@@ -2911,6 +2926,8 @@ function checkConstValue(mutable checker: Checker, name: string, value: Expr): b
     Expr.ArrayLit(_, _, elements, _) => checkConstValues(mutable checker, name, elements)
     Expr.MapLit(_, _, _, keys, values) => checkConstMap(mutable checker, name, keys, values)
     Expr.ArrowExpr(_, pos, _, _, _, _) => rejectConstPart(mutable checker, name, pos, "a closure")
+    Expr.AwaitExpr(_, pos, _) => rejectConstPart(mutable checker, name, pos, "await")
+    Expr.AsyncExpr(_, pos, _) => rejectConstPart(mutable checker, name, pos, "an async task")
     Expr.MatchExpr(_, pos, _, _) => rejectConstPart(mutable checker, name, pos, "a match")
     Expr.BlockExpr(_, pos, _) => rejectConstPart(
       mutable checker,

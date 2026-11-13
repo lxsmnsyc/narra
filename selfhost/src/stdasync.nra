@@ -1,0 +1,263 @@
+// The registry rows, checks and emitters of std/async and its primitives,
+// std/internal/async (D109 item 3). std/async is Narra source
+// (std/src/async.nra); the task runtime is selfhost/runtime/std_async.c and
+// std_async_loop.c.
+import { StdFunc } from "narrac/builtins"
+import { Type } from "narrac/types"
+import { Checker, Walker, getExpressionId } from "narrac/check"
+import { Pos, Arg } from "narrac/ast"
+import { checkExpression } from "narrac/exprs"
+import { cachedCType } from "narrac/cnames"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  noteHelper,
+  ownedTemp,
+  readNodeType,
+  writeLine,
+  consume,
+  reportUnsupported,
+} from "narrac/emitstate"
+import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+import { NODE, plain, owned, argumentText } from "narrac/stdemithelp"
+
+export const ASYNC_FUNCS: Array<StdFunc> = [
+  // std/async is Narra source: a module row with no function.
+  StdFunc { name: "std/async", module: "std/async", key: "", check: "source" },
+  // std/async/time is Narra source too (std/src/async__time.nra).
+  StdFunc { name: "std/async/time", module: "std/async/time", key: "", check: "source" },
+]
+
+export const INTERNAL_ASYNC_FUNCS: Array<StdFunc> = [
+  // A handle that finishes once no task of the loop is ready.
+  StdFunc {
+    name: "Tasks.idle",
+    module: "std/internal/async",
+    key: "idle",
+    parameters: [],
+    result: "Async<void>",
+    effects: ["alloc"],
+  },
+  // A timer handle: its value is the nanoseconds slept, or -1 on a cancel.
+  StdFunc {
+    name: "Tasks.sleep",
+    module: "std/internal/async",
+    key: "sleep",
+    parameters: ["int"],
+    result: "Async<int>",
+    effects: ["io", "alloc"],
+  },
+  // Keeps a callback that takes the finished handle; it runs unless the task is cancelled.
+  StdFunc {
+    name: "Tasks.then",
+    module: "std/internal/async",
+    key: "then",
+    effects: ["alloc"],
+    check: "checkTasks",
+  },
+  // Marks the task cancelled and drops its callbacks.
+  StdFunc {
+    name: "Tasks.cancel",
+    module: "std/internal/async",
+    key: "cancel",
+    check: "checkTasks",
+  },
+  // Whether the task finished without a cancel.
+  StdFunc {
+    name: "Tasks.finished",
+    module: "std/internal/async",
+    key: "finished",
+    check: "checkTasks",
+  },
+  // The value of a finished task, borrowed from its frame.
+  StdFunc { name: "Tasks.value", module: "std/internal/async", key: "value", check: "checkTasks" },
+  // A handle whose value is the index that Tasks.watch sets first.
+  StdFunc {
+    name: "Tasks.winner",
+    module: "std/internal/async",
+    key: "winner",
+    parameters: [],
+    result: "Async<int>",
+    effects: ["alloc"],
+  },
+  // Marks the running task so a cancel of it does not reach the handles it awaits.
+  StdFunc {
+    name: "Tasks.keepInputs",
+    module: "std/internal/async",
+    key: "keepInputs",
+    parameters: [],
+    result: "void",
+  },
+  // Counts the handle as observed by an Async.all, so a cancel walk does not cancel it.
+  StdFunc {
+    name: "Tasks.observe",
+    module: "std/internal/async",
+    key: "observe",
+    check: "checkTasks",
+  },
+  // Ends one Tasks.observe of the handle.
+  StdFunc {
+    name: "Tasks.unobserve",
+    module: "std/internal/async",
+    key: "unobserve",
+    check: "checkTasks",
+  },
+  // Sets the winner to index once the handle finishes, unless another came first.
+  StdFunc {
+    name: "Tasks.watch",
+    module: "std/internal/async",
+    key: "watch",
+    effects: ["alloc"],
+    check: "checkTasks",
+  },
+]
+
+function checkHandle<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  arguments: Array<Arg>,
+  index: int,
+  name: string,
+): Type from checker uses alloc {
+  const found = checkExpression(mutable checker, walker, arguments[index].value, None)
+  if (found is Type.TAsync(value)) {
+    return value
+  }
+  // Only std/async calls these, with handles.
+  panic(`internal error: ${name} needs a handle`)
+  return Type.TVoid
+}
+
+export function checkTasksCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type from checker uses alloc {
+  if (name == "Tasks.then") {
+    if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+      return Type.TVoid
+    }
+    const value = copy(checkHandle(mutable checker, walker, arguments, 0, name))
+    const callback = Type.TFunc([Type.TAsync(value)], Type.TVoid, [], -1, -1)
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, callback)
+    return Type.TVoid
+  }
+  if (name == "Tasks.watch") {
+    if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 3)) {
+      return Type.TVoid
+    }
+    checkArgumentAgainst(mutable checker, walker, arguments[0].value, Type.TAsync(Type.TInt))
+    checkHandle(mutable checker, walker, arguments, 1, name)
+    checkArgumentAgainst(mutable checker, walker, arguments[2].value, Type.TInt)
+    return Type.TVoid
+  }
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  const value = copy(checkHandle(mutable checker, walker, arguments, 0, name))
+  if (name == "Tasks.finished") {
+    return Type.TBool
+  }
+  if (name == "Tasks.value") {
+    return value
+  }
+  return Type.TVoid
+}
+
+function emitHandleArgument<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+  index: int,
+): string uses alloc {
+  // An owned handle is a statement temporary, released when the statement ends.
+  const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
+  return code.text
+}
+
+function emitThen<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+  const callbackType = copy(readNodeType(emitter, getExpressionId(arguments[1].value)))
+  const callbackCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+  // The task keeps the closure's reference to its environment.
+  const callback = consume(mutable emitter, callbackCode.text, callbackCode.owned, callbackType)
+  writeLine(
+    mutable emitter,
+    `narra_task_then(${handle}, (void (*)(struct narra_env*, narra_task*))(${callback}).fn, (${callback}).env, narra_env_release);`,
+  )
+  return plain("((void)0)")
+}
+
+export function emitAsyncCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  noteHelper(emitter, "std/internal/async")
+  if (name == "Tasks.idle") {
+    const handleType = Type.TAsync(Type.TVoid)
+    return owned(ownedTemp(mutable emitter, handleType, "narra_async_idle()"))
+  }
+  if (name == "Tasks.sleep") {
+    const nanos = argumentText(walker, mutable emitter, arguments, 0)
+    const handleType = Type.TAsync(Type.TInt)
+    return owned(ownedTemp(mutable emitter, handleType, `narra_async_sleep(${nanos})`))
+  }
+  if (name == "Tasks.winner") {
+    const handleType = Type.TAsync(Type.TInt)
+    return owned(ownedTemp(mutable emitter, handleType, "narra_task_winner_new()"))
+  }
+  if (name == "Tasks.keepInputs") {
+    writeLine(mutable emitter, "narra_loop_keep_inputs();")
+    return plain("((void)0)")
+  }
+  if (name == "Tasks.then") {
+    return emitThen(walker, mutable emitter, arguments)
+  }
+  if (name == "Tasks.cancel") {
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    writeLine(mutable emitter, `narra_task_cancel(${handle});`)
+    return plain("((void)0)")
+  }
+  if (name == "Tasks.observe") {
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    writeLine(mutable emitter, `narra_task_observe(${handle});`)
+    return plain("((void)0)")
+  }
+  if (name == "Tasks.unobserve") {
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    writeLine(mutable emitter, `narra_task_unobserve(${handle});`)
+    return plain("((void)0)")
+  }
+  if (name == "Tasks.finished") {
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    return plain(`narra_task_finished(${handle})`)
+  }
+  if (name == "Tasks.value") {
+    const handleType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    if (handleType is Type.TAsync(value)) {
+      if (value == Type.TVoid) {
+        return plain("((void)0)")
+      }
+      const valueName = cachedCType(emitter.checker, emitter.typeNames, value)
+      return plain(`(*(${valueName}*)(${handle})->value)`)
+    }
+  }
+  if (name == "Tasks.watch") {
+    const winner = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 1)
+    const index = EmitWalker.emitExpression(walker, mutable emitter, arguments[2].value)
+    writeLine(mutable emitter, `narra_task_watch(${winner}, ${handle}, ${index.text});`)
+    return plain("((void)0)")
+  }
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

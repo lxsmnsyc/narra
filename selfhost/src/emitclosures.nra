@@ -9,6 +9,7 @@
 // the per-function state is saved and restored around it.
 import * as Int from "std/int"
 import * as Str from "std/string"
+import * as Async from "narrac/emitasync"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -303,6 +304,17 @@ function emitArrowParts<W: EmitWalker>(
       body = Block { pos: pos, end: pos, statements: [Stmt.ReturnStmt(pos, Some(arrowBody))] }
     }
   }
+  // The closure of an async arrow starts a task from its captures and parameters.
+  let task: Option<Async.TaskCall> = None
+  if (closure.isTask) {
+    let valueType = Type.TVoid
+    if (result is Type.TAsync(value)) {
+      valueType = copy(value)
+    }
+    task = Some(
+      Async.emitTaskArrow(walker, mutable emitter, closure, parameters, body, valueType, pos),
+    )
+  }
   emitClosureFunction(
     walker,
     mutable emitter,
@@ -313,6 +325,7 @@ function emitArrowParts<W: EmitWalker>(
     body,
     result,
     pos,
+    task,
   )
 
   if (Arrays.length(closure.captures) == 0) {
@@ -440,6 +453,7 @@ function emitClosureFunction<W: EmitWalker>(
   body: Block,
   result: Type,
   pos: Pos,
+  task: Option<Async.TaskCall>,
 ) uses alloc {
   // Captures are read from the environment into borrowed locals with their
   // usual C names. This runs in the middle of another body, so every piece of
@@ -486,6 +500,20 @@ function emitClosureFunction<W: EmitWalker>(
       }
     }
   }
+  if (task is Some(call)) {
+    let inputs: Array<string> = []
+    for (const local of Arrays.values(call.inputs)) {
+      Arrays.push(mutable inputs, localRef(emitter, local))
+    }
+    writeLine(mutable emitter, `return ${call.creation}(${Str.join(inputs, ", ")});`)
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+    writeLine(mutable emitter, "")
+    const taskText = Str.build(emitter.out)
+    Str.append(mutable emitter.closureDefinitions, taskText)
+    leaveBodyContext(mutable emitter, saved)
+    return
+  }
   EmitWalker.emitBlockInScope(walker, mutable emitter, body)
   unwindAll(mutable emitter)
   if (result != Type.TVoid && hasReachableEnd(emitter.checker, emitter.body, body)) {
@@ -525,16 +553,19 @@ export function emitValueCall<W: EmitWalker>(
     if (functionType is Type.TFunc(types, _, _, _, _)) {
       parameterTypes = copy(types)
     }
-    for (const index of Ranges.between(0, Arrays.length(arguments))) {
-      const argumentCode = EmitWalker.emitExpression(
-        walker,
-        mutable emitter,
-        arguments[index].value,
-      )
-      Arrays.push(
-        mutable parts,
-        passArgument(mutable emitter, parameterTypes[index], argumentCode.text),
-      )
+    let parameterIndex = 0
+    for (const argument of Arrays.values(arguments)) {
+      const argumentCode = EmitWalker.emitExpression(walker, mutable emitter, argument.value)
+      // A void argument (the value of an Async<void>) passes nothing.
+      if (readNodeType(emitter, getExpressionId(argument.value)) == Type.TVoid) {
+        writeLine(mutable emitter, `${argumentCode.text};`)
+      } else {
+        Arrays.push(
+          mutable parts,
+          passArgument(mutable emitter, parameterTypes[parameterIndex], argumentCode.text),
+        )
+        parameterIndex++
+      }
     }
     const callText = `${holder}.fn(${Str.join(parts, ", ")})`
     if (functionType is Type.TFunc(_, resultType, _, _, _)) {

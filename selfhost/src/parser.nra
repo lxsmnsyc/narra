@@ -47,6 +47,8 @@ import {
   SYMBOL_GREATER_EQUAL,
   SYMBOL_HASH_BRACKET,
   SYMBOL_KEYWORD_AS,
+  SYMBOL_KEYWORD_ASYNC,
+  SYMBOL_KEYWORD_AWAIT,
   SYMBOL_KEYWORD_BREAK,
   SYMBOL_KEYWORD_CONST,
   SYMBOL_KEYWORD_CONTINUE,
@@ -1310,6 +1312,9 @@ function parseDeclBody(mutable parser: Parser): Decl {
   if (isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
     return Decl.Func(parseFuncDecl(mutable parser, exported))
   }
+  if (isAt(parser, SYMBOL_KEYWORD_ASYNC)) {
+    return Decl.Func(parseAsyncFuncDecl(mutable parser, exported))
+  }
   if (isAt(parser, SYMBOL_KEYWORD_CONST)) {
     return Decl.Const(parseConstDecl(mutable parser, exported))
   }
@@ -1855,6 +1860,32 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
   const body = parseBlock(mutable parser)
   parser.resultFunction = savedResult
   return FuncDecl { ...header, requires: conditions, ensures: results, body: Some(body) }
+}
+
+function parseAsyncFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
+  // `async function name(...)`; `async function*` is not present (D109).
+  const asyncToken = advance(mutable parser)
+  if (!isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
+    const found = describeToken(currentToken(parser))
+    failAt(
+      mutable parser,
+      getPos(asyncToken),
+      "E1108",
+      `async must be followed by function, an arrow function or a block, found ${found}`,
+    )
+    return parseFuncDecl(mutable parser, exported)
+  }
+  const star = peekToken(parser, 1)
+  if (star.kind == TokenKind.TokPunct && star.text == "*") {
+    failAt(
+      mutable parser,
+      getPos(star),
+      "E1107",
+      "there is no async function*; an async function returns one value through Async<T>",
+    )
+  }
+  const declaration = parseFuncDecl(mutable parser, exported)
+  return FuncDecl { ...declaration, isAsync: true }
 }
 
 function parseRequiresLines(mutable parser: Parser): Array<Expr> {
@@ -2674,8 +2705,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
   }
   // a nested function declaration, also async function
   if (
-    token.kind == TokenKind.TokIdent &&
-      token.text == "async" &&
+    isAt(parser, SYMBOL_KEYWORD_ASYNC) &&
       following.kind == TokenKind.TokKeyword &&
       following.text == "function"
   ) {
@@ -3212,6 +3242,13 @@ function parseUnary(mutable parser: Parser): Expr {
     )
     return Expr.IntLit(newId(mutable parser), getPos(token), "0")
   }
+  if (isAt(parser, SYMBOL_KEYWORD_AWAIT)) {
+    advance(mutable parser)
+    const operand = parseUnary(mutable parser)
+    const awaited = Expr.AwaitExpr(newId(mutable parser), getPos(token), operand)
+    noteExpr(mutable parser, startIndex, awaited)
+    return awaited
+  }
   if (isAt(parser, SYMBOL_MINUS) || isAt(parser, SYMBOL_BANG) || isAt(parser, SYMBOL_TILDE)) {
     advance(mutable parser)
     const operand = parseUnary(mutable parser)
@@ -3556,7 +3593,9 @@ function getExpressionPos(expression: Expr): Pos {
       | Expr.ArrayLit(_, pos, _, _)
       | Expr.MatchExpr(_, pos, _, _)
       | Expr.BlockExpr(_, pos, _)
-      | Expr.ArrowExpr(_, pos, _, _, _, _) => copy(pos)
+      | Expr.ArrowExpr(_, pos, _, _, _, _)
+      | Expr.AwaitExpr(_, pos, _)
+      | Expr.AsyncExpr(_, pos, _) => copy(pos)
   }
 }
 
@@ -3759,6 +3798,9 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     if (token.text == "if") {
       return parseIfExpr(mutable parser)
     }
+    if (token.text == "async") {
+      return parseAsyncExpr(mutable parser)
+    }
     if (token.text == "yield") {
       failAt(
         mutable parser,
@@ -3811,6 +3853,30 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     return createDummyExpr()
   }
   failAt(mutable parser, pos, "E0039", `expected an expression, found ${describeToken(token)}`)
+  return createDummyExpr()
+}
+
+function parseAsyncExpr(mutable parser: Parser): Expr {
+  // `async { ... }` or `async (x) => ...` in value position.
+  const startIndex = parser.index
+  const pos = getPos(advance(mutable parser))
+  if (isAt(parser, SYMBOL_LEFT_BRACE)) {
+    const block = parseBlockExpr(mutable parser)
+    noteExpr(mutable parser, startIndex + 1, block)
+    return Expr.AsyncExpr(newId(mutable parser), pos, block)
+  }
+  if (isAt(parser, SYMBOL_LEFT_PAREN) && isArrowAhead(parser)) {
+    const arrow = parseArrow(mutable parser)
+    noteExpr(mutable parser, startIndex + 1, arrow)
+    return Expr.AsyncExpr(newId(mutable parser), pos, arrow)
+  }
+  const found = describeToken(currentToken(parser))
+  failAt(
+    mutable parser,
+    pos,
+    "E1108",
+    `async must be followed by function, an arrow function or a block, found ${found}`,
+  )
   return createDummyExpr()
 }
 

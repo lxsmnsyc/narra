@@ -2,6 +2,24 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-13, end of batch-12
+
+Run of `bench/run.sh -n 9` at commit 57740eaf on `feat/batch-12`, same machine and toolchains as the batch-11 run below. No agent was running. The load average was 1.77 (1 minute) at the start, with the 5 and 15 minute averages (3.33 and 3.93) still falling after the batch's Linux check, and 1.63 at the end. Batch-12 adds async; code with no async emits the same C as before, and every program is within 3% of batch-11.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.111 | 0.124 | 0.111 | 39088169   |
+| sieve     | 0.129 | 0.139 | 0.129 | 1270607    |
+| matmul    | 0.106 | 0.202 | 0.119 | 3547800000 |
+| strings   | 0.217 | 0.295 | 0.354 | 100000     |
+| interp    | 0.185 | 0.242 | 0.168 | 972838     |
+| particles | 0.067 | 0.074 | 0.093 | 6996184    |
+| compiler  | 0.314 | -     | -     | peak memory 176 MB |
+
+Instructions retired by `narrac emit selfhost` (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`, load average 1.59 to 1.63): on the batch-12 source, 3.022G with the batch-11 compiler (main) and 3.030G with the batch-12 compiler (+0.3%, within noise). The batch-11 compiler is measured on the batch-12 source because the batch-12 compiler rejects the batch-11 source: bound-trait-shared-results added 7 `from` markers it needs. The compiler row rises from 0.298 s to 0.314 s and 170 MB to 176 MB mostly because the source grew from 75,144 to 77,814 lines (`selfhost/src`). The seed is 223,860 lines.
+
 ## 2026-11-12, end of batch-11
 
 Run of `bench/run.sh -n 9` at commit dc6ce4b6 on `feat/batch-11`, same machine and toolchains as the batch-10 run below. No agent was running. The machine had booted 27 minutes earlier: the load average was 1.74 (1 minute) at the start, with the 5 and 15 minute averages (3.40 and 10.56) still falling from startup, and 2.10 at the end. Every program is within 4% of batch-10.

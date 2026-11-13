@@ -25,7 +25,7 @@ shared: []
 reserves: []
 provides: []
 depends_on:
-  - on: async
+  - on: async-core
     kind: hard
     why: builds on Async<T>, the event loop and the async state machine (D93)
 ---

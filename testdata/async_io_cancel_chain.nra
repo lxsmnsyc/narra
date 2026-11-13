@@ -1,0 +1,115 @@
+// A cancel passes down the await chain (D109 item 8): it reaches a read two
+// helpers deep, and a helper the task awaits only after the cancel. A handle
+// that another task also awaits is not cancelled, and a detached child keeps
+// running.
+import * as Async from "std/async"
+import * as AsyncTime from "std/async/time"
+import * as Net from "std/async/net"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+import { Connection } from "std/async/net"
+
+async function inner(connection: Connection): string uses io, alloc {
+  const data = await Net.read(connection, 16)
+  if (data is Err(AsyncError.Cancelled)) {
+    return "inner read cancelled"
+  }
+  return "inner read data"
+}
+
+async function middle(connection: Connection): string uses io, alloc {
+  const text = await inner(connection)
+  return `middle got: ${text}`
+}
+
+async function outer(connection: Connection): string uses io, alloc {
+  const text = await middle(connection)
+  return `outer got: ${text}`
+}
+
+async function sleepLong(): string uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.seconds(3600))
+  if (slept is Err(AsyncError.Cancelled)) {
+    return "late helper cancelled"
+  }
+  return "late helper slept"
+}
+
+async function awaitAfterCancel(): string uses io, alloc {
+  // The cancel ends this sleep; the helper started after it is awaited by a
+  // cancelled task, so the cancel passes to it when the await suspends.
+  const first = await AsyncTime.sleep(Time.seconds(3600))
+  if (first is Err(AsyncError.Cancelled)) {
+    print("first sleep cancelled")
+  }
+  return await sleepLong()
+}
+
+async function shared(): string uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(1))
+  if (slept is Err(_)) {
+    return "shared cancelled"
+  }
+  return "shared finished"
+}
+
+async function waitOn(handle: Async<string>): string uses io, alloc {
+  return await handle
+}
+
+async function child(): int uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(1))
+  if (slept is Err(_)) {
+    print("child cancelled")
+    return 1
+  }
+  print("child keeps running")
+  return 0
+}
+
+async function parent(): string uses io, alloc {
+  Async.detach(child())
+  const slept = await AsyncTime.sleep(Time.seconds(3600))
+  if (slept is Err(AsyncError.Cancelled)) {
+    return "parent cancelled"
+  }
+  return "parent slept"
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return 1
+  }
+  const connecting = Net.connect("127.0.0.1", Net.localPort(listener.value))
+  const accepted = await Net.accept(listener.value)
+  const client = await connecting
+  if (accepted is Err(_)) {
+    return 1
+  }
+  if (client is Err(_)) {
+    return 1
+  }
+
+  const deep = outer(accepted.value)
+  Async.cancel(deep)
+  print(await deep)
+
+  const late = awaitAfterCancel()
+  Async.cancel(late)
+  print(await late)
+
+  // Two tasks await one handle; cancelling one of them leaves the handle.
+  const common = shared()
+  const first = waitOn(common)
+  const second = waitOn(common)
+  Async.cancel(first)
+  print(`first gives: ${await first}`)
+  print(`second gives: ${await second}`)
+
+  const parenting = parent()
+  Async.cancel(parenting)
+  print(await parenting)
+  await Async.idle()
+  return 0
+}

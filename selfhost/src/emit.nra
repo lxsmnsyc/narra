@@ -23,7 +23,14 @@ import { substring } from "narrac/textops"
 import * as Str from "std/string"
 import { Type } from "narrac/types"
 import { Checker, ProgramFunc, typeString, containsTypeParameter } from "narrac/check"
-import { Emitter, newEmitter, noteReference, underlyingType, useHelper } from "narrac/emitstate"
+import {
+  Emitter,
+  newEmitter,
+  noteReference,
+  noteHelper,
+  underlyingType,
+  useHelper,
+} from "narrac/emitstate"
 import {
   typeId,
   cachedTypeId,
@@ -394,10 +401,10 @@ function listTypeParts(emitter: Emitter, type: Type): Array<Type> uses alloc {
         }
       }
     }
-    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => Arrays.push(
-      mutable parts,
-      element,
-    )
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TFixedArray(element, _)
+      | Type.TAsync(element) => Arrays.push(mutable parts, element)
     Type.TMap(key, valueType) => {
       Arrays.push(mutable parts, key)
       Arrays.push(mutable parts, valueType)
@@ -618,7 +625,25 @@ function emitMain(mutable emitter: Emitter): string uses alloc {
     mutable builder,
     "  for (int i = 0; i < argc; i++) {\n    args->items[args->len++] = lstr_from_cstr(argv[i]);\n  }\n",
   )
-  Str.append(mutable builder, `  int64_t code = ${entryName}(args);\n  ${releaseHelper}(args);\n`)
+  // A program with tasks runs the loop: an async entry until its handle is done,
+  // then the exit of D109 item 6 for the tasks still running.
+  const entryResult = emitter.checker.functions[emitter.entry].result
+  let usesTasks = false
+  for (const path of Arrays.values(emitter.checker.used)) {
+    if (path == "std/internal/async") {
+      usesTasks = true
+    }
+  }
+  if (entryResult is Type.TAsync(_)) {
+    Str.append(mutable builder, `  int64_t code = narra_async_run_entry(${entryName}(args));\n`)
+  } else {
+    Str.append(mutable builder, `  int64_t code = ${entryName}(args);\n`)
+  }
+  Str.append(mutable builder, `  ${releaseHelper}(args);\n`)
+  if (usesTasks) {
+    noteHelper(emitter, "std/internal/async")
+    Str.append(mutable builder, "  narra_async_exit();\n")
+  }
   Str.append(
     mutable builder,
     "  fflush(stdout);\n  narra_consts_release();\n  NARRA_COPY_REPORT();\n  narra_report_leaks();\n  return (int)code;\n}\n",

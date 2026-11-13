@@ -1,0 +1,433 @@
+// Tasks in C (SPEC sections 8 and 11, D109 items 1 and 2). An async function,
+// an async arrow and an async block compile to a task frame, named from the
+// C name of their function (frame T, resume r, release q for an async
+// function; U, u, p and the creation function h, numbered per function, for
+// an arrow or a block):
+//
+// - The frame struct: the header narra_task (std_async.c), the result slot
+//   `value` (left out for an Async<void>), then one field per C variable of
+//   the body, as in a generator frame (declareVariable in emitstate.nra).
+// - The resume function: a switch on the state jumps to the label after the
+//   await it waits at. An await that has to wait registers the task on the
+//   handle, records the state and returns; a return stores the value,
+//   releases what the body holds and calls narra_task_finish.
+// - The release function: once the task is done it releases the value, and
+//   before that what is live at its state (only at exit, D109 item 6).
+// - The creation function: it allocates the frame, stores and retains the
+//   parameters or captures, and runs the body until it first waits. An async
+//   function is its own creation function. There is no clone: copies of a
+//   handle share the frame.
+//
+// What is live at an await is what a return there would release, recorded per
+// state by recordLive (emitgenerators.nra).
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Expr, Block, Pos, Param, FuncDecl } from "narrac/ast"
+import { Type } from "narrac/types"
+import { ClosureInfo, getExpressionId } from "narrac/check"
+import { hasReachableEnd } from "narrac/pathends"
+import { cachedCType, generatorPart, closureName } from "narrac/cnames"
+import {
+  Emitter,
+  EmitWalker,
+  Code,
+  TempVar,
+  writeLine,
+  where,
+  temp,
+  ownedTemp,
+  consume,
+  beginStatement,
+  unwindAll,
+  readNodeType,
+  readLocal,
+  localRef,
+  localName,
+  isPointerParameter,
+  retainCode,
+  releaseCode,
+  declareLocalVariable,
+  addLocal,
+  noteHelper,
+  needsRc,
+  enterBodyContext,
+  leaveBodyContext,
+  findDeclaredLocal,
+} from "narrac/emitstate"
+import { recordLive, emitStateSwitch } from "narrac/emitgenerators"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const ASYNC_MODULE = "std/internal/async"
+
+// The creation function of an async arrow's task and the locals it takes, in
+// order (BodyInfo.locals indexes): the captures, then the parameters.
+export struct TaskCall {
+  creation: string
+  inputs: Array<int>
+}
+
+// The C names of one task's frame, resume and release functions.
+struct TaskNames {
+  frame: string
+  resume: string
+  release: string
+}
+
+export function emitAsyncFunction<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  declaration: FuncDecl,
+  block: Block,
+  result: Type,
+  signature: string,
+  owner: string,
+): string uses alloc {
+  // The caller has started the function (startFunction); signature is its C
+  // signature and owner its C name. The frame owns the parameters.
+  const names = TaskNames {
+    frame: generatorPart("T", owner),
+    resume: generatorPart("r", owner),
+    release: generatorPart("q", owner),
+  }
+  let valueType = Type.TVoid
+  if (result is Type.TAsync(value)) {
+    valueType = copy(value)
+  }
+  let inputs: Array<int> = []
+  for (const index of Ranges.upTo(Arrays.length(declaration.parameters))) {
+    Arrays.push(mutable inputs, index)
+  }
+  const parts = emitTaskParts(
+    walker,
+    mutable emitter,
+    inputs,
+    block,
+    valueType,
+    names,
+    declaration.pos,
+  )
+  Str.append(mutable emitter.out, parts)
+  writeLine(mutable emitter, `${signature} {`)
+  emitTaskCreation(mutable emitter, inputs, valueType, names)
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, "")
+  const text = Str.build(emitter.out)
+  emitter.out = Str.builder()
+  return text
+}
+
+export function emitTaskBlock<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  block: Block,
+): Code uses alloc {
+  // `async { ... }` calls its creation function with the captured values, read
+  // where the block is written.
+  const captures = findCaptures(emitter, nodeId)
+  const handleType = copy(readNodeType(emitter, nodeId))
+  let valueType = Type.TVoid
+  if (handleType is Type.TAsync(value)) {
+    valueType = copy(value)
+  }
+  let arguments: Array<string> = []
+  for (const capture of Arrays.values(captures)) {
+    Arrays.push(mutable arguments, localRef(emitter, capture))
+  }
+  const creation = emitNestedTask(walker, mutable emitter, captures, block, valueType, pos)
+  const call = `${creation}(${Str.join(arguments, ", ")})`
+  return Code { text: ownedTemp(mutable emitter, handleType, call), owned: true }
+}
+
+function findCaptures(emitter: Emitter, nodeId: int): Array<int> uses alloc {
+  const info = emitter.checker.bodies[emitter.body]
+  if (info.closureIndex[nodeId] is Some(closureIndex)) {
+    return copy(info.closures[closureIndex].captures)
+  }
+  return []
+}
+
+export function emitTaskArrow<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  closure: ClosureInfo,
+  parameters: Array<Param>,
+  body: Block,
+  valueType: Type,
+  pos: Pos,
+): TaskCall uses alloc {
+  // The task of an async arrow gets the captures, then the parameters.
+  let inputs = copy(closure.captures)
+  for (const parameter of Arrays.values(parameters)) {
+    Arrays.push(mutable inputs, findDeclaredLocal(emitter, parameter.id))
+  }
+  const creation = emitNestedTask(walker, mutable emitter, inputs, body, valueType, pos)
+  return TaskCall { creation: creation, inputs: inputs }
+}
+
+function emitNestedTask<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  inputs: Array<int>,
+  block: Block,
+  valueType: Type,
+  pos: Pos,
+): string uses alloc {
+  // The text goes with the closures, before every function body that calls it.
+  noteHelper(emitter, ASYNC_MODULE)
+  const owner = emitter.owner
+  const key = `task|${owner}`
+  let count = 1
+  if (emitter.closureCounts[key] is Some(previous)) {
+    count = previous + 1
+  }
+  emitter.closureCounts[key] = count
+  const names = TaskNames {
+    frame: closureName("U", owner, count),
+    resume: closureName("u", owner, count),
+    release: closureName("p", owner, count),
+  }
+  const creation = closureName("h", owner, count)
+  let parameters: Array<string> = []
+  for (const input of Arrays.values(inputs)) {
+    const local = readLocal(emitter, input)
+    const typeName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
+    Arrays.push(mutable parameters, `${typeName} ${localName(local)}`)
+  }
+  if (Arrays.length(parameters) == 0) {
+    Arrays.push(mutable parameters, "void")
+  }
+  const signature = `static narra_task* ${creation}(${Str.join(parameters, ", ")})`
+  Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
+
+  const saved = enterBodyContext(mutable emitter, valueType)
+  const savedHeld = copy(emitter.heldArguments)
+  const savedPending = emitter.heldPending
+  emitter.heldArguments = Map {}
+  emitter.heldPending = 0
+  const parts = emitTaskParts(walker, mutable emitter, inputs, block, valueType, names, pos)
+  writeLine(mutable emitter, `${signature} {`)
+  emitTaskCreation(mutable emitter, inputs, valueType, names)
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, "")
+  const creationText = Str.build(emitter.out)
+  leaveBodyContext(mutable emitter, saved)
+  emitter.heldArguments = savedHeld
+  emitter.heldPending = savedPending
+  Str.append(mutable emitter.closureDefinitions, parts)
+  Str.append(mutable emitter.closureDefinitions, creationText)
+  return creation
+}
+
+function emitTaskParts<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  inputs: Array<int>,
+  block: Block,
+  valueType: Type,
+  names: TaskNames,
+  pos: Pos,
+): string uses alloc {
+  // The resume body is written first: it decides the frame fields. The inputs
+  // are locals of the outer scope, owned by the frame.
+  noteHelper(emitter, ASYNC_MODULE)
+  emitter.inFrame = true
+  emitter.inAsync = true
+  emitter.taskValue = valueType
+  emitter.frameFields = []
+  emitter.frameSeen = Map {}
+  emitter.liveValues = []
+  emitter.out = Str.builder()
+  emitter.indent = 1
+  for (const input of Arrays.values(inputs)) {
+    const _ = declareLocalVariable(mutable emitter, input)
+    addLocal(mutable emitter, input)
+  }
+  recordLive(mutable emitter)
+  EmitWalker.emitBlockInScope(walker, mutable emitter, block)
+  if (hasReachableEnd(emitter.checker, emitter.body, block)) {
+    if (valueType != Type.TVoid) {
+      const position = where(emitter, pos)
+      writeLine(
+        mutable emitter,
+        `narra_panic(${position}, "internal compiler error: task ended without returning a value");`,
+      )
+    }
+    emitTaskFinish(mutable emitter)
+  }
+  const body = Str.build(emitter.out)
+  emitter.out = Str.builder()
+  emitter.inFrame = false
+  emitter.inAsync = false
+  emitter.indent = 0
+
+  // The frame, the resume function and the release function.
+  let fields = Str.builder()
+  Str.append(mutable fields, " narra_task h;")
+  if (valueType != Type.TVoid) {
+    const valueName = cachedCType(emitter.checker, emitter.typeNames, valueType)
+    Str.append(mutable fields, ` ${valueName} value;`)
+  }
+  for (const field of Arrays.values(emitter.frameFields)) {
+    Str.append(mutable fields, ` ${field};`)
+  }
+  const frame = names.frame
+  writeLine(mutable emitter, `typedef struct ${frame} {${Str.build(fields)} } ${frame};`)
+  writeLine(mutable emitter, `static void ${names.resume}(narra_task* h) {`)
+  writeLine(mutable emitter, `  ${frame}* f = (${frame}*)h;`)
+  writeLine(mutable emitter, "  switch (f->h.state) {")
+  writeLine(mutable emitter, "  case 0: break;")
+  for (const state of Ranges.between(1, Arrays.length(emitter.liveValues))) {
+    const number = Int.toString(state)
+    writeLine(mutable emitter, `  case ${number}: goto narra_resume_${number};`)
+  }
+  writeLine(mutable emitter, "  default: return;")
+  writeLine(mutable emitter, "  }")
+  Str.append(mutable emitter.out, body)
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `static void ${names.release}(narra_task* h) {`)
+  writeLine(mutable emitter, `  ${frame}* f = (${frame}*)h;`)
+  writeLine(mutable emitter, "  if (f->h.done) {")
+  if (valueType != Type.TVoid) {
+    const releaseValue = releaseCode(emitter, valueType, "f->value")
+    if (releaseValue != "") {
+      writeLine(mutable emitter, `    ${releaseValue}`)
+    }
+  }
+  writeLine(mutable emitter, "    return;")
+  writeLine(mutable emitter, "  }")
+  emitStateSwitch(mutable emitter, false)
+  writeLine(mutable emitter, "}")
+  const text = Str.build(emitter.out)
+  emitter.out = Str.builder()
+  return text
+}
+
+function emitTaskCreation(
+  mutable emitter: Emitter,
+  inputs: Array<int>,
+  valueType: Type,
+  names: TaskNames,
+) uses alloc {
+  // A new frame that owns its inputs; a large parameter is copied, since the
+  // caller's value may be gone when the task resumes.
+  const frame = names.frame
+  writeLine(mutable emitter, `  ${frame}* f = narra_alloc(sizeof(${frame}));`)
+  writeLine(mutable emitter, `  memset(f, 0, sizeof(${frame}));`)
+  let slot = "NULL"
+  if (valueType != Type.TVoid) {
+    slot = "&f->value"
+  }
+  writeLine(
+    mutable emitter,
+    `  narra_task_init(&f->h, ${names.resume}, ${names.release}, ${slot});`,
+  )
+  for (const input of Arrays.values(inputs)) {
+    const local = copy(readLocal(emitter, input))
+    const name = localName(local)
+    let value = name
+    if (isPointerParameter(emitter, input)) {
+      value = `*${name}`
+    }
+    writeLine(mutable emitter, `  f->${name} = ${value};`)
+    const retainText = retainCode(emitter, local.localType, `f->${name}`)
+    if (retainText != "") {
+      writeLine(mutable emitter, `  ${retainText}`)
+    }
+  }
+  writeLine(mutable emitter, "  return narra_task_start(&f->h);")
+}
+
+function emitTaskFinish(mutable emitter: Emitter) uses alloc {
+  // narra_task_finish may free the frame, so nothing follows it.
+  unwindAll(mutable emitter)
+  writeLine(mutable emitter, "narra_task_finish(&f->h);")
+  writeLine(mutable emitter, "return;")
+}
+
+export function emitTaskReturn<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  value: Option<Expr>,
+) uses alloc {
+  // The caller closes the statement's frame; unwindAll has released it.
+  beginStatement(mutable emitter)
+  if (value is Some(returned)) {
+    const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
+    if (emitter.taskValue != Type.TVoid) {
+      const returnedType = copy(readNodeType(emitter, getExpressionId(returned)))
+      const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
+      writeLine(mutable emitter, `f->value = ${consumed};`)
+    } else if (code.text != "") {
+      writeLine(mutable emitter, `${code.text};`)
+    }
+  }
+  emitTaskFinish(mutable emitter)
+}
+
+export function emitAwait<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  operand: Expr,
+): Code uses alloc {
+  // A finished handle gives its value at once. Otherwise the task waits on the
+  // handle, records its state and returns to the loop, which resumes it at the
+  // label once the handle has finished. The handle is held in a frame field
+  // across the wait.
+  noteHelper(emitter, ASYNC_MODULE)
+  const handleType = copy(readNodeType(emitter, getExpressionId(operand)))
+  const code = EmitWalker.emitExpression(walker, mutable emitter, operand)
+  let handle = code.text
+  if (!Str.startsWith(handle, "f->")) {
+    handle = temp(mutable emitter, handleType, code.text)
+    if (code.owned) {
+      // The statement owns the handle: it is released when the statement ends,
+      // or by the release function if the task is dropped while it waits.
+      replaceTemporary(mutable emitter, code.text, handle, handleType)
+    }
+  }
+  const number = Int.toString(Arrays.length(emitter.liveValues))
+  writeLine(mutable emitter, `if (!${handle}->done) {`)
+  emitter.indent++
+  recordLive(mutable emitter)
+  writeLine(mutable emitter, `narra_task_wait(&f->h, ${handle});`)
+  writeLine(mutable emitter, `f->h.state = ${number};`)
+  writeLine(mutable emitter, "return;")
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `narra_resume_${number}:;`)
+  const valueType = copy(readNodeType(emitter, nodeId))
+  if (valueType == Type.TVoid) {
+    return Code { text: "", owned: false }
+  }
+  // The task takes its own reference to the value, so the same handle can be
+  // awaited again.
+  const valueName = cachedCType(emitter.checker, emitter.typeNames, valueType)
+  const value = ownedTemp(mutable emitter, valueType, `(*(${valueName}*)${handle}->value)`)
+  if (needsRc(emitter, valueType)) {
+    const retainText = retainCode(emitter, valueType, value)
+    writeLine(mutable emitter, retainText)
+    return Code { text: value, owned: true }
+  }
+  return Code { text: value, owned: false }
+}
+
+function replaceTemporary(
+  mutable emitter: Emitter,
+  name: string,
+  replacement: string,
+  type: Type,
+) uses alloc {
+  // The owned handle moves to the frame field that holds it across the wait.
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= 0; frame--) {
+    for (const index of Ranges.upTo(Arrays.length(emitter.frames[frame]))) {
+      if (emitter.frames[frame][index].name == name) {
+        emitter.frames[frame][index] = TempVar { name: replacement, tempType: type }
+        return
+      }
+    }
+  }
+}

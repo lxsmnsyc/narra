@@ -1235,26 +1235,6 @@ function listPickers(): Array<Picker> uses alloc {
 }
 ```
 
-### Regions
-
-A region allocates many values from one block and frees them all at once.
-
-```ts
-import * as Region from "std/region"
-
-const summary = Region.run((region) => {
-  const tree = Parser.parse(source)        // every allocation here comes from the region
-  return Summary.of(tree)                  // the result is copied out
-})
-// the region and everything in it has been freed
-```
-
-- **`Region.run(f)`** runs `f` with a region. Every heap allocation made while `f` runs comes from the region. Values in a region have no reference count updates.
-- **Values leave a region only by copying.** The result of `f` is copied to the normal heap. A value sent to a channel, stored in a `Shared`, or returned through the result is copied when it leaves.
-- **The region is freed when `f` returns,** in one step.
-- **A region cannot escape,** with the same rules as a `Scope`.
-- Regions suit work with a clear end, such as handling one request or compiling one file.
-
 ### Mutable parameters
 
 A function changes a caller's data only through a `mutable` parameter. The keyword appears in the declaration and again at the call. A `mutable` parameter reaches the contents of the caller's value, its fields and elements, and never the caller's variable (D81).
@@ -1775,7 +1755,7 @@ export enum Color {
 
 ## 11. Code generation
 
-- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arenas and regions.
+- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler and arenas.
 - **Vector types** from `std/simd` compile to C compiler vector extensions (D112; not built yet). Each type the program uses is a typedef such as `typedef float narra_f32x4 __attribute__((vector_size(16), aligned(8)))`. The alignment is 8 because heap blocks start at 8-byte boundaries; loads are unaligned, which costs nothing on x86-64 and arm64. Integer `+`, `-` and `*` go through the unsigned vector type, so they wrap. The build passes no `-march` flag: x86-64 code uses SSE2 and arm64 code NEON. A C compiler without vector extensions (TCC) cannot build a program that imports `std/simd`.
 - **Debug builds** use a fast C compiler such as TCC with checks on.
 - **Release builds** use Clang or GCC with `-O2`.

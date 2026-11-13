@@ -409,6 +409,7 @@ Decision: `Region.run(f)` allocates every heap value created during `f` from one
 - **Reason.** Work with a clear end, such as one request or one compile, frees thousands of values in one step. No reference counts are updated.
 - **Reason.** Copying on the way out keeps the rule that no value can point into freed memory.
 - **Cost.** The result is copied out. Large results should be kept small, such as a summary instead of the whole tree.
+- **Superseded by D113.** Regions are dropped.
 
 ## D49. Copies on shared values are made visible
 
@@ -1725,3 +1726,28 @@ Decision: in a type (a function type or a `Generator<T>` or `Coroutine<In, Out>`
 - **Rejected: parentheses always in types** (`uses (io)`). The one-name form has no ambiguity, and 223 type lists have one effect, 12 of them in seed-compiled source.
 - **Rejected: parentheses also allowed on a declaration's list.** Two spellings of the same list. fmt could normalize them, but the grammar is smaller with one.
 - **Cost.** One more rule to learn: parentheses for two or more effects in a type, none on a declaration. 27 test sources, about 19 goldens (`.err`, `.fmt`, `typesdump`, `query`), D78's and SPEC's generator examples, and the guide change. `isParamAfterComma` and the fmt trailing-comma exception go away.
+## D113. Regions are dropped
+
+Approved by the maintainer, 2026-11-13: regions are dropped (spike regions-plan). This record replaces D48 and D100's design for regions. SPEC section 6 "Regions" is removed, and node regions is dropped. The codes E1270-E1279 are retired.
+
+Measured with D100's prototype (`roadmaps/selfhost/nodes/regions-design/prototype/variant.py`, patched to match the current `narra_free`; the patched copy is in `roadmaps/selfhost/nodes/regions-plan/prototype/`). Apple M2, 8 GB, macOS 27, compiler from `selfhost/bootstrap.sh`, `cc -O2 -DNARRA_RELEASE`, median of 5 alternating runs, load average 3.6 to 4.9, instructions retired from `/usr/bin/time -l`. Every variant emits the same C as the base compiler, except the one that skips counts.
+
+| variant | `emit selfhost` | peak | `fmt --check selfhost/src` | peak |
+| --- | --- | --- | --- | --- |
+| base: size-class free lists (fast-alloc) | 3.03 G | 184 MB | 11.49 G | 40 MB |
+| plain `malloc` and `free` | 5.25 G | 171 MB | 16.91 G | 35 MB |
+| bump, counts kept, `free` does nothing | 3.08 G | 569 MB | 11.95 G | 625 MB |
+| bump, counts kept, no drop walk | 2.81 G | 638 MB | 11.57 G | 756 MB |
+| bump, no retain and no release | wrong output | | 11.32 G (3 runs) | 400 to 543 MB |
+| sign check on retain and release, free lists | 3.09 G | 185 MB | 11.52 G | 40 MB |
+
+One `emit selfhost` makes 9.76 M allocations (487 MB), 659 K reallocs, 38.3 M retains, 42.9 M releases and 6158 copies on write.
+
+1. **D100's numbers no longer hold (question 1).** The compiler got 3 times faster since D100 (9.27 G to 3.03 G), and the free lists made allocation as cheap as bumping a pointer: a region that keeps counts is 1.7% slower on `emit selfhost` and 4% slower on `fmt --check`, at 3 to 15 times the peak memory. Skipping the drop walk gains 7% on `emit` and nothing on `fmt`. D100's 31% bound came from skipping all counts; that variant now makes the compiler report false shared-write errors on its own source (`check.nra:1334`: a loop over `checker.instanceTypes` relies on copy on write), so skipping counts is not safe and has no valid bound on the compiler. On the formatter alone, which still runs without counts, it gains 1.6%. The one realistic use D100 named, `formatSource` per file, gains at most 1.6%.
+2. **What goes.** SPEC section 6 "Regions", the word "regions" from the runtime line of section 11 ("Output is C"), and D48, which this record replaces. Bulk freeing of a large structure is already covered: frees can be spread out (section 6), and `std/arena` (section 6 "Graphs", node std-arena, not built) frees all its slots at once.
+
+- **Reason.** No measured use gains more than the noise, and every variant costs memory. The safe design, counts kept, removes the only source of gain D100 found.
+- **Cost.** A SPEC feature goes away, and code with a clear end keeps freeing value by value. Nothing in the repo used regions.
+- **Rejected: building regions with counts kept.** The design that would have been built: region objects keep their counts, a tag in the block header makes `narra_free` a no-op on region blocks, a write inside a region copies any older block first so older blocks never point into the region, identity objects (Cell slots, task frames) always live on the heap, and the result is copied out with one generated copy function per boxed type. One error for a write to a captured `let` or `mutable` parameter, and one for a generator in the result. About 1500 lines over three nodes for a 1.7% to 4% slowdown.
+- **Rejected: D100's negative counts.** The compiler's own code depends on copy on write in places D94 accepts; a region that skips counts gives wrong results.
+- **Rejected: region objects with the drop walk skipped (7% on `emit`).** A heap value held by a region container then needs a store list, and `fmt` gets 0.7% slower.

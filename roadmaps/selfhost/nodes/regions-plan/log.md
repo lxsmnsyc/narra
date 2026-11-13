@@ -1,0 +1,19 @@
+# Log: regions-plan
+
+- Branch `spike/regions-plan`, reset to `feat/batch-13` (b23bbd4f). D113 did not exist; DECISIONS.md ended at D109.
+- Read D48, D100, D104, D109, the regions-design outcome, SPEC section 6 "Regions", `selfhost/runtime/runtime.h` (allocator, closure env, strings), `std_async.c` (task frames), `std/src/cell.nra`, `emitdynamic.nra`, `emitconsts.nra`, `emitpointers.nra`, `emitgenerators.nra`.
+- Code facts that change D100:
+  - fast-alloc put an 8-byte class header in front of every block (size-class builds). A region tag can live there, so `narra_free` and `narra_realloc` can tell a region block from any pointer, including runtime buffers with no count (map key arrays, `StringBuilder` data, the `Str.split` scratch array in `std_string.c`). D100 put the mark only in `rc`.
+  - Plain-malloc builds (ASan, `NARRA_PLAIN_MALLOC`) have no header today.
+  - `Cell` is now a source module over `Box` (`std/src/cell.nra`): the runtime cannot tell a Cell box from a plain box, so "Cell stays on the heap" needs a std change (an internal heap allocation in `std/internal/cell`).
+  - Every non-static top-level `const` is computed by a getter on first read (`emitconsts.nra`, `_ready` flags), like `lazy`. A first read inside a region would leave a region value in a global. D100 missed this.
+  - Async task frames (`narra_task`, D109) run their body up to the first wait inside the call that starts them, and live on the loop after the region.
+  - `Dynamic.of` allocates one cell with a table pointer (`emitdynamic.nra`); `Ptr.alloc` calls `narra_alloc` and `Ptr.free` calls `narra_free`.
+  - `CStrings.pointer` gives a `Ptr<u8>` into a string's bytes.
+- Measurement: the D100 prototype no longer applies as is: `narra_free`'s `free(p)` now sits under `#ifdef NARRA_PLAIN_MALLOC`, so `variant.py bump` left `free` on bump blocks and aborted. A patched copy in `/private/tmp/claude-501/regions-plan/variant.py` also matches `free(p)` after the `#ifdef` line, and the hooked variants are built with `-DNARRA_PLAIN_MALLOC` so the hooked lines are live. `base` and `signfl` use the size-class allocator.
+- Results (5 alternating runs, load 3.6 to 4.9): `emit selfhost` base 3.03 G / 184 MB, plain 5.25 G, bump 3.08 G / 569 MB, nofree 2.81 G / 638 MB, sign on free lists 3.09 G. `fmt --check selfhost/src` base 11.49 G / 40 MB, bump 11.95 G / 625 MB, nofree 11.57 G, nocount 11.32 G (3 runs) / 400 to 543 MB. Counts per emit: 9.76 M allocations, 487 MB, 659 K reallocs, 38.3 M retains, 42.9 M releases, 6158 copies on write (`NARRA_CHECK_LEAKS=1` so the counters print at exit).
+- `nocount` on `emit selfhost` now prints false shared-write errors at `check.nra:1334` and emits nothing: the compiler relies on copy on write for a loop over `checker.instanceTypes`. Skipping counts is unsafe, not just unproven.
+- Design change from D100: counts kept, tag in the block header, older blocks never point into the region (copy on write of a non-region block inside a region), identity objects always on the heap. That removes the sign check, the store list and the D94 dependency, and makes D100's identity-type error unneeded; E1271 kept for generators only.
+- `Region.run` must be a builtin, not a source function: the result's release has to come before the region closes.
+- The SPEC sample keeps the first line `import * as Region from "std/region"`, so the `spec-skip.txt` entry still matches. Suites: `spec` PASS 62 cases, `sources` PASS 1 case.
+- Maintainer approved the drop (2026-11-13). Amended: D113 approved and shortened, SPEC section 6 "Regions" removed, spec-skip line removed, E1270-E1279 retired in the diagnostics header, D48 superseded, region-copy-out and region-check deleted, regions brief marked dropped. Suites after: `spec` PASS 61 cases (one sample fewer), `sources` PASS, `codes` PASS.

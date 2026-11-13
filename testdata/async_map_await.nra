@@ -1,0 +1,41 @@
+// A map literal whose value awaits: the key runs first, and a heap key stays
+// held while the task waits. One task finishes; another waits on its own
+// handle and is dropped at exit with the key held, so nothing leaks.
+import * as Int from "std/int"
+import * as Maps from "std/map"
+import * as Async from "std/async"
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+
+function heap(value: int): string uses io, alloc {
+  print(`key ${Int.toString(value)}`)
+  return Int.toString(value)
+}
+
+async function later(value: int): int uses io {
+  print("value starts")
+  await Async.idle()
+  return value
+}
+
+async function waitForSelf(slot: Cell<Option<Async<int>>>): int uses io, alloc {
+  await Async.idle()
+  const own = Cells.get(slot)
+  if (own is Some(handle)) {
+    const dropped = Map { [heap(12)]: await handle }
+    return Maps.size(dropped)
+  }
+  return 0
+}
+
+export async function run(_args: Array<string>): int {
+  const counts = Map { [heap(7)]: await later(1), [heap(8)]: 2 }
+  print(Int.toString(Maps.size(counts)))
+  const slot: Cell<Option<Async<int>>> = Cells.create(None)
+  const task = waitForSelf(slot)
+  Cells.set(slot, Some(task))
+  Async.detach(task)
+  await Async.idle()
+  print("entry ends")
+  return 0
+}

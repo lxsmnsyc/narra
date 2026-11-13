@@ -57,7 +57,8 @@ export function markArgument(mutable checker: Checker, param: Param, value: Expr
       const body = checker.body
       checker.bodies[body].allowedId = nodeId
     }
-    Expr.ArrowExpr(nodeId, _, _, _, _, _) => {
+    Expr.ArrowExpr(nodeId, _, _, _, _, _)
+      | Expr.AsyncExpr(_, _, Expr.ArrowExpr(nodeId, _, _, _, _, _)) => {
       const closure = findClosure(mutable checker, nodeId)
       const body = checker.body
       checker.bodies[body].closures[closure].stack = true
@@ -104,6 +105,28 @@ export function useLocal(mutable checker: Checker, nodeId: int, pos: Pos, index:
     return
   }
 
+  // A task copies what it captures when it starts, so it cannot share a variable
+  // that changes (D109 item 9).
+  if (local.isMutable) {
+    for (let check = first; check <= innermost; check++) {
+      const taskClosure = checker.bodies[body].arrows[check].closure
+      if (checker.bodies[body].closures[taskClosure].isTask) {
+        let kind = "declared with let"
+        if (local.param) {
+          kind = "a mutable parameter"
+        } else if (local.binding == BindingKind.Reference) {
+          kind = "a loop element changed in place"
+        }
+        reportError(
+          mutable checker,
+          pos,
+          "E1110",
+          `an async arrow or block cannot capture ${quoteGo(local.name)}, which is ${kind}: the task copies its captures when it starts; keep state that changes in a Cell from std/cell`,
+        )
+        return
+      }
+    }
+  }
   // A let or a mutable parameter is captured by reference, so every closure
   // between the use and the declaration must be a stack closure.
   if (local.isMutable) {
@@ -163,6 +186,19 @@ export function markChangedCapture(mutable checker: Checker, pos: Pos, index: in
   }
   const innermost = checker.bodies[body].arrowDepth - 1
   const first = findOutermostCapture(checker, index)
+  // A task changes its own copy, which the code around it would not see.
+  for (let taskLevel = first; taskLevel <= innermost; taskLevel++) {
+    const taskClosure = checker.bodies[body].arrows[taskLevel].closure
+    if (checker.bodies[body].closures[taskClosure].isTask) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1110",
+        `an async arrow or block cannot change captured ${quoteGo(local.name)}: the task copies its captures when it starts; keep state that changes in a Cell from std/cell`,
+      )
+      return
+    }
+  }
   let level = first
   while (level <= innermost) {
     const closure = checker.bodies[body].arrows[level].closure

@@ -49,6 +49,7 @@ import {
 } from "narrac/emitstate"
 import { pointerTemp, declaredLocal, emitArithmetic } from "narrac/emitexprs"
 import * as Generators from "narrac/emitgenerators"
+import * as Async from "narrac/emitasync"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
 import * as Tail from "narrac/emittail"
@@ -337,7 +338,13 @@ function emitReturn<W: EmitWalker>(
     emitBlockReturn(walker, mutable emitter, value)
     return
   }
-  if (emitter.inGenerator) {
+  if (emitter.inFrame && emitter.inAsync) {
+    Async.emitTaskReturn(walker, mutable emitter, value)
+    // emitTaskReturn released everything, so the frame closes without releasing again.
+    emitter.frames = Tail.withoutLastFrame(emitter.frames)
+    return
+  }
+  if (emitter.inFrame) {
     Generators.emitGeneratorReturn(mutable emitter)
     return
   }
@@ -790,7 +797,7 @@ function emitArrayFor<W: EmitWalker>(
       // Array.entries gives #[index, item]; an assignment to a frame field
       // needs a compound literal.
       let tupleValue = `{.f_0 = ${index}, .f_1 = ${array}->items[${index}]}`
-      if (emitter.inGenerator) {
+      if (emitter.inFrame) {
         const tupleName = cachedCType(
           emitter.checker,
           emitter.typeNames,
@@ -853,7 +860,7 @@ function chooseHoistedArrays(
   scan: HoistScan,
 ): Array<Expr> from scan uses alloc {
   let chosen: Array<Expr> = []
-  if (emitter.inGenerator) {
+  if (emitter.inFrame) {
     return chosen
   }
   for (const place of Arrays.values(scan.places)) {
@@ -1138,6 +1145,12 @@ function scanHoistExpression(
       }
     }
     Expr.UnaryExpr(_, _, _, operand) => {
+      scanHoistExpression(emitter, mutable scan, operand)
+    }
+    Expr.AwaitExpr(_, _, operand) => {
+      scanHoistExpression(emitter, mutable scan, operand)
+    }
+    Expr.AsyncExpr(_, _, operand) => {
       scanHoistExpression(emitter, mutable scan, operand)
     }
     Expr.BinaryExpr(_, _, _, left, right) => {

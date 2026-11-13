@@ -559,17 +559,25 @@ function checkFunctionBody(
   key: string,
   funcIndex: int,
 ) uses alloc {
+  // An async function's returns give the value of its task.
+  let bodyResult = result
+  if (funcDecl.isAsync) {
+    if (result is Type.TAsync(value)) {
+      bodyResult = value
+    }
+  }
   const saved = startBody(
     mutable checker,
     kind,
     name,
     typeArguments,
     BodyRoot.RootFunc(funcDecl),
-    result,
+    bodyResult,
     environment,
   )
   checker.functionIndex = funcIndex
   checker.generator = funcDecl.generator
+  checker.asyncBody = funcDecl.isAsync
   if (key != "") {
     keyBody(mutable checker, key)
   }
@@ -580,9 +588,11 @@ function checkFunctionBody(
     Stmts.checkBlock(mutable checker, walker, block)
     // An instance of a generic function repeats what its declaration was checked for.
     if (!funcDecl.generator && Arrays.length(typeArguments) == 0) {
-      checkEveryPathReturns(mutable checker, block, result, false)
+      checkEveryPathReturns(mutable checker, block, bodyResult, false)
     }
-    if (Arrays.length(typeArguments) == 0 && !skipsSharedResults(checker)) {
+    // An async function's value goes through its task, which holds its own
+    // copies of the parameters, so it names no `from` (D109 item 9).
+    if (Arrays.length(typeArguments) == 0 && !skipsSharedResults(checker) && !funcDecl.isAsync) {
       checkSharedResults(mutable checker, funcDecl)
     }
   }

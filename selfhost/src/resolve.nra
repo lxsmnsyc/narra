@@ -10,13 +10,14 @@ import { importsPointers, resolvePointerType } from "narrac/unsafecode"
 import { splitString } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
-import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl, ConstDecl } from "narrac/ast"
+import { TypeExpr, FieldDecl, VariantDecl, Pos, Decl, FuncDecl, ConstDecl, Param } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { createFix, createEdit, moveColumn } from "narrac/fixes"
 import { Type, Field, Variant, StructInfo, EnumInfo, typeKey, typeKeys } from "narrac/types"
 import {
   Checker,
   internComposite,
+  noteAsyncUse,
   checkMapKey,
   noteTypeBounds,
   reportError,
@@ -84,6 +85,9 @@ export function resolveSignature(
     if (param.isMutable && report) {
       checkMutableType(mutable checker, param.pos, resolvedType, -1)
     }
+    if (funcDecl.isAsync && report) {
+      checkAsyncParameter(mutable checker, funcDecl, param)
+    }
     if (!funcDecl.generator || !report) {
       continue
     }
@@ -131,12 +135,46 @@ function checkResultFrom(mutable checker: Checker, funcDecl: FuncDecl) uses allo
   }
 }
 
+function checkAsyncParameter(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  param: Param,
+) uses alloc {
+  // The task outlives the call, so it keeps no pointer into the caller and stores
+  // its function parameters.
+  let isFunc = false
+  if (param.type is Some(paramType)) {
+    isFunc = paramType.isFunc
+  }
+  if (param.isMutable) {
+    reportError(
+      mutable checker,
+      param.pos,
+      "E1104",
+      `async function ${funcDecl.name} cannot take a mutable parameter ${quoteGo(param.name)}; its task outlives the call`,
+    )
+  } else if (isFunc && !param.escaping) {
+    reportError(
+      mutable checker,
+      param.pos,
+      "E1111",
+      `parameter ${quoteGo(param.name)} of async function ${funcDecl.name} has a function type, so it must be \`escaping\`: the task outlives the call`,
+    )
+  }
+}
+
 function resolveGeneratorResult(
   mutable checker: Checker,
   funcDecl: FuncDecl,
   funcIndex: int,
   report: bool,
 ): Type from checker uses alloc {
+  if (funcDecl.isAsync) {
+    // An async function declares the value of its task; a call gives Async<T>.
+    const value = resolveOpt(mutable checker, funcDecl.result)
+    noteAsyncUse(mutable checker)
+    return internComposite(mutable checker, Type.TAsync(value))
+  }
   if (!funcDecl.generator) {
     return resolveOpt(mutable checker, funcDecl.result)
   }
@@ -588,6 +626,25 @@ export function resolveType(
     }
     const element = resolveType(mutable checker, typeExpr.arguments[0])
     return makeGenerator(checker, element, Type.TVoid, typeExpr.effects)
+  }
+  if (typeExpr.name == "Async" && !userType(checker, "Async")) {
+    if (argCount != 1) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E1109",
+        "Async takes one type argument, the value of the task",
+      )
+      return Type.TVoid
+    }
+    // Async<void> is the handle of a task that gives no value.
+    const argument = typeExpr.arguments[0]
+    let value = Type.TVoid
+    if (argument.name != "void" || Arrays.length(argument.arguments) > 0 || argument.isFunc) {
+      value = resolveType(mutable checker, argument)
+    }
+    noteAsyncUse(mutable checker)
+    return internComposite(mutable checker, Type.TAsync(value))
   }
   if (typeExpr.name == "Coroutine" && !userType(checker, "Coroutine")) {
     if (argCount != 2) {
@@ -1278,6 +1335,10 @@ export function substitute(
     Type.TPtr(element) => {
       const newElement = substitute(mutable checker, element, bindings)
       return internComposite(mutable checker, Type.TPtr(newElement))
+    }
+    Type.TAsync(value) => {
+      const newValue = substitute(mutable checker, value, bindings)
+      return internComposite(mutable checker, Type.TAsync(newValue))
     }
     Type.TFixedArray(element, length) => {
       const newElement = substitute(mutable checker, element, bindings)

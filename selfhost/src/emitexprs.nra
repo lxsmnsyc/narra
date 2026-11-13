@@ -23,7 +23,6 @@ import {
   containsTypeParameter,
   instanceDefaultKey,
   getExpressionPos,
-  findBodySlot,
   orderArguments,
   findParameterIndexes,
 } from "narrac/check"
@@ -32,7 +31,6 @@ import {
   Emitter,
   Code,
   EmitWalker,
-  TempVar,
   reportUnsupported,
   writeLine,
   literal,
@@ -40,10 +38,8 @@ import {
   temp,
   ownedTemp,
   consume,
-  retainCode,
   beginStatement,
   endStatement,
-  needsRc,
   readNodeType,
   readNodeRef,
   findSyntheticCode,
@@ -59,10 +55,18 @@ import {
   buildVariantFieldPath,
   noteReference,
   useHelper,
+  findDeclaredLocal,
 } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
 import * as Closures from "narrac/emitclosures"
+import * as Async from "narrac/emitasync"
+import {
+  containsAwait,
+  anyContainsAwait,
+  holdArgument,
+  holdBeforeAwait,
+} from "narrac/emitasyncspill"
 import * as Inline from "narrac/emitinline"
 import * as ConstValues from "narrac/emitconstvalues"
 import { isInlineFunction } from "narrac/inlining"
@@ -171,7 +175,29 @@ export function emitExpression<W: EmitWalker>(
     Expr.MatchExpr(_, _, _, _) => Match.emitMatchValue(walker, mutable emitter, expression)
     Expr.BlockExpr(nodeId, _, block) => emitBlockExpression(walker, mutable emitter, nodeId, block)
     Expr.ArrowExpr(_, _, _, _, _, _) => Closures.emitArrow(walker, mutable emitter, expression)
+    Expr.AwaitExpr(nodeId, _, operand) => Async.emitAwait(walker, mutable emitter, nodeId, operand)
+    Expr.AsyncExpr(nodeId, pos, body) => emitAsyncExpression(
+      walker,
+      mutable emitter,
+      nodeId,
+      pos,
+      body,
+    )
   }
+}
+
+function emitAsyncExpression<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  body: Expr,
+): Code uses alloc {
+  // An async arrow is a closure whose call starts a task; an async block starts one now.
+  if (body is Expr.BlockExpr(_, _, block)) {
+    return Async.emitTaskBlock(walker, mutable emitter, nodeId, pos, block)
+  }
+  return Closures.emitArrow(walker, mutable emitter, body)
 }
 
 function emitBlockExpression<W: EmitWalker>(
@@ -518,6 +544,10 @@ function emitBinary<W: EmitWalker>(
     return plain(result)
   }
 
+  // In a task body the left operand runs before an await on the right.
+  if (emitter.inAsync && containsAwait(right)) {
+    holdArgument(walker, mutable emitter, left)
+  }
   // Equality of structs, enums and arrays is the traits module's.
   const leftType = copy(underlyingType(emitter, readNodeType(emitter, getExpressionId(left))))
   if (!isPrimitive(leftType) && (operator == "==" || operator == "!=")) {
@@ -761,45 +791,6 @@ function holdReorderedArguments<W: EmitWalker>(
       holdArgument(walker, mutable emitter, arguments[index].value)
     }
   }
-}
-
-function isStableArgument(emitter: Emitter, value: Expr, nodeId: int): bool {
-  return match (value) {
-    Expr.IntLit(_, _, _)
-      | Expr.FloatLit(_, _, _)
-      | Expr.StringLit(_, _, _, _)
-      | Expr.CharLit(_, _, _)
-      | Expr.BoolLit(_, _, _) => true
-    Expr.Ident(_, _, _) => !(readNodeRef(emitter, nodeId) is Ref.Local(_))
-    _ => false
-  }
-}
-
-function holdArgument<W: EmitWalker>(walker: W, mutable emitter: Emitter, value: Expr) uses alloc {
-  const nodeId = getExpressionId(value)
-  if (isStableArgument(emitter, value, nodeId)) {
-    return
-  }
-  const valueType = copy(readNodeType(emitter, nodeId))
-  if (valueType is Type.TFunc(_, _, _, _, _)) {
-    return
-  }
-  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
-  let held = code
-  if (!code.owned) {
-    // Keep the value this argument read, even if the variable changes.
-    const name = temp(mutable emitter, valueType, code.text)
-    held = plain(name)
-    if (needsRc(emitter, valueType)) {
-      const retainText = retainCode(emitter, valueType, name)
-      writeLine(mutable emitter, retainText)
-      const top = Arrays.length(emitter.frames) - 1
-      Arrays.push(mutable emitter.frames[top], TempVar { name: name, tempType: valueType })
-      held = Code { text: name, owned: true }
-    }
-  }
-  emitter.heldArguments[nodeId] = held
-  emitter.heldPending++
 }
 
 function emitConstructorCall<W: EmitWalker>(
@@ -1090,8 +1081,14 @@ function emitStructLiteral<W: EmitWalker>(
   if (structType is Type.TStruct(structIndex)) {
     let parts: Array<string> = []
     let given: Map<string, bool> = Map {}
+    if (emitter.inAsync) {
+      emitAwaitedFields(walker, mutable emitter, fields, mutable parts, mutable given)
+    }
     // The fields written in the literal, in source order.
     for (const field of Arrays.values(fields)) {
+      if (given[field.name] is Some(_)) {
+        continue
+      }
       const code = EmitWalker.emitExpression(walker, mutable emitter, field.value)
       const fieldType = copy(readNodeType(emitter, getExpressionId(field.value)))
       const consumed = consume(mutable emitter, code.text, code.owned, fieldType)
@@ -1125,6 +1122,36 @@ function emitStructLiteral<W: EmitWalker>(
     return Code { text: built, owned: true }
   }
   return unsupportedCode(mutable emitter, "struct literal")
+}
+
+function emitAwaitedFields<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  fields: Array<FieldInit>,
+  mutable parts: Array<string>,
+  mutable given: Map<string, bool>,
+) uses alloc {
+  // In a task body every field is evaluated before any is consumed, so a value
+  // computed before an await stays in the statement's frame across the wait.
+  let values: Array<Expr> = []
+  for (const field of Arrays.values(fields)) {
+    Arrays.push(mutable values, field.value)
+  }
+  if (!anyContainsAwait(values)) {
+    return
+  }
+  holdBeforeAwait(walker, mutable emitter, values)
+  let codes: Array<Code> = []
+  for (const field of Arrays.values(fields)) {
+    Arrays.push(mutable codes, EmitWalker.emitExpression(walker, mutable emitter, field.value))
+  }
+  for (const index of Ranges.upTo(Arrays.length(fields))) {
+    const field = fields[index]
+    const fieldType = copy(readNodeType(emitter, getExpressionId(field.value)))
+    const consumed = consume(mutable emitter, codes[index].text, codes[index].owned, fieldType)
+    Arrays.push(mutable parts, `.f_${field.name} = ${consumed}`)
+    given[field.name] = true
+  }
 }
 
 function emitArrayLiteral<W: EmitWalker>(
@@ -1268,13 +1295,7 @@ function isHoistedArray(emitter: Emitter, target: Expr): bool {
 }
 
 export function declaredLocal(emitter: Emitter, nodeId: int): int {
-  const info = emitter.checker.bodies[emitter.body]
-  // Only a parameter, VarStmt or ForStmt node declares a local.
-  const slot = findBodySlot(info, nodeId)
-  if (slot < 0) {
-    return -1
-  }
-  return info.declared[slot]
+  return findDeclaredLocal(emitter, nodeId)
 }
 
 // Top-level constants. A constant whose value is a literal, an operator on

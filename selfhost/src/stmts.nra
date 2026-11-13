@@ -78,6 +78,7 @@ import * as Arrays from "std/array"
 import * as Str from "std/string"
 import * as Int from "std/int"
 import * as Ranges from "std/range"
+import * as AsyncCheck from "narrac/asynccheck"
 
 export function checkBlock<W: Walker>(
   mutable checker: Checker,
@@ -336,6 +337,7 @@ function checkVariable<W: Walker>(
 ) uses alloc {
   if (pattern is Some(declaredPattern)) {
     checkDestructure(mutable checker, walker, isMutable, declaredPattern, type, value)
+    AsyncCheck.checkDiscardedPattern(mutable checker, declaredPattern)
     return
   }
 
@@ -360,6 +362,8 @@ function checkVariable<W: Walker>(
   if (found == Type.TVoid && Arrays.length(checker.errors) == errorCount) {
     reportError(mutable checker, pos, "E0225", "this expression has no value")
   }
+  // `const _ =` does not let a task go; Async.detach does (D109 item 5).
+  AsyncCheck.checkDiscardedName(mutable checker, pos, name, found)
   const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
   setBinding(mutable checker, local, value, BindingKind.Plain)
   recordConstantLocal(mutable checker, local, value)
@@ -565,8 +569,21 @@ function checkExpressionStatement<W: Walker>(
   }
   checkExpression(mutable checker, walker, expression, None)
 
+  // A value that holds a task handle must be used, whatever expression gives it.
+  if (copy(getNodeType(checker, getExpressionId(expression))) is Some(statementType)) {
+    if (AsyncCheck.holdsHandle(checker, statementType)) {
+      AsyncCheck.reportUnusedHandle(mutable checker, pos)
+      return
+    }
+  }
+
   // Only a call can stand alone, and a Result it returns must be used.
-  if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
+  const standsAlone = match (expression) {
+    Expr.CallExpr(_, _, _, _, _) | Expr.AwaitExpr(_, _, _) => true
+    _ => false
+  }
+  if (standsAlone) {
+    const nodeId = getExpressionId(expression)
     if (copy(getNodeType(checker, nodeId)) is Some(found)) {
       if (isResult(checker, found)) {
         reportError(
@@ -1111,7 +1128,15 @@ function checkReferenceFor<W: Walker>(
   // The source is an array place the loop may change, as for a `mutable` argument, its
   // elements have contents, the binding acts as a `mutable` parameter, and the body
   // cannot use the source (checkLoopBorrows).
-  // The element pointer would have to live in the frame across `yield`.
+  // The element pointer would have to live in the frame across `yield` or `await`.
+  if (checker.asyncBody) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1105",
+      "`for (mutable ...)` is not allowed in an async body; change the elements through an index, as in `items[index].field = value`",
+    )
+  }
   if (checker.generator && checker.bodies[checker.body].arrowDepth == 0) {
     reportError(
       mutable checker,
@@ -1570,7 +1595,9 @@ function collectUses(
       collectUses(checker, mutable collector, index, chain, arms)
     }
     Expr.IsExpr(_, _, subject, _) => collectUses(checker, mutable collector, subject, chain, arms)
-    Expr.UnaryExpr(_, _, _, operand) => collectUses(
+    Expr.UnaryExpr(_, _, _, operand)
+      | Expr.AwaitExpr(_, _, operand)
+      | Expr.AsyncExpr(_, _, operand) => collectUses(
       checker,
       mutable collector,
       operand,

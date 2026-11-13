@@ -3,6 +3,7 @@
 //
 // The C for one map type is the template RUNTIME_MAP_H with the @...@ names
 // filled in. The key's equality and hash come from emittraits.
+import { containsAwait, holdBeforeAwait } from "narrac/emitasyncspill"
 import { splitString, substring } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -294,6 +295,23 @@ export function emitMapLiteral<W: EmitWalker>(
       `${name}_new(${Int.toString(Arrays.length(keys))})`,
     )
     for (const index of Ranges.between(0, Arrays.length(keys))) {
+      // In a task body a key runs before an await in its value and stays in the
+      // statement's frame across the wait, so both are consumed after the value.
+      const awaited = emitter.inAsync && containsAwait(values[index])
+      if (awaited) {
+        holdBeforeAwait(walker, mutable emitter, [keys[index], values[index]])
+        const heldKey = EmitWalker.emitExpression(walker, mutable emitter, keys[index])
+        const awaitedValue = EmitWalker.emitExpression(walker, mutable emitter, values[index])
+        const key = consume(mutable emitter, heldKey.text, heldKey.owned, getKeyType(mapType))
+        const value = consume(
+          mutable emitter,
+          awaitedValue.text,
+          awaitedValue.owned,
+          getValueType(mapType),
+        )
+        writeLine(mutable emitter, `${name}_set(&${map}, ${key}, ${value});`)
+        continue
+      }
       const keyCode = EmitWalker.emitExpression(walker, mutable emitter, keys[index])
       const key = consume(mutable emitter, keyCode.text, keyCode.owned, getKeyType(mapType))
       const valueCode = EmitWalker.emitExpression(walker, mutable emitter, values[index])

@@ -122,11 +122,16 @@ export struct Emitter {
   loopInfos: Array<LoopInfo> = []
   // The block expressions being emitted, innermost last (Go: blocks).
   blocks: Array<BlockInfo> = []
-  // Set while a function* body is emitted (Go: gen, emitgenerators.nra):
-  // its C variables are fields of the frame f, listed in frameFields as
-  // "type name" in first-use order. liveValues holds, for state 0 and each
-  // yield, what the frame holds while it waits there.
-  inGenerator: bool = false
+  // Set while a function* body or a task body is emitted (Go: gen,
+  // emitgenerators.nra, emitasync.nra): its C variables are fields of the
+  // frame f, listed in frameFields as "type name" in first-use order.
+  // liveValues holds, for state 0 and each yield or await, what the frame
+  // holds while it waits there.
+  inFrame: bool = false
+  // Set while a task body is emitted (an async function, arrow or block);
+  // taskValue is the type of its result slot.
+  inAsync: bool = false
+  taskValue: Type
   // The `let` variables (BodyInfo.locals indexes) that the closure being
   // emitted captures by reference; its C variables are pointers (Go:
   // refCaptures).
@@ -171,7 +176,7 @@ export struct InlineCaller {
   file: string
   refCaptures: Array<int>
   hoistedArrays: Array<int>
-  inGenerator: bool
+  inFrame: bool
   blocks: Array<BlockInfo>
   labelSuffix: string
 }
@@ -197,7 +202,12 @@ export struct BodyContext {
   loopInfos: Array<LoopInfo>
   blocks: Array<BlockInfo>
   resultType: Type
-  inGenerator: bool
+  inFrame: bool
+  inAsync: bool
+  taskValue: Type
+  frameFields: Array<string>
+  frameSeen: Map<string, bool>
+  liveValues: Array<Array<TempVar>>
   refCaptures: Array<int>
   syntheticTypes: Map<int, Type>
   syntheticRefs: Map<int, Ref>
@@ -219,7 +229,12 @@ export function enterBodyContext(
     loopInfos: emitter.loopInfos,
     blocks: emitter.blocks,
     resultType: emitter.resultType,
-    inGenerator: emitter.inGenerator,
+    inFrame: emitter.inFrame,
+    inAsync: emitter.inAsync,
+    taskValue: emitter.taskValue,
+    frameFields: emitter.frameFields,
+    frameSeen: emitter.frameSeen,
+    liveValues: emitter.liveValues,
     refCaptures: emitter.refCaptures,
     syntheticTypes: emitter.syntheticTypes,
     syntheticRefs: emitter.syntheticRefs,
@@ -231,7 +246,11 @@ export function enterBodyContext(
   emitter.loopInfos = []
   emitter.blocks = []
   emitter.refCaptures = []
-  emitter.inGenerator = false
+  emitter.inFrame = false
+  emitter.inAsync = false
+  emitter.frameFields = []
+  emitter.frameSeen = Map {}
+  emitter.liveValues = []
   emitter.out = Str.builder()
   emitter.indent = 0
   emitter.resultType = resultType
@@ -250,7 +269,12 @@ export function leaveBodyContext(mutable emitter: Emitter, saved: BodyContext) {
   emitter.loopInfos = saved.loopInfos
   emitter.blocks = saved.blocks
   emitter.resultType = saved.resultType
-  emitter.inGenerator = saved.inGenerator
+  emitter.inFrame = saved.inFrame
+  emitter.inAsync = saved.inAsync
+  emitter.taskValue = saved.taskValue
+  emitter.frameFields = saved.frameFields
+  emitter.frameSeen = saved.frameSeen
+  emitter.liveValues = saved.liveValues
   emitter.refCaptures = saved.refCaptures
   emitter.syntheticTypes = saved.syntheticTypes
   emitter.syntheticRefs = saved.syntheticRefs
@@ -338,6 +362,7 @@ export function newEmitter(
     unsupported: [],
     frameSeen: Map {},
     generatorElement: Type.TVoid,
+    taskValue: Type.TVoid,
     heldArguments: Map {},
     syntheticTypes: Map {},
     syntheticRefs: Map {},
@@ -496,7 +521,7 @@ export function isPointerParameter(emitter: Emitter, index: int): bool uses allo
   const local = readLocal(emitter, index)
   return local.param &&
     !local.isMutable &&
-    !emitter.inGenerator &&
+    !emitter.inFrame &&
     isPassedByPointer(emitter.checker, local.localType)
 }
 
@@ -516,7 +541,7 @@ export function declareVariable(
 ): string uses alloc {
   // In a generator body this adds a frame field to the frame and returns the
   // field access instead of a C declaration.
-  if (!emitter.inGenerator) {
+  if (!emitter.inFrame) {
     return `${typeName} ${name}`
   }
   if (emitter.frameSeen[name] is None) {
@@ -533,14 +558,14 @@ export function declareUnset(
 ): string uses alloc {
   // A frame field needs no line.
   const declaration = declareVariable(mutable emitter, typeName, name)
-  if (!emitter.inGenerator) {
+  if (!emitter.inFrame) {
     writeLine(mutable emitter, `${declaration};`)
   }
   return variableRef(emitter, name)
 }
 
 export function variableRef(emitter: Emitter, name: string): string uses alloc {
-  if (emitter.inGenerator) {
+  if (emitter.inFrame) {
     return `f->${name}`
   }
   return name
@@ -555,6 +580,16 @@ export function declareLocalVariable(mutable emitter: Emitter, localIndex: int):
 export function declareLocal(mutable emitter: Emitter, localIndex: int, value: string) uses alloc {
   const declaration = declareLocalVariable(mutable emitter, localIndex)
   writeLine(mutable emitter, `${declaration} = ${value};`)
+}
+
+export function findDeclaredLocal(emitter: Emitter, nodeId: int): int {
+  const info = emitter.checker.bodies[emitter.body]
+  // Only a parameter, VarStmt or ForStmt node declares a local.
+  const slot = findBodySlot(info, nodeId)
+  if (slot < 0) {
+    return -1
+  }
+  return info.declared[slot]
 }
 
 export function switchBody(mutable emitter: Emitter, body: int): int {
@@ -623,6 +658,10 @@ function refCountCode(
     }
     Type.TFunc(_, _, _, _, _) => `narra_env_${operation}((${value}).env);`
     Type.TGenerator(_, _, _, _, _) => `narra_gen_${operation}(${value});`
+    Type.TAsync(_) => {
+      noteHelper(emitter, "std/internal/async")
+      return `narra_task_${operation}(${value});`
+    }
     Type.TDynamic(_) => {
       noteHelper(emitter, "dynamic")
       return `narra_dyn_${operation}(${value});`

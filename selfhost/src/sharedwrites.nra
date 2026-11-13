@@ -1313,6 +1313,7 @@ function isHeapObject(checker: Checker, type: Type): bool {
       | Type.TMap(_, _)
       | Type.TStringBuilder
       | Type.TGenerator(_, _, _, _, _)
+      | Type.TAsync(_)
       | Type.TParam(_) => true
     _ => false
   }
@@ -1349,6 +1350,7 @@ function searchHeapValue(
       | Type.TMap(_, _)
       | Type.TStringBuilder
       | Type.TGenerator(_, _, _, _, _)
+      | Type.TAsync(_)
       | Type.TParam(_)
       | Type.TDynamic(_) => {
       return true
@@ -1554,6 +1556,12 @@ function canWriteInExpression(expression: Expr): bool {
       return false
     }
     Expr.UnaryExpr(_, _, _, operand) => {
+      return canWriteInExpression(operand)
+    }
+    Expr.AwaitExpr(_, _, operand) => {
+      return canWriteInExpression(operand)
+    }
+    Expr.AsyncExpr(_, _, operand) => {
       return canWriteInExpression(operand)
     }
     Expr.BinaryExpr(_, _, _, left, right) => {
@@ -2132,6 +2140,8 @@ function evaluateIgnored(checker: Checker, mutable walk: WriteWalk, expression: 
       }
     }
     Expr.UnaryExpr(_, _, _, operand) => evaluateIgnored(checker, mutable walk, operand)
+    Expr.AwaitExpr(_, _, operand) => evaluateIgnored(checker, mutable walk, operand)
+    Expr.AsyncExpr(_, _, operand) => evaluateIgnored(checker, mutable walk, operand)
     Expr.BinaryExpr(_, _, _, left, right) => {
       evaluateIgnored(checker, mutable walk, left)
       evaluateIgnored(checker, mutable walk, right)
@@ -2206,6 +2216,19 @@ function evaluateParts(
     }
     Expr.UnaryExpr(_, _, _, operand) => {
       return evaluate(checker, mutable walk, operand)
+    }
+    Expr.AwaitExpr(_, _, operand) => {
+      // The task has returned: its value shares nothing it was given.
+      evaluateIgnored(checker, mutable walk, operand)
+      return []
+    }
+    Expr.AsyncExpr(nodeId, pos, body) => {
+      // An async block runs on its own state, as an arrow does, and its handle
+      // shares what it captures (D109 item 9).
+      if (body is Expr.BlockExpr(_, _, taskBlock)) {
+        return walkArrow(checker, mutable walk, nodeId, pos, [], None, Some(taskBlock))
+      }
+      return evaluate(checker, mutable walk, body)
     }
     Expr.BinaryExpr(nodeId, _, _, left, right) => {
       // Comparisons and arithmetic give values that share nothing.
@@ -2411,6 +2434,14 @@ function evaluateCall(
       appendShares(mutable payload, shares)
     }
     return payload
+  }
+  // A task handle holds every argument of its task while it is live.
+  if (getNodeType(checker, nodeId) is Some(Type.TAsync(_))) {
+    let held: Array<ValueShare> = []
+    for (const shares of Arrays.values(argumentShares)) {
+      appendShares(mutable held, shares)
+    }
+    return held
   }
   if (findSharedArgument(checker, call) is Some(sharedArgument)) {
     const sharedId = getExpressionId(sharedArgument)

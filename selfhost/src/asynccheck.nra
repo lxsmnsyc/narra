@@ -1,0 +1,191 @@
+// The checks of `await` and of unused task handles (D109 items 4 and 5).
+// exprs.nra calls checkAwait for an `await` expression; stmts.nra calls
+// reportUnusedHandle for an expression statement and for `const _ = ...`.
+// Async arrows and blocks are checked as arrows (closures.nra), async
+// functions by their signature (resolve.nra) and body (body.nra).
+import { Pos, Expr, Pattern } from "narrac/ast"
+import { Type, typeKey } from "narrac/types"
+import {
+  Checker,
+  Walker,
+  reportError,
+  typeString,
+  noteAsyncUse,
+  internComposite,
+  getNodeType,
+} from "narrac/check"
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+
+export function checkAwait<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  operand: Expr,
+  want: Option<Type>,
+): Type from checker uses alloc {
+  // The operand is checked against the handle of the expected value.
+  noteAsyncUse(mutable checker)
+  if (!checker.asyncBody) {
+    reportAwaitPlace(mutable checker, pos)
+  }
+  let handleWant: Option<Type> = None
+  if (want is Some(wanted)) {
+    if (wanted != Type.TVoid) {
+      handleWant = Some(internComposite(mutable checker, Type.TAsync(wanted)))
+    }
+  }
+  const found = Walker.checkExpression(walker, mutable checker, operand, handleWant)
+  if (found is Type.TAsync(value)) {
+    return copy(value)
+  }
+  if (found != Type.TVoid) {
+    const shown = typeString(checker, found)
+    reportError(
+      mutable checker,
+      pos,
+      "E1102",
+      `await takes an Async<T>, found ${shown}; only the handle of a task can be awaited`,
+    )
+  }
+  return Type.TVoid
+}
+
+function reportAwaitPlace(mutable checker: Checker, pos: Pos) uses alloc {
+  // The message names where the await stands: a function*, an arrow that is not
+  // async, or a body that is not async.
+  let place = "outside an async body"
+  if (checker.generator) {
+    place = "in a function* body"
+  } else if (checker.bodies[checker.body].arrowDepth > 0) {
+    place = "in an arrow function that is not async"
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E1100",
+    `await is allowed only in an async function, an async arrow or an async block, not ${place}`,
+  )
+}
+
+export function holdsHandle(checker: Checker, type: Type): bool uses alloc {
+  // An Async<T> anywhere in the value: itself, an element, a payload or a field.
+  let seen: Map<string, bool> = Map {}
+  return searchHandle(checker, type, mutable seen)
+}
+
+function searchHandle(
+  checker: Checker,
+  type: Type,
+  mutable seen: Map<string, bool>,
+): bool uses alloc {
+  const key = typeKey(type)
+  if (seen[key] is Some(_)) {
+    return false
+  }
+  seen[key] = true
+  match (type) {
+    Type.TAsync(_) => {
+      return true
+    }
+    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
+      return searchHandle(checker, element, mutable seen)
+    }
+    Type.TMap(keyType, valueType) => {
+      return searchHandle(checker, keyType, mutable seen) ||
+        searchHandle(checker, valueType, mutable seen)
+    }
+    Type.TStruct(index) => {
+      for (const field of Arrays.values(checker.structs[index].fields)) {
+        if (searchHandle(checker, field.fieldType, mutable seen)) {
+          return true
+        }
+      }
+      return false
+    }
+    Type.TEnum(index) => {
+      for (const variant of Arrays.values(checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          if (searchHandle(checker, field.fieldType, mutable seen)) {
+            return true
+          }
+        }
+      }
+      return false
+    }
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return searchHandle(checker, base, mutable seen)
+      }
+      return false
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+export function checkDiscardedName(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  type: Type,
+) uses alloc {
+  // `_` and a `_` name turn off the unused rule, so a handle kept there would
+  // let its task go unseen (D109 item 5).
+  if (Str.startsWith(name, "_") && holdsHandle(checker, type)) {
+    reportUnusedHandle(mutable checker, pos)
+  }
+}
+
+export function checkDiscardedPattern(mutable checker: Checker, pattern: Pattern) uses alloc {
+  // The parts of a destructuring that `_` or a `_` name discards.
+  match (pattern) {
+    Pattern.PatWildcard(nodeId, pos) => checkDiscardedPart(mutable checker, nodeId, pos, "_")
+    Pattern.PatName(nodeId, pos, name) => checkDiscardedPart(mutable checker, nodeId, pos, name)
+    Pattern.PatCtor(_, _, _, _, arguments, _) | Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        checkDiscardedPattern(mutable checker, argument)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        checkDiscardedPattern(mutable checker, field.pattern)
+      }
+    }
+    Pattern.PatArray(_, _, elements, rest) => {
+      for (const element of Arrays.values(elements)) {
+        checkDiscardedPattern(mutable checker, element)
+      }
+      if (rest is Some(restPattern)) {
+        checkDiscardedPattern(mutable checker, restPattern)
+      }
+    }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        checkDiscardedPattern(mutable checker, alternative)
+      }
+    }
+    Pattern.PatLit(_, _, _) | Pattern.PatCompare(_, _, _, _) => {}
+  }
+}
+
+function checkDiscardedPart(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+) uses alloc {
+  if (copy(getNodeType(checker, nodeId)) is Some(partType)) {
+    checkDiscardedName(mutable checker, pos, name, partType)
+  }
+}
+
+export function reportUnusedHandle(mutable checker: Checker, pos: Pos) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1103",
+    "this Async handle is not used; await it, keep it, pass it on, or let the task run with Async.detach(handle)",
+  )
+}

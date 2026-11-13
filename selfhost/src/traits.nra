@@ -1014,6 +1014,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
       | Type.TMap(_, _)
       | Type.TRange
       | Type.TGenerator(_, _, _, _, _)
+      | Type.TAsync(_)
       | Type.TPtr(_)
       | Type.TModule(_)
       | Type.TDynamic(_) => {
@@ -1309,7 +1310,14 @@ export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) u
   }
   let seen: Map<string, bool> = Map {}
   const text = typeString(checker, type)
-  if (isCellType(checker, type)) {
+  if (type is Type.TAsync(_)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1106",
+      `cannot use == on ${text}: a task handle is shared by identity; await the handles and compare the values`,
+    )
+  } else if (isCellType(checker, type)) {
     reportError(
       mutable checker,
       pos,
@@ -1410,6 +1418,9 @@ export function mapKeyProblem(
     Type.TGenerator(_, _, _, _, _) => {
       return "a Generator is not hashable"
     }
+    Type.TAsync(_) => {
+      return "an Async handle is shared by identity, not hashable"
+    }
     Type.TPtr(_) => {
       return "a pointer is not hashable"
     }
@@ -1462,7 +1473,12 @@ export function flushMapKeys(mutable checker: Checker) uses alloc {
     const problem = mapKeyProblem(mutable checker, check.key, mutable seen)
     if (problem != "") {
       const message = `${typeString(checker, check.key)} cannot be a map key: ${problem}`
-      reportErrorIn(mutable checker, check.file, check.pos, "E0900", message)
+      // A handle as the key itself has a code of its own (D109 item 9).
+      let code = "E0900"
+      if (check.key is Type.TAsync(_)) {
+        code = "E1106"
+      }
+      reportErrorIn(mutable checker, check.file, check.pos, code, message)
     }
   }
 }

@@ -51,8 +51,8 @@ import {
   releaseCode,
   declareLocalVariable,
   declareLocal,
+  findDeclaredLocal,
 } from "narrac/emitstate"
-import { declaredLocal } from "narrac/emitexprs"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -74,7 +74,7 @@ export function emitGenerator<W: EmitWalker>(
   if (result is Type.TGenerator(element, _, _, _, _)) {
     emitter.generatorElement = element
   }
-  emitter.inGenerator = true
+  emitter.inFrame = true
   emitter.frameFields = []
   emitter.frameSeen = Map {}
   emitter.liveValues = []
@@ -92,7 +92,7 @@ export function emitGenerator<W: EmitWalker>(
   emitGeneratorReturn(mutable emitter)
   const body = Str.build(emitter.out)
   emitter.out = Str.builder()
-  emitter.inGenerator = false
+  emitter.inFrame = false
   emitter.indent = 0
 
   // The frame and the resume function.
@@ -160,7 +160,7 @@ export function emitGenerator<W: EmitWalker>(
   return text
 }
 
-function emitStateSwitch(mutable emitter: Emitter, retaining: bool) uses alloc {
+export function emitStateSwitch(mutable emitter: Emitter, retaining: bool) uses alloc {
   // States with nothing live have no case.
   writeLine(mutable emitter, "  switch (f->h.state) {")
   for (const state of Ranges.upTo(Arrays.length(emitter.liveValues))) {
@@ -185,7 +185,7 @@ function emitStateSwitch(mutable emitter: Emitter, retaining: bool) uses alloc {
   writeLine(mutable emitter, "  }")
 }
 
-function recordLive(mutable emitter: Emitter) uses alloc {
+export function recordLive(mutable emitter: Emitter) uses alloc {
   // The list is in the order unwindAll releases it.
   let live: Array<TempVar> = []
   for (let frame = Arrays.length(emitter.frames) - 1; frame >= 0; frame--) {
@@ -208,11 +208,11 @@ function recordLive(mutable emitter: Emitter) uses alloc {
       Arrays.push(mutable live, held[heldIndex])
     }
   }
-  // A value held at a yield must be a frame field: a C local does not
+  // A value held at a yield or an await must be a frame field: a C local does not
   // survive the return, and clone and drop cannot name it.
   for (const value of Arrays.values(live)) {
     if (!Str.startsWith(value.name, "f->")) {
-      panic(`internal error: ${value.name} is held at a yield but is not a frame field`)
+      panic(`internal error: ${value.name} is held at a yield or an await but is not a frame field`)
     }
   }
   Arrays.push(mutable emitter.liveValues, live)
@@ -258,7 +258,7 @@ export function emitYield<W: EmitWalker>(
       // The input of the resume that continued the coroutine: the caller of
       // resume owns it, so the local gets its own reference.
       beginStatement(mutable emitter)
-      const localIndex = declaredLocal(emitter, bound.id)
+      const localIndex = findDeclaredLocal(emitter, bound.id)
       const local = copy(emitter.checker.bodies[emitter.body].locals[localIndex])
       const inputName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
       const input = consume(mutable emitter, `(*(${inputName}*)f->h.in)`, false, local.localType)
@@ -310,9 +310,9 @@ export function emitGeneratorFor<W: EmitWalker>(
   Arrays.push(mutable emitter.frames[top], TempVar { name: generator, tempType: generatorType })
   writeLine(mutable emitter, "while (1) {")
   emitter.indent++
-  const localIndex = declaredLocal(emitter, nodeId)
+  const localIndex = findDeclaredLocal(emitter, nodeId)
   const declaration = declareLocalVariable(mutable emitter, localIndex)
-  if (!emitter.inGenerator) {
+  if (!emitter.inFrame) {
     writeLine(mutable emitter, `${declaration};`)
   }
   const variable = localRef(emitter, localIndex)

@@ -862,6 +862,16 @@ function findCallee(
 }
 
 function funcEffects(state: EffectState, callee: Callee): Array<Effect> from state uses alloc {
+  // A call of an async function also allocates the task frame (D109 item 9).
+  if (callee.declaration.isAsync) {
+    let set = copy(findBodyEffects(state, callee))
+    addEffect(mutable set, "alloc", Pos { line: 0, column: 0 }, "")
+    return set
+  }
+  return findBodyEffects(state, callee)
+}
+
+function findBodyEffects(state: EffectState, callee: Callee): Array<Effect> from state uses alloc {
   const nowhere = Pos { line: 0, column: 0 }
   let set: Array<Effect> = []
   if (state.entries[callee.key] is Some(_)) {
@@ -906,6 +916,7 @@ function valueEffects(
   const bodyIndex = state.body
   const tracked = match (expression) {
     Expr.ArrowExpr(nodeId, _, _, _, _, _) => state.arrows[nodeId]
+    Expr.AsyncExpr(_, _, Expr.ArrowExpr(nodeId, _, _, _, _, _)) => state.arrows[nodeId]
     Expr.Ident(nodeId, _, _) => findNamedValue(checker, state, bodyIndex, nodeId)
     Expr.FieldExpr(nodeId, _, _, _) => findFunctionValue(checker, state, bodyIndex, nodeId)
     _ => None
@@ -1231,7 +1242,8 @@ function walkExpression(
       }
       addEffect(mutable out, "alloc", pos, "map literal")
     }
-    Expr.UnaryExpr(_, _, _, operand) => walkExpression(
+    Expr.AsyncExpr(_, pos, body) => walkTask(mutable checker, mutable state, mutable out, pos, body)
+    Expr.UnaryExpr(_, _, _, operand) | Expr.AwaitExpr(_, _, operand) => walkExpression(
       mutable checker,
       mutable state,
       mutable out,
@@ -1310,6 +1322,27 @@ function walkExpression(
     )
     _ => {}
   }
+}
+
+function walkTask(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  pos: Pos,
+  body: Expr,
+) uses alloc {
+  // A task is made where it is written: an async block charges its body and the
+  // frame now, and an async arrow adds the frame to the set of its calls.
+  walkExpression(mutable checker, mutable state, mutable out, body)
+  if (body is Expr.ArrowExpr(arrowId, _, _, _, _, _)) {
+    if (state.arrows[arrowId] is Some(inner)) {
+      let set = copy(inner)
+      addEffect(mutable set, "alloc", pos, "async arrow")
+      state.arrows[arrowId] = set
+    }
+    return
+  }
+  addEffect(mutable out, "alloc", pos, "async block")
 }
 
 function walkCall(

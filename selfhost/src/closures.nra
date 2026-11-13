@@ -28,6 +28,8 @@ import {
   setRef,
   setParameterType,
   getNodeType,
+  setNodeType,
+  noteAsyncUse,
   getRef,
   declareLocal,
   pushScope,
@@ -77,7 +79,67 @@ export function checkArrow<W: Walker>(
       bodyExpr,
       block,
       want,
+      false,
     )
+  }
+  if (expression is Expr.AsyncExpr(asyncId, asyncPos, asyncBody)) {
+    return checkAsyncExpression(mutable checker, walker, asyncId, asyncPos, asyncBody, want)
+  }
+  return Type.TVoid
+}
+
+function checkAsyncExpression<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  asyncId: int,
+  pos: Pos,
+  body: Expr,
+  want: Option<Type>,
+): Type from checker uses alloc {
+  // An async arrow is an arrow whose result is the handle of its task; an async
+  // block is checked as an arrow with no parameters that runs at once.
+  noteAsyncUse(mutable checker)
+  if (body is Expr.ArrowExpr(nodeId, arrowPos, parameters, resultExpr, bodyExpr, block)) {
+    let arrowWant: Option<Type> = None
+    if (want is Some(Type.TFunc(wantParams, Type.TAsync(wantValue), effects, binder, _))) {
+      arrowWant = Some(Type.TFunc(wantParams, wantValue, effects, binder, -1))
+    }
+    const found = checkArrowParts(
+      mutable checker,
+      walker,
+      nodeId,
+      arrowPos,
+      parameters,
+      resultExpr,
+      bodyExpr,
+      block,
+      arrowWant,
+      true,
+    )
+    setNodeType(mutable checker, nodeId, found)
+    return found
+  }
+  if (body is Expr.BlockExpr(blockId, _, taskBlock)) {
+    let blockWant: Option<Type> = None
+    if (want is Some(Type.TAsync(wantValue))) {
+      blockWant = Some(Type.TFunc([], wantValue, [], -1, -1))
+    }
+    const found = checkArrowParts(
+      mutable checker,
+      walker,
+      asyncId,
+      pos,
+      [],
+      None,
+      None,
+      Some(taskBlock),
+      blockWant,
+      true,
+    )
+    if (found is Type.TFunc(_, handleType, _, _, _)) {
+      setNodeType(mutable checker, blockId, handleType)
+      return copy(handleType)
+    }
   }
   return Type.TVoid
 }
@@ -92,11 +154,13 @@ function checkArrowParts<W: Walker>(
   bodyExpr: Option<Expr>,
   block: Option<Block>,
   want: Option<Type>,
+  isAsync: bool,
 ): Type from checker uses alloc {
   // The expected parameter and result types: the expected function type
   // wins over the hint of a generic call.
   const closure = findClosure(mutable checker, nodeId)
   const bodyIndex = checker.body
+  checker.bodies[bodyIndex].closures[closure].isTask = isAsync
   let hasHint = checker.bodies[bodyIndex].closures[closure].hasHint
   let hintParameters = copy(checker.bodies[bodyIndex].closures[closure].hintParameters)
   let hintResult = checker.bodies[bodyIndex].closures[closure].hintResult
@@ -158,6 +222,7 @@ function checkArrowParts<W: Walker>(
   const savedResult = checker.resultType
   const savedInferring = checker.inferring
   const savedGenerator = checker.generator
+  const savedAsync = checker.asyncBody
   const outerDepth = checker.scopeDepth
   // Clear the saved lists before any call changes the checker, so they are not shared.
   checker.loops = 0
@@ -166,6 +231,7 @@ function checkArrowParts<W: Walker>(
   pushArrow(mutable checker, outerDepth, closure)
   pushScope(mutable checker)
   checker.generator = false
+  checker.asyncBody = isAsync
   for (const index of Ranges.between(0, Arrays.length(parameters))) {
     const param = parameters[index]
     declareLocal(mutable checker, param.id, param.pos, param.name, paramTypes[index], false, true)
@@ -208,6 +274,7 @@ function checkArrowParts<W: Walker>(
   checker.resultType = savedResult
   checker.inferring = savedInferring
   checker.generator = savedGenerator
+  checker.asyncBody = savedAsync
 
   // The type of the arrow function.
   let finalResult = Type.TVoid
@@ -235,6 +302,11 @@ function checkArrowParts<W: Walker>(
   if (!writesFrom && hasHint) {
     shared = expectedShared
     checker.bodies[bodyIndex].closures[closure].expectsFresh = shared < 0
+  }
+  if (isAsync) {
+    // The task holds its own copies, so the handle shares no parameter.
+    const handleType = internComposite(mutable checker, Type.TAsync(finalResult))
+    return copy(internComposite(mutable checker, Type.TFunc(paramTypes, handleType, [], -1, -1)))
   }
   return copy(internComposite(mutable checker, Type.TFunc(paramTypes, finalResult, [], -1, shared)))
 }
@@ -397,15 +469,21 @@ function hintArrow(
   typeParameters: Array<int>,
   bindings: Map<int, Type>,
 ) uses alloc {
-  // Runs just before the argument at index is checked.
-  let isArrow = false
+  // Runs just before the argument at index is checked. An async arrow takes the
+  // value of the expected handle as the hint of its result.
+  let arrowId = -1
+  let isAsync = false
   if (arguments[index].value is Expr.ArrowExpr(_, _, _, _, _, _)) {
-    isArrow = true
+    arrowId = getExpressionId(arguments[index].value)
+  } else if (
+    arguments[index].value is Expr.AsyncExpr(_, _, Expr.ArrowExpr(innerId, _, _, _, _, _))
+  ) {
+    arrowId = innerId
+    isAsync = true
   }
-  if (!isArrow) {
+  if (arrowId < 0) {
     return
   }
-  const arrowId = getExpressionId(arguments[index].value)
 
   const known = learnFromEarlier(mutable checker, arguments, index, parameters, bindings)
   const declared = checker.paramTypes[parameters[index].id]
@@ -423,6 +501,9 @@ function hintArrow(
     let hintResult: Option<Type> = None
     if (!containsOpen(checker, funcResult, typeParameters)) {
       hintResult = Some(funcResult)
+      if (isAsync) {
+        hintResult = findHandleValue(funcResult)
+      }
     }
     const closure = findClosure(mutable checker, arrowId)
     const body = checker.body
@@ -430,6 +511,13 @@ function hintArrow(
     checker.bodies[body].closures[closure].hintParameters = hintParameters
     checker.bodies[body].closures[closure].hintResult = hintResult
   }
+}
+
+function findHandleValue(handleType: Type): Option<Type> from handleType {
+  if (handleType is Type.TAsync(value)) {
+    return Some(value)
+  }
+  return None
 }
 
 export function checkGenericArguments<W: Walker>(
@@ -617,6 +705,8 @@ function collectMutableRoots(
       collectMutableRoots(checker, index, mutable roots)
     }
     Expr.UnaryExpr(_, _, _, operand) => collectMutableRoots(checker, operand, mutable roots)
+    Expr.AwaitExpr(_, _, operand) => collectMutableRoots(checker, operand, mutable roots)
+    Expr.AsyncExpr(_, _, operand) => collectMutableRoots(checker, operand, mutable roots)
     Expr.BinaryExpr(_, _, _, left, right) => {
       collectMutableRoots(checker, left, mutable roots)
       collectMutableRoots(checker, right, mutable roots)
@@ -692,6 +782,22 @@ export function checkArrowArgument<W: Walker>(
       checker.bodies[body].closures[closure].hasHint = true
       checker.bodies[body].closures[closure].hintParameters = hinted
       checker.bodies[body].closures[closure].hintResult = hintResult
+    }
+    Expr.AsyncExpr(_, _, Expr.ArrowExpr(arrowId, _, _, _, _, _)) => {
+      // The task copies the captures, so the closure itself may stay on the stack.
+      const closure = findClosure(mutable checker, arrowId)
+      let hinted: Array<Option<Type>> = []
+      for (const hintParam of Arrays.values(hintParameters)) {
+        Arrays.push(mutable hinted, Some(hintParam))
+      }
+      let valueHint: Option<Type> = None
+      if (hintResult is Some(hintedHandle)) {
+        valueHint = findHandleValue(hintedHandle)
+      }
+      checker.bodies[body].closures[closure].stack = true
+      checker.bodies[body].closures[closure].hasHint = true
+      checker.bodies[body].closures[closure].hintParameters = hinted
+      checker.bodies[body].closures[closure].hintResult = valueHint
     }
     Expr.Ident(identId, _, _) => {
       checker.bodies[body].allowedId = identId

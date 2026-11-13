@@ -1,7 +1,7 @@
 ---
 id: regions
 title: "Region runtime: region blocks, the region tag and the region-off points"
-status: todo
+status: dropped
 priority: must
 type: feature
 story: batch-13

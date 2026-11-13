@@ -1,7 +1,7 @@
 ---
 id: regions-plan
 title: "Plan: regions from D100"
-status: active
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 182127
 owns:
   - roadmaps/selfhost/nodes/regions/**
   - roadmaps/selfhost/nodes/regions-plan/**

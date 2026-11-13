@@ -2,10 +2,10 @@
 id: regions
 title: Regions
 status: todo
-priority: could
+priority: must
 type: feature
 outline: true
-milestone: m4-systems
+milestone: p1-syntax
 target:
 from:
 size: M

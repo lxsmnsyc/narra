@@ -2,12 +2,12 @@
 id: workspaces
 title: "Workspaces: several packages in one repository"
 status: todo
-priority: should
+priority: could
 type: feature
 story:
 early: false
 outline: true
-milestone: m13-distribution
+milestone: p4-packages
 target:
 ship: auto
 from:

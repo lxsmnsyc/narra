@@ -1,5 +1,5 @@
 ---
-milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures, m12-spec-gaps, m13-distribution]
+milestones: [m3-core, m4-systems, m5-concurrency, m6-performance, m7-tooling, m8-selfhost, m9-adoption, m10-std, m11-closures, m12-spec-gaps, m13-distribution, p1-syntax, p2-std, p3-review, p4-packages, p5-distribution, p6-docs]
 merge:
   mode: auto
   method: squash
@@ -21,6 +21,9 @@ The Narra compiler is written in Narra and compiles itself. The Go bootstrap com
 - `bench/` reports Narra, Go and Rust times for the same programs.
 
 ## Priorities
+
+Phase order (maintainer, 2026-11-13): p1-syntax (finalize the language for the seed compiler), p2-std (modules the tool layer needs), p3-review (what to remove or adopt), p4-packages (workspaces, so the repo can be restructured), p5-distribution, p6-docs. Batches are picked phase by phase. Syntax nodes are must; std and review should; packages, distribution and docs could.
+
 
 - must: needed for the self-hosted compiler (milestones m3-core and m8-selfhost).
 - should: spec features that real programs need soon, and the measurement and tooling that make the language usable.

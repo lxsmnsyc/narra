@@ -2,12 +2,12 @@
 id: async-generators
 title: "Async generators and for await"
 status: todo
-priority: later
+priority: must
 type: feature
 story:
 early: false
 outline: true
-milestone: m5-concurrency
+milestone: p1-syntax
 target:
 ship: auto
 from:

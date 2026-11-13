@@ -2,10 +2,10 @@
 id: threads
 title: Scoped threads, channels and shared state
 status: todo
-priority: later
+priority: must
 type: feature
 outline: true
-milestone: m5-concurrency
+milestone: p1-syntax
 target:
 from:
 size: L

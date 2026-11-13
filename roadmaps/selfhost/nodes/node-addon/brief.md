@@ -2,12 +2,12 @@
 id: node-addon
 title: Node-API bindings for publishing Narra libraries to npm
 status: todo
-priority: later
+priority: could
 type: feature
 story:
 early: false
 outline: true
-milestone: m13-distribution
+milestone: p5-distribution
 target:
 ship: auto
 from:

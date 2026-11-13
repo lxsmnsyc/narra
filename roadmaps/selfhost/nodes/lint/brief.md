@@ -5,7 +5,7 @@ status: todo
 priority: could
 type: feature
 outline: true
-milestone: m9-adoption
+milestone: p6-docs
 target:
 from:
 size: M

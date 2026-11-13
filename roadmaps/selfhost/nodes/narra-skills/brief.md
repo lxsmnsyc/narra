@@ -2,10 +2,10 @@
 id: narra-skills
 title: Agent skills for Narra
 status: todo
-priority: should
+priority: could
 type: docs
 outline: true
-milestone: m9-adoption
+milestone: p6-docs
 target:
 from:
 size: M

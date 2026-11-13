@@ -2,12 +2,12 @@
 id: c-abi-export
 title: Shared library output with stable C ABI exports
 status: todo
-priority: later
+priority: could
 type: feature
 story:
 early: false
 outline: true
-milestone: m13-distribution
+milestone: p5-distribution
 target:
 ship: auto
 from:

@@ -2,10 +2,10 @@
 id: install-guide
 title: Installation guide
 status: todo
-priority: should
+priority: could
 type: docs
 outline: true
-milestone: m9-adoption
+milestone: p6-docs
 target:
 from:
 size: S

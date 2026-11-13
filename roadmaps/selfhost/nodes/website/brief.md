@@ -2,12 +2,12 @@
 id: website
 title: Narra website
 status: todo
-priority: later
+priority: could
 type: feature
 story:
 early: false
 outline: true
-milestone: m9-adoption
+milestone: p6-docs
 target:
 ship: auto
 from:

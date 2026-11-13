@@ -2,12 +2,12 @@
 id: workspace-design
 title: "Spike: workspaces for several packages in one repository"
 status: todo
-priority: should
+priority: could
 type: spike
 story:
 early: false
 outline: false
-milestone: m13-distribution
+milestone: p4-packages
 target:
 ship: auto
 from:

@@ -2,12 +2,12 @@
 id: selfhost-layout
 title: Group the self-hosted compiler's modules into directories
 status: todo
-priority: should
+priority: could
 type: refactor
 story:
 early: false
 outline: true
-milestone: m9-adoption
+milestone: p4-packages
 target:
 ship: auto
 from:

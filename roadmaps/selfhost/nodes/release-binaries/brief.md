@@ -7,7 +7,7 @@ type: chore
 story:
 early: false
 outline: true
-milestone: m9-adoption
+milestone: p5-distribution
 target:
 ship: pr
 from:

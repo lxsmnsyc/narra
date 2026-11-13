@@ -5,7 +5,7 @@ status: todo
 priority: should
 type: feature
 outline: true
-milestone: m10-std
+milestone: p2-std
 target:
 from:
 size: M

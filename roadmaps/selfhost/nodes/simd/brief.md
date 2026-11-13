@@ -2,10 +2,10 @@
 id: simd
 title: SIMD vector types
 status: todo
-priority: later
+priority: must
 type: feature
 outline: true
-milestone: m4-systems
+milestone: p1-syntax
 target:
 from:
 size: M

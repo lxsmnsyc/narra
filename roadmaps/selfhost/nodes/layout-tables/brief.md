@@ -2,10 +2,10 @@
 id: layout-tables
 title: Layout tables for debug builds
 status: todo
-priority: later
+priority: could
 type: feature
 outline: true
-milestone: m6-performance
+milestone: p5-distribution
 target:
 from:
 size: L

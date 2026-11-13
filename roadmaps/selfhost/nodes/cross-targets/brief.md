@@ -7,7 +7,7 @@ type: feature
 story:
 early: false
 outline: true
-milestone: m13-distribution
+milestone: p5-distribution
 target:
 ship: auto
 from:

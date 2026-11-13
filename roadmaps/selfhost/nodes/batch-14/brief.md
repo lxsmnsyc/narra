@@ -52,6 +52,7 @@ Children:
 ## Follow-ups after batch-13 merges
 
 - `chunk` and `window` in std/iterator take the D118 signature (an effect variable) once effect-var-nested-result lands.
+- Private functions in std sources and samples that write an incomplete `uses` list are E0800 since effect-var-nested-result (batch-13); fix them with one word each when rebasing.
 - `Command.rest` in std/args gets `= Rest.None` once constructor-field-defaults lands.
 
 ## Seed

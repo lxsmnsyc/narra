@@ -441,7 +441,23 @@ function walkExpression(
     }
     Expr.UnaryExpr(_, _, _, operand) => walkExpression(checker, mutable facts, operand)
     Expr.AwaitExpr(_, _, operand) => walkExpression(checker, mutable facts, operand)
-    Expr.AsyncExpr(_, _, operand) => walkExpression(checker, mutable facts, operand)
+    Expr.AsyncExpr(_, _, operand) => {
+      // An `async { }` block captures like an arrow function, so its returns follow the
+      // captured-share rule of an arrow (D109 item 9).
+      if (operand is Expr.BlockExpr(blockId, _, taskBlock)) {
+        facts.arrowParents[blockId] = facts.arrow
+        facts.arrows[blockId] = expression
+        const savedOwner = facts.owner
+        const savedArrow = facts.arrow
+        facts.owner = blockId
+        facts.arrow = blockId
+        walkBlock(checker, mutable facts, taskBlock)
+        facts.owner = savedOwner
+        facts.arrow = savedArrow
+      } else {
+        walkExpression(checker, mutable facts, operand)
+      }
+    }
     Expr.BinaryExpr(_, _, _, left, right) => {
       walkExpression(checker, mutable facts, left)
       walkExpression(checker, mutable facts, right)
@@ -819,9 +835,11 @@ function collectShared(
     Expr.AwaitExpr(_, _, operand) => {
       if (findSharedArgument(checker, expression) is Some(argument)) {
         collectShared(checker, facts, mutable query, argument)
-      } else {
+      } else if (operand is Expr.AsyncExpr(_, _, _)) {
         collectShared(checker, facts, mutable query, operand)
       }
+      // The value of a stored handle comes from its task, not from the handle, and its
+      // `from` is not tracked (a known gap, D109 item 9).
     }
     Expr.AsyncExpr(_, _, operand) => collectShared(checker, facts, mutable query, operand)
     _ => {}
@@ -957,6 +975,22 @@ function reportSharedParameter(
 
 function checkArrowReturns(mutable checker: Checker, facts: SharingFacts) uses alloc {
   for (const site of Arrays.values(facts.returns)) {
+    if (facts.arrows[site.owner] is Some(Expr.AsyncExpr(_, _, _))) {
+      // An async block has no parameters: every shared local is captured.
+      for (const local of Arrays.values(
+        copy(findSharedLocals(checker, facts, site.owner, site.value)),
+      )) {
+        const name = checker.bodies[checker.body].locals[local].name
+        const copyFixes = copy(buildCopyFix(checker, site.value))
+        reportErrorFix(
+          mutable checker,
+          findExpressionStart(site.value),
+          "E0976",
+          copyFixes,
+          `the async block returns a value that shares captured "${name}"; return a copy with copy(...)`,
+        )
+      }
+    }
     if (facts.arrows[site.owner] is Some(Expr.ArrowExpr(_, _, parameters, result, _, _))) {
       const shared = findArrowShared(checker, site.owner, result, parameters)
       for (const local of Arrays.values(

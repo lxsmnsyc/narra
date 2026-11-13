@@ -70,5 +70,5 @@ The async outline node is dropped, replaced by the async children.
 - [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
 - [x] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
 - [x] `compiler/README.md` "Not supported yet" no longer lists async functions or `async` arrows.
-- [ ] A fresh review of the whole story branch, before the pull request.
+- [x] A fresh review of the whole story branch, before the pull request.
 - [ ] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.

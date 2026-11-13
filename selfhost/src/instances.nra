@@ -9,13 +9,18 @@
 import { Type, typeKeys } from "narrac/types"
 import { Checker, ProgramFunc, FuncInstance, reportError, enter } from "narrac/check"
 import { resolveSignature, substitute } from "narrac/resolve"
-import { envWith } from "narrac/generics"
+import { envWith, maxDepth } from "narrac/generics"
 import * as Int from "std/int"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
 // The most instances Go makes before it reports a runaway recursion.
 const MAX_INSTANCES = 10000
+
+// The deepest type arguments an instance may have. A function that calls itself with a type
+// built from its own parameter (grow(Grow { value: v })) gets a deeper type each time, and
+// the instance limit is reached only after minutes.
+const MAX_TYPE_DEPTH = 64
 
 export function addFuncInstance(
   mutable checker: Checker,
@@ -56,7 +61,10 @@ export function addFuncInstance(
     result: result,
   })
   checker.funcInstances[key] = index
-  if (Arrays.length(checker.instanceList) > MAX_INSTANCES) {
+  if (
+    Arrays.length(checker.instanceList) > MAX_INSTANCES ||
+      maxDepth(checker, typeArguments) > MAX_TYPE_DEPTH
+  ) {
     reportError(
       mutable checker,
       info.declaration.pos,

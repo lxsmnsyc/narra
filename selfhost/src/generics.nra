@@ -10,6 +10,7 @@
 import { Type, ParamInfo } from "narrac/types"
 import { Checker, reportError, containsTypeParameter, typeString } from "narrac/check"
 import * as Arrays from "std/array"
+import * as Math from "std/math"
 import * as Ranges from "std/range"
 
 export function makeParameters(
@@ -198,6 +199,32 @@ function templateEdges(checker: Checker, type: Type, mutable out: Array<GenericE
     }
     _ => {}
   }
+}
+
+export function typeDepth(checker: Checker, type: Type): int uses alloc {
+  // Counts the levels of type arguments: Grow<Grow<int>> is 2 deep.
+  return match (type) {
+    Type.TArray(element) | Type.TBox(element) | Type.TPtr(element) | Type.TFixedArray(element, _) =>
+      1 + typeDepth(checker, element)
+    Type.TMap(key, value) => 1 + maxDepth(checker, [key, value])
+    Type.TFunc(parameters, result, _, _, _) =>
+      1 + Math.max(maxDepth(checker, parameters), typeDepth(checker, result))
+    Type.TGenerator(element, _, _, _, input) => 1 + maxDepth(checker, [element, input])
+    Type.TStruct(index) => 1 + maxDepth(checker, checker.structs[index].arguments)
+    Type.TEnum(index) => 1 + maxDepth(checker, checker.enums[index].arguments)
+    _ => 0
+  }
+}
+
+export function maxDepth(checker: Checker, types: Array<Type>): int uses alloc {
+  let deepest = 0
+  for (const type of Arrays.values(types)) {
+    const depth = typeDepth(checker, type)
+    if (depth > deepest) {
+      deepest = depth
+    }
+  }
+  return deepest
 }
 
 function growsArgs(checker: Checker, arguments: Array<Type>): bool {

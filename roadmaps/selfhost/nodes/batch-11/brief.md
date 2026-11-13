@@ -1,7 +1,7 @@
 ---
 id: batch-11
 title: "Batch 11: the remaining syntax features"
-status: active
+status: done
 priority: should
 type: story
 story: 
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-12
-spent:
+spent: 5723000
 owns:
   - roadmaps/selfhost/nodes/batch-11/**
 shared:

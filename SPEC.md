@@ -76,7 +76,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - A function with no return type returns nothing.
 - **A function with a result must return on every path.** A path ends at `return`, a call to `panic` or `Process.exit`, an `if`/`else` whose branches all end, a `match` whose arms all end, or `while (true)` / `for (;;)` with no `break` out of it. Any other path that reaches the closing brace is a compile error that names the path (E0969, E0970 for an arrow function with a block body). Generators have no result value and are exempt (D92).
 - **Anonymous functions are arrow functions:** `(x: int): int => x + 1`, or `(x: int): int => { ... }` with a block. `function` is only used for named declarations.
-- **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`.
+- **`function*`** declares a generator and **`async function`** declares an async function (section 8). Arrow functions can be `async`: `async () => { ... }`, and `async { ... }` is an async block.
 - An arrow function passed as an argument takes its types from the parameter it is passed to. The types can be left out: `Arrays.map(prices, (p) => p * 2)`.
 - **Function types** are written like arrow functions: `(item: T) => U`.
 - **Standard functions are values** when their signature is fixed: `Int.toString`, `Str.length` and `Fs.readText` can be passed, stored and returned, and `import { toString } from "std/int"` names one directly. Its effects follow it: `Fs.readText` has `alloc, io`, so a function type that takes it lists both. A standard function whose types depend on the call (`Arrays.length`, `Maps.size`), one with a `mutable` parameter and one that takes a function (`Arrays.map`) are not values (E1013); write an arrow function, `(items) => Arrays.length(items)`.
@@ -124,7 +124,7 @@ each(numbers, (item) => { total = total + item })
 - **Function-type parameters cannot escape by default.** Inside the called function, such a parameter can only be called. It cannot be stored, returned, captured by another closure, or sent to a thread.
 - **A non-escaping closure costs no allocation.** Its environment is placed on the caller's stack, and nothing is reference counted or freed.
 - **`escaping`** marks a function-type parameter that may be stored or outlive the call: `function onClick(escaping handler: () => void)`. An escaping closure's environment is allocated on the heap.
-- Struct fields and array elements of function type always hold escaping closures. `Thread.start`, `Async.spawn` and `Async.run` take escaping parameters.
+- Struct fields and array elements of function type always hold escaping closures. `Thread.start` and `Async.then` take escaping parameters. An `async` arrow function or block captures like an escaping closure wherever it is written (section 8).
 - **`@inline`** on a function copies its body into each call. An arrow function passed for a function-type parameter that the body only calls is copied too, to each place the body calls the parameter, so the call has no C call, no closure environment and no indirect call. The arrow reads the caller's variables in place.
 
 ```ts
@@ -305,9 +305,9 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `y = x++`, `++x`, `a[i] = b += 1` | Compound assignment and `x++` are statements without a value; `++x` is an error (E0964) |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
-| Calling an async function without `await` starts it in the background | A compile error. Use `await f()`, or start a task with `Async.spawn` (section 8) |
+| Calling an async function without `await` starts it in the background | It starts it too, and the call gives an `Async<T>` handle. A handle left unused is a compile error (E1103): write `await f()`, keep the handle, or let it run with `Async.detach(f())` (section 8) |
 | `const o = { a }` builds an object | Not present. `{ a }` in value position is a block expression, which needs `return` (E0933). Write a struct literal: `Point { x: 1 }` |
-| `Promise<T>` | Not present. `Async.spawn` returns a `Task<T>` |
+| `Promise<T>` | `Async<T>` (section 8). The methods are functions: `Async.then(handle, callback)`, `Async.all(handles)` |
 | `async function*` | Not present in the first version |
 | A `function` declared inside a function | A compile error (E0930). Declare it at module level as a private function and pass the enclosing values as arguments |
 
@@ -319,7 +319,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/lazy` (section 10), `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`.
+- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/lazy` (section 10), `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/string`, `std/test` and `std/time`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -1265,7 +1265,7 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 - Immutable values cannot form cycles, so reference counting frees everything without a cycle collector. Storing a value inside itself holds a second reference to it while the write runs, so the write copies first.
 - A variable is never stored by reference: storing it stores a copy, and only a closure that cannot outlive the call captures a variable by reference, so no cycle forms.
-- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Task<T>` and `Cell<T>`; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
+- **Cycles through identity types leak** (D80). Identity types (`Shared<T>`, `Sender<T>`, `Receiver<T>`, `Async<T>` and `Cell<T>`; section 8) are handles to one object, so they can form a cycle. There is no cycle collector and no type rule against it. Memory safety holds, but the objects in the cycle are never freed and resources they hold never close. Every cycle passes through an identity object, so the debug leak check (`NARRA_CHECK_LEAKS`, section 13) reports it at exit, and a test that leaks fails. Two patterns leak:
   - A handle stored in its own payload: `Shared.update(state, ...)` that stores `Some(state)` in the value of `state`, or a `Sender` sent into its own channel.
   - A closure stored in a `Cell` that captures the same `Cell`.
 - **Breaking a cycle.** Clear the slot before the last outside handle is dropped (`Cells.set(cell, None)`), or keep the graph in `std/arena` and refer to its nodes with handles.
@@ -1294,7 +1294,7 @@ Rules:
 - The compiler infers effects for private functions and arrow functions.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
-- The entry function (section 15) has every effect. It is not `async`. `Async.run` runs async code from it.
+- The entry function (section 15) has every effect. It may be `async` (section 8).
 - `async` and `function*` are not effects. They mark the type of function a declaration is (section 8).
 - **Function types carry effects** (D86): `(v: int) => int uses io`. A call through a function value has the effects of its type, and a function cannot be stored where the type lists fewer effects than it has. A function value's own type lists none, so a top-level constant that holds a function with effects writes its type: `const step: (v: int) => int uses io = loud`.
 - **Generator types carry effects** (D78), as function types do: `Generator<string> uses io` is a generator whose body does I/O when it runs. `Generator<T>` alone is pure. The effects are charged where the body runs: a `for ... of` over the generator, a `yield*` of it, and `Co.resume`. Creating a generator charges only `alloc`, for its frame.
@@ -1472,59 +1472,89 @@ const now = Shared.read(hits, (count) => count)
 - **The callback cannot be `async`,** so a task never suspends while holding a lock.
 - **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
 - `==` on an identity type compares identity, not contents.
-- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Task<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
+- **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Async<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narra audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
 
 ### Async functions
 
-An event loop runs many tasks on one thread. A task suspends at each `await`, and the loop resumes it when the awaited I/O is ready. The syntax is TypeScript's.
+An async function runs as a task on the event loop of its thread. A task suspends at an `await` that has to wait, and the loop resumes it when the awaited task has finished, a timer has fired or I/O is ready. The syntax is TypeScript's (D93, D95, D109).
 
 ```ts
 import * as Async from "std/async"
+import * as Bytes from "std/bytes"
 import * as Net from "std/async/net"
+import { Connection } from "std/async/net"
 
-async function handle(connection: Connection) uses io, alloc {
-  const conn = connection
+async function echo(connection: Connection): int uses io, alloc {
+  let total = 0
   while (true) {
-    const data = await Net.read(mutable conn, 4096)
+    const data = await Net.read(connection, 4096)
     if (data is Err(_)) {
-      return
+      return total
     }
     if (Bytes.length(data.value) == 0) {
-      return
+      return total
     }
-    const written = await Net.write(mutable conn, data.value)
+    const written = await Net.write(connection, data.value)
     if (written is Err(_)) {
-      return
+      return total
     }
+    total += written.value
   }
 }
 
-export function run(args: Array<string>): int {        // entry function set in narra.toml
-  Async.run(async (loop) => {
-    let listener = Net.listen("127.0.0.1", 8080)
-    while (true) {
-      const accepted = await Net.accept(mutable listener)
-      if (accepted is Ok(conn)) {
-        Async.spawn(loop, async () => await handle(conn))
-      }
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 8080)
+  if (listener is Err(_)) {
+    return 1
+  }
+  while (true) {
+    const accepted = await Net.accept(listener.value)
+    if (accepted is Err(_)) {
+      return 0
     }
-  })
-  return 0
+    Async.detach(echo(accepted.value))
+  }
 }
 ```
 
-- **`async function`** declares a function that can suspend. Its body compiles to a state machine.
-- **`await` is required on every call to an async function.** A call without `await` is a compile error. Every point where a task can suspend is visible at the call.
-- **Async functions run only inside an event loop.** They are called with `await` from other async functions, or started with `Async.run` and `Async.spawn`.
-- **`Async.run(f)`** runs an event loop on the current thread until `f` and every task it started have finished. It is a normal function, so it can be called from the entry function or from a thread.
-- **`Async.spawn(loop, f)`** starts a task on that loop and returns a `Task<T>`. **`await Async.join(t)`** waits for the task and returns its result.
-- **`await Async.all(functions)`** runs several async functions at the same time and returns their results in order.
-- **No async callbacks in normal higher-order functions.** `Arrays.map(items, async (x) => ...)` is a compile error. `std/async` provides `Async.map` and `Async.forEach` instead.
-- **A `Loop` cannot escape,** with the same rules as a `Scope`.
-- **Suspending I/O lives in `std/async/*`.** `std/async/net`, `std/async/file` and `std/async/time` mirror the blocking modules with the same function names. Their functions are `async`.
-- **A task stays on the thread that runs its loop.** To use several cores, run one loop per thread inside `Thread.scope`. Pass work between the loops with channels.
-- `await Async.sleep(milliseconds)` suspends the task for a time.
+Tasks and handles:
+
+- **`async function f(...): T`** declares an async function. Its type is `(...) => Async<T>`: a call starts the task and gives an `Async<T>` handle. The body runs until it first has to wait, then the call returns. `return` in the body gives a `T`.
+- **`Async<T>`** is a handle to a result on its way, like a TypeScript `Promise`. It is an identity type (section 6, "Cycles"): copies share one task, and the finished value is kept until the last handle is dropped. `Async` needs no import, and a type named `Async` that the module declares hides it. `==`, `!=` and map keys on a handle are compile errors (E1106).
+- **`async` arrow functions and `async { ... }` blocks** make handles too. `async (item) => { ... }` has the type `(item: T) => Async<R>`, so `Arrays.map(items, async (item) => ...)` gives an `Array<Async<R>>`. `async { ... }` is an expression of type `Async<T>` that starts at once; it follows the rules of a block expression (section 2), so its value comes from `return`. Both capture like escaping closures wherever they are written: the task gets each captured value when it starts, and capturing a `let` or a `mutable` parameter is a compile error (E1110). Share changing state through a `Cell`.
+- **`await handle`** gives the value of an `Async<T>`. It waits only when the task has not finished, and awaiting the same handle again gives the same value. `await` on another type is E1102.
+- **Where `await` is allowed.** Anywhere in an async body (function, arrow or block), in any expression: `if (await ready())` and `total(await first(), await second())` work, and the operands run left to right as in TypeScript. Outside an async body, in a `function*` body and in an arrow function that is not `async` it is E1100.
+- **An unused `Async<T>` is a compile error** (E1103), like an unchecked `Result`: a call without `await` as a statement, an `async { ... }` alone, and `const _ = f()`. Await the handle, keep it, pass it on, or let the task run with `Async.detach(handle)`.
+- **Effects are charged where the handle is made.** A call of an async function has the function's effects plus `alloc` for the task, and `await` has none. `Async<T>` carries no effects. The type of an async arrow lists the effects of its body: `(id: int) => Async<User> uses io`.
+- **Parameters.** An async function or arrow takes no `mutable` parameter (E1104), because the task outlives the call. Its parameters are kept in the task, and a value passed to a task is shared with it: while a local holds the handle, a write to the passed place is a shared write (E0978, section 6), and `copy(...)` at the argument is the fix.
+- `for (mutable item of items)` is a compile error in an async body (E1105). `async function*` is not present (E1107).
+
+The functions of `std/async` (`import * as Async from "std/async"`):
+
+- **`Async.then(handle, callback)`** runs `callback` with the value when the task finishes and returns nothing. The callback is an ordinary escaping function with no `await`, and its effects are charged at the call. The runtime drops it after it runs or when the handle is cancelled.
+- **`Async.detach(handle)`** lets the task run with nobody waiting.
+- **`Async.peek(handle): Option<T>`** gives the value once the task has finished, and `None` before that or after a cancel. It never waits.
+- **`Async.cancel(handle)`** cancels the task (below).
+- **`Async.all(handles): Async<Array<T>>`** gives every value, in order. **`Async.race(handles): Async<Option<T>>`** gives the first value to come, or `None` for an empty array. Neither cancels the handles it was given.
+- **`await Async.idle()`** waits until no other task of the loop is running, ready or waiting, counting tasks started while it waits.
+- **`AsyncError`** is the error of every suspending std function: `AsyncError.Cancelled`, or `AsyncError.Failed(message)` with the operating system's message.
+- **No blocking wait.** No function waits for a handle outside an async body. A function that is not `async` starts tasks and passes their handles on, detaches them, or registers a `then` callback.
+- **No `Thenable` trait.** `await` works only on `Async<T>`, so it never runs user code. A type that can be awaited offers a function that returns an `Async<T>`.
+
+The loop:
+
+- **One event loop per thread,** with no loop value to pass around. The entry function runs as its first task (section 15). It may be `export async function run(args: Array<string>): int`, whose `Async<int>` gives the exit code.
+- **The program exits when the entry function finishes.** Tasks still running then are cancelled and run until they return; a task left waiting on a task that can never finish is dropped. To let tasks finish first, end the entry with `await Async.idle()`. A detached task lives at most as long as the program.
+- **A cycle of awaits stops the program.** When no task is ready, no timer is set and no I/O is waiting, but the entry has not finished, the tasks wait on each other. The program stops with the message `async: every task waits on another task` and exit code 101, as for a panic.
+- **Cancel is cooperative.** After `Async.cancel(handle)`, the suspending std call that the task waits on or makes next returns `Err(AsyncError.Cancelled)` without doing its work, and so does every later one. The body handles it like any error and returns a `T`, so `await` on a cancelled handle still gives a `T`. A cancelled handle's `then` callbacks do not run. A cancel does not reach the tasks that the cancelled task awaits, since other holders may wait on them. Cancelling a finished task does nothing. `Async.idle()` is not a cancel point: in a cancelled task it finishes at once.
+- **Suspending I/O lives in `std/async/*`.** Each suspending function is `async` and returns `Result<T, AsyncError>`, so a body must look at the result (E0229) and sees a cancel.
+  - `std/async/time`: `sleep(duration: Duration): Result<Duration, AsyncError>`, with `Duration` from `std/time`. Ok holds the time slept.
+  - `std/async/file`: `readText`, `writeText`, `readBytes` and `writeBytes`, with the names and arguments of `std/fs`. Each call reads or writes in one blocking step, then lets the other ready tasks run once.
+  - `std/async/net`: `listen(host, port): Result<Listener, AsyncError>` and `localPort(listener): int`, which do not suspend, and `accept(listener)`, `connect(host, port)`, `read(connection, maxBytes): Result<bytes, AsyncError>` (empty at the end of the stream) and `write(connection, data): Result<int, AsyncError>`. `host` is a numeric address, and port 0 picks a free port. `Listener` and `Connection` are handles: copies share the socket, and it closes when the last copy is dropped (section 6).
+- **Blocking calls block the loop.** `std/fs`, `Time.sleep`, `Process.run` and the other blocking functions are allowed in async code, and no other task runs while they wait.
+- **A task stays on the thread that runs its loop.** An `Async<T>` or a `Cell` cannot be sent to another thread. Pass work between the loops of several threads with channels.
+- The loop waits with `kqueue` on macOS and `epoll` on Linux.
 
 ## 9. Unsafe code and C interop
 
@@ -1642,6 +1672,9 @@ export enum Color {
   - Every local, loop counter, temporary and expression result of the body is a field of the struct, so no C local is alive across a `yield`. Only scratch values used inside one expression stay C locals.
   - `yield v` stores `v` for the caller, records the next state and returns. Ending the body or `return` releases what is still held and sets the finished state; resuming a finished generator returns nothing again.
   - Dropping an unfinished generator releases what is live at its state and frees the struct. Resuming a shared generator first copies the struct and retains what is live in it, so `for ... of` and `yield*` work on their own copy.
+  - Calling an async function allocates the struct with a task header and a field for the result, stores its parameters (an async arrow or block stores its captures) and runs the body until it first waits. The struct is the task and the handle: `Async<T>` points to it, and copies of the handle share it, so it is never copied.
+  - `await` on a finished handle reads the result field. Otherwise the task joins the handle's waiters, records the next state and returns to the loop, which resumes it once the handle has finished.
+  - A finished task has released its locals. The struct and the result are freed with the last handle. At exit the tasks still unfinished are dropped like an unfinished generator, so the leak check sees nothing of them.
 - **`mutable` parameters** compile to C pointer parameters.
 - **Self-calls in tail position** compile to loops in every function (section 2). Other recursion uses the C stack. Stack overflow aborts the program.
 - **Closures.** A non-escaping closure's environment is a C struct on the caller's stack. An escaping closure's environment is a reference-counted heap object. The bodies of `@inline` functions, and of arrow functions passed to them, are written into each call (section 2).
@@ -1913,7 +1946,7 @@ generics = "compact"    # optional: layout tables everywhere, for smaller binari
 ```
 
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
-- **The entry function** has the signature `export function run(args: Array<string>): int`. The result is the process exit code. It has every effect, and it is not `async`.
+- **The entry function** has the signature `export function run(args: Array<string>): int`, or `export async function run(args: Array<string>): int`. The result is the process exit code; for an async entry, the value of its `Async<int>`. It has every effect. Tasks still running when it finishes are cancelled (section 8).
 - **`[link]`** has one key, `search`: directories `cc` searches for libraries (`-L`), relative to the package directory unless absolute. The libraries come from the `from` of extern blocks (section 9); any other key in `[link]` is E1000.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
@@ -1923,7 +1956,7 @@ generics = "compact"    # optional: layout tables everywhere, for smaller binari
 
 These are left out of the first version on purpose.
 
-- **Task cancellation and timeouts.** A task runs until it returns. A cancellation design for async tasks and threads is not decided.
+- **Thread cancellation.** A thread runs until it returns. Async tasks have a cooperative cancel (`Async.cancel`, section 8), and a timeout is `Async.race` with a `sleep`; a cancel design for threads is not decided.
 - **A cycle collector for identity objects.** Cycles through identity types leak and the leak check reports them (section 6, D80).
 - **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.

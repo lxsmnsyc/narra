@@ -842,6 +842,7 @@ const text = Label.label(price)
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
 | `Shape` | Conversion to and from the `Value` tree of `std/shape`, for serialization | By the compiler for prelude types, by `derives` or `implement` for a struct or enum |
+| `Sendable` | Values that may cross threads (section 6, not built yet) | Automatically for types without functions, `Cell`, `Async`, generators and the other types section 6 lists; never by `implement` |
 
 - A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
 - Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
@@ -1275,9 +1276,12 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Values across threads
 
-- A value captured by a thread function or sent through a channel is marked shared. Shared values use atomic reference counts. Unshared values use plain counts.
+Not built yet (D111; nodes threads, threads-check).
+
+- **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
+- A value captured by a thread function, sent through a channel or stored in a `Shared` is marked shared. Shared values use atomic reference counts. Unshared values use plain counts. Only a program that imports `std/thread` (or a module built on it) has shared values; any other program uses plain counts throughout.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
-- Every value can be sent to another thread. Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
+- Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
 
 ## 7. Effects
 
@@ -1382,7 +1386,7 @@ for (const n of both()) {
 
 ### Threads
 
-Threads run in a scope. Every thread started in a scope finishes before the scope returns.
+Threads run in a scope. Every thread started in a scope finishes before the scope returns. Not built yet (D111; nodes threads, threads-check): the compiler has no `std/thread`.
 
 ```ts
 import * as Thread from "std/thread"
@@ -1395,10 +1399,14 @@ const total = Thread.scope((scope) => {
 ```
 
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
-- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
-- **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
-- **Thread functions capture only constant values,** like every closure that can outlive its call. They cannot be `async`.
-- **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
+- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result. A second `join` gives the same value. Each thread has an 8 MiB stack, the size of the main thread's.
+- **Effects.** `Thread.start` has the effects of `f` and `alloc`. `Thread.scope` and `Thread.join` add none: joining gives the same result every run.
+- **A `Scope` cannot escape.** It can be passed to a function, but it cannot be stored in a field, element, tuple or constructor, returned, or captured by an escaping closure, a thread function included (E1191). Only code running inside `Thread.scope` can start threads in it.
+- **Thread functions** are an arrow function written at the call or the name of a top-level function (E1193), so the compiler sees what they capture. They capture only constant values, like every closure that can outlive its call, and each capture and the result must be `Sendable` (section 6, E1190). They cannot be `async` (E1192).
+- **Tasks on a thread.** Each thread has its own event loop. A thread function may start tasks; when it returns, its thread cancels and drains what is left, as the program does at exit (Async functions below), before `join` gives the result. An `Async<T>` is not `Sendable`, so a handle never reaches another thread's loop; work moves between loops through channels and `Shared`.
+- **A panic on any thread** prints its message and ends the process with code 101.
+- **`Parallel.map(items, f)`** from `std/parallel` splits an array into one part per core, runs `f` on each element on those threads and returns the results in order. `f` follows the thread function rules.
+- `==`, `!=` and map keys on a `Thread<T>` or a `Scope` are a compile error (E1195).
 
 ### Channels
 
@@ -1417,12 +1425,14 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 }
 ```
 
-The builtin that builds channels must accept the type argument in `Channel.create<int>(16)`. Builtin functions reject type arguments today (E0326), so channels need an exception when they are built.
+Not built yet (D111; node threads-channels). `std/channel` is a source module, and `Channel.create<int>(16)` is an ordinary call with a type argument (section 4).
 
-- **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`.
-- **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
-- **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
-- Blocking calls have the `io` effect.
+- **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`. `T` must be `Sendable` (E1190). A capacity below 1 is taken as 1.
+- **`Channel.send(sender, value)`** blocks while the channel is full and returns `true`. It returns `false` and drops the value once the channel is closed or every copy of the receiver is gone.
+- **`Channel.receive(receiver)`** blocks until a value arrives and returns `Some(value)`, or `None` once the channel is closed and empty. **`Channel.values(receiver)`** is a `Generator<T> uses io` over the same values. Copies of a `Receiver` share the queue, so several threads can take values from one channel; each value goes to one of them.
+- **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it.
+- Blocking calls have the `io` effect. In async code they block the thread's event loop, as other blocking calls do.
+- `==`, `!=` and map keys on a `Sender` or a `Receiver` are a compile error (E1195).
 - **A channel in a cycle stays open** (D80). A `Sender` sent through its own channel, or held in a `Shared` that the channel's values reach, keeps the channel alive: it is never freed, and dropping the other copies of the sender does not close it, so a receiver that reads until the close waits forever. When senders travel through channels, close the channel with `Channel.close(sender)` instead of relying on the last drop; the close ends the receiver's wait, and a receiver that reads the channel empty drops the sender it held and breaks the cycle. A `Sender<Reply>` sent inside a request (`Sender<#[Request, Sender<Reply>]>`) is fine: the reply channel does not hold the request channel.
 
 ### Cell
@@ -1446,7 +1456,7 @@ const reset = (): int => {
 
 - **`Cells.create(value)`** allocates the slot (`uses alloc`). **`Cells.get(cell)`** returns a copy of the value. **`Cells.set(cell, value)`** replaces it and drops the old value at the call. **`Cells.update(cell, change)`** stores `change(value)`; `change` is a function that returns the new value, because a scalar cannot be a `mutable` parameter (D81). None of the last three has an effect: a write to a `Cell` is not tracked.
 - Copying a `Cell`, capturing it, or storing it in a struct copies the handle, so every copy sees every write. `Cell` is an `opaque struct`: its field is not reachable. `==` and `!=` on a `Cell` are a compile error (E0965), and a `Cell` is not `Hashable`, so it cannot be a `Map` key; compare the values with `Cells.get`.
-- **A `Cell` cannot cross threads.** It uses plain reference counts. Use `Shared`. Threads are parked, so the compiler does not check this yet; the node that builds threads must reject a `Cell`, or a value that holds one, captured by a thread function or sent through a channel.
+- **A `Cell` cannot cross threads.** It uses plain reference counts and is not `Sendable` (section 6): a `Cell`, or a value that holds one, captured by a thread function or sent through a channel is E1190, with a hint to use `Shared`. Not built yet (node threads-check).
 - **A closure stored in the `Cell` it captures leaks** (D80); clear it with `Cells.set(cell, None)` first.
 
 ### Shared state
@@ -1459,21 +1469,24 @@ A few types have identity: copying one copies a handle to the same object. They 
 | `Shared<T>` | A value guarded by a lock |
 | `Atomic<T>` | An integer or `bool` with atomic operations |
 
+Not built yet (D111; node threads-shared).
+
+<!-- context
+import * as Shared from "std/shared"
+-->
 ```ts
 const hits = Shared.create(0)
 
-Shared.update(hits, (mutable count) => {
-  count = count + 1
-})
+Shared.update(hits, (count) => count + 1)
 
 const now = Shared.read(hits, (count) => count)
 ```
 
-- **Open (D81).** The sample above passes an `int` as a `mutable` arrow parameter, which D81 and E0028 do not allow. The node that builds `Shared` decides its form, for example a callback that returns the new value.
-- **The lock is held only during the callback.** `Shared.update` and `Shared.read` take the lock, run the callback and release it. There is no way to take the lock and forget to release it.
-- **The callback cannot be `async`,** so a task never suspends while holding a lock.
-- **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
-- `==` on an identity type compares identity, not contents.
+- **`Shared<T>`** (`std/shared`) has the functions of `Cells` and `read`: `Shared.create(value)` (`uses alloc`), `Shared.get(shared)` returns a copy, `Shared.set(shared, value)`, `Shared.update(shared, change)` stores `change(value)`, and `Shared.read(shared, look)` returns `look(value)`. As for `Cells.update`, `change` returns the new value, because a scalar cannot be a `mutable` parameter (D81). `T` must be `Sendable` (E1190).
+- **The lock is held only while a call runs.** Each function takes the lock, does its work (running the callback, if any) and releases it. There is no way to take the lock and forget to release it.
+- **The callback cannot be `async`** (E1410), so a task never suspends while holding a lock.
+- **`Atomic<T>`** (`std/atomic`) holds a `bool` or an integer type up to 64 bits (E1411 for any other `T`). It offers `Atomic.create`, `Atomic.load`, `Atomic.store`, `Atomic.exchange`, `Atomic.add` (integers only; it returns the old value and wraps like `+`) and `Atomic.compareExchange(atomic, expected, replacement)`, which returns `true` when it stored. Every operation is sequentially consistent.
+- `==`, `!=` and map keys on a `Shared` or an `Atomic` are a compile error (E1195), as on a `Cell`; compare the values instead.
 - **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Async<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narra audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
 

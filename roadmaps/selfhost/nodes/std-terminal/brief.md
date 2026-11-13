@@ -1,7 +1,7 @@
 ---
 id: std-terminal
 title: "std/terminal"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 196421
 owns:
   - std/src/terminal.nra
   - selfhost/src/stdterminal.nra

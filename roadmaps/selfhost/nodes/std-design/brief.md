@@ -1,7 +1,7 @@
 ---
 id: std-design
 title: "Design: std APIs for the tool layer"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-14

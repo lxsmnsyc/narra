@@ -635,9 +635,9 @@ function floatLiteralCode(emitter: Emitter, nodeId: int, text: string): string u
 }
 
 function mayWrite(emitter: Emitter, expression: Expr): bool uses alloc {
-  // Block expressions, matches and calls that run a closure can assign; plain
-  // reads, operators, arrows (their body runs later) and calls with
-  // side-effect-free arguments cannot.
+  // Block expressions, matches, calls that run a closure and arrows that write
+  // a captured `let` can assign; plain reads, operators, other arrows (their
+  // body runs later) and calls with side-effect-free arguments cannot.
   return match (expression) {
     Expr.IntLit(_, _, _)
       | Expr.FloatLit(_, _, _)
@@ -655,9 +655,19 @@ function mayWrite(emitter: Emitter, expression: Expr): bool uses alloc {
     Expr.MapLit(_, _, _, keys, values) => anyMayWrite(emitter, keys) || anyMayWrite(emitter, values)
     Expr.StructLit(_, _, _, _, fields, spread) => structMayWrite(emitter, fields, spread)
     Expr.CallExpr(nodeId, _, _, _, arguments) => callMayWrite(emitter, nodeId, arguments)
-    Expr.ArrowExpr(_, _, _, _, _, _) => false
+    Expr.ArrowExpr(nodeId, _, _, _, _, _) => arrowWritesCaptured(emitter, nodeId)
     _ => true
   }
+}
+
+function arrowWritesCaptured(emitter: Emitter, nodeId: int): bool {
+  // An arrow's body runs later, unless a call that takes it runs it now: then a
+  // captured `let` that the body writes changes under the arguments before it.
+  const info = emitter.checker.bodies[emitter.body]
+  if (info.closureIndex[nodeId] is Some(closureIndex)) {
+    return info.closures[closureIndex].writesCaptured
+  }
+  return false
 }
 
 function anyMayWrite(emitter: Emitter, list: Array<Expr>): bool uses alloc {

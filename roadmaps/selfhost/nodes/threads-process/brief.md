@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 92496
 owns:
   - roadmaps/selfhost/nodes/threads-process/**
 shared:

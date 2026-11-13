@@ -1,7 +1,7 @@
 ---
 id: async-core
 title: "Async functions, blocks and await"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 661776
 owns:
   - testdata/async_*
   - testdata/errors/async_*

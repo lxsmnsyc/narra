@@ -1,7 +1,7 @@
 ---
 id: async-api
 title: "Async.then, detach, peek, cancel, all and race"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-12

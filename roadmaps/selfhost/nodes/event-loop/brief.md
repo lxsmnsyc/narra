@@ -1,7 +1,7 @@
 ---
 id: event-loop
 title: "The event loop: kqueue, epoll, timers and exit"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-12

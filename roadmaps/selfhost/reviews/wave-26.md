@@ -8,8 +8,7 @@ Orchestrator rulings: `Async.idle()` built in async-core; E1111; discarding a va
 
 ## Still to do
 
-1. Pull request PR #117 (`feat/batch-12` into `main`) is open for the maintainer.
-2. After it merges: set batch-12 `done` on `main`, prune `feat/batch-12` and `../narra-batch-12`.
+Done: PR #117 merged on 2026-11-13; batch-12 set `done` on `main`; `feat/batch-12` and `../narra-batch-12` pruned.
 
 ## Inbox from this batch
 

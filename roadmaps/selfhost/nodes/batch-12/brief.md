@@ -1,7 +1,7 @@
 ---
 id: batch-12
 title: "Batch 12: async, plus fixes from the batch-11 reviews"
-status: active
+status: done
 priority: should
 type: story
 story: 
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 2681000
 owns:
   - roadmaps/selfhost/nodes/batch-12/**
 shared:

@@ -171,6 +171,9 @@ export struct Emitter {
   // text written for them so far (emitdynamic.nra).
   dynamicNeeds: Array<DynamicNeed> = []
   dynamicTexts: Array<string> = []
+  // Thread mode (D111 item 2): the program imports std/thread, so the C file
+  // defines NARRA_THREADS and counted values get share functions.
+  threads: bool = false
 }
 
 // The caller's side of the emitter state at an @inline call, put back while the
@@ -376,7 +379,17 @@ export function newEmitter(
     syntheticTypes: Map {},
     syntheticRefs: Map {},
     syntheticCode: Map {},
+    threads: usesThreads(checker),
   }
+}
+
+function usesThreads(checker: Checker): bool {
+  for (const path of Arrays.values(checker.used)) {
+    if (path == "std/internal/thread") {
+      return true
+    }
+  }
+  return false
 }
 
 export function noteReference(mutable emitter: Emitter, name: string) uses alloc {
@@ -470,7 +483,7 @@ export function literal(mutable emitter: Emitter, text: string): string uses all
   const name = `L${Int.toString(emitter.literalCount)}`
   Str.append(
     mutable emitter.literals,
-    `static lstr ${name} = {-1, ${Int.toString(Str.length(text))}, ${cString(text)}};\n`,
+    `static lstr ${name} = {0, ${Int.toString(Str.length(text))}, ${cString(text)}};\n`,
   )
   return `(&${name})`
 }
@@ -645,6 +658,16 @@ export function retainCode(emitter: Emitter, type: Type, value: string): string 
 
 export function releaseCode(emitter: Emitter, type: Type, value: string): string uses alloc {
   return refCountCode(emitter, "release", type, value)
+}
+
+export function shareCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  // Thread mode only: marks value and what it holds shared (D111 item 2).
+  // Values that cannot cross a thread have nothing to mark.
+  const base = underlyingType(emitter, type)
+  return match (base) {
+    Type.TGenerator(_, _, _, _, _) | Type.TAsync(_) | Type.THandle | Type.TDynamic(_) => ""
+    _ => refCountCode(emitter, "share", base, value)
+  }
 }
 
 function refCountCode(

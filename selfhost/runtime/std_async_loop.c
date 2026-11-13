@@ -65,7 +65,15 @@ typedef struct narra_loop {
 
 static _Thread_local narra_loop narra_async_loop;
 
+#ifdef NARRA_THREADS
+static void narra_async_exit(void);
+#endif
+
 static void narra_loop_add(narra_task* task) {
+#ifdef NARRA_THREADS
+  // A thread that started a task runs the loop's exit before it ends.
+  __atomic_store_n(&narra_loop_exit_hook, narra_async_exit, __ATOMIC_RELEASE);
+#endif
   narra_task* current = narra_async_loop.current;
   task->cancelled = narra_async_loop.exiting;
   task->started_cancelled = current != NULL && current->cancelled;

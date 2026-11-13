@@ -14,6 +14,18 @@
 #include <string.h>
 #include <unistd.h>
 
+// Thread mode (D111): a program that imports std/thread is emitted with
+// NARRA_THREADS defined. Shared objects then carry negative counts that change
+// atomically, each thread allocates from a heap of its own, and the state
+// below that a thread changes for itself is per thread. Without it the runtime
+// is the single-threaded one.
+#ifdef NARRA_THREADS
+#include <pthread.h>
+#define NARRA_PER_THREAD _Thread_local
+#else
+#define NARRA_PER_THREAD
+#endif
+
 // Test builds only (std/test): in a child process that runs a Test.panics
 // closure, a panic writes its message to this pipe and exits 101 at once.
 static int narra_panic_fd = -1;
@@ -24,8 +36,8 @@ static const char* narra_golden_dir = "testdata";
 
 // Test builds: while Co.resume runs a coroutine it sets this, so a panic in
 // the coroutine returns to Co.resume as Panicked (std/coroutine).
-static jmp_buf* narra_panic_jmp = NULL;
-static char narra_panic_text[256];
+static NARRA_PER_THREAD jmp_buf* narra_panic_jmp = NULL;
+static NARRA_PER_THREAD char narra_panic_text[256];
 
 // Failure and copy paths stay out of line so the hot paths inline. The
 // attributes are GNU extensions; other compilers get plain C11.
@@ -41,7 +53,32 @@ static char narra_panic_text[256];
 #define NARRA_LIKELY(condition) (condition)
 #endif
 
+#ifdef NARRA_THREADS
+// The threads started and not yet ended. While it is 0 only the main thread
+// runs, which then uses the static heap without reading a thread-local.
+static int64_t narra_threads_running = 0;
+// The exit of a thread's event loop (D109 item 6). std_async_loop.c sets it
+// when a task starts, so a thread that ends runs it.
+static void (*narra_loop_exit_hook)(void) = NULL;
+// A panic holds this lock until the process ends, so one message is written.
+static pthread_mutex_t narra_panic_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// The first read of a constant builds it under this lock (D61). Building one
+// constant may read another, so the thread that holds the lock may take it again.
+static pthread_mutex_t narra_const_mutex = PTHREAD_MUTEX_INITIALIZER;
+static NARRA_PER_THREAD int narra_const_depth = 0;
+static void narra_const_lock(void) {
+  if (narra_const_depth++ == 0) pthread_mutex_lock(&narra_const_mutex);
+}
+static void narra_const_unlock(void) {
+  if (--narra_const_depth == 0) pthread_mutex_unlock(&narra_const_mutex);
+}
+#endif
+
 _Noreturn NARRA_COLD static void narra_panic(const char* where, const char* msg) {
+#ifdef NARRA_THREADS
+  if (!narra_panic_jmp) pthread_mutex_lock(&narra_panic_lock);
+#endif
   fflush(stdout);
   if (narra_panic_jmp) {
     strncpy(narra_panic_text, msg, sizeof narra_panic_text - 1);
@@ -62,18 +99,14 @@ _Noreturn NARRA_COLD static void narra_panic(const char* where, const char* msg)
     _exit(101);
   }
   fprintf(stderr, "panic at %s: %s\n", where, msg);
-  exit(101);
-}
-
-// Live allocation count. With NARRA_CHECK_LEAKS set, the program reports
-// allocations still live at exit, which shows reference counting bugs.
-static int64_t narra_live = 0;
-
-static void narra_report_leaks(void) {
-  if (getenv("NARRA_CHECK_LEAKS") && narra_live != 0) {
-    fprintf(stderr, "leak check: %" PRId64 " allocations still live\n", narra_live);
-    _exit(102);
+#ifdef NARRA_THREADS
+  // No exit handler may run beside threads that still run.
+  if (__atomic_load_n(&narra_threads_running, __ATOMIC_ACQUIRE) > 0) {
+    fflush(stderr);
+    _exit(101);
   }
+#endif
+  exit(101);
 }
 
 // AddressSanitizer builds keep plain malloc and free, so the sanitizer sees
@@ -86,48 +119,175 @@ static void narra_report_leaks(void) {
 #endif
 #endif
 
-#ifndef NARRA_PLAIN_MALLOC
+#ifndef NARRA_THREADS
+// Live allocation count. With NARRA_CHECK_LEAKS set, the program reports
+// allocations still live at exit, which shows reference counting bugs.
+static int64_t narra_live = 0;
+
+static int64_t narra_live_total(void) { return narra_live; }
+#endif
+
+#if !defined(NARRA_PLAIN_MALLOC) || defined(NARRA_THREADS)
 // Blocks of up to 512 bytes, header included, come from size-class free
 // lists in steps of 16 bytes, carved from 1 MiB chunks. Larger blocks use
 // malloc. An 8-byte header in front of each block holds its class, 0 for a
 // malloc block. Chunks are never returned to the system.
+//
+// In thread mode each thread allocates from a heap of its own (D111 item 3).
+// The header keeps the class in its low byte and the number of the owning
+// heap above it; the static heap, which the main thread uses, is number 0. A
+// free from another thread pushes the block onto the owner's remote stack
+// with one compare-and-swap, and the owner takes the whole stack with one
+// exchange when a size class runs empty. A heap whose thread has ended goes
+// to the next thread that starts. live counts the allocations minus the frees
+// done on the heap's thread; the leak check adds them up.
 #define NARRA_SMALL_MAX 512
 #define NARRA_CHUNK_SIZE ((size_t)1 << 20)
-// Make this _Thread_local when threads exist: one heap per thread.
-#define NARRA_HEAP_LOCAL
 typedef struct narra_heap {
+#ifndef NARRA_PLAIN_MALLOC
   uint64_t* free_lists[NARRA_SMALL_MAX / 16 + 1];
   char* at;
   char* end;
   void* chunks; // linked through each chunk's first word, so they stay reachable
+#endif
+#ifdef NARRA_THREADS
+  int64_t live;
+  uint64_t number;
+  uint64_t* remote;
+  struct narra_heap* next_idle;
+#endif
 } narra_heap;
-static NARRA_HEAP_LOCAL narra_heap narra_small;
+static narra_heap narra_small;
+#endif
 
-static uint64_t* narra_carve(size_t size) {
-  if (!narra_small.at || (size_t)(narra_small.end - narra_small.at) < size) {
+#ifdef NARRA_THREADS
+#define NARRA_HEAP_MAX 4096
+static NARRA_PER_THREAD narra_heap* narra_heap_mine = &narra_small;
+static narra_heap* narra_heaps[NARRA_HEAP_MAX] = {&narra_small};
+static uint64_t narra_heap_count = 1;
+static narra_heap* narra_heap_idle = NULL;
+static pthread_mutex_t narra_heap_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// The heap of the calling thread. A plain load decides while no thread runs.
+static inline narra_heap* narra_heap_here(void) {
+  if (NARRA_LIKELY(__atomic_load_n(&narra_threads_running, __ATOMIC_RELAXED) == 0)) return &narra_small;
+  return narra_heap_mine;
+}
+
+#define narra_live (narra_heap_here()->live)
+
+static int64_t narra_live_total(void) {
+  int64_t total = 0;
+  pthread_mutex_lock(&narra_heap_lock);
+  for (uint64_t i = 0; i < narra_heap_count; i++) total += narra_heaps[i]->live;
+  pthread_mutex_unlock(&narra_heap_lock);
+  return total;
+}
+
+// Gives a started thread a heap: one whose thread has ended, or a new one.
+static void narra_heap_enter(void) {
+  pthread_mutex_lock(&narra_heap_lock);
+  narra_heap* heap = narra_heap_idle;
+  if (heap) {
+    narra_heap_idle = heap->next_idle;
+  } else {
+    if (narra_heap_count == NARRA_HEAP_MAX) {
+      pthread_mutex_unlock(&narra_heap_lock);
+      narra_panic("runtime", "too many threads at once");
+    }
+    // Plain calloc: a heap is never freed and stays reachable through narra_heaps.
+    heap = calloc(1, sizeof(narra_heap));
+    if (!heap) {
+      pthread_mutex_unlock(&narra_heap_lock);
+      narra_panic("runtime", "out of memory");
+    }
+    heap->number = narra_heap_count;
+    narra_heaps[narra_heap_count++] = heap;
+  }
+  pthread_mutex_unlock(&narra_heap_lock);
+  narra_heap_mine = heap;
+}
+
+// Hands the heap of an ending thread to the next thread that starts.
+static void narra_heap_leave(void) {
+  narra_heap* heap = narra_heap_mine;
+  pthread_mutex_lock(&narra_heap_lock);
+  heap->next_idle = narra_heap_idle;
+  narra_heap_idle = heap;
+  pthread_mutex_unlock(&narra_heap_lock);
+}
+#endif
+
+static void narra_report_leaks(void) {
+  if (getenv("NARRA_CHECK_LEAKS") && narra_live_total() != 0) {
+    fprintf(stderr, "leak check: %" PRId64 " allocations still live\n", narra_live_total());
+    _exit(102);
+  }
+}
+
+#ifndef NARRA_PLAIN_MALLOC
+// In thread mode the block functions take the heap, which the caller read once.
+#ifdef NARRA_THREADS
+#define NARRA_HEAP_ARG narra_heap* heap,
+#define NARRA_HEAP_PASS heap,
+#define NARRA_SIZE_CLASS(header) ((header) & 0xff)
+#else
+#define NARRA_HEAP_ARG
+#define NARRA_HEAP_PASS
+#define NARRA_SIZE_CLASS(header) (header)
+#define heap (&narra_small)
+#endif
+
+static uint64_t* narra_carve(NARRA_HEAP_ARG size_t size) {
+  if (!heap->at || (size_t)(heap->end - heap->at) < size) {
     char* chunk = malloc(NARRA_CHUNK_SIZE);
     if (!chunk) narra_panic("runtime", "out of memory");
-    *(void**)chunk = narra_small.chunks;
-    narra_small.chunks = chunk;
-    narra_small.at = chunk + 16;
-    narra_small.end = chunk + NARRA_CHUNK_SIZE;
+    *(void**)chunk = heap->chunks;
+    heap->chunks = chunk;
+    heap->at = chunk + 16;
+    heap->end = chunk + NARRA_CHUNK_SIZE;
   }
-  uint64_t* block = (uint64_t*)narra_small.at;
-  narra_small.at += size;
+  uint64_t* block = (uint64_t*)heap->at;
+  heap->at += size;
   return block;
 }
 
-static void* narra_block_new(size_t n) {
+#ifdef NARRA_THREADS
+// Moves the blocks other threads freed to the free lists of their classes.
+NARRA_COLD static bool narra_heap_collect(narra_heap* heap) {
+  uint64_t* block = __atomic_exchange_n(&heap->remote, NULL, __ATOMIC_ACQUIRE);
+  if (!block) return false;
+  while (block) {
+    uint64_t* next = *(uint64_t**)(block + 1);
+    uint64_t size_class = NARRA_SIZE_CLASS(*block);
+    *(uint64_t**)(block + 1) = heap->free_lists[size_class];
+    heap->free_lists[size_class] = block;
+    block = next;
+  }
+  return true;
+}
+#endif
+
+static void* narra_block_new(NARRA_HEAP_ARG size_t n) {
   uint64_t* block;
   if (n <= NARRA_SMALL_MAX - 8) {
     // The header keeps its class while the block sits in a free list.
     size_t size_class = (n + 8 + 15) >> 4;
-    block = narra_small.free_lists[size_class];
+    block = heap->free_lists[size_class];
+#ifdef NARRA_THREADS
+    if (!block && __atomic_load_n(&heap->remote, __ATOMIC_RELAXED) && narra_heap_collect(heap)) {
+      block = heap->free_lists[size_class];
+    }
+#endif
     if (block) {
-      narra_small.free_lists[size_class] = *(uint64_t**)(block + 1);
+      heap->free_lists[size_class] = *(uint64_t**)(block + 1);
     } else {
-      block = narra_carve(size_class << 4);
+      block = narra_carve(NARRA_HEAP_PASS size_class << 4);
+#ifdef NARRA_THREADS
+      *block = size_class | (heap->number << 8);
+#else
       *block = size_class;
+#endif
     }
   } else {
     if (n > SIZE_MAX - 8) narra_panic("runtime", "out of memory");
@@ -138,19 +298,46 @@ static void* narra_block_new(size_t n) {
   return block + 1;
 }
 
-static void narra_block_free(void* p) {
+static void narra_block_free(NARRA_HEAP_ARG void* p) {
   uint64_t* block = (uint64_t*)p - 1;
-  uint64_t size_class = *block;
-  if (size_class == 0) {
+  uint64_t header = *block;
+  if (header == 0) {
     free(block);
     return;
   }
-  *(uint64_t**)p = narra_small.free_lists[size_class];
-  narra_small.free_lists[size_class] = block;
+#ifdef NARRA_THREADS
+  // A block of another heap goes onto that heap's remote stack.
+  uint64_t owner = header >> 8;
+  if (NARRA_UNLIKELY(owner != heap->number)) {
+    narra_heap* home = narra_heaps[owner];
+    uint64_t* head = __atomic_load_n(&home->remote, __ATOMIC_RELAXED);
+    do {
+      *(uint64_t**)p = head;
+    } while (!__atomic_compare_exchange_n(&home->remote, &head, block, true, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+    return;
+  }
+#endif
+  uint64_t size_class = NARRA_SIZE_CLASS(header);
+  *(uint64_t**)p = heap->free_lists[size_class];
+  heap->free_lists[size_class] = block;
 }
+#ifndef NARRA_THREADS
+#undef heap
+#endif
 #endif
 
 static void* narra_alloc(size_t n) {
+#ifdef NARRA_THREADS
+  narra_heap* heap = narra_heap_here();
+  heap->live++;
+#ifdef NARRA_PLAIN_MALLOC
+  void* p = malloc(n ? n : 1);
+  if (!p) narra_panic("runtime", "out of memory");
+  return p;
+#else
+  return narra_block_new(heap, n);
+#endif
+#else
 #ifdef NARRA_PLAIN_MALLOC
   void* p = malloc(n ? n : 1);
   if (!p) narra_panic("runtime", "out of memory");
@@ -159,14 +346,25 @@ static void* narra_alloc(size_t n) {
 #endif
   narra_live++;
   return p;
+#endif
 }
 
 static void narra_free(void* p) {
+#ifdef NARRA_THREADS
+  narra_heap* heap = narra_heap_here();
+  heap->live--;
+#ifdef NARRA_PLAIN_MALLOC
+  free(p);
+#else
+  narra_block_free(heap, p);
+#endif
+#else
   narra_live--;
 #ifdef NARRA_PLAIN_MALLOC
   free(p);
 #else
   narra_block_free(p);
+#endif
 #endif
 }
 
@@ -186,7 +384,22 @@ static void narra_free(void* p) {
 #ifndef NARRA_RELEASE
 typedef struct narra_copy_slot { const void* p; int64_t credits; } narra_copy_slot;
 static bool narra_copy_on = false;
-static bool narra_copy_granting = false;
+static NARRA_PER_THREAD bool narra_copy_granting = false;
+// In thread mode the table is behind one lock, which a thread may take again
+// while it holds it (debug builds only).
+#ifdef NARRA_THREADS
+static pthread_mutex_t narra_copy_mutex = PTHREAD_MUTEX_INITIALIZER;
+static NARRA_PER_THREAD int narra_copy_depth = 0;
+static void narra_copy_lock(void) {
+  if (narra_copy_depth++ == 0) pthread_mutex_lock(&narra_copy_mutex);
+}
+static void narra_copy_unlock(void) {
+  if (--narra_copy_depth == 0) pthread_mutex_unlock(&narra_copy_mutex);
+}
+#else
+#define narra_copy_lock() ((void)0)
+#define narra_copy_unlock() ((void)0)
+#endif
 static narra_copy_slot* narra_copy_slots = NULL;
 static size_t narra_copy_cap = 0, narra_copy_used = 0;
 static int64_t narra_copy_unexplained[5];
@@ -313,17 +526,23 @@ static void narra_report_copies(void) {
 // the copy whose last holder was released, HELD counts a retain of a holder
 // made by copy(...) and BRAND marks the holder it makes. All expand to nothing, or
 // to the plain retain, under NARRA_RELEASE.
-#define NARRA_COPY_SHARED(p) do { if (narra_copy_granting) narra_copy_credit(p); } while (0)
+#define NARRA_COPY_SHARED(p) do { if (narra_copy_granting) { narra_copy_lock(); narra_copy_credit(p); narra_copy_unlock(); } } while (0)
+// In thread mode a shared count is negative, so the tests compare the number
+// of holders, and the table is read only under its lock.
+#ifdef NARRA_THREADS
+#define NARRA_COPY_DROP(p) do { if (narra_copy_on) { narra_copy_lock(); if (narra_copy_used && NARRA_RC_HOLDERS((p)->rc) <= 2) narra_copy_forget(p); narra_copy_unlock(); } } while (0)
+#else
 #define NARRA_COPY_DROP(p) do { if (narra_copy_used && (p)->rc <= 2) narra_copy_forget(p); } while (0)
-#define NARRA_COPY_WRITE(p, kind) narra_copy_write(p, kind)
+#endif
+#define NARRA_COPY_WRITE(p, kind) do { narra_copy_lock(); narra_copy_write(p, kind); narra_copy_unlock(); } while (0)
 #define NARRA_COPY_WRITTEN() (narra_copy_granting = false)
 #define NARRA_COPY_GRANT(on) narra_copy_grant(on)
 #define NARRA_COPY_ONLY(...) __VA_ARGS__
-#define NARRA_COPY_CREDIT(...) if (!narra_copy_on) {} else { __VA_ARGS__ }
+#define NARRA_COPY_CREDIT(...) if (!narra_copy_on) {} else { narra_copy_lock(); __VA_ARGS__ narra_copy_unlock(); }
 #define NARRA_COPY_GRANTED(...) do { narra_copy_grant(true); __VA_ARGS__ narra_copy_grant(false); } while (0)
-#define NARRA_COPY_ENDED(v, uncredit) do { bool retired = (v).copy_held && --narra_copy_holders[(v).copy_held] == 0; if ((v).u && narra_copy_used) { narra_copy_slot* mark = narra_copy_find((v).u); if (mark) { bool last = (v).u->rc <= 1; int64_t ended = last ? mark->credits : (retired && mark->credits > 0 ? 1 : 0); if (ended > 0 && ended < mark->credits) mark->credits -= ended; else if (ended > 0 || last) narra_copy_forget((v).u); while (ended-- > 0) uncredit(v); } } } while (0)
-#define NARRA_COPY_HELD(v) do { if ((v).copy_held) narra_copy_holders[(v).copy_held]++; } while (0)
-#define NARRA_COPY_BRAND(v) do { if ((v).copy_held) narra_copy_holders[(v).copy_held]--; (v).copy_held = narra_copy_brand(); } while (0)
+#define NARRA_COPY_ENDED(v, uncredit) do { narra_copy_lock(); bool retired = (v).copy_held && --narra_copy_holders[(v).copy_held] == 0; if ((v).u && narra_copy_used) { narra_copy_slot* mark = narra_copy_find((v).u); if (mark) { bool last = NARRA_RC_HOLDERS((v).u->rc) <= 1; int64_t ended = last ? mark->credits : (retired && mark->credits > 0 ? 1 : 0); if (ended > 0 && ended < mark->credits) mark->credits -= ended; else if (ended > 0 || last) narra_copy_forget((v).u); while (ended-- > 0) uncredit(v); } } narra_copy_unlock(); } while (0)
+#define NARRA_COPY_HELD(v) do { if ((v).copy_held) { narra_copy_lock(); narra_copy_holders[(v).copy_held]++; narra_copy_unlock(); } } while (0)
+#define NARRA_COPY_BRAND(v) do { narra_copy_lock(); if ((v).copy_held) narra_copy_holders[(v).copy_held]--; (v).copy_held = narra_copy_brand(); narra_copy_unlock(); } while (0)
 #define NARRA_COPY_START() narra_copy_start()
 #define NARRA_COPY_REPORT() narra_report_copies()
 #else
@@ -340,6 +559,54 @@ static void narra_report_copies(void) {
 #define NARRA_COPY_BRAND(v) ((void)0)
 #define NARRA_COPY_START() ((void)0)
 #define NARRA_COPY_REPORT() ((void)0)
+#endif
+
+// Reference counts (D111 item 2). A count above 0 is plain and owned by one
+// thread, a count below 0 marks a shared object whose count changes
+// atomically (minus one per holder), and 0 marks an immortal object (string
+// literals, closure environments on the stack). RETAIN adds a holder, RELEASE
+// removes one and is true for the last, and UNSHARE is true when a write must
+// copy first. Only thread mode makes counts negative, so without it the macros
+// are the plain operations. SHARE marks an object shared and is true when it
+// was not, so the caller goes on to the values it holds.
+#ifdef NARRA_THREADS
+static inline void narra_rc_retain(int64_t* rc) {
+  int64_t count = __atomic_load_n(rc, __ATOMIC_RELAXED);
+  if (NARRA_LIKELY(count > 0)) {
+    __atomic_store_n(rc, count + 1, __ATOMIC_RELAXED);
+  } else if (count < 0) {
+    __atomic_fetch_sub(rc, 1, __ATOMIC_RELAXED);
+  }
+}
+static inline bool narra_rc_release(int64_t* rc) {
+  int64_t count = __atomic_load_n(rc, __ATOMIC_RELAXED);
+  if (NARRA_LIKELY(count > 0)) {
+    __atomic_store_n(rc, count - 1, __ATOMIC_RELAXED);
+    return count == 1;
+  }
+  return count < 0 && __atomic_add_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0;
+}
+static inline bool narra_rc_share(int64_t* rc) {
+  // Only the owning thread sees a positive count, so a plain store would do;
+  // the loads are atomic because a shared count changes on other threads.
+  int64_t count = __atomic_load_n(rc, __ATOMIC_RELAXED);
+  if (count <= 0) return false;
+  __atomic_store_n(rc, -count, __ATOMIC_RELAXED);
+  return true;
+}
+static inline int64_t narra_rc_holders(int64_t* rc) {
+  int64_t count = __atomic_load_n(rc, __ATOMIC_RELAXED);
+  return count < 0 ? -count : count;
+}
+#define NARRA_RC_RETAIN(rc) narra_rc_retain(&(rc))
+#define NARRA_RC_RELEASE(rc) narra_rc_release(&(rc))
+#define NARRA_RC_UNSHARE(rc) (__atomic_load_n(&(rc), __ATOMIC_RELAXED) != 1)
+#define NARRA_RC_HOLDERS(rc) narra_rc_holders(&(rc))
+#else
+#define NARRA_RC_RETAIN(rc) ((void)((rc)++))
+#define NARRA_RC_RELEASE(rc) (--(rc) == 0)
+#define NARRA_RC_UNSHARE(rc) ((rc) != 1)
+#define NARRA_RC_HOLDERS(rc) (rc)
 #endif
 
 // Dropping a heap value queues the values it holds instead of recursing, so
@@ -377,15 +644,48 @@ static void narra_drop(void* p, void (*drop)(void*)) {
   narra_draining = false;
 }
 
+#ifdef NARRA_THREADS
+// Marking a value shared (D111 item 2) queues the parts of each object it
+// marks, as narra_drop does, so a long list is walked without the C stack.
+static NARRA_PER_THREAD narra_pending* narra_shares = NULL;
+static NARRA_PER_THREAD size_t narra_shares_n = 0, narra_shares_cap = 0;
+static NARRA_PER_THREAD bool narra_sharing = false;
+
+static void narra_share(void* p, void (*walk)(void*)) {
+  if (narra_sharing) {
+    if (narra_shares_n == narra_shares_cap) {
+      narra_shares_cap = narra_shares_cap ? narra_shares_cap * 2 : 64;
+      narra_pending* grown = realloc(narra_shares, narra_shares_cap * sizeof(narra_pending));
+      if (!grown) narra_panic("runtime", "out of memory");
+      narra_shares = grown;
+    }
+    narra_shares[narra_shares_n].p = p;
+    narra_shares[narra_shares_n].drop = walk;
+    narra_shares_n++;
+    return;
+  }
+  narra_sharing = true;
+  walk(p);
+  while (narra_shares_n > 0) {
+    narra_pending next = narra_shares[--narra_shares_n];
+    next.drop(next.p);
+  }
+  narra_sharing = false;
+}
+#endif
+
 static void* narra_realloc(void* p, size_t n) {
 #ifdef NARRA_PLAIN_MALLOC
   void* q = realloc(p, n ? n : 1);
   if (!q) narra_panic("runtime", "out of memory");
   return q;
 #else
-  if (!p) return narra_block_new(n);
+#ifdef NARRA_THREADS
+  narra_heap* heap = narra_heap_here();
+#endif
+  if (!p) return narra_block_new(NARRA_HEAP_PASS n);
   uint64_t* block = (uint64_t*)p - 1;
-  uint64_t size_class = *block;
+  uint64_t size_class = NARRA_SIZE_CLASS(*block);
   // A malloc block stays one, even when it shrinks.
   if (size_class == 0) {
     if (n > SIZE_MAX - 8) narra_panic("runtime", "out of memory");
@@ -396,9 +696,9 @@ static void* narra_realloc(void* p, size_t n) {
   // A small block that still fits stays; otherwise it moves to another class or to malloc.
   size_t room = (size_t)(size_class << 4) - 8;
   if (n <= room) return p;
-  void* q = narra_block_new(n);
+  void* q = narra_block_new(NARRA_HEAP_PASS n);
   memcpy(q, p, room);
-  narra_block_free(p);
+  narra_block_free(NARRA_HEAP_PASS p);
   return q;
 #endif
 }
@@ -416,22 +716,21 @@ typedef struct narra_gen {
   const void* in; // the input of the resume in progress (coroutines only)
 } narra_gen;
 static void narra_gen_retain(narra_gen* g) {
-  g->rc++;
+  NARRA_RC_RETAIN(g->rc);
   NARRA_COPY_SHARED(g);
 }
 static void narra_gen_release(narra_gen* g) {
   NARRA_COPY_DROP(g);
-  if (--g->rc == 0) narra_drop(g, g->drop);
+  if (NARRA_RC_RELEASE(g->rc)) narra_drop(g, g->drop);
 }
 // narra_gen_next resumes *p. A shared generator is copied first, so the
 // other holders of the value keep their state.
 static bool narra_gen_next(narra_gen** p, void* out) {
-  if ((*p)->rc > 1) {
+  if (NARRA_RC_UNSHARE((*p)->rc)) {
     NARRA_COPY_WRITE(*p, 4);
     narra_gen* copy = (*p)->clone(*p);
     NARRA_COPY_WRITTEN();
-    NARRA_COPY_DROP(*p);
-    (*p)->rc--;
+    narra_gen_release(*p);
     *p = copy;
   }
   return (*p)->resume(*p, out);
@@ -441,14 +740,13 @@ static bool narra_gen_next(narra_gen** p, void* out) {
 // for a generator) and returns 1 with a value at out, 0 when the generator is
 // done, or -1 when it panicked. Only a guarded call (test builds) catches a
 // panic: the frame is then finished, and what it held is not freed.
-static bool narra_co_panicked = false;
+static NARRA_PER_THREAD bool narra_co_panicked = false;
 static int narra_co_next(narra_gen** p, void* out, const void* in, bool guard) {
-  if ((*p)->rc > 1) {
+  if (NARRA_RC_UNSHARE((*p)->rc)) {
     NARRA_COPY_WRITE(*p, 4);
     narra_gen* copy = (*p)->clone(*p);
     NARRA_COPY_WRITTEN();
-    NARRA_COPY_DROP(*p);
-    (*p)->rc--;
+    narra_gen_release(*p);
     *p = copy;
   }
   (*p)->in = in;
@@ -474,7 +772,7 @@ static int narra_co_next(narra_gen** p, void* out, const void* in, bool guard) {
   return more ? 1 : 0;
 }
 
-// Strings. A negative count marks a literal that is never freed.
+// Strings. A count of 0 marks a literal that is never freed.
 typedef struct lstr {
   int64_t rc;
   int64_t len;
@@ -491,15 +789,27 @@ static lstr* lstr_new(int64_t len) {
 }
 
 static void lstr_retain(lstr* s) {
-  if (s->rc >= 0) s->rc++;
+#ifdef NARRA_THREADS
+  NARRA_RC_RETAIN(s->rc);
+#else
+  if (s->rc != 0) s->rc++;
+#endif
 }
 
 static void lstr_release(lstr* s) {
-  if (s->rc >= 0 && --s->rc == 0) {
+#ifdef NARRA_THREADS
+  if (NARRA_RC_RELEASE(s->rc)) {
+#else
+  if (s->rc != 0 && --s->rc == 0) {
+#endif
     narra_free(s->data);
     narra_free(s);
   }
 }
+
+#ifdef NARRA_THREADS
+static void lstr_share(lstr* s) { narra_rc_share(&s->rc); }
+#endif
 
 static lstr* lstr_from_cstr(const char* c) {
   int64_t n = (int64_t)strlen(c);

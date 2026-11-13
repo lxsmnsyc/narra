@@ -1349,7 +1349,7 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Values across threads
 
-Not built yet (D111; nodes threads, threads-check).
+The `Sendable` checks are not built yet (D111; node threads-check). Shared values and plain counts are built.
 
 - **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
 - A value captured by a thread function, sent through a channel or stored in a `Shared` is marked shared. Shared values use atomic reference counts. Unshared values use plain counts. Only a program that imports `std/thread` (or a module built on it) has shared values; any other program uses plain counts throughout.
@@ -1460,7 +1460,7 @@ for (const n of both()) {
 
 ### Threads
 
-Threads run in a scope. Every thread started in a scope finishes before the scope returns. Not built yet (D111; nodes threads, threads-check): the compiler has no `std/thread`.
+Threads run in a scope. Every thread started in a scope finishes before the scope returns. The compile-time rules below (E1190 to E1195) and `std/parallel` are not built yet (D111; node threads-check).
 
 ```ts
 import * as Thread from "std/thread"

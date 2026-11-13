@@ -20,6 +20,7 @@ import {
   endStatement,
   unwindAll,
   releaseCode,
+  shareCode,
 } from "narrac/emitstate"
 import * as Exprs from "narrac/emitexprs"
 import * as ConstValues from "narrac/emitconstvalues"
@@ -159,6 +160,13 @@ export function emitGetter(mutable emitter: Emitter, constIndex: int): string us
   const getter = cachedDeclName(emitter.typeNames, "g", info.module, info.name)
   writeLine(mutable emitter, `static ${typeName} ${getter}(void) {`)
   emitter.indent++
+  // In thread mode (D111 item 2) the first reader builds the value under a
+  // lock and marks it shared; the others read the flag with an acquire load.
+  if (emitter.threads) {
+    writeLine(mutable emitter, `if (!__atomic_load_n(&${variable}_ready, __ATOMIC_ACQUIRE)) {`)
+    emitter.indent++
+    writeLine(mutable emitter, "narra_const_lock();")
+  }
   writeLine(mutable emitter, `if (!${variable}_ready) {`)
   emitter.indent++
   beginStatement(mutable emitter)
@@ -171,10 +179,23 @@ export function emitGetter(mutable emitter: Emitter, constIndex: int): string us
   }
   const consumed = consume(mutable emitter, code.text, code.owned, constantType)
   writeLine(mutable emitter, `${variable} = ${consumed};`)
-  writeLine(mutable emitter, `${variable}_ready = 1;`)
+  if (emitter.threads) {
+    const shareText = shareCode(emitter, constantType, variable)
+    if (shareText != "") {
+      writeLine(mutable emitter, shareText)
+    }
+    writeLine(mutable emitter, `__atomic_store_n(&${variable}_ready, 1, __ATOMIC_RELEASE);`)
+  } else {
+    writeLine(mutable emitter, `${variable}_ready = 1;`)
+  }
   endStatement(mutable emitter)
   emitter.indent--
   writeLine(mutable emitter, "}")
+  if (emitter.threads) {
+    writeLine(mutable emitter, "narra_const_unlock();")
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+  }
   writeLine(mutable emitter, `return ${variable};`)
   emitter.indent--
   writeLine(mutable emitter, "}")

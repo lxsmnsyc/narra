@@ -1,0 +1,49 @@
+// Eight threads read one captured array of strings. The capture marks the
+// array and its strings shared, so no thread copies it, and the last holder
+// frees each string once (the leak check and AddressSanitizer see it).
+import * as Thread from "std/thread"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+function makeWords(count: int): Array<string> uses alloc {
+  let words: Array<string> = []
+  for (const index of Ranges.between(0, count)) {
+    Arrays.push(mutable words, `word-${Int.toString(index)}`)
+  }
+  return words
+}
+
+function countLetters(words: Array<string>, offset: int): int {
+  // Each thread reads every word, starting at its own offset.
+  let total = 0
+  const count = Arrays.length(words)
+  if (count == 0) {
+    return 0
+  }
+  for (const index of Ranges.between(0, count)) {
+    total += Str.length(words[(index + offset) % count])
+  }
+  return total
+}
+
+export function run(_args: Array<string>): int {
+  const words = makeWords(1000)
+  const totals = Thread.scope((scope) => {
+    let threads: Array<Thread.Thread<int>> = []
+    for (const offset of Ranges.between(0, 8)) {
+      Arrays.push(mutable threads, Thread.start(scope, () => countLetters(words, offset)))
+    }
+    let results: Array<int> = []
+    for (const thread of Arrays.values(threads)) {
+      Arrays.push(mutable results, Thread.join(thread))
+    }
+    return results
+  })
+  for (const total of Arrays.values(totals)) {
+    print(`letters ${Int.toString(total)}`)
+  }
+  print(`first word ${words[0]}, ${Int.toString(Arrays.length(words))} words`)
+  return 0
+}

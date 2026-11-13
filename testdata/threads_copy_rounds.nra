@@ -1,0 +1,67 @@
+// Eight threads, four rounds: each reads shared items, copies parts with
+// copy(...), builds new values that hold shared parts and returns them; the
+// main thread frees the results. The debug copy check counts the holders of a
+// shared object, so every copy is explained.
+import * as Thread from "std/thread"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+struct Item {
+  name: string
+  tags: Array<string>
+}
+
+function makeItems(count: int): Array<Item> uses alloc {
+  let items: Array<Item> = []
+  for (const index of Ranges.between(0, count)) {
+    Arrays.push(mutable items, Item {
+      name: `item-${Int.toString(index)}`,
+      tags: [`t${Int.toString(index)}`, "lit"],
+    })
+  }
+  return items
+}
+
+function work(items: Array<Item>, seed: int): Array<Item> uses alloc {
+  let mine = copy(items)
+  let out: Array<Item> = []
+  for (const round of Ranges.between(0, 50)) {
+    for (const item of Arrays.values(items)) {
+      let tags = copy(item.tags)
+      Arrays.push(mutable tags, Int.toString(seed + round))
+      Arrays.push(mutable out, Item { name: item.name, tags: tags })
+    }
+    if (round % 10 == 0) {
+      Arrays.push(mutable mine, Item { name: "extra", tags: [] })
+      out = []
+    }
+  }
+  Arrays.push(mutable out, copy(mine[0]))
+  return out
+}
+
+export function run(args: Array<string>): int {
+  const items = makeItems(200)
+  let grand = 0
+  for (const outer of Ranges.between(0, 4)) {
+    const lengths = Thread.scope((scope) => {
+      let threads: Array<Thread.Thread<Array<Item>>> = []
+      for (const seed of Ranges.between(0, 8)) {
+        Arrays.push(mutable threads, Thread.start(scope, () => work(items, seed + outer)))
+      }
+      let total = 0
+      for (const thread of Arrays.values(threads)) {
+        const got = Thread.join(thread)
+        total += Arrays.length(got)
+        const again = Thread.join(thread)
+        total += Str.length(again[0].name)
+      }
+      return total
+    })
+    grand += lengths
+  }
+  print(`total ${Int.toString(grand)} first ${items[0].name}`)
+  return 0
+}

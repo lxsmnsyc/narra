@@ -49,23 +49,52 @@ import {
   leaveBodyContext,
   retainCode,
   releaseCode,
+  shareCode,
   noteReference,
 } from "narrac/emitstate"
 
 const NODE = "selfhost-emit-closures"
 
 const ENV_RUNTIME = `
-// Closure environments. A count below zero marks an environment on the
-// caller's stack, which is never counted or freed.
+// Closure environments. A count of 0 marks an environment on the caller's
+// stack, which is never counted or freed.
 typedef struct narra_env { int64_t rc; void (*drop)(struct narra_env*); } narra_env;
 static void narra_env_retain(narra_env* e) {
-  if (e && e->rc >= 0) e->rc++;
+  if (e && e->rc != 0) e->rc++;
 }
 static void narra_env_release(narra_env* e) {
-  if (e && e->rc >= 0 && --e->rc == 0) {
+  if (e && e->rc != 0 && --e->rc == 0) {
     e->drop(e);
     narra_free(e);
   }
+}
+`
+
+// In thread mode an environment also has a share function, which marks the
+// captures shared when a thread function crosses to its thread (D111 item 2).
+const ENV_RUNTIME_THREADS = `
+// Closure environments. A count of 0 marks an environment on the caller's
+// stack, which is never counted or freed.
+typedef struct narra_env {
+  int64_t rc;
+  void (*drop)(struct narra_env*);
+  void (*share)(struct narra_env*);
+} narra_env;
+static void narra_env_retain(narra_env* e) {
+  if (e) NARRA_RC_RETAIN(e->rc);
+}
+static void narra_env_release(narra_env* e) {
+  if (e && NARRA_RC_RELEASE(e->rc)) {
+    e->drop(e);
+    narra_free(e);
+  }
+}
+static void narra_env_share_parts(void* p) {
+  narra_env* e = p;
+  e->share(e);
+}
+static void narra_env_share(narra_env* e) {
+  if (e && narra_rc_share(&e->rc)) narra_share(e, narra_env_share_parts);
 }
 `
 
@@ -136,7 +165,7 @@ export function emitFuncTypeDefinitions(
     return ""
   }
   let builder = Str.builder()
-  Str.append(mutable builder, ENV_RUNTIME)
+  Str.append(mutable builder, emitter.threads ? ENV_RUNTIME_THREADS : ENV_RUNTIME)
   // Forward declarations first, since structs hold function values inline.
   for (const type of Arrays.values(types)) {
     const name = cachedCType(emitter.checker, emitter.typeNames, type)
@@ -291,6 +320,9 @@ function emitArrowParts<W: EmitWalker>(
   const dropName = closureName("D", owner, count)
   if (Arrays.length(closure.captures) > 0) {
     emitEnvironmentStruct(mutable emitter, environmentType, dropName, closure)
+    if (emitter.threads) {
+      emitShareFunction(mutable emitter, environmentType, closureName("S", owner, count), closure)
+    }
   }
 
   // The body is a block; an expression body is a return or an expression statement.
@@ -334,8 +366,8 @@ function emitArrowParts<W: EmitWalker>(
   emitter.tempCount++
   const environment = `k${Int.toString(emitter.tempCount)}`
   if (closure.stack) {
-    // The environment lives on the caller's stack, with a count of -1.
-    let parts = [".h = {-1, NULL}"]
+    // The environment lives on the caller's stack, with a count of 0.
+    let parts = [".h = {0, NULL}"]
     for (const capture of Arrays.values(closure.captures)) {
       const local = readLocal(emitter, capture)
       Arrays.push(
@@ -356,6 +388,9 @@ function emitArrowParts<W: EmitWalker>(
   )
   writeLine(mutable emitter, `${environment}->h.rc = 1;`)
   writeLine(mutable emitter, `${environment}->h.drop = ${dropName};`)
+  if (emitter.threads) {
+    writeLine(mutable emitter, `${environment}->h.share = ${closureName("S", owner, count)};`)
+  }
   for (const capture of Arrays.values(closure.captures)) {
     const local = copy(readLocal(emitter, capture))
     const field = `${environment}->c_${localName(local)}`
@@ -437,6 +472,32 @@ function emitEnvironmentStruct(
     const releaseText = releaseCode(emitter, local.localType, `k->c_${localName(local)}`)
     if (releaseText != "") {
       Str.append(mutable builder, `  ${releaseText}\n`)
+    }
+  }
+  Str.append(mutable builder, "}\n")
+  Str.append(mutable emitter.closureEnvs, Str.build(builder))
+}
+
+function emitShareFunction(
+  mutable emitter: Emitter,
+  environmentType: string,
+  shareName: string,
+  closure: ClosureInfo,
+) uses alloc {
+  // Marks each capture held by value shared; a thread function holds no other.
+  let builder = Str.builder()
+  Str.append(
+    mutable builder,
+    `static void ${shareName}(narra_env* h) {\n  ${environmentType}* k = (${environmentType}*)h;\n  (void)k;\n`,
+  )
+  for (const capture of Arrays.values(closure.captures)) {
+    if (isCapturedByReference(emitter, closure, capture)) {
+      continue
+    }
+    const local = readLocal(emitter, capture)
+    const shareText = shareCode(emitter, local.localType, `k->c_${localName(local)}`)
+    if (shareText != "") {
+      Str.append(mutable builder, `  ${shareText}\n`)
     }
   }
   Str.append(mutable builder, "}\n")

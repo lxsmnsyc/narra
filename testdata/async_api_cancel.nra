@@ -1,0 +1,52 @@
+// Async.cancel marks a task and drops its then callbacks without running them,
+// freeing what they capture. The body keeps running, so await on a cancelled
+// handle still gives its value, also to a task that waited before the cancel.
+// Async.peek gives None before the task finishes and from the cancel on.
+// Cancelling a finished task does nothing.
+import * as Int from "std/int"
+import * as Async from "std/async"
+
+async function later(label: string): string uses io, alloc {
+  await Async.idle()
+  print(`${label} finishes`)
+  return `${label} value`
+}
+
+async function waitFor(handle: Async<string>): int uses io, alloc {
+  const value = await handle
+  print(`waiter gets ${value}`)
+  return 1
+}
+
+function describe(handle: Async<string>): string uses alloc {
+  const peeked = Async.peek(handle)
+  if (peeked is Some(value)) {
+    return `Some(${value})`
+  }
+  return "None"
+}
+
+export async function run(_args: Array<string>): int {
+  const doomed = later("doomed")
+  const captured = `captured ${Int.toString(42)}`
+  Async.then(doomed, (value) => print(`${captured} sees ${value}`))
+  Async.then(doomed, (value) => print(`second sees ${value}`))
+  // A callback that holds the handle it is registered on.
+  Async.then(doomed, (_value) => print(describe(doomed)))
+  const waiter = waitFor(doomed)
+  print(`peek before: ${describe(doomed)}`)
+  Async.cancel(doomed)
+  Async.cancel(doomed)
+  print(`peek after the cancel: ${describe(doomed)}`)
+  Async.then(doomed, (value) => print(`late sees ${value}`))
+  print(`await gives ${await doomed}`)
+  print(`waiter ends with ${Int.toString(await waiter)}`)
+  print(`peek after the end: ${describe(doomed)}`)
+
+  const done = later("done")
+  print(await done)
+  Async.cancel(done)
+  print(`peek after cancelling a finished task: ${describe(done)}`)
+  Async.then(done, (value) => print(`then still runs: ${value}`))
+  return 0
+}

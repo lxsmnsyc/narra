@@ -577,9 +577,10 @@ static int64_t narra_async_run_entry(narra_task* entry) {
 // dropping any breaks the cycles through those frames. Last, the poller
 // closes.
 static void narra_async_exit(void) {
+  narra_task_check_watchers(narra_async_loop.live);
   narra_async_loop.exiting = true;
   for (narra_task* task = narra_async_loop.live; task; task = task->next_live) {
-    task->cancelled = true;
+    narra_task_mark_cancelled(task);
   }
   do {
     narra_loop_cancel_all_waits();

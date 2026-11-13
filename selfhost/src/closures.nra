@@ -60,6 +60,7 @@ import * as Int from "std/int"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
+import { isVoidParameterValue } from "narrac/asyncvoid"
 
 export function checkArrow<W: Walker>(
   mutable checker: Checker,
@@ -629,16 +630,10 @@ export function checkCallThroughValue<W: Walker>(
 ): Type from funcResult uses alloc {
   // Parameters of a function type are escaping.
   setRef(mutable checker, nodeId, Ref.Value)
-  if (Arrays.length(arguments) != Arrays.length(funcParams)) {
-    reportError(
-      mutable checker,
-      pos,
-      "E0316",
-      `this call passes ${Int.toString(Arrays.length(arguments))} arguments, the function takes ${Int.toString(Arrays.length(funcParams))}`,
-    )
-  }
-  for (const index of Ranges.between(0, Arrays.length(arguments))) {
-    const arg = arguments[index]
+  // In a generic instance, a value of a type parameter bound to void fills no parameter.
+  let parameterIndex = 0
+  let passed = 0
+  for (const arg of Arrays.values(arguments)) {
     if (arg.isMutable) {
       reportError(
         mutable checker,
@@ -648,11 +643,27 @@ export function checkCallThroughValue<W: Walker>(
       )
     }
     let want: Option<Type> = None
-    if (index < Arrays.length(funcParams)) {
-      want = Some(funcParams[index])
+    if (parameterIndex < Arrays.length(funcParams)) {
+      want = Some(funcParams[parameterIndex])
     }
     const found = checkExpression(mutable checker, walker, arg.value, want)
-    expectType(mutable checker, getExpressionPos(arg.value), want, found)
+    const fillsNothing =
+      found == Type.TVoid &&
+        Arrays.length(arguments) != Arrays.length(funcParams) &&
+        isVoidParameterValue(checker, getExpressionId(arg.value))
+    if (!fillsNothing) {
+      expectType(mutable checker, getExpressionPos(arg.value), want, found)
+      parameterIndex++
+      passed++
+    }
+  }
+  if (passed != Arrays.length(funcParams)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0316",
+      `this call passes ${Int.toString(passed)} arguments, the function takes ${Int.toString(Arrays.length(funcParams))}`,
+    )
   }
   checkCalleeExclusive(mutable checker, callee, arguments)
   return funcResult

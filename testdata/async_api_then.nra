@@ -1,0 +1,53 @@
+// Async.then on a pending handle runs its callbacks in order when the task
+// finishes; on a finished handle it queues the callback for the next loop
+// turn, as TypeScript does. A callback that captures its own handle is
+// dropped after it runs, so nothing leaks.
+import * as Int from "std/int"
+import * as Async from "std/async"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+async function later(label: string, rounds: int): string uses io, alloc {
+  for (const _ of Ranges.between(0, rounds)) {
+    await Async.idle()
+  }
+  print(`${label} finishes`)
+  return `${label} value`
+}
+
+function watch(handle: Async<string>, name: string) uses io, alloc {
+  Async.then(handle, (value) => print(`${name} sees ${value}`))
+}
+
+export async function run(_args: Array<string>): int {
+  const pending = later("pending", 1)
+  watch(pending, "first")
+  watch(pending, "second")
+  print("callbacks kept")
+  print(await pending)
+  print("after await")
+  Async.then(pending, (value) => print(`queued on a finished handle: ${value}`))
+  print("after then on a finished handle")
+
+  // The callback holds the handle it is registered on: a cycle until it runs.
+  const own = later("own", 2)
+  Async.then(own, (value) => {
+    const again = Async.peek(own)
+    if (again is Some(text)) {
+      print(`own callback: ${value}, peek ${text}`)
+    }
+  })
+  Async.detach(own)
+
+  // A callback starts a new task; its effects are charged at Async.then.
+  const counted = later("counted", 1)
+  Async.then(counted, (value) => {
+    print(`counted gives ${Int.toString(Str.length(value))} characters`)
+    Async.detach(later("started by a callback", 1))
+  })
+  Async.detach(counted)
+  await Async.idle()
+  await Async.idle()
+  print("entry ends")
+  return 0
+}

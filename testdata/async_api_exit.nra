@@ -1,0 +1,49 @@
+// Tasks left at exit with then callbacks, waiters, an all and a race attached.
+// One task waits on its own handle and can never finish; its callbacks hold
+// the handle. Exit cancels every task, which drops the callbacks without
+// running them, and the loop drops the frames: nothing leaks.
+import * as Async from "std/async"
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+
+async function waitForSelf(slot: Cell<Option<Async<string>>>): string uses io, alloc {
+  await Async.idle()
+  print("waits on itself")
+  const own = Cells.get(slot)
+  if (own is Some(handle)) {
+    return await handle
+  }
+  return "none"
+}
+
+async function later(label: string): string uses io, alloc {
+  await Async.idle()
+  await Async.idle()
+  print(`${label} finishes`)
+  return label
+}
+
+function startStuck(): Async<string> uses io, alloc {
+  const slot: Cell<Option<Async<string>>> = Cells.create(None)
+  const task = waitForSelf(slot)
+  Cells.set(slot, Some(task))
+  Async.then(task, (value) => print(`stuck callback ${value}`))
+  return task
+}
+
+export async function run(_args: Array<string>): int {
+  const stuck = startStuck()
+  Async.then(stuck, (_value) => {
+    if (Async.peek(stuck) is Some(_)) {
+      print("never printed")
+    }
+  })
+  Async.detach(Async.all([stuck, later("beside the stuck task")]))
+  Async.detach(Async.race([stuck]))
+  const running = later("running at exit")
+  Async.then(running, (value) => print(`running callback ${value}`))
+  Async.detach(running)
+  await Async.idle()
+  print("entry ends")
+  return 0
+}

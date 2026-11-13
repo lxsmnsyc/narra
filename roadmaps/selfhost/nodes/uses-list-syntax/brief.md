@@ -4,9 +4,9 @@ title: "Effect lists inside type lists"
 status: todo
 priority: must
 type: feature
-story:
+story: batch-13
 early: false
-outline: true
+outline: false
 milestone: p1-syntax
 target:
 ship: auto
@@ -15,25 +15,36 @@ from:
 size: S
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
 spent:
-owns: []
-shared: []
+owns:
+  - roadmaps/selfhost/nodes/uses-list-syntax/**
+shared:
 reserves: []
 provides: []
-depends_on: []
+depends_on:
+  - on: uses-list-design
+    kind: hard
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
 # Effect lists inside type lists
 
 ## Goal
 
-Outside a parameter list, a `uses` list on a type takes every following `, name` as another effect (`parseUsesList`), so `Map<Generator<int> uses io, int>` parses as one generator with effects `io, int`, and `#[Generator<int> uses io, Array<int>]` is a parse error. Function types with `uses` have the same problem. Needs a syntax decision (for example parentheses around the effect list), then the parser, fmt and SPEC change. From the PR #82 review.
+Build D117: the new effect list syntax inside type lists.
 
-## Notes
+## Context
 
-Outline, added 2026-11-13 when the maintainer set the phase order (syntax, std, feature review, packages, distribution, docs).
+- Refined by `uses-list-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
+
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

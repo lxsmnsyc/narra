@@ -4,6 +4,7 @@ title: std/arena
 status: todo
 priority: should
 type: feature
+story: batch-14
 outline: true
 milestone: p2-std
 target:
@@ -20,6 +21,9 @@ shared: []
 reserves: []
 provides: []
 depends_on:
+  - on: std-design
+    kind: hard
+    why: the design gate fixes the API this node builds
   - on: std-foundation
     kind: hard
     why: source std modules need the generic mismatch errors, std/internal and the stage 2 tests (std-source gate, 2026-11-05)

@@ -1,36 +1,50 @@
 ---
 id: simd
-title: SIMD vector types
+title: "SIMD vector types"
 status: todo
 priority: must
 type: feature
-outline: true
+story: batch-13
+early: false
+outline: false
 milestone: p1-syntax
 target:
+ship: auto
+land: auto
 from:
 size: M
 spike: false
-verify:
+hypothesis:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
-added:
-owns: []
-shared: []
+added: 2026-11-13
+spent:
+owns:
+  - roadmaps/selfhost/nodes/simd/**
+shared:
 reserves: []
 provides: []
 depends_on:
-  - on: fixed-arrays
+  - on: simd-design
     kind: hard
-    why: vectors build on fixed-size array layout
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
 # SIMD vector types
 
 ## Goal
 
-`std/simd` vector types compiled to C vector extensions.
+Build D112: `std/simd` vector types compiled to C vector extensions.
 
-## Notes
+## Context
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+- Refined by `simd-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
+
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

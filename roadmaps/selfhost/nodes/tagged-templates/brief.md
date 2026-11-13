@@ -4,9 +4,9 @@ title: "Tagged template literals"
 status: todo
 priority: must
 type: feature
-story:
+story: batch-13
 early: false
-outline: true
+outline: false
 milestone: p1-syntax
 target:
 ship: auto
@@ -15,25 +15,36 @@ from:
 size: M
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
 spent:
-owns: []
-shared: []
+owns:
+  - roadmaps/selfhost/nodes/tagged-templates/**
+shared:
 reserves: []
 provides: []
-depends_on: []
+depends_on:
+  - on: tagged-templates-design
+    kind: hard
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
 # Tagged template literals
 
 ## Goal
 
-`tag`text ${value}`` with TypeScript's meaning: the tag is a function named at the use site, so no call is hidden. Approved for planning 2026-11-07. Open: the tag's signature (an `Array<string>` of parts and a typed list of values, or one call per value type), how values of different types pass without varargs (D12), the tag's effects, and whether std ships tags (JSON, shell quoting). Refine through a design spike with a decision record.
+Build D114: tagged template literals.
 
-## Notes
+## Context
 
-Outline, added 2026-11-13 when the maintainer set the phase order (syntax, std, feature review, packages, distribution, docs).
+- Refined by `tagged-templates-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
+
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

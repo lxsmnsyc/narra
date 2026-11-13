@@ -4,7 +4,7 @@ title: "std/regex"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-14
 early: false
 outline: true
 milestone: p2-std
@@ -25,7 +25,11 @@ owns: []
 shared: []
 reserves: []
 provides: []
-depends_on: []
+depends_on:
+  - on: std-design
+    kind: hard
+    why: the design gate fixes the API this node builds
+
 ---
 
 # std/regex

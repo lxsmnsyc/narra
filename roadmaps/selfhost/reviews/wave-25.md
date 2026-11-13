@@ -18,7 +18,7 @@ Batch-12 runs on the local story branch `feat/batch-12` (worktree `../narra-batc
 
 ## Still to do
 
-1. Finish the four async-core fixes on `feat/async-core`, rebase on `feat/batch-12`, full check, squash to one commit, land it, set async-core `done`.
+1. On `feat/async-core`: squash `542bf01b` into `97a04089`, rebase on `feat/batch-12`, run the full check, land it, set async-core `done`.
 2. Start event-loop and async-api together (both after async-core), then std-async-io (after both).
 3. End of batch: seed updates, full check and Linux check, debug `emit selfhost` with `NARRA_CHECK_COPIES=1`, curator pass, fresh review of the whole branch, bench row, one pull request.
 

@@ -83,6 +83,9 @@ static bool narra_io_no_nul(lstr* s, lstr** err) {
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <sys/wait.h>
 
 typedef struct narra_proc_buf {
@@ -122,24 +125,97 @@ static int narra_proc_pipe(int* fds) {
   return 0;
 }
 
-static volatile sig_atomic_t narra_proc_child = 0;
+// While a call runs, SIGTERM, SIGINT and SIGHUP are passed on to its child, so
+// killing this process does not orphan the child. Several threads may call at
+// once: a count of active calls (under a mutex) installs the handlers for the
+// first call and restores them after the last, and each call owns a slot in a
+// fixed array of child pids that the handler walks with plain atomic loads.
+// A slot holds -1 from the claim until the pid is stored; a signal that
+// arrives in between is remembered in the pending array and sent on attach.
+#define narra_proc_SLOTS 64
+static pthread_mutex_t narra_proc_lock = PTHREAD_MUTEX_INITIALIZER;
+static int narra_proc_active = 0;
+static struct sigaction narra_proc_saved[3];
+static _Atomic int narra_proc_pids[narra_proc_SLOTS];
+static _Atomic int narra_proc_pending[narra_proc_SLOTS];
+static const int narra_proc_signals[3] = {SIGTERM, SIGINT, SIGHUP};
+
+typedef struct narra_proc_guard {
+  sigset_t mask;
+  int slot;
+} narra_proc_guard;
 
 static void narra_proc_forward(int signal_number) {
-  pid_t child = (pid_t)narra_proc_child;
-  if (child > 0) kill(child, signal_number);
+  for (int i = 0; i < narra_proc_SLOTS; i++) {
+    if (atomic_load(&narra_proc_pids[i]) == 0) continue;
+    atomic_store(&narra_proc_pending[i], signal_number);
+    int child = atomic_load(&narra_proc_pids[i]);
+    if (child > 0) kill((pid_t)child, signal_number);
+  }
 }
 
-static const int narra_proc_forwarded[3] = {SIGTERM, SIGINT, SIGHUP};
-
-// Clears the child slot with the signals still blocked, restores the old
-// handlers, then restores the old mask, so no signal reaches a reaped pid.
-static void narra_proc_detach(const sigset_t* forwarded_set, const sigset_t* saved_mask, struct sigaction* saved_actions) {
-  sigprocmask(SIG_BLOCK, forwarded_set, NULL);
-  narra_proc_child = 0;
-  for (int i = 0; i < 3; i++) sigaction(narra_proc_forwarded[i], &saved_actions[i], NULL);
-  sigprocmask(SIG_SETMASK, saved_mask, NULL);
+static void narra_proc_begin(narra_proc_guard* guard) {
+  sigset_t set;
+  sigemptyset(&set);
+  for (int i = 0; i < 3; i++) sigaddset(&set, narra_proc_signals[i]);
+  pthread_sigmask(SIG_BLOCK, &set, &guard->mask);
+  // Claim a slot; wait for one when all are taken.
+  guard->slot = -1;
+  while (guard->slot < 0) {
+    for (int i = 0; i < narra_proc_SLOTS; i++) {
+      int expected = 0;
+      if (atomic_compare_exchange_strong(&narra_proc_pids[i], &expected, -1)) {
+        atomic_store(&narra_proc_pending[i], 0);
+        guard->slot = i;
+        break;
+      }
+    }
+    if (guard->slot < 0) sched_yield();
+  }
+  pthread_mutex_lock(&narra_proc_lock);
+  if (narra_proc_active++ == 0) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = narra_proc_forward;
+    sigemptyset(&action.sa_mask);
+    for (int i = 0; i < 3; i++) {
+      // A signal that was ignored on entry (a background job, nohup) stays ignored.
+      sigaction(narra_proc_signals[i], NULL, &narra_proc_saved[i]);
+      if (narra_proc_saved[i].sa_handler != SIG_IGN) sigaction(narra_proc_signals[i], &action, NULL);
+    }
+  }
+  pthread_mutex_unlock(&narra_proc_lock);
 }
 
+// The child takes no lock: the saved handlers do not change while a call is active.
+static void narra_proc_restore_child(narra_proc_guard* guard) {
+  for (int i = 0; i < 3; i++) sigaction(narra_proc_signals[i], &narra_proc_saved[i], NULL);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
+}
+
+static void narra_proc_attach(narra_proc_guard* guard, pid_t pid) {
+  atomic_store(&narra_proc_pids[guard->slot], (int)pid);
+  int missed = atomic_load(&narra_proc_pending[guard->slot]);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
+  if (missed) kill(pid, missed);
+}
+
+// Frees the slot with the signals still blocked, restores the old handlers
+// after the last call, then restores the old mask, so no signal reaches a
+// reaped pid.
+static void narra_proc_detach(narra_proc_guard* guard) {
+  sigset_t set;
+  sigemptyset(&set);
+  for (int i = 0; i < 3; i++) sigaddset(&set, narra_proc_signals[i]);
+  pthread_sigmask(SIG_BLOCK, &set, NULL);
+  atomic_store(&narra_proc_pids[guard->slot], 0);
+  pthread_mutex_lock(&narra_proc_lock);
+  if (--narra_proc_active == 0) {
+    for (int i = 0; i < 3; i++) sigaction(narra_proc_signals[i], &narra_proc_saved[i], NULL);
+  }
+  pthread_mutex_unlock(&narra_proc_lock);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
+}
 // Runs cmd (found through PATH) with argv[0..argc) as its arguments and its
 // standard input closed. Returns false with *err set when the process cannot
 // start. The exit code of a process killed by a signal is 128 plus the signal.
@@ -166,25 +242,13 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   // so killing the parent does not orphan the child. The child stays in the
   // foreground process group, so Ctrl-C in a terminal still reaches it. The
   // signals are blocked from before the fork until the child pid is recorded.
-  sigset_t forwarded_set, saved_mask;
-  sigemptyset(&forwarded_set);
-  for (int i = 0; i < 3; i++) sigaddset(&forwarded_set, narra_proc_forwarded[i]);
-  sigprocmask(SIG_BLOCK, &forwarded_set, &saved_mask);
-  struct sigaction forward_action, saved_actions[3];
-  memset(&forward_action, 0, sizeof forward_action);
-  forward_action.sa_handler = narra_proc_forward;
-  sigemptyset(&forward_action.sa_mask);
-  for (int i = 0; i < 3; i++) {
-    // A signal that was ignored on entry (a background job, nohup) stays ignored.
-    sigaction(narra_proc_forwarded[i], NULL, &saved_actions[i]);
-    if (saved_actions[i].sa_handler != SIG_IGN) sigaction(narra_proc_forwarded[i], &forward_action, NULL);
-  }
+  narra_proc_guard guard;
+  narra_proc_begin(&guard);
   pid_t pid = fork();
   int fork_errno = errno;
-  if (pid > 0) narra_proc_child = (sig_atomic_t)pid;
-  if (pid != 0) sigprocmask(SIG_SETMASK, &saved_mask, NULL);
+  if (pid > 0) narra_proc_attach(&guard, pid);
   if (pid < 0) {
-    narra_proc_detach(&forwarded_set, &saved_mask, saved_actions);
+    narra_proc_detach(&guard);
     *err = narra_io_fail(cmd->data, cmd->len, strerror(fork_errno));
     narra_proc_close(po); narra_proc_close(pe); narra_proc_close(px);
     free(vec);
@@ -192,8 +256,7 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   }
   if (pid == 0) {
     int e;
-    for (int i = 0; i < 3; i++) sigaction(narra_proc_forwarded[i], &saved_actions[i], NULL);
-    sigprocmask(SIG_SETMASK, &saved_mask, NULL);
+    narra_proc_restore_child(&guard);
     int in = open("/dev/null", O_RDONLY);
     if (in < 0) goto child_fail;
     if (in != 0) {
@@ -220,7 +283,7 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   if (got == (ssize_t)sizeof child_errno) {
     close(po[0]); close(pe[0]);
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-    narra_proc_detach(&forwarded_set, &saved_mask, saved_actions);
+    narra_proc_detach(&guard);
     *err = narra_io_fail(cmd->data, cmd->len, strerror(child_errno));
     return false;
   }
@@ -244,7 +307,7 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   if (fds[0].fd >= 0) close(fds[0].fd);
   if (fds[1].fd >= 0) close(fds[1].fd);
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-  narra_proc_detach(&forwarded_set, &saved_mask, saved_actions);
+  narra_proc_detach(&guard);
   *code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
   *out = narra_io_lossy(bo.p ? bo.p : "", bo.len);
   *errout = narra_io_lossy(be.p ? be.p : "", be.len);

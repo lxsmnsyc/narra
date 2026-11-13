@@ -14,63 +14,105 @@
 // narra_panic prints before the process ends.
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
-// While a child runs, SIGTERM, SIGINT and SIGHUP are passed on to it, so
-// killing this process does not orphan the child. The signals are blocked from
-// before the fork until the child pid is stored.
-static volatile sig_atomic_t narra_panics_child = 0;
+// While a call runs, SIGTERM, SIGINT and SIGHUP are passed on to its child, so
+// killing this process does not orphan the child. Several threads may call at
+// once: a count of active calls (under a mutex) installs the handlers for the
+// first call and restores them after the last, and each call owns a slot in a
+// fixed array of child pids that the handler walks with plain atomic loads.
+// A slot holds -1 from the claim until the pid is stored; a signal that
+// arrives in between is remembered in the pending array and sent on attach.
+#define narra_panics_SLOTS 64
+static pthread_mutex_t narra_panics_lock = PTHREAD_MUTEX_INITIALIZER;
+static int narra_panics_active = 0;
+static struct sigaction narra_panics_saved[3];
+static _Atomic int narra_panics_pids[narra_panics_SLOTS];
+static _Atomic int narra_panics_pending[narra_panics_SLOTS];
 static volatile sig_atomic_t narra_panics_caught = 0;
 static const int narra_panics_signals[3] = {SIGTERM, SIGINT, SIGHUP};
 
 typedef struct narra_panics_guard {
   sigset_t mask;
-  struct sigaction actions[3];
+  int slot;
 } narra_panics_guard;
 
 static void narra_panics_forward(int signal_number) {
   narra_panics_caught = signal_number;
-  pid_t child = (pid_t)narra_panics_child;
-  if (child > 0) kill(child, signal_number);
+  for (int i = 0; i < narra_panics_SLOTS; i++) {
+    if (atomic_load(&narra_panics_pids[i]) == 0) continue;
+    atomic_store(&narra_panics_pending[i], signal_number);
+    int child = atomic_load(&narra_panics_pids[i]);
+    if (child > 0) kill((pid_t)child, signal_number);
+  }
 }
 
 static void narra_panics_begin(narra_panics_guard* guard) {
   sigset_t set;
   sigemptyset(&set);
   for (int i = 0; i < 3; i++) sigaddset(&set, narra_panics_signals[i]);
-  sigprocmask(SIG_BLOCK, &set, &guard->mask);
-  struct sigaction action;
-  memset(&action, 0, sizeof action);
-  action.sa_handler = narra_panics_forward;
-  sigemptyset(&action.sa_mask);
-  for (int i = 0; i < 3; i++) {
-    // A signal that was ignored on entry (a background job, nohup) stays ignored.
-    sigaction(narra_panics_signals[i], NULL, &guard->actions[i]);
-    if (guard->actions[i].sa_handler != SIG_IGN) sigaction(narra_panics_signals[i], &action, NULL);
+  pthread_sigmask(SIG_BLOCK, &set, &guard->mask);
+  // Claim a slot; wait for one when all are taken.
+  guard->slot = -1;
+  while (guard->slot < 0) {
+    for (int i = 0; i < narra_panics_SLOTS; i++) {
+      int expected = 0;
+      if (atomic_compare_exchange_strong(&narra_panics_pids[i], &expected, -1)) {
+        atomic_store(&narra_panics_pending[i], 0);
+        guard->slot = i;
+        break;
+      }
+    }
+    if (guard->slot < 0) sched_yield();
   }
+  pthread_mutex_lock(&narra_panics_lock);
+  if (narra_panics_active++ == 0) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = narra_panics_forward;
+    sigemptyset(&action.sa_mask);
+    for (int i = 0; i < 3; i++) {
+      // A signal that was ignored on entry (a background job, nohup) stays ignored.
+      sigaction(narra_panics_signals[i], NULL, &narra_panics_saved[i]);
+      if (narra_panics_saved[i].sa_handler != SIG_IGN) sigaction(narra_panics_signals[i], &action, NULL);
+    }
+  }
+  pthread_mutex_unlock(&narra_panics_lock);
 }
 
+// The child takes no lock: the saved handlers do not change while a call is active.
 static void narra_panics_restore_child(narra_panics_guard* guard) {
-  for (int i = 0; i < 3; i++) sigaction(narra_panics_signals[i], &guard->actions[i], NULL);
-  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+  for (int i = 0; i < 3; i++) sigaction(narra_panics_signals[i], &narra_panics_saved[i], NULL);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
 }
 
 static void narra_panics_attach(narra_panics_guard* guard, pid_t pid) {
-  narra_panics_child = (sig_atomic_t)pid;
-  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+  atomic_store(&narra_panics_pids[guard->slot], (int)pid);
+  int missed = atomic_load(&narra_panics_pending[guard->slot]);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
+  if (missed) kill(pid, missed);
 }
 
+// Frees the slot with the signals still blocked, restores the old handlers
+// after the last call, then restores the old mask, so no signal reaches a
+// reaped pid.
 static void narra_panics_detach(narra_panics_guard* guard) {
   sigset_t set;
   sigemptyset(&set);
   for (int i = 0; i < 3; i++) sigaddset(&set, narra_panics_signals[i]);
-  sigprocmask(SIG_BLOCK, &set, NULL);
-  narra_panics_child = 0;
-  for (int i = 0; i < 3; i++) sigaction(narra_panics_signals[i], &guard->actions[i], NULL);
-  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+  pthread_sigmask(SIG_BLOCK, &set, NULL);
+  atomic_store(&narra_panics_pids[guard->slot], 0);
+  pthread_mutex_lock(&narra_panics_lock);
+  if (--narra_panics_active == 0) {
+    for (int i = 0; i < 3; i++) sigaction(narra_panics_signals[i], &narra_panics_saved[i], NULL);
+  }
+  pthread_mutex_unlock(&narra_panics_lock);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
 }
-
 typedef struct narra_test_proc {
   pid_t pid;
   int fd;

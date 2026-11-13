@@ -1,0 +1,75 @@
+#!/bin/sh
+# Counts uses of language features. Run from the repo root:
+#   sh roadmaps/selfhost/debate/feature-review/evidence/count.sh
+# Counts are grep matches on one line each, so they are lower bounds
+# for multi-line forms and may include a few comments or strings.
+count() {
+  label="$1"
+  re="$2"
+  s=$(grep -rhoE --include='*.nra' -e "$re" selfhost/src | wc -l | tr -d ' ')
+  d=$(grep -rhoE --include='*.nra' -e "$re" std/src | wc -l | tr -d ' ')
+  t=$(grep -rhoE --include='*.nra' -e "$re" testdata | wc -l | tr -d ' ')
+  tf=$(grep -rlE --include='*.nra' -e "$re" testdata | wc -l | tr -d ' ')
+  printf '%-30s selfhost=%-6s std=%-5s testdata=%-5s (files %s)\n' "$label" "$s" "$d" "$t" "$tf"
+}
+count "Coroutine type" 'Coroutine<'
+count "Co.resume" 'Co\.resume'
+count "function* decl" 'function\*'
+count "yield*" 'yield\*'
+count "lazy const" '= lazy '
+count "typeof in type" ': typeof |= typeof '
+count "labeled loop" '^[[:space:]]*[a-zA-Z_]+: (for|while) '
+count "break/continue label" '(break|continue) [a-zA-Z_]+'
+count "conditional ?:" ' \? [^:]+ : '
+count "if as value" '= if \('
+count "c-style for" 'for \(let [a-zA-Z_]+ = '
+count "for (;;)" 'for \(;;\)'
+count "Ranges.upTo/between" 'Ranges\.(upTo|between)'
+count "x++ / x--" '[a-zA-Z_]\+\+$|[a-zA-Z_]--$'
+count "+= 1 / -= 1" '(\+|-)= 1$'
+count "compound assign" ' (\+|-|\*|/|%|&|\||\^|<<|>>)= '
+count "distinct type" 'distinct type'
+count "opaque struct" 'opaque struct'
+count "Dynamic<" 'Dynamic<'
+count "type alias" '^(export )?type [A-Z]'
+count "tuple literal #[" '#\['
+count "@inline" '@inline'
+count "@const" '@const'
+count "@specialize" '@specialize'
+count "@trusted" '@trusted'
+count "unsafe {" 'unsafe \{'
+count "extern {" 'extern \{'
+count "@target" '@target'
+count "Build.os/arch/debug" 'Build\.(os|arch|debug)'
+count "requires line" '^[[:space:]]+requires '
+count "ensures line" '^[[:space:]]+ensures '
+count "escaping param" 'escaping [a-zA-Z_]+:'
+count "effect variable decl" 'effect [A-Z][,>]'
+count "or-pattern in arm" '[A-Za-z)] \| [A-Z][a-zA-Z]*\.'
+count "match guard" '\) if \('
+count "spread update" '\{ \.\.\.[a-z]'
+count "copy(" '[^a-zA-Z_.]copy\('
+count "from marker" '\) from [a-z]+ |> from [a-z]+ '
+count "Cells." 'Cells\.'
+count "Boxes.new" 'Boxes\.new'
+count "Str.concat" 'Str\.concat'
+count "async function" 'async function'
+count "await" 'await '
+count "for await" 'for await'
+count "Options.*" 'Options\.[a-zA-Z]+'
+count "Results.*" 'Results\.[a-zA-Z]+'
+count "is None) {" 'is None\) \{'
+count "is Err(" 'is Err\('
+count ".value read" '\.value[^a-zA-Z(]'
+count "!(x is" '!\([a-zA-Z_.]+ is '
+count "const N: int" 'const [A-Z]: int'
+count "FixedArray<" 'FixedArray<'
+count "sized int annot" ': (i8|i16|i32|u8|u16|u32|u64)[^a-z0-9]'
+count "f32 annot" ': f32'
+count "bytes annot" ': bytes'
+count "hex/oct/bin literal" '0[xob][0-9a-fA-F_]+'
+count "match as value" '= match \('
+count "for (mutable" 'for \(mutable '
+count "test block" '^test "'
+count "while (true)" 'while \(true\)'
+count "Arrays.push" 'Arrays\.push'

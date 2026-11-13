@@ -1,7 +1,7 @@
 ---
 id: feature-review
 title: "Feature review: what to remove, what to adopt"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-13

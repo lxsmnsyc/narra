@@ -1,7 +1,7 @@
 ---
 id: event-loop
 title: "The event loop: kqueue, epoll, timers and exit"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 447582
 owns:
   - testdata/async_loop_*
   - testdata/async_time_*

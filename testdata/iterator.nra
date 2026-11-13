@@ -1,0 +1,143 @@
+// Every operator of std/iterator: the lazy ones over finite and endless
+// generators, chunk and window with good and bad sizes, and the eager ones.
+import * as Iterators from "std/iterator"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+function* naturals(): Generator<int> {
+  let n = 0
+  while (true) {
+    yield n
+    n = n + 1
+  }
+}
+
+function* upTo(limit: int): Generator<int> {
+  for (const i of Ranges.upTo(limit)) {
+    yield i
+  }
+}
+
+function* words(): Generator<string> {
+  yield "red"
+  yield "green"
+  yield "blue"
+}
+
+function* twice(text: string): Generator<string> {
+  yield text
+  yield text
+}
+
+function showInts(label: string, values: Generator<int> uses alloc) uses io, alloc {
+  let texts: Array<string> = []
+  for (const value of values) {
+    Arrays.push(mutable texts, Int.toString(value))
+  }
+  print(`${label}: [${Str.join(texts, ", ")}]`)
+}
+
+function showTexts(label: string, values: Generator<string> uses alloc) uses io, alloc {
+  let texts: Array<string> = []
+  for (const value of values) {
+    Arrays.push(mutable texts, value)
+  }
+  print(`${label}: [${Str.join(texts, ", ")}]`)
+}
+
+function showGroups(
+  label: string,
+  groups: Option<Generator<Array<int>> uses alloc>,
+) uses io, alloc {
+  if (groups is Some(generator)) {
+    let texts: Array<string> = []
+    for (const group of generator) {
+      let items: Array<string> = []
+      for (const item of group) {
+        Arrays.push(mutable items, Int.toString(item))
+      }
+      Arrays.push(mutable texts, `[${Str.join(items, " ")}]`)
+    }
+    print(`${label}: [${Str.join(texts, ", ")}]`)
+  } else {
+    print(`${label}: None`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // Lazy operators.
+  showInts("map", Iterators.map(upTo(4), (value: int): int => value * 10))
+  showInts("filter", Iterators.filter(upTo(10), (value: int): bool => value % 3 == 0))
+  showTexts("flatMap", Iterators.flatMap(words(), (word: string): Generator<string> => twice(word)))
+  showInts("take", Iterators.take(naturals(), 3))
+  showInts("take negative", Iterators.take(naturals(), -2))
+  showInts("drop", Iterators.drop(upTo(6), 4))
+  showInts("drop negative", Iterators.drop(upTo(3), -1))
+  showInts("takeWhile", Iterators.takeWhile(naturals(), (value: int): bool => value < 4))
+  showInts("dropWhile", Iterators.dropWhile(upTo(7), (value: int): bool => value < 4))
+  for (const pair of Iterators.enumerate(words())) {
+    const #[index, word] = pair
+    print(`enumerate: ${Int.toString(index)} ${word}`)
+  }
+  for (const pair of Iterators.zip(naturals(), words())) {
+    const #[number, word] = pair
+    print(`zip: ${Int.toString(number)} ${word}`)
+  }
+  for (const pair of Iterators.zip(words(), upTo(2))) {
+    const #[word, number] = pair
+    print(`zip shorter: ${word} ${Int.toString(number)}`)
+  }
+  showInts("concat", Iterators.concat(upTo(2), upTo(3)))
+  showGroups("chunk 2", Iterators.chunk(upTo(5), 2))
+  showGroups("chunk 0", Iterators.chunk(upTo(5), 0))
+  showGroups("window 3", Iterators.window(upTo(5), 3))
+  showGroups("window too long", Iterators.window(upTo(2), 3))
+  showGroups("window -1", Iterators.window(upTo(5), -1))
+
+  // An early break out of a map over an endless generator.
+  const squares = Iterators.map(naturals(), (value: int): int => value * value)
+  for (const square of squares) {
+    if (square > 20) {
+      break
+    }
+    print(`square ${Int.toString(square)}`)
+  }
+
+  // Stages named with const, read top to bottom.
+  const odd = Iterators.filter(naturals(), (value: int): bool => value % 2 == 1)
+  const tripled = Iterators.map(odd, (value: int): int => value * 3)
+  showInts("stages", Iterators.take(tripled, 4))
+
+  // Eager operators; their callbacks may capture a let.
+  const sum = Iterators.reduce(upTo(5), (total: int, value: int): int => total + value, 0)
+  print(`reduce: ${Int.toString(sum)}`)
+  const joined = Iterators.reduce(
+    words(),
+    (total: string, word: string): string => `${total}${word}`,
+    "",
+  )
+  print(`reduce text: ${joined}`)
+  const collected = Iterators.toArray(Iterators.take(naturals(), 3))
+  print(`toArray: ${Int.toString(Arrays.length(collected))}`)
+  let seen = 0
+  Iterators.forEach(upTo(4), (value: int) => {
+    seen = seen + value
+  })
+  print(`forEach: ${Int.toString(seen)}`)
+  print(`some: ${Iterators.some(naturals(), (value: int): bool => value == 5) ? "true" : "false"}`)
+  print(
+    `some empty: ${Iterators.some(upTo(0), (value: int): bool => value == 0) ? "true" : "false"}`,
+  )
+  print(`every: ${Iterators.every(upTo(5), (value: int): bool => value < 5) ? "true" : "false"}`)
+  print(
+    `every naturals: ${Iterators.every(naturals(), (value: int): bool => value < 5) ? "true" : "false"}`,
+  )
+  const found = Iterators.find(naturals(), (value: int): bool => value * value > 50)
+  print(`find: ${match (found) { Some(value) => Int.toString(value), None => "None" }}`)
+  const missing = Iterators.find(words(), (word: string): bool => word == "pink")
+  print(`find missing: ${match (missing) { Some(word) => word, None => "None" }}`)
+  print(`count: ${Int.toString(Iterators.count(words()))}`)
+  return 0
+}

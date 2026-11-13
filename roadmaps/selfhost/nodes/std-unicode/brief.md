@@ -1,7 +1,7 @@
 ---
 id: std-unicode
 title: "std/unicode: tables, graphemes, case and width"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

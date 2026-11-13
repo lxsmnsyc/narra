@@ -66,7 +66,7 @@ The async outline node is dropped, replaced by the async children.
 ## Acceptance
 
 - [x] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
 - [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
 - [x] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
 - [x] `compiler/README.md` "Not supported yet" no longer lists async functions or `async` arrows.

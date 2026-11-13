@@ -935,7 +935,7 @@ const text = Label.label(price)
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
 | `Shape` | Conversion to and from the `Value` tree of `std/shape`, for serialization | By the compiler for prelude types, by `derives` or `implement` for a struct or enum |
-| `Sendable` | Values that may cross threads (section 6, not built yet) | Automatically for types without functions, `Cell`, `Async`, generators and the other types section 6 lists; never by `implement` |
+| `Sendable` | Values that may cross threads (section 6) | Automatically for types without functions, `Cell`, `Async`, generators and the other types section 6 lists; never by `implement` |
 
 - A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
 - Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
@@ -1349,8 +1349,6 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Values across threads
 
-The `Sendable` checks are not built yet (D111; node threads-check). Shared values and plain counts are built.
-
 - **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
 - A value captured by a thread function, sent through a channel or stored in a `Shared` is marked shared. Shared values use atomic reference counts. Unshared values use plain counts. Only a program that imports `std/thread` (or a module built on it) has shared values; any other program uses plain counts throughout.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
@@ -1460,7 +1458,7 @@ for (const n of both()) {
 
 ### Threads
 
-Threads run in a scope. Every thread started in a scope finishes before the scope returns. The compile-time rules below (E1190 to E1195) and `std/parallel` are not built yet (D111; node threads-check).
+Threads run in a scope. Every thread started in a scope finishes before the scope returns.
 
 ```ts
 import * as Thread from "std/thread"
@@ -1530,7 +1528,7 @@ const reset = (): int => {
 
 - **`Cells.create(value)`** allocates the slot (`uses alloc`). **`Cells.get(cell)`** returns a copy of the value. **`Cells.set(cell, value)`** replaces it and drops the old value at the call. **`Cells.update(cell, change)`** stores `change(value)`; `change` is a function that returns the new value, because a scalar cannot be a `mutable` parameter (D81). None of the last three has an effect: a write to a `Cell` is not tracked.
 - Copying a `Cell`, capturing it, or storing it in a struct copies the handle, so every copy sees every write. `Cell` is an `opaque struct`: its field is not reachable. `==` and `!=` on a `Cell` are a compile error (E0965), and a `Cell` is not `Hashable`, so it cannot be a `Map` key; compare the values with `Cells.get`.
-- **A `Cell` cannot cross threads.** It uses plain reference counts and is not `Sendable` (section 6): a `Cell`, or a value that holds one, captured by a thread function or sent through a channel is E1190, with a hint to use `Shared`. Not built yet (node threads-check).
+- **A `Cell` cannot cross threads.** It uses plain reference counts and is not `Sendable` (section 6): a `Cell`, or a value that holds one, captured by a thread function or sent through a channel is E1190, with a hint to use `Shared`.
 - **A closure stored in the `Cell` it captures leaks** (D80); clear it with `Cells.set(cell, None)` first.
 
 ### Shared state

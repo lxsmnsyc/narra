@@ -1,0 +1,65 @@
+// std/parallel: Parallel.map runs a function over an array on several threads
+// (SPEC.md section 8, D111 item 4). The array is split into one part per core,
+// each part runs on a thread of its own, and the results keep the order of
+// the items. Importing this module builds the program in thread mode (D111
+// item 2).
+
+import * as Arrays from "std/array"
+import * as Boxes from "std/box"
+import * as CellSlot from "std/internal/cell"
+import * as Threads from "std/internal/thread"
+
+// Gives change(item) for every item, in the order of the items. As for
+// Thread.start, the items, the result and the captures of change must be
+// Sendable, and change must be an arrow function written at the call or the
+// name of a top-level function.
+export function map<T, U, effect E>(
+  items: Array<T>,
+  escaping change: (item: T) => U uses E
+): Array<U> uses E, alloc {
+  const count = Arrays.length(items)
+  let parts = Threads.cores()
+  if (parts > count) {
+    parts = count
+  }
+  let results: Array<Box<Array<U>>> = []
+  let threads: Array<int> = []
+  let start = 0
+  for (let part = 0; part < parts; part++) {
+    // The first count % parts parts take one item more.
+    let size = count / parts
+    if (part < count % parts) {
+      size++
+    }
+    const first = start
+    const end = start + size
+    const slot: Box<Array<U>> = Boxes.new([])
+    const thread = Threads.start(() => CellSlot.store(slot, mapPart(items, first, end, change)))
+    Arrays.push(mutable threads, thread)
+    Arrays.push(mutable results, slot)
+    start = end
+  }
+  for (const thread of Arrays.values(threads)) {
+    Threads.join(thread)
+  }
+  let output: Array<U> = []
+  for (const slot of Arrays.values(results)) {
+    for (const value of Arrays.values(slot.value)) {
+      Arrays.push(mutable output, value)
+    }
+  }
+  return output
+}
+
+function mapPart<T, U, effect E>(
+  items: Array<T>,
+  first: int,
+  end: int,
+  change: (item: T) => U uses E
+): Array<U> uses E, alloc {
+  let mapped: Array<U> = []
+  for (let index = first; index < end; index++) {
+    Arrays.push(mutable mapped, change(items[index]))
+  }
+  return mapped
+}

@@ -65,3 +65,17 @@ static int64_t narra_thread_start(
 static void narra_thread_join(int64_t thread) {
   pthread_join((pthread_t)(uintptr_t)thread, NULL);
 }
+
+// The cores online, for std/parallel. macOS hides the sysconf name under
+// _POSIX_C_SOURCE; its value there is 58.
+#if !defined(_SC_NPROCESSORS_ONLN) && defined(__APPLE__)
+#define _SC_NPROCESSORS_ONLN 58
+#endif
+static int64_t narra_thread_cores(void) {
+#ifdef _SC_NPROCESSORS_ONLN
+  long count = sysconf(_SC_NPROCESSORS_ONLN);
+  return count < 1 ? 1 : (int64_t)count;
+#else
+  return 1;
+#endif
+}

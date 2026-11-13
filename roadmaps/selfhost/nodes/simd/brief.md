@@ -1,7 +1,7 @@
 ---
 id: simd
 title: "SIMD vector types: types, literals, operators, lanes"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

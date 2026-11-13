@@ -1,7 +1,7 @@
 ---
 id: field-default-alloc
 title: "A struct literal that leaves out an array field default is not charged alloc"
-status: active
+status: done
 priority: must
 type: fix
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 91929
 owns:
   - roadmaps/selfhost/nodes/field-default-alloc/**
 shared:

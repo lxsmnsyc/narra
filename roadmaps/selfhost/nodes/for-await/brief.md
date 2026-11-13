@@ -1,7 +1,7 @@
 ---
 id: for-await
 title: "for await over AsyncGenerator<T>, and Net.chunks"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 230124
 owns:
   - roadmaps/selfhost/nodes/for-await/**
   - selfhost/src/forawait.nra

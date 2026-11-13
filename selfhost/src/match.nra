@@ -38,6 +38,7 @@ import { resolveType } from "narrac/resolve"
 import { checkExpression, expectType, findField, isHiddenStruct } from "narrac/exprs"
 import { namesEnum, findEnumName } from "narrac/ctors"
 import { seedPatternFacts } from "narrac/contracts"
+import { resolveArrayShape, checkDestructureLengths, isInstanceBody } from "narrac/arraypatterns"
 import {
   getPatternId,
   getPatternPos,
@@ -158,6 +159,16 @@ function resolveNode<W: Walker>(
       pattern,
       pos,
       arguments,
+      valueType,
+      mutable seen,
+    )
+    Pattern.PatArray(_, pos, elements, rest) => resolveArray(
+      mutable checker,
+      walker,
+      pattern,
+      pos,
+      elements,
+      rest,
       valueType,
       mutable seen,
     )
@@ -292,6 +303,14 @@ function collectNameIds(
     Pattern.PatTuple(_, _, arguments) => {
       for (const argument of Arrays.values(arguments)) {
         collectNameIds(checker, argument, mutable nodeIds)
+      }
+    }
+    Pattern.PatArray(_, _, elements, rest) => {
+      for (const element of Arrays.values(elements)) {
+        collectNameIds(checker, element, mutable nodeIds)
+      }
+      if (rest is Some(restPattern)) {
+        collectNameIds(checker, restPattern, mutable nodeIds)
       }
     }
     Pattern.PatOr(_, _, alternatives) => {
@@ -530,6 +549,30 @@ function resolveTuple<W: Walker>(
   }
 }
 
+function resolveArray<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pattern: Pattern,
+  pos: Pos,
+  elements: Array<Pattern>,
+  rest: Option<Pattern>,
+  valueType: Type,
+  mutable seen: Map<string, bool>,
+) uses alloc {
+  const shape = resolveArrayShape(mutable checker, pos, Arrays.length(elements), rest, valueType)
+  if (shape is Some(elementType)) {
+    for (const element of Arrays.values(elements)) {
+      resolveNode(mutable checker, walker, element, elementType, mutable seen)
+    }
+    // A named rest is an Array of the remaining elements, the value's own type.
+    if (rest is Some(restPattern)) {
+      resolveNode(mutable checker, walker, restPattern, valueType, mutable seen)
+    }
+    return
+  }
+  bindRest(mutable checker, pattern, mutable seen)
+}
+
 function resolveLiteral<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -588,6 +631,14 @@ function bindRest(
     Pattern.PatTuple(_, _, arguments) => {
       for (const argument of Arrays.values(arguments)) {
         bindRest(mutable checker, argument, mutable seen)
+      }
+    }
+    Pattern.PatArray(_, _, elements, rest) => {
+      for (const element of Arrays.values(elements)) {
+        bindRest(mutable checker, element, mutable seen)
+      }
+      if (rest is Some(restPattern)) {
+        bindRest(mutable checker, restPattern, mutable seen)
       }
     }
     Pattern.PatOr(_, _, alternatives) => {
@@ -676,6 +727,9 @@ function findAlternatives(pattern: Pattern): Option<Pos> from pattern {
   }
   if (pattern is Pattern.PatTuple(_, _, arguments)) {
     return findAlternativesIn(arguments)
+  }
+  if (pattern is Pattern.PatArray(_, _, elements, _)) {
+    return findAlternativesIn(elements)
   }
   if (pattern is Pattern.PatStruct(_, _, fields)) {
     for (const field of Arrays.values(fields)) {
@@ -772,6 +826,8 @@ export function checkMatch<W: Walker>(
   let rows: Array<Array<Pattern>> = []
   let patternFailed = false
   let result = want
+  // The declaration's own body already judged the arms of a generic instance.
+  const judgesArms = !isInstanceBody(checker)
   for (const arm of Arrays.values(arms)) {
     pushScope(mutable checker)
     const errorCount = Arrays.length(checker.errors)
@@ -789,7 +845,7 @@ export function checkMatch<W: Walker>(
     seedPatternFacts(mutable checker, subject, arm.pattern)
 
     // An arm that no value reaches is an error, guarded or not; an or-pattern reports its alternatives.
-    if (!(arm.pattern is Pattern.PatOr(_, _, _))) {
+    if (judgesArms && !(arm.pattern is Pattern.PatOr(_, _, _))) {
       if (!isUseful(checker, rows, [arm.pattern], [subjectType])) {
         reportErrorFix(
           mutable checker,
@@ -805,7 +861,7 @@ export function checkMatch<W: Walker>(
     if (arm.guard is Some(guard)) {
       const guardType = checkExpression(mutable checker, walker, guard, Some(Type.TBool))
       expectType(mutable checker, getExpressionPos(guard), Some(Type.TBool), guardType)
-    } else {
+    } else if (judgesArms) {
       reportCoveredAlternatives(mutable checker, rows, arm.pattern, subjectType)
       Arrays.push(mutable rows, [arm.pattern])
     }
@@ -833,7 +889,7 @@ export function checkMatch<W: Walker>(
   }
 
   // Every value of the subject must match some arm.
-  if (!patternFailed) {
+  if (!patternFailed && judgesArms) {
     let budget = CaseBudget { remaining: 10 }
     const missing = findMissingCases(checker, rows, [subjectType], mutable budget)
     if (Arrays.length(missing) > 0) {
@@ -892,7 +948,9 @@ export function checkDestructure<W: Walker>(
     )
   }
   resolvePattern(mutable checker, walker, pattern, found)
-  if (!isIrrefutable(checker, pattern)) {
+  // A FixedArray length error already says why the pattern can fail.
+  const hasLengthError = checkDestructureLengths(mutable checker, pattern)
+  if (!hasLengthError && !isIrrefutable(checker, pattern)) {
     const message = `this pattern does not match every ${typeString(checker, found)}; use match or \`is\` to test a value`
     reportError(mutable checker, getPatternPos(pattern), "E0715", message)
   }

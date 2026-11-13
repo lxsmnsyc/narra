@@ -1,0 +1,15 @@
+# Log: const-functions
+
+- 2026-11-12: started on feat/batch-11 7941611a. Baseline `narrac emit selfhost` (release, median of 5): 2,597,720,610 instructions.
+- Check: `@const` did not parse (E0012), so nothing existed yet.
+- Parser: `parseAttribute` takes the `const` keyword token as the name; row in `KNOWN_ATTRIBUTES`. The known-attribute list in `target_attribute_unknown.err` grows.
+- Checker: `checkConstCall` accepts `Ref.Function` of an `@const` function. `ConstValue` and `Checker.constValues` live in check.nra, the only module both the evaluator and the emitter import without a cycle.
+- Narra rejects `mutable` parameters of enum type and whole assignment of a `mutable` parameter, so the evaluator moves values through arrays: `takeAt(mutable items, index)` and `storeIntoArray(mutable items, index, steps, depth, value)` with the slots array as the root. A push into a local array does not copy it.
+- Divisions and shifts in the evaluator need the D92 proof shapes (`if (right != 0) { ... }` in a helper).
+- Three pipelines run the effect pass: `checkForTarget` (driver.nra), `runEmit` (emitter.nra) and the language service (lspcache.nra). `checkConstants` (consteval.nra) is called from all three.
+- Match arms in value position: a block arm takes its value from `return`, so `return` is needed in every block arm of a `return match`.
+- Stack: release build (-O2), a body with five nested blocks: about 4.5 KB of C stack per interpreted call; 999 calls fit in 8 MiB and in 4 MiB, fail in 1 MiB at 250. Debug build (-O0): about 16 KB per call, 600 calls overflow 8 MiB. Added a nesting limit (7000 blocks and expressions under way, E1056): the guard fires before a crash at 4 MiB with -O1 and -O2, a 3 MiB stack overflows at -O1. The call limit stays 1000.
+- The pragma: without it, clang -O2 on arm64 prints 0.7400000000000001 for one entry of `const_functions_float` at run time where the compiler computes 0.74; with it both are 0.74. No existing golden changed (full suite run with the pragma).
+- Steps: `while (true) { count++ }` reaches 10 M steps in 0.24 s (4.4 G instructions, about 440 per step). Peak memory of the E1055 test: 4 MB.
+- After: `narrac emit selfhost` 2,795,980,739 instructions (median of 5, bootstrap build). The base compiler on the new source: 2,790,176,341, so the growth is the larger source (about 4,500 new lines), the compiler itself within noise.
+- Fresh review fixes: iterative `areEqual` and `writeKeyText` (60000-deep equality passes `check`); value depth 1000 checked iteratively before the C writer; copies charged at `copy(...)` and place-read stores (`cow`, `cow2` now E1055 at 165 MB and 37 MB peak); steps per 8 scanned bytes (`slow` now E1054 in 0.18 s); f32 tie refusal (`isSingleTie`, `isExactDecimal`); constants after `reportSharedWrites` in driver and emitter; nesting limit 10000 with loops as a level of their own. Release build: guard fires before a crash at 6 MiB for if-heavy (`deep2`), loop-heavy (`deep4`, `deep5`) bodies; 5 MiB overflows; `deep3` (six nested additions, 999 calls) fits.

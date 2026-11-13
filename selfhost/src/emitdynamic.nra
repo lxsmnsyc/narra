@@ -1,0 +1,348 @@
+// Dynamic<Trait> values in C. A Dynamic is a `narra_dyn*`, the header of a
+// counted cell that also holds the table of its trait and the value:
+//
+//   typedef struct narra_dyn { int64_t rc; const void* table; } narra_dyn;
+//   struct Q_Drawable__S_Circle { narra_dyn header; S_Circle value; };
+//
+// A copy is one retain, and the value is never copied. Each (trait, type)
+// pair gets a cell type, a drop function, one thunk per trait function, a
+// const table and a function that makes a cell (`..._of`). Every table of a
+// trait starts with the drop function, so retain and release are the same
+// two functions for every Dynamic. A call `Drawable.draw(item)` reads the
+// thunk from the table of the cell.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Cells from "std/cell"
+import { Arg, Expr } from "narrac/ast"
+import { Type, TraitFunc } from "narrac/types"
+import { isPassedByPointer, stdTrait } from "narrac/check"
+import { lookupImplementation } from "narrac/implementations"
+import { isSelfMutable } from "narrac/dynamic"
+import {
+  cachedCType,
+  cachedTypeId,
+  cachedFunctionName,
+  parameterCType,
+  typeId,
+} from "narrac/cnames"
+import {
+  Emitter,
+  Code,
+  DynamicNeed,
+  EmitWalker,
+  readNodeType,
+  noteHelper,
+  noteReference,
+  ownedTemp,
+  temp,
+  passArgument,
+  retainCode,
+  releaseCode,
+  reportUnsupported,
+} from "narrac/emitstate"
+import { useShow, useHash } from "narrac/emittraits"
+
+const DYNAMIC_BASE = `
+// Dynamic values
+typedef struct narra_dyn { int64_t rc; const void* table; } narra_dyn;
+typedef struct narra_dyn_table { void (*drop)(void* cell); } narra_dyn_table;
+static void narra_dyn_retain(narra_dyn* d) {
+  d->rc++;
+  NARRA_COPY_SHARED(d);
+}
+static void narra_dyn_release(narra_dyn* d) {
+  NARRA_COPY_DROP(d);
+  if (--d->rc == 0) narra_drop(d, ((const narra_dyn_table*)d->table)->drop);
+}
+`
+
+export function buildDynamicBase(emitter: Emitter): string uses alloc {
+  // Written after the runtime, only when emitted code uses a Dynamic.
+  return match (Cells.get(emitter.helpers).seen["dynamic"]) { Some(_) => DYNAMIC_BASE, None => "" }
+}
+
+export function emitDynamicCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  let nodeId = -1
+  let callee = expression
+  if (expression is Expr.CallExpr(callId, _, calleeExpression, _, _)) {
+    nodeId = callId
+    callee = calleeExpression
+  }
+  // The checker records a Dynamic for a call through one, and the stored
+  // value's type for Dynamic.of.
+  const recorded = copy(emitter.checker.bodies[emitter.body].traitSelf[nodeId])
+  if (recorded is Some(Type.TDynamic(traitIndex))) {
+    return emitTableCall(walker, mutable emitter, traitIndex, callee, arguments)
+  }
+  if (recorded is Some(valueType)) {
+    if (readNodeType(emitter, nodeId) is Type.TDynamic(dynamicTrait)) {
+      return emitMakeCall(walker, mutable emitter, dynamicTrait, valueType, arguments)
+    }
+  }
+  return Code { text: reportUnsupported(mutable emitter, "call", "unresolved"), owned: false }
+}
+
+function emitMakeCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  traitIndex: int,
+  valueType: Type,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const name = useCell(mutable emitter, traitIndex, valueType)
+  const value = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+  const passed = passArgument(mutable emitter, valueType, value.text)
+  const made = ownedTemp(mutable emitter, Type.TDynamic(traitIndex), `${name}_of(${passed})`)
+  return Code { text: made, owned: true }
+}
+
+function emitTableCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  traitIndex: int,
+  callee: Expr,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  noteHelper(emitter, "dynamic")
+  const traitFunction = copy(findCalledFunction(emitter, traitIndex, callee))
+  const parameters = traitFunction.declaration.parameters
+  // The Dynamic is read twice, for its table and as the first argument.
+  const self = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+  const held = temp(mutable emitter, Type.TDynamic(traitIndex), self.text)
+  let texts = [held]
+  for (const index of Ranges.between(1, Arrays.length(arguments))) {
+    if (parameters[index].isMutable) {
+      const pointer = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[index].value)
+      Arrays.push(mutable texts, pointer)
+    } else {
+      const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
+      const parameterType = traitFunction.parameters[index]
+      Arrays.push(mutable texts, passArgument(mutable emitter, parameterType, code.text))
+    }
+  }
+  const table = buildTableName(emitter, traitIndex)
+  const call = `((const struct ${table}*)${held}->table)->f_${traitFunction.name}(${Str.join(texts, ", ")})`
+  if (traitFunction.result == Type.TVoid) {
+    return Code { text: call, owned: false }
+  }
+  return Code { text: ownedTemp(mutable emitter, traitFunction.result, call), owned: true }
+}
+
+function findCalledFunction(
+  emitter: Emitter,
+  traitIndex: int,
+  callee: Expr,
+): TraitFunc from emitter {
+  // The callee is written `Trait.name`.
+  let name = ""
+  if (callee is Expr.FieldExpr(_, _, _, field)) {
+    name = field
+  }
+  const functions = emitter.checker.traits[traitIndex].functions
+  for (const traitFunction of Arrays.values(functions)) {
+    if (traitFunction.name == name) {
+      return traitFunction
+    }
+  }
+  return functions[0]
+}
+
+function buildTableName(emitter: Emitter, traitIndex: int): string uses alloc {
+  return `${typeId(emitter.checker, Type.TDynamic(traitIndex))}_table`
+}
+
+function useCell(mutable emitter: Emitter, traitIndex: int, valueType: Type): string uses alloc {
+  // A cell type is written once per (trait, type) pair.
+  noteHelper(emitter, "dynamic")
+  const traitName = typeId(emitter.checker, Type.TDynamic(traitIndex))
+  const name = `${traitName}__${cachedTypeId(emitter.checker, emitter.typeNames, valueType)}`
+  for (const need of Arrays.values(emitter.dynamicNeeds)) {
+    if (need.name == name) {
+      return name
+    }
+  }
+  Arrays.push(mutable emitter.dynamicNeeds, DynamicNeed {
+    traitIndex: traitIndex,
+    valueType: valueType,
+    name: name,
+  })
+  return name
+}
+
+export function emitDynamicCells(mutable emitter: Emitter): bool uses alloc {
+  // A thunk can name trait functions and implementations that are not
+  // written yet, so emitReachableBodies calls this until nothing is new.
+  let wrote = false
+  while (Arrays.length(emitter.dynamicTexts) < Arrays.length(emitter.dynamicNeeds)) {
+    const position = Arrays.length(emitter.dynamicTexts)
+    const need = copy(emitter.dynamicNeeds[position])
+    let text = ""
+    if (!isTableWritten(emitter, need.traitIndex, position)) {
+      text = buildTableStruct(emitter, need.traitIndex)
+    }
+    text = `${text}${buildCell(mutable emitter, need)}`
+    Arrays.push(mutable emitter.dynamicTexts, text)
+    wrote = true
+  }
+  return wrote
+}
+
+export function buildDynamicText(emitter: Emitter): string uses alloc {
+  if (Arrays.length(emitter.dynamicTexts) == 0) {
+    return ""
+  }
+  return `\n// Dynamic cells\n${Str.join(emitter.dynamicTexts, "")}`
+}
+
+function isTableWritten(emitter: Emitter, traitIndex: int, position: int): bool {
+  for (const index of Ranges.between(0, position)) {
+    if (emitter.dynamicNeeds[index].traitIndex == traitIndex) {
+      return true
+    }
+  }
+  return false
+}
+
+function listThunkParameters(emitter: Emitter, traitFunction: TraitFunc): string uses alloc {
+  // The Dynamic, then the other parameters as the implementation takes them.
+  let parts = ["narra_dyn* self"]
+  const parameters = traitFunction.declaration.parameters
+  for (const index of Ranges.between(1, Arrays.length(parameters))) {
+    const parameterType = parameterCType(
+      emitter.checker,
+      emitter.typeNames,
+      traitFunction.parameters[index],
+      parameters[index].isMutable,
+    )
+    Arrays.push(mutable parts, `${parameterType} a${Int.toString(index)}`)
+  }
+  return Str.join(parts, ", ")
+}
+
+function buildTableStruct(emitter: Emitter, traitIndex: int): string uses alloc {
+  // The drop function first, then one slot per function that takes Self as a value.
+  let builder = Str.builder()
+  const table = buildTableName(emitter, traitIndex)
+  Str.append(mutable builder, `struct ${table} {\n  narra_dyn_table base;\n`)
+  const functions = emitter.checker.traits[traitIndex].functions
+  for (const index of Ranges.between(0, Arrays.length(functions))) {
+    if (isSelfMutable(emitter.checker, traitIndex, index)) {
+      continue
+    }
+    const traitFunction = functions[index]
+    const result = cachedCType(emitter.checker, emitter.typeNames, traitFunction.result)
+    const parameters = listThunkParameters(emitter, traitFunction)
+    Str.append(mutable builder, `  ${result} (*f_${traitFunction.name})(${parameters});\n`)
+  }
+  Str.append(mutable builder, "};\n")
+  return Str.build(builder)
+}
+
+function buildCell(mutable emitter: Emitter, need: DynamicNeed): string uses alloc {
+  const name = need.name
+  const valueCType = cachedCType(emitter.checker, emitter.typeNames, need.valueType)
+  let builder = Str.builder()
+  Str.append(
+    mutable builder,
+    `typedef struct ${name} { narra_dyn header; ${valueCType} value; } ${name};\n`,
+  )
+
+  // drop releases the value and frees the cell.
+  Str.append(
+    mutable builder,
+    `static void ${name}_drop(void* pointer) {\n  ${name}* cell = pointer;\n`,
+  )
+  const release = releaseCode(emitter, need.valueType, "cell->value")
+  if (release != "") {
+    Str.append(mutable builder, `  ${release}\n`)
+  }
+  Str.append(mutable builder, "  narra_free(cell);\n}\n")
+
+  // One thunk per function that takes Self as a value.
+  let slots = [`{ ${name}_drop }`]
+  const functions = copy(emitter.checker.traits[need.traitIndex].functions)
+  for (const index of Ranges.between(0, Arrays.length(functions))) {
+    if (isSelfMutable(emitter.checker, need.traitIndex, index)) {
+      continue
+    }
+    Str.append(mutable builder, buildThunk(mutable emitter, need, functions[index]))
+    Arrays.push(mutable slots, `${name}_${functions[index].name}`)
+  }
+  const table = buildTableName(emitter, need.traitIndex)
+  Str.append(
+    mutable builder,
+    `static const struct ${table} ${name}_table = { ${Str.join(slots, ", ")} };\n`,
+  )
+
+  // _of takes the value as a call argument and keeps its own reference.
+  const parameterType = parameterCType(emitter.checker, emitter.typeNames, need.valueType, false)
+  let value = "value"
+  if (isPassedByPointer(emitter.checker, need.valueType)) {
+    value = "*value"
+  }
+  Str.append(mutable builder, `static narra_dyn* ${name}_of(${parameterType} value) {\n`)
+  Str.append(mutable builder, `  ${name}* cell = narra_alloc(sizeof(${name}));\n`)
+  Str.append(mutable builder, `  cell->header.rc = 1;\n  cell->header.table = &${name}_table;\n`)
+  Str.append(mutable builder, `  cell->value = ${value};\n`)
+  const retain = retainCode(emitter, need.valueType, "cell->value")
+  if (retain != "") {
+    Str.append(mutable builder, `  ${retain}\n`)
+  }
+  Str.append(mutable builder, "  return &cell->header;\n}\n")
+  return Str.build(builder)
+}
+
+function buildThunk(
+  mutable emitter: Emitter,
+  need: DynamicNeed,
+  traitFunction: TraitFunc,
+): string uses alloc {
+  const name = need.name
+  const result = cachedCType(emitter.checker, emitter.typeNames, traitFunction.result)
+  const parameters = listThunkParameters(emitter, traitFunction)
+  // Show and Hashable go through the compiler's function of the type, which
+  // takes the value itself and calls a user implementation when there is
+  // one. An implementation takes a large value by pointer.
+  let callee = ""
+  let value = "cell->value"
+  if (need.traitIndex == stdTrait(emitter.checker, "Show")) {
+    callee = useShow(mutable emitter, need.valueType)
+  } else if (need.traitIndex == stdTrait(emitter.checker, "Hashable")) {
+    callee = `(int64_t)${useHash(mutable emitter, need.valueType)}`
+  } else {
+    callee = findImplementationName(mutable emitter, need, traitFunction.name)
+    if (isPassedByPointer(emitter.checker, need.valueType)) {
+      value = "&cell->value"
+    }
+  }
+  let arguments = [value]
+  for (const index of Ranges.between(1, Arrays.length(traitFunction.parameters))) {
+    Arrays.push(mutable arguments, `a${Int.toString(index)}`)
+  }
+  let returned = "return "
+  if (traitFunction.result == Type.TVoid) {
+    returned = ""
+  }
+  return `static ${result} ${name}_${traitFunction.name}(${parameters}) {\n  ${name}* cell = (${name}*)self;\n  ${returned}${callee}(${Str.join(arguments, ", ")});\n}\n`
+}
+
+function findImplementationName(
+  mutable emitter: Emitter,
+  need: DynamicNeed,
+  functionName: string,
+): string uses alloc {
+  const found = lookupImplementation(emitter.checker, need.valueType, need.traitIndex, functionName)
+  if (found is Some(program)) {
+    const callee = cachedFunctionName(emitter.checker, emitter.typeNames, program)
+    noteReference(mutable emitter, callee)
+    return callee
+  }
+  return reportUnsupported(mutable emitter, "dynamic table", functionName)
+}

@@ -1,0 +1,789 @@
+// The rules of an `@const` function's declaration (SPEC.md section 10). They
+// run after the effect pass, once per `@const` function, even when no constant
+// calls it: the signature holds only the types the evaluator can build (E1050),
+// the effects stay inside `alloc` (E1051), and the body calls only `@const`
+// functions, constructors and the std functions consteval.nra runs (E1052).
+import { Pos, Expr, Stmt, Block, Arg, Pattern, MatchArm, FuncDecl, findAttribute } from "narrac/ast"
+import { Type, typeKey } from "narrac/types"
+import {
+  Checker,
+  Ref,
+  typeString,
+  reportError,
+  enter,
+  findBody,
+  getExpressionId,
+  getExpressionPos,
+} from "narrac/check"
+import { EffectState } from "narrac/effects"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// The std modules whose functions an `@const` body may call.
+export const CONST_STD_MODULES = [
+  "std/string",
+  "std/array",
+  "std/map",
+  "std/int",
+  "std/float",
+  "std/range",
+]
+
+// Std functions of those modules that the evaluator does not run.
+const LEFT_OUT_FUNCTIONS = ["Map.update"]
+
+export function isConstFunction(checker: Checker, funcIndex: int): bool uses alloc {
+  return findAttribute(checker.functions[funcIndex].declaration, "const") is Some(_)
+}
+
+export function isConstStdModule(module: string): bool uses alloc {
+  // A builtin module's Narra part is std/ext/<name>.
+  let path = module
+  if (Str.startsWith(module, "std/ext/")) {
+    path = `std/${Str.sliceFrom(module, 8)}`
+  }
+  for (const allowed of Arrays.values(CONST_STD_MODULES)) {
+    if (allowed == path) {
+      return true
+    }
+  }
+  return false
+}
+
+// The std/math functions whose results depend on the C library.
+const LIBRARY_FUNCTIONS = ["sin", "cos", "tan", "atan2", "exp", "log", "pow"]
+
+function isLibraryFunction(module: string, name: string): bool {
+  if (module != "std/math") {
+    return false
+  }
+  for (const listed of Arrays.values(LIBRARY_FUNCTIONS)) {
+    if (listed == name) {
+      return true
+    }
+  }
+  return false
+}
+
+// What the body walk knows: the body, the function and whether it reported already.
+struct BodyScan {
+  body: int
+  name: string
+  reported: bool
+}
+
+export function checkConstFunctions(mutable checker: Checker, effects: EffectState) uses alloc {
+  for (const funcIndex of Ranges.between(0, Arrays.length(checker.functions))) {
+    if (!isConstFunction(checker, funcIndex)) {
+      continue
+    }
+    const declaration = copy(checker.functions[funcIndex].declaration)
+    if (declaration.body is None) {
+      continue
+    }
+    const scope = checker.functions[funcIndex].scope
+    const saved = enter(mutable checker, scope)
+    const signatureFine = checkSignature(mutable checker, funcIndex, declaration)
+    if (signatureFine) {
+      checkEffects(mutable checker, effects, funcIndex, declaration)
+    }
+    const body = findBody(checker, `func|${Int.toString(funcIndex)}`)
+    if (signatureFine && body >= 0) {
+      let scan = BodyScan { body: body, name: declaration.name, reported: false }
+      if (declaration.body is Some(block)) {
+        scanBlock(mutable checker, mutable scan, block)
+      }
+    }
+    enter(mutable checker, saved)
+  }
+}
+
+function reportSignature(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  problem: string,
+) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1050",
+    `@const function ${name} ${problem}; an @const function takes and returns numbers, bool, char, string, bytes, Array, Map, FixedArray, Option, Result, tuples, and structs, enums and distinct types made of these`,
+  )
+}
+
+function checkSignature(
+  mutable checker: Checker,
+  funcIndex: int,
+  declaration: FuncDecl,
+): bool uses alloc {
+  const name = declaration.name
+  if (declaration.generator) {
+    reportSignature(mutable checker, declaration.pos, name, "is a generator")
+    return false
+  }
+  for (const bounds of Arrays.values(declaration.bounds)) {
+    if (Arrays.length(bounds) > 0) {
+      reportSignature(
+        mutable checker,
+        declaration.pos,
+        name,
+        "has a type parameter with a trait constraint",
+      )
+      return false
+    }
+  }
+  if (Arrays.length(declaration.effectParameters) > 0) {
+    reportSignature(mutable checker, declaration.pos, name, "has an effect parameter")
+    return false
+  }
+  for (const parameter of Arrays.values(declaration.parameters)) {
+    const parameterType = copy(checker.paramTypes[parameter.id])
+    let seen: Map<string, bool> = Map {}
+    const forbidden = findForbiddenType(checker, parameterType, mutable seen)
+    if (forbidden != "") {
+      const problem = `takes parameter ${parameter.name} of type ${describeForbidden(checker, parameterType, forbidden)}`
+      reportSignature(mutable checker, parameter.pos, name, problem)
+      return false
+    }
+  }
+  const result = copy(checker.functions[funcIndex].result)
+  let seenResult: Map<string, bool> = Map {}
+  const forbiddenResult = findForbiddenType(checker, result, mutable seenResult)
+  if (forbiddenResult != "") {
+    let pos = declaration.pos
+    if (declaration.result is Some(written)) {
+      pos = written.pos
+    }
+    const problem = `returns ${describeForbidden(checker, result, forbiddenResult)}`
+    reportSignature(mutable checker, pos, name, problem)
+    return false
+  }
+  return true
+}
+
+function describeForbidden(checker: Checker, type: Type, forbidden: string): string uses alloc {
+  const written = typeString(checker, type)
+  if (written == forbidden) {
+    return written
+  }
+  return `${written}, which holds ${forbidden}`
+}
+
+function findForbiddenType(
+  checker: Checker,
+  type: Type,
+  mutable seen: Map<string, bool>,
+): string uses alloc {
+  // The text of the first part of the type the evaluator cannot build, or "".
+  return match (type) {
+    Type.TInt
+      | Type.TI8
+      | Type.TI16
+      | Type.TI32
+      | Type.TU8
+      | Type.TU16
+      | Type.TU32
+      | Type.TU64
+      | Type.TF64
+      | Type.TF32
+      | Type.TBool
+      | Type.TChar
+      | Type.TStr
+      | Type.TBytes
+      | Type.TVoid
+      | Type.TParam(_)
+      | Type.TConst(_) => ""
+    Type.TArray(element) => findForbiddenType(checker, element, mutable seen)
+    Type.TFixedArray(element, _) => findForbiddenType(checker, element, mutable seen)
+    Type.TMap(key, valueType) => findForbiddenPair(checker, key, valueType, mutable seen)
+    Type.TDistinct(index) => findForbiddenBase(checker, index, mutable seen)
+    Type.TStruct(index) => findForbiddenStruct(checker, index, mutable seen)
+    Type.TEnum(index) => findForbiddenEnum(checker, index, mutable seen)
+    _ => typeString(checker, type)
+  }
+}
+
+function findForbiddenPair(
+  checker: Checker,
+  first: Type,
+  second: Type,
+  mutable seen: Map<string, bool>,
+): string uses alloc {
+  const forbidden = findForbiddenType(checker, first, mutable seen)
+  if (forbidden != "") {
+    return forbidden
+  }
+  return findForbiddenType(checker, second, mutable seen)
+}
+
+function findForbiddenBase(
+  checker: Checker,
+  index: int,
+  mutable seen: Map<string, bool>,
+): string uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return findForbiddenType(checker, base, mutable seen)
+  }
+  return ""
+}
+
+function findForbiddenStruct(
+  checker: Checker,
+  index: int,
+  mutable seen: Map<string, bool>,
+): string uses alloc {
+  const key = `s${Int.toString(index)}`
+  if (seen[key] is Some(_)) {
+    return ""
+  }
+  seen[key] = true
+  // Cell and Shared are structs of std modules the evaluator does not run.
+  const module = checker.structs[index].module
+  if (module != "" && Str.startsWith(module, "std/") && !isConstStdModule(module)) {
+    return typeString(checker, Type.TStruct(index))
+  }
+  for (const field of Arrays.values(checker.structs[index].fields)) {
+    const forbidden = findForbiddenType(checker, field.fieldType, mutable seen)
+    if (forbidden != "") {
+      return forbidden
+    }
+  }
+  return ""
+}
+
+function findForbiddenEnum(
+  checker: Checker,
+  index: int,
+  mutable seen: Map<string, bool>,
+): string uses alloc {
+  const key = `e${Int.toString(index)}`
+  if (seen[key] is Some(_)) {
+    return ""
+  }
+  seen[key] = true
+  const module = checker.enums[index].module
+  if (module != "" && Str.startsWith(module, "std/") && !isConstStdModule(module)) {
+    return typeString(checker, Type.TEnum(index))
+  }
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    for (const field of Arrays.values(variant.fields)) {
+      const forbidden = findForbiddenType(checker, field.fieldType, mutable seen)
+      if (forbidden != "") {
+        return forbidden
+      }
+    }
+  }
+  return ""
+}
+
+function checkEffects(
+  mutable checker: Checker,
+  effects: EffectState,
+  funcIndex: int,
+  declaration: FuncDecl,
+) uses alloc {
+  const name = declaration.name
+  // A declared effect beyond alloc is reported at the declaration.
+  for (const declared of Arrays.values(declaration.effects)) {
+    if (declared != "alloc") {
+      reportError(
+        mutable checker,
+        declaration.pos,
+        "E1051",
+        `@const function ${name} declares \`uses ${declared}\`; an @const function may use only alloc`,
+      )
+      return
+    }
+  }
+  if (effects.functions[effects.functionKeys[funcIndex]] is Some(found)) {
+    for (const effect of Arrays.values(found)) {
+      if (effect.name == "alloc") {
+        continue
+      }
+      let through = ""
+      if (effect.via != "") {
+        through = ` through \`${effect.via}\``
+      }
+      reportError(
+        mutable checker,
+        effect.pos,
+        "E1051",
+        `@const function ${name} uses ${effect.name}${through}; an @const function may use only alloc`,
+      )
+      return
+    }
+  }
+}
+
+function reportBody(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  pos: Pos,
+  problem: string,
+) uses alloc {
+  // The first problem of a body is enough.
+  if (scan.reported) {
+    return
+  }
+  scan.reported = true
+  reportError(
+    mutable checker,
+    pos,
+    "E1052",
+    `@const function ${scan.name} ${problem}; an @const function calls only @const functions, constructors and the std functions of ${Str.join(CONST_STD_MODULES, ", ")} that take no function`,
+  )
+}
+
+function readRef(checker: Checker, body: int, nodeId: int): Ref {
+  const slot = nodeId - checker.bodies[body].first
+  if (slot < 0 || slot >= Arrays.length(checker.bodies[body].refs)) {
+    return Ref.Unresolved
+  }
+  return checker.bodies[body].refs[slot]
+}
+
+function readType(checker: Checker, body: int, nodeId: int): Type from checker {
+  const slot = nodeId - checker.bodies[body].first
+  if (slot < 0 || slot >= Arrays.length(checker.bodies[body].types)) {
+    return Type.TVoid
+  }
+  if (checker.bodies[body].types[slot] is Some(found)) {
+    return found
+  }
+  return Type.TVoid
+}
+
+function scanBlock(mutable checker: Checker, mutable scan: BodyScan, block: Block) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    scanStatement(mutable checker, mutable scan, statement)
+  }
+}
+
+function scanStatement(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  statement: Stmt,
+) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => scanBlock(mutable checker, mutable scan, block)
+    Stmt.VarStmt(_, _, _, _, pattern, _, value) => {
+      if (pattern is Some(written)) {
+        scanPattern(mutable checker, mutable scan, written)
+      }
+      scanExpression(mutable checker, mutable scan, value)
+    }
+    Stmt.AssignStmt(_, target, value) => {
+      scanExpression(mutable checker, mutable scan, target)
+      scanExpression(mutable checker, mutable scan, value)
+    }
+    Stmt.CompoundAssignStmt(_, target, _, value) => {
+      scanExpression(mutable checker, mutable scan, target)
+      scanExpression(mutable checker, mutable scan, value)
+    }
+    Stmt.ExprStmt(_, expression) => scanExpression(mutable checker, mutable scan, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        scanExpression(mutable checker, mutable scan, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      scanExpression(mutable checker, mutable scan, condition)
+      scanBlock(mutable checker, mutable scan, then)
+      if (orElse is Some(otherwise)) {
+        scanStatement(mutable checker, mutable scan, otherwise)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      scanExpression(mutable checker, mutable scan, condition)
+      scanBlock(mutable checker, mutable scan, body)
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(initStatement)) {
+        scanStatement(mutable checker, mutable scan, initStatement)
+      }
+      if (condition is Some(conditionValue)) {
+        scanExpression(mutable checker, mutable scan, conditionValue)
+      }
+      if (step is Some(stepStatement)) {
+        scanStatement(mutable checker, mutable scan, stepStatement)
+      }
+      scanBlock(mutable checker, mutable scan, body)
+    }
+    Stmt.ForStmt(_, pos, _, _, iterable, body, _) => {
+      const iterableType = copy(readType(checker, scan.body, getExpressionId(iterable)))
+      if (iterableType is Type.TGenerator(_, _, _, _, _)) {
+        reportBody(mutable checker, mutable scan, pos, "loops over a generator")
+      }
+      scanExpression(mutable checker, mutable scan, iterable)
+      scanBlock(mutable checker, mutable scan, body)
+    }
+    Stmt.YieldStmt(pos, _, _, _) => reportBody(mutable checker, mutable scan, pos, "yields")
+    Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => {}
+  }
+}
+
+function scanPattern(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  pattern: Pattern,
+) uses alloc {
+  match (pattern) {
+    Pattern.PatCtor(_, _, _, _, arguments, _) => {
+      for (const argument of Arrays.values(arguments)) {
+        scanPattern(mutable checker, mutable scan, argument)
+      }
+    }
+    Pattern.PatStruct(_, _, fields) => {
+      for (const field of Arrays.values(fields)) {
+        scanPattern(mutable checker, mutable scan, field.pattern)
+      }
+    }
+    Pattern.PatTuple(_, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        scanPattern(mutable checker, mutable scan, argument)
+      }
+    }
+    Pattern.PatArray(_, _, elements, _) => {
+      for (const element of Arrays.values(elements)) {
+        scanPattern(mutable checker, mutable scan, element)
+      }
+    }
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        scanPattern(mutable checker, mutable scan, alternative)
+      }
+    }
+    _ => {}
+  }
+}
+
+function scanExpressions(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  expressions: Array<Expr>,
+) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    scanExpression(mutable checker, mutable scan, expression)
+  }
+}
+
+function scanExpression(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  expression: Expr,
+) uses alloc {
+  if (scan.reported) {
+    return
+  }
+  const nodeType = copy(readType(checker, scan.body, getExpressionId(expression)))
+  if (nodeType is Type.TMap(key, _)) {
+    let seen: Map<string, bool> = Map {}
+    const implementation = findUserImplementation(checker, key, "Hashable", mutable seen)
+    if (implementation != "") {
+      reportBody(
+        mutable checker,
+        mutable scan,
+        getExpressionPos(expression),
+        `uses a map whose keys run the user implement block of Hashable for ${implementation}`,
+      )
+      return
+    }
+  }
+  match (expression) {
+    Expr.TemplateLit(_, _, parts) => scanExpressions(mutable checker, mutable scan, parts)
+    Expr.Ident(nodeId, pos, name) => scanName(mutable checker, mutable scan, nodeId, pos, name)
+    Expr.FieldExpr(nodeId, pos, target, name) => {
+      const ref = readRef(checker, scan.body, nodeId)
+      if (ref is Ref.Function(_) || ref is Ref.Builtin(_)) {
+        reportBody(mutable checker, mutable scan, pos, `uses function ${name} as a value`)
+      } else {
+        scanExpression(mutable checker, mutable scan, target)
+      }
+    }
+    Expr.IsExpr(_, _, subject, pattern) => {
+      scanExpression(mutable checker, mutable scan, subject)
+      scanPattern(mutable checker, mutable scan, pattern)
+    }
+    Expr.IndexExpr(_, _, target, index) => {
+      scanExpression(mutable checker, mutable scan, target)
+      scanExpression(mutable checker, mutable scan, index)
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      scanExpressions(mutable checker, mutable scan, keys)
+      scanExpressions(mutable checker, mutable scan, values)
+    }
+    Expr.CallExpr(nodeId, pos, callee, _, arguments) => scanCall(
+      mutable checker,
+      mutable scan,
+      nodeId,
+      pos,
+      callee,
+      arguments,
+    )
+    Expr.UnaryExpr(_, _, _, operand) => scanExpression(mutable checker, mutable scan, operand)
+    Expr.BinaryExpr(_, pos, operator, left, right) => {
+      if (operator == "==" || operator == "!=") {
+        const operandType = copy(readType(checker, scan.body, getExpressionId(left)))
+        let seen: Map<string, bool> = Map {}
+        const implementation = findUserImplementation(
+          checker,
+          operandType,
+          "Equatable",
+          mutable seen,
+        )
+        if (implementation != "") {
+          reportBody(
+            mutable checker,
+            mutable scan,
+            pos,
+            `compares with ${operator}, which runs the user implement block of Equatable for ${implementation}`,
+          )
+          return
+        }
+      }
+      scanExpression(mutable checker, mutable scan, left)
+      scanExpression(mutable checker, mutable scan, right)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      if (spread is Some(base)) {
+        scanExpression(mutable checker, mutable scan, base)
+      }
+      for (const field of Arrays.values(fields)) {
+        scanExpression(mutable checker, mutable scan, field.value)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => scanExpressions(mutable checker, mutable scan, elements)
+    Expr.MatchExpr(_, _, subject, arms) => {
+      scanExpression(mutable checker, mutable scan, subject)
+      scanArms(mutable checker, mutable scan, arms)
+    }
+    Expr.BlockExpr(_, _, block) => scanBlock(mutable checker, mutable scan, block)
+    Expr.ArrowExpr(_, pos, _, _, _, _) => reportBody(
+      mutable checker,
+      mutable scan,
+      pos,
+      "uses an arrow function",
+    )
+    _ => {}
+  }
+}
+
+function scanArms(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  arms: Array<MatchArm>,
+) uses alloc {
+  for (const arm of Arrays.values(arms)) {
+    scanPattern(mutable checker, mutable scan, arm.pattern)
+    if (arm.guard is Some(guard)) {
+      scanExpression(mutable checker, mutable scan, guard)
+    }
+    if (arm.body is Some(value)) {
+      scanExpression(mutable checker, mutable scan, value)
+    }
+    if (arm.block is Some(block)) {
+      scanBlock(mutable checker, mutable scan, block)
+    }
+  }
+}
+
+function scanName(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+) uses alloc {
+  const ref = readRef(checker, scan.body, nodeId)
+  if (ref is Ref.Function(_) || ref is Ref.Builtin(_)) {
+    reportBody(mutable checker, mutable scan, pos, `uses function ${name} as a value`)
+  }
+}
+
+function scanCall(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  nodeId: int,
+  pos: Pos,
+  callee: Expr,
+  arguments: Array<Arg>,
+) uses alloc {
+  const ref = readRef(checker, scan.body, nodeId)
+  const calleeName = describeCalleeName(callee)
+  match (ref) {
+    Ref.Function(funcIndex) => checkCalledFunction(
+      mutable checker,
+      mutable scan,
+      pos,
+      funcIndex,
+      calleeName,
+    )
+    Ref.Builtin(index) => {
+      const builtin = copy(checker.registry.functions[index])
+      const allowed = builtin.module == "" || isConstStdModule(builtin.module)
+      if (isLeftOut(builtin.name)) {
+        reportBody(
+          mutable checker,
+          mutable scan,
+          pos,
+          `calls ${calleeName}, which takes a function`,
+        )
+      } else if (!allowed) {
+        reportBody(
+          mutable checker,
+          mutable scan,
+          pos,
+          `calls ${calleeName} of ${builtin.module}, a module the compiler does not run while it compiles`,
+        )
+      }
+    }
+    Ref.Constructor(_, _) | Ref.Distinct(_) => {}
+    Ref.Implementation(_, _) => reportBody(
+      mutable checker,
+      mutable scan,
+      pos,
+      `calls ${calleeName}, a function of a user implement block`,
+    )
+    Ref.Value => reportBody(
+      mutable checker,
+      mutable scan,
+      pos,
+      `calls ${calleeName} through a function value`,
+    )
+    _ => reportBody(mutable checker, mutable scan, pos, `calls ${calleeName}`)
+  }
+  for (const argument of Arrays.values(arguments)) {
+    scanExpression(mutable checker, mutable scan, argument.value)
+  }
+}
+
+function isLeftOut(name: string): bool {
+  for (const leftOut of Arrays.values(LEFT_OUT_FUNCTIONS)) {
+    if (leftOut == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function checkCalledFunction(
+  mutable checker: Checker,
+  mutable scan: BodyScan,
+  pos: Pos,
+  funcIndex: int,
+  calleeName: string,
+) uses alloc {
+  if (isConstFunction(checker, funcIndex)) {
+    return
+  }
+  const module = checker.functions[funcIndex].module
+  if (isConstStdModule(module) && !takesFunction(checker, funcIndex)) {
+    return
+  }
+  if (isConstStdModule(module)) {
+    reportBody(mutable checker, mutable scan, pos, `calls ${calleeName}, which takes a function`)
+    return
+  }
+  const name = checker.functions[funcIndex].name
+  if (isLibraryFunction(module, name)) {
+    reportBody(
+      mutable checker,
+      mutable scan,
+      pos,
+      `calls ${calleeName}, whose result depends on the C library`,
+    )
+    return
+  }
+  if (Str.startsWith(module, "std/")) {
+    reportBody(
+      mutable checker,
+      mutable scan,
+      pos,
+      `calls ${calleeName} of ${module}, a module the compiler does not run while it compiles`,
+    )
+    return
+  }
+  reportBody(mutable checker, mutable scan, pos, `calls ${calleeName}, which is not @const`)
+}
+
+function takesFunction(checker: Checker, funcIndex: int): bool {
+  for (const parameter of Arrays.values(checker.functions[funcIndex].declaration.parameters)) {
+    if (checker.paramTypes[parameter.id] is Type.TFunc(_, _, _, _, _)) {
+      return true
+    }
+  }
+  return false
+}
+
+function describeCalleeName(callee: Expr): string uses alloc {
+  return match (callee) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, name) => {
+      const prefix = describeCalleeName(target)
+      return prefix == "" ? name : `${prefix}.${name}`
+    }
+    _ => ""
+  }
+}
+
+function findUserImplementation(
+  checker: Checker,
+  type: Type,
+  traitName: string,
+  mutable seen: Map<string, bool>,
+): string uses alloc {
+  // The type whose user implement block of the trait a comparison or a map key would run, or "".
+  if (type is Type.TArray(element)) {
+    return findUserImplementation(checker, element, traitName, mutable seen)
+  }
+  if (type is Type.TFixedArray(fixedElement, _)) {
+    return findUserImplementation(checker, fixedElement, traitName, mutable seen)
+  }
+  const isDeclared = type is Type.TStruct(_) || type is Type.TEnum(_) || type is Type.TDistinct(_)
+  if (!isDeclared) {
+    return ""
+  }
+  const key = typeKey(type)
+  if (seen[key] is Some(_)) {
+    return ""
+  }
+  seen[key] = true
+  if (hasImplementation(checker, key, traitName)) {
+    return typeString(checker, type)
+  }
+  // A derived implementation compares the parts, which may have user blocks.
+  let parts: Array<Type> = []
+  if (type is Type.TStruct(structIndex)) {
+    for (const field of Arrays.values(checker.structs[structIndex].fields)) {
+      Arrays.push(mutable parts, field.fieldType)
+    }
+  }
+  if (type is Type.TEnum(enumIndex)) {
+    for (const variant of Arrays.values(checker.enums[enumIndex].variants)) {
+      for (const field of Arrays.values(variant.fields)) {
+        Arrays.push(mutable parts, field.fieldType)
+      }
+    }
+  }
+  if (type is Type.TDistinct(distinctIndex)) {
+    if (checker.distincts[distinctIndex].base is Some(base)) {
+      Arrays.push(mutable parts, base)
+    }
+  }
+  for (const part of Arrays.values(parts)) {
+    const found = findUserImplementation(checker, part, traitName, mutable seen)
+    if (found != "") {
+      return found
+    }
+  }
+  return ""
+}
+
+function hasImplementation(checker: Checker, key: string, traitName: string): bool uses alloc {
+  // Equatable has `equals`, Hashable has `hash`; a user block defines them.
+  const member = traitName == "Equatable" ? "equals" : "hash"
+  return checker.implFunctions[`${key}|${traitName}.${member}`] is Some(_)
+}

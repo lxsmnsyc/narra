@@ -16,17 +16,31 @@ import {
   getExpressionPos,
   findLocal,
 } from "narrac/check"
-import { factKey, endNarrowing } from "narrac/patterns"
+import {
+  factKey,
+  endNarrowing,
+  relationKey,
+  relationPartnerKey,
+  relationCountKey,
+  findRelationCount,
+} from "narrac/patterns"
 import { isCapturedByArrow } from "narrac/funcvalues"
 import { findConstantValue, isOpenConstant, describeConstantOperand } from "narrac/constgenerics"
 import * as Int from "std/int"
 import * as Math from "std/math"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 
 const UNBOUNDED_LOW = -9223372036854775807
 const UNBOUNDED_HIGH = 9223372036854775807
 const MAXIMUM_CONSTANT_DEPTH = 8
+
+// The orders a relation between two locals still allows, as bits of a set.
+const RELATION_LESS = 1
+const RELATION_EQUAL = 2
+const RELATION_GREATER = 4
+const RELATION_ANY = 7
 
 export struct Fact {
   low: int
@@ -253,7 +267,7 @@ export function flipComparison(operator: string): string {
   return operator
 }
 
-function negateComparison(operator: string): string {
+export function negateComparison(operator: string): string {
   if (operator == "<") {
     return ">="
   }
@@ -306,6 +320,11 @@ function narrowByBinary(
   holds: bool,
 ) uses alloc {
   const isBoth = (operator == "&&" && holds) || (operator == "||" && !holds)
+  const isEither = (operator == "||" && holds) || (operator == "&&" && !holds)
+  if (isEither) {
+    narrowByHull(mutable checker, operator, left, right, holds)
+    return
+  }
   if (isBoth) {
     // The right side runs after the left one, so a closure in it may assign a name the
     // left side narrowed; such a name keeps only what the right side says.
@@ -322,11 +341,25 @@ function narrowByBinary(
   if (!isComparisonOperator(operator)) {
     return
   }
-  let local = findFactLocal(checker, left)
+  // A check between two integer locals of one type is a relation between them.
+  const leftLocal = findFactLocal(checker, left)
+  const rightLocal = findFactLocal(checker, right)
+  if (leftLocal >= 0 && rightLocal >= 0) {
+    const leftType = getLocal(checker, leftLocal).localType
+    if (leftLocal != rightLocal && leftType == getLocal(checker, rightLocal).localType) {
+      let comparison = operator
+      if (!holds) {
+        comparison = negateComparison(operator)
+      }
+      recordRelation(mutable checker, leftLocal, rightLocal, findRelationSet(comparison))
+    }
+    return
+  }
+  let local = leftLocal
   let constantSide = right
   let comparison = operator
   if (local < 0) {
-    local = findFactLocal(checker, right)
+    local = rightLocal
     constantSide = left
     comparison = flipComparison(operator)
   }
@@ -341,6 +374,296 @@ function narrowByBinary(
   }
 }
 
+function narrowByHull(
+  mutable checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+  holds: bool,
+) uses alloc {
+  // One side of a true `||` (or a false `&&`) holds. When every side compares the same
+  // local with a constant, the local is in the hull of the sides; anything else says nothing.
+  let sides: Array<Expr> = []
+  collectChainSides(operator, left, mutable sides)
+  collectChainSides(operator, right, mutable sides)
+  let local = -1
+  let hull = createUnknownFact()
+  for (const side of Arrays.values(sides)) {
+    const sideLocal = findComparedLocal(checker, side)
+    if (sideLocal < 0 || (local >= 0 && sideLocal != local)) {
+      return
+    }
+    if (buildComparisonFact(checker, side, sideLocal, holds) is Some(sideFact)) {
+      if (local < 0) {
+        hull = sideFact
+      } else {
+        hull = joinFacts(hull, sideFact)
+      }
+    } else {
+      return
+    }
+    local = sideLocal
+  }
+  if (local >= 0) {
+    narrowFact(mutable checker, local, hull)
+  }
+}
+
+function findComparedLocal(checker: Checker, side: Expr): int {
+  if (side is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (isComparisonOperator(operator)) {
+      const local = findFactLocal(checker, left)
+      if (local >= 0) {
+        return local
+      }
+      return findFactLocal(checker, right)
+    }
+  }
+  return -1
+}
+
+function buildComparisonFact(
+  checker: Checker,
+  side: Expr,
+  local: int,
+  holds: bool,
+): Option<Fact> uses alloc {
+  // The fact a comparison of the local with a constant gives when it holds (or fails).
+  if (side is Expr.BinaryExpr(_, _, operator, left, right)) {
+    let constantSide = right
+    let comparison = operator
+    if (findFactLocal(checker, left) != local) {
+      constantSide = left
+      comparison = flipComparison(operator)
+    }
+    const type = getLocal(checker, local).localType
+    if (findTypedConstant(checker, constantSide, type) is Some(bound)) {
+      if (!holds) {
+        comparison = negateComparison(comparison)
+      }
+      return Some(buildSideFact(type, comparison, bound))
+    }
+  }
+  return None
+}
+
+function collectChainSides(
+  operator: string,
+  expression: Expr,
+  mutable sides: Array<Expr>,
+) uses alloc {
+  if (expression is Expr.BinaryExpr(_, _, inner, left, right)) {
+    if (inner == operator) {
+      collectChainSides(operator, left, mutable sides)
+      collectChainSides(operator, right, mutable sides)
+      return
+    }
+  }
+  Arrays.push(mutable sides, expression)
+}
+
+export function buildSideFact(type: Type, comparison: string, bound: int): Fact {
+  // One side of a hull, built as refineFact builds a fact: on a u64 a bound from 2^63 up
+  // is negative as an int and proves nothing.
+  if (type == Type.TU64 && bound < 0) {
+    return createUnknownFact()
+  }
+  return refineBounds(createUnknownFact(), comparison, bound)
+}
+
+export function findRelationSet(comparison: string): int {
+  if (comparison == "<") {
+    return RELATION_LESS
+  }
+  if (comparison == "<=") {
+    return RELATION_LESS | RELATION_EQUAL
+  }
+  if (comparison == ">") {
+    return RELATION_GREATER
+  }
+  if (comparison == ">=") {
+    return RELATION_GREATER | RELATION_EQUAL
+  }
+  if (comparison == "==") {
+    return RELATION_EQUAL
+  }
+  return RELATION_LESS | RELATION_GREATER
+}
+
+export function isRelationProven(known: int, comparison: string): bool {
+  // A set proves a comparison when every order it allows meets the comparison.
+  return (known & (RELATION_ANY - findRelationSet(comparison))) == 0
+}
+
+function flipRelation(relation: int): int {
+  // The set seen from the other local: less and greater swap.
+  return ((relation & RELATION_EQUAL) |
+    ((relation & RELATION_LESS) << 2) |
+    ((relation & RELATION_GREATER) >> 2))
+}
+
+function readRelation(checker: Checker, first: int, second: int): int uses alloc {
+  // The orders still possible between first and second, seen from first.
+  if (first == second) {
+    return RELATION_EQUAL
+  }
+  let relation = RELATION_ANY
+  if (checker.localNames[relationKey(first, second)] is Some(stored)) {
+    if (stored >= 0) {
+      relation = stored
+    }
+  }
+  if (first > second) {
+    return flipRelation(relation)
+  }
+  return relation
+}
+
+export function recordRelation(
+  mutable checker: Checker,
+  first: int,
+  second: int,
+  relation: int,
+) uses alloc {
+  // The pair key holds the set seen from the smaller local, intersected with what is known.
+  if (first == second) {
+    return
+  }
+  const key = relationKey(first, second)
+  let isNew = true
+  if (checker.localNames[key] is Some(stored)) {
+    isNew = stored < 0
+  }
+  let narrowed = readRelation(checker, first, second) & relation
+  if (first > second) {
+    narrowed = flipRelation(narrowed)
+  }
+  if (isNew) {
+    addRelationPartner(mutable checker, first, second)
+    addRelationPartner(mutable checker, second, first)
+  }
+  bindName(mutable checker, key, narrowed)
+  passBounds(mutable checker, first, second)
+  passBounds(mutable checker, second, first)
+}
+
+function addRelationPartner(mutable checker: Checker, local: int, partner: int) uses alloc {
+  const count = findRelationCount(checker, local)
+  bindName(mutable checker, relationPartnerKey(local, count), partner)
+  bindName(mutable checker, relationCountKey(local), count + 1)
+}
+
+function passBoundsToPartners(mutable checker: Checker, local: int) uses alloc {
+  // One step only: the partners' own partners are not visited.
+  const count = findRelationCount(checker, local)
+  for (const index of Ranges.upTo(count)) {
+    if (checker.localNames[relationPartnerKey(local, index)] is Some(partner)) {
+      passBounds(mutable checker, local, partner)
+    }
+  }
+}
+
+function passBounds(mutable checker: Checker, source: int, target: int) uses alloc {
+  // With source <= target, target is at least source's low end; with source >= target,
+  // at most its high end; `<` and `>` pass the end plus or minus one.
+  const relation = readRelation(checker, source, target)
+  if (relation == RELATION_ANY) {
+    return
+  }
+  if (isCapturedByArrow(checker, source) || isCapturedByArrow(checker, target)) {
+    return
+  }
+  const type = getLocal(checker, source).localType
+  const fact = readFact(checker, source)
+  let passed = createUnknownFact()
+  if ((relation & RELATION_GREATER) == 0 && isPassableEnd(fact.low, type)) {
+    passed.low = fact.low
+    if ((relation & RELATION_EQUAL) == 0) {
+      passed.low = fact.low + 1
+    }
+  }
+  if ((relation & RELATION_LESS) == 0 && isPassableEnd(fact.high, type)) {
+    passed.high = fact.high
+    if ((relation & RELATION_EQUAL) == 0) {
+      passed.high = fact.high - 1
+    }
+  }
+  if (relation == RELATION_EQUAL) {
+    passed.nonzero = fact.nonzero
+  }
+  if (!isUnboundedEnd(passed.low) || !isUnboundedEnd(passed.high) || passed.nonzero) {
+    intersectFact(mutable checker, target, passed)
+  }
+}
+
+function isPassableEnd(value: int, type: Type): bool {
+  // A u64 end from 2^63 up is negative as an int, so it is no bound to pass on.
+  return !isUnboundedEnd(value) && !(type == Type.TU64 && value < 0)
+}
+
+export function findArgumentRelation(
+  checker: Checker,
+  left: Expr,
+  right: Expr,
+  type: Type,
+): int uses alloc {
+  // What a call knows about the order of two arguments: from constants, from intervals
+  // whose bounded ends settle it, from one local passed twice, or from a relation fact.
+  if (!isInteger(type)) {
+    return RELATION_ANY
+  }
+  if (findTypedConstant(checker, left, type) is Some(leftValue)) {
+    if (findTypedConstant(checker, right, type) is Some(rightValue)) {
+      return compareConstants(leftValue, rightValue, type)
+    }
+  }
+  const leftLocal = findFactLocal(checker, left)
+  const rightLocal = findFactLocal(checker, right)
+  if (leftLocal >= 0 && leftLocal == rightLocal) {
+    return RELATION_EQUAL
+  }
+  let relation = RELATION_ANY
+  const leftFact = findOperandFact(checker, left, type)
+  const rightFact = findOperandFact(checker, right, type)
+  if (isPassableEnd(leftFact.high, type) && isPassableEnd(rightFact.low, type)) {
+    if (leftFact.high < rightFact.low) {
+      relation = relation & RELATION_LESS
+    } else if (leftFact.high == rightFact.low) {
+      relation = relation & (RELATION_LESS | RELATION_EQUAL)
+    }
+  }
+  if (isPassableEnd(leftFact.low, type) && isPassableEnd(rightFact.high, type)) {
+    if (leftFact.low > rightFact.high) {
+      relation = relation & RELATION_GREATER
+    } else if (leftFact.low == rightFact.high) {
+      relation = relation & (RELATION_GREATER | RELATION_EQUAL)
+    }
+  }
+  if (leftLocal >= 0 && rightLocal >= 0) {
+    if (!isCapturedByArrow(checker, leftLocal) && !isCapturedByArrow(checker, rightLocal)) {
+      relation = relation & readRelation(checker, leftLocal, rightLocal)
+    }
+  }
+  return relation
+}
+
+function compareConstants(leftValue: int, rightValue: int, type: Type): int {
+  // A u64 from 2^63 up is negative as an int and above every smaller u64.
+  if (type == Type.TU64 && (leftValue < 0) != (rightValue < 0)) {
+    if (leftValue < 0) {
+      return RELATION_GREATER
+    }
+    return RELATION_LESS
+  }
+  if (leftValue < rightValue) {
+    return RELATION_LESS
+  }
+  if (leftValue > rightValue) {
+    return RELATION_GREATER
+  }
+  return RELATION_EQUAL
+}
+
 export function refineFact(
   mutable checker: Checker,
   local: int,
@@ -353,6 +676,7 @@ export function refineFact(
   }
   const refined = refineBounds(readFact(checker, local), comparison, bound)
   writeFact(mutable checker, local, refined)
+  passBoundsToPartners(mutable checker, local)
 }
 
 export function refineBounds(fact: Fact, comparison: string, bound: int): Fact {
@@ -400,10 +724,16 @@ export function joinFacts(left: Fact, right: Fact): Fact {
 }
 
 export function narrowFact(mutable checker: Checker, local: int, fact: Fact) uses alloc {
-  // Adds a fact to what is known about an integer local.
+  // Adds a fact to what is known about an integer local, and passes its bounds one step.
+  if (intersectFact(mutable checker, local, fact)) {
+    passBoundsToPartners(mutable checker, local)
+  }
+}
+
+function intersectFact(mutable checker: Checker, local: int, fact: Fact): bool uses alloc {
   const info = copy(getLocal(checker, local))
   if (!isInteger(info.localType)) {
-    return
+    return false
   }
   let added = copy(fact)
   if (info.localType == Type.TU64) {
@@ -422,6 +752,7 @@ export function narrowFact(mutable checker: Checker, local: int, fact: Fact) use
     high: Math.min(known.high, added.high),
     nonzero: known.nonzero || added.nonzero,
   })
+  return true
 }
 
 function isNonzeroFact(fact: Fact): bool {

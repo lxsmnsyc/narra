@@ -22,6 +22,15 @@ import * as Str from "std/string"
 import { Pos, Expr, Pattern, FieldPattern } from "narrac/ast"
 import { Type } from "narrac/types"
 import { Checker, Ref, getRef, getLocal, findBodySlot, bindName } from "narrac/check"
+import {
+  isArrayShapeIrrefutable,
+  isLengthColumn,
+  findLengthLimit,
+  countLengthConstructors,
+  listLengthTypes,
+  specializeArray,
+  describeLength,
+} from "narrac/arraypatterns"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -32,6 +41,7 @@ export function getPatternId(pattern: Pattern): int {
       | Pattern.PatCtor(nodeId, _, _, _, _, _)
       | Pattern.PatStruct(nodeId, _, _)
       | Pattern.PatTuple(nodeId, _, _)
+      | Pattern.PatArray(nodeId, _, _, _)
       | Pattern.PatLit(nodeId, _, _)
       | Pattern.PatOr(nodeId, _, _)
       | Pattern.PatCompare(nodeId, _, _, _) => nodeId
@@ -45,6 +55,7 @@ export function getPatternPos(pattern: Pattern): Pos {
       | Pattern.PatCtor(_, pos, _, _, _, _)
       | Pattern.PatStruct(_, pos, _)
       | Pattern.PatTuple(_, pos, _)
+      | Pattern.PatArray(_, pos, _, _)
       | Pattern.PatLit(_, pos, _)
       | Pattern.PatOr(_, pos, _)
       | Pattern.PatCompare(_, pos, _, _) => copy(pos)
@@ -77,6 +88,14 @@ export function collectPatternLocals(
     Pattern.PatTuple(_, _, arguments) => {
       for (const argument of Arrays.values(arguments)) {
         collectPatternLocals(checker, argument, mutable locals)
+      }
+    }
+    Pattern.PatArray(_, _, elements, rest) => {
+      for (const element of Arrays.values(elements)) {
+        collectPatternLocals(checker, element, mutable locals)
+      }
+      if (rest is Some(restPattern)) {
+        collectPatternLocals(checker, restPattern, mutable locals)
       }
     }
     // Every alternative binds the same locals; the first one stands for all.
@@ -123,10 +142,42 @@ export function endNarrowing(mutable checker: Checker, local: int) uses alloc {
   }
   endKey(mutable checker, narrowKey(local))
   endKey(mutable checker, factKey(local))
+  // A relation ends with either local, so the other side reads no relation either.
+  const count = findRelationCount(checker, local)
+  for (const index of Ranges.upTo(count)) {
+    if (checker.localNames[relationPartnerKey(local, index)] is Some(partner)) {
+      endKey(mutable checker, relationKey(local, partner))
+    }
+  }
 }
 
 export function factKey(local: int): string uses alloc {
   return `fact|${Int.toString(local)}`
+}
+
+export function relationKey(first: int, second: int): string uses alloc {
+  // One key per pair, with the smaller local first.
+  if (first < second) {
+    return `relation|${Int.toString(first)}|${Int.toString(second)}`
+  }
+  return `relation|${Int.toString(second)}|${Int.toString(first)}`
+}
+
+export function relationPartnerKey(local: int, index: int): string uses alloc {
+  return `relations|${Int.toString(local)}|${Int.toString(index)}`
+}
+
+export function relationCountKey(local: int): string uses alloc {
+  return `relations|${Int.toString(local)}`
+}
+
+export function findRelationCount(checker: Checker, local: int): int uses alloc {
+  if (checker.localNames[relationCountKey(local)] is Some(count)) {
+    if (count > 0) {
+      return count
+    }
+  }
+  return 0
 }
 
 function endKey(mutable checker: Checker, key: string) uses alloc {
@@ -170,6 +221,9 @@ export function isIrrefutable(checker: Checker, pattern: Pattern): bool {
       isSingleVariant(checker, nodeId) && allIrrefutable(checker, arguments)
     Pattern.PatStruct(_, _, fields) => structFieldsIrrefutable(checker, fields)
     Pattern.PatTuple(_, _, arguments) => allIrrefutable(checker, arguments)
+    Pattern.PatArray(nodeId, _, elements, rest) =>
+      isArrayShapeIrrefutable(checker, nodeId, Arrays.length(elements), rest is Some(_)) &&
+      allIrrefutable(checker, elements)
     Pattern.PatLit(_, _, _) => false
     Pattern.PatOr(_, _, alternatives) => isAnyIrrefutable(checker, alternatives)
     Pattern.PatCompare(_, _, _, _) => false
@@ -258,6 +312,10 @@ export function isWild(checker: Checker, pattern: Pattern): bool {
   if (pattern is Pattern.PatName(nodeId, _, _)) {
     return getRef(checker, nodeId) is Ref.Unresolved
   }
+  // `[..._]` and `[...rest]` match an array of any length.
+  if (pattern is Pattern.PatArray(_, _, elements, Some(_))) {
+    return Arrays.length(elements) == 0
+  }
   return false
 }
 
@@ -323,6 +381,9 @@ function specialize(
       return Some(createWildcards(count))
     }
     return Some(arguments)
+  }
+  if (pattern is Pattern.PatArray(_, _, elements, rest)) {
+    return specializeArray(elements, rest, count)
   }
   if (pattern is Pattern.PatStruct(_, _, fields)) {
     let out = createWildcards(count)
@@ -420,7 +481,6 @@ export function findMissingCases(
     return findMissingCases(checker, expandAlternativeHeads(rows), types, mutable budget)
   }
   const type = types[0]
-  const count = countConstructors(checker, type)
   const restTypes = sliceItems(types, 1, Arrays.length(types))
   let allWild = true
   for (const row of Arrays.values(rows)) {
@@ -428,6 +488,10 @@ export function findMissingCases(
       allWild = false
     }
   }
+  if (!allWild && isLengthColumn(type)) {
+    return findMissingLengths(checker, rows, type, restTypes, mutable budget)
+  }
+  const count = countConstructors(checker, type)
 
   // Only wildcards cover an infinite type, and a column of wildcards covers
   // any constructor: look at the other columns.
@@ -478,6 +542,92 @@ export function findMissingCases(
     }
   }
   return out
+}
+
+function findMissingLengths(
+  checker: Checker,
+  rows: Array<Array<Pattern>>,
+  type: Type,
+  restTypes: Array<Type>,
+  mutable budget: CaseBudget,
+): Array<Array<string>> uses alloc {
+  // Each length constructor with the rows that can match it.
+  const limit = findLengthLimit(collectHeads(rows))
+  let out: Array<Array<string>> = []
+  for (const constructorIndex of Ranges.upTo(countLengthConstructors(type, limit))) {
+    const elementTypes = listLengthTypes(type, constructorIndex, limit)
+    const columns = Arrays.length(elementTypes)
+    let specialized: Array<Array<Pattern>> = []
+    for (const row of Arrays.values(rows)) {
+      if (specialize(checker, row[0], type, constructorIndex, columns) is Some(patterns)) {
+        Arrays.push(
+          mutable specialized,
+          joinItems(patterns, sliceItems(row, 1, Arrays.length(row))),
+        )
+      }
+    }
+    const subTypes = joinItems(elementTypes, restTypes)
+    for (const example of Arrays.values(
+      findMissingCases(checker, specialized, subTypes, mutable budget),
+    )) {
+      const head = describeLength(type, constructorIndex, limit, sliceItems(example, 0, columns))
+      Arrays.push(
+        mutable out,
+        joinItems([head], sliceItems(example, columns, Arrays.length(example))),
+      )
+    }
+  }
+  return out
+}
+
+function collectHeads(rows: Array<Array<Pattern>>): Array<Pattern> from rows uses alloc {
+  let heads: Array<Pattern> = []
+  for (const row of Arrays.values(rows)) {
+    Arrays.push(mutable heads, row[0])
+  }
+  return heads
+}
+
+function isLengthUseful(
+  checker: Checker,
+  rows: Array<Array<Pattern>>,
+  vector: Array<Pattern>,
+  type: Type,
+  restTypes: Array<Type>,
+): bool uses alloc {
+  // Each length constructor the vector matches, against the rows that match it too.
+  let heads: Array<Pattern> = [vector[0]]
+  for (const row of Arrays.values(rows)) {
+    Arrays.push(mutable heads, row[0])
+  }
+  const limit = findLengthLimit(heads)
+  const restVector = sliceItems(vector, 1, Arrays.length(vector))
+  for (const constructorIndex of Ranges.upTo(countLengthConstructors(type, limit))) {
+    const elementTypes = listLengthTypes(type, constructorIndex, limit)
+    const columns = Arrays.length(elementTypes)
+    if (specialize(checker, vector[0], type, constructorIndex, columns) is Some(head)) {
+      let specializedRows: Array<Array<Pattern>> = []
+      for (const row of Arrays.values(rows)) {
+        if (specialize(checker, row[0], type, constructorIndex, columns) is Some(patterns)) {
+          Arrays.push(
+            mutable specializedRows,
+            joinItems(patterns, sliceItems(row, 1, Arrays.length(row))),
+          )
+        }
+      }
+      if (
+        isUseful(
+          checker,
+          specializedRows,
+          joinItems(head, restVector),
+          joinItems(elementTypes, restTypes),
+        )
+      ) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 // ---- unreachable alternatives ----
@@ -588,6 +738,9 @@ export function isUseful(
   const count = countConstructors(checker, type)
   const restVector = sliceItems(vector, 1, Arrays.length(vector))
   const restTypes = sliceItems(types, 1, Arrays.length(types))
+  if (isLengthColumn(type) && !areAllWild(checker, expandedRows, vector[0])) {
+    return isLengthUseful(checker, expandedRows, vector, type, restTypes)
+  }
   if (count < 0 && isLiteral(vector[0])) {
     // A literal of an infinite type is covered by a wildcard or by the same literal.
     const key = describeLiteral(getPatternLiteral(vector[0]))
@@ -654,6 +807,19 @@ export function isUseful(
     }
   }
   return false
+}
+
+function areAllWild(checker: Checker, rows: Array<Array<Pattern>>, head: Pattern): bool {
+  // A column of wildcards says nothing about lengths: the other columns decide.
+  if (!isWild(checker, head)) {
+    return false
+  }
+  for (const row of Arrays.values(rows)) {
+    if (!isWild(checker, row[0])) {
+      return false
+    }
+  }
+  return true
 }
 
 function describeConstructor(

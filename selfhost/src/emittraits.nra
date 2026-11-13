@@ -10,8 +10,16 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Expr } from "narrac/ast"
-import { Type, typeKey, isInteger, findFixedLength } from "narrac/types"
-import { Ref, ProgramFunc, getExpressionId, orderArguments, isPassedByPointer } from "narrac/check"
+import { Type, isInteger, findFixedLength } from "narrac/types"
+import {
+  Ref,
+  ProgramFunc,
+  getExpressionId,
+  orderArguments,
+  isPassedByPointer,
+  stdTrait,
+} from "narrac/check"
+import { lookupImplementation } from "narrac/implementations"
 import { cachedCType, cachedTypeId, opFuncName, cachedFunctionName } from "narrac/cnames"
 import {
   Emitter,
@@ -27,13 +35,17 @@ import {
   noteReference,
 } from "narrac/emitstate"
 
-function traitMember(operation: string): string {
+function standardTraitName(operation: string): string {
   return match (operation) {
-    "eq" => "Equatable.equals"
-    "hash" => "Hashable.hash"
-    "cmp" => "Ordered.compare"
-    _ => "Show.show"
+    "eq" => "Equatable"
+    "hash" => "Hashable"
+    "cmp" => "Ordered"
+    _ => "Show"
   }
+}
+
+function standardMemberName(operation: string): string {
+  return match (operation) { "eq" => "equals", "hash" => "hash", "cmp" => "compare", _ => "show" }
 }
 
 function fieldName(name: string): string uses alloc {
@@ -87,12 +99,39 @@ function standardName(emitter: Emitter, operation: string, type: Type): string u
   return opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, type))
 }
 
+function stripDistinct(
+  emitter: Emitter,
+  operation: string,
+  type: Type,
+): Type from emitter uses alloc {
+  // A distinct type uses its base type's function, unless it has an implement block of its own.
+  const traitIndex = stdTrait(emitter.checker, standardTraitName(operation))
+  let current = copy(type)
+  let following = true
+  while (following) {
+    following = false
+    if (current is Type.TDistinct(index)) {
+      const member = standardMemberName(operation)
+      const own =
+        traitIndex >= 0 &&
+          lookupImplementation(emitter.checker, current, traitIndex, member) is Some(_)
+      if (!own) {
+        if (emitter.checker.distincts[index].base is Some(base)) {
+          current = base
+          following = true
+        }
+      }
+    }
+  }
+  return current
+}
+
 function useTraitFunction(
   mutable emitter: Emitter,
   operation: string,
   type: Type,
 ): string uses alloc {
-  const stripped = underlyingType(emitter, type)
+  const stripped = copy(stripDistinct(emitter, operation, type))
   const name = standardName(emitter, operation, stripped)
   if (isPrimitive(stripped)) {
     return name
@@ -246,13 +285,18 @@ function writeDefinition(
   addLine(mutable builder, `${prototype} {`)
 
   // A user implementation, when there is one, is called as is.
-  const key = `${typeKey(need.needType)}|${traitMember(need.operation)}`
-  if (emitter.checker.implFunctions[key] is Some(implementation)) {
-    const call = cachedFunctionName(
+  const traitIndex = stdTrait(emitter.checker, standardTraitName(need.operation))
+  let implementation: Option<ProgramFunc> = None
+  if (traitIndex >= 0) {
+    implementation = lookupImplementation(
       emitter.checker,
-      emitter.typeNames,
-      ProgramFunc.ImplFunc(implementation.block, implementation.index),
+      need.needType,
+      traitIndex,
+      standardMemberName(need.operation),
     )
+  }
+  if (implementation is Some(program)) {
+    const call = cachedFunctionName(emitter.checker, emitter.typeNames, program)
     noteReference(mutable emitter, call)
     // The implementation takes a large value by pointer.
     let pointer = ""

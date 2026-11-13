@@ -28,7 +28,6 @@ import {
   Emitter,
   Code,
   TempVar,
-  ScopeFrame,
   EmitWalker,
   reportUnsupported,
   writeLine,
@@ -45,6 +44,8 @@ import {
   temp,
   consume,
   unwindAll,
+  enterBodyContext,
+  leaveBodyContext,
   retainCode,
   releaseCode,
   noteReference,
@@ -458,36 +459,13 @@ function emitClosureFunction<W: EmitWalker>(
   const signature = `static ${cachedCType(checker, emitter.typeNames, result)} ${name}(${Str.join(parts, ", ")})`
   Str.append(mutable emitter.closurePrototypes, `${signature};\n`)
 
-  // Save the state of the body being emitted.
-  const savedOut = emitter.out
-  const savedIndent = emitter.indent
-  const savedFrames = emitter.frames
-  const savedScopes = emitter.scopes
-  const savedLoopFrames = emitter.loopFrames
-  const savedLoopInfos = emitter.loopInfos
-  const savedBlocks = emitter.blocks
-  const savedResultType = emitter.resultType
-  const savedInGenerator = emitter.inGenerator
-  const savedRefCaptures = emitter.refCaptures
-  // The closure body starts with no frames, scopes, loops or blocks of its own.
-  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
-  emitter.frames = []
-  emitter.loopFrames = []
-  emitter.loopInfos = []
-  emitter.blocks = []
+  const saved = enterBodyContext(mutable emitter, result)
   // The closure holds each `let` it captures through a pointer.
-  emitter.refCaptures = []
   for (const capture of Arrays.values(closure.captures)) {
     if (isCapturedByReference(emitter, closure, capture)) {
       Arrays.push(mutable emitter.refCaptures, capture)
     }
   }
-  // The closure's variables are its own C locals, even in a generator body.
-  emitter.inGenerator = false
-  emitter.out = Str.builder()
-  emitter.indent = 0
-  emitter.resultType = result
-
   writeLine(mutable emitter, `${signature} {`)
   emitter.indent++
   if (Arrays.length(closure.captures) == 0) {
@@ -525,17 +503,7 @@ function emitClosureFunction<W: EmitWalker>(
   const text = Str.build(emitter.out)
   Str.append(mutable emitter.closureDefinitions, text)
 
-  // Restore the state.
-  emitter.out = savedOut
-  emitter.indent = savedIndent
-  emitter.frames = savedFrames
-  emitter.scopes = savedScopes
-  emitter.loopFrames = savedLoopFrames
-  emitter.loopInfos = savedLoopInfos
-  emitter.blocks = savedBlocks
-  emitter.resultType = savedResultType
-  emitter.inGenerator = savedInGenerator
-  emitter.refCaptures = savedRefCaptures
+  leaveBodyContext(mutable emitter, saved)
 }
 
 export function emitValueCall<W: EmitWalker>(

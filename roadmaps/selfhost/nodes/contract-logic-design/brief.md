@@ -1,15 +1,15 @@
 ---
 id: contract-logic-design
 title: "Spike: logical operators in requires and ensures"
-status: todo
+status: done
 priority: should
 type: spike
-story:
+story: batch-11
 early: false
 outline: false
-milestone: m12-spec-gaps
+milestone: 
 target:
-ship: pr
+ship: auto
 from:
 size: M
 spike: true
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-11
-spent:
+spent: 438000
 owns:
   - roadmaps/selfhost/nodes/contract-logic-design/**
 shared:

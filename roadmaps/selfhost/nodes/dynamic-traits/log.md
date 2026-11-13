@@ -1,0 +1,15 @@
+# Log: dynamic-traits
+
+- 2026-11-12: started from feat/batch-11 at c440978. Not built before: no TDynamic, no samples. Base compiler built with bootstrap into the scratch folder.
+- Design: one C type for every Dynamic (`struct narra_dyn*`, a struct tag so signatures need no typedef), a cell `{ narra_dyn header; T value; }` per (trait, type), a table struct per trait whose first member is `narra_dyn_table base` (the drop function). Retain and release are generic (`narra_dyn_retain`, `narra_dyn_release`), written into the program by emitdynamic.nra when the "dynamic" helper is noted, since the runtime text may not change without a seed update.
+- Checker: resolve.nra makes `TDynamic(traitIndex)` and queues each written use in `Checker.dynamicTraits`; `flushDynamicTraits` (dynamic.nra) checks the trait rule beside flushTypeBounds, because a struct field `Dynamic<Drawable>` is resolved before resolveTraits fills the trait's functions. That flush is called from body.nra and declare.nra (not shared: deviation, one line each).
+- Calls keep `Ref.Unresolved` instead of the brief's `Ref.TraitFunction`: the effect pass already gives an unresolved trait call the trait function's declared effects (the bound case), and the shared-result pass treats it as a bound call. traitSelf holds the Dynamic for a call and the value type for Dynamic.of; the emitter dispatches `Ref.Unresolved` to emitdynamic.nra. Dynamic.of's `alloc` effect needed one line in effects.nra (not shared: deviation).
+- Leak found: locals of type Dynamic were not released, because `isCountedType` (check.nra) did not list TDynamic. Fixed.
+- Map keys: `mapKeyProblem` (traits.nra) returned "" for TDynamic; added "a Dynamic is not hashable".
+- `copy(d)` is E0975 (copies nothing), since a Dynamic is never changed in place; recorded as a D95 amendment instead of the brief's "copy retains".
+- Package sample and query test live under testdata/packages/dynamic_traits and testdata/query/dynamic_traits (outside the owned globs: deviation).
+- Fresh review fixes (2026-11-12), after rebasing on feat/batch-11 (conflicts in diagnostics.nra and emitstate.nra, both sides kept):
+  - A call through a Dynamic to a `from value` trait function counted as a fresh result. `findSharedArgument` (sharedresults.nra) has a `Ref.Unresolved` arm for a Dynamic in traitSelf; `canShareType` (stdcopy.nra), `canShareKnown` and `searchHeapValue` (sharedwrites.nra) treat a Dynamic as able to hold a tracked value, since its stored value may. `copy(d)` stays E0975 by an explicit check. Error tests `dynamic_trait_shared` (E0978) and `dynamic_trait_shared_result` (missing `from item`).
+  - `Dynamic<Hashable>` is allowed (orchestrator). Its thunk calls the compiler's hash function (`useHash`), cast to int. Sample `dynamic_traits_hash`.
+  - `checkTraitCall` reports no E0522 when the first argument's type is void (an error already reported) and returns the result when it has no Self.
+  - Following `from` through a Dynamic means an `Array<Dynamic<X>>` can share too: `pick(items, index)` in the main sample now needs `from items`. The err_infer typesdump golden loses one cascading E0522.

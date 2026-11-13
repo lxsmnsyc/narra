@@ -38,6 +38,7 @@ import {
   readLocal,
   isReference,
   retainCode,
+  releaseCode,
   localRef,
   declareLocal,
   declareLocalVariable,
@@ -47,6 +48,13 @@ import {
   buildVariantFieldPath,
 } from "narrac/emitstate"
 import * as Tail from "narrac/emittail"
+import {
+  isLengthImpossible,
+  buildLengthCondition,
+  buildElementPath,
+  emitRestCopy,
+  collectRestLocals,
+} from "narrac/emitarraypatterns"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -146,6 +154,30 @@ function collectConditions<W: EmitWalker>(
         )
       }
     }
+    Pattern.PatArray(nodeId, _, elements, rest) => {
+      const arrayType = copy(readNodeType(emitter, nodeId))
+      const lengthCondition = buildLengthCondition(
+        arrayType,
+        path,
+        Arrays.length(elements),
+        rest is Some(_),
+      )
+      if (lengthCondition != "") {
+        Arrays.push(mutable conditions, lengthCondition)
+      }
+      // The elements of a length that never matches are not read.
+      if (lengthCondition != "false") {
+        for (const index of Ranges.between(0, Arrays.length(elements))) {
+          collectConditions(
+            walker,
+            mutable emitter,
+            elements[index],
+            buildElementPath(arrayType, path, index),
+            mutable conditions,
+          )
+        }
+      }
+    }
     Pattern.PatLit(nodeId, _, literal) => {
       const code = EmitWalker.emitExpression(walker, mutable emitter, literal)
       if (readNodeType(emitter, nodeId) == Type.TStr) {
@@ -210,6 +242,14 @@ function collectBoundLocals(
     Pattern.PatTuple(_, _, arguments) => {
       for (const argument of Arrays.values(arguments)) {
         collectBoundLocals(emitter, argument, mutable locals)
+      }
+    }
+    Pattern.PatArray(_, _, elements, rest) => {
+      for (const element of Arrays.values(elements)) {
+        collectBoundLocals(emitter, element, mutable locals)
+      }
+      if (rest is Some(restPattern)) {
+        collectBoundLocals(emitter, restPattern, mutable locals)
       }
     }
     Pattern.PatOr(_, _, alternatives) => collectBoundLocals(
@@ -317,6 +357,16 @@ function bindPattern<W: EmitWalker>(
         )
       }
     }
+    Pattern.PatArray(nodeId, _, elements, rest) => bindArray(
+      walker,
+      mutable emitter,
+      nodeId,
+      elements,
+      rest,
+      path,
+      assignOnly,
+      borrowed,
+    )
     Pattern.PatOr(_, _, alternatives) => {
       let locals: Array<int> = []
       collectBoundLocals(emitter, pattern, mutable locals)
@@ -334,10 +384,65 @@ function bindPattern<W: EmitWalker>(
           for (const localIndex of Arrays.values(locals)) {
             addLocal(mutable emitter, localIndex)
           }
+        } else if (!assignOnly) {
+          // A named rest owns its Array even where the other names borrow.
+          let restLocals: Array<int> = []
+          collectRestLocals(emitter, pattern, mutable restLocals)
+          for (const localIndex of Arrays.values(restLocals)) {
+            addLocal(mutable emitter, localIndex)
+          }
         }
       }
     }
     Pattern.PatLit(_, _, _) | Pattern.PatWildcard(_, _) | Pattern.PatCompare(_, _, _, _) => {}
+  }
+}
+
+function bindArray<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  elements: Array<Pattern>,
+  rest: Option<Pattern>,
+  path: string,
+  assignOnly: bool,
+  borrowed: bool,
+) uses alloc {
+  const arrayType = copy(readNodeType(emitter, nodeId))
+  if (isLengthImpossible(arrayType, Arrays.length(elements), rest is Some(_))) {
+    // The arm never runs, but its body still names the locals.
+    if (!assignOnly) {
+      let locals: Array<int> = []
+      for (const element of Arrays.values(elements)) {
+        collectBoundLocals(emitter, element, mutable locals)
+      }
+      for (const localIndex of Arrays.values(locals)) {
+        const declaration = declareLocalVariable(mutable emitter, localIndex)
+        if (!emitter.inGenerator) {
+          const name = localRef(emitter, localIndex)
+          writeLine(mutable emitter, `${declaration}; memset(&${name}, 0, sizeof ${name});`)
+        }
+      }
+    }
+    return
+  }
+  for (const index of Ranges.between(0, Arrays.length(elements))) {
+    const elementPath = buildElementPath(arrayType, path, index)
+    bindPattern(walker, mutable emitter, elements[index], elementPath, assignOnly, borrowed)
+  }
+  if (rest is Some(Pattern.PatName(restId, _, _))) {
+    const localIndex = declaredLocal(emitter, restId)
+    if (localIndex >= 0) {
+      // The copy is owned, so the local releases it whether the other names borrow or not.
+      const copied = emitRestCopy(mutable emitter, arrayType, path, Arrays.length(elements))
+      if (assignOnly) {
+        const target = localRef(emitter, localIndex)
+        writeLine(mutable emitter, `${target} = ${copied};`)
+      } else {
+        declareLocal(mutable emitter, localIndex, copied)
+        addLocal(mutable emitter, localIndex)
+      }
+    }
   }
 }
 
@@ -577,6 +682,13 @@ function containsOrPattern(pattern: Pattern): bool {
         }
       }
     }
+    Pattern.PatArray(_, _, elements, _) => {
+      for (const element of Arrays.values(elements)) {
+        if (containsOrPattern(element)) {
+          return true
+        }
+      }
+    }
     _ => {}
   }
   return false
@@ -653,6 +765,15 @@ function expandOrPatterns(pattern: Pattern): Array<Pattern> from pattern uses al
         Arrays.push(mutable expanded, Pattern.PatTuple(nodeId, pos, combination))
       }
     }
+    Pattern.PatArray(nodeId, pos, elements, rest) => {
+      let options: Array<Array<Pattern>> = []
+      for (const element of Arrays.values(elements)) {
+        Arrays.push(mutable options, expandOrPatterns(element))
+      }
+      for (const combination of Arrays.values(combinePatternOptions(options))) {
+        Arrays.push(mutable expanded, Pattern.PatArray(nodeId, pos, combination, rest))
+      }
+    }
     _ => {
       Arrays.push(mutable expanded, pattern)
     }
@@ -682,6 +803,9 @@ function emitGuardedAlternatives<W: EmitWalker>(
       writeLine(mutable emitter, `${declaration};`)
     }
   }
+  // A named rest owns its Array: an alternative whose guard fails releases it.
+  let restLocals: Array<int> = []
+  collectRestLocals(emitter, arm.pattern, mutable restLocals)
   emitter.tempCount++
   const selectedName = `m${Int.toString(emitter.tempCount)}`
   const selectedDeclaration = declareVariable(mutable emitter, "bool", selectedName)
@@ -703,6 +827,16 @@ function emitGuardedAlternatives<W: EmitWalker>(
     emitter.indent++
     writeLine(mutable emitter, `${selected} = true;`)
     emitter.indent--
+    if (Arrays.length(restLocals) > 0) {
+      writeLine(mutable emitter, "} else {")
+      emitter.indent++
+      for (const localIndex of Arrays.values(restLocals)) {
+        const local = copy(readLocal(emitter, localIndex))
+        const releaseText = releaseCode(emitter, local.localType, localRef(emitter, localIndex))
+        writeLine(mutable emitter, releaseText)
+      }
+      emitter.indent--
+    }
     writeLine(mutable emitter, "}")
     emitter.indent--
     writeLine(mutable emitter, "}")
@@ -710,6 +844,9 @@ function emitGuardedAlternatives<W: EmitWalker>(
   writeLine(mutable emitter, `if (${selected}) {`)
   emitter.indent++
   pushScope(mutable emitter, false)
+  for (const localIndex of Arrays.values(restLocals)) {
+    addLocal(mutable emitter, localIndex)
+  }
   emitArmBody(walker, mutable emitter, arm, returning, isValue, result, resultType, done)
   popScope(mutable emitter)
   emitter.indent--

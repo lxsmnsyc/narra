@@ -1,0 +1,124 @@
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Str from "std/string"
+
+struct Canvas {
+  lines: Array<string>
+}
+
+trait Drawable {
+  function draw(value: Self, mutable canvas: Canvas, prefix: string): int
+  function name(value: Self): string
+}
+
+struct Circle implements Drawable {
+  radius: int
+}
+
+implement Drawable for Circle {
+  function draw(value: Circle, mutable canvas: Canvas, prefix: string): int {
+    Arrays.push(mutable canvas.lines, `${prefix}circle ${Show.show(value.radius)}`)
+    return value.radius
+  }
+
+  function name(_value: Circle): string {
+    return "circle"
+  }
+}
+
+// A struct with counted fields, large enough to be passed by pointer.
+struct Label implements Drawable {
+  text: string
+  tags: Array<string>
+  x: int
+  y: int
+  width: int
+  height: int
+}
+
+implement Drawable for Label {
+  function draw(value: Label, mutable canvas: Canvas, prefix: string): int {
+    Arrays.push(mutable canvas.lines, `${prefix}label ${value.text} ${Str.join(value.tags, ",")}`)
+    return value.width
+  }
+
+  function name(value: Label): string {
+    return `label ${value.text}`
+  }
+}
+
+struct Scene {
+  title: string
+  main: Dynamic<Drawable>
+  extra: Option<Dynamic<Drawable>>
+}
+
+function makeLabel(text: string): Dynamic<Drawable> uses alloc {
+  return Dynamic.of(Label {
+    text: text,
+    tags: ["a", text],
+    x: 1,
+    y: 2,
+    width: Str.length(text),
+    height: 1,
+  })
+}
+
+function describe(item: Dynamic<Drawable>): string uses alloc {
+  return `<${Drawable.name(item)}>`
+}
+
+function pick(items: Array<Dynamic<Drawable>>, index: int): Dynamic<Drawable> from items {
+  return items[index]
+}
+
+export function run(_args: Array<string>): int {
+  let canvas = Canvas { lines: [] }
+  const items: Array<Dynamic<Drawable>> = [
+    Dynamic.of(Circle { radius: 1 }),
+    makeLabel("hi"),
+    Dynamic.of(Circle { radius: 3 }),
+  ]
+  let total = 0
+  for (const item of items) {
+    total += Drawable.draw(item, mutable canvas, "- ")
+  }
+  for (const line of canvas.lines) {
+    print(line)
+  }
+  print(`total ${Show.show(total)}`)
+
+  // Parameters, results, struct fields and Option.
+  print(describe(pick(items, 1)))
+  const scene = Scene { title: "scene", main: pick(items, 0), extra: Some(makeLabel("over")) }
+  print(describe(scene.main))
+  if (scene.extra is Some(extra)) {
+    print(describe(extra))
+  }
+  const empty = Scene { title: "empty", main: makeLabel("solo"), extra: None }
+  print(`${empty.title} ${describe(empty.main)} ${Show.show(empty.extra is None)}`)
+
+  // A copy outlives the original, and the array outlives the copies.
+  let kept = makeLabel("kept")
+  const original = makeLabel("first")
+  kept = original
+  print(describe(kept))
+  let copies: Array<Dynamic<Drawable>> = []
+  for (const round of [1, 2, 3]) {
+    const made = makeLabel(`round ${Show.show(round)}`)
+    Arrays.push(mutable copies, made)
+    Arrays.push(mutable copies, made)
+  }
+  print(`copies ${Show.show(Arrays.length(copies))} ${describe(copies[5])}`)
+
+  // Dynamic values in a map.
+  let byName: Map<string, Dynamic<Drawable>> = Map {}
+  for (const item of items) {
+    byName[Drawable.name(item)] = item
+  }
+  for (const entry of Maps.entries(byName)) {
+    const #[key, value] = entry
+    print(`${key} -> ${describe(value)}`)
+  }
+  return 0
+}

@@ -1,0 +1,10 @@
+# Log: array-patterns
+
+- 2026-11-12: branch feat/array-patterns reset to feat/batch-11 (20f9a487). Not built before: `match (items) { [] => ... }` failed to parse.
+- AST: `Pattern.PatArray(id, pos, elements, rest: Option<Pattern>)`, rest is the PatName or PatWildcard after `...`. E0722 is a parser error (anything after the rest).
+- Checker logic in new module `selfhost/src/arraypatterns.nra` (imports narrac/check only, so patterns, match and contracts can all call it). Emitter helpers in new `selfhost/src/emitarraypatterns.nra`. Shared files carry the switch cases.
+- Exhaustiveness: Array columns use length constructors 0..L and "above L" (L + 1 columns); a pattern with no rest matches the constructor with its element count, with a rest every constructor with at least that many columns. `[..._]` and `[...rest]` count as wildcards. A column whose heads are all wildcards goes to the default matrix, which stops the walk down `Array<Array<T>>`.
+- Generic instances re-run every body check. In an instance body a FixedArray length mismatch is not E0723, and a match whose subject holds a FixedArray skips E0983 and exhaustiveness (the generic body judged it against the open length). The emitter writes `false` for a length that cannot match and zero-fills the arm's locals, so the dead arm compiles.
+- Destructuring: `checkDestructureLengths` reports E0723 for an open N and suppresses E0715 when a FixedArray length error was reported.
+- Rest copy: `A_new(len - k)` plus a retain loop; the rest local owns it in match arms too (borrowed bindings), including in or-patterns and guarded or-patterns (released when the guard fails).
+- Fresh review: the instance rule first keyed on subjects holding a FixedArray (through type arguments) and rejected a FixedArray field of a struct matched in a generic function. Now every match in an instance body skips E0983 and exhaustiveness; `isLengthColumn` no longer looks at the body. Sample `testdata/array_patterns_instance.nra`. Rebased on feat/batch-11 aa2820e0.

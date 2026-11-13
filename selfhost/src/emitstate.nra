@@ -69,6 +69,14 @@ export struct TraitNeed {
   name: string
 }
 
+// A Dynamic<Trait> cell type to write (emitdynamic.nra): the trait, the type
+// of the stored value and the cell's C name.
+export struct DynamicNeed {
+  traitIndex: int
+  valueType: Type
+  name: string
+}
+
 // The helper functions and std runtime sections the emitted code names, in
 // note order. A cell, so code that holds the Emitter read-only can note.
 export struct HelperNotes {
@@ -138,6 +146,122 @@ export struct Emitter {
   // The C names of the functions and constant getters the emitted code calls,
   // in the order the calls were written; emitProgram emits only these.
   references: Array<string> = []
+  // The nodes of a thunk that calls a std function: negative ids with a type, a
+  // reference and the C text of the value, so the call emitters read them like
+  // the nodes of a body.
+  syntheticTypes: Map<int, Type>
+  syntheticRefs: Map<int, Ref>
+  syntheticCode: Map<int, string>
+  // The @inline calls being written, innermost last (emitinline.nra), the
+  // count of copied bodies so far, and the suffix of the loop labels in the
+  // copy being written, since C labels are per function.
+  inlineSites: Array<InlineSite> = []
+  inlineCount: int = 0
+  labelSuffix: string = ""
+  // The Dynamic cells the emitted code makes, in first-use order, and the C
+  // text written for them so far (emitdynamic.nra).
+  dynamicNeeds: Array<DynamicNeed> = []
+  dynamicTexts: Array<string> = []
+}
+
+// The caller's side of the emitter state at an @inline call, put back while the
+// body of an arrow argument is written.
+export struct InlineCaller {
+  body: int
+  file: string
+  refCaptures: Array<int>
+  hoistedArrays: Array<int>
+  inGenerator: bool
+  blocks: Array<BlockInfo>
+  labelSuffix: string
+}
+
+// An arrow argument that is written where the copied body calls its parameter
+// (a BodyInfo.locals index of the callee).
+export struct InlineArrow {
+  parameter: int
+  arrow: Expr
+}
+
+export struct InlineSite {
+  caller: InlineCaller
+  arrows: Array<InlineArrow>
+}
+
+export struct BodyContext {
+  out: StringBuilder
+  indent: int
+  frames: Array<Array<TempVar>>
+  scopes: Array<ScopeFrame>
+  loopFrames: Array<int>
+  loopInfos: Array<LoopInfo>
+  blocks: Array<BlockInfo>
+  resultType: Type
+  inGenerator: bool
+  refCaptures: Array<int>
+  syntheticTypes: Map<int, Type>
+  syntheticRefs: Map<int, Ref>
+  syntheticCode: Map<int, string>
+}
+
+export function enterBodyContext(
+  mutable emitter: Emitter,
+  resultType: Type,
+): BodyContext from emitter uses alloc {
+  // A function written in the middle of another body starts with no frames, scopes, loops or
+  // blocks, and its own output. The context returned is what leaveBodyContext puts back.
+  const saved = BodyContext {
+    out: emitter.out,
+    indent: emitter.indent,
+    frames: emitter.frames,
+    scopes: emitter.scopes,
+    loopFrames: emitter.loopFrames,
+    loopInfos: emitter.loopInfos,
+    blocks: emitter.blocks,
+    resultType: emitter.resultType,
+    inGenerator: emitter.inGenerator,
+    refCaptures: emitter.refCaptures,
+    syntheticTypes: emitter.syntheticTypes,
+    syntheticRefs: emitter.syntheticRefs,
+    syntheticCode: emitter.syntheticCode,
+  }
+  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
+  emitter.frames = []
+  emitter.loopFrames = []
+  emitter.loopInfos = []
+  emitter.blocks = []
+  emitter.refCaptures = []
+  emitter.inGenerator = false
+  emitter.out = Str.builder()
+  emitter.indent = 0
+  emitter.resultType = resultType
+  emitter.syntheticTypes = Map {}
+  emitter.syntheticRefs = Map {}
+  emitter.syntheticCode = Map {}
+  return saved
+}
+
+export function leaveBodyContext(mutable emitter: Emitter, saved: BodyContext) {
+  emitter.out = saved.out
+  emitter.indent = saved.indent
+  emitter.frames = saved.frames
+  emitter.scopes = saved.scopes
+  emitter.loopFrames = saved.loopFrames
+  emitter.loopInfos = saved.loopInfos
+  emitter.blocks = saved.blocks
+  emitter.resultType = saved.resultType
+  emitter.inGenerator = saved.inGenerator
+  emitter.refCaptures = saved.refCaptures
+  emitter.syntheticTypes = saved.syntheticTypes
+  emitter.syntheticRefs = saved.syntheticRefs
+  emitter.syntheticCode = saved.syntheticCode
+}
+
+export function findSyntheticCode(emitter: Emitter, nodeId: int): Option<string> from emitter {
+  if (nodeId >= -1) {
+    return None
+  }
+  return emitter.syntheticCode[nodeId]
 }
 
 // BlockInfo is a block expression being emitted: where a return stores its
@@ -160,6 +284,9 @@ export struct LoopInfo {
   continueUsed: bool
   // A C-style for loop: continue jumps to its step.
   hasStep: bool
+  // Set in the copy of an @inline body, so two copies in one function have
+  // labels of their own.
+  suffix: string = ""
 }
 
 // The recursion entry points of the body emitter. Narra function types cannot
@@ -212,6 +339,9 @@ export function newEmitter(
     frameSeen: Map {},
     generatorElement: Type.TVoid,
     heldArguments: Map {},
+    syntheticTypes: Map {},
+    syntheticRefs: Map {},
+    syntheticCode: Map {},
   }
 }
 
@@ -316,6 +446,9 @@ export function where(emitter: Emitter, pos: Pos): string uses alloc {
 }
 
 export function readNodeType(emitter: Emitter, nodeId: int): Type from emitter {
+  if (emitter.syntheticTypes[nodeId] is Some(synthetic)) {
+    return synthetic
+  }
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot >= 0) {
@@ -327,6 +460,9 @@ export function readNodeType(emitter: Emitter, nodeId: int): Type from emitter {
 }
 
 export function readNodeRef(emitter: Emitter, nodeId: int): Ref {
+  if (emitter.syntheticRefs[nodeId] is Some(synthetic)) {
+    return synthetic
+  }
   const info = emitter.checker.bodies[emitter.body]
   const slot = findBodySlot(info, nodeId)
   if (slot < 0) {
@@ -487,6 +623,10 @@ function refCountCode(
     }
     Type.TFunc(_, _, _, _, _) => `narra_env_${operation}((${value}).env);`
     Type.TGenerator(_, _, _, _, _) => `narra_gen_${operation}(${value});`
+    Type.TDynamic(_) => {
+      noteHelper(emitter, "dynamic")
+      return `narra_dyn_${operation}(${value});`
+    }
     Type.TStruct(_) | Type.TEnum(_) | Type.TFixedArray(_, _) => structOrEnumCode(
       emitter,
       operation,
@@ -735,6 +875,7 @@ export function unwindLoop(mutable emitter: Emitter) uses alloc {
 
 export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) uses alloc {
   const depth = Arrays.length(emitter.frames)
+  const suffix = emitter.labelSuffix
   Arrays.push(mutable emitter.loopFrames, depth)
   Arrays.push(mutable emitter.loopInfos, LoopInfo {
     label: label,
@@ -743,6 +884,7 @@ export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) use
     breakUsed: false,
     continueUsed: false,
     hasStep: false,
+    suffix: suffix,
   })
 }
 
@@ -775,7 +917,7 @@ export function emitStepJump(mutable emitter: Emitter) uses alloc {
   emitter.loopInfos[index].continueUsed = true
   writeLine(
     mutable emitter,
-    `goto narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)};`,
+    `goto narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix};`,
   )
 }
 
@@ -784,7 +926,7 @@ export function emitContinueLabel(mutable emitter: Emitter) uses alloc {
   if (info.continueUsed) {
     writeLine(
       mutable emitter,
-      `narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}:;`,
+      `narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix}:;`,
     )
   }
 }
@@ -793,7 +935,7 @@ export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses al
   if (info.breakUsed) {
     writeLine(
       mutable emitter,
-      `narra_break_${Int.toString(info.line)}_${Int.toString(info.column)}:;`,
+      `narra_break_${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix}:;`,
     )
   }
 }
@@ -803,7 +945,7 @@ export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak
     const info = copy(emitter.loopInfos[index])
     if (info.label == label) {
       unwindToLoop(mutable emitter, index)
-      const where = `${Int.toString(info.line)}_${Int.toString(info.column)}`
+      const where = `${Int.toString(info.line)}_${Int.toString(info.column)}${info.suffix}`
       if (isBreak) {
         emitter.loopInfos[index].breakUsed = true
         writeLine(mutable emitter, `goto narra_break_${where};`)

@@ -1,8 +1,8 @@
 ---
 id: const-lazy
 title: "lazy values and @const functions"
-status: todo
-priority: could
+status: dropped
+priority: should
 type: feature
 story:
 early: false
@@ -33,6 +33,8 @@ depends_on:
 # lazy values and @const functions
 
 ## Goal
+
+Split on 2026-11-12 into lazy-values and const-eval-design.
 
 SPEC lines 910-915 (F12, in the README's "Not supported yet"). `const table = lazy build()` and `@const function` fail to parse. Parser, checker and emitter (a once guard for `lazy`; compile-time evaluation for `@const`).
 

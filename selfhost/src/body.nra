@@ -30,7 +30,7 @@ import { quoteDump } from "narrac/modules"
 import { Package } from "narrac/modules"
 import { BuildTarget, createUnknownTarget } from "narrac/buildtarget"
 import { applyBuildTarget, reportUnsupportedHost } from "narrac/buildconditions"
-import { Type, Field } from "narrac/types"
+import { Type, Field, plainTypeKey } from "narrac/types"
 import {
   Checker,
   BodyRoot,
@@ -41,6 +41,7 @@ import {
   startBody,
   finishBody,
   keyBody,
+  containsTypeParameter,
   declareLocal,
   getExpressionPos,
   finish,
@@ -50,8 +51,12 @@ import { newPackageChecker, declareSourceModule } from "narrac/declare"
 import { checkEntries, recordEntryTargets } from "narrac/scopes"
 import { reportUnusedTopLevel } from "narrac/unused"
 import { flushMapKeys, shapeDeriveHolds } from "narrac/traits"
+import { flushTypeBounds } from "narrac/typebounds"
+import { flushDynamicTraits } from "narrac/dynamic"
+import { findImplementMember, createImplementEnvironment } from "narrac/genericimpl"
+import { addImplementInstances } from "narrac/implementations"
 import { derivedShapeType } from "narrac/deriveshape"
-import { makeEnv } from "narrac/generics"
+import { makeEnv, envWith } from "narrac/generics"
 import { resolveOpt } from "narrac/resolve"
 import { dumpTypeString } from "narrac/declsdump"
 import * as Exprs from "narrac/exprs"
@@ -67,6 +72,7 @@ import {
   checkContractCalls,
   collectModuleRequirements,
 } from "narrac/contracts"
+import { checkInlineFunctions } from "narrac/inlining"
 import * as Ctors from "narrac/ctors"
 import * as Closures from "narrac/closures"
 import * as StdCalls from "narrac/stdcalls"
@@ -282,7 +288,10 @@ export function checkModules(
   checkPending(mutable checker, walker)
   queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforePending
   checkContractCalls(mutable checker)
+  checkInlineFunctions(mutable checker)
   flushMapKeys(mutable checker)
+  flushTypeBounds(mutable checker)
+  flushDynamicTraits(mutable checker)
   checkEntries(mutable checker, package)
   const concrete = copy(checker.concrete)
   finish(mutable checker, concrete)
@@ -348,6 +357,7 @@ function checkGenericDefaults(
     owner = `${info.module}.${info.name}`
   }
   const environment = makeEnv(checker, info.parameters)
+  const before = Arrays.length(checker.errors)
   checkFieldDefaults(
     mutable checker,
     walker,
@@ -356,6 +366,38 @@ function checkGenericDefaults(
     info.fields,
     environment,
   )
+  // An instance repeats the check only for a default that held with the parameters open.
+  if (Arrays.length(checker.errors) > before) {
+    checker.failedDefaults[generic] = true
+  }
+  enter(mutable checker, saved)
+}
+
+function checkInstanceDefaults(
+  mutable checker: Checker,
+  walker: BodyWalker,
+  structIndex: int,
+) uses alloc {
+  const instance = copy(checker.structs[structIndex])
+  if (checker.failedDefaults[instance.generic] is Some(_)) {
+    return
+  }
+  const info = copy(checker.generics[instance.generic])
+  // Only the fields that use a type parameter, with this instance's types.
+  let fields: Array<Field> = []
+  for (const index of Ranges.between(0, Arrays.length(info.fields))) {
+    if (
+      info.fields[index].default is Some(_) &&
+        containsTypeParameter(checker, info.fields[index].fieldType)
+    ) {
+      Arrays.push(mutable fields, instance.fields[index])
+    }
+  }
+  const type = Type.TStruct(structIndex)
+  const saved = enter(mutable checker, info.scope)
+  const owner = dumpTypeString(checker, type)
+  const environment = envWith(checker, info.parameters, instance.arguments)
+  checkFieldDefaults(mutable checker, walker, owner, plainTypeKey(type), fields, environment)
   enter(mutable checker, saved)
 }
 
@@ -548,8 +590,21 @@ function checkFunctionBody(
 }
 
 function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
-  // Checking one instance can queue more.
-  while (checker.pendingNext < Arrays.length(checker.pending)) {
+  // Checking one instance can queue more, and so can a new instance of a generic type with implement blocks.
+  addImplementInstances(mutable checker)
+  while (true) {
+    // The defaults of a new struct instance come first; checking them can make more instances.
+    if (Arrays.length(checker.pendingInstanceDefaults) > 0) {
+      const structs = checker.pendingInstanceDefaults
+      checker.pendingInstanceDefaults = []
+      for (const structIndex of Arrays.values(structs)) {
+        checkInstanceDefaults(mutable checker, walker, structIndex)
+      }
+      continue
+    }
+    if (checker.pendingNext >= Arrays.length(checker.pending)) {
+      break
+    }
     const instanceIndex = checker.pending[checker.pendingNext]
     const instance = copy(checker.instanceList[instanceIndex])
     checker.pendingNext++
@@ -569,6 +624,9 @@ function checkPending(mutable checker: Checker, walker: BodyWalker) uses alloc {
       instance.funcIndex,
     )
     enter(mutable checker, saved)
+    if (checker.pendingNext == Arrays.length(checker.pending)) {
+      addImplementInstances(mutable checker)
+    }
   }
 }
 
@@ -645,10 +703,17 @@ function checkImplBodies(
     for (const param of Arrays.values(funcDecl.parameters)) {
       Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
     }
-    const result = findImplResult(mutable checker, block, funcDecl, environment)
+    // A member of a block on a generic type is checked with the type's parameters open.
+    const memberIndex = findImplementMember(checker, scope, funcDecl.pos)
+    let memberEnvironment = environment
+    if (memberIndex >= 0) {
+      const parameters = copy(checker.functions[memberIndex].typeParameters)
+      memberEnvironment = createImplementEnvironment(checker, parameters, impl.forType)
+    }
+    const result = findImplResult(mutable checker, block, funcDecl, memberEnvironment)
     let key = ""
     const implIndex = findImplIndex(checker, block, funcDecl)
-    if (implIndex >= 0) {
+    if (implIndex >= 0 && memberIndex < 0) {
       key = `impl|${Int.toString(block)}|${Int.toString(implIndex)}`
     }
     checkFunctionBody(
@@ -660,9 +725,9 @@ function checkImplBodies(
       funcDecl,
       paramTypes,
       result,
-      environment,
+      memberEnvironment,
       key,
-      -1,
+      memberIndex,
     )
   }
 }

@@ -1,0 +1,133 @@
+// Trait constraints on the type parameters of structs and enums
+// (`struct Labeled<T: Show>`). declareModuleBounds puts them in
+// Checker.bounds for the type's parameters, so field types, implement blocks
+// and derives see them, as they see a generic function's. Each written use of
+// the type with arguments (a type, a struct literal, an enum constructor) is
+// queued by noteTypeBounds (check.nra); flushTypeBounds checks the queue once
+// every module is declared, when the trait facts of every type are known. A
+// type parameter meets a constraint only through its own declared bounds.
+import { File, Decl, TypeExpr } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, reportError, reportErrorIn, lookupTrait, typeString } from "narrac/check"
+import { typeImplements } from "narrac/traits"
+import { quoteGo } from "narrac/parser"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function declareModuleBounds(mutable checker: Checker, file: File) uses alloc {
+  // Runs after declareTraits, before any field or signature is resolved.
+  const scope = checker.current
+  for (const declaration of Arrays.values(file.declarations)) {
+    match (declaration) {
+      Decl.Struct(structDecl) => {
+        if (checker.scopes[scope].generics[structDecl.name] is Some(generic)) {
+          if (checker.generics[generic].pos == structDecl.pos) {
+            declareBounds(mutable checker, generic, structDecl.typeParameters, structDecl.bounds)
+          }
+        }
+      }
+      Decl.Enum(enumDecl) => {
+        if (checker.scopes[scope].generics[enumDecl.name] is Some(generic)) {
+          if (checker.generics[generic].pos == enumDecl.pos) {
+            declareBounds(mutable checker, generic, enumDecl.typeParameters, enumDecl.bounds)
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+}
+
+function declareBounds(
+  mutable checker: Checker,
+  generic: int,
+  names: Array<string>,
+  bounds: Array<Array<TypeExpr>>,
+) uses alloc {
+  const parameters = copy(checker.generics[generic].parameters)
+  for (const i of Ranges.between(0, Arrays.length(bounds))) {
+    if (i >= Arrays.length(parameters) || i >= Arrays.length(names)) {
+      continue
+    }
+    let traits: Array<int> = []
+    let seen: Map<int, bool> = Map {}
+    for (const typeExpr of Arrays.values(bounds[i])) {
+      const traitIndex = lookupTrait(checker, typeExpr.name)
+      if (traitIndex < 0) {
+        reportError(
+          mutable checker,
+          typeExpr.pos,
+          "E0505",
+          `unknown trait ${quoteGo(typeExpr.name)}`,
+        )
+        continue
+      }
+      if (seen[traitIndex] is Some(_)) {
+        const message = `${checker.traits[traitIndex].name} is listed twice in the constraint of ${names[i]}`
+        reportError(mutable checker, typeExpr.pos, "E0506", message)
+        continue
+      }
+      seen[traitIndex] = true
+      Arrays.push(mutable traits, traitIndex)
+    }
+    if (Arrays.length(traits) > 0) {
+      checker.bounds[parameters[i]] = traits
+    }
+  }
+}
+
+export function flushTypeBounds(mutable checker: Checker) uses alloc {
+  // Runs once every module is declared and every body is checked.
+  const checks = checker.typeBounds
+  checker.typeBounds = []
+  for (const check of Arrays.values(checks)) {
+    const owner = checker.generics[check.generic].name
+    const parameters = copy(checker.generics[check.generic].parameters)
+    for (const i of Ranges.between(0, Arrays.length(parameters))) {
+      if (i >= Arrays.length(check.arguments) || check.arguments[i] == Type.TVoid) {
+        continue
+      }
+      const argument = check.arguments[i]
+      const parameterName = checker.parameters[parameters[i]].name
+      for (const traitIndex of Arrays.values(copy(findBounds(checker, parameters[i])))) {
+        if (typeImplements(mutable checker, argument, traitIndex)) {
+          continue
+        }
+        const traitName = checker.traits[traitIndex].name
+        let message = `${typeString(checker, argument)} does not implement ${traitName}, which ${owner} needs for type parameter ${parameterName}`
+        // A type parameter of the enclosing declaration needs the constraint written on it.
+        if (argument is Type.TParam(argumentParameter)) {
+          const argumentName = checker.parameters[argumentParameter].name
+          message = `${message}; declare it as <${argumentName}: ${traitName}>`
+        }
+        reportErrorIn(mutable checker, check.file, check.pos, "E1020", message)
+      }
+    }
+  }
+}
+
+export function typeBoundsHold(
+  mutable checker: Checker,
+  generic: int,
+  arguments: Array<Type>,
+): bool uses alloc {
+  const parameters = copy(checker.generics[generic].parameters)
+  for (const i of Ranges.between(0, Arrays.length(parameters))) {
+    if (i >= Arrays.length(arguments)) {
+      return false
+    }
+    for (const traitIndex of Arrays.values(copy(findBounds(checker, parameters[i])))) {
+      if (!typeImplements(mutable checker, arguments[i], traitIndex)) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+function findBounds(checker: Checker, parameter: int): Array<int> from checker uses alloc {
+  if (checker.bounds[parameter] is Some(bounds)) {
+    return bounds
+  }
+  return []
+}

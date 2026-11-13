@@ -46,7 +46,13 @@ import {
   isContentsType,
   findSharedParameter,
 } from "narrac/check"
-import { resolveOpt, substitute } from "narrac/resolve"
+import { resolveOpt, resolveType, substitute } from "narrac/resolve"
+import { makeEnv } from "narrac/generics"
+import {
+  checkImplementHead,
+  createImplementEnvironment,
+  registerImplementMember,
+} from "narrac/genericimpl"
 import { HIDDEN_SHAPE, isShapeDerive } from "narrac/deriveshape"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
@@ -91,6 +97,7 @@ function typeTraitsKey(checker: Checker, type: Type): string {
   return match (type) {
     Type.TStruct(index) => `${checker.structs[index].module}|${checker.structs[index].name}`
     Type.TEnum(index) => `${checker.enums[index].module}|${checker.enums[index].name}`
+    Type.TDistinct(index) => `${checker.distincts[index].module}|${checker.distincts[index].name}`
     _ => ""
   }
 }
@@ -188,11 +195,28 @@ export function declareTraits(mutable checker: Checker, file: File) uses alloc {
         }
         const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${enumDecl.name}`, info)
       }
+      Decl.Distinct(distinctDecl) => {
+        const info = TypeTraits {
+          name: distinctDecl.name,
+          module: modulePath,
+          pos: distinctDecl.pos,
+          generic: false,
+          implementationExpressions: distinctDecl.implementations,
+          derivedExpressions: distinctDecl.derived,
+          listed: Map {},
+          derived: Map {},
+          blocks: Map {},
+        }
+        const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${distinctDecl.name}`, info)
+      }
       _ => {}
     }
   }
   for (const declaration of Arrays.values(file.declarations)) {
     match (declaration) {
+      Decl.Distinct(distinctDecl) => {
+        declareListed(mutable checker, `${modulePath}|${distinctDecl.name}`)
+      }
       Decl.Struct(structDecl) => declareListed(mutable checker, `${modulePath}|${structDecl.name}`)
       Decl.Enum(enumDecl) => declareListed(mutable checker, `${modulePath}|${enumDecl.name}`)
       _ => {}
@@ -357,6 +381,13 @@ export function resolveTraits(mutable checker: Checker, file: File) uses alloc {
         checkListed(mutable checker, modulePath, enumDecl.name, type)
         checkShapeTags(mutable checker, enumDecl)
       }
+      Decl.Distinct(distinctDecl) => {
+        let type = Type.TVoid
+        if (lookupType(checker, distinctDecl.name) is Some(distinctType)) {
+          type = copy(distinctType)
+        }
+        checkListed(mutable checker, modulePath, distinctDecl.name, type)
+      }
       _ => {}
     }
   }
@@ -402,6 +433,18 @@ function checkListed(
     if (checker.typeTraits[entryIndex].blocks[traitIndex] is Some(_)) {
       const message = `${info.name} both derives and implements ${checker.traits[traitIndex].name}; keep one`
       reportError(mutable checker, typeExpr.pos, "E0508", message)
+      continue
+    }
+    // A distinct type derives a trait when its base type implements it.
+    if (type is Type.TDistinct(distinctIndex)) {
+      if (checker.distincts[distinctIndex].base is Some(base)) {
+        if (!typeImplements(mutable checker, base, traitIndex)) {
+          const traitName = checker.traits[traitIndex].name
+          const baseText = typeString(checker, base)
+          const message = `cannot derive ${traitName} for ${info.name}: its base type ${baseText} does not implement ${traitName}`
+          reportError(mutable checker, typeExpr.pos, "E1012", message)
+        }
+      }
       continue
     }
     if (isShapeTrait(checker, traitIndex)) {
@@ -490,6 +533,12 @@ export function shapeDeriveHolds(mutable checker: Checker, typeName: string): bo
   let type = Type.TVoid
   if (lookupType(checker, typeName) is Some(found)) {
     type = copy(found)
+  }
+  if (type is Type.TDistinct(distinctIndex)) {
+    if (checker.distincts[distinctIndex].base is Some(base)) {
+      return typeImplements(mutable checker, base, shape)
+    }
+    return false
   }
   for (const field of Arrays.values(copy(shapeCheckedFields(checker, typeName, type)))) {
     if (!typeImplements(mutable checker, field.fieldType, shape)) {
@@ -652,22 +701,37 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
     return
   }
   const info = copy(checker.typeTraits[entryIndex])
-  if (info.generic) {
-    reportError(
-      mutable checker,
-      implDecl.pos,
-      "E0514",
-      "implement blocks for generic types are not supported by this compiler yet; use derives",
-    )
-    return
-  }
-  if (Arrays.length(typeExpr.arguments) > 0) {
-    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
-    return
-  }
+  // A generic type is named with its own parameters, and the block holds the type with them open.
   let type = Type.TVoid
-  if (lookupType(checker, typeExpr.name) is Some(namedType)) {
+  let parameters: Array<int> = []
+  if (info.generic) {
+    if (lookupGeneric(checker, typeExpr.name) is Some(generic)) {
+      const writtenType = typeExprString(typeExpr)
+      if (!checkImplementHead(mutable checker, implDecl, traitName, writtenType, generic)) {
+        markRejectedBlock(mutable checker, entryIndex, traitIndex)
+        return
+      }
+      parameters = copy(checker.generics[generic].parameters)
+      checker.environment = makeEnv(checker, parameters)
+      type = resolveType(mutable checker, typeExpr)
+      checker.environment = Map {}
+    }
+  } else if (Arrays.length(typeExpr.arguments) > 0) {
+    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
+    markRejectedBlock(mutable checker, entryIndex, traitIndex)
+    return
+  } else if (lookupType(checker, typeExpr.name) is Some(namedType)) {
     type = copy(namedType)
+  }
+  if (type is Type.TDistinct(_) && checker.traits[traitIndex].std) {
+    // == and map keys use the base value, so a block for them would never run.
+    if (traitName == "Equatable" || traitName == "Hashable") {
+      const use = match (traitName) { "Equatable" => "`==`", _ => "a map key" }
+      const message = `cannot implement ${traitName} for ${info.name}: ${use} on a distinct type compares the base value (D62)`
+      reportError(mutable checker, implDecl.pos, "E1014", message)
+      markRejectedBlock(mutable checker, entryIndex, traitIndex)
+      return
+    }
   }
   if (info.listed[traitIndex] is None) {
     reportError(
@@ -699,7 +763,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   })
   let selfMap: Map<int, Type> = Map {}
   selfMap[checker.traits[traitIndex].selfParameter] = type
-  checker.environment = Map { "Self": type }
+  checker.environment = createImplementEnvironment(checker, parameters, type)
   checkMutableSelf(mutable checker, implDecl.pos, traitIndex, type, info.name)
   let got: Map<string, bool> = Map {}
   for (const funcDecl of Arrays.values(implDecl.functions)) {
@@ -750,6 +814,10 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
       mutable checker.implementations[blockIndex].functions,
       ImplFunc { name: funcDecl.name, declaration: copy(funcDecl), result: result },
     )
+    if (info.generic) {
+      registerImplementMember(mutable checker, blockIndex, funcDecl, parameters, result, type)
+      continue
+    }
     checker.implFunctions[`${typeKey(type)}|${traitName}.${funcDecl.name}`] = ImplRef {
       block: blockIndex,
       index: implIndex,
@@ -766,6 +834,13 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
         `implement ${traitName} for ${info.name} is missing function ${traitFunc.name}`,
       )
     }
+  }
+}
+
+function markRejectedBlock(mutable checker: Checker, entryIndex: int, traitIndex: int) uses alloc {
+  // A block whose head is wrong was still written: -1 keeps E0507 from asking for it again.
+  if (checker.typeTraits[entryIndex].blocks[traitIndex] is None) {
+    checker.typeTraits[entryIndex].blocks[traitIndex] = -1
   }
 }
 
@@ -929,14 +1004,8 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
     Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
       return std && typeImplements(mutable checker, element, traitIndex)
     }
-    Type.TDistinct(index) => {
-      if (!std || !(name == "Equatable" || name == "Hashable")) {
-        return false
-      }
-      if (checker.distincts[index].base is Some(base)) {
-        return typeImplements(mutable checker, base, traitIndex)
-      }
-      return false
+    Type.TDistinct(_) => {
+      return distinctImplements(mutable checker, type, traitIndex)
     }
     Type.TStruct(_) | Type.TEnum(_) => {
       return nominalImplements(mutable checker, type, traitIndex)
@@ -946,7 +1015,8 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
       | Type.TRange
       | Type.TGenerator(_, _, _, _, _)
       | Type.TPtr(_)
-      | Type.TModule(_) => {
+      | Type.TModule(_)
+      | Type.TDynamic(_) => {
       return false
     }
     _ => {
@@ -974,6 +1044,9 @@ function shapeImplements(mutable checker: Checker, type: Type, traitIndex: int):
     }
     Type.TMap(key, valueType) => {
       return key == Type.TStr && typeImplements(mutable checker, valueType, traitIndex)
+    }
+    Type.TDistinct(_) => {
+      return distinctImplements(mutable checker, type, traitIndex)
     }
     Type.TEnum(index) => {
       if (checker.enums[index].module == "" && checker.enums[index].name == "Option") {
@@ -1084,6 +1157,30 @@ export function reportShapeProblem(
 export function isCellType(checker: Checker, type: Type): bool {
   if (type is Type.TStruct(index)) {
     return checker.structs[index].module == "std/cell" && checker.structs[index].name == "Cell"
+  }
+  return false
+}
+
+function distinctImplements(
+  mutable checker: Checker,
+  type: Type,
+  traitIndex: int,
+): bool uses alloc {
+  // An implement block is the type's own; Equatable and Hashable come with the base, and a derived trait holds when the base implements it.
+  const entryIndex = findTypeTraits(mutable checker, type)
+  if (entryIndex >= 0 && checker.typeTraits[entryIndex].blocks[traitIndex] is Some(_)) {
+    return true
+  }
+  const name = checker.traits[traitIndex].name
+  const auto = checker.traits[traitIndex].std && (name == "Equatable" || name == "Hashable")
+  const derived = entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)
+  if (!auto && !derived) {
+    return false
+  }
+  if (type is Type.TDistinct(index)) {
+    if (checker.distincts[index].base is Some(base)) {
+      return typeImplements(mutable checker, base, traitIndex)
+    }
   }
   return false
 }
@@ -1315,6 +1412,9 @@ export function mapKeyProblem(
     }
     Type.TPtr(_) => {
       return "a pointer is not hashable"
+    }
+    Type.TDynamic(_) => {
+      return "a Dynamic is not hashable"
     }
     Type.TStruct(_) | Type.TEnum(_) => {
       return nominalKeyProblem(mutable checker, type, mutable seen)

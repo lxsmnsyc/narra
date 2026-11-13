@@ -231,6 +231,28 @@ function dumpPatternSlot(
   }
 }
 
+function dumpBounds(
+  mutable builder: StringBuilder,
+  depth: int,
+  typeParameters: Array<string>,
+  bounds: Array<Array<TypeExpr>>,
+) uses alloc {
+  // One `bound` slot per type parameter that has constraints.
+  let index = 0
+  for (const traitBounds of Arrays.values(bounds)) {
+    if (Arrays.length(traitBounds) > 0 && index < Arrays.length(typeParameters)) {
+      dumpTypesSlot(
+        mutable builder,
+        depth,
+        "bound",
+        formatStringAttr("param", typeParameters[index]),
+        traitBounds,
+      )
+    }
+    index++
+  }
+}
+
 function dumpFunc(mutable builder: StringBuilder, depth: int, funcDecl: FuncDecl) uses alloc {
   writeNode(
     mutable builder,
@@ -239,19 +261,7 @@ function dumpFunc(mutable builder: StringBuilder, depth: int, funcDecl: FuncDecl
     funcDecl.pos,
     `${formatStringAttr("name", funcDecl.name)}${formatFlag("export", funcDecl.exported)}${formatFlag("generator", funcDecl.generator)}${formatListAttr("typeParams", funcDecl.typeParameters)}${formatListAttr("effectParams", funcDecl.effectParameters)}${formatListAttr("constParams", funcDecl.constantParameters)}${formatListAttr("uses", funcDecl.effects)}`,
   )
-  let index = 0
-  for (const bounds of Arrays.values(funcDecl.bounds)) {
-    if (Arrays.length(bounds) > 0 && index < Arrays.length(funcDecl.typeParameters)) {
-      dumpTypesSlot(
-        mutable builder,
-        depth + 1,
-        "bound",
-        formatStringAttr("param", funcDecl.typeParameters[index]),
-        bounds,
-      )
-    }
-    index++
-  }
+  dumpBounds(mutable builder, depth + 1, funcDecl.typeParameters, funcDecl.bounds)
   dumpParameters(mutable builder, depth + 1, funcDecl.parameters)
   dumpTypeSlot(mutable builder, depth + 1, "result", funcDecl.result)
   if (Arrays.length(funcDecl.requires) > 0) {
@@ -350,7 +360,7 @@ function dumpDecl(mutable builder: StringBuilder, depth: int, declaration: Decl)
         depth,
         "const",
         constDecl.pos,
-        `${formatStringAttr("name", constDecl.name)}${formatFlag("export", constDecl.exported)}`,
+        `${formatStringAttr("name", constDecl.name)}${formatFlag("export", constDecl.exported)}${formatFlag("lazy", constDecl.lazyPos is Some(_))}`,
       )
       dumpTypeSlot(mutable builder, depth + 1, "type", constDecl.type)
       dumpExprSlot(mutable builder, depth + 1, "value", Some(constDecl.value))
@@ -363,6 +373,7 @@ function dumpDecl(mutable builder: StringBuilder, depth: int, declaration: Decl)
         structDecl.pos,
         `${formatStringAttr("name", structDecl.name)}${formatFlag("export", structDecl.exported)}${formatFlag("opaque", structDecl.opaque)}${formatListAttr("typeParams", structDecl.typeParameters)}${formatListAttr("constParams", structDecl.constantParameters)}`,
       )
+      dumpBounds(mutable builder, depth + 1, structDecl.typeParameters, structDecl.bounds)
       dumpTypesSlot(mutable builder, depth + 1, "implements", "", structDecl.implementations)
       dumpTypesSlot(mutable builder, depth + 1, "derives", "", structDecl.derived)
       if (Arrays.length(structDecl.fields) > 0) {
@@ -378,6 +389,7 @@ function dumpDecl(mutable builder: StringBuilder, depth: int, declaration: Decl)
         enumDecl.pos,
         `${formatStringAttr("name", enumDecl.name)}${formatFlag("export", enumDecl.exported)}${formatListAttr("typeParams", enumDecl.typeParameters)}`,
       )
+      dumpBounds(mutable builder, depth + 1, enumDecl.typeParameters, enumDecl.bounds)
       dumpTypesSlot(mutable builder, depth + 1, "implements", "", enumDecl.implementations)
       dumpTypesSlot(mutable builder, depth + 1, "derives", "", enumDecl.derived)
       if (Arrays.length(enumDecl.variants) > 0) {
@@ -403,6 +415,8 @@ function dumpDecl(mutable builder: StringBuilder, depth: int, declaration: Decl)
         `${formatStringAttr("name", distinctDecl.name)}${formatFlag("export", distinctDecl.exported)}${formatFlag("opaque", distinctDecl.opaque)}`,
       )
       dumpTypeSlot(mutable builder, depth + 1, "base", Some(distinctDecl.base))
+      dumpTypesSlot(mutable builder, depth + 1, "implements", "", distinctDecl.implementations)
+      dumpTypesSlot(mutable builder, depth + 1, "derives", "", distinctDecl.derived)
     }
     Decl.Alias(aliasDecl) => {
       writeNode(
@@ -746,6 +760,13 @@ function dumpPattern(mutable builder: StringBuilder, depth: int, pattern: Patter
       for (const argument of Arrays.values(arguments)) {
         dumpPattern(mutable builder, depth + 1, argument)
       }
+    }
+    Pattern.PatArray(_, pos, elements, rest) => {
+      writeNode(mutable builder, depth, "pat-array", pos, "")
+      for (const element of Arrays.values(elements)) {
+        dumpPattern(mutable builder, depth + 1, element)
+      }
+      dumpPatternSlot(mutable builder, depth + 1, "rest", rest)
     }
     Pattern.PatLit(_, pos, literal) => {
       writeNode(mutable builder, depth, "pat-lit", pos, "")

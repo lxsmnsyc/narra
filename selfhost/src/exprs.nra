@@ -34,6 +34,7 @@ import {
   Param,
   ConstDecl,
   MatchArm,
+  findAttribute,
 } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import {
@@ -82,6 +83,7 @@ import {
   canChangeContents,
   pushScope,
   popScope,
+  noteTypeBounds,
 } from "narrac/check"
 import {
   resolveType,
@@ -100,6 +102,7 @@ import {
   checkDivisor,
   checkShiftCount,
   collectAssignedInExpr,
+  findTypedConstant,
 } from "narrac/operands"
 import { buildConstantHint } from "narrac/stdcopy"
 import { canShareType } from "narrac/stdcopy"
@@ -112,6 +115,7 @@ import {
   markChangedCapture,
   isReferenceCapture,
 } from "narrac/funcvalues"
+import { checkStdFunctionValue } from "narrac/stdvalues"
 import { sourceScope, memberScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -120,6 +124,7 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { checkConstantName, describeUnknownParameter } from "narrac/constgenerics"
 import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
+import { checkLazyUse, reportLazyCycle } from "narrac/lazyvalues"
 
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
@@ -1014,8 +1019,12 @@ function checkName<W: Walker>(
   // A top-level constant, own or imported.
   const scope = checker.current
   if (checker.scopes[scope].consts[name] is Some(index)) {
+    checkLazyUse(mutable checker, nodeId, pos, index)
     setRef(mutable checker, nodeId, Ref.Const(index))
     return checkConstType(mutable checker, walker, index, pos)
+  }
+  if (checker.scopes[scope].imported[name] is Some(builtin)) {
+    return checkStdFunctionValue(mutable checker, nodeId, pos, name, builtin)
   }
   if (checker.scopes[scope].functions[name] is Some(funcIndex)) {
     return checkFunctionValue(mutable checker, nodeId, pos, funcIndex, want)
@@ -1226,8 +1235,15 @@ function checkField<W: Walker>(
               return Type.TVoid
             }
             setNodeType(mutable checker, targetId, Type.TModule(path))
+            checkLazyUse(mutable checker, nodeId, pos, index)
             setRef(mutable checker, nodeId, Ref.Const(index))
             return checkConstType(mutable checker, walker, index, pos)
+          }
+        }
+        if (checker.registry.modules[path] is Some(stdModule)) {
+          if (stdModule.functions[name] is Some(builtin)) {
+            setNodeType(mutable checker, targetId, Type.TModule(path))
+            return checkStdFunctionValue(mutable checker, nodeId, pos, `${alias}.${name}`, builtin)
           }
         }
       }
@@ -1462,8 +1478,50 @@ function checkIndex<W: Walker>(
     }
     return fixedElement
   }
+  if (targetType is Type.TStruct(structIndex)) {
+    if (checker.structs[structIndex].tuple) {
+      return checkTupleIndex(mutable checker, nodeId, pos, targetType, structIndex, index)
+    }
+  }
   const text = typeString(checker, targetType)
   reportError(mutable checker, pos, "E0210", `only arrays can be indexed, found ${text}`)
+  return Type.TVoid
+}
+
+function checkTupleIndex(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  tupleType: Type,
+  structIndex: int,
+  index: Expr,
+): Type uses alloc {
+  // The index picks a field, so it must be a constant inside the tuple.
+  const known = findTypedConstant(checker, index, Type.TInt)
+  if (known is None) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1010",
+      "a tuple index must be a constant integer; use a pattern such as `const #[first, second] = pair` to read the elements",
+    )
+    return Type.TVoid
+  }
+  const fields = copy(checker.structs[structIndex].fields)
+  const count = Arrays.length(fields)
+  if (known is Some(value)) {
+    if (value >= 0 && value < count) {
+      checker.bodies[checker.body].tupleIndexes[nodeId] = value
+      return fields[value].fieldType
+    }
+    const shown = typeString(checker, tupleType)
+    reportError(
+      mutable checker,
+      pos,
+      "E1011",
+      `index ${Int.toString(value)} is out of range for ${shown}, whose indexes are 0 to ${Int.toString(count - 1)}`,
+    )
+  }
   return Type.TVoid
 }
 
@@ -1978,8 +2036,11 @@ function inferGenericStruct<W: Walker>(
   buildGeneric(mutable checker, generic)
   const parameters = copy(checker.generics[generic].parameters)
   let bindings: Map<int, Type> = Map {}
+  // Type arguments from the expected type were checked against the bounds where it was written.
+  let fromExpected = false
   if (expected is Some(Type.TStruct(wanted))) {
     if (checker.structs[wanted].generic == generic) {
+      fromExpected = true
       for (const index of Ranges.between(0, Arrays.length(parameters))) {
         bindings[parameters[index]] = checker.structs[wanted].arguments[index]
       }
@@ -2013,6 +2074,9 @@ function inferGenericStruct<W: Walker>(
       reportError(mutable checker, pos, "E0220", message)
       return -1
     }
+  }
+  if (!fromExpected) {
+    noteTypeBounds(mutable checker, pos, generic, typeArguments)
   }
   const instance = instantiate(mutable checker, generic, typeArguments)
   if (instance is Type.TStruct(index)) {
@@ -2645,6 +2709,12 @@ export function findAssignedLocal(checker: Checker, expression: Expr): int {
         current = target
       }
       Expr.IndexExpr(_, _, target, _) => {
+        // A tuple element is not a place.
+        if (getNodeType(checker, getExpressionId(target)) is Some(Type.TStruct(structIndex))) {
+          if (checker.structs[structIndex].tuple) {
+            return -1
+          }
+        }
         current = target
       }
       _ => {
@@ -2749,6 +2819,10 @@ export function checkConstType<W: Walker>(
     }
     return Type.TVoid
   }
+  if (info.state == CONST_BUSY && info.declaration.lazyPos is Some(_)) {
+    reportLazyCycle(mutable checker, pos, info.name)
+    return Type.TVoid
+  }
   if (info.state == CONST_BUSY) {
     reportError(
       mutable checker,
@@ -2795,7 +2869,7 @@ export function checkConstType<W: Walker>(
   if (Arrays.length(checker.errors) == errorCount) {
     if (found == Type.TVoid) {
       reportError(mutable checker, info.declaration.pos, "E0225", "this expression has no value")
-    } else {
+    } else if (info.declaration.lazyPos is None) {
       checkConstValue(mutable checker, info.name, info.declaration.value)
     }
   }
@@ -2898,8 +2972,9 @@ function checkConstCall(
   callee: Expr,
   arguments: Array<Arg>,
 ): bool uses alloc {
-  // Only constructor calls are allowed, with constant arguments.
-  if (getRef(checker, nodeId) is Ref.Constructor(_, _)) {
+  // Constructor calls and calls of `@const` functions are allowed, with constant arguments.
+  const ref = getRef(checker, nodeId)
+  if (ref is Ref.Constructor(_, _) || isConstFunctionCall(checker, ref)) {
     for (const arg of Arrays.values(arguments)) {
       if (!checkConstValue(mutable checker, name, arg.value)) {
         return false
@@ -2913,6 +2988,13 @@ function checkConstCall(
     "E0192",
     `constant ${quoteGo(name)} cannot call function ${quoteGo(describeCallee(callee))}; a top-level constant holds literals, constructors, structs, arrays, function names and other constants`,
   )
+  return false
+}
+
+function isConstFunctionCall(checker: Checker, ref: Ref): bool uses alloc {
+  if (ref is Ref.Function(funcIndex)) {
+    return findAttribute(checker.functions[funcIndex].declaration, "const") is Some(_)
+  }
   return false
 }
 

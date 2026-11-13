@@ -18,12 +18,14 @@ import {
   Checker,
   internComposite,
   checkMapKey,
+  noteTypeBounds,
   reportError,
   reportErrorFix,
   enter,
   lookupType,
   lookupGeneric,
   containsTypeParameter,
+  anyTypeParameter,
   findSharedParameter,
   findFromNamePos,
   findLocal,
@@ -34,6 +36,8 @@ import {
   typeString,
   findFixedArraySize,
   FIXED_ARRAY_SIZE_LIMIT,
+  DynamicTraitUse,
+  lookupTrait,
 } from "narrac/check"
 import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
@@ -564,6 +568,9 @@ export function resolveType(
     const boxed = resolveType(mutable checker, typeExpr.arguments[0])
     return internComposite(mutable checker, Type.TBox(boxed))
   }
+  if (typeExpr.name == "Dynamic" && !userType(checker, "Dynamic")) {
+    return resolveDynamicType(mutable checker, typeExpr)
+  }
   if (typeExpr.name == "Map" && !userType(checker, "Map")) {
     if (argCount != 2) {
       reportError(mutable checker, typeExpr.pos, "E0111", "Map takes two type arguments")
@@ -665,6 +672,7 @@ export function resolveType(
     }
     const parameters = copy(checker.generics[generic].parameters)
     const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
+    noteTypeBounds(mutable checker, typeExpr.pos, generic, arguments)
     return instantiate(mutable checker, generic, arguments)
   }
   const named = copy(lookupType(checker, typeExpr.name))
@@ -763,6 +771,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from 
       }
       const parameters = copy(checker.generics[generic].parameters)
       const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
+      noteTypeBounds(mutable checker, typeExpr.pos, generic, arguments)
       return instantiate(mutable checker, generic, arguments)
     }
   }
@@ -774,6 +783,36 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from 
     return namedType
   }
   return Type.TVoid
+}
+
+function resolveDynamicType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  // The trait rule needs the trait's functions, which a later declaration in
+  // this module may resolve, so it is queued for flushDynamicTraits.
+  if (Arrays.length(typeExpr.arguments) != 1) {
+    reportError(mutable checker, typeExpr.pos, "E1022", "Dynamic takes one trait argument")
+    return Type.TVoid
+  }
+  const argument = typeExpr.arguments[0]
+  let traitIndex = -1
+  if (Arrays.length(argument.arguments) == 0 && !argument.isFunc && !argument.isTuple) {
+    traitIndex = lookupTrait(checker, argument.name)
+  }
+  if (traitIndex < 0) {
+    const written = resolveType(mutable checker, argument)
+    if (written == Type.TVoid) {
+      return Type.TVoid
+    }
+    const message = `Dynamic takes a trait, and ${typeString(checker, written)} is not a trait`
+    reportError(mutable checker, argument.pos, "E1022", message)
+    return Type.TVoid
+  }
+  const file = checker.scopes[checker.current].file
+  Arrays.push(mutable checker.dynamicTraits, DynamicTraitUse {
+    pos: typeExpr.pos,
+    traitIndex: traitIndex,
+    file: file,
+  })
+  return Type.TDynamic(traitIndex)
 }
 
 function userType(checker: Checker, name: string): bool {
@@ -982,20 +1021,7 @@ export function buildGeneric(mutable checker: Checker, generic: int) uses alloc 
   const savedEnv = checker.environment
   checker.environment = makeEnv(checker, info.parameters)
   if (info.isStruct) {
-    let fields = copy(resolveFields(mutable checker, info.fieldDeclarations))
-    for (const index of Ranges.between(0, Arrays.length(fields))) {
-      if (
-        fields[index].default is Some(_) && containsTypeParameter(checker, fields[index].fieldType)
-      ) {
-        reportError(
-          mutable checker,
-          info.fieldDeclarations[index].pos,
-          "E0107",
-          "a default for a field whose type uses a type parameter is not supported by this compiler yet",
-        )
-        fields[index].default = None
-      }
-    }
+    const fields = copy(resolveFields(mutable checker, info.fieldDeclarations))
     // Go checks the defaults here; the body checker (body.nra) checks the
     // queued ones after the module's declarations.
     if (checker.checkingBodies) {
@@ -1112,6 +1138,28 @@ function fillInstance(mutable checker: Checker, generic: int, instance: Type) us
     checker.enums[index].variants = variants
   }
   Arrays.push(mutable checker.instanceTypes, instance)
+  if (checker.checkingBodies) {
+    queueInstanceDefaults(mutable checker, info.fields, instance)
+  }
+}
+
+function queueInstanceDefaults(
+  mutable checker: Checker,
+  fields: Array<Field>,
+  instance: Type,
+) uses alloc {
+  // A default whose field type uses a parameter is checked again with the instance's types.
+  if (instance is Type.TStruct(index)) {
+    if (anyTypeParameter(checker, checker.structs[index].arguments)) {
+      return
+    }
+    for (const field of Arrays.values(fields)) {
+      if (field.default is Some(_) && containsTypeParameter(checker, field.fieldType)) {
+        Arrays.push(mutable checker.pendingInstanceDefaults, index)
+        return
+      }
+    }
+  }
 }
 
 function resolveFixedLength(

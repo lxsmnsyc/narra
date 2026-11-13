@@ -112,6 +112,24 @@ export struct FuncInfo {
   declaration: FuncDecl
   typeParameters: Array<int> // Checker.parameters
   result: Type
+  // Set for a member of an implement block on a generic type: the type with its parameters open.
+  selfType: Option<Type> = None
+}
+
+// A written use of a constrained struct or enum, waiting for flushTypeBounds (typebounds.nra).
+export struct TypeBoundCheck {
+  pos: Pos
+  generic: int
+  arguments: Array<Type>
+  file: string
+}
+
+// A written Dynamic<Trait>, waiting for flushDynamicTraits (dynamic.nra) to
+// check the trait once its functions are resolved.
+export struct DynamicTraitUse {
+  pos: Pos
+  traitIndex: int
+  file: string
 }
 
 // A top-level constant. declaredType is the declared type, set by declareConstTypes;
@@ -286,6 +304,8 @@ export struct BodyInfo {
   // Checker.instanceList index; and the Self type of each trait function call.
   instanceRefs: Map<int, int>
   traitSelf: Map<int, Type>
+  // The element a tuple index reads, by the id of the index expression.
+  tupleIndexes: Map<int, int>
 }
 
 // The entry point of the recursive body checker. Narra modules cannot
@@ -483,6 +503,8 @@ export struct Checker {
   implFunctions: Map<string, ImplRef>
   mapKeys: Array<MapKeyCheck>
   pointerElements: Array<PointerCheck> = []
+  typeBounds: Array<TypeBoundCheck> = []
+  dynamicTraits: Array<DynamicTraitUse> = []
   errors: Array<CheckError>
   errorKeys: Map<string, bool> // file, line, column and message of each error in errors
   // Structs and enums in C definition order, set by finish (Go's
@@ -526,6 +548,11 @@ export struct Checker {
   // Generic structs built since the last default check (resolve.nra's
   // buildGeneric queues them; Go checks their defaults during the build).
   pendingDefaults: Array<int> = []
+  // Generic structs whose open default check reported an error, and the struct
+  // instances whose defaults of fields that use a type parameter are still to
+  // be checked with the instance's types (body.nra's checkInstanceDefaults).
+  failedDefaults: Map<int, bool>
+  pendingInstanceDefaults: Array<int> = []
   bodies: Array<BodyInfo> = []
   body: int = -1
   localNames: Map<string, int>
@@ -640,6 +667,27 @@ export struct Checker {
   // the requirements, and those of the body being proven, by body index.
   resultContracts: Map<int, ResultContract>
   bodyContracts: Map<int, ResultContract>
+  // The value of each top-level constant that calls an `@const` function, by
+  // Checker.consts index, computed by consteval.nra after the effect pass.
+  constValues: Map<int, ConstValue>
+}
+
+// A value computed while compiling (consteval.nra). Structs and tuples keep
+// their fields in declaration order; a map keeps its keys and values in
+// insertion order, with the position of each key by its keyText.
+export enum ConstValue {
+  Unit
+  Integer(value: int)
+  Float(value: f64)
+  Boolean(value: bool)
+  Character(value: char)
+  Text(value: string)
+  Items(elements: Array<ConstValue>)
+  Fields(values: Array<ConstValue>)
+  Variant(tag: int, values: Array<ConstValue>)
+  Entries(keys: Array<ConstValue>, values: Array<ConstValue>, positions: Map<string, int>)
+  Span(start: int, end: int, step: int)
+  Builder(parts: Array<string>)
 }
 
 // The `ensures` patterns of one function, and the folded bound of each comparison
@@ -649,20 +697,26 @@ export struct ResultContract {
   bounds: Map<int, int>
 }
 
-// One `requires` comparison: parameter `parameter` compared with `bound`,
-// which the source writes as boundText (a number or a constant's name).
+// One `requires` comparison: parameter `parameter` compared with `bound`, which the
+// source writes as boundText (a number or a constant's name), or with parameter
+// `other` when it is not -1 (a relation; boundText is its name). Comparisons with
+// the same clause index are joined by `||`.
 export struct Requirement {
   parameter: int
   comparison: string
   bound: int
   boundText: string
+  clause: int
+  other: int
 }
 
-// What a call proved about each argument when it was checked.
+// What a call proved about each argument when it was checked, and the set of
+// possible orders between the arguments of each relation requirement, in order.
 export struct ContractCall {
   file: string
   funcIndex: int
   arguments: Array<ContractArgument>
+  relations: Array<int>
 }
 
 // constant is set when the argument is the integer constant value.
@@ -692,6 +746,7 @@ export function newChecker(ids: int): Checker uses alloc {
     functions: [],
     consts: [],
     instances: Map {},
+    failedDefaults: Map {},
     aliasNames: Map {},
     instanceTypes: [],
     concrete: [],
@@ -742,6 +797,7 @@ export function newChecker(ids: int): Checker uses alloc {
     requirements: Map {},
     resultContracts: Map {},
     bodyContracts: Map {},
+    constValues: Map {},
   }
 }
 
@@ -975,6 +1031,30 @@ export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses 
   Arrays.push(mutable checker.mapKeys, item)
 }
 
+export function noteTypeBounds(
+  mutable checker: Checker,
+  pos: Pos,
+  generic: int,
+  arguments: Array<Type>,
+) uses alloc {
+  // Only a type with constraints is queued; flushTypeBounds checks it once every module is declared.
+  let constrained = false
+  for (const parameter of Arrays.values(checker.generics[generic].parameters)) {
+    if (checker.bounds[parameter] is Some(_)) {
+      constrained = true
+    }
+  }
+  if (!constrained) {
+    return
+  }
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  const item = TypeBoundCheck { pos: pos, generic: generic, arguments: arguments, file: file }
+  Arrays.push(mutable checker.typeBounds, item)
+}
+
 export function typeString(checker: Checker, type: Type): string uses alloc {
   return match (type) {
     Type.TInt => "int"
@@ -1001,6 +1081,7 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TParam(index) => checker.parameters[index].name
     Type.TArray(element) => `Array<${typeString(checker, element)}>`
     Type.TBox(element) => `Box<${typeString(checker, element)}>`
+    Type.TDynamic(traitIndex) => `Dynamic<${checker.traits[traitIndex].name}>`
     Type.TPtr(element) => `Ptr<${typeString(checker, element)}>`
     Type.TMap(key, value) => `Map<${typeString(checker, key)}, ${typeString(checker, value)}>`
     Type.TFunc(
@@ -1532,7 +1613,8 @@ export function isCountedType(checker: Checker, type: Type): bool {
       | Type.TFunc(_, _, _, _, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
-      | Type.TGenerator(_, _, _, _, _) => true
+      | Type.TGenerator(_, _, _, _, _)
+      | Type.TDynamic(_) => true
     Type.TStruct(index) => isCountedStruct(checker, index)
     Type.TEnum(index) => isCountedEnum(checker, index)
     Type.TDistinct(index) => isCountedDistinct(checker, index)
@@ -1919,6 +2001,7 @@ export function startBody(
     allowedId: -1,
     instanceRefs: Map {},
     traitSelf: Map {},
+    tupleIndexes: Map {},
   }
   Arrays.push(mutable checker.bodies, info)
   checker.body = Arrays.length(checker.bodies) - 1
@@ -2409,7 +2492,8 @@ export function findBody(checker: Checker, key: string): int {
   // Keys: "func|<funcIndex>", "inst|<instance>", "impl|<block>|<index>",
   // "test|<module>|<n-th test of the module>", "const|<constIndex>",
   // "default|<module>.<name>|<field>" (the module is left out in the prelude; a generic
-  // struct has one default body shared by its instances).
+  // struct has one default body shared by its instances, except for a field whose type
+  // uses a type parameter, which is keyed "default|<instance type key>|<field>").
   if (checker.bodyKeys[key] is Some(index)) {
     return index
   }
@@ -2423,6 +2507,10 @@ export function internComposite(mutable checker: Checker, type: Type): Type from
     checker.composites[key] = type
   }
   return type
+}
+
+export function instanceDefaultKey(type: Type, field: string): string uses alloc {
+  return `default|${plainTypeKey(type)}|${field}`
 }
 
 export function keyBody(mutable checker: Checker, key: string) uses alloc {

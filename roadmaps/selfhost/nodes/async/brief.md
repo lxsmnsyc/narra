@@ -2,7 +2,7 @@
 id: async
 title: Async functions and the event loop
 status: todo
-priority: later
+priority: should
 type: feature
 outline: true
 milestone: m5-concurrency

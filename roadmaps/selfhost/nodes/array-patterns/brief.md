@@ -1,13 +1,13 @@
 ---
 id: array-patterns
 title: "Array patterns in match, is and const"
-status: todo
+status: done
 priority: should
 type: feature
-story:
+story: batch-11
 early: false
 outline: false
-milestone: m12-spec-gaps
+milestone: 
 target:
 ship: auto
 from:
@@ -19,7 +19,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-11
-spent:
+spent: 395000
 owns:
   - roadmaps/selfhost/nodes/array-patterns/**
   - testdata/array_patterns*

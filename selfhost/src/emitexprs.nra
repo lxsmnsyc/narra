@@ -20,6 +20,9 @@ import {
   ProgramFunc,
   getExpressionId,
   findBody,
+  containsTypeParameter,
+  instanceDefaultKey,
+  getExpressionPos,
   findBodySlot,
   orderArguments,
   findParameterIndexes,
@@ -43,6 +46,7 @@ import {
   needsRc,
   readNodeType,
   readNodeRef,
+  findSyntheticCode,
   readLocal,
   localRef,
   isReference,
@@ -59,7 +63,12 @@ import {
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
 import * as Closures from "narrac/emitclosures"
+import * as Inline from "narrac/emitinline"
+import * as ConstValues from "narrac/emitconstvalues"
+import { isInlineFunction } from "narrac/inlining"
+import * as StdValues from "narrac/stdvalues"
 import * as Traits from "narrac/emittraits"
+import * as Dynamic from "narrac/emitdynamic"
 import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
 import * as Options from "narrac/emitoptions"
@@ -292,12 +301,22 @@ function emitIdent<W: EmitWalker>(
   expression: Expr,
   nodeId: int,
 ): Code uses alloc {
+  if (findSyntheticCode(emitter, nodeId) is Some(synthetic)) {
+    return plain(synthetic)
+  }
   const ref = readNodeRef(emitter, nodeId)
   return match (ref) {
     Ref.Local(index) => plain(localRef(emitter, index))
     Ref.Const(index) => plain(constRef(mutable emitter, index))
     Ref.Constructor(enumIndex, variant) => plain(constructorValue(emitter, enumIndex, variant))
     Ref.Function(_) => Closures.emitFuncValue(walker, mutable emitter, expression)
+    Ref.Builtin(index) => StdValues.emitStdFunctionValue(
+      walker,
+      mutable emitter,
+      getExpressionPos(expression),
+      nodeId,
+      index,
+    )
     Ref.ConstantParameter(value, false) => plain(writeConstantParameter(value))
     _ => unsupportedCode(mutable emitter, "name")
   }
@@ -325,6 +344,15 @@ function emitFieldRead<W: EmitWalker>(
   }
   if (ref is Ref.Function(_)) {
     return Closures.emitFuncValue(walker, mutable emitter, expression)
+  }
+  if (ref is Ref.Builtin(index)) {
+    return StdValues.emitStdFunctionValue(
+      walker,
+      mutable emitter,
+      getExpressionPos(expression),
+      nodeId,
+      index,
+    )
   }
   if (ref is Ref.Constructor(enumIndex, variant)) {
     return plain(constructorValue(emitter, enumIndex, variant))
@@ -369,6 +397,17 @@ function emitIndexRead<W: EmitWalker>(
       `${getHelper}(${targetCode.text}, ${indexCode.text}, ${position})`,
     )
     return plain(read)
+  }
+  if (targetType is Type.TStruct(_)) {
+    // A tuple element is a field named by its constant index.
+    const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
+    if (
+      emitter.checker.bodies[emitter.body].tupleIndexes[getExpressionId(expression)] is Some(
+        position,
+      )
+    ) {
+      return plain(`(${targetCode.text}).f_${Int.toString(position)}`)
+    }
   }
   return unsupportedCode(mutable emitter, "index")
 }
@@ -561,7 +600,7 @@ function emitCall<W: EmitWalker>(
       arguments,
     )
     Ref.TraitFunction(_, _) => Traits.emitTraitCall(walker, mutable emitter, expression)
-    Ref.Value => Closures.emitValueCall(walker, mutable emitter, expression)
+    Ref.Value => Inline.emitInlineValueCall(walker, mutable emitter, expression)
     Ref.Builtin(index) => emitBuiltinCall(
       walker,
       mutable emitter,
@@ -583,6 +622,7 @@ function emitCall<W: EmitWalker>(
       funcIndex,
       ordered,
     )
+    Ref.Unresolved => Dynamic.emitDynamicCall(walker, mutable emitter, expression, ordered)
     _ => unsupportedCode(mutable emitter, "call")
   }
 }
@@ -781,13 +821,16 @@ function emitPlainOrInstanceCall<W: EmitWalker>(
   arguments: Array<Arg>,
 ): Code uses alloc {
   const info = copy(emitter.checker.bodies[emitter.body])
+  let program = ProgramFunc.PlainFunc(funcIndex)
   if (info.instanceRefs[nodeId] is Some(instance)) {
-    return emitFunctionCall(walker, mutable emitter, ProgramFunc.InstanceFunc(instance), arguments)
-  }
-  if (Arrays.length(emitter.checker.functions[funcIndex].typeParameters) > 0) {
+    program = ProgramFunc.InstanceFunc(instance)
+  } else if (Arrays.length(emitter.checker.functions[funcIndex].typeParameters) > 0) {
     return unsupportedCode(mutable emitter, "generic call without an instance")
   }
-  return emitFunctionCall(walker, mutable emitter, ProgramFunc.PlainFunc(funcIndex), arguments)
+  if (isInlineFunction(emitter.checker, funcIndex)) {
+    return Inline.emitInlineCall(walker, mutable emitter, program, arguments)
+  }
+  return emitFunctionCall(walker, mutable emitter, program, arguments)
 }
 
 function emitFunctionCall<W: EmitWalker>(
@@ -1009,9 +1052,16 @@ function qualifiedName(module: string, name: string): string uses alloc {
 }
 
 function defaultBodyKey(checker: Checker, structIndex: int, field: string): string uses alloc {
-  // A generic struct has one default body shared by its instances, so the key
-  // uses the declaration's module and name only.
+  // A default whose type uses a type parameter has a body for each instance;
+  // any other default of a generic struct has one body shared by its instances.
   const info = checker.structs[structIndex]
+  if (info.generic >= 0) {
+    for (const declared of Arrays.values(checker.generics[info.generic].fields)) {
+      if (declared.name == field && containsTypeParameter(checker, declared.fieldType)) {
+        return instanceDefaultKey(Type.TStruct(structIndex), field)
+      }
+    }
+  }
   return `default|${qualifiedName(info.module, info.name)}|${field}`
 }
 
@@ -1261,6 +1311,10 @@ function isStaticName(
 }
 
 export function isStaticConstant(emitter: Emitter, constIndex: int): bool uses alloc {
+  // A computed constant is static when its value is a scalar.
+  if (ConstValues.findComputedValue(emitter, constIndex) is Some(computed)) {
+    return ConstValues.isScalarValue(computed)
+  }
   const body = findBody(emitter.checker, `const|${Int.toString(constIndex)}`)
   if (body < 0) {
     return false
@@ -1319,6 +1373,11 @@ export function constRef(mutable emitter: Emitter, constIndex: int): string uses
   // The value is borrowed. A static constant re-emits its value here, inside
   // its own body.
   const checker = copy(emitter.checker)
+  if (ConstValues.findComputedValue(emitter, constIndex) is Some(computed)) {
+    if (ConstValues.isScalarValue(computed)) {
+      return ConstValues.writeScalar(emitter, computed, constType(checker, constIndex))
+    }
+  }
   const body = findBody(checker, `const|${Int.toString(constIndex)}`)
   if (body >= 0 && isStaticConstant(emitter, constIndex)) {
     const saved = switchBody(mutable emitter, body)

@@ -251,6 +251,26 @@ const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" }
 
 - **Strings** use double quotes: `"text"`. They have no interpolation.
 - **Template strings** use backticks: `` `Hello ${name}` ``. Each `${...}` must hold an expression of type `string`. Template strings can span several lines. They take the same escapes as strings: `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `` \` ``, `\$` and `\u{<hex>}`. Any other `\X` is a compile error, reported at the backslash. `\${` is a literal `${`, not an interpolation.
+- **Tagged templates** (D114, not built yet): `` tag`a${x}b` `` is the call `tag(["a", "b"], [x])`. The parts array always has one more item than the values; an empty part is `""`. The tag is a name or a dotted name (`tag`, `Sql.query`) on the same line as the backtick; after `)`, `]` or a literal a template is E1200. A tag is a function or function value of two parameters, neither `mutable` (E1201): the parts, `Array<string>` with the escapes above or `Template.Raw` from `std/template` with the source text as written, and the values, `Array<T>` for one type `T`. Each hole is checked with `T` as its expected type, and a hole of another type is E1202; a generic tag takes `T` from the holes. The tag's effects count at the use site, plus `alloc` for the two arrays. Raw parts decode no escape and report none: `` \d `` is the two characters `\` and `d`, and `` \` `` and `\${` keep their backslash. A template at the start of a line, after a line that ends with a name, is E1203: a newline ends the statement, so it is not tagged as it would be in TypeScript. `Template.raw` is TypeScript's `String.raw`; it is `@const`, so `` const DIGITS = Template.raw`\d+` `` is computed while compiling (section 10).
+
+  ```text
+  import * as Arrays from "std/array"
+  import * as Ranges from "std/range"
+  import * as Str from "std/string"
+  import * as Template from "std/template"
+
+  function quoted(parts: Array<string>, values: Array<string>): string {
+    let out = Str.builder()
+    for (const index of Ranges.between(0, Arrays.length(values))) {
+      Str.append(mutable out, `${parts[index]}"${values[index]}"`)
+    }
+    Str.append(mutable out, parts[Arrays.length(values)])
+    return Str.build(out)
+  }
+
+  const greeting = quoted`hello ${name}!`      // hello "ada"! when name is "ada"
+  const pattern = Template.raw`\d+\.${digits}` // the text \d+\. then digits
+  ```
 - **Characters** use single quotes: `'a'`, `'\n'`, `'\u{1F600}'`. A character literal has type `char`. `'abc'` is a compile error.
 - **Integers:** `42`, `0xFF`, `0o755`, `0b1010`. `_` can separate digits: `1_000_000`.
 - **Floats:** `3.14`, `1.0e-9`, `1_000.5`.
@@ -304,6 +324,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
 | `xs.push(v)`, `s.length` | Not present. Use `Arrays.push(mutable xs, v)`, `Str.length(s)` |
 | `a + b` joins strings | Not present. Use a template string (`s += t` is allowed as a statement) |
+| `` tag`a${x}` `` calls `tag(strings, ...values)`, `strings.raw` holds the source text, and any expression can be the tag | `tag(["a", ""], [x])`: the values come in one `Array<T>`, the tag picks decoded or raw parts by its first parameter type (`Array<string>` or `Template.Raw`), and the tag is a name (D114, not built yet) |
 | `y = x++`, `++x`, `a[i] = b += 1` | Compound assignment and `x++` are statements without a value; `++x` is an error (E0964) |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
@@ -321,7 +342,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/lazy` (section 10), `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/simd` (section 4, not built yet), `std/string`, `std/test` and `std/time`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
+- **Standard modules.** `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/json`, `std/lazy` (section 10), `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/result`, `std/shape`, `std/simd` (section 4, not built yet), `std/string`, `std/template` (section 2, `std/test` and `std/time`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.

@@ -1,7 +1,7 @@
 ---
 id: std-async-io
 title: "std/async/net and std/async/file"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 218448
 owns:
   - std/src/async__net.nra
   - std/src/async__file.nra

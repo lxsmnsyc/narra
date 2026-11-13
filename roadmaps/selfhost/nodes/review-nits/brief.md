@@ -1,7 +1,7 @@
 ---
 id: review-nits
 title: "Small fixes from the batch-11 reviews"
-status: todo
+status: active
 priority: should
 type: chore
 story: batch-12

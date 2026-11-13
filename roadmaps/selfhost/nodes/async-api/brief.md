@@ -1,7 +1,7 @@
 ---
 id: async-api
 title: "Async.then, detach, peek, cancel, all and race"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-12
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 242717
 owns:
   - testdata/async_api_*
   - testdata/errors/async_api_*

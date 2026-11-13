@@ -1,7 +1,7 @@
 ---
 id: std-async-io
 title: "std/async/net and std/async/file"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-12

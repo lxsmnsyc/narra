@@ -1,7 +1,7 @@
 ---
 id: regions-plan
 title: "Plan: regions from D100"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

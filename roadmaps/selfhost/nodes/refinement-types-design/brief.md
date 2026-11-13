@@ -1,7 +1,7 @@
 ---
 id: refinement-types-design
 title: "Design: refinement types on distinct types"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

@@ -1,7 +1,7 @@
 ---
 id: tagged-templates-design
 title: "Design: tagged template literals"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

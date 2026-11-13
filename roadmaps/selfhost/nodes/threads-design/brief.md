@@ -1,7 +1,7 @@
 ---
 id: threads-design
 title: "Design: scoped threads, channels, Shared and Atomic"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

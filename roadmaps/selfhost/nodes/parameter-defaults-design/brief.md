@@ -1,7 +1,7 @@
 ---
 id: parameter-defaults-design
 title: "Design: parameter defaults"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

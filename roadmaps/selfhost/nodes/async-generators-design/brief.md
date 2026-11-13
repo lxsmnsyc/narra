@@ -1,7 +1,7 @@
 ---
 id: async-generators-design
 title: "Design: async generators and for await"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

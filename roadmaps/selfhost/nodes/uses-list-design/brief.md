@@ -1,7 +1,7 @@
 ---
 id: uses-list-design
 title: "Design: effect lists inside type lists"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

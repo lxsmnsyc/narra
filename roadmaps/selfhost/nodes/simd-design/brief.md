@@ -1,7 +1,7 @@
 ---
 id: simd-design
 title: "Design: SIMD vector types"
-status: todo
+status: active
 priority: must
 type: spike
 story: batch-13

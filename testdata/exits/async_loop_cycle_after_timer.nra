@@ -1,0 +1,37 @@
+// A pending timer is work the loop waits for: the entry awaits a cycle, but a
+// sleeping task still runs first. Once it has finished, nothing is ready and
+// nothing is waited for, so the program stops with exit code 101.
+import * as Async from "std/async"
+import * as AsyncTime from "std/async/time"
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+import * as Time from "std/time"
+
+async function sleeper(): int uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(20))
+  if (slept is Ok(_)) {
+    print("sleeper woke")
+  }
+  return 0
+}
+
+async function waitForSelf(slot: Cell<Option<Async<int>>>): int uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(0))
+  if (slept is Err(_)) {
+    return 0
+  }
+  print("waits on itself")
+  const own = Cells.get(slot)
+  if (own is Some(handle)) {
+    return await handle
+  }
+  return 0
+}
+
+export async function run(_args: Array<string>): int {
+  Async.detach(sleeper())
+  const slot: Cell<Option<Async<int>>> = Cells.create(None)
+  const task = waitForSelf(slot)
+  Cells.set(slot, Some(task))
+  return await task
+}

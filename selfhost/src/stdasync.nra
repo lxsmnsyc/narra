@@ -5,12 +5,21 @@
 import { StdFunc } from "narrac/builtins"
 import { Type } from "narrac/types"
 import { Arg } from "narrac/ast"
-import { Emitter, Code, noteHelper, ownedTemp, reportUnsupported } from "narrac/emitstate"
-import { NODE, plain, owned } from "narrac/stdemithelp"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  noteHelper,
+  ownedTemp,
+  reportUnsupported,
+} from "narrac/emitstate"
+import { NODE, plain, owned, argumentText } from "narrac/stdemithelp"
 
 export const ASYNC_FUNCS: Array<StdFunc> = [
   // std/async is Narra source: a module row with no function.
   StdFunc { name: "std/async", module: "std/async", key: "", check: "source" },
+  // std/async/time is Narra source too (std/src/async__time.nra).
+  StdFunc { name: "std/async/time", module: "std/async/time", key: "", check: "source" },
 ]
 
 export const INTERNAL_ASYNC_FUNCS: Array<StdFunc> = [
@@ -23,17 +32,32 @@ export const INTERNAL_ASYNC_FUNCS: Array<StdFunc> = [
     result: "Async<void>",
     effects: ["alloc"],
   },
+  // A timer handle: its value is the nanoseconds slept, or -1 on a cancel.
+  StdFunc {
+    name: "Tasks.sleep",
+    module: "std/internal/async",
+    key: "sleep",
+    parameters: ["int"],
+    result: "Async<int>",
+    effects: ["io", "alloc"],
+  },
 ]
 
-export function emitAsyncCall(
+export function emitAsyncCall<W: EmitWalker>(
+  walker: W,
   mutable emitter: Emitter,
   name: string,
-  _arguments: Array<Arg>,
+  arguments: Array<Arg>,
 ): Code uses alloc {
   noteHelper(emitter, "std/internal/async")
   if (name == "Tasks.idle") {
     const handleType = Type.TAsync(Type.TVoid)
     return owned(ownedTemp(mutable emitter, handleType, "narra_async_idle()"))
+  }
+  if (name == "Tasks.sleep") {
+    const nanos = argumentText(walker, mutable emitter, arguments, 0)
+    const handleType = Type.TAsync(Type.TInt)
+    return owned(ownedTemp(mutable emitter, handleType, `narra_async_sleep(${nanos})`))
   }
   return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
 }

@@ -17,6 +17,12 @@ struct narra_task {
   bool cancelled;
   // Set at exit once release has run for an unfinished frame.
   bool dropped;
+  // Set when the task that started this one was cancelled then: a suspending
+  // std call of this task returns Err(AsyncError.Cancelled) at once.
+  bool started_cancelled;
+  // Set on the task of a suspending std function (std/async/time) once it
+  // waits in the loop: a cancel of the task awaiting it reaches its wait.
+  bool forwards_cancel;
   void (*resume)(narra_task* task);
   void (*release)(narra_task* task);
   // The value slot of the frame, or NULL for an Async<void>.

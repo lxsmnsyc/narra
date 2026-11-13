@@ -1,0 +1,12 @@
+# Log: event-loop
+
+- 2026-11-13: branch feat/event-loop from feat/batch-12 (53a1f53a). async-core left a ready queue, `Async.idle` (all idle handles finish together once nothing is ready) and the exit drop.
+- Design: the loop waits through wait handles (`narra_wait`, a bare task with an `int64_t` value: time slept or 0, -1 on cancel, errno on a refused descriptor). `std/async/time` is an async source function over `Tasks.sleep(nanos): Async<int>`. std sources under `std/async/` are compiled by stage 1 only (the seed never compiles them), so async syntax is allowed there (batch-12 brief, "Seed").
+- Cancel reach: the task of a suspending std function sets `forwards_cancel` when it waits in the loop, so `narra_loop_cancel_wait(task)` follows `awaited` through such tasks down to the wait. A task started by a cancelled task gets `started_cancelled`, read only by the std primitives, so a cancelled task's next sleep returns at once while user tasks it starts keep their own cancel state.
+- Idle rule: one idle handle at a time, oldest first, when nothing is ready and no timer or descriptor wait is pending. Taking the D109 text literally (no other unfinished task) would deadlock two tasks idling at once, and a task stuck in an await cycle never finishes, so the quiescent loop is the test.
+- Found: `Async.detach(f())` with `f(): Async<void>` fails with "cannot tell type parameter T of detach"; samples use `int` results. Left for async-api.
+- `emitAsyncCall` now takes the walker (for the `Tasks.sleep` argument); the call in `emitstd.nra` changed with it.
+- The unknown-module goldens list `std/async/time` now.
+- Orchestrator ruling: a cancel wakes a task waiting in its own `Async.idle()`; `narra_loop_cancel_wait` now finishes that idle handle (`narra_loop_cancel_idle`). async-api changes the exit through `narra_task_cancel`; the second to land keeps both.
+- The first Linux check failed only on `generated/runtimestdasyncloop`, because the loop file was edited while it ran; rerun after regenerating.
+- Review fixes: deadline saturates at INT64_MAX, poll waits at most a day and stops on a poller error other than EINTR, a second wait in one direction is EEXIST on both platforms, epoll keeps one registration per descriptor for a reader and a writer. C-level test io_wait_test.c over a socketpair (macOS and Linux image). D109 item 7 and SPEC section 8 amended to the accepted idle rule.

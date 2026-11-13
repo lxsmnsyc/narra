@@ -1,0 +1,52 @@
+// The program exits when the entry returns. Tasks still sleeping then are
+// cancelled: each pending sleep gives Err(AsyncError.Cancelled), every later
+// sleep gives it at once, and each task runs to its return and leaks nothing.
+// A detached task that would sleep for an hour, or loop forever, does not keep
+// the program running.
+import * as Async from "std/async"
+import { AsyncError } from "std/async"
+import * as AsyncTime from "std/async/time"
+import * as Time from "std/time"
+
+async function sleepsLong(name: string): int uses io, alloc {
+  const label = `${name} (a heap string held across the sleep)`
+  const slept = await AsyncTime.sleep(Time.seconds(3600))
+  if (slept is Err(AsyncError.Cancelled)) {
+    print(`${label}: cancelled`)
+    // A cancelled task's next sleep returns at once.
+    const again = await AsyncTime.sleep(Time.seconds(3600))
+    if (again is Err(AsyncError.Cancelled)) {
+      print(`${name}: cancelled again at once`)
+    }
+    return 0
+  }
+  print(`${name}: woke`)
+  return 1
+}
+
+async function ticksForever(): int uses io, alloc {
+  let ticks = 0
+  while (true) {
+    const slept = await AsyncTime.sleep(Time.milliseconds(1))
+    if (slept is Err(_)) {
+      print("ticker: cancelled")
+      return ticks
+    }
+    ticks++
+  }
+  return ticks
+}
+
+export async function run(_args: Array<string>): int {
+  Async.detach(sleepsLong("first"))
+  Async.detach(ticksForever())
+  const kept = sleepsLong("kept")
+  Async.detach(sleepsLong("second"))
+  const short = await AsyncTime.sleep(Time.milliseconds(5))
+  if (short is Ok(_)) {
+    print("entry slept")
+  }
+  print("entry returns")
+  Async.detach(kept)
+  return 0
+}

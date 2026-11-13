@@ -1,7 +1,7 @@
 ---
 id: threads-design
 title: "Design: scoped threads, channels, Shared and Atomic"
-status: active
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 187834
 owns:
   - roadmaps/selfhost/nodes/threads/**
   - roadmaps/selfhost/nodes/threads-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D111, diag E1190-E1199 and E1400-E1419]
+reserves: [decision D111]
 provides: []
 depends_on: []
 ---

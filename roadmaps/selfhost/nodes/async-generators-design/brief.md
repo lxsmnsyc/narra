@@ -1,7 +1,7 @@
 ---
 id: async-generators-design
 title: "Design: async generators and for await"
-status: active
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 161270
 owns:
   - roadmaps/selfhost/nodes/async-generators/**
   - roadmaps/selfhost/nodes/async-generators-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D110, diag E1112-E1129]
+reserves: [decision D110]
 provides: []
 depends_on: []
 ---

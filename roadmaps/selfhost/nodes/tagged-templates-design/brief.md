@@ -1,7 +1,7 @@
 ---
 id: tagged-templates-design
 title: "Design: tagged template literals"
-status: active
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 125109
 owns:
   - roadmaps/selfhost/nodes/tagged-templates/**
   - roadmaps/selfhost/nodes/tagged-templates-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D114, diag E1200-E1209]
+reserves: [decision D114]
 provides: []
 depends_on: []
 ---

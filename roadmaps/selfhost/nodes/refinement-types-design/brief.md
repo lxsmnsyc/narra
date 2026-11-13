@@ -1,7 +1,7 @@
 ---
 id: refinement-types-design
 title: "Design: refinement types on distinct types"
-status: active
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 143023
 owns:
   - roadmaps/selfhost/nodes/refinement-types/**
   - roadmaps/selfhost/nodes/refinement-types-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D116, diag E1220-E1239]
+reserves: [decision D116]
 provides: []
 depends_on: []
 ---

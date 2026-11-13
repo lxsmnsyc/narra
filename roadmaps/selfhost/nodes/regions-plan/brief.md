@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D113, diag E1270-E1279]
+reserves: [decision D113]
 provides: []
 depends_on: []
 ---

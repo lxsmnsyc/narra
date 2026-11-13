@@ -1,7 +1,7 @@
 ---
 id: for-await
 title: "for await over AsyncGenerator<T>, and Net.chunks"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

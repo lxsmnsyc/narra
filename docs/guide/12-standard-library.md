@@ -308,6 +308,24 @@ export function run(args: Array<string>): int uses io, alloc {
   if (broken is Err(error)) {
     print(Toml.formatError(error))
   }
+  return 0
+}
+```
+
+```text
+main.run
+[package]
+name = "hello"
+
+[[binary]]
+name = "hello"
+entry = "main.run"
+
+1:9: expected ]
+```
+
+`Toml.parse` returns a `TomlError` with `line`, `column` and `reason` fields, so a tool can report the error in its own format. `Toml.stringify` writes the plain keys of each table before its sub-tables and drops comments, so a tool that rewrites a file changes its layout. It returns an error for `Value.Null`, which TOML cannot write.
+
 ## Terminals: `std/terminal`
 
 `std/terminal` adds colors and styles to text, and tells a program whether it is writing to a terminal. The style functions do not look at the terminal. They always add the codes, so a test can compare their output:
@@ -329,18 +347,6 @@ export function run(args: Array<string>): int uses io, alloc {
 ```
 
 ```text
-main.run
-[package]
-name = "hello"
-
-[[binary]]
-name = "hello"
-entry = "main.run"
-
-1:9: expected ]
-```
-
-`Toml.parse` returns a `TomlError` with `line`, `column` and `reason` fields, so a tool can report the error in its own format. `Toml.stringify` writes the plain keys of each table before its sub-tables and drops comments, so a tool that rewrites a file changes its layout. It returns an error for `Value.Null`, which TOML cannot write.
 <ESC>[31merror<ESC>[39m
 <ESC>[1m<ESC>[2mnote<ESC>[22m<ESC>[1m and more<ESC>[22m
 done
@@ -349,3 +355,43 @@ done
 Each function closes with its own reset code. When the text already holds that close, as `dim` inside `bold` does, the outer style is opened again after it, so `and more` stays bold. `Terminal.stripStyles` removes the codes again. `Terminal.style(text, Style { ... })` applies several at once: `bold`, `dim`, `italic`, `underline`, `inverse`, `strikethrough`, and a `foreground` and `background` that hold `Some(Color.Red)`, `Some(Color.Ansi256(21))` or `Some(Color.Rgb(255, 128, 0))`.
 
 The caller decides when to style. `Terminal.useColor(Stream.Stderr)` answers for one stream: `false` when `NO_COLOR` is set and not empty, `true` when `FORCE_COLOR` is set to anything but `""` or `"0"`, `false` when `TERM` is `dumb`, and otherwise whether the stream is a terminal. `Terminal.isTerminal(stream)` is that last test alone, and `Terminal.columns(stream)` is `Some(width)` for a terminal and `None` for a pipe or a file.
+
+## Patterns: `std/regex`
+
+`std/regex` finds text that matches a pattern. The syntax is JavaScript's, without back references (`\1`) and lookaround (`(?=...)`): those can take exponential time, and this engine runs in time linear in the text. Flags go inside the pattern: `(?i)` ignores the case of ASCII letters, `(?m)` makes `^` and `$` match at each line, and `(?s)` lets `.` match a line break.
+
+`Regexes.compile` returns the compiled pattern or a `RegexError` with the byte offset of the mistake. `find` returns the first `Match`, `findAll` is a generator over every match, and `group` and `namedGroup` read the groups. Offsets are byte offsets, as `Str.indexOf` returns them:
+
+```narra
+import * as Regexes from "std/regex"
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const compiled = Regexes.compile("(?<key>\\w+)=(?<value>\\d+)")
+  if (compiled is Err(error)) {
+    print(error.reason)
+    return 1
+  }
+  const pairs = compiled.value
+  for (const found of Regexes.findAll(pairs, "width=80 height=24 depth=x")) {
+    if (Regexes.namedGroup(found, "key") is Some(key)) {
+      print(`${key} at ${Int.toString(found.start)}`)
+    }
+  }
+  print(Regexes.replaceAll(pairs, "a=1, b=2", "?"))
+  const bad = Regexes.compile("(a)\\1")
+  if (bad is Err(error)) {
+    print(`${Int.toString(error.position)}: ${error.reason}`)
+  }
+  return 0
+}
+```
+
+```text
+width at 0
+height at 9
+?, ?
+3: back references are not supported: the engine is linear-time
+```
+
+The function that only answers yes or no is `Regexes.matches`, since `test` is a keyword in Narra. `replace` and `replaceAll` take the replacement as plain text: `$1` is not expanded. To build each replacement from its match, pass a function to `replaceWith`. `split` cuts a string at every match.

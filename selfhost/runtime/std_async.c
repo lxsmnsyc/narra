@@ -24,6 +24,9 @@ struct narra_task {
   // Set on the task of a suspending std function (std/async/time) once it
   // waits in the loop: a cancel of the task awaiting it reaches its wait.
   bool forwards_cancel;
+  // Set on the task of Async.all: a cancel of it stops there and does not
+  // reach the handles it awaits.
+  bool keeps_inputs;
   void (*resume)(narra_task* task);
   void (*release)(narra_task* task);
   // The value slot of the frame, or NULL for an Async<void>.

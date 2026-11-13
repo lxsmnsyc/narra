@@ -1,0 +1,38 @@
+// A cancel passes down the await chain only to a handle nobody else observes.
+// A then callback counts as an observer: the handle it is registered on is
+// not cancelled, so the callback runs when the task finishes. A handle with no
+// callback and one waiter is cancelled with its waiter.
+import * as Int from "std/int"
+import * as Async from "std/async"
+import * as AsyncTime from "std/async/time"
+import * as Time from "std/time"
+
+async function sleeper(label: string): int uses io, alloc {
+  const slept = await AsyncTime.sleep(Time.milliseconds(1))
+  if (slept is Err(_)) {
+    print(`${label} cancelled`)
+    return 0
+  }
+  print(`${label} slept`)
+  return 1
+}
+
+async function waitOn(label: string, handle: Async<int>): int uses io, alloc {
+  const value = await handle
+  print(`${label} gets ${Int.toString(value)}`)
+  return value
+}
+
+export async function run(_args: Array<string>): int {
+  const watched = sleeper("watched")
+  Async.then(watched, (value) => print(`then watched ${Int.toString(value)}`))
+  const outer = waitOn("outer", watched)
+  Async.cancel(outer)
+  print(`outer gives ${Int.toString(await outer)}`)
+  const plain = sleeper("plain")
+  const other = waitOn("other", plain)
+  Async.cancel(other)
+  print(`other gives ${Int.toString(await other)}`)
+  await Async.idle()
+  return 0
+}

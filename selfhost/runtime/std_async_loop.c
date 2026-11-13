@@ -314,6 +314,11 @@ static bool narra_wait_is(narra_task* task) {
   return task->release == narra_wait_release;
 }
 
+// Marks the running task (an Async.all block) so a cancel of it stops there.
+static void narra_loop_keep_inputs(void) {
+  if (narra_async_loop.current) narra_async_loop.current->keeps_inputs = true;
+}
+
 // True when a suspending std call of the running task must not wait: the task,
 // or the task that started it, is cancelled, or the program exits.
 static bool narra_loop_cancelled_now(void) {
@@ -405,14 +410,17 @@ static void narra_loop_cancel_idle(narra_task* idle);
 // 2026-11-13) to the wait at its end: an Async.idle handle, which finishes,
 // or a timer or descriptor wait, which finishes with -1. The task of a
 // suspending std function passes it on. A user task it awaits is cancelled
-// too when the waiter is the only task waiting on it; a handle that other
-// tasks await keeps running, and so do the tasks a cancelled task started but
-// does not await. Async.cancel calls this after it sets the cancelled flag,
-// and so does an await in a task that is already cancelled.
+// too when the waiter is the only task waiting on it and it has no then
+// callbacks; a handle that other tasks await or that has callbacks keeps
+// running, and so do the tasks a cancelled task started but does not await.
+// The task of Async.all stops the walk, as the winner of Async.race does, so
+// neither cancels the handles it was given. Async.cancel calls this after it
+// sets the cancelled flag, and so does an await in a task that is already
+// cancelled.
 static void narra_loop_cancel_wait(narra_task* task) {
   narra_task* waiter = task;
   narra_task* awaited = task->awaited;
-  while (awaited && !awaited->done) {
+  while (awaited && !awaited->done && !waiter->keeps_inputs) {
     if (awaited->release == narra_task_release_nothing) {
       narra_loop_cancel_idle(awaited);
       return;
@@ -425,7 +433,8 @@ static void narra_loop_cancel_wait(narra_task* task) {
       // A bare task (a race winner) has no wait of its own to end.
       if (awaited->resume == NULL) return;
       bool alone = awaited->waiters == waiter && waiter->next_waiter == NULL;
-      if (!alone || !narra_task_mark_cancelled(awaited)) return;
+      if (!alone || awaited->callbacks != NULL) return;
+      if (!narra_task_mark_cancelled(awaited)) return;
     }
     waiter = awaited;
     awaited = awaited->awaited;

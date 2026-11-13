@@ -1,7 +1,7 @@
 ---
 id: async
 title: Async functions and the event loop
-status: todo
+status: dropped
 priority: should
 type: feature
 outline: true
@@ -41,3 +41,5 @@ Outline. Split into children when refined (rough plan, each M):
 Open (D93): the exit code with tasks still running after a failed entry function; loops on several threads.
 
 - 2026-11-09: design settled in D95 (maintainer). Refine the brief from it.
+
+- 2026-11-13: replaced by the batch-12 children async-design, async-core, event-loop, async-api and std-async-io.

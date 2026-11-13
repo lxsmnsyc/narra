@@ -1,7 +1,7 @@
 ---
 id: std-iterator
 title: std/iterator
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

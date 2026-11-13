@@ -1,7 +1,7 @@
 ---
 id: std-args
 title: "std/args"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

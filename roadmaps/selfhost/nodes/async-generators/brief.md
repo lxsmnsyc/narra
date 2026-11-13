@@ -1,7 +1,7 @@
 ---
 id: async-generators
 title: "Async generators: async function*, AsyncGenerator<T> and Async.next"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 340372
 owns:
   - roadmaps/selfhost/nodes/async-generators/**
   - selfhost/src/asyncgenerators.nra

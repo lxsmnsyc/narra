@@ -1,7 +1,7 @@
 ---
 id: std-regex
 title: "std/regex: syntax and a linear-time engine"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 244852
 owns:
   - std/src/regex.nra
   - selfhost/src/stdregex.nra

@@ -1,7 +1,7 @@
 ---
 id: std-regex-const
 title: "std/regex: patterns checked while compiling"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

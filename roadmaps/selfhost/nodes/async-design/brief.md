@@ -1,7 +1,7 @@
 ---
 id: async-design
 title: "Design: the async runtime, codes and SPEC text"
-status: todo
+status: active
 priority: should
 type: spike
 story: batch-12

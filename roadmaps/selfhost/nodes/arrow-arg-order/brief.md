@@ -1,7 +1,7 @@
 ---
 id: arrow-arg-order
 title: "Arguments before an arrow that writes a captured let are not held"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-12

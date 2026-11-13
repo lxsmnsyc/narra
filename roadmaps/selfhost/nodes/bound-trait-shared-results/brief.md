@@ -1,7 +1,7 @@
 ---
 id: bound-trait-shared-results
 title: "Shared results through a bound <T: Trait> count as fresh"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-12

@@ -1,7 +1,7 @@
 ---
 id: shape-names-private
 title: "Generated Shape names are reachable from user code"
-status: todo
+status: active
 priority: should
 type: fix
 story: batch-12

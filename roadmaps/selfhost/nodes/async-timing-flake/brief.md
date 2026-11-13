@@ -1,7 +1,7 @@
 ---
 id: async-timing-flake
 title: "async_api_all_observed depends on timer order under load"
-status: active
+status: done
 priority: must
 type: fix
 story: batch-13

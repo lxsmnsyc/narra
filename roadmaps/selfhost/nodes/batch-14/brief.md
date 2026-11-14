@@ -62,7 +62,7 @@ Children:
 ## Acceptance
 
 - [x] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
 - [x] The seed is regenerated if any runtime text changed, and `sh selfhost/bootstrap.sh` reports it current.
 - [x] SPEC lists each new module; the language guide's std chapter covers it.
 - [x] A fresh review of the whole story branch, before the pull request.

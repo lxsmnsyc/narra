@@ -51,5 +51,5 @@ The language is meant to have these features, and the compiler does not have the
 
 - `async` and `await`, threads, channels and shared state.
 - Regions and SIMD vectors.
-- `@inline`, `@const` functions and `lazy` values.
+- `@inline` and `@const` functions.
 - Dependencies on other packages.

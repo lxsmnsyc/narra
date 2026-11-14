@@ -747,31 +747,6 @@ function isWord(parser: Parser, word: string): bool {
   return token.kind == TokenKind.TokIdent && token.text == word
 }
 
-function startsLazyValue(parser: Parser): bool {
-  if (!isWord(parser, "lazy")) {
-    return false
-  }
-  // `lazy` is a name unless an expression follows it on the same line.
-  const word = peekToken(parser, 0)
-  const next = peekToken(parser, 1)
-  if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof) {
-    return false
-  }
-  if (next.kind != TokenKind.TokPunct) {
-    return true
-  }
-  // After a space, `(`, `[` and `!` start the expression (`lazy(` calls and `lazy[` indexes a name),
-  // and so does a `-` that touches its operand (`lazy - 1` subtracts).
-  if (next.line != word.line || next.column <= word.column + 4) {
-    return false
-  }
-  if (next.text == "(" || next.text == "[" || next.text == "!") {
-    return true
-  }
-  const operand = peekToken(parser, 2)
-  return next.text == "-" && operand.line == next.line && operand.column == next.column + 1
-}
-
 function skipNewlines(mutable parser: Parser) {
   while (currentToken(parser).kind == TokenKind.TokNewline) {
     advance(mutable parser)
@@ -1908,14 +1883,6 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
     declaredType = Some(parseType(mutable parser))
   }
   expect(mutable parser, SYMBOL_EQUALS)
-  // The contextual word `lazy` before the value.
-  let lazyPos: Option<Pos> = None
-  if (startsLazyValue(parser)) {
-    const lazyIndex = parser.index
-    const lazyKey = getPosKey("k", getPos(currentToken(parser)))
-    lazyPos = Some(getPos(advance(mutable parser)))
-    noteKey(mutable parser, lazyKey, lazyIndex)
-  }
   const value = parseExpr(mutable parser)
   endStatement(mutable parser)
   return ConstDecl {
@@ -1924,7 +1891,6 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
     exported: exported,
     type: declaredType,
     value: value,
-    lazyPos: lazyPos,
   }
 }
 
@@ -2991,14 +2957,6 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       declaredType = Some(parseType(mutable parser))
     }
     expect(mutable parser, SYMBOL_EQUALS)
-    if (startsLazyValue(parser)) {
-      failHere(
-        mutable parser,
-        "E1032",
-        "`lazy` is written only on the value of a top-level `const`",
-      )
-      return Stmt.BreakStmt(pos, "")
-    }
     if (
       isAt(parser, SYMBOL_KEYWORD_YIELD) &&
         name != "" &&

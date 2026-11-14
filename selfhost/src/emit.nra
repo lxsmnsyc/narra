@@ -7,7 +7,7 @@
 // the function prototypes are real. The stubs of the other nodes still write
 // their marker lines.
 //
-// Only the functions and lazy constants the program reaches are emitted. The
+// Only the functions and getter constants the program reaches are emitted. The
 // roots are the entry function, or every test block in a test build. Each body
 // notes the C names it calls (noteReference), and emitReachableBodies emits the
 // named declarations until no new name appears. The text keeps the checker's
@@ -169,8 +169,8 @@ export function emitProgram(
 
 // The declarations a program reaches and their emitted text. functions and
 // functionTexts follow Checker.programFunctions; an unreached function has
-// false and "". constants lists the reached lazy constants (Checker.consts
-// indexes) in lazyConstants order, and getterTexts their getters.
+// false and "". constants lists the reached getter constants (Checker.consts
+// indexes) in getterConstants order, and getterTexts their getters.
 // helperTexts holds the reference counting functions the emitted code names,
 // by C name, and mapTexts the functions of each map type it names, by the
 // map's C name.
@@ -197,7 +197,7 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
   const checker = copy(emitter.checker)
   const programs = checker.programFunctions
 
-  // Map each C name to its function or lazy constant.
+  // Map each C name to its function or getter constant.
   let functionPositions: Map<string, int> = Map {}
   let functions: Array<bool> = []
   let functionTexts: Array<string> = []
@@ -207,12 +207,12 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
     Arrays.push(mutable functions, false)
     Arrays.push(mutable functionTexts, "")
   }
-  const lazy = Consts.lazyConstants(emitter)
+  const getterConsts = Consts.getterConstants(emitter)
   let constantPositions: Map<string, int> = Map {}
   let constantsReached: Array<bool> = []
   let getterTexts: Array<string> = []
-  for (const position of Ranges.between(0, Arrays.length(lazy))) {
-    const info = checker.consts[lazy[position]]
+  for (const position of Ranges.between(0, Arrays.length(getterConsts))) {
+    const info = checker.consts[getterConsts[position]]
     constantPositions[cachedDeclName(emitter.typeNames, "g", info.module, info.name)] = position
     Arrays.push(mutable constantsReached, false)
     Arrays.push(mutable getterTexts, "")
@@ -273,7 +273,10 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
       } else if (constantPositions[name] is Some(constantPosition)) {
         if (!constantsReached[constantPosition]) {
           constantsReached[constantPosition] = true
-          getterTexts[constantPosition] = Consts.emitGetter(mutable emitter, lazy[constantPosition])
+          getterTexts[constantPosition] = Consts.emitGetter(
+            mutable emitter,
+            getterConsts[constantPosition],
+          )
           emittedBody = true
           emittedGetter = true
         }
@@ -283,7 +286,7 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
     if (emittedGetter || firstRound) {
       constantRelease = Consts.emitConstRelease(
         mutable emitter,
-        collectReachedConstants(lazy, constantsReached),
+        collectReachedConstants(getterConsts, constantsReached),
       )
       firstRound = false
     }
@@ -317,7 +320,7 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
 
   // Keep the reached constants in their order.
   let reachedGetters: Array<string> = []
-  for (const position of Ranges.between(0, Arrays.length(lazy))) {
+  for (const position of Ranges.between(0, Arrays.length(getterConsts))) {
     if (constantsReached[position]) {
       Arrays.push(mutable reachedGetters, getterTexts[position])
     }
@@ -325,7 +328,7 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
   return ReachableBodies {
     functions: functions,
     functionTexts: functionTexts,
-    constants: collectReachedConstants(lazy, constantsReached),
+    constants: collectReachedConstants(getterConsts, constantsReached),
     getterTexts: reachedGetters,
     constantRelease: constantRelease,
     testText: Str.build(testBodies),
@@ -335,11 +338,14 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
   }
 }
 
-function collectReachedConstants(lazy: Array<int>, reached: Array<bool>): Array<int> uses alloc {
+function collectReachedConstants(
+  getterConsts: Array<int>,
+  reached: Array<bool>,
+): Array<int> uses alloc {
   let constants: Array<int> = []
-  for (const position of Ranges.between(0, Arrays.length(lazy))) {
+  for (const position of Ranges.between(0, Arrays.length(getterConsts))) {
     if (reached[position]) {
-      Arrays.push(mutable constants, lazy[position])
+      Arrays.push(mutable constants, getterConsts[position])
     }
   }
   return constants

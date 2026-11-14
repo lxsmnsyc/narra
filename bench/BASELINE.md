@@ -2,6 +2,27 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-14, end of batch-13
+
+Run of `bench/run.sh -n 9` at commit 8c83f28f on `feat/batch-13` (batch-14 merged in), same machine and toolchains as the batch-12 run below. No agent was running. The load average was 1.95 (1 minute) at the start, with the 5 and 15 minute averages (3.70 and 4.46) still falling after the batch's Linux check, and 2.02 at the end. Batch-13 adds a benchmark, `dot`, an `F32x8` dot product from simd-library; every older program is within 2% of batch-12.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.111 | 0.124 | 0.112 | 39088169   |
+| sieve     | 0.131 | 0.141 | 0.131 | 1270607    |
+| matmul    | 0.107 | 0.203 | 0.118 | 3547800000 |
+| strings   | 0.218 | 0.294 | 0.355 | 100000     |
+| interp    | 0.185 | 0.243 | 0.169 | 972838     |
+| particles | 0.067 | 0.074 | 0.093 | 6996184    |
+| dot       | 0.034 | 0.136 | 0.056 | 800        |
+| compiler  | 0.365 | -     | -     | peak memory 196 MB |
+
+Instructions retired by `narrac emit selfhost` (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`, load average 1.73 to 2.02): on the batch-13 source, 3.419G with the main compiler (batch-14) and 3.464G with the batch-13 compiler (+1.3%, within the 2% layout spread; the review fixes measured +0.38% on a busier machine). narrac grows from 4,613,864 to 5,113,032 bytes (+10.8%). The compiler row rises from 0.314 s and 176 MB because the source grew from 77,814 to 85,860 lines (`selfhost/src`) and std grew with batch-14. The seed is 247,321 lines.
+
+Thread mode: a program that imports `std/thread` without using it turns on atomic counts for shared values. Measured by the whole-branch review on a loaded machine: `interp` +0.15% instructions and +0.07% cycles, `strings` +0.7% instructions and +9.7% cycles; binaries grow by about 35 to 50 KB.
+
 ## 2026-11-13, end of batch-12
 
 Run of `bench/run.sh -n 9` at commit 57740eaf on `feat/batch-12`, same machine and toolchains as the batch-11 run below. No agent was running. The load average was 1.77 (1 minute) at the start, with the 5 and 15 minute averages (3.33 and 3.93) still falling after the batch's Linux check, and 1.63 at the end. Batch-12 adds async; code with no async emits the same C as before, and every program is within 3% of batch-11.

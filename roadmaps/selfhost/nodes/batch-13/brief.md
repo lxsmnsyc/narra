@@ -1,7 +1,7 @@
 ---
 id: batch-13
 title: "Batch 13: finish the syntax (phase p1)"
-status: active
+status: done
 priority: must
 type: story
 story: 

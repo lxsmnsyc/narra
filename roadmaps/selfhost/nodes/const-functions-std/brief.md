@@ -1,7 +1,7 @@
 ---
 id: const-functions-std
 title: "@const bodies call the rest of the D105 std list"
-status: todo
+status: done
 priority: must
 type: feature
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 245000
 owns:
   - roadmaps/selfhost/nodes/const-functions-std/**
   - testdata/const_functions_std*

@@ -7,6 +7,8 @@
 // its event loop (D109 item 6) when it started tasks, releases the
 // environment and gives the heap back. The thread is a number to Narra code:
 // its pthread_t, which narra_thread_join waits for.
+#include <errno.h>
+
 struct narra_env;
 
 typedef struct narra_thread_work {
@@ -112,6 +114,26 @@ static narra_sync* narra_sync_new(void) {
   pthread_cond_init(&core->ready[0], NULL);
   pthread_cond_init(&core->ready[1], NULL);
   return &core->h;
+}
+
+// A core whose lock is an error-checking mutex, for std/shared: a second lock
+// by the thread that holds it fails instead of hanging (narra_sync_enter).
+static narra_sync* narra_sync_new_checked(void) {
+  narra_sync* sync = narra_sync_new();
+  narra_sync_core* core = (narra_sync_core*)sync;
+  pthread_mutex_destroy(&core->lock);
+  pthread_mutexattr_t attributes;
+  pthread_mutexattr_init(&attributes);
+  pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_ERRORCHECK);
+  pthread_mutex_init(&core->lock, &attributes);
+  pthread_mutexattr_destroy(&attributes);
+  return sync;
+}
+
+// Takes the lock of a checked core. Gives true, without the lock, when this
+// thread already holds it, so the caller can stop the program.
+static bool narra_sync_enter(narra_sync* sync) {
+  return pthread_mutex_lock(&((narra_sync_core*)sync)->lock) == EDEADLK;
 }
 
 static void narra_sync_retain(narra_sync* sync) { NARRA_RC_RETAIN(sync->rc); }

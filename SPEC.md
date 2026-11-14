@@ -1539,8 +1539,6 @@ A few types have identity: copying one copies a handle to the same object. They 
 | `Shared<T>` | A value guarded by a lock |
 | `Atomic<T>` | An integer or `bool` with atomic operations |
 
-Not built yet (D111; node threads-shared).
-
 <!-- context
 import * as Shared from "std/shared"
 -->
@@ -1552,13 +1550,14 @@ Shared.update(hits, (count) => count + 1)
 const now = Shared.read(hits, (count) => count)
 ```
 
-- **`Shared<T>`** (`std/shared`) has the functions of `Cells` and `read`: `Shared.create(value)` (`uses alloc`), `Shared.get(shared)` returns a copy, `Shared.set(shared, value)`, `Shared.update(shared, change)` stores `change(value)`, and `Shared.read(shared, look)` returns `look(value)`. As for `Cells.update`, `change` returns the new value, because a scalar cannot be a `mutable` parameter (D81). `T` must be `Sendable` (E1190).
+- **`Shared<T>`** (`std/shared`) has the functions of `Cells` and `read`: `Shared.create(value)` (`uses alloc`), `Shared.get(shared)` returns a copy, `Shared.set(shared, value)`, `Shared.update(shared, change)` stores `change(value)`, and `Shared.read(shared, look)` returns `look(value)`. As for `Cells.update`, `change` returns the new value, because a scalar cannot be a `mutable` parameter (D81). `T` must be `Sendable` (E1190). Like `Cells.get`, `Shared.get` shares the value it returns (`from shared`), and `look` may return a part of its value (`from value`); both results hold their own reference, taken before the lock is released. `update` moves the value out of the `Shared` while `change` runs.
 - **The lock is held only while a call runs.** Each function takes the lock, does its work (running the callback, if any) and releases it. There is no way to take the lock and forget to release it.
 - **The callback cannot be `async`** (E1410), so a task never suspends while holding a lock.
-- **`Atomic<T>`** (`std/atomic`) holds a `bool` or an integer type up to 64 bits (E1411 for any other `T`). It offers `Atomic.create`, `Atomic.load`, `Atomic.store`, `Atomic.exchange`, `Atomic.add` (integers only; it returns the old value and wraps like `+`) and `Atomic.compareExchange(atomic, expected, replacement)`, which returns `true` when it stored. Every operation is sequentially consistent.
+- **`Atomic<T>`** (`std/atomic`) holds a `bool` or an integer type up to 64 bits (E1411 for any other `T`). It offers `Atomic.create`, `Atomic.load`, `Atomic.store`, `Atomic.exchange`, `Atomic.add` (integers only, E1412 on `Atomic<bool>`; it returns the old value and wraps like `+`) and `Atomic.compareExchange(atomic, expected, replacement)`, which returns `true` when it stored. Every operation is sequentially consistent.
 - `==`, `!=` and map keys on a `Shared` or an `Atomic` are a compile error (E1195), as on a `Cell`; compare the values instead.
 - **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Async<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narra audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
+- **A callback that reaches its own `Shared` stops the program** (D111). A call of `Shared.get`, `set`, `update` or `read` on a `Shared` whose lock its own thread holds, as in `Shared.read(cell, (v) => v + Shared.get(cell))`, ends the program with exit code 101 and a message that names the call, as a panic does, instead of waiting forever.
 
 ### Async functions
 

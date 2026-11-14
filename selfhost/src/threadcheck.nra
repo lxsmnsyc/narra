@@ -2,8 +2,8 @@
 // the checks where a value crosses a thread, the form of thread functions, the
 // Scope escape rule and `==` on thread handles (item 4). The hot files carry
 // only the calls; every rule is here. Checks other than Sendable run only when
-// a module imports std/thread, std/parallel, std/channel or std/internal/thread
-// (Checker.threads).
+// a module imports std/thread, std/parallel, std/channel, std/shared,
+// std/atomic or std/internal/thread (Checker.threads).
 import { Pos, Expr, Arg, FuncDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Type, Field, typeKey } from "narrac/types"
@@ -29,8 +29,7 @@ struct HandleType {
   compare: string
 }
 
-// Sender and Receiver (and Shared and Atomic of threads-shared) are Sendable
-// when their type argument is.
+// Sender, Receiver, Shared and Atomic are Sendable when their type argument is.
 const THREAD_HANDLES: Array<HandleType> = [
   HandleType {
     module: "std/thread",
@@ -55,6 +54,18 @@ const THREAD_HANDLES: Array<HandleType> = [
     name: "Receiver",
     sendable: true,
     compare: "compare the values received from the channel",
+  },
+  HandleType {
+    module: "std/shared",
+    name: "Shared",
+    sendable: true,
+    compare: "compare the values it holds, from Shared.get",
+  },
+  HandleType {
+    module: "std/atomic",
+    name: "Atomic",
+    sendable: true,
+    compare: "compare the values it holds, from Atomic.load",
   },
 ]
 
@@ -82,6 +93,8 @@ export function isThreadModule(path: string): bool {
   return path == "std/thread" ||
     path == "std/parallel" ||
     path == "std/channel" ||
+    path == "std/shared" ||
+    path == "std/atomic" ||
     path == "std/internal/thread"
 }
 
@@ -297,6 +310,10 @@ export function checkThreadCall(
     checkChannelElement(mutable checker, pos, result)
     return
   }
+  if (info.module == "std/shared" || info.module == "std/atomic") {
+    checkSharedCall(mutable checker, info.module, info.name, arguments, pos, result)
+    return
+  }
   let work = -1
   for (const entry of Arrays.values(THREAD_FUNCTIONS)) {
     if (info.name == entry.name && info.module == entry.module) {
@@ -328,6 +345,133 @@ function checkChannelElement(mutable checker: Checker, pos: Pos, result: Type) u
         }
       }
     }
+  }
+}
+
+function checkSharedCall(
+  mutable checker: Checker,
+  module: string,
+  name: string,
+  arguments: Array<Arg>,
+  pos: Pos,
+  result: Type,
+) uses alloc {
+  // The value of Shared.create and Atomic.create must be Sendable, an Atomic
+  // holds bool or an integer, and the callbacks of Shared run under the lock.
+  if (name == "create") {
+    if (findHandleArgument(checker, result) is Some(valueType)) {
+      if (module == "std/shared") {
+        checkSendable(mutable checker, pos, valueType, "the value of Shared.create")
+      } else if (!isAtomicValue(valueType)) {
+        reportAtomicValue(mutable checker, pos, valueType)
+      }
+    }
+    return
+  }
+  if (module == "std/atomic" && name == "add" && Arrays.length(arguments) > 0) {
+    const atomicType = copy(getNodeType(checker, getExpressionId(arguments[0].value)))
+    if (atomicType is Some(type)) {
+      if (findHandleArgument(checker, type) is Some(Type.TBool)) {
+        reportError(
+          mutable checker,
+          pos,
+          "E1412",
+          "Atomic.add needs an integer type, found Atomic<bool>; use Atomic.store or Atomic.compareExchange",
+        )
+      }
+    }
+    return
+  }
+  if (
+    module == "std/shared" && (name == "update" || name == "read") && Arrays.length(arguments) > 1
+  ) {
+    checkLockCallback(mutable checker, arguments[1].value, `Shared.${name}`)
+  }
+}
+
+function findHandleArgument(checker: Checker, type: Type): Option<Type> uses alloc {
+  // The one type argument of Shared<T> or Atomic<T>.
+  if (type is Type.TStruct(index)) {
+    if (Arrays.length(checker.structs[index].arguments) == 1) {
+      return Some(copy(checker.structs[index].arguments[0]))
+    }
+  }
+  return None
+}
+
+function checkLockCallback(mutable checker: Checker, callback: Expr, name: string) uses alloc {
+  // An async arrow, an async function or any function that gives an Async
+  // would suspend, or hand off work, while the lock is held.
+  let isAsync = false
+  if (callback is Expr.AsyncExpr(_, _, _)) {
+    isAsync = true
+  }
+  const nodeId = getExpressionId(callback)
+  if (getRef(checker, nodeId) is Ref.Function(funcIndex)) {
+    if (checker.functions[funcIndex].declaration.isAsync) {
+      isAsync = true
+    }
+  }
+  if (getNodeType(checker, nodeId) is Some(Type.TFunc(_, Type.TAsync(_), _, _, _))) {
+    isAsync = true
+  }
+  if (isAsync) {
+    reportError(
+      mutable checker,
+      getExpressionPos(callback),
+      "E1410",
+      `the callback of ${name} cannot be async: it runs while the lock is held, and a task must not suspend there`,
+    )
+  }
+}
+
+function isAtomicValue(type: Type): bool {
+  return match (type) {
+    Type.TBool
+      | Type.TInt
+      | Type.TI8
+      | Type.TI16
+      | Type.TI32
+      | Type.TU8
+      | Type.TU16
+      | Type.TU32
+      | Type.TU64 => true
+    _ => false
+  }
+}
+
+function reportAtomicValue(mutable checker: Checker, pos: Pos, type: Type) uses alloc {
+  const text = typeString(checker, type)
+  reportError(
+    mutable checker,
+    pos,
+    "E1411",
+    `Atomic<${text}> is not allowed: an Atomic holds bool or an integer type up to 64 bits; keep other values in a Shared from std/shared`,
+  )
+}
+
+export function checkAtomicType(
+  mutable checker: Checker,
+  pos: Pos,
+  generic: int,
+  arguments: Array<Type>,
+) uses alloc {
+  // A written Atomic<T> type. Only std/atomic itself writes Atomic<T> with a
+  // type parameter, since no bound says "an integer type"; its instances
+  // repeat what the call that made them was checked for.
+  if (!checker.threads || Arrays.length(arguments) != 1) {
+    return
+  }
+  if (
+    checker.generics[generic].module != "std/atomic" || checker.generics[generic].name != "Atomic"
+  ) {
+    return
+  }
+  if (Arrays.length(checker.scopes) > 0 && checker.scopes[checker.current].path == "std/atomic") {
+    return
+  }
+  if (!isAtomicValue(arguments[0])) {
+    reportAtomicValue(mutable checker, pos, arguments[0])
   }
 }
 
@@ -413,6 +557,9 @@ export function describeHandle(checker: Checker, type: Type): string uses alloc 
   const handle = findHandle(checker, type)
   if (handle < 0) {
     return ""
+  }
+  if (THREAD_HANDLES[handle].name == "Atomic") {
+    return "an Atomic"
   }
   return `a ${THREAD_HANDLES[handle].name}`
 }

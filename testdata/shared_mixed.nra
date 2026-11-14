@@ -1,0 +1,68 @@
+// Four threads mix update, read, get and set on one Shared array. Copies
+// that get and read hand out are dropped on their own threads while update
+// takes the value out of the slot, so the count each thread sees must be
+// ordered with the others (ThreadSanitizer checks it in tsan.sh).
+import * as Thread from "std/thread"
+import * as Shared from "std/shared"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+function append(numbers: Array<int>, number: int): Array<int> uses alloc {
+  let grown = copy(numbers)
+  Arrays.push(mutable grown, number)
+  return grown
+}
+
+function updater(numbers: Shared.Shared<Array<int>>): int {
+  for (let index = 0; index < 500; index++) {
+    Shared.update(numbers, (current) => append(current, index))
+  }
+  return 500
+}
+
+function reader(numbers: Shared.Shared<Array<int>>): int {
+  let largest = 0
+  for (let index = 0; index < 500; index++) {
+    const length = Shared.read(numbers, (current) => Arrays.length(current))
+    if (length > largest) {
+      largest = length
+    }
+  }
+  return largest
+}
+
+function getter(numbers: Shared.Shared<Array<int>>): int {
+  let total = 0
+  for (let index = 0; index < 500; index++) {
+    const items = Shared.get(numbers)
+    total += Arrays.length(items) % 2
+  }
+  return total
+}
+
+function setter(numbers: Shared.Shared<Array<int>>): int {
+  for (let index = 0; index < 50; index++) {
+    Shared.set(numbers, [index])
+  }
+  return 50
+}
+
+export function run(_args: Array<string>): int {
+  const empty: Array<int> = []
+  const numbers = Shared.create(empty)
+  const done = Thread.scope((scope) => {
+    const first = Thread.start(scope, () => updater(numbers))
+    const second = Thread.start(scope, () => reader(numbers))
+    const third = Thread.start(scope, () => getter(numbers))
+    const fourth = Thread.start(scope, () => setter(numbers))
+    Thread.join(second)
+    Thread.join(third)
+    return Thread.join(first) + Thread.join(fourth)
+  })
+  print(`updates and sets ${Int.toString(done)}`)
+  const length = Shared.read(numbers, (current) => Arrays.length(current))
+  if (length >= 1 && length <= 501) {
+    print("length in range")
+  }
+  return 0
+}

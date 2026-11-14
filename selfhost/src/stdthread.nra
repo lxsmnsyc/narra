@@ -17,6 +17,7 @@ import {
   reportUnsupported,
   ownedTemp,
   shareCode,
+  retainCode,
   buildVariantFieldPath,
   underlyingType,
 } from "narrac/emitstate"
@@ -34,6 +35,10 @@ export const THREAD_FUNCS: Array<StdFunc> = [
   StdFunc { name: "std/parallel", module: "std/parallel", key: "", check: "source" },
   // std/channel is Narra source over Sync and boxes (std/src/channel.nra).
   StdFunc { name: "std/channel", module: "std/channel", key: "", check: "source" },
+  // std/shared and std/atomic are Narra source over Sync, boxes and the
+  // atomic primitives below (std/src/shared.nra, std/src/atomic.nra).
+  StdFunc { name: "std/shared", module: "std/shared", key: "", check: "source" },
+  StdFunc { name: "std/atomic", module: "std/atomic", key: "", check: "source" },
 ]
 
 export const INTERNAL_THREAD_FUNCS: Array<StdFunc> = [
@@ -82,6 +87,25 @@ export const INTERNAL_THREAD_FUNCS: Array<StdFunc> = [
     parameters: ["Sync", "int"],
     result: "Sync",
     effects: ["alloc"],
+  },
+  // A Sync whose lock reports a second lock by the thread that holds it, for
+  // std/shared; Threads.enter takes it.
+  StdFunc {
+    name: "Threads.syncChecked",
+    module: "std/internal/thread",
+    key: "syncChecked",
+    parameters: [],
+    result: "Sync",
+    effects: ["alloc"],
+  },
+  // Takes the lock of a Sync from Threads.syncChecked. Gives true, without
+  // the lock, when this thread holds it already.
+  StdFunc {
+    name: "Threads.enter",
+    module: "std/internal/thread",
+    key: "enter",
+    parameters: ["Sync"],
+    result: "bool",
   },
   StdFunc {
     name: "Threads.lock",
@@ -152,7 +176,72 @@ export const INTERNAL_THREAD_FUNCS: Array<StdFunc> = [
     key: "share",
     check: "checkThreads",
   },
+  // The value of a Box<Option<T>> that holds Some, with one more reference,
+  // so it stays alive after the lock is released. For Shared.get.
+  StdFunc {
+    name: "Threads.peek",
+    module: "std/internal/thread",
+    key: "peek",
+    check: "checkThreads",
+  },
+  // Sequentially consistent operations on the value of a Box<T>, where T is
+  // bool or an integer type, for std/atomic. add gives the old value and wraps.
+  StdFunc {
+    name: "Threads.atomicLoad",
+    module: "std/internal/thread",
+    key: "atomicLoad",
+    check: "checkThreads",
+  },
+  StdFunc {
+    name: "Threads.atomicStore",
+    module: "std/internal/thread",
+    key: "atomicStore",
+    check: "checkThreads",
+  },
+  StdFunc {
+    name: "Threads.atomicExchange",
+    module: "std/internal/thread",
+    key: "atomicExchange",
+    check: "checkThreads",
+  },
+  StdFunc {
+    name: "Threads.atomicAdd",
+    module: "std/internal/thread",
+    key: "atomicAdd",
+    check: "checkThreads",
+  },
+  StdFunc {
+    name: "Threads.atomicCompareExchange",
+    module: "std/internal/thread",
+    key: "atomicCompareExchange",
+    check: "checkThreads",
+  },
 ]
+
+// The atomic primitives: the name and how many values follow the box.
+struct AtomicPrimitive {
+  name: string
+  values: int
+}
+
+const ATOMIC_PRIMITIVES: Array<AtomicPrimitive> = [
+  AtomicPrimitive { name: "Threads.atomicLoad", values: 0 },
+  AtomicPrimitive { name: "Threads.atomicStore", values: 1 },
+  AtomicPrimitive { name: "Threads.atomicExchange", values: 1 },
+  AtomicPrimitive { name: "Threads.atomicAdd", values: 1 },
+  AtomicPrimitive { name: "Threads.atomicCompareExchange", values: 2 },
+]
+
+function findAtomicPrimitive(name: string): int {
+  let position = 0
+  for (const primitive of Arrays.values(ATOMIC_PRIMITIVES)) {
+    if (primitive.name == name) {
+      return position
+    }
+    position++
+  }
+  return -1
+}
 
 export function checkThreadsCall<W: Walker>(
   mutable checker: Checker,
@@ -161,8 +250,12 @@ export function checkThreadsCall<W: Walker>(
   arguments: Array<Arg>,
   name: string,
 ): Type from checker uses alloc {
-  if (name == "Threads.take" || name == "Threads.result") {
+  if (name == "Threads.take" || name == "Threads.result" || name == "Threads.peek") {
     return copy(checkOptionBox(mutable checker, walker, pos, arguments, name))
+  }
+  const atomic = findAtomicPrimitive(name)
+  if (atomic >= 0) {
+    return copy(checkAtomicPrimitive(mutable checker, walker, pos, arguments, atomic))
   }
   if (name == "Threads.share") {
     // Any value; only std modules call it.
@@ -210,6 +303,80 @@ function checkOptionBox<W: Walker>(
   return Type.TVoid
 }
 
+function checkAtomicPrimitive<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  atomic: int,
+): Type uses alloc {
+  // A Box<T> first, then the values of type T; std/atomic keeps T to bool and integers.
+  const primitive = ATOMIC_PRIMITIVES[atomic]
+  const count = primitive.values + 1
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, primitive.name, count)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TBox(valueType)) {
+    for (let index = 1; index < count; index++) {
+      checkArgumentAgainst(mutable checker, walker, arguments[index].value, valueType)
+    }
+    if (primitive.name == "Threads.atomicStore") {
+      return Type.TVoid
+    }
+    if (primitive.name == "Threads.atomicCompareExchange") {
+      return Type.TBool
+    }
+    return copy(valueType)
+  }
+  // Only std/atomic calls these, with a box.
+  panic(`internal error: ${primitive.name} needs a Box<T>`)
+  return Type.TVoid
+}
+
+function emitAtomicPrimitive<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // GCC and clang __atomic builtins, sequentially consistent. On signed types
+  // they wrap in two's complement, which is the wrapping + of D92.
+  const boxType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const valueType = findBoxValue(boxType)
+  const boxCode = argumentText(walker, mutable emitter, arguments, 0)
+  const box = temp(mutable emitter, boxType, boxCode)
+  const place = `&${box}->f_value`
+  if (name == "Threads.atomicLoad") {
+    return plain(temp(mutable emitter, valueType, `__atomic_load_n(${place}, __ATOMIC_SEQ_CST)`))
+  }
+  const value = argumentText(walker, mutable emitter, arguments, 1)
+  if (name == "Threads.atomicStore") {
+    writeLine(mutable emitter, `__atomic_store_n(${place}, ${value}, __ATOMIC_SEQ_CST);`)
+    return plain("((void)0)")
+  }
+  if (name == "Threads.atomicExchange") {
+    const exchanged = `__atomic_exchange_n(${place}, ${value}, __ATOMIC_SEQ_CST)`
+    return plain(temp(mutable emitter, valueType, exchanged))
+  }
+  if (name == "Threads.atomicAdd") {
+    const added = `__atomic_fetch_add(${place}, ${value}, __ATOMIC_SEQ_CST)`
+    return plain(temp(mutable emitter, valueType, added))
+  }
+  // compareExchange: the expected value needs a place of its own.
+  const expected = temp(mutable emitter, valueType, value)
+  const replacement = argumentText(walker, mutable emitter, arguments, 2)
+  const exchanged = `__atomic_compare_exchange_n(${place}, &${expected}, ${replacement}, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)`
+  return plain(temp(mutable emitter, Type.TBool, exchanged))
+}
+
+function findBoxValue(boxType: Type): Type uses alloc {
+  if (boxType is Type.TBox(valueType)) {
+    return copy(valueType)
+  }
+  return Type.TVoid
+}
+
 function emitOptionBox<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -229,27 +396,43 @@ function emitOptionBox<W: EmitWalker>(
       const none = Decls.enumAllocation(mutable emitter, optionType, noneVariant, [])
       writeLine(mutable emitter, `${box}->f_value = ${none.text};`)
       // A shared count of -1 is one holder, the result, so the top object
-      // becomes plain again and a write to it needs no copy; its parts stay shared.
+      // becomes plain again and a write to it needs no copy; its parts stay
+      // shared. The acquire load pairs with the acq_rel release of a copy
+      // dropped on another thread, so its writes come before ours.
       const base = underlyingType(emitter, valueType)
       if (base is Type.TArray(_) || base is Type.TBox(_) || base is Type.TMap(_, _)) {
         const some = Int.toString(findVariant(emitter, optionType, "Some"))
         const value = buildVariantFieldPath(emitter, enumIndex, "Some", "value", taken)
         writeLine(
           mutable emitter,
-          `if (${taken}.tag == ${some} && __atomic_load_n(&(${value})->rc, __ATOMIC_RELAXED) == -1) __atomic_store_n(&(${value})->rc, 1, __ATOMIC_RELAXED);`,
+          `if (${taken}.tag == ${some} && __atomic_load_n(&(${value})->rc, __ATOMIC_ACQUIRE) == -1) __atomic_store_n(&(${value})->rc, 1, __ATOMIC_RELAXED);`,
         )
       }
       return owned(taken)
     }
     const some = Int.toString(findVariant(emitter, optionType, "Some"))
+    let missing = "Thread.join found no result"
+    if (name == "Threads.peek") {
+      missing = "Shared found no value"
+    }
     writeLine(
       mutable emitter,
-      `if (${box}->f_value.tag != ${some}) narra_panic("runtime", "internal error: Thread.join found no result");`,
+      `if (${box}->f_value.tag != ${some}) narra_panic("runtime", "internal error: ${missing}");`,
     )
     if (valueType == Type.TVoid) {
       return plain("((void)0)")
     }
-    return plain(buildVariantFieldPath(emitter, enumIndex, "Some", "value", `${box}->f_value`))
+    const path = buildVariantFieldPath(emitter, enumIndex, "Some", "value", `${box}->f_value`)
+    if (name == "Threads.peek") {
+      // The reference is taken here, while the caller still holds the lock.
+      const value = ownedTemp(mutable emitter, valueType, path)
+      const retain = retainCode(emitter, valueType, value)
+      if (retain != "") {
+        writeLine(mutable emitter, retain)
+      }
+      return owned(value)
+    }
+    return plain(path)
   }
   return plain(reportUnsupported(mutable emitter, `${name} needs a Box<Option<T>>`, NODE))
 }
@@ -279,6 +462,13 @@ export function emitThreadsCall<W: EmitWalker>(
   }
   if (name == "Threads.sync") {
     return owned(ownedTemp(mutable emitter, Type.TSync, "narra_sync_new()"))
+  }
+  if (name == "Threads.syncChecked") {
+    return owned(ownedTemp(mutable emitter, Type.TSync, "narra_sync_new_checked()"))
+  }
+  if (name == "Threads.enter") {
+    const sync = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(temp(mutable emitter, Type.TBool, `narra_sync_enter(${sync})`))
   }
   if (name == "Threads.end") {
     const sync = argumentText(walker, mutable emitter, arguments, 0)
@@ -312,8 +502,11 @@ export function emitThreadsCall<W: EmitWalker>(
     const kind = argumentText(walker, mutable emitter, arguments, 1)
     return plain(temp(mutable emitter, Type.TInt, `narra_sync_ends(${sync}, ${kind})`))
   }
-  if (name == "Threads.take" || name == "Threads.result") {
+  if (name == "Threads.take" || name == "Threads.result" || name == "Threads.peek") {
     return emitOptionBox(walker, mutable emitter, name, arguments)
+  }
+  if (findAtomicPrimitive(name) >= 0) {
+    return emitAtomicPrimitive(walker, mutable emitter, name, arguments)
   }
   if (name == "Threads.share") {
     const valueType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))

@@ -1537,6 +1537,12 @@ Status: Approved by the maintainer, 2026-11-13, with every recommendation of the
    - Order: threads-process, then threads, then threads-check, then threads-channels and threads-shared side by side.
 
 - **Cost.** About 3000 lines over five nodes (estimate): the count macros and share walkers in `emitdecls.nra` and the runtime, about 500 lines of C for the heap, threads, locks and channels, four std source modules, and the trait and escape checks. Thread programs run about 5% slower in count-heavy code than the same code without threads, and pay one walk per value that crosses. Deadlocks from nested `Shared` calls are not reported.
+
+Built: `Shared` and `Atomic` (node threads-shared, 2026-11-14). Amendments from the build:
+
+- **A `Shared` re-entered on its own thread stops the program.** The lock of a `Shared` is an error-checking mutex. A call that reaches a `Shared` whose lock its own thread holds, from a callback of `Shared.update` or `Shared.read` (`Shared.read(cell, (v) => v + Shared.get(cell))`), stops the program with exit code 101 and a message that names the call: `Shared.get: this thread already holds the lock of this Shared; ...`. It is one more runtime stop beside the list of D92, as D109's stop for a cycle of awaits is; the other choice is a hang. Two threads that take two `Shared` locks in opposite orders still deadlock without a report.
+- **`Atomic<T>` with a type parameter is E1411 by design.** No bound says "an integer type", so generic code cannot write `Atomic<T>`; only `std/atomic` itself does. E1412 is `Atomic.add` on an `Atomic<bool>`.
+- `Shared.get` is `from shared`, like `Cells.get`, and `look` of `Shared.read` is `(value: T) => U from value`, with a result `from shared`.
 ## D112. SIMD vector types: twenty fixed types, operators lane by lane, functions in `std/simd`
 
 Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Built by nodes simd and simd-library, 2026-11-14. Spike simd-design, 2026-11-13. It settles the `std/simd` types that D47 and SPEC section 4 name, and how they compile (section 11). Codes E1250-E1269.

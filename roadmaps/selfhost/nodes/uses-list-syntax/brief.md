@@ -1,7 +1,7 @@
 ---
 id: uses-list-syntax
 title: "Effect lists inside type lists"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 231895
 owns:
   - roadmaps/selfhost/nodes/uses-list-syntax/**
   - testdata/uses_list_*.nra

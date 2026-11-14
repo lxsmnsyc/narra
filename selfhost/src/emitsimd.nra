@@ -9,11 +9,13 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
+import * as Ranges from "std/range"
 import { Expr, Arg } from "narrac/ast"
 import { Type, findLaneSize, isUnsignedInteger } from "narrac/types"
 import { getExpressionId } from "narrac/check"
 import { cachedCType } from "narrac/cnames"
-import { findUnsignedTwin, isFloatVector } from "narrac/simdtypes"
+import { findTypedConstant } from "narrac/operands"
+import { findUnsignedTwin, findMaskType, isFloatVector } from "narrac/simdtypes"
 import {
   Emitter,
   Code,
@@ -22,8 +24,19 @@ import {
   temp,
   readNodeType,
   reportUnsupported,
+  useHelper,
+  containerName,
+  declareVariable,
+  variableRef,
 } from "narrac/emitstate"
-import { NODE, plain, argumentText } from "narrac/stdemithelp"
+import {
+  NODE,
+  plain,
+  argumentText,
+  findVariant,
+  variantFieldType,
+  ioEither,
+} from "narrac/stdemithelp"
 
 function buildTypedef(emitter: Emitter, vector: Type): string uses alloc {
   if (vector is Type.TVector(lane, count)) {
@@ -191,6 +204,328 @@ function emitWithLane<W: EmitWalker>(
   return plain(result)
 }
 
+function holdArguments<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Array<string> uses alloc {
+  // Each argument is read once, in the written order, into a temporary.
+  let held: Array<string> = []
+  for (const argument of Arrays.values(arguments)) {
+    const argumentType = copy(readNodeType(emitter, getExpressionId(argument.value)))
+    const code = EmitWalker.emitExpression(walker, mutable emitter, argument.value)
+    Arrays.push(mutable held, temp(mutable emitter, argumentType, code.text))
+  }
+  return held
+}
+
+function nameVector(emitter: Emitter, vector: Type): string uses alloc {
+  return cachedCType(emitter.checker, emitter.typeNames, vector)
+}
+
+function buildBlend(
+  emitter: Emitter,
+  vector: Type,
+  mask: string,
+  ifTrue: string,
+  ifFalse: string,
+): string uses alloc {
+  // Bits of ifTrue where the mask is set, of ifFalse elsewhere, on the unsigned twin of the mask.
+  const name = nameVector(emitter, vector)
+  const twin = nameVector(emitter, findUnsignedTwin(findMaskType(vector)))
+  return `((${name})(((${twin})(${ifTrue}) & (${twin})(${mask})) | ((${twin})(${ifFalse}) & ~(${twin})(${mask}))))`
+}
+
+function buildLaneList(emitter: Emitter, vector: Type, lanes: Array<string>): string uses alloc {
+  return `((${nameVector(emitter, vector)}){${Str.join(lanes, ", ")}})`
+}
+
+const COMPARISON_NAMES = [
+  "Simd.equal",
+  "Simd.notEqual",
+  "Simd.less",
+  "Simd.lessOrEqual",
+  "Simd.greater",
+  "Simd.greaterOrEqual",
+]
+const COMPARISON_OPERATORS = ["==", "!=", "<", "<=", ">", ">="]
+
+function findComparisonOperator(name: string): string {
+  for (const i of Ranges.upTo(Arrays.length(COMPARISON_NAMES))) {
+    if (COMPARISON_NAMES[i] == name) {
+      return COMPARISON_OPERATORS[i]
+    }
+  }
+  return ""
+}
+
+function emitComparison<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+  operator: string,
+): Code uses alloc {
+  // A C vector comparison gives lanes of -1 and 0 in the signed type of the same shape.
+  const mask = copy(readNodeType(emitter, nodeId))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  const text = `((${nameVector(emitter, mask)})(${held[0]} ${operator} ${held[1]}))`
+  return plain(temp(mutable emitter, mask, text))
+}
+
+function emitSelect<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const vector = copy(readNodeType(emitter, nodeId))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  const blend = buildBlend(emitter, vector, held[0], held[1], held[2])
+  return plain(temp(mutable emitter, vector, blend))
+}
+
+function emitLaneTest<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+  every: bool,
+): Code uses alloc {
+  // any joins the lane tests with ||, all with &&.
+  const vector = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  let joiner = " || "
+  if (every) {
+    joiner = " && "
+  }
+  let tests: Array<string> = []
+  if (vector is Type.TVector(_, count)) {
+    for (let i = 0; i < count; i++) {
+      Arrays.push(mutable tests, `${held[0]}[${Int.toString(i)}] != 0`)
+    }
+  }
+  return plain(temp(mutable emitter, Type.TBool, `(${Str.join(tests, joiner)})`))
+}
+
+function buildRangeTest(start: string, length: string, count: int): string uses alloc {
+  // start + count is never computed, so a large start cannot overflow.
+  return `(${start} >= 0 && ${start} <= ${length} - ${Int.toString(count)})`
+}
+
+function emitLoad<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const optionType = copy(readNodeType(emitter, nodeId))
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  const vector = copy(variantFieldType(emitter, optionType, some))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  if (vector is Type.TVector(_, count)) {
+    const inRange = temp(
+      mutable emitter,
+      Type.TBool,
+      buildRangeTest(held[1], `${held[0]}->len`, count),
+    )
+    const name = nameVector(emitter, vector)
+    const lanes = temp(mutable emitter, vector, `((${name}){0})`)
+    writeLine(
+      mutable emitter,
+      `if (${inRange}) memcpy(&${lanes}, &${held[0]}->items[${held[1]}], sizeof(${lanes}));`,
+    )
+    return ioEither(mutable emitter, optionType, inRange, some, [lanes], none, [])
+  }
+  return plain("0")
+}
+
+function emitStore<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // The array is made unique only when the lanes are written.
+  const arrayType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const vector = copy(readNodeType(emitter, getExpressionId(arguments[2].value)))
+  const place = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  const arrayName = cachedCType(emitter.checker, emitter.typeNames, arrayType)
+  emitter.tempCount++
+  const pointerName = `t${Int.toString(emitter.tempCount)}`
+  const declaration = declareVariable(mutable emitter, `${arrayName}*`, pointerName)
+  writeLine(mutable emitter, `${declaration} = ${place};`)
+  const pointer = variableRef(emitter, pointerName)
+  const startCode = argumentText(walker, mutable emitter, arguments, 1)
+  const start = temp(mutable emitter, Type.TInt, startCode)
+  const lanesCode = argumentText(walker, mutable emitter, arguments, 2)
+  const lanes = temp(mutable emitter, vector, lanesCode)
+  if (vector is Type.TVector(_, count)) {
+    const inRange = temp(
+      mutable emitter,
+      Type.TBool,
+      buildRangeTest(start, `(*${pointer})->len`, count),
+    )
+    const uniqueHelper = useHelper(emitter, containerName(emitter, arrayType), "unique")
+    writeLine(mutable emitter, `if (${inRange}) {`)
+    emitter.indent++
+    writeLine(mutable emitter, `*${pointer} = ${uniqueHelper}(*${pointer});`)
+    writeLine(
+      mutable emitter,
+      `memcpy(&(*${pointer})->items[${start}], &${lanes}, sizeof(${lanes}));`,
+    )
+    emitter.indent--
+    writeLine(mutable emitter, "}")
+    return plain(inRange)
+  }
+  return plain("false")
+}
+
+function emitShuffle<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // Lane reads in a compound literal; clang and gcc turn them into one shuffle.
+  const vector = copy(readNodeType(emitter, nodeId))
+  const valueCode = argumentText(walker, mutable emitter, arguments, 0)
+  const value = temp(mutable emitter, vector, valueCode)
+  let lanes: Array<string> = []
+  if (arguments[1].value is Expr.ArrayLit(_, _, elements, _)) {
+    for (const element of Arrays.values(elements)) {
+      let lane = 0
+      if (findTypedConstant(emitter.checker, element, Type.TInt) is Some(constant)) {
+        lane = constant
+      }
+      Arrays.push(mutable lanes, `${value}[${Int.toString(lane)}]`)
+    }
+  }
+  const shuffled = buildLaneList(emitter, vector, lanes)
+  return plain(temp(mutable emitter, vector, shuffled))
+}
+
+function emitSum<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // The high half is added to the low half until one lane is left; integer
+  // lanes are added on the unsigned twin, which wraps.
+  const lane = copy(readNodeType(emitter, nodeId))
+  const vector = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  const twin = findUnsignedTwin(vector)
+  const value = argumentText(walker, mutable emitter, arguments, 0)
+  const twinName = nameVector(emitter, twin)
+  const lanes = temp(mutable emitter, twin, `((${twinName})(${value}))`)
+  let terms: Array<string> = []
+  if (vector is Type.TVector(_, count)) {
+    for (let i = 0; i < count; i++) {
+      Arrays.push(mutable terms, `${lanes}[${Int.toString(i)}]`)
+    }
+  }
+  const twinLane = match (twin) { Type.TVector(unsignedLane, _) => unsignedLane, _ => lane }
+  const twinLaneName = cachedCType(emitter.checker, emitter.typeNames, twinLane)
+  while (Arrays.length(terms) > 1) {
+    const half = Arrays.length(terms) / 2
+    let folded: Array<string> = []
+    for (let i = 0; i < half; i++) {
+      Arrays.push(mutable folded, `(${twinLaneName})(${terms[i]} + ${terms[i + half]})`)
+    }
+    terms = folded
+  }
+  const laneName = cachedCType(emitter.checker, emitter.typeNames, lane)
+  return plain(temp(mutable emitter, lane, `((${laneName})(${terms[0]}))`))
+}
+
+function emitMinMax<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+  isMin: bool,
+): Code uses alloc {
+  // min takes a where a < b, max takes a where b < a; b elsewhere.
+  const vector = copy(readNodeType(emitter, nodeId))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  const maskName = nameVector(emitter, findMaskType(vector))
+  let comparison = `${held[0]} < ${held[1]}`
+  if (!isMin) {
+    comparison = `${held[1]} < ${held[0]}`
+  }
+  const mask = temp(mutable emitter, findMaskType(vector), `((${maskName})(${comparison}))`)
+  const blend = buildBlend(emitter, vector, mask, held[0], held[1])
+  return plain(temp(mutable emitter, vector, blend))
+}
+
+function emitAbs<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // Floats clear the sign bit; integers blend v and the wrapping -v.
+  const vector = copy(readNodeType(emitter, nodeId))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  const name = nameVector(emitter, vector)
+  const mask = findMaskType(vector)
+  const twin = findUnsignedTwin(mask)
+  const twinName = nameVector(emitter, twin)
+  if (vector is Type.TVector(lane, count)) {
+    if (isFloatVector(vector)) {
+      let magnitude = "0x7fffffffu"
+      if (lane == Type.TF64) {
+        magnitude = "0x7fffffffffffffffull"
+      }
+      let bits: Array<string> = []
+      for (let i = 0; i < count; i++) {
+        Arrays.push(mutable bits, magnitude)
+      }
+      const cleared = `((${name})((${twinName})(${held[0]}) & ${buildLaneList(emitter, twin, bits)}))`
+      return plain(temp(mutable emitter, vector, cleared))
+    }
+    const negated = temp(mutable emitter, vector, `((${name})(-(${twinName})(${held[0]})))`)
+    const maskName = nameVector(emitter, mask)
+    const negative = temp(mutable emitter, mask, `((${maskName})(${held[0]} < (${name}){0}))`)
+    const blend = buildBlend(emitter, vector, negative, negated, held[0])
+    return plain(temp(mutable emitter, vector, blend))
+  }
+  return plain("0")
+}
+
+function emitShift<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+  isLeft: bool,
+): Code uses alloc {
+  // The count is a scalar of the lane type, proven in range by the checker. A
+  // left shift runs on the unsigned twin; a right shift is arithmetic on signed lanes.
+  const vector = copy(readNodeType(emitter, nodeId))
+  const held = holdArguments(walker, mutable emitter, arguments)
+  const name = nameVector(emitter, vector)
+  if (isLeft) {
+    const twin = findUnsignedTwin(vector)
+    if (twin is Type.TVector(unsignedLane, _)) {
+      const twinName = nameVector(emitter, twin)
+      const laneName = cachedCType(emitter.checker, emitter.typeNames, unsignedLane)
+      return plain(
+        temp(
+          mutable emitter,
+          vector,
+          `((${name})((${twinName})(${held[0]}) << (${laneName})(${held[1]})))`,
+        ),
+      )
+    }
+  }
+  if (vector is Type.TVector(lane, _)) {
+    const laneName = cachedCType(emitter.checker, emitter.typeNames, lane)
+    return plain(temp(mutable emitter, vector, `(${held[0]} >> (${laneName})(${held[1]}))`))
+  }
+  return plain("0")
+}
+
 export function emitSimdCall<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
@@ -209,6 +544,37 @@ export function emitSimdCall<W: EmitWalker>(
   }
   if (name == "Simd.withLane") {
     return emitWithLane(walker, mutable emitter, nodeId, arguments)
+  }
+  const operator = findComparisonOperator(name)
+  if (operator != "") {
+    return emitComparison(walker, mutable emitter, nodeId, arguments, operator)
+  }
+  if (name == "Simd.select") {
+    return emitSelect(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Simd.any" || name == "Simd.all") {
+    return emitLaneTest(walker, mutable emitter, arguments, name == "Simd.all")
+  }
+  if (name == "Simd.load") {
+    return emitLoad(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Simd.store") {
+    return emitStore(walker, mutable emitter, arguments)
+  }
+  if (name == "Simd.shuffle") {
+    return emitShuffle(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Simd.sum") {
+    return emitSum(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Simd.min" || name == "Simd.max") {
+    return emitMinMax(walker, mutable emitter, nodeId, arguments, name == "Simd.min")
+  }
+  if (name == "Simd.abs") {
+    return emitAbs(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Simd.shiftLeft" || name == "Simd.shiftRight") {
+    return emitShift(walker, mutable emitter, nodeId, arguments, name == "Simd.shiftLeft")
   }
   return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
 }

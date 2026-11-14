@@ -20,7 +20,7 @@ fi
 if [ "$#" -gt 0 ]; then
   programs=("$@")
 else
-  programs=(fib sieve matmul strings interp particles compiler)
+  programs=(fib sieve matmul strings interp particles dot compiler)
 fi
 
 mkdir -p "$build"

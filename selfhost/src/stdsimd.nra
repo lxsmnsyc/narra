@@ -1,10 +1,20 @@
 // The registry rows and checks of std/simd (D112): the functions that build
-// vectors. The vector types and their operators are in simdtypes.nra, the
-// emitters in emitsimd.nra. No function has an effect, panics or allocates.
+// vectors, compare them, load and store them, and work on their lanes. The
+// vector types and their operators are in simdtypes.nra, the emitters in
+// emitsimd.nra. No function has an effect, panics or allocates.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
 import { StdFunc } from "narrac/builtins"
-import { Type } from "narrac/types"
+import { Type, findLaneSize } from "narrac/types"
 import { checkFixedIndex } from "narrac/fixedarrays"
-import { findVectorFor } from "narrac/simdtypes"
+import { findTypedConstant, checkShiftCount } from "narrac/operands"
+import {
+  findVectorFor,
+  findMaskType,
+  findUnsignedTwin,
+  isFloatVector,
+  isUnsignedVector,
+} from "narrac/simdtypes"
 import {
   Checker,
   Walker,
@@ -13,18 +23,63 @@ import {
   typeString,
   getExpressionPos,
 } from "narrac/check"
-import { Pos, Arg } from "narrac/ast"
-import { checkExpression, expectType, checkArgumentsLoosely } from "narrac/exprs"
-import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
+import { Pos, Arg, Expr } from "narrac/ast"
+import {
+  checkExpression,
+  expectType,
+  checkArgumentsLoosely,
+  checkExclusive,
+  checkMutableArgument,
+} from "narrac/exprs"
+import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/stdcheckhelp"
 
 export const SIMD_FUNCS: Array<StdFunc> = [
+  StdFunc { name: "Simd.abs", module: "std/simd", key: "abs", check: "checkSimdAbs" },
+  StdFunc { name: "Simd.all", module: "std/simd", key: "all", check: "checkSimdTest" },
+  StdFunc { name: "Simd.any", module: "std/simd", key: "any", check: "checkSimdTest" },
+  StdFunc { name: "Simd.equal", module: "std/simd", key: "equal", check: "checkSimdCompare" },
   StdFunc {
     name: "Simd.fromFixed",
     module: "std/simd",
     key: "fromFixed",
     check: "checkSimdFromFixed",
   },
+  StdFunc { name: "Simd.greater", module: "std/simd", key: "greater", check: "checkSimdCompare" },
+  StdFunc {
+    name: "Simd.greaterOrEqual",
+    module: "std/simd",
+    key: "greaterOrEqual",
+    check: "checkSimdCompare",
+  },
+  StdFunc { name: "Simd.less", module: "std/simd", key: "less", check: "checkSimdCompare" },
+  StdFunc {
+    name: "Simd.lessOrEqual",
+    module: "std/simd",
+    key: "lessOrEqual",
+    check: "checkSimdCompare",
+  },
+  StdFunc { name: "Simd.load", module: "std/simd", key: "load", check: "checkSimdLoad" },
+  StdFunc { name: "Simd.max", module: "std/simd", key: "max", check: "checkSimdMinMax" },
+  StdFunc { name: "Simd.min", module: "std/simd", key: "min", check: "checkSimdMinMax" },
+  StdFunc { name: "Simd.notEqual", module: "std/simd", key: "notEqual", check: "checkSimdCompare" },
+  StdFunc { name: "Simd.select", module: "std/simd", key: "select", check: "checkSimdSelect" },
+  StdFunc { name: "Simd.shiftLeft", module: "std/simd", key: "shiftLeft", check: "checkSimdShift" },
+  StdFunc {
+    name: "Simd.shiftRight",
+    module: "std/simd",
+    key: "shiftRight",
+    check: "checkSimdShift",
+  },
+  StdFunc { name: "Simd.shuffle", module: "std/simd", key: "shuffle", check: "checkSimdShuffle" },
   StdFunc { name: "Simd.splat", module: "std/simd", key: "splat", check: "checkSimdSplat" },
+  StdFunc {
+    name: "Simd.store",
+    module: "std/simd",
+    key: "store",
+    mutables: [true, false, false],
+    check: "checkSimdStore",
+  },
+  StdFunc { name: "Simd.sum", module: "std/simd", key: "sum", check: "checkSimdSum" },
   StdFunc { name: "Simd.toFixed", module: "std/simd", key: "toFixed", check: "checkSimdToFixed" },
   StdFunc {
     name: "Simd.withLane",
@@ -176,6 +231,395 @@ function checkSimdWithLane<W: Walker>(
   return Type.TVoid
 }
 
+function reportVectorRejected(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  vector: Type,
+) uses alloc {
+  // E1261: a function that takes some vector types and not this one.
+  const text = typeString(checker, vector)
+  if (isFloatVector(vector)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1261",
+      `${name} does not take ${text}, whose lanes are floats; it takes integer vectors`,
+    )
+  } else {
+    reportError(
+      mutable checker,
+      pos,
+      "E1261",
+      `${name} does not take ${text}, which is unsigned; it takes signed and float vectors`,
+    )
+  }
+}
+
+function checkVectorPair<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Option<Type> uses alloc {
+  // Two vectors of one type; the second is checked against the first.
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return None
+  }
+  const found = checkVectorArgument(mutable checker, walker, arguments[0], name)
+  if (found is Some(vector)) {
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, vector)
+    return found
+  }
+  checkExpression(mutable checker, walker, arguments[1].value, None)
+  return None
+}
+
+function checkSimdCompare<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  // A comparison gives the mask of its vector type.
+  if (checkVectorPair(mutable checker, walker, pos, arguments, name) is Some(vector)) {
+    return internComposite(mutable checker, findMaskType(vector))
+  }
+  return Type.TVoid
+}
+
+function checkSimdMinMax<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (checkVectorPair(mutable checker, walker, pos, arguments, name) is Some(vector)) {
+    // The emitted blend needs the mask type.
+    internComposite(mutable checker, findMaskType(vector))
+    return vector
+  }
+  return Type.TVoid
+}
+
+function checkSimdSelect<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 3)) {
+    return Type.TVoid
+  }
+  const mask = checkVectorArgument(mutable checker, walker, arguments[0], name)
+  const found = checkVectorArgument(mutable checker, walker, arguments[1], name)
+  if (found is Some(vector)) {
+    checkArgumentAgainst(mutable checker, walker, arguments[2].value, vector)
+    // The mask is the signed integer vector of the same shape.
+    const wanted = internComposite(mutable checker, findMaskType(vector))
+    if (mask is Some(maskType)) {
+      if (maskType != wanted) {
+        const wantedText = typeString(checker, wanted)
+        const vectorText = typeString(checker, vector)
+        const maskText = typeString(checker, maskType)
+        reportError(
+          mutable checker,
+          getExpressionPos(arguments[0].value),
+          "E1261",
+          `${name} takes the mask ${wantedText} for ${vectorText}, found ${maskText}`,
+        )
+      }
+    }
+    return vector
+  }
+  checkExpression(mutable checker, walker, arguments[2].value, None)
+  return Type.TVoid
+}
+
+function checkSimdTest<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  // any and all read integer lanes.
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (checkVectorArgument(mutable checker, walker, arguments[0], name) is Some(vector)) {
+    if (isFloatVector(vector)) {
+      reportVectorRejected(mutable checker, getExpressionPos(arguments[0].value), name, vector)
+    }
+  }
+  return Type.TBool
+}
+
+function findLoadType(checker: Checker, want: Option<Type>): Option<Type> uses alloc {
+  // A type argument gives V, a binding Option<V>.
+  if (want is Some(Type.TVector(lane, count))) {
+    return Some(Type.TVector(copy(lane), count))
+  }
+  if (want is Some(Type.TEnum(enumIndex))) {
+    const wanted = checker.enums[enumIndex]
+    if (wanted.name == "Option" && Arrays.length(wanted.arguments) == 1) {
+      if (wanted.arguments[0] is Type.TVector(lane, count)) {
+        return Some(Type.TVector(copy(lane), count))
+      }
+    }
+  }
+  return None
+}
+
+function checkSimdLoad<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  want: Option<Type>,
+): Type from checker uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = findLoadType(checker, want)
+  if (found is Some(vector)) {
+    if (vector is Type.TVector(lane, _)) {
+      const arrayType = internComposite(mutable checker, Type.TArray(lane))
+      checkArgumentAgainst(mutable checker, walker, arguments[0].value, arrayType)
+      checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+      const interned = internComposite(mutable checker, vector)
+      return makePreludeEnum(mutable checker, "Option", [interned])
+    }
+  }
+  checkArgumentsLoosely(mutable checker, walker, arguments)
+  reportError(
+    mutable checker,
+    pos,
+    "E1254",
+    `${name} takes its vector type from where the result goes or from a type argument, as in \`const lanes: Option<F32x8> = Simd.load(items, 0)\` or \`Simd.load<F32x8>(items, 0)\``,
+  )
+  return Type.TVoid
+}
+
+function checkSimdStore<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 3)) {
+    return Type.TBool
+  }
+  if (!arguments[0].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0312",
+      `${name} changes its argument; write \`mutable\` before it`,
+    )
+  }
+  const arrayType = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (arguments[0].isMutable) {
+    // The argument is checked before checkMutableArgument reads its local.
+    checkMutableArgument(mutable checker, arguments[0].value)
+  }
+  checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+  const found = checkVectorArgument(mutable checker, walker, arguments[2], name)
+  checkExclusive(mutable checker, arguments, [0])
+  if (found is Some(vector)) {
+    if (vector is Type.TVector(lane, _)) {
+      // The array holds the lanes of the vector.
+      if (arrayType != Type.TVoid && arrayType != Type.TArray(lane)) {
+        const vectorText = typeString(checker, vector)
+        const laneText = typeString(checker, lane)
+        const arrayText = typeString(checker, arrayType)
+        reportError(
+          mutable checker,
+          getExpressionPos(arguments[0].value),
+          "E1261",
+          `${name} writes ${vectorText} into an Array<${laneText}>, found ${arrayText}`,
+        )
+      }
+    }
+  }
+  return Type.TBool
+}
+
+function checkSimdShuffle<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = checkVectorArgument(mutable checker, walker, arguments[0], name)
+  const lanes = arguments[1].value
+  if (lanes is Expr.ArrayLit(_, lanesPos, elements, false)) {
+    // Each lane is checked as an int, so a named constant resolves.
+    for (const element of Arrays.values(elements)) {
+      checkArgumentAgainst(mutable checker, walker, element, Type.TInt)
+    }
+    if (found is Some(vector)) {
+      if (vector is Type.TVector(_, count)) {
+        checkShuffleLanes(mutable checker, lanesPos, name, vector, count, elements)
+      }
+      return vector
+    }
+    return Type.TVoid
+  }
+  checkExpression(mutable checker, walker, lanes, None)
+  reportError(
+    mutable checker,
+    getExpressionPos(lanes),
+    "E1260",
+    `the lanes of ${name} are a list literal of constants, one per lane, as in \`Simd.shuffle(v, [3, 2, 1, 0])\``,
+  )
+  if (found is Some(vector)) {
+    return vector
+  }
+  return Type.TVoid
+}
+
+function checkShuffleLanes(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  vector: Type,
+  count: int,
+  elements: Array<Expr>,
+) uses alloc {
+  // One constant per lane of the result, each from 0 to count - 1.
+  const vectorText = typeString(checker, vector)
+  if (Arrays.length(elements) != count) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1260",
+      `${name} takes ${Int.toString(count)} lanes for ${vectorText}, found ${Int.toString(Arrays.length(elements))}`,
+    )
+    return
+  }
+  for (const element of Arrays.values(elements)) {
+    const elementPos = getExpressionPos(element)
+    if (findTypedConstant(checker, element, Type.TInt) is Some(lane)) {
+      if (lane < 0 || lane >= count) {
+        reportError(
+          mutable checker,
+          elementPos,
+          "E1260",
+          `lane ${Int.toString(lane)} is out of range for ${vectorText}, whose lanes are 0 to ${Int.toString(count - 1)}`,
+        )
+      }
+    } else {
+      reportError(
+        mutable checker,
+        elementPos,
+        "E1260",
+        `a lane of ${name} must be a constant, as in \`Simd.shuffle(v, [3, 2, 1, 0])\``,
+      )
+    }
+  }
+}
+
+function checkSimdSum<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  // The sum has the lane type.
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (checkVectorArgument(mutable checker, walker, arguments[0], name) is Some(vector)) {
+    // Integer lanes are added on the unsigned twin, which wraps.
+    internComposite(mutable checker, findUnsignedTwin(vector))
+    if (vector is Type.TVector(lane, _)) {
+      return copy(lane)
+    }
+  }
+  return Type.TVoid
+}
+
+function checkSimdAbs<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 1)) {
+    return Type.TVoid
+  }
+  if (checkVectorArgument(mutable checker, walker, arguments[0], name) is Some(vector)) {
+    if (isUnsignedVector(vector)) {
+      reportVectorRejected(mutable checker, getExpressionPos(arguments[0].value), name, vector)
+    }
+    // A float abs clears the sign bit through the mask type's unsigned twin.
+    internComposite(mutable checker, findMaskType(vector))
+    return vector
+  }
+  return Type.TVoid
+}
+
+function checkSimdShift<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = checkVectorArgument(mutable checker, walker, arguments[0], name)
+  const count = arguments[1].value
+  const countType = checkExpression(mutable checker, walker, count, Some(Type.TInt))
+  expectType(mutable checker, getExpressionPos(count), Some(Type.TInt), countType)
+  if (found is Some(vector)) {
+    if (isFloatVector(vector)) {
+      reportVectorRejected(mutable checker, getExpressionPos(arguments[0].value), name, vector)
+    } else if (countType == Type.TInt) {
+      checkLaneShiftCount(mutable checker, count, vector)
+    }
+    // A left shift runs on the unsigned twin, as signed C shifts can overflow.
+    internComposite(mutable checker, findUnsignedTwin(vector))
+    return vector
+  }
+  return Type.TVoid
+}
+
+function checkLaneShiftCount(mutable checker: Checker, count: Expr, vector: Type) uses alloc {
+  // The count is an int, so a constant is read as one, not wrapped to the lane
+  // type. A name goes through the scalar proof with the signed lane, since an
+  // int count can be negative even when the lanes are unsigned.
+  if (findMaskType(vector) is Type.TVector(signedLane, _)) {
+    if (findTypedConstant(checker, count, Type.TInt) is Some(value)) {
+      const width = findLaneSize(signedLane) * 8
+      if (value < 0 || value >= width) {
+        reportError(
+          mutable checker,
+          getExpressionPos(count),
+          "E0980",
+          `the shift count must be a constant from 0 to ${Int.toString(width - 1)} or a name checked against both ends first; this constant is out of range`,
+        )
+      }
+      return
+    }
+    checkShiftCount(mutable checker, count, signedLane)
+  }
+}
+
 export function checkSimdCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -196,6 +640,36 @@ export function checkSimdCall<W: Walker>(
   }
   if (kind == "checkSimdWithLane") {
     return copy(checkSimdWithLane(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdCompare") {
+    return copy(checkSimdCompare(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdMinMax") {
+    return copy(checkSimdMinMax(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdSelect") {
+    return copy(checkSimdSelect(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdTest") {
+    return copy(checkSimdTest(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdLoad") {
+    return copy(checkSimdLoad(mutable checker, walker, pos, arguments, name, want))
+  }
+  if (kind == "checkSimdStore") {
+    return copy(checkSimdStore(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdShuffle") {
+    return copy(checkSimdShuffle(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdSum") {
+    return copy(checkSimdSum(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdAbs") {
+    return copy(checkSimdAbs(mutable checker, walker, pos, arguments, name))
+  }
+  if (kind == "checkSimdShift") {
+    return copy(checkSimdShift(mutable checker, walker, pos, arguments, name))
   }
   panic(`checkStdCall: no port of the check ${kind} (${name})`)
   return Type.TVoid

@@ -10,7 +10,7 @@ bench/run.sh compiler   # the compiler emitting its own C
 
 `run.sh` builds each program in release mode into `bench/build/` (ignored by git), runs it, and prints the median wall-clock seconds per language. It also checks that every language prints the same answer. If `go`, `rustc` or a C compiler is missing, that language is skipped and shown as `-`.
 
-Programs live in `bench/<name>/<name>.nra`, `.go` and `.rs`: `fib` (recursion), `sieve` and `matmul` (arrays), `strings` (string building), `interp` (enum and match), `particles` (structs in an array).
+Programs live in `bench/<name>/<name>.nra`, `.go` and `.rs`: `fib` (recursion), `sieve` and `matmul` (arrays), `strings` (string building), `interp` (enum and match), `particles` (structs in an array), `dot` (the dot product of two `Array<f32>` of 1,048,576 elements, 200 times; Narra uses an `F32x8` accumulator fed by `Simd.load` and `Simd.sum`, Go and Rust eight scalar accumulators added in the same order).
 
 The `compiler` row is not a program in three languages. It is the median wall-clock time of the release-built Narra compiler running `narrac emit selfhost` (it emits its own C; the output goes to `/dev/null`), plus the peak memory of one more run, read from `/usr/bin/time -l` (macOS) or `-v` (Linux) and shown as `n/a` when neither works. The Go and Rust columns are `-`. Run only this row with `bench/run.sh compiler`.
 

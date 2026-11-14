@@ -462,8 +462,6 @@ function last(values: FixedArray<f64, 4>): Option<f64> {
 
 ### Vector types
 
-The types, literals, operators, lane reads, `Simd.splat`, `Simd.fromFixed`, `Simd.toFixed` and `Simd.withLane` are built (D112). The comparison functions, `Simd.select`, `Simd.any`, `Simd.all`, `Simd.load`, `Simd.store` and the functions under "Other functions" are not built yet (node simd-library).
-
 - **Twenty types.** `std/simd` has ten lane types at two widths. 128 bits: `I8x16`, `U8x16`, `I16x8`, `U16x8`, `I32x4`, `U32x4`, `I64x2`, `U64x2`, `F32x4`, `F64x2`. 256 bits: `I8x32`, `U8x32`, `I16x16`, `U16x16`, `I32x8`, `U32x8`, `I64x4`, `U64x4`, `F32x8`, `F64x4`. The lanes of `I64x2` are `int`. The names are visible in a module that imports `std/simd` (`import * as Simd from "std/simd"`), whatever the alias.
 - **Every type exists on every target** and gives the same results there. A 256-bit type on a machine with 128-bit registers runs as two 128-bit operations.
 - **A vector is a plain value,** like a number: assignment copies it, and it needs no heap. It is not a contents type, so it cannot be a `mutable` parameter or the argument of `copy` (section 6). It can be an element of `Array` and `FixedArray`, a struct field, a type argument and the target of a `Ptr`. `==` and `!=` compare whole vectors and give a `bool`. Integer vectors can be map keys; float vectors cannot, like floats. `Show.show(v)` prints the lanes as it prints a `FixedArray`; a template does not take a vector, as it does not take a `FixedArray`. Vectors have no order: `<`, `<=`, `>` and `>=` are compile errors (E1250).

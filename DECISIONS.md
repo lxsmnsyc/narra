@@ -1539,7 +1539,7 @@ Status: Approved by the maintainer, 2026-11-13, with every recommendation of the
 - **Cost.** About 3000 lines over five nodes (estimate): the count macros and share walkers in `emitdecls.nra` and the runtime, about 500 lines of C for the heap, threads, locks and channels, four std source modules, and the trait and escape checks. Thread programs run about 5% slower in count-heavy code than the same code without threads, and pay one walk per value that crosses. Deadlocks from nested `Shared` calls are not reported.
 ## D112. SIMD vector types: twenty fixed types, operators lane by lane, functions in `std/simd`
 
-Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Spike simd-design, 2026-11-13. It settles the `std/simd` types that D47 and SPEC section 4 name, and how they compile (section 11). Codes E1250-E1269.
+Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Built by nodes simd and simd-library, 2026-11-14. Spike simd-design, 2026-11-13. It settles the `std/simd` types that D47 and SPEC section 4 name, and how they compile (section 11). Codes E1250-E1269.
 
 1. **Types.** Ten lane types at two widths, twenty types in all:
 
@@ -1604,7 +1604,7 @@ Status: Approved by the maintainer, 2026-11-13, with every recommendation of the
 - **Reason.** No new syntax: the types are names, the operations are existing operators and std calls, and lane indexes reuse the `FixedArray` proof. The parser, `fmt`, `astdump` and the language service need nothing beyond type names.
 - **Cost.** One `Type` variant (`TVector(lane, count)`) in `types.nra` with its cases in the type switches (about 35 sites, as `TPtr` has), C typedefs, and about 25 std functions with their own checks. About 1600 lines over two nodes (estimate). A program that wants instructions wider than SSE2 waits for build targets.
 
-**Built** (node simd, 2026-11-14): the types, literals, operators, lane reads, `==`, hashing, `Show`, `Simd.splat`, `Simd.fromFixed`, `Simd.toFixed` and `Simd.withLane`, as decided. A vector does not derive `Shape`, as a `FixedArray` does not (D84): `derives Shape` on a struct with a vector field reports that the vector has no Value form (orchestrator, 2026-11-14). A template does not take a vector; `Show.show` prints the lanes. `!` on a vector is the "expected bool" error it is on a number. A non-vector argument of a `std/simd` function is E1256.
+**Built** (node simd, 2026-11-14): the types, literals, operators, lane reads, `==`, hashing, `Show`, `Simd.splat`, `Simd.fromFixed`, `Simd.toFixed` and `Simd.withLane`, as decided. A vector does not derive `Shape`, as a `FixedArray` does not (D84): `derives Shape` on a struct with a vector field reports that the vector has no Value form (orchestrator, 2026-11-14). A template does not take a vector; `Show.show` prints the lanes. `!` on a vector is the "expected bool" error it is on a number. A non-vector argument of a `std/simd` function is E1256. Node simd-library built the comparisons, `select`, `any`, `all`, `load`, `store`, `shuffle`, `sum`, `min`, `max`, `abs` and the shifts, and `bench/dot`. `Simd.abs` on a float vector clears the sign bit, so `-0.0` gives `0.0` and a NaN stays a NaN.
 ## D114. Tagged templates call a named function with the parts and an array of the values
 
 Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Spike tagged-templates-design, 2026-11-13. Evidence at commit b23bbd4f: `roadmaps/selfhost/nodes/tagged-templates-design/log.md`.

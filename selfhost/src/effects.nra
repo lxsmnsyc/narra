@@ -1799,28 +1799,38 @@ function bindResultEffects(
   callee: Callee,
   arguments: Array<Arg>,
 ) uses alloc {
-  if (copy(findNodeType(checker, state.body, nodeId)) is Some(resultType)) {
-    let slots: Array<int> = []
-    collectBoundSlots(checker, nodeId, resultType, mutable slots)
-    const declaration = callee.declaration
-    const nowhere = Pos { line: 0, column: 0 }
-    for (const slot of Arrays.values(slots)) {
-      // A name that is not a variable of the callee stands for itself.
-      let set: Array<Effect> = []
-      for (const name of Arrays.values(copy(checker.boundNames[slot]))) {
-        if (!containsName(declaration.effectParameters, name)) {
-          addEffect(mutable set, name, nowhere, "")
-          continue
-        }
-        for (const passed of Arrays.values(
-          findBoundEffects(checker, state, declaration, arguments, name),
-        )) {
-          addEffect(mutable set, passed, nowhere, "")
-        }
-      }
-      checker.boundGenerators[slot] = sortEffectNames(set)
-    }
+  // Most programs bind no slot, so most calls skip the type walk.
+  if (Arrays.length(checker.boundCallIds) == 0) {
+    return
   }
+  const slots = findBoundSlots(checker, state.body, nodeId)
+  const declaration = callee.declaration
+  const nowhere = Pos { line: 0, column: 0 }
+  for (const slot of Arrays.values(slots)) {
+    // A name that is not a variable of the callee stands for itself.
+    let set: Array<Effect> = []
+    for (const name of Arrays.values(copy(checker.boundNames[slot]))) {
+      if (!containsName(declaration.effectParameters, name)) {
+        addEffect(mutable set, name, nowhere, "")
+        continue
+      }
+      for (const passed of Arrays.values(
+        findBoundEffects(checker, state, declaration, arguments, name),
+      )) {
+        addEffect(mutable set, passed, nowhere, "")
+      }
+    }
+    checker.boundGenerators[slot] = sortEffectNames(set)
+  }
+}
+
+function findBoundSlots(checker: Checker, body: int, nodeId: int): Array<int> uses alloc {
+  // The slots that this call made, read from its result type.
+  let slots: Array<int> = []
+  if (findNodeType(checker, body, nodeId) is Some(resultType)) {
+    collectBoundSlots(checker, nodeId, resultType, mutable slots)
+  }
+  return copy(slots)
 }
 
 function collectBoundSlots(

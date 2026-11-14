@@ -1,7 +1,7 @@
 ---
 id: threads-shared
 title: "std/shared and std/atomic: Shared<T> and Atomic<T>"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

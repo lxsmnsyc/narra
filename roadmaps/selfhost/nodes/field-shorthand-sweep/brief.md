@@ -60,6 +60,9 @@ depends_on:
   - on: batch-15-nits
     kind: hard
     why: runs after the other compiler children
+  - on: remove-inline
+    kind: hard
+    why: runs after the other compiler children
   - on: const-functions-std
     kind: hard
     why: runs after the other compiler children

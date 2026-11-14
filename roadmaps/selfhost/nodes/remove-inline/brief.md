@@ -1,12 +1,12 @@
 ---
 id: remove-inline
-title: Remove @inline
+title: "Remove @inline"
 status: todo
 priority: should
 type: feature
-story:
+story: batch-15
 early: false
-outline: true
+outline: false
 milestone: p3-review
 target:
 ship: auto
@@ -18,17 +18,31 @@ hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
-gate: true
+gate: false
 added: 2026-11-14
 spent:
-owns: []
-shared: []
-reserves: []
+owns:
+  - roadmaps/selfhost/nodes/remove-inline/**
+  - selfhost/src/inlining.nra
+  - selfhost/src/emitinline.nra
+  - testdata/inline*
+  - testdata/errors/inline_*
+  - testdata/panics/inline_bounds*
+  - testdata/packages/inline/**
+shared:
+  - selfhost/src/*.nra
+  - std/src/option.nra
+  - testdata/**
+  - SPEC.md
+  - DECISIONS.md
+  - docs/guide/*.md
+  - compiler/README.md
+reserves: [decision D120]
 provides: []
 depends_on:
   - on: inline-benchmark
     kind: hard
-    why: the benchmark found no gain from @inline (outcome.md), and the maintainer must accept that before code is removed
+    why: the benchmark found no gain from @inline (outcome.md); the maintainer approved removal on 2026-11-14
 ---
 
 # Remove @inline
@@ -39,7 +53,7 @@ The `@inline` attribute no longer exists. `std/option` has no attribute, `Option
 
 ## Notes
 
-Outline. Break into full briefs when `plan.py refine` lists it. Gate: the maintainer reads `nodes/inline-benchmark/outcome.md` first.
+The maintainer approved the removal on 2026-11-14 after reading `nodes/inline-benchmark/outcome.md`. Write the decision as D120 (superseding the `@inline` parts of D119 and of the record that introduced it). Proof first: `bench/inline` and `testdata/std_option.nra` outputs and instruction counts before the change, recorded in `log.md`. `selfhost/src` and seed-compiled std may use only features the committed seed compiles. Scratch folder: /private/tmp/claude-501/remove-inline/. Follow `roadmaps/selfhost/CLAUDE.md`.
 
 What removal touches:
 

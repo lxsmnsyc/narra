@@ -1,7 +1,7 @@
 ---
 id: inline-benchmark
 title: "Spike: is @inline worth keeping"
-status: todo
+status: done
 priority: must
 type: spike
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: [bench]
 fulfilled_by:
 gate: true
 added: 2026-11-14
-spent:
+spent: 85153
 owns:
   - roadmaps/selfhost/nodes/inline-benchmark/**
   - bench/inline/**

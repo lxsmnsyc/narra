@@ -388,6 +388,33 @@ export function run(args: Array<string>): int {
 
 `Arrays.filled(0, 4)` makes an array of four zeros, as `Some(zeros)`; a negative count gives `None`. The `#[position, square]` in the loop takes apart a pair of values. Pairs come at the end of this chapter.
 
+To count down or in strides, give the range a step. `Ranges.stepped(start, end, step)` stops before `end`, as the plain range does. A negative step counts down while the value is above `end`:
+
+```narra
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+
+export function run(args: Array<string>): int {
+  for (const i of Ranges.stepped(10, 0, -4)) {
+    print(Int.toString(i))
+  }
+  for (const i of Ranges.stepped(0, 10, 5)) {
+    print(Int.toString(i))
+  }
+  return 0
+}
+```
+
+```text
+10
+6
+2
+0
+5
+```
+
+A step of 0 written in the code is a compile error. A step of 0 that is only known when the program runs gives an empty range. The range stops before the value would pass the largest or smallest `int`, so a range near the end of `int` does not wrap around.
+
 ### Stop early or skip an element
 
 You want the first price above 300, and you want to skip prices of 0, which are free samples. `break` leaves a loop at once, and `continue` skips to the next pass:

@@ -181,7 +181,7 @@ for (mutable player of players) {
 
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
 - **`for await (const chunk of stream) { ... }`** reads an `AsyncGenerator<T>` in an async body, waiting for each value (section 8, Async generators).
-- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and `Ranges.stepped` returns `None` for a step of 0. The loop stops before the value would pass the largest or smallest `int`.
+- **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 gives an empty range. A step that is 0 at compile time (a literal, or a constant that folds to 0) is error E1270, since the range could never have a value. `Ranges.stepped` returns a `Range`, so it never panics. The loop stops before the value would pass the largest or smallest `int`.
 
 <!-- context
 import * as Arrays from "std/array"
@@ -1051,7 +1051,6 @@ export function parsePair(line: string): Option<Pair> uses alloc {
 | `Bytes.slice(data, start, end)` | `Option<bytes>` | the range is out of bounds |
 | `Float.truncate(value)`, `F32.truncate(value)` | `Option<int>` | `value` is NaN or outside `int` |
 | `Arrays.filled(value, count)` | `Option<Array<T>>` | `count` is negative |
-| `Ranges.stepped(start, end, step)` | `Option<Range>` | `step` is 0 |
 | `Math.clamp(value, low, high)` | `Option<T>` | `low` is greater than `high` |
 | `Math.powInt(base, exponent)` | `Option<int>` | `exponent` is negative |
 | `Random.nextInt(mutable random, low, high)` | `Option<int>` | `low` is not below `high` |

@@ -1174,10 +1174,10 @@ NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
 
-static bool narra_range_stepped(int64_t low, int64_t high, int64_t step, narra_range* out) {
-  if (step == 0) return false;
-  *out = (narra_range){low, high, step};
-  return true;
+// A step of 0 gives the empty range, so a loop over it never starts.
+static narra_range narra_range_stepped(int64_t low, int64_t high, int64_t step) {
+  if (step == 0) return (narra_range){low, low, 1};
+  return (narra_range){low, high, step};
 }
 
 // Moves a loop variable by the step; a sum past the int range ends the loop.

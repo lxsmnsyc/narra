@@ -642,6 +642,9 @@ export function resolveType(
   if (typeExpr.typeofName != "") {
     return resolveTypeof(mutable checker, typeExpr)
   }
+  if (reportEffectArgument(mutable checker, typeExpr.arguments)) {
+    return Type.TVoid
+  }
   if (typeExpr.isFunc) {
     // A parameter whose type is void (T bound by an Async<void>) takes no argument.
     let parameters: Array<Type> = []
@@ -852,8 +855,78 @@ export function resolveType(
   if (named is Some(namedType)) {
     return namedType
   }
-  reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
+  reportUnknownType(mutable checker, typeExpr)
   return Type.TVoid
+}
+
+export function reportUnknownType(mutable checker: Checker, typeExpr: TypeExpr) uses alloc {
+  if (isEffectName(checker, typeExpr)) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1241",
+      `\`${typeExpr.name}\` is an effect, not a type`,
+    )
+    return
+  }
+  reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
+}
+
+function reportEffectArgument(
+  mutable checker: Checker,
+  arguments: Array<TypeExpr>,
+): bool uses alloc {
+  // `Map<Generator<int> uses io, alloc>`: the `,` ended the generator's list, so the
+  // effect after it stands where a type belongs.
+  for (const index of Ranges.between(1, Arrays.length(arguments))) {
+    const argument = arguments[index]
+    if (isEffectName(checker, argument)) {
+      const before = findTrailingEffects(arguments[index - 1])
+      if (Arrays.length(before) > 0) {
+        let effects = copy(before)
+        Arrays.push(mutable effects, argument.name)
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E1241",
+          `\`${argument.name}\` is an effect, not a type; a type takes several effects in parentheses: write \`uses (${Str.join(effects, ", ")})\``,
+        )
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function findTrailingEffects(typeExpr: TypeExpr): Array<string> from typeExpr {
+  // The `uses` list a type ends with: its own, or that of a function type's result.
+  if (Arrays.length(typeExpr.effects) > 0) {
+    return typeExpr.effects
+  }
+  if (typeExpr.isFunc) {
+    if (typeExpr.result is Some(resultType)) {
+      return findTrailingEffects(resultType.value)
+    }
+  }
+  return []
+}
+
+function isEffectName(checker: Checker, typeExpr: TypeExpr): bool {
+  // `io`, `alloc`, `unsafe` or an effect variable of the function being checked, written alone.
+  if (
+    typeExpr.isFunc ||
+      typeExpr.isTuple ||
+      typeExpr.typeofName != "" ||
+      Arrays.length(typeExpr.arguments) > 0 ||
+      lookupType(checker, typeExpr.name) is Some(_)
+  ) {
+    return false
+  }
+  const name = typeExpr.name
+  if (name == "io" || name == "alloc" || name == "unsafe") {
+    return true
+  }
+  return findEffectBinder(checker, [name]) >= 0
 }
 
 export function resolveTypeArguments(

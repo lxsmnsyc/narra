@@ -20,6 +20,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Doc as Document } from "narrac/fmtdoc"
+import { writeTypeUses } from "narrac/typeuses"
 import { Token, TokenKind, lex } from "narrac/lexer"
 import {
   Pos,
@@ -213,20 +214,6 @@ function printElement(printer: Printer, expression: Expr): Document from printer
     }
   }
   return printExpression(printer, expression)
-}
-
-export function endsWithUses(type: TypeExpr): bool {
-  // A function type or a `Generator<T> uses E` carries the list.
-  if (Arrays.length(type.effects) > 0) {
-    return true
-  }
-  if (!type.isFunc) {
-    return false
-  }
-  if (type.result is Some(resultType)) {
-    return endsWithUses(resultType.value)
-  }
-  return false
 }
 
 function printList(
@@ -1177,13 +1164,7 @@ function printArrow(
     }
     Arrays.push(mutable items, withComments(printer, getIdKey(parameter.id), createConcat(parts)))
   }
-  let hasComma = true
-  if (Arrays.length(parameters) > 0) {
-    if (parameters[Arrays.length(parameters) - 1].type is Some(lastType)) {
-      hasComma = !endsWithUses(lastType)
-    }
-  }
-  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, hasComma)]
+  let parts: Array<Document> = [printList(printer, "(", ")", items, [], false, true)]
   if (Arrays.length(parameters) == 0 && hasAttached(printer, getIdKey(id))) {
     // A comment in an empty parameter list is dangling on the arrow.
     parts = [
@@ -1348,11 +1329,7 @@ function printTypeBody(printer: Printer, type: TypeExpr): Document uses alloc {
     for (const element of Arrays.values(type.arguments)) {
       Arrays.push(mutable items, printType(printer, element))
     }
-    let hasComma = true
-    if (Arrays.length(type.arguments) > 0) {
-      hasComma = !endsWithUses(type.arguments[Arrays.length(type.arguments) - 1])
-    }
-    return printList(printer, "#[", "]", items, [], false, hasComma)
+    return printList(printer, "#[", "]", items, [], false, true)
   }
   if (type.isFunc) {
     return printFunctionType(printer, type)
@@ -1362,8 +1339,8 @@ function printTypeBody(printer: Printer, type: TypeExpr): Document uses alloc {
   }
   let parts: Array<Document> = [createText(type.name), printTypeArguments(printer, type.arguments)]
   if (Arrays.length(type.effects) > 0) {
-    // `Generator<T> uses E`.
-    Arrays.push(mutable parts, createText(` uses ${Str.join(type.effects, ", ")}`))
+    // `Generator<T> uses E`, `Generator<T> uses (E, alloc)`.
+    Arrays.push(mutable parts, createText(writeTypeUses(type.effects)))
   }
   return createConcat(parts)
 }
@@ -1379,19 +1356,15 @@ function printFunctionType(printer: Printer, type: TypeExpr): Document uses allo
       Arrays.push(mutable items, argument)
     }
   }
-  let hasComma = true
-  if (Arrays.length(type.arguments) > 0) {
-    hasComma = !endsWithUses(type.arguments[Arrays.length(type.arguments) - 1])
-  }
   let parts: Array<Document> = [
-    printList(printer, "(", ")", items, [], false, hasComma),
+    printList(printer, "(", ")", items, [], false, true),
     createText(" => "),
   ]
   if (type.result is Some(resultType)) {
     Arrays.push(mutable parts, printType(printer, resultType.value))
   }
   if (Arrays.length(type.effects) > 0) {
-    Arrays.push(mutable parts, createText(` uses ${Str.join(type.effects, ", ")}`))
+    Arrays.push(mutable parts, createText(writeTypeUses(type.effects)))
   }
   return createConcat(parts)
 }

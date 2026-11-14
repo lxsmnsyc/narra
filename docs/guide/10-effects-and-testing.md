@@ -143,6 +143,32 @@ At each call, `E` becomes the effects of the function passed in. Here that funct
 
 A private function does not need this. A function-type parameter of a private function takes on the effects of whatever is passed in, without an effect variable.
 
+A function type with more than one effect puts them in parentheses: `(reading: int) => void uses (io, alloc)`. A function's own list, after its result type, has none. The parentheses keep the list apart from what follows it, because a function type often sits in a list of its own, such as the parameters of another function:
+
+```narra
+import * as Int from "std/int"
+
+export function eachLabel(readings: Array<int>, show: (label: string) => void uses (io, alloc), unit: string) uses io, alloc {
+  for (const reading of readings) {
+    show(`${Int.toString(reading)} ${unit}`)
+  }
+}
+
+export function run(args: Array<string>): int {
+  eachLabel([21, 23], (label) => {
+    print(label)
+  }, "C")
+  return 0
+}
+```
+
+```text
+21 C
+23 C
+```
+
+Without the parentheses, the `,` after `io` would end the type, and the compiler would report the `alloc` that follows. With one effect, `uses io`, the parentheses can be left out.
+
 ## Writing tests
 
 Tests go in the same file as the code, in `test` blocks. Here is the temperature module with a parser, an average, and five tests. Save it as `temperature.nra`:

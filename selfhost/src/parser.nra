@@ -1736,7 +1736,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   if (name == "Generator" || name == "Coroutine" || name == "AsyncGenerator") {
     // A generator type carries the effects its body has when it runs:
     // `Generator<string> uses io`.
-    const effects = parseUsesList(mutable parser)
+    const effects = parseTypeUses(mutable parser)
     if (Arrays.length(effects) > 0) {
       return TypeExpr { ...named, arguments: arguments, effects: effects }
     }
@@ -2039,6 +2039,10 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
       reportOptionalParameter(mutable parser, paramName, false)
       break
     }
+    // `f: () => int uses io, alloc,`: the type's list ended at its one effect.
+    if (!isAt(parser, SYMBOL_COLON) && paramStart > 0) {
+      reportTypeUsesComma(mutable parser, paramStart - 1)
+    }
     expect(mutable parser, SYMBOL_COLON)
     const paramType = parseType(mutable parser)
     // `depth: int = 0`: the checker holds the value to the constant rule (D115).
@@ -2068,6 +2072,11 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   let result: Option<TypeExpr> = None
   if (accept(mutable parser, SYMBOL_COLON)) {
     result = Some(parseResultType(mutable parser))
+    // `Generator<string> uses io, alloc {`: the type's list ended at its one effect.
+    if (isAt(parser, SYMBOL_COMMA)) {
+      const commaIndex = parser.index
+      reportTypeUsesComma(mutable parser, commaIndex)
+    }
   }
   const effects = parseUsesList(mutable parser)
   return FuncDecl {
@@ -2426,7 +2435,7 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   expect(mutable parser, SYMBOL_ARROW)
   const result = parseResultType(mutable parser)
-  const effects = parseUsesList(mutable parser)
+  const effects = parseTypeUses(mutable parser)
   return TypeExpr {
     pos: pos,
     name: "",
@@ -2456,19 +2465,80 @@ function parseResultType(mutable parser: Parser): TypeExpr {
 }
 
 function parseUsesList(mutable parser: Parser): Array<string> {
+  // A declaration's own list is a bare comma list: `uses io, alloc`.
   let names: Array<string> = []
   if (accept(mutable parser, SYMBOL_KEYWORD_USES)) {
     while (isOk(parser)) {
-      Arrays.push(mutable names, expectIdent(mutable parser).text)
-      if (isAt(parser, SYMBOL_COMMA) && isParamAfterComma(parser)) {
-        break
-      }
+      const effect = expectIdent(mutable parser)
+      reportRepeatedEffect(mutable parser, names, effect)
+      Arrays.push(mutable names, effect.text)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
     }
   }
   return names
+}
+
+function parseTypeUses(mutable parser: Parser): Array<string> {
+  // A type's list is one effect or a list in parentheses, so a `,` after it ends the type.
+  let names: Array<string> = []
+  if (!accept(mutable parser, SYMBOL_KEYWORD_USES)) {
+    return names
+  }
+  if (!accept(mutable parser, SYMBOL_LEFT_PAREN)) {
+    Arrays.push(mutable names, expectIdent(mutable parser).text)
+    return names
+  }
+  while (isOk(parser)) {
+    const effect = expectIdent(mutable parser)
+    reportRepeatedEffect(mutable parser, names, effect)
+    Arrays.push(mutable names, effect.text)
+    // A trailing comma may come before the `)`.
+    if (!accept(mutable parser, SYMBOL_COMMA) || isAt(parser, SYMBOL_RIGHT_PAREN)) {
+      break
+    }
+  }
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
+  return names
+}
+
+function reportRepeatedEffect(mutable parser: Parser, names: Array<string>, effect: Token) {
+  // Each effect is named once in a list, so a repeated one is a typo.
+  for (const name of Arrays.values(names)) {
+    if (name == effect.text) {
+      failAt(
+        mutable parser,
+        getPos(effect),
+        "E1242",
+        `\`${effect.text}\` is listed twice in this \`uses\` list`,
+      )
+    }
+  }
+}
+
+function reportTypeUsesComma(mutable parser: Parser, commaIndex: int) {
+  // Only a `,` right after `uses name` reads as a list the type cannot hold.
+  if (commaIndex < 2 || commaIndex + 1 >= Arrays.length(parser.tokens)) {
+    return
+  }
+  const comma = parser.tokens[commaIndex]
+  const effect = parser.tokens[commaIndex - 1]
+  const next = parser.tokens[commaIndex + 1]
+  if (
+    comma.symbol != SYMBOL_COMMA ||
+      effect.kind != TokenKind.TokIdent ||
+      parser.tokens[commaIndex - 2].symbol != SYMBOL_KEYWORD_USES ||
+      next.kind != TokenKind.TokIdent
+  ) {
+    return
+  }
+  failAt(
+    mutable parser,
+    getPos(comma),
+    "E1240",
+    `a type's \`uses\` list takes one effect, or several in parentheses: \`uses (${effect.text}, ${next.text})\``,
+  )
 }
 
 function acceptEscaping(mutable parser: Parser): bool {
@@ -2483,23 +2553,6 @@ function acceptEscaping(mutable parser: Parser): bool {
     return true
   }
   return false
-}
-
-function isParamAfterComma(parser: Parser): bool {
-  // A `,` followed by `name:`, `mutable name` or `escaping name` ends a `uses` list written inside a parameter list.
-  if (parser.index + 2 >= Arrays.length(parser.tokens)) {
-    return false
-  }
-  const nextToken = parser.tokens[parser.index + 1]
-  if (
-    nextToken.kind != TokenKind.TokIdent &&
-      !(nextToken.kind == TokenKind.TokKeyword && nextToken.text == "mutable")
-  ) {
-    return false
-  }
-  const afterNext = parser.tokens[parser.index + 2]
-  return afterNext.kind == TokenKind.TokIdent ||
-    (afterNext.kind == TokenKind.TokPunct && afterNext.text == ":")
 }
 
 // ---- Statements

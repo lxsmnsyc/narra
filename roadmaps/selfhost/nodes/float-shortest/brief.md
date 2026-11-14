@@ -1,7 +1,7 @@
 ---
 id: float-shortest
 title: "Float.toString prints 2e+01"
-status: todo
+status: done
 priority: must
 type: fix
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 120093
 owns:
   - roadmaps/selfhost/nodes/float-shortest/**
   - testdata/float_shortest*

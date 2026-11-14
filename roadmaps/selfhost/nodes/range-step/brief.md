@@ -1,7 +1,7 @@
 ---
 id: range-step
 title: "Ranges.stepped(start, end, step)"
-status: todo
+status: done
 priority: must
 type: feature
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 130760
 owns:
   - roadmaps/selfhost/nodes/range-step/**
   - testdata/range_step*

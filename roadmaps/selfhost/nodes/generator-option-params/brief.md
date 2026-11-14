@@ -1,7 +1,7 @@
 ---
 id: generator-option-params
 title: "Generator types with effects nested in Option and results"
-status: todo
+status: done
 priority: must
 type: fix
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 205000
 owns:
   - roadmaps/selfhost/nodes/generator-option-params/**
   - testdata/generator_effect_types*

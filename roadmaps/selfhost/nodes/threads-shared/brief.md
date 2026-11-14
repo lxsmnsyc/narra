@@ -74,6 +74,11 @@ Build `Shared<T>` and `Atomic<T>` of D111 item 4: `Shared.create`, `get`, `set`,
 - E1411 an `Atomic<T>` whose `T` is not `bool` or an integer type (in a type or at `Atomic.create`).
 - E1412-E1419 free.
 
+## From threads-channels (orchestrator, 2026-11-14)
+
+- threads-channels built a non-generic builtin `Sync` (mutex, two condition variables, end counts) instead of `SyncSlot<T>`; a guarded value lives in a `Box<T>` beside it. Read its outcome for the API. `Shared.update` needs a primitive that takes the value out of the box when its count is 1 (for example `Threads.take`) so it changes the value in place.
+- Make `Thread.start` accept a thread function that returns nothing, as `Async<void>` does: `T` binds to `void` inside `Thread<T>`, and `Thread.join` on it returns nothing. Restore the original SPEC sample.
+
 ## Acceptance
 
 - [ ] Proof first: `testdata/shared_counter.nra` fails to compile on this node's base.

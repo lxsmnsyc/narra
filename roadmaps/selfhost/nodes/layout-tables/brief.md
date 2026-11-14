@@ -1,7 +1,7 @@
 ---
 id: layout-tables
 title: Layout tables for debug builds
-status: todo
+status: dropped
 priority: could
 type: feature
 outline: true
@@ -34,3 +34,5 @@ Compile generic code once with layout tables in debug builds, as `SPEC.md` secti
 ## Notes
 
 Outline. Break into full briefs when `plan.py refine` lists it.
+
+- 2026-11-14: dropped by D119 (every build monomorphizes).

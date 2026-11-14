@@ -79,3 +79,99 @@ static int64_t narra_thread_cores(void) {
   return 1;
 #endif
 }
+
+// Sync (D111 item 4): a lock with two condition variables, for std/channel
+// and std/shared. Its count starts shared (-1), so copies on any thread retain
+// and release it atomically and the share walk stops at it. A Sync is a core
+// (narra_sync_new: the lock, the conditions and two end counts) or an end
+// (narra_sync_end: only the header, pointing at a core). An end adds one to
+// the core's end count of its kind, and when its last copy is dropped it takes
+// that one away again and wakes every waiter of the core, so a channel sees
+// its last sender or its last receiver go. The lock functions take a core.
+typedef struct narra_sync {
+  int64_t rc;
+  struct narra_sync_core* core;
+  int64_t kind;
+} narra_sync;
+
+typedef struct narra_sync_core {
+  narra_sync h;
+  int64_t ends[2];
+  pthread_mutex_t lock;
+  pthread_cond_t ready[2];
+} narra_sync_core;
+
+static narra_sync* narra_sync_new(void) {
+  narra_sync_core* core = narra_alloc(sizeof(narra_sync_core));
+  core->h.rc = -1;
+  core->h.core = NULL;
+  core->h.kind = 0;
+  core->ends[0] = 0;
+  core->ends[1] = 0;
+  pthread_mutex_init(&core->lock, NULL);
+  pthread_cond_init(&core->ready[0], NULL);
+  pthread_cond_init(&core->ready[1], NULL);
+  return &core->h;
+}
+
+static void narra_sync_retain(narra_sync* sync) { NARRA_RC_RETAIN(sync->rc); }
+
+static void narra_sync_share(narra_sync* sync) { (void)sync; }
+
+static void narra_sync_lock(narra_sync* sync) {
+  pthread_mutex_lock(&((narra_sync_core*)sync)->lock);
+}
+
+static void narra_sync_unlock(narra_sync* sync) {
+  pthread_mutex_unlock(&((narra_sync_core*)sync)->lock);
+}
+
+static void narra_sync_wait(narra_sync* sync, int64_t condition) {
+  narra_sync_core* core = (narra_sync_core*)sync;
+  pthread_cond_wait(&core->ready[condition & 1], &core->lock);
+}
+
+static void narra_sync_wake_one(narra_sync* sync, int64_t condition) {
+  pthread_cond_signal(&((narra_sync_core*)sync)->ready[condition & 1]);
+}
+
+static void narra_sync_wake_all(narra_sync* sync, int64_t condition) {
+  pthread_cond_broadcast(&((narra_sync_core*)sync)->ready[condition & 1]);
+}
+
+static int64_t narra_sync_ends(narra_sync* sync, int64_t kind) {
+  return ((narra_sync_core*)sync)->ends[kind & 1];
+}
+
+static narra_sync* narra_sync_end(narra_sync* sync, int64_t kind) {
+  narra_sync_core* core = (narra_sync_core*)sync;
+  narra_sync* end = narra_alloc(sizeof(narra_sync));
+  end->rc = -1;
+  narra_sync_retain(sync);
+  end->core = core;
+  end->kind = kind & 1;
+  pthread_mutex_lock(&core->lock);
+  core->ends[end->kind]++;
+  pthread_mutex_unlock(&core->lock);
+  return end;
+}
+
+static void narra_sync_release(narra_sync* sync) {
+  if (!NARRA_RC_RELEASE(sync->rc)) return;
+  narra_sync_core* core = sync->core;
+  if (!core) {
+    core = (narra_sync_core*)sync;
+    pthread_cond_destroy(&core->ready[0]);
+    pthread_cond_destroy(&core->ready[1]);
+    pthread_mutex_destroy(&core->lock);
+    narra_free(core);
+    return;
+  }
+  pthread_mutex_lock(&core->lock);
+  core->ends[sync->kind]--;
+  pthread_cond_broadcast(&core->ready[0]);
+  pthread_cond_broadcast(&core->ready[1]);
+  pthread_mutex_unlock(&core->lock);
+  narra_free(sync);
+  narra_sync_release(&core->h);
+}

@@ -191,18 +191,30 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
 function buildVariantMembers(emitter: Emitter, enumIndex: int): string uses alloc {
   let builder = Str.builder()
   for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
-    if (Arrays.length(variant.fields) > 0) {
+    // A field of type void (Option<void> in a Thread<void>) has no member.
+    if (hasValueFields(variant)) {
       Str.append(mutable builder, " struct {")
       for (const field of Arrays.values(variant.fields)) {
-        Str.append(
-          mutable builder,
-          ` ${cachedCType(emitter.checker, emitter.typeNames, field.fieldType)} ${fieldName(field.name)};`,
-        )
+        if (field.fieldType != Type.TVoid) {
+          Str.append(
+            mutable builder,
+            ` ${cachedCType(emitter.checker, emitter.typeNames, field.fieldType)} ${fieldName(field.name)};`,
+          )
+        }
       }
       Str.append(mutable builder, ` } ${variantName(variant)};`)
     }
   }
   return Str.build(builder)
+}
+
+function hasValueFields(variant: Variant): bool {
+  for (const field of Arrays.values(variant.fields)) {
+    if (field.fieldType != Type.TVoid) {
+      return true
+    }
+  }
+  return false
 }
 
 export function emitHeapDefinitions(emitter: Emitter, used: Map<string, bool>): string uses alloc {
@@ -1140,14 +1152,22 @@ export function enumAllocation(
   const info = copy(emitter.checker.enums[enumIndex].variants[variant])
   const name = cachedCType(emitter.checker, emitter.typeNames, baseType)
   const tag = Int.toString(info.index)
-  if (Arrays.length(fields) == 0) {
+  // A void field has no member; its value is a call that runs for its effect.
+  for (const index of Ranges.between(0, Arrays.length(fields))) {
+    if (index < Arrays.length(info.fields) && info.fields[index].fieldType == Type.TVoid) {
+      writeLine(mutable emitter, `${fields[index]};`)
+    }
+  }
+  if (Arrays.length(fields) == 0 || !hasValueFields(info)) {
     return Code { text: `((${name}){.tag = ${tag}})`, owned: false }
   }
   if (!isHeapEnum(emitter.checker, enumIndex)) {
     // An inline payload is a compound literal; the value owns the fields.
     let members: Array<string> = []
     for (const index of Ranges.between(0, Arrays.length(info.fields))) {
-      Arrays.push(mutable members, `.${fieldName(info.fields[index].name)} = ${fields[index]}`)
+      if (info.fields[index].fieldType != Type.TVoid) {
+        Arrays.push(mutable members, `.${fieldName(info.fields[index].name)} = ${fields[index]}`)
+      }
     }
     return Code {
       text: `((${name}){.tag = ${tag}, .u.${variantName(info)} = {${Str.join(members, ", ")}}})`,
@@ -1161,10 +1181,12 @@ export function enumAllocation(
   writeLine(mutable emitter, `${payload}* ${pointer} = narra_alloc(sizeof(${payload}));`)
   writeLine(mutable emitter, `${pointer}->rc = 1; ${pointer}->tag = ${tag};`)
   for (const index of Ranges.between(0, Arrays.length(info.fields))) {
-    writeLine(
-      mutable emitter,
-      `${pointer}->${variantName(info)}.${fieldName(info.fields[index].name)} = ${fields[index]};`,
-    )
+    if (info.fields[index].fieldType != Type.TVoid) {
+      writeLine(
+        mutable emitter,
+        `${pointer}->${variantName(info)}.${fieldName(info.fields[index].name)} = ${fields[index]};`,
+      )
+    }
   }
   return Code { text: `((${name}){.tag = ${tag}, .u = ${pointer}})`, owned: false }
 }

@@ -2,7 +2,7 @@
 // the checks where a value crosses a thread, the form of thread functions, the
 // Scope escape rule and `==` on thread handles (item 4). The hot files carry
 // only the calls; every rule is here. Checks other than Sendable run only when
-// a module imports std/thread, std/parallel or std/internal/thread
+// a module imports std/thread, std/parallel, std/channel or std/internal/thread
 // (Checker.threads).
 import { Pos, Expr, Arg, FuncDecl } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
@@ -25,13 +25,37 @@ struct HandleType {
   module: string
   name: string
   sendable: bool
+  // What to compare instead, for the E1195 message.
+  compare: string
 }
 
-// threads-channels and threads-shared add Sender, Receiver, Shared and Atomic,
-// which are Sendable when their type argument is.
+// Sender and Receiver (and Shared and Atomic of threads-shared) are Sendable
+// when their type argument is.
 const THREAD_HANDLES: Array<HandleType> = [
-  HandleType { module: "std/thread", name: "Thread", sendable: false },
-  HandleType { module: "std/thread", name: "Scope", sendable: false },
+  HandleType {
+    module: "std/thread",
+    name: "Thread",
+    sendable: false,
+    compare: "compare the values it gives",
+  },
+  HandleType {
+    module: "std/thread",
+    name: "Scope",
+    sendable: false,
+    compare: "compare the values it gives",
+  },
+  HandleType {
+    module: "std/channel",
+    name: "Sender",
+    sendable: true,
+    compare: "compare the values sent through the channel",
+  },
+  HandleType {
+    module: "std/channel",
+    name: "Receiver",
+    sendable: true,
+    compare: "compare the values received from the channel",
+  },
 ]
 
 // The std functions that run a function on another thread: the module, the
@@ -55,7 +79,10 @@ struct Unsendable {
 }
 
 export function isThreadModule(path: string): bool {
-  return path == "std/thread" || path == "std/parallel" || path == "std/internal/thread"
+  return path == "std/thread" ||
+    path == "std/parallel" ||
+    path == "std/channel" ||
+    path == "std/internal/thread"
 }
 
 export function isSendableTrait(checker: Checker, traitIndex: int): bool {
@@ -256,13 +283,20 @@ export function checkThreadCall(
   mutable checker: Checker,
   funcIndex: int,
   arguments: Array<Arg>,
+  pos: Pos,
+  result: Type,
 ) uses alloc {
   // A call of Thread.start or Parallel.map: the function argument must show its
-  // captures, and they, its result and the items must be Sendable.
+  // captures, and they, its result and the items must be Sendable. The values
+  // of Channel.create must be Sendable too.
   if (isInstanceBody(checker)) {
     return
   }
   const info = copy(checker.functions[funcIndex])
+  if (info.module == "std/channel" && info.name == "create") {
+    checkChannelElement(mutable checker, pos, result)
+    return
+  }
   let work = -1
   for (const entry of Arrays.values(THREAD_FUNCTIONS)) {
     if (info.name == entry.name && info.module == entry.module) {
@@ -278,6 +312,21 @@ export function checkThreadCall(
     const itemsType = copy(getNodeType(checker, getExpressionId(items)))
     if (itemsType is Some(Type.TArray(element))) {
       checkSendable(mutable checker, getExpressionPos(items), element, "the items of Parallel.map")
+    }
+  }
+}
+
+function checkChannelElement(mutable checker: Checker, pos: Pos, result: Type) uses alloc {
+  // The result is #[Sender<T>, Receiver<T>]; T is the type argument of the Sender.
+  if (result is Type.TStruct(tupleIndex)) {
+    const fields = copy(checker.structs[tupleIndex].fields)
+    if (Arrays.length(fields) > 0) {
+      if (fields[0].fieldType is Type.TStruct(senderIndex)) {
+        const arguments = copy(checker.structs[senderIndex].arguments)
+        if (Arrays.length(arguments) == 1) {
+          checkSendable(mutable checker, pos, arguments[0], "the values of Channel.create")
+        }
+      }
     }
   }
 }
@@ -366,6 +415,15 @@ export function describeHandle(checker: Checker, type: Type): string uses alloc 
     return ""
   }
   return `a ${THREAD_HANDLES[handle].name}`
+}
+
+export function describeCompare(checker: Checker, type: Type): string {
+  // What to compare in place of the handle, for the E1195 message.
+  const handle = findHandle(checker, type)
+  if (handle < 0) {
+    return ""
+  }
+  return THREAD_HANDLES[handle].compare
 }
 
 export function reportSendableWritten(mutable checker: Checker, pos: Pos, form: string) uses alloc {

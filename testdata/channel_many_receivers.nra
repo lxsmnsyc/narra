@@ -1,0 +1,47 @@
+// Four threads take values from copies of one Receiver. Every value is taken
+// by exactly one of them: the counts and the sums add up to what was sent.
+import * as Channel from "std/channel"
+import * as Thread from "std/thread"
+import { Receiver } from "std/channel"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+struct Taken {
+  count: int
+  sum: int
+}
+
+function takeAll(receiver: Receiver<int>): Taken uses io, alloc {
+  let count = 0
+  let sum = 0
+  for (const value of Channel.values(receiver)) {
+    count++
+    sum += value
+  }
+  return Taken { count: count, sum: sum }
+}
+
+export function run(_args: Array<string>): int {
+  const #[sender, receiver] = Channel.create<int>(8)
+  const totals = Thread.scope((scope) => {
+    let workers: Array<Thread.Thread<Taken>> = []
+    for (let i = 0; i < 4; i++) {
+      Arrays.push(mutable workers, Thread.start(scope, () => takeAll(receiver)))
+    }
+    for (let value = 1; value <= 1000; value++) {
+      Channel.send(sender, value)
+    }
+    Channel.close(sender)
+    let count = 0
+    let sum = 0
+    for (const worker of Arrays.values(workers)) {
+      const taken = Thread.join(worker)
+      count += taken.count
+      sum += taken.sum
+    }
+    return Taken { count: count, sum: sum }
+  })
+  print(`count ${Int.toString(totals.count)}`)
+  print(`sum ${Int.toString(totals.sum)}`)
+  return 0
+}

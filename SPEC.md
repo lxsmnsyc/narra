@@ -1495,7 +1495,7 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 }
 ```
 
-Not built yet (D111; node threads-channels). `std/channel` is a source module, and `Channel.create<int>(16)` is an ordinary call with a type argument (section 4).
+`std/channel` is a source module, and `Channel.create<int>(16)` is an ordinary call with a type argument (section 4).
 
 - **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`. `T` must be `Sendable` (E1190). A capacity below 1 is taken as 1.
 - **`Channel.send(sender, value)`** blocks while the channel is full and returns `true`. It returns `false` and drops the value once the channel is closed or every copy of the receiver is gone.

@@ -164,3 +164,61 @@ export function isVoidParameterValue(checker: Checker, nodeId: int): bool {
   }
   return false
 }
+
+function isThreadType(checker: Checker, type: Type): bool {
+  if (type is Type.TStruct(index)) {
+    return checker.structs[index].module == "std/thread" && checker.structs[index].name == "Thread"
+  }
+  return false
+}
+
+export function bindThreadVoid(
+  checker: Checker,
+  module: string,
+  declared: Type,
+  actual: Type,
+  mutable bindings: Map<int, Type>,
+) uses alloc {
+  // A thread function that returns nothing binds T of std/thread to void, as
+  // an Async<void> does: `() => T` given `() => void`, and Thread<T> given Thread<void>.
+  if (module != "std/thread") {
+    return
+  }
+  if (declared is Type.TFunc(_, Type.TParam(parameter), _, _, _)) {
+    if (actual is Type.TFunc(_, Type.TVoid, _, _, _)) {
+      if (bindings[parameter] is None) {
+        bindings[parameter] = Type.TVoid
+      }
+    }
+    return
+  }
+  if (isThreadType(checker, declared) && isThreadType(checker, actual)) {
+    if (declared is Type.TStruct(declaredIndex)) {
+      if (actual is Type.TStruct(actualIndex)) {
+        const declaredArguments = checker.structs[declaredIndex].arguments
+        const actualArguments = checker.structs[actualIndex].arguments
+        if (Arrays.length(declaredArguments) == 1 && Arrays.length(actualArguments) == 1) {
+          if (declaredArguments[0] is Type.TParam(parameter)) {
+            if (actualArguments[0] == Type.TVoid && bindings[parameter] is None) {
+              bindings[parameter] = Type.TVoid
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+export function isVoidInstance(checker: Checker): bool {
+  // The body being checked is an instance with a type argument of void.
+  const body = checker.body
+  if (body < 0 || body >= Arrays.length(checker.bodies)) {
+    return false
+  }
+  for (const argument of Arrays.values(checker.bodies[body].typeArguments)) {
+    if (argument == Type.TVoid) {
+      return true
+    }
+  }
+  return false
+}

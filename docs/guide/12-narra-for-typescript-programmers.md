@@ -87,7 +87,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-There is no C-style `for (let i = 0; i < n; i++)` loop yet. Loop over a range with `Ranges.upTo(n)`, or over positions and elements with `Arrays.entries` ([chapter 2](02-values-and-types.md#lists-of-values)).
+The C-style `for (let i = 0; i < n; i++)` loop works as in TypeScript. To walk a range, loop over `Ranges.upTo(n)`; for positions and elements, use `Arrays.entries` ([chapter 2](02-values-and-types.md#lists-of-values)).
 
 ## Numbers
 

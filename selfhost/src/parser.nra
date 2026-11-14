@@ -1711,7 +1711,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   if (name == "Generator" || name == "Coroutine" || name == "AsyncGenerator") {
     // A generator type carries the effects its body has when it runs:
     // `Generator<string> uses io`.
-    const effects = parseTypeUses(mutable parser)
+    const effects = parseTypeUses(mutable parser, named.pos)
     if (Arrays.length(effects) > 0) {
       return TypeExpr { ...named, arguments: arguments, effects: effects }
     }
@@ -2044,7 +2044,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
       reportTypeUsesComma(mutable parser, commaIndex)
     }
   }
-  const effects = parseUsesList(mutable parser)
+  const effects = parseUsesList(mutable parser, pos)
   return FuncDecl {
     pos: pos,
     name: name,
@@ -2401,7 +2401,7 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   expect(mutable parser, SYMBOL_ARROW)
   const result = parseResultType(mutable parser)
-  const effects = parseTypeUses(mutable parser)
+  const effects = parseTypeUses(mutable parser, pos)
   return TypeExpr {
     pos: pos,
     name: "",
@@ -2430,13 +2430,17 @@ function parseResultType(mutable parser: Parser): TypeExpr {
   return TypeExpr { ...result, resultFrom: name.text }
 }
 
-function parseUsesList(mutable parser: Parser): Array<string> {
+function parseUsesList(mutable parser: Parser, owner: Pos): Array<string> {
   // A declaration's own list is a bare comma list: `uses io, alloc`.
   let names: Array<string> = []
+  const keywordIndex = parser.index
   if (accept(mutable parser, SYMBOL_KEYWORD_USES)) {
+    noteUsesKeyword(mutable parser, owner, keywordIndex)
     while (isOk(parser)) {
+      const effectIndex = parser.index
       const effect = expectIdent(mutable parser)
       reportRepeatedEffect(mutable parser, names, effect)
+      noteUsesEffect(mutable parser, owner, Arrays.length(names), effectIndex)
       Arrays.push(mutable names, effect.text)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
@@ -2446,19 +2450,25 @@ function parseUsesList(mutable parser: Parser): Array<string> {
   return names
 }
 
-function parseTypeUses(mutable parser: Parser): Array<string> {
+function parseTypeUses(mutable parser: Parser, owner: Pos): Array<string> {
   // A type's list is one effect or a list in parentheses, so a `,` after it ends the type.
   let names: Array<string> = []
+  const keywordIndex = parser.index
   if (!accept(mutable parser, SYMBOL_KEYWORD_USES)) {
     return names
   }
+  noteUsesKeyword(mutable parser, owner, keywordIndex)
   if (!accept(mutable parser, SYMBOL_LEFT_PAREN)) {
+    const effectIndex = parser.index
     Arrays.push(mutable names, expectIdent(mutable parser).text)
+    noteUsesEffect(mutable parser, owner, 0, effectIndex)
     return names
   }
   while (isOk(parser)) {
+    const effectIndex = parser.index
     const effect = expectIdent(mutable parser)
     reportRepeatedEffect(mutable parser, names, effect)
+    noteUsesEffect(mutable parser, owner, Arrays.length(names), effectIndex)
     Arrays.push(mutable names, effect.text)
     // A trailing comma may come before the `)`.
     if (!accept(mutable parser, SYMBOL_COMMA) || isAt(parser, SYMBOL_RIGHT_PAREN)) {
@@ -2467,6 +2477,15 @@ function parseTypeUses(mutable parser: Parser): Array<string> {
   }
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   return names
+}
+
+function noteUsesKeyword(mutable parser: Parser, owner: Pos, keywordIndex: int) {
+  // The keyword and each effect are trivia nodes, so a comment stays where it was written.
+  noteKey(mutable parser, getPosKey("u", owner), keywordIndex)
+}
+
+function noteUsesEffect(mutable parser: Parser, owner: Pos, position: int, effectIndex: int) {
+  noteKey(mutable parser, `${getPosKey("u", owner)}.${Int.toString(position)}`, effectIndex)
 }
 
 function reportRepeatedEffect(mutable parser: Parser, names: Array<string>, effect: Token) {

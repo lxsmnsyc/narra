@@ -16,8 +16,8 @@ A test compiles and runs every program in the guide. Each one works with the com
 8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
 9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, writes to shared values, `mutable` parameters and their rules.
 10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narrac test`.
-11. [Narra for TypeScript programmers](11-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
-12. [The standard library](12-standard-library.md): the modules larger programs are built on, starting with `std/iterator` for lazy and eager operations over generators, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection and `std/regex` for patterns.
+11. [The standard library](11-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
+12. [Narra for TypeScript programmers](12-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 
 ## Reading the samples
 

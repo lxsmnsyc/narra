@@ -1,4 +1,4 @@
-# 12. The standard library
+# 11. The standard library
 
 The earlier chapters used a few standard modules along the way: `std/int`, `std/string`, `std/array`, `std/option`. This chapter goes through the modules that larger programs, such as command-line tools, are built on. Each section stands on its own.
 
@@ -432,7 +432,7 @@ true
 
 Each cluster from `Unicode.graphemes` is a slice of the text, so the loop copies nothing. `toUpperCase` and `toLowerCase` use the full mappings, where one letter can become two (`ß` is `SS`), and a capital sigma at the end of a word lowers to `ς`. They take no locale, like `toUpperCase()` in JavaScript. To compare two texts without case, compare their `foldCase` results.
 
-`displayWidth` counts the columns a terminal gives the text: wide and fullwidth characters, such as Chinese, Japanese and Korean, and emoji take 2, combining marks and zero width characters take none, and the rest take 1. It works per cluster, so a flag or a family emoji is 2 columns. A tool can pad a table column with it where `Str.length` would count bytes.
+`displayWidth` counts the columns a terminal gives the text: wide and fullwidth characters, such as Chinese, Japanese and Korean, and emoji take 2, combining marks and zero width characters take none, and the rest take 1. It works per cluster, so a flag or a family emoji is 2 columns. A tool can pad a table column with it where `Str.length` would count bytes. It counts the bytes of escape codes too, so pass styled text through `Terminal.stripStyles` first: `Unicode.displayWidth(Terminal.stripStyles(text))`.
 
 A few edges follow from those rules. Characters of ambiguous East Asian width, such as `±` and Greek letters, are 1 column, as in a terminal set to a Western locale. Control characters, the tab included, are 0: a terminal moves the cursor for them, and the distance depends on where it stands. U+FE0F after an emoji that is text by default, such as `❤`, makes it 2, but U+FE0E after an emoji that is wide by default, such as `😀`, leaves it 2. The Hangul filler U+115F is 0, since it is default-ignorable.
 
@@ -469,3 +469,5 @@ false
 NFC composes: a letter and its accents become one code point where Unicode has one. NFD decomposes: every accent becomes a code point of its own, after its letter. NFKC and NFKD do the same and also replace compatibility characters with plain ones: the ligature `ﬁ` becomes `fi`, and the circled digit `①` becomes `1`. The K forms lose formatting, so they suit search and identifiers, not text to show. NFC is the form most text on the web is in already.
 
 `isNormalized` tells whether `normalize` would change the text. Both look up each code point first and stop early, so text already in the form, ASCII text among it, costs one pass and no allocation: `normalize` gives back the same string. Hangul syllables are composed and decomposed by arithmetic, as Unicode defines them, not from the tables.
+
+Next: [12. Narra for TypeScript programmers](12-narra-for-typescript-programmers.md), optional reading for TypeScript programmers.

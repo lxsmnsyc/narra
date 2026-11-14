@@ -1,4 +1,4 @@
-# 11. Narra for TypeScript programmers
+# 12. Narra for TypeScript programmers
 
 This chapter is optional. It is for readers who already write TypeScript and want to know which habits carry over to Narra and which ones the compiler stops. Each topic shows the Narra form, with the error the TypeScript habit produces, and links to the chapter that teaches it.
 

@@ -1,7 +1,7 @@
 ---
 id: std-unicode
 title: "std/unicode: tables, graphemes, case and width"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 249034
 owns:
   - std/src/unicode.nra
   - std/src/unicode__tables.nra

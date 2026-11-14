@@ -1,7 +1,7 @@
 ---
 id: std-unicode-normalize
 title: "std/unicode: normalization"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-14

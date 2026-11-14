@@ -39,7 +39,7 @@ Fifteenth one-shot batch, scope set by the maintainer on 2026-11-14: the five ac
 
 Children:
 
-- p3 review: field-shorthand, coroutine-send, remove-lazy, inline-benchmark (spike, gate on any removal), field-shorthand-sweep (last, after the seed update).
+- p3 review: field-shorthand, coroutine-send, remove-lazy, inline-benchmark (spike, gate on any removal), remove-inline (added after the maintainer accepted the benchmark's result, 2026-11-14), field-shorthand-sweep (last, after the seed update).
 - p2 std: range-step, const-functions-std.
 - Fixes: float-shortest, slot-shared-writes, index-assign-order, stream-exit (gate: amends D109 item 6), generator-option-params, batch-15-nits.
 

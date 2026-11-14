@@ -1,0 +1,175 @@
+// The slot-stores suite: every exported function of std/cell, std/shared,
+// std/channel, std/atomic and std/arena that takes a value of a type parameter
+// is a row of SLOT_ROWS or a name of NOT_STORED in selfhost/src/slotstores.nra.
+// A new function that stores its argument must be listed, or the shared-write
+// check does not see the store. The functions are found by reading the std
+// source text: a parameter typed with a type parameter of the function, also
+// inside a function type, counts as taking a value.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import { splitString, substring } from "testrunner/textops"
+import { Context, TestCase } from "testrunner/context"
+
+const MODULES = ["cell", "shared", "channel", "atomic", "arena"]
+
+export function collectCases(context: Context): Array<TestCase> uses io, alloc {
+  let cases: Array<TestCase> = []
+  for (const name of Arrays.values(MODULES)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "slot-stores",
+      name: `std/${name}`,
+      path: Path.join(Path.join(context.repository, "std/src"), `${name}.nra`),
+      variant: name,
+    })
+  }
+  return cases
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const table = Fs.readText(Path.join(context.repository, "selfhost/src/slotstores.nra"))
+  if (table is Err(tableMessage)) {
+    return Err(`cannot read slotstores.nra: ${tableMessage}`)
+  }
+  const source = Fs.readText(testCase.path)
+  if (source is Err(sourceMessage)) {
+    return Err(`cannot read ${testCase.path}: ${sourceMessage}`)
+  }
+  const listed = readListed(table.value)
+  let missing: Array<string> = []
+  let found = 0
+  for (const signature of Arrays.values(readSignatures(source.value))) {
+    const name = readFunctionName(signature)
+    if (!takesValue(signature)) {
+      continue
+    }
+    found += 1
+    const key = `std/${testCase.variant}.${name}`
+    if (!isListed(listed, key)) {
+      Arrays.push(mutable missing, key)
+    }
+  }
+  if (found == 0) {
+    return Err("no exported function with a value parameter was found; the source was not read")
+  }
+  if (Arrays.length(missing) > 0) {
+    return Err(
+      `not in SLOT_ROWS or NOT_STORED of slotstores.nra: ${Str.join(missing, ", ")}; add a row if the function keeps the value, or list it as not stored`,
+    )
+  }
+  return Ok(true)
+}
+
+function isListed(listed: Array<string>, key: string): bool {
+  for (const entry of Arrays.values(listed)) {
+    if (entry == key) {
+      return true
+    }
+  }
+  return false
+}
+
+// The keys "module.name" of the table rows and of NOT_STORED.
+function readListed(table: string): Array<string> uses alloc {
+  let listed: Array<string> = []
+  for (const line of Arrays.values(splitString(table, "\n"))) {
+    const trimmed = Str.trim(line)
+    if (Str.startsWith(trimmed, "\"std/")) {
+      Arrays.push(mutable listed, readQuoted(trimmed, 0))
+    } else if (Str.startsWith(trimmed, "SlotRow {")) {
+      const module = readField(trimmed, "module: \"")
+      const name = readField(trimmed, "name: \"")
+      Arrays.push(mutable listed, `${module}.${name}`)
+    }
+  }
+  return listed
+}
+
+function readField(line: string, marker: string): string uses alloc {
+  if (Str.indexOf(line, marker) is Some(start)) {
+    return readQuoted(line, start + Str.length(marker) - 1)
+  }
+  return ""
+}
+
+// The text of the string literal whose opening quote is at start.
+function readQuoted(line: string, start: int): string uses alloc {
+  const rest = Str.sliceFrom(line, start + 1)
+  if (Str.indexOf(rest, "\"") is Some(end)) {
+    return substring(rest, 0, end)
+  }
+  return ""
+}
+
+// Each exported function's text up to the `{` that opens its body.
+function readSignatures(source: string): Array<string> uses alloc {
+  let signatures: Array<string> = []
+  let current = ""
+  let isReading = false
+  for (const line of Arrays.values(splitString(source, "\n"))) {
+    if (!isReading && Str.startsWith(line, "export function")) {
+      isReading = true
+      current = ""
+    }
+    if (isReading) {
+      current = `${current} ${Str.trim(line)}`
+      if (Str.endsWith(line, "{")) {
+        Arrays.push(mutable signatures, current)
+        isReading = false
+      }
+    }
+  }
+  return signatures
+}
+
+function readFunctionName(signature: string): string uses alloc {
+  let start = Str.length(" export function")
+  if (Str.startsWith(Str.sliceFrom(signature, start), "*")) {
+    start += 1
+  }
+  const rest = Str.trim(Str.sliceFrom(signature, start))
+  let end = Str.length(rest)
+  for (const stop of Arrays.values(["<", "("])) {
+    if (Str.indexOf(rest, stop) is Some(position)) {
+      if (position < end) {
+        end = position
+      }
+    }
+  }
+  return substring(rest, 0, end)
+}
+
+// Whether a parameter is typed with a type parameter of the function.
+function takesValue(signature: string): bool uses alloc {
+  let openAt = -1
+  let parenAt = -1
+  if (Str.indexOf(signature, "<") is Some(position)) {
+    openAt = position
+  }
+  if (Str.indexOf(signature, "(") is Some(position)) {
+    parenAt = position
+  }
+  if (openAt < 0 || parenAt < 0 || openAt > parenAt) {
+    return false
+  }
+  const parameters = Str.sliceFrom(signature, parenAt)
+  const names = Str.sliceFrom(substring(signature, 0, parenAt), openAt + 1)
+  for (const part of Arrays.values(splitString(names, ","))) {
+    let name = Str.trim(part)
+    if (Str.startsWith(name, "effect ") || Str.startsWith(name, "const ")) {
+      continue
+    }
+    for (const stop of Arrays.values([":", " ", ">"])) {
+      if (Str.indexOf(name, stop) is Some(position)) {
+        name = substring(name, 0, position)
+      }
+    }
+    for (const ending of Arrays.values([",", ")"])) {
+      if (Str.contains(parameters, `: ${name}${ending}`)) {
+        return true
+      }
+    }
+  }
+  return false
+}

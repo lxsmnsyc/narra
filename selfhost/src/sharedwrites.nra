@@ -30,6 +30,7 @@ import { Fix, createFix, insertAt } from "narrac/fixes"
 import { collectPatternLocals } from "narrac/patterns"
 import { isCopyTracked, isCopyCall, canShareType } from "narrac/stdcopy"
 import { findSharedArgument, findExpressionStart } from "narrac/sharedresults"
+import { SlotStore, findSlotStore, isSlotHandle } from "narrac/slotstores"
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 import * as Maps from "std/map"
@@ -1073,7 +1074,7 @@ function findLiveReason(checker: Checker, walk: WriteWalk, root: int): Option<Li
   if (depth < walk.arrowDepth) {
     return Some(LiveReason.Captured)
   }
-  if (isCellType(checker, info.localType)) {
+  if (isCellType(checker, info.localType) || isSlotHandle(checker, info.localType)) {
     return Some(LiveReason.Cell)
   }
   return None
@@ -2383,7 +2384,8 @@ function evaluateCall(
   if (getNodeType(checker, nodeId) is Some(resultType)) {
     resultShares = canHoldShared(checker, mutable walk, resultType)
   }
-  const keepsShares = resultShares || ref is Ref.Builtin(_)
+  const slotStore = findSlotStore(checker, nodeId)
+  const keepsShares = resultShares || ref is Ref.Builtin(_) || slotStore is Some(_)
   // The arguments are read first, in order; a `mutable` one is used too.
   let argumentShares: Array<Array<ValueShare>> = []
   let hasWritten = false
@@ -2429,6 +2431,12 @@ function evaluateCall(
       }
     }
   }
+  if (slotStore is Some(store)) {
+    const stored = keepStoredValue(checker, mutable walk, arguments, argumentShares, store)
+    if (store.holder < 0 && resultShares) {
+      return stored
+    }
+  }
   // The places the result shares.
   if (!resultShares) {
     return []
@@ -2465,6 +2473,42 @@ function evaluateCall(
     }
   }
   return []
+}
+
+function keepStoredValue(
+  checker: Checker,
+  mutable walk: WriteWalk,
+  arguments: Array<Arg>,
+  argumentShares: Array<Array<ValueShare>>,
+  store: SlotStore,
+): Array<ValueShare> from argumentShares uses alloc {
+  // A store into a slot shares the value with the holder, as a field store does.
+  if (store.value >= Arrays.length(argumentShares)) {
+    return []
+  }
+  const stored = argumentShares[store.value]
+  if (store.holder < 0 || store.holder >= Arrays.length(arguments)) {
+    return stored
+  }
+  const holderArgument = arguments[store.holder]
+  let holders: Array<Place> = []
+  if (holderArgument.isMutable) {
+    if (findPlace(checker, mutable walk, holderArgument.value) is Some(place)) {
+      Arrays.push(mutable holders, place)
+    }
+  } else {
+    for (const share of Arrays.values(argumentShares[store.holder])) {
+      Arrays.push(mutable holders, share.place)
+    }
+  }
+  const origin = addOrigin(mutable walk, Some(arguments[store.value].value))
+  for (const holder of Arrays.values(holders)) {
+    for (const share of Arrays.values(stored)) {
+      const element = extendPlace(mutable walk.places, holder, `[]${share.suffix}`)
+      addPair(mutable walk, element, share.place, origin, share.tracked)
+    }
+  }
+  return stored
 }
 
 function keepArguments(

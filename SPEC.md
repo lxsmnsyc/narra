@@ -522,7 +522,7 @@ struct Entry<K, V> {
 - `TypeName { field: value, ... }` builds a struct of that type. The fields can appear in any order.
 - When the expected type is already known, the type name can be left out: `{ field: value }`. The type comes from an annotation, a parameter or a return type.
 - Fields with defaults can be left out. All other fields must be given.
-- Every field is written as `name: value`, even when the value is a variable with the same name. `{ name }` is a compile error in a literal.
+- A field can be written as its name alone: `Point { x, y }` means `Point { x: x, y: y }` (D119). The name is read as a variable, a parameter or a top-level constant in scope, so an unknown name is the usual unknown-name error. Shorthand and `name: value` fields mix, and shorthand works after a spread, in enum constructor arguments and in a generic struct literal with or without type arguments. It needs a type name or a spread: a plain `{ name }` in value position is still a block expression (E0933). `narrac fmt` keeps the form that was written.
 - Type arguments of a generic struct are inferred from the fields: `Entry { key: "a", value: 1 }` is `Entry<string, int>`.
 
 <!-- context

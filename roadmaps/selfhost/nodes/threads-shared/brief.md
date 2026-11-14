@@ -1,7 +1,7 @@
 ---
 id: threads-shared
 title: "std/shared and std/atomic: Shared<T> and Atomic<T>"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 285548
 owns:
   - roadmaps/selfhost/nodes/threads-shared/**
   - std/src/shared.nra

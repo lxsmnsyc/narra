@@ -1,0 +1,95 @@
+// Runs every line of the Unicode 17.0 GraphemeBreakTest.txt (testdata/unicode)
+// through Unicode.graphemes and Unicode.graphemeCount, and prints the count of
+// passes and each line that fails.
+import * as Unicode from "std/unicode"
+import * as Arrays from "std/array"
+import * as Char from "std/char"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+// A test line: the text and the clusters it splits into.
+struct Case {
+  text: string
+  clusters: Array<string>
+}
+
+function parseLine(line: string): Case {
+  // `÷ 0020 × 0308 ÷` lists code points; ÷ is a break and × is none.
+  let clusters: Array<string> = []
+  let text = Str.builder()
+  let cluster = Str.builder()
+  let open = false
+  if (Str.split(line, " ") is Some(tokens)) {
+    for (const token of tokens) {
+      if (token == "\u{f7}") {
+        if (open) {
+          Arrays.push(mutable clusters, Str.build(cluster))
+          cluster = Str.builder()
+        }
+        open = false
+      } else if (token != "\u{d7}" && token != "") {
+        if (Int.parse(token, 16) is Ok(code)) {
+          if (Char.fromCode(code) is Some(character)) {
+            Str.appendChar(mutable text, character)
+            Str.appendChar(mutable cluster, character)
+            open = true
+          }
+        }
+      }
+    }
+  }
+  return Case { text: Str.build(text), clusters: clusters }
+}
+
+function splitText(text: string): Array<string> uses alloc {
+  let clusters: Array<string> = []
+  for (const cluster of Unicode.graphemes(text)) {
+    Arrays.push(mutable clusters, cluster)
+  }
+  return clusters
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const read = Fs.readText("testdata/unicode/GraphemeBreakTest.txt")
+  if (read is Err(message)) {
+    print(`cannot read the test file: ${message}`)
+    return 1
+  }
+  let passed = 0
+  let total = 0
+  if (Str.split(read.value, "\n") is Some(lines)) {
+    for (const line of lines) {
+      if (line == "" || Str.startsWith(line, "#")) {
+        continue
+      }
+      let data = line
+      if (Str.indexOf(line, "#") is Some(hash)) {
+        if (Str.slice(line, 0, hash) is Some(before)) {
+          data = Str.trim(before)
+        }
+      }
+      total++
+      const testCase = parseLine(data)
+      const got = splitText(testCase.text)
+      if (
+        got == testCase.clusters &&
+          Unicode.graphemeCount(testCase.text) == Arrays.length(testCase.clusters)
+      ) {
+        passed++
+      } else {
+        print(`fail: ${data}`)
+      }
+    }
+  }
+  print(`${Int.toString(passed)} of ${Int.toString(total)} lines pass`)
+
+  // Clusters a reader can see: a flag, a family, a combining accent, CR LF.
+  const sample = "e\u{301}\u{1f1ef}\u{1f1f5}\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}a\r\nb"
+  print(`count: ${Int.toString(Unicode.graphemeCount(sample))}`)
+  for (const cluster of Unicode.graphemes(sample)) {
+    print(`cluster of ${Int.toString(Str.length(cluster))} bytes`)
+  }
+  print(`empty: ${Int.toString(Unicode.graphemeCount(""))}`)
+  return 0
+}

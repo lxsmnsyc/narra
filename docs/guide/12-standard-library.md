@@ -395,3 +395,43 @@ height at 9
 ```
 
 The function that only answers yes or no is `Regexes.matches`, since `test` is a keyword in Narra. `replace` and `replaceAll` take the replacement as plain text: `$1` is not expanded. To build each replacement from its match, pass a function to `replaceWith`. `split` cuts a string at every match.
+
+## Text as people see it: `std/unicode`
+
+A `string` is UTF-8 bytes, and `Str.length` counts bytes. What a reader sees as one character can be several code points: an accent after its letter, a flag made of two regional indicators, a family emoji joined with zero width joiners. Such a group is a grapheme cluster. `std/unicode` splits text into clusters, maps case, and counts terminal columns:
+
+```narra
+import * as Unicode from "std/unicode"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const word = "cafe\u{301}"
+  print(`${Int.toString(Str.length(word))} bytes, ${Int.toString(Unicode.graphemeCount(word))} clusters`)
+  for (const cluster of Unicode.graphemes("a\u{1f1ef}\u{1f1f5}b")) {
+    print(`[${cluster}]`)
+  }
+  print(Unicode.toUpperCase("stra\u{df}e"))
+  print(Unicode.toLowerCase("\u{3a3}\u{391}\u{3a3}"))
+  print(Show.show(Unicode.foldCase("Stra\u{df}e") == Unicode.foldCase("STRASSE")))
+  print(Int.toString(Unicode.displayWidth("ab\u{4e2d}\u{6587}")))
+  return 0
+}
+```
+
+```text
+6 bytes, 4 clusters
+[a]
+[🇯🇵]
+[b]
+STRASSE
+σας
+true
+6
+```
+
+Each cluster from `Unicode.graphemes` is a slice of the text, so the loop copies nothing. `toUpperCase` and `toLowerCase` use the full mappings, where one letter can become two (`ß` is `SS`), and a capital sigma at the end of a word lowers to `ς`. They take no locale, like `toUpperCase()` in JavaScript. To compare two texts without case, compare their `foldCase` results.
+
+`displayWidth` counts the columns a terminal gives the text: wide and fullwidth characters, such as Chinese, Japanese and Korean, and emoji take 2, combining marks and zero width characters take none, and the rest take 1. It works per cluster, so a flag or a family emoji is 2 columns. A tool can pad a table column with it where `Str.length` would count bytes.
+
+A few edges follow from those rules. Characters of ambiguous East Asian width, such as `±` and Greek letters, are 1 column, as in a terminal set to a Western locale. Control characters, the tab included, are 0: a terminal moves the cursor for them, and the distance depends on where it stands. U+FE0F after an emoji that is text by default, such as `❤`, makes it 2, but U+FE0E after an emoji that is wide by default, such as `😀`, leaves it 2. The Hangul filler U+115F is 0, since it is default-ignorable.

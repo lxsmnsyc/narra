@@ -1,0 +1,494 @@
+// std/unicode: grapheme clusters, case mapping and display width, Unicode 17.0 (D118 item 3).
+//
+// graphemes splits text into extended grapheme clusters (UAX #29), each a slice
+// of the text. toUpperCase and toLowerCase use the full mappings, with the
+// unconditional rules of SpecialCasing and the final sigma rule, and no locale,
+// as JavaScript without a locale argument. foldCase is full case folding (status
+// C and F), for comparing text without case. displayWidth counts terminal
+// columns per cluster: East Asian Wide and Fullwidth are 2, marks, format and
+// other zero-width characters 0, emoji presentation 2, everything else 1.
+//
+// The tables are string constants in std/internal/unicode, written by
+// scripts/unicode/generate.nra; each lookup is a binary search with Str.byteAt.
+// Every function takes the bytes of ASCII text without a lookup.
+
+import * as Str from "std/string"
+import * as Char from "std/char"
+import * as Tables from "std/internal/unicode"
+
+// Grapheme_Cluster_Break values, as the generator writes them.
+const OTHER = 0
+const CR = 1
+const LF = 2
+const CONTROL = 3
+const EXTEND = 4
+const ZWJ = 5
+const REGIONAL_INDICATOR = 6
+const PREPEND = 7
+const SPACING_MARK = 8
+const HANGUL_L = 9
+const HANGUL_V = 10
+const HANGUL_T = 11
+const HANGUL_LV = 12
+const HANGUL_LVT = 13
+
+// Indic_Conjunct_Break values.
+const CONJUNCT_CONSONANT = 1
+const CONJUNCT_EXTEND = 2
+const CONJUNCT_LINKER = 3
+
+// Record widths of the tables.
+const RANGE_WIDTH = 13
+const GRAPHEME_WIDTH = 14
+const CASE_RANGE_WIDTH = 19
+const FULL_MAPPING_WIDTH = 24
+
+const CAPITAL_SIGMA = 0x3a3
+const SMALL_SIGMA = 0x3c3
+const FINAL_SIGMA = 0x3c2
+const PRESENTATION_SELECTOR = 0xfe0f
+
+// graphemes yields the extended grapheme clusters of text, in order.
+export function* graphemes(text: string): Generator<string> uses alloc {
+  const length = Str.length(text)
+  let start = 0
+  // The properties of the code point at start, when the last cluster looked them up.
+  let known = -1
+  while (start < length) {
+    const found = clusterEnd(text, start, length, known)
+    if (Str.slice(text, start, found[0]) is Some(cluster)) {
+      yield cluster
+    }
+    start = found[0]
+    known = found[1]
+  }
+}
+
+// graphemeCount is the number of extended grapheme clusters in text.
+export function graphemeCount(text: string): int {
+  const length = Str.length(text)
+  let count = 0
+  let start = 0
+  let known = -1
+  while (start < length) {
+    const found = clusterEnd(text, start, length, known)
+    start = found[0]
+    known = found[1]
+    count++
+  }
+  return count
+}
+
+// displayWidth is the number of terminal columns text takes, summed per cluster.
+export function displayWidth(text: string): int {
+  const length = Str.length(text)
+  let total = 0
+  let start = 0
+  let known = -1
+  while (start < length) {
+    const found = clusterEnd(text, start, length, known)
+    const end = found[0]
+    known = found[1]
+    const first = Str.byteAt(text, start)
+    if (end == start + 1 && first < 128) {
+      // Printable ASCII is one column; control characters take none.
+      if (first >= 32 && first < 127) {
+        total++
+      }
+    } else {
+      total += clusterWidth(text, start, end)
+    }
+    start = end
+  }
+  return total
+}
+
+// toUpperCase maps text to upper case with the full mappings: sharp s (U+00DF) becomes "SS".
+export function toUpperCase(text: string): string uses alloc {
+  return mapCase(text, Tables.UPPER_RANGES, Tables.UPPER_FULL, 97, -32, false)
+}
+
+// toLowerCase maps text to lower case; a capital sigma at the end of a word is final (U+03C2).
+export function toLowerCase(text: string): string uses alloc {
+  return mapCase(text, Tables.LOWER_RANGES, Tables.LOWER_FULL, 65, 32, true)
+}
+
+// foldCase maps text to its case folding, so foldCase(a) == foldCase(b) compares without case.
+export function foldCase(text: string): string uses alloc {
+  return mapCase(text, Tables.FOLD_RANGES, Tables.FOLD_FULL, 65, 32, false)
+}
+
+function codePointAt(text: string, position: int): int {
+  return Char.code(Str.charAt(text, position))
+}
+
+function hexDigit(byte: int): int {
+  // Digits are 0-9 and a-f.
+  if (byte <= 57) {
+    return byte - 48
+  }
+  return byte - 87
+}
+
+function readHex(table: string, offset: int, digits: int): int {
+  let value = 0
+  for (let index = 0; index < digits; index++) {
+    value = value * 16 + hexDigit(Str.byteAt(table, offset + index))
+  }
+  return value
+}
+
+// findRange gives the offset of the range record that holds codePoint, or -1.
+function findRange(table: string, width: int, codePoint: int): int
+  requires width > 0
+{
+  let low = 0
+  let high = Str.length(table) / width
+  while (low < high) {
+    const middle = (low + high) / 2
+    const offset = middle * width
+    if (codePoint < readHex(table, offset, 6)) {
+      high = middle
+    } else if (codePoint > readHex(table, offset + 6, 6)) {
+      low = middle + 1
+    } else {
+      return offset
+    }
+  }
+  return -1
+}
+
+// findFull gives the offset of the full mapping record of codePoint, or -1.
+function findFull(table: string, codePoint: int): int {
+  let low = 0
+  let high = Str.length(table) / FULL_MAPPING_WIDTH
+  while (low < high) {
+    const middle = (low + high) / 2
+    const offset = middle * FULL_MAPPING_WIDTH
+    const key = readHex(table, offset, 6)
+    if (codePoint < key) {
+      high = middle
+    } else if (codePoint > key) {
+      low = middle + 1
+    } else {
+      return offset
+    }
+  }
+  return -1
+}
+
+// graphemeProperties packs Grapheme_Cluster_Break, Indic_Conjunct_Break (times
+// 16) and Extended_Pictographic (times 64).
+function graphemeProperties(codePoint: int): int {
+  if (codePoint < 128) {
+    if (codePoint == 13) {
+      return CR
+    }
+    if (codePoint == 10) {
+      return LF
+    }
+    if (codePoint < 32 || codePoint == 127) {
+      return CONTROL
+    }
+    return OTHER
+  }
+  const offset = findRange(Tables.GRAPHEME, GRAPHEME_WIDTH, codePoint)
+  if (offset < 0) {
+    return OTHER
+  }
+  return readHex(Tables.GRAPHEME, offset + 12, 2)
+}
+
+function isControlBreak(value: int): bool {
+  return value == CR || value == LF || value == CONTROL
+}
+
+// clusterEnd gives the end of the cluster that starts at start (UAX #29 rules
+// GB3 to GB999), and the properties of the code point at the end, so the next
+// cluster does not look them up again (-1 when they were not looked up). known
+// holds the properties of the code point at start, or -1.
+function clusterEnd(text: string, start: int, length: int, known: int): #[int, int] {
+  const firstByte = Str.byteAt(text, start)
+  const after = start + 1
+  // Two ASCII characters always break, except CR LF.
+  if (firstByte < 128) {
+    if (after >= length) {
+      return #[after, -1]
+    }
+    const nextByte = Str.byteAt(text, after)
+    if (nextByte < 128) {
+      if (firstByte == 13 && nextByte == 10) {
+        return #[after + 1, -1]
+      }
+      return #[after, -1]
+    }
+  }
+  let properties = known
+  if (properties < 0) {
+    properties = graphemeProperties(codePointAt(text, start))
+  }
+  let regionalCount = 0
+  let pictographicRun = false
+  let pictographicJoiner = false
+  let conjunctConsonant = false
+  let conjunctLinker = false
+  let position = start
+  while (true) {
+    // The context the next code point is checked against.
+    const current = properties % 16
+    const conjunct = (properties / 16) % 4
+    if (current == REGIONAL_INDICATOR) {
+      regionalCount++
+    } else {
+      regionalCount = 0
+    }
+    pictographicJoiner = current == ZWJ && pictographicRun
+    pictographicRun = properties >= 64 || (pictographicRun && current == EXTEND)
+    if (conjunct == CONJUNCT_CONSONANT) {
+      conjunctConsonant = true
+      conjunctLinker = false
+    } else if (conjunctConsonant && conjunct == CONJUNCT_LINKER) {
+      conjunctLinker = true
+    } else if (!(conjunctConsonant && conjunct == CONJUNCT_EXTEND)) {
+      conjunctConsonant = false
+      conjunctLinker = false
+    }
+    position = Str.nextChar(text, position)
+    if (position >= length) {
+      return #[length, -1]
+    }
+    const next = graphemeProperties(codePointAt(text, position))
+    const nextBreak = next % 16
+    if (breaksBetween(current, nextBreak)) {
+      // GB9c: a consonant, extends and linkers with at least one linker, then a consonant.
+      const joinsConjunct = (next / 16) % 4 == CONJUNCT_CONSONANT && conjunctLinker
+      // GB11: an emoji, extends and a zero width joiner, then an emoji.
+      const joinsEmoji = next >= 64 && pictographicJoiner
+      // GB12 and GB13: regional indicators pair up.
+      const joinsFlag =
+        current == REGIONAL_INDICATOR && nextBreak == REGIONAL_INDICATOR && regionalCount % 2 == 1
+      if (!joinsConjunct && !joinsEmoji && !joinsFlag) {
+        return #[position, next]
+      }
+    }
+    properties = next
+  }
+  return #[length, -1]
+}
+
+// breaksBetween applies the rules that need only the two break values; the
+// rules with context (GB9c, GB11, GB12, GB13) are checked by the caller.
+function breaksBetween(previous: int, current: int): bool {
+  if (previous == CR && current == LF) {
+    return false
+  }
+  if (isControlBreak(previous) || isControlBreak(current)) {
+    return true
+  }
+  if (
+    previous == HANGUL_L &&
+      (current == HANGUL_L || current == HANGUL_V || current == HANGUL_LV || current == HANGUL_LVT)
+  ) {
+    return false
+  }
+  if (
+    (previous == HANGUL_LV || previous == HANGUL_V) && (current == HANGUL_V || current == HANGUL_T)
+  ) {
+    return false
+  }
+  if ((previous == HANGUL_LVT || previous == HANGUL_T) && current == HANGUL_T) {
+    return false
+  }
+  if (current == EXTEND || current == ZWJ || current == SPACING_MARK || previous == PREPEND) {
+    return false
+  }
+  return true
+}
+
+// widthClass is 0 for zero width, 1 for an emoji with text presentation, 2 for wide, 3 otherwise.
+function widthClass(codePoint: int): int {
+  const offset = findRange(Tables.WIDTH, RANGE_WIDTH, codePoint)
+  if (offset < 0) {
+    return 3
+  }
+  return readHex(Tables.WIDTH, offset + 12, 1)
+}
+
+// clusterWidth is the widest code point of the cluster; U+FE0F after an emoji makes it 2.
+function clusterWidth(text: string, start: int, end: int): int {
+  const firstClass = widthClass(codePointAt(text, start))
+  let width = columnsForClass(firstClass)
+  let position = Str.nextChar(text, start)
+  while (position < end) {
+    const codePoint = codePointAt(text, position)
+    if (codePoint == PRESENTATION_SELECTOR && firstClass == 1) {
+      return 2
+    }
+    const columns = columnsForClass(widthClass(codePoint))
+    if (columns > width) {
+      width = columns
+    }
+    position = Str.nextChar(text, position)
+  }
+  return width
+}
+
+function columnsForClass(kind: int): int {
+  if (kind == 0) {
+    return 0
+  }
+  if (kind == 2) {
+    return 2
+  }
+  return 1
+}
+
+function appendCodePoint(mutable builder: StringBuilder, codePoint: int) {
+  if (Char.fromCode(codePoint) is Some(character)) {
+    Str.appendChar(mutable builder, character)
+  }
+}
+
+function appendSlice(
+  mutable builder: StringBuilder,
+  text: string,
+  start: int,
+  end: int,
+) uses alloc {
+  if (end > start) {
+    if (Str.slice(text, start, end) is Some(piece)) {
+      Str.append(mutable builder, piece)
+    }
+  }
+}
+
+// findMapping gives the single target of codePoint, or -2 - offset for a
+// record of the full table, or -1 when it has no mapping.
+function findMapping(ranges: string, full: string, codePoint: int): int {
+  const offset = findRange(ranges, CASE_RANGE_WIDTH, codePoint)
+  if (offset >= 0) {
+    const distance = codePoint - readHex(ranges, offset, 6)
+    // A stride 2 record maps every other code point.
+    if (readHex(ranges, offset + 12, 1) == 1 || distance % 2 == 0) {
+      return readHex(ranges, offset + 13, 6) + distance
+    }
+  }
+  const fullOffset = findFull(full, codePoint)
+  if (fullOffset < 0) {
+    return -1
+  }
+  return -2 - fullOffset
+}
+
+function appendMapping(mutable builder: StringBuilder, full: string, mapping: int) {
+  if (mapping >= 0) {
+    appendCodePoint(mutable builder, mapping)
+    return
+  }
+  const fullOffset = -2 - mapping
+  for (let index = 0; index < 3; index++) {
+    const target = readHex(full, fullOffset + 6 + 6 * index, 6)
+    if (target != 0) {
+      appendCodePoint(mutable builder, target)
+    }
+  }
+}
+
+// mapCase copies text with each code point mapped. ASCII letters from
+// asciiFirst to asciiFirst + 25 move by asciiShift without a lookup.
+function mapCase(
+  text: string,
+  ranges: string,
+  full: string,
+  asciiFirst: int,
+  asciiShift: int,
+  finalSigma: bool,
+): string uses alloc {
+  const length = Str.length(text)
+  let builder = Str.builder()
+  let changed = false
+  // Bytes from copied up to position are unchanged and not written yet.
+  let copied = 0
+  let position = 0
+  while (position < length) {
+    const byte = Str.byteAt(text, position)
+    if (byte < 128) {
+      if (byte >= asciiFirst && byte < asciiFirst + 26) {
+        appendSlice(mutable builder, text, copied, position)
+        appendCodePoint(mutable builder, byte + asciiShift)
+        changed = true
+        copied = position + 1
+      }
+      position++
+      continue
+    }
+    const next = Str.nextChar(text, position)
+    const codePoint = codePointAt(text, position)
+    if (finalSigma && codePoint == CAPITAL_SIGMA) {
+      appendSlice(mutable builder, text, copied, position)
+      if (isFinalSigma(text, position, next, length)) {
+        appendCodePoint(mutable builder, FINAL_SIGMA)
+      } else {
+        appendCodePoint(mutable builder, SMALL_SIGMA)
+      }
+      changed = true
+      copied = next
+    } else {
+      const mapping = findMapping(ranges, full, codePoint)
+      if (mapping != -1) {
+        appendSlice(mutable builder, text, copied, position)
+        appendMapping(mutable builder, full, mapping)
+        changed = true
+        copied = next
+      }
+    }
+    position = next
+  }
+  if (!changed) {
+    return text
+  }
+  appendSlice(mutable builder, text, copied, length)
+  return Str.build(builder)
+}
+
+// caseContext is 1 for Cased, 2 for Case_Ignorable, 3 for both and 0 for neither.
+function caseContext(codePoint: int): int {
+  const offset = findRange(Tables.CASE_CONTEXT, RANGE_WIDTH, codePoint)
+  if (offset < 0) {
+    return 0
+  }
+  return readHex(Tables.CASE_CONTEXT, offset + 12, 1)
+}
+
+// isFinalSigma: a cased letter comes before the sigma and none after it, with
+// only case-ignorable code points between (the Final_Sigma condition).
+function isFinalSigma(text: string, position: int, next: int, length: int): bool {
+  let before = position
+  let casedBefore = false
+  while (before > 0) {
+    // Step back to the first byte of the previous code point.
+    before--
+    while (before > 0 && Str.byteAt(text, before) >= 128 && Str.byteAt(text, before) < 192) {
+      before--
+    }
+    // Case-ignorable code points are skipped first, as ICU and V8 do, even when they are also cased.
+    const context = caseContext(codePointAt(text, before))
+    if (context >= 2) {
+      continue
+    }
+    casedBefore = context == 1
+    break
+  }
+  if (!casedBefore) {
+    return false
+  }
+  let after = next
+  while (after < length) {
+    const context = caseContext(codePointAt(text, after))
+    if (context < 2) {
+      return context != 1
+    }
+    after = Str.nextChar(text, after)
+  }
+  return true
+}

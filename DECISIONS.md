@@ -1766,15 +1766,6 @@ One `emit selfhost` makes 9.76 M allocations (487 MB), 659 K reallocs, 38.3 M re
 - **Rejected: D100's negative counts.** The compiler's own code depends on copy on write in places D94 accepts; a region that skips counts gives wrong results.
 - **Rejected: region objects with the drop walk skipped (7% on `emit`).** A heap value held by a region container then needs a store list, and `fmt` gets 0.7% slower.
 
-## D120. Remove `@inline`
-
-Decision (maintainer, 2026-11-14), after the benchmark of node inline-benchmark (`roadmaps/selfhost/nodes/inline-benchmark/outcome.md`). Supersedes the `@inline` item of D119 (benchmark first, remove if no gain), the **Inline** bullet of D95 and the `@inline` amendments recorded under D95 for batch 11 (node inline). Those records stay as they are.
-
-- **Why.** The benchmark ran `Options.map`, `andThen`, `orElse` and `withDefault` 100 million times in one loop. With `@inline` and without it the run took 1911.5 million instructions, and clang -O2 inlines the small functions anyway. The bench programs and the compiler itself call no `@inline` function, and their C is the same either way. The only users were three std functions that nothing in the repository calls. The feature cost about 830 lines of compiler (`inlining.nra`, `emitinline.nra`), two error codes and a second emitter path with its own labels.
-- **What goes.** The `@inline` attribute, E1030 and E1031, the inliner and its emitter state, the SPEC text, and the samples that tested it. E0990 stays for the other attributes. A program that writes `@inline` gets the parser's unknown-attribute error, with no migration message.
-- **What stays.** `map`, `andThen` and `orElse` in `std/option` keep their signatures and results. An arrow passed to them takes the non-escaping closure path: its environment is on the caller's stack and costs no allocation (D46 and SPEC section 2). An `@inline` function used as a value already had an ordinary C function.
-- **Limit of the evidence.** The benchmark used small bodies that clang inlines by itself. A callee that clang refuses to inline could differ; no such function existed.
-
 ## D119. Feature review: what changes before release
 
 Decision (maintainer, 2026-11-14), from the feature-review debate (`roadmaps/selfhost/debate/feature-review/debate.md`). Each accepted item is an outline node; nothing here is built yet.
@@ -1847,3 +1838,12 @@ Decision: seven std modules, each a Narra source file in `std/src/`. Only `std/t
 - **Rejected: style functions that check the terminal themselves.** They would need `io`, and tests could not compare styled output.
 - **Cost.** About 4,500 lines of Narra and 60 lines of C over the builds (estimate: iterator 300, arena 200, unicode 600 plus the generated tables and the generator, args 700, toml 900, regex 1,500, terminal 300). narrac grows by the embedded sources and the Unicode tables (about 110 KB). A lazy stage costs about 2.5 ns per item. `stringify` of TOML loses comments, so a tool that edits a manifest rewrites its layout. Regex case folding is ASCII only until a later node.
 - **Open for the maintainer** (each with the recommendation). (a) narrac drops single-dash long flags (`-release` becomes `--release`): yes. (b) TOML dates as `Text`: yes, rather than a `Value` variant. (c) `TomlError` is a struct while `std/json` keeps its string error: yes. (d) A std function allowed only in a constant (`Regexes.checked`, E1360): yes. (e) The alias `Regexes`, since an alias may not equal the type name `Regex`: yes. (f) Normalization (about 70 KB of tables) in this batch as its own node, landing last: yes. (g) The narrac and `manifest.nra` moves onto `std/args` and `std/toml` as nodes after the batch seed update: yes.
+
+## D120. Remove `@inline`
+
+Decision (maintainer, 2026-11-14), after the benchmark of node inline-benchmark (`roadmaps/selfhost/nodes/inline-benchmark/outcome.md`). Supersedes the `@inline` item of D119 (benchmark first, remove if no gain), the **Inline** bullet of D95 and the `@inline` amendments recorded under D95 for batch 11 (node inline). Those records stay as they are.
+
+- **Why.** The benchmark ran `Options.map`, `andThen`, `orElse` and `withDefault` 100 million times in one loop. With `@inline` and without it the run took 1911.5 million instructions, and clang -O2 inlines the small functions anyway. The bench programs and the compiler itself call no `@inline` function, and their C is the same either way. The only users were three std functions that nothing in the repository calls. The feature cost about 830 lines of compiler (`inlining.nra`, `emitinline.nra`), two error codes and a second emitter path with its own labels.
+- **What goes.** The `@inline` attribute, E1030 and E1031, the inliner and its emitter state, the SPEC text, and the samples that tested it. E0990 stays for the other attributes. A program that writes `@inline` gets the parser's unknown-attribute error, with no migration message.
+- **What stays.** `map`, `andThen` and `orElse` in `std/option` keep their signatures and results. An arrow passed to them takes the non-escaping closure path: its environment is on the caller's stack and costs no allocation (D46 and SPEC section 2). An `@inline` function used as a value already had an ordinary C function.
+- **Limit of the evidence.** The benchmark used small bodies that clang inlines by itself. A callee that clang refuses to inline could differ; no such function existed.

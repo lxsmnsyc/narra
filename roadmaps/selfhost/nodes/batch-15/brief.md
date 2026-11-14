@@ -39,7 +39,7 @@ Fifteenth one-shot batch, scope set by the maintainer on 2026-11-14: the five ac
 
 Children:
 
-- p3 review: field-shorthand, coroutine-send, remove-lazy, inline-benchmark (spike, gate on any removal), field-shorthand-sweep (last, after the seed update).
+- p3 review: field-shorthand, coroutine-send, remove-lazy, inline-benchmark (spike, gate on any removal), remove-inline (added after the maintainer accepted the benchmark's result, 2026-11-14), field-shorthand-sweep (last, after the seed update).
 - p2 std: range-step, const-functions-std.
 - Fixes: float-shortest, slot-shared-writes, index-assign-order, stream-exit (gate: amends D109 item 6), generator-option-params, batch-15-nits.
 
@@ -58,9 +58,9 @@ Children:
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
-- [ ] A fresh review of the whole story branch, before the pull request.
-- [ ] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
+- [x] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
+- [x] A fresh review of the whole story branch, before the pull request.
+- [x] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.

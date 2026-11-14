@@ -1,7 +1,7 @@
 ---
 id: slot-shared-writes
 title: "Cells.set and Channel.send escape the shared-write check"
-status: todo
+status: done
 priority: must
 type: fix
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 190000
 owns:
   - roadmaps/selfhost/nodes/slot-shared-writes/**
   - testdata/errors/slot_shared*

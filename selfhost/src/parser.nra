@@ -259,7 +259,7 @@ export function parse(source: string, firstId: int): Result<Parsed, Diagnostic> 
     return Err(diagnostic)
   }
   const facts = finishFacts(parser, source)
-  return Ok(Parsed { file: File { ...file, facts: facts }, nextId: parser.nextId })
+  return Ok(Parsed { file: File { ...file, facts }, nextId: parser.nextId })
 }
 
 function readTokens(mutable parser: Parser, source: string): Option<Diagnostic> {
@@ -300,7 +300,7 @@ export function parseWithTrivia(source: string, firstId: int): Result<#[
   }
   const trivia = buildTrivia(parser.collector, comments, source)
   const facts = finishFacts(parser, source)
-  return Ok(#[Parsed { file: File { ...file, facts: facts }, nextId: parser.nextId }, trivia])
+  return Ok(#[Parsed { file: File { ...file, facts }, nextId: parser.nextId }, trivia])
 }
 
 // ---- Source facts for fixes
@@ -420,23 +420,23 @@ function finishFacts(parser: Parser, source: string): SourceFacts from parser us
     if (dotUses[token.text] is Some(found)) {
       known = copy(found)
     }
-    Arrays.push(mutable known, DotUse { pos: getPos(token), member: member })
+    Arrays.push(mutable known, DotUse { pos: getPos(token), member })
     dotUses[token.text] = known
   }
   // The `${}` parts of templates added their names while the parser read them.
   let referenced: Map<string, bool> = copy(parser.facts.referenced)
   collectReferencedNames(mutable referenced, parser.tokens)
   return SourceFacts {
-    source: source,
+    source,
     header: findHeaderLine(source),
-    inTemplate: inTemplate,
-    dotUses: dotUses,
+    inTemplate,
+    dotUses,
     namePositions: parser.facts.namePositions,
     shorthandIds: parser.facts.shorthandIds,
     callEnds: parser.facts.callEnds,
     templateTokenEnds: parser.facts.templateTokenEnds,
     taggedCalls: parser.facts.taggedCalls,
-    referenced: referenced,
+    referenced,
     resultEnds: parser.facts.resultEnds,
     fromNames: parser.facts.fromNames,
     valueEnds: parser.facts.valueEnds,
@@ -551,14 +551,14 @@ function failAtFix(
     if (semicolonPos.line == pos.line && semicolonPos.column == pos.column) {
       parser.failed = Some(Diagnostic {
         code: "E0003",
-        pos: pos,
+        pos,
         message: "semicolons are not used; end the statement with a line break",
         fixes: buildRemoveSemicolonFix(pos),
       })
       return
     }
   }
-  parser.failed = Some(Diagnostic { code: code, pos: pos, message: message, fixes: fixes })
+  parser.failed = Some(Diagnostic { code, pos, message, fixes })
 }
 
 function failHere(mutable parser: Parser, code: string, message: string) {
@@ -747,31 +747,6 @@ function isWord(parser: Parser, word: string): bool {
   return token.kind == TokenKind.TokIdent && token.text == word
 }
 
-function startsLazyValue(parser: Parser): bool {
-  if (!isWord(parser, "lazy")) {
-    return false
-  }
-  // `lazy` is a name unless an expression follows it on the same line.
-  const word = peekToken(parser, 0)
-  const next = peekToken(parser, 1)
-  if (next.kind == TokenKind.TokNewline || next.kind == TokenKind.TokEof) {
-    return false
-  }
-  if (next.kind != TokenKind.TokPunct) {
-    return true
-  }
-  // After a space, `(`, `[` and `!` start the expression (`lazy(` calls and `lazy[` indexes a name),
-  // and so does a `-` that touches its operand (`lazy - 1` subtracts).
-  if (next.line != word.line || next.column <= word.column + 4) {
-    return false
-  }
-  if (next.text == "(" || next.text == "[" || next.text == "!") {
-    return true
-  }
-  const operand = peekToken(parser, 2)
-  return next.text == "-" && operand.line == next.line && operand.column == next.column + 1
-}
-
 function skipNewlines(mutable parser: Parser) {
   while (currentToken(parser).kind == TokenKind.TokNewline) {
     advance(mutable parser)
@@ -925,7 +900,7 @@ function parseFile(mutable parser: Parser): File {
     }
     skipNewlines(mutable parser)
   }
-  return File { imports: imports, declarations: declarations, facts: createEmptyFacts() }
+  return File { imports, declarations, facts: createEmptyFacts() }
 }
 
 function parseImport(mutable parser: Parser): ImportDecl {
@@ -953,9 +928,9 @@ function parseImport(mutable parser: Parser): ImportDecl {
       }
       Arrays.push(mutable names, ImportName {
         pos: getPos(nameToken),
-        name: name,
-        local: local,
-        end: end,
+        name,
+        local,
+        end,
       })
       skipNewlines(mutable parser)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
@@ -990,7 +965,7 @@ function parseImport(mutable parser: Parser): ImportDecl {
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("i", pos), startIndex)
   }
-  return ImportDecl { pos: pos, alias: alias, aliasPos: aliasPos, names: names, path: path }
+  return ImportDecl { pos, alias, aliasPos, names, path }
 }
 
 function isFieldsOnlyBody(parser: Parser): bool {
@@ -1198,8 +1173,8 @@ function parseExternBlock(
     noteKey(mutable parser, getPosKey("x", pos), startIndex)
   }
   const block = ExternBlock {
-    pos: pos,
-    end: end,
+    pos,
+    end,
     library: libraryToken.text,
     libraryPos: getPos(libraryToken),
     attributes: targets,
@@ -1241,15 +1216,6 @@ function parseExternMember(mutable parser: Parser): FuncDecl {
   const startIndex = parser.index
   const attributes = parseAttributeList(mutable parser)
   for (const attribute of Arrays.values(attributes)) {
-    if (isOk(parser) && attribute.name == "inline") {
-      // A C function has no body to copy into the caller.
-      failAt(
-        mutable parser,
-        attribute.pos,
-        "E1031",
-        "@inline needs a body to copy; a function of an extern block has none",
-      )
-    }
     if (isOk(parser) && attribute.name != "extern") {
       failAt(
         mutable parser,
@@ -1300,7 +1266,7 @@ function parseExternMember(mutable parser: Parser): FuncDecl {
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("d", header.pos), startIndex)
   }
-  return FuncDecl { ...header, effects: ["unsafe"], attributes: attributes }
+  return FuncDecl { ...header, effects: ["unsafe"], attributes }
 }
 
 function parseDeclBody(mutable parser: Parser): Decl {
@@ -1351,7 +1317,7 @@ function parseDeclBody(mutable parser: Parser): Decl {
     } else {
       name = advance(mutable parser).text
     }
-    return Decl.Test(TestDecl { pos: pos, name: name, body: parseBlock(mutable parser) })
+    return Decl.Test(TestDecl { pos, name, body: parseBlock(mutable parser) })
   }
   const token = currentToken(parser)
   if (token.kind == TokenKind.TokIdent && (token.text == "class" || token.text == "interface")) {
@@ -1399,7 +1365,6 @@ struct AttributeRow {
 const KNOWN_ATTRIBUTES: Array<AttributeRow> = [
   AttributeRow { name: "target", takesArguments: true },
   AttributeRow { name: "trusted", takesArguments: false },
-  AttributeRow { name: "inline", takesArguments: false },
   AttributeRow { name: "extern", takesArguments: true, takesText: true },
   AttributeRow { name: "const", takesArguments: false },
 ]
@@ -1447,7 +1412,7 @@ function parseAttribute(mutable parser: Parser): Attribute uses alloc {
   }
   let arguments: Array<AttributeArgument> = []
   if (!takesArguments) {
-    return Attribute { pos: pos, name: nameToken.text, hasParentheses: false, arguments: arguments }
+    return Attribute { pos, name: nameToken.text, hasParentheses: false, arguments }
   }
   expect(mutable parser, SYMBOL_LEFT_PAREN)
   if (takesText) {
@@ -1472,7 +1437,7 @@ function parseAttribute(mutable parser: Parser): Attribute uses alloc {
       })
     }
     expect(mutable parser, SYMBOL_RIGHT_PAREN)
-    return Attribute { pos: pos, name: nameToken.text, hasParentheses: true, arguments: arguments }
+    return Attribute { pos, name: nameToken.text, hasParentheses: true, arguments }
   }
   while (isOk(parser) && !isAt(parser, SYMBOL_RIGHT_PAREN)) {
     const argumentToken = expectIdent(mutable parser)
@@ -1501,9 +1466,9 @@ function parseAttribute(mutable parser: Parser): Attribute uses alloc {
       Arrays.push(mutable arguments, AttributeArgument {
         pos: getPos(argumentToken),
         name: argumentToken.text,
-        typeName: typeName,
-        typePos: typePos,
-        variant: variant,
+        typeName,
+        typePos,
+        variant,
       })
     }
     if (!accept(mutable parser, SYMBOL_COMMA)) {
@@ -1511,7 +1476,7 @@ function parseAttribute(mutable parser: Parser): Attribute uses alloc {
     }
   }
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
-  return Attribute { pos: pos, name: nameToken.text, hasParentheses: true, arguments: arguments }
+  return Attribute { pos, name: nameToken.text, hasParentheses: true, arguments }
 }
 
 function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<Decl> {
@@ -1545,14 +1510,14 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
     endTypeDecl(mutable parser)
     return Some(
       Decl.Distinct(DistinctDecl {
-        pos: pos,
-        name: name,
-        exported: exported,
-        opaque: opaque,
-        base: base,
+        pos,
+        name,
+        exported,
+        opaque,
+        base,
         implementations: traitLists.implementations,
         derived: traitLists.derived,
-        refinement: refinement,
+        refinement,
       }),
     )
   }
@@ -1664,9 +1629,9 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     }
     expect(mutable parser, SYMBOL_RIGHT_BRACKET)
     return TypeExpr {
-      pos: pos,
+      pos,
       name: "",
-      arguments: arguments,
+      arguments,
       isFunc: false,
       result: None,
       effects: [],
@@ -1680,7 +1645,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     const valueName = expectIdent(mutable parser).text
     parser.facts.hasTypeof = true
     return TypeExpr {
-      pos: pos,
+      pos,
       name: "",
       arguments: [],
       isFunc: false,
@@ -1705,7 +1670,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
   let arguments: Array<TypeExpr> = []
   const named = TypeExpr {
     pos: getPos(token),
-    name: name,
+    name,
     arguments: [],
     isFunc: false,
     result: None,
@@ -1729,16 +1694,16 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
         column: shift.column + 1,
         symbol: SYMBOL_GREATER,
       }
-      return TypeExpr { ...named, arguments: arguments }
+      return TypeExpr { ...named, arguments }
     }
     expect(mutable parser, SYMBOL_GREATER)
   }
   if (name == "Generator" || name == "Coroutine" || name == "AsyncGenerator") {
     // A generator type carries the effects its body has when it runs:
     // `Generator<string> uses io`.
-    const effects = parseTypeUses(mutable parser)
+    const effects = parseTypeUses(mutable parser, named.pos)
     if (Arrays.length(effects) > 0) {
-      return TypeExpr { ...named, arguments: arguments, effects: effects }
+      return TypeExpr { ...named, arguments, effects }
     }
   }
   const after = peekToken(parser, 1)
@@ -1753,7 +1718,7 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
       "there is no `T[]` array type; write `Array<T>`",
     )
   }
-  return TypeExpr { ...named, arguments: arguments }
+  return TypeExpr { ...named, arguments }
 }
 
 function parseTypeParams(mutable parser: Parser, allowBounds: bool): TypeParams {
@@ -1763,7 +1728,7 @@ function parseTypeParams(mutable parser: Parser, allowBounds: bool): TypeParams 
   let effects: Array<string> = []
   let constants: Array<string> = []
   if (!accept(mutable parser, SYMBOL_LESS)) {
-    return TypeParams { names: names, bounds: bounds, effects: effects, constants: constants }
+    return TypeParams { names, bounds, effects, constants }
   }
   while (isOk(parser) && !isAt(parser, SYMBOL_GREATER)) {
     const token = currentToken(parser)
@@ -1820,7 +1785,7 @@ function parseTypeParams(mutable parser: Parser, allowBounds: bool): TypeParams 
     }
   }
   expect(mutable parser, SYMBOL_GREATER)
-  return TypeParams { names: names, bounds: bounds, effects: effects, constants: constants }
+  return TypeParams { names, bounds, effects, constants }
 }
 
 function isConstantTypeAhead(parser: Parser): bool {
@@ -1839,7 +1804,7 @@ function parseConstantType(mutable parser: Parser): TypeExpr {
   }
   const literal = advance(mutable parser)
   return TypeExpr {
-    pos: pos,
+    pos,
     name: `${sign}${literal.text}`,
     arguments: [],
     isFunc: false,
@@ -1908,23 +1873,14 @@ function parseConstDecl(mutable parser: Parser, exported: bool): ConstDecl {
     declaredType = Some(parseType(mutable parser))
   }
   expect(mutable parser, SYMBOL_EQUALS)
-  // The contextual word `lazy` before the value.
-  let lazyPos: Option<Pos> = None
-  if (startsLazyValue(parser)) {
-    const lazyIndex = parser.index
-    const lazyKey = getPosKey("k", getPos(currentToken(parser)))
-    lazyPos = Some(getPos(advance(mutable parser)))
-    noteKey(mutable parser, lazyKey, lazyIndex)
-  }
   const value = parseExpr(mutable parser)
   endStatement(mutable parser)
   return ConstDecl {
-    pos: pos,
-    name: name,
-    exported: exported,
+    pos,
+    name,
+    exported,
     type: declaredType,
-    value: value,
-    lazyPos: lazyPos,
+    value,
   }
 }
 
@@ -2056,9 +2012,9 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
       id: paramId,
       pos: paramPos,
       name: paramName,
-      isMutable: isMutable,
+      isMutable,
       type: Some(paramType),
-      escaping: escaping,
+      escaping,
       default: defaultValue,
     })
     if (parser.collector.enabled) {
@@ -2078,17 +2034,17 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
       reportTypeUsesComma(mutable parser, commaIndex)
     }
   }
-  const effects = parseUsesList(mutable parser)
+  const effects = parseUsesList(mutable parser, pos)
   return FuncDecl {
-    pos: pos,
-    name: name,
+    pos,
+    name,
     typeParameters: typeParameters.names,
     bounds: typeParameters.bounds,
-    exported: exported,
-    generator: generator,
-    parameters: parameters,
-    result: result,
-    effects: effects,
+    exported,
+    generator,
+    parameters,
+    result,
+    effects,
     effectParameters: typeParameters.effects,
     constantParameters: typeParameters.constants,
     body: None,
@@ -2156,8 +2112,8 @@ function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
       defaultValue = Some(parseExpr(mutable parser))
     }
     Arrays.push(mutable fields, FieldDecl {
-      pos: pos,
-      name: name,
+      pos,
+      name,
       type: fieldType,
       default: defaultValue,
     })
@@ -2178,11 +2134,11 @@ function parseAliasDecl(mutable parser: Parser, exported: bool): AliasDecl {
   const body = parseType(mutable parser)
   endTypeDecl(mutable parser)
   return AliasDecl {
-    pos: pos,
-    name: name,
-    typeParameters: typeParameters,
-    exported: exported,
-    body: body,
+    pos,
+    name,
+    typeParameters,
+    exported,
+    body,
   }
 }
 
@@ -2195,15 +2151,15 @@ function parseStructDecl(mutable parser: Parser, exported: bool): StructDecl {
   const fields = parseFieldList(mutable parser)
   expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return StructDecl {
-    pos: pos,
-    name: name,
+    pos,
+    name,
     typeParameters: typeParameters.names,
     bounds: typeParameters.bounds,
     constantParameters: typeParameters.constants,
-    exported: exported,
+    exported,
     implementations: traitLists.implementations,
     derived: traitLists.derived,
-    fields: fields,
+    fields,
     opaque: false,
   }
 }
@@ -2246,7 +2202,7 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
     Arrays.push(mutable variants, VariantDecl {
       pos: variantPos,
       name: variantName,
-      fields: fields,
+      fields,
     })
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("v", variantPos), variantStart)
@@ -2256,14 +2212,14 @@ function parseEnumDecl(mutable parser: Parser, exported: bool): EnumDecl {
   }
   expect(mutable parser, SYMBOL_RIGHT_BRACE)
   return EnumDecl {
-    pos: pos,
-    name: name,
+    pos,
+    name,
     typeParameters: typeParameters.names,
     bounds: typeParameters.bounds,
-    exported: exported,
+    exported,
     implementations: traitLists.implementations,
     derived: traitLists.derived,
-    variants: variants,
+    variants,
   }
 }
 
@@ -2276,7 +2232,7 @@ function parseTraitLists(mutable parser: Parser): TraitLists {
   if (accept(mutable parser, SYMBOL_KEYWORD_DERIVES)) {
     derived = parseTraitNames(mutable parser)
   }
-  return TraitLists { implementations: implementations, derived: derived }
+  return TraitLists { implementations, derived }
 }
 
 function parseTraitNames(mutable parser: Parser): Array<TypeExpr> {
@@ -2345,7 +2301,7 @@ function parseTraitDecl(mutable parser: Parser, exported: bool): TraitDecl {
     }
   }
   expect(mutable parser, SYMBOL_RIGHT_BRACE)
-  return TraitDecl { pos: pos, name: name, exported: exported, functions: functions }
+  return TraitDecl { pos, name, exported, functions }
 }
 
 function rejectNestedGenerator(mutable parser: Parser) {
@@ -2396,7 +2352,7 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
     }
     rejectNestedGenerator(mutable parser)
     const parsedFunction = parseFuncDecl(mutable parser, false)
-    const implFunction = FuncDecl { ...parsedFunction, attributes: attributes }
+    const implFunction = FuncDecl { ...parsedFunction, attributes }
     Arrays.push(mutable functions, implFunction)
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("d", implFunction.pos), functionStart)
@@ -2404,7 +2360,7 @@ function parseImplDecl(mutable parser: Parser): ImplDecl {
     skipNewlines(mutable parser)
   }
   expect(mutable parser, SYMBOL_RIGHT_BRACE)
-  return ImplDecl { pos: pos, traitType: traitType, type: declaredType, functions: functions }
+  return ImplDecl { pos, traitType, type: declaredType, functions }
 }
 
 function parseFuncType(mutable parser: Parser): TypeExpr {
@@ -2435,14 +2391,14 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   expect(mutable parser, SYMBOL_ARROW)
   const result = parseResultType(mutable parser)
-  const effects = parseTypeUses(mutable parser)
+  const effects = parseTypeUses(mutable parser, pos)
   return TypeExpr {
-    pos: pos,
+    pos,
     name: "",
-    arguments: arguments,
+    arguments,
     isFunc: true,
     result: Some(Boxes.new(result)),
-    effects: effects,
+    effects,
     isTuple: false,
     parameterNames: names,
   }
@@ -2464,13 +2420,17 @@ function parseResultType(mutable parser: Parser): TypeExpr {
   return TypeExpr { ...result, resultFrom: name.text }
 }
 
-function parseUsesList(mutable parser: Parser): Array<string> {
+function parseUsesList(mutable parser: Parser, owner: Pos): Array<string> {
   // A declaration's own list is a bare comma list: `uses io, alloc`.
   let names: Array<string> = []
+  const keywordIndex = parser.index
   if (accept(mutable parser, SYMBOL_KEYWORD_USES)) {
+    noteUsesKeyword(mutable parser, owner, keywordIndex)
     while (isOk(parser)) {
+      const effectIndex = parser.index
       const effect = expectIdent(mutable parser)
       reportRepeatedEffect(mutable parser, names, effect)
+      noteUsesEffect(mutable parser, owner, Arrays.length(names), effectIndex)
       Arrays.push(mutable names, effect.text)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
@@ -2480,19 +2440,25 @@ function parseUsesList(mutable parser: Parser): Array<string> {
   return names
 }
 
-function parseTypeUses(mutable parser: Parser): Array<string> {
+function parseTypeUses(mutable parser: Parser, owner: Pos): Array<string> {
   // A type's list is one effect or a list in parentheses, so a `,` after it ends the type.
   let names: Array<string> = []
+  const keywordIndex = parser.index
   if (!accept(mutable parser, SYMBOL_KEYWORD_USES)) {
     return names
   }
+  noteUsesKeyword(mutable parser, owner, keywordIndex)
   if (!accept(mutable parser, SYMBOL_LEFT_PAREN)) {
+    const effectIndex = parser.index
     Arrays.push(mutable names, expectIdent(mutable parser).text)
+    noteUsesEffect(mutable parser, owner, 0, effectIndex)
     return names
   }
   while (isOk(parser)) {
+    const effectIndex = parser.index
     const effect = expectIdent(mutable parser)
     reportRepeatedEffect(mutable parser, names, effect)
+    noteUsesEffect(mutable parser, owner, Arrays.length(names), effectIndex)
     Arrays.push(mutable names, effect.text)
     // A trailing comma may come before the `)`.
     if (!accept(mutable parser, SYMBOL_COMMA) || isAt(parser, SYMBOL_RIGHT_PAREN)) {
@@ -2501,6 +2467,15 @@ function parseTypeUses(mutable parser: Parser): Array<string> {
   }
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   return names
+}
+
+function noteUsesKeyword(mutable parser: Parser, owner: Pos, keywordIndex: int) {
+  // The keyword and each effect are trivia nodes, so a comment stays where it was written.
+  noteKey(mutable parser, getPosKey("u", owner), keywordIndex)
+}
+
+function noteUsesEffect(mutable parser: Parser, owner: Pos, position: int, effectIndex: int) {
+  noteKey(mutable parser, `${getPosKey("u", owner)}.${Int.toString(position)}`, effectIndex)
 }
 
 function reportRepeatedEffect(mutable parser: Parser, names: Array<string>, effect: Token) {
@@ -2703,7 +2678,7 @@ function parseBlock(mutable parser: Parser): Block {
   if (parser.collector.enabled) {
     noteKey(mutable parser, getPosKey("b", pos), startIndex)
   }
-  return Block { pos: pos, end: end, statements: statements }
+  return Block { pos, end, statements }
 }
 
 function parseLoopExitLabel(mutable parser: Parser): string {
@@ -2764,7 +2739,7 @@ function parseReferenceFor(
   }
   const forId = newId(mutable parser)
   parser.facts.namePositions[forId] = getPos(nameToken)
-  const reference = LoopReference { indexId: indexId, indexName: indexName }
+  const reference = LoopReference { indexId, indexName }
   return Stmt.ForStmt(
     forId,
     pos,
@@ -2991,14 +2966,6 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       declaredType = Some(parseType(mutable parser))
     }
     expect(mutable parser, SYMBOL_EQUALS)
-    if (startsLazyValue(parser)) {
-      failHere(
-        mutable parser,
-        "E1032",
-        "`lazy` is written only on the value of a top-level `const`",
-      )
-      return Stmt.BreakStmt(pos, "")
-    }
     if (
       isAt(parser, SYMBOL_KEYWORD_YIELD) &&
         name != "" &&
@@ -3025,9 +2992,9 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       endStatement(mutable parser)
       const binding = YieldBinding {
         id: newId(mutable parser),
-        isMutable: isMutable,
-        name: name,
-        pos: pos,
+        isMutable,
+        name,
+        pos,
       }
       return Stmt.YieldStmt(yieldPos, yielded, false, Some(binding))
     }
@@ -3142,7 +3109,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
       for (const statement of Arrays.values(body.statements)) {
         Arrays.push(mutable statements, statement)
       }
-      body = Block { pos: body.pos, end: body.end, statements: statements }
+      body = Block { pos: body.pos, end: body.end, statements }
       name = hidden
     }
     const forId = newId(mutable parser)
@@ -3289,7 +3256,7 @@ function parseExprBody(mutable parser: Parser): Expr {
   Arrays.push(mutable parser.ternaryIds, ternaryId)
   // The expression starts at the condition and its block at the `?`, which is
   // how isConditional tells it from a plain block and an `if` value.
-  return Expr.BlockExpr(ternaryId, start, Block { pos: pos, end: pos, statements: [ifStatement] })
+  return Expr.BlockExpr(ternaryId, start, Block { pos, end: pos, statements: [ifStatement] })
 }
 
 function isTernary(parser: Parser, expression: Expr): bool {
@@ -3631,9 +3598,9 @@ function parseCallArguments(mutable parser: Parser): Array<Arg> {
     const value = parseExpr(mutable parser)
     Arrays.push(mutable arguments, Arg {
       pos: start,
-      name: name,
-      isMutable: isMutable,
-      value: value,
+      name,
+      isMutable,
+      value,
     })
     if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
@@ -3951,7 +3918,7 @@ function parseBlockExpr(mutable parser: Parser): Expr {
 
 function createReturnBlock(value: Expr): Block from value {
   const pos = getExpressionPos(value)
-  return Block { pos: pos, end: pos, statements: [Stmt.ReturnStmt(pos, Some(value))] }
+  return Block { pos, end: pos, statements: [Stmt.ReturnStmt(pos, Some(value))] }
 }
 
 function parseIfExpr(mutable parser: Parser): Expr {
@@ -3981,7 +3948,7 @@ function parseIfExpr(mutable parser: Parser): Expr {
     Some(Stmt.BlockStmt(createReturnBlock(elseBranch))),
   )
   return Expr.BlockExpr(newId(mutable parser), pos, Block {
-    pos: pos,
+    pos,
     end: pos,
     statements: [ifStatement],
   })
@@ -4019,18 +3986,21 @@ function parseStructLit(
     }
     const fieldStart = parser.index
     const name = expectIdent(mutable parser)
-    if (isOk(parser) && !isAt(parser, SYMBOL_COLON)) {
-      failAt(
-        mutable parser,
-        getPos(name),
-        "E0037",
-        `write \`${name.text}: ${name.text}\`; field shorthand is not allowed`,
-      )
-      break
+    if (isOk(parser) && (isAt(parser, SYMBOL_COMMA) || isAt(parser, SYMBOL_RIGHT_BRACE))) {
+      // `name` alone means `name: name`; the value is a name at the field's own position.
+      const namePos = getPos(name)
+      const shorthandValue = Expr.Ident(newId(mutable parser), namePos, name.text)
+      Arrays.push(mutable fields, FieldInit {
+        pos: namePos,
+        name: name.text,
+        value: shorthandValue,
+        isShorthand: true,
+      })
+    } else {
+      expect(mutable parser, SYMBOL_COLON)
+      const value = parseExpr(mutable parser)
+      Arrays.push(mutable fields, FieldInit { pos: getPos(name), name: name.text, value })
     }
-    expect(mutable parser, SYMBOL_COLON)
-    const value = parseExpr(mutable parser)
-    Arrays.push(mutable fields, FieldInit { pos: getPos(name), name: name.text, value: value })
     if (parser.collector.enabled) {
       noteKey(mutable parser, getPosKey("f", getPos(name)), fieldStart)
     }
@@ -4276,7 +4246,7 @@ function advancePosition(raw: Array<char>, fromIndex: int, toIndex: int, start: 
       column++
     }
   }
-  return Pos { line: line, column: column }
+  return Pos { line, column }
 }
 
 // The text parts and the `${}` expressions of a template, in source order;
@@ -4324,8 +4294,8 @@ function parseTaggedTemplate(mutable parser: Parser, tag: Expr, token: Token): E
   parser.facts.callEnds[callId] = Pos { line: token.endLine, column: token.endColumn }
   parser.facts.taggedCalls[callId] = true
   return Expr.CallExpr(callId, pos, tag, [], [
-    Arg { pos: pos, name: None, isMutable: false, value: partsExpression },
-    Arg { pos: pos, name: None, isMutable: false, value: valuesExpression },
+    Arg { pos, name: None, isMutable: false, value: partsExpression },
+    Arg { pos, name: None, isMutable: false, value: valuesExpression },
   ])
 }
 
@@ -4461,7 +4431,7 @@ function splitTemplate(mutable parser: Parser, token: Token, tagged: bool): Temp
     mutable parts,
     createTemplatePart(raw, partStart, count, lastText, partError, partPos),
   )
-  return TemplatePieces { parts: parts, holes: holes, literalIds: literalIds }
+  return TemplatePieces { parts, holes, literalIds }
 }
 
 function takeLiteralId(mutable parser: Parser, tagged: bool, text: string): int {
@@ -4487,7 +4457,7 @@ function createTemplatePart(
   if (failure is Some(error)) {
     decoded = Err(copy(error))
   }
-  return TemplatePart { raw: Str.build(source), decoded: decoded, pos: copy(pos) }
+  return TemplatePart { raw: Str.build(source), decoded, pos: copy(pos) }
 }
 
 function parseMatch(mutable parser: Parser): Expr {
@@ -4513,8 +4483,8 @@ function parseMatch(mutable parser: Parser): Expr {
       const block = parseBlock(mutable parser)
       Arrays.push(mutable arms, MatchArm {
         pos: armPos,
-        pattern: pattern,
-        guard: guard,
+        pattern,
+        guard,
         body: None,
         block: Some(block),
         next: armPos,
@@ -4526,8 +4496,8 @@ function parseMatch(mutable parser: Parser): Expr {
       const body = parseExpr(mutable parser)
       Arrays.push(mutable arms, MatchArm {
         pos: armPos,
-        pattern: pattern,
-        guard: guard,
+        pattern,
+        guard,
         body: Some(body),
         block: None,
         next: armPos,

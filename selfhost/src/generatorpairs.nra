@@ -1,0 +1,133 @@
+// Two types that differ only in the effect lists of the generators inside them,
+// as `Option<Generator<T> uses E>` and `Option<Generator<T> uses (io, alloc)>`.
+// The walk pairs each generator of the expected type with the one of the value
+// at the same place, so the caller checks the effects of every pair.
+import { Type } from "narrac/types"
+import { Checker } from "narrac/check"
+import * as Arrays from "std/array"
+
+export function collectGeneratorPairs(
+  checker: Checker,
+  want: Type,
+  got: Type,
+  mutable wants: Array<Type>,
+  mutable gots: Array<Type>,
+): bool uses alloc {
+  if (want == got) {
+    return true
+  }
+  // A generator pairs when its element and input fit, and the pair is recorded last.
+  if (want is Type.TGenerator(wantElement, _, _, _, wantInput)) {
+    if (got is Type.TGenerator(gotElement, _, _, _, gotInput)) {
+      if (wantInput != gotInput) {
+        return false
+      }
+      if (!collectGeneratorPairs(checker, wantElement, gotElement, mutable wants, mutable gots)) {
+        return false
+      }
+      Arrays.push(mutable wants, want)
+      Arrays.push(mutable gots, got)
+      return true
+    }
+    return false
+  }
+  if (want is Type.TAsyncGenerator(wantStream, _, _, _)) {
+    if (got is Type.TAsyncGenerator(gotStream, _, _, _)) {
+      if (!collectGeneratorPairs(checker, wantStream, gotStream, mutable wants, mutable gots)) {
+        return false
+      }
+      Arrays.push(mutable wants, want)
+      Arrays.push(mutable gots, got)
+      return true
+    }
+    return false
+  }
+  // A container fits when it has the same shape and its parts fit.
+  if (want is Type.TArray(wantItem)) {
+    if (got is Type.TArray(gotItem)) {
+      return collectGeneratorPairs(checker, wantItem, gotItem, mutable wants, mutable gots)
+    }
+    return false
+  }
+  if (want is Type.TBox(wantItem)) {
+    if (got is Type.TBox(gotItem)) {
+      return collectGeneratorPairs(checker, wantItem, gotItem, mutable wants, mutable gots)
+    }
+    return false
+  }
+  if (want is Type.TAsync(wantValue)) {
+    if (got is Type.TAsync(gotValue)) {
+      return collectGeneratorPairs(checker, wantValue, gotValue, mutable wants, mutable gots)
+    }
+    return false
+  }
+  if (want is Type.TEnum(wantEnum)) {
+    if (got is Type.TEnum(gotEnum)) {
+      if (checker.enums[wantEnum].generic != checker.enums[gotEnum].generic) {
+        return false
+      }
+      // Two plain enums are the same type only when they are the same index.
+      if (checker.enums[wantEnum].generic < 0) {
+        return false
+      }
+      return collectPairsOfLists(
+        checker,
+        checker.enums[wantEnum].arguments,
+        checker.enums[gotEnum].arguments,
+        mutable wants,
+        mutable gots,
+      )
+    }
+    return false
+  }
+  if (want is Type.TStruct(wantStruct)) {
+    if (got is Type.TStruct(gotStruct)) {
+      if (checker.structs[wantStruct].generic != checker.structs[gotStruct].generic) {
+        return false
+      }
+      if (checker.structs[wantStruct].tuple != checker.structs[gotStruct].tuple) {
+        return false
+      }
+      if (checker.structs[wantStruct].generic < 0 && !checker.structs[wantStruct].tuple) {
+        return false
+      }
+      return collectPairsOfLists(
+        checker,
+        checker.structs[wantStruct].arguments,
+        checker.structs[gotStruct].arguments,
+        mutable wants,
+        mutable gots,
+      )
+    }
+    return false
+  }
+  return false
+}
+
+function collectPairsOfLists(
+  checker: Checker,
+  wantTypes: Array<Type>,
+  gotTypes: Array<Type>,
+  mutable wants: Array<Type>,
+  mutable gots: Array<Type>,
+): bool uses alloc {
+  if (Arrays.length(wantTypes) != Arrays.length(gotTypes)) {
+    return false
+  }
+  let index = 0
+  while (index < Arrays.length(wantTypes)) {
+    if (
+      !collectGeneratorPairs(
+        checker,
+        wantTypes[index],
+        gotTypes[index],
+        mutable wants,
+        mutable gots,
+      )
+    ) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}

@@ -1,0 +1,73 @@
+// A task that ignores the Err(Cancelled) of its sleep and loops does not keep
+// the program running. At exit the wait a task is in returns Err(Cancelled),
+// the task runs up to its next suspending call, and that call drops it: its
+// frame releases what it holds and it does not resume. Cleanup code without an
+// await still runs; cleanup code that awaits is dropped at that await.
+import * as Async from "std/async"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+import { sleep } from "std/async/time"
+
+async function ignoresCancel(name: string): int uses io, alloc {
+  const label = `${name} (a heap string held across the sleep)`
+  let turns = 0
+  while (true) {
+    const _ = await sleep(Time.milliseconds(1))
+    turns++
+    if (turns == 1) {
+      print(`${label}: keeps looping`)
+    }
+  }
+  return turns
+}
+
+async function* ignoringStream(): AsyncGenerator<int> uses (io, alloc) {
+  const label = `stream (a heap string held across the sleep)`
+  while (true) {
+    const _ = await sleep(Time.milliseconds(1))
+    yield Str.length(label)
+  }
+}
+
+async function checksCancel(): int uses io, alloc {
+  const slept = await sleep(Time.seconds(3600))
+  if (slept is Err(AsyncError.Cancelled)) {
+    print("checker: cleanup runs")
+    return 1
+  }
+  return 0
+}
+
+async function cleansUpWithAwait(): int uses io, alloc {
+  const label = `cleaner (a heap string held across the sleep)`
+  const slept = await sleep(Time.seconds(3600))
+  if (slept is Err(AsyncError.Cancelled)) {
+    print(`${label}: cleanup starts`)
+    const _ = await sleep(Time.milliseconds(1))
+    print(`${label}: never printed`)
+    return 1
+  }
+  return 0
+}
+
+async function readsStream(): int uses io, alloc {
+  const stream = ignoringStream()
+  while (true) {
+    const step = await Async.next(stream)
+    if (step is None) {
+      return 0
+    }
+  }
+  return 0
+}
+
+export async function run(_args: Array<string>): int {
+  Async.detach(ignoresCancel("task"))
+  Async.detach(checksCancel())
+  Async.detach(cleansUpWithAwait())
+  Async.detach(readsStream())
+  const _ = await sleep(Time.milliseconds(5))
+  print("entry returns")
+  return 0
+}

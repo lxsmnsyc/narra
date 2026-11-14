@@ -95,6 +95,7 @@ import {
   enterTypeofChain,
 } from "narrac/resolve"
 import { unify } from "narrac/generics"
+import { collectGeneratorPairs } from "narrac/generatorpairs"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
@@ -121,6 +122,7 @@ import { checkStdFunctionValue, checkPreludeFunctionValue } from "narrac/stdvalu
 import { sourceScope, memberScope, exported, isNamespaceName, findNamespace } from "narrac/scopes"
 import * as Int from "std/int"
 import * as Str from "std/string"
+import { countErrors, addShorthandHint } from "narrac/fieldshorthand"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -133,7 +135,6 @@ import {
   reportLaneCount,
   reportLaneWrite,
 } from "narrac/simdtypes"
-import { checkLazyUse, reportLazyCycle } from "narrac/lazyvalues"
 import * as AsyncCheck from "narrac/asynccheck"
 import * as TaggedTemplates from "narrac/taggedtemplates"
 import * as ThreadCheck from "narrac/threadcheck"
@@ -686,12 +687,16 @@ export function expectType(
           return
         }
         // A function* result differs from the annotated result only in its effects
-        if (wantParameters == gotParameters && sameGeneratorShape(wantResult, gotResult)) {
+        if (wantParameters == gotParameters && sameGeneratorShape(checker, wantResult, gotResult)) {
           checkGeneratorResult(mutable checker, pos, wantResult, gotResult)
           recordFunctionStore(mutable checker, pos, expected, wantBinder, got)
           return
         }
       }
+    }
+    // The same type with other effect lists on the generators inside it
+    if (expected != got && fitsGeneratorEffects(mutable checker, pos, expected, got)) {
+      return
     }
     if (expected != got) {
       // A void from an expression that already reported at this position is its failure.
@@ -763,18 +768,30 @@ function buildSharedSlotFix(
   return [createFix(`add from ${name} to the expected type`, edits)]
 }
 
-function sameGeneratorShape(want: Type, got: Type): bool {
-  if (want is Type.TGenerator(wantElement, _, _, _, wantInput)) {
-    if (got is Type.TGenerator(gotElement, _, _, _, gotInput)) {
-      return wantElement == gotElement && wantInput == gotInput
-    }
+function sameGeneratorShape(checker: Checker, want: Type, got: Type): bool uses alloc {
+  let wants: Array<Type> = []
+  let gots: Array<Type> = []
+  return collectGeneratorPairs(checker, want, got, mutable wants, mutable gots)
+}
+
+function fitsGeneratorEffects(
+  mutable checker: Checker,
+  pos: Pos,
+  want: Type,
+  got: Type,
+): bool uses alloc {
+  // Each generator of the expected type is checked against the one of the value at its place.
+  let wants: Array<Type> = []
+  let gots: Array<Type> = []
+  if (!collectGeneratorPairs(checker, want, got, mutable wants, mutable gots)) {
+    return false
   }
-  if (want is Type.TAsyncGenerator(wantStream, _, _, _)) {
-    if (got is Type.TAsyncGenerator(gotStream, _, _, _)) {
-      return wantStream == gotStream
-    }
+  let index = 0
+  while (index < Arrays.length(wants)) {
+    checkGeneratorResult(mutable checker, pos, wants[index], gots[index])
+    index = index + 1
   }
-  return false
+  return true
 }
 
 function checkGeneratorResult(
@@ -827,11 +844,11 @@ function recordFunctionStore(
   }
   const body = checker.body
   Arrays.push(mutable checker.functionStores, FunctionStore {
-    pos: pos,
-    file: file,
-    body: body,
-    want: want,
-    got: got,
+    pos,
+    file,
+    body,
+    want,
+    got,
   })
 }
 
@@ -856,10 +873,10 @@ function expectGenerator(
       file = checker.scopes[checker.current].file
     }
     Arrays.push(mutable checker.generatorUses, GeneratorUse {
-      pos: pos,
-      file: file,
-      want: want,
-      got: got,
+      pos,
+      file,
+      want,
+      got,
     })
     return
   }
@@ -1223,7 +1240,6 @@ function checkName<W: Walker>(
   // A top-level constant, own or imported.
   const scope = checker.current
   if (checker.scopes[scope].consts[name] is Some(index)) {
-    checkLazyUse(mutable checker, nodeId, pos, index)
     setRef(mutable checker, nodeId, Ref.Const(index))
     return checkConstType(mutable checker, walker, index, pos)
   }
@@ -1403,7 +1419,7 @@ export function findConstInfo(
   const info = ConstInfo {
     name: constDecl.name,
     module: checker.scopes[scope].path,
-    scope: scope,
+    scope,
     declaration: constDecl,
     declaredType: None,
   }
@@ -1444,7 +1460,6 @@ function checkField<W: Walker>(
               return Type.TVoid
             }
             setNodeType(mutable checker, targetId, Type.TModule(path))
-            checkLazyUse(mutable checker, nodeId, pos, index)
             setRef(mutable checker, nodeId, Ref.Const(index))
             return checkConstType(mutable checker, walker, index, pos)
           }
@@ -2104,7 +2119,7 @@ function checkStructLiteral<W: Walker>(
   let expected = want
   if (Arrays.length(typeArguments) > 0) {
     const written = TypeExpr {
-      pos: pos,
+      pos,
       name: typeName,
       arguments: typeArguments,
       isFunc: false,
@@ -2230,11 +2245,13 @@ function checkStructLiteral<W: Walker>(
     const fieldType = structFields[fieldIndex].fieldType
     const valueId = getExpressionId(field.value)
     let valueType = Type.TVoid
+    const errorsBefore = countErrors(checker)
     if (getNodeType(checker, valueId) is Some(checkedType)) {
       valueType = copy(checkedType)
     } else {
       valueType = checkExpression(mutable checker, walker, field.value, Some(fieldType))
     }
+    addShorthandHint(mutable checker, field, errorsBefore)
     expectType(mutable checker, getExpressionPos(field.value), Some(fieldType), valueType)
   }
 
@@ -2285,7 +2302,9 @@ function inferGenericStruct<W: Walker>(
         if (containsOpen(checker, fieldType, parameters)) {
           fieldWant = None
         }
+        const errorsBefore = countErrors(checker)
         const valueType = checkExpression(mutable checker, walker, field.value, fieldWant)
+        addShorthandHint(mutable checker, field, errorsBefore)
         unify(checker, templateField.fieldType, valueType, mutable bindings)
       }
     }
@@ -3077,10 +3096,6 @@ export function checkConstType<W: Walker>(
     }
     return Type.TVoid
   }
-  if (info.state == CONST_BUSY && info.declaration.lazyPos is Some(_)) {
-    reportLazyCycle(mutable checker, pos, info.name)
-    return Type.TVoid
-  }
   if (info.state == CONST_BUSY) {
     reportError(
       mutable checker,
@@ -3127,7 +3142,7 @@ export function checkConstType<W: Walker>(
   if (Arrays.length(checker.errors) == errorCount) {
     if (found == Type.TVoid) {
       reportError(mutable checker, info.declaration.pos, "E0225", "this expression has no value")
-    } else if (info.declaration.lazyPos is None) {
+    } else {
       checkConstValue(mutable checker, info.name, info.declaration.value)
     }
   }

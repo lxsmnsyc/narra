@@ -87,7 +87,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-There is no C-style `for (let i = 0; i < n; i++)` loop yet. Loop over a range with `Ranges.upTo(n)`, or over positions and elements with `Arrays.entries` ([chapter 2](02-values-and-types.md#lists-of-values)).
+The C-style `for (let i = 0; i < n; i++)` loop works as in TypeScript. To walk a range, loop over `Ranges.upTo(n)`; for positions and elements, use `Arrays.entries` ([chapter 2](02-values-and-types.md#lists-of-values)).
 
 ## Numbers
 
@@ -758,16 +758,21 @@ export function run(args: Array<string>): int {
 (1, 2)
 ```
 
-The spread update `{ ...point, x: 4 }` works as in TypeScript and builds a new value ([chapter 4](04-structs-and-enums.md#change-an-item)). A plain `{ name }` does not build an object, though. Without a type name, `{ ... }` in value position is a block, and a struct literal writes every field in full:
+The spread update `{ ...point, x: 4 }` works as in TypeScript and builds a new value ([chapter 4](04-structs-and-enums.md#change-an-item)). Field shorthand works too: `Item { name }` means `Item { name: name }`. It needs the type name, though. A plain `{ name }` does not build an object: without a type name, `{ ... }` in value position is a block.
 
-```narra error
-// error: 5:23: write `name: name`; field shorthand is not allowed
+```narra
 struct Item { name: string }
 
 export function run(args: Array<string>): int {
+  const name = "tea"
   const item = Item { name }
+  print(item.name)
   return 0
 }
+```
+
+```text
+tea
 ```
 
 A class with private fields becomes an `export opaque struct`. Code outside the module cannot build it or read its fields, and goes through the functions the module exports ([chapter 4](04-structs-and-enums.md#hide-the-fields-of-a-struct)).

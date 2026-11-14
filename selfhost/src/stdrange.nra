@@ -1,7 +1,8 @@
 // The registry rows, checks of std/range.
 import { StdFunc } from "narrac/builtins"
 import { Type } from "narrac/types"
-import { Checker, Walker } from "narrac/check"
+import { Checker, Walker, reportError, getExpressionPos } from "narrac/check"
+import { findTypedConstant } from "narrac/operands"
 import { Pos, Arg } from "narrac/ast"
 import { checkArgumentCount, checkArgumentAgainst } from "narrac/stdcheckhelp"
 
@@ -16,8 +17,7 @@ export const RANGE_FUNCS: Array<StdFunc> = [
     name: "Range.stepped",
     module: "std/range",
     key: "stepped",
-    parameters: ["int", "int", "int"],
-    result: "Option<Range>",
+    check: "checkRangeStepped",
   },
   StdFunc { name: "Range.upTo", module: "std/range", key: "upTo", check: "checkRangeUpTo" },
 ]
@@ -49,6 +49,32 @@ function checkRangeBetween<W: Walker>(
   return Type.TRange
 }
 
+function checkRangeStepped<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (checkArgumentCount(mutable checker, walker, pos, arguments, name, 3)) {
+    checkArgumentAgainst(mutable checker, walker, arguments[0].value, Type.TInt)
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+    checkArgumentAgainst(mutable checker, walker, arguments[2].value, Type.TInt)
+    // A step that is zero at compile time never makes progress.
+    if (findTypedConstant(checker, arguments[2].value, Type.TInt) is Some(step)) {
+      if (step == 0) {
+        reportError(
+          mutable checker,
+          getExpressionPos(arguments[2].value),
+          "E1270",
+          "the step of Ranges.stepped is 0, so the range is always empty; use a step other than 0",
+        )
+      }
+    }
+  }
+  return Type.TRange
+}
+
 export function checkRangeCall<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -62,6 +88,9 @@ export function checkRangeCall<W: Walker>(
   }
   if (kind == "checkRangeBetween") {
     return checkRangeBetween(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkRangeStepped") {
+    return checkRangeStepped(mutable checker, walker, pos, arguments, name)
   }
   panic(`checkStdCall: no port of the check ${kind} (${name})`)
   return Type.TVoid

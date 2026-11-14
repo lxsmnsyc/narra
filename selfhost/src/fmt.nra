@@ -68,6 +68,7 @@ import {
   moveLineCommentsToTrailing,
   printDangling,
   trailingComma,
+  printUses,
   getOffset,
   getLineStarts,
   getCommentOffsets,
@@ -317,14 +318,14 @@ function createPrinter(
     useTabs: config.useTabs,
   }
   return Printer {
-    source: source,
-    trivia: trivia,
-    settings: Settings { options: options, trailingComma: config.trailingComma },
+    source,
+    trivia,
+    settings: Settings { options, trailingComma: config.trailingComma },
     printExpression: Exprs.printExpression,
     printPattern: Exprs.printPattern,
     printType: Exprs.printType,
-    printBlock: printBlock,
-    lineStarts: lineStarts,
+    printBlock,
+    lineStarts,
     commentStarts: getCommentOffsets(source, lineStarts, trivia.comments, false),
     commentEnds: getCommentOffsets(source, lineStarts, trivia.comments, true),
   }
@@ -832,7 +833,7 @@ function printFunction(printer: Printer, declaration: FuncDecl): Doc from printe
     Arrays.push(mutable parts, printer.printType(printer, result))
   }
   if (Arrays.length(declaration.effects) > 0) {
-    Arrays.push(mutable parts, text(` uses ${Str.join(declaration.effects, ", ")}`))
+    Arrays.push(mutable parts, printUses(printer, declaration.pos, declaration.effects, true))
   }
   // Each `requires` line is indented under the signature, and the body opens on its own line.
   for (const condition of Arrays.values(declaration.requires)) {
@@ -897,23 +898,6 @@ function printConst(printer: Printer, declaration: ConstDecl): Doc from printer 
   if (declaration.type is Some(type)) {
     Arrays.push(mutable parts, text(": "))
     Arrays.push(mutable parts, printer.printType(printer, type))
-  }
-  if (declaration.lazyPos is Some(lazyPos)) {
-    const lazyKey = getPosKey("k", lazyPos)
-    const lazyValue = Docs.concat([
-      withComments(printer, lazyKey, text("lazy ")),
-      printer.printExpression(printer, declaration.value),
-    ])
-    // A comment on the lines before `lazy` moves it to the line after `=`.
-    if (hasLeading(printer, lazyKey)) {
-      Arrays.push(
-        mutable parts,
-        Docs.group(Docs.concat([text(" ="), Docs.indent(Docs.concat([Doc.Line, lazyValue]))])),
-      )
-    } else {
-      Arrays.push(mutable parts, Docs.concat([text(" = "), lazyValue]))
-    }
-    return Docs.concat(parts)
   }
   Arrays.push(mutable parts, printAssigned(printer, "=", declaration.value))
   return Docs.concat(parts)
@@ -1354,7 +1338,7 @@ function takeLabelComments(
   let prefix = text(getLabelPrefix(label))
   let active = printer
   if (label == "") {
-    return LabelComments { prefix: prefix, printer: active }
+    return LabelComments { prefix, printer: active }
   }
   const keywordOffset = findKeywordOffset(
     printer.source,

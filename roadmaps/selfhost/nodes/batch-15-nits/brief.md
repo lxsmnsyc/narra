@@ -1,7 +1,7 @@
 ---
 id: batch-15-nits
 title: "Small fixes from the batch-13 reviews"
-status: todo
+status: done
 priority: must
 type: fix
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 110000
 owns:
   - roadmaps/selfhost/nodes/batch-15-nits/**
   - testdata/fmt/uses_list_comments*

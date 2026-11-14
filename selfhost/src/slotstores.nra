@@ -1,0 +1,69 @@
+// The std functions that store an argument in a slot of a handle or a
+// container: a store shares the argument with the holder, as a field store does.
+// The shared-write check (sharedwrites.nra) reads this table.
+import { Type } from "narrac/types"
+import { Checker, Ref, getRef } from "narrac/check"
+
+// holder is the index of the argument that keeps the value, or -1 when the
+// result is the holder; value is the index of the stored argument.
+export struct SlotStore {
+  holder: int
+  value: int
+}
+
+struct SlotRow {
+  module: string
+  name: string
+  holder: int
+  value: int
+}
+
+const SLOT_ROWS: Array<SlotRow> = [
+  SlotRow { module: "std/cell", name: "create", holder: -1, value: 0 },
+  SlotRow { module: "std/cell", name: "set", holder: 0, value: 1 },
+  SlotRow { module: "std/shared", name: "create", holder: -1, value: 0 },
+  SlotRow { module: "std/shared", name: "set", holder: 0, value: 1 },
+  SlotRow { module: "std/channel", name: "send", holder: 0, value: 1 },
+  SlotRow { module: "std/arena", name: "insert", holder: 0, value: 1 },
+  SlotRow { module: "std/arena", name: "set", holder: 0, value: 2 },
+]
+
+// Exported functions of the slot modules that take a value of a type parameter
+// and keep nothing of it: the callbacks of update and read return values the
+// arrow-result check already ties to their captures (E0976), and an Atomic
+// holds only bool and integers, which no write changes in place. The slot-stores
+// suite lists every such function and wants it here or in SLOT_ROWS.
+export const NOT_STORED: Array<string> = [
+  "std/atomic.create",
+  "std/atomic.store",
+  "std/atomic.exchange",
+  "std/atomic.add",
+  "std/atomic.compareExchange",
+  "std/cell.update",
+  "std/shared.update",
+  "std/shared.read",
+  "std/arena.update",
+]
+
+export function findSlotStore(checker: Checker, nodeId: int): Option<SlotStore> {
+  if (getRef(checker, nodeId) is Ref.Function(index)) {
+    const info = checker.functions[index]
+    for (const row of SLOT_ROWS) {
+      if (row.module == info.module && row.name == info.name) {
+        return Some(SlotStore { holder: row.holder, value: row.value })
+      }
+    }
+  }
+  return None
+}
+
+export function isSlotHandle(checker: Checker, type: Type): bool {
+  if (type is Type.TStruct(index)) {
+    const info = checker.structs[index]
+    if (info.module == "std/cell" || info.module == "std/shared") {
+      return true
+    }
+    return info.module == "std/channel" && (info.name == "Sender" || info.name == "Receiver")
+  }
+  return false
+}

@@ -876,30 +876,72 @@ static lstr* lstr_from_uint(uint64_t v) {
   return lstr_from_digits(v, 0);
 }
 
+// Lays out the digits of a "%e" text the way JavaScript does, except that a
+// whole number keeps ".0" so the text still reads as a float.
+static lstr* lstr_from_scientific(const char* sci) {
+  char out[400];
+  char digits[40];
+  size_t used = 0;
+  size_t count = 0;
+  if (*sci == '-') out[used++] = *sci++;
+  for (; *sci != 'e'; sci++) {
+    if (*sci != '.') digits[count++] = *sci;
+  }
+  int exponent = atoi(sci + 1);
+  while (count > 1 && digits[count - 1] == '0') count--;
+  int point = exponent + 1;
+  if (count == 1 && digits[0] == '0') {
+    memcpy(out + used, "0.0", 3);
+    used += 3;
+  } else if (point > 0 && point <= 21) {
+    for (int i = 0; i < point; i++) out[used++] = (size_t)i < count ? digits[i] : '0';
+    out[used++] = '.';
+    if (count > (size_t)point) {
+      for (size_t i = (size_t)point; i < count; i++) out[used++] = digits[i];
+    } else {
+      out[used++] = '0';
+    }
+  } else if (point <= 0 && point > -6) {
+    out[used++] = '0';
+    out[used++] = '.';
+    for (int i = point; i < 0; i++) out[used++] = '0';
+    for (size_t i = 0; i < count; i++) out[used++] = digits[i];
+  } else {
+    out[used++] = digits[0];
+    if (count > 1) {
+      out[used++] = '.';
+      for (size_t i = 1; i < count; i++) out[used++] = digits[i];
+    }
+    out[used++] = 'e';
+    out[used++] = exponent < 0 ? '-' : '+';
+    used += (size_t)snprintf(out + used, sizeof out - used, "%d", exponent < 0 ? -exponent : exponent);
+  }
+  out[used] = 0;
+  return lstr_from_cstr(out);
+}
+
 // Shortest text that reads back as the same double.
 static lstr* lstr_from_f64(double v) {
+  if (v != v) return lstr_from_cstr("nan");
+  if (v - v != 0.0) return lstr_from_cstr(v > 0 ? "inf" : "-inf");
   char buf[40];
-  for (int prec = 1; prec <= 17; prec++) {
-    snprintf(buf, sizeof buf, "%.*g", prec, v);
+  for (int prec = 0; prec <= 16; prec++) {
+    snprintf(buf, sizeof buf, "%.*e", prec, v);
     if (strtod(buf, NULL) == v) break;
   }
-  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {
-    strcat(buf, ".0");
-  }
-  return lstr_from_cstr(buf);
+  return lstr_from_scientific(buf);
 }
 
 // Shortest text that reads back as the same float.
 static lstr* lstr_from_f32(float v) {
+  if (v != v) return lstr_from_cstr("nan");
+  if (v - v != 0.0f) return lstr_from_cstr(v > 0 ? "inf" : "-inf");
   char buf[40];
-  for (int prec = 1; prec <= 9; prec++) {
-    snprintf(buf, sizeof buf, "%.*g", prec, (double)v);
+  for (int prec = 0; prec <= 8; prec++) {
+    snprintf(buf, sizeof buf, "%.*e", prec, (double)v);
     if (strtof(buf, NULL) == v) break;
   }
-  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {
-    strcat(buf, ".0");
-  }
-  return lstr_from_cstr(buf);
+  return lstr_from_scientific(buf);
 }
 
 static lstr* lstr_from_char(uint32_t c) {
@@ -1132,10 +1174,10 @@ NARRA_SIZED(u16, uint16_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u32, uint32_t, 0, lstr_from_uint((uint64_t)v))
 NARRA_SIZED(u64, uint64_t, 0, lstr_from_uint(v))
 
-static bool narra_range_stepped(int64_t low, int64_t high, int64_t step, narra_range* out) {
-  if (step == 0) return false;
-  *out = (narra_range){low, high, step};
-  return true;
+// A step of 0 gives the empty range, so a loop over it never starts.
+static narra_range narra_range_stepped(int64_t low, int64_t high, int64_t step) {
+  if (step == 0) return (narra_range){low, low, 1};
+  return (narra_range){low, high, step};
 }
 
 // Moves a loop variable by the step; a sum past the int range ends the loop.

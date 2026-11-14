@@ -55,6 +55,28 @@ export function run(args: Array<string>): int {
 }
 ```
 
+When a variable has the name of the field, write the name alone: `Item { name, priceCents }` means `Item { name: name, priceCents: priceCents }`. Shorthand and `name: value` fields can be mixed in one literal.
+
+```narra
+import * as Int from "std/int"
+
+struct Item {
+  name: string
+  priceCents: int
+}
+
+export function run(args: Array<string>): int {
+  const name = "tea"
+  const item = Item { name, priceCents: 250 }
+  print(`${item.name} ${Int.toString(item.priceCents)}`)
+  return 0
+}
+```
+
+```text
+tea 250
+```
+
 You can leave out the struct name when the compiler already knows which struct you mean. That is the case when the value goes to a parameter, a result or a name with a written type:
 
 ```narra

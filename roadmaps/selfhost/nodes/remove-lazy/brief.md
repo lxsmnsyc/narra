@@ -1,7 +1,7 @@
 ---
 id: remove-lazy
 title: "Remove lazy values"
-status: todo
+status: done
 priority: must
 type: feature
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 125187
 owns:
   - roadmaps/selfhost/nodes/remove-lazy/**
   - selfhost/src/lazyvalues.nra

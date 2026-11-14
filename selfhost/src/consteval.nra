@@ -50,6 +50,7 @@ import * as Char from "std/char"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as ParamDefaults from "narrac/paramdefaults"
+import { StdOutcome, wrapInteger, callStdFunction, compareScalars } from "narrac/conststd"
 
 const STEP_LIMIT = 10000000
 const MEMORY_LIMIT = 67108864
@@ -152,7 +153,7 @@ function evaluateConstants(mutable checker: Checker) uses alloc {
   }
   for (const constIndex of Arrays.values(copy(checker.programConsts))) {
     const body = findBody(checker, `const|${Int.toString(constIndex)}`)
-    if (body < 0 || checker.consts[constIndex].declaration.lazyPos is Some(_)) {
+    if (body < 0) {
       continue
     }
     if (!callsConstFunction(checker, body, checker.consts[constIndex].declaration.value)) {
@@ -536,7 +537,7 @@ struct MapParts {
 
 function readMapParts(value: ConstValue): MapParts uses alloc {
   if (value is ConstValue.Entries(keys, values, positions)) {
-    return copy(MapParts { keys: keys, values: values, positions: positions })
+    return copy(MapParts { keys, values, positions })
   }
   return MapParts { keys: [], values: [], positions: Map {} }
 }
@@ -880,19 +881,6 @@ function makeOption(
     return makeVariant(checker, optionType, "Some", [value])
   }
   return makeVariant(checker, optionType, "None", [])
-}
-
-function wrapInteger(type: Type, value: int): int {
-  // Keeps a sized integer inside its type, as the C type does.
-  return match (type) {
-    Type.TI8 => ((value & 255) ^ 128) - 128
-    Type.TI16 => ((value & 65535) ^ 32768) - 32768
-    Type.TI32 => ((value & 4294967295) ^ 2147483648) - 2147483648
-    Type.TU8 => value & 255
-    Type.TU16 => value & 65535
-    Type.TU32 => value & 4294967295
-    _ => value
-  }
 }
 
 function roundFloat(type: Type, value: f64): f64 {
@@ -2983,6 +2971,14 @@ function evaluateCall(
       arguments,
     )
     Ref.Builtin(index) => callBuiltin(checker, mutable state, nodeId, pos, index, arguments)
+    Ref.TraitFunction(traitIndex, member) => callTraitFunction(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      `${checker.traits[traitIndex].name}.${member}`,
+      arguments,
+    )
     _ => reportUnsupported(mutable state, pos, "a call of this kind")
   }
 }
@@ -3094,7 +3090,7 @@ function callFunction(
   if (state.failed) {
     Arrays.push(mutable state.chain, ChainNote {
       file: findFile(checker, callerBody),
-      pos: pos,
+      pos,
       text: `${callerName} calls ${calleeName}`,
     })
     return ConstValue.Unit
@@ -3229,6 +3225,10 @@ function callBuiltin(
     }
     return values[0]
   }
+  const outcome = callStdFunction(name, values, argumentTypes)
+  if (outcome.shape != "unsupported") {
+    return finishOutcome(checker, mutable state, pos, name, resultType, outcome)
+  }
   if (Str.startsWith(name, "Str.")) {
     return callStringBuiltin(checker, mutable state, pos, name, values, resultType)
   }
@@ -3257,17 +3257,74 @@ function callBuiltin(
     return ConstValue.Span(readInteger(values[0]), readInteger(values[1]), 1)
   }
   if (name == "Range.stepped") {
-    if (readInteger(values[2]) == 0) {
-      return makeOption(checker, resultType, None)
+    const step = readInteger(values[2])
+    if (step == 0) {
+      return ConstValue.Span(readInteger(values[0]), readInteger(values[0]), 1)
     }
-    const span = ConstValue.Span(
-      readInteger(values[0]),
-      readInteger(values[1]),
-      readInteger(values[2]),
-    )
-    return makeOption(checker, resultType, Some(span))
+    return ConstValue.Span(readInteger(values[0]), readInteger(values[1]), step)
   }
   return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function finishOutcome(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  resultType: Type,
+  outcome: StdOutcome,
+): ConstValue from outcome uses alloc {
+  // The functions of conststd.nra: charge what the value holds, then wrap it.
+  let held = 0
+  if (outcome.value is ConstValue.Text(text)) {
+    held = countTextBytes(Str.length(text))
+  }
+  if (outcome.value is ConstValue.Items(elements)) {
+    if (!countScanSteps(mutable state, pos, Arrays.length(elements))) {
+      return ConstValue.Unit
+    }
+    held = 16 + 8 * Arrays.length(elements)
+  }
+  if (held > 0 && !charge(mutable state, pos, held, name)) {
+    return ConstValue.Unit
+  }
+  if (outcome.shape == "some") {
+    return makeOption(checker, resultType, Some(outcome.value))
+  }
+  if (outcome.shape == "none") {
+    return makeOption(checker, resultType, None)
+  }
+  if (outcome.shape == "ok") {
+    return makeVariant(checker, resultType, "Ok", [outcome.value])
+  }
+  if (outcome.shape == "err") {
+    return makeVariant(checker, resultType, "Err", [outcome.value])
+  }
+  return outcome.value
+}
+
+function callTraitFunction(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  member: string,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  // Ordered.compare of the scalar types, strings and bytes, which the std source functions use.
+  const values = evaluateArguments(checker, mutable state, nodeId, arguments)
+  if (state.failed) {
+    return ConstValue.Unit
+  }
+  if (member == "Ordered.compare") {
+    if (checker.bodies[state.body].traitSelf[nodeId] is Some(selfType)) {
+      const tag = compareScalars(findUnderlying(checker, selfType), values[0], values[1])
+      if (tag >= 0) {
+        return ConstValue.Variant(tag, [])
+      }
+    }
+  }
+  return reportUnsupported(mutable state, pos, `the trait function ${member}`)
 }
 
 function callCharBuiltin(

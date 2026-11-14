@@ -1,7 +1,7 @@
 ---
 id: field-shorthand
 title: "Field shorthand in struct literals"
-status: todo
+status: done
 priority: must
 type: feature
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 169297
 owns:
   - roadmaps/selfhost/nodes/field-shorthand/**
   - selfhost/src/fieldshorthand.nra

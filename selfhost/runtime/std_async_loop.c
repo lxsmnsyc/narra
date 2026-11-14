@@ -32,6 +32,9 @@ struct narra_wait {
   int64_t started;
   int64_t deadline;
   int64_t sequence;
+  // Set on a wait that never finishes and that a cancel does not end: a task
+  // that waits on it again after the exit cancelled it is dropped there.
+  bool parked;
   // The index in the timer heap, or -1.
   int64_t slot;
   // The descriptor it waits on, or -1, and the list of descriptor waits.
@@ -327,12 +330,21 @@ static void narra_loop_keep_inputs(void) {
   if (narra_async_loop.current) narra_async_loop.current->keeps_inputs = true;
 }
 
-// True when a suspending std call of the running task must not wait: the task,
-// or the task that started it, is cancelled, or the program exits.
-static bool narra_loop_cancelled_now(void) {
+enum { NARRA_GATE_WAIT, NARRA_GATE_CANCELLED, NARRA_GATE_PARK };
+
+static int narra_loop_gate(void) {
   narra_task* current = narra_async_loop.current;
-  if (narra_async_loop.exiting) return true;
-  return current != NULL && (current->cancelled || current->started_cancelled);
+  if (narra_async_loop.exiting) {
+    // A task that suspends again after the exit cancelled it is dropped there.
+    if (current == NULL) return NARRA_GATE_CANCELLED;
+    return NARRA_GATE_PARK;
+  }
+  if (current != NULL && (current->cancelled || current->started_cancelled)) return NARRA_GATE_CANCELLED;
+  return NARRA_GATE_WAIT;
+}
+
+static bool narra_loop_cancelled_now(void) {
+  return narra_loop_gate() == NARRA_GATE_CANCELLED;
 }
 
 // Takes a wait out of the heap or the poller and finishes its handle with
@@ -363,8 +375,13 @@ static narra_task* narra_async_sleep(int64_t nanos) {
   if (current) current->forwards_cancel = true;
   narra_wait* wait = narra_wait_new();
   narra_task* handle = &wait->task;
-  if (narra_loop_cancelled_now()) {
+  int gate = narra_loop_gate();
+  if (gate == NARRA_GATE_CANCELLED) {
     narra_wait_finish(wait, -1);
+    return handle;
+  }
+  if (gate == NARRA_GATE_PARK) {
+    wait->parked = true;
     return handle;
   }
   if (nanos <= 0) {
@@ -389,8 +406,13 @@ static narra_task* narra_loop_wait_io(int descriptor, bool writable) {
   if (current) current->forwards_cancel = true;
   narra_wait* wait = narra_wait_new();
   narra_task* handle = &wait->task;
-  if (narra_loop_cancelled_now()) {
+  int gate = narra_loop_gate();
+  if (gate == NARRA_GATE_CANCELLED) {
     narra_wait_finish(wait, -1);
+    return handle;
+  }
+  if (gate == NARRA_GATE_PARK) {
+    wait->parked = true;
     return handle;
   }
   if (narra_io_find(descriptor, writable)) {
@@ -447,6 +469,7 @@ static void narra_loop_cancel_wait(narra_task* task) {
       return;
     }
     if (narra_wait_is(awaited)) {
+      if (((narra_wait*)awaited)->parked) return;
       narra_wait_finish((narra_wait*)awaited, -1);
       return;
     }
@@ -540,13 +563,14 @@ static bool narra_loop_poll(void) {
 // Async.idle: a handle that finishes once no other task can run: nothing is
 // ready, no timer is set and no descriptor is waited on. Idle handles finish
 // one at a time in the order they were made, so a task started by an earlier
-// one counts for the later ones. In a cancelled task, and at exit, it
-// finishes at once.
+// one counts for the later ones. In a cancelled task it finishes at once. At
+// exit it wakes the task once; the next idle of that task drops it.
 static narra_task* narra_async_idle(void) {
   narra_task* task = narra_alloc(sizeof(narra_task));
   memset(task, 0, sizeof(narra_task));
   narra_task_init(task, NULL, narra_task_release_nothing, NULL);
   narra_task* current = narra_async_loop.current;
+  if (narra_async_loop.exiting && narra_loop_gate() == NARRA_GATE_PARK) return task;
   if (task->cancelled || (current && current->cancelled)) {
     narra_task_finish(task);
     return task;

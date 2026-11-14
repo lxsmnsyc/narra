@@ -2,6 +2,27 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-14, end of batch-15
+
+Run of `bench/run.sh -n 9` at commit 23535ecb on `feat/batch-15`, same machine and toolchains as the batch-13 run below. No agent was running. The load average was 3.16 (1 minute) at the start and 3.64 at the end, above the 2 this file asks for, so read small differences as noise.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.120 | 0.129 | 0.116 | 39088169   |
+| sieve     | 0.156 | 0.171 | 0.141 | 1270607    |
+| matmul    | 0.106 | 0.210 | 0.123 | 3547800000 |
+| strings   | 0.235 | 0.295 | 0.365 | 100000     |
+| interp    | 0.187 | 0.244 | 0.170 | 972838     |
+| particles | 0.068 | 0.074 | 0.093 | 6996184    |
+| dot       | 0.034 | 0.144 | 0.057 | 800        |
+| compiler  | 0.377 | -     | -     | peak memory 195 MB |
+
+`sieve` reads 0.156 s against 0.131 s at batch-13, and Go and Rust rose with it on this busier run. Its emitted C differs from the main compiler's only in the float formatting functions, which `sieve` does not call; instructions retired were 497M to 523M with the main compiler and 503M to 512M with the batch-15 compiler over three runs each, inside the run-to-run spread.
+
+Instructions retired by `narrac emit selfhost` on the main source (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`, load average about 3.5 to 4): 3.466G with the main compiler (batch-13) and 3.470G with the batch-15 compiler (+0.1%, within noise). The main compiler cannot read the batch-15 source, which uses field shorthand. narrac shrinks from 5,113,032 to 5,080,728 bytes (-0.6%) after removing lazy values and `@inline`; `selfhost/src` goes from 85,860 to 85,632 lines, and the seed is 246,466 lines.
+
 ## 2026-11-14, end of batch-13
 
 Run of `bench/run.sh -n 9` at commit 8c83f28f on `feat/batch-13` (batch-14 merged in), same machine and toolchains as the batch-12 run below. No agent was running. The load average was 1.95 (1 minute) at the start, with the 5 and 15 minute averages (3.70 and 4.46) still falling after the batch's Linux check, and 2.02 at the end. Batch-13 adds a benchmark, `dot`, an `F32x8` dot product from simd-library; every older program is within 2% of batch-12.

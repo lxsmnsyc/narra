@@ -21,8 +21,6 @@
 //   tree-shake/unreached   the C of testdata/tree_shake.nra has no unreached
 //                      function, generic instance, trait implementation or
 //                      constant
-//   tree-shake/lazy-unforced   the C of testdata/lazy_values_unforced.nra has no
-//                      getter, storage or builder of the lazy value nobody forces
 //   tree-shake/std-source   the C of bench/fib/fib.nra has none of the
 //                      std/int functions written in Narra, which it never calls
 //   tree-shake/unused-types   the C of bench/fib/fib.nra has no type that only
@@ -42,9 +40,6 @@
 //                      instances that differ only in a constant type argument
 //                      (repeat<1>, repeat<2>, repeat<3>; Vector<1>, Vector<2>,
 //                      Vector<3>) have C names of their own
-//   inline/no-closure  the C of testdata/inline.nra has no C function for the
-//                      @inline function applyTwice, and no closure function or
-//                      environment for its arrow argument
 //   const-functions/scalar-inline   in the C of testdata/const_functions_scalar.nra
 //                      the constant AREA = square(4) is the literal 16 at its
 //                      use, with no getter and no call of square
@@ -106,11 +101,6 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     ),
     makeCase("tree-shake/unreached", Path.join(context.testdata, "tree_shake.nra"), "unreached"),
     makeCase(
-      "tree-shake/lazy-unforced",
-      Path.join(context.testdata, "lazy_values_unforced.nra"),
-      "lazy-unforced",
-    ),
-    makeCase(
       "tree-shake/std-source",
       Path.join(Path.dirname(context.testdata), "bench/fib/fib.nra"),
       "std-source",
@@ -146,7 +136,6 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(context.testdata, "const_generics.nra"),
       "distinct-instances",
     ),
-    makeCase("inline/no-closure", Path.join(context.testdata, "inline.nra"), "no-closure"),
     makeCase(
       "const-functions/scalar-inline",
       Path.join(context.testdata, "const_functions_scalar.nra"),
@@ -202,14 +191,8 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   if (testCase.variant == "unreached") {
     return checkUnreached(context, testCase.path)
   }
-  if (testCase.variant == "lazy-unforced") {
-    return checkLazyUnforced(context, testCase.path)
-  }
   if (testCase.variant == "distinct-instances") {
     return checkDistinctInstances(context, testCase.path)
-  }
-  if (testCase.variant == "no-closure") {
-    return checkInlineCopied(context, testCase.path)
   }
   if (testCase.variant == "const-scalar") {
     return checkConstScalar(context, testCase.path)
@@ -333,23 +316,6 @@ function checkOneBranch(context: Context, source: string): Result<bool, string> 
     if (Str.contains(result.output, text) != (text == kept)) {
       return Err(`the emitted C should hold only "${kept}"; "${text}" is wrong`)
     }
-  }
-  return Ok(true)
-}
-
-function checkInlineCopied(context: Context, source: string): Result<bool, string> uses io, alloc {
-  const result = Common.runNarrac(context, ["emit", source])
-  if (result.code != 0) {
-    return Err(`emit failed: ${Common.describeRun(result)}`)
-  }
-  // The callee's C name ends in its own name; closures and environments use narra_env.
-  for (const text of Arrays.values(["_applyTwice", "narra_env"])) {
-    if (Str.contains(result.output, text)) {
-      return Err(`the emitted C should not hold "${text}"`)
-    }
-  }
-  if (!Str.contains(result.output, "narra_inline_")) {
-    return Err("the emitted C has no copied body")
   }
   return Ok(true)
 }
@@ -493,25 +459,6 @@ function checkUnreached(context: Context, source: string): Result<bool, string> 
   }
   if (definitions != 1) {
     return Err(`want one definition of an instance of pick, got ${Int.toString(definitions)}`)
-  }
-  return Ok(true)
-}
-
-function checkLazyUnforced(context: Context, source: string): Result<bool, string> uses io, alloc {
-  const result = Common.runNarrac(context, ["emit", source])
-  if (result.code != 0) {
-    return Err(`emit failed: ${Common.describeRun(result)}`)
-  }
-  // The forced value has its getter and builder; the other has neither.
-  for (const name of Arrays.values(["buildUsed", "_used_ready"])) {
-    if (!Str.contains(result.output, name)) {
-      return Err(`the emitted C should hold "${name}"`)
-    }
-  }
-  for (const name of Arrays.values(["buildUnused", "_unused"])) {
-    if (Str.contains(result.output, name)) {
-      return Err(`the emitted C should not hold "${name}"`)
-    }
   }
   return Ok(true)
 }

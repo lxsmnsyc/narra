@@ -1,7 +1,7 @@
 ---
 id: batch-15
 title: "Batch 15: the feature review nodes and inbox fixes"
-status: active
+status: done
 priority: must
 type: story
 story: 

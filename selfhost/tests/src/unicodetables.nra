@@ -1,0 +1,62 @@
+// The unicodetables case of the generated suite: scripts/unicode/generate.nra
+// runs twice on the small UCD-format files in testdata/unicode/mini, and both
+// outputs must equal testdata/unicode/mini/tables.out. The real UCD files are
+// not in the repo, so this checks that the generator gives the same file for
+// the same inputs and that its format does not drift. With --update the golden
+// is rewritten.
+import * as Path from "std/path"
+import { Context, TestCase } from "testrunner/context"
+import * as Common from "testrunner/context"
+import * as Scratch from "testrunner/scratch"
+
+export function makeCase(context: Context): TestCase uses alloc {
+  return TestCase {
+    suite: "generated",
+    name: "unicodetables",
+    path: Path.join(context.testdata, "unicode/mini/tables.out"),
+    variant: "unicodetables",
+  }
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const first = generate(context, Path.join(scratch.work, "first.nra"))
+  const second = generate(context, Path.join(scratch.work, "second.nra"))
+  Scratch.removeScratch(scratch)
+  if (first is Err(message)) {
+    return Err(message)
+  }
+  if (second is Err(message)) {
+    return Err(message)
+  }
+  const same = Common.compareText("second run of the generator", first.value, second.value)
+  if (same is Err(difference)) {
+    return Err(difference)
+  }
+  if (context.update) {
+    const written = Scratch.writeFile(testCase.path, first.value)
+    if (written is Err(message)) {
+      return Err(`cannot write ${testCase.path}: ${message}`)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(testCase.path)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("generated tables", want.value, first.value)
+}
+
+function generate(context: Context, output: string): Result<string, string> uses io, alloc {
+  const script = Path.join(context.repository, "scripts/unicode/generate.nra")
+  const inputs = Path.join(context.testdata, "unicode/mini")
+  const result = Common.runNarrac(context, ["run", "-release", script, inputs, output])
+  if (result.code != 0) {
+    return Err(`generate.nra failed: ${Common.describeRun(result)}`)
+  }
+  return Scratch.readFile(output)
+}

@@ -1,0 +1,69 @@
+// std/regex: Regexes.checked compiles a pattern while the compiler runs, and
+// the same pattern from Regexes.compile at run time gives the same matches.
+import * as Regexes from "std/regex"
+import { Regex } from "std/regex"
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+const WORD = Regexes.checked("[a-z]+")
+const DATE = Regexes.checked("(?<year>\\d{4})-(?<month>\\d\\d)-(?<day>\\d\\d)")
+const FOLDED = Regexes.checked("(?i)h[aeiou]llo|w\\w*d")
+const SPACES = Regexes.checked("\\s+")
+const LONG = Regexes.checked("^[A-Za-z_][A-Za-z0-9_]{0,30}\\.(nra|toml)$")
+
+function compileOrPanic(pattern: string): Regex uses alloc {
+  const compiled = Regexes.compile(pattern)
+  if (compiled is Err(error)) {
+    panic(`bad pattern ${pattern}: ${error.reason}`)
+  }
+  return compiled.value
+}
+
+function describeMatches(regex: Regex, text: string): string uses alloc {
+  let parts: Array<string> = []
+  for (const found of Regexes.findAll(regex, text)) {
+    Arrays.push(mutable parts, `${Int.toString(found.start)}-${Int.toString(found.end)}`)
+  }
+  return Str.join(parts, " ")
+}
+
+function describeDate(regex: Regex, text: string): string uses alloc {
+  if (Regexes.find(regex, text) is Some(found)) {
+    let parts: Array<string> = []
+    for (const name of ["year", "month", "day"]) {
+      if (Regexes.namedGroup(found, name) is Some(value)) {
+        Arrays.push(mutable parts, `${name}=${value}`)
+      }
+    }
+    return Str.join(parts, " ")
+  }
+  return "no date"
+}
+
+function compare(name: string, checked: Regex, pattern: string, text: string) uses io, alloc {
+  const atRunTime = compileOrPanic(pattern)
+  const first = describeMatches(checked, text)
+  const second = describeMatches(atRunTime, text)
+  const sameMatches = first == second
+  const sameProgram = checked.ops == atRunTime.ops && checked.ranges == atRunTime.ranges
+  print(`${name}: ${first} (${sameMatches && sameProgram ? "same" : "different"})`)
+}
+
+export function run(_args: Array<string>): int uses io, alloc {
+  compare("word", WORD, "[a-z]+", "Some words, 42 here")
+  compare(
+    "date",
+    DATE,
+    "(?<year>\\d{4})-(?<month>\\d\\d)-(?<day>\\d\\d)",
+    "on 2026-11-14 and 1999-01-02",
+  )
+  compare("folded", FOLDED, "(?i)h[aeiou]llo|w\\w*d", "HELLO world, hullo wood")
+  compare("spaces", SPACES, "\\s+", "a  b\tc\n d")
+  compare("long", LONG, "^[A-Za-z_][A-Za-z0-9_]{0,30}\\.(nra|toml)$", "narra_config.toml")
+  print(describeDate(DATE, "due 2026-11-14"))
+  print(Regexes.matches(WORD, "123") ? "word" : "no word")
+  print(Regexes.replaceAll(SPACES, "a  b\tc", " "))
+  print(`${WORD.source} ${Int.toString(DATE.groupCount)} ${LONG.anchored ? "anchored" : "free"}`)
+  return 0
+}

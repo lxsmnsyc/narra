@@ -1,0 +1,1831 @@
+// std/regex: regular expressions with a linear-time engine (D118 item 6).
+//
+// The syntax is JavaScript's without back references and lookaround: literals
+// and escapes, `.`, classes, `\d`, `\w`, `\s` and their negations, `\u{...}`,
+// anchors `^`, `$`, `\b`, `\B`, groups `(...)`, `(?:...)`, `(?<name>...)`,
+// alternation and the repeats `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}` (at most
+// 1000) with their lazy forms. Flags are written in the pattern as RE2 does:
+// `(?i)`, `(?m)`, `(?s)`, or `(?i:...)` for one group; `(?i)` folds ASCII
+// letters only. A pattern compiles to a program that a Pike VM runs over the
+// code points of the text, so a search takes time linear in the text times
+// the program, and matches are leftmost-first with captures, as in RE2.
+// Offsets are byte offsets, as `Str.indexOf` returns them.
+
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Char from "std/char"
+
+// A repeat count above this is an error.
+const MAX_REPEAT = 1000
+// A program longer than this is an error.
+const MAX_PROGRAM = 10000
+// Groups nested deeper than this are an error.
+const MAX_DEPTH = 1000
+// A program whose length times its slots (two per group, one per repeat) is
+// above this is an error: each thread list holds that many ints.
+const MAX_THREAD_SLOTS = 1000000
+// The largest code point.
+const MAX_CODE = 1114111
+
+// The kinds of an Assert instruction.
+const TEXT_START = 0
+const TEXT_END = 1
+const LINE_START = 2
+const LINE_END = 3
+const WORD_BOUNDARY = 4
+const NOT_WORD_BOUNDARY = 5
+
+export struct RegexError derives Show, Equatable {
+  position: int
+  reason: string
+}
+
+export struct Match derives Show, Equatable {
+  start: int
+  end: int
+  text: string
+  // groups[0] is the whole match; a group that took no part in it is None.
+  groups: Array<Option<string>>
+  // The name of each group, "" for one without a name.
+  names: Array<string>
+}
+
+// The instructions of a program.
+enum Op derives Equatable {
+  // One code point: first is the code, second its other ASCII case or -1.
+  Char
+  // Any code point; first is 1 when line terminators match too.
+  Any
+  // A code point in ranges[first] to ranges[second], pairs of low and high.
+  Class
+  // Go on at first, and at second with lower priority.
+  Split
+  // Go on at first.
+  Jump
+  // Store the position in capture slot first.
+  Save
+  // Go on only when the assertion of kind first holds.
+  Assert
+  // Clear capture slots first up to second, at the start of a repeat's pass.
+  Reset
+  // Go on only when the position moved past the one in slot first: a pass of
+  // a repeat beyond its lower count may not match empty.
+  Progress
+  Match
+}
+
+export struct Regex {
+  source: string
+  ops: Array<Op>
+  firsts: Array<int>
+  seconds: Array<int>
+  ranges: Array<int>
+  groupCount: int
+  // Capture slots, then one slot per repeat for its Progress check.
+  slotCount: int
+  names: Array<string>
+  // Text every match starts with, searched for before the machine runs.
+  prefix: string
+  // True when every match starts at offset 0.
+  anchored: bool
+}
+
+// The nodes of a parsed pattern.
+enum Kind derives Equatable {
+  Empty
+  Literal
+  AnyChar
+  Set
+  Assertion
+  Group
+  Concat
+  Alternate
+  Repeat
+}
+
+// A node of the pattern tree. Literal: value is the code, limit the other
+// case or -1. AnyChar: value is 1 with (?s). Assertion: value is the kind.
+// Group: value is the capture index. Repeat: value and limit are the counts
+// (limit -1 for no limit), and the groups inside it are groupStart + 1 to
+// groupEnd. Set: ranges holds sorted pairs of low and high.
+struct Node {
+  kind: Kind
+  value: int
+  limit: int
+  greedy: bool
+  groupStart: int
+  groupEnd: int
+  children: Array<int>
+  ranges: Array<int>
+}
+
+struct Parser {
+  pattern: string
+  length: int
+  position: int
+  nodes: Array<Node>
+  groupCount: int
+  names: Array<string>
+  ignoreCase: bool
+  multiline: bool
+  dotAll: bool
+  depth: int
+  failed: bool
+  errorPosition: int
+  reason: string
+}
+
+struct Program {
+  ops: Array<Op>
+  firsts: Array<int>
+  seconds: Array<int>
+  ranges: Array<int>
+  tooLarge: bool
+  // The Progress slot of each repeat node, or -1 before it is compiled.
+  loopSlots: Array<int>
+  slotCount: int
+}
+
+// The state of one search: two thread lists that take turns, each with its
+// program counters and capture slots, and the stack of addThread.
+struct Machine {
+  size: int
+  slots: int
+  pcs: Array<int>
+  captures: Array<int>
+  counts: Array<int>
+  marks: Array<int>
+  generations: Array<int>
+  generation: int
+  side: int
+  stackPcs: Array<int>
+  stackSlots: Array<int>
+  stackValues: Array<int>
+  stackTop: int
+  working: Array<int>
+  best: Array<int>
+}
+
+// compile parses a pattern into a Regex, or the first error in it.
+export function compile(pattern: string): Result<Regex, RegexError> uses alloc {
+  let parser = Parser {
+    pattern: pattern,
+    length: Str.length(pattern),
+    position: 0,
+    nodes: [],
+    groupCount: 0,
+    names: [""],
+    ignoreCase: false,
+    multiline: false,
+    dotAll: false,
+    depth: 0,
+    failed: false,
+    errorPosition: 0,
+    reason: "",
+  }
+  const root = parseAlternation(mutable parser)
+  if (!parser.failed && parser.position < parser.length) {
+    const position = parser.position
+    fail(mutable parser, position, "unmatched ')'")
+  }
+  if (parser.failed) {
+    return Err(RegexError { position: parser.errorPosition, reason: parser.reason })
+  }
+  let program = Program {
+    ops: [],
+    firsts: [],
+    seconds: [],
+    ranges: [],
+    tooLarge: false,
+    loopSlots: filledInts(-1, Arrays.length(parser.nodes)),
+    slotCount: (parser.groupCount + 1) * 2,
+  }
+  emit(mutable program, Op.Save, 0, 0)
+  compileNode(mutable program, parser.nodes, root)
+  emit(mutable program, Op.Save, 1, 0)
+  emit(mutable program, Op.Match, 0, 0)
+  if (program.tooLarge) {
+    return Err(RegexError {
+      position: 0,
+      reason: `the pattern compiles to more than ${Int.toString(MAX_PROGRAM)} instructions`,
+    })
+  }
+  if (Arrays.length(program.ops) * program.slotCount > MAX_THREAD_SLOTS) {
+    return Err(RegexError {
+      position: 0,
+      reason: `the pattern needs more than ${Int.toString(MAX_THREAD_SLOTS)} thread slots (instructions times groups and repeats)`,
+    })
+  }
+  return Ok(Regex {
+    source: pattern,
+    ops: program.ops,
+    firsts: program.firsts,
+    seconds: program.seconds,
+    ranges: program.ranges,
+    groupCount: parser.groupCount,
+    slotCount: program.slotCount,
+    names: parser.names,
+    prefix: findPrefix(parser.nodes, root),
+    anchored: startsAnchored(parser.nodes, root),
+  })
+}
+
+// checked compiles a pattern while the compiler runs. It may only be the
+// value of a top-level const (E1360), where a bad pattern is a compile error.
+@const
+export function checked(pattern: string): Regex uses alloc {
+  const compiled = compile(pattern)
+  if (compiled is Err(error)) {
+    panic(`bad pattern "${shorten(pattern)}" at ${Int.toString(error.position)}: ${error.reason}`)
+  }
+  return compiled.value
+}
+
+// shorten cuts a pattern longer than 60 bytes to its first 57 and "...".
+function shorten(pattern: string): string uses alloc {
+  if (Str.length(pattern) <= 60) {
+    return pattern
+  }
+  // Step back to a character boundary.
+  let end = 57
+  while (end > 0) {
+    if (Str.slice(pattern, 0, end) is Some(head)) {
+      return `${head}...`
+    }
+    end -= 1
+  }
+  return "..."
+}
+
+// formatError writes an error as `<position>: <reason>`, the position being
+// the byte offset of the mistake in the pattern.
+export function formatError(error: RegexError): string uses alloc {
+  return `${Int.toString(error.position)}: ${error.reason}`
+}
+
+// matches reports whether the regex matches anywhere in the text.
+export function matches(regex: Regex, text: string): bool uses alloc {
+  let machine = createMachine(regex)
+  return search(regex, mutable machine, text, 0)
+}
+
+// find returns the first match in the text.
+export function find(regex: Regex, text: string): Option<Match> from regex uses alloc {
+  return findFrom(regex, text, 0)
+}
+
+// findFrom returns the first match that starts at or after the byte offset
+// start. A start inside a character moves to the next character; a start
+// outside the text finds nothing.
+export function findFrom(
+  regex: Regex,
+  text: string,
+  start: int,
+): Option<Match> from regex uses alloc {
+  if (start < 0 || start > Str.length(text)) {
+    return None
+  }
+  let machine = createMachine(regex)
+  if (!search(regex, mutable machine, text, start)) {
+    return None
+  }
+  return Some(buildMatch(regex, text, machine.best))
+}
+
+// findAll yields every match from left to right, as `matchAll` does. After an
+// empty match the search goes on one character later.
+export function* findAll(regex: Regex, text: string): Generator<Match> uses alloc {
+  let machine = createMachine(regex)
+  const length = Str.length(text)
+  let position = 0
+  while (position <= length) {
+    if (!search(regex, mutable machine, text, position)) {
+      return
+    }
+    const start = machine.best[0]
+    const end = machine.best[1]
+    yield buildMatch(regex, text, machine.best)
+    position = nextStart(text, start, end)
+  }
+}
+
+// group returns the text of a group; 0 is the whole match. A group that took
+// no part in the match, or one the pattern does not have, is None.
+export function group(found: Match, index: int): Option<string> {
+  if (index < 0 || index >= Arrays.length(found.groups)) {
+    return None
+  }
+  return found.groups[index]
+}
+
+// namedGroup returns the text of the group written `(?<name>...)`.
+export function namedGroup(found: Match, name: string): Option<string> {
+  if (name == "") {
+    return None
+  }
+  for (let index = 0; index < Arrays.length(found.names); index += 1) {
+    if (found.names[index] == name) {
+      return found.groups[index]
+    }
+  }
+  return None
+}
+
+// replace replaces the first match with the replacement, as plain text: `$1`
+// stays `$1`.
+export function replace(regex: Regex, text: string, replacement: string): string uses alloc {
+  let machine = createMachine(regex)
+  if (!search(regex, mutable machine, text, 0)) {
+    return text
+  }
+  let builder = Str.builder()
+  Str.append(mutable builder, cut(text, 0, machine.best[0]))
+  Str.append(mutable builder, replacement)
+  Str.append(mutable builder, Str.sliceFrom(text, machine.best[1]))
+  return Str.build(builder)
+}
+
+// replaceAll replaces every match, found as findAll finds them, with the
+// replacement as plain text.
+export function replaceAll(regex: Regex, text: string, replacement: string): string uses alloc {
+  let machine = createMachine(regex)
+  const length = Str.length(text)
+  let builder = Str.builder()
+  let copied = 0
+  let position = 0
+  while (position <= length && search(regex, mutable machine, text, position)) {
+    const start = machine.best[0]
+    const end = machine.best[1]
+    Str.append(mutable builder, cut(text, copied, start))
+    Str.append(mutable builder, replacement)
+    copied = end
+    position = nextStart(text, start, end)
+  }
+  Str.append(mutable builder, Str.sliceFrom(text, copied))
+  return Str.build(builder)
+}
+
+// replaceWith replaces every match, found as findAll finds them, with the
+// text the callback returns for it.
+export function replaceWith<effect E>(
+  regex: Regex,
+  text: string,
+  change: (found: Match) => string uses E
+): string uses E, alloc {
+  let machine = createMachine(regex)
+  const length = Str.length(text)
+  let builder = Str.builder()
+  let copied = 0
+  let position = 0
+  while (position <= length && search(regex, mutable machine, text, position)) {
+    const start = machine.best[0]
+    const end = machine.best[1]
+    Str.append(mutable builder, cut(text, copied, start))
+    Str.append(mutable builder, change(buildMatch(regex, text, machine.best)))
+    copied = end
+    position = nextStart(text, start, end)
+  }
+  Str.append(mutable builder, Str.sliceFrom(text, copied))
+  return Str.build(builder)
+}
+
+// split cuts the text at every match, as JavaScript's `split` does with a
+// regex, but without the groups: an empty match next to the last cut or at
+// the end of the text does not cut.
+export function split(regex: Regex, text: string): Array<string> uses alloc {
+  let machine = createMachine(regex)
+  const length = Str.length(text)
+  // An empty text gives [] when the regex matches it, as in JavaScript.
+  if (length == 0) {
+    if (search(regex, mutable machine, text, 0)) {
+      return []
+    }
+    return [""]
+  }
+  let pieces: Array<string> = []
+  let copied = 0
+  let position = 0
+  while (position < length && search(regex, mutable machine, text, position)) {
+    const start = machine.best[0]
+    const end = machine.best[1]
+    if (start >= length) {
+      break
+    }
+    if (end != copied) {
+      Arrays.push(mutable pieces, cut(text, copied, start))
+      copied = end
+    }
+    position = nextStart(text, start, end)
+  }
+  Arrays.push(mutable pieces, Str.sliceFrom(text, copied))
+  return pieces
+}
+
+// Where the next search starts after a match: its end, or one character
+// later for an empty match.
+function nextStart(text: string, start: int, end: int): int {
+  if (end > start) {
+    return end
+  }
+  if (end >= Str.length(text)) {
+    return end + 1
+  }
+  return end + readWidth(text, end)
+}
+
+function cut(text: string, start: int, end: int): string uses alloc {
+  if (Str.slice(text, start, end) is Some(piece)) {
+    return piece
+  }
+  panic("cut: the range is outside the text")
+}
+
+function buildMatch(regex: Regex, text: string, best: Array<int>): Match from regex uses alloc {
+  let groups: Array<Option<string>> = []
+  for (let index = 0; index <= regex.groupCount; index += 1) {
+    const start = best[index * 2]
+    const end = best[index * 2 + 1]
+    if (start >= 0 && end >= start) {
+      Arrays.push(mutable groups, Str.slice(text, start, end))
+    } else {
+      Arrays.push(mutable groups, None)
+    }
+  }
+  return Match {
+    start: best[0],
+    end: best[1],
+    text: cut(text, best[0], best[1]),
+    groups: groups,
+    names: regex.names,
+  }
+}
+
+// The pattern parser. Each function returns the index of the node it built;
+// after an error the parser is failed and returns an Empty node.
+
+function fail(mutable parser: Parser, position: int, reason: string) {
+  if (!parser.failed) {
+    parser.failed = true
+    parser.errorPosition = position
+    parser.reason = reason
+  }
+}
+
+function addNode(
+  mutable parser: Parser,
+  kind: Kind,
+  value: int,
+  limit: int,
+  children: Array<int>,
+  ranges: Array<int>,
+): int uses alloc {
+  const index = Arrays.length(parser.nodes)
+  Arrays.push(mutable parser.nodes, Node {
+    kind: kind,
+    value: value,
+    limit: limit,
+    greedy: true,
+    groupStart: 0,
+    groupEnd: 0,
+    children: children,
+    ranges: ranges,
+  })
+  return index
+}
+
+function addEmpty(mutable parser: Parser): int uses alloc {
+  return addNode(mutable parser, Kind.Empty, 0, 0, [], [])
+}
+
+// The byte at position, or -1 past the end.
+function peekByte(parser: Parser, position: int): int {
+  if (position >= parser.length) {
+    return -1
+  }
+  return Str.byteAt(parser.pattern, position)
+}
+
+function parseAlternation(mutable parser: Parser): int uses alloc {
+  const first = parseConcat(mutable parser)
+  if (peekByte(parser, parser.position) != 124) {
+    return first
+  }
+  let children = [first]
+  while (!parser.failed && peekByte(parser, parser.position) == 124) {
+    parser.position += 1
+    const next = parseConcat(mutable parser)
+    Arrays.push(mutable children, next)
+  }
+  return addNode(mutable parser, Kind.Alternate, 0, 0, children, [])
+}
+
+function parseConcat(mutable parser: Parser): int uses alloc {
+  let children: Array<int> = []
+  while (!parser.failed && parser.position < parser.length) {
+    const byte = peekByte(parser, parser.position)
+    // `|` and `)` end the sequence.
+    if (byte == 124 || byte == 41) {
+      break
+    }
+    const groupStart = parser.groupCount
+    const atom = parseAtom(mutable parser)
+    // A flag group such as `(?i)` builds no node.
+    if (atom >= 0) {
+      const repeated = parseRepeat(mutable parser, atom, groupStart)
+      Arrays.push(mutable children, repeated)
+    }
+  }
+  if (Arrays.length(children) == 1) {
+    return children[0]
+  }
+  if (Arrays.length(children) == 0) {
+    return addEmpty(mutable parser)
+  }
+  return addNode(mutable parser, Kind.Concat, 0, 0, children, [])
+}
+
+// Reads `{n}`, `{n,}` or `{n,m}` at position. Returns the end of the
+// quantifier and its counts (-1 for no upper count), or end -1 when the text
+// is not a quantifier, which makes `{` a literal as in JavaScript.
+struct Counts {
+  end: int
+  low: int
+  high: int
+}
+
+function readCounts(parser: Parser, position: int): Counts {
+  const none = Counts { end: -1, low: 0, high: 0 }
+  let index = position + 1
+  const low = readNumber(parser, index)
+  if (low.end == index) {
+    return none
+  }
+  index = low.end
+  if (peekByte(parser, index) == 125) {
+    return Counts { end: index + 1, low: low.low, high: low.low }
+  }
+  if (peekByte(parser, index) != 44) {
+    return none
+  }
+  index += 1
+  if (peekByte(parser, index) == 125) {
+    return Counts { end: index + 1, low: low.low, high: -1 }
+  }
+  const high = readNumber(parser, index)
+  if (high.end == index || peekByte(parser, high.end) != 125) {
+    return none
+  }
+  return Counts { end: high.end + 1, low: low.low, high: high.low }
+}
+
+// Reads decimal digits at position; low holds the value, capped so a long
+// number cannot overflow.
+function readNumber(parser: Parser, position: int): Counts {
+  let index = position
+  let value = 0
+  while (true) {
+    const byte = peekByte(parser, index)
+    if (byte < 48 || byte > 57) {
+      break
+    }
+    if (value <= MAX_REPEAT * 10) {
+      value = value * 10 + byte - 48
+    }
+    index += 1
+  }
+  return Counts { end: index, low: value, high: 0 }
+}
+
+function isQuantifier(parser: Parser, position: int): bool {
+  const byte = peekByte(parser, position)
+  if (byte == 42 || byte == 43 || byte == 63) {
+    return true
+  }
+  return byte == 123 && readCounts(parser, position).end >= 0
+}
+
+function parseRepeat(mutable parser: Parser, atom: int, groupStart: int): int uses alloc {
+  const position = parser.position
+  if (!isQuantifier(parser, position)) {
+    return atom
+  }
+  if (parser.nodes[atom].kind == Kind.Assertion) {
+    fail(mutable parser, position, "nothing to repeat")
+    return atom
+  }
+  const byte = peekByte(parser, position)
+  let low = 0
+  let high = -1
+  if (byte == 42) {
+    parser.position += 1
+  } else if (byte == 43) {
+    low = 1
+    parser.position += 1
+  } else if (byte == 63) {
+    high = 1
+    parser.position += 1
+  } else {
+    const counts = readCounts(parser, position)
+    if (counts.low > MAX_REPEAT || counts.high > MAX_REPEAT) {
+      fail(mutable parser, position, `repeat count above ${Int.toString(MAX_REPEAT)}`)
+      return atom
+    }
+    if (counts.high >= 0 && counts.high < counts.low) {
+      fail(mutable parser, position, "repeat counts out of order")
+      return atom
+    }
+    low = counts.low
+    high = counts.high
+    parser.position = counts.end
+  }
+  let greedy = true
+  if (peekByte(parser, parser.position) == 63) {
+    greedy = false
+    parser.position += 1
+  }
+  if (isQuantifier(parser, parser.position)) {
+    const repeatPosition = parser.position
+    fail(mutable parser, repeatPosition, "nothing to repeat")
+    return atom
+  }
+  const index = addNode(mutable parser, Kind.Repeat, low, high, [atom], [])
+  parser.nodes[index].greedy = greedy
+  parser.nodes[index].groupStart = groupStart
+  parser.nodes[index].groupEnd = parser.groupCount
+  return index
+}
+
+// Parses one atom. Returns -1 for a flag group, which builds no node.
+function parseAtom(mutable parser: Parser): int uses alloc {
+  const position = parser.position
+  const byte = peekByte(parser, position)
+  if (byte == 40) {
+    return parseGroup(mutable parser)
+  }
+  if (byte == 91) {
+    return parseClass(mutable parser)
+  }
+  if (byte == 46) {
+    parser.position += 1
+    const dotAll = boolCode(parser.dotAll)
+    return addNode(mutable parser, Kind.AnyChar, dotAll, 0, [], [])
+  }
+  if (byte == 94) {
+    parser.position += 1
+    if (parser.multiline) {
+      return addNode(mutable parser, Kind.Assertion, LINE_START, 0, [], [])
+    }
+    return addNode(mutable parser, Kind.Assertion, TEXT_START, 0, [], [])
+  }
+  if (byte == 36) {
+    parser.position += 1
+    if (parser.multiline) {
+      return addNode(mutable parser, Kind.Assertion, LINE_END, 0, [], [])
+    }
+    return addNode(mutable parser, Kind.Assertion, TEXT_END, 0, [], [])
+  }
+  if (byte == 92) {
+    return parseEscape(mutable parser)
+  }
+  if (isQuantifier(parser, position)) {
+    fail(mutable parser, position, "nothing to repeat")
+    return addEmpty(mutable parser)
+  }
+  const code = readCode(parser.pattern, position)
+  parser.position += readWidth(parser.pattern, position)
+  return addLiteral(mutable parser, code)
+}
+
+function boolCode(flag: bool): int {
+  if (flag) {
+    return 1
+  }
+  return 0
+}
+
+function addLiteral(mutable parser: Parser, code: int): int uses alloc {
+  let other = -1
+  if (parser.ignoreCase) {
+    other = otherCase(code)
+  }
+  return addNode(mutable parser, Kind.Literal, code, other, [], [])
+}
+
+// The other case of an ASCII letter, or -1.
+function otherCase(code: int): int {
+  if (code >= 65 && code <= 90) {
+    return code + 32
+  }
+  if (code >= 97 && code <= 122) {
+    return code - 32
+  }
+  return -1
+}
+
+function parseGroup(mutable parser: Parser): int uses alloc {
+  const open = parser.position
+  parser.position += 1
+  let capture = -1
+  if (peekByte(parser, parser.position) == 63) {
+    const kind = peekByte(parser, parser.position + 1)
+    if (kind == 58) {
+      parser.position += 2
+      capture = 0
+    } else if (kind == 61 || kind == 33) {
+      fail(mutable parser, open, "lookahead is not supported: the engine is linear-time")
+      return addEmpty(mutable parser)
+    } else if (kind == 60) {
+      const after = peekByte(parser, parser.position + 2)
+      if (after == 61 || after == 33) {
+        fail(mutable parser, open, "lookbehind is not supported: the engine is linear-time")
+        return addEmpty(mutable parser)
+      }
+      parser.position += 2
+      const name = readGroupName(mutable parser, open)
+      if (parser.failed) {
+        return addEmpty(mutable parser)
+      }
+      parser.groupCount += 1
+      capture = parser.groupCount
+      Arrays.push(mutable parser.names, name)
+    } else {
+      return parseFlags(mutable parser, open)
+    }
+  } else {
+    parser.groupCount += 1
+    capture = parser.groupCount
+    Arrays.push(mutable parser.names, "")
+  }
+  return parseGroupBody(mutable parser, open, capture)
+}
+
+// Parses up to the `)` of the group that opened at open. A capture of 0 is a
+// group that does not capture. The flags set inside the group end with it.
+function parseGroupBody(mutable parser: Parser, open: int, capture: int): int uses alloc {
+  if (parser.depth >= MAX_DEPTH) {
+    fail(mutable parser, open, `groups nested deeper than ${Int.toString(MAX_DEPTH)}`)
+    return addEmpty(mutable parser)
+  }
+  const ignoreCase = parser.ignoreCase
+  const multiline = parser.multiline
+  const dotAll = parser.dotAll
+  parser.depth += 1
+  const body = parseAlternation(mutable parser)
+  parser.depth -= 1
+  parser.ignoreCase = ignoreCase
+  parser.multiline = multiline
+  parser.dotAll = dotAll
+  if (parser.failed) {
+    return body
+  }
+  if (peekByte(parser, parser.position) != 41) {
+    fail(mutable parser, open, "unclosed group")
+    return body
+  }
+  parser.position += 1
+  if (capture == 0) {
+    return body
+  }
+  return addNode(mutable parser, Kind.Group, capture, 0, [body], [])
+}
+
+// Reads `name>` of a named group and checks the name.
+function readGroupName(mutable parser: Parser, open: int): string uses alloc {
+  const start = parser.position
+  while (true) {
+    const byte = peekByte(parser, parser.position)
+    if (byte == 62) {
+      break
+    }
+    const letter =
+      (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95 || byte == 36
+    const digit = byte >= 48 && byte <= 57
+    if (!letter && !(digit && parser.position > start)) {
+      const namePosition = parser.position
+      fail(mutable parser, namePosition, "bad group name")
+      return ""
+    }
+    parser.position += 1
+  }
+  if (parser.position == start) {
+    fail(mutable parser, start, "bad group name")
+    return ""
+  }
+  const name = cut(parser.pattern, start, parser.position)
+  parser.position += 1
+  let used = false
+  for (const existing of parser.names) {
+    if (existing == name) {
+      used = true
+    }
+  }
+  if (used) {
+    fail(mutable parser, open, `group name "${name}" is used twice`)
+    return ""
+  }
+  return name
+}
+
+// Parses `(?flags)`, which sets flags for the rest of the enclosing group, or
+// `(?flags:...)`, which sets them for one group. A `-` turns the flags after
+// it off.
+function parseFlags(mutable parser: Parser, open: int): int uses alloc {
+  parser.position += 1
+  let turnOn = true
+  let seen = false
+  let ignoreCase = parser.ignoreCase
+  let multiline = parser.multiline
+  let dotAll = parser.dotAll
+  while (true) {
+    const byte = peekByte(parser, parser.position)
+    if (byte == 105) {
+      ignoreCase = turnOn
+    } else if (byte == 109) {
+      multiline = turnOn
+    } else if (byte == 115) {
+      dotAll = turnOn
+    } else if (byte == 45 && turnOn) {
+      turnOn = false
+      seen = false
+    } else {
+      break
+    }
+    if (byte != 45) {
+      seen = true
+    }
+    parser.position += 1
+  }
+  const end = peekByte(parser, parser.position)
+  if (!seen || (end != 41 && end != 58)) {
+    if (peekByte(parser, open + 2) == 80 || peekByte(parser, open + 2) == 39) {
+      fail(mutable parser, open, "bad group")
+    } else {
+      fail(mutable parser, open, "bad group: expected a flag (i, m or s), `:`, `<name>`")
+    }
+    return addEmpty(mutable parser)
+  }
+  parser.position += 1
+  if (end == 41) {
+    parser.ignoreCase = ignoreCase
+    parser.multiline = multiline
+    parser.dotAll = dotAll
+    return -1
+  }
+  const outerIgnoreCase = parser.ignoreCase
+  const outerMultiline = parser.multiline
+  const outerDotAll = parser.dotAll
+  parser.ignoreCase = ignoreCase
+  parser.multiline = multiline
+  parser.dotAll = dotAll
+  const body = parseGroupBody(mutable parser, open, 0)
+  parser.ignoreCase = outerIgnoreCase
+  parser.multiline = outerMultiline
+  parser.dotAll = outerDotAll
+  return body
+}
+
+// An escape outside a class.
+function parseEscape(mutable parser: Parser): int uses alloc {
+  const start = parser.position
+  const byte = peekByte(parser, start + 1)
+  if (byte == 98 || byte == 66) {
+    parser.position += 2
+    if (byte == 98) {
+      return addNode(mutable parser, Kind.Assertion, WORD_BOUNDARY, 0, [], [])
+    }
+    return addNode(mutable parser, Kind.Assertion, NOT_WORD_BOUNDARY, 0, [], [])
+  }
+  const set = readSetEscape(byte)
+  if (Arrays.length(set) > 0) {
+    parser.position += 2
+    return addSet(mutable parser, set, false)
+  }
+  const code = readEscapeCode(mutable parser, false)
+  if (parser.failed) {
+    return addEmpty(mutable parser)
+  }
+  return addLiteral(mutable parser, code)
+}
+
+// The ranges of `\d`, `\D`, `\w`, `\W`, `\s` or `\S` for the letter after the
+// backslash, or [] for any other.
+function readSetEscape(byte: int): Array<int> uses alloc {
+  if (byte == 100) {
+    return [48, 57]
+  }
+  if (byte == 68) {
+    return complement([48, 57])
+  }
+  if (byte == 119) {
+    return wordRanges()
+  }
+  if (byte == 87) {
+    return complement(wordRanges())
+  }
+  if (byte == 115) {
+    return spaceRanges()
+  }
+  if (byte == 83) {
+    return complement(spaceRanges())
+  }
+  return []
+}
+
+function wordRanges(): Array<int> uses alloc {
+  return [48, 57, 65, 90, 95, 95, 97, 122]
+}
+
+// White space and line terminators, as JavaScript's `\s`.
+function spaceRanges(): Array<int> uses alloc {
+  return [
+    9,
+    13,
+    32,
+    32,
+    160,
+    160,
+    5760,
+    5760,
+    8192,
+    8202,
+    8232,
+    8233,
+    8239,
+    8239,
+    8287,
+    8287,
+    12288,
+    12288,
+    65279,
+    65279,
+  ]
+}
+
+// Reads one escape that stands for a code point, at the backslash, and moves
+// past it. inClass makes `\b` a backspace and `\-` a hyphen.
+function readEscapeCode(mutable parser: Parser, inClass: bool): int uses alloc {
+  const start = parser.position
+  const byte = peekByte(parser, start + 1)
+  if (byte < 0) {
+    fail(mutable parser, start, "the pattern ends with a backslash")
+    return 0
+  }
+  parser.position += 2
+  if (byte >= 49 && byte <= 57) {
+    fail(mutable parser, start, "back references are not supported: the engine is linear-time")
+    return 0
+  }
+  if (byte == 107) {
+    fail(mutable parser, start, "back references are not supported: the engine is linear-time")
+    return 0
+  }
+  if (byte == 48) {
+    return 0
+  }
+  if (byte == 110) {
+    return 10
+  }
+  if (byte == 114) {
+    return 13
+  }
+  if (byte == 116) {
+    return 9
+  }
+  if (byte == 118) {
+    return 11
+  }
+  if (byte == 102) {
+    return 12
+  }
+  if (byte == 98 && inClass) {
+    return 8
+  }
+  if (byte == 99) {
+    const letter = peekByte(parser, parser.position)
+    if ((letter >= 65 && letter <= 90) || (letter >= 97 && letter <= 122)) {
+      parser.position += 1
+      return letter % 32
+    }
+    fail(mutable parser, start, "\\c must be followed by a letter")
+    return 0
+  }
+  if (byte == 120) {
+    const value = readHex(parser, parser.position, 2)
+    if (value < 0) {
+      fail(mutable parser, start, "\\x must be followed by two hex digits")
+      return 0
+    }
+    parser.position += 2
+    return value
+  }
+  if (byte == 117) {
+    return readUnicodeEscape(mutable parser, start)
+  }
+  if (byte == 112 || byte == 80) {
+    fail(mutable parser, start, "Unicode property escapes are not supported")
+    return 0
+  }
+  // Any other ASCII letter or digit is an unknown escape; punctuation and
+  // non-ASCII characters stand for themselves.
+  if ((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)) {
+    const letter = cut(parser.pattern, start + 1, start + 2)
+    fail(mutable parser, start, `unknown escape \\${letter}`)
+    return 0
+  }
+  parser.position = start + 1
+  const code = readCode(parser.pattern, parser.position)
+  parser.position += readWidth(parser.pattern, parser.position)
+  return code
+}
+
+// `\uHHHH` or `\u{H...}`, with parser.position just past the `u`.
+function readUnicodeEscape(mutable parser: Parser, start: int): int {
+  if (peekByte(parser, parser.position) == 123) {
+    let index = parser.position + 1
+    let value = 0
+    while (index < parser.length && peekByte(parser, index) != 125) {
+      const digit = readHex(parser, index, 1)
+      if (digit < 0) {
+        fail(mutable parser, start, "bad \\u{...} escape")
+        return 0
+      }
+      value = value * 16 + digit
+      if (value > MAX_CODE) {
+        fail(mutable parser, start, "\\u{...} escape above 10FFFF")
+        return 0
+      }
+      index += 1
+    }
+    if (index >= parser.length || index == parser.position + 1) {
+      fail(mutable parser, start, "bad \\u{...} escape")
+      return 0
+    }
+    parser.position = index + 1
+    return value
+  }
+  const value = readHex(parser, parser.position, 4)
+  if (value < 0) {
+    fail(mutable parser, start, "\\u must be followed by four hex digits or {...}")
+    return 0
+  }
+  parser.position += 4
+  // A high surrogate escape followed by a low one is one code point, as the
+  // pair would be in a JavaScript string.
+  if (value >= 55296 && value <= 56319 && peekByte(parser, parser.position) == 92) {
+    if (peekByte(parser, parser.position + 1) == 117) {
+      const low = readHex(parser, parser.position + 2, 4)
+      if (low >= 56320 && low <= 57343) {
+        parser.position += 6
+        return 65536 + (value - 55296) * 1024 + (low - 56320)
+      }
+    }
+  }
+  return value
+}
+
+// The value of count hex digits at position, or -1.
+function readHex(parser: Parser, position: int, count: int): int {
+  let value = 0
+  for (let i = 0; i < count; i += 1) {
+    const byte = peekByte(parser, position + i)
+    let digit = -1
+    if (byte >= 48 && byte <= 57) {
+      digit = byte - 48
+    } else if (byte >= 97 && byte <= 102) {
+      digit = byte - 87
+    } else if (byte >= 65 && byte <= 70) {
+      digit = byte - 55
+    }
+    if (digit < 0) {
+      return -1
+    }
+    value = value * 16 + digit
+  }
+  return value
+}
+
+// A class `[...]` or `[^...]`.
+function parseClass(mutable parser: Parser): int uses alloc {
+  const open = parser.position
+  parser.position += 1
+  let negated = false
+  if (peekByte(parser, parser.position) == 94) {
+    negated = true
+    parser.position += 1
+  }
+  let ranges: Array<int> = []
+  while (!parser.failed) {
+    const byte = peekByte(parser, parser.position)
+    if (byte < 0) {
+      fail(mutable parser, open, "unclosed class")
+      return addEmpty(mutable parser)
+    }
+    if (byte == 93) {
+      parser.position += 1
+      break
+    }
+    const itemStart = parser.position
+    // A set escape adds its ranges and cannot start a range.
+    if (byte == 92) {
+      const set = readSetEscape(peekByte(parser, parser.position + 1))
+      if (Arrays.length(set) > 0) {
+        parser.position += 2
+        for (const bound of set) {
+          Arrays.push(mutable ranges, bound)
+        }
+        if (isRangeDash(parser)) {
+          fail(mutable parser, itemStart, "bad class range")
+        }
+        continue
+      }
+    }
+    const low = readClassCode(mutable parser)
+    if (!isRangeDash(parser)) {
+      Arrays.push(mutable ranges, low)
+      Arrays.push(mutable ranges, low)
+      continue
+    }
+    parser.position += 1
+    if (
+      peekByte(parser, parser.position) == 92 &&
+        Arrays.length(readSetEscape(peekByte(parser, parser.position + 1))) > 0
+    ) {
+      fail(mutable parser, itemStart, "bad class range")
+      continue
+    }
+    const high = readClassCode(mutable parser)
+    if (high < low) {
+      fail(mutable parser, itemStart, "bad class range")
+      continue
+    }
+    Arrays.push(mutable ranges, low)
+    Arrays.push(mutable ranges, high)
+  }
+  if (parser.failed) {
+    return addEmpty(mutable parser)
+  }
+  return addSet(mutable parser, ranges, negated)
+}
+
+// A `-` that makes a range: not the last character of the class.
+function isRangeDash(parser: Parser): bool {
+  const after = peekByte(parser, parser.position + 1)
+  return peekByte(parser, parser.position) == 45 && after != 93 && after >= 0
+}
+
+function readClassCode(mutable parser: Parser): int uses alloc {
+  if (peekByte(parser, parser.position) == 92) {
+    return readEscapeCode(mutable parser, true)
+  }
+  const code = readCode(parser.pattern, parser.position)
+  parser.position += readWidth(parser.pattern, parser.position)
+  return code
+}
+
+// Adds a Set node: the ranges sorted and merged, with the other case of each
+// ASCII letter under (?i), then complemented when negated.
+function addSet(mutable parser: Parser, ranges: Array<int>, negated: bool): int uses alloc {
+  let all = normalize(ranges)
+  if (parser.ignoreCase) {
+    all = normalize(addOtherCases(all))
+  }
+  if (negated) {
+    all = complement(all)
+  }
+  return addNode(mutable parser, Kind.Set, 0, 0, [], all)
+}
+
+// Adds the other case of the ASCII letters in sorted, merged ranges.
+function addOtherCases(ranges: Array<int>): Array<int> uses alloc {
+  let result = copy(ranges)
+  for (let index = 0; index < Arrays.length(ranges); index += 2) {
+    const low = ranges[index]
+    const high = ranges[index + 1]
+    // The upper case letters in the range, then the lower case ones.
+    const upperLow = larger(low, 65)
+    const upperHigh = smaller(high, 90)
+    if (upperLow <= upperHigh) {
+      Arrays.push(mutable result, upperLow + 32)
+      Arrays.push(mutable result, upperHigh + 32)
+    }
+    const lowerLow = larger(low, 97)
+    const lowerHigh = smaller(high, 122)
+    if (lowerLow <= lowerHigh) {
+      Arrays.push(mutable result, lowerLow - 32)
+      Arrays.push(mutable result, lowerHigh - 32)
+    }
+  }
+  return result
+}
+
+function larger(first: int, second: int): int {
+  if (first > second) {
+    return first
+  }
+  return second
+}
+
+function smaller(first: int, second: int): int {
+  if (first < second) {
+    return first
+  }
+  return second
+}
+
+// Sorts pairs of low and high by low and merges the ones that touch.
+function normalize(ranges: Array<int>): Array<int> uses alloc {
+  let sorted = copy(ranges)
+  const count = Arrays.length(sorted) / 2
+  // Insertion sort: classes are short.
+  for (let i = 1; i < count; i += 1) {
+    const low = sorted[i * 2]
+    const high = sorted[i * 2 + 1]
+    let j = i - 1
+    while (j >= 0 && sorted[j * 2] > low) {
+      sorted[j * 2 + 2] = sorted[j * 2]
+      sorted[j * 2 + 3] = sorted[j * 2 + 1]
+      j -= 1
+    }
+    sorted[j * 2 + 2] = low
+    sorted[j * 2 + 3] = high
+  }
+  let merged: Array<int> = []
+  for (let i = 0; i < count; i += 1) {
+    const low = sorted[i * 2]
+    const high = sorted[i * 2 + 1]
+    const last = Arrays.length(merged) - 1
+    if (last > 0 && low <= merged[last] + 1) {
+      if (high > merged[last]) {
+        merged[last] = high
+      }
+    } else {
+      Arrays.push(mutable merged, low)
+      Arrays.push(mutable merged, high)
+    }
+  }
+  return merged
+}
+
+// The code points not in sorted, merged ranges.
+function complement(ranges: Array<int>): Array<int> uses alloc {
+  let result: Array<int> = []
+  let next = 0
+  for (let index = 0; index < Arrays.length(ranges); index += 2) {
+    if (ranges[index] > next) {
+      Arrays.push(mutable result, next)
+      Arrays.push(mutable result, ranges[index] - 1)
+    }
+    next = ranges[index + 1] + 1
+  }
+  if (next <= MAX_CODE) {
+    Arrays.push(mutable result, next)
+    Arrays.push(mutable result, MAX_CODE)
+  }
+  return result
+}
+
+// The literal text every match starts with: the leading literals of the
+// pattern that do not fold case.
+function findPrefix(nodes: Array<Node>, root: int): string uses alloc {
+  let builder = Str.builder()
+  let items = [root]
+  if (nodes[root].kind == Kind.Concat) {
+    items = nodes[root].children
+  }
+  for (const item of items) {
+    const node = nodes[item]
+    if (node.kind != Kind.Literal || node.limit >= 0) {
+      break
+    }
+    if (Char.fromCode(node.value) is Some(character)) {
+      Str.appendChar(mutable builder, character)
+    } else {
+      break
+    }
+  }
+  return Str.build(builder)
+}
+
+function startsAnchored(nodes: Array<Node>, root: int): bool {
+  let first = root
+  if (nodes[root].kind == Kind.Concat) {
+    first = nodes[root].children[0]
+  }
+  return nodes[first].kind == Kind.Assertion && nodes[first].value == TEXT_START
+}
+
+// The program compiler.
+
+function emit(mutable program: Program, op: Op, first: int, second: int): int uses alloc {
+  const index = Arrays.length(program.ops)
+  if (index >= MAX_PROGRAM) {
+    program.tooLarge = true
+    return index
+  }
+  Arrays.push(mutable program.ops, op)
+  Arrays.push(mutable program.firsts, first)
+  Arrays.push(mutable program.seconds, second)
+  return index
+}
+
+function patchFirst(mutable program: Program, index: int, target: int) {
+  if (index < Arrays.length(program.firsts)) {
+    program.firsts[index] = target
+  }
+}
+
+function patchSecond(mutable program: Program, index: int, target: int) {
+  if (index < Arrays.length(program.seconds)) {
+    program.seconds[index] = target
+  }
+}
+
+function compileNode(mutable program: Program, nodes: Array<Node>, index: int) uses alloc {
+  if (program.tooLarge) {
+    return
+  }
+  const node = nodes[index]
+  match (node.kind) {
+    Kind.Empty => {}
+    Kind.Literal => {
+      emit(mutable program, Op.Char, node.value, node.limit)
+    }
+    Kind.AnyChar => {
+      emit(mutable program, Op.Any, node.value, 0)
+    }
+    Kind.Set => {
+      const start = Arrays.length(program.ranges)
+      for (const bound of node.ranges) {
+        Arrays.push(mutable program.ranges, bound)
+      }
+      const end = Arrays.length(program.ranges)
+      emit(mutable program, Op.Class, start, end)
+    }
+    Kind.Assertion => {
+      emit(mutable program, Op.Assert, node.value, 0)
+    }
+    Kind.Group => {
+      emit(mutable program, Op.Save, node.value * 2, 0)
+      compileNode(mutable program, nodes, node.children[0])
+      emit(mutable program, Op.Save, node.value * 2 + 1, 0)
+    }
+    Kind.Concat => {
+      for (const child of node.children) {
+        compileNode(mutable program, nodes, child)
+      }
+    }
+    Kind.Alternate => {
+      compileAlternate(mutable program, nodes, node.children)
+    }
+    Kind.Repeat => {
+      compileRepeat(mutable program, nodes, index, node)
+    }
+  }
+}
+
+// a|b|c: split to each choice in order, each ending in a jump past the rest.
+function compileAlternate(
+  mutable program: Program,
+  nodes: Array<Node>,
+  children: Array<int>,
+) uses alloc {
+  let jumps: Array<int> = []
+  const last = Arrays.length(children) - 1
+  for (let i = 0; i < last; i += 1) {
+    const choice = Arrays.length(program.ops) + 1
+    const split = emit(mutable program, Op.Split, choice, 0)
+    compileNode(mutable program, nodes, children[i])
+    const jump = emit(mutable program, Op.Jump, 0, 0)
+    Arrays.push(mutable jumps, jump)
+    const following = Arrays.length(program.ops)
+    patchSecond(mutable program, split, following)
+  }
+  compileNode(mutable program, nodes, children[last])
+  const end = Arrays.length(program.ops)
+  for (const jump of jumps) {
+    patchFirst(mutable program, jump, end)
+  }
+}
+
+// A repeat writes one pass of its body per required count, then a loop for
+// no upper count, or one optional pass per count above the lower one. Each
+// pass clears the groups inside it, and a pass beyond the lower count fails
+// when it matches empty, as in JavaScript.
+function compileRepeat(
+  mutable program: Program,
+  nodes: Array<Node>,
+  index: int,
+  node: Node,
+) uses alloc {
+  for (let i = 0; i < node.value && !program.tooLarge; i += 1) {
+    compilePass(mutable program, nodes, node)
+  }
+  if (node.value == node.limit) {
+    return
+  }
+  if (program.loopSlots[index] < 0) {
+    program.loopSlots[index] = program.slotCount
+    program.slotCount += 1
+  }
+  const slot = program.loopSlots[index]
+  if (node.limit < 0) {
+    const split = emit(mutable program, Op.Split, 0, 0)
+    compileCheckedPass(mutable program, nodes, node, slot)
+    emit(mutable program, Op.Jump, split, 0)
+    patchSplit(mutable program, split, node.greedy)
+    return
+  }
+  let splits: Array<int> = []
+  for (let i = node.value; i < node.limit && !program.tooLarge; i += 1) {
+    const split = emit(mutable program, Op.Split, 0, 0)
+    Arrays.push(mutable splits, split)
+    compileCheckedPass(mutable program, nodes, node, slot)
+  }
+  for (const split of splits) {
+    patchSplit(mutable program, split, node.greedy)
+  }
+}
+
+// Points a split at the next instruction and at the end of the program so
+// far, the next one first when greedy.
+function patchSplit(mutable program: Program, split: int, greedy: bool) {
+  const end = Arrays.length(program.ops)
+  if (greedy) {
+    patchFirst(mutable program, split, split + 1)
+    patchSecond(mutable program, split, end)
+  } else {
+    patchFirst(mutable program, split, end)
+    patchSecond(mutable program, split, split + 1)
+  }
+}
+
+function compilePass(mutable program: Program, nodes: Array<Node>, node: Node) uses alloc {
+  if (node.groupEnd > node.groupStart) {
+    emit(mutable program, Op.Reset, (node.groupStart + 1) * 2, (node.groupEnd + 1) * 2)
+  }
+  compileNode(mutable program, nodes, node.children[0])
+}
+
+function compileCheckedPass(
+  mutable program: Program,
+  nodes: Array<Node>,
+  node: Node,
+  slot: int,
+) uses alloc {
+  emit(mutable program, Op.Save, slot, 0)
+  compilePass(mutable program, nodes, node)
+  emit(mutable program, Op.Progress, slot, 0)
+}
+
+// Text decoding. The text is valid UTF-8, so the first byte gives the width.
+
+function readWidth(text: string, position: int): int {
+  const byte = Str.byteAt(text, position)
+  if (byte < 128) {
+    return 1
+  }
+  if (byte < 224) {
+    return 2
+  }
+  if (byte < 240) {
+    return 3
+  }
+  return 4
+}
+
+function readCode(text: string, position: int): int {
+  const byte = Str.byteAt(text, position)
+  if (byte < 128) {
+    return byte
+  }
+  if (byte < 224) {
+    return (byte % 32) * 64 + Str.byteAt(text, position + 1) % 64
+  }
+  if (byte < 240) {
+    return ((byte % 16) * 64 + Str.byteAt(text, position + 1) % 64) * 64 +
+      Str.byteAt(text, position + 2) % 64
+  }
+  const high = (byte % 8) * 64 + Str.byteAt(text, position + 1) % 64
+  return (high * 64 + Str.byteAt(text, position + 2) % 64) * 64 +
+    Str.byteAt(text, position + 3) % 64
+}
+
+// The code point at position, or -1 at the end of the text.
+function codeAt(text: string, position: int): int {
+  if (position >= Str.length(text)) {
+    return -1
+  }
+  return readCode(text, position)
+}
+
+// The code point that ends just before position, or -1 at the start.
+function codeBefore(text: string, position: int): int {
+  if (position <= 0) {
+    return -1
+  }
+  let start = position - 1
+  while (start > 0 && Str.byteAt(text, start) >= 128 && Str.byteAt(text, start) < 192) {
+    start -= 1
+  }
+  return readCode(text, start)
+}
+
+function isLineTerminator(code: int): bool {
+  return code == 10 || code == 13 || code == 8232 || code == 8233
+}
+
+function isWordCode(code: int): bool {
+  return (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    code == 95 ||
+    (code >= 97 && code <= 122)
+}
+
+// The Pike VM.
+
+function createMachine(regex: Regex): Machine uses alloc {
+  const size = Arrays.length(regex.ops)
+  const slots = regex.slotCount
+  return Machine {
+    size: size,
+    slots: slots,
+    pcs: filledInts(0, size * 2),
+    captures: filledInts(-1, size * slots * 2),
+    counts: [0, 0],
+    marks: filledInts(0, size * 2),
+    generations: [0, 0],
+    generation: 0,
+    side: 0,
+    stackPcs: [],
+    stackSlots: [],
+    stackValues: [],
+    stackTop: 0,
+    working: filledInts(-1, slots),
+    best: filledInts(-1, slots),
+  }
+}
+
+function filledInts(value: int, count: int): Array<int> uses alloc {
+  if (Arrays.filled(value, count) is Some(items)) {
+    return items
+  }
+  return []
+}
+
+// Empties a thread list for the next step.
+function resetList(mutable machine: Machine, list: int) {
+  machine.generation += 1
+  machine.generations[list] = machine.generation
+  machine.counts[list] = 0
+}
+
+// Pushes a job on the stack of addThread: a program counter to follow, or
+// with a slot of 0 or more, a value to put back in that slot.
+function pushJob(mutable machine: Machine, pc: int, slot: int, value: int) uses alloc {
+  const top = machine.stackTop
+  if (top < Arrays.length(machine.stackPcs)) {
+    machine.stackPcs[top] = pc
+    machine.stackSlots[top] = slot
+    machine.stackValues[top] = value
+  } else {
+    Arrays.push(mutable machine.stackPcs, pc)
+    Arrays.push(mutable machine.stackSlots, slot)
+    Arrays.push(mutable machine.stackValues, value)
+  }
+  machine.stackTop = top + 1
+}
+
+// Follows the program from pc through splits, jumps, saves and assertions,
+// and adds a thread to the list at each instruction that reads a character
+// or matches, in priority order. The captures come from machine.working.
+// before and after are the code points around position (-1 at an edge).
+function addThread(
+  regex: Regex,
+  mutable machine: Machine,
+  list: int,
+  startPc: int,
+  position: int,
+  length: int,
+  before: int,
+  after: int,
+) {
+  const markBase = list * machine.size
+  const generation = machine.generations[list]
+  pushJob(mutable machine, startPc, -1, 0)
+  while (machine.stackTop > 0) {
+    machine.stackTop -= 1
+    const top = machine.stackTop
+    const slot = machine.stackSlots[top]
+    if (slot >= 0) {
+      // Undo a save once the threads after it are added.
+      machine.working[slot] = machine.stackValues[top]
+      continue
+    }
+    let pc = machine.stackPcs[top]
+    while (machine.marks[markBase + pc] != generation) {
+      machine.marks[markBase + pc] = generation
+      const op = regex.ops[pc]
+      if (op == Op.Jump) {
+        pc = regex.firsts[pc]
+      } else if (op == Op.Split) {
+        pushJob(mutable machine, regex.seconds[pc], -1, 0)
+        pc = regex.firsts[pc]
+      } else if (op == Op.Save) {
+        const saved = regex.firsts[pc]
+        const previous = machine.working[saved]
+        pushJob(mutable machine, 0, saved, previous)
+        machine.working[saved] = position
+        pc += 1
+      } else if (op == Op.Reset) {
+        for (let cleared = regex.firsts[pc]; cleared < regex.seconds[pc]; cleared += 1) {
+          const previous = machine.working[cleared]
+          pushJob(mutable machine, 0, cleared, previous)
+          machine.working[cleared] = -1
+        }
+        pc += 1
+      } else if (op == Op.Progress) {
+        if (machine.working[regex.firsts[pc]] == position) {
+          break
+        }
+        pc += 1
+      } else if (op == Op.Assert) {
+        if (!assertionHolds(regex.firsts[pc], position, length, before, after)) {
+          break
+        }
+        pc += 1
+      } else {
+        const count = machine.counts[list]
+        machine.pcs[markBase + count] = pc
+        const captureBase = (markBase + count) * machine.slots
+        for (let i = 0; i < machine.slots; i += 1) {
+          machine.captures[captureBase + i] = machine.working[i]
+        }
+        machine.counts[list] = count + 1
+        break
+      }
+    }
+  }
+}
+
+function assertionHolds(kind: int, position: int, length: int, before: int, after: int): bool {
+  if (kind == TEXT_START) {
+    return position == 0
+  }
+  if (kind == TEXT_END) {
+    return position == length
+  }
+  if (kind == LINE_START) {
+    return before < 0 || isLineTerminator(before)
+  }
+  if (kind == LINE_END) {
+    return after < 0 || isLineTerminator(after)
+  }
+  const boundary = isWordCode(before) != isWordCode(after)
+  if (kind == WORD_BOUNDARY) {
+    return boundary
+  }
+  return !boundary
+}
+
+function classHolds(regex: Regex, start: int, end: int, code: int): bool {
+  // Binary search over the pairs of low and high.
+  let low = 0
+  let high = (end - start) / 2
+  while (low < high) {
+    const middle = (low + high) / 2
+    const pair = start + middle * 2
+    if (code < regex.ranges[pair]) {
+      high = middle
+    } else if (code > regex.ranges[pair + 1]) {
+      low = middle + 1
+    } else {
+      return true
+    }
+  }
+  return false
+}
+
+function stepHolds(regex: Regex, pc: int, code: int): bool {
+  if (code < 0) {
+    return false
+  }
+  const op = regex.ops[pc]
+  if (op == Op.Char) {
+    return code == regex.firsts[pc] || code == regex.seconds[pc]
+  }
+  if (op == Op.Any) {
+    return regex.firsts[pc] == 1 || !isLineTerminator(code)
+  }
+  if (op == Op.Class) {
+    return classHolds(regex, regex.firsts[pc], regex.seconds[pc], code)
+  }
+  return false
+}
+
+// The first offset at or after position where the prefix starts, or -1.
+function findText(text: string, prefix: string, position: int): int {
+  const length = Str.length(text)
+  const prefixLength = Str.length(prefix)
+  const first = Str.byteAt(prefix, 0)
+  let index = position
+  while (index + prefixLength <= length) {
+    if (Str.byteAt(text, index) == first) {
+      let same = true
+      for (let i = 1; i < prefixLength && same; i += 1) {
+        same = Str.byteAt(text, index + i) == Str.byteAt(prefix, i)
+      }
+      if (same) {
+        return index
+      }
+    }
+    index += 1
+  }
+  return -1
+}
+
+// Runs the machine from start, moved to a character boundary. On a match,
+// machine.best holds its capture slots.
+function search(regex: Regex, mutable machine: Machine, text: string, start: int): bool {
+  const length = Str.length(text)
+  let position = start
+  while (
+    position < length && Str.byteAt(text, position) >= 128 && Str.byteAt(text, position) < 192
+  ) {
+    position += 1
+  }
+  if (position > length) {
+    return false
+  }
+  const usePrefix = Str.length(regex.prefix) > 0
+  let matched = false
+  let before = codeBefore(text, position)
+  let code = codeAt(text, position)
+  machine.side = 0
+  resetList(mutable machine, 0)
+  while (true) {
+    const current = machine.side
+    const next = 1 - current
+    if (!matched) {
+      if (machine.counts[current] == 0) {
+        if (regex.anchored && position > 0) {
+          break
+        }
+        if (usePrefix) {
+          const found = findText(text, regex.prefix, position)
+          if (found < 0) {
+            break
+          }
+          if (found > position) {
+            position = found
+            before = codeBefore(text, position)
+            code = codeAt(text, position)
+          }
+        }
+      }
+      for (let i = 0; i < machine.slots; i += 1) {
+        machine.working[i] = -1
+      }
+      addThread(regex, mutable machine, current, 0, position, length, before, code)
+    }
+    // With no thread left, the search ends once a match is found; before
+    // that, the next position gets a new thread.
+    const count = machine.counts[current]
+    if (count == 0 && matched) {
+      break
+    }
+    let width = 0
+    if (code >= 0) {
+      width = readWidth(text, position)
+    }
+    const after = codeAt(text, position + width)
+    resetList(mutable machine, next)
+    const listBase = current * machine.size
+    for (let index = 0; index < count; index += 1) {
+      const pc = machine.pcs[listBase + index]
+      const captureBase = (listBase + index) * machine.slots
+      if (regex.ops[pc] == Op.Match) {
+        // Threads after this one have lower priority: drop them.
+        for (let i = 0; i < machine.slots; i += 1) {
+          machine.best[i] = machine.captures[captureBase + i]
+        }
+        matched = true
+        break
+      }
+      if (stepHolds(regex, pc, code)) {
+        for (let i = 0; i < machine.slots; i += 1) {
+          machine.working[i] = machine.captures[captureBase + i]
+        }
+        addThread(regex, mutable machine, next, pc + 1, position + width, length, code, after)
+      }
+    }
+    if (code < 0) {
+      break
+    }
+    machine.side = next
+    position += width
+    before = code
+    code = after
+  }
+  return matched
+}

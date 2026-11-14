@@ -290,4 +290,4 @@ export function run(args: Array<string>): int {
 
 A test block may print or do any other effect without a `uses` list.
 
-Next: [11. Narra for TypeScript programmers](11-narra-for-typescript-programmers.md), optional reading for TypeScript programmers.
+Next: [11. The standard library](11-standard-library.md).

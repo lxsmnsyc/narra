@@ -1,0 +1,144 @@
+// std/toml: a document with every value kind, printed as JSON, then written
+// back with Toml.stringify and read again to the same Value.
+import * as Toml from "std/toml"
+import * as Json from "std/json"
+import { Value } from "std/shape"
+import * as Str from "std/string"
+
+const DOCUMENT = `# Every kind of TOML value.
+title = "TOML \\"example\\" \\u00e9 \\U0001F600"
+literal = 'C:\\Users\\nodejs'
+bare-key_1 = true
+"quoted key" = false
+'' = "empty literal key"
+lines = """
+Roses are red
+Violets are \\
+    blue"""
+raw = '''
+first line
+  'quoted' second line'''
+quotes = """two "" quotes and one at the end""""
+decimal = +99
+negative = -17
+zero = 0
+grouped = 1_000_000
+hex = 0xDEAD_beef
+octal = 0o755
+binary = 0b1101_0110
+largest = 9223372036854775807
+smallest = -9223372036854775808
+pi = 3.1415
+exponent = 5e+22
+small = -2E-2
+both = 6.626e-34
+under = 224_617.445_991
+infinity = inf
+negative-infinity = -inf
+not-a-number = nan
+offset = 1979-05-27T07:32:00Z
+offset-fraction = 1979-05-27T00:32:00.999999-07:00
+space = 1979-05-27 07:32:00+01:00
+local-datetime = 1979-05-27T07:32:00
+local-date = 2024-02-29
+local-time = 00:32:00.5
+mixed = [1, "two", 3.0, [4, 5], { six = 6 }]
+nested = [
+  [1, 2], # a comment in an array
+  ["a", 'b'],
+]
+empty = []
+site."google.com" = true
+point = { x = 1, y.z = 2 }
+
+[server]
+host = "localhost"
+port = 8080
+
+[server.limits]
+connections = 512
+
+[a.b.c]
+deep = 1
+
+[[products]]
+name = "Hammer"
+sku = 738594937
+
+[[products]]
+
+[[products]]
+name = "Nail"
+color = "gray"
+
+[[products.parts]]
+id = 1
+`
+
+export function run(_args: Array<string>): int {
+  const parsed = Toml.parse(DOCUMENT)
+  if (parsed is Err(error)) {
+    print(Toml.formatError(error))
+    return 1
+  }
+  const first = Json.stringify(parsed.value)
+  print(first)
+  const written = Toml.stringify(parsed.value)
+  if (written is Err(message)) {
+    print(message)
+    return 1
+  }
+  print(written.value)
+  const again = Toml.parse(written.value)
+  if (again is Err(error)) {
+    print(Toml.formatError(error))
+    return 1
+  }
+  if (Json.stringify(again.value) != first) {
+    print("round trip differs")
+    print(Json.stringify(again.value))
+    return 1
+  }
+  print("round trip ok")
+  // TOML has no null, and a document is a table.
+  let fields: Map<string, Value> = Map {}
+  fields["list"] = Value.List([Value.Int(1), Value.Null])
+  print(Show.show(Toml.stringify(Value.Record(fields))))
+  print(Show.show(Toml.stringify(Value.List([]))))
+  // Negative zero keeps its sign through a round trip.
+  let zero: Map<string, Value> = Map {}
+  zero["zero"] = Value.Float(-0.0)
+  if (Toml.stringify(Value.Record(zero)) is Ok(zeroText)) {
+    print(zeroText)
+    if (Toml.parse(zeroText) is Ok(zeroValue)) {
+      print(Show.show(Toml.stringify(zeroValue)))
+    }
+  }
+  // stringify stops at the depth parse accepts: 512 tables below the root.
+  print(Show.show(checkDepth(512)))
+  print(Show.show(checkDepth(600)))
+  return 0
+}
+
+// checkDepth stringifies tables nested depth deep and parses the text again.
+function checkDepth(depth: int): string uses alloc {
+  let value = Value.Record(Map {})
+  let level = 0
+  while (level < depth) {
+    let fields: Map<string, Value> = Map {}
+    fields["k"] = value
+    value = Value.Record(fields)
+    level += 1
+  }
+  const written = Toml.stringify(value)
+  if (written is Err(message)) {
+    if (Str.endsWith(message, ": nesting is deeper than 512")) {
+      return "stringify: nesting is deeper than 512"
+    }
+    return message
+  }
+  if (Toml.parse(written.value) is Err(error)) {
+    return `parse: ${Toml.formatError(error)}`
+  }
+  return "ok"
+}

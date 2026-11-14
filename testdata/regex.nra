@@ -1,0 +1,211 @@
+// std/regex: patterns and texts with the first match and its groups.
+import * as Regexes from "std/regex"
+import { Match } from "std/regex"
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function showFlag(flag: bool): string {
+  if (flag) {
+    return "yes"
+  }
+  return "no"
+}
+
+function describe(found: Match): string uses alloc {
+  let parts: Array<string> = []
+  for (let index = 1; index < Arrays.length(found.groups); index += 1) {
+    if (Regexes.group(found, index) is Some(text)) {
+      Arrays.push(mutable parts, `"${text}"`)
+    } else {
+      Arrays.push(mutable parts, "-")
+    }
+  }
+  const range = `${Int.toString(found.start)}..${Int.toString(found.end)}`
+  if (Arrays.length(parts) == 0) {
+    return `"${found.text}" at ${range}`
+  }
+  return `"${found.text}" at ${range} groups ${Str.join(parts, " ")}`
+}
+
+function check(pattern: string, text: string) uses io, alloc {
+  const compiled = Regexes.compile(pattern)
+  if (compiled is Err(error)) {
+    print(`/${pattern}/: error at ${Int.toString(error.position)}: ${error.reason}`)
+    return
+  }
+  const found = Regexes.find(compiled.value, text)
+  if (found is Some(hit)) {
+    print(`/${pattern}/ "${text}": ${describe(hit)}`)
+  } else {
+    print(`/${pattern}/ "${text}": no match`)
+  }
+}
+
+function checkAll(pattern: string, text: string) uses io, alloc {
+  const compiled = Regexes.compile(pattern)
+  if (compiled is Err(error)) {
+    print(`/${pattern}/: error ${error.reason}`)
+    return
+  }
+  let parts: Array<string> = []
+  for (const found of Regexes.findAll(compiled.value, text)) {
+    Arrays.push(mutable parts, `"${found.text}"@${Int.toString(found.start)}`)
+  }
+  print(`all /${pattern}/ "${text}": ${Str.join(parts, " ")}`)
+}
+
+function checkNamed(pattern: string, text: string, name: string) uses io, alloc {
+  const compiled = Regexes.compile(pattern)
+  if (compiled is Err(error)) {
+    print(`/${pattern}/: error ${error.reason}`)
+    return
+  }
+  if (Regexes.find(compiled.value, text) is Some(found)) {
+    if (Regexes.namedGroup(found, name) is Some(value)) {
+      print(`/${pattern}/ "${text}" <${name}>: "${value}"`)
+    } else {
+      print(`/${pattern}/ "${text}" <${name}>: none`)
+    }
+  } else {
+    print(`/${pattern}/ "${text}": no match`)
+  }
+}
+
+export function run(_args: Array<string>): int {
+  print("-- literals")
+  check("abc", "xxabcxx")
+  check("abc", "ab")
+  check("", "abc")
+  check("a.c", "abc")
+  check("a.c", "a\nc")
+  check("(?s)a.c", "a\nc")
+  check("a\\.c", "abc a.c")
+  check("\\$\\(x\\)", "cost $(x)")
+  check("\\x41\\u0042\\u{43}", "ABC")
+  check("\\t\\n", "a\t\nb")
+  print("-- classes")
+  check("[abc]+", "xxbcaz")
+  check("[a-z]+", "ABCdefGHI")
+  check("[^a-z]+", "abcDEF1g")
+  check("[a-]+", "x-a-y")
+  check("[\\d.]+", "pi is 3.14!")
+  check("\\d+", "abc 123 def")
+  check("\\D+", "123abc456")
+  check("\\w+", "  hello_world1 !")
+  check("\\W+", "abc, def")
+  check("\\s+", "a \t\n b")
+  check("\\S+", "  word  ")
+  check("[\\s\\d]+", "ab 1 2 cd")
+  check("[]a]", "a")
+  check("[^]", "x")
+  check("[\\]]", "a]b")
+  check("[\\b]", "a\u{8}b")
+  print("-- anchors")
+  check("^abc", "abcabc")
+  check("^abc", "xabc")
+  check("abc$", "abcabc")
+  check("abc$", "abcx")
+  check("^$", "")
+  check("(?m)^b", "a\nb")
+  check("^b", "a\nb")
+  check("(?m)a$", "a\nb")
+  check("\\bfoo\\b", "afoo foo")
+  check("\\Boo\\B", "foo boot")
+  check("\\b", "")
+  print("-- repeats")
+  check("a*", "aaab")
+  check("a*?", "aaab")
+  check("a+?", "aaab")
+  check("a?", "b")
+  check("a??b", "ab")
+  check("a{3}", "aaaaa")
+  check("a{2,}", "aaaaa")
+  check("a{2,3}", "aaaaa")
+  check("a{2,3}?", "aaaaa")
+  check("a{,3}", "a{,3}")
+  check("x{", "x{")
+  check("<.*>", "<a><b>")
+  check("<.*?>", "<a><b>")
+  check("(a|ab)(c|bcd)(d*)", "abcd")
+  check("(a+)(b+)?", "aaac")
+  check("(a*)*b", "aaab")
+  check("(a*)+", "b")
+  check("(a|b)*", "abba")
+  // Each pass of a repeat clears its groups, and a pass beyond the lower
+  // count may not match empty, as in JavaScript.
+  check("(?:(a)|b)+", "ab")
+  check("(?:(a)|(b))+", "ab")
+  check("(?:(a)|b){2}", "ab")
+  check("(|a)+", "aa")
+  check("(|a)*", "aa")
+  check("(a|)*?b", "aab")
+  check("(a?)*", "aa")
+  check("(a*)*", "b")
+  check("(?:a|())+", "aa")
+  check("(a){0,3}", "aaaa")
+  print("-- alternation")
+  check("cat|dog", "hotdog")
+  check("a|ab", "ab")
+  check("ab|a", "ab")
+  check("(?:x|y)+z", "xyxz")
+  check("|a", "a")
+  check("a|", "b")
+  print("-- groups")
+  check("(\\d+)-(\\d+)", "tel 555-1234")
+  check("((a)(b))", "ab")
+  check("(a)|(b)", "b")
+  check("(?:a)(b)", "ab")
+  check("()", "x")
+  checkNamed("(?<year>\\d{4})-(?<month>\\d\\d)", "on 2026-11-14", "month")
+  checkNamed("(?<year>\\d{4})-(?<month>\\d\\d)", "on 2026-11-14", "day")
+  checkNamed("(?<word>[a-z]+)|(?<num>\\d+)", "42", "word")
+  checkNamed("(?<word>[a-z]+)|(?<num>\\d+)", "42", "num")
+  print("-- flags")
+  check("(?i)hello", "Say HeLLo")
+  check("(?i)[a-c]+", "xABCabcd")
+  check("(?i)[^a-c]+", "abCdeF")
+  check("a(?i)b", "aB")
+  check("a(?i)b", "AB")
+  check("(?i:a)b", "Ab")
+  check("(?i:a)b", "AB")
+  check("(?i)\u{e9}", "\u{c9}\u{e9}")
+  check("(?ms)^a.b$", "x\na\nb\ny")
+  check("(?i-m)A", "a")
+  print("-- non-ASCII text")
+  check("\u{e9}+", "caf\u{e9}\u{e9}!")
+  check("caf.", "un caf\u{e9}")
+  check(".", "\u{1F600}x")
+  check("[\u{3b1}-\u{3c9}]+", "abc \u{3b1}\u{3b2}\u{3b3} def")
+  check("\\u{1F600}", "smile \u{1F600}")
+  check("\u{1F600}+", "smile \u{1F600}\u{1F600}")
+  check("\\uD83D\\uDE00", "smile \u{1F600}")
+  check("[\u{1F600}-\u{1F64F}]", "a \u{1F602}")
+  check("\\w+", "\u{e9}t\u{e9}")
+  check("\\bt", "\u{e9}t")
+  check("\\s", "a\u{3000}b")
+  print("-- empty matches and findAll")
+  checkAll("a*", "baaca")
+  checkAll("b*", "abc")
+  checkAll("\\d+", "1 22 333")
+  checkAll("", "\u{e9}a")
+  checkAll("x", "abc")
+  print("-- test and findFrom")
+  if (Regexes.compile("o") is Ok(letter)) {
+    print(`matches "foo": ${showFlag(Regexes.matches(letter, "foo"))}`)
+    print(`matches "bar": ${showFlag(Regexes.matches(letter, "bar"))}`)
+    if (Regexes.findFrom(letter, "foo boo", 3) is Some(found)) {
+      print(`findFrom 3: ${describe(found)}`)
+    }
+    print(`findFrom 99: ${showFlag(Regexes.findFrom(letter, "foo", 99) is Some(_))}`)
+  }
+  if (Regexes.compile("^a") is Ok(start)) {
+    print(`findFrom 1 of ^a: ${showFlag(Regexes.findFrom(start, "aa", 1) is Some(_))}`)
+  }
+  if (Regexes.compile(".") is Ok(any)) {
+    if (Regexes.findFrom(any, "\u{e9}x", 1) is Some(found)) {
+      print(`findFrom inside a character: ${describe(found)}`)
+    }
+  }
+  return 0
+}

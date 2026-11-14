@@ -1,0 +1,72 @@
+// std/regex: replace, replaceAll, replaceWith and split.
+import * as Regexes from "std/regex"
+import { Regex, Match } from "std/regex"
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function compileOrPanic(pattern: string): Regex uses alloc {
+  const compiled = Regexes.compile(pattern)
+  if (compiled is Err(error)) {
+    panic(`bad pattern ${pattern}: ${error.reason}`)
+  }
+  return compiled.value
+}
+
+function showPieces(pieces: Array<string>): string uses alloc {
+  let parts: Array<string> = []
+  for (const piece of pieces) {
+    Arrays.push(mutable parts, `"${piece}"`)
+  }
+  return `[${Str.join(parts, ", ")}]`
+}
+
+function checkSplit(pattern: string, text: string) uses io, alloc {
+  const regex = compileOrPanic(pattern)
+  print(`split /${pattern}/ "${text}": ${showPieces(Regexes.split(regex, text))}`)
+}
+
+function shout(found: Match): string uses alloc {
+  if (Regexes.group(found, 1) is Some(word)) {
+    return `<${word}:${Int.toString(found.start)}>`
+  }
+  return "<>"
+}
+
+export function run(_args: Array<string>): int {
+  const digits = compileOrPanic("\\d+")
+  print(Regexes.replace(digits, "a1b22c333", "#"))
+  print(Regexes.replaceAll(digits, "a1b22c333", "#"))
+  print(Regexes.replace(digits, "no digits", "#"))
+  // The replacement is plain text: $1 and $& stay as written.
+  const pair = compileOrPanic("(\\w+)@(\\w+)")
+  print(Regexes.replace(pair, "mail me@home now", "$2 at $1 ($&)"))
+  print(Regexes.replaceAll(pair, "a@b c@d", "$1"))
+  // Empty matches replace between characters, as JavaScript's replaceAll.
+  const empty = compileOrPanic("x*")
+  print(Regexes.replaceAll(empty, "abc", "-"))
+  print(Regexes.replaceAll(empty, "axxb", "-"))
+  print(Regexes.replaceAll(compileOrPanic(""), "\u{e9}t\u{e9}", "."))
+  // replaceWith gets each match.
+  const word = compileOrPanic("([a-z]+)")
+  print(Regexes.replaceWith(word, "one two, three", shout))
+  let count = 0
+  const numbered = Regexes.replaceWith(word, "x y z", (found: Match): string => {
+    count += 1
+    return `${found.text}${Int.toString(count)}`
+  })
+  print(`${numbered} after ${Int.toString(count)} calls`)
+  // split.
+  checkSplit(",", "a,b,,c")
+  checkSplit("\\s*,\\s*", "a , b,c ,d")
+  checkSplit(",", ",a,")
+  checkSplit(",", "")
+  checkSplit("x*", "abc")
+  checkSplit("b*", "abc")
+  checkSplit("", "\u{e9}a")
+  checkSplit("(-)", "1-2-3")
+  checkSplit("\\d", "a1b2c3")
+  checkSplit("x*", "")
+  checkSplit("x", "")
+  return 0
+}

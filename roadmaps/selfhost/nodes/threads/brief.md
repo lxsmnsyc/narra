@@ -1,42 +1,50 @@
 ---
 id: threads
-title: Scoped threads, channels and shared state
+title: "Scoped threads, channels, Shared and Atomic"
 status: todo
 priority: must
 type: feature
-outline: true
+story: batch-13
+early: false
+outline: false
 milestone: p1-syntax
 target:
+ship: auto
+land: auto
 from:
 size: L
 spike: false
-verify:
+hypothesis:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
-added:
-owns: []
-shared: []
+added: 2026-11-13
+spent:
+owns:
+  - roadmaps/selfhost/nodes/threads/**
+shared:
 reserves: []
 provides: []
 depends_on:
-  - on: closures
+  - on: threads-design
     kind: hard
-    why: thread functions are escaping closures
-  - on: identity-cycles
-    kind: hard
-    why: Shared, channels and tasks follow the cycle decision
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
-# Scoped threads, channels and shared state
+# Scoped threads, channels, Shared and Atomic
 
 ## Goal
 
-`Thread.scope`, `Thread.start`, channels, `Shared<T>`, `Atomic<T>`, and atomic reference counts for values shared across threads.
+Build D111. The design spike splits this node into children.
 
-## Notes
+## Context
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+- Refined by `threads-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
 
-Cycles: the identity-cycles node decides how reference cycles through `Shared`, channels and tasks are handled. Implement its answer here.
-- 2026-11-12, from the process-signals review: `Process.run` (`selfhost/runtime/std_process.c`) and the test runner keep one process-global child slot and save and restore the signal handlers on each call, with `sigprocmask`. Two threads in `Process.run` at once can leave the forwarding handler installed with no child, so the process then ignores SIGTERM, SIGINT and SIGHUP. Before threads ship: a mutex-guarded count for installing and restoring the handlers, a set of child pids, and `pthread_sigmask`.
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

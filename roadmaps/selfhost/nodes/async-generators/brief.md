@@ -4,38 +4,47 @@ title: "Async generators and for await"
 status: todo
 priority: must
 type: feature
-story:
+story: batch-13
 early: false
-outline: true
+outline: false
 milestone: p1-syntax
 target:
 ship: auto
+land: auto
 from:
-size: M
+size: L
 spike: false
 hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
-added: 2026-11-09
+added: 2026-11-13
 spent:
-owns: []
-shared: []
+owns:
+  - roadmaps/selfhost/nodes/async-generators/**
+shared:
 reserves: []
 provides: []
 depends_on:
-  - on: async-core
+  - on: async-generators-design
     kind: hard
-    why: builds on Async<T>, the event loop and the async state machine (D93)
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
 # Async generators and for await
 
 ## Goal
 
-`async function*` returning `AsyncGenerator<T>`, consumed with `for await (const chunk of stream)`, as in TypeScript (D95). Needed for HTTP bodies, server-sent events and file streams, so it lands before the `std/async` I/O modules return streams. `ensures` applies to each yielded chunk.
+Build D110: `async function*`, `AsyncGenerator<T>` and `for await`.
 
-## Notes
+## Context
 
-Outline. Decide when refined: cancellation of a stream mid-iteration (D93 cooperative cancel), backpressure, and the time operators the inbox lists (`debounce`, `throttle`, `merge`).
+- Refined by `async-generators-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
+
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

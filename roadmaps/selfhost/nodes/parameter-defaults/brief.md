@@ -4,9 +4,9 @@ title: "Parameter defaults"
 status: todo
 priority: must
 type: feature
-story:
+story: batch-13
 early: false
-outline: true
+outline: false
 milestone: p1-syntax
 target:
 ship: auto
@@ -15,25 +15,36 @@ from:
 size: M
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
 spent:
-owns: []
-shared: []
+owns:
+  - roadmaps/selfhost/nodes/parameter-defaults/**
+shared:
 reserves: []
 provides: []
-depends_on: []
+depends_on:
+  - on: parameter-defaults-design
+    kind: hard
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
 # Parameter defaults
 
 ## Goal
 
-Default values on function parameters, next to named arguments (D87: `move(x: 1, y: 2)`, every argument passed). Debate not started: whether defaults are allowed, what expressions they may use, how they interact with named arguments, function types and function values. Refine through a goal debate or design spike.
+Build D115, or close as dropped if D115 rejects defaults.
 
-## Notes
+## Context
 
-Outline, added 2026-11-13 when the maintainer set the phase order (syntax, std, feature review, packages, distribution, docs).
+- Refined by `parameter-defaults-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
+
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

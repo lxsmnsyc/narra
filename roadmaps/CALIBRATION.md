@@ -111,3 +111,13 @@ Notes:
 | selfhost | event-loop | M | L | 2 | 448k tokens. Review: deadline overflow, kqueue spin, duplicate fd waits; maintainer accepted a quiescent idle rule. |
 | selfhost | async-api | M | L | 3 | 280k tokens. Review: race watcher growth; Async<void> inference; then queued. |
 | selfhost | std-async-io | L | L | 2 | 247k tokens. Review: accept errors, read buffer; maintainer made cancel pass down the await chain. |
+| selfhost | std-design | S | M | 1 | 176k tokens. One gate for seven module APIs; split unicode and regex into two nodes each. |
+| selfhost | std-iterator | M | M | 1 | 159k tokens. Clean review; chunk/window narrowed by an effect-variable gap found on the base. |
+| selfhost | std-args | M | M | 2 | 192k tokens. Review: flags of nested commands clashed; chose a BadSpec error. |
+| selfhost | std-arena | S | S | 1 | 142k tokens. No review beyond the batch review. |
+| selfhost | std-toml | M | L | 2 | 207k tokens. 1,460 lines against 900 estimated; review: -0.0 and stringify depth. |
+| selfhost | std-terminal | S | M | 2 | 196k tokens. Two rebases on shared lists; review: colon SGR form. |
+| selfhost | std-regex | L | L | 2 | 248k tokens. Review: per-pass capture reset, empty passes, slot cap, all checked against node. |
+| selfhost | std-regex-const | M | M | 2 | 209k tokens. Review: hints, renamed imports. |
+| selfhost | std-unicode | L | L | 2 | 251k tokens. Review: final sigma order, three lookups per code point. |
+| selfhost | std-unicode-normalize | M | L | 2 | 215k tokens. Review: quadratic mark ordering; the linear-time test needed three designs to be load proof. |

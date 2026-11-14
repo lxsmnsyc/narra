@@ -1,0 +1,84 @@
+// std/unicode: canonical ordering of a long run of marks takes time linear in
+// its length times its logarithm, not its square. The test has no wall-clock
+// bound. It times two texts of the same length in the same process: a run of
+// alternating marks that the sort must reorder all through, and a run that is
+// in order but for its first mark. A merge sort takes about as long for both
+// (under 6 times as long with 40 copies running on 8 cores); an insertion
+// sort is quadratic on the first and linear on the second, so it takes 50 to
+// 100 times as long. The texts take turns over nine rounds and each keeps its
+// fastest time, so a busy machine slows both alike. Only the pass or fail
+// against a ratio of 16 is printed, so the output does not depend on the
+// machine.
+import * as Unicode from "std/unicode"
+import { NormalForm } from "std/unicode"
+import * as Int from "std/int"
+import * as Math from "std/math"
+import * as Str from "std/string"
+import * as Time from "std/time"
+
+const COUNT = 20000
+
+function repeatText(text: string, count: int): string uses alloc {
+  if (Str.repeat(text, count) is Some(repeated)) {
+    return repeated
+  }
+  return ""
+}
+
+// timeRun normalizes the text and returns the time in nanoseconds, or -1 when
+// the answer is wrong.
+function timeRun(text: string, form: NormalForm, expected: string): int uses io, alloc {
+  const started = Time.now()
+  const normal = Unicode.normalize(text, form)
+  const elapsed = Time.elapsed(started).nanos
+  if (normal != expected) {
+    return -1
+  }
+  return elapsed
+}
+
+function check(
+  name: string,
+  form: NormalForm,
+  mixedWant: string,
+  orderedWant: string,
+) uses io, alloc {
+  // Acute (class 230) and grave below (class 220) alternate; the sort moves every grave below first.
+  const mixed = `a${repeatText("\u{301}\u{316}", COUNT)}`
+  // The a with acute decomposes to a and an acute, which moves past the graves below.
+  const ordered = `\u{e1}${repeatText("\u{316}", COUNT)}${repeatText("\u{301}", COUNT)}`
+  let mixedTime = -1
+  let orderedTime = -1
+  for (let round = 0; round < 9; round++) {
+    const mixedTry = timeRun(mixed, form, mixedWant)
+    const orderedTry = timeRun(ordered, form, orderedWant)
+    if (mixedTry < 0 || orderedTry < 0) {
+      print(`${name}: wrong`)
+      return
+    }
+    if (mixedTime < 0 || mixedTry < mixedTime) {
+      mixedTime = mixedTry
+    }
+    if (orderedTime < 0 || orderedTry < orderedTime) {
+      orderedTime = orderedTry
+    }
+  }
+  let speed = "under 16 times"
+  if (mixedTime > 16 * Math.max(orderedTime, 1)) {
+    speed = "over 16 times"
+  }
+  print(
+    `${name}: right, ${Int.toString(2 * COUNT)} alternating marks take ${speed} as long as marks in order`,
+  )
+}
+
+export function run(_args: Array<string>): int uses io, alloc {
+  const graves = repeatText("\u{316}", COUNT)
+  const acutes = repeatText("\u{301}", COUNT)
+  // In NFD every grave below comes first.
+  check("nfd", NormalForm.NFD, `a${graves}${acutes}`, `a${graves}${acutes}\u{301}`)
+  // In NFC the first acute joins the a; the rest stay in order.
+  const fewer = repeatText("\u{301}", COUNT - 1)
+  check("nfc", NormalForm.NFC, `\u{e1}${graves}${fewer}`, `\u{e1}${graves}${acutes}`)
+  return 0
+}

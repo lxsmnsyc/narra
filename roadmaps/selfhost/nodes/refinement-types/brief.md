@@ -4,9 +4,9 @@ title: "Refinement types on distinct types"
 status: todo
 priority: must
 type: feature
-story:
+story: batch-13
 early: false
-outline: true
+outline: false
 milestone: p1-syntax
 target:
 ship: auto
@@ -15,25 +15,36 @@ from:
 size: M
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
 spent:
-owns: []
-shared: []
+owns:
+  - roadmaps/selfhost/nodes/refinement-types/**
+shared:
 reserves: []
 provides: []
-depends_on: []
+depends_on:
+  - on: refinement-types-design
+    kind: hard
+    why: the design gate fixes the syntax, codes and SPEC text this node builds
 ---
-
 # Refinement types on distinct types
 
 ## Goal
 
-`distinct type Port = int requires >= 1 && <= 65535`, `distinct type Method = string requires "GET" | "POST"`. `Port.from(raw): Option<Port>` checks at runtime; the prover knows the predicate inside. `Json.decode` of such a type returns Err when the check fails. Uses the D95 and D102 contract patterns. From the D95 discussion, 2026-11-09. Refine through a design spike.
+Build D116: refinement types on distinct types.
 
-## Notes
+## Context
 
-Outline, added 2026-11-13 when the maintainer set the phase order (syntax, std, feature review, packages, distribution, docs).
+- Refined by `refinement-types-design` after its gate. Read its decision record and outcome first; they override this brief where they differ.
+- Proof first: the feature's sample program fails to compile on the batch base.
+
+## Acceptance
+
+- [ ] Samples with checked output, clean under AddressSanitizer, the leak check and the copy check.
+- [ ] Error tests for each code the decision gives this node.
+- [ ] fmt, astdump, the language service and `narrac query` cover any new syntax; the `sources` suite passes.
+- [ ] `compiler/README.md` updated.

@@ -1,0 +1,1483 @@
+// std/toml: parse and stringify TOML 1.0 text as a Value of std/shape (D118 item 5).
+//
+// A table is a Record in the order of the file, an array a List, an integer
+// an Int, a float a Float (inf and nan too), a string Text and a boolean Bool.
+// A date, time or date-time is Text holding its text as written. A parse error
+// is a TomlError at a line and column; formatError writes `<line>:<column>: <reason>`.
+
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Char from "std/char"
+import * as Float from "std/float"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as FloatText from "std/internal/float"
+import { Value, Shape } from "std/shape"
+
+// Tables and arrays nested deeper than this are an error, as in std/json.
+const MAX_DEPTH = 512
+
+export struct TomlError derives Show, Equatable {
+  line: int
+  column: int
+  reason: string
+}
+
+// What a node of the parse tree is. The first four are tables: one made as
+// the parent of a header (Implicit), one opened by its own header, one made by
+// dotted keys, and an inline table, which nothing can extend.
+enum Kind derives Equatable {
+  Implicit
+  Header
+  Dotted
+  Inline
+  TableArray
+  List
+  Leaf
+}
+
+// A node of the tree the parser builds before it becomes a Value. A table keeps
+// its children in keys, an array in items, and a leaf its value.
+struct Node {
+  kind: Kind
+  keys: Map<string, int>
+  items: Array<int>
+  value: Value
+  depth: int
+}
+
+struct KeyPart {
+  name: string
+  position: int
+}
+
+struct Parser {
+  text: string
+  length: int
+  position: int
+  nodes: Array<Node>
+  // The table that key-value lines go into.
+  current: int
+}
+
+// parse reads a TOML document into a Record.
+export function parse(text: string): Result<Value, TomlError> uses alloc {
+  let parser = Parser { text: text, length: Str.length(text), position: 0, nodes: [], current: 0 }
+  addNode(mutable parser, Kind.Header, Value.Null, 0)
+  const document = parseDocument(mutable parser)
+  if (document is Err(error)) {
+    return Err(error)
+  }
+  return Ok(buildValue(parser, 0))
+}
+
+// formatError writes an error as `<line>:<column>: <reason>`.
+export function formatError(error: TomlError): string uses alloc {
+  return `${Int.toString(error.line)}:${Int.toString(error.column)}: ${error.reason}`
+}
+
+// decode reads TOML text as a T: `Toml.decode<Manifest>(text)`. A parse error
+// reads as formatError writes it; a shape error as `<path>: <reason>`.
+export function decode<T: Shape>(text: string): Result<T, string> uses alloc {
+  const value = parse(text)
+  if (value is Err(error)) {
+    return Err(formatError(error))
+  }
+  return Shape.fromValue<T>(value.value)
+}
+
+// encode writes any value that implements Shape as a TOML document.
+export function encode<T: Shape>(value: T): Result<string, string> uses alloc {
+  return stringify(Shape.toValue(value))
+}
+
+// fail builds the error for the byte at position.
+function fail<T>(parser: Parser, position: int, reason: string): Result<T, TomlError> uses alloc {
+  let line = 1
+  let column = 1
+  let index = 0
+  while (index < position && index < parser.length) {
+    const byte = Str.byteAt(parser.text, index)
+    if (byte == 10) {
+      line += 1
+      column = 1
+    } else if (byte < 128 || byte >= 192) {
+      column += 1
+    }
+    index += 1
+  }
+  return Err(TomlError { line: line, column: column, reason: reason })
+}
+
+function cutText(text: string, start: int, end: int): string uses alloc {
+  if (Str.slice(text, start, end) is Some(piece)) {
+    return piece
+  }
+  panic("cutText: the range is outside the text")
+}
+
+// The byte at position, or -1 past the end.
+function byteAt(parser: Parser, position: int): int {
+  if (position >= parser.length) {
+    return -1
+  }
+  return Str.byteAt(parser.text, position)
+}
+
+function addNode(mutable parser: Parser, kind: Kind, value: Value, depth: int): int uses alloc {
+  const index = Arrays.length(parser.nodes)
+  Arrays.push(mutable parser.nodes, Node {
+    kind: kind,
+    keys: Map {},
+    items: [],
+    value: value,
+    depth: depth,
+  })
+  return index
+}
+
+function isTable(kind: Kind): bool {
+  return kind == Kind.Implicit || kind == Kind.Header || kind == Kind.Dotted || kind == Kind.Inline
+}
+
+function skipBlank(mutable parser: Parser) {
+  while (parser.position < parser.length) {
+    const byte = Str.byteAt(parser.text, parser.position)
+    if (byte != 32 && byte != 9) {
+      return
+    }
+    parser.position += 1
+  }
+}
+
+// isControl says whether a byte may not appear in a string or a comment as is.
+function isControl(byte: int): bool {
+  return (byte < 32 && byte != 9) || byte == 127
+}
+
+// skipComment moves past a comment that starts at parser.position, up to the newline.
+function skipComment(mutable parser: Parser): Result<bool, TomlError> uses alloc {
+  if (byteAt(parser, parser.position) != 35) {
+    return Ok(false)
+  }
+  while (parser.position < parser.length) {
+    const byte = Str.byteAt(parser.text, parser.position)
+    if (byte == 10 || (byte == 13 && byteAt(parser, parser.position + 1) == 10)) {
+      return Ok(true)
+    }
+    if (isControl(byte)) {
+      return fail(parser, parser.position, "control character in a comment")
+    }
+    parser.position += 1
+  }
+  return Ok(true)
+}
+
+// skipNewline consumes LF or CRLF and says whether it found one.
+function skipNewline(mutable parser: Parser): bool {
+  const byte = byteAt(parser, parser.position)
+  if (byte == 10) {
+    parser.position += 1
+    return true
+  }
+  if (byte == 13 && byteAt(parser, parser.position + 1) == 10) {
+    parser.position += 2
+    return true
+  }
+  return false
+}
+
+// skipLineEnd reads the rest of a line after a key-value pair or a header.
+function skipLineEnd(mutable parser: Parser): Result<bool, TomlError> uses alloc {
+  skipBlank(mutable parser)
+  const comment = skipComment(mutable parser)
+  if (comment is Err(error)) {
+    return Err(error)
+  }
+  if (parser.position >= parser.length || skipNewline(mutable parser)) {
+    return Ok(true)
+  }
+  return fail(parser, parser.position, "expected a newline")
+}
+
+function parseDocument(mutable parser: Parser): Result<bool, TomlError> uses alloc {
+  while (true) {
+    skipBlank(mutable parser)
+    if (parser.position >= parser.length) {
+      return Ok(true)
+    }
+    const byte = Str.byteAt(parser.text, parser.position)
+    if (byte == 35) {
+      const comment = skipComment(mutable parser)
+      if (comment is Err(error)) {
+        return Err(error)
+      }
+      continue
+    }
+    if (skipNewline(mutable parser)) {
+      continue
+    }
+    if (byte == 91) {
+      const header = parseHeader(mutable parser)
+      if (header is Err(error)) {
+        return Err(error)
+      }
+    } else {
+      const current = parser.current
+      const pair = parsePair(mutable parser, current)
+      if (pair is Err(error)) {
+        return Err(error)
+      }
+    }
+    const end = skipLineEnd(mutable parser)
+    if (end is Err(error)) {
+      return Err(error)
+    }
+  }
+  return Ok(true)
+}
+
+function isBareKeyByte(byte: int): bool {
+  return ((byte >= 65 && byte <= 90) ||
+    (byte >= 97 && byte <= 122) ||
+    (byte >= 48 && byte <= 57) ||
+    byte == 95 ||
+    byte == 45)
+}
+
+// parseKey reads a bare, quoted or dotted key.
+function parseKey(mutable parser: Parser): Result<Array<KeyPart>, TomlError> uses alloc {
+  let parts: Array<KeyPart> = []
+  while (true) {
+    skipBlank(mutable parser)
+    const start = parser.position
+    const byte = byteAt(parser, start)
+    if (byte == 34) {
+      const name = parseBasicString(mutable parser)
+      if (name is Err(error)) {
+        return Err(error)
+      }
+      Arrays.push(mutable parts, KeyPart { name: name.value, position: start })
+    } else if (byte == 39) {
+      const name = parseLiteralString(mutable parser)
+      if (name is Err(error)) {
+        return Err(error)
+      }
+      Arrays.push(mutable parts, KeyPart { name: name.value, position: start })
+    } else {
+      while (
+        parser.position < parser.length && isBareKeyByte(Str.byteAt(parser.text, parser.position))
+      ) {
+        parser.position += 1
+      }
+      if (parser.position == start) {
+        return fail(parser, start, "expected a key")
+      }
+      Arrays.push(mutable parts, KeyPart {
+        name: cutText(parser.text, start, parser.position),
+        position: start,
+      })
+    }
+    skipBlank(mutable parser)
+    if (byteAt(parser, parser.position) != 46) {
+      return Ok(parts)
+    }
+    parser.position += 1
+  }
+  return Ok(parts)
+}
+
+function quoteKey(name: string): string uses alloc {
+  let builder = Str.builder()
+  writeKey(mutable builder, name)
+  return Str.build(builder)
+}
+
+// childTable makes a table under table for a header's or a dotted key's inner part.
+function childTable(
+  mutable parser: Parser,
+  table: int,
+  part: KeyPart,
+  kind: Kind,
+): Result<int, TomlError> uses alloc {
+  const depth = parser.nodes[table].depth + 1
+  if (depth > MAX_DEPTH) {
+    return fail(parser, part.position, "nesting is deeper than 512")
+  }
+  const child = addNode(mutable parser, kind, Value.Null, depth)
+  parser.nodes[table].keys[part.name] = child
+  return Ok(child)
+}
+
+// walkDotted follows the inner parts of a dotted key from table. Only tables
+// made by dotted keys can take more of them.
+function walkDotted(
+  mutable parser: Parser,
+  start: int,
+  parts: Array<KeyPart>,
+): Result<int, TomlError> uses alloc {
+  let table = start
+  let index = 0
+  while (index < Arrays.length(parts) - 1) {
+    const part = parts[index]
+    if (parser.nodes[table].keys[part.name] is Some(child)) {
+      const kind = parser.nodes[child].kind
+      if (kind != Kind.Dotted) {
+        if (kind == Kind.Inline) {
+          return fail(
+            parser,
+            part.position,
+            `inline table ${quoteKey(part.name)} cannot be extended`,
+          )
+        }
+        if (isTable(kind)) {
+          return fail(parser, part.position, `table ${quoteKey(part.name)} is already defined`)
+        }
+        return fail(parser, part.position, `key ${quoteKey(part.name)} is already defined`)
+      }
+      table = child
+    } else {
+      const made = childTable(mutable parser, table, part, Kind.Dotted)
+      if (made is Err(error)) {
+        return Err(error)
+      }
+      table = made.value
+    }
+    index += 1
+  }
+  return Ok(table)
+}
+
+// parsePair reads `key = value` into table.
+function parsePair(mutable parser: Parser, table: int): Result<bool, TomlError> uses alloc {
+  const parts = parseKey(mutable parser)
+  if (parts is Err(error)) {
+    return Err(error)
+  }
+  const parent = walkDotted(mutable parser, table, parts.value)
+  if (parent is Err(error)) {
+    return Err(error)
+  }
+  const last = parts.value[Arrays.length(parts.value) - 1]
+  if (parser.nodes[parent.value].keys[last.name] is Some(_)) {
+    return fail(parser, last.position, `key ${quoteKey(last.name)} is already defined`)
+  }
+  if (byteAt(parser, parser.position) != 61) {
+    return fail(parser, parser.position, "expected =")
+  }
+  parser.position += 1
+  skipBlank(mutable parser)
+  const depth = parser.nodes[parent.value].depth
+  const value = parseValue(mutable parser, depth)
+  if (value is Err(error)) {
+    return Err(error)
+  }
+  parser.nodes[parent.value].keys[last.name] = value.value
+  return Ok(true)
+}
+
+// parseHeader reads `[name]` or `[[name]]` and makes its table the current one.
+function parseHeader(mutable parser: Parser): Result<bool, TomlError> uses alloc {
+  const start = parser.position
+  parser.position += 1
+  const isArray = byteAt(parser, parser.position) == 91
+  if (isArray) {
+    parser.position += 1
+  }
+  const parts = parseKey(mutable parser)
+  if (parts is Err(error)) {
+    return Err(error)
+  }
+  if (byteAt(parser, parser.position) != 93) {
+    return fail(parser, parser.position, "expected ]")
+  }
+  parser.position += 1
+  if (isArray) {
+    if (byteAt(parser, parser.position) != 93) {
+      return fail(parser, parser.position, "expected ]]")
+    }
+    parser.position += 1
+  }
+  // Walk the inner parts; an array of tables leads into its last table.
+  let table = 0
+  let index = 0
+  while (index < Arrays.length(parts.value) - 1) {
+    const part = parts.value[index]
+    if (parser.nodes[table].keys[part.name] is Some(child)) {
+      const kind = parser.nodes[child].kind
+      if (kind == Kind.TableArray) {
+        table = parser.nodes[child].items[Arrays.length(parser.nodes[child].items) - 1]
+      } else if (kind == Kind.Inline) {
+        return fail(parser, part.position, `inline table ${quoteKey(part.name)} cannot be extended`)
+      } else if (isTable(kind)) {
+        table = child
+      } else {
+        return fail(parser, part.position, `key ${quoteKey(part.name)} is not a table`)
+      }
+    } else {
+      const made = childTable(mutable parser, table, part, Kind.Implicit)
+      if (made is Err(error)) {
+        return Err(error)
+      }
+      table = made.value
+    }
+    index += 1
+  }
+  const last = parts.value[Arrays.length(parts.value) - 1]
+  const name = quoteKey(last.name)
+  if (isArray) {
+    return openTableArray(mutable parser, table, last, name)
+  }
+  if (parser.nodes[table].keys[last.name] is Some(existing)) {
+    const kind = parser.nodes[existing].kind
+    if (kind == Kind.Implicit) {
+      parser.nodes[existing].kind = Kind.Header
+      parser.current = existing
+      return Ok(true)
+    }
+    if (kind == Kind.Header) {
+      return fail(parser, start, `table ${name} is defined twice`)
+    }
+    if (kind == Kind.Dotted) {
+      return fail(parser, start, `table ${name} is already defined by dotted keys`)
+    }
+    if (kind == Kind.Inline) {
+      return fail(parser, start, `inline table ${name} cannot be extended`)
+    }
+    if (kind == Kind.TableArray) {
+      return fail(parser, start, `${name} is an array of tables`)
+    }
+    return fail(parser, start, `key ${name} is already defined`)
+  }
+  const made = childTable(mutable parser, table, last, Kind.Header)
+  if (made is Err(error)) {
+    return Err(error)
+  }
+  parser.current = made.value
+  return Ok(true)
+}
+
+// openTableArray adds a table to the array of tables named last under table.
+function openTableArray(
+  mutable parser: Parser,
+  table: int,
+  last: KeyPart,
+  name: string,
+): Result<bool, TomlError> uses alloc {
+  let array = 0
+  if (parser.nodes[table].keys[last.name] is Some(existing)) {
+    const kind = parser.nodes[existing].kind
+    if (kind == Kind.List) {
+      return fail(parser, last.position, `cannot append to the static array ${name}`)
+    }
+    if (kind != Kind.TableArray) {
+      return fail(parser, last.position, `key ${name} is already defined`)
+    }
+    array = existing
+  } else {
+    const made = childTable(mutable parser, table, last, Kind.TableArray)
+    if (made is Err(error)) {
+      return Err(error)
+    }
+    array = made.value
+  }
+  const depth = parser.nodes[array].depth + 1
+  if (depth > MAX_DEPTH) {
+    return fail(parser, last.position, "nesting is deeper than 512")
+  }
+  const item = addNode(mutable parser, Kind.Header, Value.Null, depth)
+  Arrays.push(mutable parser.nodes[array].items, item)
+  parser.current = item
+  return Ok(true)
+}
+
+// parseValue reads a value into a new node one level below depth.
+function parseValue(mutable parser: Parser, depth: int): Result<int, TomlError> uses alloc {
+  const start = parser.position
+  const byte = byteAt(parser, start)
+  if (byte == 34) {
+    const text = readBasic(mutable parser)
+    if (text is Err(error)) {
+      return Err(error)
+    }
+    return Ok(addNode(mutable parser, Kind.Leaf, Value.Text(text.value), depth + 1))
+  }
+  if (byte == 39) {
+    const text = readLiteral(mutable parser)
+    if (text is Err(error)) {
+      return Err(error)
+    }
+    return Ok(addNode(mutable parser, Kind.Leaf, Value.Text(text.value), depth + 1))
+  }
+  if (byte == 91 || byte == 123) {
+    if (depth + 1 > MAX_DEPTH) {
+      return fail(parser, start, "nesting is deeper than 512")
+    }
+    if (byte == 91) {
+      return parseArray(mutable parser, depth + 1)
+    }
+    return parseInlineTable(mutable parser, depth + 1)
+  }
+  const scalar = parseScalar(mutable parser)
+  if (scalar is Err(error)) {
+    return Err(error)
+  }
+  return Ok(addNode(mutable parser, Kind.Leaf, scalar.value, depth + 1))
+}
+
+// skipArraySpace moves past blanks, comments and newlines inside an array.
+function skipArraySpace(mutable parser: Parser): Result<bool, TomlError> uses alloc {
+  while (true) {
+    skipBlank(mutable parser)
+    const comment = skipComment(mutable parser)
+    if (comment is Err(error)) {
+      return Err(error)
+    }
+    if (!skipNewline(mutable parser)) {
+      return Ok(true)
+    }
+  }
+  return Ok(true)
+}
+
+function parseArray(mutable parser: Parser, depth: int): Result<int, TomlError> uses alloc {
+  const array = addNode(mutable parser, Kind.List, Value.Null, depth)
+  // Skip the [.
+  parser.position += 1
+  while (true) {
+    const space = skipArraySpace(mutable parser)
+    if (space is Err(error)) {
+      return Err(error)
+    }
+    if (byteAt(parser, parser.position) == 93) {
+      parser.position += 1
+      return Ok(array)
+    }
+    if (parser.position >= parser.length) {
+      return fail(parser, parser.position, "unterminated array")
+    }
+    const item = parseValue(mutable parser, depth)
+    if (item is Err(error)) {
+      return Err(error)
+    }
+    Arrays.push(mutable parser.nodes[array].items, item.value)
+    const after = skipArraySpace(mutable parser)
+    if (after is Err(error)) {
+      return Err(error)
+    }
+    const byte = byteAt(parser, parser.position)
+    if (byte == 93) {
+      parser.position += 1
+      return Ok(array)
+    }
+    if (byte != 44) {
+      if (byte < 0) {
+        return fail(parser, parser.position, "unterminated array")
+      }
+      return fail(parser, parser.position, "expected , or ]")
+    }
+    parser.position += 1
+  }
+  return Ok(array)
+}
+
+function parseInlineTable(mutable parser: Parser, depth: int): Result<int, TomlError> uses alloc {
+  const table = addNode(mutable parser, Kind.Inline, Value.Null, depth)
+  // Skip the {.
+  parser.position += 1
+  skipBlank(mutable parser)
+  if (byteAt(parser, parser.position) == 125) {
+    parser.position += 1
+    return Ok(table)
+  }
+  while (true) {
+    skipBlank(mutable parser)
+    if (byteAt(parser, parser.position) == 125) {
+      return fail(parser, parser.position, "trailing comma in an inline table")
+    }
+    const pair = parsePair(mutable parser, table)
+    if (pair is Err(error)) {
+      return Err(error)
+    }
+    skipBlank(mutable parser)
+    const byte = byteAt(parser, parser.position)
+    if (byte == 125) {
+      parser.position += 1
+      return Ok(table)
+    }
+    if (byte != 44) {
+      if (byte == 10 || byte == 13) {
+        return fail(parser, parser.position, "newline in an inline table")
+      }
+      if (byte < 0) {
+        return fail(parser, parser.position, "unterminated inline table")
+      }
+      return fail(parser, parser.position, "expected , or }")
+    }
+    parser.position += 1
+  }
+  return Ok(table)
+}
+
+// readBasic reads a basic string, one line or three quotes.
+function readBasic(mutable parser: Parser): Result<string, TomlError> uses alloc {
+  if (readWord(mutable parser, "\"\"\"")) {
+    return parseMultiline(mutable parser, 34)
+  }
+  return parseBasicString(mutable parser)
+}
+
+function readLiteral(mutable parser: Parser): Result<string, TomlError> uses alloc {
+  if (readWord(mutable parser, "'''")) {
+    return parseMultiline(mutable parser, 39)
+  }
+  return parseLiteralString(mutable parser)
+}
+
+// readWord consumes word when the text continues with it.
+function readWord(mutable parser: Parser, word: string): bool {
+  const count = Str.length(word)
+  if (parser.position + count > parser.length) {
+    return false
+  }
+  let index = 0
+  while (index < count) {
+    if (Str.byteAt(parser.text, parser.position + index) != Str.byteAt(word, index)) {
+      return false
+    }
+    index += 1
+  }
+  parser.position += count
+  return true
+}
+
+// parseBasicString reads a one-line basic string whose quote is at parser.position.
+function parseBasicString(mutable parser: Parser): Result<string, TomlError> uses alloc {
+  const start = parser.position
+  parser.position += 1
+  let builder = Str.builder()
+  let runStart = parser.position
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte < 0 || byte == 10 || byte == 13) {
+      return fail(parser, start, "unterminated string")
+    }
+    if (byte == 34) {
+      Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
+      parser.position += 1
+      return Ok(Str.build(builder))
+    }
+    if (isControl(byte)) {
+      return fail(parser, parser.position, "control character in a string")
+    }
+    if (byte != 92) {
+      parser.position += 1
+      continue
+    }
+    Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
+    const escape = readEscape(mutable parser, mutable builder)
+    if (escape is Err(error)) {
+      return Err(error)
+    }
+    runStart = parser.position
+  }
+  return fail(parser, start, "unterminated string")
+}
+
+// readEscape reads the escape whose backslash is at parser.position.
+function readEscape(
+  mutable parser: Parser,
+  mutable builder: StringBuilder,
+): Result<bool, TomlError> uses alloc {
+  const escapeAt = parser.position
+  parser.position += 1
+  const letter = byteAt(parser, parser.position)
+  parser.position += 1
+  if (letter == 117 || letter == 85) {
+    let count = 4
+    if (letter == 85) {
+      count = 8
+    }
+    let code = 0
+    let index = 0
+    while (index < count) {
+      const digit = hexValue(byteAt(parser, parser.position))
+      if (digit < 0) {
+        return fail(parser, escapeAt, "invalid unicode escape")
+      }
+      code = code * 16 + digit
+      parser.position += 1
+      index += 1
+    }
+    if (code > 1114111 || (code >= 55296 && code <= 57343)) {
+      return fail(parser, escapeAt, "unicode escape is not a scalar value")
+    }
+    if (Char.fromCode(code) is Some(character)) {
+      Str.appendChar(mutable builder, character)
+    }
+    return Ok(true)
+  }
+  const simple = simpleEscape(letter)
+  if (simple == "") {
+    return fail(parser, escapeAt, "invalid escape")
+  }
+  Str.append(mutable builder, simple)
+  return Ok(true)
+}
+
+function parseLiteralString(mutable parser: Parser): Result<string, TomlError> uses alloc {
+  const start = parser.position
+  parser.position += 1
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte < 0 || byte == 10 || byte == 13) {
+      return fail(parser, start, "unterminated string")
+    }
+    if (byte == 39) {
+      parser.position += 1
+      return Ok(cutText(parser.text, start + 1, parser.position - 1))
+    }
+    if (isControl(byte)) {
+      return fail(parser, parser.position, "control character in a string")
+    }
+    parser.position += 1
+  }
+  return fail(parser, start, "unterminated string")
+}
+
+// parseMultiline reads a multi-line string after its three quotes. quote is
+// 34 for a basic string (escapes and line-ending backslashes) or 39 for a literal one.
+function parseMultiline(mutable parser: Parser, quote: int): Result<string, TomlError> uses alloc {
+  const start = parser.position - 3
+  // A newline right after the opening quotes is not part of the string.
+  skipNewline(mutable parser)
+  let builder = Str.builder()
+  let runStart = parser.position
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte < 0) {
+      return fail(parser, start, "unterminated string")
+    }
+    if (byte == quote) {
+      // Count the run of quotes: three end the string, and up to two more belong to it.
+      const runEnd = parser.position
+      let count = 0
+      while (byteAt(parser, parser.position) == quote) {
+        parser.position += 1
+        count += 1
+      }
+      if (count < 3) {
+        continue
+      }
+      if (count > 5) {
+        return fail(parser, runEnd, "too many quotes at the end of a string")
+      }
+      Str.append(mutable builder, cutText(parser.text, runStart, runEnd + count - 3))
+      return Ok(Str.build(builder))
+    }
+    if (byte == 13 && byteAt(parser, parser.position + 1) == 10) {
+      parser.position += 2
+      continue
+    }
+    if (byte != 10 && isControl(byte)) {
+      return fail(parser, parser.position, "control character in a string")
+    }
+    if (byte != 92 || quote == 39) {
+      parser.position += 1
+      continue
+    }
+    Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
+    if (isLineEndBackslash(parser)) {
+      // Skip the backslash, the blanks and newlines after it.
+      parser.position += 1
+      while (true) {
+        skipBlank(mutable parser)
+        if (!skipNewline(mutable parser)) {
+          break
+        }
+      }
+    } else {
+      const escape = readEscape(mutable parser, mutable builder)
+      if (escape is Err(error)) {
+        return Err(error)
+      }
+    }
+    runStart = parser.position
+  }
+  return fail(parser, start, "unterminated string")
+}
+
+// isLineEndBackslash says whether the backslash at parser.position has only
+// blanks after it on its line.
+function isLineEndBackslash(parser: Parser): bool {
+  let index = parser.position + 1
+  while (byteAt(parser, index) == 32 || byteAt(parser, index) == 9) {
+    index += 1
+  }
+  const byte = byteAt(parser, index)
+  return byte == 10 || (byte == 13 && byteAt(parser, index + 1) == 10)
+}
+
+function hexValue(byte: int): int {
+  if (byte >= 48 && byte <= 57) {
+    return byte - 48
+  }
+  if (byte >= 97 && byte <= 102) {
+    return byte - 87
+  }
+  if (byte >= 65 && byte <= 70) {
+    return byte - 55
+  }
+  return -1
+}
+
+// The text for the escape letter after a backslash, or "".
+function simpleEscape(letter: int): string uses alloc {
+  if (letter == 34) {
+    return "\""
+  }
+  if (letter == 92) {
+    return "\\"
+  }
+  if (letter == 98) {
+    return controlText(8)
+  }
+  if (letter == 102) {
+    return controlText(12)
+  }
+  if (letter == 110) {
+    return "\n"
+  }
+  if (letter == 114) {
+    return "\r"
+  }
+  if (letter == 116) {
+    return "\t"
+  }
+  return ""
+}
+
+function controlText(code: int): string uses alloc {
+  if (Char.fromCode(code) is Some(character)) {
+    return Str.fromChar(character)
+  }
+  return ""
+}
+
+function isDigit(byte: int): bool {
+  return byte >= 48 && byte <= 57
+}
+
+function isScalarByte(byte: int): bool {
+  return isBareKeyByte(byte) || byte == 43 || byte == 46 || byte == 58
+}
+
+// parseScalar reads a boolean, a number, or a date or time.
+function parseScalar(mutable parser: Parser): Result<Value, TomlError> uses alloc {
+  const start = parser.position
+  while (
+    parser.position < parser.length && isScalarByte(Str.byteAt(parser.text, parser.position))
+  ) {
+    parser.position += 1
+  }
+  if (parser.position == start) {
+    return fail(parser, start, "expected a value")
+  }
+  // A local date followed by a space and a time is one date-time.
+  if (
+    parser.position - start == 10 &&
+      byteAt(parser, parser.position) == 32 &&
+      isDigit(byteAt(parser, parser.position + 1)) &&
+      isDigit(byteAt(parser, parser.position + 2)) &&
+      byteAt(parser, parser.position + 3) == 58
+  ) {
+    parser.position += 1
+    while (
+      parser.position < parser.length && isScalarByte(Str.byteAt(parser.text, parser.position))
+    ) {
+      parser.position += 1
+    }
+  }
+  const token = cutText(parser.text, start, parser.position)
+  if (token == "true") {
+    return Ok(Value.Bool(true))
+  }
+  if (token == "false") {
+    return Ok(Value.Bool(false))
+  }
+  const length = Str.length(token)
+  if (length >= 5 && digitRun(token, 0, 4) && Str.byteAt(token, 4) == 45) {
+    if (isDateTime(token)) {
+      return Ok(Value.Text(token))
+    }
+    return fail(parser, start, "invalid date or time")
+  }
+  if (length >= 3 && digitRun(token, 0, 2) && Str.byteAt(token, 2) == 58) {
+    if (readTime(token, 0) == length) {
+      return Ok(Value.Text(token))
+    }
+    return fail(parser, start, "invalid date or time")
+  }
+  return parseNumber(parser, token, start)
+}
+
+// digitRun says whether text has count digits from start.
+function digitRun(text: string, start: int, count: int): bool {
+  if (start + count > Str.length(text)) {
+    return false
+  }
+  let index = start
+  while (index < start + count) {
+    if (!isDigit(Str.byteAt(text, index))) {
+      return false
+    }
+    index += 1
+  }
+  return true
+}
+
+// The number written by count digits from start; the caller checked them.
+function digitsValue(text: string, start: int, count: int): int {
+  let value = 0
+  let index = start
+  while (index < start + count) {
+    value = value * 10 + Str.byteAt(text, index) - 48
+    index += 1
+  }
+  return value
+}
+
+function daysInMonth(year: int, month: int): int {
+  if (month == 2) {
+    if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
+      return 29
+    }
+    return 28
+  }
+  if (month == 4 || month == 6 || month == 9 || month == 11) {
+    return 30
+  }
+  return 31
+}
+
+// isDateTime checks a local date, a local date-time or an offset date-time.
+function isDateTime(text: string): bool {
+  const length = Str.length(text)
+  if (length < 10 || !digitRun(text, 5, 2) || Str.byteAt(text, 7) != 45 || !digitRun(text, 8, 2)) {
+    return false
+  }
+  const year = digitsValue(text, 0, 4)
+  const month = digitsValue(text, 5, 2)
+  const day = digitsValue(text, 8, 2)
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) {
+    return false
+  }
+  if (length == 10) {
+    return true
+  }
+  const separator = Str.byteAt(text, 10)
+  if (separator != 84 && separator != 116 && separator != 32) {
+    return false
+  }
+  const timeEnd = readTime(text, 11)
+  if (timeEnd < 0) {
+    return false
+  }
+  if (timeEnd == length) {
+    return true
+  }
+  // The offset: Z, or a sign and hours and minutes.
+  const zone = Str.byteAt(text, timeEnd)
+  if (zone == 90 || zone == 122) {
+    return timeEnd + 1 == length
+  }
+  if (zone != 43 && zone != 45) {
+    return false
+  }
+  if (
+    timeEnd + 6 != length || !digitRun(text, timeEnd + 1, 2) || Str.byteAt(text, timeEnd + 3) != 58
+  ) {
+    return false
+  }
+  if (!digitRun(text, timeEnd + 4, 2)) {
+    return false
+  }
+  return digitsValue(text, timeEnd + 1, 2) <= 23 && digitsValue(text, timeEnd + 4, 2) <= 59
+}
+
+// readTime checks HH:MM:SS with an optional fraction from start and returns
+// where it ends, or -1.
+function readTime(text: string, start: int): int {
+  if (!digitRun(text, start, 2) || !digitRun(text, start + 3, 2) || !digitRun(text, start + 6, 2)) {
+    return -1
+  }
+  if (Str.byteAt(text, start + 2) != 58 || Str.byteAt(text, start + 5) != 58) {
+    return -1
+  }
+  const hour = digitsValue(text, start, 2)
+  const minute = digitsValue(text, start + 3, 2)
+  const second = digitsValue(text, start + 6, 2)
+  if (hour > 23 || minute > 59 || second > 60) {
+    return -1
+  }
+  let index = start + 8
+  const length = Str.length(text)
+  if (index < length && Str.byteAt(text, index) == 46) {
+    index += 1
+    const fraction = index
+    while (index < length && isDigit(Str.byteAt(text, index))) {
+      index += 1
+    }
+    if (index == fraction) {
+      return -1
+    }
+  }
+  return index
+}
+
+// stripUnderscores checks that each underscore of digits[start..] sits between
+// two digits of the base and returns the digits without them, or "".
+function stripUnderscores(text: string, start: int, base: int): string uses alloc {
+  const length = Str.length(text)
+  if (start >= length) {
+    return ""
+  }
+  let builder = Str.builder()
+  let previousDigit = false
+  let index = start
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 95) {
+      if (!previousDigit) {
+        return ""
+      }
+      previousDigit = false
+    } else {
+      const digit = hexValue(byte)
+      if (digit < 0 || digit >= base) {
+        return ""
+      }
+      previousDigit = true
+      Str.append(mutable builder, cutText(text, index, index + 1))
+    }
+    index += 1
+  }
+  if (!previousDigit) {
+    return ""
+  }
+  return Str.build(builder)
+}
+
+function parseNumber(
+  parser: Parser,
+  token: string,
+  start: int,
+): Result<Value, TomlError> uses alloc {
+  const length = Str.length(token)
+  // Prefixed integers take no sign.
+  if (length > 2 && Str.byteAt(token, 0) == 48) {
+    const marker = Str.byteAt(token, 1)
+    let base = 0
+    if (marker == 120) {
+      base = 16
+    } else if (marker == 111) {
+      base = 8
+    } else if (marker == 98) {
+      base = 2
+    }
+    if (base != 0) {
+      const digits = stripUnderscores(token, 2, base)
+      if (digits == "") {
+        return fail(parser, start, "invalid integer")
+      }
+      if (Int.parse(digits, base) is Ok(number)) {
+        return Ok(Value.Int(number))
+      }
+      return fail(parser, start, "integer out of range")
+    }
+  }
+  let index = 0
+  let sign = ""
+  const first = Str.byteAt(token, 0)
+  if (first == 43 || first == 45) {
+    index = 1
+    if (first == 45) {
+      sign = "-"
+    }
+  }
+  const body = cutText(token, index, length)
+  if (body == "inf" || body == "nan") {
+    return Ok(Value.Float(FloatText.parse(`${sign}${body}`)))
+  }
+  // Split the token into its integer part, fraction and exponent.
+  let fractionAt = -1
+  let exponentAt = -1
+  let position = index
+  while (position < length) {
+    const byte = Str.byteAt(token, position)
+    if (byte == 46 && fractionAt < 0 && exponentAt < 0) {
+      fractionAt = position
+    } else if ((byte == 101 || byte == 69) && exponentAt < 0) {
+      exponentAt = position
+    }
+    position += 1
+  }
+  let integerEnd = length
+  if (fractionAt >= 0) {
+    integerEnd = fractionAt
+  } else if (exponentAt >= 0) {
+    integerEnd = exponentAt
+  }
+  const whole = stripUnderscores(cutText(token, index, integerEnd), 0, 10)
+  if (whole == "") {
+    return fail(parser, start, "invalid number")
+  }
+  if (Str.length(whole) > 1 && Str.byteAt(whole, 0) == 48) {
+    return fail(parser, start, "leading zeros in a number")
+  }
+  if (fractionAt < 0 && exponentAt < 0) {
+    if (Int.parse(`${sign}${whole}`, 10) is Ok(number)) {
+      return Ok(Value.Int(number))
+    }
+    return fail(parser, start, "integer out of range")
+  }
+  let text = `${sign}${whole}`
+  if (fractionAt >= 0) {
+    let fractionEnd = length
+    if (exponentAt >= 0) {
+      fractionEnd = exponentAt
+    }
+    const fraction = stripUnderscores(cutText(token, fractionAt + 1, fractionEnd), 0, 10)
+    if (fraction == "") {
+      return fail(parser, start, "invalid number")
+    }
+    text = `${text}.${fraction}`
+  }
+  if (exponentAt >= 0) {
+    let exponentStart = exponentAt + 1
+    let exponentSign = ""
+    const marker = byteAtText(token, exponentStart)
+    if (marker == 43 || marker == 45) {
+      exponentStart += 1
+      if (marker == 45) {
+        exponentSign = "-"
+      }
+    }
+    const exponent = stripUnderscores(cutText(token, exponentStart, length), 0, 10)
+    if (exponent == "") {
+      return fail(parser, start, "invalid number")
+    }
+    text = `${text}e${exponentSign}${exponent}`
+  }
+  return Ok(Value.Float(FloatText.parse(text)))
+}
+
+function byteAtText(text: string, index: int): int {
+  if (index >= Str.length(text)) {
+    return -1
+  }
+  return Str.byteAt(text, index)
+}
+
+// buildValue turns the node at index into a Value. Depth is capped while parsing.
+function buildValue(parser: Parser, index: int): Value from parser uses alloc {
+  const node = parser.nodes[index]
+  if (node.kind == Kind.Leaf) {
+    return node.value
+  }
+  if (node.kind == Kind.List || node.kind == Kind.TableArray) {
+    let items: Array<Value> = []
+    for (const item of Arrays.values(node.items)) {
+      Arrays.push(mutable items, buildValue(parser, item))
+    }
+    return Value.List(items)
+  }
+  let fields: Map<string, Value> = Map {}
+  for (const entry of Maps.entries(node.keys)) {
+    const #[key, child] = entry
+    fields[key] = buildValue(parser, child)
+  }
+  return Value.Record(fields)
+}
+
+// stringify writes a Record as a TOML document: the plain keys of each table
+// before its sub-tables, and a List of Records as `[[name]]` tables. It fails
+// on Null, which TOML cannot write, and on a root that is not a Record.
+export function stringify(value: Value): Result<string, string> uses alloc {
+  if (value is Value.Record(fields)) {
+    let builder = Str.builder()
+    const written = writeTable(mutable builder, "", "", fields, 0)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    // A document whose root has no plain keys starts with a header, not a blank line.
+    const text = Str.build(builder)
+    if (Str.startsWith(text, "\n")) {
+      return Ok(cutText(text, 1, Str.length(text)))
+    }
+    return Ok(text)
+  }
+  return Err("the root must be a Record")
+}
+
+// isTableList says whether a value is a non-empty List of Records only.
+function isTableList(value: Value): bool {
+  if (value is Value.List(items)) {
+    if (Arrays.length(items) == 0) {
+      return false
+    }
+    for (const item of Arrays.values(items)) {
+      if (!(item is Value.Record(_))) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function hasPlainKeys(fields: Map<string, Value>): bool {
+  for (const entry of Maps.entries(fields)) {
+    const #[_, field] = entry
+    if (!(field is Value.Record(_)) && !isTableList(field)) {
+      return true
+    }
+  }
+  return false
+}
+
+// writeTable writes the body of a table. header is its dotted name for the
+// headers of its sub-tables; path is the D84 path for errors; depth counts
+// the tables and arrays above it, as parse does.
+function writeTable(
+  mutable builder: StringBuilder,
+  header: string,
+  path: string,
+  fields: Map<string, Value>,
+  depth: int,
+): Result<bool, string> uses alloc {
+  if (depth > MAX_DEPTH) {
+    return Err(`${path}: nesting is deeper than 512`)
+  }
+  // The plain keys first.
+  for (const entry of Maps.entries(fields)) {
+    const #[key, field] = entry
+    if (field is Value.Record(_)) {
+      continue
+    }
+    if (isTableList(field)) {
+      continue
+    }
+    writeKey(mutable builder, key)
+    Str.append(mutable builder, " = ")
+    const written = writeInline(mutable builder, `${path}.${key}`, field, depth + 1)
+    if (written is Err(message)) {
+      return Err(message)
+    }
+    Str.append(mutable builder, "\n")
+  }
+  // Then the tables and arrays of tables.
+  for (const entry of Maps.entries(fields)) {
+    const #[key, field] = entry
+    let name = quoteKey(key)
+    if (header != "") {
+      name = `${header}.${name}`
+    }
+    if (field is Value.Record(inner)) {
+      // A table with only sub-tables needs no header of its own.
+      if (Maps.size(inner) == 0 || hasPlainKeys(inner)) {
+        Str.append(mutable builder, `\n[${name}]\n`)
+      }
+      const written = writeTable(mutable builder, name, `${path}.${key}`, inner, depth + 1)
+      if (written is Err(message)) {
+        return Err(message)
+      }
+    } else if (isTableList(field)) {
+      if (field is Value.List(items)) {
+        let index = 0
+        for (const item of Arrays.values(items)) {
+          if (item is Value.Record(inner)) {
+            Str.append(mutable builder, `\n[[${name}]]\n`)
+            const written = writeTable(
+              mutable builder,
+              name,
+              `${path}.${key}[${Int.toString(index)}]`,
+              inner,
+              depth + 2,
+            )
+            if (written is Err(message)) {
+              return Err(message)
+            }
+          }
+          index += 1
+        }
+      }
+    }
+  }
+  return Ok(true)
+}
+
+function writeInline(
+  mutable builder: StringBuilder,
+  path: string,
+  value: Value,
+  depth: int,
+): Result<bool, string> uses alloc {
+  if (depth > MAX_DEPTH && (value is Value.List(_) || value is Value.Record(_))) {
+    return Err(`${path}: nesting is deeper than 512`)
+  }
+  match (value) {
+    Value.Null => {
+      return Err(`${path}: TOML has no null`)
+    }
+    Value.Bool(flag) => {
+      if (flag) {
+        Str.append(mutable builder, "true")
+      } else {
+        Str.append(mutable builder, "false")
+      }
+    }
+    Value.Int(number) => Str.append(mutable builder, Int.toString(number))
+    Value.Float(number) => Str.append(mutable builder, floatText(number))
+    Value.Text(text) => writeString(mutable builder, text)
+    Value.List(items) => {
+      Str.append(mutable builder, "[")
+      let index = 0
+      for (const item of Arrays.values(items)) {
+        if (index > 0) {
+          Str.append(mutable builder, ", ")
+        }
+        const written = writeInline(
+          mutable builder,
+          `${path}[${Int.toString(index)}]`,
+          item,
+          depth + 1,
+        )
+        if (written is Err(message)) {
+          return Err(message)
+        }
+        index += 1
+      }
+      Str.append(mutable builder, "]")
+    }
+    Value.Record(fields) => {
+      if (Maps.size(fields) == 0) {
+        Str.append(mutable builder, "{}")
+        return Ok(true)
+      }
+      Str.append(mutable builder, "{ ")
+      let first = true
+      for (const entry of Maps.entries(fields)) {
+        const #[key, field] = entry
+        if (!first) {
+          Str.append(mutable builder, ", ")
+        }
+        first = false
+        writeKey(mutable builder, key)
+        Str.append(mutable builder, " = ")
+        const written = writeInline(mutable builder, `${path}.${key}`, field, depth + 1)
+        if (written is Err(message)) {
+          return Err(message)
+        }
+      }
+      Str.append(mutable builder, " }")
+    }
+  }
+  return Ok(true)
+}
+
+// floatText writes a Float so that it reads back as a Float: inf and nan by
+// name, negative zero as -0.0, and a whole number below 1e15 with ".0".
+function floatText(number: f64): string uses alloc {
+  if (number != number) {
+    return "nan"
+  }
+  if (number == 0.0 && Str.startsWith(Float.toString(number), "-")) {
+    return "-0.0"
+  }
+  if (number - number != 0.0) {
+    if (number > 0.0) {
+      return "inf"
+    }
+    return "-inf"
+  }
+  if (number > -1000000000000000.0 && number < 1000000000000000.0) {
+    if (Float.truncate(number) is Some(whole)) {
+      if (Float.fromInt(whole) == number) {
+        return `${Int.toString(whole)}.0`
+      }
+    }
+  }
+  const text = Float.toString(number)
+  if (Str.contains(text, ".") || Str.contains(text, "e")) {
+    return text
+  }
+  return `${text}.0`
+}
+
+// writeKey writes a key bare when it can be, and quoted otherwise.
+function writeKey(mutable builder: StringBuilder, key: string) uses alloc {
+  const length = Str.length(key)
+  let bare = length > 0
+  let index = 0
+  while (bare && index < length) {
+    bare = isBareKeyByte(Str.byteAt(key, index))
+    index += 1
+  }
+  if (bare) {
+    Str.append(mutable builder, key)
+  } else {
+    writeString(mutable builder, key)
+  }
+}
+
+function writeString(mutable builder: StringBuilder, text: string) uses alloc {
+  Str.append(mutable builder, "\"")
+  const length = Str.length(text)
+  // The start of the bytes that need no escape and are not yet copied.
+  let runStart = 0
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (!isControl(byte) && byte != 9 && byte != 34 && byte != 92) {
+      index += 1
+      continue
+    }
+    Str.append(mutable builder, cutText(text, runStart, index))
+    Str.append(mutable builder, escapeByte(byte))
+    index += 1
+    runStart = index
+  }
+  Str.append(mutable builder, cutText(text, runStart, length))
+  Str.append(mutable builder, "\"")
+}
+
+// The TOML escape for a quote, a backslash or a control character.
+function escapeByte(byte: int): string uses alloc {
+  if (byte == 34) {
+    return "\\\""
+  }
+  if (byte == 92) {
+    return "\\\\"
+  }
+  if (byte == 10) {
+    return "\\n"
+  }
+  if (byte == 13) {
+    return "\\r"
+  }
+  if (byte == 9) {
+    return "\\t"
+  }
+  if (byte == 8) {
+    return "\\b"
+  }
+  if (byte == 12) {
+    return "\\f"
+  }
+  const hex = Int.toHex(byte)
+  if (Str.repeat("0", 4 - Str.length(hex)) is Some(padding)) {
+    return `\\u${padding}${hex}`
+  }
+  return `\\u${hex}`
+}

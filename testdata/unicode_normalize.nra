@@ -1,0 +1,119 @@
+// Runs every line of testdata/unicode/NormalizationTest-sample.txt (part 0 and
+// part 1 of the Unicode 17.0 NormalizationTest.txt) through Unicode.normalize
+// and Unicode.isNormalized in all four forms, and prints the count of passes
+// and each line that fails. The path is the one the file takes as an argument,
+// so the same program can run the whole NormalizationTest.txt.
+import * as Unicode from "std/unicode"
+import { NormalForm } from "std/unicode"
+import * as Arrays from "std/array"
+import * as Char from "std/char"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+const FORMS = [NormalForm.NFC, NormalForm.NFD, NormalForm.NFKC, NormalForm.NFKD]
+
+// decodeColumn turns `0044 0307` into the text of those code points.
+function decodeColumn(column: string): string uses alloc {
+  let text = Str.builder()
+  if (Str.split(Str.trim(column), " ") is Some(parts)) {
+    for (const part of parts) {
+      if (Int.parse(part, 16) is Ok(code)) {
+        if (Char.fromCode(code) is Some(character)) {
+          Str.appendChar(mutable text, character)
+        }
+      }
+    }
+  }
+  return Str.build(text)
+}
+
+// expectedColumn is the column (0 to 4) that normalizing column `source` in form gives,
+// by the invariants in the header of NormalizationTest.txt.
+function expectedColumn(form: NormalForm, source: int): int {
+  // Canonical forms keep the compatibility characters of c4 and c5.
+  let offset = 0
+  if (source >= 3) {
+    offset = 2
+  }
+  return match (form) {
+    NormalForm.NFC => 1 + offset
+    NormalForm.NFD => 2 + offset
+    NormalForm.NFKC => 3
+    NormalForm.NFKD => 4
+  }
+}
+
+// checkLine gives the failures of one line: each form of each column, and
+// isNormalized of each column.
+function checkLine(columns: Array<string>): Array<string> uses alloc {
+  let failures: Array<string> = []
+  for (const form of FORMS) {
+    for (let source = 0; source < 5; source++) {
+      const want = columns[expectedColumn(form, source)]
+      const got = Unicode.normalize(columns[source], form)
+      if (got != want) {
+        Arrays.push(mutable failures, `${Show.show(form)} of c${Int.toString(source + 1)}`)
+      }
+      const normal = columns[source] == want
+      if (Unicode.isNormalized(columns[source], form) != normal) {
+        Arrays.push(
+          mutable failures,
+          `isNormalized ${Show.show(form)} of c${Int.toString(source + 1)}`,
+        )
+      }
+    }
+  }
+  return failures
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  let path = "testdata/unicode/NormalizationTest-sample.txt"
+  if (Arrays.length(args) > 1) {
+    path = args[1]
+  }
+  const read = Fs.readText(path)
+  if (read is Err(message)) {
+    print(`cannot read the test file: ${message}`)
+    return 1
+  }
+  let passed = 0
+  let total = 0
+  if (Str.split(read.value, "\n") is Some(lines)) {
+    for (const line of lines) {
+      if (line == "" || Str.startsWith(line, "#") || Str.startsWith(line, "@")) {
+        continue
+      }
+      let data = line
+      if (Str.indexOf(line, "#") is Some(hash)) {
+        if (Str.slice(line, 0, hash) is Some(before)) {
+          data = Str.trim(before)
+        }
+      }
+      let columns: Array<string> = []
+      if (Str.split(data, ";") is Some(fields)) {
+        for (const field of fields) {
+          if (Arrays.length(columns) < 5) {
+            Arrays.push(mutable columns, decodeColumn(field))
+          }
+        }
+      }
+      total++
+      if (Arrays.length(columns) != 5) {
+        print(`bad line: ${data}`)
+        continue
+      }
+      const failures = checkLine(columns)
+      if (Arrays.length(failures) == 0) {
+        passed++
+      } else if (total - passed <= 20) {
+        print(`fail: ${data}: ${Str.join(failures, ", ")}`)
+      }
+    }
+  }
+  print(`${Int.toString(passed)} of ${Int.toString(total)} lines pass`)
+  if (passed != total) {
+    return 1
+  }
+  return 0
+}

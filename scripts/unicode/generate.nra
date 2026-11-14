@@ -1,0 +1,993 @@
+// Writes the tables of std/unicode from the Unicode Character Database.
+//
+//   narrac run -release scripts/unicode/generate.nra <ucd folder> [output]
+//
+// The folder holds the UCD files named in INPUTS, flat (auxiliary/ and emoji/
+// files beside the others). The output defaults to std/src/internal__unicode.nra,
+// the source of std/internal/unicode; run from the repo root. The version comes
+// from the header of DerivedCoreProperties.txt, and the header of the output
+// names it with the SHA-256 of every input, so the same inputs give the same file.
+//
+// Every table is one string constant of fixed-width ASCII records, sorted by
+// code point, with numbers in lowercase hex. A lookup is a binary search with
+// Str.byteAt (D118 item 3). The normalization tables (UAX #15) take five hex
+// digits per code point, since no decomposition reaches past U+2FFFF.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Io from "std/io"
+import * as Str from "std/string"
+
+const INPUTS = [
+  "UnicodeData.txt",
+  "SpecialCasing.txt",
+  "CaseFolding.txt",
+  "GraphemeBreakProperty.txt",
+  "emoji-data.txt",
+  "EastAsianWidth.txt",
+  "DerivedCoreProperties.txt",
+  "CompositionExclusions.txt",
+  "DerivedNormalizationProps.txt",
+]
+
+const CODE_POINTS = 1114112
+
+// Grapheme_Cluster_Break values, in the order std/unicode reads them.
+const BREAK_NAMES = [
+  "Other",
+  "CR",
+  "LF",
+  "Control",
+  "Extend",
+  "ZWJ",
+  "Regional_Indicator",
+  "Prepend",
+  "SpacingMark",
+  "L",
+  "V",
+  "T",
+  "LV",
+  "LVT",
+]
+
+// Indic_Conjunct_Break values; the grapheme record keeps them in bits 4 and 5.
+const CONJUNCT_NAMES = ["None", "Consonant", "Extend", "Linker"]
+
+// General categories of zero display width.
+const ZERO_WIDTH_CATEGORIES = ["Mn", "Me", "Mc", "Cf", "Cc", "Zl", "Zp"]
+
+const SHA_ROUND_CONSTANTS = [
+  0x428a2f98,
+  0x71374491,
+  0xb5c0fbcf,
+  0xe9b5dba5,
+  0x3956c25b,
+  0x59f111f1,
+  0x923f82a4,
+  0xab1c5ed5,
+  0xd807aa98,
+  0x12835b01,
+  0x243185be,
+  0x550c7dc3,
+  0x72be5d74,
+  0x80deb1fe,
+  0x9bdc06a7,
+  0xc19bf174,
+  0xe49b69c1,
+  0xefbe4786,
+  0x0fc19dc6,
+  0x240ca1cc,
+  0x2de92c6f,
+  0x4a7484aa,
+  0x5cb0a9dc,
+  0x76f988da,
+  0x983e5152,
+  0xa831c66d,
+  0xb00327c8,
+  0xbf597fc7,
+  0xc6e00bf3,
+  0xd5a79147,
+  0x06ca6351,
+  0x14292967,
+  0x27b70a85,
+  0x2e1b2138,
+  0x4d2c6dfc,
+  0x53380d13,
+  0x650a7354,
+  0x766a0abb,
+  0x81c2c92e,
+  0x92722c85,
+  0xa2bfe8a1,
+  0xa81a664b,
+  0xc24b8b70,
+  0xc76c51a3,
+  0xd192e819,
+  0xd6990624,
+  0xf40e3585,
+  0x106aa070,
+  0x19a4c116,
+  0x1e376c08,
+  0x2748774c,
+  0x34b0bcb5,
+  0x391c0cb3,
+  0x4ed8aa4a,
+  0x5b9cca4f,
+  0x682e6ff3,
+  0x748f82ee,
+  0x78a5636f,
+  0x84c87814,
+  0x8cc70208,
+  0x90befffa,
+  0xa4506ceb,
+  0xbef9a3f7,
+  0xc67178f2,
+]
+
+const SHA_INITIAL = [
+  0x6a09e667,
+  0xbb67ae85,
+  0x3c6ef372,
+  0xa54ff53a,
+  0x510e527f,
+  0x9b05688c,
+  0x1f83d9ab,
+  0x5be0cd19,
+]
+
+const MASK_32 = 0xffffffff
+
+struct Input {
+  name: string
+  text: string
+}
+
+// Quick check values of DerivedNormalizationProps, with the bit each sets in
+// the normalization properties.
+const QUICK_CHECKS = [
+  #["NFD_QC", "N", 1],
+  #["NFKD_QC", "N", 2],
+  #["NFC_QC", "N", 4],
+  #["NFC_QC", "M", 8],
+  #["NFKC_QC", "N", 16],
+  #["NFKC_QC", "M", 32],
+]
+
+// A decomposition of UnicodeData, one step.
+struct Decomposition {
+  point: int
+  compatibility: bool
+  targets: Array<int>
+}
+
+// One case mapping table: a single code point target (-1 for none) and the
+// mappings to two or three code points.
+struct CaseMap {
+  single: Array<int>
+  multiple: Array<#[int, Array<int>]>
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  if (Arrays.length(args) < 2 || Arrays.length(args) > 3) {
+    Io.writeError("usage: generate <ucd folder> [output]\n")
+    return 2
+  }
+  const folder = args[1]
+  let output = "std/src/internal__unicode.nra"
+  if (Arrays.length(args) == 3) {
+    output = args[2]
+  }
+  let inputs: Array<Input> = []
+  for (const name of INPUTS) {
+    const read = Fs.readText(`${folder}/${name}`)
+    if (read is Err(message)) {
+      Io.writeError(`generate: cannot read ${folder}/${name}: ${message}\n`)
+      return 1
+    }
+    Arrays.push(mutable inputs, Input { name: name, text: read.value })
+  }
+  const version = readVersion(inputs[6].text)
+  if (version == "") {
+    Io.writeError("generate: DerivedCoreProperties.txt has no version line\n")
+    return 1
+  }
+  const text = writeModule(version, inputs)
+  const written = Fs.writeText(output, text)
+  if (written is Err(message)) {
+    Io.writeError(`generate: cannot write ${output}: ${message}\n`)
+    return 1
+  }
+  return 0
+}
+
+function readVersion(text: string): string {
+  // The first line reads `# DerivedCoreProperties-17.0.0.txt`.
+  const prefix = "# DerivedCoreProperties-"
+  if (!Str.startsWith(text, prefix)) {
+    return ""
+  }
+  const end = Str.indexOf(text, ".txt")
+  if (end is Some(position)) {
+    if (Str.slice(text, Str.length(prefix), position) is Some(version)) {
+      return version
+    }
+  }
+  return ""
+}
+
+function writeModule(version: string, inputs: Array<Input>): string {
+  let builder = Str.builder()
+  Str.append(
+    mutable builder,
+    `// std/internal/unicode: the Unicode ${version} tables of std/unicode.\n`,
+  )
+  Str.append(
+    mutable builder,
+    "// Generated by scripts/unicode/generate.nra from the Unicode Character Database. Do not edit.\n",
+  )
+  Str.append(
+    mutable builder,
+    `// Source: https://www.unicode.org/Public/${version}/ucd/ (auxiliary/ and emoji/ files flat).\n`,
+  )
+  Str.append(mutable builder, "//\n// Inputs (SHA-256):\n")
+  for (const input of inputs) {
+    Str.append(mutable builder, `//   ${input.name} ${sha256(input.text)}\n`)
+  }
+  Str.append(mutable builder, "//\n")
+  Str.append(
+    mutable builder,
+    "// Numbers are lowercase hex. A range record is start (6), end (6) and a value.\n",
+  )
+  Str.append(mutable builder, `\nexport const VERSION = "${version}"\n`)
+  writeTables(mutable builder, inputs)
+  return Str.build(builder)
+}
+
+function writeTables(mutable builder: StringBuilder, inputs: Array<Input>) {
+  const unicodeData = inputs[0].text
+  const special = inputs[1].text
+  const folding = inputs[2].text
+  const breaks = inputs[3].text
+  const emoji = inputs[4].text
+  const widths = inputs[5].text
+  const derived = inputs[6].text
+  const categories = readCategories(unicodeData)
+  const breakValues = readBreaks(breaks)
+
+  // Grapheme cluster break: value = break + 16 * conjunct + 64 * Extended_Pictographic.
+  let graphemes = copy(breakValues)
+  const conjuncts = readConjuncts(derived)
+  const pictographic = readProperty(emoji, "Extended_Pictographic")
+  for (let index = 0; index < CODE_POINTS; index++) {
+    graphemes[index] = graphemes[index] + 16 * conjuncts[index] + 64 * pictographic[index]
+  }
+  writeComment(
+    mutable builder,
+    "Grapheme properties (14): range, then 2 digits: Grapheme_Cluster_Break (0 Other, 1 CR, 2 LF, 3 Control, 4 Extend, 5 ZWJ, 6 Regional_Indicator, 7 Prepend, 8 SpacingMark, 9 L, 10 V, 11 T, 12 LV, 13 LVT) + 16 * Indic_Conjunct_Break (1 Consonant, 2 Extend, 3 Linker) + 64 * Extended_Pictographic.",
+  )
+  writeConstant(mutable builder, "GRAPHEME", writeRanges(graphemes, 6, 2, 0, 0))
+
+  // Display width: 0 zero width, 1 an emoji with text presentation (2 with U+FE0F), 2 wide.
+  const wide = readWide(widths)
+  const presentation = readProperty(emoji, "Emoji_Presentation")
+  const emojiValues = readProperty(emoji, "Emoji")
+  const ignorable = readProperty(derived, "Default_Ignorable_Code_Point")
+  let widthValues = filledInts(0)
+  for (let index = 0; index < CODE_POINTS; index++) {
+    // Hangul vowel and trailing jamo join the leading jamo of their syllable.
+    const jamo = breakValues[index] == 10 || breakValues[index] == 11
+    if (isZeroWidthCategory(categories[index]) || ignorable[index] == 1 || jamo) {
+      widthValues[index] = 1
+    } else if (wide[index] == 1 || presentation[index] == 1) {
+      widthValues[index] = 3
+    } else if (emojiValues[index] == 1) {
+      widthValues[index] = 2
+    }
+  }
+  // The stored value is one less, so 0 stays free for "no record".
+  writeComment(
+    mutable builder,
+    "Display width (13): range, then 1 digit: 0 zero width, 1 an emoji with text presentation (2 columns with U+FE0F), 2 wide. Any other code point is 1 column.",
+  )
+  writeConstant(mutable builder, "WIDTH", writeRanges(widthValues, 6, 1, -1, 0))
+
+  // Case context for the final sigma rule: 1 Cased, 2 Case_Ignorable, 3 both.
+  const cased = readProperty(derived, "Cased")
+  const caseIgnorable = readProperty(derived, "Case_Ignorable")
+  let contextValues = filledInts(0)
+  for (let index = 0; index < CODE_POINTS; index++) {
+    contextValues[index] = cased[index] + 2 * caseIgnorable[index]
+  }
+  writeComment(
+    mutable builder,
+    "Case context (13): range, then 1 digit: 1 Cased, 2 Case_Ignorable, 3 both.",
+  )
+  writeConstant(mutable builder, "CASE_CONTEXT", writeRanges(contextValues, 6, 1, 0, 0))
+
+  // Case mappings: UnicodeData simple mappings, replaced by the unconditional
+  // full mappings of SpecialCasing.
+  const upper = readCaseMap(unicodeData, 12, special, 3)
+  const lower = readCaseMap(unicodeData, 13, special, 1)
+  const fold = readFolding(folding)
+  writeComment(
+    mutable builder,
+    "Case mapping ranges (19): range, stride (1 digit), target of the start (6). A code point start + stride * k maps to target + stride * k.",
+  )
+  writeConstant(mutable builder, "UPPER_RANGES", writeCaseRanges(upper.single))
+  writeConstant(mutable builder, "LOWER_RANGES", writeCaseRanges(lower.single))
+  writeConstant(mutable builder, "FOLD_RANGES", writeCaseRanges(fold.single))
+  writeComment(
+    mutable builder,
+    "Full case mappings (24): code point (6), then three targets (6 each), 000000 for none.",
+  )
+  writeConstant(mutable builder, "UPPER_FULL", writeFullMappings(upper.multiple))
+  writeConstant(mutable builder, "LOWER_FULL", writeFullMappings(lower.multiple))
+  writeConstant(mutable builder, "FOLD_FULL", writeFullMappings(fold.multiple))
+  writeNormalization(mutable builder, unicodeData, inputs[7].text, inputs[8].text)
+}
+
+// writeNormalization writes the tables of normalize and isNormalized (UAX #15).
+// Hangul syllables are computed, not tabled.
+function writeNormalization(
+  mutable builder: StringBuilder,
+  unicodeData: string,
+  exclusions: string,
+  properties: string,
+) {
+  const classes = readCombiningClasses(unicodeData)
+  const decompositions = readDecompositions(unicodeData)
+  const excluded = readCompositionExclusions(exclusions, properties, classes, decompositions)
+
+  // Combining class and quick check share one range table.
+  writeComment(
+    mutable builder,
+    "Normalization properties (14): start (5), end (5), then 4 digits: Canonical_Combining_Class + 256 * quick check (1 NFD_QC=N, 2 NFKD_QC=N, 4 NFC_QC=N, 8 NFC_QC=M, 16 NFKC_QC=N, 32 NFKC_QC=M). Any other code point is class 0 and Yes in every quick check.",
+  )
+  writeConstant(
+    mutable builder,
+    "NORMAL_PROPERTIES",
+    writeRanges(readNormalProperties(properties, classes), 5, 4, 0, 0),
+  )
+
+  // Canonical decompositions have one or two code points per step.
+  let canonical = Str.builder()
+  let pairs: Array<#[int, int, int]> = []
+  let count = 0
+  for (const entry of decompositions) {
+    if (entry.compatibility) {
+      continue
+    }
+    const size = Arrays.length(entry.targets)
+    if (size > 2) {
+      panic(
+        `generate: U+${hex(entry.point, 4)} has a canonical decomposition of ${Show.show(size)} code points`,
+      )
+    }
+    Str.append(mutable canonical, hexField(entry.point, 5))
+    Str.append(mutable canonical, hexField(entry.targets[0], 5))
+    if (size == 2) {
+      Str.append(mutable canonical, hexField(entry.targets[1], 5))
+      if (!excluded[entry.point]) {
+        Arrays.push(mutable pairs, #[entry.targets[0], entry.targets[1], count])
+      }
+    } else {
+      Str.append(mutable canonical, "00000")
+    }
+    count++
+  }
+  writeComment(
+    mutable builder,
+    "Canonical decompositions (15), one step: code point (5), then one or two code points (5 each), 00000 for none.",
+  )
+  writeConstant(mutable builder, "CANONICAL", Str.build(canonical))
+
+  // Primary composites, found by the pair they compose from.
+  sortPairs(mutable pairs)
+  let composition = Str.builder()
+  for (const pair of pairs) {
+    Str.append(mutable composition, hexField(pair[2], 3))
+  }
+  writeComment(
+    mutable builder,
+    "Canonical composition (3): the index of each two code point CANONICAL record that composes (not Full_Composition_Exclusion), sorted by its first and then its second code point.",
+  )
+  writeConstant(mutable builder, "COMPOSITION", Str.build(composition))
+  writeCompatibility(mutable builder, decompositions)
+}
+
+// writeCompatibility writes the compatibility decompositions: runs of single
+// code points as ranges, the longer ones as an index into one list of code points.
+function writeCompatibility(mutable builder: StringBuilder, decompositions: Array<Decomposition>) {
+  let ranges = Str.builder()
+  let index = Str.builder()
+  let data = Str.builder()
+  let offset = 0
+  let position = 0
+  const total = Arrays.length(decompositions)
+  while (position < total) {
+    const entry = decompositions[position]
+    if (!entry.compatibility) {
+      position++
+      continue
+    }
+    if (Arrays.length(entry.targets) == 1) {
+      // The run grows while the next code point maps to the next target.
+      let last = position
+      while (last + 1 < total && continuesRun(decompositions[last], decompositions[last + 1])) {
+        last++
+      }
+      Str.append(mutable ranges, hexField(entry.point, 5))
+      Str.append(mutable ranges, hexField(decompositions[last].point, 5))
+      Str.append(mutable ranges, hexField(entry.targets[0], 5))
+      position = last + 1
+      continue
+    }
+    Str.append(mutable index, hexField(entry.point, 5))
+    Str.append(mutable index, hexField(offset, 4))
+    for (const target of entry.targets) {
+      Str.append(mutable data, hexField(target, 5))
+      offset++
+    }
+    position++
+  }
+  writeComment(
+    mutable builder,
+    "Compatibility decompositions to one code point (15), one step: start (5), end (5), target of the start (5). A code point start + k decomposes to target + k.",
+  )
+  writeConstant(mutable builder, "COMPATIBILITY_RANGES", Str.build(ranges))
+  writeComment(
+    mutable builder,
+    "Longer compatibility decompositions (9), one step: code point (5), then the offset (4) of its first code point in COMPATIBILITY_DATA, counted in code points. The next record's offset, or the end of the data, ends it.",
+  )
+  writeConstant(mutable builder, "COMPATIBILITY", Str.build(index))
+  writeComment(mutable builder, "The code points of COMPATIBILITY (5 each).")
+  writeConstant(mutable builder, "COMPATIBILITY_DATA", Str.build(data))
+}
+
+function continuesRun(previous: Decomposition, next: Decomposition): bool {
+  return next.compatibility &&
+    Arrays.length(next.targets) == 1 &&
+    next.point == previous.point + 1 &&
+    next.targets[0] == previous.targets[0] + 1
+}
+
+// readNormalProperties gives the combining class plus 256 times the quick check bits.
+function readNormalProperties(properties: string, classes: Array<int>): Array<int> {
+  let values = copy(classes)
+  for (const fields of dataLines(properties)) {
+    if (Arrays.length(fields) < 3) {
+      continue
+    }
+    for (const check of QUICK_CHECKS) {
+      if (fields[1] == check[0] && fields[2] == check[1]) {
+        const range = parseRange(fields[0])
+        for (let point = range[0]; point <= range[1]; point++) {
+          values[point] = values[point] + 256 * check[2]
+        }
+      }
+    }
+  }
+  return values
+}
+
+function readCombiningClasses(text: string): Array<int> {
+  let values = filledInts(0)
+  for (const fields of dataLines(text)) {
+    if (Int.parse(fields[3], 10) is Ok(value)) {
+      values[parseHex(fields[0])] = value
+    }
+  }
+  return values
+}
+
+function readDecompositions(text: string): Array<Decomposition> {
+  let entries: Array<Decomposition> = []
+  for (const fields of dataLines(text)) {
+    let field = fields[5]
+    if (field == "") {
+      continue
+    }
+    // A compatibility decomposition starts with its tag, such as `<compat>` or `<font>`.
+    const compatibility = Str.startsWith(field, "<")
+    if (compatibility) {
+      if (Str.indexOf(field, ">") is Some(close)) {
+        field = Str.sliceFrom(field, close + 1)
+      }
+    }
+    Arrays.push(mutable entries, Decomposition {
+      point: parseHex(fields[0]),
+      compatibility: compatibility,
+      targets: parseCodePoints(field),
+    })
+  }
+  return entries
+}
+
+// readCompositionExclusions gives Full_Composition_Exclusion: the code points
+// of CompositionExclusions.txt, singletons, and decompositions of or into a
+// non-starter. It must equal the property in DerivedNormalizationProps.
+function readCompositionExclusions(
+  exclusions: string,
+  properties: string,
+  classes: Array<int>,
+  decompositions: Array<Decomposition>,
+): Array<bool> {
+  let excluded = filledBools(false)
+  for (const fields of dataLines(exclusions)) {
+    const range = parseRange(fields[0])
+    for (let point = range[0]; point <= range[1]; point++) {
+      excluded[point] = true
+    }
+  }
+  for (const entry of decompositions) {
+    if (entry.compatibility) {
+      continue
+    }
+    const single = Arrays.length(entry.targets) == 1
+    if (single || classes[entry.point] != 0 || classes[entry.targets[0]] != 0) {
+      excluded[entry.point] = true
+    }
+  }
+  const derived = readProperty(properties, "Full_Composition_Exclusion")
+  for (let point = 0; point < CODE_POINTS; point++) {
+    if (excluded[point] != (derived[point] == 1)) {
+      panic(
+        `generate: Full_Composition_Exclusion of U+${hex(point, 4)} differs from DerivedNormalizationProps`,
+      )
+    }
+  }
+  return excluded
+}
+
+function sortPairs(mutable pairs: Array<#[int, int, int]>) {
+  // Insertion sort by first, then second code point; the list is close to sorted.
+  for (let index = 1; index < Arrays.length(pairs); index++) {
+    let position = index
+    while (position > 0 && comesAfter(pairs[position - 1], pairs[position])) {
+      const previous = pairs[position - 1]
+      pairs[position - 1] = pairs[position]
+      pairs[position] = previous
+      position--
+    }
+  }
+}
+
+function comesAfter(left: #[int, int, int], right: #[int, int, int]): bool {
+  return left[0] > right[0] || (left[0] == right[0] && left[1] > right[1])
+}
+
+// hexField is hex with a check that the value fits the field.
+function hexField(value: int, digits: int): string {
+  const text = hex(value, digits)
+  if (Str.length(text) != digits) {
+    panic(`generate: ${text} does not fit in ${Show.show(digits)} hex digits`)
+  }
+  return text
+}
+
+function writeComment(mutable builder: StringBuilder, text: string) {
+  Str.append(mutable builder, `\n// ${text}\n`)
+}
+
+function writeConstant(mutable builder: StringBuilder, name: string, records: string) {
+  Str.append(mutable builder, `export const ${name} = "${records}"\n`)
+}
+
+function isZeroWidthCategory(category: string): bool {
+  for (const zero of ZERO_WIDTH_CATEGORIES) {
+    if (category == zero) {
+      return true
+    }
+  }
+  return false
+}
+
+// dataLines splits each line that is not a comment into trimmed fields.
+function dataLines(text: string): Array<Array<string>> {
+  let lines: Array<Array<string>> = []
+  if (Str.split(text, "\n") is Some(rawLines)) {
+    for (const rawLine of rawLines) {
+      let line = rawLine
+      if (Str.indexOf(line, "#") is Some(hash)) {
+        if (Str.slice(line, 0, hash) is Some(before)) {
+          line = before
+        }
+      }
+      if (Str.trim(line) == "") {
+        continue
+      }
+      if (Str.split(line, ";") is Some(parts)) {
+        let fields: Array<string> = []
+        for (const part of parts) {
+          Arrays.push(mutable fields, Str.trim(part))
+        }
+        Arrays.push(mutable lines, fields)
+      }
+    }
+  }
+  return lines
+}
+
+function parseHex(text: string): int {
+  if (Int.parse(text, 16) is Ok(value)) {
+    return value
+  }
+  panic(`generate: bad hex number ${text}`)
+}
+
+// parseRange reads `0041` or `0041..005A`.
+function parseRange(field: string): #[int, int] {
+  if (Str.indexOf(field, "..") is Some(dots)) {
+    if (Str.slice(field, 0, dots) is Some(first)) {
+      return #[parseHex(first), parseHex(Str.sliceFrom(field, dots + 2))]
+    }
+  }
+  const single = parseHex(field)
+  return #[single, single]
+}
+
+function parseCodePoints(field: string): Array<int> {
+  let points: Array<int> = []
+  if (Str.split(field, " ") is Some(parts)) {
+    for (const part of parts) {
+      if (part != "") {
+        Arrays.push(mutable points, parseHex(part))
+      }
+    }
+  }
+  return points
+}
+
+function fillRange(mutable values: Array<int>, range: #[int, int], value: int) {
+  for (let point = range[0]; point <= range[1]; point++) {
+    values[point] = value
+  }
+}
+
+// readProperty marks the code points listed with the property name in field 1.
+function readProperty(text: string, name: string): Array<int> {
+  let values = filledInts(0)
+  for (const fields of dataLines(text)) {
+    if (Arrays.length(fields) >= 2 && fields[1] == name) {
+      fillRange(mutable values, parseRange(fields[0]), 1)
+    }
+  }
+  return values
+}
+
+function readConjuncts(text: string): Array<int> {
+  let values = filledInts(0)
+  for (const fields of dataLines(text)) {
+    if (Arrays.length(fields) >= 3 && fields[1] == "InCB") {
+      for (let index = 1; index < Arrays.length(CONJUNCT_NAMES); index++) {
+        if (fields[2] == CONJUNCT_NAMES[index]) {
+          fillRange(mutable values, parseRange(fields[0]), index)
+        }
+      }
+    }
+  }
+  return values
+}
+
+function readBreaks(text: string): Array<int> {
+  let values = filledInts(0)
+  for (const fields of dataLines(text)) {
+    for (let index = 1; index < Arrays.length(BREAK_NAMES); index++) {
+      if (Arrays.length(fields) >= 2 && fields[1] == BREAK_NAMES[index]) {
+        fillRange(mutable values, parseRange(fields[0]), index)
+      }
+    }
+  }
+  return values
+}
+
+function readWide(text: string): Array<int> {
+  let values = filledInts(0)
+  for (const fields of dataLines(text)) {
+    if (Arrays.length(fields) >= 2 && (fields[1] == "W" || fields[1] == "F")) {
+      fillRange(mutable values, parseRange(fields[0]), 1)
+    }
+  }
+  return values
+}
+
+// readCategories gives the general category of each code point ("" when unassigned).
+function readCategories(text: string): Array<string> {
+  let values = filledStrings("")
+  let rangeStart = -1
+  for (const fields of dataLines(text)) {
+    const point = parseHex(fields[0])
+    const name = fields[1]
+    // A range is two lines, `<..., First>` and `<..., Last>`.
+    if (Str.endsWith(name, ", First>")) {
+      rangeStart = point
+    } else if (Str.endsWith(name, ", Last>") && rangeStart >= 0) {
+      for (let inner = rangeStart; inner <= point; inner++) {
+        values[inner] = fields[2]
+      }
+      rangeStart = -1
+    } else {
+      values[point] = fields[2]
+    }
+  }
+  return values
+}
+
+// The filled functions give one item per code point.
+function filledInts(value: int): Array<int> {
+  if (Arrays.filled(value, CODE_POINTS) is Some(items)) {
+    return items
+  }
+  panic("generate: cannot allocate a table")
+}
+
+function filledStrings(value: string): Array<string> {
+  if (Arrays.filled(value, CODE_POINTS) is Some(items)) {
+    return items
+  }
+  panic("generate: cannot allocate a table")
+}
+
+function filledBools(value: bool): Array<bool> {
+  if (Arrays.filled(value, CODE_POINTS) is Some(items)) {
+    return items
+  }
+  panic("generate: cannot allocate a table")
+}
+
+function sixtyFourZeros(): Array<int> {
+  if (Arrays.filled(0, 64) is Some(items)) {
+    return items
+  }
+  panic("generate: cannot allocate a block")
+}
+
+function emptyCaseMap(): CaseMap {
+  return CaseMap { single: filledInts(-1), multiple: [] }
+}
+
+function setMapping(mutable map: CaseMap, point: int, targets: Array<int>) {
+  // A mapping to the code point itself is no mapping.
+  if (Arrays.length(targets) == 1) {
+    if (targets[0] != point) {
+      map.single[point] = targets[0]
+    }
+    return
+  }
+  if (Arrays.length(targets) > 1) {
+    Arrays.push(mutable map.multiple, #[point, targets])
+  }
+}
+
+// readCaseMap reads the simple mapping in field `simpleField` of UnicodeData
+// and replaces it with the full mapping in field `fullField` of each
+// unconditional SpecialCasing line.
+function readCaseMap(
+  unicodeData: string,
+  simpleField: int,
+  special: string,
+  fullField: int,
+): CaseMap {
+  let map = emptyCaseMap()
+  let replaced = filledBools(false)
+  for (const fields of dataLines(special)) {
+    // A fifth field holds the conditions (locales, Final_Sigma).
+    if (Arrays.length(fields) >= 5 && fields[4] != "") {
+      continue
+    }
+    const point = parseHex(fields[0])
+    replaced[point] = true
+    setMapping(mutable map, point, parseCodePoints(fields[fullField]))
+  }
+  for (const fields of dataLines(unicodeData)) {
+    const point = parseHex(fields[0])
+    if (!replaced[point] && fields[simpleField] != "") {
+      setMapping(mutable map, point, [parseHex(fields[simpleField])])
+    }
+  }
+  sortMultiple(mutable map.multiple)
+  return map
+}
+
+// readFolding keeps the common (C) and full (F) foldings of CaseFolding.
+function readFolding(text: string): CaseMap {
+  let map = emptyCaseMap()
+  for (const fields of dataLines(text)) {
+    if (fields[1] == "C" || fields[1] == "F") {
+      setMapping(mutable map, parseHex(fields[0]), parseCodePoints(fields[2]))
+    }
+  }
+  sortMultiple(mutable map.multiple)
+  return map
+}
+
+function sortMultiple(mutable entries: Array<#[int, Array<int>]>) {
+  // Insertion sort by code point; the lists hold about a hundred entries.
+  for (let index = 1; index < Arrays.length(entries); index++) {
+    let position = index
+    while (position > 0 && entries[position - 1][0] > entries[position][0]) {
+      const previous = copy(entries[position - 1])
+      entries[position - 1] = copy(entries[position])
+      entries[position] = previous
+      position--
+    }
+  }
+}
+
+function hex(value: int, digits: int): string {
+  let text = Int.toHex(value)
+  while (Str.length(text) < digits) {
+    text = `0${text}`
+  }
+  return text
+}
+
+// writeRanges writes one record per run of equal values, leaving out runs of
+// `skip`. Start and end take keyDigits each; the stored value is the value
+// plus `offset`.
+function writeRanges(
+  values: Array<int>,
+  keyDigits: int,
+  digits: int,
+  offset: int,
+  skip: int,
+): string {
+  let builder = Str.builder()
+  let start = 0
+  while (start < CODE_POINTS) {
+    const value = values[start]
+    let end = start
+    while (end + 1 < CODE_POINTS && values[end + 1] == value) {
+      end++
+    }
+    if (value != skip) {
+      Str.append(mutable builder, hexField(start, keyDigits))
+      Str.append(mutable builder, hexField(end, keyDigits))
+      Str.append(mutable builder, hex(value + offset, digits))
+    }
+    start = end + 1
+  }
+  return Str.build(builder)
+}
+
+// writeCaseRanges writes runs of code points whose targets move with them, at
+// stride 1 or 2. A stride 2 run grows only over code points without a mapping,
+// so the runs never overlap.
+function writeCaseRanges(targets: Array<int>): string {
+  let builder = Str.builder()
+  let start = 0
+  while (start < CODE_POINTS) {
+    if (targets[start] < 0) {
+      start++
+      continue
+    }
+    let end = start
+    let stride = 1
+    if (start + 1 < CODE_POINTS && targets[start + 1] == targets[start] + 1) {
+      while (end + 1 < CODE_POINTS && targets[end + 1] == targets[end] + 1) {
+        end++
+      }
+    } else {
+      while (
+        end + 2 < CODE_POINTS && targets[end + 1] < 0 && targets[end + 2] == targets[end] + 2
+      ) {
+        end += 2
+      }
+      if (end > start) {
+        stride = 2
+      }
+    }
+    Str.append(mutable builder, hex(start, 6))
+    Str.append(mutable builder, hex(end, 6))
+    Str.append(mutable builder, hex(stride, 1))
+    Str.append(mutable builder, hex(targets[start], 6))
+    start = end + 1
+  }
+  return Str.build(builder)
+}
+
+function writeFullMappings(entries: Array<#[int, Array<int>]>): string {
+  let builder = Str.builder()
+  for (const entry of entries) {
+    Str.append(mutable builder, hex(entry[0], 6))
+    for (let index = 0; index < 3; index++) {
+      if (index < Arrays.length(entry[1])) {
+        Str.append(mutable builder, hex(entry[1][index], 6))
+      } else {
+        Str.append(mutable builder, "000000")
+      }
+    }
+  }
+  return Str.build(builder)
+}
+
+// sha256 hashes the UTF-8 bytes of text (FIPS 180-4), in lowercase hex.
+function sha256(text: string): string {
+  let state = copy(SHA_INITIAL)
+  const length = Str.length(text)
+  // The message is padded with 0x80, zeros and the bit length to a multiple of 64 bytes.
+  const total = ((length + 8) / 64 + 1) * 64
+  let block = sixtyFourZeros()
+  let schedule = sixtyFourZeros()
+  for (let offset = 0; offset < total; offset += 64) {
+    for (let index = 0; index < 64; index++) {
+      block[index] = paddedByte(text, length, total, offset + index)
+    }
+    for (let index = 0; index < 16; index++) {
+      schedule[index] =
+        (block[4 * index] << 24) |
+          (block[4 * index + 1] << 16) |
+          (block[4 * index + 2] << 8) |
+          block[4 * index + 3]
+    }
+    for (let index = 16; index < 64; index++) {
+      const early = schedule[index - 15]
+      const late = schedule[index - 2]
+      const sigma0 = rotate(early, 7) ^ rotate(early, 18) ^ (early >> 3)
+      const sigma1 = rotate(late, 17) ^ rotate(late, 19) ^ (late >> 10)
+      schedule[index] = (schedule[index - 16] + sigma0 + schedule[index - 7] + sigma1) & MASK_32
+    }
+    // The working variables a to h are named as in FIPS 180-4.
+    let a = state[0]
+    let b = state[1]
+    let c = state[2]
+    let d = state[3]
+    let e = state[4]
+    let f = state[5]
+    let g = state[6]
+    let h = state[7]
+    for (let index = 0; index < 64; index++) {
+      const sum1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)
+      const choice = (e & f) ^ (~e & MASK_32 & g)
+      const first = (h + sum1 + choice + SHA_ROUND_CONSTANTS[index] + schedule[index]) & MASK_32
+      const sum0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)
+      const majority = (a & b) ^ (a & c) ^ (b & c)
+      const second = (sum0 + majority) & MASK_32
+      h = g
+      g = f
+      f = e
+      e = (d + first) & MASK_32
+      d = c
+      c = b
+      b = a
+      a = (first + second) & MASK_32
+    }
+    state[0] = (state[0] + a) & MASK_32
+    state[1] = (state[1] + b) & MASK_32
+    state[2] = (state[2] + c) & MASK_32
+    state[3] = (state[3] + d) & MASK_32
+    state[4] = (state[4] + e) & MASK_32
+    state[5] = (state[5] + f) & MASK_32
+    state[6] = (state[6] + g) & MASK_32
+    state[7] = (state[7] + h) & MASK_32
+  }
+  let digest = Str.builder()
+  for (const word of state) {
+    Str.append(mutable digest, hex(word, 8))
+  }
+  return Str.build(digest)
+}
+
+function paddedByte(text: string, length: int, total: int, position: int): int {
+  if (position < length) {
+    return Str.byteAt(text, position)
+  }
+  if (position == length) {
+    return 0x80
+  }
+  // The last 8 bytes hold the length in bits, big-endian.
+  const shift = 8 * (total - 1 - position)
+  if (shift >= 0 && shift < 64) {
+    return ((length * 8) >> shift) & 0xff
+  }
+  return 0
+}
+
+function rotate(value: int, count: int): int
+  requires count > 0 && count < 32
+{
+  const left = 32 - count
+  if (left > 0 && left < 32) {
+    return ((value >> count) | (value << left)) & MASK_32
+  }
+  return value
+}

@@ -1,0 +1,272 @@
+// std/iterator: lazy and eager operators over generators (D118 item 1).
+//
+// A lazy operator is a generator function: it does no work until the result is
+// resumed, and it keeps its callback, so the callback is `escaping`. An eager
+// operator runs the source to its end or to the first answer, with a callback
+// that is not escaping. Every operator takes its source by value: a loop or a
+// resume inside it works on its own copy, and the caller's generator does not
+// move.
+
+import * as Co from "std/coroutine"
+import { Step } from "std/coroutine"
+import * as Arrays from "std/array"
+
+export function* map<T, U, effect E>(
+  source: Generator<T> uses E,
+  escaping transform: (value: T) => U uses E
+): Generator<U> uses E {
+  for (const value of source) {
+    yield transform(value)
+  }
+}
+
+export function* filter<T, effect E>(
+  source: Generator<T> uses E,
+  escaping keep: (value: T) => bool uses E
+): Generator<T> uses E {
+  for (const value of source) {
+    if (keep(value)) {
+      yield value
+    }
+  }
+}
+
+export function* flatMap<T, U, effect E>(
+  source: Generator<T> uses E,
+  escaping expand: (value: T) => Generator<U> uses E uses E, alloc
+): Generator<U> uses E, alloc {
+  for (const value of source) {
+    for (const inner of expand(value)) {
+      yield inner
+    }
+  }
+}
+
+export function* take<T, effect E>(source: Generator<T> uses E, count: int): Generator<T> uses E {
+  // A count of 0 or less yields nothing and never resumes the source.
+  if (count <= 0) {
+    return
+  }
+  let taken = 0
+  for (const value of source) {
+    yield value
+    taken = taken + 1
+    if (taken >= count) {
+      return
+    }
+  }
+}
+
+export function* drop<T, effect E>(source: Generator<T> uses E, count: int): Generator<T> uses E {
+  let skipped = 0
+  for (const value of source) {
+    if (skipped < count) {
+      skipped = skipped + 1
+    } else {
+      yield value
+    }
+  }
+}
+
+export function* takeWhile<T, effect E>(
+  source: Generator<T> uses E,
+  escaping keep: (value: T) => bool uses E
+): Generator<T> uses E {
+  for (const value of source) {
+    if (!keep(value)) {
+      return
+    }
+    yield value
+  }
+}
+
+export function* dropWhile<T, effect E>(
+  source: Generator<T> uses E,
+  escaping skip: (value: T) => bool uses E
+): Generator<T> uses E {
+  let dropping = true
+  for (const value of source) {
+    if (dropping && skip(value)) {
+      continue
+    }
+    dropping = false
+    yield value
+  }
+}
+
+export function* enumerate<T, effect E>(source: Generator<T> uses E): Generator<#[int, T]> uses E {
+  let index = 0
+  for (const value of source) {
+    yield #[index, value]
+    index = index + 1
+  }
+}
+
+export function* zip<A, B, effect E>(
+  first: Generator<A> uses E,
+  second: Generator<B> uses E
+): Generator<#[A, B]> uses E, alloc {
+  // A generator parameter cannot be `mutable`, so the second source is resumed
+  // through a local copy of its own.
+  let other = copy(second)
+  for (const value of first) {
+    const step = Co.resume(mutable other)
+    if (step is Step.Yielded(otherValue)) {
+      yield #[value, otherValue]
+    } else {
+      return
+    }
+  }
+}
+
+export function* concat<T, effect E>(
+  first: Generator<T> uses E,
+  second: Generator<T> uses E
+): Generator<T> uses E {
+  for (const value of first) {
+    yield value
+  }
+  for (const value of second) {
+    yield value
+  }
+}
+
+export function chunk<T>(
+  source: Generator<T> uses alloc,
+  size: int,
+): Option<Generator<Array<T>> uses alloc> uses alloc {
+  // A size below 1 has no chunks to yield. The source has no effect variable: one
+  // inside the Option of the result would not be bound at the call.
+  if (size < 1) {
+    return None
+  }
+  return Some(chunkFrom(source, size))
+}
+
+function* chunkFrom<T>(source: Generator<T> uses alloc, size: int): Generator<Array<T>> uses alloc {
+  // The last chunk may be shorter than size; an empty source yields none.
+  let current: Array<T> = []
+  for (const value of source) {
+    Arrays.push(mutable current, value)
+    if (Arrays.length(current) == size) {
+      yield current
+      current = []
+    }
+  }
+  if (Arrays.length(current) > 0) {
+    yield current
+  }
+}
+
+export function window<T>(
+  source: Generator<T> uses alloc,
+  size: int,
+): Option<Generator<Array<T>> uses alloc> uses alloc {
+  // A size below 1 has no windows to yield.
+  if (size < 1) {
+    return None
+  }
+  return Some(windowFrom(source, size))
+}
+
+function* windowFrom<T>(
+  source: Generator<T> uses alloc,
+  size: int,
+): Generator<Array<T>> uses alloc {
+  // Each window is the last size values; a source shorter than size yields none.
+  let recent: Array<T> = []
+  for (const value of source) {
+    Arrays.push(mutable recent, value)
+    if (Arrays.length(recent) > size) {
+      recent = withoutFirst(recent)
+    }
+    if (Arrays.length(recent) == size) {
+      yield recent
+    }
+  }
+}
+
+function withoutFirst<T>(values: Array<T>): Array<T> from values uses alloc {
+  let rest: Array<T> = Arrays.withCapacity(Arrays.length(values))
+  let index = 1
+  while (index < Arrays.length(values)) {
+    Arrays.push(mutable rest, values[index])
+    index = index + 1
+  }
+  return rest
+}
+
+export function reduce<T, U, effect E>(
+  source: Generator<T> uses E,
+  combine: (total: U, value: T) => U uses E,
+  initial: U,
+): U from initial uses E {
+  let total = initial
+  for (const value of source) {
+    total = combine(total, value)
+  }
+  return total
+}
+
+export function toArray<T, effect E>(
+  source: Generator<T> uses E
+): Array<T> from source uses E, alloc {
+  let values: Array<T> = []
+  for (const value of source) {
+    Arrays.push(mutable values, value)
+  }
+  return values
+}
+
+export function forEach<T, effect E>(
+  source: Generator<T> uses E,
+  visit: (value: T) => void uses E
+) uses E {
+  for (const value of source) {
+    visit(value)
+  }
+}
+
+export function some<T, effect E>(
+  source: Generator<T> uses E,
+  predicate: (value: T) => bool uses E
+): bool uses E {
+  for (const value of source) {
+    if (predicate(value)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function every<T, effect E>(
+  source: Generator<T> uses E,
+  predicate: (value: T) => bool uses E
+): bool uses E {
+  for (const value of source) {
+    if (!predicate(value)) {
+      return false
+    }
+  }
+  return true
+}
+
+export function find<T, effect E>(
+  source: Generator<T> uses E,
+  predicate: (value: T) => bool uses E
+): Option<T> from source uses E {
+  for (const value of source) {
+    if (predicate(value)) {
+      return Some(value)
+    }
+  }
+  return None
+}
+
+export function count<T, effect E>(source: Generator<T> uses E): int uses E {
+  let total = 0
+  for (const _value of source) {
+    total = total + 1
+  }
+  return total
+}

@@ -1,0 +1,112 @@
+// std/args: a narrac-like command line parsed over many argument lists.
+import * as Args from "std/args"
+import { Command, Flag, Rest, Parsed } from "std/args"
+import * as Str from "std/string"
+
+const NARRAC = Command {
+  name: "narrac",
+  summary: "The Narra compiler.",
+  flags: [Flag { name: "verbose", short: "v", help: "print each step" }],
+  rest: Rest.None,
+  commands: [
+    Command {
+      name: "build",
+      summary: "Build a program.",
+      flags: [
+        Flag { name: "release", short: "r", help: "build with optimizations" },
+        Flag { name: "output", short: "o", value: "path", help: "where to write the binary" },
+        Flag { name: "filter", value: "name", repeated: true, help: "keep matching tests" },
+        Flag { name: "quiet", short: "q" },
+      ],
+      positionals: ["file"],
+      rest: Rest.None,
+    },
+    Command {
+      name: "run",
+      summary: "Build and run a program.",
+      positionals: ["file"],
+      rest: Rest.Raw,
+    },
+    Command {
+      name: "fmt",
+      summary: "Format files.",
+      flags: [Flag { name: "check", help: "fail on unformatted files" }],
+      rest: Rest.Positionals,
+    },
+  ],
+}
+
+function describe(parsed: Parsed): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, Str.join(Args.commandPath(parsed), " "))
+  for (const entry of parsed.flags) {
+    Str.append(mutable builder, ` --${entry.name}`)
+    if (entry.value != "") {
+      Str.append(mutable builder, `=${entry.value}`)
+    }
+  }
+  for (const entry of parsed.positionals) {
+    Str.append(mutable builder, ` <${entry.name}>=${entry.value}`)
+  }
+  const rest = Args.rest(parsed)
+  if (rest != []) {
+    Str.append(mutable builder, ` rest=[${Str.join(rest, ", ")}]`)
+  }
+  return Str.build(builder)
+}
+
+function check(arguments: Array<string>) uses io, alloc {
+  const line = Str.join(arguments, " ")
+  const parsed = Args.parse(NARRAC, arguments)
+  if (parsed is Err(error)) {
+    print(`${line}\n  error: ${Args.formatError(error)}`)
+    return
+  }
+  print(`${line}\n  ${describe(parsed.value)}`)
+}
+
+export function run(_args: Array<string>): int uses io, alloc {
+  check(["narrac", "build", "main.nra"])
+  check(["narrac", "build", "--release", "main.nra"])
+  check(["narrac", "build", "main.nra", "--release"])
+  check(["narrac", "build", "-o", "out/app", "main.nra"])
+  check(["narrac", "build", "-oout/app", "main.nra"])
+  check(["narrac", "build", "--output=out/app", "main.nra"])
+  check(["narrac", "build", "--output", "out/app", "main.nra"])
+  check(["narrac", "build", "-rqo", "app", "main.nra"])
+  check(["narrac", "build", "-rqoapp", "main.nra"])
+  check(["narrac", "build", "--filter", "lex", "--filter=parse", "main.nra"])
+  check(["narrac", "build", "--output", "a", "--output", "b", "main.nra"])
+  check(["narrac", "build", "--", "--release"])
+  check(["narrac", "build", "-"])
+  check(["narrac", "-v", "build", "main.nra"])
+  check(["narrac", "--verbose", "run", "main.nra"])
+  check(["narrac", "run", "main.nra", "--release", "-o", "x", "--", "y"])
+  check(["narrac", "run", "--", "main.nra", "a"])
+  check(["narrac", "fmt", "a.nra", "--check", "b.nra"])
+  check(["narrac", "fmt"])
+  check(["narrac", "fmt", "--", "--check"])
+  check(["narrac", "build", "--output="])
+  // Reading the values back.
+  const parsed = Args.parse(NARRAC, [
+    "narrac",
+    "build",
+    "--filter",
+    "lex",
+    "--filter",
+    "parse",
+    "-r",
+    "main.nra",
+  ])
+  if (parsed is Ok(result)) {
+    print(Show.show(Args.has(result, "release")))
+    print(Show.show(Args.has(result, "quiet")))
+    print(Show.show(Args.value(result, "filter")))
+    print(Show.show(Args.value(result, "output")))
+    print(Show.show(Args.values(result, "filter")))
+    print(Show.show(Args.values(result, "quiet")))
+    print(Show.show(Args.positional(result, "file")))
+    print(Show.show(Args.positional(result, "other")))
+  }
+  return 0
+}

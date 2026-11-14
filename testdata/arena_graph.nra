@@ -1,0 +1,43 @@
+// A graph with a cycle of handles: the arena frees every node when it goes.
+import * as Arenas from "std/arena"
+import { Arena, Handle } from "std/arena"
+
+struct Node {
+  name: string
+  edges: Array<Handle<Node>>
+}
+
+function walk(graph: Arena<Node>, start: Handle<Node>) uses io, alloc {
+  // Follow the first edge six times: twice around the cycle.
+  let current = copy(start)
+  for (let step = 0; step < 6; step = step + 1) {
+    const found = Arenas.get(graph, current)
+    if (found is Some(node)) {
+      print(`${Show.show(step)}: ${node.name}`)
+      current = copy(node.edges[0])
+    }
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  let graph: Arena<Node> = Arenas.create()
+  const a = Arenas.insert(mutable graph, Node { name: "a", edges: [] })
+  const b = Arenas.insert(mutable graph, Node { name: "b", edges: [] })
+  const c = Arenas.insert(mutable graph, Node { name: "c", edges: [] })
+
+  // a -> b -> c -> a
+  Arenas.update(mutable graph, a, (node) => Node { name: node.name, edges: [copy(b)] })
+  Arenas.update(mutable graph, b, (node) => Node { name: node.name, edges: [copy(c)] })
+  Arenas.update(mutable graph, c, (node) => Node { name: node.name, edges: [copy(a)] })
+
+  walk(graph, a)
+
+  // removing b leaves an edge that no longer leads anywhere
+  Arenas.remove(mutable graph, b)
+  const afterA = Arenas.get(graph, a)
+  if (afterA is Some(node)) {
+    print(`a points at b: ${Show.show(Arenas.contains(graph, node.edges[0]))}`)
+  }
+  print(`size ${Show.show(Arenas.size(graph))}`)
+  return 0
+}

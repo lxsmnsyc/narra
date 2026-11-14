@@ -130,3 +130,13 @@ Notes:
 | selfhost | threads-channels | M | L | 2 | 316k tokens. Sync instead of SyncSlot; review: receive with from, void thread functions. |
 | selfhost | threads-shared | M | L | 2 | 288k tokens. Review: relaxed load race in Threads.take (190/200 under TSan). |
 | selfhost | feature-review | M | M | 1 | 270k tokens. 25 proposals, 7 kept, D119. |
+| selfhost | std-design | S | M | 1 | 176k tokens. One gate for seven module APIs; split unicode and regex into two nodes each. |
+| selfhost | std-iterator | M | M | 1 | 159k tokens. Clean review; chunk/window narrowed by an effect-variable gap found on the base. |
+| selfhost | std-args | M | M | 2 | 192k tokens. Review: flags of nested commands clashed; chose a BadSpec error. |
+| selfhost | std-arena | S | S | 1 | 142k tokens. No review beyond the batch review. |
+| selfhost | std-toml | M | L | 2 | 207k tokens. 1,460 lines against 900 estimated; review: -0.0 and stringify depth. |
+| selfhost | std-terminal | S | M | 2 | 196k tokens. Two rebases on shared lists; review: colon SGR form. |
+| selfhost | std-regex | L | L | 2 | 248k tokens. Review: per-pass capture reset, empty passes, slot cap, all checked against node. |
+| selfhost | std-regex-const | M | M | 2 | 209k tokens. Review: hints, renamed imports. |
+| selfhost | std-unicode | L | L | 2 | 251k tokens. Review: final sigma order, three lookups per code point. |
+| selfhost | std-unicode-normalize | M | L | 2 | 215k tokens. Review: quadratic mark ordering; the linear-time test needed three designs to be load proof. |

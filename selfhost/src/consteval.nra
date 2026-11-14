@@ -256,9 +256,11 @@ function reportFailure(
   if (state.code == "E1053") {
     text = `constant ${name} panicked while the compiler computed it: ${state.message}`
   } else if (state.code == "E1054") {
-    text = `constant ${name} needs more than ${Int.toString(STEP_LIMIT)} evaluation steps; build a table this large with lazy or a generated source file`
+    const hint = writeLimitHint(checker, constIndex)
+    text = `constant ${name} needs more than ${Int.toString(STEP_LIMIT)} evaluation steps; ${hint}`
   } else if (state.code == "E1055") {
-    text = `constant ${name} needs more than 64 MiB of values (${state.message}); build a table this large with lazy or a generated source file`
+    const hint = writeLimitHint(checker, constIndex)
+    text = `constant ${name} needs more than 64 MiB of values (${state.message}); ${hint}`
   } else if (state.code == "E1056" && state.message == "value") {
     text = `constant ${name} holds a value nested more than ${Int.toString(VALUE_DEPTH_LIMIT)} levels deep; the compiler writes a computed value only up to that depth`
   } else if (state.code == "E1056" && state.message == "nesting") {
@@ -310,6 +312,21 @@ function reportFailure(
     state.code,
     Str.build(builder),
   )
+}
+
+function writeLimitHint(checker: Checker, constIndex: int): string {
+  // A pattern too large for Regexes.checked compiles at run time instead.
+  const body = findBody(checker, `const|${Int.toString(constIndex)}`)
+  const value = checker.consts[constIndex].declaration.value
+  if (value is Expr.CallExpr(nodeId, _, _, _, _)) {
+    if (readRefIn(checker, body, nodeId) is Ref.Function(funcIndex)) {
+      const called = checker.functions[funcIndex]
+      if (called.module == "std/regex" && called.name == "checked") {
+        return "compile this pattern at run time with Regexes.compile"
+      }
+    }
+  }
+  return "compute a value this large at run time in a function, or generate a source file"
 }
 
 function isSameNote(first: ChainNote, second: ChainNote): bool {
@@ -3227,6 +3244,12 @@ function callBuiltin(
   if (Str.startsWith(name, "Map.")) {
     return callMapBuiltin(mutable state, pos, name, values)
   }
+  if (Str.startsWith(name, "Char.")) {
+    return callCharBuiltin(checker, mutable state, pos, name, values, resultType)
+  }
+  if (Str.startsWith(name, "Result.")) {
+    return callResultBuiltin(checker, mutable state, pos, name, values, argumentTypes, resultType)
+  }
   if (name == "Range.upTo") {
     return ConstValue.Span(0, readInteger(values[0]), 1)
   }
@@ -3243,6 +3266,49 @@ function callBuiltin(
       readInteger(values[2]),
     )
     return makeOption(checker, resultType, Some(span))
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function callCharBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+  resultType: Type,
+): ConstValue uses alloc {
+  if (name == "Char.code") {
+    return ConstValue.Integer(readInteger(values[0]))
+  }
+  if (name == "Char.fromCode") {
+    if (Char.fromCode(readInteger(values[0])) is Some(character)) {
+      return makeOption(checker, resultType, Some(ConstValue.Character(character)))
+    }
+    return makeOption(checker, resultType, None)
+  }
+  return reportUnsupported(mutable state, pos, `the std function ${name}`)
+}
+
+function callResultBuiltin(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  pos: Pos,
+  name: string,
+  values: Array<ConstValue>,
+  argumentTypes: Array<Type>,
+  resultType: Type,
+): ConstValue uses alloc {
+  const isOk = readTag(values[0]) == findVariant(checker, argumentTypes[0], "Ok")
+  const payload = readParts(values[0])
+  if (name == "Result.ok") {
+    return makeOption(checker, resultType, isOk ? Some(copy(payload[0])) : None)
+  }
+  if (name == "Result.err") {
+    return makeOption(checker, resultType, isOk ? None : Some(copy(payload[0])))
+  }
+  if (name == "Result.withDefault") {
+    return copy(isOk ? payload[0] : values[1])
   }
   return reportUnsupported(mutable state, pos, `the std function ${name}`)
 }

@@ -1,0 +1,295 @@
+// std/terminal: detecting a terminal and styling text for it (D118 item 7).
+//
+// The style functions always add the codes and have no effect beyond `alloc`, so
+// tests can compare styled output. The caller decides whether to style:
+// `const color = Terminal.useColor(Stream.Stderr)`. A style closes with its own
+// reset code and reopens itself after an inner close, so a styled part inside
+// another styled part does not end the outer one.
+
+import * as Tty from "std/internal/terminal"
+import * as Env from "std/env"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export enum Stream {
+  Stdin
+  Stdout
+  Stderr
+}
+
+export enum Color {
+  Black
+  Red
+  Green
+  Yellow
+  Blue
+  Magenta
+  Cyan
+  White
+  BrightBlack
+  BrightRed
+  BrightGreen
+  BrightYellow
+  BrightBlue
+  BrightMagenta
+  BrightCyan
+  BrightWhite
+  Ansi256(index: u8)
+  Rgb(red: u8, green: u8, blue: u8)
+}
+
+export struct Style {
+  foreground: Option<Color> = None
+  background: Option<Color> = None
+  bold: bool = false
+  dim: bool = false
+  italic: bool = false
+  underline: bool = false
+  inverse: bool = false
+  strikethrough: bool = false
+}
+
+function streamDescriptor(stream: Stream): int {
+  return match (stream) { Stream.Stdin => 0, Stream.Stdout => 1, Stream.Stderr => 2 }
+}
+
+export function isTerminal(stream: Stream): bool uses io {
+  return Tty.isTerminal(streamDescriptor(stream))
+}
+
+export function columns(stream: Stream): Option<int> uses io {
+  const width = Tty.columns(streamDescriptor(stream))
+  if (width > 0) {
+    return Some(width)
+  }
+  return None
+}
+
+export function useColor(stream: Stream): bool uses io, alloc {
+  // NO_COLOR wins, then FORCE_COLOR, then a dumb terminal, then the stream itself.
+  if (Env.get("NO_COLOR") is Some(noColor)) {
+    if (noColor != "") {
+      return false
+    }
+  }
+  if (Env.get("FORCE_COLOR") is Some(forceColor)) {
+    if (forceColor != "" && forceColor != "0") {
+      return true
+    }
+  }
+  if (Env.get("TERM") is Some(term)) {
+    if (term == "dumb") {
+      return false
+    }
+  }
+  return isTerminal(stream)
+}
+
+const ESCAPE = "\u{1b}["
+
+function sequence(code: string): string uses alloc {
+  return `${ESCAPE}${code}m`
+}
+
+// Wraps the text in an open and a close code. A close inside the text is replaced
+// by `reopen`, which ends the inner style and starts this one again.
+function wrap(text: string, open: string, close: string, reopen: string): string uses alloc {
+  return `${open}${Str.replace(text, close, reopen)}${close}`
+}
+
+function paint(text: string, openCode: string, closeCode: string): string uses alloc {
+  const open = sequence(openCode)
+  const close = sequence(closeCode)
+  return wrap(text, open, close, open)
+}
+
+// Bold and dim share the close code 22, so closing one also ends the other.
+function paintWeight(text: string, openCode: string): string uses alloc {
+  const open = sequence(openCode)
+  const close = sequence("22")
+  return wrap(text, open, close, `${close}${open}`)
+}
+
+export function bold(text: string): string uses alloc {
+  return paintWeight(text, "1")
+}
+
+export function dim(text: string): string uses alloc {
+  return paintWeight(text, "2")
+}
+
+export function italic(text: string): string uses alloc {
+  return paint(text, "3", "23")
+}
+
+export function underline(text: string): string uses alloc {
+  return paint(text, "4", "24")
+}
+
+export function inverse(text: string): string uses alloc {
+  return paint(text, "7", "27")
+}
+
+export function strikethrough(text: string): string uses alloc {
+  return paint(text, "9", "29")
+}
+
+export function black(text: string): string uses alloc {
+  return paint(text, "30", "39")
+}
+
+export function red(text: string): string uses alloc {
+  return paint(text, "31", "39")
+}
+
+export function green(text: string): string uses alloc {
+  return paint(text, "32", "39")
+}
+
+export function yellow(text: string): string uses alloc {
+  return paint(text, "33", "39")
+}
+
+export function blue(text: string): string uses alloc {
+  return paint(text, "34", "39")
+}
+
+export function magenta(text: string): string uses alloc {
+  return paint(text, "35", "39")
+}
+
+export function cyan(text: string): string uses alloc {
+  return paint(text, "36", "39")
+}
+
+export function white(text: string): string uses alloc {
+  return paint(text, "37", "39")
+}
+
+export function gray(text: string): string uses alloc {
+  return paint(text, "90", "39")
+}
+
+export function bgBlack(text: string): string uses alloc {
+  return paint(text, "40", "49")
+}
+
+export function bgRed(text: string): string uses alloc {
+  return paint(text, "41", "49")
+}
+
+export function bgGreen(text: string): string uses alloc {
+  return paint(text, "42", "49")
+}
+
+export function bgYellow(text: string): string uses alloc {
+  return paint(text, "43", "49")
+}
+
+export function bgBlue(text: string): string uses alloc {
+  return paint(text, "44", "49")
+}
+
+export function bgMagenta(text: string): string uses alloc {
+  return paint(text, "45", "49")
+}
+
+export function bgCyan(text: string): string uses alloc {
+  return paint(text, "46", "49")
+}
+
+export function bgWhite(text: string): string uses alloc {
+  return paint(text, "47", "49")
+}
+
+// The SGR parameters that select the color; `offset` is 0 for a foreground and 10 for a background.
+function colorCode(color: Color, offset: int): string uses alloc {
+  const base = 38 + offset
+  return match (color) {
+    Color.Black => Int.toString(30 + offset)
+    Color.Red => Int.toString(31 + offset)
+    Color.Green => Int.toString(32 + offset)
+    Color.Yellow => Int.toString(33 + offset)
+    Color.Blue => Int.toString(34 + offset)
+    Color.Magenta => Int.toString(35 + offset)
+    Color.Cyan => Int.toString(36 + offset)
+    Color.White => Int.toString(37 + offset)
+    Color.BrightBlack => Int.toString(90 + offset)
+    Color.BrightRed => Int.toString(91 + offset)
+    Color.BrightGreen => Int.toString(92 + offset)
+    Color.BrightYellow => Int.toString(93 + offset)
+    Color.BrightBlue => Int.toString(94 + offset)
+    Color.BrightMagenta => Int.toString(95 + offset)
+    Color.BrightCyan => Int.toString(96 + offset)
+    Color.BrightWhite => Int.toString(97 + offset)
+    Color.Ansi256(index) => `${Int.toString(base)};5;${Int.toString(Int.from(index))}`
+    Color.Rgb(
+      red,
+      green,
+      blue,
+    ) => `${Int.toString(base)};2;${Int.toString(Int.from(red))};${Int.toString(Int.from(green))};${Int.toString(Int.from(blue))}`
+  }
+}
+
+// A field left as `None` adds nothing. Applies every field of the style in turn, so the pieces nest like the plain functions.
+export function style(text: string, look: Style): string uses alloc {
+  let result = text
+  if (look.bold) {
+    result = bold(result)
+  }
+  if (look.dim) {
+    result = dim(result)
+  }
+  if (look.italic) {
+    result = italic(result)
+  }
+  if (look.underline) {
+    result = underline(result)
+  }
+  if (look.inverse) {
+    result = inverse(result)
+  }
+  if (look.strikethrough) {
+    result = strikethrough(result)
+  }
+  if (look.foreground is Some(color)) {
+    result = paint(result, colorCode(color, 0), "39")
+  }
+  if (look.background is Some(fill)) {
+    result = paint(result, colorCode(fill, 10), "49")
+  }
+  return result
+}
+
+// Removes the SGR sequences (`ESC [ <digits and semicolons> m`) and keeps everything else.
+export function stripStyles(text: string): string uses alloc {
+  const length = Str.length(text)
+  let builder = Str.builder()
+  let start = 0
+  let index = 0
+  while (index < length) {
+    if (Str.byteAt(text, index) == 27 && index + 1 < length && Str.byteAt(text, index + 1) == 91) {
+      // Scan the parameters; the sequence counts only when an `m` ends it.
+      let end = index + 2
+      while (end < length && isParameterByte(Str.byteAt(text, end))) {
+        end += 1
+      }
+      if (end < length && Str.byteAt(text, end) == 109) {
+        if (Str.slice(text, start, index) is Some(kept)) {
+          Str.append(mutable builder, kept)
+        }
+        start = end + 1
+        index = end + 1
+        continue
+      }
+    }
+    index += 1
+  }
+  Str.append(mutable builder, Str.sliceFrom(text, start))
+  return Str.build(builder)
+}
+
+function isParameterByte(byte: int): bool {
+  // Digits, the semicolon and the colon of the `38:5:1` form.
+  return (byte >= 48 && byte <= 57) || byte == 59 || byte == 58
+}

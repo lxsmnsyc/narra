@@ -1,7 +1,7 @@
 ---
 id: threads-channels
 title: "std/channel: bounded channels between threads"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

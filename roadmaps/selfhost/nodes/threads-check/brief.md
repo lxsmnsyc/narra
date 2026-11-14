@@ -1,7 +1,7 @@
 ---
 id: threads-check
 title: "Sendable, Scope escape rules, thread function rules and std/parallel"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 263100
 owns:
   - roadmaps/selfhost/nodes/threads-check/**
   - selfhost/src/threadcheck.nra

@@ -140,3 +140,17 @@ Notes:
 | selfhost | std-regex-const | M | M | 2 | 209k tokens. Review: hints, renamed imports. |
 | selfhost | std-unicode | L | L | 2 | 251k tokens. Review: final sigma order, three lookups per code point. |
 | selfhost | std-unicode-normalize | M | L | 2 | 215k tokens. Review: quadratic mark ordering; the linear-time test needed three designs to be load proof. |
+| selfhost | field-shorthand | M | M | 1 | 169k tokens. Review: rename rule for shorthand fields deferred (no rename in the language service yet). |
+| selfhost | field-shorthand-sweep | M | S | 0 | 68k tokens. One regex script plus fmt; 563 sites. |
+| selfhost | coroutine-send | S | S | 0 | 112k tokens. |
+| selfhost | remove-lazy | S | S | 0 | 125k tokens. |
+| selfhost | inline-benchmark | S | S | 0 | 85k tokens. No gain anywhere; the commit was blocked for the worker and landed by the orchestrator. |
+| selfhost | remove-inline | M | M | 1 | 170k tokens. Review clean. |
+| selfhost | range-step | S | S | 0 | 131k tokens. Ranges.stepped already existed as Option<Range>. |
+| selfhost | const-functions-std | M | M | 1 | 245k tokens. Review: 100 compile-time and run-time pairs matched. |
+| selfhost | float-shortest | S | S | 0 | 120k tokens. |
+| selfhost | slot-shared-writes | M | S | 2 | 190k tokens. Review: Atomic rows, update callbacks, a guard suite for the store table. |
+| selfhost | index-assign-order | M | M | 3 | 203k tokens. Two reworks: compound old-value read, then identifier indexes changed by the right side. |
+| selfhost | stream-exit | S | S | 3 | 215k tokens. The first build used a 16-turn limit instead of the approved rule. |
+| selfhost | generator-option-params | M | S | 1 | 205k tokens. Review clean; one of the two inbox cases did not reproduce. |
+| selfhost | batch-15-nits | S | S | 0 | 110k tokens. |

@@ -58,9 +58,9 @@ Children:
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
-- [ ] A fresh review of the whole story branch, before the pull request.
-- [ ] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+- [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
+- [x] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
+- [x] A fresh review of the whole story branch, before the pull request.
+- [x] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.

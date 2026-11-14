@@ -1,7 +1,7 @@
 ---
 id: batch-14
 title: "Batch 14: standard library for the tool layer (phase p2)"
-status: active
+status: done
 priority: should
 type: story
 story: 
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 2100000
 owns:
   - roadmaps/selfhost/nodes/batch-14/**
 shared:

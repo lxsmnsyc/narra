@@ -1,7 +1,7 @@
 ---
 id: remove-inline
 title: "Remove @inline"
-status: todo
+status: done
 priority: should
 type: feature
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 170000
 owns:
   - roadmaps/selfhost/nodes/remove-inline/**
   - selfhost/src/inlining.nra

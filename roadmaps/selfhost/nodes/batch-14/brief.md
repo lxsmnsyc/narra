@@ -61,9 +61,9 @@ Children:
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
 - [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated if any runtime text changed, and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] SPEC lists each new module; the language guide's std chapter covers it.
-- [ ] A fresh review of the whole story branch, before the pull request.
-- [ ] `bench/BASELINE.md` has an end-of-batch row if a module adds a benchmark.
+- [x] The seed is regenerated if any runtime text changed, and `sh selfhost/bootstrap.sh` reports it current.
+- [x] SPEC lists each new module; the language guide's std chapter covers it.
+- [x] A fresh review of the whole story branch, before the pull request.
+- [x] `bench/BASELINE.md` has an end-of-batch row if a module adds a benchmark.

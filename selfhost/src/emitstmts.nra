@@ -38,6 +38,8 @@ import {
   localRef,
   readLocal,
   releaseCode,
+  retainCode,
+  needsRc,
   declareLocal,
   declareLocalVariable,
   declareVariable,
@@ -56,6 +58,7 @@ import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
 import * as Tail from "narrac/emittail"
 import * as Fixed from "narrac/emitfixed"
+import { holdTargetParts, readsBeforeValue } from "narrac/emitassignorder"
 import * as Arrays from "std/array"
 import * as Str from "std/string"
 
@@ -235,6 +238,7 @@ function emitAssignment<W: EmitWalker>(
       return
     }
   }
+  holdTargetParts(walker, mutable emitter, target, value)
   const code = EmitWalker.emitExpression(walker, mutable emitter, value)
   const valueType = copy(readNodeType(emitter, getExpressionId(value)))
   const consumed = consume(mutable emitter, code.text, code.owned, valueType)
@@ -270,17 +274,39 @@ function emitCompoundAssignment<W: EmitWalker>(
   }
   const targetType = copy(readNodeType(emitter, getExpressionId(target)))
   const operandType = underlyingType(emitter, targetType)
+  holdTargetParts(walker, mutable emitter, target, value)
+  // An element or field is read before a right side that runs code, so a write
+  // made by that code does not change the old value.
+  let oldText = ""
+  if (readsBeforeValue(target, value)) {
+    const heldBefore = copy(emitter.heldArguments)
+    const pendingBefore = emitter.heldPending
+    const firstLocation = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
+    oldText = temp(mutable emitter, targetType, `(*${firstLocation})`)
+    if (needsRc(emitter, targetType)) {
+      const retainText = retainCode(emitter, targetType, oldText)
+      writeLine(mutable emitter, retainText)
+      const top = Arrays.length(emitter.frames) - 1
+      Arrays.push(mutable emitter.frames[top], TempVar { name: oldText, tempType: targetType })
+    }
+    // The held index values are read again by the store.
+    emitter.heldArguments = heldBefore
+    emitter.heldPending = pendingBefore
+  }
   const valueCode = EmitWalker.emitExpression(walker, mutable emitter, value)
   const valueType = copy(readNodeType(emitter, getExpressionId(value)))
   const valueText = temp(mutable emitter, valueType, valueCode.text)
   // The place is found once; the old value is read and the new one stored through it.
   const location = EmitWalker.emitLvaluePointer(walker, mutable emitter, target)
   const pointer = pointerTemp(mutable emitter, targetType, location)
-  const old = `(*${pointer})`
+  let old = `(*${pointer})`
+  if (oldText != "") {
+    old = oldText
+  }
   if (operandType == Type.TStr) {
     // The joined string is new; the old one is released before it is stored.
     const joined = temp(mutable emitter, Type.TStr, `lstr_concat(${old}, ${valueText})`)
-    const releaseOld = releaseCode(emitter, targetType, old)
+    const releaseOld = releaseCode(emitter, targetType, `(*${pointer})`)
     writeLine(mutable emitter, releaseOld)
     writeLine(mutable emitter, `*${pointer} = ${joined};`)
   } else {

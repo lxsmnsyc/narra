@@ -1,0 +1,160 @@
+// An assignment evaluates its target first (the object and index expressions,
+// left to right), then the right side, then stores. Plain, compound, nested,
+// map index, field-then-index and async targets print their call order.
+import * as Async from "std/async"
+import * as Int from "std/int"
+
+struct Outer {
+  inner: Holder
+}
+
+struct Holder {
+  items: Array<int>
+  total: int
+}
+
+function idx(label: string, value: int): int uses io, alloc {
+  print(`index ${label}`)
+  return value
+}
+
+function show(values: Array<int>): string uses alloc {
+  let text = ""
+  for (const value of values) {
+    text += `${Int.toString(value)} `
+  }
+  return text
+}
+
+function key(label: string): string uses io, alloc {
+  print(`key ${label}`)
+  return label
+}
+
+function loud(label: string, value: int): int uses io, alloc {
+  print(`value ${label}`)
+  return value
+}
+
+function apply(work: () => int uses (io, alloc)): int uses io, alloc {
+  return work()
+}
+
+function applyText(work: () => string uses (io, alloc)): string uses io, alloc {
+  return work()
+}
+
+function readsFirst() uses io, alloc {
+  // The old value is read before the right side runs, so a write that the
+  // right side makes to the same place is overwritten by the sum.
+  let counts: Array<int> = [10, 20]
+  counts[idx("x", 0)] += apply(() => {
+    counts[0] = 100
+    return 1
+  })
+  print(show([counts[0], counts[1]]))
+
+  let holder = Holder { items: [1, 2, 3], total: 10 }
+  holder.total += apply(() => {
+    holder.total = 50
+    return 1
+  })
+  holder.items[idx("y", 1)] += apply(() => {
+    holder.items[1] = 70
+    return 2
+  })
+  print(show([holder.total, holder.items[1]]))
+
+  let words: Array<string> = ["a", "b"]
+  words[idx("z", 0)] += applyText(() => {
+    words[0] = "long"
+    return "!"
+  })
+  print(words[0])
+}
+
+function changedIndex() uses io, alloc {
+  // An index or key that the right side changes still names the place that was
+  // written when the statement began.
+  let slots: Array<int> = [0, 0, 0]
+  let position = 0
+  slots[position] = apply(() => {
+    position = 2
+    return 5
+  })
+  print(show(slots))
+
+  let totals: Array<int> = [1, 2, 3]
+  let column = 1
+  totals[column] += apply(() => {
+    column = 2
+    return 10
+  })
+  print(show(totals))
+
+  let named: Map<string, int> = Map {}
+  let name = "a"
+  named[name] = apply(() => {
+    name = "b"
+    return 4
+  })
+  if (named["a"] is Some(found)) {
+    print(Int.toString(found))
+  }
+  if (named["b"] is Some(other)) {
+    print(Int.toString(other))
+  }
+}
+
+async function step(label: string, value: int): int uses io, alloc {
+  print(`start ${label}`)
+  await Async.idle()
+  print(`end ${label}`)
+  return value
+}
+
+export async function run(_args: Array<string>): int {
+  readsFirst()
+  changedIndex()
+
+  let outer = Outer { inner: Holder { items: [1], total: 10 } }
+  outer.inner.total +=
+    await step("w", 5) +
+      apply(() => {
+        outer.inner.total = 50
+        return 1
+      })
+  print(show([outer.inner.total]))
+  let plain: Array<int> = [0, 0, 0]
+  plain[idx("p", 1)] = loud("p", 4)
+  print(show([plain[0], plain[1], plain[2]]))
+
+  plain[idx("q", 2)] += loud("q", 6)
+  print(show([plain[0], plain[1], plain[2]]))
+
+  let grid: Array<Array<int>> = [[0, 0], [0, 0]]
+  grid[idx("r", 1)][idx("s", 0)] = loud("r", 9)
+  print(show([grid[0][0], grid[0][1], grid[1][0], grid[1][1]]))
+
+  let map: Map<string, int> = Map {}
+  map[key("k")] = loud("k", 2)
+  if (map["k"] is Some(found)) {
+    print(Int.toString(found))
+  }
+
+  let holder = Holder { items: [1, 2, 3], total: 10 }
+  holder.items[idx("h", 2)] = loud("h", 8)
+  print(show([holder.items[0], holder.items[1], holder.items[2]]))
+
+  let waited: Array<Array<int>> = [[0, 0], [0, 0]]
+  waited[idx("a", 1)][idx("b", 0)] = await step("s", 7)
+  waited[idx("c", 0)][idx("d", 1)] += await step("t", 5)
+  print(show([waited[0][0], waited[0][1], waited[1][0], waited[1][1]]))
+
+  let names: Map<string, int> = Map {}
+  names[key("m")] = await step("u", 3)
+  if (names["m"] is Some(found)) {
+    print(Int.toString(found))
+  }
+  return 0
+}

@@ -1,0 +1,103 @@
+// Assignment order. A target is evaluated before the right side: the index
+// expressions of an indexed target run left to right, then the right side,
+// then the store. A target whose index expressions are plain reads, or a right
+// side that runs no code, keeps the single pass the emitter always wrote.
+import { Expr } from "narrac/ast"
+import { Ref } from "narrac/check"
+import { Emitter, EmitWalker, readNodeRef, readLocal, isReference } from "narrac/emitstate"
+import { holdArgument } from "narrac/emitasyncspill"
+import * as Arrays from "std/array"
+
+export function runsCode(expression: Expr): bool uses alloc {
+  // Calls, awaits, matches and blocks run code; reads and operators do not.
+  return match (expression) {
+    Expr.IntLit(_, _, _)
+      | Expr.FloatLit(_, _, _)
+      | Expr.StringLit(_, _, _, _)
+      | Expr.CharLit(_, _, _)
+      | Expr.BoolLit(_, _, _)
+      | Expr.Ident(_, _, _)
+      | Expr.ArrowExpr(_, _, _, _, _, _)
+      | Expr.AsyncExpr(_, _, _)
+      | Expr.TemplateParts(_, _, _) => false
+    Expr.FieldExpr(_, _, target, _) => runsCode(target)
+    Expr.IsExpr(_, _, subject, _) => runsCode(subject)
+    Expr.IndexExpr(_, _, target, index) => runsCode(target) || runsCode(index)
+    Expr.UnaryExpr(_, _, _, operand) => runsCode(operand)
+    Expr.BinaryExpr(_, _, _, left, right) => runsCode(left) || runsCode(right)
+    Expr.TemplateLit(_, _, parts) => anyRunsCode(parts)
+    Expr.ArrayLit(_, _, elements, _) => anyRunsCode(elements)
+    _ => true
+  }
+}
+
+function anyRunsCode(expressions: Array<Expr>): bool uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    if (runsCode(expression)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isChangeableVariable(emitter: Emitter, expression: Expr): bool {
+  // A variable that the right side can write: a pointer variable, or a `let`
+  // or `mutable` local that an arrow of this body captures.
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    if (readNodeRef(emitter, nodeId) is Ref.Local(index)) {
+      if (isReference(emitter, index)) {
+        return true
+      }
+      if (readLocal(emitter, index).isMutable) {
+        for (const closure of Arrays.values(emitter.checker.bodies[emitter.body].closures)) {
+          for (const captured of Arrays.values(closure.captures)) {
+            if (captured == index) {
+              return true
+            }
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+export function holdsBeforeValue(emitter: Emitter, index: Expr): bool uses alloc {
+  return runsCode(index) || isChangeableVariable(emitter, index)
+}
+
+export function holdTargetParts<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  target: Expr,
+  value: Expr,
+) uses alloc {
+  // Each index expression that runs code is evaluated now, in written order,
+  // and held until the store reads it.
+  if (runsCode(value)) {
+    holdIndexes(walker, mutable emitter, target)
+  }
+}
+
+export function holdIndexes<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  target: Expr,
+) uses alloc {
+  if (target is Expr.FieldExpr(_, _, base, _)) {
+    holdIndexes(walker, mutable emitter, base)
+  } else if (target is Expr.IndexExpr(_, _, base, index)) {
+    holdIndexes(walker, mutable emitter, base)
+    if (holdsBeforeValue(emitter, index)) {
+      holdArgument(walker, mutable emitter, index)
+    }
+  }
+}
+
+export function readsBeforeValue(target: Expr, value: Expr): bool uses alloc {
+  // Only a field or an element can be written by the right side and read back.
+  if (!runsCode(value)) {
+    return false
+  }
+  return target is Expr.FieldExpr(_, _, _, _) || target is Expr.IndexExpr(_, _, _, _)
+}

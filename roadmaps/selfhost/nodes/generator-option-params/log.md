@@ -1,0 +1,7 @@
+# Log: generator-option-params
+
+- Base: feat/batch-15 at d64eee66, compiler built with `sh selfhost/bootstrap.sh`.
+- Proof on base: `narrac check testdata/generator_effect_types.nra` printed 8 E0119 errors, for example `expected Option<Generator<Array<int>> uses (alloc, io)>, found Option<Generator<Array<int>>>` for a bound `Option` passed to a parameter and for a plain function returning `Iterators.chunk(source, 2)`. `narrac check testdata/errors/generator_effect_types.nra` printed `expected Option<Generator<Array<int>> uses io>, found Option<Generator<Array<int>>>` (the found type had lost its effects).
+- Cause: `expectType` compared the types with `==`. Each effect list or bound slot makes another `Option` instance, so two types that differ only in the effects of a generator inside never matched. Only a generator at the top, or as the result of a function type, was compared by effects.
+- The pass-through of the inbox note (`expected Generator<int>, found Generator<int> uses alloc`) shows when the result is written `Generator<int> from source uses alloc`: the `uses` there is the function's, not the type's. `Generator<int> uses alloc from source` already checked on base. What fails on base is the same shape inside an `Option`, `Array` or tuple, for example a plain function returning `chunk(source, 2)` or `wrapStream(source)`.
+- Fix: `generatorpairs.nra` walks the expected and found types together and pairs the generators at the same place; `expectType` then runs the existing effect check on each pair.

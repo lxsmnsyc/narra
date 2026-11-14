@@ -95,6 +95,7 @@ import {
   enterTypeofChain,
 } from "narrac/resolve"
 import { unify } from "narrac/generics"
+import { collectGeneratorPairs } from "narrac/generatorpairs"
 import { checkEquatable } from "narrac/traits"
 import { stdType } from "narrac/stdtypes"
 import { findNarrowable, findNarrowed, endNarrowing } from "narrac/patterns"
@@ -686,12 +687,16 @@ export function expectType(
           return
         }
         // A function* result differs from the annotated result only in its effects
-        if (wantParameters == gotParameters && sameGeneratorShape(wantResult, gotResult)) {
+        if (wantParameters == gotParameters && sameGeneratorShape(checker, wantResult, gotResult)) {
           checkGeneratorResult(mutable checker, pos, wantResult, gotResult)
           recordFunctionStore(mutable checker, pos, expected, wantBinder, got)
           return
         }
       }
+    }
+    // The same type with other effect lists on the generators inside it
+    if (expected != got && fitsGeneratorEffects(mutable checker, pos, expected, got)) {
+      return
     }
     if (expected != got) {
       // A void from an expression that already reported at this position is its failure.
@@ -763,18 +768,30 @@ function buildSharedSlotFix(
   return [createFix(`add from ${name} to the expected type`, edits)]
 }
 
-function sameGeneratorShape(want: Type, got: Type): bool {
-  if (want is Type.TGenerator(wantElement, _, _, _, wantInput)) {
-    if (got is Type.TGenerator(gotElement, _, _, _, gotInput)) {
-      return wantElement == gotElement && wantInput == gotInput
-    }
+function sameGeneratorShape(checker: Checker, want: Type, got: Type): bool uses alloc {
+  let wants: Array<Type> = []
+  let gots: Array<Type> = []
+  return collectGeneratorPairs(checker, want, got, mutable wants, mutable gots)
+}
+
+function fitsGeneratorEffects(
+  mutable checker: Checker,
+  pos: Pos,
+  want: Type,
+  got: Type,
+): bool uses alloc {
+  // Each generator of the expected type is checked against the one of the value at its place.
+  let wants: Array<Type> = []
+  let gots: Array<Type> = []
+  if (!collectGeneratorPairs(checker, want, got, mutable wants, mutable gots)) {
+    return false
   }
-  if (want is Type.TAsyncGenerator(wantStream, _, _, _)) {
-    if (got is Type.TAsyncGenerator(gotStream, _, _, _)) {
-      return wantStream == gotStream
-    }
+  let index = 0
+  while (index < Arrays.length(wants)) {
+    checkGeneratorResult(mutable checker, pos, wants[index], gots[index])
+    index = index + 1
   }
-  return false
+  return true
 }
 
 function checkGeneratorResult(

@@ -1,0 +1,135 @@
+// A generator type keeps its effect list when it sits inside an Option, an
+// Array or a tuple: a bound value of such a type fits a parameter or a result
+// that writes the effects, for Generator and AsyncGenerator alike.
+import * as Async from "std/async"
+import * as Iterators from "std/iterator"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function* lines(): Generator<int> uses io {
+  print("read")
+  yield 1
+  yield 2
+  yield 3
+}
+
+async function* stream(): AsyncGenerator<int> uses (io, alloc) {
+  print("stream")
+  yield 4
+  yield 5
+}
+
+function* relay<effect E>(source: Generator<int> uses E): Generator<int> uses E {
+  for (const value of source) {
+    yield value
+  }
+}
+
+async function* relayStream<effect E>(
+  source: AsyncGenerator<int> uses E,
+): AsyncGenerator<int> uses (E, alloc) {
+  yield* source
+}
+
+function wrap<effect E>(source: Generator<int> uses E): Option<Generator<int> uses E> uses alloc {
+  return Some(relay(source))
+}
+
+function wrapStream<effect E>(
+  source: AsyncGenerator<int> uses E,
+): Option<AsyncGenerator<int> uses E> uses alloc {
+  return Some(relayStream(source))
+}
+
+function listed<effect E>(source: Generator<int> uses E): Array<Generator<int> uses E> uses alloc {
+  return [relay(source)]
+}
+
+function passOn(source: Generator<int> uses io): Generator<int> uses io from source {
+  return relay(source)
+}
+
+function passOnStream(
+  source: AsyncGenerator<int> uses (io, alloc),
+): AsyncGenerator<int> uses (io, alloc) from source {
+  return relayStream(source)
+}
+
+function sumChunks(source: Option<Generator<Array<int>> uses (io, alloc)>): int uses io, alloc {
+  let total = 0
+  if (source is Some(chunks)) {
+    for (const chunk of chunks) {
+      total = total + chunk[0]
+    }
+  }
+  return total
+}
+
+function sumWrapped(source: Option<Generator<int> uses io>): int uses io {
+  let total = 0
+  if (source is Some(values)) {
+    for (const value of values) {
+      total = total + value
+    }
+  }
+  return total
+}
+
+function sumAll(sources: Array<Generator<int> uses io>): int uses io {
+  let total = 0
+  for (const source of Arrays.values(sources)) {
+    for (const value of source) {
+      total = total + value
+    }
+  }
+  return total
+}
+
+function chunkAgain(
+  source: Generator<int> uses io,
+): Option<Generator<Array<int>> uses (io, alloc)> uses alloc {
+  return Iterators.chunk(source, 2)
+}
+
+function wrapAgain(source: Generator<int> uses io): Option<Generator<int> uses io> uses alloc {
+  return wrap(source)
+}
+
+function wrapStreamAgain(
+  source: AsyncGenerator<int> uses (io, alloc),
+): Option<AsyncGenerator<int> uses (io, alloc)> uses alloc {
+  return wrapStream(source)
+}
+
+async function sumStream(source: Option<AsyncGenerator<int> uses (io, alloc)>): int uses io, alloc {
+  let total = 0
+  if (source is Some(values)) {
+    while (true) {
+      const next = await Async.next(values)
+      if (next is Some(value)) {
+        total = total + value
+      } else {
+        break
+      }
+    }
+  }
+  return total
+}
+
+export async function run(args: Array<string>): int uses io, alloc {
+  const chunks = Iterators.chunk(lines(), 2)
+  print(Int.toString(sumChunks(chunks)))
+  print(Int.toString(sumChunks(chunkAgain(lines()))))
+  const wrapped = wrap(lines())
+  print(Int.toString(sumWrapped(wrapped)))
+  print(Int.toString(sumWrapped(wrapAgain(lines()))))
+  print(Int.toString(sumAll(listed(lines()))))
+  print(Int.toString(sumAll([passOn(lines())])))
+  const passed = passOnStream(stream())
+  const wrappedStream = wrapStream(passed)
+  print(Int.toString(await sumStream(wrappedStream)))
+  const bound = wrapStream(stream())
+  print(Int.toString(await sumStream(bound)))
+  print(Int.toString(await sumStream(wrapStreamAgain(stream()))))
+  return 0
+}

@@ -435,3 +435,37 @@ Each cluster from `Unicode.graphemes` is a slice of the text, so the loop copies
 `displayWidth` counts the columns a terminal gives the text: wide and fullwidth characters, such as Chinese, Japanese and Korean, and emoji take 2, combining marks and zero width characters take none, and the rest take 1. It works per cluster, so a flag or a family emoji is 2 columns. A tool can pad a table column with it where `Str.length` would count bytes.
 
 A few edges follow from those rules. Characters of ambiguous East Asian width, such as `±` and Greek letters, are 1 column, as in a terminal set to a Western locale. Control characters, the tab included, are 0: a terminal moves the cursor for them, and the distance depends on where it stands. U+FE0F after an emoji that is text by default, such as `❤`, makes it 2, but U+FE0E after an emoji that is wide by default, such as `😀`, leaves it 2. The Hangul filler U+115F is 0, since it is default-ignorable.
+
+### Normalization
+
+One text can be written with different code points: `é` is one code point, U+00E9, or an `e` followed by the combining accent U+0301. The two look the same and are different strings, so `==` says they differ. `Unicode.normalize` writes text in one of the four normal forms of Unicode, and two texts in the same form are equal when a reader would call them equal:
+
+```narra
+import * as Unicode from "std/unicode"
+import { NormalForm } from "std/unicode"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const typed = "caf\u{e9}"
+  const pasted = "cafe\u{301}"
+  print(Show.show(typed == pasted))
+  print(Show.show(Unicode.normalize(typed, NormalForm.NFC) == Unicode.normalize(pasted, NormalForm.NFC)))
+  print(Int.toString(Str.length(Unicode.normalize(typed, NormalForm.NFD))))
+  print(Unicode.normalize("\u{fb01}le \u{2460}", NormalForm.NFKC))
+  print(Show.show(Unicode.isNormalized(pasted, NormalForm.NFC)))
+  return 0
+}
+```
+
+```text
+false
+true
+6
+file 1
+false
+```
+
+NFC composes: a letter and its accents become one code point where Unicode has one. NFD decomposes: every accent becomes a code point of its own, after its letter. NFKC and NFKD do the same and also replace compatibility characters with plain ones: the ligature `ﬁ` becomes `fi`, and the circled digit `①` becomes `1`. The K forms lose formatting, so they suit search and identifiers, not text to show. NFC is the form most text on the web is in already.
+
+`isNormalized` tells whether `normalize` would change the text. Both look up each code point first and stop early, so text already in the form, ASCII text among it, costs one pass and no allocation: `normalize` gives back the same string. Hangul syllables are composed and decomposed by arithmetic, as Unicode defines them, not from the tables.

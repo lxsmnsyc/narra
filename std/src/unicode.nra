@@ -7,11 +7,14 @@
 // C and F), for comparing text without case. displayWidth counts terminal
 // columns per cluster: East Asian Wide and Fullwidth are 2, marks, format and
 // other zero-width characters 0, emoji presentation 2, everything else 1.
+// normalize and isNormalized implement the four normalization forms of UAX #15;
+// Hangul syllables are composed and decomposed by arithmetic.
 //
 // The tables are string constants in std/internal/unicode, written by
 // scripts/unicode/generate.nra; each lookup is a binary search with Str.byteAt.
 // Every function takes the bytes of ASCII text without a lookup.
 
+import * as Arrays from "std/array"
 import * as Str from "std/string"
 import * as Char from "std/char"
 import * as Tables from "std/internal/unicode"
@@ -47,6 +50,48 @@ const CAPITAL_SIGMA = 0x3a3
 const SMALL_SIGMA = 0x3c3
 const FINAL_SIGMA = 0x3c2
 const PRESENTATION_SELECTOR = 0xfe0f
+
+// Record widths of the normalization tables.
+const NORMAL_PROPERTIES_WIDTH = 14
+const CANONICAL_WIDTH = 15
+const COMPOSITION_WIDTH = 3
+const COMPATIBILITY_RANGE_WIDTH = 15
+const COMPATIBILITY_WIDTH = 9
+const COMPATIBILITY_DATA_WIDTH = 5
+
+// Quick check bits of the normalization properties, and the answers of quickCheck.
+const NFD_NO = 1
+const NFKD_NO = 2
+const NFC_NO = 4
+const NFC_MAYBE = 8
+const NFKC_NO = 16
+const NFKC_MAYBE = 32
+const QUICK_YES = 0
+const QUICK_MAYBE = 1
+const QUICK_NO = 2
+
+// Hangul syllables and jamo (UAX #15, section 16).
+const SYLLABLE_BASE = 0xac00
+const SYLLABLE_COUNT = 11172
+const LEADING_BASE = 0x1100
+const LEADING_COUNT = 19
+const VOWEL_BASE = 0x1161
+const VOWEL_COUNT = 21
+const TRAILING_BASE = 0x11a7
+const TRAILING_COUNT = 28
+const SYLLABLES_PER_LEADING = 588
+
+// Runs of marks up to this length are sorted by insertion, longer ones by merging.
+const SHORT_RUN = 8
+
+// The normalization forms of UAX #15: canonical (NFD, NFC) or compatibility
+// (NFKD, NFKC) decomposition, with canonical composition after it in NFC and NFKC.
+export enum NormalForm derives Show, Equatable {
+  NFC
+  NFD
+  NFKC
+  NFKD
+}
 
 // graphemes yields the extended grapheme clusters of text, in order.
 export function* graphemes(text: string): Generator<string> uses alloc {
@@ -116,6 +161,29 @@ export function toLowerCase(text: string): string uses alloc {
 // foldCase maps text to its case folding, so foldCase(a) == foldCase(b) compares without case.
 export function foldCase(text: string): string uses alloc {
   return mapCase(text, Tables.FOLD_RANGES, Tables.FOLD_FULL, 65, 32, false)
+}
+
+// normalize gives text in the normal form. Text that is already in it,
+// such as any ASCII text, comes back as the same string with no allocation.
+export function normalize(text: string, form: NormalForm): string uses alloc {
+  const checked = quickCheck(text, form)
+  if (checked[0] == QUICK_YES) {
+    return text
+  }
+  return normalizeFrom(text, checked[1], form)
+}
+
+// isNormalized tells whether normalize would give text back unchanged. The
+// quick check answers most text; only a Maybe answer normalizes and compares.
+export function isNormalized(text: string, form: NormalForm): bool uses alloc {
+  const checked = quickCheck(text, form)
+  if (checked[0] == QUICK_YES) {
+    return true
+  }
+  if (checked[0] == QUICK_NO) {
+    return false
+  }
+  return normalizeFrom(text, checked[1], form) == text
 }
 
 function codePointAt(text: string, position: int): int {
@@ -491,4 +559,388 @@ function isFinalSigma(text: string, position: int, next: int, length: int): bool
     after = Str.nextChar(text, after)
   }
   return true
+}
+
+// findNormalRange gives the offset of the record of a normalization range
+// table (start and end of 5 digits) that holds codePoint, or -1.
+function findNormalRange(table: string, width: int, codePoint: int): int
+  requires width > 0
+{
+  let low = 0
+  let high = Str.length(table) / width
+  while (low < high) {
+    const middle = (low + high) / 2
+    const offset = middle * width
+    if (codePoint < readHex(table, offset, 5)) {
+      high = middle
+    } else if (codePoint > readHex(table, offset + 5, 5)) {
+      low = middle + 1
+    } else {
+      return offset
+    }
+  }
+  return -1
+}
+
+// findNormalKey gives the offset of the record whose first 5 digits are codePoint, or -1.
+function findNormalKey(table: string, width: int, codePoint: int): int
+  requires width > 0
+{
+  let low = 0
+  let high = Str.length(table) / width
+  while (low < high) {
+    const middle = (low + high) / 2
+    const offset = middle * width
+    const key = readHex(table, offset, 5)
+    if (codePoint < key) {
+      high = middle
+    } else if (codePoint > key) {
+      low = middle + 1
+    } else {
+      return offset
+    }
+  }
+  return -1
+}
+
+// normalProperties is the combining class plus 256 times the quick check bits.
+function normalProperties(codePoint: int): int {
+  const offset = findNormalRange(Tables.NORMAL_PROPERTIES, NORMAL_PROPERTIES_WIDTH, codePoint)
+  if (offset < 0) {
+    return 0
+  }
+  return readHex(Tables.NORMAL_PROPERTIES, offset + 10, 4)
+}
+
+function isCompatibilityForm(form: NormalForm): bool {
+  return match (form) {
+    NormalForm.NFC => false
+    NormalForm.NFD => false
+    NormalForm.NFKC => true
+    NormalForm.NFKD => true
+  }
+}
+
+function isComposedForm(form: NormalForm): bool {
+  return match (form) {
+    NormalForm.NFC => true
+    NormalForm.NFD => false
+    NormalForm.NFKC => true
+    NormalForm.NFKD => false
+  }
+}
+
+// quickCheckBits gives the No bit and the Maybe bit of the form's quick check.
+function quickCheckBits(form: NormalForm): #[int, int] {
+  return match (form) {
+    NormalForm.NFC => #[NFC_NO, NFC_MAYBE]
+    NormalForm.NFD => #[NFD_NO, 0]
+    NormalForm.NFKC => #[NFKC_NO, NFKC_MAYBE]
+    NormalForm.NFKD => #[NFKD_NO, 0]
+  }
+}
+
+// quickCheck runs the quick check of UAX #15 and gives QUICK_YES, QUICK_MAYBE
+// or QUICK_NO, with the byte offset normalizing can start from: the last
+// starter with a Yes answer before the first code point without one. Nothing
+// before that starter changes, and nothing after it composes with what is before.
+function quickCheck(text: string, form: NormalForm): #[int, int] {
+  const bits = quickCheckBits(form)
+  const length = Str.length(text)
+  let answer = QUICK_YES
+  let safe = 0
+  let lastClass = 0
+  let position = 0
+  while (position < length) {
+    const byte = Str.byteAt(text, position)
+    if (byte < 128) {
+      // ASCII is a starter with Yes in every form.
+      if (answer == QUICK_YES) {
+        safe = position
+      }
+      lastClass = 0
+      position++
+      continue
+    }
+    const properties = normalProperties(codePointAt(text, position))
+    const combining = properties % 256
+    const check = properties / 256
+    // Marks out of canonical order, or a code point the form never keeps.
+    if ((combining != 0 && lastClass > combining) || (check & bits[0]) != 0) {
+      return #[QUICK_NO, safe]
+    }
+    if ((check & bits[1]) != 0) {
+      answer = QUICK_MAYBE
+    } else if (answer == QUICK_YES && combining == 0) {
+      safe = position
+    }
+    lastClass = combining
+    position = Str.nextChar(text, position)
+  }
+  return #[answer, safe]
+}
+
+// normalizeFrom keeps the bytes of text before start and normalizes the rest.
+function normalizeFrom(text: string, start: int, form: NormalForm): string uses alloc {
+  const compatibility = isCompatibilityForm(form)
+  const length = Str.length(text)
+  let points: Array<int> = []
+  let classes: Array<int> = []
+  let position = start
+  while (position < length) {
+    decompose(mutable points, mutable classes, codePointAt(text, position), compatibility)
+    position = Str.nextChar(text, position)
+  }
+  orderMarks(mutable points, mutable classes)
+  let builder = Str.builder()
+  appendSlice(mutable builder, text, 0, start)
+  if (isComposedForm(form)) {
+    for (const point of compose(points, classes)) {
+      appendCodePoint(mutable builder, point)
+    }
+  } else {
+    for (const point of points) {
+      appendCodePoint(mutable builder, point)
+    }
+  }
+  return Str.build(builder)
+}
+
+// decompose appends the full decomposition of codePoint with the combining
+// class of each code point; orderMarks puts the marks in canonical order after.
+function decompose(
+  mutable points: Array<int>,
+  mutable classes: Array<int>,
+  codePoint: int,
+  compatibility: bool,
+) uses alloc {
+  if (codePoint < 128) {
+    pushPoint(mutable points, mutable classes, codePoint, 0)
+    return
+  }
+  const properties = normalProperties(codePoint)
+  // The No bit of NFD or NFKD marks every code point with a decomposition.
+  let noBit = NFD_NO
+  if (compatibility) {
+    noBit = NFKD_NO
+  }
+  if (((properties / 256) & noBit) == 0) {
+    pushPoint(mutable points, mutable classes, codePoint, properties % 256)
+    return
+  }
+  if (codePoint >= SYLLABLE_BASE && codePoint < SYLLABLE_BASE + SYLLABLE_COUNT) {
+    const index = codePoint - SYLLABLE_BASE
+    pushPoint(mutable points, mutable classes, LEADING_BASE + index / SYLLABLES_PER_LEADING, 0)
+    pushPoint(
+      mutable points,
+      mutable classes,
+      VOWEL_BASE + (index % SYLLABLES_PER_LEADING) / TRAILING_COUNT,
+      0,
+    )
+    if (index % TRAILING_COUNT != 0) {
+      pushPoint(mutable points, mutable classes, TRAILING_BASE + index % TRAILING_COUNT, 0)
+    }
+    return
+  }
+  const canonical = findNormalKey(Tables.CANONICAL, CANONICAL_WIDTH, codePoint)
+  if (canonical >= 0) {
+    const first = readHex(Tables.CANONICAL, canonical + 5, 5)
+    decompose(mutable points, mutable classes, first, compatibility)
+    const second = readHex(Tables.CANONICAL, canonical + 10, 5)
+    if (second != 0) {
+      decompose(mutable points, mutable classes, second, compatibility)
+    }
+    return
+  }
+  const range = findNormalRange(Tables.COMPATIBILITY_RANGES, COMPATIBILITY_RANGE_WIDTH, codePoint)
+  if (range >= 0) {
+    const distance = codePoint - readHex(Tables.COMPATIBILITY_RANGES, range, 5)
+    const target = readHex(Tables.COMPATIBILITY_RANGES, range + 10, 5) + distance
+    decompose(mutable points, mutable classes, target, compatibility)
+    return
+  }
+  const record = findNormalKey(Tables.COMPATIBILITY, COMPATIBILITY_WIDTH, codePoint)
+  if (record >= 0) {
+    // The next record's offset ends this one's code points.
+    let end = Str.length(Tables.COMPATIBILITY_DATA) / COMPATIBILITY_DATA_WIDTH
+    if (record + COMPATIBILITY_WIDTH < Str.length(Tables.COMPATIBILITY)) {
+      end = readHex(Tables.COMPATIBILITY, record + COMPATIBILITY_WIDTH + 5, 4)
+    }
+    for (let index = readHex(Tables.COMPATIBILITY, record + 5, 4); index < end; index++) {
+      const target = readHex(Tables.COMPATIBILITY_DATA, index * COMPATIBILITY_DATA_WIDTH, 5)
+      decompose(mutable points, mutable classes, target, compatibility)
+    }
+    return
+  }
+  pushPoint(mutable points, mutable classes, codePoint, properties % 256)
+}
+
+function pushPoint(
+  mutable points: Array<int>,
+  mutable classes: Array<int>,
+  codePoint: int,
+  combining: int,
+) uses alloc {
+  Arrays.push(mutable points, codePoint)
+  Arrays.push(mutable classes, combining)
+}
+
+// orderMarks puts each run of non-starters in canonical order: a stable sort
+// by combining class, so marks of equal class keep their order.
+function orderMarks(mutable points: Array<int>, mutable classes: Array<int>) uses alloc {
+  const total = Arrays.length(points)
+  let start = 0
+  while (start < total) {
+    if (classes[start] == 0) {
+      start++
+      continue
+    }
+    let end = start + 1
+    while (end < total && classes[end] != 0) {
+      end++
+    }
+    // Most runs are one or two marks; a long run takes a merge sort.
+    if (end - start <= SHORT_RUN) {
+      insertMarks(mutable points, mutable classes, start, end)
+    } else {
+      mergeMarks(mutable points, mutable classes, start, end)
+    }
+    start = end
+  }
+}
+
+function insertMarks(
+  mutable points: Array<int>,
+  mutable classes: Array<int>,
+  start: int,
+  end: int,
+) {
+  for (let index = start + 1; index < end; index++) {
+    const point = points[index]
+    const combining = classes[index]
+    let position = index
+    while (position > start && classes[position - 1] > combining) {
+      points[position] = points[position - 1]
+      classes[position] = classes[position - 1]
+      position--
+    }
+    points[position] = point
+    classes[position] = combining
+  }
+}
+
+// mergeMarks sorts points[start..end) by class bottom-up, merging runs of
+// width 1, 2, 4 and so on through a buffer; the left item wins a tie.
+function mergeMarks(
+  mutable points: Array<int>,
+  mutable classes: Array<int>,
+  start: int,
+  end: int,
+) uses alloc {
+  let bufferPoints: Array<int> = []
+  let bufferClasses: Array<int> = []
+  for (let index = start; index < end; index++) {
+    Arrays.push(mutable bufferPoints, 0)
+    Arrays.push(mutable bufferClasses, 0)
+  }
+  const size = end - start
+  let width = 1
+  while (width < size) {
+    let left = 0
+    while (left < size) {
+      let middle = left + width
+      if (middle > size) {
+        middle = size
+      }
+      let right = middle + width
+      if (right > size) {
+        right = size
+      }
+      // Merge [left, middle) and [middle, right) into the buffer.
+      let first = left
+      let second = middle
+      for (let out = left; out < right; out++) {
+        const takeFirst =
+          first < middle && (second >= right || classes[start + first] <= classes[start + second])
+        if (takeFirst) {
+          bufferPoints[out] = points[start + first]
+          bufferClasses[out] = classes[start + first]
+          first++
+        } else {
+          bufferPoints[out] = points[start + second]
+          bufferClasses[out] = classes[start + second]
+          second++
+        }
+      }
+      left = right
+    }
+    for (let index = 0; index < size; index++) {
+      points[start + index] = bufferPoints[index]
+      classes[start + index] = bufferClasses[index]
+    }
+    width *= 2
+  }
+}
+
+// compose applies canonical composition to decomposed code points: each one
+// joins the last starter when no code point between them blocks it.
+function compose(points: Array<int>, classes: Array<int>): Array<int> uses alloc {
+  let result: Array<int> = []
+  // The index in result of the last starter, and the class of the last code point kept.
+  let starter = -1
+  let lastClass = 0
+  for (let index = 0; index < Arrays.length(points); index++) {
+    const point = points[index]
+    const combining = classes[index]
+    if (starter >= 0 && (lastClass < combining || lastClass == 0)) {
+      const composite = composePair(result[starter], point)
+      if (composite >= 0) {
+        result[starter] = composite
+        continue
+      }
+    }
+    if (combining == 0) {
+      starter = Arrays.length(result)
+    }
+    lastClass = combining
+    Arrays.push(mutable result, point)
+  }
+  return result
+}
+
+// composePair gives the primary composite of two code points, or -1.
+function composePair(first: int, second: int): int {
+  // A leading and a vowel jamo make an LV syllable; an LV syllable and a trailing jamo an LVT one.
+  const leading = first - LEADING_BASE
+  const vowel = second - VOWEL_BASE
+  if (leading >= 0 && leading < LEADING_COUNT && vowel >= 0 && vowel < VOWEL_COUNT) {
+    return SYLLABLE_BASE + (leading * VOWEL_COUNT + vowel) * TRAILING_COUNT
+  }
+  const syllable = first - SYLLABLE_BASE
+  const trailing = second - TRAILING_BASE
+  if (
+    syllable >= 0 &&
+      syllable < SYLLABLE_COUNT &&
+      syllable % TRAILING_COUNT == 0 &&
+      trailing > 0 &&
+      trailing < TRAILING_COUNT
+  ) {
+    return first + trailing
+  }
+  let low = 0
+  let high = Str.length(Tables.COMPOSITION) / COMPOSITION_WIDTH
+  while (low < high) {
+    const middle = (low + high) / 2
+    const record = readHex(Tables.COMPOSITION, middle * COMPOSITION_WIDTH, 3) * CANONICAL_WIDTH
+    const recordFirst = readHex(Tables.CANONICAL, record + 5, 5)
+    const recordSecond = readHex(Tables.CANONICAL, record + 10, 5)
+    if (first < recordFirst || (first == recordFirst && second < recordSecond)) {
+      high = middle
+    } else if (first > recordFirst || second > recordSecond) {
+      low = middle + 1
+    } else {
+      return readHex(Tables.CANONICAL, record, 5)
+    }
+  }
+  return -1
 }

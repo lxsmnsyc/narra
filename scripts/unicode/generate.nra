@@ -10,8 +10,8 @@
 //
 // Every table is one string constant of fixed-width ASCII records, sorted by
 // code point, with numbers in lowercase hex. A lookup is a binary search with
-// Str.byteAt (D118 item 3). A later table (normalization) adds its inputs to
-// INPUTS and its writer to writeTables.
+// Str.byteAt (D118 item 3). The normalization tables (UAX #15) take five hex
+// digits per code point, since no decomposition reaches past U+2FFFF.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
@@ -26,6 +26,8 @@ const INPUTS = [
   "emoji-data.txt",
   "EastAsianWidth.txt",
   "DerivedCoreProperties.txt",
+  "CompositionExclusions.txt",
+  "DerivedNormalizationProps.txt",
 ]
 
 const CODE_POINTS = 1114112
@@ -139,6 +141,24 @@ struct Input {
   text: string
 }
 
+// Quick check values of DerivedNormalizationProps, with the bit each sets in
+// the normalization properties.
+const QUICK_CHECKS = [
+  #["NFD_QC", "N", 1],
+  #["NFKD_QC", "N", 2],
+  #["NFC_QC", "N", 4],
+  #["NFC_QC", "M", 8],
+  #["NFKC_QC", "N", 16],
+  #["NFKC_QC", "M", 32],
+]
+
+// A decomposition of UnicodeData, one step.
+struct Decomposition {
+  point: int
+  compatibility: bool
+  targets: Array<int>
+}
+
 // One case mapping table: a single code point target (-1 for none) and the
 // mappings to two or three code points.
 struct CaseMap {
@@ -244,7 +264,7 @@ function writeTables(mutable builder: StringBuilder, inputs: Array<Input>) {
     mutable builder,
     "Grapheme properties (14): range, then 2 digits: Grapheme_Cluster_Break (0 Other, 1 CR, 2 LF, 3 Control, 4 Extend, 5 ZWJ, 6 Regional_Indicator, 7 Prepend, 8 SpacingMark, 9 L, 10 V, 11 T, 12 LV, 13 LVT) + 16 * Indic_Conjunct_Break (1 Consonant, 2 Extend, 3 Linker) + 64 * Extended_Pictographic.",
   )
-  writeConstant(mutable builder, "GRAPHEME", writeRanges(graphemes, 2, 0, 0))
+  writeConstant(mutable builder, "GRAPHEME", writeRanges(graphemes, 6, 2, 0, 0))
 
   // Display width: 0 zero width, 1 an emoji with text presentation (2 with U+FE0F), 2 wide.
   const wide = readWide(widths)
@@ -268,7 +288,7 @@ function writeTables(mutable builder: StringBuilder, inputs: Array<Input>) {
     mutable builder,
     "Display width (13): range, then 1 digit: 0 zero width, 1 an emoji with text presentation (2 columns with U+FE0F), 2 wide. Any other code point is 1 column.",
   )
-  writeConstant(mutable builder, "WIDTH", writeRanges(widthValues, 1, -1, 0))
+  writeConstant(mutable builder, "WIDTH", writeRanges(widthValues, 6, 1, -1, 0))
 
   // Case context for the final sigma rule: 1 Cased, 2 Case_Ignorable, 3 both.
   const cased = readProperty(derived, "Cased")
@@ -281,7 +301,7 @@ function writeTables(mutable builder: StringBuilder, inputs: Array<Input>) {
     mutable builder,
     "Case context (13): range, then 1 digit: 1 Cased, 2 Case_Ignorable, 3 both.",
   )
-  writeConstant(mutable builder, "CASE_CONTEXT", writeRanges(contextValues, 1, 0, 0))
+  writeConstant(mutable builder, "CASE_CONTEXT", writeRanges(contextValues, 6, 1, 0, 0))
 
   // Case mappings: UnicodeData simple mappings, replaced by the unconditional
   // full mappings of SpecialCasing.
@@ -302,6 +322,246 @@ function writeTables(mutable builder: StringBuilder, inputs: Array<Input>) {
   writeConstant(mutable builder, "UPPER_FULL", writeFullMappings(upper.multiple))
   writeConstant(mutable builder, "LOWER_FULL", writeFullMappings(lower.multiple))
   writeConstant(mutable builder, "FOLD_FULL", writeFullMappings(fold.multiple))
+  writeNormalization(mutable builder, unicodeData, inputs[7].text, inputs[8].text)
+}
+
+// writeNormalization writes the tables of normalize and isNormalized (UAX #15).
+// Hangul syllables are computed, not tabled.
+function writeNormalization(
+  mutable builder: StringBuilder,
+  unicodeData: string,
+  exclusions: string,
+  properties: string,
+) {
+  const classes = readCombiningClasses(unicodeData)
+  const decompositions = readDecompositions(unicodeData)
+  const excluded = readCompositionExclusions(exclusions, properties, classes, decompositions)
+
+  // Combining class and quick check share one range table.
+  writeComment(
+    mutable builder,
+    "Normalization properties (14): start (5), end (5), then 4 digits: Canonical_Combining_Class + 256 * quick check (1 NFD_QC=N, 2 NFKD_QC=N, 4 NFC_QC=N, 8 NFC_QC=M, 16 NFKC_QC=N, 32 NFKC_QC=M). Any other code point is class 0 and Yes in every quick check.",
+  )
+  writeConstant(
+    mutable builder,
+    "NORMAL_PROPERTIES",
+    writeRanges(readNormalProperties(properties, classes), 5, 4, 0, 0),
+  )
+
+  // Canonical decompositions have one or two code points per step.
+  let canonical = Str.builder()
+  let pairs: Array<#[int, int, int]> = []
+  let count = 0
+  for (const entry of decompositions) {
+    if (entry.compatibility) {
+      continue
+    }
+    const size = Arrays.length(entry.targets)
+    if (size > 2) {
+      panic(
+        `generate: U+${hex(entry.point, 4)} has a canonical decomposition of ${Show.show(size)} code points`,
+      )
+    }
+    Str.append(mutable canonical, hexField(entry.point, 5))
+    Str.append(mutable canonical, hexField(entry.targets[0], 5))
+    if (size == 2) {
+      Str.append(mutable canonical, hexField(entry.targets[1], 5))
+      if (!excluded[entry.point]) {
+        Arrays.push(mutable pairs, #[entry.targets[0], entry.targets[1], count])
+      }
+    } else {
+      Str.append(mutable canonical, "00000")
+    }
+    count++
+  }
+  writeComment(
+    mutable builder,
+    "Canonical decompositions (15), one step: code point (5), then one or two code points (5 each), 00000 for none.",
+  )
+  writeConstant(mutable builder, "CANONICAL", Str.build(canonical))
+
+  // Primary composites, found by the pair they compose from.
+  sortPairs(mutable pairs)
+  let composition = Str.builder()
+  for (const pair of pairs) {
+    Str.append(mutable composition, hexField(pair[2], 3))
+  }
+  writeComment(
+    mutable builder,
+    "Canonical composition (3): the index of each two code point CANONICAL record that composes (not Full_Composition_Exclusion), sorted by its first and then its second code point.",
+  )
+  writeConstant(mutable builder, "COMPOSITION", Str.build(composition))
+  writeCompatibility(mutable builder, decompositions)
+}
+
+// writeCompatibility writes the compatibility decompositions: runs of single
+// code points as ranges, the longer ones as an index into one list of code points.
+function writeCompatibility(mutable builder: StringBuilder, decompositions: Array<Decomposition>) {
+  let ranges = Str.builder()
+  let index = Str.builder()
+  let data = Str.builder()
+  let offset = 0
+  let position = 0
+  const total = Arrays.length(decompositions)
+  while (position < total) {
+    const entry = decompositions[position]
+    if (!entry.compatibility) {
+      position++
+      continue
+    }
+    if (Arrays.length(entry.targets) == 1) {
+      // The run grows while the next code point maps to the next target.
+      let last = position
+      while (last + 1 < total && continuesRun(decompositions[last], decompositions[last + 1])) {
+        last++
+      }
+      Str.append(mutable ranges, hexField(entry.point, 5))
+      Str.append(mutable ranges, hexField(decompositions[last].point, 5))
+      Str.append(mutable ranges, hexField(entry.targets[0], 5))
+      position = last + 1
+      continue
+    }
+    Str.append(mutable index, hexField(entry.point, 5))
+    Str.append(mutable index, hexField(offset, 4))
+    for (const target of entry.targets) {
+      Str.append(mutable data, hexField(target, 5))
+      offset++
+    }
+    position++
+  }
+  writeComment(
+    mutable builder,
+    "Compatibility decompositions to one code point (15), one step: start (5), end (5), target of the start (5). A code point start + k decomposes to target + k.",
+  )
+  writeConstant(mutable builder, "COMPATIBILITY_RANGES", Str.build(ranges))
+  writeComment(
+    mutable builder,
+    "Longer compatibility decompositions (9), one step: code point (5), then the offset (4) of its first code point in COMPATIBILITY_DATA, counted in code points. The next record's offset, or the end of the data, ends it.",
+  )
+  writeConstant(mutable builder, "COMPATIBILITY", Str.build(index))
+  writeComment(mutable builder, "The code points of COMPATIBILITY (5 each).")
+  writeConstant(mutable builder, "COMPATIBILITY_DATA", Str.build(data))
+}
+
+function continuesRun(previous: Decomposition, next: Decomposition): bool {
+  return next.compatibility &&
+    Arrays.length(next.targets) == 1 &&
+    next.point == previous.point + 1 &&
+    next.targets[0] == previous.targets[0] + 1
+}
+
+// readNormalProperties gives the combining class plus 256 times the quick check bits.
+function readNormalProperties(properties: string, classes: Array<int>): Array<int> {
+  let values = copy(classes)
+  for (const fields of dataLines(properties)) {
+    if (Arrays.length(fields) < 3) {
+      continue
+    }
+    for (const check of QUICK_CHECKS) {
+      if (fields[1] == check[0] && fields[2] == check[1]) {
+        const range = parseRange(fields[0])
+        for (let point = range[0]; point <= range[1]; point++) {
+          values[point] = values[point] + 256 * check[2]
+        }
+      }
+    }
+  }
+  return values
+}
+
+function readCombiningClasses(text: string): Array<int> {
+  let values = filledInts(0)
+  for (const fields of dataLines(text)) {
+    if (Int.parse(fields[3], 10) is Ok(value)) {
+      values[parseHex(fields[0])] = value
+    }
+  }
+  return values
+}
+
+function readDecompositions(text: string): Array<Decomposition> {
+  let entries: Array<Decomposition> = []
+  for (const fields of dataLines(text)) {
+    let field = fields[5]
+    if (field == "") {
+      continue
+    }
+    // A compatibility decomposition starts with its tag, such as `<compat>` or `<font>`.
+    const compatibility = Str.startsWith(field, "<")
+    if (compatibility) {
+      if (Str.indexOf(field, ">") is Some(close)) {
+        field = Str.sliceFrom(field, close + 1)
+      }
+    }
+    Arrays.push(mutable entries, Decomposition {
+      point: parseHex(fields[0]),
+      compatibility: compatibility,
+      targets: parseCodePoints(field),
+    })
+  }
+  return entries
+}
+
+// readCompositionExclusions gives Full_Composition_Exclusion: the code points
+// of CompositionExclusions.txt, singletons, and decompositions of or into a
+// non-starter. It must equal the property in DerivedNormalizationProps.
+function readCompositionExclusions(
+  exclusions: string,
+  properties: string,
+  classes: Array<int>,
+  decompositions: Array<Decomposition>,
+): Array<bool> {
+  let excluded = filledBools(false)
+  for (const fields of dataLines(exclusions)) {
+    const range = parseRange(fields[0])
+    for (let point = range[0]; point <= range[1]; point++) {
+      excluded[point] = true
+    }
+  }
+  for (const entry of decompositions) {
+    if (entry.compatibility) {
+      continue
+    }
+    const single = Arrays.length(entry.targets) == 1
+    if (single || classes[entry.point] != 0 || classes[entry.targets[0]] != 0) {
+      excluded[entry.point] = true
+    }
+  }
+  const derived = readProperty(properties, "Full_Composition_Exclusion")
+  for (let point = 0; point < CODE_POINTS; point++) {
+    if (excluded[point] != (derived[point] == 1)) {
+      panic(
+        `generate: Full_Composition_Exclusion of U+${hex(point, 4)} differs from DerivedNormalizationProps`,
+      )
+    }
+  }
+  return excluded
+}
+
+function sortPairs(mutable pairs: Array<#[int, int, int]>) {
+  // Insertion sort by first, then second code point; the list is close to sorted.
+  for (let index = 1; index < Arrays.length(pairs); index++) {
+    let position = index
+    while (position > 0 && comesAfter(pairs[position - 1], pairs[position])) {
+      const previous = pairs[position - 1]
+      pairs[position - 1] = pairs[position]
+      pairs[position] = previous
+      position--
+    }
+  }
+}
+
+function comesAfter(left: #[int, int, int], right: #[int, int, int]): bool {
+  return left[0] > right[0] || (left[0] == right[0] && left[1] > right[1])
+}
+
+// hexField is hex with a check that the value fits the field.
+function hexField(value: int, digits: int): string {
+  const text = hex(value, digits)
+  if (Str.length(text) != digits) {
+    panic(`generate: ${text} does not fit in ${Show.show(digits)} hex digits`)
+  }
+  return text
 }
 
 function writeComment(mutable builder: StringBuilder, text: string) {
@@ -562,8 +822,15 @@ function hex(value: int, digits: int): string {
 }
 
 // writeRanges writes one record per run of equal values, leaving out runs of
-// `skip`. The stored value is the value plus `offset`.
-function writeRanges(values: Array<int>, digits: int, offset: int, skip: int): string {
+// `skip`. Start and end take keyDigits each; the stored value is the value
+// plus `offset`.
+function writeRanges(
+  values: Array<int>,
+  keyDigits: int,
+  digits: int,
+  offset: int,
+  skip: int,
+): string {
   let builder = Str.builder()
   let start = 0
   while (start < CODE_POINTS) {
@@ -573,8 +840,8 @@ function writeRanges(values: Array<int>, digits: int, offset: int, skip: int): s
       end++
     }
     if (value != skip) {
-      Str.append(mutable builder, hex(start, 6))
-      Str.append(mutable builder, hex(end, 6))
+      Str.append(mutable builder, hexField(start, keyDigits))
+      Str.append(mutable builder, hexField(end, keyDigits))
       Str.append(mutable builder, hex(value + offset, digits))
     }
     start = end + 1

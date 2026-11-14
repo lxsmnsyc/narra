@@ -1,0 +1,70 @@
+// Unicode normalization in std/unicode: composing and decomposing accents,
+// compatibility forms, Hangul syllables and ASCII.
+import * as Unicode from "std/unicode"
+import { NormalForm } from "std/unicode"
+
+function show(label: string, text: string) uses io, alloc {
+  print(`${label}: [${text}]`)
+}
+
+function check(label: string, ok: bool) uses io, alloc {
+  print(`${label}: ${Show.show(ok)}`)
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // An e and a combining acute accent compose to one code point, and come apart again.
+  const composed = Unicode.normalize("e\u{301}", NormalForm.NFC)
+  show("nfc e acute", composed)
+  check("nfc is U+00E9", composed == "\u{e9}")
+  check("nfd is e U+0301", Unicode.normalize("\u{e9}", NormalForm.NFD) == "e\u{301}")
+  check("nfc of U+00E9 is itself", Unicode.normalize("\u{e9}", NormalForm.NFC) == "\u{e9}")
+
+  // Compatibility forms: the fi ligature becomes two letters only in NFKC and NFKD.
+  show("nfkc fi ligature", Unicode.normalize("\u{fb01}", NormalForm.NFKC))
+  show("nfkd fi ligature", Unicode.normalize("\u{fb01}", NormalForm.NFKD))
+  check("nfc keeps the ligature", Unicode.normalize("\u{fb01}", NormalForm.NFC) == "\u{fb01}")
+  show("nfkc superscript and fraction", Unicode.normalize("x\u{b2} \u{bd}", NormalForm.NFKC))
+
+  // Marks are put in canonical order: below (220) before above (230).
+  check(
+    "nfd orders marks",
+    Unicode.normalize("a\u{301}\u{323}", NormalForm.NFD) == "a\u{323}\u{301}",
+  )
+  check(
+    "nfc composes past a mark",
+    Unicode.normalize("a\u{301}\u{323}", NormalForm.NFC) == "\u{1ea1}\u{301}",
+  )
+  // A singleton decomposition never composes back: the Angstrom sign becomes A with ring.
+  check("nfc of the Angstrom sign", Unicode.normalize("\u{212b}", NormalForm.NFC) == "\u{c5}")
+
+  // Hangul syllables decompose into jamo and compose back.
+  const syllables = "\u{d55c}\u{ad6d}\u{c5b4}"
+  const jamo = Unicode.normalize(syllables, NormalForm.NFD)
+  print(`nfd hangul: ${Show.show(Unicode.graphemeCount(jamo))} clusters`)
+  check(
+    "nfd hangul is jamo",
+    jamo == "\u{1112}\u{1161}\u{11ab}\u{1100}\u{116e}\u{11a8}\u{110b}\u{1165}",
+  )
+  check("nfc hangul round-trips", Unicode.normalize(jamo, NormalForm.NFC) == syllables)
+  check("nfkd hangul is jamo", Unicode.normalize(syllables, NormalForm.NFKD) == jamo)
+  check("nfkc hangul round-trips", Unicode.normalize(jamo, NormalForm.NFKC) == syllables)
+
+  // ASCII and empty text come back unchanged in every form.
+  const ascii = "Hello, World 42!"
+  check("ascii nfc", Unicode.normalize(ascii, NormalForm.NFC) == ascii)
+  check("ascii nfd", Unicode.normalize(ascii, NormalForm.NFD) == ascii)
+  check("ascii nfkc", Unicode.normalize(ascii, NormalForm.NFKC) == ascii)
+  check("ascii nfkd", Unicode.normalize(ascii, NormalForm.NFKD) == ascii)
+  check("empty nfc", Unicode.normalize("", NormalForm.NFC) == "")
+
+  // isNormalized answers without building a new string when it can.
+  check("isNormalized ascii", Unicode.isNormalized(ascii, NormalForm.NFC))
+  check("isNormalized e acute nfc", Unicode.isNormalized("\u{e9}", NormalForm.NFC))
+  check("isNormalized e acute nfd", Unicode.isNormalized("\u{e9}", NormalForm.NFD))
+  check("isNormalized e U+0301 nfc", Unicode.isNormalized("e\u{301}", NormalForm.NFC))
+  check("isNormalized e U+0301 nfd", Unicode.isNormalized("e\u{301}", NormalForm.NFD))
+  check("isNormalized marks out of order", Unicode.isNormalized("a\u{301}\u{323}", NormalForm.NFD))
+  check("isNormalized ligature nfc", Unicode.isNormalized("\u{fb01}", NormalForm.NFC))
+  check("isNormalized ligature nfkc", Unicode.isNormalized("\u{fb01}", NormalForm.NFKC))
+  return 0
+}

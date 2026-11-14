@@ -360,7 +360,7 @@ The caller decides when to style. `Terminal.useColor(Stream.Stderr)` answers for
 
 `std/regex` finds text that matches a pattern. The syntax is JavaScript's, without back references (`\1`) and lookaround (`(?=...)`): those can take exponential time, and this engine runs in time linear in the text. Flags go inside the pattern: `(?i)` ignores the case of ASCII letters, `(?m)` makes `^` and `$` match at each line, and `(?s)` lets `.` match a line break.
 
-`Regexes.compile` returns the compiled pattern or a `RegexError` with the byte offset of the mistake. `find` returns the first `Match`, `findAll` is a generator over every match, and `group` and `namedGroup` read the groups. Offsets are byte offsets, as `Str.indexOf` returns them:
+`Regexes.compile` returns the compiled pattern or a `RegexError` with the byte offset of the mistake, and `Regexes.formatError` writes it as `<position>: <reason>`. `find` returns the first `Match`, `findAll` is a generator over every match, and `group` and `namedGroup` read the groups. Offsets are byte offsets, as `Str.indexOf` returns them:
 
 ```narra
 import * as Regexes from "std/regex"
@@ -381,7 +381,7 @@ export function run(args: Array<string>): int uses io, alloc {
   print(Regexes.replaceAll(pairs, "a=1, b=2", "?"))
   const bad = Regexes.compile("(a)\\1")
   if (bad is Err(error)) {
-    print(`${Int.toString(error.position)}: ${error.reason}`)
+    print(Regexes.formatError(error))
   }
   return 0
 }

@@ -166,13 +166,13 @@ The result of a lazy operator has the effects of its source and its callback. Ma
 
 `std/args` reads a command line. The program describes its command line as a `Command` value, and one call of `Args.parse` reads the arguments against it. The same value gives the help text and the error messages.
 
-A `Command` has a name, a summary, its flags, its positionals and what to do with extra arguments. A `Flag` with no `value` is a switch such as `--loud`. A flag with a `value` takes one, and the text of `value` names it in the help. `rest` says what happens to arguments after the declared positionals: `Rest.None` makes them an error, `Rest.Positionals` collects them, and `Rest.Raw` keeps everything after the declared positionals as written, flags included.
+A `Command` has a name, a summary, its flags, its positionals and what to do with extra arguments. A `Flag` with no `value` is a switch such as `--loud`. A flag with a `value` takes one, and the text of `value` names it in the help. `rest` says what happens to arguments after the declared positionals: `Rest.None`, the default, makes them an error, `Rest.Positionals` collects them, and `Rest.Raw` keeps everything after the declared positionals as written, flags included.
 
 `Args.parse` returns a `Result`. On success, `Args.has`, `Args.value`, `Args.values` and `Args.positional` read what was given. `-h` and `--help` work on every command and come back as the error `ArgsError.Help`, so the program prints the help and stops. Any other error has a message from `Args.formatError`, with a hint when a flag or command name is close to a known one:
 
 ```narra
 import * as Args from "std/args"
-import { Command, Flag, Rest } from "std/args"
+import { Command, Flag } from "std/args"
 
 const GREET = Command {
   name: "greet",
@@ -182,7 +182,6 @@ const GREET = Command {
     Flag { name: "times", short: "n", value: "count", help: "a number to show" },
   ],
   positionals: ["name"],
-  rest: Rest.None,
 }
 
 function greet(arguments: Array<string>) uses io, alloc {
@@ -352,7 +351,7 @@ export function run(args: Array<string>): int uses io, alloc {
 done
 ```
 
-Each function closes with its own reset code. When the text already holds that close, as `dim` inside `bold` does, the outer style is opened again after it, so `and more` stays bold. `Terminal.stripStyles` removes the codes again. `Terminal.style(text, Style { ... })` applies several at once: `bold`, `dim`, `italic`, `underline`, `inverse`, `strikethrough`, and a `foreground` and `background` that hold `Some(Color.Red)`, `Some(Color.Ansi256(21))` or `Some(Color.Rgb(255, 128, 0))`.
+Each function closes with its own reset code. When the text already holds that close, as `dim` inside `bold` does, the outer style is opened again after it, so `and more` stays bold. `Terminal.stripStyles` removes the codes again. `Terminal.style(text, Style { ... })` applies several at once: `bold`, `dim`, `italic`, `underline`, `inverse`, `strikethrough`, and a `foreground` and `background` such as `Color.Red`, `Color.Ansi256(21)` or `Color.Rgb(255, 128, 0)`. Both start as `Color.Default`, which leaves the color as it is.
 
 The caller decides when to style. `Terminal.useColor(Stream.Stderr)` answers for one stream: `false` when `NO_COLOR` is set and not empty, `true` when `FORCE_COLOR` is set to anything but `""` or `"0"`, `false` when `TERM` is `dumb`, and otherwise whether the stream is a terminal. `Terminal.isTerminal(stream)` is that last test alone, and `Terminal.columns(stream)` is `Some(width)` for a terminal and `None` for a pipe or a file.
 

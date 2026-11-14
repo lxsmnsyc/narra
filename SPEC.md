@@ -1786,7 +1786,7 @@ export enum Color {
 
 - **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler and arenas.
 - **Vector types** from `std/simd` compile to C compiler vector extensions (D112). Each type the program uses is a typedef such as `typedef float narra_f32x4 __attribute__((vector_size(16), aligned(8)))`. The alignment is 8 because heap blocks start at 8-byte boundaries; loads are unaligned, which costs nothing on x86-64 and arm64. Integer `+`, `-` and `*` go through the unsigned vector type, so they wrap. The build passes no `-march` flag: x86-64 code uses SSE2 and arm64 code NEON. A C compiler without vector extensions (TCC) cannot build a program that imports `std/simd`.
-- **Debug builds** use a fast C compiler such as TCC with checks on.
+- **Debug builds** use the same C compiler with checks on (AddressSanitizer, the leak check and the copy check).
 - **Release builds** use Clang or GCC with `-O2`.
 - **No fused multiply-add.** The C starts with `#pragma STDC FP_CONTRACT OFF`, so `a * b + c` on floats rounds twice at every optimization level, as the compiler computes it for an `@const` function (D105). Without it, clang contracts the expression on arm64, which changes the last bit of some results.
 - **Generators and async functions** compile to a struct and a resume function. The struct holds their live variables and a state number. The resume function switches on that number.
@@ -1803,20 +1803,11 @@ export enum Color {
 - **Trait constraints** compile to a hidden parameter that points to the implementation table.
 - **Constant parameters pass by pointer.** A parameter larger than two machine words is passed as a pointer to the caller's value. Parameters are constant and access is exclusive (section 6), so this changes nothing a program can observe.
 - **Reads do not copy.** `items[i].field` and `s.inner.field` read through a pointer. The element is not copied and its reference count is not touched.
-- **Generic code uses layout tables.** A generic function that is not specialized receives one hidden table per type parameter. The table holds the type's size, its alignment, and functions to copy, drop and move a value. Values are stored and passed in their normal form, never boxed.
-- **Containers store raw values.** `Array<T>` stores elements directly, using the size from the layout table. `Array<int>` holds raw integers in both generic and specialized code.
-- **Specialization.**
-  - Debug builds compile each generic function once, with layout tables, for fast builds.
-  - Release builds compile a separate copy for each type a generic function is used with inside the same package.
-  - Calls across packages use layout tables unless the function is marked `@specialize` or `@inline`.
-  - `generics = "compact"` in the `[build]` table of `narra.toml` uses layout tables everywhere, for smaller binaries.
-- **`@specialize`** on a function always emits a copy per concrete type, in every build.
+- **Generic code is monomorphized.** Every build, debug and release, compiles one copy of a generic function for each set of type arguments the program uses, across packages too (D119). Values are stored and passed in their normal form, never boxed, and `Array<int>` holds raw integers.
 
 ## 12. Build model
 
 - The compiler reads a module's `import` declarations before anything else and builds the module graph from them.
-- Each module produces an interface file (`.nrai`) with its exported signatures. A module type-checks against its dependencies' interface files only.
-- When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.
 - Builds are deterministic. The same inputs produce byte-identical C and binaries.
 - Compile-time evaluation is limited to top-level `const` declarations, `@const` functions and build conditions. A constant that calls an `@const` function is computed inside the compiler, by an evaluator over the checked program, within the limits of section 10; `narrac check`, `build`, `emit` and the language service all compute it, since a failed computation is a compile error. A result depends only on the source and the target: maps keep insertion order, integers wrap the same way, and floats round the same in the compiler and the program (section 11).
@@ -2063,8 +2054,6 @@ entry = "app/cli.run"
 [link]
 search = ["/opt/homebrew/lib"]
 
-[build]
-generics = "compact"    # optional: layout tables everywhere, for smaller binaries
 ```
 
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.

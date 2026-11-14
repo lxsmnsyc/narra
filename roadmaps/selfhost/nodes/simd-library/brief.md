@@ -1,7 +1,7 @@
 ---
 id: simd-library
 title: "SIMD vector types: std/simd functions and bench/dot"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 221915
 owns:
   - roadmaps/selfhost/nodes/simd-library/**
   - testdata/simd/library*

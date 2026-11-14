@@ -1,7 +1,7 @@
 ---
 id: std-regex-const
 title: "std/regex: patterns checked while compiling"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-14
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 177421
 owns:
   - testdata/regex_const*.nra
   - testdata/regex_const*.out

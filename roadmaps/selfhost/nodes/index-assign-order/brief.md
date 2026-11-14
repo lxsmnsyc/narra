@@ -1,7 +1,7 @@
 ---
 id: index-assign-order
 title: "Indexed assignment evaluates its right side first"
-status: todo
+status: done
 priority: must
 type: fix
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 203000
 owns:
   - roadmaps/selfhost/nodes/index-assign-order/**
   - testdata/index_assign_order*

@@ -1,7 +1,7 @@
 ---
 id: simd-library
 title: "SIMD vector types: std/simd functions and bench/dot"
-status: todo
+status: active
 priority: must
 type: feature
 story: batch-13

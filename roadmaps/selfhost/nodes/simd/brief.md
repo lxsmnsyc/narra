@@ -1,7 +1,7 @@
 ---
 id: simd
 title: "SIMD vector types: types, literals, operators, lanes"
-status: active
+status: done
 priority: must
 type: feature
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-13
-spent:
+spent: 343769
 owns:
   - roadmaps/selfhost/nodes/simd/**
   - selfhost/src/stdsimd.nra

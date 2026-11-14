@@ -243,7 +243,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 
 ## Not supported yet
 
-- In `@const` bodies: arrow functions, calls through function values, explicit trait function calls, `Map.update`, `Results.map`, `andThen` and `mapErr`, and the std modules `std/math`, `std/bytes`, `std/fixedarray` and the sized number modules (E1052). A float literal in an `@const` body with more than 18 significant digits or a power of ten past 22 that does not reduce to an exact integer is not read yet (E1052 at the constant).
+- In `@const` bodies: arrow functions, calls through function values, explicit trait function calls, `Map.update`, `Results.map`, `andThen` and `mapErr` (E1052), and the C library functions of `std/math`. A float literal in an `@const` body with more than 18 significant digits or a power of ten past 22 that does not reduce to an exact integer is not read yet (E1052 at the constant).
 - Dependencies on other packages, `narra.lock`, interface files (`.nrai`) and incremental builds.
 - Effects: trait function calls to user implementations are not followed, and an implementation may use effects its trait function does not declare, except `unsafe` (E0800). Implementations of pure trait functions such as `Show.show` allocate in existing programs and in the guide; enforcing the subset rule for `alloc` and `io` waits for a decision.
 - Async `from` through a stored handle: after `const h = keep(items)`, a write to the value of `await h` is not E0978 while `items` is used, and the debug copy check (`NARRA_CHECK_COPIES`) reports the hidden copy (D109 item 9).

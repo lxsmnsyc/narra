@@ -1,0 +1,434 @@
+// The std functions an `@const` body calls that consteval.nra hands over: the
+// sized number modules (std/i8 to std/u64), std/f32, std/bytes, the C library
+// functions std/math builds on, and the ordering of scalars (Ordered.compare).
+// Each runs the same std function inside the compiler, after the checks the
+// run-time function makes. A byte sequence is held as an Items value of numbers.
+import { ConstValue } from "narrac/check"
+import { Type } from "narrac/types"
+import { substring } from "narrac/textops"
+import * as Int from "std/int"
+import * as Char from "std/char"
+import * as Float from "std/float"
+import * as F32 from "std/f32"
+import * as I8 from "std/i8"
+import * as I16 from "std/i16"
+import * as I32 from "std/i32"
+import * as U8 from "std/u8"
+import * as U16 from "std/u16"
+import * as U32 from "std/u32"
+import * as U64 from "std/u64"
+import * as Bytes from "std/bytes"
+import * as Math from "std/math"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const INT_MIN = -9223372036854775807 - 1
+const MAX_EXACT_FLOAT = 9007199254740992
+
+// What a function made: how to wrap the value (a plain value, Some, None, Ok,
+// Err), or "unsupported" when this module does not run the function.
+export struct StdOutcome {
+  shape: string
+  value: ConstValue
+}
+
+function makeOutcome(shape: string, value: ConstValue): StdOutcome from value {
+  return StdOutcome { shape: shape, value: value }
+}
+
+function makeOptional(found: Option<ConstValue>): StdOutcome from found {
+  if (found is Some(value)) {
+    return makeOutcome("some", value)
+  }
+  return makeOutcome("none", ConstValue.Unit)
+}
+
+function makeUnsupported(): StdOutcome {
+  return makeOutcome("unsupported", ConstValue.Unit)
+}
+
+export function wrapInteger(type: Type, value: int): int {
+  // Keeps a sized integer inside its type, as the C type does.
+  return match (type) {
+    Type.TI8 => ((value & 255) ^ 128) - 128
+    Type.TI16 => ((value & 65535) ^ 32768) - 32768
+    Type.TI32 => ((value & 4294967295) ^ 2147483648) - 2147483648
+    Type.TU8 => value & 255
+    Type.TU16 => value & 65535
+    Type.TU32 => value & 4294967295
+    _ => value
+  }
+}
+
+export function callStdFunction(
+  name: string,
+  values: Array<ConstValue>,
+  argumentTypes: Array<Type>,
+): StdOutcome uses alloc {
+  // The module prefix is the text before the dot (I8, Bytes, F32, Libm).
+  if (Str.indexOf(name, ".") is Some(dot)) {
+    const prefix = substring(name, 0, dot)
+    const member = Str.sliceFrom(name, dot + 1)
+    const sizedType = findSizedType(prefix)
+    if (sizedType != Type.TVoid) {
+      return callSizedFunction(sizedType, member, values, argumentTypes)
+    }
+    if (prefix == "Bytes") {
+      return callBytesFunction(member, values)
+    }
+    if (prefix == "F32") {
+      return callF32Function(member, values, argumentTypes)
+    }
+    if (prefix == "Libm") {
+      return callLibmFunction(member, values)
+    }
+  }
+  return makeUnsupported()
+}
+
+function findSizedType(prefix: string): Type {
+  return match (prefix) {
+    "I8" => Type.TI8
+    "I16" => Type.TI16
+    "I32" => Type.TI32
+    "U8" => Type.TU8
+    "U16" => Type.TU16
+    "U32" => Type.TU32
+    "U64" => Type.TU64
+    _ => Type.TVoid
+  }
+}
+
+function readNumber(value: ConstValue): int {
+  return match (value) { ConstValue.Integer(number) => number, _ => 0 }
+}
+
+function readReal(value: ConstValue): f64 {
+  return match (value) { ConstValue.Float(number) => number, _ => 0.0 }
+}
+
+function readWords(value: ConstValue): string {
+  return match (value) { ConstValue.Text(text) => text, _ => "" }
+}
+
+function isLessUnsigned(left: int, right: int): bool {
+  return (left ^ INT_MIN) < (right ^ INT_MIN)
+}
+
+function fitsType(target: Type, isSourceWide: bool, number: int): bool {
+  // A u64 source from 2 to the power 63 up is negative as an int: only a u64 holds it.
+  if (target == Type.TU64) {
+    return isSourceWide || number >= 0
+  }
+  if (isSourceWide && number < 0) {
+    return false
+  }
+  return wrapInteger(target, number) == number
+}
+
+function callSizedFunction(
+  type: Type,
+  member: string,
+  values: Array<ConstValue>,
+  argumentTypes: Array<Type>,
+): StdOutcome uses alloc {
+  if (member == "toString") {
+    const number = readNumber(values[0])
+    if (type == Type.TU64) {
+      return makeOutcome("value", ConstValue.Text(U64.toString(U64.wrap(number))))
+    }
+    return makeOutcome("value", ConstValue.Text(Int.toString(number)))
+  }
+  if (member == "parse") {
+    return parseSized(type, readWords(values[0]), readNumber(values[1]))
+  }
+  if (member == "from" || member == "wrap") {
+    return makeOutcome("value", ConstValue.Integer(wrapInteger(type, readNumber(values[0]))))
+  }
+  if (member == "tryFrom") {
+    const number = readNumber(values[0])
+    if (fitsType(type, argumentTypes[0] == Type.TU64, number)) {
+      return makeOutcome("some", ConstValue.Integer(number))
+    }
+    return makeOutcome("none", ConstValue.Unit)
+  }
+  if (member == "addChecked" || member == "subChecked" || member == "mulChecked") {
+    return makeOptional(computeChecked(type, member, readNumber(values[0]), readNumber(values[1])))
+  }
+  return makeUnsupported()
+}
+
+function computeChecked(type: Type, member: string, left: int, right: int): Option<ConstValue> {
+  // None when the exact result is outside the type, as the run-time function reports.
+  if (type == Type.TU64) {
+    return computeCheckedWide(member, left, right)
+  }
+  let exact: Option<int> = None
+  if (member == "addChecked") {
+    exact = Int.addChecked(left, right)
+  } else if (member == "subChecked") {
+    exact = Int.subChecked(left, right)
+  } else {
+    exact = Int.mulChecked(left, right)
+  }
+  if (exact is Some(number)) {
+    if (wrapInteger(type, number) == number) {
+      return Some(ConstValue.Integer(number))
+    }
+  }
+  return None
+}
+
+function computeCheckedWide(member: string, left: int, right: int): Option<ConstValue> {
+  // u64 bits held in an int: the overflow tests compare without a sign.
+  if (member == "addChecked") {
+    const sum = left + right
+    if (isLessUnsigned(sum, left)) {
+      return None
+    }
+    return Some(ConstValue.Integer(sum))
+  }
+  if (member == "subChecked") {
+    if (isLessUnsigned(left, right)) {
+      return None
+    }
+    return Some(ConstValue.Integer(left - right))
+  }
+  if (left == 0 || right == 0) {
+    return Some(ConstValue.Integer(0))
+  }
+  const product = left * right
+  const divisor = U64.wrap(left)
+  if (divisor == 0) {
+    return Some(ConstValue.Integer(0))
+  }
+  const quotient = Int.wrap(U64.wrap(product) / divisor)
+  if (quotient != right) {
+    return None
+  }
+  return Some(ConstValue.Integer(product))
+}
+
+function parseSized(type: Type, text: string, base: int): StdOutcome uses alloc {
+  let parsed: Result<int, string> = Err("")
+  if (type == Type.TI8) {
+    parsed = match (I8.parse(text, base)) {
+      Ok(value) => Ok(Int.from(value))
+      Err(message) => Err(message)
+    }
+  } else if (type == Type.TI16) {
+    parsed = match (I16.parse(text, base)) {
+      Ok(value) => Ok(Int.from(value))
+      Err(message) => Err(message)
+    }
+  } else if (type == Type.TI32) {
+    parsed = match (I32.parse(text, base)) {
+      Ok(value) => Ok(Int.from(value))
+      Err(message) => Err(message)
+    }
+  } else if (type == Type.TU8) {
+    parsed = match (U8.parse(text, base)) {
+      Ok(value) => Ok(Int.from(value))
+      Err(message) => Err(message)
+    }
+  } else if (type == Type.TU16) {
+    parsed = match (U16.parse(text, base)) {
+      Ok(value) => Ok(Int.from(value))
+      Err(message) => Err(message)
+    }
+  } else if (type == Type.TU32) {
+    parsed = match (U32.parse(text, base)) {
+      Ok(value) => Ok(Int.from(value))
+      Err(message) => Err(message)
+    }
+  } else {
+    parsed = match (U64.parse(text, base)) {
+      Ok(value) => Ok(Int.wrap(value))
+      Err(message) => Err(message)
+    }
+  }
+  return match (parsed) {
+    Ok(number) => makeOutcome("ok", ConstValue.Integer(number))
+    Err(message) => makeOutcome("err", ConstValue.Text(message))
+  }
+}
+
+function callF32Function(
+  member: string,
+  values: Array<ConstValue>,
+  argumentTypes: Array<Type>,
+): StdOutcome uses alloc {
+  if (member == "from") {
+    if (values[0] is ConstValue.Float(number)) {
+      return makeOutcome("value", ConstValue.Float(Float.from(F32.from(number))))
+    }
+    // An integer converts straight to f32 in C; through f64 it rounds twice above 2 to the power 53.
+    const whole = readNumber(values[0])
+    const isWide = argumentTypes[0] == Type.TU64
+    if ((isWide && whole < 0) || whole > MAX_EXACT_FLOAT || whole < 0 - MAX_EXACT_FLOAT) {
+      return makeUnsupported()
+    }
+    return makeOutcome("value", ConstValue.Float(Float.from(F32.from(Float.fromInt(whole)))))
+  }
+  if (member == "truncate") {
+    if (Float.truncate(readReal(values[0])) is Some(whole)) {
+      return makeOutcome("some", ConstValue.Integer(whole))
+    }
+    return makeOutcome("none", ConstValue.Unit)
+  }
+  if (member == "toString") {
+    return makeOutcome("value", ConstValue.Text(F32.toString(F32.from(readReal(values[0])))))
+  }
+  return makeUnsupported()
+}
+
+function callLibmFunction(member: string, values: Array<ConstValue>): StdOutcome uses alloc {
+  // Only the functions IEEE 754 rounds exactly; sin, cos, tan, atan2, exp, log and pow stay out.
+  const number = readReal(values[0])
+  if (member == "floor") {
+    return makeOutcome("value", ConstValue.Float(Math.floor(number)))
+  }
+  if (member == "ceil") {
+    return makeOutcome("value", ConstValue.Float(Math.ceil(number)))
+  }
+  if (member == "round") {
+    return makeOutcome("value", ConstValue.Float(Math.round(number)))
+  }
+  if (member == "trunc") {
+    return makeOutcome("value", ConstValue.Float(Math.trunc(number)))
+  }
+  return makeUnsupported()
+}
+
+function readBytes(value: ConstValue): Array<int> uses alloc {
+  let numbers: Array<int> = []
+  if (value is ConstValue.Items(elements)) {
+    for (const element of Arrays.values(elements)) {
+      Arrays.push(mutable numbers, readNumber(element))
+    }
+  }
+  return numbers
+}
+
+function makeBytes(numbers: Array<int>): ConstValue uses alloc {
+  let items: Array<ConstValue> = []
+  for (const number of Arrays.values(numbers)) {
+    Arrays.push(mutable items, ConstValue.Integer(number))
+  }
+  return ConstValue.Items(items)
+}
+
+function makeRuntimeBytes(numbers: Array<int>): bytes uses alloc {
+  let raw: Array<u8> = []
+  for (const number of Arrays.values(numbers)) {
+    Arrays.push(mutable raw, U8.wrap(number))
+  }
+  return Bytes.fromArray(raw)
+}
+
+function callBytesFunction(member: string, values: Array<ConstValue>): StdOutcome uses alloc {
+  if (member == "fromString") {
+    let numbers: Array<int> = []
+    for (const byte of Arrays.values(Bytes.toArray(Bytes.fromString(readWords(values[0]))))) {
+      Arrays.push(mutable numbers, Int.from(byte))
+    }
+    return makeOutcome("value", makeBytes(numbers))
+  }
+  const numbers = readBytes(values[0])
+  if (member == "length") {
+    return makeOutcome("value", ConstValue.Integer(Arrays.length(numbers)))
+  }
+  if (member == "toArray" || member == "fromArray") {
+    return makeOutcome("value", makeBytes(numbers))
+  }
+  if (member == "at") {
+    const index = readNumber(values[1])
+    if (index < 0 || index >= Arrays.length(numbers)) {
+      return makeOutcome("none", ConstValue.Unit)
+    }
+    return makeOutcome("some", ConstValue.Integer(numbers[index]))
+  }
+  if (member == "concat") {
+    let joined = copy(numbers)
+    for (const number of Arrays.values(readBytes(values[1]))) {
+      Arrays.push(mutable joined, number)
+    }
+    return makeOutcome("value", makeBytes(joined))
+  }
+  if (member == "slice") {
+    const start = readNumber(values[1])
+    const finish = readNumber(values[2])
+    if (start < 0 || finish < start || finish > Arrays.length(numbers)) {
+      return makeOutcome("none", ConstValue.Unit)
+    }
+    let part: Array<int> = []
+    for (const index of Ranges.between(start, finish)) {
+      Arrays.push(mutable part, numbers[index])
+    }
+    return makeOutcome("some", makeBytes(part))
+  }
+  if (member == "toString") {
+    return match (Bytes.toString(makeRuntimeBytes(numbers))) {
+      Ok(text) => makeOutcome("ok", ConstValue.Text(text))
+      Err(message) => makeOutcome("err", ConstValue.Text(message))
+    }
+  }
+  return makeUnsupported()
+}
+
+function readOrderingTag(left: int, right: int): int {
+  // Ordering's tags: Less 0, Equal 1, Greater 2.
+  return (left > right ? 1 : 0) - (left < right ? 1 : 0) + 1
+}
+
+// The tag of Ordering that comparing left with right gives, as the run-time
+// functions of the scalar types do; -1 for a type this module does not order.
+export function compareScalars(type: Type, left: ConstValue, right: ConstValue): int uses alloc {
+  if (left is ConstValue.Float(first)) {
+    // A NaN is neither less nor greater.
+    return (first > readReal(right) ? 1 : 0) - (first < readReal(right) ? 1 : 0) + 1
+  }
+  if (left is ConstValue.Integer(first)) {
+    if (type == Type.TU64) {
+      return readOrderingTag(first ^ INT_MIN, readNumber(right) ^ INT_MIN)
+    }
+    return readOrderingTag(first, readNumber(right))
+  }
+  if (left is ConstValue.Character(first)) {
+    if (right is ConstValue.Character(second)) {
+      return readOrderingTag(Char.code(first), Char.code(second))
+    }
+  }
+  if (left is ConstValue.Boolean(first)) {
+    if (right is ConstValue.Boolean(second)) {
+      return readOrderingTag(first ? 1 : 0, second ? 1 : 0)
+    }
+  }
+  if (left is ConstValue.Text(first)) {
+    return match (Ordered.compare(first, readWords(right))) {
+      Ordering.Less => 0
+      Ordering.Equal => 1
+      Ordering.Greater => 2
+    }
+  }
+  if (type == Type.TBytes) {
+    return compareBytes(readBytes(left), readBytes(right))
+  }
+  return -1
+}
+
+function compareBytes(left: Array<int>, right: Array<int>): int {
+  // Bytewise, a prefix first.
+  const shared = (
+    Arrays.length(left) < Arrays.length(right)
+      ? Arrays.length(left)
+      : Arrays.length(right)
+  )
+  for (const index of Ranges.between(0, shared)) {
+    if (left[index] != right[index]) {
+      return readOrderingTag(left[index], right[index])
+    }
+  }
+  return readOrderingTag(Arrays.length(left), Arrays.length(right))
+}
